@@ -370,6 +370,12 @@ pub(crate) fn apply_beginner_part_assignments(
         .filter(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Leg)
         .map(|assignment| assignment.candidate_id)
         .collect::<Vec<_>>();
+    let wing_candidate_ids = request
+        .assignments
+        .iter()
+        .filter(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Wing)
+        .map(|assignment| assignment.candidate_id)
+        .collect::<Vec<_>>();
     let tail_candidate_ids = request
         .assignments
         .iter()
@@ -436,6 +442,72 @@ pub(crate) fn apply_beginner_part_assignments(
     }
     let mut profile = project.editor.beginner_design_profile().clone();
     profile.generation_constraints.target_parts = target_parts;
+    if wing_candidate_ids.len() == 2
+        && antenna_candidate_ids.len() == 2
+        && profile.generation_constraints.target_category
+            == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
+    {
+        let axis_twice = i64::from(request.selected_outline.bounds.min_x)
+            + i64::from(request.selected_outline.bounds.max_x);
+        let derive_pair = |ids: &[u8],
+                           id: u16,
+                           vertical: bool|
+         -> Result<ori_domain::BeginnerProtrusionTargetV1, String> {
+            let mut pair = ids
+                .iter()
+                .filter_map(|candidate_id| {
+                    candidates
+                        .iter()
+                        .find(|candidate| candidate.id == *candidate_id)
+                })
+                .collect::<Vec<_>>();
+            pair.sort_by_key(|candidate| candidate.bounds.min_x);
+            if pair.len() != 2 {
+                return Err("part_assignment_wing_antenna_binding_invalid".to_owned());
+            }
+            let left_x = i64::from(pair[0].bounds.min_x) + i64::from(pair[0].bounds.max_x);
+            let right_x = i64::from(pair[1].bounds.min_x) + i64::from(pair[1].bounds.max_x);
+            let left_y = i64::from(pair[0].bounds.min_y) + i64::from(pair[0].bounds.max_y);
+            let right_y = i64::from(pair[1].bounds.min_y) + i64::from(pair[1].bounds.max_y);
+            if (left_x + right_x - axis_twice * 2).abs() > 2 || (left_y - right_y).abs() > 2 {
+                return Err("part_assignment_wing_antenna_binding_invalid".to_owned());
+            }
+            Ok(ori_domain::BeginnerProtrusionTargetV1 {
+                id,
+                count: 2,
+                length_tenths_mm: u32::try_from(
+                    (right_x - left_x).unsigned_abs().saturating_mul(5).max(1),
+                )
+                .map_err(|_| "part_assignment_wing_antenna_binding_invalid")?,
+                thickness_tenths_mm: 10,
+                position_tenths_mm: [
+                    i32::try_from(axis_twice.saturating_mul(5))
+                        .map_err(|_| "part_assignment_wing_antenna_binding_invalid")?,
+                    i32::try_from((left_y + right_y).saturating_mul(5) / 2)
+                        .map_err(|_| "part_assignment_wing_antenna_binding_invalid")?,
+                    0,
+                ],
+                direction_milli: if vertical {
+                    [0, -1000, 0]
+                } else {
+                    [1000, 0, 0]
+                },
+                symmetry: ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+                curvature_degrees: 0,
+                joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
+                motion_degrees: [0, 0],
+                side: ori_domain::BeginnerProtrusionSideV1::Either,
+                priority: 50,
+            })
+        };
+        profile.generation_constraints.protrusions = vec![
+            derive_pair(&wing_candidate_ids, 1, false)?,
+            derive_pair(&antenna_candidate_ids, 2, true)?,
+        ];
+        if ori_domain::insect_wing_antenna_bindings_v1(&profile.generation_constraints).is_none() {
+            return Err("part_assignment_wing_antenna_binding_invalid".to_owned());
+        }
+    }
     let vertical_candidate_ids = if horn_candidate_ids.len() == 1
         && profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Animal)

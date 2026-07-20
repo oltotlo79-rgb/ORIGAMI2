@@ -114,6 +114,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     CompositeHornEarBase,
     CompositeHornTailBase,
     CompositeHornTailEarBase,
+    CompositeWingAntennaBase,
     VerticalBookFold,
     HorizontalBookFold,
     DiagonalFold,
@@ -185,6 +186,52 @@ pub struct BeginnerHornTailEarBindingV1 {
     pub horn_protrusion_id: u16,
     pub tail_protrusion_id: u16,
     pub ear_pair_protrusion_id: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerWingAntennaBindingV1 {
+    pub wing_pair_protrusion_id: u16,
+    pub antenna_pair_protrusion_id: u16,
+}
+
+#[must_use]
+pub fn insect_wing_antenna_bindings_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<BeginnerWingAntennaBindingV1> {
+    let count = |kind| {
+        constraints
+            .target_parts
+            .iter()
+            .find(|part| part.kind == kind)
+            .map_or(0, |part| part.count)
+    };
+    if constraints.target_category != Some(BeginnerTargetCategoryV1::Insect)
+        || count(BeginnerTargetPartKindV1::Wing) != 2
+        || count(BeginnerTargetPartKindV1::Antenna) != 2
+    {
+        return None;
+    }
+    let pairs = constraints
+        .protrusions
+        .iter()
+        .filter(|target| {
+            target.count == 2 && target.symmetry == BeginnerProtrusionSymmetryV1::Bilateral
+        })
+        .collect::<Vec<_>>();
+    if pairs.len() != 2 {
+        return None;
+    }
+    let wing = pairs
+        .iter()
+        .find(|target| target.direction_milli[0] != 0 && target.direction_milli[1] == 0)?;
+    let antenna = pairs
+        .iter()
+        .find(|target| target.direction_milli[1] != 0 && target.direction_milli[0] == 0)?;
+    (wing.id != antenna.id).then_some(BeginnerWingAntennaBindingV1 {
+        wing_pair_protrusion_id: wing.id,
+        antenna_pair_protrusion_id: antenna.id,
+    })
 }
 
 #[must_use]
@@ -471,6 +518,12 @@ pub fn estimate_symmetric_parameters_v1(
         }
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Tail) == 1 => 1,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 1 => 1,
+        BeginnerTargetCategoryV1::Insect
+            if count(BeginnerTargetPartKindV1::Wing) == 2
+                && count(BeginnerTargetPartKindV1::Antenna) == 2 =>
+        {
+            4
+        }
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Antenna) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Antenna) == 1 => 1,
@@ -802,7 +855,39 @@ pub fn generate_beginner_plans_v1(
             }
         }
         BeginnerTargetCategoryV1::Insect => {
-            if part_count(BeginnerTargetPartKindV1::Antenna) == 1 {
+            if part_count(BeginnerTargetPartKindV1::Wing) == 2
+                && part_count(BeginnerTargetPartKindV1::Antenna) == 2
+            {
+                let bindings = insect_wing_antenna_bindings_v1(constraints)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
+                let mut wing_only = constraints.clone();
+                wing_only
+                    .protrusions
+                    .retain(|target| target.id == bindings.wing_pair_protrusion_id);
+                let wings = parameterized_symmetric_endpoints(&wing_only, 2, false)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
+                let mut antenna_only = constraints.clone();
+                antenna_only
+                    .protrusions
+                    .retain(|target| target.id == bindings.antenna_pair_protrusion_id);
+                let antennae = parameterized_symmetric_endpoints(&antenna_only, 2, true)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
+                let mut endpoints = wings.to_vec();
+                endpoints.extend(antennae);
+                symmetric_template(
+                    namespace,
+                    source,
+                    BeginnerGeneratedPlanKindV1::CompositeWingAntennaBase,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &endpoints,
+                    "composite_wing_antenna_base",
+                    constraints,
+                )
+            } else if part_count(BeginnerTargetPartKindV1::Antenna) == 1 {
                 let endpoint = parameterized_center_axis_endpoint(constraints, true)
                     .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
                 symmetric_template(
@@ -1590,6 +1675,30 @@ mod tests {
         assert_eq!(
             antenna_plans[0].kind,
             BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
+        );
+        let mut wing_antenna = constraints.clone();
+        wing_antenna.target_parts.push(BeginnerTargetPartRecordV1 {
+            kind: BeginnerTargetPartKindV1::Antenna,
+            count: 2,
+        });
+        let mut antenna_target = bilateral_protrusion(2, 2);
+        antenna_target.direction_milli = [0, -1_000, 0];
+        antenna_target.length_tenths_mm = 4;
+        wing_antenna.protrusions.push(antenna_target);
+        let composite_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &wing_antenna).unwrap();
+        assert_eq!(
+            composite_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::CompositeWingAntennaBase
+        );
+        assert_eq!(composite_plans[0].crease_pattern.vertices.len(), 9);
+        assert_eq!(composite_plans[0].crease_pattern.edges.len(), 8);
+        assert_eq!(
+            insect_wing_antenna_bindings_v1(&wing_antenna),
+            Some(BeginnerWingAntennaBindingV1 {
+                wing_pair_protrusion_id: 1,
+                antenna_pair_protrusion_id: 2,
+            })
         );
         let mut single_antenna = antenna.clone();
         single_antenna.target_parts[2].count = 1;

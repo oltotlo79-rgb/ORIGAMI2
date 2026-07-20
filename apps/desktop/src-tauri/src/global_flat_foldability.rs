@@ -399,6 +399,37 @@ impl CurrentLayerOrderCommitGuard<'_> {
     pub(super) fn invalidate_after_project_mutation(mut self) {
         self.slot.current_layer_order = None;
     }
+
+    /// Replaces the consumed source certificate with a flat-layer certificate
+    /// that is independently bound to the already committed target project.
+    #[allow(dead_code)]
+    pub(super) fn install_certified_target_after_project_mutation(
+        mut self,
+        project: &ProjectState,
+        snapshot: LayerOrderSnapshot,
+    ) -> Result<(), ()> {
+        let fingerprint = project.editor.fold_model_fingerprint_v1();
+        let provenance = snapshot.provenance.source;
+        if provenance.identity_namespace != Some(project.project_id)
+            || provenance.source_revision != project.editor.revision()
+            || provenance
+                .source_fingerprint
+                .is_none_or(|value| value.to_hex() != fingerprint)
+        {
+            self.slot.current_layer_order = None;
+            return Err(());
+        }
+        let binding = Arc::new(GlobalFlatFoldabilityBinding {
+            project_instance_id: project.instance_id,
+            project_id: project.project_id,
+            revision: project.editor.revision(),
+            topology_input: Arc::new(project.editor.topology_analysis_input(project.project_id)),
+            fold_model_fingerprint: Arc::from(fingerprint),
+        });
+        let certificate = mint_current_layer_order_certificate(&mut self.slot, binding, snapshot)?;
+        self.slot.current_layer_order = Some(certificate);
+        Ok(())
+    }
 }
 
 pub(super) fn lock_revalidated_current_layer_order_for_commit<'a>(

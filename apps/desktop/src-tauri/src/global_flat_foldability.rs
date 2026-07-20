@@ -389,7 +389,16 @@ pub(super) struct CurrentLayerOrderCapability {
 }
 
 pub(super) struct CurrentLayerOrderCommitGuard<'a> {
-    _slot: MutexGuard<'a, GlobalFlatFoldabilitySlot>,
+    slot: MutexGuard<'a, GlobalFlatFoldabilitySlot>,
+}
+
+impl CurrentLayerOrderCommitGuard<'_> {
+    /// Invalidates the source-revision certificate while the layer slot is
+    /// still held at the native commit boundary. A later target certificate
+    /// must be freshly minted; stale authority is never carried across edits.
+    pub(super) fn invalidate_after_project_mutation(mut self) {
+        self.slot.current_layer_order = None;
+    }
 }
 
 pub(super) fn lock_revalidated_current_layer_order_for_commit<'a>(
@@ -407,7 +416,7 @@ pub(super) fn lock_revalidated_current_layer_order_for_commit<'a>(
     if !current_layer_order_capability_matches_locked_slot(&slot, project, capability, current) {
         return Ok(None);
     }
-    Ok(Some(CurrentLayerOrderCommitGuard { _slot: slot }))
+    Ok(Some(CurrentLayerOrderCommitGuard { slot }))
 }
 
 impl CurrentLayerOrderCapability {

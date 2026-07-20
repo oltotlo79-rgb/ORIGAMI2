@@ -345,7 +345,7 @@ pub(super) fn apply_stacked_fold_transaction(
         lock_revalidated_current_applied_pose_for_commit(&project, &pending.pose_capability)
             .map_err(|_| "The current pose authority is unavailable.".to_owned())?
             .ok_or_else(|| "The stacked-fold transaction preview is stale.".to_owned())?;
-    let _layer_guard = lock_revalidated_current_layer_order_for_commit(
+    let layer_guard = lock_revalidated_current_layer_order_for_commit(
         &foldability_state,
         &project,
         &pending.layer_capability,
@@ -399,7 +399,7 @@ pub(super) fn apply_stacked_fold_transaction(
             applied_pose,
         )
         .map_err(|_| "The stacked-fold transaction could not be applied atomically.".to_owned())?;
-    drop(_layer_guard);
+    layer_guard.invalidate_after_project_mutation();
     drop(_pose_guard);
     drop(project);
     transaction_slot.pending = None;

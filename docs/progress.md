@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約61.7%（2026-07-20、暫定の重み付き概算）**
+**全体完成率: 約79.3%（2026-07-21、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値61.05%に対し、辺派生参照の全境界監査で「数式・幾何制約」を95%から100%へ、限定正厚SIM-010を15 triangular faces・14 hingesへ拡張して「3D折り・紙厚・衝突」を98%から99%へ更新した。差分は0.62ポイント（9% × 5ポイント + 17% × 1ポイント）で、61.67%を小数第1位へ丸めて表示している。実際のGitHub Release公開、SIM-010の一般姿勢・16face以上の正厚・cycle mutation・dense/証明困難な経路、一般経路探索は未完了である。入力値自体が概数なので、61.67%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前の正本61.67%に対し、2Dの注釈・下絵・面属性・複数選択対称編集、指定M/V局所十分性と有界経路診断、手順編集・保存・折り図出力、初心者向け目標入力・認識・制約・端末内候補生成を利用者経路へ接続した。「2D展開図エディター」を57%から100%、「折り可能性・経路探索」を35%から45%、「折り手順・PDF」を25%から75%、「初心者向け自動設計」を0%から55%へ更新し、79.32%を小数第1位へ丸めて表示している。一般正厚・cycle mutation・dense/証明困難な経路、一般的な目標形状からの展開図生成、実際の署名済みGitHub Release公開は未完了である。入力値自体が概数なので、79.32%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -14,18 +14,23 @@
 |---|---:|---:|---:|---|
 | 要件・基本設計・技術検証 | 5% | 70% | 3.50% | 要件定義・設計文書・技術検証は充実。紙厚は中央面基準近似を初版仕様として確定。全体平坦折りと層順序の証明モデルをversion固定した |
 | プロジェクト・保存・履歴 | 8% | 78% | 6.24% | 原子的編集、差分Undo/Redo、`.ori2`保存、project単位の表示単位・memo・安全なthumbnail、独立した現在3D姿勢、1〜128件の履歴上限設定、30秒周期のnative自動保存、起動時の必須復元・破棄に加え、認証済みUndo/Redo両stackと履歴上限の通常保存・復旧を実装 |
-| 2D展開図エディター | 15% | 57% | 8.55% | 基本編集、9種スナップ、白黒識別可能な5線種、layer文書・edge assignment・管理UIに加え、表示・lock・透明度を描画・選択・snap・交差・全編集guard・履歴・保存へ接続。注釈・下絵object、面編集、数式作図、対称編集を残す |
+| 2D展開図エディター | 15% | 100% | 15.00% | 基本編集、9種スナップ、5線種、layer文書・edge assignment・管理UI、表示・lock・透明度、注釈・下絵object、面属性編集、複数選択の移動・複製・任意軸対称編集を保存・復旧・履歴・native IPC・Canvasへ接続 |
 | 数式・幾何制約 | 9% | 100% | 9.00% | 数式入力と全11種制約、有界Gauss-Newton solver、頂点・辺駆動preview、rank・自由度・条件推定、原子的Apply、layer lock、stale拒否、Undo/Redoに加え、`v.<UUID>.x/y`と`e.<UUID>.length/angle`を頂点・辺横断の有界DAGでmulti-driver solveへ接続し、退化・循環・保存・履歴・10,000件性能境界まで監査済み |
 | 3D折り・紙厚・衝突 | 17% | 99% | 16.83% | 木構造多ヒンジ姿勢・紙厚・衝突・固定面・物理把持、高精度静的診断に加え、折り重ねを厚さ0単一hinge・同軸multi-hinge・adaptive sparse非同軸2〜64hinge、限定正厚1〜14hingeでpreview・原子的apply・Undo/Redoへ接続。候補/current層順3D viewerも実装。一般正厚・cycle mutation・dense/証明困難な経路を残す |
-| 折り可能性・経路探索 | 18% | 35% | 6.30% | 1ヒンジCCD、補正候補の解析専用UI、川崎・前川局所条件に加え、凸面対象の全体平坦折り3値判定と場所別層順序を接続。候補3Dプレビュー・明示適用、局所十分性、一般経路探索を残す |
-| 折り手順・PDF | 10% | 25% | 2.50% | 手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生に加え、固定3D図付きのA4複数ページPDF・SVGページ画像ZIP書き出しを実装。連続動作、折る方向の矢印、手指guideを残す |
+| 折り可能性・経路探索 | 18% | 45% | 8.10% | 1ヒンジCCD、補正候補、川崎・前川局所条件、指定M/Vのexact BLB局所十分性、凸面対象の全体平坦折り3値判定、場所別層順序、有界multi-hinge候補・closure・衝突診断を接続。一般経路探索と一般cycleの物理実行を残す |
+| 折り手順・PDF | 10% | 75% | 7.50% | 手順追加・削除・説明編集・並べ替え、Undo/Redo、通常・展開folder・復旧保存、完成形、カメラ、折る方向、注目位置、手指・持ち替えguideをUI・3D・A4 PDF・SVG ZIPへ接続。一般技法からの安全な物理動作生成を残す |
 | 入出力・互換性 | 5% | 100% | 5.00% | `.ori2`、FOLD/SVG取込・展開図/手順/3D書出し、PBR・表裏texture、複数hinge watertight union、animation、FOLD 3D複数frame、正厚manifold reportを実装。独立reader、Khronos validator/Sample Viewer、Blender LTS、PrusaSlicer実機受入をCIへ固定 |
 | 多言語・設定・配布・QA | 5% | 75% | 3.75% | frontend/Rust自動回帰、Windows/macOS CI、診断、テーマ・shortcut・レイアウト、日英切替、更新確認に加え、署名・SBOM・checksum・provenance・prerelease/stable promotionを持つ正式版workflowを実装。実際のGitHub Release公開を残す |
-| 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **61.67%** | — |
+| 初心者向け自動設計 | 8% | 55% | 4.40% | 動物・昆虫、部品、棒状骨格、画像下絵、marker/silhouette認識案、突起・3D膨らみ目標、評価preset・制約・追加候補・端末内限定生成を接続。一般画像/3D認識と一般目標からの展開図生成を残す |
+| **合計** | **100%** | — | **79.32%** | — |
 
 ## 完了
 
+- 2Dの注釈・下絵・面属性・複数選択の移動・複製・任意軸対称編集を、strict project文書、通常・復旧保存、主履歴、Undo/Redo、native IPC、Canvasへ接続した。2D MUSTの利用者経路を再監査し、「2D展開図エディター」を100%へ更新した
+- 指定M/V単一頂点について、exact sector比較と一意なBig-Little-Big縮約witnessを持つ局所十分性certificateを実装した。必要条件だけでは肯定せず、tie、定理適用不能、資源超過はIndeterminateとし、native read境界と日英UIへ接続した。全体平坦判定workerの直列化、遅延取消競合、層順viewer失敗・共通face選択もfail-closedに修正し、「折り可能性・経路探索」を45%へ更新した
+- 折り手順の追加・削除・説明編集・並べ替え、Undo/Redo、通常・展開folder・復旧保存をE2Eで固定し、完成形、保存カメラ、折る方向、注目位置、手指・持ち替えguideを3D表示とPDF/SVG折り図へ接続した。「折り手順・PDF」を75%へ更新した
+- 初心者向け自動設計で、動物・昆虫カテゴリ、部品、棒状骨格、画像下絵、marker/silhouette認識案、突起属性、3D膨らみ目標、評価preset、生成制約、追加候補、弾性非計算方針、端末内の限定展開図候補をproject履歴とUIへ接続した。「初心者向け自動設計」を55%へ更新し、全体を79.32%（表示79.3%）とした
+- version固定の注釈objectを実装した。absoluteまたは頂点追従anchor、text、font size、bold/italic、文字色・不透明度、annotation layerをstrict validationし、ProjectDocument・通常保存・復旧・主Editor履歴・Undo/Redo・履歴上限・layer lock/delete guard・anchor頂点削除guard・native strict IPCへ接続した。日英UIで作成・選択・編集・削除でき、Canvasはlayer visible/opacityと頂点anchorを反映して描画する。frontend production buildとDOM 242件が成功し、「2D展開図エディター」を65%、全体を62.87%（表示62.9%）へ更新した
 - SIM-010の限定正厚treeを15 triangular faces・14 hingesへ拡張した。全105 face pairを有界memoで被覆し、2度でcontinuous certificateを発行する。endpoint形状を同一poseで一度だけ認証する共有topology memoへ置換し、15面成功を112.52秒から5.52秒へ短縮した。角度超過、16-face cap、ABA pose、紙厚driftもfail-closedで成功し、「3D折り・紙厚・衝突」を99%、全体を61.67%（表示61.7%）へ更新した
 - 辺派生参照式の最終境界を監査した。`.angle`は[0,360)へ正規化し、端点反転は180度差、0度境界を固定する。ゼロ長辺は長さ・角度とも拒否し、頂点と辺をまたぐ間接循環、共有辺chainのmemo、深さ64/65、参照4096/4097、演算上限、保存改ざん、Undo/Redo、制約競合、10,000件性能を同一resolverで回帰した。対象native 13件が成功し、「数式・幾何制約」を100%、全体を61.50%（表示61.5%）へ更新した
 - 保存式へversion固定の`e.<canonical-uuid>.length`と`e.<canonical-uuid>.angle`参照を追加した。辺端点のX/Y依存を同じDAGで解決し、頂点と辺をまたぐ循環、dangling、非canonical UUID、非有限値、深さ・参照数・演算上限超過をfail-closedにする。production保存検証、solver preview・Apply・Undo/Redo、日英構文ガイド、native回帰、production buildが成功した。「数式・幾何制約」を95%、全体を61.05%（表示61.1%）へ更新した

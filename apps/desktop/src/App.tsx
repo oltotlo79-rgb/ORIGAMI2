@@ -5655,6 +5655,8 @@ function App() {
               tool={benchmarkRun ? 'select' : activeTool}
               selectedVertexId={selectedVertexId}
               selectedFaceId={selectedFaceId}
+              mirrorSelectedVertexIds={mirrorVertexIds}
+              mirrorSelectedLineIds={mirrorEdgeIds}
               pendingVertexId={pendingEdgeStart}
               selectedLineId={selectedLineId}
               measurementLabel={formatLineMeasurementLabel(

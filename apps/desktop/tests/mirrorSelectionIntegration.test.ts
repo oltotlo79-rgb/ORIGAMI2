@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const app = source('../src/App.tsx')
+const canvas = source('../src/components/CreaseCanvas.tsx')
 const native = source('../src-tauri/src/lib.rs')
 const editor = source('../../../crates/ori-core/src/editor.rs')
 
@@ -48,6 +49,14 @@ test('mirror failures are translated from a closed vocabulary', () => {
   )
   assert.match(app, /aria-labelledby="mirror-selection-heading"/u)
   assert.match(app, /role="status"/u)
+})
+
+test('the accumulated mirror selection remains visible on the 2D canvas', () => {
+  assert.match(app, /mirrorSelectedVertexIds=\{mirrorVertexIds\}/u)
+  assert.match(app, /mirrorSelectedLineIds=\{mirrorEdgeIds\}/u)
+  assert.match(canvas, /const mirrorLineIds = new Set\(mirrorSelectedLineIds\)/u)
+  assert.match(canvas, /const mirrorVertexIds = new Set\(mirrorSelectedVertexIds\)/u)
+  assert.match(canvas, /context\.strokeStyle = '#b45309'/u)
 })
 
 function source(relativePath: string) {

@@ -138,6 +138,8 @@ type Props = {
   tool?: string
   selectedVertexId?: string | null
   selectedFaceId?: string | null
+  mirrorSelectedVertexIds?: readonly string[]
+  mirrorSelectedLineIds?: readonly string[]
   pendingVertexId?: string | null
   selectedLineId: string | null
   measurementLabel?: string
@@ -286,6 +288,8 @@ export function CreaseCanvas({
   tool = 'select',
   selectedVertexId = null,
   selectedFaceId = null,
+  mirrorSelectedVertexIds = [],
+  mirrorSelectedLineIds = [],
   pendingVertexId = null,
   selectedLineId,
   measurementLabel,
@@ -565,6 +569,25 @@ export function CreaseCanvas({
       context.setLineDash([])
       context.lineCap = 'butt'
 
+      const mirrorLineIds = new Set(mirrorSelectedLineIds)
+      if (mirrorLineIds.size > 0) {
+        context.save()
+        context.beginPath()
+        for (const line of lines) {
+          if (!mirrorLineIds.has(line.id)) continue
+          const start = mapPaperPoint(transform, line.x1, line.y1)
+          const end = mapPaperPoint(transform, line.x2, line.y2)
+          if (!start || !end) continue
+          context.moveTo(start.x, start.y)
+          context.lineTo(end.x, end.y)
+        }
+        context.strokeStyle = '#b45309'
+        context.lineWidth = 5
+        context.setLineDash([3, 4])
+        context.stroke()
+        context.restore()
+      }
+
       if (parallelReference) {
         const start = mapPaperPoint(transform, parallelReference.x1, parallelReference.y1)
         const end = mapPaperPoint(transform, parallelReference.x2, parallelReference.y2)
@@ -607,6 +630,20 @@ export function CreaseCanvas({
         const point = mapPaperPoint(transform, x, y)
         if (!point) continue
         mappedVertices.push({ id: vertex.id, ...point })
+      }
+      const mirrorVertexIds = new Set(mirrorSelectedVertexIds)
+      if (mirrorVertexIds.size > 0) {
+        context.save()
+        context.strokeStyle = '#b45309'
+        context.lineWidth = 3
+        context.setLineDash([3, 3])
+        for (const vertex of mappedVertices) {
+          if (!mirrorVertexIds.has(vertex.id)) continue
+          context.beginPath()
+          context.arc(vertex.x, vertex.y, 8, 0, Math.PI * 2)
+          context.stroke()
+        }
+        context.restore()
       }
 
       drawValidationVertexHaloBatch(
@@ -760,6 +797,8 @@ export function CreaseCanvas({
     lines,
     locale,
     measurementLabel,
+    mirrorSelectedLineIds,
+    mirrorSelectedVertexIds,
     paperColor,
     paperPattern,
     parallelReference,

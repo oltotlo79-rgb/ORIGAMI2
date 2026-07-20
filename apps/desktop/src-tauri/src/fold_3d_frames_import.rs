@@ -6,6 +6,7 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
+use base64::Engine;
 use ori_domain::ProjectId;
 use ori_formats::{Fold3dFramesPreviewV1, FoldImportLimits, read_fold_3d_frames_preview_v1};
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,9 @@ pub(super) struct SelectFold3dFrameResponse {
     frame_index: usize,
     vertex_count: usize,
     source_sha256_hex: String,
+    preview_image_data_url: String,
+    preview_width: u32,
+    preview_height: u32,
     render_coordinates_exposed: bool,
     authorizes_project_import: bool,
     authorizes_applied_pose: bool,
@@ -169,6 +173,7 @@ pub(super) fn select_fold_3d_frame(
         .preview
         .select_frame(request.frame_index)
         .map_err(|_| STALE.to_owned())?;
+    let (png, width, height) = render_vertex_cloud_png(selected.vertices())?;
     Ok(SelectFold3dFrameResponse {
         token: pending.token,
         frame_index: selected.frame_index(),
@@ -178,11 +183,80 @@ pub(super) fn select_fold_3d_frame(
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect(),
+        preview_image_data_url: format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(png)
+        ),
+        preview_width: width,
+        preview_height: height,
         render_coordinates_exposed: false,
         authorizes_project_import: false,
         authorizes_applied_pose: false,
         authorizes_instruction_timeline: false,
     })
+}
+
+fn render_vertex_cloud_png(vertices: &[[f64; 3]]) -> Result<(Vec<u8>, u32, u32), String> {
+    const WIDTH: usize = 512;
+    const HEIGHT: usize = 384;
+    const MARGIN: f64 = 24.0;
+    if vertices.is_empty() {
+        return Err("selected FOLD frame has no vertices".to_owned());
+    }
+    let projected = vertices
+        .iter()
+        .map(|point| [point[0] + point[2] * 0.5, point[1] - point[2] * 0.5])
+        .collect::<Vec<_>>();
+    let min_x = projected.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+    let max_x = projected
+        .iter()
+        .map(|p| p[0])
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = projected.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
+    let max_y = projected
+        .iter()
+        .map(|p| p[1])
+        .fold(f64::NEG_INFINITY, f64::max);
+    let span_x = (max_x - min_x).max(1.0);
+    let span_y = (max_y - min_y).max(1.0);
+    let scale =
+        ((WIDTH as f64 - 2.0 * MARGIN) / span_x).min((HEIGHT as f64 - 2.0 * MARGIN) / span_y);
+    let mut pixels = vec![248_u8; WIDTH * HEIGHT * 4];
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
+    for point in projected {
+        let x = (MARGIN + (point[0] - min_x) * scale).round() as isize;
+        let y = (HEIGHT as f64 - MARGIN - (point[1] - min_y) * scale).round() as isize;
+        for dy in -3..=3 {
+            for dx in -3..=3 {
+                if dx * dx + dy * dy > 9 {
+                    continue;
+                }
+                let px = x + dx;
+                let py = y + dy;
+                if px >= 0 && py >= 0 && px < WIDTH as isize && py < HEIGHT as isize {
+                    let offset = (py as usize * WIDTH + px as usize) * 4;
+                    pixels[offset..offset + 4].copy_from_slice(&[34, 73, 105, 255]);
+                }
+            }
+        }
+    }
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut encoded, WIDTH as u32, HEIGHT as u32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Fast);
+        let mut writer = encoder.write_header().map_err(|_| "preview PNG failed")?;
+        writer
+            .write_image_data(&pixels)
+            .map_err(|_| "preview PNG failed")?;
+    }
+    if encoded.len() > 512 * 1024 {
+        return Err("preview PNG exceeds its size bound".to_owned());
+    }
+    Ok((encoded, WIDTH as u32, HEIGHT as u32))
 }
 
 #[tauri::command]
@@ -310,5 +384,17 @@ mod tests {
         assert!(value.get("vertices").is_none());
         assert!(value["frames"][0].get("vertices").is_none());
         assert_eq!(value["authorizesProjectImport"], false);
+    }
+
+    #[test]
+    fn native_camera_fit_png_is_deterministic_bounded_and_contains_no_coordinate_text() {
+        let points = [[-123.5, 4.25, 9.0], [7.0, 88.0, -2.5], [0.0, 0.0, 0.0]];
+        let first = render_vertex_cloud_png(&points).unwrap();
+        let second = render_vertex_cloud_png(&points).unwrap();
+        assert_eq!(first, second);
+        assert_eq!((first.1, first.2), (512, 384));
+        assert!(first.0.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(first.0.len() <= 512 * 1024);
+        assert!(!first.0.windows(6).any(|window| window == b"-123.5"));
     }
 }

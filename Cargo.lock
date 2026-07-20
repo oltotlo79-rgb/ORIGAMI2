@@ -2517,6 +2517,7 @@ dependencies = [
 name = "origami2-desktop"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "libc",
  "num-bigint",
  "ori-collision",
@@ -2528,6 +2529,7 @@ dependencies = [
  "ori-kinematics",
  "ori-numeric",
  "ori-topology",
+ "png 0.18.1",
  "serde",
  "serde_json",
  "sha2",

@@ -14,8 +14,8 @@ use ori_geometry::{
     exact_orientation, point_polygon_relation, point_segment_relation, segment_intersection,
 };
 use ori_kinematics::{
-    CanonicalHingeAngles, HingeAngle, KinematicsError, MaterialTreeKinematicsModel,
-    MaterialTreePose, TreeKinematicsLimits,
+    CanonicalHingeAngles, HingeAngle, KinematicsError, MaterialHingeGraphAudit,
+    MaterialTreeKinematicsModel, MaterialTreePose, TreeKinematicsLimits,
 };
 use ori_topology::{
     Face, FaceExtractionInput, TopologyIssueSeverity, TopologySnapshot, analyze_faces,
@@ -338,6 +338,8 @@ pub enum PrepareStackedFoldGeometryErrorV1 {
 pub enum PrepareStackedFoldTargetModelErrorV1 {
     #[error("proved target topology could not be reconstructed: {0}")]
     Topology(#[from] FaceLineageError),
+    #[error("target hinge graph has {closure_hinge_count} loop-closure constraint(s)")]
+    CyclicTargetUnsupported { closure_hinge_count: usize },
     #[error("proved target topology is not supported by material tree kinematics: {0}")]
     Kinematics(#[from] KinematicsError),
 }
@@ -1318,6 +1320,14 @@ pub fn prepare_stacked_fold_target_model_v1(
         &geometry.candidate.pattern,
         FaceLineageTopology::Target,
     )?;
+    let graph = MaterialHingeGraphAudit::prepare(&topology, limits)?;
+    if !graph.is_tree() {
+        return Err(
+            PrepareStackedFoldTargetModelErrorV1::CyclicTargetUnsupported {
+                closure_hinge_count: graph.closure_hinges().len(),
+            },
+        );
+    }
     let model = MaterialTreeKinematicsModel::prepare(
         &geometry.candidate.pattern,
         &geometry.candidate.paper,
@@ -2628,6 +2638,14 @@ mod tests {
         .expect("build and prove one owning package");
         assert_eq!(prepared.candidate(), &candidate);
         assert_eq!(prepared.proof(), &proof);
+        assert!(matches!(
+            prepare_stacked_fold_target_model_v1(prepared, TreeKinematicsLimits::default()),
+            Err(
+                PrepareStackedFoldTargetModelErrorV1::CyclicTargetUnsupported {
+                    closure_hinge_count: 1
+                }
+            )
+        ));
     }
 
     #[test]

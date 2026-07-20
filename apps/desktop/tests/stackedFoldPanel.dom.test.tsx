@@ -9,6 +9,7 @@ const transport = vi.hoisted(() => ({
   cancel: vi.fn(),
   cancelRead: vi.fn(),
   registry: vi.fn(),
+  progress: null as null | ((value: any) => void),
 }))
 
 vi.mock('../src/lib/coreClient', async (importOriginal) => ({
@@ -18,6 +19,12 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => ({
   cancelStackedFoldTransactionPreview: transport.cancel,
   cancelCurrentStackedFoldReadV1: transport.cancelRead,
   readLiveHingeRegistryV1: transport.registry,
+  listenStackedFoldReadProgressV1: vi.fn(async (callback) => {
+    transport.progress = callback
+    return () => {
+      transport.progress = null
+    }
+  }),
 }))
 
 const instance = '018f47a2-4b7a-7cc1-8abc-112233445566'
@@ -147,6 +154,7 @@ afterEach(() => {
 })
 
 beforeEach(() => {
+  transport.progress = null
   transport.cancelRead.mockResolvedValue(undefined)
   transport.registry.mockResolvedValue({
     version: 1,
@@ -177,10 +185,25 @@ describe('StackedFoldPanel', () => {
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    await waitFor(() => expect(transport.progress).not.toBeNull())
+    const request = transport.preview.mock.calls[0]?.[0]
+    transport.progress?.({
+      version: 1,
+      requestId: request.progressRequestId,
+      exploredStateCount: 2,
+      evaluatedTransitionCount: 3,
+      stateLimit: 32,
+      transitionLimit: 64,
+      authorizesProjectMutation: false,
+    })
+    expect((await screen.findByRole('status')).textContent).toBe(
+      'Explored states 2/32; transitions 3/64',
+    )
     fireEvent.click(await screen.findByRole('button', {
       name: 'Cancel path analysis',
     }))
     expect(transport.cancelRead).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('status')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Apply stacked fold' })).toBeNull()
   })
 

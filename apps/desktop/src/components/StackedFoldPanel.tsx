@@ -3,6 +3,7 @@ import {
   applyStackedFoldTransaction,
   cancelCurrentStackedFoldReadV1,
   cancelStackedFoldTransactionPreview,
+  listenStackedFoldReadProgressV1,
   proposeCurrentStackedFoldRead,
   readLiveHingeRegistryV1,
   type ProjectSnapshot,
@@ -88,6 +89,14 @@ export function StackedFoldPanel({
   const [selectedFace, setSelectedFace] = useState<string | null>(null)
   const [hoveredFace, setHoveredFace] = useState<string | null>(null)
   const tokenRef = useRef<string | null>(null)
+  const progressRequestRef = useRef<string | null>(null)
+  const progressSequenceRef = useRef(0)
+  const [pathProgress, setPathProgress] = useState<Readonly<{
+    exploredStateCount: number
+    evaluatedTransitionCount: number
+    stateLimit: number
+    transitionLimit: number
+  }> | null>(null)
   const coordinator = useMemo<StackedFoldReadCoordinator>(() =>
     createStackedFoldReadCoordinator({
       transport: proposeCurrentStackedFoldRead,
@@ -108,6 +117,8 @@ export function StackedFoldPanel({
 
   useEffect(() => {
     coordinator.invalidate()
+    progressRequestRef.current = null
+    setPathProgress(null)
     cancelToken(tokenRef.current)
     tokenRef.current = null
     setConfirmed(false)
@@ -131,6 +142,29 @@ export function StackedFoldPanel({
     coordinator.dispose()
     cancelToken(tokenRef.current)
   }, [coordinator])
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | null = null
+    void listenStackedFoldReadProgressV1((progress) => {
+      if (progress.requestId !== progressRequestRef.current) return
+      setPathProgress((previous) => {
+        if (
+          previous &&
+          (progress.exploredStateCount < previous.exploredStateCount ||
+            progress.evaluatedTransitionCount < previous.evaluatedTransitionCount)
+        ) return previous
+        return progress
+      })
+    }).then((value) => {
+      if (disposed) value()
+      else unlisten = value
+    }).catch(() => undefined)
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
 
   useEffect(() => {
     let current = true
@@ -224,8 +258,13 @@ export function StackedFoldPanel({
       }
     }
     setConfirmed(false)
+    const progressRequestId =
+      `${snapshot.project_instance_id}:${snapshot.revision}:${++progressSequenceRef.current}`
+    progressRequestRef.current = progressRequestId
+    setPathProgress(null)
     setView({ kind: 'reading' })
     const result = await coordinator.read({
+      progressRequestId,
       expectedProjectInstanceId: snapshot.project_instance_id,
       expectedProjectId: snapshot.project_id,
       expectedRevision: snapshot.revision,
@@ -238,6 +277,7 @@ export function StackedFoldPanel({
       ...(linearCandidateV1 ? { linearCandidateV1 } : {}),
       ...(certifiedPathGraphV1 ? { certifiedPathGraphV1 } : {}),
     })
+    progressRequestRef.current = null
     if (result.status === 'ready') {
       tokenRef.current = result.response.transactionProposal.transactionToken
       setView({ kind: 'ready', response: result.response, applyFailed: false })
@@ -411,12 +451,26 @@ export function StackedFoldPanel({
         </p>
       )}
       {view.kind === 'reading' && (
+        <div>
+          {pathProgress && (
+            <p role="status">
+              {t(
+                `探索済み状態 ${pathProgress.exploredStateCount}/${pathProgress.stateLimit}、遷移 ${pathProgress.evaluatedTransitionCount}/${pathProgress.transitionLimit}`,
+                `Explored states ${pathProgress.exploredStateCount}/${pathProgress.stateLimit}; transitions ${pathProgress.evaluatedTransitionCount}/${pathProgress.transitionLimit}`,
+              )}
+            </p>
+          )}
         <button
           type="button"
-          onClick={() => void cancelCurrentStackedFoldReadV1().catch(() => undefined)}
+          onClick={() => {
+            progressRequestRef.current = null
+            setPathProgress(null)
+            void cancelCurrentStackedFoldReadV1().catch(() => undefined)
+          }}
         >
           {t('経路解析を中止', 'Cancel path analysis')}
         </button>
+        </div>
       )}
       {view.kind === 'refresh_failed' && (
         <div role="alert">

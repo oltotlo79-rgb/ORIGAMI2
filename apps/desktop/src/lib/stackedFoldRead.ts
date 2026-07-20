@@ -19,6 +19,7 @@ export const STACKED_FOLD_PATH_CERTIFICATE_MODEL_IDS = Object.freeze([
 ] as const)
 
 export type StackedFoldReadRequest = Readonly<{
+  progressRequestId?: string
   expectedProjectInstanceId: string
   expectedProjectId: string
   expectedRevision: number
@@ -422,10 +423,16 @@ export function isStackedFoldReadRequest(value: unknown): value is StackedFoldRe
       'expectedProjectInstanceId', 'expectedProjectId', 'expectedRevision',
       'first', 'second', 'fixedSide', 'rotationDirection',
       'requestedAngleDegrees',
+      ...(value.progressRequestId !== undefined ? ['progressRequestId'] : []),
       ...(schedule !== undefined ? ['cycleScheduleV1'] : []),
       ...(linear !== undefined ? ['linearCandidateV1'] : []),
       ...(graph !== undefined ? ['certifiedPathGraphV1'] : []),
     ]) &&
+    (value.progressRequestId === undefined ||
+      (typeof value.progressRequestId === 'string' &&
+        value.progressRequestId.length > 0 &&
+        value.progressRequestId.length <= 128 &&
+        /^[\x21-\x7e]+$/.test(value.progressRequestId))) &&
     isCanonicalNonNilUuid(value.expectedProjectInstanceId) &&
     isCanonicalNonNilUuid(value.expectedProjectId) &&
     isCount(value.expectedRevision) &&

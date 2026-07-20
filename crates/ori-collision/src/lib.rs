@@ -45,11 +45,12 @@ pub use cell_order_transport::{
 };
 pub use certified_path_graph::{
     CERTIFIED_PATH_GRAPH_MODEL_ID_V1, CertifiedPathGraphIndeterminateReasonV1,
-    CertifiedPathGraphSearchResultV1, CertifiedPathTransitionCandidateV1,
-    CertifiedPathTransitionEvidenceV1, CertifiedPoseGraphPathCertificateV1,
-    MAX_CERTIFIED_PATH_GRAPH_STATES_V1, MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1, PoseFingerprintV1,
+    CertifiedPathGraphProgressV1, CertifiedPathGraphSearchResultV1,
+    CertifiedPathTransitionCandidateV1, CertifiedPathTransitionEvidenceV1,
+    CertifiedPoseGraphPathCertificateV1, MAX_CERTIFIED_PATH_GRAPH_STATES_V1,
+    MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1, PoseFingerprintV1,
     certify_scheduled_cycle_transition_v1, search_certified_pose_graph_v1,
-    search_certified_pose_graph_with_checkpoint_v1,
+    search_certified_pose_graph_with_checkpoint_v1, search_certified_pose_graph_with_progress_v1,
 };
 pub use continuous_path::{
     MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1, MAX_STACKED_FOLD_PATH_SAMPLES_V1,

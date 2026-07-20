@@ -35,7 +35,7 @@ use ori_kinematics::{
 use ori_topology::{FaceExtractionInput, TopologyIssueSeverity, analyze_faces};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use super::{
     AppState,
@@ -61,6 +61,7 @@ const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
 const CANCELLED_MESSAGE: &str = "stacked_fold_cycle_path_cancelled";
 static STACKED_FOLD_READ_GENERATION: AtomicU64 = AtomicU64::new(0);
+const STACKED_FOLD_READ_PROGRESS_EVENT_V1: &str = "stacked-fold-read-progress-v1";
 
 #[tauri::command]
 pub(super) fn cancel_current_stacked_fold_read_v1() -> Result<(), String> {
@@ -107,6 +108,8 @@ impl From<RotationDirectionRequest> for StackedFoldRotationDirectionV1 {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct StackedFoldReadRequest {
+    #[serde(default)]
+    progress_request_id: Option<String>,
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
@@ -121,6 +124,18 @@ pub(super) struct StackedFoldReadRequest {
     linear_candidate_v1: Option<LinearCandidateRequestV1>,
     #[serde(default)]
     certified_path_graph_v1: Option<CertifiedPathGraphRequestV1>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StackedFoldReadProgressDtoV1 {
+    version: u32,
+    request_id: String,
+    explored_state_count: usize,
+    evaluated_transition_count: usize,
+    state_limit: usize,
+    transition_limit: usize,
+    authorizes_project_mutation: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -701,11 +716,16 @@ pub(super) struct StackedFoldReadResponse {
 
 #[tauri::command]
 pub(super) async fn propose_current_stacked_fold_read(
+    app: AppHandle,
     app_state: State<'_, AppState>,
     foldability_state: State<'_, GlobalFlatFoldabilityState>,
     transaction_state: State<'_, super::stacked_fold_transaction::StackedFoldTransactionState>,
     request: StackedFoldReadRequest,
 ) -> Result<StackedFoldReadResponse, String> {
+    let worker_permit = app_state
+        .try_acquire_native_pose_worker()
+        .ok_or_else(|| BUSY_MESSAGE.to_owned())?;
+    // A rejected busy request must not cancel the permit owner.
     let analysis_generation = STACKED_FOLD_READ_GENERATION
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
             generation.checked_add(1)
@@ -713,9 +733,9 @@ pub(super) async fn propose_current_stacked_fold_read(
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?
         .checked_add(1)
         .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
-    let worker_permit = app_state
-        .try_acquire_native_pose_worker()
-        .ok_or_else(|| BUSY_MESSAGE.to_owned())?;
+    let progress_request_id = request.progress_request_id.clone().filter(|value| {
+        !value.is_empty() && value.len() <= 128 && value.bytes().all(|byte| byte.is_ascii_graphic())
+    });
     let (paper, pattern, pose_capability, layer_capability, binding) = {
         let project = lock_project(&app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
         if project.instance_id != request.expected_project_instance_id
@@ -876,8 +896,10 @@ pub(super) async fn propose_current_stacked_fold_read(
                         .collect::<std::collections::BTreeMap<_, _>>();
                     let mut resource_exhausted = false;
                     let mut oracle_edges = std::collections::BTreeMap::new();
+                    let progress_app = app.clone();
+                    let progress_request_id = progress_request_id.clone();
                     let searched =
-                        ori_collision::search_certified_pose_graph_with_checkpoint_v1(
+                        ori_collision::search_certified_pose_graph_with_progress_v1(
                         &fingerprints,
                         &candidates,
                         fingerprints[graph.source_state],
@@ -885,6 +907,23 @@ pub(super) async fn propose_current_stacked_fold_read(
                         || {
                             STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire)
                                 == analysis_generation
+                        },
+                        |progress| {
+                            if let Some(request_id) = progress_request_id.as_ref() {
+                                let _ = progress_app.emit(
+                                    STACKED_FOLD_READ_PROGRESS_EVENT_V1,
+                                    StackedFoldReadProgressDtoV1 {
+                                        version: 1,
+                                        request_id: request_id.clone(),
+                                        explored_state_count: progress.explored_state_count,
+                                        evaluated_transition_count:
+                                            progress.evaluated_transition_count,
+                                        state_limit: progress.state_limit,
+                                        transition_limit: progress.transition_limit,
+                                        authorizes_project_mutation: false,
+                                    },
+                                );
+                            }
                         },
                         |edge| {
                             let source_index = *index_by_fingerprint.get(&edge.source)?;

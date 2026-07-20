@@ -213,6 +213,17 @@ pub enum CertifiedPathGraphSearchResultV1 {
     },
 }
 
+/// Detached observation emitted while a bounded search is running.
+///
+/// Progress is never certificate evidence and never authorizes mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CertifiedPathGraphProgressV1 {
+    pub explored_state_count: usize,
+    pub evaluated_transition_count: usize,
+    pub state_limit: usize,
+    pub transition_limit: usize,
+}
+
 /// Runs canonical breadth-first search over at most 32 states and 64 candidate
 /// transitions. The oracle is called once per reachable canonical candidate;
 /// only exact source/target-bound evidence is admitted.
@@ -223,12 +234,13 @@ pub fn search_certified_pose_graph_v1(
     target: PoseFingerprintV1,
     oracle: impl FnMut(&CertifiedPathTransitionCandidateV1) -> Option<CertifiedPathTransitionEvidenceV1>,
 ) -> CertifiedPathGraphSearchResultV1 {
-    search_certified_pose_graph_with_checkpoint_v1(
+    search_certified_pose_graph_with_progress_v1(
         states,
         transitions,
         source,
         target,
         || true,
+        |_| {},
         oracle,
     )
 }
@@ -241,11 +253,44 @@ pub fn search_certified_pose_graph_with_checkpoint_v1(
     transitions: &[CertifiedPathTransitionCandidateV1],
     source: PoseFingerprintV1,
     target: PoseFingerprintV1,
+    checkpoint: impl FnMut() -> bool,
+    oracle: impl FnMut(&CertifiedPathTransitionCandidateV1) -> Option<CertifiedPathTransitionEvidenceV1>,
+) -> CertifiedPathGraphSearchResultV1 {
+    search_certified_pose_graph_with_progress_v1(
+        states,
+        transitions,
+        source,
+        target,
+        checkpoint,
+        |_| {},
+        oracle,
+    )
+}
+
+/// Cancellable search with bounded monotonic progress observations. Progress
+/// is detached from the eventual certificate and may be discarded at any time.
+pub fn search_certified_pose_graph_with_progress_v1(
+    states: &[PoseFingerprintV1],
+    transitions: &[CertifiedPathTransitionCandidateV1],
+    source: PoseFingerprintV1,
+    target: PoseFingerprintV1,
     mut checkpoint: impl FnMut() -> bool,
+    mut progress: impl FnMut(CertifiedPathGraphProgressV1),
     mut oracle: impl FnMut(
         &CertifiedPathTransitionCandidateV1,
     ) -> Option<CertifiedPathTransitionEvidenceV1>,
 ) -> CertifiedPathGraphSearchResultV1 {
+    let publish_progress = |progress: &mut dyn FnMut(CertifiedPathGraphProgressV1),
+                            explored_state_count,
+                            evaluated_transition_count| {
+        progress(CertifiedPathGraphProgressV1 {
+            explored_state_count,
+            evaluated_transition_count,
+            state_limit: MAX_CERTIFIED_PATH_GRAPH_STATES_V1,
+            transition_limit: MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1,
+        });
+    };
+    publish_progress(&mut progress, 0, 0);
     if !checkpoint() {
         return indeterminate(CertifiedPathGraphIndeterminateReasonV1::Cancelled, 0, 0);
     }
@@ -299,6 +344,7 @@ pub fn search_certified_pose_graph_with_checkpoint_v1(
             );
         }
         explored += 1;
+        publish_progress(&mut progress, explored, evaluated);
         for candidate in canonical_transitions
             .iter()
             .filter(|edge| edge.source == current)
@@ -314,6 +360,7 @@ pub fn search_certified_pose_graph_with_checkpoint_v1(
                 continue;
             }
             evaluated += 1;
+            publish_progress(&mut progress, explored, evaluated);
             let Some(evidence) = oracle(candidate) else {
                 continue;
             };
@@ -545,5 +592,42 @@ mod tests {
             }
         ));
         assert_eq!(oracle_calls, 1);
+    }
+
+    #[test]
+    fn progress_is_monotonic_bounded_and_detached_from_the_certificate() {
+        let mut observations = Vec::new();
+        let result = search_certified_pose_graph_with_progress_v1(
+            &[fingerprint(1), fingerprint(2), fingerprint(3)],
+            &[candidate(1, 2, 1), candidate(2, 3, 1)],
+            fingerprint(1),
+            fingerprint(3),
+            || true,
+            |value| observations.push(value),
+            |candidate| Some(certify(candidate)),
+        );
+        assert!(matches!(
+            result,
+            CertifiedPathGraphSearchResultV1::Certified(_)
+        ));
+        assert_eq!(
+            observations.first().copied(),
+            Some(CertifiedPathGraphProgressV1 {
+                explored_state_count: 0,
+                evaluated_transition_count: 0,
+                state_limit: MAX_CERTIFIED_PATH_GRAPH_STATES_V1,
+                transition_limit: MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1,
+            })
+        );
+        assert!(observations.windows(2).all(|pair| {
+            pair[0].explored_state_count <= pair[1].explored_state_count
+                && pair[0].evaluated_transition_count <= pair[1].evaluated_transition_count
+        }));
+        assert!(observations.iter().all(|value| {
+            value.explored_state_count <= value.state_limit
+                && value.evaluated_transition_count <= value.transition_limit
+                && value.state_limit == MAX_CERTIFIED_PATH_GRAPH_STATES_V1
+                && value.transition_limit == MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1
+        }));
     }
 }

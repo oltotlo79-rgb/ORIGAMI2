@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   FOLD_ASSIGNMENT_CODES,
   type FoldImportPreview,
@@ -1758,6 +1759,46 @@ export function proposeCurrentStackedFoldRead(
       throw new StackedFoldReadNativeError('cycle_path_collision')
     }
     throw new StackedFoldReadNativeError('native_failure')
+  })
+}
+
+export type StackedFoldReadProgressV1 = Readonly<{
+  version: 1
+  requestId: string
+  exploredStateCount: number
+  evaluatedTransitionCount: number
+  stateLimit: 32
+  transitionLimit: 64
+  authorizesProjectMutation: false
+}>
+
+export function listenStackedFoldReadProgressV1(
+  onProgress: (progress: StackedFoldReadProgressV1) => void,
+): Promise<UnlistenFn> {
+  return listen<unknown>('stacked-fold-read-progress-v1', ({ payload }) => {
+    if (
+      typeof payload !== 'object' ||
+      payload === null ||
+      Array.isArray(payload)
+    ) return
+    const value = payload as Record<string, unknown>
+    if (
+      Object.keys(value).length !== 7 ||
+      value.version !== 1 ||
+      typeof value.requestId !== 'string' ||
+      value.requestId.length === 0 ||
+      value.requestId.length > 128 ||
+      !Number.isSafeInteger(value.exploredStateCount) ||
+      Number(value.exploredStateCount) < 0 ||
+      Number(value.exploredStateCount) > 32 ||
+      !Number.isSafeInteger(value.evaluatedTransitionCount) ||
+      Number(value.evaluatedTransitionCount) < 0 ||
+      Number(value.evaluatedTransitionCount) > 64 ||
+      value.stateLimit !== 32 ||
+      value.transitionLimit !== 64 ||
+      value.authorizesProjectMutation !== false
+    ) return
+    onProgress(value as StackedFoldReadProgressV1)
   })
 }
 

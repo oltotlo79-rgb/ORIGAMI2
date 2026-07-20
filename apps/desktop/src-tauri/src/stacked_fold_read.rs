@@ -1428,4 +1428,41 @@ mod tests {
         let ready = serde_json::to_value(transaction_failure_classes(true, true)).unwrap();
         assert_eq!(ready, serde_json::json!([]));
     }
+
+    #[test]
+    fn cycle_schedule_wire_rejects_unknown_fields_and_numeric_overflow() {
+        let request = || {
+            serde_json::json!({
+                "expectedProjectInstanceId": "018f47a2-4b7a-7cc1-8abc-112233445566",
+                "expectedProjectId": "018f47a2-4b7a-7cc1-8abc-665544332211",
+                "expectedRevision": 3,
+                "first": [0.0, 0.0, 0.0],
+                "second": [1.0, 0.0, 0.0],
+                "fixedSide": "left",
+                "rotationDirection": "positive",
+                "requestedAngleDegrees": 90.0,
+                "cycleScheduleV1": {
+                    "version": 1,
+                    "entries": [{
+                        "edge": "018f47a2-4b7a-7cc1-8abc-778899aabbcc",
+                        "uDomain": [
+                            {"numerator": 0, "denominator": 1},
+                            {"numerator": 1, "denominator": 1}
+                        ],
+                        "numeratorPowerCoefficients": [{"numerator": 1, "denominator": 1}],
+                        "denominatorPowerCoefficients": [{"numerator": 1, "denominator": 1}],
+                        "requestedAngleDegrees": 90.0
+                    }]
+                }
+            })
+        };
+        assert!(serde_json::from_value::<StackedFoldReadRequest>(request()).is_ok());
+        let mut unknown = request();
+        unknown["cycleScheduleV1"]["entries"][0]["authority"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<StackedFoldReadRequest>(unknown).is_err());
+        let mut overflow = request();
+        overflow["cycleScheduleV1"]["entries"][0]["uDomain"][0]["denominator"] =
+            serde_json::json!(-1);
+        assert!(serde_json::from_value::<StackedFoldReadRequest>(overflow).is_err());
+    }
 }

@@ -980,6 +980,22 @@ pub fn generate_linear_multi_hinge_path_candidate_v1(
         schedule_limits,
     )
     .map_err(|_| MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    for (parameter, expected) in [(0.0, initial), (1.0, requested)] {
+        let evaluated = schedule
+            .evaluate(parameter)
+            .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+        if evaluated
+            .as_slice()
+            .iter()
+            .zip(expected.as_slice())
+            .any(|(actual, expected)| {
+                actual.edge() != expected.edge()
+                    || actual.angle_degrees().to_bits() != expected.angle_degrees().to_bits()
+            })
+        {
+            return Err(MultiHingePathCandidateErrorV1::CandidateRejected);
+        }
+    }
     Ok(GeneratedMultiHingePathCandidateV1 {
         schedule,
         moving_hinges,

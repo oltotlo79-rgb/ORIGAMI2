@@ -6,6 +6,7 @@ mod constraint_solver;
 mod constraints;
 mod cycle_fold_transaction;
 mod editor;
+mod flat_surface;
 mod fold_model_fingerprint;
 mod sheet;
 mod stacked_fold;
@@ -45,6 +46,10 @@ pub use editor::{
     EditorHistoryV1, EditorState, ElementMetadataTargetV1, HistoryEntryLimitError,
     IntersectionEdgeTarget, JunctionVertexIntent, MAX_EDITOR_HISTORY_ENTRIES, MAX_REVISION,
     MirrorAxisV1, MirrorSelectionModeV1, Revision, VertexPositionUpdate,
+};
+pub use flat_surface::{
+    CertifiedFlatSurfaceFaceV1, CertifiedFlatSurfaceV1, MAX_CERTIFIED_FLAT_SURFACE_VERTICES_V1,
+    extract_certified_flat_surface_v1,
 };
 pub use fold_model_fingerprint::fold_model_fingerprint_v1;
 pub use ori_foldability::{

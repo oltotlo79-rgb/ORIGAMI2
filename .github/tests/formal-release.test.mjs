@@ -935,6 +935,8 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
               sourceCommit: 'a'.repeat(40),
               workflow: '.github/workflows/ci.yml',
               workflowRunId: '67890',
+              runAttempt: 1,
+              checkSuiteId: '24680',
               checks: [{ name: 'test', conclusion: 'success' }],
             }),
           },
@@ -1024,6 +1026,8 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
           sourceCommit: 'a'.repeat(40),
           workflow: '.github/workflows/ci.yml',
           workflowRunId: '67890',
+          runAttempt: 1,
+          checkSuiteId: '24680',
           checks: [{ name: 'test', conclusion: 'success' }],
         }),
       },
@@ -1074,6 +1078,8 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
         sourceCommit: 'a'.repeat(40),
         workflow: '.github/workflows/ci.yml',
         workflowRunId: '67890',
+        runAttempt: 1,
+        checkSuiteId: '24680',
         checks: [{ name: 'test', conclusion: 'success' }],
       },
     }))
@@ -1097,6 +1103,8 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
           sourceCommit: 'a'.repeat(40),
           workflow: '.github/workflows/ci.yml',
           workflowRunId: '67890',
+          runAttempt: 1,
+          checkSuiteId: '24680',
           checks: [{ name: 'test', conclusion: 'success' }],
         }),
       },
@@ -1163,6 +1171,7 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
       event: 'push',
       head_branch: 'main',
       run_attempt: 1,
+      check_suite_id: 84,
       updated_at: new Date().toISOString(),
     })
     writeFileSync(runsPath, JSON.stringify({
@@ -1183,6 +1192,7 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
       name, status, conclusion,
       details_url: 'https://github.com/example/repo/actions/runs/42/job/1',
       app: { slug: 'github-actions' },
+      check_suite: { id: 84 },
     })
     const requiredChecks = [
       'dependency-advisory-audit', 'frontend', 'macos-bundle',
@@ -1198,6 +1208,8 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
       sourceCommit: commit,
       workflow: '.github/workflows/ci.yml',
       workflowRunId: '42',
+      runAttempt: 1,
+      checkSuiteId: '84',
       checks: requiredChecks.map((name) => ({ name, conclusion: 'success' })),
     })
     writeFileSync(checksPath, JSON.stringify({

@@ -40,6 +40,7 @@ const run = runs.workflow_runs[0]
 const completedAt = Date.parse(run.updated_at)
 if (
   !Number.isSafeInteger(run.id) || run.id < 1
+  || !Number.isSafeInteger(run.check_suite_id) || run.check_suite_id < 1
   || run.head_sha !== commit
   || run.status !== 'completed'
   || run.conclusion !== 'success'
@@ -81,6 +82,7 @@ const checkResults = selected.map((check) => {
     typeof check.name !== 'string' || check.name.length < 1 || check.name.length > 200
     || names.has(check.name)
     || check.app?.slug !== 'github-actions'
+    || check.check_suite?.id !== run.check_suite_id
   ) throw new Error('CI check names are invalid or duplicated')
   names.add(check.name)
   if (check.status !== 'completed' || check.conclusion !== 'success') {
@@ -97,5 +99,7 @@ process.stdout.write(`${JSON.stringify({
   sourceCommit: commit,
   workflow: '.github/workflows/ci.yml',
   workflowRunId: String(run.id),
+  runAttempt: run.run_attempt,
+  checkSuiteId: String(run.check_suite_id),
   checks: checkResults,
 })}\n`)

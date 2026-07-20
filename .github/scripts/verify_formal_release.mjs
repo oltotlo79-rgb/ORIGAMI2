@@ -143,6 +143,9 @@ if (
   || releaseEvidence.ciChecks?.schema !== 'origami2.ci-check-evidence.v1'
   || releaseEvidence.ciChecks?.sourceCommit !== process.env.RELEASE_COMMIT
   || !/^[1-9][0-9]*$/u.test(releaseEvidence.ciChecks?.workflowRunId ?? '')
+  || !Number.isSafeInteger(releaseEvidence.ciChecks?.runAttempt)
+  || releaseEvidence.ciChecks.runAttempt < 1
+  || !/^[1-9][0-9]*$/u.test(releaseEvidence.ciChecks?.checkSuiteId ?? '')
   || releaseEvidence.ciChecks?.workflow !== '.github/workflows/ci.yml'
   || !Array.isArray(releaseEvidence.ciChecks?.checks)
   || releaseEvidence.ciChecks.checks.length < 1

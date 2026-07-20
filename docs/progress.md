@@ -26,6 +26,8 @@
 
 ## 完了
 
+- IO-008のFOLD 3D複数frameをnative stagingへ接続した。専用picker・token registry・frame選択・cancel commandをproject instance・ID・revisionへ束縛し、新pickerのreentryで旧tokenを失効、cancelはexact tokenだけをidempotentに処理する。WebViewへはframe index・parent・inherit・vertex count・source digestだけを返し、bytes・3D座標とproject/applied pose/timeline authorityは渡さない。日英native picker、cancel/reentry/metadata redaction専用2件、desktop全target checkが成功した。native rendererと利用者UIは未接続なので完成率は変更していない
+
 - IO-008の正厚meshで狭域face unionを接続した。position・normal・UVがbinary64 exact一致する共面隣接faceだけをweldし、共有edgeをtriangle incidence 2として内部wall生成から除外する。extrusion後は全幾何edgeのincidenceがexactly 2であるwatertight性を検証し、重複coincident triangleはfail-closed、非共面・normal違いは従来どおり面別solidへ保つ。隣接2面のside 8・total 12、manifold、独立STL、正厚GLB E2E、frontend buildとUI回帰が成功した。「入出力・互換性」を92%、全体を46.79%（表示46.8%）へ更新した
 - IO-008のFOLD 1.2 3D複数frame内部previewを追加した。既存2D importerと分離し、最大256の`file_frames`、file/frame `vertices_coords`のfinite 3要素、`frame_parent`範囲・自己参照・cycle、`frame_inherit`解決、byte・vertex上限、spec 1.2以下、signed zeroをstrictに検証する。preview metadataと選択結果はsource SHA-256・frame index・解決済み3D座標へ一体化する。FOLD座標だけではnative hinge/model identityを証明できないためproject・applied pose・timeline authorityはfalse固定で、利用者UIも未接続である。`ori-formats` 272件が成功し、完成率は変更していない
 - IO-008の正厚GLBへ表裏textureを接続した。extrusionの全triangleをFrontCap・BackCap・SideWallへ1対1で完全分類し、3 primitive・3 materialへ分離する。表裏は独立UVと認証済みPNG/JPEG、sideはtexture/TEXCOORDなしで表裏RGBA平均を使う。片側textureだけは意味を推測せず拒否し、無textureの既存経路を維持する。独立`gltf` readerとdesktop E2Eで3 primitive/material、2 image、表裏TEXCOORD、side非textureを確認した。「入出力・互換性」を91%、全体を46.74%（表示46.7%）へ更新した

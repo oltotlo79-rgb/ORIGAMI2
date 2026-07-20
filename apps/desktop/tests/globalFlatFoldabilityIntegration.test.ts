@@ -48,7 +48,7 @@ test('snapshot changes invalidate before publishing and replacements are explici
   )
   assert.match(
     applySnapshot,
-    /latestSnapshotRef\.current = admittedSnapshot\s*globalFlatFoldabilityCoordinatorRef\.current\?\.invalidate\(\{\s*projectId: admittedSnapshot\.project_id,\s*revision: admittedSnapshot\.revision,\s*foldModelFingerprint: admittedSnapshot\.fold_model_fingerprint,\s*\}, forceReplacement\)\s*setNativeSnapshot\(admittedSnapshot\)/u,
+    /latestSnapshotRef\.current = admittedSnapshot\s*globalFlatFoldabilityCoordinatorRef\.current\?\.invalidate\(\{\s*projectInstanceId: admittedSnapshot\.project_instance_id,\s*projectId: admittedSnapshot\.project_id,\s*revision: admittedSnapshot\.revision,\s*foldModelFingerprint: admittedSnapshot\.fold_model_fingerprint,\s*\}, forceReplacement\)\s*setNativeSnapshot\(admittedSnapshot\)/u,
   )
   assert.match(
     appSource,
@@ -76,7 +76,7 @@ test('snapshot changes invalidate before publishing and replacements are explici
   )
   assert.match(
     start,
-    /globalFlatFoldabilityCoordinatorRef\.current\?\.start\(\s*\{\s*projectId: current\.project_id,\s*revision: current\.revision,\s*foldModelFingerprint: current\.fold_model_fingerprint,\s*\},\s*timeLimitSeconds/u,
+    /globalFlatFoldabilityCoordinatorRef\.current\?\.start\(\s*\{\s*projectInstanceId: current\.project_instance_id,\s*projectId: current\.project_id,\s*revision: current\.revision,\s*foldModelFingerprint: current\.fold_model_fingerprint,\s*\},\s*timeLimitSeconds/u,
   )
 })
 

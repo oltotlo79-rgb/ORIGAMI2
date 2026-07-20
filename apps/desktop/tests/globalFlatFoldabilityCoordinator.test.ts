@@ -19,11 +19,13 @@ import {
 import { GlobalFlatFoldabilityNativeError } from '../src/lib/globalFlatFoldabilityNative.ts'
 
 const FIRST_CONTEXT = Object.freeze({
+  projectInstanceId: '018f47d1-5ca0-75b1-a53a-c579f39f9660',
   projectId: '018f47d1-5ca0-75b1-a53a-c579f39f9661',
   revision: 7,
   foldModelFingerprint: 'a'.repeat(64),
 })
 const SECOND_CONTEXT = Object.freeze({
+  projectInstanceId: '018f47d1-5ca0-75b1-a53a-c579f39f9664',
   projectId: '018f47d1-5ca0-75b1-a53a-c579f39f9661',
   revision: 8,
   foldModelFingerprint: 'b'.repeat(64),
@@ -680,6 +682,28 @@ test('forced replacement invalidates even an identical completed snapshot tuple'
   assert.equal(coordinator.getState().job?.state, 'completed')
   assert.equal(coordinator.invalidate(FIRST_CONTEXT), false)
   assert.equal(coordinator.invalidate(FIRST_CONTEXT, true), true)
+  assert.equal(coordinator.getState().job?.state, 'stale')
+})
+
+test('a reopened project instance invalidates an otherwise identical snapshot tuple', async () => {
+  const coordinator = requiredCoordinator({
+    transport: transportFixture({
+      begin: async () => ({
+        jobId: FIRST_JOB_ID,
+        job: possibleJob(10, 2_000),
+      }),
+    }),
+    scheduler: manualScheduler(),
+    onState: () => undefined,
+  })
+  coordinator.start(FIRST_CONTEXT, 30)
+  await settlePromises()
+  assert.equal(coordinator.getState().job?.state, 'completed')
+
+  assert.equal(coordinator.invalidate({
+    ...FIRST_CONTEXT,
+    projectInstanceId: SECOND_CONTEXT.projectInstanceId,
+  }), true)
   assert.equal(coordinator.getState().job?.state, 'stale')
 })
 

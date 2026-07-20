@@ -1051,6 +1051,7 @@ function App() {
     topologyRequestIdRef.current += 1
     latestSnapshotRef.current = admittedSnapshot
     globalFlatFoldabilityCoordinatorRef.current?.invalidate({
+      projectInstanceId: admittedSnapshot.project_instance_id,
       projectId: admittedSnapshot.project_id,
       revision: admittedSnapshot.revision,
       foldModelFingerprint: admittedSnapshot.fold_model_fingerprint,
@@ -2591,6 +2592,7 @@ function App() {
     ) return
     globalFlatFoldabilityCoordinatorRef.current?.start(
       {
+        projectInstanceId: current.project_instance_id,
         projectId: current.project_id,
         revision: current.revision,
         foldModelFingerprint: current.fold_model_fingerprint,

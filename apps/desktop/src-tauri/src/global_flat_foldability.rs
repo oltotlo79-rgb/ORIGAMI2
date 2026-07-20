@@ -755,6 +755,7 @@ pub(super) fn begin_global_flat_foldability(
     app: AppHandle,
     state: State<'_, AppState>,
     foldability_state: State<'_, GlobalFlatFoldabilityState>,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     expected_fold_model_fingerprint: String,
@@ -768,6 +769,7 @@ pub(super) fn begin_global_flat_foldability(
     match prepare_global_flat_foldability_begin(
         &state,
         &foldability_state,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         &expected_fold_model_fingerprint,
@@ -869,6 +871,7 @@ fn lock_foldability_state(
 fn prepare_global_flat_foldability_begin(
     state: &AppState,
     foldability_state: &GlobalFlatFoldabilityState,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     expected_fold_model_fingerprint: &str,
@@ -884,6 +887,7 @@ fn prepare_global_flat_foldability_begin(
     })?;
     let capture = capture_source(
         &project,
+        expected_project_instance_id,
         expected_project_id,
         expected_revision,
         expected_fold_model_fingerprint,
@@ -927,6 +931,7 @@ fn prepare_global_flat_foldability_begin(
 
 fn capture_source(
     project: &ProjectState,
+    expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     expected_fold_model_fingerprint: &str,
@@ -934,7 +939,10 @@ fn capture_source(
     runtime: Arc<GlobalFlatFoldabilityRuntime>,
     limits: GlobalFlatFoldabilityLimits,
 ) -> Result<GlobalFlatFoldabilityCapture, GlobalFlatFoldabilityCommandError> {
-    if project.project_id != expected_project_id || project.editor.revision() != expected_revision {
+    if project.instance_id != expected_project_instance_id
+        || project.project_id != expected_project_id
+        || project.editor.revision() != expected_revision
+    {
         return Err(GlobalFlatFoldabilityCommandError::new(
             GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable,
         ));
@@ -2228,6 +2236,7 @@ mod tests {
         let expected_fingerprint = project.editor.fold_model_fingerprint_v1();
         let capture = capture_source(
             project,
+            project.instance_id,
             project.project_id,
             project.editor.revision(),
             &expected_fingerprint,
@@ -2611,6 +2620,7 @@ mod tests {
 
         let capture = capture_source(
             &project,
+            project.instance_id,
             project.project_id,
             project.editor.revision(),
             &"f".repeat(64),
@@ -2629,8 +2639,27 @@ mod tests {
     #[test]
     fn normal_capture_requires_expected_fingerprint_and_shares_one_binding() {
         let project = initial_project_state();
+        let wrong_instance = match capture_source(
+            &project,
+            ProjectId::new(),
+            project.project_id,
+            project.editor.revision(),
+            &project.editor.fold_model_fingerprint_v1(),
+            GlobalFlatFoldabilityJobId::new(),
+            Arc::new(GlobalFlatFoldabilityRuntime::new(30_000)),
+            native_limits(),
+        ) {
+            Ok(_) => panic!("a reopened project instance must reject the old begin request"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            wrong_instance.category,
+            GlobalFlatFoldabilityErrorCategory::SnapshotUnavailable
+        );
+
         let mismatch = match capture_source(
             &project,
+            project.instance_id,
             project.project_id,
             project.editor.revision(),
             &"f".repeat(64),
@@ -2758,9 +2787,10 @@ mod tests {
     fn project_lock_linearizes_same_revision_begin_install_and_later_begin_wins() {
         let app_state = Arc::new(AppState::new(initial_project_state()));
         let foldability_state = Arc::new(GlobalFlatFoldabilityState::default());
-        let (project_id, revision, fingerprint) = {
+        let (project_instance_id, project_id, revision, fingerprint) = {
             let project = lock_project(&app_state).expect("read begin request");
             (
+                project.instance_id,
                 project.project_id,
                 project.editor.revision(),
                 project.editor.fold_model_fingerprint_v1(),
@@ -2778,6 +2808,7 @@ mod tests {
             prepare_global_flat_foldability_begin(
                 &first_app_state,
                 &first_foldability_state,
+                project_instance_id,
                 project_id,
                 revision,
                 &first_fingerprint,
@@ -2813,6 +2844,7 @@ mod tests {
             prepare_global_flat_foldability_begin(
                 &second_app_state,
                 &second_foldability_state,
+                project_instance_id,
                 project_id,
                 revision,
                 &second_fingerprint,
@@ -2877,10 +2909,11 @@ mod tests {
     fn source_limit_begin_preserves_every_occupied_slot_field() {
         let app_state = Arc::new(AppState::new(initial_project_state()));
         let foldability_state = Arc::new(GlobalFlatFoldabilityState::default());
-        let (project_id, revision, fingerprint, active_source) = {
+        let (project_instance_id, project_id, revision, fingerprint, active_source) = {
             let project = lock_project(&app_state).expect("lock source-limit project");
             install_possible_layer_order(&foldability_state, &project);
             (
+                project.instance_id,
                 project.project_id,
                 project.editor.revision(),
                 project.editor.fold_model_fingerprint_v1(),
@@ -2929,6 +2962,7 @@ mod tests {
         let prepared = prepare_global_flat_foldability_begin(
             &app_state,
             &foldability_state,
+            project_instance_id,
             project_id,
             revision,
             &fingerprint,

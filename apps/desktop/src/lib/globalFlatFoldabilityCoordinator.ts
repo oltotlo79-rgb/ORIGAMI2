@@ -647,11 +647,13 @@ function snapshotContext(value: unknown): GlobalFlatFoldabilityContext | null {
     if (!isPlainObject(value)) return null
     const keys = Reflect.ownKeys(value)
     if (
-      keys.length !== 3
+      keys.length !== 4
+      || !keys.includes('projectInstanceId')
       || !keys.includes('projectId')
       || !keys.includes('revision')
       || !keys.includes('foldModelFingerprint')
     ) return null
+    const instanceDescriptor = Object.getOwnPropertyDescriptor(value, 'projectInstanceId')
     const projectDescriptor = Object.getOwnPropertyDescriptor(value, 'projectId')
     const revisionDescriptor = Object.getOwnPropertyDescriptor(value, 'revision')
     const fingerprintDescriptor = Object.getOwnPropertyDescriptor(
@@ -659,20 +661,25 @@ function snapshotContext(value: unknown): GlobalFlatFoldabilityContext | null {
       'foldModelFingerprint',
     )
     if (
-      !projectDescriptor
+      !instanceDescriptor
+      || !projectDescriptor
       || !revisionDescriptor
       || !fingerprintDescriptor
+      || !instanceDescriptor.enumerable
       || !projectDescriptor.enumerable
       || !revisionDescriptor.enumerable
       || !fingerprintDescriptor.enumerable
+      || !('value' in instanceDescriptor)
       || !('value' in projectDescriptor)
       || !('value' in revisionDescriptor)
       || !('value' in fingerprintDescriptor)
+      || !validProjectId(instanceDescriptor.value)
       || !validProjectId(projectDescriptor.value)
       || !validRevision(revisionDescriptor.value)
       || !validFoldModelFingerprint(fingerprintDescriptor.value)
     ) return null
     return Object.freeze({
+      projectInstanceId: instanceDescriptor.value,
       projectId: projectDescriptor.value,
       revision: revisionDescriptor.value,
       foldModelFingerprint: fingerprintDescriptor.value,
@@ -907,7 +914,8 @@ function contextsEqual(
   first: GlobalFlatFoldabilityContext,
   second: GlobalFlatFoldabilityContext,
 ) {
-  return first.projectId === second.projectId
+  return first.projectInstanceId === second.projectInstanceId
+    && first.projectId === second.projectId
     && first.revision === second.revision
     && first.foldModelFingerprint === second.foldModelFingerprint
 }

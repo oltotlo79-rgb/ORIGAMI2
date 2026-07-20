@@ -9,6 +9,7 @@ import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
 const MAX_TIME_LIMIT_MS = 300_000
 
 export type GlobalFlatFoldabilityNativeContext = Readonly<{
+  projectInstanceId: string
   projectId: string
   revision: number
   foldModelFingerprint: string
@@ -49,7 +50,8 @@ export function createGlobalFlatFoldabilityNativeTransport(
   return Object.freeze({
     async begin(context, timeLimitMs) {
       if (
-        !isUuid(context.projectId)
+        !isUuid(context.projectInstanceId)
+        || !isUuid(context.projectId)
         || !isRevision(context.revision)
         || !isFoldModelFingerprint(context.foldModelFingerprint)
         || !Number.isSafeInteger(timeLimitMs)
@@ -64,6 +66,7 @@ export function createGlobalFlatFoldabilityNativeTransport(
         raw = await Promise.resolve(nativeInvoke(
           'begin_global_flat_foldability',
           {
+            expectedProjectInstanceId: context.projectInstanceId,
             expectedProjectId: context.projectId,
             expectedRevision: context.revision,
             expectedFoldModelFingerprint: context.foldModelFingerprint,

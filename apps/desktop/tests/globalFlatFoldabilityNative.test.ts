@@ -10,6 +10,7 @@ const PROJECT_ID = '00000000-0000-4000-8000-000000000001'
 const JOB_ID = '00000000-0000-4000-8000-000000000002'
 const FOLD_MODEL_FINGERPRINT = 'a'.repeat(64)
 const CONTEXT = {
+  projectInstanceId: '018f47d1-5ca0-75b1-a53a-c579f39f9660',
   projectId: PROJECT_ID,
   revision: 7,
   foldModelFingerprint: FOLD_MODEL_FINGERPRINT,
@@ -83,6 +84,7 @@ test('begin uses the exact camel-case command contract and validates its envelop
   assert.deepEqual(calls, [[
     'begin_global_flat_foldability',
     {
+      expectedProjectInstanceId: CONTEXT.projectInstanceId,
       expectedProjectId: PROJECT_ID,
       expectedRevision: 7,
       expectedFoldModelFingerprint: FOLD_MODEL_FINGERPRINT,

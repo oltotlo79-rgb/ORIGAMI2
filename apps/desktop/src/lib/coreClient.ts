@@ -181,7 +181,7 @@ export type BeginnerGenerationConstraintsV1 = {
     end: { x_tenths_mm: number; y_tenths_mm: number }
     thickness_tenths_mm: number
   }>
-  protrusions: Array<{
+  protrusions?: Array<{
     id: number
     count: number
     length_tenths_mm: number
@@ -195,7 +195,7 @@ export type BeginnerGenerationConstraintsV1 = {
     side: 'front' | 'back' | 'either'
     priority: number
   }>
-  bulge_targets: Array<{
+  bulge_targets?: Array<{
     id: number
     face_ids: string[]
     range_min_tenths_mm: [number, number, number]
@@ -262,7 +262,7 @@ function isBoundedIntegerTuple(
 function normalizeBeginnerGenerationConstraints(
   value: unknown,
 ): BeginnerGenerationConstraintsV1 | null {
-  const record = exactCoreDataRecord(value, [
+  const currentKeys = [
     'schema_version',
     'maximum_steps',
     'detail_level',
@@ -273,7 +273,26 @@ function normalizeBeginnerGenerationConstraints(
     'bulge_targets',
     'target_asset',
     'allowed_techniques',
-  ] as const)
+  ] as const
+  const legacyKeys = currentKeys.filter(
+    (key) => key !== 'protrusions' && key !== 'bulge_targets',
+  )
+  const protrusionKeys = currentKeys.filter((key) => key !== 'bulge_targets')
+  const snapshot = snapshotCoreDataRecord(value)
+  if (!snapshot) return null
+  const hadProtrusions = Object.hasOwn(snapshot, 'protrusions')
+  const hadBulgeTargets = Object.hasOwn(snapshot, 'bulge_targets')
+  const actualKeys = Object.keys(snapshot)
+  const hasExactKeys = (keys: readonly string[]) =>
+    actualKeys.length === keys.length && keys.every((key) => Object.hasOwn(snapshot, key))
+  if (!hasExactKeys(currentKeys) && !hasExactKeys(protrusionKeys) && !hasExactKeys(legacyKeys)) {
+    return null
+  }
+  const record: Record<string, unknown> = {
+    ...snapshot,
+    protrusions: Object.hasOwn(snapshot, 'protrusions') ? snapshot.protrusions : [],
+    bulge_targets: Object.hasOwn(snapshot, 'bulge_targets') ? snapshot.bulge_targets : [],
+  }
   if (
     !record
     || record.schema_version !== 1
@@ -373,7 +392,7 @@ function normalizeBeginnerGenerationConstraints(
       || !Number.isInteger(item.priority) || Number(item.priority) < 1 || Number(item.priority) > 100
     ) return null
     protrusionIds.add(Number(item.id))
-    return { ...item } as BeginnerGenerationConstraintsV1['protrusions'][number]
+    return { ...item } as NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
   })
   if (protrusions.some((target) => target === null)) return null
   const bulgeIds = new Set<number>()
@@ -400,7 +419,7 @@ function normalizeBeginnerGenerationConstraints(
       || minimum.every((value, index) => value === maximum[index])
       || direction.every((axis) => axis === 0)) return null
     bulgeIds.add(Number(item.id))
-    return { ...item } as BeginnerGenerationConstraintsV1['bulge_targets'][number]
+    return { ...item } as NonNullable<BeginnerGenerationConstraintsV1['bulge_targets']>[number]
   })
   if (bulgeTargets.some((target) => target === null)) return null
   let targetAsset: BeginnerGenerationConstraintsV1['target_asset'] = null
@@ -425,8 +444,8 @@ function normalizeBeginnerGenerationConstraints(
     target_category: record.target_category,
     target_parts: targetParts,
     skeleton_segments: skeletonSegments,
-    protrusions,
-    bulge_targets: bulgeTargets,
+    ...(hadProtrusions ? { protrusions } : {}),
+    ...(hadBulgeTargets ? { bulge_targets: bulgeTargets } : {}),
     target_asset: targetAsset,
     allowed_techniques: Object.freeze(record.allowed_techniques.slice()),
   }) as BeginnerGenerationConstraintsV1

@@ -688,9 +688,9 @@ function App() {
   const [beginnerSkeletonSegments, setBeginnerSkeletonSegments] =
     useState<BeginnerDesignProfileV1['generation_constraints']['skeleton_segments']>([])
   const [beginnerProtrusions, setBeginnerProtrusions] =
-    useState<BeginnerDesignProfileV1['generation_constraints']['protrusions']>([])
+    useState<NonNullable<BeginnerDesignProfileV1['generation_constraints']['protrusions']>>([])
   const [beginnerBulgeTargets, setBeginnerBulgeTargets] =
-    useState<BeginnerDesignProfileV1['generation_constraints']['bulge_targets']>([])
+    useState<NonNullable<BeginnerDesignProfileV1['generation_constraints']['bulge_targets']>>([])
   const beginnerCandidateRequestRef = useRef(0)
   const [beginnerRecognitionProposal, setBeginnerRecognitionProposal] =
     useState<BeginnerRecognitionProposalV1 | null>(null)

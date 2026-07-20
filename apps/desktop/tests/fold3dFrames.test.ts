@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   normalizeFold3dFrameSelection,
   normalizeFold3dFramesPicker,
+  normalizeFold3dPoseCompatibility,
 } from '../src/lib/fold3dFrames.ts'
 
 const id = '00000000-0000-4000-8000-000000000001'
@@ -24,6 +25,22 @@ test('strict FOLD 3D picker parser admits bounded metadata only', () => {
   assert.equal(normalizeFold3dFramesPicker({
     canceled: false,
     preview: { ...parsed?.preview, coordinates: [[0, 0, 0]] },
+  }), null)
+})
+
+test('pose compatibility parser keeps geometry mutation authority inert', () => {
+  const value = {
+    token: id,
+    frameIndex: 1,
+    hingeCount: 2,
+    sourceFingerprint: 'cd'.repeat(32),
+    authorizesProjectGeometryMutation: false,
+    requiresExplicitApply: true,
+  }
+  assert.ok(normalizeFold3dPoseCompatibility(value))
+  assert.equal(normalizeFold3dPoseCompatibility({
+    ...value,
+    authorizesProjectGeometryMutation: true,
   }), null)
 })
 

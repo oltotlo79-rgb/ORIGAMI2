@@ -1,20 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   cancelFold3dFrames,
+  applyFold3dAppliedPose,
   pickFold3dFrames,
+  prepareFold3dAppliedPose,
   selectFold3dFrame,
   type Fold3dFrameSelection,
   type Fold3dFramesMetadata,
+  type Fold3dPoseCompatibility,
 } from '../lib/fold3dFrames.ts'
 import { useLocale } from '../lib/i18n.ts'
 
-export function Fold3dFramesLauncher({ disabled }: Readonly<{ disabled: boolean }>) {
+export function Fold3dFramesLauncher({ disabled, onApplied }: Readonly<{
+  disabled: boolean
+  onApplied?(): void | Promise<void>
+}>) {
   const locale = useLocale()
   const en = locale.startsWith('en')
   const [preview, setPreview] = useState<Fold3dFramesMetadata | null>(null)
   const [selection, setSelection] = useState<Fold3dFrameSelection | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [compatibility, setCompatibility] = useState<Fold3dPoseCompatibility | null>(null)
+  const [confirmed, setConfirmed] = useState(false)
+  const [applied, setApplied] = useState(false)
   const launcher = useRef<HTMLButtonElement>(null)
   const dialog = useRef<HTMLElement>(null)
 
@@ -34,6 +43,7 @@ export function Fold3dFramesLauncher({ disabled }: Readonly<{ disabled: boolean 
       if (!result.canceled && result.preview) {
         setPreview(result.preview)
         setSelection(await selectFold3dFrame(result.preview, 0))
+        setCompatibility(await prepareFold3dAppliedPose(result.preview, 0))
       }
     } catch {
       setError(en ? 'The FOLD 3D preview became stale or invalid.' : 'FOLD 3Dプレビューが古いか無効です。')
@@ -42,7 +52,7 @@ export function Fold3dFramesLauncher({ disabled }: Readonly<{ disabled: boolean 
 
   async function close() {
     const token = preview?.token
-    setPreview(null); setSelection(null); setError(null)
+    setPreview(null); setSelection(null); setCompatibility(null); setError(null)
     if (token) await cancelFold3dFrames(token).catch(() => undefined)
     requestAnimationFrame(() => launcher.current?.focus())
   }
@@ -50,9 +60,27 @@ export function Fold3dFramesLauncher({ disabled }: Readonly<{ disabled: boolean 
   async function choose(index: number) {
     if (!preview || busy) return
     setBusy(true); setError(null)
-    try { setSelection(await selectFold3dFrame(preview, index)) }
+    try {
+      setSelection(await selectFold3dFrame(preview, index))
+      setCompatibility(await prepareFold3dAppliedPose(preview, index))
+      setConfirmed(false); setApplied(false)
+    }
     catch { setError(en ? 'This preview is stale. Close and retry.' : 'プレビューが古くなりました。閉じて再試行してください。') }
     finally { setBusy(false) }
+  }
+
+  async function applyPose() {
+    if (!preview || !selection || !compatibility || !confirmed || busy) return
+    setBusy(true); setError(null)
+    try {
+      await applyFold3dAppliedPose(preview, selection.frameIndex)
+      await onApplied?.()
+      setApplied(true)
+    } catch {
+      setCompatibility(null)
+      setError(en ? 'The project or pose changed. Close and retry.'
+        : 'プロジェクトまたは姿勢が変更されました。閉じて再試行してください。')
+    } finally { setBusy(false) }
   }
 
   function trapFocus(event: React.KeyboardEvent<HTMLElement>) {
@@ -98,6 +126,29 @@ export function Fold3dFramesLauncher({ disabled }: Readonly<{ disabled: boolean 
           width={selection.previewWidth} height={selection.previewHeight}
           alt={en ? `Native preview of frame ${selection.frameIndex + 1}`
             : `フレーム ${selection.frameIndex + 1} のネイティブプレビュー`} />}
+        <p role="status">
+          {compatibility
+            ? (en ? `Compatible native tree pose · ${compatibility.hingeCount} hinges`
+              : `互換性のあるネイティブ木構造姿勢・ヒンジ ${compatibility.hingeCount}`)
+            : (en ? 'Not compatible with the current native model.'
+              : '現在のネイティブモデルとは互換性がありません。')}
+        </p>
+        {compatibility && <>
+          <label><input type="checkbox" checked={confirmed} disabled={busy || applied}
+            onChange={(event) => setConfirmed(event.target.checked)} />
+            {en
+              ? 'Replace only the current 3D pose. Project geometry and revision stay unchanged.'
+              : '現在の3D姿勢だけを置換します。プロジェクト形状とrevisionは変更しません。'}
+          </label>
+          <p>{en
+            ? 'This pose adoption is not an editor geometry command. Editor Undo/Redo does not create a separate geometry-history entry.'
+            : '姿勢の適用は形状編集コマンドではありません。エディタの元に戻す／やり直すに形状履歴は追加されません。'}</p>
+          <button type="button" disabled={busy || !confirmed || applied}
+            onClick={() => void applyPose()}>
+            {applied ? (en ? 'Pose applied' : '姿勢を適用しました')
+              : (en ? 'Apply current 3D pose' : '現在の3D姿勢へ適用')}
+          </button>
+        </>}
         {error && <p role="alert">{error}</p>}
         <button type="button" disabled={busy} onClick={() => void close()}>
           {en ? 'Close' : '閉じる'}

@@ -31,6 +31,15 @@ export type Fold3dFrameSelection = Readonly<{
   authorizesInstructionTimeline: false
 }>
 
+export type Fold3dPoseCompatibility = Readonly<{
+  token: string
+  frameIndex: number
+  hingeCount: number
+  sourceFingerprint: string
+  authorizesProjectGeometryMutation: false
+  requiresExplicitApply: true
+}>
+
 const record = (value: unknown): Record<string, unknown> | null =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -102,6 +111,18 @@ export function normalizeFold3dFrameSelection(value: unknown): Fold3dFrameSelect
   return result as unknown as Fold3dFrameSelection
 }
 
+export function normalizeFold3dPoseCompatibility(value: unknown): Fold3dPoseCompatibility | null {
+  const result = record(value)
+  if (!result || !exactKeys(result, ['token', 'frameIndex', 'hingeCount',
+    'sourceFingerprint', 'authorizesProjectGeometryMutation', 'requiresExplicitApply'])
+    || !id(result.token) || !integer(result.frameIndex) || !integer(result.hingeCount)
+    || typeof result.sourceFingerprint !== 'string'
+    || !/^[0-9a-f]{64}$/.test(result.sourceFingerprint)
+    || result.authorizesProjectGeometryMutation !== false
+    || result.requiresExplicitApply !== true) return null
+  return result as unknown as Fold3dPoseCompatibility
+}
+
 export async function pickFold3dFrames() {
   const parsed = normalizeFold3dFramesPicker(await invoke<unknown>('preview_fold_3d_frames'))
   if (!parsed) throw new Error('invalid FOLD 3D frame picker response')
@@ -120,6 +141,48 @@ export async function selectFold3dFrame(preview: Fold3dFramesMetadata, frameInde
   }))
   if (!parsed) throw new Error('invalid FOLD 3D frame selection response')
   return parsed
+}
+
+const request = (preview: Fold3dFramesMetadata, frameIndex: number) => ({
+  token: preview.token,
+  expectedProjectInstanceId: preview.projectInstanceId,
+  expectedProjectId: preview.projectId,
+  expectedRevision: preview.revision,
+  frameIndex,
+})
+
+export async function prepareFold3dAppliedPose(
+  preview: Fold3dFramesMetadata,
+  frameIndex: number,
+) {
+  const parsed = normalizeFold3dPoseCompatibility(await invoke<unknown>(
+    'prepare_fold_3d_applied_pose', { request: request(preview, frameIndex) },
+  ))
+  if (!parsed) throw new Error('invalid FOLD 3D pose compatibility response')
+  return parsed
+}
+
+export async function applyFold3dAppliedPose(
+  preview: Fold3dFramesMetadata,
+  frameIndex: number,
+) {
+  const value = record(await invoke<unknown>('apply_fold_3d_applied_pose', {
+    request: request(preview, frameIndex),
+  }))
+  const binding = value && record(value.binding)
+  if (!value || !exactKeys(value, ['binding']) || !binding
+    || !exactKeys(binding, ['projectInstanceId', 'projectId', 'revision', 'poseGeneration'])
+    || binding.projectInstanceId !== preview.projectInstanceId
+    || binding.projectId !== preview.projectId || binding.revision !== preview.revision
+    || typeof binding.poseGeneration !== 'string' || !/^(0|[1-9][0-9]*)$/.test(binding.poseGeneration)) {
+    throw new Error('invalid FOLD 3D pose apply response')
+  }
+  return binding as Readonly<{
+    projectInstanceId: string
+    projectId: string
+    revision: number
+    poseGeneration: string
+  }>
 }
 
 export const cancelFold3dFrames = (token: string) =>

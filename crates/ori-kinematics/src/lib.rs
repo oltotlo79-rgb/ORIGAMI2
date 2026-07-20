@@ -94,6 +94,7 @@ pub use schedule::{
     CycleSchedulePrepareErrorV1, GeneratedMultiHingePathCandidateV1, HalfAngleDomainV1,
     HalfAngleRationalEntryInputV1, MultiHingePathCandidateErrorV1, MultiHingePathCandidateLimitsV1,
     PoleFreeBernsteinCertificateV1, PreparedHalfAngleRationalEntryV1, RationalCoefficientV1,
+    admit_canonical_multi_hinge_path_candidate_v1,
     evaluate_half_angle_rational_degrees_interval_v1,
     evaluate_half_angle_rational_derivative_interval_v1, evaluate_pole_free_atan2_interval_v1,
     evaluate_pole_free_rational_dyadic_v1, evaluate_pole_free_rational_interval_v1,

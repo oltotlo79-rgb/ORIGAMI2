@@ -926,6 +926,41 @@ impl GeneratedMultiHingePathCandidateV1 {
     }
 }
 
+/// Admits a caller-supplied canonical schedule as a detached path candidate.
+/// Both endpoints must match bit-for-bit and at least one hinge must move.
+pub fn admit_canonical_multi_hinge_path_candidate_v1(
+    schedule: CanonicalCycleScheduleV1,
+    initial: &CanonicalHingeAngles,
+    requested: &CanonicalHingeAngles,
+) -> Result<GeneratedMultiHingePathCandidateV1, MultiHingePathCandidateErrorV1> {
+    let lower = schedule
+        .evaluate(0.0)
+        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    let upper = schedule
+        .evaluate(1.0)
+        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    if lower != *initial || upper != *requested {
+        return Err(MultiHingePathCandidateErrorV1::InvalidBinding);
+    }
+    let moving_hinges = initial
+        .as_slice()
+        .iter()
+        .zip(requested.as_slice())
+        .filter_map(|(initial, requested)| {
+            (initial.edge() == requested.edge()
+                && initial.angle_degrees().to_bits() != requested.angle_degrees().to_bits())
+            .then_some(initial.edge())
+        })
+        .collect::<Vec<_>>();
+    if moving_hinges.is_empty() {
+        return Err(MultiHingePathCandidateErrorV1::NoMotion);
+    }
+    Ok(GeneratedMultiHingePathCandidateV1 {
+        schedule,
+        moving_hinges,
+    })
+}
+
 /// Generates the deterministic straight segment in complete hinge-angle
 /// space. This is only a candidate; cyclic closure and collision clearance
 /// must be proved independently over its full domain.
@@ -2214,6 +2249,68 @@ mod tests {
         assert_eq!(
             schedule.evaluate_angle_box_dyadic(1, 2, CycleScheduleLimitsV1::default()),
             Err(CycleSchedulePrepareErrorV1::InvalidInput)
+        );
+    }
+
+    #[test]
+    fn half_angle_schedule_admission_binds_both_endpoints_bit_exactly() {
+        let (geometry, audit, fixed, edges) = fixture();
+        let mut inputs = edges
+            .into_iter()
+            .map(|edge| HalfAngleRationalEntryInputV1 {
+                edge,
+                u_domain: [
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                numerator_power_coefficients: vec![
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                denominator_power_coefficients: vec![RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                }],
+            })
+            .collect::<Vec<_>>();
+        inputs.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            inputs,
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        let initial = schedule.evaluate(0.0).unwrap();
+        let requested = schedule.evaluate(1.0).unwrap();
+        let admitted =
+            admit_canonical_multi_hinge_path_candidate_v1(schedule.clone(), &initial, &requested)
+                .unwrap();
+        assert_eq!(admitted.moving_hinges().len(), geometry.hinges().len());
+
+        let mut forged = requested.as_slice().to_vec();
+        forged[0] = HingeAngle::new(
+            forged[0].edge(),
+            f64::from_bits(forged[0].angle_degrees().to_bits() - 1),
+        )
+        .unwrap();
+        let forged = CanonicalHingeAngles::new(forged).unwrap();
+        assert_eq!(
+            admit_canonical_multi_hinge_path_candidate_v1(schedule, &initial, &forged),
+            Err(MultiHingePathCandidateErrorV1::InvalidBinding)
         );
     }
 }

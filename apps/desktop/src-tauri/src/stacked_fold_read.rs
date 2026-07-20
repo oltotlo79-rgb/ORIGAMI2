@@ -975,7 +975,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             if path_variant_count != 1 {
                 return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned());
             }
-            if let Some(cycle) = request.cycle_schedule_v1.as_ref() {
+            let supplied_cycle_candidate = if let Some(cycle) = request.cycle_schedule_v1.as_ref() {
                 let schedule = prepare_requested_cycle_schedule_v1(
                     cycle,
                     initial.target().hinge_geometry(),
@@ -984,49 +984,23 @@ pub(super) async fn propose_current_stacked_fold_read(
                     initial.pose().hinge_angles(),
                 )
                 .map_err(str::to_owned)?;
-                let closure = initial
-                    .target()
-                    .hinge_geometry()
-                    .prove_dyadic_schedule_closure_v1(
-                        initial.target().audit(),
-                        initial.pose().fixed_face(),
-                        &schedule,
-                        ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
-                        DyadicIntervalClosureLimitsV1 {
-                            max_depth: 8,
-                            max_leaves: 256,
-                            max_work: CycleScheduleLimitsV1::default().max_work,
-                            schedule_limits: CycleScheduleLimitsV1::default(),
-                        },
-                    )
-                    .map_err(|error| match error {
-                        ori_kinematics::DyadicIntervalClosureErrorV1::ResourceLimit => {
-                            CYCLE_PATH_RESOURCE_MESSAGE.to_owned()
-                        }
-                        ori_kinematics::DyadicIntervalClosureErrorV1::InvalidInput => {
-                            CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned()
-                        }
-                        ori_kinematics::DyadicIntervalClosureErrorV1::UnprovenClosure { .. } => {
-                            CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE.to_owned()
-                        }
-                    })?;
-                let collision = ori_collision::diagnose_canonical_cycle_schedule_path_v1(
-                    initial.target().hinge_geometry(),
-                    initial.target().audit(),
-                    initial.pose().fixed_face(),
-                    &schedule,
-                    &closure,
-                    StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
-                );
-                if collision.continuous_certificate_model_id().is_none() {
-                    return Err(CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE.to_owned());
-                }
-                // This branch is intentionally unreachable for the currently
-                // admitted half-angle family: it has no finite derivative
-                // certificate. Keep the registration boundary fail-closed
-                // until its generated transition can carry both certificates.
-                return Err(CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE.to_owned());
-            }
+                let requested = ori_kinematics::CanonicalHingeAngles::new(
+                    cycle.entries.iter().map(|entry| {
+                        ori_kinematics::HingeAngle::new(entry.edge, entry.requested_angle_degrees)
+                    }).collect::<Result<Vec<_>, _>>()
+                        .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?,
+                ).map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+                Some((
+                    ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(
+                        schedule,
+                        initial.pose().hinge_angles(),
+                        &requested,
+                    ).map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?,
+                    requested,
+                ))
+            } else {
+                None
+            };
             let (
                 initial_angles,
                 requested_angles,
@@ -1257,6 +1231,17 @@ pub(super) async fn propose_current_stacked_fold_read(
                         Some(certificate),
                         registry_edges,
                     )
+                } else if let Some((_, requested)) = supplied_cycle_candidate.as_ref() {
+                    (
+                        initial.pose().hinge_angles().clone(),
+                        requested.clone(),
+                        requested.as_slice().iter().all(|entry| {
+                            entry.angle_degrees().to_bits() == 180.0_f64.to_bits()
+                        }),
+                        None,
+                        None,
+                        Vec::new(),
+                    )
                 } else {
                     let linear = request
                         .linear_candidate_v1
@@ -1277,7 +1262,9 @@ pub(super) async fn propose_current_stacked_fold_read(
                         Vec::new(),
                     )
                 };
-            let generated = generate_linear_multi_hinge_path_candidate_v1(
+            let generated = if let Some((generated, _)) = supplied_cycle_candidate {
+                generated
+            } else { generate_linear_multi_hinge_path_candidate_v1(
                 initial.target().hinge_geometry(),
                 initial.target().audit(),
                 initial.pose().fixed_face(),
@@ -1290,7 +1277,7 @@ pub(super) async fn propose_current_stacked_fold_read(
                     CYCLE_PATH_RESOURCE_MESSAGE.to_owned()
                 }
                 _ => CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned(),
-            })?;
+            })? };
             let cycle_limits = CycleScheduleLimitsV1::default();
             let interval_closure = initial
                 .target()

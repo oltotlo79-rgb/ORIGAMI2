@@ -285,7 +285,12 @@ test('publication verifies current-run artifact archive digests before extractio
     }
     const path = join(directory, 'metadata.json')
     writeFileSync(path, JSON.stringify(valid))
-    const output = execFileSync('node', [verifier, path], { encoding: 'utf8' })
+    const verifierEnv = {
+      ...process.env,
+      GITHUB_RUN_ID: '12345',
+      RELEASE_COMMIT: 'a'.repeat(40),
+    }
+    const output = execFileSync('node', [verifier, path], { encoding: 'utf8', env: verifierEnv })
     assert.match(output, /^formal-release-macos-arm64\t1\tb{64}$/mu)
     for (const invalid of [
       { ...valid, total_count: 3 },
@@ -298,13 +303,13 @@ test('publication verifies current-run artifact archive digests before extractio
     ]) {
       writeFileSync(path, JSON.stringify(invalid))
       assert.throws(
-        () => execFileSync('node', [verifier, path], { stdio: 'pipe' }),
+        () => execFileSync('node', [verifier, path], { stdio: 'pipe', env: verifierEnv }),
         /workflow artifact/u,
       )
     }
     writeFileSync(path, ' '.repeat(1_048_577))
     assert.throws(
-      () => execFileSync('node', [verifier, path], { stdio: 'pipe' }),
+      () => execFileSync('node', [verifier, path], { stdio: 'pipe', env: verifierEnv }),
       /metadata size is invalid/u,
     )
   } finally {
@@ -319,6 +324,9 @@ function artifact(id, name, digestCharacter) {
     expired: false,
     size_in_bytes: 1024,
     digest: `sha256:${digestCharacter.repeat(64)}`,
+    workflow_run: { id: 12345, head_sha: 'a'.repeat(40) },
+    created_at: '2026-07-21T00:00:00Z',
+    expires_at: '2026-07-22T00:00:00Z',
   }
 }
 

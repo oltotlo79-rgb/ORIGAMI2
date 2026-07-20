@@ -6,6 +6,11 @@ if (metadataSize <= 0 || metadataSize > 1_048_576) {
   throw new Error('workflow artifact metadata size is invalid')
 }
 const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'))
+const runId = Number(process.env.GITHUB_RUN_ID)
+const releaseCommit = process.env.RELEASE_COMMIT
+if (!Number.isSafeInteger(runId) || runId < 1 || !/^[0-9a-f]{40}$/u.test(releaseCommit ?? '')) {
+  throw new Error('workflow artifact expected identity is invalid')
+}
 const expectedNames = [
   'formal-release-macos-arm64',
   'formal-release-windows-x64',
@@ -20,6 +25,8 @@ if (
   throw new Error('workflow artifact count mismatch')
 }
 const admitted = metadata.artifacts.map((artifact) => {
+  const createdAt = Date.parse(artifact?.created_at)
+  const expiresAt = Date.parse(artifact?.expires_at)
   if (
     artifact === null
     || typeof artifact !== 'object'
@@ -32,6 +39,12 @@ const admitted = metadata.artifacts.map((artifact) => {
     || artifact.size_in_bytes > 2_147_483_648
     || typeof artifact.digest !== 'string'
     || !/^sha256:[0-9a-f]{64}$/u.test(artifact.digest)
+    || artifact.workflow_run?.id !== runId
+    || artifact.workflow_run?.head_sha !== releaseCommit
+    || !Number.isFinite(createdAt)
+    || !Number.isFinite(expiresAt)
+    || expiresAt <= createdAt
+    || expiresAt - createdAt > 26 * 60 * 60 * 1000
   ) {
     throw new Error('workflow artifact metadata is invalid')
   }

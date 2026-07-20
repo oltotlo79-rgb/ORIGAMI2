@@ -319,18 +319,20 @@ mod tests {
         unbounded.maximum_steps = MAX_BEGINNER_GENERATION_STEPS_V1 + 1;
         assert!(!validate_beginner_generation_constraints_v1(&unbounded));
 
-        let mut parts = BeginnerGenerationConstraintsV1::default();
-        parts.target_category = Some(BeginnerTargetCategoryV1::Animal);
-        parts.target_parts = vec![
-            BeginnerTargetPartRecordV1 {
-                kind: BeginnerTargetPartKindV1::Head,
-                count: 1,
-            },
-            BeginnerTargetPartRecordV1 {
-                kind: BeginnerTargetPartKindV1::Torso,
-                count: 1,
-            },
-        ];
+        let mut parts = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::Animal),
+            target_parts: vec![
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Head,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Torso,
+                    count: 1,
+                },
+            ],
+            ..Default::default()
+        };
         assert!(validate_beginner_generation_constraints_v1(&parts));
         parts.target_parts.push(BeginnerTargetPartRecordV1 {
             kind: BeginnerTargetPartKindV1::Head,

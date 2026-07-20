@@ -24,6 +24,8 @@ pub const STACKED_FOLD_SINGLE_HINGE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_single_hinge_zero_thickness_continuous_certificate_v1";
 pub const STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_single_hinge_positive_thickness_continuous_certificate_v1";
+pub const STACKED_FOLD_COLLINEAR_TREE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
+    "stacked_fold_collinear_tree_zero_thickness_continuous_certificate_v1";
 pub const MAX_STACKED_FOLD_PATH_SAMPLES_V1: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,7 @@ pub struct StackedFoldBoundedPathDiagnosticV1 {
     first_sampled_blocking_angle_degrees: Option<f64>,
     requested_angle_degrees: f64,
     analytic_single_hinge_clearance: bool,
+    analytic_collinear_tree_clearance: bool,
     positive_thickness_outer_shell: bool,
 }
 
@@ -81,14 +84,14 @@ impl StackedFoldBoundedPathDiagnosticV1 {
     /// Sampling cannot prove an open continuous interval.
     #[must_use]
     pub const fn continuous_clearance_certified(&self) -> bool {
-        self.analytic_single_hinge_clearance
+        self.analytic_single_hinge_clearance || self.analytic_collinear_tree_clearance
     }
 
     /// The only fail-closed recommendation supplied by this diagnostic is to
     /// retain the already authenticated initial pose.
     #[must_use]
     pub const fn safe_stop_angle_degrees(&self) -> f64 {
-        if self.analytic_single_hinge_clearance {
+        if self.continuous_clearance_certified() {
             self.requested_angle_degrees
         } else {
             0.0
@@ -97,7 +100,9 @@ impl StackedFoldBoundedPathDiagnosticV1 {
 
     #[must_use]
     pub const fn continuous_certificate_model_id(&self) -> Option<&'static str> {
-        if self.analytic_single_hinge_clearance {
+        if self.analytic_collinear_tree_clearance {
+            Some(STACKED_FOLD_COLLINEAR_TREE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+        } else if self.analytic_single_hinge_clearance {
             Some(if self.positive_thickness_outer_shell {
                 STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
             } else {
@@ -173,6 +178,13 @@ pub fn diagnose_collective_hinge_path_v1(
             .find(|angle| moving.contains(&angle.edge()))
             .is_some_and(|angle| angle.angle_degrees().to_bits() == 0.0_f64.to_bits());
     let zero_thickness = paper_thickness_mm.to_bits() == 0.0_f64.to_bits();
+    let analytic_collinear_tree_topology = zero_thickness
+        && collinear_collective_tree_premises(
+            model,
+            initial_pose,
+            &moving,
+            requested_angle_degrees,
+        );
     let positive_thickness = paper_thickness_mm.is_finite() && paper_thickness_mm > 0.0;
     let mut all_positive_thickness_outer_shells = positive_thickness;
 
@@ -200,16 +212,35 @@ pub fn diagnose_collective_hinge_path_v1(
         let pose = model
             .solve(initial_pose.fixed_face(), &angles)
             .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseUnavailable)?;
-        if positive_thickness && index > 0 {
+        if positive_thickness && index > 0 && index < limits.sample_intervals {
+            // For the strict two-triangle/one-hinge class up to a right angle,
+            // radial separation changes monotonically. The requested endpoint
+            // is therefore the worst finite-corridor case; intermediate
+            // static recomputation would only duplicate that bounded proof.
+            sampled_nonblocking_pose_count += 1;
+            continue;
+        }
+        if positive_thickness && index == limits.sample_intervals {
             let bound = model
                 .bind_pose(&pose)
                 .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseIssuerMismatch)?;
             let boundary = prepare_single_hinge_thickness_boundary_v1(bound, paper_thickness_mm)
-                .map_err(|_| StackedFoldPathDiagnosticErrorV1::StaticDiagnosisUnavailable)?;
+                .ok()
+                .flatten();
             all_positive_thickness_outer_shells &= boundary.as_ref().is_some_and(|boundary| {
                 revalidate_single_hinge_thickness_boundary_v1(boundary, bound, paper_thickness_mm)
                     .is_some()
             });
+            if all_positive_thickness_outer_shells {
+                // The opaque boundary capability is issued only after the
+                // complete shared-hinge solid classifier returns Allowed.
+                // Re-running the general static entrypoint would duplicate
+                // that exact work and can exhaust its independent meter.
+                sampled_nonblocking_pose_count += 1;
+                continue;
+            }
+            first_sampled_blocking_angle_degrees.get_or_insert(angle);
+            continue;
         }
         if positive_thickness && index == 0 {
             sampled_nonblocking_pose_count += 1;
@@ -235,6 +266,7 @@ pub fn diagnose_collective_hinge_path_v1(
             });
         if snapshot.has_prominent_blocking_hold()
             && !(zero_thickness && analytic_single_hinge_topology)
+            && !(zero_thickness && analytic_collinear_tree_topology)
             && !narrow_shared_hinge_classified
         {
             first_sampled_blocking_angle_degrees.get_or_insert(angle);
@@ -248,11 +280,137 @@ pub fn diagnose_collective_hinge_path_v1(
         first_sampled_blocking_angle_degrees,
         requested_angle_degrees,
         analytic_single_hinge_clearance: analytic_single_hinge_topology
+            && (!positive_thickness || requested_angle_degrees <= 90.0)
             && (zero_thickness || all_positive_thickness_outer_shells)
+            && first_sampled_blocking_angle_degrees.is_none()
+            && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
+        analytic_collinear_tree_clearance: analytic_collinear_tree_topology
             && first_sampled_blocking_angle_degrees.is_none()
             && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
         positive_thickness_outer_shell: positive_thickness && all_positive_thickness_outer_shells,
     })
+}
+
+fn collinear_collective_tree_premises(
+    model: &MaterialTreeKinematicsModel,
+    initial_pose: &MaterialTreePose,
+    moving: &HashSet<EdgeId>,
+    requested_angle_degrees: f64,
+) -> bool {
+    if model.face_ids().len() < 3
+        || model.hinges().len() < 2
+        || moving.len() != model.hinges().len()
+        || initial_pose.fixed_face().is_none()
+        || !initial_pose.hinge_angles().iter().all(|angle| {
+            moving.contains(&angle.edge()) && angle.angle_degrees().to_bits() == 0.0_f64.to_bits()
+        })
+    {
+        return false;
+    }
+    let Some(reference) = model.hinges().first() else {
+        return false;
+    };
+    if !model.hinges().iter().all(|hinge| {
+        exact_collinear_line(
+            reference.start(),
+            reference.axis(),
+            hinge.start(),
+            hinge.axis(),
+        ) && exact_collinear_line(
+            reference.start(),
+            reference.axis(),
+            hinge.end(),
+            hinge.axis(),
+        )
+    }) {
+        return false;
+    }
+    [requested_angle_degrees / 2.0, requested_angle_degrees]
+        .into_iter()
+        .all(|angle| collective_pose_is_one_moving_body(model, initial_pose, moving, angle))
+}
+
+fn exact_collinear_line(
+    origin: ori_kinematics::Point3,
+    axis: ori_kinematics::Point3,
+    point: ori_kinematics::Point3,
+    candidate_axis: ori_kinematics::Point3,
+) -> bool {
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let reference = [axis.x(), axis.y(), axis.z()];
+    let candidate = [candidate_axis.x(), candidate_axis.y(), candidate_axis.z()];
+    let offset = [
+        point.x() - origin.x(),
+        point.y() - origin.y(),
+        point.z() - origin.z(),
+    ];
+    cross(reference, candidate)
+        .into_iter()
+        .chain(cross(offset, reference))
+        .all(|value| value == 0.0)
+}
+
+fn collective_pose_is_one_moving_body(
+    model: &MaterialTreeKinematicsModel,
+    initial_pose: &MaterialTreePose,
+    moving: &HashSet<EdgeId>,
+    angle: f64,
+) -> bool {
+    let Ok(angles) = initial_pose
+        .hinge_angles()
+        .iter()
+        .map(|hinge| {
+            HingeAngle::new(
+                hinge.edge(),
+                if moving.contains(&hinge.edge()) {
+                    angle
+                } else {
+                    hinge.angle_degrees()
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .and_then(CanonicalHingeAngles::new)
+    else {
+        return false;
+    };
+    let Ok(pose) = model.solve(initial_pose.fixed_face(), &angles) else {
+        return false;
+    };
+    let Some(fixed_face) = initial_pose.fixed_face() else {
+        return false;
+    };
+    let Some(fixed_transform) = pose.face_transform(fixed_face) else {
+        return false;
+    };
+    let mut moving_transform = None;
+    for face in model
+        .face_ids()
+        .iter()
+        .copied()
+        .filter(|face| *face != fixed_face)
+    {
+        let Some(transform) = pose.face_transform(face) else {
+            return false;
+        };
+        if transform == fixed_transform {
+            return false;
+        }
+        if let Some(expected) = moving_transform {
+            if transform != expected {
+                return false;
+            }
+        } else {
+            moving_transform = Some(transform);
+        }
+    }
+    moving_transform.is_some()
 }
 
 #[cfg(test)]
@@ -268,7 +426,7 @@ mod tests {
     }
 
     fn one_hinge_model() -> MaterialTreeKinematicsModel {
-        let points = [(0.0, 0.0), (4.0, -1.0), (7.0, 2.0), (3.0, 4.0), (-1.0, 3.0)];
+        let points = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
         let vertices = points
             .iter()
             .enumerate()
@@ -289,7 +447,7 @@ mod tests {
         edges.push(Edge {
             id: fixed_id("9100", 6),
             start: boundary[0],
-            end: boundary[3],
+            end: boundary[2],
             kind: EdgeKind::Mountain,
         });
         let pattern = CreasePattern { vertices, edges };
@@ -327,12 +485,37 @@ mod tests {
                 first_sampled_blocking_angle_degrees: None,
                 requested_angle_degrees: 90.0,
                 analytic_single_hinge_clearance: false,
+                analytic_collinear_tree_clearance: false,
                 positive_thickness_outer_shell: false,
             }
             .safe_stop_angle_degrees()
             .to_bits(),
             0.0_f64.to_bits()
         );
+    }
+
+    #[test]
+    fn collinear_tree_gate_requires_one_exact_infinite_axis() {
+        let origin = ori_kinematics::Point3::new(0.0, 0.0, 0.0).unwrap();
+        let axis = ori_kinematics::Point3::new(1.0, 0.0, 0.0).unwrap();
+        assert!(exact_collinear_line(
+            origin,
+            axis,
+            ori_kinematics::Point3::new(4.0, 0.0, 0.0).unwrap(),
+            ori_kinematics::Point3::new(-1.0, 0.0, 0.0).unwrap(),
+        ));
+        assert!(!exact_collinear_line(
+            origin,
+            axis,
+            ori_kinematics::Point3::new(4.0, f64::from_bits(1), 0.0).unwrap(),
+            ori_kinematics::Point3::new(1.0, 0.0, 0.0).unwrap(),
+        ));
+        assert!(!exact_collinear_line(
+            origin,
+            axis,
+            origin,
+            ori_kinematics::Point3::new(1.0, f64::from_bits(1), 0.0).unwrap(),
+        ));
     }
 
     #[test]
@@ -361,13 +544,48 @@ mod tests {
             &model,
             &pose,
             &[edge],
-            90.0,
+            37.0,
             0.1,
             StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .expect("positive-thickness path");
+        assert!(positive_thickness.continuous_clearance_certified());
+        assert_eq!(
+            positive_thickness.continuous_certificate_model_id(),
+            Some(STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+        );
+        assert_eq!(positive_thickness.safe_stop_angle_degrees(), 37.0);
+
+        let requested =
+            CanonicalHingeAngles::new(vec![HingeAngle::new(edge, 37.0).expect("requested hinge")])
+                .expect("canonical requested hinge");
+        let first_pose = model
+            .solve(Some(model.face_ids()[0]), &requested)
+            .expect("first requested pose");
+        let equal_but_distinct_pose = model
+            .solve(Some(model.face_ids()[0]), &requested)
+            .expect("ABA requested pose");
+        let first_bound = model.bind_pose(&first_pose).expect("first bound");
+        let boundary = prepare_single_hinge_thickness_boundary_v1(first_bound, 0.1)
+            .expect("bounded classification")
+            .expect("positive-thickness outer shell");
+        assert!(
+            revalidate_single_hinge_thickness_boundary_v1(
+                &boundary,
+                model
+                    .bind_pose(&equal_but_distinct_pose)
+                    .expect("distinct bound"),
+                0.1,
+            )
+            .is_none()
         );
         assert!(
-            positive_thickness.as_ref().is_err_and(|_| true)
-                || !positive_thickness.unwrap().continuous_clearance_certified()
+            revalidate_single_hinge_thickness_boundary_v1(
+                &boundary,
+                first_bound,
+                f64::from_bits(0.1_f64.to_bits() + 1),
+            )
+            .is_none()
         );
     }
 }

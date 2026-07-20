@@ -1664,6 +1664,18 @@ export function importFrontPaperTexture(
   })
 }
 
+export function importBackPaperTexture(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+) {
+  return invoke<ProjectSnapshot>('import_back_paper_texture', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+  })
+}
+
 export function setElementMetadata(
   expectedProjectId: string,
   expectedRevision: number,

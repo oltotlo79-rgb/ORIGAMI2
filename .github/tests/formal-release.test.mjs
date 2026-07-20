@@ -105,6 +105,8 @@ test('publication binds generated notes tag and immutable remote commit', () => 
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const publish = workflow.slice(workflow.indexOf('  publish:'), workflow.indexOf('  promote:'))
   assert.match(workflow, /commit: \$\{\{ steps\.contract\.outputs\.commit \}\}/u)
+  assert.equal(workflow.match(/ref: \$\{\{ needs\.validate\.outputs\.commit \}\}/gu)?.length ?? 0, 3)
+  assert.doesNotMatch(publish, /ref: \$\{\{ needs\.validate\.outputs\.tag/u)
   assert.match(publish, /commits\/\$RELEASE_TAG.*--jq \.sha/u)
   assert.match(publish, /test "\$remote_commit" = "\$RELEASE_COMMIT"/u)
   assert.match(publish, /releases\/generate-notes/u)

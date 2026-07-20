@@ -314,6 +314,87 @@ fn validate_linear_candidate_angles_v1(
     Ok((initial, collect(true)?))
 }
 
+fn prepare_requested_cycle_schedule_v1(
+    request: &CycleScheduleRequestV1,
+    geometry: &ori_kinematics::MaterialHingeGraphGeometry,
+    audit: &ori_kinematics::MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    live: &ori_kinematics::CanonicalHingeAngles,
+) -> Result<ori_kinematics::CanonicalCycleScheduleV1, &'static str> {
+    if request.version != 1 || request.entries.len() != live.as_slice().len() {
+        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
+    }
+    let rational = |value: RationalCoefficientRequestV1| {
+        (value.denominator != 0)
+            .then_some(ori_kinematics::RationalCoefficientV1 {
+                numerator: value.numerator,
+                denominator: value.denominator,
+            })
+            .ok_or(CYCLE_PATH_UNSUPPORTED_MESSAGE)
+    };
+    let inputs = request
+        .entries
+        .iter()
+        .map(|entry| {
+            Ok(ori_kinematics::HalfAngleRationalEntryInputV1 {
+                edge: entry.edge,
+                u_domain: [rational(entry.u_domain[0])?, rational(entry.u_domain[1])?],
+                numerator_power_coefficients: entry
+                    .numerator_power_coefficients
+                    .iter()
+                    .copied()
+                    .map(rational)
+                    .collect::<Result<Vec<_>, _>>()?,
+                denominator_power_coefficients: entry
+                    .denominator_power_coefficients
+                    .iter()
+                    .copied()
+                    .map(rational)
+                    .collect::<Result<Vec<_>, _>>()?,
+            })
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+    let limits = CycleScheduleLimitsV1::default();
+    let schedule = ori_kinematics::CanonicalCycleScheduleV1::prepare_half_angle_rational(
+        geometry, audit, fixed_face, inputs, limits,
+    )
+    .map_err(|error| match error {
+        ori_kinematics::CycleSchedulePrepareErrorV1::ResourceLimit => CYCLE_PATH_RESOURCE_MESSAGE,
+        _ => CYCLE_PATH_UNSUPPORTED_MESSAGE,
+    })?;
+    for (upper, expected) in [false, true].into_iter().zip([
+        live.as_slice()
+            .iter()
+            .map(|angle| (angle.edge(), angle.angle_degrees()))
+            .collect::<Vec<_>>(),
+        request
+            .entries
+            .iter()
+            .map(|entry| (entry.edge, entry.requested_angle_degrees))
+            .collect(),
+    ]) {
+        let endpoint = schedule
+            .evaluate_endpoint_angle_box(upper, limits)
+            .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE)?;
+        if endpoint.len() != expected.len()
+            || endpoint
+                .iter()
+                .zip(expected)
+                .any(|((edge, interval), expected)| {
+                    *edge != expected.0
+                        || !expected.1.is_finite()
+                        || expected.1 < interval.lower()
+                        || expected.1 > interval.upper()
+                        || interval.upper() - interval.lower()
+                            > ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1
+                })
+        {
+            return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
+        }
+    }
+    Ok(schedule)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CycleScheduleRequestV1 {
@@ -891,8 +972,48 @@ pub(super) async fn propose_current_stacked_fold_read(
             let path_variant_count = usize::from(request.cycle_schedule_v1.is_some())
                 + usize::from(request.linear_candidate_v1.is_some())
                 + usize::from(request.certified_path_graph_v1.is_some());
-            if path_variant_count != 1 || request.cycle_schedule_v1.is_some() {
+            if path_variant_count != 1 {
                 return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned());
+            }
+            if let Some(cycle) = request.cycle_schedule_v1.as_ref() {
+                let schedule = prepare_requested_cycle_schedule_v1(
+                    cycle,
+                    initial.target().hinge_geometry(),
+                    initial.target().audit(),
+                    initial.pose().fixed_face(),
+                    initial.pose().hinge_angles(),
+                )
+                .map_err(str::to_owned)?;
+                initial
+                    .target()
+                    .hinge_geometry()
+                    .prove_dyadic_schedule_closure_v1(
+                        initial.target().audit(),
+                        initial.pose().fixed_face(),
+                        &schedule,
+                        ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                        DyadicIntervalClosureLimitsV1 {
+                            max_depth: 8,
+                            max_leaves: 256,
+                            max_work: CycleScheduleLimitsV1::default().max_work,
+                            schedule_limits: CycleScheduleLimitsV1::default(),
+                        },
+                    )
+                    .map_err(|error| match error {
+                        ori_kinematics::DyadicIntervalClosureErrorV1::ResourceLimit => {
+                            CYCLE_PATH_RESOURCE_MESSAGE.to_owned()
+                        }
+                        ori_kinematics::DyadicIntervalClosureErrorV1::InvalidInput => {
+                            CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned()
+                        }
+                        ori_kinematics::DyadicIntervalClosureErrorV1::UnprovenClosure { .. } => {
+                            CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE.to_owned()
+                        }
+                    })?;
+                // Half-angle rational schedules have a closure oracle, but the
+                // current CCD oracle cannot yet publish clearance evidence for
+                // them. Never register closure alone as a certified edge.
+                return Err(CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE.to_owned());
             }
             let (
                 initial_angles,

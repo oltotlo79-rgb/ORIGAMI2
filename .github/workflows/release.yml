@@ -108,10 +108,13 @@ jobs:
           node-version: 24.11.1
       - working-directory: apps/desktop
         run: npm ci
+      - name: Freeze Cargo lock resolution before release build
+        shell: bash
+        run: cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/cargo-metadata.json"
       - name: Build Windows portable executable
         if: matrix.platform == 'windows-x64'
         working-directory: apps/desktop
-        run: npx tauri build --ci --no-sign --no-bundle
+        run: npx --no-install tauri build --ci --no-sign --no-bundle
       - name: Sign Windows portable executable
         if: matrix.platform == 'windows-x64' && needs.validate.outputs.mode != 'dry-run'
         shell: pwsh
@@ -139,7 +142,7 @@ jobs:
       - name: Bundle Windows installer around the tested executable
         if: matrix.platform == 'windows-x64'
         working-directory: apps/desktop
-        run: npx tauri bundle --ci --no-sign --bundles nsis
+        run: npx --no-install tauri bundle --ci --no-sign --bundles nsis
       - name: Sign Windows installer
         if: matrix.platform == 'windows-x64' && needs.validate.outputs.mode != 'dry-run'
         shell: pwsh

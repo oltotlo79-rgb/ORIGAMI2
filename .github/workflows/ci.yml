@@ -35,7 +35,7 @@ jobs:
       - name: Validate generated static, textured, and animated GLB
         run: npm run test:gltf-validator
       - name: Install headless Chromium for Khronos Sample Viewer
-        run: npx playwright install --with-deps chromium
+        run: npx --no-install playwright install --with-deps chromium
       - name: Audit primary UI accessibility in Chromium
         id: accessibility-browser
         env:
@@ -380,14 +380,14 @@ jobs:
         shell: pwsh
         run: |
           $env:RUST_TEST_THREADS = '1'
-          cargo test -p origami2-desktop --lib recovery::tests -- --test-threads=1
+          cargo test --locked -p origami2-desktop --lib recovery::tests -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Windows recovery and close contract failed.' }
-          cargo test -p origami2-desktop --lib diagnostics::tests -- --test-threads=1
+          cargo test --locked -p origami2-desktop --lib diagnostics::tests -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Windows diagnostics persistence contract failed.' }
       - name: Verify Windows-native 10000-edge archive and history budgets
         shell: pwsh
         run: |
-          cargo test -p origami2-desktop --lib windows_large_archive_budget_tests -- --test-threads=1
+          cargo test --locked -p origami2-desktop --lib windows_large_archive_budget_tests -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw 'Windows 10000-edge archive budget failed.' }
       - name: Remove stale Windows bundle outputs
         shell: pwsh

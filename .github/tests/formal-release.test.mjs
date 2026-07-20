@@ -202,6 +202,17 @@ test('release-gating CI uses exact toolchains and digest-verified external tools
   assert.match(workflow, /blender-4\.5\.11-linux-x64\.tar\.xz[\s\S]*sha256sum --check --strict/u)
   assert.match(workflow, /PrusaSlicer-2\.9\.6\.zip[\s\S]*Get-FileHash[\s\S]*checksum mismatch/u)
   assert.match(workflow, /--require-hashes --no-deps -r \.github\/release-audit-requirements\.txt/u)
+  assert.doesNotMatch(workflow, /npx (?!--no-install)/u)
+  for (const command of workflow.matchAll(/cargo test[^\r\n]*/gu)) {
+    assert.match(command[0], /--locked/u)
+  }
+})
+
+test('formal builds cannot resolve undeclared npm or Cargo inputs', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  assert.match(workflow, /npm ci[\s\S]*cargo metadata --locked --no-deps --format-version 1/u)
+  assert.equal(workflow.match(/npx --no-install tauri/gu)?.length ?? 0, 2)
+  assert.doesNotMatch(workflow, /npx tauri|npm install/u)
 })
 
 test('all direct and nested action runtimes match the audited Node.js 24 inventory', () => {
@@ -557,8 +568,8 @@ test('Windows CI executes native recovery close and diagnostics persistence cont
   const end = workflow.indexOf('Remove stale Windows bundle outputs', start)
   assert.ok(start > 0 && end > start)
   const step = workflow.slice(start, end)
-  assert.match(step, /cargo test -p origami2-desktop --lib recovery::tests -- --test-threads=1/u)
-  assert.match(step, /cargo test -p origami2-desktop --lib diagnostics::tests -- --test-threads=1/u)
+  assert.match(step, /cargo test --locked -p origami2-desktop --lib recovery::tests -- --test-threads=1/u)
+  assert.match(step, /cargo test --locked -p origami2-desktop --lib diagnostics::tests -- --test-threads=1/u)
   assert.match(step, /Windows recovery and close contract failed/u)
   assert.match(step, /Windows diagnostics persistence contract failed/u)
   assert.doesNotMatch(step, /continue-on-error|\|\| true/u)

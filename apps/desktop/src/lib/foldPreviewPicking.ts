@@ -11,6 +11,7 @@ export type FoldPreviewPickObject = Readonly<{
 }>
 
 export type FoldPreviewPickTarget =
+  | Readonly<{ kind: 'vertex'; vertexId: string }>
   | Readonly<{ kind: 'hinge'; edgeId: string }>
   | Readonly<{ kind: 'face'; faceId: string }>
 
@@ -35,6 +36,7 @@ export function pickFoldPreviewTarget(
   hinges: readonly FoldPreviewPickObject[],
   faces: readonly FoldPreviewPickObject[],
   lineThreshold = 0.08,
+  vertices: readonly FoldPreviewPickObject[] = [],
 ): FoldPreviewPickTarget | null {
   if (
     !Number.isFinite(pointer.x)
@@ -46,10 +48,16 @@ export function pickFoldPreviewTarget(
   ) return null
   const hingeIndex = indexTargets(hinges)
   const faceIndex = indexTargets(faces)
-  if (!hingeIndex || !faceIndex) return null
+  const vertexIndex = indexTargets(vertices)
+  if (!hingeIndex || !faceIndex || !vertexIndex) return null
 
   raycaster.params.Line = { threshold: lineThreshold }
   raycaster.setFromCamera(pointer, camera)
+  const vertexHit = raycaster.intersectObjects([...vertexIndex.keys()], false)[0]
+  if (vertexHit) {
+    const vertexId = vertexIndex.get(vertexHit.object)
+    if (vertexId) return { kind: 'vertex', vertexId }
+  }
   const hingeHit = raycaster.intersectObjects([...hingeIndex.keys()], false)[0]
   if (hingeHit) {
     const edgeId = hingeIndex.get(hingeHit.object)

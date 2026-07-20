@@ -12,6 +12,7 @@ import {
 } from 'react'
 import {
   CreaseCanvas,
+  type CreaseCanvasFace,
   type CreaseCanvasRenderMetrics,
   type CreaseLine,
   type PaperBounds,
@@ -517,6 +518,7 @@ function App() {
   }
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [selectedVertexId, setSelectedVertexId] = useState<string | null>(null)
+  const [selectedFaceId, setSelectedFaceId] = useState<string | null>(null)
   const [foldAngle, setFoldAngle] = useState(52)
   const [foldAngleOverrides, setFoldAngleOverrides] = useState<FoldAngleOverrides>({
     projectId: null,
@@ -944,6 +946,7 @@ function App() {
     }))
     setSelectedLineId(null)
     setSelectedVertexId(null)
+    setSelectedFaceId(null)
     setPendingEdgeStart(null)
     setParallelReferenceEdgeId(null)
     setAppliedFoldPose(null)
@@ -1250,6 +1253,40 @@ function App() {
     () => buildFoldPreviewModel(nativeSnapshot, topologyResponse),
     [nativeSnapshot, topologyResponse],
   )
+  const canvasFaces = useMemo<readonly CreaseCanvasFace[]>(() => {
+    const topology = topologyResponse?.snapshot
+    if (
+      !nativeSnapshot
+      || !topology
+      || topologyResponse.project_id !== nativeSnapshot.project_id
+      || topologyResponse.revision !== nativeSnapshot.revision
+      || topology.source_revision !== nativeSnapshot.revision
+    ) return []
+    const positions = new Map<string, Array<{ x: number; y: number }>>()
+    for (const vertex of nativeSnapshot.crease_pattern.vertices) {
+      const matches = positions.get(vertex.id)
+      if (matches) matches.push(vertex.position)
+      else positions.set(vertex.id, [vertex.position])
+    }
+    const faces: CreaseCanvasFace[] = []
+    for (const face of topology.faces) {
+      const polygon: Array<{ x: number; y: number }> = []
+      let valid = face.outer.half_edges.length >= 3
+      for (const halfEdge of face.outer.half_edges) {
+        const matches = positions.get(halfEdge.origin)
+        if (matches?.length !== 1) {
+          valid = false
+          break
+        }
+        polygon.push({ x: matches[0].x, y: matches[0].y })
+      }
+      if (valid) faces.push(Object.freeze({
+        id: face.id,
+        polygon: Object.freeze(polygon),
+      }))
+    }
+    return Object.freeze(faces)
+  }, [nativeSnapshot, topologyResponse])
   const fixedFaceOptions = useMemo(() => (
     foldPreviewModel?.kind === 'single_fold'
       ? foldPreviewModel.faces
@@ -2394,6 +2431,7 @@ function App() {
     if (activeTool === 'select' || activeTool === 'vertex') {
       setSelectedVertexId(vertexId)
       setSelectedLineId(null)
+      setSelectedFaceId(null)
       return
     }
     selectVertexForEdge(vertexId)
@@ -4644,8 +4682,10 @@ function App() {
               paperPolygon={benchmarkRun ? undefined : paperPolygon}
               paperColor={paperFrontColor}
               vertices={displayedVertices}
+              faces={benchmarkRun ? [] : canvasFaces}
               tool={benchmarkRun ? 'select' : activeTool}
               selectedVertexId={selectedVertexId}
+              selectedFaceId={selectedFaceId}
               pendingVertexId={pendingEdgeStart}
               selectedLineId={selectedLineId}
               measurementLabel={formatLineMeasurementLabel(
@@ -4667,8 +4707,20 @@ function App() {
               onRenderMetrics={recordBenchmarkRenderMetrics}
               onSelectLine={(lineId) => {
                 setSelectedLineId(lineId)
-                if (lineId) setSelectedVertexId(null)
+                if (lineId) {
+                  setSelectedVertexId(null)
+                  setSelectedFaceId(null)
+                }
               }}
+              onSelectFace={benchmarkRun
+                ? undefined
+                : (faceId) => {
+                    setSelectedFaceId(faceId)
+                    if (faceId) {
+                      setSelectedLineId(null)
+                      setSelectedVertexId(null)
+                    }
+                  }}
               onPlaceVertex={benchmarkRun
                 ? undefined
                 : (placement) => void placeCanvasVertex(placement)}
@@ -4691,6 +4743,7 @@ function App() {
                 ? (vertexId) => {
                     setSelectedVertexId(vertexId)
                     setSelectedLineId(null)
+                    setSelectedFaceId(null)
                   }
                 : selectCanvasVertex}
               onMoveVertex={benchmarkRun
@@ -4714,13 +4767,46 @@ function App() {
               angle={foldAngle}
               hingeAngles={foldTreeHingeAngles}
               selectedHingeId={selectedPreviewHingeId}
+              selectedFaceId={selectedFaceId}
+              selectedVertexId={selectedVertexId}
               fixedFaceId={effectiveFixedFaceId}
               onSelectHinge={benchmarkRun || foldPreviewHingeIds.size === 0
                 ? undefined
                 : (edgeId) => {
                     if (!nativeLines.some(({ id }) => id === edgeId)) return
                     setSelectedLineId(edgeId)
-                    if (edgeId) setSelectedVertexId(null)
+                    if (edgeId) {
+                      setSelectedVertexId(null)
+                      setSelectedFaceId(null)
+                    }
+                  }}
+              onSelectFace={benchmarkRun
+                ? undefined
+                : (faceId) => {
+                    if (
+                      faceId
+                      && !foldPreviewModel?.faces.some((face) => face.id === faceId)
+                    ) return
+                    setSelectedFaceId(faceId)
+                    if (faceId) {
+                      setSelectedLineId(null)
+                      setSelectedVertexId(null)
+                    }
+                  }}
+              onSelectVertex={benchmarkRun
+                ? undefined
+                  : (vertexId) => {
+                    if (
+                      vertexId
+                      && !nativeSnapshot?.crease_pattern.vertices.some(
+                        (vertex) => vertex.id === vertexId,
+                      )
+                    ) return
+                    setSelectedVertexId(vertexId)
+                    if (vertexId) {
+                      setSelectedLineId(null)
+                      setSelectedFaceId(null)
+                    }
                   }}
               onChooseFixedFace={!fixedFaceEnabled
                 ? undefined

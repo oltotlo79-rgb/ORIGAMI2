@@ -89,14 +89,21 @@ export type CreaseCanvasRenderMetrics = Readonly<{
 
 export type ValidationVertexHighlight = 'violated' | 'indeterminate'
 
+export type CreaseCanvasFace = Readonly<{
+  id: string
+  polygon: readonly Readonly<{ x: number; y: number }>[]
+}>
+
 type Props = {
   lines: CreaseLine[]
   vertices?: Array<{ id: string; x: number; y: number }>
+  faces?: readonly CreaseCanvasFace[]
   paperBounds?: PaperBounds
   paperPolygon?: PaperPolygonPoint[]
   paperColor?: string
   tool?: string
   selectedVertexId?: string | null
+  selectedFaceId?: string | null
   pendingVertexId?: string | null
   selectedLineId: string | null
   measurementLabel?: string
@@ -112,6 +119,7 @@ type Props = {
     reason: 'intersection-truncated' | 'intersection-blocked'
   ) => void
   onSelectVertex?: (id: string) => void
+  onSelectFace?: (id: string | null) => void
   onMoveVertex?: (id: string, x: number, y: number) => void
   cancelInteractionToken?: number
   disabled?: boolean
@@ -189,11 +197,13 @@ const EMPTY_LOCKED_VERTEX_IDS: ReadonlySet<string> = new Set()
 export function CreaseCanvas({
   lines,
   vertices = [],
+  faces = [],
   paperBounds,
   paperPolygon,
   paperColor = '#fffdf9',
   tool = 'select',
   selectedVertexId = null,
+  selectedFaceId = null,
   pendingVertexId = null,
   selectedLineId,
   measurementLabel,
@@ -207,6 +217,7 @@ export function CreaseCanvas({
   onPlaceVertex,
   onPlacementBlocked,
   onSelectVertex,
+  onSelectFace,
   onMoveVertex,
   cancelInteractionToken = 0,
   disabled = false,
@@ -374,6 +385,23 @@ export function CreaseCanvas({
         context.stroke()
       }
       context.restore()
+
+      const selectedFace = selectedFaceId
+        ? faces.find((face) => face.id === selectedFaceId)
+        : null
+      if (
+        selectedFace
+        && tracePolygonPath(context, transform, selectedFace.polygon)
+      ) {
+        context.save()
+        context.fillStyle = 'rgba(22, 113, 184, 0.18)'
+        context.fill()
+        context.strokeStyle = '#1671b8'
+        context.lineWidth = 3
+        context.setLineDash([7, 4])
+        context.stroke()
+        context.restore()
+      }
 
       if (displayPaperPolygon && tracePolygonPath(context, transform, displayPaperPolygon)) {
         const presentation = CREASE_LINE_PRESENTATIONS.boundary
@@ -579,6 +607,7 @@ export function CreaseCanvas({
     canvasSize.height,
     canvasSize.width,
     dragPreview,
+    faces,
     lineDrawBatches,
     lines,
     locale,
@@ -590,6 +619,7 @@ export function CreaseCanvas({
     resolvedPaperBounds,
     renderMetricsRequestId,
     selectedLineId,
+    selectedFaceId,
     selectedVertexId,
     snapGuide,
     tool,
@@ -808,7 +838,15 @@ export function CreaseCanvas({
       radius: LINE_HIT_RADIUS_PX / pointer.transform.scale,
       boundary: 'exclusive',
     })
-    onSelectLine(best?.value.id ?? null)
+    if (best) {
+      onSelectLine(best.value.id)
+      onSelectFace?.(null)
+      return
+    }
+    onSelectLine(null)
+    const face = faces.find((candidate) =>
+      pointInPolygonInclusive(x, y, candidate.polygon))
+    onSelectFace?.(face?.id ?? null)
   }
 
   function handlePointerDown(event: PointerEvent<HTMLCanvasElement>) {
@@ -1150,7 +1188,7 @@ function pointIsOnSegment(
 function tracePolygonPath(
   context: CanvasRenderingContext2D,
   transform: ViewTransform,
-  polygon: PaperPolygonPoint[],
+  polygon: readonly Readonly<{ x: number; y: number }>[],
 ) {
   const first = mapPaperPoint(transform, polygon[0].x, polygon[0].y)
   if (!first) return false
@@ -1327,7 +1365,7 @@ function lookupExactVertex(
 function pointInPolygonInclusive(
   x: number,
   y: number,
-  polygon: PaperPolygonPoint[],
+  polygon: readonly Readonly<{ x: number; y: number }>[],
 ) {
   if (!Number.isFinite(x) || !Number.isFinite(y)) return false
   let minX = Number.POSITIVE_INFINITY

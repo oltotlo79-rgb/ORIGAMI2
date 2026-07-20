@@ -179,8 +179,12 @@ type FoldPreviewProps = {
   angle: number
   hingeAngles?: readonly FoldPreviewHingeAngle[]
   selectedHingeId?: string | null
+  selectedFaceId?: string | null
+  selectedVertexId?: string | null
   fixedFaceId?: string | null
   onSelectHinge?: (edgeId: string | null) => void
+  onSelectFace?: (faceId: string | null) => void
+  onSelectVertex?: (vertexId: string | null) => void
   onChooseFixedFace?: (faceId: string) => void
   onRequestFoldAngle?: (angleDegrees: number) => void
   onCommitHingeFoldAngle?: (edgeId: string, angleDegrees: number) => void
@@ -200,6 +204,10 @@ type FoldPreviewProps = {
 type PreviewRuntime = {
   schedulePose: (angle: number, hingeAngles?: readonly FoldPreviewHingeAngle[]) => boolean
   updateSelection: (selectedHingeId: string | null) => void
+  updateElementSelection: (
+    selectedFaceId: string | null,
+    selectedVertexId: string | null,
+  ) => void
   render: () => void
   cancelAngleDrag: () => void
   resetView: () => void
@@ -383,8 +391,12 @@ export function FoldPreview({
   angle,
   hingeAngles,
   selectedHingeId,
+  selectedFaceId,
+  selectedVertexId,
   fixedFaceId,
   onSelectHinge,
+  onSelectFace,
+  onSelectVertex,
   onChooseFixedFace,
   onRequestFoldAngle,
   onCommitHingeFoldAngle,
@@ -434,8 +446,16 @@ export function FoldPreview({
   hingeAnglesRef.current = hingeAngles
   const selectedHingeIdRef = useRef(selectedHingeId ?? null)
   selectedHingeIdRef.current = selectedHingeId ?? null
+  const selectedFaceIdRef = useRef(selectedFaceId ?? null)
+  selectedFaceIdRef.current = selectedFaceId ?? null
+  const selectedVertexIdRef = useRef(selectedVertexId ?? null)
+  selectedVertexIdRef.current = selectedVertexId ?? null
   const onSelectHingeRef = useRef(onSelectHinge)
   onSelectHingeRef.current = onSelectHinge
+  const onSelectFaceRef = useRef(onSelectFace)
+  onSelectFaceRef.current = onSelectFace
+  const onSelectVertexRef = useRef(onSelectVertex)
+  onSelectVertexRef.current = onSelectVertex
   const onChooseFixedFaceRef = useRef(onChooseFixedFace)
   onChooseFixedFaceRef.current = onChooseFixedFace
   const onRequestFoldAngleRef = useRef(onRequestFoldAngle)
@@ -592,6 +612,10 @@ export function FoldPreview({
     let sceneRuntime: FoldPreviewSceneRuntime | null = null
     let hingeMaterial: THREE.LineBasicMaterial | null = null
     let selectedHingeMaterial: THREE.LineBasicMaterial | null = null
+    let selectedFaceMaterial: THREE.LineBasicMaterial | null = null
+    let vertexGeometry: THREE.SphereGeometry | null = null
+    let vertexMaterial: THREE.MeshBasicMaterial | null = null
+    let selectedVertexMaterial: THREE.MeshBasicMaterial | null = null
     let observer: ResizeObserver | null = null
     let controls: OrbitControls | null = null
     let controlsChangeHandler: (() => void) | null = null
@@ -941,6 +965,10 @@ export function FoldPreview({
       for (const geometry of hingeGeometries) attemptCleanup(() => geometry.dispose())
       attemptCleanup(() => hingeMaterial?.dispose())
       attemptCleanup(() => selectedHingeMaterial?.dispose())
+      attemptCleanup(() => selectedFaceMaterial?.dispose())
+      attemptCleanup(() => vertexGeometry?.dispose())
+      attemptCleanup(() => vertexMaterial?.dispose())
+      attemptCleanup(() => selectedVertexMaterial?.dispose())
       const ownedSceneRuntime = sceneRuntime
       sceneRuntime = null
       attemptCleanup(() => ownedSceneRuntime?.dispose())
@@ -969,12 +997,41 @@ export function FoldPreview({
         },
       } = createdSceneRuntime
       const materials = [...paperMaterials]
+      const createdSelectedFaceMaterial = new THREE.LineBasicMaterial({
+        color: 0x005fcc,
+        depthTest: false,
+        depthWrite: false,
+      })
+      selectedFaceMaterial = createdSelectedFaceMaterial
+      const vertexRadius = Math.max(
+        0.018,
+        Math.min(
+          0.055,
+          Math.max(
+            model.worldBounds.maxX - model.worldBounds.minX,
+            model.worldBounds.maxZ - model.worldBounds.minZ,
+          ) * 0.012,
+        ),
+      )
+      const createdVertexGeometry = new THREE.SphereGeometry(vertexRadius, 12, 8)
+      const createdVertexMaterial = new THREE.MeshBasicMaterial({ color: 0x176b87 })
+      const createdSelectedVertexMaterial = new THREE.MeshBasicMaterial({
+        color: 0xff7a00,
+        depthTest: false,
+        depthWrite: false,
+      })
+      vertexGeometry = createdVertexGeometry
+      vertexMaterial = createdVertexMaterial
+      selectedVertexMaterial = createdSelectedVertexMaterial
 
       const faceEdgeLines = new Map<string, THREE.LineSegments>()
+      const vertexMeshes = new Map<string, THREE.Mesh[]>()
+      const vertexPickObjects: FoldPreviewPickObject[] = []
       let dependentFaceIdsForHighlight = new Set<string>()
       refreshFaceHighlights = () => {
         for (const [faceId, line] of faceEdgeLines) {
           const fixed = faceId === resolvedFixedFaceId
+          const selected = faceId === selectedFaceIdRef.current
           const dependent = dependentFaceIdsForHighlight.has(faceId)
           const collisionSeverity = collisionSeverityByFace.get(faceId)
           line.material = collisionSeverity === 'penetrating'
@@ -983,6 +1040,8 @@ export function FoldPreview({
               ? createdCollisionIndeterminateEdgeMaterial
               : collisionSeverity === 'contact'
                 ? createdCollisionContactEdgeMaterial
+                : selected
+                  ? createdSelectedFaceMaterial
                 : fixed
                   ? createdFixedFaceEdgeMaterial
                   : dependent
@@ -994,11 +1053,17 @@ export function FoldPreview({
               ? 12
               : collisionSeverity === 'contact'
                 ? 11
+                : selected ? 10
                 : fixed ? 9 : dependent ? 8 : 0
         }
       }
       const facePickObjects: FoldPreviewPickObject[] = []
-      const makeFace = (geometry: THREE.BufferGeometry, face: FoldPreviewFaceModel) => {
+      const makeFace = (
+        geometry: THREE.BufferGeometry,
+        face: FoldPreviewFaceModel,
+        offsetX = 0,
+        offsetZ = 0,
+      ) => {
         const group = new THREE.Group()
         group.userData.faceId = face.id
         const paper = new THREE.Mesh(geometry, materials)
@@ -1011,6 +1076,24 @@ export function FoldPreview({
         const faceEdges = new THREE.LineSegments(edgeGeometry, createdEdgeMaterial)
         faceEdgeLines.set(face.id, faceEdges)
         group.add(paper, faceEdges)
+        for (const point of face.polygon) {
+          const marker = new THREE.Mesh(
+            createdVertexGeometry,
+            createdVertexMaterial,
+          )
+          marker.position.set(
+            point.x + offsetX,
+            previewThickness / 2 + vertexRadius * 0.35,
+            point.z + offsetZ,
+          )
+          marker.userData.vertexId = point.vertexId
+          marker.renderOrder = 14
+          const matches = vertexMeshes.get(point.vertexId)
+          if (matches) matches.push(marker)
+          else vertexMeshes.set(point.vertexId, [marker])
+          vertexPickObjects.push({ id: point.vertexId, object: marker })
+          group.add(marker)
+        }
         return group
       }
 
@@ -1034,11 +1117,32 @@ export function FoldPreview({
       let initialPoseAngle = angleRef.current
       let updatePose = (_angle: number, _hingeAngles?: readonly FoldPreviewHingeAngle[]) => true
       let updateSelection = (_selectedHingeId: string | null) => undefined
+      let updateElementSelection = (
+        _selectedFaceId: string | null,
+        _selectedVertexId: string | null,
+      ) => undefined
+      updateElementSelection = (_nextFaceId, nextVertexId) => {
+        refreshFaceHighlights()
+        for (const [vertexId, markers] of vertexMeshes) {
+          const selected = vertexId === nextVertexId
+          for (const marker of markers) {
+            marker.material = selected
+              ? createdSelectedVertexMaterial
+              : createdVertexMaterial
+            marker.scale.setScalar(selected ? 1.65 : 1)
+          }
+        }
+      }
       if (model.kind === 'single_fold' && movingGeometry) {
         if (!singleAnchor) throw new Error('missing single-fold anchor')
         pivot = new THREE.Group()
         pivot.position.set(model.hinge.start.x, 0, model.hinge.start.z)
-        pivot.add(makeFace(movingGeometry, singleAnchor.movingFace))
+        pivot.add(makeFace(
+          movingGeometry,
+          singleAnchor.movingFace,
+          -model.hinge.start.x,
+          -model.hinge.start.z,
+        ))
         axis = new THREE.Vector3(
           model.hinge.end.x - model.hinge.start.x,
           0,
@@ -1148,6 +1252,10 @@ export function FoldPreview({
           refreshFaceHighlights()
         }
         updateSelection(selectedHingeIdRef.current)
+        updateElementSelection(
+          selectedFaceIdRef.current,
+          selectedVertexIdRef.current,
+        )
 
         if (model.kind === 'fold_graph' && model.kinematics.kind === 'tree') {
           if (!treeKinematics) throw new Error('missing fold-tree anchor')
@@ -2284,6 +2392,8 @@ export function FoldPreview({
             pointer,
             hingePickObjects,
             facePickObjects,
+            undefined,
+            vertexPickObjects,
           )
         } catch {
           // Picking is optional; keep the verified render state unchanged.
@@ -2343,14 +2453,31 @@ export function FoldPreview({
       }
       const selectAt = (clientX: number, clientY: number) => {
         const target = pickAt(clientX, clientY)
-        if (target?.kind === 'hinge') {
+        if (target?.kind === 'vertex') {
+          onSelectHingeRef.current?.(null)
+          onSelectFaceRef.current?.(null)
+          onSelectVertexRef.current?.(
+            target.vertexId === selectedVertexIdRef.current
+              ? null
+              : target.vertexId,
+          )
+        } else if (target?.kind === 'hinge') {
+          onSelectFaceRef.current?.(null)
+          onSelectVertexRef.current?.(null)
           onSelectHingeRef.current?.(
             target.edgeId === selectedHingeIdRef.current ? null : target.edgeId,
           )
         } else if (target?.kind === 'face') {
+          onSelectHingeRef.current?.(null)
+          onSelectVertexRef.current?.(null)
+          onSelectFaceRef.current?.(
+            target.faceId === selectedFaceIdRef.current ? null : target.faceId,
+          )
           onChooseFixedFaceRef.current?.(target.faceId)
         } else {
           onSelectHingeRef.current?.(null)
+          onSelectFaceRef.current?.(null)
+          onSelectVertexRef.current?.(null)
         }
       }
       const canvas = createdRenderer.domElement
@@ -3527,9 +3654,14 @@ export function FoldPreview({
       keyboardCoordinator = createdKeyboardCoordinator
       keyDownHandler = (event) => createdKeyboardCoordinator.handleKeyDown(event)
       host.addEventListener('keydown', keyDownHandler)
+      updateElementSelection(
+        selectedFaceIdRef.current,
+        selectedVertexIdRef.current,
+      )
       runtime = {
         schedulePose,
         updateSelection,
+        updateElementSelection,
         render,
         cancelAngleDrag: () => {
           resetFoldGestures('reset')
@@ -3613,6 +3745,21 @@ export function FoldPreview({
       setRenderError('selection_render_failed')
     }
   }, [selectedHingeId])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    try {
+      runtime.updateElementSelection(
+        selectedFaceId ?? null,
+        selectedVertexId ?? null,
+      )
+      runtime.render()
+    } catch {
+      runtime.dispose()
+      setRenderError('render_unavailable')
+    }
+  }, [selectedFaceId, selectedVertexId])
 
   const resetView = () => {
     const runtime = runtimeRef.current
@@ -4335,6 +4482,8 @@ export function FoldPreview({
       data-angle-drag-sequence={angleDragPresentation.sequence}
       data-camera-controls-enabled={angleDragPresentation.cameraControlsEnabled}
       data-selected-hinge={selectedHingeId ?? undefined}
+      data-selected-face={selectedFaceId ?? undefined}
+      data-selected-vertex={selectedVertexId ?? undefined}
       data-fixed-face={resolvedFixedFaceId ?? undefined}
       data-interactive={Boolean(
         onSelectHinge

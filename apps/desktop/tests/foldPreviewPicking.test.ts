@@ -10,6 +10,7 @@ import {
   PerspectiveCamera,
   PlaneGeometry,
   Raycaster,
+  SphereGeometry,
   Vector2,
   Vector3,
 } from 'three'
@@ -28,6 +29,23 @@ test('hinges take selection priority over an intersected face', () => {
     [{ id: 'hinge', object: hinge }],
     [{ id: 'face', object: face }],
   ), { kind: 'hinge', edgeId: 'hinge' })
+})
+
+test('vertex markers take priority over hinges and faces', () => {
+  const { camera, hinge, face } = fixture()
+  const vertex = new Mesh(
+    new SphereGeometry(0.15),
+    new MeshBasicMaterial(),
+  )
+  assert.deepEqual(pickFoldPreviewTarget(
+    new Raycaster(),
+    camera,
+    new Vector2(0, 0),
+    [{ id: 'hinge', object: hinge }],
+    [{ id: 'face', object: face }],
+    undefined,
+    [{ id: 'vertex', object: vertex }],
+  ), { kind: 'vertex', vertexId: 'vertex' })
 })
 
 test('faces remain pickable when no hinge intersects the pointer', () => {

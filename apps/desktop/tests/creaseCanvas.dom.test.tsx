@@ -197,6 +197,29 @@ describe('CreaseCanvas localization', () => {
       expect(paintedStrokeAlphas).toContain(0.35)
     })
   })
+
+  it('selects a topology face when empty paper is clicked', () => {
+    const onSelectFace = vi.fn()
+    renderCanvas({
+      localeStore: localeFixture('en'),
+      faces: [{
+        id: 'face-a',
+        polygon: [
+          { x: 0, y: 0 },
+          { x: 400, y: 0 },
+          { x: 400, y: 400 },
+          { x: 0, y: 400 },
+        ],
+      }],
+      onSelectFace,
+    })
+
+    fireEvent.click(screen.getByLabelText('Crease-pattern editing canvas'), {
+      clientX: 250,
+      clientY: 250,
+    })
+    expect(onSelectFace).toHaveBeenCalledWith('face-a')
+  })
 })
 
 function renderCanvas(

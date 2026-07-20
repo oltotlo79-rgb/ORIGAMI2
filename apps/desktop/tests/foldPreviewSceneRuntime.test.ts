@@ -382,7 +382,7 @@ test('scene ownership stays separate from motion, controls, and React authority'
   }
   assert.equal(
     componentSource.match(/new THREE\.LineBasicMaterial\(/gu)?.length,
-    2,
+    3,
   )
   assert.match(componentSource, /new OrbitControls\(/u)
   assert.match(componentSource, /new ResizeObserver\(resize\)/u)

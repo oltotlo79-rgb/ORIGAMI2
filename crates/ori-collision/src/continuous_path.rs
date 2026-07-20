@@ -35,9 +35,12 @@ pub const STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &s
 pub const STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_tree_interval_zero_thickness_continuous_certificate_v1";
 pub const MAX_STACKED_FOLD_PATH_SAMPLES_V1: usize = 64;
-pub const MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1: usize = 8;
-const MAX_STACKED_FOLD_INTERVAL_FACE_PAIRS_V1: usize = 36;
-const MAX_STACKED_FOLD_INTERVAL_WORK_V1: usize = 64 * 36;
+pub const MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1: usize = 16;
+const MAX_STACKED_FOLD_INTERVAL_FACE_PAIRS_V1: usize = 136;
+const MAX_STACKED_FOLD_INTERVAL_LEAVES_V1: usize = 128;
+const MAX_STACKED_FOLD_INTERVAL_DEPTH_V1: usize = 7;
+const MAX_STACKED_FOLD_INTERVAL_WORK_V1: usize =
+    MAX_STACKED_FOLD_INTERVAL_LEAVES_V1 * MAX_STACKED_FOLD_INTERVAL_FACE_PAIRS_V1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackedFoldPathDiagnosticLimitsV1 {
@@ -513,9 +516,26 @@ fn two_hinge_interval_clearance_premises(
                 || (hinge.left_face() == second && hinge.right_face() == first)
         })
     };
-    for interval in 0..interval_count {
-        let lower = requested_angle_degrees * interval as f64 / interval_count as f64;
-        let upper = requested_angle_degrees * (interval + 1) as f64 / interval_count as f64;
+    let mut pending = (0..interval_count)
+        .map(|interval| {
+            (
+                requested_angle_degrees * interval as f64 / interval_count as f64,
+                requested_angle_degrees * (interval + 1) as f64 / interval_count as f64,
+                0_usize,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut leaf_count = interval_count;
+    let mut pair_work = 0_usize;
+    while !pending.is_empty() {
+        // Process the narrowest interval first, then its lower endpoint. This
+        // fixed priority makes subdivision independent of source storage order.
+        pending.sort_by(|left, right| {
+            (left.1 - left.0)
+                .total_cmp(&(right.1 - right.0))
+                .then_with(|| left.0.total_cmp(&right.0))
+        });
+        let (lower, upper, subdivision_depth) = pending.remove(0);
         let midpoint = (lower + upper) / 2.0;
         let half_width_radians = (upper - lower) * std::f64::consts::PI / 360.0;
         let Some(pose) = solve_collective_pose(model, initial_pose, moving, midpoint) else {
@@ -552,19 +572,41 @@ fn two_hinge_interval_clearance_premises(
             }
             bounds.push((*face, minimum, maximum));
         }
+        let mut all_separated = true;
         for first in 0..bounds.len() {
             for second in first + 1..bounds.len() {
                 if adjacent(bounds[first].0, bounds[second].0) {
                     continue;
                 }
+                pair_work = match pair_work.checked_add(1) {
+                    Some(value) if value <= MAX_STACKED_FOLD_INTERVAL_WORK_V1 => value,
+                    _ => return false,
+                };
                 let separated = (0..3).any(|axis| {
                     bounds[first].2[axis] < bounds[second].1[axis]
                         || bounds[second].2[axis] < bounds[first].1[axis]
                 });
                 if !separated {
-                    return false;
+                    all_separated = false;
+                    break;
                 }
             }
+            if !all_separated {
+                break;
+            }
+        }
+        if !all_separated {
+            if subdivision_depth >= MAX_STACKED_FOLD_INTERVAL_DEPTH_V1
+                || leaf_count >= MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
+                || !midpoint.is_finite()
+                || midpoint <= lower
+                || midpoint >= upper
+            {
+                return false;
+            }
+            leaf_count += 1;
+            pending.push((lower, midpoint, subdivision_depth + 1));
+            pending.push((midpoint, upper, subdivision_depth + 1));
         }
     }
     true

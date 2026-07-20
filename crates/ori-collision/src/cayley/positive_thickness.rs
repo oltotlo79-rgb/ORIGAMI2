@@ -37,7 +37,10 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
 use ori_domain::{EdgeId, FaceId, VertexId};
-use ori_kinematics::{BoundMaterialTreePose, Point3};
+use ori_kinematics::{
+    BoundMaterialTreePose, Point3, prepare_material_hinge_pair_projection_v1,
+    revalidate_material_hinge_pair_projection_v1,
+};
 use ori_topology::FoldAssignment;
 
 use super::{
@@ -2266,6 +2269,85 @@ pub fn revalidate_single_hinge_thickness_boundary_v1(
 
 pub const MAX_COMPOSED_THICKNESS_HINGES_V1: usize = 16;
 
+fn prepare_projected_incident_hinge_boundary_v1(
+    bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+    edge: EdgeId,
+) -> Result<Option<NativeSingleHingeThicknessBoundaryV1<'_>>, SingleHingeThicknessBoundaryErrorV1> {
+    let projection = prepare_material_hinge_pair_projection_v1(bound, edge)
+        .map_err(|_| SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?;
+    let Some(input) = revalidate_material_hinge_pair_projection_v1(&projection, bound) else {
+        return Err(SingleHingeThicknessBoundaryErrorV1::InconsistentPose);
+    };
+    if !positive_finite_binary64(paper_thickness_mm)
+        || input.boundaries.iter().any(|boundary| boundary.len() != 3)
+        || input.face_indexes[0] == input.face_indexes[1]
+        || input
+            .excluded_face_indexes
+            .iter()
+            .any(|index| input.face_indexes.contains(index))
+    {
+        return Ok(None);
+    }
+    let world = |face: usize| {
+        input.axis.map(|point| {
+            input.world_transforms[face]
+                .apply_point(point)
+                .map(point3_array)
+                .map_err(|_| SingleHingeThicknessBoundaryErrorV1::InconsistentPose)
+        })
+    };
+    let left = world(0);
+    let right = world(1);
+    let left = [left[0]?, left[1]?];
+    let right = [right[0]?, right[1]?];
+    if left
+        .iter()
+        .zip(right)
+        .any(|(first, second)| first.map(f64::to_bits) != second.map(f64::to_bits))
+    {
+        return Ok(None);
+    }
+    let local_y = Point3::new(0.0, 1.0, 0.0)
+        .map_err(|_| SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?;
+    let normals = input.world_transforms.clone().map(|transform| {
+        transform
+            .apply_vector(local_y)
+            .map(point3_array)
+            .map_err(|_| SingleHingeThicknessBoundaryErrorV1::InconsistentPose)
+    });
+    let normals = [normals[0].clone()?, normals[1].clone()?];
+    let half = paper_thickness_mm / 2.0;
+    let offset = |points: [[f64; 3]; 2], normal: [f64; 3], sign: f64| {
+        points.map(|point| {
+            std::array::from_fn(|axis| {
+                let value = point[axis] + sign * half * normal[axis];
+                if value == 0.0 { 0.0 } else { value }
+            })
+        })
+    };
+    let occurrence = input.boundary_edges[0]
+        .iter()
+        .position(|candidate| *candidate == edge)
+        .ok_or(SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?;
+    let endpoint_vertices = [
+        input.boundaries[0][occurrence],
+        input.boundaries[0][(occurrence + 1) % 3],
+    ];
+    Ok(Some(NativeSingleHingeThicknessBoundaryV1 {
+        bound,
+        paper_thickness_bits: paper_thickness_mm.to_bits(),
+        hinge: edge,
+        left_face: input.faces[0],
+        right_face: input.faces[1],
+        endpoint_vertices,
+        left_front: offset(left, normals[0], 1.0),
+        left_back: offset(left, normals[0], -1.0),
+        right_front: offset(right, normals[1], 1.0),
+        right_back: offset(right, normals[1], -1.0),
+    }))
+}
+
 #[derive(Debug)]
 pub struct NativeTreeHingeThicknessBoundariesV1<'a> {
     bound: BoundMaterialTreePose<'a>,
@@ -2292,13 +2374,20 @@ pub fn prepare_tree_hinge_thickness_boundaries_v1(
     }
     let mut hinges = Vec::with_capacity(bound.model().hinges().len());
     for source_hinge in bound.model().hinges() {
-        let Some(capability) = prepare_single_hinge_thickness_boundary_for_edge_v1(
+        let capability = prepare_single_hinge_thickness_boundary_for_edge_v1(
             bound,
             paper_thickness_mm,
             source_hinge.edge(),
             true,
-        )?
-        else {
+        )
+        .ok()
+        .flatten()
+        .or(prepare_projected_incident_hinge_boundary_v1(
+            bound,
+            paper_thickness_mm,
+            source_hinge.edge(),
+        )?);
+        let Some(capability) = capability else {
             return Ok(None);
         };
         hinges.push(capability);

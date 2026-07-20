@@ -63,6 +63,8 @@ export function GlobalFlatFoldabilityPanel({
   const cancelButtonRef = useRef<HTMLButtonElement>(null)
   const previousKindRef = useRef(presentation.kind)
   const [layerView, setLayerView] = useState<CurrentLayerOrderView | null>(null)
+  const [layerViewStatus, setLayerViewStatus] =
+    useState<'idle' | 'loading' | 'ready' | 'failed'>('idle')
   const [selectedCell, setSelectedCell] = useState<string | null>(null)
   const [hoveredFace, setHoveredFace] = useState<string | null>(null)
   const authorityInstanceId = authority?.projectInstanceId
@@ -87,6 +89,7 @@ export function GlobalFlatFoldabilityPanel({
   useEffect(() => {
     let current = true
     setLayerView(null); setSelectedCell(null); setHoveredFace(null)
+    setLayerViewStatus('idle')
     if (authorityInstanceId === undefined || authorityProjectId === undefined
       || authorityRevision === undefined || presentation.kind !== 'possible') {
       return () => { current = false }
@@ -96,12 +99,20 @@ export function GlobalFlatFoldabilityPanel({
       projectId: authorityProjectId,
       revision: authorityRevision,
     }
+    setLayerViewStatus('loading')
     void getCurrentLayerOrderView(expected).then((result) => {
       if (current
         && result.projectInstanceId === expected.projectInstanceId
         && result.projectId === expected.projectId
-        && result.revision === expected.revision) setLayerView(result)
-    }).catch(() => undefined)
+        && result.revision === expected.revision) {
+        setLayerView(result)
+        setLayerViewStatus('ready')
+      } else if (current) {
+        setLayerViewStatus('failed')
+      }
+    }).catch(() => {
+      if (current) setLayerViewStatus('failed')
+    })
     return () => { current = false }
   }, [
     authorityInstanceId,
@@ -246,6 +257,15 @@ export function GlobalFlatFoldabilityPanel({
           onSelectFace={(face) => onSelectFace?.(face)}
           onHoverFace={setHoveredFace}
         />
+      )}
+      {presentation.kind === 'possible' && layerViewStatus === 'failed' && (
+        <p role="alert" className="global-flat-foldability-layer-unavailable">
+          {localized(
+            locale,
+            '認証済みの層順序表示を取得できませんでした。この状態を「重なりなし」と解釈しないでください。',
+            'The certified layer-order view is unavailable. Do not interpret this as having no overlaps.',
+          )}
+        </p>
       )}
 
       <aside

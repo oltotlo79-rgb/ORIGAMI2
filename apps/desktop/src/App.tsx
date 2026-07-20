@@ -63,6 +63,7 @@ import {
   analyzeGeometricConstraints,
   analyzeProjectTopology,
   applyGeometricConstraintSolve,
+  applyMirrorSelection,
   applyFoldImport,
   applySvgImport,
   assignEdgeToProjectLayer,
@@ -95,6 +96,7 @@ import {
   previewGeometricConstraintSolve,
   previewGeometricConstraintEdgeSolve,
   previewGeometricConstraintExpressionSolve,
+  preflightMirrorSelection,
   previewInstructionExport,
   previewInstructionMeshAnimation,
   previewStaticMeshExport,
@@ -129,6 +131,8 @@ import {
   importFrontPaperTexture,
   importBackPaperTexture,
   type ProjectSnapshot,
+  type MirrorSelectionPreflight,
+  type MirrorSelectionRequest,
   type GeometricConstraintKind,
   type ProjectTopologyResponse,
   type InstructionVisual,
@@ -560,6 +564,20 @@ function App() {
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [selectedVertexId, setSelectedVertexId] = useState<string | null>(null)
   const [selectedFaceId, setSelectedFaceId] = useState<string | null>(null)
+  const [mirrorVertexIds, setMirrorVertexIds] = useState<string[]>([])
+  const [mirrorEdgeIds, setMirrorEdgeIds] = useState<string[]>([])
+  const [mirrorMode, setMirrorMode] = useState<'move' | 'duplicate'>('duplicate')
+  const [mirrorAxis, setMirrorAxis] = useState({
+    x1: '0', y1: '0', x2: '0', y2: '100',
+  })
+  const [mirrorPreview, setMirrorPreview] = useState<{
+    binding: string
+    request: MirrorSelectionRequest
+    result: MirrorSelectionPreflight
+  } | null>(null)
+  const [mirrorBusy, setMirrorBusy] = useState(false)
+  const mirrorRequestSequenceRef = useRef(0)
+  const mirrorOperationRef = useRef(false)
   const [compassCircles, setCompassCircles] = useState<readonly {
     centerX: number
     centerY: number
@@ -1224,7 +1242,16 @@ function App() {
       current === null || visibleVertexIds.has(current) ? current : null)
     setPendingEdgeStart((current) =>
       current === null || visibleVertexIds.has(current) ? current : null)
+    setMirrorEdgeIds((current) => current.filter((id) => visibleLineIds.has(id)))
+    setMirrorVertexIds((current) => current.filter((id) => visibleVertexIds.has(id)))
   }, [nativeLines, nativeVertices])
+  useEffect(() => {
+    setMirrorPreview(null)
+  }, [
+    nativeSnapshot?.project_instance_id,
+    nativeSnapshot?.project_id,
+    nativeSnapshot?.revision,
+  ])
   const displayedLines = benchmarkRun?.lines ?? nativeLines
   const displayedVertices = benchmarkRun?.vertices ?? nativeVertices
   const firstDisplayedLineById = useMemo(() => {
@@ -2051,6 +2078,148 @@ function App() {
       setCoreBusy(false)
     }
   }, [applySnapshot])
+
+  function addCurrentToMirrorSelection() {
+    setMirrorPreview(null)
+    if (selectedVertex) {
+      setMirrorVertexIds((current) =>
+        [...new Set([...current, selectedVertex.id])].sort())
+      return
+    }
+    if (selectedLine) {
+      setMirrorEdgeIds((current) =>
+        [...new Set([...current, selectedLine.id])].sort())
+      setMirrorVertexIds((current) =>
+        [...new Set([
+          ...current,
+          selectedLine.startVertexId,
+          selectedLine.endVertexId,
+        ])].sort())
+    }
+  }
+
+  function createMirrorRequest(): MirrorSelectionRequest | null {
+    const values = [
+      mirrorAxis.x1, mirrorAxis.y1, mirrorAxis.x2, mirrorAxis.y2,
+    ].map(Number)
+    if (values.some((value) => !Number.isFinite(value))) return null
+    const [x1, y1, x2, y2] = values as [number, number, number, number]
+    if (x1 === x2 && y1 === y2) return null
+    const vertices = [...mirrorVertexIds].sort()
+    const edges = [...mirrorEdgeIds].sort()
+    return {
+      vertices,
+      edges,
+      axis: { start: { x: x1, y: y1 }, end: { x: x2, y: y2 } },
+      mode: mirrorMode,
+      new_vertices: mirrorMode === 'duplicate'
+        ? vertices.map(() => crypto.randomUUID()).sort()
+        : [],
+      new_edges: mirrorMode === 'duplicate'
+        ? edges.map(() => crypto.randomUUID()).sort()
+        : [],
+    }
+  }
+
+  async function previewCurrentMirrorSelection() {
+    const current = latestSnapshotRef.current
+    const request = createMirrorRequest()
+    if (
+      !current || !request || mirrorOperationRef.current
+      || coreOperationRef.current
+    ) {
+      setMirrorPreview(null)
+      setCoreStatus(appMessage({
+        ja: '対称選択と有限な2点の対称軸を指定してください。',
+        en: 'Choose a mirror selection and a finite two-point axis.',
+      }))
+      return
+    }
+    const sequence = ++mirrorRequestSequenceRef.current
+    mirrorOperationRef.current = true
+    setMirrorBusy(true)
+    try {
+      const result = await preflightMirrorSelection(
+        current.project_id,
+        current.revision,
+        current.project_instance_id,
+        request,
+      )
+      const latest = latestSnapshotRef.current
+      if (
+        sequence !== mirrorRequestSequenceRef.current
+        || latest !== current
+      ) return
+      const binding = [
+        current.project_instance_id,
+        current.project_id,
+        current.revision,
+      ].join(':')
+      setMirrorPreview({ binding, request, result })
+    } catch {
+      if (sequence === mirrorRequestSequenceRef.current) {
+        setMirrorPreview(null)
+        setCoreStatus(appMessage({
+          ja: '対称編集の事前検証に失敗しました。',
+          en: 'Mirror preflight failed.',
+        }))
+      }
+    } finally {
+      if (sequence === mirrorRequestSequenceRef.current) {
+        mirrorOperationRef.current = false
+        setMirrorBusy(false)
+      }
+    }
+  }
+
+  async function applyCurrentMirrorSelection() {
+    const preview = mirrorPreview
+    const current = latestSnapshotRef.current
+    if (
+      !preview || !preview.result.allowed || !current
+      || mirrorOperationRef.current
+    ) return
+    const binding = [
+      current.project_instance_id,
+      current.project_id,
+      current.revision,
+    ].join(':')
+    if (binding !== preview.binding) {
+      setMirrorPreview(null)
+      return
+    }
+    mirrorOperationRef.current = true
+    setMirrorBusy(true)
+    const applied = await runNativeEdit((projectId, revision, projectInstanceId) => {
+      if (
+        projectId !== current.project_id
+        || revision !== current.revision
+        || projectInstanceId !== current.project_instance_id
+      ) return Promise.reject(new Error('stale mirror preview'))
+      return applyMirrorSelection(
+        projectId,
+        revision,
+        projectInstanceId,
+        preview.request,
+      )
+    })
+    mirrorOperationRef.current = false
+    setMirrorBusy(false)
+    if (applied) {
+      setMirrorPreview(null)
+      setMirrorVertexIds([])
+      setMirrorEdgeIds([])
+    }
+  }
+
+  function cancelMirrorSelection() {
+    mirrorRequestSequenceRef.current += 1
+    mirrorOperationRef.current = false
+    setMirrorBusy(false)
+    setMirrorPreview(null)
+    setMirrorVertexIds([])
+    setMirrorEdgeIds([])
+  }
 
   useEffect(() => {
     const current = latestSnapshotRef.current
@@ -5885,6 +6054,125 @@ function App() {
           </div>
           <section>
             <h2>{text({ ja: '選択要素', en: 'Selection' })}</h2>
+            <section className="mirror-selection-panel" aria-labelledby="mirror-selection-heading">
+              <h3 id="mirror-selection-heading">
+                {text({ ja: '選択を対称編集', en: 'Mirror selection' })}
+              </h3>
+              <p aria-live="polite">
+                {formattedText({
+                  ja: '頂点 {vertices}件・辺 {edges}件',
+                  en: '{vertices} vertices · {edges} edges',
+                }, { vertices: mirrorVertexIds.length, edges: mirrorEdgeIds.length })}
+              </p>
+              <div className="button-row">
+                <button
+                  type="button"
+                  disabled={coreBusy || mirrorBusy || (!selectedVertex && !selectedLine)}
+                  onClick={addCurrentToMirrorSelection}
+                >
+                  {text({ ja: '現在の選択を追加', en: 'Add current selection' })}
+                </button>
+                <button
+                  type="button"
+                  disabled={coreBusy || (
+                    mirrorVertexIds.length === 0 && mirrorEdgeIds.length === 0
+                  )}
+                  onClick={cancelMirrorSelection}
+                >
+                  {text({ ja: '取消', en: 'Cancel' })}
+                </button>
+              </div>
+              <fieldset disabled={coreBusy || mirrorBusy}>
+                <legend>{text({ ja: '処理', en: 'Operation' })}</legend>
+                <label>
+                  <input
+                    type="radio"
+                    name="mirror_mode"
+                    checked={mirrorMode === 'duplicate'}
+                    onChange={() => {
+                      setMirrorMode('duplicate')
+                      setMirrorPreview(null)
+                    }}
+                  />
+                  {text({ ja: '複製', en: 'Duplicate' })}
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="mirror_mode"
+                    checked={mirrorMode === 'move'}
+                    onChange={() => {
+                      setMirrorMode('move')
+                      setMirrorPreview(null)
+                    }}
+                  />
+                  {text({ ja: '移動', en: 'Move' })}
+                </label>
+              </fieldset>
+              <fieldset disabled={coreBusy || mirrorBusy}>
+                <legend>{text({ ja: '対称軸の2点', en: 'Two-point mirror axis' })}</legend>
+                {([
+                  ['x1', '始点 X', 'Start X'],
+                  ['y1', '始点 Y', 'Start Y'],
+                  ['x2', '終点 X', 'End X'],
+                  ['y2', '終点 Y', 'End Y'],
+                ] as const).map(([key, ja, en]) => (
+                  <label className="field" key={key}>
+                    <span>{text({ ja, en })}</span>
+                    <input
+                      aria-label={text({ ja, en })}
+                      inputMode="decimal"
+                      value={mirrorAxis[key]}
+                      onChange={(event) => {
+                        setMirrorAxis((current) => ({
+                          ...current,
+                          [key]: event.currentTarget.value,
+                        }))
+                        setMirrorPreview(null)
+                      }}
+                    />
+                  </label>
+                ))}
+              </fieldset>
+              <div className="button-row">
+                <button
+                  type="button"
+                  disabled={
+                    coreBusy || mirrorBusy
+                    || (mirrorVertexIds.length === 0 && mirrorEdgeIds.length === 0)
+                  }
+                  onClick={() => void previewCurrentMirrorSelection()}
+                >
+                  {mirrorBusy
+                    ? text({ ja: '検証中…', en: 'Checking…' })
+                    : text({ ja: '事前検証', en: 'Preflight' })}
+                </button>
+                <button
+                  type="button"
+                  disabled={coreBusy || mirrorBusy || !mirrorPreview?.result.allowed}
+                  onClick={() => void applyCurrentMirrorSelection()}
+                >
+                  {text({ ja: '対称編集を適用', en: 'Apply mirror edit' })}
+                </button>
+              </div>
+              {mirrorPreview && (
+                <p
+                  role="status"
+                  data-testid="mirror-selection-preflight"
+                  className={mirrorPreview.result.allowed ? 'status-good' : 'status-bad'}
+                >
+                  {mirrorPreview.result.allowed
+                    ? text({
+                        ja: '適用できます。内容を確認して明示的に適用してください。',
+                        en: 'Ready. Review and explicitly apply the edit.',
+                      })
+                    : formattedText({
+                        ja: '適用できません: {issue}',
+                        en: 'Cannot apply: {issue}',
+                      }, { issue: mirrorPreview.result.issue ?? 'unknown' })}
+                </p>
+              )}
+            </section>
             {selectedElementTarget && (
               <form
                 key={`${selectedElementTarget.kind}:${selectedElementTarget.id}:${nativeSnapshot?.revision ?? 0}`}

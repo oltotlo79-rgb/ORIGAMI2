@@ -163,6 +163,14 @@ describe('App locale integration', () => {
     expect(screen.getByRole('button', {
       name: 'Mountain fold',
     })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Mirror selection' })).toBeTruthy()
+    expect(screen.getByRole('button', {
+      name: 'Add current selection',
+    }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByLabelText('Start X')).toBeTruthy()
+    expect(screen.getByRole('button', {
+      name: 'Apply mirror edit',
+    }).hasAttribute('disabled')).toBe(true)
   })
 
   it('retranslates an asynchronous error without exposing its payload', async () => {

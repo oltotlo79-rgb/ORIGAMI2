@@ -6,15 +6,16 @@ use crate::{
     validate_geometric_constraint_record_against_pattern_v1,
 };
 use ori_domain::{
-    ConstraintId, CreasePattern, DEFAULT_PROJECT_LAYER_ID, Edge, EdgeId, EdgeKind,
-    EdgeLayerAssignmentV1, ElementMetadataDocumentV1, ElementMetadataV1, FaceId,
-    GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1, GeometricConstraintDocumentV1,
-    GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1,
-    GeometricConstraintRecordV1, InstructionPose, InstructionStep, InstructionStepId,
-    InstructionTimeline, InstructionTimelineValidationError, InstructionVisual, LayerId,
-    LayerRecordV1, LengthDisplayUnit, MAX_LAYER_EDGE_ASSIGNMENTS, MAX_PROJECT_LAYER_INDEX_EDGES,
-    Paper, Point2, ProjectLayerDocumentV1, ProjectLayerDocumentValidationErrorV1, RgbaColor,
-    Vertex, VertexId, validate_element_metadata_v1, validate_geometric_constraint_document_v1,
+    AnnotationDocumentV1, AnnotationId, AnnotationRecordV1, ConstraintId, CreasePattern,
+    DEFAULT_PROJECT_LAYER_ID, Edge, EdgeId, EdgeKind, EdgeLayerAssignmentV1,
+    ElementMetadataDocumentV1, ElementMetadataV1, FaceId, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+    GeometricConstraintDocumentV1, GeometricConstraintDocumentValidationErrorV1,
+    GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionPose, InstructionStep,
+    InstructionStepId, InstructionTimeline, InstructionTimelineValidationError, InstructionVisual,
+    LayerId, LayerRecordV1, LengthDisplayUnit, MAX_LAYER_EDGE_ASSIGNMENTS,
+    MAX_PROJECT_LAYER_INDEX_EDGES, Paper, Point2, ProjectLayerDocumentV1,
+    ProjectLayerDocumentValidationErrorV1, RgbaColor, Vertex, VertexId,
+    validate_element_metadata_v1, validate_geometric_constraint_document_v1,
     validate_instruction_timeline, validate_project_layer_document_against_pattern_v1,
 };
 use ori_geometry::{
@@ -182,6 +183,15 @@ pub enum Command {
     RemoveGeometricConstraint {
         id: ConstraintId,
     },
+    AddAnnotation {
+        record: AnnotationRecordV1,
+    },
+    UpdateAnnotation {
+        record: AnnotationRecordV1,
+    },
+    RemoveAnnotation {
+        id: AnnotationId,
+    },
     AddInstructionStep {
         step: InstructionStep,
     },
@@ -256,6 +266,12 @@ pub struct CommandResult {
 
 #[derive(Debug, Error, PartialEq)]
 pub enum CommandError {
+    #[error("annotation is invalid or unavailable")]
+    InvalidAnnotation,
+    #[error("annotation {0:?} was not found")]
+    AnnotationNotFound(AnnotationId),
+    #[error("annotation {0:?} already exists")]
+    AnnotationAlreadyExists(AnnotationId),
     #[error("the stacked-fold target document is invalid")]
     InvalidStackedFoldDocument,
     #[error("expected revision {expected}, but the current revision is {actual}")]
@@ -1545,6 +1561,7 @@ pub struct EditorState {
     instruction_timeline: InstructionTimeline,
     project_layers: ProjectLayerDocumentV1,
     element_metadata: ElementMetadataDocumentV1,
+    annotations: AnnotationDocumentV1,
     project_memo: String,
     /// Non-persisted runtime meaning only; this is not project authority.
     current_applied_pose: Option<AppliedPoseV1>,
@@ -1656,6 +1673,10 @@ impl EditorState {
             instruction_timeline,
             project_layers,
             element_metadata,
+            annotations: AnnotationDocumentV1 {
+                schema_version: ori_domain::ANNOTATION_SCHEMA_VERSION_V1,
+                annotations: Vec::new(),
+            },
             project_memo: String::new(),
             current_applied_pose: None,
             revision: 0,
@@ -1688,8 +1709,37 @@ impl EditorState {
     }
 
     #[must_use]
+    pub fn with_all_document_parts_annotations_and_memo(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        geometric_constraints: GeometricConstraintDocumentV1,
+        project_layers: ProjectLayerDocumentV1,
+        element_metadata: ElementMetadataDocumentV1,
+        annotations: AnnotationDocumentV1,
+        project_memo: String,
+    ) -> Self {
+        let mut editor = Self::with_all_document_parts_and_memo(
+            pattern,
+            paper,
+            instruction_timeline,
+            geometric_constraints,
+            project_layers,
+            element_metadata,
+            project_memo,
+        );
+        editor.annotations = annotations;
+        editor
+    }
+
+    #[must_use]
     pub const fn pattern(&self) -> &CreasePattern {
         &self.pattern
+    }
+
+    #[must_use]
+    pub const fn annotations(&self) -> &AnnotationDocumentV1 {
+        &self.annotations
     }
 
     #[must_use]
@@ -2343,6 +2393,47 @@ impl EditorState {
                 self.geometric_constraints = candidate;
                 Ok(Inverse::RestoreRemovedGeometricConstraint { index, record })
             }
+            Command::AddAnnotation { ref record } => {
+                if self
+                    .annotations
+                    .annotations
+                    .iter()
+                    .any(|item| item.id == record.id)
+                {
+                    return Err(CommandError::AnnotationAlreadyExists(record.id));
+                }
+                self.validate_annotation_record(record)?;
+                self.annotations.annotations.push(record.clone());
+                self.annotations
+                    .annotations
+                    .sort_by_key(|item| item.id.canonical_bytes());
+                Ok(Inverse::Command(Command::RemoveAnnotation {
+                    id: record.id,
+                }))
+            }
+            Command::UpdateAnnotation { ref record } => {
+                self.validate_annotation_record(record)?;
+                let current = self
+                    .annotations
+                    .annotations
+                    .iter_mut()
+                    .find(|item| item.id == record.id)
+                    .ok_or(CommandError::AnnotationNotFound(record.id))?;
+                let previous = std::mem::replace(current, record.clone());
+                Ok(Inverse::Command(Command::UpdateAnnotation {
+                    record: previous,
+                }))
+            }
+            Command::RemoveAnnotation { id } => {
+                let index = self
+                    .annotations
+                    .annotations
+                    .iter()
+                    .position(|item| item.id == id)
+                    .ok_or(CommandError::AnnotationNotFound(id))?;
+                let record = self.annotations.annotations.remove(index);
+                Ok(Inverse::Command(Command::AddAnnotation { record }))
+            }
             Command::AddInstructionStep { ref step } => {
                 if self
                     .instruction_timeline
@@ -2689,6 +2780,24 @@ impl EditorState {
     /// also affect every incident edge layer when moved or removed.
     fn ensure_project_layers_allow(&self, command: &Command) -> Result<(), CommandError> {
         match command {
+            Command::AddAnnotation { record } | Command::UpdateAnnotation { record } => {
+                self.ensure_layer_unlocked(record.layer)?;
+            }
+            Command::RemoveAnnotation { id } => {
+                let record = self.annotations.annotations.iter().find(|item| item.id == *id)
+                    .ok_or(CommandError::AnnotationNotFound(*id))?;
+                self.ensure_layer_unlocked(record.layer)?;
+            }
+            Command::DeleteLayer { layer } if self.annotations.annotations.iter()
+                .any(|annotation| annotation.layer == *layer) => {
+                return Err(CommandError::InvalidAnnotation);
+            }
+            Command::RemoveVertex { id } if self.annotations.annotations.iter().any(|annotation| {
+                matches!(annotation.anchor, ori_domain::AnnotationAnchorV1::Vertex { vertex, .. } if vertex == *id)
+            }) => return Err(CommandError::InvalidAnnotation),
+            _ => {}
+        }
+        match command {
             Command::AddVertex { .. }
             | Command::AddEdge { .. }
             | Command::AddConnectedVertex { .. } => {
@@ -2814,6 +2923,9 @@ impl EditorState {
             | Command::SetLengthDisplayUnit { .. }
             | Command::AddGeometricConstraint { .. }
             | Command::RemoveGeometricConstraint { .. }
+            | Command::AddAnnotation { .. }
+            | Command::UpdateAnnotation { .. }
+            | Command::RemoveAnnotation { .. }
             | Command::AddInstructionStep { .. }
             | Command::AppendInstructionSteps { .. }
             | Command::UpdateInstructionStepMetadata { .. }
@@ -3020,6 +3132,28 @@ impl EditorState {
         }
     }
 
+    fn validate_annotation_record(&self, record: &AnnotationRecordV1) -> Result<(), CommandError> {
+        let layer = self
+            .project_layers
+            .layers
+            .iter()
+            .find(|layer| layer.id == record.layer)
+            .filter(|layer| {
+                layer.content_kind == ori_domain::LayerContentKindV1::Annotation && !layer.locked
+            })
+            .ok_or(CommandError::InvalidAnnotation)?;
+        let _ = layer;
+        if let ori_domain::AnnotationAnchorV1::Vertex { vertex, .. } = record.anchor
+            && !self.pattern.vertices.iter().any(|item| item.id == vertex)
+        {
+            return Err(CommandError::InvalidAnnotation);
+        }
+        let mut document = AnnotationDocumentV1::default();
+        document.annotations.push(record.clone());
+        ori_domain::validate_annotation_document_v1(&document)
+            .map_err(|_| CommandError::InvalidAnnotation)
+    }
+
     fn constraint_mutation_targets(
         &self,
         command: &Command,
@@ -3137,6 +3271,9 @@ impl EditorState {
             | Command::SetLengthDisplayUnit { .. }
             | Command::AddGeometricConstraint { .. }
             | Command::RemoveGeometricConstraint { .. }
+            | Command::AddAnnotation { .. }
+            | Command::UpdateAnnotation { .. }
+            | Command::RemoveAnnotation { .. }
             | Command::AddInstructionStep { .. }
             | Command::AppendInstructionSteps { .. }
             | Command::UpdateInstructionStepMetadata { .. }
@@ -5121,6 +5258,9 @@ impl Command {
             | Self::RemoveBoundaryVertex { .. }
             | Self::AddGeometricConstraint { .. }
             | Self::RemoveGeometricConstraint { .. }
+            | Self::AddAnnotation { .. }
+            | Self::UpdateAnnotation { .. }
+            | Self::RemoveAnnotation { .. }
             | Self::AddInstructionStep { .. }
             | Self::AppendInstructionSteps { .. }
             | Self::UpdateInstructionStepMetadata { .. }
@@ -5174,6 +5314,9 @@ impl Command {
             | Self::SetLengthDisplayUnit { .. }
             | Self::AddGeometricConstraint { .. }
             | Self::RemoveGeometricConstraint { .. }
+            | Self::AddAnnotation { .. }
+            | Self::UpdateAnnotation { .. }
+            | Self::RemoveAnnotation { .. }
             | Self::AddInstructionStep { .. }
             | Self::AppendInstructionSteps { .. }
             | Self::UpdateInstructionStepMetadata { .. }
@@ -5459,6 +5602,12 @@ impl Command {
                     ..Changes::default()
                 }
             }
+            Self::AddAnnotation { .. }
+            | Self::UpdateAnnotation { .. }
+            | Self::RemoveAnnotation { .. } => Changes {
+                settings: true,
+                ..Changes::default()
+            },
             Self::AddInstructionStep { .. }
             | Self::AppendInstructionSteps { .. }
             | Self::UpdateInstructionStepMetadata { .. }

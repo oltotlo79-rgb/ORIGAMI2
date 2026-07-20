@@ -443,7 +443,6 @@ struct ProjectState {
     /// `project -> pose -> layer order`. It is never persisted.
     applied_pose_authority: CurrentAppliedPoseAuthority,
     numeric_expressions: ProjectNumericExpressions,
-    annotations: ori_domain::AnnotationDocumentV1,
     texture_assets: Vec<ori_formats::ProjectTextureAssetV1>,
     saved_revision: Option<u64>,
     saved_document: Option<ProjectDocument>,
@@ -465,7 +464,6 @@ impl ProjectState {
             editor,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
-            annotations: ori_domain::AnnotationDocumentV1::default(),
             texture_assets: Vec::new(),
             saved_revision: None,
             saved_document: None,
@@ -487,7 +485,6 @@ impl ProjectState {
             editor,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
-            annotations: ori_domain::AnnotationDocumentV1::default(),
             texture_assets: Vec::new(),
             saved_revision: None,
             saved_document: None,
@@ -504,15 +501,15 @@ impl ProjectState {
         saved_document.numeric_expressions.vertex_undo_stack.clear();
         saved_document.numeric_expressions.vertex_redo_stack.clear();
         let numeric_expressions = document.numeric_expressions;
-        let annotations = document.annotations;
         let texture_assets = document.texture_assets;
-        let editor = EditorState::with_all_document_parts_and_memo(
+        let editor = EditorState::with_all_document_parts_annotations_and_memo(
             document.crease_pattern,
             document.paper,
             document.instruction_timeline,
             document.geometric_constraints,
             document.layers,
             document.element_metadata,
+            document.annotations,
             document.memo,
         );
         Self {
@@ -523,7 +520,6 @@ impl ProjectState {
             saved_revision: Some(editor.revision()),
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions,
-            annotations,
             texture_assets,
             saved_document: Some(saved_document),
             editor,
@@ -558,7 +554,6 @@ impl ProjectState {
         saved_document.numeric_expressions.vertex_undo_stack.clear();
         saved_document.numeric_expressions.vertex_redo_stack.clear();
         let texture_assets = document.texture_assets.clone();
-        let annotations = document.annotations.clone();
         let mut restored = Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -567,7 +562,6 @@ impl ProjectState {
             saved_revision: Some(editor.revision()),
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: document.numeric_expressions,
-            annotations,
             texture_assets,
             saved_document: Some(saved_document),
             editor,
@@ -597,7 +591,6 @@ impl ProjectState {
             history_lengths.1,
         )?;
         let texture_assets = document.texture_assets.clone();
-        let annotations = document.annotations.clone();
         let mut restored = Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -606,7 +599,6 @@ impl ProjectState {
             saved_revision: None,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
             numeric_expressions: document.numeric_expressions,
-            annotations,
             texture_assets,
             saved_document: None,
             editor,
@@ -636,7 +628,7 @@ impl ProjectState {
             numeric_expressions,
             geometric_constraints: self.editor.geometric_constraints().clone(),
             layers: self.editor.project_layers().clone(),
-            annotations: self.annotations.clone(),
+            annotations: self.editor.annotations().clone(),
             element_metadata: self.editor.element_metadata().clone(),
             texture_assets: self.texture_assets.clone(),
         };
@@ -948,25 +940,27 @@ fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, (
             if history.project_id() != project.document.project_id {
                 return Err(());
             }
-            EditorState::with_all_document_parts_memo_and_history_v1(
+            EditorState::with_all_document_parts_annotations_memo_and_history_v1(
                 project.document.crease_pattern.clone(),
                 project.document.paper.clone(),
                 project.document.instruction_timeline.clone(),
                 project.document.geometric_constraints.clone(),
                 project.document.layers.clone(),
                 project.document.element_metadata.clone(),
+                project.document.annotations.clone(),
                 project.document.memo.clone(),
                 history.clone(),
             )
             .map_err(|_| ())
         }
-        None => Ok(EditorState::with_all_document_parts_and_memo(
+        None => Ok(EditorState::with_all_document_parts_annotations_and_memo(
             project.document.crease_pattern.clone(),
             project.document.paper.clone(),
             project.document.instruction_timeline.clone(),
             project.document.geometric_constraints.clone(),
             project.document.layers.clone(),
             project.document.element_metadata.clone(),
+            project.document.annotations.clone(),
             project.document.memo.clone(),
         )),
     }?;
@@ -1064,6 +1058,7 @@ struct ProjectSnapshot {
     geometric_constraints: GeometricConstraintDocumentV1,
     project_layers: ProjectLayerDocumentV1,
     element_metadata: ori_domain::ElementMetadataDocumentV1,
+    annotations: ori_domain::AnnotationDocumentV1,
     fold_model_fingerprint: String,
     can_undo: bool,
     can_redo: bool,
@@ -3642,6 +3637,60 @@ fn remove_geometric_constraint(
 }
 
 #[tauri::command]
+fn add_annotation(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    record: ori_domain::AnnotationRecordV1,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::AddAnnotation { record },
+    )
+}
+
+#[tauri::command]
+fn update_annotation(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    record: ori_domain::AnnotationRecordV1,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::UpdateAnnotation { record },
+    )
+}
+
+#[tauri::command]
+fn remove_annotation(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    id: ori_domain::AnnotationId,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::RemoveAnnotation { id },
+    )
+}
+
+#[tauri::command]
 fn undo(
     state: State<'_, AppState>,
     foldability_state: State<'_, GlobalFlatFoldabilityState>,
@@ -5575,6 +5624,7 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
         geometric_constraints: project.editor.geometric_constraints().clone(),
         project_layers: project.editor.project_layers().clone(),
         element_metadata: project.editor.element_metadata().clone(),
+        annotations: project.editor.annotations().clone(),
         fold_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
         can_undo: project.editor.can_undo(),
         can_redo: project.editor.can_redo(),
@@ -7485,6 +7535,9 @@ pub fn run() {
             add_edge_orientation_constraint,
             add_geometric_constraint,
             remove_geometric_constraint,
+            add_annotation,
+            update_annotation,
+            remove_annotation,
             undo,
             redo,
             add_instruction_step,

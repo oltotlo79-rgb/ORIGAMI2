@@ -139,6 +139,7 @@ export type ProjectSnapshot = {
   geometric_constraints?: GeometricConstraintDocument
   project_layers: ProjectLayerDocumentV1
   element_metadata: ElementMetadataDocumentV1
+  annotations?: AnnotationDocumentV1
   numeric_expressions?: {
     rectangular_paper_creation?: NumericExpressionBinding
     undo_stack?: Array<NumericExpressionBinding | null>
@@ -148,6 +149,23 @@ export type ProjectSnapshot = {
     vertex_redo_stack?: Array<VertexCoordinateExpressionTransition | null>
   }
   fold_model_fingerprint: string
+}
+
+export type AnnotationAnchorV1 =
+  | { kind: 'absolute'; position: { x: number; y: number } }
+  | { kind: 'vertex'; vertex: string; offset: { x: number; y: number } }
+
+export type AnnotationRecordV1 = {
+  id: string
+  text: string
+  anchor: AnnotationAnchorV1
+  style: { color: RgbaColor; font_size_mm: number; bold: boolean; italic: boolean }
+  layer: string
+}
+
+export type AnnotationDocumentV1 = {
+  schema_version: 1
+  annotations: AnnotationRecordV1[]
 }
 
 export type ElementMetadata = {
@@ -1710,6 +1728,48 @@ export function removeGeometricConstraint(
     expectedProjectId,
     expectedRevision,
     constraint,
+  })
+}
+
+export function addAnnotation(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  record: AnnotationRecordV1,
+) {
+  return invoke<ProjectSnapshot>('add_annotation', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    record,
+  })
+}
+
+export function updateAnnotation(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  record: AnnotationRecordV1,
+) {
+  return invoke<ProjectSnapshot>('update_annotation', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    record,
+  })
+}
+
+export function removeAnnotation(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  id: string,
+) {
+  return invoke<ProjectSnapshot>('remove_annotation', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    id,
   })
 }
 

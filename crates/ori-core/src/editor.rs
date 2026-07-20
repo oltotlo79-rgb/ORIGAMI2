@@ -14,7 +14,7 @@ use ori_domain::{
     InstructionStepId, InstructionTimeline, InstructionTimelineValidationError, InstructionVisual,
     LayerId, LayerRecordV1, LengthDisplayUnit, MAX_LAYER_EDGE_ASSIGNMENTS,
     MAX_PROJECT_LAYER_INDEX_EDGES, Paper, Point2, ProjectLayerDocumentV1,
-    ProjectLayerDocumentValidationErrorV1, RgbaColor, Vertex, VertexId,
+    ProjectLayerDocumentValidationErrorV1, RgbaColor, UnderlayDocumentV1, Vertex, VertexId,
     validate_element_metadata_v1, validate_geometric_constraint_document_v1,
     validate_instruction_timeline, validate_project_layer_document_against_pattern_v1,
 };
@@ -1562,6 +1562,7 @@ pub struct EditorState {
     project_layers: ProjectLayerDocumentV1,
     element_metadata: ElementMetadataDocumentV1,
     annotations: AnnotationDocumentV1,
+    underlays: UnderlayDocumentV1,
     project_memo: String,
     /// Non-persisted runtime meaning only; this is not project authority.
     current_applied_pose: Option<AppliedPoseV1>,
@@ -1677,6 +1678,10 @@ impl EditorState {
                 schema_version: ori_domain::ANNOTATION_SCHEMA_VERSION_V1,
                 annotations: Vec::new(),
             },
+            underlays: UnderlayDocumentV1 {
+                schema_version: ori_domain::UNDERLAY_SCHEMA_VERSION_V1,
+                underlays: Vec::new(),
+            },
             project_memo: String::new(),
             current_applied_pose: None,
             revision: 0,
@@ -1733,6 +1738,32 @@ impl EditorState {
     }
 
     #[must_use]
+    pub fn with_all_document_parts_annotations_underlays_and_memo(
+        pattern: CreasePattern,
+        paper: Paper,
+        instruction_timeline: InstructionTimeline,
+        geometric_constraints: GeometricConstraintDocumentV1,
+        project_layers: ProjectLayerDocumentV1,
+        element_metadata: ElementMetadataDocumentV1,
+        annotations: AnnotationDocumentV1,
+        underlays: UnderlayDocumentV1,
+        project_memo: String,
+    ) -> Self {
+        let mut editor = Self::with_all_document_parts_annotations_and_memo(
+            pattern,
+            paper,
+            instruction_timeline,
+            geometric_constraints,
+            project_layers,
+            element_metadata,
+            annotations,
+            project_memo,
+        );
+        editor.underlays = underlays;
+        editor
+    }
+
+    #[must_use]
     pub const fn pattern(&self) -> &CreasePattern {
         &self.pattern
     }
@@ -1740,6 +1771,18 @@ impl EditorState {
     #[must_use]
     pub const fn annotations(&self) -> &AnnotationDocumentV1 {
         &self.annotations
+    }
+
+    #[must_use]
+    pub const fn underlays(&self) -> &UnderlayDocumentV1 {
+        &self.underlays
+    }
+
+    /// Restores the separately validated current underlay document.
+    ///
+    /// This is load-time state admission, not an editing operation.
+    pub fn restore_underlays(&mut self, underlays: UnderlayDocumentV1) {
+        self.underlays = underlays;
     }
 
     #[must_use]

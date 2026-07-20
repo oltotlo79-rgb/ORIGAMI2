@@ -502,7 +502,7 @@ impl ProjectState {
         saved_document.numeric_expressions.vertex_redo_stack.clear();
         let numeric_expressions = document.numeric_expressions;
         let texture_assets = document.texture_assets;
-        let editor = EditorState::with_all_document_parts_annotations_and_memo(
+        let editor = EditorState::with_all_document_parts_annotations_underlays_and_memo(
             document.crease_pattern,
             document.paper,
             document.instruction_timeline,
@@ -510,6 +510,7 @@ impl ProjectState {
             document.layers,
             document.element_metadata,
             document.annotations,
+            document.underlays,
             document.memo,
         );
         Self {
@@ -629,7 +630,7 @@ impl ProjectState {
             geometric_constraints: self.editor.geometric_constraints().clone(),
             layers: self.editor.project_layers().clone(),
             annotations: self.editor.annotations().clone(),
-            underlays: ori_domain::UnderlayDocumentV1::default(),
+            underlays: self.editor.underlays().clone(),
             element_metadata: self.editor.element_metadata().clone(),
             texture_assets: self.texture_assets.clone(),
         };
@@ -936,7 +937,7 @@ fn apply_vertex_expression_binding(
 }
 
 fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, ()> {
-    let editor = match &project.editor_history {
+    let mut editor = match &project.editor_history {
         Some(history) => {
             if history.project_id() != project.document.project_id {
                 return Err(());
@@ -954,7 +955,7 @@ fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, (
             )
             .map_err(|_| ())
         }
-        None => Ok(EditorState::with_all_document_parts_annotations_and_memo(
+        None => Ok(EditorState::with_all_document_parts_annotations_underlays_and_memo(
             project.document.crease_pattern.clone(),
             project.document.paper.clone(),
             project.document.instruction_timeline.clone(),
@@ -962,9 +963,11 @@ fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, (
             project.document.layers.clone(),
             project.document.element_metadata.clone(),
             project.document.annotations.clone(),
+            project.document.underlays.clone(),
             project.document.memo.clone(),
         )),
     }?;
+    editor.restore_underlays(project.document.underlays.clone());
     validate_reachable_history_instruction_poses(&project.document, &editor)?;
     Ok(editor)
 }

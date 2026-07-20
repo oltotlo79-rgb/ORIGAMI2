@@ -194,13 +194,23 @@ mod tests {
         let mut editor = editor();
         let mut token = ready(&editor, project);
         let initial = editor.revision();
+        let pattern_before = editor.pattern().clone();
         let applied =
             apply_ready_cycle_fold_transaction_v1(project, &mut editor, &mut token).unwrap();
         assert!(applied.revision > initial);
+        let pattern_after = editor.pattern().clone();
+        assert_ne!(pattern_after, pattern_before);
+        assert!(editor.current_applied_pose().is_some());
         assert!(matches!(
             apply_ready_cycle_fold_transaction_v1(project, &mut editor, &mut token),
             Err(CycleFoldTransactionErrorV1::AlreadyConsumed)
         ));
+        editor.undo(editor.revision()).unwrap();
+        assert_eq!(editor.pattern(), &pattern_before);
+        assert!(editor.current_applied_pose().is_none());
+        editor.redo(editor.revision()).unwrap();
+        assert_eq!(editor.pattern(), &pattern_after);
+        assert!(editor.current_applied_pose().is_some());
 
         let mut stale = ready(&editor, project);
         editor

@@ -1371,6 +1371,71 @@ export function importBeginnerReferenceModel(
   })
 }
 
+export type BeginnerReferenceModelGeometry = Readonly<{
+  project_instance_id: string
+  project_id: string
+  revision: number
+  asset_id: string
+  positions: ReadonlyArray<readonly [number, number, number]>
+  triangle_indices: ReadonlyArray<readonly [number, number, number]>
+  material_color: readonly [number, number, number, number]
+}>
+
+export async function getBeginnerReferenceModelGeometry(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+): Promise<BeginnerReferenceModelGeometry> {
+  const value = await invoke<unknown>('get_beginner_reference_model_geometry', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+  })
+  const record = exactCoreDataRecord(value, [
+    'project_instance_id', 'project_id', 'revision', 'asset_id',
+    'positions', 'triangle_indices', 'material_color',
+  ] as const)
+  if (!record
+    || record.project_instance_id !== expectedProjectInstanceId
+    || record.project_id !== expectedProjectId
+    || record.revision !== expectedRevision
+    || !isCanonicalNonNilUuid(record.asset_id)
+    || !Array.isArray(record.positions) || record.positions.length < 1
+    || record.positions.length > 20_000
+    || !Array.isArray(record.triangle_indices) || record.triangle_indices.length < 1
+    || record.triangle_indices.length > 40_000
+    || !isBoundedIntegerTuple(record.material_color, 4, 255)
+    || record.material_color.some((channel) => channel < 0)) {
+    throw new Error('invalid reference model geometry')
+  }
+  const positions = record.positions.map((position) => {
+    if (!Array.isArray(position) || position.length !== 3
+      || position.some((coordinate) => typeof coordinate !== 'number'
+        || !Number.isFinite(coordinate) || Math.abs(coordinate) > 1_000_000)) {
+      throw new Error('invalid reference model geometry')
+    }
+    return Object.freeze([position[0], position[1], position[2]] as const)
+  })
+  const triangleIndices = record.triangle_indices.map((triangle) => {
+    if (!Array.isArray(triangle) || triangle.length !== 3
+      || triangle.some((index) => !Number.isInteger(index)
+        || index < 0 || index >= positions.length)) {
+      throw new Error('invalid reference model geometry')
+    }
+    return Object.freeze([triangle[0], triangle[1], triangle[2]] as const)
+  })
+  return Object.freeze({
+    project_instance_id: expectedProjectInstanceId,
+    project_id: expectedProjectId,
+    revision: expectedRevision,
+    asset_id: record.asset_id,
+    positions: Object.freeze(positions),
+    triangle_indices: Object.freeze(triangleIndices),
+    material_color: Object.freeze(record.material_color.slice()) as unknown as
+      readonly [number, number, number, number],
+  })
+}
+
 export function evaluateBeginnerCandidates(
   expectedProjectId: string,
   expectedRevision: number,

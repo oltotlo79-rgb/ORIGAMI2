@@ -133,6 +133,7 @@ import {
   updateProjectMemo,
   updateBeginnerDesignProfile,
   importBeginnerReferenceModel,
+  getBeginnerReferenceModelGeometry,
   updatePaperProperties,
   importFrontPaperTexture,
   importBackPaperTexture,
@@ -140,6 +141,7 @@ import {
   type BeginnerDesignProfileV1,
   type BeginnerCandidateResponseV1,
   type BeginnerRecognitionProposalV1,
+  type BeginnerReferenceModelGeometry,
   BeginnerRecognitionError,
   type MirrorSelectionPreflight,
   type MirrorSelectionRequest,
@@ -705,12 +707,17 @@ function App() {
     useState<BeginnerRecognitionProposalV1 | null>(null)
   const [beginnerRecognitionBusy, setBeginnerRecognitionBusy] = useState(false)
   const beginnerRecognitionRequestRef = useRef(0)
+  const [beginnerReferenceGeometry, setBeginnerReferenceGeometry] =
+    useState<BeginnerReferenceModelGeometry | null>(null)
+  const beginnerReferenceRequestRef = useRef(0)
   const beginnerDesignFormRef = useRef<HTMLFormElement>(null)
   useEffect(() => {
     setBeginnerCandidates(null)
     beginnerRecognitionRequestRef.current += 1
     setBeginnerRecognitionBusy(false)
     setBeginnerRecognitionProposal(null)
+    beginnerReferenceRequestRef.current += 1
+    setBeginnerReferenceGeometry(null)
     setBeginnerPartTotal(
       nativeSnapshot?.beginner_design_profile.generation_constraints.target_parts
         .reduce((sum, part) => sum + part.count, 0) ?? 0,
@@ -3638,6 +3645,32 @@ function App() {
   function requestBeginnerReferenceModelImport() {
     void runNativeEdit((projectId, revision, projectInstanceId) =>
       importBeginnerReferenceModel(projectId, revision, projectInstanceId))
+  }
+
+  function toggleBeginnerReferenceModelPreview() {
+    if (beginnerReferenceGeometry) {
+      beginnerReferenceRequestRef.current += 1
+      setBeginnerReferenceGeometry(null)
+      return
+    }
+    const current = latestSnapshotRef.current
+    if (!current) return
+    const request = ++beginnerReferenceRequestRef.current
+    void getBeginnerReferenceModelGeometry(
+      current.project_id,
+      current.revision,
+      current.project_instance_id,
+    ).then((geometry) => {
+      const latest = latestSnapshotRef.current
+      if (request === beginnerReferenceRequestRef.current
+        && latest?.project_id === geometry.project_id
+        && latest.project_instance_id === geometry.project_instance_id
+        && latest.revision === geometry.revision) {
+        setBeginnerReferenceGeometry(geometry)
+      }
+    }).catch(() => {
+      if (request === beginnerReferenceRequestRef.current) setBeginnerReferenceGeometry(null)
+    })
   }
 
   function requestBeginnerRecognition(mode: 'marker' | 'silhouette' = 'marker') {
@@ -7800,12 +7833,37 @@ function App() {
                   </p>
                   {nativeSnapshot.beginner_design_profile.generation_constraints.target_asset?.kind
                     === 'reference_model' && (
-                    <p role="status">
-                      {text({
-                        ja: '安全性を検証した3D参照モデルが設定されています。',
-                        en: 'A validated 3D reference model is attached.',
-                      })}
-                    </p>
+                    <>
+                      <p role="status">
+                        {text({
+                          ja: '安全性を検証した3D参照モデルが設定されています。',
+                          en: 'A validated 3D reference model is attached.',
+                        })}
+                      </p>
+                      <button type="button" onClick={toggleBeginnerReferenceModelPreview}>
+                        {beginnerReferenceGeometry
+                          ? text({ ja: '3D参照表示を隠す', en: 'Hide 3D reference preview' })
+                          : text({ ja: '3D参照表示を開く', en: 'Show 3D reference preview' })}
+                      </button>
+                      {beginnerReferenceGeometry && (
+                        <svg
+                          viewBox="-100 -100 200 200"
+                          role="img"
+                          aria-label={text({
+                            ja: '読み取り専用3D参照モデル',
+                            en: 'Read-only 3D reference model',
+                          })}
+                        >
+                          {beginnerReferenceGeometry.triangle_indices.map((triangle, index) => {
+                            const points = triangle.map((vertex) => {
+                              const position = beginnerReferenceGeometry.positions[vertex]
+                              return `${position[0]},${-position[1]}`
+                            }).join(' ')
+                            return <polygon key={index} points={points} fill="none" stroke="currentColor" />
+                          })}
+                        </svg>
+                      )}
+                    </>
                   )}
                 </div>
                 <div aria-live="polite">

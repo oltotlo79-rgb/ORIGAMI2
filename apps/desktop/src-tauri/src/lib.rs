@@ -1963,6 +1963,63 @@ fn import_beginner_reference_model(
     result
 }
 
+#[derive(Debug, Serialize)]
+struct BeginnerReferenceModelGeometryResponse {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    asset_id: AssetId,
+    positions: Vec<[f32; 3]>,
+    triangle_indices: Vec<[u32; 3]>,
+    material_color: [u8; 4],
+}
+
+#[tauri::command]
+fn get_beginner_reference_model_geometry(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<BeginnerReferenceModelGeometryResponse, String> {
+    let project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id }) = project
+        .editor
+        .beginner_design_profile()
+        .generation_constraints
+        .target_asset
+    else {
+        return Err(
+            "3D参照モデルが設定されていません / No 3D reference model is attached".to_owned(),
+        );
+    };
+    let asset = project
+        .reference_model_assets
+        .iter()
+        .find(|asset| asset.id == asset_id)
+        .ok_or_else(|| {
+            "3D参照モデルが利用できません / 3D reference model is unavailable".to_owned()
+        })?;
+    let geometry = ori_formats::read_reference_glb_geometry_v1(&asset.bytes).map_err(|_| {
+        "3D参照モデルを安全に表示できません / 3D reference model cannot be displayed safely"
+            .to_owned()
+    })?;
+    Ok(BeginnerReferenceModelGeometryResponse {
+        project_instance_id: project.instance_id,
+        project_id: project.project_id,
+        revision: project.editor.revision(),
+        asset_id,
+        positions: geometry.positions,
+        triangle_indices: geometry.triangle_indices,
+        material_color: geometry.material_color,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn new_project(
@@ -8560,6 +8617,7 @@ pub fn run() {
             update_project_memo,
             update_beginner_design_profile,
             import_beginner_reference_model,
+            get_beginner_reference_model_geometry,
             get_history_entry_limit,
             set_history_entry_limit,
             get_recovery_candidate,

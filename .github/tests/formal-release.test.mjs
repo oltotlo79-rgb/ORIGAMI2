@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -400,6 +400,62 @@ test('update manifest generator emits canonical version and digest bindings', ()
         sha256: createHash('sha256').update(value).digest('hex'),
       })),
     })
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('credential-free dry-run fixture proves the complete nine-asset handoff', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'origami2-formal-dry-run-'))
+  try {
+    const version = '0.1.0'
+    const platformPayloads = new Map([
+      ['windows-x64', {
+        [`ORIGAMI2-v${version}-windows-x64-setup.exe`]: 'unsigned installer fixture',
+        [`ORIGAMI2-v${version}-windows-x64-portable.zip`]: 'portable fixture',
+        [`ORIGAMI2-v${version}-windows-x64.cdx.json`]: JSON.stringify({
+          bomFormat: 'CycloneDX', components: [],
+        }),
+      }],
+      ['macos-arm64', {
+        [`ORIGAMI2-v${version}-macos-arm64-app.tar.gz`]: 'application fixture',
+        [`ORIGAMI2-v${version}-macos-arm64.cdx.json`]: JSON.stringify({
+          bomFormat: 'CycloneDX', components: [],
+        }),
+      }],
+    ])
+    for (const [platform, payloads] of platformPayloads) {
+      for (const [name, bytes] of Object.entries(payloads)) {
+        writeFileSync(join(directory, name), bytes)
+      }
+      execFileSync(
+        'node',
+        ['.github/scripts/write_update_manifest.mjs', directory],
+        { cwd: root, env: { ...process.env, PLATFORM: platform, VERSION: version } },
+      )
+      const names = [
+        ...Object.keys(payloads),
+        `ORIGAMI2-v${version}-${platform}.update.json`,
+      ].sort()
+      const checksums = names.map((name) =>
+        `${createHash('sha256').update(readFileSync(join(directory, name))).digest('hex')}  ${name}`,
+      )
+      writeFileSync(
+        join(directory, `SHA256SUMS-${platform}.txt`),
+        `${checksums.join('\n')}\n`,
+      )
+    }
+    const output = execFileSync(
+      'node',
+      ['.github/scripts/verify_merged_release_set.mjs', directory],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, RELEASE_VERSION: version },
+      },
+    )
+    assert.match(output, /verified merged release set v0\.1\.0/u)
+    assert.equal(readdirSync(directory).length, 9)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

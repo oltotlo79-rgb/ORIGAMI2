@@ -1149,4 +1149,122 @@ mod tests {
             Err(KinematicsError::ResourceLimitExceeded)
         );
     }
+
+    #[test]
+    fn noncommuting_four_hinge_inverse_pairs_close_as_an_interval_identity() {
+        let namespace = ProjectId::new();
+        let faces = [b"a", b"b", b"c", b"d"].map(|name| FaceId::derive_v5(namespace, name));
+        let edges = [b"ab", b"bc", b"cd", b"da"].map(|name| EdgeId::derive_v5(namespace, name));
+        let mut source = topology(
+            &faces,
+            &[
+                (edges[0], faces[0], faces[1]),
+                (edges[1], faces[1], faces[2]),
+                (edges[2], faces[2], faces[3]),
+                (edges[3], faces[3], faces[0]),
+            ],
+        );
+        source.hinge_adjacency[2].assignment = FoldAssignment::Valley;
+        source.hinge_adjacency[3].assignment = FoldAssignment::Valley;
+        let audit =
+            MaterialHingeGraphAudit::prepare(&source, TreeKinematicsLimits::default()).unwrap();
+        let origin = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let x = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let y = Point3::new(0.0, 1.0, 0.0).unwrap();
+        let hinges = vec![
+            TreeHinge::new_for_test(
+                edges[0],
+                FoldAssignment::Mountain,
+                faces[0],
+                faces[1],
+                origin,
+                x,
+                x,
+            ),
+            TreeHinge::new_for_test(
+                edges[1],
+                FoldAssignment::Mountain,
+                faces[1],
+                faces[2],
+                origin,
+                y,
+                y,
+            ),
+            TreeHinge::new_for_test(
+                edges[2],
+                FoldAssignment::Valley,
+                faces[2],
+                faces[3],
+                origin,
+                y,
+                y,
+            ),
+            TreeHinge::new_for_test(
+                edges[3],
+                FoldAssignment::Valley,
+                faces[3],
+                faces[0],
+                origin,
+                x,
+                x,
+            ),
+        ];
+        let geometry = MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), hinges);
+        let mut boxes = edges
+            .map(|edge| (edge, OutwardIntervalV1::new(37.0, 37.0).unwrap()))
+            .to_vec();
+        boxes.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+        let certificate = geometry
+            .prove_interval_closure_v1(&audit, faces[0], &boxes, 1.0e-9, 1_000_000)
+            .unwrap();
+        assert_eq!(certificate.checked_hinges().len(), 4);
+
+        let mut schedule_entries = edges
+            .map(|edge| crate::HalfAngleRationalEntryInputV1 {
+                edge,
+                u_domain: [
+                    crate::RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    crate::RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                numerator_power_coefficients: vec![crate::RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                }],
+                denominator_power_coefficients: vec![crate::RationalCoefficientV1 {
+                    numerator: 3,
+                    denominator: 1,
+                }],
+            })
+            .to_vec();
+        schedule_entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        let schedule = crate::CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            faces[0],
+            schedule_entries,
+            crate::CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        let dyadic = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                faces[0],
+                &schedule,
+                1.0e-9,
+                DyadicIntervalClosureLimitsV1 {
+                    max_depth: 4,
+                    max_leaves: 16,
+                    max_work: 1_000_000,
+                    schedule_limits: crate::CycleScheduleLimitsV1::default(),
+                },
+            )
+            .unwrap();
+        assert_eq!(dyadic.leaves().len(), 1);
+    }
 }

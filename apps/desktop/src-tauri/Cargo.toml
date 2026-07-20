@@ -22,6 +22,7 @@ ori-foldability = { path = "../../../crates/ori-foldability" }
 ori-formats = { path = "../../../crates/ori-formats" }
 ori-instructions = { path = "../../../crates/ori-instructions" }
 ori-kinematics = { path = "../../../crates/ori-kinematics" }
+ori-topology = { path = "../../../crates/ori-topology" }
 ori-numeric = { path = "../../../crates/ori-numeric" }
 serde.workspace = true
 serde_json.workspace = true

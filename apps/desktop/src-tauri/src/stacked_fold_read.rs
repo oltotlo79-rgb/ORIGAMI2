@@ -13,12 +13,17 @@ use ori_collision::{
 };
 use ori_core::{
     ExpectedStackedFoldCreaseV1, FaceLineageLimits, StackedFoldGeometryLimitsV1,
-    StackedFoldTopologyBuildLimitsV1, prepare_stacked_fold_geometry_candidate_v1,
+    StackedFoldTopologyBuildLimitsV1, analyze_global_flat_foldability,
+    analyze_local_flat_foldability, prepare_stacked_fold_geometry_candidate_v1,
     prepare_stacked_fold_initial_pose_v1, prepare_stacked_fold_requested_pose_v1,
     prepare_stacked_fold_target_model_v1,
 };
 use ori_domain::{FaceId, ProjectId};
+use ori_foldability::{
+    GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, GlobalFlatFoldabilityOutcome,
+};
 use ori_kinematics::{Point3, TreeKinematicsLimits};
+use ori_topology::{FaceExtractionInput, TopologyIssueSeverity, analyze_faces};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -170,6 +175,15 @@ struct StackedFoldEndpointCollisionDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct StackedFoldFlatEndpointLayerOrderDto {
+    applicable: bool,
+    certified: bool,
+    material_face_count: usize,
+    overlap_cell_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct StackedFoldReadResponse {
     guard_model_id: &'static str,
     proposal_model_id: &'static str,
@@ -181,6 +195,7 @@ pub(super) struct StackedFoldReadResponse {
     material_segments: Vec<StackedFoldMaterialSegmentDto>,
     topology_proof: StackedFoldTopologyProofDto,
     endpoint_collision: StackedFoldEndpointCollisionDto,
+    flat_endpoint_layer_order: StackedFoldFlatEndpointLayerOrderDto,
     work: StackedFoldReadWorkDto,
     authorizes_project_mutation: bool,
     authorizes_apply_stacked_fold: bool,
@@ -318,6 +333,64 @@ pub(super) async fn propose_current_stacked_fold_read(
             StaticCollisionLimits::default(),
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let flat_endpoint_layer_order =
+            if candidate.requested_angle_degrees().to_bits() == 180.0_f64.to_bits() {
+                let target_revision = geometry_proof.lineage().target_revision();
+                let topology_report = analyze_faces(FaceExtractionInput {
+                    identity_namespace: binding.project_id(),
+                    source_revision: target_revision,
+                    paper: &topology.paper,
+                    pattern: &topology.pattern,
+                });
+                if topology_report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.severity != TopologyIssueSeverity::Warning)
+                {
+                    return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+                }
+                let target_topology = topology_report
+                    .snapshot
+                    .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+                let local = analyze_local_flat_foldability(&topology.paper, &topology.pattern);
+                let report = analyze_global_flat_foldability(
+                    GlobalFlatFoldabilityInput::current_with_geometry(
+                        binding.project_id(),
+                        &topology.paper,
+                        &topology.pattern,
+                        &target_topology,
+                        &local,
+                    ),
+                    GlobalFlatFoldabilityLimits::default(),
+                )
+                .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+                match report.outcome {
+                    GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => {
+                        StackedFoldFlatEndpointLayerOrderDto {
+                            applicable: true,
+                            certified: true,
+                            material_face_count: layer_order.material_faces.len(),
+                            overlap_cell_count: layer_order.overlap_cells.len(),
+                        }
+                    }
+                    GlobalFlatFoldabilityOutcome::Impossible { .. }
+                    | GlobalFlatFoldabilityOutcome::Unknown { .. } => {
+                        StackedFoldFlatEndpointLayerOrderDto {
+                            applicable: true,
+                            certified: false,
+                            material_face_count: 0,
+                            overlap_cell_count: 0,
+                        }
+                    }
+                }
+            } else {
+                StackedFoldFlatEndpointLayerOrderDto {
+                    applicable: false,
+                    certified: false,
+                    material_face_count: 0,
+                    overlap_cell_count: 0,
+                }
+            };
         let lineage = geometry_proof.lineage();
         let topology_proof = StackedFoldTopologyProofDto {
             target_fingerprint_sha256: lineage.target_fingerprint().to_hex(),
@@ -383,6 +456,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             topology_proof,
             work,
             endpoint_collision,
+            flat_endpoint_layer_order,
         ))
     })
     .await
@@ -398,6 +472,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         topology_proof,
         work,
         endpoint_collision,
+        flat_endpoint_layer_order,
     ) = analysis;
 
     {
@@ -445,6 +520,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             indeterminate_pair_count: endpoint_collision.indeterminate_pairs(),
             has_blocking_hold: endpoint_collision.has_prominent_blocking_hold(),
         },
+        flat_endpoint_layer_order,
         work: StackedFoldReadWorkDto {
             scanned_cells: work.scanned_cells,
             total_boundary_vertices: work.total_boundary_vertices,

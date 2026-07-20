@@ -2527,6 +2527,7 @@ dependencies = [
  "ori-instructions",
  "ori-kinematics",
  "ori-numeric",
+ "ori-topology",
  "serde",
  "serde_json",
  "sha2",

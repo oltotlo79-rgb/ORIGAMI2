@@ -108,6 +108,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     SymmetricInsectLegPairBase,
     SymmetricSixLegBase,
     CenterAxisTailBase,
+    CenterAxisHornBase,
     VerticalBookFold,
     HorizontalBookFold,
     DiagonalFold,
@@ -257,6 +258,7 @@ pub fn estimate_symmetric_parameters_v1(
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Ear) == 2 => 2,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 2 => 2,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Tail) == 1 => 1,
+        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 1 => 1,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Antenna) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Leg) == 2 => 2,
@@ -365,8 +367,24 @@ pub fn generate_beginner_plans_v1(
     };
     let template = match target_category {
         BeginnerTargetCategoryV1::Animal => {
-            if part_count(BeginnerTargetPartKindV1::Tail) == 1 {
-                let endpoint = parameterized_center_axis_endpoint(constraints)
+            if part_count(BeginnerTargetPartKindV1::Horn) == 1 {
+                let endpoint = parameterized_center_axis_endpoint(constraints, true)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+                symmetric_template(
+                    namespace,
+                    source,
+                    BeginnerGeneratedPlanKindV1::CenterAxisHornBase,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &[endpoint],
+                    "center_axis_horn_base",
+                    constraints,
+                )
+            } else if part_count(BeginnerTargetPartKindV1::Tail) == 1 {
+                let endpoint = parameterized_center_axis_endpoint(constraints, false)
                     .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
                 symmetric_template(
                     namespace,
@@ -598,6 +616,7 @@ pub fn generate_beginner_plans_v1(
 
 fn parameterized_center_axis_endpoint(
     constraints: &BeginnerGenerationConstraintsV1,
+    vertical: bool,
 ) -> Option<(f64, f64)> {
     let target = constraints.protrusions.iter().find(|target| {
         target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
@@ -612,22 +631,42 @@ fn parameterized_center_axis_endpoint(
     {
         return None;
     }
-    let length_ratio = f64::from(target.length_tenths_mm) / f64::from(span_x as u32);
-    if !(0.02..=0.45).contains(&length_ratio) || target.direction_milli[0] == 0 {
+    let primary_span = if vertical { span_y } else { span_x };
+    let primary_direction = if vertical {
+        target.direction_milli[1]
+    } else {
+        target.direction_milli[0]
+    };
+    let length_ratio = f64::from(target.length_tenths_mm) / f64::from(primary_span as u32);
+    if !(0.02..=0.45).contains(&length_ratio) || primary_direction == 0 {
         return None;
     }
     let center_y =
         f64::from(target.position_tenths_mm[1].checked_sub(minimum_y)?) / f64::from(span_y as u32);
     let reach = length_ratio
         * (0.75 + f64::from(target.priority) / 400.0)
-        * f64::from(target.direction_milli[0].unsigned_abs())
+        * f64::from(primary_direction.unsigned_abs())
         / 1_000.0;
-    let x = if target.direction_milli[0] < 0 {
-        0.5 - reach
+    let point = if vertical {
+        (
+            0.5,
+            if primary_direction < 0 {
+                center_y - reach
+            } else {
+                center_y + reach
+            },
+        )
     } else {
-        0.5 + reach
+        (
+            if primary_direction < 0 {
+                0.5 - reach
+            } else {
+                0.5 + reach
+            },
+            center_y,
+        )
     };
-    ((0.0..1.0).contains(&x) && (0.0..1.0).contains(&center_y)).then_some((x, center_y))
+    ((0.0..1.0).contains(&point.0) && (0.0..1.0).contains(&point.1)).then_some(point)
 }
 
 #[must_use]
@@ -637,9 +676,19 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
             if constraints
                 .target_parts
                 .iter()
+                .any(|part| part.kind == BeginnerTargetPartKindV1::Horn && part.count == 1)
+            {
+                parameterized_center_axis_endpoint(constraints, true).and_then(|_| {
+                    constraints.protrusions.iter().find(|target| {
+                        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                    })
+                })
+            } else if constraints
+                .target_parts
+                .iter()
                 .any(|part| part.kind == BeginnerTargetPartKindV1::Tail && part.count == 1)
             {
-                parameterized_center_axis_endpoint(constraints).and_then(|_| {
+                parameterized_center_axis_endpoint(constraints, false).and_then(|_| {
                     constraints.protrusions.iter().find(|target| {
                         target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
                     })
@@ -992,6 +1041,21 @@ mod tests {
             generate_beginner_plans_v1(namespace, &source, &ids, &tail),
             Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
         );
+        let mut horn = constraints.clone();
+        horn.target_parts[2] = BeginnerTargetPartRecordV1 {
+            kind: BeginnerTargetPartKindV1::Horn,
+            count: 1,
+        };
+        horn.protrusions[0] = bilateral_protrusion(1, 1);
+        horn.protrusions[0].symmetry = BeginnerProtrusionSymmetryV1::None;
+        horn.protrusions[0].direction_milli = [0, -1_000, 0];
+        let horn_plans = generate_beginner_plans_v1(namespace, &source, &ids, &horn).unwrap();
+        assert_eq!(
+            horn_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::CenterAxisHornBase
+        );
+        assert_eq!(horn_plans[0].crease_pattern.vertices.len(), 2);
+        assert_eq!(horn_plans[0].crease_pattern.edges.len(), 1);
         let mut higher_priority = constraints.clone();
         higher_priority.protrusions[0].priority = 100;
         let scaled =

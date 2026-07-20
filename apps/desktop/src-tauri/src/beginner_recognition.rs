@@ -376,7 +376,13 @@ pub(crate) fn apply_beginner_part_assignments(
         .filter(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Tail)
         .map(|assignment| assignment.candidate_id)
         .collect::<Vec<_>>();
-    let mut counts = [0_u8; 5];
+    let horn_candidate_ids = request
+        .assignments
+        .iter()
+        .filter(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Horn)
+        .map(|assignment| assignment.candidate_id)
+        .collect::<Vec<_>>();
+    let mut counts = [0_u8; 6];
     for assignment in &request.assignments {
         let index = match assignment.kind {
             ori_domain::BeginnerTargetPartKindV1::Torso => 0,
@@ -384,6 +390,7 @@ pub(crate) fn apply_beginner_part_assignments(
             ori_domain::BeginnerTargetPartKindV1::Leg => 2,
             ori_domain::BeginnerTargetPartKindV1::Wing => 3,
             ori_domain::BeginnerTargetPartKindV1::Tail => 4,
+            ori_domain::BeginnerTargetPartKindV1::Horn => 5,
             _ => return Err("part_assignment_invalid".to_owned()),
         };
         counts[index] += 1;
@@ -394,6 +401,7 @@ pub(crate) fn apply_beginner_part_assignments(
         ori_domain::BeginnerTargetPartKindV1::Leg,
         ori_domain::BeginnerTargetPartKindV1::Wing,
         ori_domain::BeginnerTargetPartKindV1::Tail,
+        ori_domain::BeginnerTargetPartKindV1::Horn,
     ]
     .into_iter()
     .zip(counts)
@@ -412,6 +420,80 @@ pub(crate) fn apply_beginner_part_assignments(
     }
     let mut profile = project.editor.beginner_design_profile().clone();
     profile.generation_constraints.target_parts = target_parts;
+    if horn_candidate_ids.len() == 1
+        && profile.generation_constraints.target_category
+            == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
+    {
+        let horn = candidates
+            .iter()
+            .find(|candidate| candidate.id == horn_candidate_ids[0])
+            .ok_or_else(|| "part_assignment_horn_binding_invalid".to_owned())?;
+        let torso_center_y_twice = i64::from(request.selected_outline.bounds.min_y)
+            + i64::from(request.selected_outline.bounds.max_y);
+        let horn_center_y_twice = i64::from(horn.bounds.min_y) + i64::from(horn.bounds.max_y);
+        if horn_center_y_twice == torso_center_y_twice {
+            return Err("part_assignment_horn_binding_invalid".to_owned());
+        }
+        let torso_height_tenths = request
+            .selected_outline
+            .bounds
+            .max_y
+            .saturating_sub(request.selected_outline.bounds.min_y)
+            .saturating_add(1)
+            .saturating_mul(10);
+        let inferred_length = u32::try_from(
+            (horn_center_y_twice - torso_center_y_twice)
+                .unsigned_abs()
+                .saturating_mul(5)
+                .max(1),
+        )
+        .map_err(|_| "part_assignment_horn_binding_invalid")?;
+        let minimum_length = torso_height_tenths
+            .saturating_mul(2)
+            .checked_div(100)
+            .unwrap_or(1)
+            .max(1);
+        let maximum_length = torso_height_tenths
+            .saturating_mul(45)
+            .checked_div(100)
+            .unwrap_or(1)
+            .max(minimum_length);
+        let axis_twice = i64::from(request.selected_outline.bounds.min_x)
+            + i64::from(request.selected_outline.bounds.max_x);
+        profile.generation_constraints.protrusions = vec![ori_domain::BeginnerProtrusionTargetV1 {
+            id: 1,
+            count: 1,
+            length_tenths_mm: inferred_length.clamp(minimum_length, maximum_length),
+            thickness_tenths_mm: u16::try_from(
+                (horn.bounds.max_x - horn.bounds.min_x + 1)
+                    .saturating_mul(10)
+                    .min(10_000),
+            )
+            .map_err(|_| "part_assignment_horn_binding_invalid")?,
+            position_tenths_mm: [
+                i32::try_from(axis_twice.saturating_mul(5))
+                    .map_err(|_| "part_assignment_horn_binding_invalid")?,
+                i32::try_from(torso_center_y_twice.saturating_mul(5))
+                    .map_err(|_| "part_assignment_horn_binding_invalid")?,
+                0,
+            ],
+            direction_milli: [
+                0,
+                if horn_center_y_twice < torso_center_y_twice {
+                    -1000
+                } else {
+                    1000
+                },
+                0,
+            ],
+            symmetry: ori_domain::BeginnerProtrusionSymmetryV1::None,
+            curvature_degrees: 0,
+            joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
+            motion_degrees: [0, 0],
+            side: ori_domain::BeginnerProtrusionSideV1::Either,
+            priority: 50,
+        }];
+    }
     if tail_candidate_ids.len() == 1
         && profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Animal)

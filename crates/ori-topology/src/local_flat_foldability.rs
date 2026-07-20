@@ -25,7 +25,7 @@ use crate::{
 /// product. Maekawa counting remains available above this bound.
 pub const MAX_EXACT_FOLD_DEGREE: usize = 256;
 pub const ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1: &str =
-    "assigned_single_vertex_unique_bll_crimp_v1";
+    "assigned_single_vertex_unique_blb_crimp_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssignedLocalSufficiencyLimitsV1 {

@@ -1662,6 +1662,116 @@ fn evaluate_beginner_candidates(
     })
 }
 
+#[derive(Debug, Serialize)]
+struct BeginnerSymmetricEstimateResponse {
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    estimate: ori_domain::BeginnerSymmetricParameterEstimateV1,
+}
+
+#[tauri::command]
+fn get_beginner_symmetric_parameter_estimate(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<BeginnerSymmetricEstimateResponse, String> {
+    let project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let estimate = ori_domain::estimate_symmetric_parameters_v1(
+        &project
+            .editor
+            .beginner_design_profile()
+            .generation_constraints,
+    )
+    .ok_or_else(|| "symmetric_parameter_estimate_unsupported".to_owned())?;
+    Ok(BeginnerSymmetricEstimateResponse {
+        project_instance_id: project.instance_id,
+        project_id: project.project_id,
+        revision: project.editor.revision(),
+        estimate,
+    })
+}
+
+#[tauri::command]
+fn apply_beginner_symmetric_parameters(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    expected_estimate: ori_domain::BeginnerSymmetricParameterEstimateV1,
+    scale_percent: u8,
+    spacing_percent: u8,
+    confirmed: bool,
+) -> Result<ProjectSnapshot, String> {
+    if !confirmed || !(10..=45).contains(&scale_percent) || !(20..=80).contains(&spacing_percent) {
+        return Err("symmetric_parameter_confirmation_required".to_owned());
+    }
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let mut profile = project.editor.beginner_design_profile().clone();
+    let live = ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints)
+        .ok_or_else(|| "symmetric_parameter_estimate_stale".to_owned())?;
+    if live != expected_estimate {
+        return Err("symmetric_parameter_estimate_stale".to_owned());
+    }
+    let insect = profile.generation_constraints.target_category
+        == Some(ori_domain::BeginnerTargetCategoryV1::Insect);
+    let skeleton = |id, start_x, start_y, end_x, end_y| ori_domain::BeginnerSkeletonSegmentV1 {
+        id,
+        start: ori_domain::BeginnerSkeletonPointV1 {
+            x_tenths_mm: start_x,
+            y_tenths_mm: start_y,
+        },
+        end: ori_domain::BeginnerSkeletonPointV1 {
+            x_tenths_mm: end_x,
+            y_tenths_mm: end_y,
+        },
+        thickness_tenths_mm: 50,
+    };
+    profile.generation_constraints.skeleton_segments = if insect {
+        vec![skeleton(1, -500, 0, 0, 500), skeleton(2, 500, 0, 0, 500)]
+    } else {
+        vec![
+            skeleton(1, -500, 0, 0, 500),
+            skeleton(2, 500, 0, 0, 500),
+            skeleton(3, 0, -500, 0, 500),
+        ]
+    };
+    profile.generation_constraints.protrusions = vec![ori_domain::BeginnerProtrusionTargetV1 {
+        id: 1,
+        count: live.protrusion_count,
+        length_tenths_mm: u32::from(scale_percent) * 10,
+        thickness_tenths_mm: u16::from(spacing_percent) * 2,
+        position_tenths_mm: [0, 0, 0],
+        direction_milli: if insect { [1000, 0, 0] } else { [0, 1000, 0] },
+        symmetry: ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+        curvature_degrees: 0,
+        joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
+        motion_degrees: [0, 0],
+        side: ori_domain::BeginnerProtrusionSideV1::Either,
+        priority: 50,
+    }];
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::UpdateBeginnerDesignProfile { profile },
+    )
+}
+
 #[tauri::command]
 fn apply_beginner_generated_plan(
     state: State<'_, AppState>,
@@ -8618,6 +8728,8 @@ pub fn run() {
             generate_benchmark_pattern,
             project_snapshot,
             evaluate_beginner_candidates,
+            get_beginner_symmetric_parameter_estimate,
+            apply_beginner_symmetric_parameters,
             recognize_beginner_target,
             recognize_beginner_silhouette,
             recognize_beginner_outline_candidates,

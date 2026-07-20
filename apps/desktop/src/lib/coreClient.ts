@@ -1465,6 +1465,38 @@ export function evaluateBeginnerCandidates(
   })
 }
 
+export type BeginnerSymmetricParameterEstimateResponse = Readonly<{
+  project_instance_id: string; project_id: string; revision: number
+  estimate: Readonly<{ protrusion_count: 2 | 4; scale_percent: number; spacing_percent: number }>
+}>
+
+export async function getBeginnerSymmetricParameterEstimate(
+  projectId: string, revision: number, projectInstanceId: string,
+): Promise<BeginnerSymmetricParameterEstimateResponse> {
+  const value = await invoke<unknown>('get_beginner_symmetric_parameter_estimate', {
+    expectedProjectInstanceId: projectInstanceId, expectedProjectId: projectId, expectedRevision: revision,
+  })
+  const record = exactCoreDataRecord(value, ['project_instance_id', 'project_id', 'revision', 'estimate'] as const)
+  const estimate = exactCoreDataRecord(record?.estimate, ['protrusion_count', 'scale_percent', 'spacing_percent'] as const)
+  if (!record || record.project_instance_id !== projectInstanceId || record.project_id !== projectId
+    || record.revision !== revision || !estimate || ![2, 4].includes(Number(estimate.protrusion_count))
+    || !Number.isInteger(estimate.scale_percent) || Number(estimate.scale_percent) < 10 || Number(estimate.scale_percent) > 45
+    || !Number.isInteger(estimate.spacing_percent) || Number(estimate.spacing_percent) < 20 || Number(estimate.spacing_percent) > 80) {
+    throw new Error('invalid symmetric parameter estimate')
+  }
+  return Object.freeze({ ...record, estimate: Object.freeze(estimate) }) as BeginnerSymmetricParameterEstimateResponse
+}
+
+export function applyBeginnerSymmetricParameters(
+  response: BeginnerSymmetricParameterEstimateResponse, scalePercent: number, spacingPercent: number,
+) {
+  return invoke<ProjectSnapshot>('apply_beginner_symmetric_parameters', {
+    expectedProjectInstanceId: response.project_instance_id, expectedProjectId: response.project_id,
+    expectedRevision: response.revision, expectedEstimate: response.estimate,
+    scalePercent, spacingPercent, confirmed: true,
+  })
+}
+
 export function recognizeBeginnerTarget(
   expectedProjectId: string,
   expectedRevision: number,

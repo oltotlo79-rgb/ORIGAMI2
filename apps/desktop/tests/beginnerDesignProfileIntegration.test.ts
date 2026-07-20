@@ -134,6 +134,15 @@ test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticit
   assert.match(app, /Elasticity is not computed/u)
 })
 
+test('symmetric parameter estimates are bounded, stale-safe, and explicitly saved', () => {
+  assert.match(client, /get_beginner_symmetric_parameter_estimate/u)
+  assert.match(client, /apply_beginner_symmetric_parameters/u)
+  assert.match(client, /Number\(estimate\.scale_percent\) < 10/u)
+  assert.match(app, /Estimate symmetric parameters/u)
+  assert.match(app, /Confirm design parameters/u)
+  assert.match(app, /This does not start generation/u)
+})
+
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }

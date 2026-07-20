@@ -81,6 +81,8 @@ import {
   createProjectLayer,
   deleteProjectLayer,
   evaluateBeginnerCandidates,
+  getBeginnerSymmetricParameterEstimate,
+  applyBeginnerSymmetricParameters,
   recognizeBeginnerTarget,
   recognizeBeginnerSilhouette,
   generateBenchmarkPattern,
@@ -144,6 +146,7 @@ import {
   type ProjectSnapshot,
   type BeginnerDesignProfileV1,
   type BeginnerCandidateResponseV1,
+  type BeginnerSymmetricParameterEstimateResponse,
   type BeginnerRecognitionProposalV1,
   type BeginnerReferenceModelGeometry,
   type BeginnerOutlineCandidatesResponse,
@@ -701,6 +704,10 @@ function App() {
   const [beginnerCandidates, setBeginnerCandidates] =
     useState<BeginnerCandidateResponseV1 | null>(null)
   const [beginnerCandidateBusy, setBeginnerCandidateBusy] = useState(false)
+  const [beginnerSymmetricEstimate, setBeginnerSymmetricEstimate] =
+    useState<BeginnerSymmetricParameterEstimateResponse | null>(null)
+  const [beginnerSymmetricScale, setBeginnerSymmetricScale] = useState(25)
+  const [beginnerSymmetricSpacing, setBeginnerSymmetricSpacing] = useState(35)
   const [beginnerPartTotal, setBeginnerPartTotal] = useState(0)
   const [beginnerSkeletonSegments, setBeginnerSkeletonSegments] =
     useState<BeginnerDesignProfileV1['generation_constraints']['skeleton_segments']>([])
@@ -725,6 +732,7 @@ function App() {
   const beginnerDesignFormRef = useRef<HTMLFormElement>(null)
   useEffect(() => {
     setBeginnerCandidates(null)
+    setBeginnerSymmetricEstimate(null)
     beginnerRecognitionRequestRef.current += 1
     setBeginnerRecognitionBusy(false)
     setBeginnerRecognitionProposal(null)
@@ -3823,6 +3831,33 @@ function App() {
     }))) return
     void runNativeEdit(() => applyBeginnerPartAssignments(outline, selected, beginnerPartAssignments))
       .then(() => setBeginnerPartSuggestions(null))
+  }
+
+  function requestBeginnerSymmetricEstimate() {
+    const current = latestSnapshotRef.current
+    if (!current) return
+    void getBeginnerSymmetricParameterEstimate(
+      current.project_id, current.revision, current.project_instance_id,
+    ).then((response) => {
+      const latest = latestSnapshotRef.current
+      if (latest?.project_instance_id === response.project_instance_id
+        && latest.project_id === response.project_id && latest.revision === response.revision) {
+        setBeginnerSymmetricEstimate(response)
+        setBeginnerSymmetricScale(response.estimate.scale_percent)
+        setBeginnerSymmetricSpacing(response.estimate.spacing_percent)
+      }
+    }).catch(() => setBeginnerSymmetricEstimate(null))
+  }
+
+  function confirmBeginnerSymmetricEstimate() {
+    const estimate = beginnerSymmetricEstimate
+    if (!estimate || !window.confirm(text({
+      ja: '調整した対称パラメータを保存しますか？生成は開始しません。',
+      en: 'Save the adjusted symmetric parameters? This does not start generation.',
+    }))) return
+    void runNativeEdit(() => applyBeginnerSymmetricParameters(
+      estimate, beginnerSymmetricScale, beginnerSymmetricSpacing,
+    )).then(() => setBeginnerSymmetricEstimate(null))
   }
 
   function copyBeginnerRecognitionProposal() {
@@ -7570,6 +7605,31 @@ function App() {
                     en: 'Scores up to three candidates on this device using the same criteria. This comparison does not change the crease pattern.',
                   })}
                 </p>
+                <button type="button" onClick={requestBeginnerSymmetricEstimate}>
+                  {text({ ja: '対称パラメータを推定', en: 'Estimate symmetric parameters' })}
+                </button>
+                {beginnerSymmetricEstimate && (
+                  <fieldset>
+                    <legend>{text({ ja: '読み取り専用の推定値を調整', en: 'Adjust read-only estimate' })}</legend>
+                    <p>{formattedText({
+                      ja: '数 {count}・尺度 {scale}%・間隔 {spacing}%',
+                      en: 'Count {count} · scale {scale}% · spacing {spacing}%',
+                    }, { count: beginnerSymmetricEstimate.estimate.protrusion_count,
+                      scale: beginnerSymmetricEstimate.estimate.scale_percent,
+                      spacing: beginnerSymmetricEstimate.estimate.spacing_percent })}</p>
+                    <label>{text({ ja: '尺度（10–45%）', en: 'Scale (10–45%)' })}
+                      <input type="number" min="10" max="45" value={beginnerSymmetricScale}
+                        onChange={(event) => setBeginnerSymmetricScale(Number(event.currentTarget.value))} />
+                    </label>
+                    <label>{text({ ja: '間隔（20–80%）', en: 'Spacing (20–80%)' })}
+                      <input type="number" min="20" max="80" value={beginnerSymmetricSpacing}
+                        onChange={(event) => setBeginnerSymmetricSpacing(Number(event.currentTarget.value))} />
+                    </label>
+                    <button type="button" onClick={confirmBeginnerSymmetricEstimate}>
+                      {text({ ja: '確認して設計条件へ保存', en: 'Confirm design parameters' })}
+                    </button>
+                  </fieldset>
+                )}
                 <button
                   type="button"
                   onClick={() => requestBeginnerCandidates(1)}

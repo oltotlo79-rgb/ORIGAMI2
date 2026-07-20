@@ -313,8 +313,9 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
     };
     target.map_or_else(
         || {
-            estimate_symmetric_parameters_v1(constraints)
-                .map_or(0, |estimate| 40 + estimate.scale_percent + estimate.spacing_percent / 5)
+            estimate_symmetric_parameters_v1(constraints).map_or(0, |estimate| {
+                40 + estimate.scale_percent + estimate.spacing_percent / 5
+            })
         },
         |target| 60 + target.priority.min(100) * 2 / 5,
     )

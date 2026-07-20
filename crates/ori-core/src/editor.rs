@@ -6,7 +6,7 @@ use crate::{
     validate_geometric_constraint_record_against_pattern_v1,
 };
 use ori_domain::{
-    AnnotationDocumentV1, AnnotationId, AnnotationRecordV1, AssetId, ConstraintId, CreasePattern,
+    AnnotationDocumentV1, AnnotationId, AnnotationRecordV1, ConstraintId, CreasePattern,
     DEFAULT_PROJECT_LAYER_ID, Edge, EdgeId, EdgeKind, EdgeLayerAssignmentV1,
     ElementMetadataDocumentV1, ElementMetadataV1, FaceId, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
     GeometricConstraintDocumentV1, GeometricConstraintDocumentValidationErrorV1,
@@ -5969,6 +5969,8 @@ impl Inverse {
 
 #[cfg(test)]
 mod tests {
+    use ori_domain::AssetId;
+
     use super::*;
 
     #[test]

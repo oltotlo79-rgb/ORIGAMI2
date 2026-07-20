@@ -5,6 +5,7 @@ use ori_kinematics::{
     CALLER_EMBEDDING_OBSERVATION_MODEL_ID, CanonicalHingeAngles, HingeAngle, KinematicsError,
     MATERIAL_TREE_KINEMATICS_MODEL_ID, MaterialTreeKinematicsModel, ObservationTreeKinematicsModel,
     Point3, TreeKinematicsLimits, VertexPosition3, deterministic_sin_cos_degrees,
+    prepare_material_hinge_pair_projection_v1, revalidate_material_hinge_pair_projection_v1,
 };
 use ori_topology::{
     BoundaryWalk, EdgeIncidence, Face, FaceExtractionInput, FoldAssignment, HalfEdgeRef,
@@ -17,6 +18,57 @@ struct FoldFixture {
     topology: TopologySnapshot,
     hinges: Vec<EdgeId>,
     vertices: Vec<VertexId>,
+}
+
+#[test]
+fn hinge_pair_projection_is_full_pose_bound_and_detached() {
+    let fixture = non_commuting_fixture();
+    let native_model = model(&fixture);
+    let angles = canonical_angles(&[(fixture.hinges[0], 20.0), (fixture.hinges[1], 35.0)]);
+    let pose = native_model
+        .solve(Some(native_model.face_ids()[0]), &angles)
+        .expect("pose");
+    let bound = native_model.bind_pose(&pose).expect("bound");
+    let projection =
+        prepare_material_hinge_pair_projection_v1(bound, fixture.hinges[0]).expect("projection");
+    let observed = projection.observe();
+    assert_eq!(observed.hinge_index, 0);
+    assert_eq!(
+        observed.boundaries[0].len(),
+        observed.boundary_edges[0].len()
+    );
+    assert_eq!(
+        observed.excluded_face_indexes.len(),
+        native_model.face_ids().len() - 2
+    );
+    assert!(!projection.authorizes_mutation());
+    assert_eq!(
+        revalidate_material_hinge_pair_projection_v1(&projection, bound),
+        Some(observed)
+    );
+
+    let aba = native_model
+        .solve(Some(native_model.face_ids()[0]), &angles)
+        .expect("ABA pose");
+    assert!(
+        revalidate_material_hinge_pair_projection_v1(
+            &projection,
+            native_model.bind_pose(&aba).expect("ABA bound"),
+        )
+        .is_none()
+    );
+    let foreign_fixture = non_commuting_fixture();
+    let foreign = model(&foreign_fixture);
+    let foreign_pose = foreign
+        .solve(Some(foreign.face_ids()[0]), &angles)
+        .expect("foreign pose");
+    assert!(
+        revalidate_material_hinge_pair_projection_v1(
+            &projection,
+            foreign.bind_pose(&foreign_pose).expect("foreign bound"),
+        )
+        .is_none()
+    );
 }
 
 fn fixture_vertex_id(index: u64) -> VertexId {

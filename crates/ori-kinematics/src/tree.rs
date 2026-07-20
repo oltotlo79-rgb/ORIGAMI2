@@ -348,6 +348,40 @@ pub struct BoundMaterialTreePose<'a> {
     pose: &'a MaterialTreePose,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaterialHingePairCanonicalInputV1 {
+    pub hinge_index: usize,
+    pub face_indexes: [usize; 2],
+    pub excluded_face_indexes: Vec<usize>,
+    pub edge: EdgeId,
+    pub faces: [FaceId; 2],
+    pub assignment: FoldAssignment,
+    pub angle_degrees: f64,
+    pub axis: [Point3; 2],
+    pub boundaries: [Vec<VertexId>; 2],
+    pub boundary_edges: [Vec<EdgeId>; 2],
+    pub rest_positions: [Vec<Point3>; 2],
+    pub world_transforms: [RigidTransform; 2],
+}
+
+#[derive(Debug)]
+pub struct MaterialHingePairProjectionV1<'a> {
+    bound: BoundMaterialTreePose<'a>,
+    input: MaterialHingePairCanonicalInputV1,
+}
+
+impl MaterialHingePairProjectionV1<'_> {
+    #[must_use]
+    pub fn observe(&self) -> MaterialHingePairCanonicalInputV1 {
+        self.input.clone()
+    }
+
+    #[must_use]
+    pub const fn authorizes_mutation(&self) -> bool {
+        false
+    }
+}
+
 /// An observation-frame pose produced only by
 /// [`ObservationTreeKinematicsModel`].
 #[derive(Debug, Clone)]
@@ -632,6 +666,106 @@ impl<'a> BoundMaterialTreePose<'a> {
     pub fn face_boundary(&self, face: FaceId) -> Option<MaterialFaceBoundary<'a>> {
         find_material_face_boundary(&self.model.tree, face)
     }
+}
+
+pub fn prepare_material_hinge_pair_projection_v1(
+    bound: BoundMaterialTreePose<'_>,
+    edge: EdgeId,
+) -> Result<MaterialHingePairProjectionV1<'_>, KinematicsError> {
+    let hinge_index = bound
+        .model
+        .hinges()
+        .iter()
+        .position(|hinge| hinge.edge() == edge)
+        .ok_or(KinematicsError::UnsupportedTopology)?;
+    if bound
+        .model
+        .hinges()
+        .iter()
+        .skip(hinge_index + 1)
+        .any(|hinge| hinge.edge() == edge)
+    {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    let hinge = &bound.model.hinges()[hinge_index];
+    let faces = [hinge.left_face(), hinge.right_face()];
+    let face_indexes = faces.map(|face| {
+        bound
+            .model
+            .face_ids()
+            .iter()
+            .position(|candidate| *candidate == face)
+            .ok_or(KinematicsError::UnsupportedTopology)
+    });
+    let face_indexes = [face_indexes[0].clone()?, face_indexes[1].clone()?];
+    let boundaries = faces.map(|face| {
+        bound
+            .face_boundary(face)
+            .map(|boundary| boundary.vertices().to_vec())
+            .ok_or(KinematicsError::UnsupportedTopology)
+    });
+    let boundaries = [boundaries[0].clone()?, boundaries[1].clone()?];
+    let boundary_edges = faces.map(|face| {
+        bound
+            .face_boundary(face)
+            .map(|boundary| boundary.edges().to_vec())
+            .ok_or(KinematicsError::UnsupportedTopology)
+    });
+    let boundary_edges = [boundary_edges[0].clone()?, boundary_edges[1].clone()?];
+    let rest_positions = boundaries.clone().map(|vertices| {
+        vertices
+            .into_iter()
+            .map(|vertex| {
+                bound
+                    .model
+                    .vertex_position(vertex)
+                    .ok_or(KinematicsError::UnrepresentableGeometry)
+            })
+            .collect::<Result<Vec<_>, _>>()
+    });
+    let angle_degrees = bound
+        .pose
+        .hinge_angles()
+        .iter()
+        .find(|angle| angle.edge() == edge)
+        .ok_or(KinematicsError::UnsupportedTopology)?
+        .angle_degrees();
+    let world_transforms = faces.map(|face| {
+        bound
+            .pose
+            .face_transform(face)
+            .ok_or(KinematicsError::UnsupportedTopology)
+    });
+    let input = MaterialHingePairCanonicalInputV1 {
+        hinge_index,
+        face_indexes,
+        excluded_face_indexes: (0..bound.model.face_ids().len())
+            .filter(|index| !face_indexes.contains(index))
+            .collect(),
+        edge,
+        faces,
+        assignment: hinge.assignment(),
+        angle_degrees,
+        axis: [hinge.start(), hinge.end()],
+        boundaries,
+        boundary_edges,
+        rest_positions: [rest_positions[0].clone()?, rest_positions[1].clone()?],
+        world_transforms: [world_transforms[0].clone()?, world_transforms[1].clone()?],
+    };
+    Ok(MaterialHingePairProjectionV1 { bound, input })
+}
+
+pub fn revalidate_material_hinge_pair_projection_v1(
+    capability: &MaterialHingePairProjectionV1<'_>,
+    bound: BoundMaterialTreePose<'_>,
+) -> Option<MaterialHingePairCanonicalInputV1> {
+    if !std::ptr::eq(capability.bound.model(), bound.model())
+        || !std::ptr::eq(capability.bound.pose(), bound.pose())
+    {
+        return None;
+    }
+    let rebuilt = prepare_material_hinge_pair_projection_v1(bound, capability.input.edge).ok()?;
+    (rebuilt.input == capability.input).then(|| rebuilt.observe())
 }
 
 impl ObservationTreePose {

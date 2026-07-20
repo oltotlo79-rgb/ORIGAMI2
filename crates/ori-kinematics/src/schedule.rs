@@ -305,6 +305,74 @@ pub fn evaluate_pole_free_rational_interval_v1(
         .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)
 }
 
+pub fn evaluate_pole_free_rational_dyadic_v1(
+    numerator: &PoleFreeBernsteinCertificateV1,
+    denominator: &PoleFreeBernsteinCertificateV1,
+    normalized_u: f64,
+    max_coefficient_bits: u32,
+    max_work: usize,
+) -> Result<BigRational, CycleSchedulePrepareErrorV1> {
+    if !normalized_u.is_finite()
+        || (normalized_u != 0.0 && !normalized_u.is_normal())
+        || !(0.0..=1.0).contains(&normalized_u)
+    {
+        return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+    }
+    let parameter = BigRational::from_float(if normalized_u == 0.0 {
+        0.0
+    } else {
+        normalized_u
+    })
+    .ok_or(CycleSchedulePrepareErrorV1::InvalidInput)?;
+    let numerator = evaluate_exact_bernstein_point(
+        &numerator.coefficients,
+        &parameter,
+        max_coefficient_bits,
+        max_work,
+    )?;
+    let denominator = evaluate_exact_bernstein_point(
+        &denominator.coefficients,
+        &parameter,
+        max_coefficient_bits,
+        max_work,
+    )?;
+    if denominator.is_zero() {
+        return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+    }
+    let value = numerator / denominator;
+    validate_exact_bits(core::slice::from_ref(&value), max_coefficient_bits)?;
+    Ok(value)
+}
+
+fn evaluate_exact_bernstein_point(
+    coefficients: &[BigRational],
+    parameter: &BigRational,
+    max_coefficient_bits: u32,
+    max_work: usize,
+) -> Result<BigRational, CycleSchedulePrepareErrorV1> {
+    let work = coefficients
+        .len()
+        .checked_mul(coefficients.len().saturating_sub(1))
+        .and_then(|value| value.checked_div(2))
+        .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
+    if work > max_work {
+        return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+    }
+    let one_minus = BigRational::from_integer(1.into()) - parameter;
+    let mut level = coefficients.to_vec();
+    for remaining in (1..level.len()).rev() {
+        for index in 0..remaining {
+            level[index] = &level[index] * &one_minus + &level[index + 1] * parameter;
+        }
+    }
+    let value = level
+        .into_iter()
+        .next()
+        .ok_or(CycleSchedulePrepareErrorV1::InvalidInput)?;
+    validate_exact_bits(core::slice::from_ref(&value), max_coefficient_bits)?;
+    Ok(value)
+}
+
 pub fn evaluate_pole_free_atan2_interval_v1(
     y: &PoleFreeBernsteinCertificateV1,
     x: &PoleFreeBernsteinCertificateV1,
@@ -1131,5 +1199,16 @@ mod tests {
             evaluate_half_angle_rational_derivative_interval_v1(&p, &q, 64, 64).unwrap();
         assert!(derivative.lower() <= 0.4);
         assert!(derivative.upper() >= 1.0);
+        assert_eq!(
+            evaluate_pole_free_rational_dyadic_v1(&p, &q, 0.5, 64, 16).unwrap(),
+            BigRational::new(3.into(), 2.into())
+        );
+        for invalid in [f64::NAN, -0.1, 1.1, f64::MIN_POSITIVE / 2.0] {
+            assert!(evaluate_pole_free_rational_dyadic_v1(&p, &q, invalid, 64, 16).is_err());
+        }
+        assert_eq!(
+            evaluate_pole_free_rational_dyadic_v1(&p, &q, 0.5, 64, 0),
+            Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+        );
     }
 }

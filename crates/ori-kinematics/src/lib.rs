@@ -88,7 +88,8 @@ pub use schedule::{
     CycleSchedulePrepareErrorV1, HalfAngleDomainV1, PoleFreeBernsteinCertificateV1,
     RationalCoefficientV1, evaluate_half_angle_rational_degrees_interval_v1,
     evaluate_half_angle_rational_derivative_interval_v1, evaluate_pole_free_atan2_interval_v1,
-    evaluate_pole_free_rational_interval_v1, prepare_pole_free_bernstein_certificate_v1,
+    evaluate_pole_free_rational_dyadic_v1, evaluate_pole_free_rational_interval_v1,
+    prepare_pole_free_bernstein_certificate_v1,
 };
 pub use transform::{Point3, RigidTransform, deterministic_sin_cos_degrees};
 pub use tree::{

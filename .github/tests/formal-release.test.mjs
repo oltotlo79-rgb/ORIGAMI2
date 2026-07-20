@@ -195,6 +195,14 @@ test('CI always runs release contracts with read-only short-lived evidence', () 
   }
 })
 
+test('CI cache action is pinned to the verified Node.js 24 release', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const pinned = 'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9'
+  assert.equal(workflow.split(pinned).length - 1, 2)
+  assert.doesNotMatch(workflow, /actions\/cache@0057852bfaa89/u)
+  assert.match(workflow, /# v6\.1\.0 \(Node\.js 24\)/u)
+})
+
 test('CI retains bounded browser accessibility evidence only on failure', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const smoke = readFileSync(

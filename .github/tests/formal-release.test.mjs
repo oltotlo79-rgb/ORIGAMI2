@@ -737,6 +737,14 @@ test('credential-free dependency policy bounds lock integrity and npm licenses',
   )
 })
 
+test('dependency policy is independent of the caller working directory', () => {
+  const output = execFileSync('node', ['../../.github/scripts/dependency_policy.mjs'], {
+    cwd: join(root, 'apps', 'desktop'),
+    encoding: 'utf8',
+  })
+  assert.deepEqual(JSON.parse(output), buildDependencyPolicy())
+})
+
 test('release CI evidence rejects duplicate and incomplete check runs', () => {
   const directory = mkdtempSync(join(tmpdir(), 'origami2-ci-evidence-'))
   try {

@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
+const repositoryRoot = resolve(import.meta.dirname, '..', '..')
+const cargoLockPath = resolve(repositoryRoot, 'Cargo.lock')
+const packageLockPath = resolve(repositoryRoot, 'apps', 'desktop', 'package-lock.json')
 
 const npmLicenseAllowlist = new Set([
   '0BSD', 'Apache-2.0', 'Apache-2.0 OR MIT', 'BSD-2-Clause', 'BSD-3-Clause',
@@ -9,7 +14,7 @@ const npmLicenseAllowlist = new Set([
 const digest = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
 
 export function buildDependencyPolicy() {
-  const cargoBytes = readFileSync('Cargo.lock', 'utf8')
+  const cargoBytes = readFileSync(cargoLockPath, 'utf8')
   const cargoPackages = cargoBytes.split(/\r?\n\[\[package\]\]\r?\n/u).slice(1)
   if (cargoPackages.length < 1 || cargoPackages.length > 10000) {
     throw new Error('Cargo.lock package count is outside policy bounds')
@@ -26,7 +31,7 @@ export function buildDependencyPolicy() {
     }
   }
 
-  const packageLock = JSON.parse(readFileSync('apps/desktop/package-lock.json', 'utf8'))
+  const packageLock = JSON.parse(readFileSync(packageLockPath, 'utf8'))
   if (packageLock.lockfileVersion !== 3 || packageLock.requires !== true) {
     throw new Error('npm lockfile policy requires lockfileVersion 3')
   }
@@ -49,8 +54,8 @@ export function buildDependencyPolicy() {
   return {
     schema: 'origami2.dependency-policy.v1',
     policy: 'locked-integrity-and-license-allowlist',
-    cargoLockSha256: digest('Cargo.lock'),
-    packageLockSha256: digest('apps/desktop/package-lock.json'),
+    cargoLockSha256: digest(cargoLockPath),
+    packageLockSha256: digest(packageLockPath),
     cargoPackages: cargoPackages.length,
     cargoRegistryPackages,
     npmPackages: npmPackages.length,

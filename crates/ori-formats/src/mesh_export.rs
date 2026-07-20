@@ -2449,6 +2449,72 @@ mod tests {
     }
 
     #[test]
+    fn ecosystem_readers_accept_all_three_interchange_formats() {
+        use std::io::Cursor;
+
+        let colors = vec![
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 255, 128],
+        ];
+        let mesh = validate_indexed_triangle_mesh(
+            &sample_document().with_vertex_colors_rgba(colors.clone()),
+        )
+        .expect("colored mesh");
+
+        let obj = export_static_triangle_mesh(StaticMeshExportFormat::Obj, &mesh)
+            .expect("OBJ")
+            .bytes;
+        let (models, materials) = tobj::load_obj_buf(
+            &mut Cursor::new(obj),
+            &tobj::LoadOptions {
+                triangulate: true,
+                single_index: true,
+                ..tobj::LoadOptions::default()
+            },
+            |_| Ok((Vec::new(), Default::default())),
+        )
+        .expect("tobj accepts OBJ");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].mesh.positions.len(), mesh.positions_mm.len() * 3);
+        assert_eq!(models[0].mesh.indices.len(), mesh.triangles.len() * 3);
+        assert!(materials.expect("material result").is_empty());
+
+        let stl = export_static_triangle_mesh(StaticMeshExportFormat::BinaryStl, &mesh)
+            .expect("STL")
+            .bytes;
+        let parsed_stl = stl_io::read_stl(&mut Cursor::new(stl)).expect("stl_io accepts STL");
+        assert_eq!(parsed_stl.faces.len(), mesh.triangles.len());
+
+        let glb = export_static_triangle_mesh(StaticMeshExportFormat::Glb20, &mesh)
+            .expect("GLB")
+            .bytes;
+        let parsed_glb = gltf::Gltf::from_slice(&glb).expect("gltf validator accepts GLB");
+        assert_eq!(parsed_glb.scenes().count(), 1);
+        let primitive = parsed_glb
+            .meshes()
+            .next()
+            .and_then(|mesh| mesh.primitives().next())
+            .expect("one primitive");
+        let reader = primitive.reader(|_| parsed_glb.blob.as_deref());
+        assert_eq!(
+            reader.read_positions().expect("positions").count(),
+            mesh.positions_mm.len()
+        );
+        assert_eq!(
+            reader.read_indices().expect("indices").into_u32().count(),
+            mesh.triangles.len() * 3
+        );
+        let parsed_colors: Vec<_> = reader
+            .read_colors(0)
+            .expect("vertex colors")
+            .into_rgba_u8()
+            .collect();
+        assert_eq!(parsed_colors, colors);
+    }
+
+    #[test]
     fn glb_node_rotation_maps_source_right_forward_up_without_reflection() {
         let transform = |vector: [f32; 3]| {
             [

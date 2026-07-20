@@ -2480,6 +2480,9 @@ name = "ori-kinematics"
 version = "0.1.0"
 dependencies = [
  "libm",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
  "ori-domain",
  "ori-geometry",
  "ori-topology",

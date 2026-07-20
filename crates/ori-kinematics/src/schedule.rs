@@ -1,3 +1,6 @@
+use num_bigint::BigInt;
+use num_rational::BigRational;
+use num_traits::{Signed, Zero};
 use ori_domain::{EdgeId, FaceId};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -10,6 +13,74 @@ use crate::{
 pub struct RationalCoefficientV1 {
     pub numerator: i64,
     pub denominator: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoleFreeBernsteinCertificateV1 {
+    degree: usize,
+    positive: bool,
+    coefficients: Vec<BigRational>,
+}
+
+pub fn prepare_pole_free_bernstein_certificate_v1(
+    power_coefficients: &[RationalCoefficientV1],
+    max_degree: usize,
+    max_coefficient_bits: u32,
+    max_work: usize,
+) -> Result<PoleFreeBernsteinCertificateV1, CycleSchedulePrepareErrorV1> {
+    if power_coefficients.is_empty()
+        || power_coefficients.len() > max_degree.saturating_add(1)
+        || power_coefficients
+            .len()
+            .saturating_mul(power_coefficients.len())
+            > max_work
+    {
+        return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+    }
+    let degree = power_coefficients.len() - 1;
+    let power = power_coefficients
+        .iter()
+        .map(|value| {
+            if value.denominator == 0
+                || value.numerator.unsigned_abs().checked_ilog2().unwrap_or(0) + 1
+                    > max_coefficient_bits
+                || value.denominator.checked_ilog2().unwrap_or(0) + 1 > max_coefficient_bits
+            {
+                return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+            }
+            Ok(BigRational::new(
+                BigInt::from(value.numerator),
+                BigInt::from(value.denominator),
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut coefficients = Vec::with_capacity(degree + 1);
+    for i in 0..=degree {
+        let mut value = BigRational::zero();
+        for (k, coefficient) in power.iter().enumerate().take(i + 1) {
+            value += coefficient
+                * BigRational::new(
+                    BigInt::from(binomial(i, k)),
+                    BigInt::from(binomial(degree, k)),
+                );
+        }
+        coefficients.push(value);
+    }
+    let positive = coefficients.iter().all(|value| value.is_positive());
+    let negative = coefficients.iter().all(|value| value.is_negative());
+    if !positive && !negative {
+        return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+    }
+    Ok(PoleFreeBernsteinCertificateV1 {
+        degree,
+        positive,
+        coefficients,
+    })
+}
+
+fn binomial(n: usize, k: usize) -> u128 {
+    let k = k.min(n - k);
+    (0..k).fold(1_u128, |value, i| value * (n - i) as u128 / (i + 1) as u128)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -426,6 +497,76 @@ mod tests {
                 },
             ),
             Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+        );
+    }
+
+    #[test]
+    fn exact_bernstein_certificate_proves_only_strict_single_sign_denominators() {
+        let positive = prepare_pole_free_bernstein_certificate_v1(
+            &[
+                RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                },
+                RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                },
+            ],
+            4,
+            8,
+            16,
+        )
+        .unwrap();
+        assert!(positive.positive);
+        assert_eq!(positive.degree, 1);
+        assert!(
+            positive
+                .coefficients
+                .iter()
+                .all(|value| value.is_positive())
+        );
+        for invalid in [
+            vec![
+                RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                },
+                RationalCoefficientV1 {
+                    numerator: -2,
+                    denominator: 1,
+                },
+            ],
+            vec![RationalCoefficientV1 {
+                numerator: 1,
+                denominator: 0,
+            }],
+        ] {
+            assert!(prepare_pole_free_bernstein_certificate_v1(&invalid, 4, 8, 16).is_err());
+        }
+        assert!(
+            prepare_pole_free_bernstein_certificate_v1(
+                &[RationalCoefficientV1 {
+                    numerator: 256,
+                    denominator: 1,
+                }],
+                4,
+                8,
+                16,
+            )
+            .is_err()
+        );
+        assert!(
+            prepare_pole_free_bernstein_certificate_v1(
+                &[RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                }; 5],
+                3,
+                8,
+                16,
+            )
+            .is_err()
         );
     }
 }

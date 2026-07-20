@@ -1584,6 +1584,22 @@ fn assess_beginner_generated_plan(
     plan: &ori_domain::BeginnerGeneratedPlanV1,
     reference: Option<&BeginnerReferenceModelSuggestionV1>,
 ) -> BeginnerGeneratedPlanAssessment {
+    assess_beginner_generated_plan_with_deadline(
+        paper,
+        current_pattern,
+        plan,
+        reference,
+        std::time::Instant::now() + std::time::Duration::from_millis(250),
+    )
+}
+
+fn assess_beginner_generated_plan_with_deadline(
+    paper: &Paper,
+    current_pattern: &CreasePattern,
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+    reference: Option<&BeginnerReferenceModelSuggestionV1>,
+    deadline: std::time::Instant,
+) -> BeginnerGeneratedPlanAssessment {
     let (mut shape_approximation_score, mut shape_difference_reason) = reference
         .map(|reference| compare_plan_to_reference_model_v1(plan, reference))
         .map_or((None, None), |(score, reason)| (Some(score), Some(reason)));
@@ -1680,9 +1696,7 @@ fn assess_beginner_generated_plan(
                 .topology_analysis_input(identity_namespace)
                 .analyze();
             if let Some(snapshot) = topology.simulation_snapshot() {
-                let mut observer = BeginnerGlobalFoldabilityDeadline(
-                    std::time::Instant::now() + std::time::Duration::from_millis(250),
-                );
+                let mut observer = BeginnerGlobalFoldabilityDeadline(deadline);
                 match analyze_global_flat_foldability_with_observer(
                     GlobalFlatFoldabilityInput::current_with_geometry(
                         identity_namespace,

@@ -1154,9 +1154,20 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
     const runsPath = join(directory, 'runs.json')
     const checksPath = join(directory, 'checks.json')
     const commit = 'b'.repeat(40)
+    const successfulRun = (id = 42) => ({
+      id,
+      head_sha: commit,
+      status: 'completed',
+      conclusion: 'success',
+      path: '.github/workflows/ci.yml',
+      event: 'push',
+      head_branch: 'main',
+      run_attempt: 1,
+      updated_at: new Date().toISOString(),
+    })
     writeFileSync(runsPath, JSON.stringify({
       total_count: 1,
-      workflow_runs: [{ id: 42, head_sha: commit, status: 'completed', conclusion: 'success' }],
+      workflow_runs: [successfulRun()],
     }))
     const verify = () => execFileSync('node', ['.github/scripts/verify_release_ci.mjs'], {
       cwd: root,
@@ -1169,21 +1180,40 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
       },
     })
     const check = (name, status = 'completed', conclusion = 'success') => ({
-      name, status, conclusion, details_url: 'https://github.com/example/repo/actions/runs/42/job/1',
+      name, status, conclusion,
+      details_url: 'https://github.com/example/repo/actions/runs/42/job/1',
+      app: { slug: 'github-actions' },
     })
+    const requiredChecks = [
+      'dependency-advisory-audit', 'frontend', 'macos-bundle',
+      'rust (macos-latest)', 'rust (windows-latest)',
+      'slicer-acceptance', 'windows-bundle',
+    ]
     writeFileSync(checksPath, JSON.stringify({
-      total_count: 2, check_runs: [check('lint'), check('test')],
+      total_count: requiredChecks.length,
+      check_runs: requiredChecks.map((name) => check(name)),
     }))
     assert.deepEqual(JSON.parse(verify()), {
       schema: 'origami2.ci-check-evidence.v1',
       sourceCommit: commit,
       workflow: '.github/workflows/ci.yml',
       workflowRunId: '42',
-      checks: [
-        { name: 'lint', conclusion: 'success' },
-        { name: 'test', conclusion: 'success' },
-      ],
+      checks: requiredChecks.map((name) => ({ name, conclusion: 'success' })),
     })
+    writeFileSync(checksPath, JSON.stringify({
+      total_count: requiredChecks.length - 1,
+      check_runs: requiredChecks.slice(1).map((name) => check(name)),
+    }))
+    assert.throws(verify, /required check set/u)
+    writeFileSync(runsPath, JSON.stringify({
+      total_count: 1,
+      workflow_runs: [{
+        ...successfulRun(),
+        updated_at: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString(),
+      }],
+    }))
+    assert.throws(verify, /workflow run identity/u)
+    writeFileSync(runsPath, JSON.stringify({ total_count: 1, workflow_runs: [successfulRun()] }))
     writeFileSync(checksPath, JSON.stringify({
       total_count: 2, check_runs: [check('test'), check('test')],
     }))
@@ -1195,8 +1225,8 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
     writeFileSync(runsPath, JSON.stringify({
       total_count: 2,
       workflow_runs: [
-        { id: 42, head_sha: commit, status: 'completed', conclusion: 'success' },
-        { id: 43, head_sha: commit, status: 'completed', conclusion: 'success' },
+        successfulRun(),
+        successfulRun(43),
       ],
     }))
     assert.throws(verify, /exactly one successful/u)

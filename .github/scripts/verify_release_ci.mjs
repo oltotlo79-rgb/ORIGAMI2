@@ -37,11 +37,19 @@ if (runs.total_count !== 1 || !Array.isArray(runs.workflow_runs) || runs.workflo
   throw new Error('release commit must have exactly one successful CI workflow run')
 }
 const run = runs.workflow_runs[0]
+const completedAt = Date.parse(run.updated_at)
 if (
   !Number.isSafeInteger(run.id) || run.id < 1
   || run.head_sha !== commit
   || run.status !== 'completed'
   || run.conclusion !== 'success'
+  || run.path !== '.github/workflows/ci.yml'
+  || run.event !== 'push'
+  || run.head_branch !== 'main'
+  || !Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1
+  || !Number.isFinite(completedAt)
+  || completedAt > Date.now() + 300_000
+  || Date.now() - completedAt > 14 * 24 * 60 * 60 * 1000
 ) throw new Error('successful CI workflow run identity is invalid')
 
 const checks = await loadJson(
@@ -59,10 +67,20 @@ const runMarker = `/actions/runs/${run.id}/`
 const selected = checks.check_runs.filter((check) => check.details_url?.includes(runMarker))
 if (selected.length < 1) throw new Error('CI workflow has no bound check runs')
 const names = new Set()
+const expectedNames = [
+  'dependency-advisory-audit',
+  'frontend',
+  'macos-bundle',
+  'rust (macos-latest)',
+  'rust (windows-latest)',
+  'slicer-acceptance',
+  'windows-bundle',
+]
 const checkResults = selected.map((check) => {
   if (
     typeof check.name !== 'string' || check.name.length < 1 || check.name.length > 200
     || names.has(check.name)
+    || check.app?.slug !== 'github-actions'
   ) throw new Error('CI check names are invalid or duplicated')
   names.add(check.name)
   if (check.status !== 'completed' || check.conclusion !== 'success') {
@@ -70,6 +88,9 @@ const checkResults = selected.map((check) => {
   }
   return { name: check.name, conclusion: 'success' }
 }).sort((left, right) => left.name.localeCompare(right.name))
+if (checkResults.map(({ name }) => name).join('\n') !== expectedNames.join('\n')) {
+  throw new Error('CI required check set is incomplete or unexpected')
+}
 
 process.stdout.write(`${JSON.stringify({
   schema: 'origami2.ci-check-evidence.v1',

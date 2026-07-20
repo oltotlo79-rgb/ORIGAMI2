@@ -59,6 +59,17 @@ test('AUT-001 admits only animal and insect target categories and connects them 
   assert.match(app, /supports only animal and insect targets/u)
 })
 
+test('AUT-002 composes a bounded explicit target from supported parts', () => {
+  assert.match(generation, /Head[\s\S]*Torso[\s\S]*Leg[\s\S]*Horn[\s\S]*Ear[\s\S]*Wing[\s\S]*Tail/u)
+  assert.match(generation, /MAX_BEGINNER_TARGET_PARTS_TOTAL_V1: u16 = 32/u)
+  assert.match(client, /record\.target_parts\.length > 7/u)
+  assert.match(client, /partTotal > 32/u)
+  assert.match(app, /name=\{`target_part_\$\{kind\}`\}/u)
+  assert.match(app, /One head and one torso are required/u)
+  assert.match(app, /Total parts: \{total\} \/ 32/u)
+  assert.match(app, /候補に使用した目標部品/u)
+})
+
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }

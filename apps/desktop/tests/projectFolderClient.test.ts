@@ -181,6 +181,7 @@ function validSnapshot(overrides: Record<string, unknown> = {}) {
         maximum_steps: 60,
         detail_level: 'standard',
         target_category: null,
+        target_parts: [],
         allowed_techniques: ['valley_fold', 'mountain_fold'],
       },
     },

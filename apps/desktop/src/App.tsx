@@ -676,9 +676,14 @@ function App() {
   const [beginnerCandidates, setBeginnerCandidates] =
     useState<BeginnerCandidateResponseV1 | null>(null)
   const [beginnerCandidateBusy, setBeginnerCandidateBusy] = useState(false)
+  const [beginnerPartTotal, setBeginnerPartTotal] = useState(0)
   const beginnerCandidateRequestRef = useRef(0)
   useEffect(() => {
     setBeginnerCandidates(null)
+    setBeginnerPartTotal(
+      nativeSnapshot?.beginner_design_profile.generation_constraints.target_parts
+        .reduce((sum, part) => sum + part.count, 0) ?? 0,
+    )
   }, [nativeSnapshot?.project_instance_id, nativeSnapshot?.revision])
   const [topologyStatusMessage, setTopologyStatus] = useState<AppMessage>(
     () => isNativeCoreAvailable()
@@ -3453,12 +3458,19 @@ function App() {
     const maximumSteps = Number(data.get('maximum_steps'))
     const detailLevel = String(data.get('detail_level'))
     const targetCategory = String(data.get('target_category'))
+    const targetParts = ([
+      'head', 'torso', 'leg', 'horn', 'ear', 'wing', 'tail',
+    ] as const).map((kind) => ({
+      kind,
+      count: Number(data.get(`target_part_${kind}`)),
+    })).filter((part) => part.count > 0)
     const allowedTechniques = data.getAll('allowed_techniques').map(String)
     const generationConstraints = {
       schema_version: 1 as const,
       maximum_steps: maximumSteps,
       detail_level: detailLevel as 'simple' | 'standard' | 'detailed',
       target_category: targetCategory as 'animal' | 'insect',
+      target_parts: targetParts,
       allowed_techniques: allowedTechniques as BeginnerDesignProfileV1['generation_constraints']['allowed_techniques'],
     }
     if (
@@ -3467,6 +3479,8 @@ function App() {
       || maximumSteps > 500
       || !['simple', 'standard', 'detailed'].includes(detailLevel)
       || !['animal', 'insect'].includes(targetCategory)
+      || targetParts.some((part) => !Number.isInteger(part.count) || part.count > 8)
+      || targetParts.reduce((sum, part) => sum + part.count, 0) > 32
       || allowedTechniques.length < 1
       || allowedTechniques.length > 8
       || new Set(allowedTechniques).size !== allowedTechniques.length
@@ -7225,6 +7239,20 @@ function App() {
                                 </li>
                               ))}
                             </ol>
+                            <p aria-label={text({ ja: '候補に使用した目標部品', en: 'Target parts used by this candidate' })}>
+                              {plan.target_parts.map((part) => {
+                                const label = {
+                                  head: { ja: '頭', en: 'head' },
+                                  torso: { ja: '胴体', en: 'torso' },
+                                  leg: { ja: '脚', en: 'leg' },
+                                  horn: { ja: '角', en: 'horn' },
+                                  ear: { ja: '耳', en: 'ear' },
+                                  wing: { ja: '翼', en: 'wing' },
+                                  tail: { ja: '尾', en: 'tail' },
+                                }[part.kind]
+                                return `${text(label)} × ${part.count}`
+                              }).join(' · ')}
+                            </p>
                             <p className="muted">
                               {text({
                                 ja: 'これは読取専用の候補です。確認・適用操作を行うまでプロジェクト権限にはなりません。',
@@ -7255,6 +7283,8 @@ function App() {
                     <p role="status">
                       {beginnerCandidates.generation_status === 'missing_target_category'
                         ? text({ ja: '先に動物または昆虫の目標カテゴリを保存してください。', en: 'Save an animal or insect target category first.' })
+                        : beginnerCandidates.generation_status === 'missing_required_parts'
+                          ? text({ ja: '頭1個と胴体1個を目標部品として保存してください。', en: 'Save one head and one torso as required target parts.' })
                         : beginnerCandidates.generation_status === 'unsupported_techniques'
                         ? text({ ja: '谷折りまたは山折りを許可してください。', en: 'Allow valley or mountain folds to generate plans.' })
                         : beginnerCandidates.generation_status === 'resource_limit'
@@ -7285,6 +7315,7 @@ function App() {
                   nativeSnapshot.beginner_design_profile.generation_constraints.maximum_steps,
                   nativeSnapshot.beginner_design_profile.generation_constraints.detail_level,
                   nativeSnapshot.beginner_design_profile.generation_constraints.target_category ?? 'unset',
+                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.target_parts),
                   nativeSnapshot.beginner_design_profile.generation_constraints.allowed_techniques.join(','),
                 ].join(':')}
                 onSubmit={submitBeginnerDesignProfile}
@@ -7339,6 +7370,58 @@ function App() {
                   {text({
                     ja: '初版で対応する目標形状は動物と昆虫だけです。未対応カテゴリは推測しません。',
                     en: 'The initial release supports only animal and insect targets. Unsupported categories are not inferred.',
+                  })}
+                </p>
+                <fieldset
+                  aria-describedby="beginner-target-parts-help beginner-target-parts-total"
+                  onInput={(event) => {
+                    const inputs = event.currentTarget.querySelectorAll<HTMLInputElement>(
+                      'input[name^="target_part_"]',
+                    )
+                    setBeginnerPartTotal(Array.from(inputs).reduce(
+                      (sum, input) => sum + Math.max(0, Number(input.value) || 0),
+                      0,
+                    ))
+                  }}
+                >
+                  <legend>{text({ ja: '目標形状の部品', en: 'Target shape parts' })}</legend>
+                  {([
+                    ['head', { ja: '頭', en: 'Head' }],
+                    ['torso', { ja: '胴体', en: 'Torso' }],
+                    ['leg', { ja: '脚', en: 'Legs' }],
+                    ['horn', { ja: '角', en: 'Horns' }],
+                    ['ear', { ja: '耳', en: 'Ears' }],
+                    ['wing', { ja: '翼', en: 'Wings' }],
+                    ['tail', { ja: '尾', en: 'Tails' }],
+                  ] as const).map(([kind, label]) => (
+                    <label className="field" key={kind}>
+                      <span>{text(label)}</span>
+                      <input
+                        name={`target_part_${kind}`}
+                        type="number"
+                        min={kind === 'head' || kind === 'torso' ? 1 : 0}
+                        max={8}
+                        required={kind === 'head' || kind === 'torso'}
+                        defaultValue={
+                          nativeSnapshot.beginner_design_profile.generation_constraints.target_parts
+                            .find((part) => part.kind === kind)?.count
+                            ?? (kind === 'head' || kind === 'torso' ? 1 : 0)
+                        }
+                        disabled={coreBusy || recoveryBlocking}
+                      />
+                    </label>
+                  ))}
+                </fieldset>
+                <output id="beginner-target-parts-total" aria-live="polite">
+                  {formattedText({
+                    ja: '部品合計: {total} / 32',
+                    en: 'Total parts: {total} / 32',
+                  }, { total: beginnerPartTotal })}
+                </output>
+                <p id="beginner-target-parts-help" className="muted">
+                  {text({
+                    ja: '頭と胴体は各1個必須です。各部品は最大8個、合計32個までです。入力した部品だけを生成条件に使います。',
+                    en: 'One head and one torso are required. Each part is limited to 8 and the total to 32. Only entered parts are used for generation.',
                   })}
                 </p>
                 <label className="field">

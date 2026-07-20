@@ -178,6 +178,7 @@ struct StackedFoldEndpointCollisionDto {
 #[serde(rename_all = "camelCase")]
 struct StackedFoldContinuousPathDto {
     model_id: &'static str,
+    continuous_certificate_model_id: Option<&'static str>,
     sampled_pose_count: usize,
     sampled_nonblocking_pose_count: usize,
     first_sampled_blocking_angle_degrees: Option<f64>,
@@ -556,6 +557,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         },
         continuous_path: StackedFoldContinuousPathDto {
             model_id: continuous_path.model_id(),
+            continuous_certificate_model_id: continuous_path.continuous_certificate_model_id(),
             sampled_pose_count: continuous_path.sampled_pose_count(),
             sampled_nonblocking_pose_count: continuous_path.sampled_nonblocking_pose_count(),
             first_sampled_blocking_angle_degrees: continuous_path

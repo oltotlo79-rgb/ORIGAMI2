@@ -83,6 +83,31 @@ if (
   || !/^rustc [0-9]+\.[0-9]+\.[0-9]+/u.test(propertyMap.get('origami2.build.rustc-version') ?? '')
   || !/^v[0-9]+\.[0-9]+\.[0-9]+/u.test(propertyMap.get('origami2.build.node-version') ?? '')
 ) throw new Error('CycloneDX SBOM build identity mismatch')
+const expectedBuildIdentity = {
+  schema: 'origami2.build-identity.v1',
+  sourceCommit: process.env.RELEASE_COMMIT,
+  version,
+  platform,
+  cargoLockSha256: expectedSbomProperties.get('origami2.build.cargo-lock-sha256'),
+  packageLockSha256: expectedSbomProperties.get('origami2.build.package-lock-sha256'),
+  rustcVersion: propertyMap.get('origami2.build.rustc-version'),
+  nodeVersion: propertyMap.get('origami2.build.node-version'),
+  buildMode: process.env.REQUIRE_SIGNATURE === 'true'
+    ? 'signed-release'
+    : 'unsigned-dry-run',
+  targetTriple: platform === 'windows-x64'
+    ? 'x86_64-pc-windows-msvc'
+    : 'aarch64-apple-darwin',
+}
+const buildIdentityJson = propertyMap.get('origami2.build.identity-json')
+try {
+  JSON.parse(buildIdentityJson)
+} catch {
+  throw new Error('CycloneDX SBOM build identity JSON is invalid')
+}
+if (buildIdentityJson !== JSON.stringify(expectedBuildIdentity)) {
+  throw new Error('CycloneDX SBOM canonical build input identity mismatch')
+}
 }
 const updateManifestBytes = readFileSync(join(directory, updateManifest), 'utf8')
 const parsedUpdateManifest = JSON.parse(updateManifestBytes)

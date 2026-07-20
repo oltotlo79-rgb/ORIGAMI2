@@ -552,6 +552,10 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
             RELEASE_COMMIT: 'a'.repeat(40),
             RUSTC_VERSION: 'rustc 1.90.0 (fixture)',
             NODE_VERSION: 'v24.0.0',
+            BUILD_MODE: 'unsigned-dry-run',
+            TARGET_TRIPLE: platform === 'windows-x64'
+              ? 'x86_64-pc-windows-msvc'
+              : 'aarch64-apple-darwin',
           },
         },
       )
@@ -614,6 +618,8 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
         RELEASE_COMMIT: 'a'.repeat(40),
         RUSTC_VERSION: 'rustc 1.90.0 (fixture)',
         NODE_VERSION: 'v24.0.0',
+        BUILD_MODE: 'unsigned-dry-run',
+        TARGET_TRIPLE: 'x86_64-pc-windows-msvc',
       },
     })
     writeFileSync(path, JSON.stringify({
@@ -635,6 +641,18 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
       properties['origami2.build.cargo-lock-sha256'],
       createHash('sha256').update(readFileSync(join(root, 'Cargo.lock'))).digest('hex'),
     )
+    assert.equal(properties['origami2.build.identity-json'], JSON.stringify({
+      schema: 'origami2.build-identity.v1',
+      sourceCommit: 'a'.repeat(40),
+      version: '0.1.0',
+      platform: 'windows-x64',
+      cargoLockSha256: properties['origami2.build.cargo-lock-sha256'],
+      packageLockSha256: properties['origami2.build.package-lock-sha256'],
+      rustcVersion: 'rustc 1.90.0 (fixture)',
+      nodeVersion: 'v24.0.0',
+      buildMode: 'unsigned-dry-run',
+      targetTriple: 'x86_64-pc-windows-msvc',
+    }))
 
     writeFileSync(path, JSON.stringify({
       bomFormat: 'CycloneDX',

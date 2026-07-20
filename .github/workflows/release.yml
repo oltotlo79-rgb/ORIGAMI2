@@ -223,6 +223,8 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           VERSION: ${{ needs.validate.outputs.version }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          BUILD_MODE: ${{ needs.validate.outputs.mode != 'dry-run' && 'signed-release' || 'unsigned-dry-run' }}
+          TARGET_TRIPLE: ${{ matrix.platform == 'windows-x64' && 'x86_64-pc-windows-msvc' || 'aarch64-apple-darwin' }}
         run: |
           RUSTC_VERSION="$(rustc --version)" \
           NODE_VERSION="$(node --version)" \

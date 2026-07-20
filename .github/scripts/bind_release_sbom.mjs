@@ -8,6 +8,8 @@ const platform = process.env.PLATFORM
 const commit = process.env.RELEASE_COMMIT
 const rustc = process.env.RUSTC_VERSION
 const node = process.env.NODE_VERSION
+const buildMode = process.env.BUILD_MODE
+const targetTriple = process.env.TARGET_TRIPLE
 if (sbom.bomFormat !== 'CycloneDX' || !Array.isArray(sbom.components)) {
   throw new Error('invalid CycloneDX source SBOM')
 }
@@ -18,6 +20,11 @@ if (!['windows-x64', 'macos-arm64'].includes(platform)) throw new Error('invalid
 if (!/^[0-9a-f]{40}$/u.test(commit ?? '')) throw new Error('invalid SBOM source commit')
 if (!/^rustc [0-9]+\.[0-9]+\.[0-9]+/u.test(rustc ?? '')) throw new Error('invalid rustc version')
 if (!/^v[0-9]+\.[0-9]+\.[0-9]+/u.test(node ?? '')) throw new Error('invalid Node.js version')
+if (!['signed-release', 'unsigned-dry-run'].includes(buildMode)) throw new Error('invalid build mode')
+const expectedTarget = platform === 'windows-x64'
+  ? 'x86_64-pc-windows-msvc'
+  : 'aarch64-apple-darwin'
+if (targetTriple !== expectedTarget) throw new Error('invalid build target triple')
 
 for (const key of ['bom-ref', 'purl']) {
   const values = sbom.components.map((component) => component?.[key]).filter(Boolean)
@@ -33,6 +40,18 @@ const properties = {
   'origami2.release.source-commit': commit,
   'origami2.release.version': version,
 }
+properties['origami2.build.identity-json'] = JSON.stringify({
+  schema: 'origami2.build-identity.v1',
+  sourceCommit: commit,
+  version,
+  platform,
+  cargoLockSha256: properties['origami2.build.cargo-lock-sha256'],
+  packageLockSha256: properties['origami2.build.package-lock-sha256'],
+  rustcVersion: rustc,
+  nodeVersion: node,
+  buildMode,
+  targetTriple,
+})
 sbom.metadata = {
   ...(sbom.metadata ?? {}),
   component: { type: 'application', name: 'ORIGAMI2', version },

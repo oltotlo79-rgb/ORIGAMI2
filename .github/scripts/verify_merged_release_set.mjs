@@ -57,6 +57,16 @@ if (process.env.RELEASE_COMMIT !== undefined) {
     const properties = new Map(
       sbom.metadata?.properties?.map(({ name, value }) => [name, value]) ?? [],
     )
+    const identityJson = properties.get('origami2.build.identity-json')
+    let canonicalIdentity
+    try {
+      canonicalIdentity = JSON.parse(identityJson)
+    } catch {
+      throw new Error('cross-platform canonical build input identity is invalid')
+    }
+    if (identityJson !== JSON.stringify(canonicalIdentity)) {
+      throw new Error('cross-platform build input identity is non-canonical')
+    }
     return {
       platform,
       cargoLock: properties.get('origami2.build.cargo-lock-sha256'),
@@ -66,17 +76,36 @@ if (process.env.RELEASE_COMMIT !== undefined) {
       sourceCommit: properties.get('origami2.release.source-commit'),
       version: properties.get('origami2.release.version'),
       declaredPlatform: properties.get('origami2.release.platform'),
+      canonicalIdentity,
     }
   })
   for (const identity of identities) {
     if (identity.declaredPlatform !== identity.platform) {
       throw new Error('cross-platform SBOM platform identity mismatch')
     }
+    const expectedTargetTriple = identity.platform === 'windows-x64'
+      ? 'x86_64-pc-windows-msvc'
+      : 'aarch64-apple-darwin'
+    if (
+      identity.canonicalIdentity.platform !== identity.platform
+      || identity.canonicalIdentity.targetTriple !== expectedTargetTriple
+    ) throw new Error('cross-platform build target identity mismatch')
   }
-  const withoutPlatform = ({ platform: _platform, declaredPlatform: _declared, ...identity }) =>
-    identity
+  const withoutPlatform = ({
+    platform: _platform,
+    declaredPlatform: _declared,
+    canonicalIdentity,
+    ...identity
+  }) => ({
+    ...identity,
+    canonicalIdentity: {
+      ...canonicalIdentity,
+      platform: undefined,
+      targetTriple: undefined,
+    },
+  })
   if (JSON.stringify(withoutPlatform(identities[0])) !== JSON.stringify(withoutPlatform(identities[1]))) {
-    throw new Error('cross-platform build identity mismatch')
+    throw new Error('cross-platform build input identity mismatch')
   }
 }
 console.log(`verified merged release set v${version}`)

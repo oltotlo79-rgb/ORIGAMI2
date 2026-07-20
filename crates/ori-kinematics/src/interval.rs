@@ -67,6 +67,44 @@ impl IntervalRotationMatrixV1 {
     pub const fn entries(&self) -> &[[OutwardIntervalV1; 3]; 3] {
         &self.entries
     }
+
+    pub fn compose(self, rhs: Self, max_work: usize) -> Result<Self, OutwardIntervalErrorV1> {
+        let zero = OutwardIntervalV1::new(0.0, 0.0)?;
+        let mut entries = [[zero; 3]; 3];
+        for (row, output_row) in entries.iter_mut().enumerate() {
+            for (column, output) in output_row.iter_mut().enumerate() {
+                let mut sum = zero;
+                for k in 0..3 {
+                    sum = sum.add(self.entries[row][k].mul(rhs.entries[k][column])?)?;
+                }
+                if sum.work() > max_work {
+                    return Err(OutwardIntervalErrorV1::ResourceLimit);
+                }
+                *output = sum;
+            }
+        }
+        Ok(Self { entries })
+    }
+
+    pub fn apply(
+        self,
+        vector: [OutwardIntervalV1; 3],
+        max_work: usize,
+    ) -> Result<[OutwardIntervalV1; 3], OutwardIntervalErrorV1> {
+        let zero = OutwardIntervalV1::new(0.0, 0.0)?;
+        let mut output = [zero; 3];
+        for (row, value) in output.iter_mut().enumerate() {
+            let mut sum = zero;
+            for (entry, component) in self.entries[row].iter().zip(vector) {
+                sum = sum.add(entry.mul(component)?)?;
+            }
+            if sum.work() > max_work {
+                return Err(OutwardIntervalErrorV1::ResourceLimit);
+            }
+            *value = sum;
+        }
+        Ok(output)
+    }
 }
 
 impl OutwardIntervalV1 {
@@ -468,5 +506,9 @@ mod tests {
             )
             .is_err()
         );
+        let twice = rotation.compose(rotation, 2048).unwrap();
+        for (actual, expected) in twice.entries()[0].iter().zip([-1.0, 0.0, 0.0]) {
+            assert!(actual.lower() <= expected && expected <= actual.upper());
+        }
     }
 }

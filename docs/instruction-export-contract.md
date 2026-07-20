@@ -387,7 +387,7 @@ WebViewへ返してよいものは、opaque export ID、期待project ID・revis
 |---|---|
 | INS-010 手順画像 | SVG page ZIPで部分達成 |
 | INS-010 PDF | 複数page PDF 1.7で部分達成 |
-| INS-010 アプリ内animation | 本契約外。未実装ならINS-010全体は部分実装 |
+| INS-010 アプリ内animation | 本契約外。アプリ内では実装済み。静的PDF・SVG ZIPは各stepの終端姿勢を出力する |
 | INS-004 camera・矢印・注目箇所 | 固定cameraと変更ヒンジ強調のみ。作家指定情報は別設計 |
 | INS-005 手のguide | 本契約外 |
 | IO-006 一枚展開図PDF | [展開図書き出し契約](crease-pattern-export-contract.md)で別に達成 |

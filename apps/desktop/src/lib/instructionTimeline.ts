@@ -128,6 +128,7 @@ export type InstructionPlaybackEvent =
       kind: 'pose_applied'
       stepId: string
       now: number
+      animated?: boolean
     }>
   | Readonly<{
       kind: 'tick'
@@ -314,7 +315,7 @@ export function reduceInstructionPlayback(
       plan: state.plan,
       cursor: state.cursor,
       target: state.target,
-      holdUntil: event.now + state.target.durationMs,
+      holdUntil: event.now + (event.animated ? 0 : state.target.durationMs),
     })
   }
   if (state.status !== 'holding' || !validClock(event.now)) return state
@@ -342,6 +343,50 @@ export function reduceInstructionPlayback(
     plan: state.plan,
     cursor: nextCursor,
     target,
+  })
+}
+
+export function createInstructionInterpolatedStep(
+  target: InstructionStepPresentation,
+  start: FoldPreviewAppliedPoseSnapshot | null,
+  progress: number,
+): InstructionStepPresentation | null {
+  if (
+    target.declarativeOnly
+    || target.stale
+    || !start
+    || start.state === 'running'
+    || start.fixedFaceId !== target.pose.fixed_face
+    || !Number.isFinite(progress)
+    || progress < 0
+    || progress > 1
+    || start.hingeAngles.length !== target.pose.hinge_angles.length
+  ) return null
+  const startByEdge = new Map<string, number>()
+  for (const angle of start.hingeAngles) {
+    if (
+      startByEdge.has(angle.edgeId)
+      || !Number.isFinite(angle.angleDegrees)
+    ) return null
+    startByEdge.set(angle.edgeId, angle.angleDegrees)
+  }
+  const hingeAngles = target.pose.hinge_angles.map((angle) => {
+    const startAngle = startByEdge.get(angle.edge)
+    if (startAngle === undefined) return null
+    return Object.freeze({
+      edge: angle.edge,
+      angle_degrees: normalizeZero(
+        startAngle + (angle.angle_degrees - startAngle) * progress,
+      ),
+    })
+  })
+  if (hingeAngles.some((angle) => angle === null)) return null
+  return Object.freeze({
+    ...target,
+    pose: Object.freeze({
+      ...target.pose,
+      hinge_angles: Object.freeze(hingeAngles) as readonly InstructionHingeAngle[],
+    }),
   })
 }
 

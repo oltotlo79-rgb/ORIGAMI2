@@ -26,6 +26,7 @@ import {
   MAX_INSTRUCTION_DURATION_MS,
   MIN_INSTRUCTION_DURATION_MS,
   createInstructionPlaybackPlan,
+  createInstructionInterpolatedStep,
   createInstructionPlaybackState,
   createInstructionPoseDraft,
   createInstructionTimelinePresentation,
@@ -116,6 +117,9 @@ export function InstructionTimelinePanel({
   const applyObservationRef = useRef<FoldPreviewAppliedPoseSnapshot | null>(null)
   const playbackModelKeyRef = useRef<string | null>(null)
   const previousManualPoseChangeRef = useRef(manualPoseChangeSequence)
+  const currentAppliedPoseRef = useRef<FoldPreviewAppliedPoseSnapshot | null>(null)
+  const animationActiveRef = useRef(false)
+  const animationWasUsedRef = useRef(false)
 
   const steps = presentation.kind === 'ready' ? presentation.steps : []
   const firstPhysicalStep = steps.find((step) => !step.declarativeOnly)
@@ -139,6 +143,7 @@ export function InstructionTimelinePanel({
     && appliedPose.revision === snapshot.revision
       ? appliedPose
       : null
+  currentAppliedPoseRef.current = currentAppliedPose
   const selectedPoseIsDisplayed = Boolean(
     selectedStep
     && !selectedStep.stale
@@ -250,6 +255,7 @@ export function InstructionTimelinePanel({
 
   useEffect(() => {
     if (playback.status !== 'applying') {
+      animationActiveRef.current = false
       applyAttemptRef.current = null
       applyObservationRef.current = null
       return
@@ -257,8 +263,109 @@ export function InstructionTimelinePanel({
     const attemptKey = `${playback.sequence}:${playback.cursor}:${playback.target.id}`
     if (applyAttemptRef.current === attemptKey) return
     applyAttemptRef.current = attemptKey
-    applyObservationRef.current = currentAppliedPose
+    const animationStartPose = currentAppliedPoseRef.current
+    applyObservationRef.current = animationStartPose
+    animationWasUsedRef.current = false
     setSelectedStepId(playback.target.id)
+    const animatedStart = createInstructionInterpolatedStep(
+      playback.target,
+      animationStartPose,
+      0,
+    )
+    if (animatedStart && playback.target.durationMs > 0) {
+      animationActiveRef.current = true
+      animationWasUsedRef.current = true
+      let initialApplied = false
+      try {
+        initialApplied = applyStepPose(animatedStart)
+      } catch {
+        initialApplied = false
+      }
+      if (!initialApplied) {
+        animationActiveRef.current = false
+        setPlayback((current) => reduceInstructionPlayback(current, {
+          kind: 'apply_failed',
+        }))
+        return
+      }
+      let elapsedMs = 0
+      let previousFrameTime: number | null = null
+      let frame = 0
+      const animate = (now: number) => {
+        if (
+          playbackRef.current.status !== 'applying'
+          || playbackRef.current.sequence !== playback.sequence
+          || playbackRef.current.target.id !== playback.target.id
+        ) {
+          animationActiveRef.current = false
+          return
+        }
+        if (previousFrameTime !== null) {
+          const frameDelta = now - previousFrameTime
+          elapsedMs += Number.isFinite(frameDelta) && frameDelta > 0
+            ? frameDelta
+            : 1_000 / 60
+        }
+        previousFrameTime = now
+        const progress = Math.min(1, Math.max(
+          0,
+          elapsedMs / playback.target.durationMs,
+        ))
+        const step = createInstructionInterpolatedStep(
+          playback.target,
+          applyObservationRef.current,
+          progress,
+        )
+        let applied = false
+        try {
+          applied = step !== null && applyStepPose(step)
+        } catch {
+          applied = false
+        }
+        if (!applied) {
+          animationActiveRef.current = false
+          setPlayback((current) => reduceInstructionPlayback(current, {
+            kind: 'apply_failed',
+          }))
+          return
+        }
+        frame = window.requestAnimationFrame(animate)
+      }
+      frame = window.requestAnimationFrame(animate)
+      const completionTimer = window.setTimeout(() => {
+        window.cancelAnimationFrame(frame)
+        let finalApplied = false
+        try {
+          finalApplied = applyStepPose(playback.target)
+        } catch {
+          finalApplied = false
+        }
+        animationActiveRef.current = false
+        if (!finalApplied) {
+          setPlayback((current) => reduceInstructionPlayback(current, {
+            kind: 'apply_failed',
+          }))
+          return
+        }
+        setPlayback((current) => {
+          const now = performance.now()
+          return reduceInstructionPlayback(
+            reduceInstructionPlayback(current, {
+              kind: 'pose_applied',
+              stepId: playback.target.id,
+              now,
+              animated: true,
+            }),
+            { kind: 'tick', now },
+          )
+        })
+      }, playback.target.durationMs)
+      return () => {
+        animationActiveRef.current = false
+        window.cancelAnimationFrame(frame)
+        window.clearTimeout(completionTimer)
+      }
+    }
     let applied = false
     try {
       applied = !playback.target.stale && applyStepPose(playback.target)
@@ -270,7 +377,7 @@ export function InstructionTimelinePanel({
         kind: 'apply_failed',
       }))
     }
-  }, [applyStepPose, currentAppliedPose, playback])
+  }, [applyStepPose, playback])
 
   useEffect(() => {
     if (
@@ -285,11 +392,13 @@ export function InstructionTimelinePanel({
       applyObservationRef.current,
       currentAppliedPose,
     )
+    if (animationActiveRef.current) return
     if (observation === 'acknowledge') {
       setPlayback((current) => reduceInstructionPlayback(current, {
         kind: 'pose_applied',
         stepId: playback.target.id,
         now: performance.now(),
+        animated: animationWasUsedRef.current,
       }))
       return
     }
@@ -312,7 +421,10 @@ export function InstructionTimelinePanel({
           ? reduceInstructionPlayback(current, { kind: 'apply_failed' })
           : current
       ))
-    }, INSTRUCTION_APPLICATION_TIMEOUT_MS)
+    }, Math.max(
+      INSTRUCTION_APPLICATION_TIMEOUT_MS,
+      playback.target.durationMs + 5_000,
+    ))
     return () => window.clearTimeout(handle)
   }, [playback])
 

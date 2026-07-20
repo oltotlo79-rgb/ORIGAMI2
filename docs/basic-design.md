@@ -723,7 +723,7 @@ project instance・ID・revision・形式を固定
 - 一件でもstaleなstepがあれば全体を拒否し、skip、truncate、部分保存を行わない。
 - 最終出力128 MiB、総page 2,048、一page 4 MiB、総glyph 500,000、総投影点visit 1,000,000を初版上限とする。
 - exact bytesはnative memoryへ最新一世代だけstageし、WebViewにはopaque IDとbounded metadataだけを返す。保存dialog取消では再試行でき、成功時だけ一度消費する。
-- アプリ内animationが未実装のため、現時点のINS-010は部分実装として扱う。作家指定camera・矢印・注目箇所、手や指のguideはINS-004/INS-005の別作業である。
+- アプリ内では各手順の所要時間に合わせ、開始姿勢から終端姿勢まで全hinge角を同時補間する。停止、非表示、手動操作、model・revision変更でanimationを取消し、終端適用に失敗した場合も再生を停止する。作家指定camera・矢印・注目箇所、手や指のguideはINS-004/INS-005として同じ3D表示へ重ねる。
 
 ## 13. セキュリティ設計
 

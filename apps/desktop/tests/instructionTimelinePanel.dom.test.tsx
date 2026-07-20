@@ -240,10 +240,15 @@ describe('InstructionTimelinePanel localization', () => {
       .toEqual(['physical-1'])
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(100)
+      await vi.advanceTimersByTimeAsync(101)
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(0)
     })
-    expect(applyStepPose.mock.calls.map(([step]) => step.id))
-      .toEqual(['physical-1', 'physical-2'])
+    const appliedIds = applyStepPose.mock.calls.map(([step]) => step.id)
+    expect(appliedIds.filter((id) => id === 'physical-1').length)
+      .toBeGreaterThan(1)
+    expect(appliedIds.at(-1)).toBe('physical-2')
+    expect(appliedIds).not.toContain('declarative')
     expect(screen.getAllByText(/手順 3「Physical two」を表示/u).length)
       .toBeGreaterThan(0)
     expect(screen.getByText('3. Physical two').closest('button')
@@ -325,7 +330,9 @@ describe('InstructionTimelinePanel localization', () => {
     expect(applyThenCancel).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByRole('button', { name: '再生を停止' }))
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(500)
+      await vi.advanceTimersByTimeAsync(501)
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(0)
     })
     expect(applyThenCancel).toHaveBeenCalledTimes(1)
     unmount()
@@ -350,9 +357,14 @@ describe('InstructionTimelinePanel localization', () => {
     }))
     await act(async () => Promise.resolve())
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(500)
+      await vi.advanceTimersByTimeAsync(501)
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(0)
     })
-    expect(applyUntilStale).toHaveBeenCalledTimes(1)
+    const staleBoundaryIds = applyUntilStale.mock.calls.map(([step]) => step.id)
+    expect(staleBoundaryIds.filter((id) => id === 'physical-1').length)
+      .toBeGreaterThan(1)
+    expect(staleBoundaryIds).not.toContain('physical-2')
     expect(screen.getAllByText(/展開図が変わった手順のため再生を停止/u).length)
       .toBeGreaterThan(0)
   })
@@ -361,11 +373,12 @@ describe('InstructionTimelinePanel localization', () => {
 function renderPanel(
   snapshot = SNAPSHOT,
   applyStepPose = vi.fn(() => true),
+  appliedPose: FoldPreviewAppliedPoseSnapshot | null = APPLIED_POSE,
 ) {
   return render(
     <InstructionTimelinePanel
       snapshot={snapshot}
-      appliedPose={APPLIED_POSE}
+      appliedPose={appliedPose}
       poseModelKey="model-1"
       manualPoseChangeSequence={0}
       coreBusy={false}

@@ -10,6 +10,7 @@ import {
   MAX_INSTRUCTION_TOTAL_HINGES,
   createInstructionPlaybackPlan,
   createInstructionPlaybackState,
+  createInstructionInterpolatedStep,
   createInstructionPoseDraft,
   createInstructionTimelinePresentation,
   formatInstructionDuration,
@@ -101,6 +102,34 @@ test('validates authored cameras, arrows, focus points, and hand guides', () => 
       CURRENT_FINGERPRINT,
     ).kind, 'invalid')
   }
+})
+
+test('interpolates every hinge together for smooth timeline animation', () => {
+  const presentation = createInstructionTimelinePresentation({
+    steps: [step('step-1', CURRENT_FINGERPRINT, [
+      angle('hinge-1', 90),
+      angle('hinge-2', 30),
+    ])],
+  }, CURRENT_FINGERPRINT)
+  assert.equal(presentation.kind, 'ready')
+  if (presentation.kind !== 'ready') return
+  const interpolated = createInstructionInterpolatedStep(
+    presentation.steps[0]!,
+    appliedPose('stable', [
+      { edgeId: 'hinge-1', angleDegrees: 10 },
+      { edgeId: 'hinge-2', angleDegrees: 90 },
+    ]),
+    0.25,
+  )
+  assert.deepEqual(interpolated?.pose.hinge_angles, [
+    { edge: 'hinge-1', angle_degrees: 30 },
+    { edge: 'hinge-2', angle_degrees: 75 },
+  ])
+  assert.equal(createInstructionInterpolatedStep(
+    presentation.steps[0]!,
+    appliedPose('stable', [{ edgeId: 'hinge-1', angleDegrees: 10 }]),
+    0.5,
+  ), null)
 })
 
 test('fails closed for unknown fields, models, fingerprints, duplicates, and invalid values', () => {

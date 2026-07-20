@@ -166,8 +166,12 @@ pub(crate) fn recognize_beginner_part_suggestions(
     let bytes = {
         let project = lock_project(&state)?;
         ensure_recognition_binding(&project, binding)?;
-        project.texture_assets.iter().find(|asset| asset.id == request.asset_id)
-            .map(|asset| asset.bytes.clone()).ok_or_else(|| "recognition_asset_unavailable".to_owned())?
+        project
+            .texture_assets
+            .iter()
+            .find(|asset| asset.id == request.asset_id)
+            .map(|asset| asset.bytes.clone())
+            .ok_or_else(|| "recognition_asset_unavailable".to_owned())?
     };
     let (width, height, rgba) = decode_general_image(&bytes)?;
     let candidates = ori_domain::analyze_outline_candidates_rgba_v1(width, height, &rgba)
@@ -175,8 +179,11 @@ pub(crate) fn recognize_beginner_part_suggestions(
     if candidates.get(usize::from(request.candidate.id)) != Some(&request.candidate) {
         return Err("outline_candidate_stale".to_owned());
     }
-    let others = candidates.iter().filter(|candidate| candidate.id != request.candidate.id)
-        .take(7).collect::<Vec<_>>();
+    let others = candidates
+        .iter()
+        .filter(|candidate| candidate.id != request.candidate.id)
+        .take(7)
+        .collect::<Vec<_>>();
     if others.is_empty() {
         return Err("part_suggestion_ambiguous".to_owned());
     }
@@ -188,12 +195,18 @@ pub(crate) fn recognize_beginner_part_suggestions(
     for (index, candidate) in others.into_iter().enumerate() {
         suggestions.push(BeginnerPartSuggestionV1 {
             candidate_id: candidate.id,
-            suggested_kind: if index == 0 && candidate.area_pixels.saturating_mul(4) >= request.candidate.area_pixels {
+            suggested_kind: if index == 0
+                && candidate.area_pixels.saturating_mul(4) >= request.candidate.area_pixels
+            {
                 ori_domain::BeginnerTargetPartKindV1::Head
             } else {
                 ori_domain::BeginnerTargetPartKindV1::Leg
             },
-            confidence_reason: if index == 0 { "largest_secondary_outline" } else { "small_secondary_outline" },
+            confidence_reason: if index == 0 {
+                "largest_secondary_outline"
+            } else {
+                "small_secondary_outline"
+            },
         });
     }
     let project = lock_project(&state)?;
@@ -207,6 +220,112 @@ pub(crate) fn recognize_beginner_part_suggestions(
         selected_outline_id: request.candidate.id,
         suggestions,
     })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BeginnerPartAssignmentV1 {
+    candidate_id: u8,
+    kind: ori_domain::BeginnerTargetPartKindV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApplyBeginnerPartAssignmentsRequest {
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    underlay_id: UnderlayId,
+    asset_id: AssetId,
+    selected_outline: ori_domain::BeginnerOutlineCandidateV1,
+    assignments: Vec<BeginnerPartAssignmentV1>,
+    confirmed: bool,
+}
+
+#[tauri::command]
+pub(crate) fn apply_beginner_part_assignments(
+    state: State<'_, AppState>,
+    request: ApplyBeginnerPartAssignmentsRequest,
+) -> Result<ProjectSnapshot, String> {
+    if !request.confirmed || request.assignments.is_empty() || request.assignments.len() > 8 {
+        return Err("part_assignment_confirmation_required".to_owned());
+    }
+    let binding = RecognizeBeginnerTargetRequest {
+        expected_project_instance_id: request.expected_project_instance_id,
+        expected_project_id: request.expected_project_id,
+        expected_revision: request.expected_revision,
+        underlay_id: request.underlay_id,
+        asset_id: request.asset_id,
+    };
+    let bytes = {
+        let project = lock_project(&state)?;
+        ensure_recognition_binding(&project, binding)?;
+        project
+            .texture_assets
+            .iter()
+            .find(|asset| asset.id == request.asset_id)
+            .map(|asset| asset.bytes.clone())
+            .ok_or_else(|| "recognition_asset_unavailable".to_owned())?
+    };
+    let source_hash: [u8; 32] = Sha256::digest(&bytes).into();
+    let (width, height, rgba) = decode_general_image(&bytes)?;
+    let candidates = ori_domain::analyze_outline_candidates_rgba_v1(width, height, &rgba)
+        .map_err(|_| "recognition_resource_limit".to_owned())?;
+    if candidates.get(usize::from(request.selected_outline.id)) != Some(&request.selected_outline) {
+        return Err("part_assignment_stale".to_owned());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    if request.assignments.iter().any(|assignment| {
+        !seen.insert(assignment.candidate_id)
+            || !candidates
+                .iter()
+                .any(|candidate| candidate.id == assignment.candidate_id)
+    }) || !request
+        .assignments
+        .iter()
+        .any(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Torso)
+    {
+        return Err("part_assignment_invalid".to_owned());
+    }
+    let mut counts = [0_u8; 3];
+    for assignment in request.assignments {
+        let index = match assignment.kind {
+            ori_domain::BeginnerTargetPartKindV1::Torso => 0,
+            ori_domain::BeginnerTargetPartKindV1::Head => 1,
+            ori_domain::BeginnerTargetPartKindV1::Leg => 2,
+            _ => return Err("part_assignment_invalid".to_owned()),
+        };
+        counts[index] += 1;
+    }
+    let target_parts = [
+        ori_domain::BeginnerTargetPartKindV1::Torso,
+        ori_domain::BeginnerTargetPartKindV1::Head,
+        ori_domain::BeginnerTargetPartKindV1::Leg,
+    ]
+    .into_iter()
+    .zip(counts)
+    .filter(|(_, count)| *count > 0)
+    .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
+    .collect();
+    let mut project = lock_project(&state)?;
+    ensure_recognition_binding(&project, binding)?;
+    let live = project
+        .texture_assets
+        .iter()
+        .find(|asset| asset.id == request.asset_id)
+        .ok_or_else(|| "recognition_asset_unavailable".to_owned())?;
+    if <[u8; 32]>::from(Sha256::digest(&live.bytes)) != source_hash {
+        return Err("part_assignment_stale".to_owned());
+    }
+    let mut profile = project.editor.beginner_design_profile().clone();
+    profile.generation_constraints.target_parts = target_parts;
+    execute_command(
+        &mut project,
+        request.expected_project_instance_id,
+        request.expected_project_id,
+        request.expected_revision,
+        ori_core::Command::UpdateBeginnerDesignProfile { profile },
+    )
 }
 
 #[derive(Debug, Deserialize)]

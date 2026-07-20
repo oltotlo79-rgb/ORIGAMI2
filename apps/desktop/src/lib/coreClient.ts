@@ -1632,6 +1632,55 @@ export function applyBeginnerOutlineCandidate(
   })
 }
 
+export type BeginnerPartSuggestionsResponse = Readonly<{
+  project_instance_id: string; project_id: string; revision: number
+  underlay_id: string; asset_id: string; selected_outline_id: number
+  suggestions: ReadonlyArray<Readonly<{
+    candidate_id: number
+    suggested_kind: 'torso' | 'head' | 'leg'
+    confidence_reason: 'selected_primary_outline' | 'largest_secondary_outline' | 'small_secondary_outline'
+  }>>
+}>
+
+export async function recognizeBeginnerPartSuggestions(
+  proposal: BeginnerOutlineCandidatesResponse,
+  candidate: BeginnerOutlineCandidatesResponse['candidates'][number],
+): Promise<BeginnerPartSuggestionsResponse> {
+  const value = await invoke<unknown>('recognize_beginner_part_suggestions', { request: {
+    expectedProjectInstanceId: proposal.project_instance_id, expectedProjectId: proposal.project_id,
+    expectedRevision: proposal.revision, underlayId: proposal.underlay_id, assetId: proposal.asset_id,
+    candidate, confirmed: false,
+  } })
+  const record = exactCoreDataRecord(value, ['project_instance_id', 'project_id', 'revision', 'underlay_id', 'asset_id', 'selected_outline_id', 'suggestions'] as const)
+  if (!record || record.project_instance_id !== proposal.project_instance_id
+    || record.project_id !== proposal.project_id || record.revision !== proposal.revision
+    || record.underlay_id !== proposal.underlay_id || record.asset_id !== proposal.asset_id
+    || record.selected_outline_id !== candidate.id || !Array.isArray(record.suggestions)
+    || record.suggestions.length < 2 || record.suggestions.length > 8) throw new BeginnerRecognitionError('native_failure')
+  const suggestions = record.suggestions.map((value) => {
+    const item = exactCoreDataRecord(value, ['candidate_id', 'suggested_kind', 'confidence_reason'] as const)
+    if (!item || !Number.isInteger(item.candidate_id)
+      || !['torso', 'head', 'leg'].includes(String(item.suggested_kind))
+      || !['selected_primary_outline', 'largest_secondary_outline', 'small_secondary_outline'].includes(String(item.confidence_reason))) {
+      throw new BeginnerRecognitionError('native_failure')
+    }
+    return Object.freeze(item) as BeginnerPartSuggestionsResponse['suggestions'][number]
+  })
+  return Object.freeze({ ...record, suggestions: Object.freeze(suggestions) }) as BeginnerPartSuggestionsResponse
+}
+
+export function applyBeginnerPartAssignments(
+  outline: BeginnerOutlineCandidatesResponse,
+  selectedOutline: BeginnerOutlineCandidatesResponse['candidates'][number],
+  assignments: ReadonlyArray<{ candidate_id: number; kind: 'torso' | 'head' | 'leg' }>,
+) {
+  return invoke<ProjectSnapshot>('apply_beginner_part_assignments', { request: {
+    expectedProjectInstanceId: outline.project_instance_id, expectedProjectId: outline.project_id,
+    expectedRevision: outline.revision, underlayId: outline.underlay_id, assetId: outline.asset_id,
+    selectedOutline, assignments, confirmed: true,
+  } })
+}
+
 export function applyBeginnerGeneratedPlan(
   expectedProjectId: string,
   expectedRevision: number,

@@ -135,6 +135,8 @@ import {
   importBeginnerReferenceModel,
   recognizeBeginnerOutlineCandidates,
   applyBeginnerOutlineCandidate,
+  recognizeBeginnerPartSuggestions,
+  applyBeginnerPartAssignments,
   getBeginnerReferenceModelGeometry,
   updatePaperProperties,
   importFrontPaperTexture,
@@ -145,6 +147,7 @@ import {
   type BeginnerRecognitionProposalV1,
   type BeginnerReferenceModelGeometry,
   type BeginnerOutlineCandidatesResponse,
+  type BeginnerPartSuggestionsResponse,
   BeginnerRecognitionError,
   type MirrorSelectionPreflight,
   type MirrorSelectionRequest,
@@ -712,6 +715,10 @@ function App() {
   const beginnerRecognitionRequestRef = useRef(0)
   const [beginnerOutlineCandidates, setBeginnerOutlineCandidates] =
     useState<BeginnerOutlineCandidatesResponse | null>(null)
+  const [beginnerPartSuggestions, setBeginnerPartSuggestions] =
+    useState<BeginnerPartSuggestionsResponse | null>(null)
+  const [beginnerPartAssignments, setBeginnerPartAssignments] =
+    useState<Array<{ candidate_id: number; kind: 'torso' | 'head' | 'leg' }>>([])
   const [beginnerReferenceGeometry, setBeginnerReferenceGeometry] =
     useState<BeginnerReferenceModelGeometry | null>(null)
   const beginnerReferenceRequestRef = useRef(0)
@@ -722,6 +729,8 @@ function App() {
     setBeginnerRecognitionBusy(false)
     setBeginnerRecognitionProposal(null)
     setBeginnerOutlineCandidates(null)
+    setBeginnerPartSuggestions(null)
+    setBeginnerPartAssignments([])
     beginnerReferenceRequestRef.current += 1
     setBeginnerReferenceGeometry(null)
     setBeginnerPartTotal(
@@ -3787,6 +3796,33 @@ function App() {
     }))) return
     void runNativeEdit(() => applyBeginnerOutlineCandidate(proposal, candidate, true))
       .then(() => setBeginnerOutlineCandidates(null))
+  }
+
+  function requestBeginnerPartSuggestions(candidate: BeginnerOutlineCandidatesResponse['candidates'][number]) {
+    const outline = beginnerOutlineCandidates
+    if (!outline) return
+    void recognizeBeginnerPartSuggestions(outline, candidate).then((proposal) => {
+      const latest = latestSnapshotRef.current
+      if (latest?.project_instance_id === proposal.project_instance_id
+        && latest.project_id === proposal.project_id && latest.revision === proposal.revision) {
+        setBeginnerPartSuggestions(proposal)
+        setBeginnerPartAssignments(proposal.suggestions.map((item) => ({
+          candidate_id: item.candidate_id, kind: item.suggested_kind,
+        })))
+      }
+    }).catch(() => setBeginnerPartSuggestions(null))
+  }
+
+  function confirmBeginnerPartAssignments() {
+    const outline = beginnerOutlineCandidates
+    const proposal = beginnerPartSuggestions
+    const selected = outline?.candidates.find((candidate) => candidate.id === proposal?.selected_outline_id)
+    if (!outline || !proposal || !selected || !window.confirm(text({
+      ja: '明示した部位割当を目標部位へ反映しますか？生成は開始しません。',
+      en: 'Apply the explicit part assignments to target parts? This does not start generation.',
+    }))) return
+    void runNativeEdit(() => applyBeginnerPartAssignments(outline, selected, beginnerPartAssignments))
+      .then(() => setBeginnerPartSuggestions(null))
   }
 
   function copyBeginnerRecognitionProposal() {
@@ -7976,9 +8012,34 @@ function App() {
                             >
                               {text({ ja: '確認して目標へコピー', en: 'Confirm and copy to target' })}
                             </button>
+                            <button type="button" onClick={() => requestBeginnerPartSuggestions(candidate)}>
+                              {text({ ja: '部位候補を提案', en: 'Suggest parts' })}
+                            </button>
                           </li>
                         ))}
                       </ol>
+                      {beginnerPartSuggestions && (
+                        <fieldset>
+                          <legend>{text({ ja: '部位の明示割当', en: 'Explicit part assignments' })}</legend>
+                          {beginnerPartAssignments.map((assignment, index) => (
+                            <label key={assignment.candidate_id}>
+                              {formattedText({ ja: '候補 {id}', en: 'Candidate {id}' }, { id: assignment.candidate_id + 1 })}
+                              <select value={assignment.kind} onChange={(event) => {
+                                const kind = event.currentTarget.value as 'torso' | 'head' | 'leg'
+                                setBeginnerPartAssignments((items) => items.map((item, itemIndex) =>
+                                  itemIndex === index ? { ...item, kind } : item))
+                              }}>
+                                <option value="torso">{text({ ja: '胴体', en: 'Torso' })}</option>
+                                <option value="head">{text({ ja: '頭', en: 'Head' })}</option>
+                                <option value="leg">{text({ ja: '脚', en: 'Leg' })}</option>
+                              </select>
+                            </label>
+                          ))}
+                          <button type="button" onClick={confirmBeginnerPartAssignments}>
+                            {text({ ja: '確認して目標部位へ反映', en: 'Confirm target parts' })}
+                          </button>
+                        </fieldset>
+                      )}
                     </section>
                   )}
                   {beginnerRecognitionProposal && (

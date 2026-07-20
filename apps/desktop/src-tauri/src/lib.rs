@@ -18,8 +18,9 @@ mod save_path;
 mod stacked_fold_read;
 mod stacked_fold_transaction;
 use beginner_recognition::{
-    apply_beginner_outline_candidate, recognize_beginner_outline_candidates,
-    recognize_beginner_part_suggestions, recognize_beginner_silhouette, recognize_beginner_target,
+    apply_beginner_outline_candidate, apply_beginner_part_assignments,
+    recognize_beginner_outline_candidates, recognize_beginner_part_suggestions,
+    recognize_beginner_silhouette, recognize_beginner_target,
 };
 use stacked_fold_transaction::StackedFoldTransactionState;
 
@@ -8622,6 +8623,7 @@ pub fn run() {
             recognize_beginner_outline_candidates,
             recognize_beginner_part_suggestions,
             apply_beginner_outline_candidate,
+            apply_beginner_part_assignments,
             apply_beginner_generated_plan,
             update_project_memo,
             update_beginner_design_profile,

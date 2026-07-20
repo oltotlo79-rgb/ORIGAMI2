@@ -77,6 +77,17 @@ test('an explicitly confirmed outline is revalidated and copied as one history c
   assert.match(app, /This does not start generation/u)
 })
 
+test('part suggestions require explicit assignment and one confirmed history command', () => {
+  assert.match(native, /part_suggestion_ambiguous/u)
+  assert.match(native, /part_assignment_stale/u)
+  assert.match(native, /UpdateBeginnerDesignProfile/u)
+  assert.match(client, /recognize_beginner_part_suggestions/u)
+  assert.match(client, /apply_beginner_part_assignments/u)
+  assert.match(app, /Explicit part assignments/u)
+  assert.match(app, /Confirm target parts/u)
+  assert.match(app, /This does not start generation/u)
+})
+
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 }

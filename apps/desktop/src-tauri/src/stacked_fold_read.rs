@@ -2115,6 +2115,11 @@ fn transaction_failure_classes(
 mod tests {
     use super::*;
 
+    // The production cancellation generation is intentionally process-wide.
+    // Serialize tests that advance it so parallel test scheduling cannot make
+    // an unrelated preview observe a foreign cancellation.
+    static STACKED_FOLD_READ_GENERATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn fixed_id<T: serde::de::DeserializeOwned>(group: &str, index: u64) -> T {
         serde_json::from_str(&format!("\"00000000-0000-4000-{group}-{index:012x}\"")).unwrap()
     }
@@ -2203,6 +2208,9 @@ mod tests {
         certified_path_steps: usize,
         cancel_after_transition: Option<usize>,
     ) -> Vec<(String, String, String)> {
+        let _generation_guard = STACKED_FOLD_READ_GENERATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut project = two_hinge_tree_project();
         super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
         let instance = project.instance_id;
@@ -2843,6 +2851,9 @@ mod tests {
 
     #[test]
     fn stacked_fold_read_cancel_advances_the_process_wide_generation() {
+        let _generation_guard = STACKED_FOLD_READ_GENERATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let before = STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire);
         cancel_current_stacked_fold_read_v1().expect("generation has capacity");
         assert_eq!(

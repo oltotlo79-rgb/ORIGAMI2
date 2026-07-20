@@ -3857,7 +3857,7 @@ mod tests {
     }
 
     #[test]
-    fn split_existing_fold_cycle_has_a_nonzero_requested_closure() {
+    fn split_existing_fold_cycle_rejects_nonclosing_nonzero_request() {
         let identity = ProjectId::new();
         let source_revision = 52;
         let sheet = create_rectangular_sheet(400.0, 400.0, false).expect("create rectangle");
@@ -3930,20 +3930,12 @@ mod tests {
         let initial =
             prepare_stacked_fold_initial_graph_pose_v1(target, &source_model, &source_pose)
                 .expect("lift folded source");
-        let requested = prepare_stacked_fold_requested_graph_pose_v1(initial, 90.0)
-            .expect("nonzero split-cycle closure");
-        assert_eq!(requested.requested_angle_degrees(), 90.0);
-        let residual = requested
-            .initial()
-            .target()
-            .hinge_geometry()
-            .measure_spanning_closure(
-                requested.initial().target().audit(),
-                requested.pose().fixed_face(),
-                requested.pose().hinge_angles(),
-            )
-            .expect("measure requested closure");
-        assert_eq!(residual.maximum_error().to_bits(), 0.0_f64.to_bits());
+        assert!(matches!(
+            prepare_stacked_fold_requested_graph_pose_v1(initial, 90.0),
+            Err(PrepareStackedFoldRequestedPoseErrorV1::Kinematics(
+                KinematicsError::UnsupportedTopology
+            ))
+        ));
     }
 
     #[test]

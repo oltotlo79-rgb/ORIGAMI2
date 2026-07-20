@@ -608,6 +608,84 @@ pub fn export_static_triangle_mesh_with_limits(
     })
 }
 
+/// Exports a zero-thickness sheet as two explicitly oriented glTF
+/// primitives. The existing static exporter remains byte-for-byte unchanged.
+pub fn export_dual_sided_triangle_mesh_glb(
+    mesh: &ValidatedIndexedTriangleMesh,
+    back_texture: EmbeddedBaseColorTextureV1,
+    back_base_color_rgba: [u8; 4],
+) -> Result<StaticMeshExportArtifact, StaticMeshExportError> {
+    export_dual_sided_triangle_mesh_glb_with_limits(
+        mesh,
+        back_texture,
+        back_base_color_rgba,
+        StaticMeshExportLimits::default(),
+    )
+}
+
+pub fn export_dual_sided_triangle_mesh_glb_with_limits(
+    mesh: &ValidatedIndexedTriangleMesh,
+    back_texture: EmbeddedBaseColorTextureV1,
+    back_base_color_rgba: [u8; 4],
+    limits: StaticMeshExportLimits,
+) -> Result<StaticMeshExportArtifact, StaticMeshExportError> {
+    validate_embedded_texture(&back_texture, mesh.positions_mm.len())?;
+    let front = serialize_glb(
+        mesh,
+        limits.max_output_bytes.min(MAX_STATIC_MESH_EXPORT_BYTES),
+    )?;
+    let bytes = append_back_primitive_glb(
+        &front,
+        mesh,
+        &back_texture,
+        back_base_color_rgba,
+        limits.max_output_bytes.min(MAX_STATIC_MESH_EXPORT_BYTES),
+    )?;
+    Ok(StaticMeshExportArtifact {
+        format: StaticMeshExportFormat::Glb20,
+        media_type: StaticMeshExportFormat::Glb20.media_type(),
+        file_extension: StaticMeshExportFormat::Glb20.file_extension(),
+        bytes,
+        vertex_count: mesh.positions_mm.len(),
+        triangle_count: mesh.triangles.len() * 2,
+    })
+}
+
+fn validate_embedded_texture(
+    texture: &EmbeddedBaseColorTextureV1,
+    vertex_count: usize,
+) -> Result<(), StaticMeshExportError> {
+    if texture.bytes.len() > MAX_STATIC_MESH_TEXTURE_BYTES {
+        return Err(StaticMeshExportError::TextureTooLarge {
+            actual: texture.bytes.len(),
+            maximum: MAX_STATIC_MESH_TEXTURE_BYTES,
+        });
+    }
+    if texture.tex_coords.len() != vertex_count {
+        return Err(StaticMeshExportError::TextureCoordinateCountMismatch {
+            actual: texture.tex_coords.len(),
+            expected: vertex_count,
+        });
+    }
+    let payload_valid = match texture.media_type {
+        EmbeddedTextureMediaTypeV1::Png => texture.bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        EmbeddedTextureMediaTypeV1::Jpeg => {
+            texture.bytes.starts_with(&[0xff, 0xd8]) && texture.bytes.ends_with(&[0xff, 0xd9])
+        }
+    };
+    if !payload_valid {
+        return Err(StaticMeshExportError::InvalidTexturePayload);
+    }
+    if let Some(vertex_index) = texture
+        .tex_coords
+        .iter()
+        .position(|uv| uv.iter().any(|value| !value.is_finite()))
+    {
+        return Err(StaticMeshExportError::NonFiniteTextureCoordinate { vertex_index });
+    }
+    Ok(())
+}
+
 fn validate_name(name: &str, limits: StaticMeshExportLimits) -> Result<(), StaticMeshExportError> {
     let maximum_chars = limits.max_name_chars.min(MAX_STATIC_MESH_NAME_CHARS);
     let actual_chars = name.chars().count();
@@ -1746,6 +1824,188 @@ fn serialize_glb(
     Ok(output)
 }
 
+fn append_back_primitive_glb(
+    front: &[u8],
+    mesh: &ValidatedIndexedTriangleMesh,
+    texture: &EmbeddedBaseColorTextureV1,
+    back_color: [u8; 4],
+    maximum: usize,
+) -> Result<Vec<u8>, StaticMeshExportError> {
+    let fail = || StaticMeshExportError::StructureNotRepresentable {
+        format: StaticMeshExportFormat::Glb20,
+    };
+    let json_len = read_u32_le_at(front, 12)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(fail)?;
+    let json_start = 20usize;
+    let bin_header = json_start.checked_add(json_len).ok_or_else(fail)?;
+    let bin_len = read_u32_le_at(front, bin_header)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(fail)?;
+    if read_u32_le_at(front, bin_header + 4) != Some(GLB_BIN_CHUNK_TYPE) {
+        return Err(fail());
+    }
+    let bin_start = bin_header + 8;
+    let mut binary = front
+        .get(bin_start..bin_start.checked_add(bin_len).ok_or_else(fail)?)
+        .ok_or_else(fail)?
+        .to_vec();
+    let mut root: serde_json::Value =
+        serde_json::from_slice(front.get(json_start..bin_header).ok_or_else(fail)?)
+            .map_err(|_| fail())?;
+
+    let normal_view = root["bufferViews"].as_array().ok_or_else(fail)?.len();
+    let normal_offset = binary.len();
+    for normal in &mesh.normals {
+        for component in normal {
+            binary.extend_from_slice(&canonical_zero_f32(-(*component as f32)).to_le_bytes());
+        }
+    }
+    root["bufferViews"]
+        .as_array_mut()
+        .ok_or_else(fail)?
+        .push(serde_json::json!({
+            "buffer": 0, "byteOffset": normal_offset,
+            "byteLength": mesh.normals.len() * 12, "target": GLTF_ARRAY_BUFFER
+        }));
+    let normal_accessor = root["accessors"].as_array().ok_or_else(fail)?.len();
+    root["accessors"]
+        .as_array_mut()
+        .ok_or_else(fail)?
+        .push(serde_json::json!({
+            "bufferView": normal_view, "byteOffset": 0, "componentType": GLTF_FLOAT,
+            "count": mesh.normals.len(), "type": "VEC3"
+        }));
+
+    let index_view = root["bufferViews"].as_array().ok_or_else(fail)?.len();
+    let index_offset = binary.len();
+    for triangle in &mesh.triangles {
+        for index in [triangle[0], triangle[2], triangle[1]] {
+            binary.extend_from_slice(&index.to_le_bytes());
+        }
+    }
+    root["bufferViews"]
+        .as_array_mut()
+        .ok_or_else(fail)?
+        .push(serde_json::json!({
+            "buffer": 0, "byteOffset": index_offset,
+            "byteLength": mesh.triangles.len() * 12, "target": GLTF_ELEMENT_ARRAY_BUFFER
+        }));
+    let index_accessor = root["accessors"].as_array().ok_or_else(fail)?.len();
+    root["accessors"]
+        .as_array_mut()
+        .ok_or_else(fail)?
+        .push(serde_json::json!({
+            "bufferView": index_view, "byteOffset": 0, "componentType": GLTF_UNSIGNED_INT,
+            "count": mesh.triangles.len() * 3, "type": "SCALAR"
+        }));
+
+    let uv_view = root["bufferViews"].as_array().ok_or_else(fail)?.len();
+    let uv_offset = binary.len();
+    for uv in &texture.tex_coords {
+        for component in uv {
+            binary.extend_from_slice(&component.to_le_bytes());
+        }
+    }
+    root["bufferViews"]
+        .as_array_mut()
+        .ok_or_else(fail)?
+        .push(serde_json::json!({
+            "buffer": 0, "byteOffset": uv_offset,
+            "byteLength": texture.tex_coords.len() * 8, "target": GLTF_ARRAY_BUFFER
+        }));
+    let uv_accessor = root["accessors"].as_array().ok_or_else(fail)?.len();
+    root["accessors"]
+        .as_array_mut()
+        .ok_or_else(fail)?
+        .push(serde_json::json!({
+            "bufferView": uv_view, "byteOffset": 0, "componentType": GLTF_FLOAT,
+            "count": texture.tex_coords.len(), "type": "VEC2"
+        }));
+
+    let image_view = root["bufferViews"].as_array().ok_or_else(fail)?.len();
+    let image_offset = binary.len();
+    binary.extend_from_slice(&texture.bytes);
+    root["bufferViews"]
+        .as_array_mut()
+        .ok_or_else(fail)?
+        .push(serde_json::json!({
+            "buffer": 0, "byteOffset": image_offset, "byteLength": texture.bytes.len()
+        }));
+    while binary.len() % 4 != 0 {
+        binary.push(0);
+    }
+
+    let images = root["images"].as_array_mut().ok_or_else(fail)?;
+    let image_index = images.len();
+    images.push(serde_json::json!({
+        "bufferView": image_view, "mimeType": texture.media_type.as_str()
+    }));
+    let textures = root["textures"].as_array_mut().ok_or_else(fail)?;
+    let texture_index = textures.len();
+    textures.push(serde_json::json!({"source": image_index}));
+    let materials = root["materials"].as_array_mut().ok_or_else(fail)?;
+    let material_index = materials.len();
+    materials[0]["doubleSided"] = serde_json::Value::Bool(false);
+    materials.push(serde_json::json!({
+        "name": "ORIGAMI2 Paper Back",
+        "pbrMetallicRoughness": {
+            "baseColorFactor": back_color.map(|channel| f32::from(channel) / 255.0),
+            "metallicFactor": 0.0, "roughnessFactor": 1.0,
+            "baseColorTexture": {"index": texture_index, "texCoord": 0}
+        },
+        "doubleSided": false
+    }));
+    let primitives = root["meshes"][0]["primitives"]
+        .as_array_mut()
+        .ok_or_else(fail)?;
+    let mut back = primitives.first().cloned().ok_or_else(fail)?;
+    back["attributes"]["NORMAL"] = serde_json::json!(normal_accessor);
+    back["attributes"]["TEXCOORD_0"] = serde_json::json!(uv_accessor);
+    back["indices"] = serde_json::json!(index_accessor);
+    back["material"] = serde_json::json!(material_index);
+    primitives.push(back);
+    root["buffers"][0]["byteLength"] = serde_json::json!(binary.len());
+
+    let json = serde_json::to_vec(&root).map_err(|_| fail())?;
+    if json.len() > MAX_GLB_JSON_BYTES {
+        return Err(fail());
+    }
+    let json_padded = align4(json.len()).ok_or_else(fail)?;
+    let total = 12usize
+        .checked_add(8)
+        .and_then(|value| value.checked_add(json_padded))
+        .and_then(|value| value.checked_add(8))
+        .and_then(|value| value.checked_add(binary.len()))
+        .ok_or_else(fail)?;
+    if total > maximum {
+        return Err(StaticMeshExportError::OutputTooLarge {
+            actual: total,
+            maximum,
+        });
+    }
+    let mut output = Vec::with_capacity(total);
+    output.extend_from_slice(b"glTF");
+    output.extend_from_slice(&2u32.to_le_bytes());
+    output.extend_from_slice(&u32::try_from(total).map_err(|_| fail())?.to_le_bytes());
+    output.extend_from_slice(
+        &u32::try_from(json_padded)
+            .map_err(|_| fail())?
+            .to_le_bytes(),
+    );
+    output.extend_from_slice(&GLB_JSON_CHUNK_TYPE.to_le_bytes());
+    output.extend_from_slice(&json);
+    output.resize(20 + json_padded, b' ');
+    output.extend_from_slice(
+        &u32::try_from(binary.len())
+            .map_err(|_| fail())?
+            .to_le_bytes(),
+    );
+    output.extend_from_slice(&GLB_BIN_CHUNK_TYPE.to_le_bytes());
+    output.extend_from_slice(&binary);
+    Ok(output)
+}
+
 fn verify_glb(bytes: &[u8], mesh: &ValidatedIndexedTriangleMesh, maximum: usize) -> bool {
     if bytes.len() > maximum || bytes.len() < 28 || bytes.get(..4) != Some(b"glTF") {
         return false;
@@ -2251,6 +2511,119 @@ mod tests {
         };
         assert_eq!(mime_type, "image/png");
         assert_eq!(&blob[view.offset()..view.offset() + view.length()], png);
+    }
+
+    #[test]
+    fn dual_sided_glb_has_independent_front_and_back_primitives_materials_and_images() {
+        let png = vec![
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 8, 215, 99, 248, 207,
+            192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
+        ];
+        let front_uvs = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let back_uvs = vec![[1.0, 0.0], [0.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        let document = sample_document().with_base_color_texture(EmbeddedBaseColorTextureV1 {
+            media_type: EmbeddedTextureMediaTypeV1::Png,
+            bytes: png.clone(),
+            tex_coords: front_uvs.clone(),
+        });
+        let mesh = validate_indexed_triangle_mesh(&document).unwrap();
+        let back = EmbeddedBaseColorTextureV1 {
+            media_type: EmbeddedTextureMediaTypeV1::Png,
+            bytes: png.clone(),
+            tex_coords: back_uvs.clone(),
+        };
+        let artifact =
+            export_dual_sided_triangle_mesh_glb(&mesh, back.clone(), [20, 30, 40, 255]).unwrap();
+        let gltf = gltf::Gltf::from_slice(&artifact.bytes).expect("independent glTF reader");
+        let blob = gltf.blob.as_deref().unwrap();
+        let primitives = gltf
+            .meshes()
+            .next()
+            .unwrap()
+            .primitives()
+            .collect::<Vec<_>>();
+        assert_eq!(primitives.len(), 2);
+        assert_eq!(gltf.materials().count(), 2);
+        assert_eq!(gltf.images().count(), 2);
+        assert_eq!(gltf.textures().count(), 2);
+        let front_indices = primitives[0]
+            .reader(|_| Some(blob))
+            .read_indices()
+            .unwrap()
+            .into_u32()
+            .collect::<Vec<_>>();
+        let back_indices = primitives[1]
+            .reader(|_| Some(blob))
+            .read_indices()
+            .unwrap()
+            .into_u32()
+            .collect::<Vec<_>>();
+        assert_eq!(front_indices, vec![0, 1, 2, 0, 2, 3]);
+        assert_eq!(back_indices, vec![0, 2, 1, 0, 3, 2]);
+        let front_normals = primitives[0]
+            .reader(|_| Some(blob))
+            .read_normals()
+            .unwrap()
+            .collect::<Vec<_>>();
+        let back_normals = primitives[1]
+            .reader(|_| Some(blob))
+            .read_normals()
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert!(front_normals.iter().all(|normal| normal[2] == 1.0));
+        assert!(back_normals.iter().all(|normal| normal[2] == -1.0));
+        let read_back_uvs = primitives[1]
+            .reader(|_| Some(blob))
+            .read_tex_coords(0)
+            .unwrap()
+            .into_f32()
+            .collect::<Vec<_>>();
+        assert_eq!(read_back_uvs, back_uvs);
+        assert_eq!(primitives[0].material().index(), Some(0));
+        assert_eq!(primitives[1].material().index(), Some(1));
+        for image in gltf.images() {
+            let gltf::image::Source::View { view, mime_type } = image.source() else {
+                panic!("embedded image required")
+            };
+            assert_eq!(mime_type, "image/png");
+            assert_eq!(&blob[view.offset()..view.offset() + view.length()], png);
+        }
+        assert_eq!(artifact.triangle_count, 4);
+
+        let mut invalid = back.clone();
+        invalid.tex_coords.pop();
+        assert!(matches!(
+            export_dual_sided_triangle_mesh_glb(&mesh, invalid, [0; 4]),
+            Err(StaticMeshExportError::TextureCoordinateCountMismatch { .. })
+        ));
+        let exact = StaticMeshExportLimits {
+            max_output_bytes: artifact.bytes.len(),
+            ..StaticMeshExportLimits::default()
+        };
+        assert!(
+            export_dual_sided_triangle_mesh_glb_with_limits(
+                &mesh,
+                back.clone(),
+                [20, 30, 40, 255],
+                exact,
+            )
+            .is_ok()
+        );
+        let one_short = StaticMeshExportLimits {
+            max_output_bytes: artifact.bytes.len() - 1,
+            ..StaticMeshExportLimits::default()
+        };
+        assert!(matches!(
+            export_dual_sided_triangle_mesh_glb_with_limits(
+                &mesh,
+                back,
+                [20, 30, 40, 255],
+                one_short
+            ),
+            Err(StaticMeshExportError::OutputTooLarge { .. })
+        ));
     }
 
     #[test]

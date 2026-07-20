@@ -59,7 +59,8 @@ pub use mesh_export::{
     MAX_STATIC_MESH_TRIANGLES, MAX_STATIC_MESH_VERTICES, STATIC_MESH_SOURCE_AXIS,
     STATIC_MESH_SOURCE_UNIT, StaticMeshEncodedPrecision, StaticMeshExportArtifact,
     StaticMeshExportError, StaticMeshExportFormat, StaticMeshExportLimits,
-    ValidatedIndexedTriangleMesh, export_static_triangle_mesh,
+    ValidatedIndexedTriangleMesh, export_dual_sided_triangle_mesh_glb,
+    export_dual_sided_triangle_mesh_glb_with_limits, export_static_triangle_mesh,
     export_static_triangle_mesh_with_limits, validate_indexed_triangle_mesh,
     validate_indexed_triangle_mesh_with_limits,
 };

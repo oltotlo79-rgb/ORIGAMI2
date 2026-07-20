@@ -12,6 +12,8 @@ export type ReleaseArtifactPlan = Readonly<{
   checksumManifestName: string
   sbomName: string
   updateManifestName: string
+  delivery: 'release_page_only'
+  runtimeUpdaterAvailable: false
   signatureVerification: 'authenticode' | 'apple_codesign'
   provenanceAttestationRequired: true
   userConfirmationRequired: true
@@ -78,6 +80,8 @@ export function selectReleaseArtifactPlan(
     checksumManifestName,
     sbomName,
     updateManifestName,
+    delivery: 'release_page_only',
+    runtimeUpdaterAvailable: false,
     signatureVerification: platform === 'windows-x64'
       ? 'authenticode'
       : 'apple_codesign',

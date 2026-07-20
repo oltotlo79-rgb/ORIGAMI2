@@ -20,6 +20,23 @@ test('release workflow keeps publication permissions out of build jobs', () => {
   assert.doesNotMatch(workflow, /pull_request:/u)
 })
 
+test('formal manifest remains an attested manual-review artifact, not an updater endpoint', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const manifestWriter = readFileSync(
+    join(root, '.github/scripts/write_update_manifest.mjs'),
+    'utf8',
+  )
+  const runtimeContract = readFileSync(
+    join(root, 'apps/desktop/src/lib/releaseArtifactCompatibility.ts'),
+    'utf8',
+  )
+  assert.match(workflow, /release\/\*\.update\.json/u)
+  assert.match(workflow, /\.update\.json" \\/u)
+  assert.doesNotMatch(manifestWriter, /https?:|url|endpoint/iu)
+  assert.match(runtimeContract, /delivery: 'release_page_only'/u)
+  assert.match(runtimeContract, /runtimeUpdaterAvailable: false/u)
+})
+
 test('promotion reuses and verifies the complete prerelease asset set', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const promote = workflow.slice(workflow.indexOf('  promote:'))

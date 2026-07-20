@@ -33,6 +33,8 @@ test('selects exact signed-release assets without retaining download authority',
     sbomName: 'ORIGAMI2-v1.2.3-windows-x64.cdx.json',
     updateManifestName:
       'ORIGAMI2-v1.2.3-windows-x64.update.json',
+    delivery: 'release_page_only',
+    runtimeUpdaterAvailable: false,
     signatureVerification: 'authenticode',
     provenanceAttestationRequired: true,
     userConfirmationRequired: true,
@@ -99,4 +101,24 @@ test('formal release output and manual update UI remain contract-compatible', as
   assert.match(updateControl, /target="_blank"/u)
   assert.match(updateControl, /rel="noopener noreferrer"/u)
   assert.doesNotMatch(updateControl, /download=/u)
+})
+
+test('Tauri runtime exposes no unverified updater or installer authority', async () => {
+  const [cargo, packageJson, tauriConfig, nativeRuntime] = await Promise.all([
+    readFile(new URL('../src-tauri/Cargo.toml', import.meta.url), 'utf8'),
+    readFile(new URL('../package.json', import.meta.url), 'utf8'),
+    readFile(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'),
+    readFile(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8'),
+  ])
+  for (const boundary of [cargo, packageJson, tauriConfig, nativeRuntime]) {
+    assert.doesNotMatch(boundary, /tauri-plugin-updater|plugin:updater|updater:/iu)
+  }
+  const parsedConfig = JSON.parse(tauriConfig)
+  assert.equal(parsedConfig.plugins?.updater, undefined)
+  assert.equal(parsedConfig.bundle?.createUpdaterArtifacts, undefined)
+  assert.equal(parsedConfig.app?.security?.csp.includes('api.github.com'), true)
+  assert.equal(
+    parsedConfig.app?.security?.csp.includes('objects.githubusercontent.com'),
+    false,
+  )
 })

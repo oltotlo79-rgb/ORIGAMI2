@@ -221,6 +221,7 @@ jobs:
             release/*.zip
             release/*.tar.gz
             release/*.cdx.json
+            release/*.update.json
       - name: Publish immutable tagged release
         env:
           GH_TOKEN: ${{ github.token }}

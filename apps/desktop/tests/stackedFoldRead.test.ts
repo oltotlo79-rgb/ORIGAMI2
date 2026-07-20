@@ -81,12 +81,13 @@ describe('stacked-fold read boundary', () => {
       continuousPath: {
         modelId: 'stacked_fold_bounded_path_diagnostic_v1',
         continuousCertificateModelId: null,
+        paperThicknessMm: 0,
         sampledPoseCount: 2,
         sampledNonblockingPoseCount: 2,
         firstSampledBlockingAngleDegrees: null,
         requestedAngleDegrees: 180,
         continuousClearanceCertified: false,
-        safeStopAngleDegrees: 180,
+        safeStopAngleDegrees: 0,
         authorizesProjectMutation: false,
       },
       transactionProposal: {
@@ -147,6 +148,16 @@ describe('stacked-fold read boundary', () => {
       normalizeStackedFoldReadResponse({
         ...ready,
         transactionProposal: { ...ready.transactionProposal, transactionToken: null },
+      }, request),
+      null,
+    )
+    assert.equal(
+      normalizeStackedFoldReadResponse({
+        ...ready,
+        continuousPath: {
+          ...ready.continuousPath,
+          continuousCertificateModelId: 'forged_collective_certificate',
+        },
       }, request),
       null,
     )

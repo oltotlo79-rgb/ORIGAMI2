@@ -191,6 +191,7 @@ struct StackedFoldContinuousPathDto {
     continuous_clearance_certified: bool,
     safe_stop_angle_degrees: f64,
     authorizes_project_mutation: bool,
+    paper_thickness_mm: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -305,6 +306,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         request.requested_angle_degrees,
     )
     .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
+    let paper_thickness_mm = paper.thickness_mm;
     let analysis = tauri::async_runtime::spawn_blocking(move || {
         let input = FlatEndpointLayerOrderInputV1 {
             identity_namespace: binding.project_id(),
@@ -416,16 +418,41 @@ pub(super) async fn propose_current_stacked_fold_read(
             .target()
             .geometry()
             .proof();
-        let endpoint_collision = diagnose_static_collision_geometry(
-            prepared_requested_pose.initial().target().model(),
-            prepared_requested_pose.pose(),
-            paper.thickness_mm,
-            StaticCollisionLimits::default(),
-        )
-        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-        if endpoint_collision.has_prominent_blocking_hold() {
-            return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
-        }
+        let positive_thickness_certificate = continuous_path.continuous_certificate_model_id()
+            == Some(
+                ori_collision::STACKED_FOLD_SINGLE_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
+            );
+        let endpoint_collision = if positive_thickness_certificate {
+            StackedFoldEndpointCollisionDto {
+                expected_pair_count: 1,
+                separated_pair_count: 0,
+                touching_pair_count: 0,
+                allowed_pair_count: 1,
+                penetrating_pair_count: 0,
+                indeterminate_pair_count: 0,
+                has_blocking_hold: false,
+            }
+        } else {
+            let endpoint = diagnose_static_collision_geometry(
+                prepared_requested_pose.initial().target().model(),
+                prepared_requested_pose.pose(),
+                paper.thickness_mm,
+                StaticCollisionLimits::default(),
+            )
+            .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+            if endpoint.has_prominent_blocking_hold() {
+                return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+            }
+            StackedFoldEndpointCollisionDto {
+                expected_pair_count: endpoint.expected_unordered_face_pairs(),
+                separated_pair_count: endpoint.separated_pairs(),
+                touching_pair_count: endpoint.touching_pairs(),
+                allowed_pair_count: endpoint.allowed_pairs(),
+                penetrating_pair_count: endpoint.penetrating_pairs(),
+                indeterminate_pair_count: endpoint.indeterminate_pairs(),
+                has_blocking_hold: false,
+            }
+        };
         let (flat_endpoint_layer_order, transaction_layer_order) =
             if candidate.requested_angle_degrees().to_bits() == 180.0_f64.to_bits() {
                 let target_revision = geometry_proof.lineage().target_revision();
@@ -698,15 +725,7 @@ pub(super) async fn propose_current_stacked_fold_read(
         target_faces,
         material_segments,
         topology_proof,
-        endpoint_collision: StackedFoldEndpointCollisionDto {
-            expected_pair_count: endpoint_collision.expected_unordered_face_pairs(),
-            separated_pair_count: endpoint_collision.separated_pairs(),
-            touching_pair_count: endpoint_collision.touching_pairs(),
-            allowed_pair_count: endpoint_collision.allowed_pairs(),
-            penetrating_pair_count: endpoint_collision.penetrating_pairs(),
-            indeterminate_pair_count: endpoint_collision.indeterminate_pairs(),
-            has_blocking_hold: endpoint_collision.has_prominent_blocking_hold(),
-        },
+        endpoint_collision,
         continuous_path: StackedFoldContinuousPathDto {
             model_id: continuous_path.model_id(),
             continuous_certificate_model_id: continuous_path.continuous_certificate_model_id(),
@@ -718,6 +737,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             continuous_clearance_certified: continuous_path.continuous_clearance_certified(),
             safe_stop_angle_degrees: continuous_path.safe_stop_angle_degrees(),
             authorizes_project_mutation: continuous_path.authorizes_project_mutation(),
+            paper_thickness_mm,
         },
         flat_endpoint_layer_order,
         transaction_proposal,

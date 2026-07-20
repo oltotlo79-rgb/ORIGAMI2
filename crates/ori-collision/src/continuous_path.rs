@@ -310,24 +310,37 @@ fn collinear_collective_tree_premises(
     let Some(reference) = model.hinges().first() else {
         return false;
     };
+    let Some(reference_line) = world_hinge_line(initial_pose, reference) else {
+        return false;
+    };
     if !model.hinges().iter().all(|hinge| {
-        exact_collinear_line(
-            reference.start(),
-            reference.axis(),
-            hinge.start(),
-            hinge.axis(),
-        ) && exact_collinear_line(
-            reference.start(),
-            reference.axis(),
-            hinge.end(),
-            hinge.axis(),
-        )
+        let Some((start, end, axis)) = world_hinge_line(initial_pose, hinge) else {
+            return false;
+        };
+        exact_collinear_line(reference_line.0, reference_line.2, start, axis)
+            && exact_collinear_line(reference_line.0, reference_line.2, end, axis)
     }) {
         return false;
     }
     [requested_angle_degrees / 2.0, requested_angle_degrees]
         .into_iter()
         .all(|angle| collective_pose_is_one_moving_body(model, initial_pose, moving, angle))
+}
+
+fn world_hinge_line(
+    pose: &MaterialTreePose,
+    hinge: &ori_kinematics::TreeHinge,
+) -> Option<(
+    ori_kinematics::Point3,
+    ori_kinematics::Point3,
+    ori_kinematics::Point3,
+)> {
+    let transform = pose.hinge_parent_transform(hinge.edge())?;
+    Some((
+        transform.apply_point(hinge.start()).ok()?,
+        transform.apply_point(hinge.end()).ok()?,
+        transform.apply_vector(hinge.axis()).ok()?,
+    ))
 }
 
 fn exact_collinear_line(

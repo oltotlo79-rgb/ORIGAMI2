@@ -8,6 +8,11 @@ export const STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1 =
   'native_linear_stacked_fold_read_proposal_v1'
 export const STACKED_FOLD_MATERIAL_MAP_MODEL_ID_V1 =
   'native_flat_stacked_fold_material_map_v1'
+export const STACKED_FOLD_PATH_CERTIFICATE_MODEL_IDS = Object.freeze([
+  'stacked_fold_single_hinge_zero_thickness_continuous_certificate_v1',
+  'stacked_fold_single_hinge_positive_thickness_continuous_certificate_v1',
+  'stacked_fold_collinear_tree_zero_thickness_continuous_certificate_v1',
+] as const)
 
 export type StackedFoldReadRequest = Readonly<{
   expectedProjectInstanceId: string
@@ -75,6 +80,7 @@ export type StackedFoldReadResponse = Readonly<{
     continuousClearanceCertified: boolean
     safeStopAngleDegrees: number
     authorizesProjectMutation: boolean
+    paperThicknessMm: number
   }>
   transactionProposal: Readonly<{
     transactionToken: string | null
@@ -258,6 +264,7 @@ export function normalizeStackedFoldReadResponse(
       'continuousClearanceCertified',
       'safeStopAngleDegrees',
       'authorizesProjectMutation',
+      'paperThicknessMm',
     ]) ||
     !hasExactKeys(transaction, [
       'transactionToken',
@@ -352,7 +359,9 @@ export function normalizeStackedFoldReadResponse(
         Number(endpointCollision.indeterminatePairCount) > 0) ||
     typeof continuousPath.modelId !== 'string' ||
     (continuousPath.continuousCertificateModelId !== null &&
-      typeof continuousPath.continuousCertificateModelId !== 'string') ||
+      !STACKED_FOLD_PATH_CERTIFICATE_MODEL_IDS.some(
+        (modelId) => modelId === continuousPath.continuousCertificateModelId,
+      )) ||
     !isCount(continuousPath.sampledPoseCount) ||
     !isCount(continuousPath.sampledNonblockingPoseCount) ||
     continuousPath.sampledNonblockingPoseCount > continuousPath.sampledPoseCount ||
@@ -366,6 +375,9 @@ export function normalizeStackedFoldReadResponse(
     !Number.isFinite(continuousPath.safeStopAngleDegrees) ||
     typeof continuousPath.continuousClearanceCertified !== 'boolean' ||
     typeof continuousPath.authorizesProjectMutation !== 'boolean' ||
+    typeof continuousPath.paperThicknessMm !== 'number' ||
+    !Number.isFinite(continuousPath.paperThicknessMm) ||
+    continuousPath.paperThicknessMm < 0 ||
     (transaction.transactionToken !== null &&
       !isCanonicalNonNilUuid(transaction.transactionToken)) ||
     transaction.sourceProjectId !== expected.expectedProjectId ||

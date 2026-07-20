@@ -247,9 +247,14 @@ export function StackedFoldPanel({
             <div><dt>{t('終端衝突', 'Endpoint collision')}</dt><dd>{view.response.endpointCollision.hasBlockingHold ? t('停止', 'Blocked') : t('なし', 'Clear')}</dd></div>
             <div><dt>{t('連続経路', 'Continuous path')}</dt><dd>{view.response.continuousPath.continuousClearanceCertified ? t('証明済み', 'Certified') : t('未証明', 'Uncertified')}</dd></div>
             <div><dt>{t('経路証明model', 'Path certificate model')}</dt><dd>{view.response.continuousPath.continuousCertificateModelId ?? t('なし', 'None')}</dd></div>
+            <div><dt>{t('証明済み紙厚', 'Certified thickness')}</dt><dd>{view.response.continuousPath.paperThicknessMm} mm</dd></div>
             <div><dt>{t('層順序', 'Layer order')}</dt><dd>{view.response.flatEndpointLayerOrder.certified ? t('証明済み', 'Certified') : t('未証明', 'Uncertified')}</dd></div>
             <div><dt>{t('追加頂点 / 辺', 'Added vertices / edges')}</dt><dd>{view.response.transactionProposal.addedVertexCount} / {view.response.transactionProposal.addedEdgeCount}</dd></div>
           </dl>
+          <p>{t(
+            'この証明は表示された紙厚・2三角形・1ヒンジ・90度以下だけを対象とします。一般の多面、別の紙厚、工作性は保証しません。',
+            'This certificate covers only the displayed thickness, two triangular faces, one hinge, and a path up to 90°. It does not guarantee general multi-face folds, another thickness, or physical manufacturability.',
+          )}</p>
           <LayerOrderViewer
             locale={locale}
             cells={view.response.crossedCells}

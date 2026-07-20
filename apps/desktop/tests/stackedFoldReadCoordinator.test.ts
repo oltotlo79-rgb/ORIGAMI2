@@ -72,12 +72,13 @@ const response = (revision = 3): StackedFoldReadResponse =>
     continuousPath: {
       modelId: 'stacked_fold_bounded_path_diagnostic_v1',
       continuousCertificateModelId: null,
+      paperThicknessMm: 0,
       sampledPoseCount: 1,
       sampledNonblockingPoseCount: 1,
       firstSampledBlockingAngleDegrees: null,
       requestedAngleDegrees: 180,
       continuousClearanceCertified: false,
-      safeStopAngleDegrees: 180,
+      safeStopAngleDegrees: 0,
       authorizesProjectMutation: false,
     },
     transactionProposal: {

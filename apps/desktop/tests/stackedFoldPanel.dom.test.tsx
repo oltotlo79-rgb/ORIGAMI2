@@ -60,7 +60,7 @@ const ready = {
     sourceEdgeSubdivisionCount: 1,
     expectedCreaseSubdivisionCount: 1,
     targetMaterialFaceCount: 2,
-    targetHingeCount: 1,
+    targetHingeCount: 2,
   },
   endpointCollision: {
     expectedPairCount: 0,
@@ -73,7 +73,8 @@ const ready = {
   },
   continuousPath: {
     modelId: 'stacked_fold_bounded_path_diagnostic_v1',
-    continuousCertificateModelId: 'stacked_fold_single_hinge_zero_thickness_continuous_certificate_v1',
+    continuousCertificateModelId: 'stacked_fold_collinear_tree_zero_thickness_continuous_certificate_v1',
+    paperThicknessMm: 0,
     sampledPoseCount: 2,
     sampledNonblockingPoseCount: 2,
     firstSampledBlockingAngleDegrees: null,

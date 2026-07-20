@@ -932,17 +932,41 @@ mod tests {
         let mut step = valid_instruction_step();
         step.visual = InstructionVisual {
             camera: Some(InstructionCamera {
-                position: InstructionPoint3 { x: 4.0, y: 3.0, z: 5.0 },
-                target: InstructionPoint3 { x: 0.0, y: 0.0, z: 0.0 },
-                up: InstructionPoint3 { x: 0.0, y: 1.0, z: 0.0 },
+                position: InstructionPoint3 {
+                    x: 4.0,
+                    y: 3.0,
+                    z: 5.0,
+                },
+                target: InstructionPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                up: InstructionPoint3 {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
             }),
             arrows: vec![InstructionArrow {
-                start: InstructionPoint3 { x: 0.0, y: 0.0, z: 0.0 },
-                end: InstructionPoint3 { x: 1.0, y: 0.0, z: 0.0 },
+                start: InstructionPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                end: InstructionPoint3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
                 label: "fold".to_owned(),
             }],
             focus_points: vec![InstructionFocusPoint {
-                position: InstructionPoint3 { x: 0.5, y: 0.0, z: 0.0 },
+                position: InstructionPoint3 {
+                    x: 0.5,
+                    y: 0.0,
+                    z: 0.0,
+                },
                 radius: 0.1,
                 label: "corner".to_owned(),
             }],
@@ -969,12 +993,18 @@ mod tests {
 
         let mut invalid = step;
         invalid.visual.focus_points.push(InstructionFocusPoint {
-            position: InstructionPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            position: InstructionPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
             radius: 0.0,
             label: String::new(),
         });
         assert!(matches!(
-            validate_instruction_timeline(&InstructionTimeline { steps: vec![invalid] }),
+            validate_instruction_timeline(&InstructionTimeline {
+                steps: vec![invalid]
+            }),
             Err(InstructionTimelineValidationError::InvalidVisual { step_index: 0 })
         ));
     }

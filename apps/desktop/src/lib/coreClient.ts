@@ -1059,6 +1059,50 @@ export function moveEdge(
   })
 }
 
+export function mirrorEdgeLeftRight(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  id: string,
+  axisXExpression: string,
+  axisXMm: number,
+) {
+  return invoke<ProjectSnapshot>('mirror_edge_left_right', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    id,
+    axisXExpression,
+    axisXMm,
+  })
+}
+
+export function rotateEdgeAboutPoint(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  id: string,
+  centerXExpression: string,
+  centerYExpression: string,
+  angleDegreesExpression: string,
+  centerXMm: number,
+  centerYMm: number,
+  angleDegrees: number,
+) {
+  return invoke<ProjectSnapshot>('rotate_edge_about_point', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    id,
+    centerXExpression,
+    centerYExpression,
+    angleDegreesExpression,
+    centerXMm,
+    centerYMm,
+    angleDegrees,
+  })
+}
+
 export function moveVertices(
   expectedProjectId: string,
   expectedRevision: number,

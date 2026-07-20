@@ -23,6 +23,8 @@ const mutationContracts = [
   ['addEdge', 'add_edge'],
   ['moveVertex', 'move_vertex'],
   ['moveEdge', 'move_edge'],
+  ['mirrorEdgeLeftRight', 'mirror_edge_left_right'],
+  ['rotateEdgeAboutPoint', 'rotate_edge_about_point'],
   ['moveVertices', 'move_vertices'],
   ['removeVertex', 'remove_vertex'],
   ['removeBoundaryVertex', 'remove_boundary_vertex'],
@@ -49,9 +51,9 @@ const mutationContracts = [
 ] as const
 
 test('the revision-changing mutation contract matrix remains complete', () => {
-  assert.equal(mutationContracts.length, 34)
-  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 34)
-  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 34)
+  assert.equal(mutationContracts.length, 36)
+  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 36)
+  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 36)
   assert.deepEqual(
     productionRevisionChangingCommands(native),
     mutationContracts.map(([, command]) => command).toSorted(),

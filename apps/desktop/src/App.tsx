@@ -71,6 +71,8 @@ import {
   getProjectSnapshot as requestProjectSnapshot,
   isNativeCoreAvailable,
   moveEdge,
+  mirrorEdgeLeftRight,
+  rotateEdgeAboutPoint,
   moveProjectLayer,
   moveVertices,
   moveVertex,
@@ -2718,6 +2720,62 @@ function App() {
         deltaX,
         deltaY,
       ))
+  }
+
+  async function submitMirrorSelectedEdge(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const current = latestSnapshotRef.current
+    if (!current || !selectedLine || benchmarkRun || selectedLine.locked) return
+    const currentUnit = resolveLengthDisplayUnit(current)
+    const form = new FormData(event.currentTarget)
+    const source = String(form.get('symmetry_axis_x_display') ?? '')
+    try {
+      const axisX = await evaluateDisplayLengthExpression(source, currentUnit)
+      await runNativeEdit((projectId, revision, projectInstanceId) =>
+        mirrorEdgeLeftRight(
+          projectId,
+          revision,
+          projectInstanceId,
+          selectedLine.id,
+          millimetreExpressionSource(source, currentUnit.millimetresPerUnit),
+          axisX,
+        ))
+    } catch (error) {
+      setCoreStatus(editExpressionErrorMessage(error))
+    }
+  }
+
+  async function submitRotateSelectedEdge(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const current = latestSnapshotRef.current
+    if (!current || !selectedLine || benchmarkRun || selectedLine.locked) return
+    const currentUnit = resolveLengthDisplayUnit(current)
+    const form = new FormData(event.currentTarget)
+    const xSource = String(form.get('rotation_center_x_display') ?? '')
+    const ySource = String(form.get('rotation_center_y_display') ?? '')
+    const angleSource = String(form.get('rotation_angle_degrees') ?? '')
+    try {
+      const [centerX, centerY, angle] = await Promise.all([
+        evaluateDisplayLengthExpression(xSource, currentUnit),
+        evaluateDisplayLengthExpression(ySource, currentUnit),
+        evaluateFiniteNumericExpression(angleSource).then(({ value }) => value),
+      ])
+      await runNativeEdit((projectId, revision, projectInstanceId) =>
+        rotateEdgeAboutPoint(
+          projectId,
+          revision,
+          projectInstanceId,
+          selectedLine.id,
+          millimetreExpressionSource(xSource, currentUnit.millimetresPerUnit),
+          millimetreExpressionSource(ySource, currentUnit.millimetresPerUnit),
+          angleSource,
+          centerX,
+          centerY,
+          angle,
+        ))
+    } catch (error) {
+      setCoreStatus(editExpressionErrorMessage(error))
+    }
   }
 
   async function submitMoveSelectedFace(event: FormEvent<HTMLFormElement>) {
@@ -5401,6 +5459,71 @@ function App() {
                           {text({ ja: '線全体を移動', en: 'Move entire line' })}
                         </button>
                       </div>
+                    </fieldset>
+                  </form>
+                  <form onSubmit={(event) => void submitMirrorSelectedEdge(event)}>
+                    <fieldset disabled={coreBusy || selectedLine.locked}>
+                      <legend>{text({ ja: '左右対称編集', en: 'Left-right symmetry' })}</legend>
+                      <label className="field">
+                        {formattedText({
+                          ja: '対称軸 X ({unit})',
+                          en: 'Mirror axis X ({unit})',
+                        }, { unit: lengthDisplayUnitLabelText })}
+                        <input
+                          name="symmetry_axis_x_display"
+                          type="text"
+                          inputMode="text"
+                          maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                          defaultValue="0"
+                        />
+                      </label>
+                      <button type="submit">
+                        {text({ ja: '左右反転を適用', en: 'Apply left-right reflection' })}
+                      </button>
+                    </fieldset>
+                  </form>
+                  <form onSubmit={(event) => void submitRotateSelectedEdge(event)}>
+                    <fieldset disabled={coreBusy || selectedLine.locked}>
+                      <legend>{text({ ja: '回転対称編集', en: 'Rotational symmetry' })}</legend>
+                      <label className="field">
+                        {formattedText({
+                          ja: '中心 X ({unit})',
+                          en: 'Center X ({unit})',
+                        }, { unit: lengthDisplayUnitLabelText })}
+                        <input
+                          name="rotation_center_x_display"
+                          type="text"
+                          inputMode="text"
+                          maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                          defaultValue="0"
+                        />
+                      </label>
+                      <label className="field">
+                        {formattedText({
+                          ja: '中心 Y ({unit})',
+                          en: 'Center Y ({unit})',
+                        }, { unit: lengthDisplayUnitLabelText })}
+                        <input
+                          name="rotation_center_y_display"
+                          type="text"
+                          inputMode="text"
+                          maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                          defaultValue="0"
+                        />
+                      </label>
+                      <label className="field">
+                        {text({ ja: '回転角度 (°)', en: 'Rotation angle (°)' })}
+                        <input
+                          name="rotation_angle_degrees"
+                          type="text"
+                          inputMode="text"
+                          maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
+                          defaultValue="180"
+                        />
+                      </label>
+                      <button type="submit">
+                        {text({ ja: '回転を適用', en: 'Apply rotation' })}
+                      </button>
                     </fieldset>
                   </form>
                   <div className="property-actions">

@@ -2220,6 +2220,172 @@ fn move_edge(
 }
 
 #[tauri::command]
+fn mirror_edge_left_right(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    id: EdgeId,
+    axis_x_expression: String,
+    axis_x_mm: f64,
+) -> Result<ProjectSnapshot, String> {
+    let (evaluated, _) = evaluate_finite_millimetre_pair(axis_x_expression.clone(), "0".to_owned())
+        .map_err(map_loaded_numeric_expression_error)?;
+    if evaluated.to_bits() != axis_x_mm.to_bits() {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    transform_edge_points(
+        state,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        id,
+        |point| mirror_point_left_right(point, axis_x_mm),
+        |point| {
+            (
+                format!("2*({axis_x_expression})-({})", point.x),
+                point.y.to_string(),
+            )
+        },
+    )
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn rotate_edge_about_point(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    id: EdgeId,
+    center_x_expression: String,
+    center_y_expression: String,
+    angle_degrees_expression: String,
+    center_x_mm: f64,
+    center_y_mm: f64,
+    angle_degrees: f64,
+) -> Result<ProjectSnapshot, String> {
+    let (evaluated_x, evaluated_y) =
+        evaluate_finite_millimetre_pair(center_x_expression.clone(), center_y_expression.clone())
+            .map_err(map_loaded_numeric_expression_error)?;
+    let (evaluated_angle, _) =
+        evaluate_finite_millimetre_pair(angle_degrees_expression.clone(), "0".to_owned())
+            .map_err(map_loaded_numeric_expression_error)?;
+    if evaluated_x.to_bits() != center_x_mm.to_bits()
+        || evaluated_y.to_bits() != center_y_mm.to_bits()
+        || evaluated_angle.to_bits() != angle_degrees.to_bits()
+    {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    let (sin, cos) = symmetry_sin_cos(angle_degrees);
+    if !sin.is_finite() || !cos.is_finite() {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    transform_edge_points(
+        state,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        id,
+        |point| rotate_point_about(point, Point2::new(center_x_mm, center_y_mm), sin, cos),
+        |point| {
+            (
+                format!(
+                    "({center_x_expression})+(({})-({center_x_expression}))*cos(({angle_degrees_expression})*pi/180)-(({})-({center_y_expression}))*sin(({angle_degrees_expression})*pi/180)",
+                    point.x, point.y
+                ),
+                format!(
+                    "({center_y_expression})+(({})-({center_x_expression}))*sin(({angle_degrees_expression})*pi/180)+(({})-({center_y_expression}))*cos(({angle_degrees_expression})*pi/180)",
+                    point.x, point.y
+                ),
+            )
+        },
+    )
+}
+
+fn mirror_point_left_right(point: Point2, axis_x: f64) -> Point2 {
+    Point2::new(axis_x.mul_add(2.0, -point.x), point.y)
+}
+
+fn rotate_point_about(point: Point2, center: Point2, sin: f64, cos: f64) -> Point2 {
+    let x = point.x - center.x;
+    let y = point.y - center.y;
+    Point2::new(center.x + x * cos - y * sin, center.y + x * sin + y * cos)
+}
+
+fn symmetry_sin_cos(angle_degrees: f64) -> (f64, f64) {
+    match angle_degrees.rem_euclid(360.0) {
+        0.0 => (0.0, 1.0),
+        90.0 => (1.0, 0.0),
+        180.0 => (0.0, -1.0),
+        270.0 => (-1.0, 0.0),
+        angle => angle.to_radians().sin_cos(),
+    }
+}
+
+fn transform_edge_points(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    id: EdgeId,
+    transform: impl Fn(Point2) -> Point2,
+    expression: impl Fn(Point2) -> (String, String),
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    let edge = project
+        .editor
+        .pattern()
+        .edges
+        .iter()
+        .find(|edge| edge.id == id)
+        .cloned()
+        .ok_or_else(|| "edge not found".to_owned())?;
+    let position = |vertex_id| {
+        project
+            .editor
+            .pattern()
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == vertex_id)
+            .map(|vertex| vertex.position)
+            .ok_or_else(|| "vertex not found".to_owned())
+    };
+    let start = position(edge.start)?;
+    let end = position(edge.end)?;
+    let start_position = transform(start);
+    let end_position = transform(end);
+    if !start_position.x.is_finite()
+        || !start_position.y.is_finite()
+        || !end_position.x.is_finite()
+        || !end_position.y.is_finite()
+    {
+        return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
+    }
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::MoveEdge {
+            id,
+            start_position,
+            end_position,
+        },
+    )?;
+    for (vertex, previous, adopted) in [
+        (edge.start, start, start_position),
+        (edge.end, end, end_position),
+    ] {
+        let (x_source, y_source) = expression(previous);
+        project.adopt_vertex_coordinate_expression(VertexCoordinateExpressions::new(
+            vertex, x_source, y_source, adopted.x, adopted.y,
+        ));
+    }
+    Ok(snapshot(&project))
+}
+
+#[tauri::command]
 fn move_vertices(
     state: State<'_, AppState>,
     expected_project_instance_id: ProjectId,
@@ -6235,6 +6401,8 @@ pub fn run() {
             add_vertex,
             move_vertex,
             move_edge,
+            mirror_edge_left_right,
+            rotate_edge_about_point,
             move_vertices,
             remove_vertex,
             add_edge,
@@ -6433,6 +6601,25 @@ mod tests {
     use super::*;
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn symmetry_transforms_are_exact_at_cardinal_angles() {
+        assert_eq!(
+            mirror_point_left_right(Point2::new(3.0, 4.0), 1.0),
+            Point2::new(-1.0, 4.0)
+        );
+        let center = Point2::new(1.0, 2.0);
+        let point = Point2::new(3.0, 4.0);
+        for (angle, expected) in [
+            (0.0, Point2::new(3.0, 4.0)),
+            (90.0, Point2::new(-1.0, 4.0)),
+            (180.0, Point2::new(-1.0, 0.0)),
+            (270.0, Point2::new(3.0, 0.0)),
+        ] {
+            let (sin, cos) = symmetry_sin_cos(angle);
+            assert_eq!(rotate_point_about(point, center, sin, cos), expected);
+        }
+    }
 
     fn execute_command(
         project: &mut ProjectState,

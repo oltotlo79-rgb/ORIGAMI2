@@ -158,7 +158,11 @@ try {
   })
   for (const file of ['static.glb', 'textured.glb', 'animated.glb']) {
     await retry(`${file} Sample Viewer runtime`, 3, async () => {
-      const page = await browser.newPage({ viewport: { width: 1024, height: 768 } })
+      const context = await browser.newContext({
+        viewport: { width: 1024, height: 768 },
+        serviceWorkers: 'block',
+      })
+      const page = await context.newPage()
       try {
         const runtimeErrors = []
         await page.addInitScript(() => {
@@ -185,10 +189,16 @@ try {
           }
         })
         const asset = `http://127.0.0.1:${port}/artifacts/${file}`
+        const assetResponse = page.waitForResponse((response) =>
+          response.url() === asset, { timeout: 30_000 })
         await page.goto(
           `http://127.0.0.1:${port}/?model=${encodeURIComponent(asset)}&noUI`,
           { waitUntil: 'domcontentloaded', timeout: 30_000 },
         )
+        const loadedAsset = await assetResponse
+        if (loadedAsset.status() !== 200) {
+          throw new Error(`${file}: model response was HTTP ${loadedAsset.status()}`)
+        }
         const canvas = page.locator('canvas')
         await canvas.waitFor({ state: 'visible', timeout: 30_000 })
         await page.waitForFunction(() => {
@@ -200,24 +210,23 @@ try {
             && canvas.height > 0,
           )
         }, undefined, { timeout: 30_000 })
-        await page.waitForTimeout(3_000)
+        await page.waitForFunction(() => new Promise((resolveFrame) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolveFrame(true)))
+        }), undefined, { timeout: 10_000 })
         if (runtimeErrors.length !== 0) {
           throw new Error(`${file}: runtime errors:\n${runtimeErrors.join('\n')}`)
         }
-        const bounds = await canvas.boundingBox()
-        if (!bounds) throw new Error(`${file}: rendered canvas has no bounds`)
         const cdp = await page.context().newCDPSession(page)
         const firstFrame = Buffer.from((await cdp.send('Page.captureScreenshot', {
           format: 'png',
           captureBeyondViewport: false,
-          clip: { ...bounds, scale: 1 },
         })).data, 'base64')
         if (firstFrame.length < 2_000) {
           throw new Error(`${file}: rendered canvas is unexpectedly empty`)
         }
         console.log(`${file}: Sample Viewer WebGL runtime visible, errors 0`)
       } finally {
-        await page.close()
+        await context.close()
       }
     })
   }

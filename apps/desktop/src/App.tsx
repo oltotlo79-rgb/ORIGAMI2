@@ -4913,6 +4913,59 @@ function App() {
               thicknessMm={nativeSnapshot?.paper.thickness_mm}
               lengthDisplayUnit={lengthDisplayUnit}
             />
+            {topologyResponse && !topologyResponse.simulation_ready && (
+              <section className="validation-report invalid topology-blockers">
+                <h2>{text({
+                  ja: '3D移行を妨げている問題',
+                  en: 'Issues blocking 3D',
+                })}</h2>
+                <p>{formattedText({
+                  ja: '{count}件の問題を解消するまで3D折り操作へ移行できません。',
+                  en: 'Resolve these {count} issues before entering 3D folding.',
+                }, { count: topologyResponse.issues.length })}</p>
+                <ul>
+                  {topologyResponse.issues.map((issue, index) => {
+                    const locations = topologyIssueLocations(issue.kind)
+                    return (
+                      <li key={`${issue.kind.kind}:${index}`}>
+                        <span className="topology-issue-reason">
+                          {topologyIssueLabel(issue.kind, locale)}
+                        </span>
+                        {locations.length > 0 && (
+                          <div className="topology-issue-locations">
+                            {locations.map((location) => (
+                              <button
+                                type="button"
+                                key={`${location.kind}:${location.id}`}
+                                onClick={() => {
+                                  if (location.kind === 'edge') {
+                                    if (!nativeLines.some((line) => line.id === location.id)) return
+                                    setSelectedLineId(location.id)
+                                    setSelectedVertexId(null)
+                                    setSelectedFaceId(null)
+                                  } else {
+                                    if (!nativeVertices.some((vertex) => vertex.id === location.id)) return
+                                    setSelectedVertexId(location.id)
+                                    setSelectedLineId(null)
+                                    setSelectedFaceId(null)
+                                  }
+                                }}
+                              >
+                                {location.kind === 'edge'
+                                  ? text({ ja: '線', en: 'Line' })
+                                  : text({ ja: '頂点', en: 'Vertex' })}
+                                {' '}
+                                {location.id}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </li>
+                    )
+                  })}
+                </ul>
+              </section>
+            )}
             <div className="fixed-face-control">
               <label htmlFor="fixed-face">
                 {text({ ja: '固定面', en: 'Fixed face' })}
@@ -6937,6 +6990,61 @@ function validationIssueLabel(code: string, locale: Locale) {
         ja: '不明な幾何検証問題',
         en: 'Unknown geometry validation issue',
       })
+}
+
+function topologyIssueLocations(
+  issue: ProjectTopologyResponse['issues'][number]['kind'],
+) {
+  switch (issue.kind) {
+    case 'duplicate_vertex_id':
+      return [{ kind: 'vertex' as const, id: issue.vertex }]
+    case 'duplicate_edge_id':
+    case 'unsupported_active_edge':
+    case 'active_edge_outside_paper':
+    case 'disconnected_fold_graph':
+    case 'non_separating_fold':
+    case 'unsupported_fold_graph':
+    case 'invalid_edge_incidence':
+    case 'unsupported_adjacent_boundary_fold':
+    case 'degenerate_fold_face':
+      return [{ kind: 'edge' as const, id: issue.edge }]
+    case 'fold_endpoint_not_on_boundary':
+    case 'unsupported_non_convex_fold_sheet':
+      return [
+        { kind: 'edge' as const, id: issue.edge },
+        { kind: 'vertex' as const, id: issue.vertex },
+      ]
+    case 'too_many_active_fold_edges':
+      return issue.edges.map((id) => ({ kind: 'edge' as const, id }))
+    default:
+      return []
+  }
+}
+
+function topologyIssueLabel(
+  issue: ProjectTopologyResponse['issues'][number]['kind'],
+  locale: Locale,
+) {
+  const labels: Record<typeof issue.kind, LocalizedText> = {
+    duplicate_vertex_id: { ja: '頂点IDが重複しています。', en: 'A vertex ID is duplicated.' },
+    duplicate_edge_id: { ja: '線IDが重複しています。', en: 'A line ID is duplicated.' },
+    invalid_paper: { ja: '用紙の輪郭または属性が不正です。', en: 'The paper boundary or properties are invalid.' },
+    invalid_crease_pattern: { ja: '展開図の幾何が不正です。', en: 'The crease-pattern geometry is invalid.' },
+    unsupported_active_edge: { ja: '3D化できない線種が含まれています。', en: 'A line kind cannot be converted to 3D.' },
+    too_many_active_fold_edges: { ja: '有効な折り線が処理上限を超えています。', en: 'The active fold count exceeds the supported limit.' },
+    active_edge_outside_paper: { ja: '折り線が用紙の外側にあります。', en: 'A fold line lies outside the paper.' },
+    disconnected_fold_graph: { ja: '折り構造が分断されています。', en: 'The fold graph is disconnected.' },
+    non_separating_fold: { ja: '折り線が面を2つに分離していません。', en: 'A fold line does not separate two faces.' },
+    unsupported_fold_graph: { ja: '現在の3Dモデルで扱えない折り構造です。', en: 'The fold graph is unsupported by the current 3D model.' },
+    invalid_edge_incidence: { ja: '線に接する面の構成が不正です。', en: 'A line has invalid face incidence.' },
+    fold_endpoint_not_on_boundary: { ja: '折り線の端点が用紙輪郭上にありません。', en: 'A fold endpoint is not on the paper boundary.' },
+    unsupported_adjacent_boundary_fold: { ja: '輪郭に隣接する折り線を3D化できません。', en: 'A boundary-adjacent fold is unsupported.' },
+    unsupported_non_convex_fold_sheet: { ja: '非凸用紙上のこの折り線を3D化できません。', en: 'This fold on a non-convex sheet is unsupported.' },
+    degenerate_fold_face: { ja: '折り線から面を構成できません。', en: 'A fold line produces a degenerate face.' },
+    unrepresentable_face_area: { ja: '面積を安全に表現できません。', en: 'A face area cannot be represented safely.' },
+    internal_boundary_resolution: { ja: '用紙輪郭から面を確定できません。', en: 'Faces could not be resolved from the paper boundary.' },
+  }
+  return selectLocalizedText(locale, labels[issue.kind])
 }
 
 function localFlatFoldabilityCoreStatus(

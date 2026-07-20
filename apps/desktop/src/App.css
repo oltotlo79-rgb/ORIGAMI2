@@ -1705,6 +1705,17 @@ html[data-theme='dark'] .svg-import-loss-badge {
   font-size: 11px;
 }
 .validation-report li > span { color: var(--muted); }
+.topology-blockers { margin: 10px; }
+.topology-issue-reason { width: auto !important; }
+.topology-issue-locations {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+}
+.validation-report .topology-issue-locations button {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
 .local-flat-foldability-report { border-left: 3px solid #74838f; }
 .local-flat-foldability-report.is-necessary_conditions_satisfied { border-left-color: #4f9a6d; }
 .local-flat-foldability-report.is-violated { border-left-color: #c85c5c; }

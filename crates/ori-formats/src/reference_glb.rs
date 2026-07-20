@@ -85,7 +85,10 @@ pub fn read_reference_glb_geometry_v1(
 ) -> Result<ReferenceGlbGeometryV1, ReferenceGlbErrorV1> {
     validate_reference_glb_v1(bytes)?;
     let gltf = gltf::Gltf::from_slice(bytes).map_err(|_| ReferenceGlbErrorV1::Json)?;
-    let blob = gltf.blob.as_deref().ok_or(ReferenceGlbErrorV1::UnsupportedContent)?;
+    let blob = gltf
+        .blob
+        .as_deref()
+        .ok_or(ReferenceGlbErrorV1::UnsupportedContent)?;
     let mut positions = Vec::new();
     let mut triangle_indices = Vec::new();
     let mut material_color = [184, 192, 204, 255];
@@ -126,10 +129,11 @@ pub fn read_reference_glb_geometry_v1(
                     .map(|triangle| [base + triangle[0], base + triangle[1], base + triangle[2]]),
             );
             positions.extend(local);
-            let factor = primitive.material().pbr_metallic_roughness().base_color_factor();
-            material_color = factor.map(|channel| {
-                (channel.clamp(0.0, 1.0) * 255.0).round() as u8
-            });
+            let factor = primitive
+                .material()
+                .pbr_metallic_roughness()
+                .base_color_factor();
+            material_color = factor.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8);
         }
     }
     if positions.is_empty() || triangle_indices.is_empty() {
@@ -201,6 +205,25 @@ mod tests {
         assert!(validate_reference_glb_v1(&trailing).is_err());
     }
 
+    #[test]
+    fn extracts_only_bounded_triangle_geometry() {
+        let json = r#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":42}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":6}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}]}"#;
+        let mut binary = Vec::new();
+        for coordinate in [0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            binary.extend_from_slice(&coordinate.to_le_bytes());
+        }
+        for index in [0_u16, 1, 2] {
+            binary.extend_from_slice(&index.to_le_bytes());
+        }
+        while binary.len() % 4 != 0 {
+            binary.push(0);
+        }
+        let geometry =
+            read_reference_glb_geometry_v1(&glb_with_bin(json, &binary)).expect("triangle");
+        assert_eq!(geometry.positions.len(), 3);
+        assert_eq!(geometry.triangle_indices, vec![[0, 1, 2]]);
+    }
+
     fn glb(json: &str) -> Vec<u8> {
         let mut json = json.as_bytes().to_vec();
         while json.len() % 4 != 0 {
@@ -214,6 +237,16 @@ mod tests {
         bytes.extend_from_slice(&(json.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&JSON_CHUNK_TYPE.to_le_bytes());
         bytes.extend_from_slice(&json);
+        bytes
+    }
+
+    fn glb_with_bin(json: &str, binary: &[u8]) -> Vec<u8> {
+        let mut bytes = glb(json);
+        let total = bytes.len() + 8 + binary.len();
+        bytes[8..12].copy_from_slice(&(total as u32).to_le_bytes());
+        bytes.extend_from_slice(&(binary.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&BIN_CHUNK_TYPE.to_le_bytes());
+        bytes.extend_from_slice(binary);
         bytes
     }
 }

@@ -669,14 +669,22 @@ pub(crate) fn apply_beginner_part_assignments(
                 return Err("part_assignment_tail_ear_binding_invalid".to_owned());
             }
         }
-        if ear_candidate_ids.is_empty() {
-            if let Some(mut horn_target) = recognized_horn {
+        if let Some(mut horn_target) = recognized_horn {
+            if ear_candidate_ids.is_empty() {
                 horn_target.id = 2;
                 profile.generation_constraints.protrusions.push(horn_target);
                 if ori_domain::animal_horn_tail_bindings_v1(&profile.generation_constraints)
                     .is_none()
                 {
                     return Err("part_assignment_horn_tail_binding_invalid".to_owned());
+                }
+            } else if ear_candidate_ids.len() == 2 {
+                horn_target.id = 3;
+                profile.generation_constraints.protrusions.push(horn_target);
+                if ori_domain::animal_horn_tail_ear_bindings_v1(&profile.generation_constraints)
+                    .is_none()
+                {
+                    return Err("part_assignment_horn_tail_ear_binding_invalid".to_owned());
                 }
             }
         }

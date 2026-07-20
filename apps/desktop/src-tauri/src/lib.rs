@@ -2210,6 +2210,25 @@ fn symmetric_plan_kind(
             .target_parts
             .iter()
             .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1)
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Ear && part.count == 2)
+    {
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailEarBase
+    } else if profile.generation_constraints.target_category
+        == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Horn && part.count == 1)
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1)
     {
         ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailBase
     } else if profile.generation_constraints.target_category
@@ -2551,6 +2570,7 @@ fn configure_symmetric_profile(
             .iter()
             .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Ear && part.count == 2);
     let horn_tail = single_horn && single_tail;
+    let horn_tail_ear = horn_tail && tail_ear && horn_ear;
     let skeleton = |id, start_x, start_y, end_x, end_y| ori_domain::BeginnerSkeletonSegmentV1 {
         id,
         start: ori_domain::BeginnerSkeletonPointV1 {
@@ -2615,6 +2635,14 @@ fn configure_symmetric_profile(
             ori_domain::BeginnerProtrusionSymmetryV1::Bilateral
         };
         profile.generation_constraints.protrusions.push(secondary);
+        if horn_tail_ear {
+            let mut ears = profile.generation_constraints.protrusions[0].clone();
+            ears.id = 3;
+            ears.count = 2;
+            ears.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
+            ears.direction_milli = [1000, 0, 0];
+            profile.generation_constraints.protrusions.push(ears);
+        }
     }
 }
 
@@ -2683,6 +2711,7 @@ fn apply_beginner_generated_plan(
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeTailEarBase
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornEarBase
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailEarBase
     ) {
         return Err("the selected generated plan is preview-only".to_owned());
     }
@@ -2825,6 +2854,11 @@ fn apply_beginner_generated_plan(
             "Create individually bound center-axis horn and tail rays.",
             "Both bindings and the global proof were revalidated before apply.",
         ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailEarBase => (
+            "Composite horn, tail, and ear base",
+            "Create individually bound horn, tail, and bilateral ear rays.",
+            "All three bindings and the global proof were revalidated before apply.",
+        ),
         ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold => (
             "Diagonal fold",
             "Fold the rectangular sheet on the generated diagonal.",
@@ -2962,6 +2996,11 @@ fn apply_grid_plan_document(
             "Composite horn and tail grid candidate",
             "Apply the globally proven horn-and-tail parameter-grid candidate.",
             "Both live bindings, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailEarBase => (
+            "Composite horn, tail, and ear grid candidate",
+            "Apply the globally proven three-part parameter-grid candidate.",
+            "All live bindings, proof, and candidate identity were revalidated before apply.",
         ),
         _ => return Err("grid_candidate_kind_invalid".to_owned()),
     };
@@ -3399,6 +3438,7 @@ fn derive_reference_model_suggestion_v1(
             .iter()
             .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Ear && part.count == 2);
     let requested_horn_tail = requested_single_horn && requested_single_tail;
+    let requested_horn_tail_ear = requested_horn_tail && requested_horn_ear;
     let requested_single_antenna = target_parts
         .iter()
         .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 1);
@@ -3502,7 +3542,7 @@ fn derive_reference_model_suggestion_v1(
     };
     if requested_tail_ear || requested_horn_ear {
         let mut ears = protrusions[0].clone();
-        ears.id = 2;
+        ears.id = if requested_horn_tail_ear { 3 } else { 2 };
         ears.count = 2;
         ears.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
         ears.direction_milli = [1000, 0, 0];
@@ -3514,7 +3554,11 @@ fn derive_reference_model_suggestion_v1(
         tail.direction_milli = [1000, 0, 0];
         tail.length_tenths_mm = u32::try_from((extents[0] / 2).max(1))
             .map_err(|_| "reference_model_feature_range".to_owned())?;
-        protrusions.push(tail);
+        if requested_horn_tail_ear {
+            protrusions.insert(1, tail);
+        } else {
+            protrusions.push(tail);
+        }
     }
     let pair_bindings = protrusions
         .iter()
@@ -3694,11 +3738,21 @@ fn apply_beginner_reference_model_features(
         return Err("reference_model_suggestion_stale".to_owned());
     }
     profile.generation_constraints.protrusions = live.protrusions.clone();
-    if live.protrusions.len() == 3
-        && ori_domain::insect_three_pair_bindings_v1(&profile.generation_constraints)
+    if live.protrusions.len() == 3 {
+        if let Some(binding) =
+            ori_domain::animal_horn_tail_ear_bindings_v1(&profile.generation_constraints)
+        {
+            if binding.horn_protrusion_id != live.protrusions[0].id
+                || binding.tail_protrusion_id != live.protrusions[1].id
+                || binding.ear_pair_protrusion_id != live.protrusions[2].id
+            {
+                return Err("reference_model_suggestion_invalid".to_owned());
+            }
+        } else if ori_domain::insect_three_pair_bindings_v1(&profile.generation_constraints)
             .is_none_or(|bindings| bindings.as_slice() != live.pair_bindings.as_slice())
-    {
-        return Err("reference_model_suggestion_invalid".to_owned());
+        {
+            return Err("reference_model_suggestion_invalid".to_owned());
+        }
     }
     if live.protrusions.len() == 2 {
         if let Some(binding) =

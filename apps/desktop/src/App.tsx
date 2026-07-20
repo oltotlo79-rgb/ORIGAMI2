@@ -4134,7 +4134,7 @@ function App() {
   }
 
   function confirmAndApplyBeginnerPlan(
-    kind: 'diagonal_fold' | 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' | 'symmetric_antenna_base' | 'symmetric_insect_leg_pair_base' | 'symmetric_six_leg_base' | 'center_axis_tail_base' | 'center_axis_horn_base' | 'center_axis_antenna_base' | 'composite_tail_ear_base' | 'composite_horn_ear_base' | 'composite_horn_tail_base',
+    kind: 'diagonal_fold' | 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' | 'symmetric_antenna_base' | 'symmetric_insect_leg_pair_base' | 'symmetric_six_leg_base' | 'center_axis_tail_base' | 'center_axis_horn_base' | 'center_axis_antenna_base' | 'composite_tail_ear_base' | 'composite_horn_ear_base' | 'composite_horn_tail_base' | 'composite_horn_tail_ear_base',
     expectedCandidateEdgeId: string,
   ) {
     const current = latestSnapshotRef.current
@@ -7986,6 +7986,8 @@ function App() {
                                                   ? (locale === 'ja' ? '一本角と左右一組の耳の複合ベース' : 'Composite horn and ear base')
                                                 : code === 'composite_horn_tail_base'
                                                   ? (locale === 'ja' ? '一本角と単一尾の複合ベース' : 'Composite horn and tail base')
+                                                : code === 'composite_horn_tail_ear_base'
+                                                  ? (locale === 'ja' ? '一本角・単一尾・左右一組の耳の複合ベース' : 'Composite horn, tail, and ear base')
                                                 : code === 'symmetric_insect_leg_pair_base'
                                                   ? text({ ja: '昆虫の左右対称な脚1組のベースを作ります。', en: 'Create one bilateral insect leg-pair base.' })
                                           : code === 'book_fold_vertical'
@@ -10289,11 +10291,12 @@ function isBeginnerSymmetricTemplate(
     | 'composite_tail_ear_base'
     | 'composite_horn_ear_base'
     | 'composite_horn_tail_base'
+    | 'composite_horn_tail_ear_base'
     | 'vertical_book_fold'
     | 'horizontal_book_fold'
     | 'diagonal_fold',
-): kind is 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' | 'symmetric_antenna_base' | 'symmetric_insect_leg_pair_base' | 'symmetric_six_leg_base' | 'center_axis_tail_base' | 'center_axis_horn_base' | 'center_axis_antenna_base' | 'composite_tail_ear_base' | 'composite_horn_ear_base' | 'composite_horn_tail_base' {
-  return ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base'].includes(kind)
+): kind is 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' | 'symmetric_antenna_base' | 'symmetric_insect_leg_pair_base' | 'symmetric_six_leg_base' | 'center_axis_tail_base' | 'center_axis_horn_base' | 'center_axis_antenna_base' | 'composite_tail_ear_base' | 'composite_horn_ear_base' | 'composite_horn_tail_base' | 'composite_horn_tail_ear_base' {
+  return ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base'].includes(kind)
 }
 
 function sameRecoveryCandidate(

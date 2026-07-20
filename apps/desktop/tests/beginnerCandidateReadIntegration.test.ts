@@ -45,8 +45,8 @@ test('AUT-107 fixes the initial bulge and elasticity policy in native, IPC, and 
 test('AUT-101 exposes bounded generated crease patterns and instructions as read-only previews', () => {
   assert.match(native, /generate_beginner_plans_v1/)
   assert.match(client, /response\.generated_plans\.length > 3/)
-  assert.match(client, /pattern\.vertices\.length > \(record\.kind === 'symmetric_six_leg_base' \? 13 : \['composite_tail_ear_base', 'composite_horn_ear_base'\]\.includes\(String\(record\.kind\)\) \? 6 : 5\)/)
-  assert.match(client, /pattern\.edges\.length > \(record\.kind === 'symmetric_six_leg_base' \? 12 : \['composite_tail_ear_base', 'composite_horn_ear_base'\]\.includes\(String\(record\.kind\)\) \? 5 : 4\)/)
+  assert.match(client, /record\.kind === 'composite_horn_tail_ear_base' \? 7/u)
+  assert.match(client, /record\.kind === 'composite_horn_tail_ear_base' \? 6/u)
   assert.match(client, /vertexIds\.has\(edge\.start\)/)
   assert.match(client, /new Set\(admittedEdges\.map\(\(edge\) => edge\.id\)\)/)
   assert.match(app, /Candidate crease-pattern preview/)

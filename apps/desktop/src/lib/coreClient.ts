@@ -594,6 +594,7 @@ export type BeginnerGeneratedPlanV1 = {
     | 'composite_tail_ear_base'
     | 'composite_horn_ear_base'
     | 'composite_horn_tail_base'
+    | 'composite_horn_tail_ear_base'
     | 'vertical_book_fold'
     | 'horizontal_book_fold'
     | 'diagonal_fold'
@@ -702,18 +703,18 @@ function normalizeBeginnerCandidateResponse(
     if (
       !record
       || record.schema_version !== 1
-      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
+      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
       || !pattern
       || !Array.isArray(pattern.vertices)
       || pattern.vertices.length < 2
-      || pattern.vertices.length > (record.kind === 'symmetric_six_leg_base' ? 13 : ['composite_tail_ear_base', 'composite_horn_ear_base'].includes(String(record.kind)) ? 6 : 5)
+      || pattern.vertices.length > (record.kind === 'symmetric_six_leg_base' ? 13 : record.kind === 'composite_horn_tail_ear_base' ? 7 : ['composite_tail_ear_base', 'composite_horn_ear_base'].includes(String(record.kind)) ? 6 : 5)
       || !Array.isArray(pattern.edges)
       || pattern.edges.length < 1
-      || pattern.edges.length > (record.kind === 'symmetric_six_leg_base' ? 12 : ['composite_tail_ear_base', 'composite_horn_ear_base'].includes(String(record.kind)) ? 5 : 4)
+      || pattern.edges.length > (record.kind === 'symmetric_six_leg_base' ? 12 : record.kind === 'composite_horn_tail_ear_base' ? 6 : ['composite_tail_ear_base', 'composite_horn_ear_base'].includes(String(record.kind)) ? 5 : 4)
       || !Array.isArray(record.instruction_codes)
       || record.instruction_codes.length !== 1
       || !record.instruction_codes.every((code) =>
-        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
+        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
     ) return null
     const normalizedPlanInputs = normalizeBeginnerGenerationConstraints({
       schema_version: 1,
@@ -2074,6 +2075,7 @@ export function applyBeginnerGeneratedPlan(
     'composite_tail_ear_base',
     'composite_horn_ear_base',
     'composite_horn_tail_base',
+    'composite_horn_tail_ear_base',
   ].includes(selectedKind) || !isCanonicalNonNilUuid(expectedCandidateEdgeId)) {
     return Promise.reject(new Error('unsupported generated plan'))
   }

@@ -538,6 +538,143 @@ pub struct CycleScheduleEntryInputV1 {
     pub chebyshev_coefficients: Vec<RationalCoefficientV1>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HalfAngleRationalEntryInputV1 {
+    pub edge: EdgeId,
+    pub u_domain: [RationalCoefficientV1; 2],
+    pub numerator_power_coefficients: Vec<RationalCoefficientV1>,
+    pub denominator_power_coefficients: Vec<RationalCoefficientV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedHalfAngleRationalEntryV1 {
+    edge: EdgeId,
+    u_domain: [BigRational; 2],
+    numerator_power_coefficients: Vec<BigRational>,
+    denominator_power_coefficients: Vec<BigRational>,
+    numerator_certificate: PoleFreeBernsteinCertificateV1,
+    denominator_certificate: PoleFreeBernsteinCertificateV1,
+}
+
+impl PreparedHalfAngleRationalEntryV1 {
+    pub fn prepare(
+        input: HalfAngleRationalEntryInputV1,
+        limits: CycleScheduleLimitsV1,
+    ) -> Result<Self, CycleSchedulePrepareErrorV1> {
+        let to_exact = |value: RationalCoefficientV1| {
+            if value.denominator == 0 {
+                return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+            }
+            Ok(BigRational::new(
+                BigInt::from(value.numerator),
+                BigInt::from(value.denominator),
+            ))
+        };
+        let u_domain = [to_exact(input.u_domain[0])?, to_exact(input.u_domain[1])?];
+        if u_domain[0] >= u_domain[1] {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        let numerator_certificate = prepare_pole_free_bernstein_certificate_v1(
+            &input.numerator_power_coefficients,
+            limits.max_degree,
+            limits.max_coefficient_bits,
+            limits.max_work,
+        )?;
+        let denominator_certificate = prepare_pole_free_bernstein_certificate_v1(
+            &input.denominator_power_coefficients,
+            limits.max_degree,
+            limits.max_coefficient_bits,
+            limits.max_work,
+        )?;
+        let numerator_power_coefficients = input
+            .numerator_power_coefficients
+            .into_iter()
+            .map(to_exact)
+            .collect::<Result<Vec<_>, _>>()?;
+        let denominator_power_coefficients = input
+            .denominator_power_coefficients
+            .into_iter()
+            .map(to_exact)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            edge: input.edge,
+            u_domain,
+            numerator_power_coefficients,
+            denominator_power_coefficients,
+            numerator_certificate,
+            denominator_certificate,
+        })
+    }
+
+    #[must_use]
+    pub const fn edge(&self) -> EdgeId {
+        self.edge
+    }
+
+    pub fn evaluate_exact(
+        &self,
+        u: RationalCoefficientV1,
+        max_coefficient_bits: u32,
+        max_work: usize,
+    ) -> Result<BigRational, CycleSchedulePrepareErrorV1> {
+        if u.denominator == 0 {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        let u = BigRational::new(BigInt::from(u.numerator), BigInt::from(u.denominator));
+        if u < self.u_domain[0] || u > self.u_domain[1] {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        let numerator = evaluate_exact_power_horner(
+            &self.numerator_power_coefficients,
+            &u,
+            max_coefficient_bits,
+            max_work,
+        )?;
+        let denominator = evaluate_exact_power_horner(
+            &self.denominator_power_coefficients,
+            &u,
+            max_coefficient_bits,
+            max_work,
+        )?;
+        if denominator.is_zero() {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        let value = numerator / denominator;
+        validate_exact_bits(core::slice::from_ref(&value), max_coefficient_bits)?;
+        Ok(value)
+    }
+
+    pub fn angle_enclosure(
+        &self,
+        max_work: usize,
+    ) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
+        evaluate_half_angle_rational_degrees_interval_v1(
+            &self.numerator_certificate,
+            &self.denominator_certificate,
+            max_work,
+        )
+    }
+}
+
+fn evaluate_exact_power_horner(
+    coefficients: &[BigRational],
+    u: &BigRational,
+    max_coefficient_bits: u32,
+    max_work: usize,
+) -> Result<BigRational, CycleSchedulePrepareErrorV1> {
+    if coefficients.is_empty() || coefficients.len() > max_work {
+        return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+    }
+    let value = coefficients
+        .iter()
+        .rev()
+        .fold(BigRational::zero(), |value, coefficient| {
+            value * u + coefficient
+        });
+    validate_exact_bits(core::slice::from_ref(&value), max_coefficient_bits)?;
+    Ok(value)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CycleScheduleLimitsV1 {
     pub max_hinges: usize,
@@ -1209,6 +1346,66 @@ mod tests {
         assert_eq!(
             evaluate_pole_free_rational_dyadic_v1(&p, &q, 0.5, 64, 0),
             Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+        );
+    }
+
+    #[test]
+    fn half_angle_entry_uses_exact_u_domain_and_horner_evaluation() {
+        let entry = PreparedHalfAngleRationalEntryV1::prepare(
+            HalfAngleRationalEntryInputV1 {
+                edge: EdgeId::derive_v5(ProjectId::new(), b"half-angle-entry"),
+                u_domain: [
+                    RationalCoefficientV1 {
+                        numerator: -1,
+                        denominator: 2,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 2,
+                    },
+                ],
+                numerator_power_coefficients: vec![
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 2,
+                        denominator: 1,
+                    },
+                ],
+                denominator_power_coefficients: vec![RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                }],
+            },
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            entry
+                .evaluate_exact(
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 4,
+                    },
+                    128,
+                    16,
+                )
+                .unwrap(),
+            BigRational::new(3.into(), 2.into())
+        );
+        assert!(
+            entry
+                .evaluate_exact(
+                    RationalCoefficientV1 {
+                        numerator: 3,
+                        denominator: 4,
+                    },
+                    128,
+                    16,
+                )
+                .is_err()
         );
     }
 }

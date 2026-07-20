@@ -1266,8 +1266,8 @@ mod tests {
                 &schedule,
                 1.0e-9,
                 DyadicIntervalClosureLimitsV1 {
-                    max_depth: 4,
-                    max_leaves: 16,
+                    max_depth: 8,
+                    max_leaves: 256,
                     max_work: 1_000_000,
                     schedule_limits: crate::CycleScheduleLimitsV1::default(),
                 },

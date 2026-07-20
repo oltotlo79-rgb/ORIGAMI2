@@ -904,7 +904,9 @@ pub fn generate_linear_multi_hinge_path_candidate_v1(
     limits: MultiHingePathCandidateLimitsV1,
 ) -> Result<GeneratedMultiHingePathCandidateV1, MultiHingePathCandidateErrorV1> {
     let hinges = geometry.hinges();
-    if geometry.face_ids() != audit.faces()
+    let mut geometry_faces = geometry.face_ids().to_vec();
+    geometry_faces.sort_unstable_by_key(FaceId::canonical_bytes);
+    if geometry_faces != audit.faces()
         || !audit.faces().contains(&fixed_face)
         || hinges.len() != initial.as_slice().len()
         || hinges.len() != requested.as_slice().len()
@@ -1221,11 +1223,56 @@ impl CanonicalCycleScheduleV1 {
         index: u64,
         limits: CycleScheduleLimitsV1,
     ) -> Result<Vec<(EdgeId, OutwardIntervalV1)>, CycleSchedulePrepareErrorV1> {
-        if self.half_angle_entries.is_empty()
-            || depth >= 64
-            || self.half_angle_entries.len() > limits.max_hinges
-        {
+        if depth >= 64 || self.half_angle_entries.len() > limits.max_hinges {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        if self.half_angle_entries.is_empty() {
+            if self.entries.is_empty() || index >= (1u64 << depth) {
+                return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+            }
+            let scale = (1u64 << depth) as f64;
+            let x = OutwardIntervalV1::new(
+                -1.0 + 2.0 * index as f64 / scale,
+                -1.0 + 2.0 * (index + 1) as f64 / scale,
+            )
+            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+            return self
+                .entries
+                .iter()
+                .map(|entry| {
+                    let zero = OutwardIntervalV1::new(0.0, 0.0)
+                        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+                    let two = OutwardIntervalV1::from_rounded(2.0)
+                        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+                    let mut b1 = zero;
+                    let mut b2 = zero;
+                    for coefficient in entry.coefficients.iter().rev() {
+                        let coefficient = OutwardIntervalV1::from_rounded(*coefficient)
+                            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+                        let b0 = two
+                            .mul(x)
+                            .and_then(|value| value.mul(b1))
+                            .and_then(|value| value.sub(b2))
+                            .and_then(|value| value.add(coefficient))
+                            .map_err(|_| CycleSchedulePrepareErrorV1::ResourceLimit)?;
+                        b2 = b1;
+                        b1 = b0;
+                    }
+                    let initial = OutwardIntervalV1::from_rounded(entry.initial)
+                        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+                    let angle = initial
+                        .add(b1)
+                        .and_then(|value| value.sub(x.mul(b2)?))
+                        .map_err(|_| CycleSchedulePrepareErrorV1::ResourceLimit)?;
+                    if angle.work() > limits.max_work
+                        || angle.lower() < 0.0
+                        || angle.upper() > 180.0
+                    {
+                        return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+                    }
+                    Ok((entry.edge, angle))
+                })
+                .collect();
         }
         self.half_angle_entries
             .iter()

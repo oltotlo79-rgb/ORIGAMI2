@@ -181,7 +181,7 @@ const expectedArtifactNames = [
   'rustsec-warning-review',
   'sample-viewer-runtime-log',
 ]
-const admittedArtifactNames = artifacts.artifacts.map((candidate) => {
+const ciArtifacts = artifacts.artifacts.map((candidate) => {
   const candidateCreatedAt = Date.parse(candidate.created_at)
   const candidateExpiresAt = Date.parse(candidate.expires_at)
   if (
@@ -196,9 +196,16 @@ const admittedArtifactNames = artifacts.artifacts.map((candidate) => {
     || candidateExpiresAt - candidateCreatedAt < 6 * 86_400_000
     || candidateExpiresAt - candidateCreatedAt > 8 * 86_400_000
   ) throw new Error('CI artifact identity or retention is invalid')
-  return candidate.name
-}).sort()
-if (admittedArtifactNames.join('\n') !== expectedArtifactNames.join('\n')) throw new Error('CI artifact names are incomplete, duplicated, or unexpected')
+  return {
+    artifactId: String(candidate.id),
+    name: candidate.name,
+    digest: candidate.digest,
+    size: candidate.size_in_bytes,
+    createdAt: candidate.created_at,
+    expiresAt: candidate.expires_at,
+  }
+}).sort((left, right) => left.name.localeCompare(right.name))
+if (ciArtifacts.map(({ name }) => name).join('\n') !== expectedArtifactNames.join('\n')) throw new Error('CI artifact names are incomplete, duplicated, or unexpected')
 const artifact = reviewArtifacts[0]
 const createdAt = Date.parse(artifact.created_at)
 const expiresAt = Date.parse(artifact.expires_at)
@@ -231,6 +238,7 @@ process.stdout.write(`${JSON.stringify({
   runAttempt: run.run_attempt,
   checkSuiteId: String(run.check_suite_id),
   checks: checkResults,
+  artifacts: ciArtifacts,
   rustsecReviewArtifact: {
     artifactId: String(artifact.id),
     name: artifact.name,

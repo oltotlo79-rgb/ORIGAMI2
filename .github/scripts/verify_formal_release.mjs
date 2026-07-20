@@ -151,6 +151,19 @@ if (
   || releaseEvidence.ciChecks.runAttempt < 1
   || !/^[1-9][0-9]*$/u.test(releaseEvidence.ciChecks?.checkSuiteId ?? '')
   || releaseEvidence.ciChecks?.workflow !== '.github/workflows/ci.yml'
+  || !Array.isArray(releaseEvidence.ciChecks?.artifacts)
+  || releaseEvidence.ciChecks.artifacts.length !== 4
+  || releaseEvidence.ciChecks.artifacts.map(({ name }) => name).join('\n') !== [
+    `ORIGAMI2-macos-app-${releaseEvidence.ciChecks.workflowRunId}`,
+    `ORIGAMI2-windows-nsis-${releaseEvidence.ciChecks.workflowRunId}`,
+    'rustsec-warning-review',
+    'sample-viewer-runtime-log',
+  ].join('\n')
+  || releaseEvidence.ciChecks.artifacts.some((artifact) => (
+    !/^[1-9][0-9]*$/u.test(artifact?.artifactId ?? '')
+    || !/^sha256:[0-9a-f]{64}$/u.test(artifact?.digest ?? '')
+    || !Number.isSafeInteger(artifact?.size) || artifact.size < 1 || artifact.size > 2_147_483_648
+  ))
   || releaseEvidence.ciChecks?.rustsecReviewArtifact?.name !== 'rustsec-warning-review'
   || releaseEvidence.ciChecks?.rustsecReviewArtifact?.digest
     !== `sha256:${releaseEvidence.ciChecks?.rustsecReviewArtifact?.archiveSha256}`
@@ -183,6 +196,7 @@ if (
     runAttempt: releaseEvidence.ciChecks.runAttempt,
     checkSuiteId: releaseEvidence.ciChecks.checkSuiteId,
     checks: releaseEvidence.ciChecks.checks,
+    artifacts: releaseEvidence.ciChecks.artifacts,
     rustsecReviewArtifact: releaseEvidence.ciChecks.rustsecReviewArtifact,
   })
   || (process.env.RELEASE_RUN_ID !== undefined && releaseEvidence.ciRunId !== process.env.RELEASE_RUN_ID)

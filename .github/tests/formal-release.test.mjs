@@ -16,6 +16,16 @@ const ciArtifactFixture = {
   createdAt: '2026-07-20T00:00:00.000Z', expiresAt: '2026-07-27T00:00:00.000Z',
   workflowRunId: '67890', runAttempt: 1, checkSuiteId: '24680',
 }
+const ciArtifactsFixture = [
+  { artifactId: '8', name: 'ORIGAMI2-macos-app-67890', digest: `sha256:${'a'.repeat(64)}`, size: 256 },
+  { artifactId: '9', name: 'ORIGAMI2-windows-nsis-67890', digest: `sha256:${'b'.repeat(64)}`, size: 512 },
+  { artifactId: '7', name: 'rustsec-warning-review', digest: ciArtifactFixture.digest, size: ciArtifactFixture.size },
+  { artifactId: '10', name: 'sample-viewer-runtime-log', digest: `sha256:${'e'.repeat(64)}`, size: 64 },
+].map((artifact) => ({
+  ...artifact,
+  createdAt: ciArtifactFixture.createdAt,
+  expiresAt: ciArtifactFixture.expiresAt,
+}))
 function fixtureCrc32(bytes) {
   let crc = 0xffffffff
   for (const byte of bytes) {
@@ -758,6 +768,7 @@ test('CI attempt and suite evidence is transitively bound to every release integ
   assert.match(artifactVerifier, /checkSuiteId: releaseEvidence\.ciChecks\.checkSuiteId/u)
   assert.match(artifactVerifier, /rustsecReviewArtifact/u)
   assert.match(artifactVerifier, /reportSha256/u)
+  assert.match(artifactVerifier, /artifacts: releaseEvidence\.ciChecks\.artifacts/u)
   assert.match(artifactVerifier, /CycloneDX SBOM canonical release evidence mismatch/u)
   assert.match(manifestWriter, /`\$\{prefix\}\.cdx\.json`/u)
   assert.match(provenanceVerifier, /\.cdx\.json"/u)
@@ -1018,6 +1029,7 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
               runAttempt: 1,
               checkSuiteId: '24680',
               checks: [{ name: 'test', conclusion: 'success' }],
+              artifacts: ciArtifactsFixture,
               rustsecReviewArtifact: ciArtifactFixture,
             }),
           },
@@ -1110,6 +1122,7 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
           runAttempt: 1,
           checkSuiteId: '24680',
           checks: [{ name: 'test', conclusion: 'success' }],
+          artifacts: ciArtifactsFixture,
           rustsecReviewArtifact: ciArtifactFixture,
         }),
       },
@@ -1163,6 +1176,7 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
         runAttempt: 1,
         checkSuiteId: '24680',
         checks: [{ name: 'test', conclusion: 'success' }],
+        artifacts: ciArtifactsFixture,
         rustsecReviewArtifact: ciArtifactFixture,
       },
       rustsecWarningReview: buildDependencyPolicy().vulnerabilityAssessment.rustsecReviewReport,
@@ -1190,6 +1204,7 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
           runAttempt: 1,
           checkSuiteId: '24680',
           checks: [{ name: 'test', conclusion: 'success' }],
+          artifacts: ciArtifactsFixture,
           rustsecReviewArtifact: ciArtifactFixture,
         }),
       },
@@ -1370,6 +1385,12 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
       runAttempt: 1,
       checkSuiteId: '84',
       checks: requiredChecks.map((name) => ({ name, conclusion: 'success' })),
+      artifacts: [
+        { artifactId: '8', name: 'ORIGAMI2-macos-app-42', digest: `sha256:${'a'.repeat(64)}`, size: 1, createdAt, expiresAt },
+        { artifactId: '9', name: 'ORIGAMI2-windows-nsis-42', digest: `sha256:${'a'.repeat(64)}`, size: 1, createdAt, expiresAt },
+        { artifactId: '7', name: 'rustsec-warning-review', digest: `sha256:${artifactDigest}`, size: artifactBytes.length, createdAt, expiresAt },
+        { artifactId: '10', name: 'sample-viewer-runtime-log', digest: `sha256:${'a'.repeat(64)}`, size: 1, createdAt, expiresAt },
+      ],
       rustsecReviewArtifact: {
         artifactId: '7', name: 'rustsec-warning-review',
         digest: `sha256:${artifactDigest}`, archiveSha256: artifactDigest,

@@ -55,6 +55,26 @@ if (
   || ciChecks.sourceCommit !== commit
 ) throw new Error('CI check evidence is non-canonical or bound to another commit')
 const reviewArtifact = ciChecks.rustsecReviewArtifact
+const expectedArtifactNames = [
+  `ORIGAMI2-macos-app-${ciChecks.workflowRunId}`,
+  `ORIGAMI2-windows-nsis-${ciChecks.workflowRunId}`,
+  'rustsec-warning-review',
+  'sample-viewer-runtime-log',
+]
+if (
+  !Array.isArray(ciChecks.artifacts)
+  || ciChecks.artifacts.length !== expectedArtifactNames.length
+  || ciChecks.artifacts.map(({ name }) => name).join('\n') !== expectedArtifactNames.join('\n')
+  || ciChecks.artifacts.some((artifact) => (
+    !/^[1-9][0-9]*$/u.test(artifact?.artifactId ?? '')
+    || !/^sha256:[0-9a-f]{64}$/u.test(artifact?.digest ?? '')
+    || !Number.isSafeInteger(artifact?.size) || artifact.size < 1 || artifact.size > 2_147_483_648
+    || !Number.isFinite(Date.parse(artifact?.createdAt))
+    || Date.parse(artifact.expiresAt) - Date.parse(artifact.createdAt) < 6 * 86_400_000
+    || Date.parse(artifact.expiresAt) - Date.parse(artifact.createdAt) > 8 * 86_400_000
+  ))
+) throw new Error('CI artifact inventory evidence is invalid')
+const inventoryReview = ciChecks.artifacts.find(({ name }) => name === 'rustsec-warning-review')
 if (
   !/^[1-9][0-9]*$/u.test(reviewArtifact?.artifactId ?? '')
   || reviewArtifact?.name !== 'rustsec-warning-review'
@@ -65,6 +85,9 @@ if (
   || reviewArtifact.workflowRunId !== ciChecks.workflowRunId
   || reviewArtifact.runAttempt !== ciChecks.runAttempt
   || reviewArtifact.checkSuiteId !== ciChecks.checkSuiteId
+  || inventoryReview?.artifactId !== reviewArtifact.artifactId
+  || inventoryReview?.digest !== reviewArtifact.digest
+  || inventoryReview?.size !== reviewArtifact.size
   || Date.parse(reviewArtifact.expiresAt) - Date.parse(reviewArtifact.createdAt) < 6 * 86_400_000
   || Date.parse(reviewArtifact.expiresAt) - Date.parse(reviewArtifact.createdAt) > 8 * 86_400_000
 ) throw new Error('RustSec review artifact evidence is invalid')

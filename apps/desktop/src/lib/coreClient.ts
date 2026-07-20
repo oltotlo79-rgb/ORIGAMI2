@@ -162,6 +162,103 @@ export type BeginnerDesignProfileV1 = {
   paper_efficiency_weight: number
 }
 
+export type BeginnerCandidateScoreV1 = {
+  schema_version: 1
+  kind: 'recommended' | 'shape_focused' | 'foldability_focused'
+  rank: number
+  total_score: number
+  shape_score: number
+  foldability_score: number
+  step_count_score: number
+  paper_efficiency_score: number
+}
+
+export type BeginnerCandidateResponseV1 = {
+  schema_version: 1
+  project_instance_id: string
+  project_id: string
+  revision: number
+  candidates: BeginnerCandidateScoreV1[]
+}
+
+function normalizeBeginnerCandidateResponse(
+  value: unknown,
+  expectedProjectInstanceId: string,
+  expectedProjectId: string,
+  expectedRevision: number,
+): BeginnerCandidateResponseV1 | null {
+  const response = exactCoreDataRecord(value, [
+    'schema_version',
+    'project_instance_id',
+    'project_id',
+    'revision',
+    'candidates',
+  ] as const)
+  if (
+    !response
+    || response.schema_version !== 1
+    || response.project_instance_id !== expectedProjectInstanceId
+    || response.project_id !== expectedProjectId
+    || response.revision !== expectedRevision
+    || !Array.isArray(response.candidates)
+    || response.candidates.length < 1
+    || response.candidates.length > 3
+  ) return null
+  const candidates = response.candidates.map((candidate, index) => {
+    const record = exactCoreDataRecord(candidate, [
+      'schema_version',
+      'kind',
+      'rank',
+      'total_score',
+      'shape_score',
+      'foldability_score',
+      'step_count_score',
+      'paper_efficiency_score',
+    ] as const)
+    const scores = record && [
+      record.total_score,
+      record.shape_score,
+      record.foldability_score,
+      record.step_count_score,
+      record.paper_efficiency_score,
+    ]
+    if (
+      !record
+      || record.schema_version !== 1
+      || (
+        record.kind !== 'recommended'
+        && record.kind !== 'shape_focused'
+        && record.kind !== 'foldability_focused'
+      )
+      || record.rank !== index + 1
+      || !scores
+      || scores.some((score) => !Number.isInteger(score) || Number(score) < 0 || Number(score) > 100)
+    ) return null
+    return Object.freeze({
+      schema_version: 1,
+      kind: record.kind,
+      rank: record.rank,
+      total_score: record.total_score,
+      shape_score: record.shape_score,
+      foldability_score: record.foldability_score,
+      step_count_score: record.step_count_score,
+      paper_efficiency_score: record.paper_efficiency_score,
+    }) as BeginnerCandidateScoreV1
+  })
+  if (candidates.some((candidate) => candidate === null)) return null
+  const admitted = candidates as BeginnerCandidateScoreV1[]
+  if (admitted.some((candidate, index) =>
+    index > 0 && admitted[index - 1].total_score < candidate.total_score
+  )) return null
+  return Object.freeze({
+    schema_version: 1,
+    project_instance_id: expectedProjectInstanceId,
+    project_id: expectedProjectId,
+    revision: expectedRevision,
+    candidates: Object.freeze(admitted.slice()),
+  }) as BeginnerCandidateResponseV1
+}
+
 export function normalizeBeginnerDesignProfile(
   value: unknown,
 ): BeginnerDesignProfileV1 | null {
@@ -719,6 +816,27 @@ export function updateBeginnerDesignProfile(
     expectedProjectId,
     expectedRevision,
     profile,
+  })
+}
+
+export function evaluateBeginnerCandidates(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+) {
+  return invoke<unknown>('evaluate_beginner_candidates', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+  }).then((value) => {
+    const response = normalizeBeginnerCandidateResponse(
+      value,
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    )
+    if (!response) throw new Error('invalid beginner candidate response')
+    return response
   })
 }
 

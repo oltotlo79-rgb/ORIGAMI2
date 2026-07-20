@@ -79,6 +79,7 @@ import {
   connectTJunction,
   createProjectLayer,
   deleteProjectLayer,
+  evaluateBeginnerCandidates,
   generateBenchmarkPattern,
   getInstructionExportProgress,
   getProjectSnapshot as requestProjectSnapshot,
@@ -133,6 +134,7 @@ import {
   importBackPaperTexture,
   type ProjectSnapshot,
   type BeginnerDesignProfileV1,
+  type BeginnerCandidateResponseV1,
   type MirrorSelectionPreflight,
   type MirrorSelectionRequest,
   type GeometricConstraintKind,
@@ -670,6 +672,12 @@ function App() {
   const [projectLayerDocumentInvalid, setProjectLayerDocumentInvalid] =
     useState(false)
   const [topologyResponse, setTopologyResponse] = useState<ProjectTopologyResponse | null>(null)
+  const [beginnerCandidates, setBeginnerCandidates] =
+    useState<BeginnerCandidateResponseV1 | null>(null)
+  const [beginnerCandidateBusy, setBeginnerCandidateBusy] = useState(false)
+  useEffect(() => {
+    setBeginnerCandidates(null)
+  }, [nativeSnapshot?.project_instance_id, nativeSnapshot?.revision])
   const [topologyStatusMessage, setTopologyStatus] = useState<AppMessage>(
     () => isNativeCoreAvailable()
       ? appMessage({
@@ -3473,6 +3481,25 @@ function App() {
         projectInstanceId,
         profile,
       ))
+  }
+
+  function requestBeginnerCandidates() {
+    if (beginnerCandidateBusy) return
+    const current = latestSnapshotRef.current
+    if (!current) return
+    setBeginnerCandidateBusy(true)
+    evaluateBeginnerCandidates(
+      current.project_id,
+      current.revision,
+      current.project_instance_id,
+    ).then((response) => {
+      if (latestSnapshotRef.current !== current) return
+      setBeginnerCandidates(response)
+    }).catch(() => {
+      if (latestSnapshotRef.current === current) setBeginnerCandidates(null)
+    }).finally(() => {
+      setBeginnerCandidateBusy(false)
+    })
   }
 
   async function submitPaperResize(event: FormEvent<HTMLFormElement>) {
@@ -7027,6 +7054,54 @@ function App() {
                   </button>
                 </div>
               </form>
+              <div aria-labelledby="beginner-candidate-heading">
+                <h3 id="beginner-candidate-heading">
+                  {text({ ja: '設計候補の比較', en: 'Compare design candidates' })}
+                </h3>
+                <p id="beginner-candidate-description" className="muted">
+                  {text({
+                    ja: '端末内で最大3件を同じ基準で評価します。これは候補の比較だけを行い、展開図を変更しません。',
+                    en: 'Scores up to three candidates on this device using the same criteria. This comparison does not change the crease pattern.',
+                  })}
+                </p>
+                <button
+                  type="button"
+                  onClick={requestBeginnerCandidates}
+                  disabled={coreBusy || recoveryBlocking || beginnerCandidateBusy}
+                  aria-describedby="beginner-candidate-description"
+                >
+                  {beginnerCandidateBusy
+                    ? text({ ja: '候補を評価中…', en: 'Scoring candidates…' })
+                    : text({ ja: '候補を評価', en: 'Score candidates' })}
+                </button>
+                {beginnerCandidates && (
+                  <ol aria-label={text({ ja: '評価順の設計候補', en: 'Design candidates in score order' })}>
+                    {beginnerCandidates.candidates.map((candidate) => (
+                      <li key={candidate.kind}>
+                        <strong>
+                          {candidate.rank}. {candidate.kind === 'recommended'
+                            ? text({ ja: '推奨案', en: 'Recommended' })
+                            : candidate.kind === 'shape_focused'
+                              ? text({ ja: '完成形重視案', en: 'Shape-focused' })
+                              : text({ ja: '折りやすさ重視案', en: 'Foldability-focused' })}
+                          {' — '}{candidate.total_score}/100
+                        </strong>
+                        <span className="muted">
+                          {formattedText({
+                            ja: '完成形 {shape}・折りやすさ {foldability}・工程数 {steps}・紙効率 {paper}',
+                            en: 'Shape {shape} · foldability {foldability} · steps {steps} · paper efficiency {paper}',
+                          }, {
+                            shape: candidate.shape_score,
+                            foldability: candidate.foldability_score,
+                            steps: candidate.step_count_score,
+                            paper: candidate.paper_efficiency_score,
+                          })}
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
             </section>
           )}
           {nativeSnapshot && !benchmarkRun && (

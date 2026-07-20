@@ -1947,6 +1947,7 @@ pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
                 | (10, 9)
                 | (11, 10)
                 | (12, 11)
+                | (13, 12)
         )
     {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::PositiveThicknessUnsupported);

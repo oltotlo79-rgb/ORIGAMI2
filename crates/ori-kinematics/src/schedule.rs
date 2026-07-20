@@ -833,6 +833,181 @@ pub enum CycleSchedulePrepareErrorV1 {
     AngleRange,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultiHingePathCandidateLimitsV1 {
+    pub max_hinges: usize,
+    pub max_candidates: usize,
+    pub max_work: usize,
+}
+
+impl Default for MultiHingePathCandidateLimitsV1 {
+    fn default() -> Self {
+        Self {
+            max_hinges: 64,
+            max_candidates: 1,
+            max_work: 256,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum MultiHingePathCandidateErrorV1 {
+    #[error("the graph, fixed face, or endpoint registry is inconsistent")]
+    InvalidBinding,
+    #[error("the endpoint angle vector contains no motion")]
+    NoMotion,
+    #[error("candidate generation exceeded its explicit resource limits")]
+    ResourceLimit,
+    #[error("the generated candidate could not satisfy schedule admission")]
+    CandidateRejected,
+}
+
+/// Read-only candidate transport. It is neither closure nor collision
+/// authority and cannot authorize project mutation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeneratedMultiHingePathCandidateV1 {
+    schedule: CanonicalCycleScheduleV1,
+    moving_hinges: Vec<EdgeId>,
+}
+
+impl GeneratedMultiHingePathCandidateV1 {
+    #[must_use]
+    pub const fn schedule(&self) -> &CanonicalCycleScheduleV1 {
+        &self.schedule
+    }
+
+    #[must_use]
+    pub fn moving_hinges(&self) -> &[EdgeId] {
+        &self.moving_hinges
+    }
+
+    #[must_use]
+    pub const fn authorizes_closure(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_collision_clearance(&self) -> bool {
+        false
+    }
+}
+
+/// Generates the deterministic straight segment in complete hinge-angle
+/// space. This is only a candidate; cyclic closure and collision clearance
+/// must be proved independently over its full domain.
+pub fn generate_linear_multi_hinge_path_candidate_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    initial: &CanonicalHingeAngles,
+    requested: &CanonicalHingeAngles,
+    limits: MultiHingePathCandidateLimitsV1,
+) -> Result<GeneratedMultiHingePathCandidateV1, MultiHingePathCandidateErrorV1> {
+    let hinges = geometry.hinges();
+    if geometry.face_ids() != audit.faces()
+        || !audit.faces().contains(&fixed_face)
+        || hinges.len() != initial.as_slice().len()
+        || hinges.len() != requested.as_slice().len()
+    {
+        return Err(MultiHingePathCandidateErrorV1::InvalidBinding);
+    }
+    if hinges.len() > limits.max_hinges || limits.max_candidates == 0 {
+        return Err(MultiHingePathCandidateErrorV1::ResourceLimit);
+    }
+    let work = hinges
+        .len()
+        .checked_mul(2)
+        .ok_or(MultiHingePathCandidateErrorV1::ResourceLimit)?;
+    if work > limits.max_work {
+        return Err(MultiHingePathCandidateErrorV1::ResourceLimit);
+    }
+    let mut expected = hinges.iter().map(|hinge| hinge.edge()).collect::<Vec<_>>();
+    expected.sort_unstable_by_key(EdgeId::canonical_bytes);
+    if initial
+        .as_slice()
+        .iter()
+        .map(|angle| angle.edge())
+        .ne(expected.iter().copied())
+        || requested
+            .as_slice()
+            .iter()
+            .map(|angle| angle.edge())
+            .ne(expected.iter().copied())
+    {
+        return Err(MultiHingePathCandidateErrorV1::InvalidBinding);
+    }
+    let mut moving_hinges = Vec::new();
+    let entries = initial
+        .as_slice()
+        .iter()
+        .zip(requested.as_slice())
+        .map(|(start, end)| {
+            let start_value = start.angle_degrees();
+            let end_value = end.angle_degrees();
+            if start_value.to_bits() != end_value.to_bits() {
+                moving_hinges.push(start.edge());
+            }
+            let midpoint = start_value + (end_value - start_value) * 0.5;
+            let half_delta = (end_value - start_value) * 0.5;
+            Ok(CycleScheduleEntryInputV1 {
+                edge: start.edge(),
+                initial_angle_degrees_bits: midpoint.to_bits(),
+                chebyshev_coefficients: vec![
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    binary64_to_rational_coefficient_v1(half_delta)?,
+                ],
+            })
+        })
+        .collect::<Result<Vec<_>, MultiHingePathCandidateErrorV1>>()?;
+    if moving_hinges.is_empty() {
+        return Err(MultiHingePathCandidateErrorV1::NoMotion);
+    }
+    let schedule_limits = CycleScheduleLimitsV1 {
+        max_hinges: limits.max_hinges,
+        max_degree: 1,
+        max_coefficient_bits: 63,
+        max_work: limits.max_work,
+    };
+    let schedule = CanonicalCycleScheduleV1::prepare(
+        geometry,
+        audit,
+        fixed_face,
+        [0.0, 1.0],
+        entries,
+        schedule_limits,
+    )
+    .map_err(|_| MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    Ok(GeneratedMultiHingePathCandidateV1 {
+        schedule,
+        moving_hinges,
+    })
+}
+
+fn binary64_to_rational_coefficient_v1(
+    value: f64,
+) -> Result<RationalCoefficientV1, MultiHingePathCandidateErrorV1> {
+    if !value.is_finite() {
+        return Err(MultiHingePathCandidateErrorV1::CandidateRejected);
+    }
+    let rational =
+        BigRational::from_float(value).ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    let numerator = rational
+        .numer()
+        .to_i64()
+        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    let denominator = rational
+        .denom()
+        .to_u64()
+        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    Ok(RationalCoefficientV1 {
+        numerator,
+        denominator,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Entry {
     edge: EdgeId,
@@ -1306,6 +1481,71 @@ mod tests {
         );
         assert_eq!(schedule.derivative_bound(edges[0]), Some(20.0));
         assert!(schedule.evaluate(-0.1).is_none());
+    }
+
+    #[test]
+    fn linear_multi_hinge_candidate_is_bounded_deterministic_and_not_authority() {
+        let (geometry, audit, fixed, mut edges) = fixture();
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let angles = |value| {
+            CanonicalHingeAngles::new(
+                edges
+                    .iter()
+                    .map(|edge| HingeAngle::new(*edge, value).unwrap())
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let initial = angles(20.0);
+        let requested = angles(40.0);
+        let candidate = generate_linear_multi_hinge_path_candidate_v1(
+            &geometry,
+            &audit,
+            fixed,
+            &initial,
+            &requested,
+            MultiHingePathCandidateLimitsV1::default(),
+        )
+        .unwrap();
+        assert_eq!(candidate.moving_hinges(), edges);
+        assert!(!candidate.authorizes_closure());
+        assert!(!candidate.authorizes_collision_clearance());
+        for (parameter, expected) in [(0.0, 20.0), (1.0, 40.0)] {
+            assert!(
+                candidate
+                    .schedule()
+                    .evaluate(parameter)
+                    .unwrap()
+                    .as_slice()
+                    .iter()
+                    .all(|angle| angle.angle_degrees() == expected)
+            );
+        }
+        assert_eq!(
+            generate_linear_multi_hinge_path_candidate_v1(
+                &geometry,
+                &audit,
+                fixed,
+                &initial,
+                &initial,
+                MultiHingePathCandidateLimitsV1::default(),
+            ),
+            Err(MultiHingePathCandidateErrorV1::NoMotion)
+        );
+        assert_eq!(
+            generate_linear_multi_hinge_path_candidate_v1(
+                &geometry,
+                &audit,
+                fixed,
+                &initial,
+                &requested,
+                MultiHingePathCandidateLimitsV1 {
+                    max_work: 1,
+                    ..MultiHingePathCandidateLimitsV1::default()
+                },
+            ),
+            Err(MultiHingePathCandidateErrorV1::ResourceLimit)
+        );
     }
 
     #[test]

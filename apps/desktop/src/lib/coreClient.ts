@@ -1468,6 +1468,8 @@ export function evaluateBeginnerCandidates(
 export type BeginnerSymmetricParameterEstimateResponse = Readonly<{
   project_instance_id: string; project_id: string; revision: number
   estimate: Readonly<{ protrusion_count: 2 | 4; scale_percent: number; spacing_percent: number }>
+  candidates: ReadonlyArray<Readonly<{ id: number; scale_percent: number; spacing_percent: number
+    approximation_score: number; complexity_score: number; required_protrusion_count: 2 | 4 }>>
 }>
 
 export async function getBeginnerSymmetricParameterEstimate(
@@ -1476,15 +1478,25 @@ export async function getBeginnerSymmetricParameterEstimate(
   const value = await invoke<unknown>('get_beginner_symmetric_parameter_estimate', {
     expectedProjectInstanceId: projectInstanceId, expectedProjectId: projectId, expectedRevision: revision,
   })
-  const record = exactCoreDataRecord(value, ['project_instance_id', 'project_id', 'revision', 'estimate'] as const)
+  const record = exactCoreDataRecord(value, ['project_instance_id', 'project_id', 'revision', 'estimate', 'candidates'] as const)
   const estimate = exactCoreDataRecord(record?.estimate, ['protrusion_count', 'scale_percent', 'spacing_percent'] as const)
   if (!record || record.project_instance_id !== projectInstanceId || record.project_id !== projectId
     || record.revision !== revision || !estimate || ![2, 4].includes(Number(estimate.protrusion_count))
     || !Number.isInteger(estimate.scale_percent) || Number(estimate.scale_percent) < 10 || Number(estimate.scale_percent) > 45
-    || !Number.isInteger(estimate.spacing_percent) || Number(estimate.spacing_percent) < 20 || Number(estimate.spacing_percent) > 80) {
+    || !Number.isInteger(estimate.spacing_percent) || Number(estimate.spacing_percent) < 20 || Number(estimate.spacing_percent) > 80
+    || !Array.isArray(record.candidates) || record.candidates.length !== 3) {
     throw new Error('invalid symmetric parameter estimate')
   }
-  return Object.freeze({ ...record, estimate: Object.freeze(estimate) }) as BeginnerSymmetricParameterEstimateResponse
+  const candidates = record.candidates.map((value, index) => {
+    const item = exactCoreDataRecord(value, ['id', 'scale_percent', 'spacing_percent', 'approximation_score', 'complexity_score', 'required_protrusion_count'] as const)
+    if (!item || item.id !== index || ![2, 4].includes(Number(item.required_protrusion_count))
+      || !Number.isInteger(item.scale_percent) || Number(item.scale_percent) < 10 || Number(item.scale_percent) > 45
+      || !Number.isInteger(item.spacing_percent) || Number(item.spacing_percent) < 20 || Number(item.spacing_percent) > 80
+      || !Number.isInteger(item.approximation_score) || Number(item.approximation_score) < 0 || Number(item.approximation_score) > 100
+      || !Number.isInteger(item.complexity_score) || Number(item.complexity_score) < 0 || Number(item.complexity_score) > 100) throw new Error('invalid symmetric parameter candidates')
+    return Object.freeze(item)
+  })
+  return Object.freeze({ ...record, estimate: Object.freeze(estimate), candidates: Object.freeze(candidates) }) as BeginnerSymmetricParameterEstimateResponse
 }
 
 export function applyBeginnerSymmetricParameters(

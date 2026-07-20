@@ -1668,6 +1668,7 @@ struct BeginnerSymmetricEstimateResponse {
     project_id: ProjectId,
     revision: u64,
     estimate: ori_domain::BeginnerSymmetricParameterEstimateV1,
+    candidates: [ori_domain::BeginnerSymmetricParameterCandidateV1; 3],
 }
 
 #[tauri::command]
@@ -1691,11 +1692,13 @@ fn get_beginner_symmetric_parameter_estimate(
             .generation_constraints,
     )
     .ok_or_else(|| "symmetric_parameter_estimate_unsupported".to_owned())?;
+    let candidates = ori_domain::symmetric_parameter_candidates_v1(estimate);
     Ok(BeginnerSymmetricEstimateResponse {
         project_instance_id: project.instance_id,
         project_id: project.project_id,
         revision: project.editor.revision(),
         estimate,
+        candidates,
     })
 }
 

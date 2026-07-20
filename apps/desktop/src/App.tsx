@@ -7618,6 +7618,24 @@ function App() {
                     }, { count: beginnerSymmetricEstimate.estimate.protrusion_count,
                       scale: beginnerSymmetricEstimate.estimate.scale_percent,
                       spacing: beginnerSymmetricEstimate.estimate.spacing_percent })}</p>
+                    <ol>
+                      {beginnerSymmetricEstimate.candidates.map((candidate) => (
+                        <li key={candidate.id}>
+                          {formattedText({
+                            ja: '尺度 {scale}%・間隔 {spacing}%・近似 {score}・複雑度 {complexity}・必要数 {count}',
+                            en: 'Scale {scale}% · spacing {spacing}% · approximation {score} · complexity {complexity} · required count {count}',
+                          }, { scale: candidate.scale_percent, spacing: candidate.spacing_percent,
+                            score: candidate.approximation_score, complexity: candidate.complexity_score,
+                            count: candidate.required_protrusion_count })}
+                          <button type="button" onClick={() => {
+                            setBeginnerSymmetricScale(candidate.scale_percent)
+                            setBeginnerSymmetricSpacing(candidate.spacing_percent)
+                          }}>
+                            {text({ ja: 'この候補を選択', en: 'Select this candidate' })}
+                          </button>
+                        </li>
+                      ))}
+                    </ol>
                     <label>{text({ ja: '尺度（10–45%）', en: 'Scale (10–45%)' })}
                       <input type="number" min="10" max="45" value={beginnerSymmetricScale}
                         onChange={(event) => setBeginnerSymmetricScale(Number(event.currentTarget.value))} />

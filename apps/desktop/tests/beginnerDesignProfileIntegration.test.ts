@@ -141,6 +141,10 @@ test('symmetric parameter estimates are bounded, stale-safe, and explicitly save
   assert.match(app, /Estimate symmetric parameters/u)
   assert.match(app, /Confirm design parameters/u)
   assert.match(app, /This does not start generation/u)
+  assert.match(client, /record\.candidates\.length !== 3/u)
+  assert.match(client, /approximation_score/u)
+  assert.match(client, /complexity_score/u)
+  assert.match(app, /Select this candidate/u)
 })
 
 function source(relativePath: string) {

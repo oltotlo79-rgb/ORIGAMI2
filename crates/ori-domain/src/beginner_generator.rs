@@ -41,6 +41,54 @@ pub struct BeginnerSymmetricParameterEstimateV1 {
     pub spacing_percent: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerSymmetricParameterCandidateV1 {
+    pub id: u8,
+    pub scale_percent: u8,
+    pub spacing_percent: u8,
+    pub approximation_score: u8,
+    pub complexity_score: u8,
+    pub required_protrusion_count: u8,
+}
+
+#[must_use]
+pub fn symmetric_parameter_candidates_v1(
+    estimate: BeginnerSymmetricParameterEstimateV1,
+) -> [BeginnerSymmetricParameterCandidateV1; 3] {
+    let variants = [
+        (estimate.scale_percent, estimate.spacing_percent),
+        (
+            estimate.scale_percent.saturating_sub(5).max(10),
+            estimate.spacing_percent.saturating_sub(10).max(20),
+        ),
+        (
+            (estimate.scale_percent + 5).min(45),
+            (estimate.spacing_percent + 10).min(80),
+        ),
+    ];
+    variants.map(|(scale_percent, spacing_percent)| {
+        let id = if scale_percent == estimate.scale_percent {
+            0
+        } else if scale_percent < estimate.scale_percent {
+            1
+        } else {
+            2
+        };
+        let deviation = scale_percent
+            .abs_diff(estimate.scale_percent)
+            .saturating_add(spacing_percent.abs_diff(estimate.spacing_percent) / 2);
+        BeginnerSymmetricParameterCandidateV1 {
+            id,
+            scale_percent,
+            spacing_percent,
+            approximation_score: 100_u8.saturating_sub(deviation.saturating_mul(3)),
+            complexity_score: 20 + estimate.protrusion_count.saturating_mul(10) + scale_percent / 5,
+            required_protrusion_count: estimate.protrusion_count,
+        }
+    })
+}
+
 #[must_use]
 pub fn estimate_symmetric_parameters_v1(
     constraints: &BeginnerGenerationConstraintsV1,
@@ -698,6 +746,16 @@ mod tests {
         let mut ambiguous = constraints;
         ambiguous.target_parts[2].count = 3;
         assert_eq!(estimate_symmetric_parameters_v1(&ambiguous), None);
+
+        let candidates = symmetric_parameter_candidates_v1(BeginnerSymmetricParameterEstimateV1 {
+            protrusion_count: 4,
+            scale_percent: 25,
+            spacing_percent: 35,
+        });
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates[0].approximation_score, 100);
+        assert!(candidates[1].approximation_score < candidates[0].approximation_score);
+        assert!(candidates[2].complexity_score > candidates[0].complexity_score);
     }
 
     fn skeleton(

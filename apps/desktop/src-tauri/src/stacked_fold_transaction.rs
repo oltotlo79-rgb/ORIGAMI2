@@ -48,7 +48,7 @@ pub(super) struct PendingStackedFoldTransaction {
     expected_pose_generation: u64,
     expected_layer_generation: u64,
     requested: PendingStackedFoldRequestedPose,
-    layer_order: PendingStackedFoldLayerProof,
+    layer_order: Option<PendingStackedFoldLayerProof>,
     pose_capability: CurrentAppliedPoseCapability,
     layer_capability: CurrentLayerOrderCapability,
 }
@@ -65,6 +65,15 @@ pub(super) enum PendingStackedFoldRequestedPose {
         certified_path: Option<ori_collision::CertifiedPoseGraphPathCertificateV1>,
         certified_edges: Vec<PendingCertifiedPathEdgeV1>,
     },
+    CurrentCycle {
+        geometry: ori_kinematics::MaterialHingeGraphGeometry,
+        audit: ori_kinematics::MaterialHingeGraphAudit,
+        fixed_face: ori_domain::FaceId,
+        generated: ori_kinematics::GeneratedMultiHingePathCandidateV1,
+        closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+        expected: ori_collision::CertifiedPathTransitionEvidenceV1,
+        target_angles: Vec<(ori_domain::EdgeId, f64)>,
+    },
 }
 
 pub(super) struct PendingCertifiedPathEdgeV1 {
@@ -76,12 +85,13 @@ pub(super) struct PendingCertifiedPathEdgeV1 {
 
 impl PendingStackedFoldRequestedPose {
     fn is_graph(&self) -> bool {
-        matches!(self, Self::Graph { .. })
+        matches!(self, Self::Graph { .. } | Self::CurrentCycle { .. })
     }
-    fn geometry(&self) -> &PreparedStackedFoldGeometryV1 {
+    fn geometry(&self) -> Option<&PreparedStackedFoldGeometryV1> {
         match self {
-            Self::Tree { requested, .. } => requested.initial().target().geometry(),
-            Self::Graph { requested, .. } => requested.initial().target().geometry(),
+            Self::Tree { requested, .. } => Some(requested.initial().target().geometry()),
+            Self::Graph { requested, .. } => Some(requested.initial().target().geometry()),
+            Self::CurrentCycle { .. } => None,
         }
     }
     fn continuous_certified(&self) -> bool {
@@ -125,6 +135,32 @@ impl PendingStackedFoldRequestedPose {
                             )
                             .is_some_and(|actual| actual == edge.expected && actual == *expected)
                         })
+            }
+            Self::CurrentCycle {
+                geometry,
+                audit,
+                fixed_face,
+                generated,
+                closure,
+                expected,
+                target_angles,
+            } => {
+                certified_edge_target_matches_schedule(&PendingCertifiedPathEdgeV1 {
+                    generated: generated.clone(),
+                    closure: closure.clone(),
+                    expected: expected.clone(),
+                    target_angles: target_angles.clone(),
+                }) && ori_collision::certify_scheduled_cycle_transition_v1(
+                    geometry,
+                    audit,
+                    *fixed_face,
+                    generated,
+                    closure,
+                    8,
+                    expected.source(),
+                    expected.target(),
+                )
+                .is_some_and(|actual| actual == *expected)
             }
         }
     }
@@ -174,6 +210,17 @@ impl PendingStackedFoldRequestedPose {
                         .collect(),
                 )
             }
+            Self::CurrentCycle {
+                geometry,
+                fixed_face,
+                target_angles,
+                ..
+            } => (
+                geometry.face_ids().to_vec(),
+                geometry.hinges().iter().map(|hinge| hinge.edge()).collect(),
+                Some(*fixed_face),
+                target_angles.clone(),
+            ),
         }
     }
 
@@ -187,6 +234,7 @@ impl PendingStackedFoldRequestedPose {
                 .iter()
                 .map(|edge| edge.target_angles.clone())
                 .collect(),
+            Self::CurrentCycle { target_angles, .. } => vec![target_angles.clone()],
             _ => vec![self.pose_components().3],
         }
     }
@@ -241,6 +289,22 @@ pub(super) struct PendingStackedFoldGraphPremises {
     pub certified_edges: Vec<PendingCertifiedPathEdgeV1>,
 }
 
+pub(super) struct PendingCurrentCyclePosePremisesV1 {
+    pub expected_instance_id: ProjectId,
+    pub expected_project_id: ProjectId,
+    pub expected_revision: u64,
+    pub expected_source_fingerprint: [u8; 32],
+    pub expected_pose_generation: u64,
+    pub expected_layer_generation: u64,
+    pub geometry: ori_kinematics::MaterialHingeGraphGeometry,
+    pub audit: ori_kinematics::MaterialHingeGraphAudit,
+    pub fixed_face: ori_domain::FaceId,
+    pub generated: ori_kinematics::GeneratedMultiHingePathCandidateV1,
+    pub closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+    pub expected: ori_collision::CertifiedPathTransitionEvidenceV1,
+    pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
+}
+
 #[derive(Clone)]
 pub(super) enum PendingStackedFoldLayerProof {
     NonFlat(StackedFoldNonFlatLayerOrderV1),
@@ -290,13 +354,13 @@ impl PendingStackedFoldTransaction {
                 layer_generation,
             ),
         ) && self.requested.continuous_certified()
-            && self.layer_order.target_revision()
-                == self
-                    .requested
-                    .geometry()
-                    .proof()
-                    .lineage()
-                    .target_revision()
+            && match (&self.layer_order, self.requested.geometry()) {
+                (Some(layer_order), Some(geometry)) => {
+                    layer_order.target_revision() == geometry.proof().lineage().target_revision()
+                }
+                (None, None) => true,
+                _ => false,
+            }
     }
 
     #[must_use]
@@ -331,7 +395,7 @@ pub(super) fn install_pending_stacked_fold(
             requested: premises.requested,
             continuous: premises.continuous,
         },
-        layer_order: PendingStackedFoldLayerProof::NonFlat(premises.layer_order),
+        layer_order: Some(PendingStackedFoldLayerProof::NonFlat(premises.layer_order)),
         pose_capability,
         layer_capability,
     };
@@ -373,7 +437,7 @@ pub(super) fn install_pending_stacked_fold_graph(
             certified_path: premises.certified_path,
             certified_edges: premises.certified_edges,
         },
-        layer_order: premises.layer_order,
+        layer_order: Some(premises.layer_order),
         pose_capability,
         layer_capability,
     };
@@ -386,6 +450,51 @@ pub(super) fn install_pending_stacked_fold_graph(
         pending.expected_layer_generation,
     ) {
         return Err("The stacked-fold graph transaction premises are inconsistent.".to_owned());
+    }
+    let mut slot = lock_slot(state)?;
+    slot.active_generation = Some(token);
+    slot.pending = Some(pending);
+    Ok(token)
+}
+
+pub(super) fn install_pending_current_cycle_pose_v1(
+    state: &StackedFoldTransactionState,
+    premises: PendingCurrentCyclePosePremisesV1,
+    pose_capability: CurrentAppliedPoseCapability,
+    layer_capability: CurrentLayerOrderCapability,
+) -> Result<ProjectId, String> {
+    let token = ProjectId::new();
+    let pending = PendingStackedFoldTransaction {
+        token,
+        expected_instance_id: premises.expected_instance_id,
+        expected_project_id: premises.expected_project_id,
+        expected_revision: premises.expected_revision,
+        expected_source_fingerprint: premises.expected_source_fingerprint,
+        expected_pose_generation: premises.expected_pose_generation,
+        expected_layer_generation: premises.expected_layer_generation,
+        requested: PendingStackedFoldRequestedPose::CurrentCycle {
+            geometry: premises.geometry,
+            audit: premises.audit,
+            fixed_face: premises.fixed_face,
+            generated: premises.generated,
+            closure: premises.closure,
+            expected: premises.expected,
+            target_angles: premises.target_angles,
+        },
+        layer_order: None,
+        pose_capability,
+        layer_capability,
+    };
+    if !pending.matches_live_binding(
+        pending.expected_instance_id,
+        pending.expected_project_id,
+        pending.expected_revision,
+        pending.expected_source_fingerprint,
+        pending.expected_pose_generation,
+        pending.expected_layer_generation,
+    ) || !pending.requested.continuous_certified()
+    {
+        return Err("The current-cycle pose premises are inconsistent.".to_owned());
     }
     let mut slot = lock_slot(state)?;
     slot.active_generation = Some(token);
@@ -472,7 +581,9 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
 
     let requested = &pending.requested;
     let target = requested.geometry();
-    if let PendingStackedFoldLayerProof::CertifiedFlat(snapshot) = &pending.layer_order {
+    if let (Some(target), Some(PendingStackedFoldLayerProof::CertifiedFlat(snapshot))) =
+        (target, &pending.layer_order)
+    {
         let lineage = target.proof().lineage();
         if !layer_guard.preflight_certified_target(
             pending.expected_project_id,
@@ -504,7 +615,6 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
         )
     }
     .map_err(|_| "The target pose is inconsistent.".to_owned())?;
-    let candidate = target.candidate();
     let mut timeline = project.editor.instruction_timeline().clone();
     let ordered_timeline_angles = requested.ordered_timeline_angles();
     if ordered_timeline_angles.is_empty() || ordered_timeline_angles.len() > 31 {
@@ -524,7 +634,10 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
             visual: InstructionVisual::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::AbsoluteHingeAnglesV1,
-                source_model_fingerprint: target.proof().lineage().target_fingerprint().to_hex(),
+                source_model_fingerprint: target.map_or_else(
+                    || project.editor.fold_model_fingerprint_v1(),
+                    |target| target.proof().lineage().target_fingerprint().to_hex(),
+                ),
                 fixed_face,
                 hinge_angles: step_angles
                     .iter()
@@ -538,22 +651,36 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
     }
     let layers = project.editor.project_layers().clone();
     let applied_layer_order = pending.layer_order.clone();
+    let (candidate_pattern, candidate_paper) = target.map_or_else(
+        || {
+            (
+                project.editor.pattern().clone(),
+                project.editor.paper().clone(),
+            )
+        },
+        |target| {
+            (
+                target.candidate().pattern.clone(),
+                target.candidate().paper.clone(),
+            )
+        },
+    );
     let result = project
         .editor
         .execute_stacked_fold_document(
             pending.expected_revision,
-            candidate.pattern.clone(),
-            candidate.paper.clone(),
+            candidate_pattern,
+            candidate_paper,
             timeline,
             layers,
             applied_pose,
         )
         .map_err(|_| "The stacked-fold transaction could not be applied atomically.".to_owned())?;
     match &applied_layer_order {
-        PendingStackedFoldLayerProof::NonFlat(_) => {
+        Some(PendingStackedFoldLayerProof::NonFlat(_)) | None => {
             layer_guard.invalidate_after_project_mutation();
         }
-        PendingStackedFoldLayerProof::CertifiedFlat(snapshot) => {
+        Some(PendingStackedFoldLayerProof::CertifiedFlat(snapshot)) => {
             layer_guard
                 .install_certified_target_after_project_mutation(&project, snapshot.clone())
                 .map_err(|_| {
@@ -565,12 +692,13 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
     drop(project);
     transaction_slot.pending = None;
     transaction_slot.active_generation = None;
-    transaction_slot.applied_layer_order = Some(applied_layer_order);
+    transaction_slot.applied_layer_order = applied_layer_order;
     debug_assert!(
         transaction_slot
             .applied_layer_order
             .as_ref()
-            .is_some_and(|order| order.target_revision() == result.revision)
+            .as_ref()
+            .is_none_or(|order| order.target_revision() == result.revision)
     );
     Ok(result.revision)
 }

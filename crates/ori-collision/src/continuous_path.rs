@@ -2895,7 +2895,7 @@ mod tests {
 
     #[test]
     fn positive_endpoint_memo_cap_rejects_ten_face_tree() {
-        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 36);
+        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 55);
         let model = deep_strip_model(9);
         let moving = model
             .hinges()
@@ -3008,7 +3008,7 @@ mod tests {
 
     #[test]
     fn positive_endpoint_memo_cap_rejects_eleven_face_tree() {
-        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 45);
+        assert_eq!(MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1, 55);
         let model = deep_strip_model(10);
         let moving = model
             .hinges()

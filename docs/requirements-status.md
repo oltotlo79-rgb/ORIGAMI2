@@ -8,7 +8,7 @@
 - 部分実装: 有用な一部が動作するが、要件に明記された範囲を満たさない
 - 未着手: 要件固有の利用経路が存在しない
 
-現在の行単位集計は **実装済み50 / 部分実装32 / 未着手5**。2026-07-18のオーナー決定によりSIM-010を追加し、macOS自動ビルド・CI検証へ確定したOPS-008を実装済みとして再評価した。2026-07-19に時間制限つき全体平坦折り3値判定、場所別層順序、進捗・中止・background worker・終端状態の利用者経路を接続し、VAL-003/005/006/007/009を実装済みへ更新した。同日に長さ表示単位の保存・換算・編集UIを接続してPRJ-008を、白黒でも識別できる5線種を画面・取込・SVG書出へ接続してLIN-003を、ライト・ダーク・OS連動とWindows/macOS共通標準shortcutを接続してUI-005/006を、2D/3D・プロパティ・折り手順領域の位置と大きさの変更・端末保存を接続してUI-004を、主要shortcutの変更・重複検出・端末保存を接続してUI-007を実装済みへ更新した。さらに新規用紙の幅・高さへnative高精度数式入力、式保存、式/評価値切替を接続し、EDT-004/005を部分実装へ更新した。2026-07-20に11種幾何制約の保存・履歴・一覧・削除、水平/垂直の作成、直接矛盾の原因と判定保留表示を利用者経路へ接続し、EDT-008/009を未着手から部分実装へ更新した。同日にproject/session単位の履歴件数上限UIと、30秒周期の端末内自動保存、起動時の必須復元・破棄workflow、正常完了時の復旧slot整理を接続し、HIS-003/004/005/006を実装済みへ更新した。さらに通常`.ori2`と復旧checkpointへ認証済みUndo/Redo両stack・履歴件数上限を保存し、再読込後も利用できる利用者経路を接続してHIS-002を実装済みへ更新した。LIN-004はversion固定のproject layer文書、折り線edge assignment、編集command、履歴、通常保存・復旧・strict IPC snapshotに加えて、layer作成・改名・並べ替え・削除・選択折り線の割当UIまで接続したため部分実装を維持する。layer共通の表示・lock・透明度はLIN-005として接続済みだが、注釈・下絵object自体の作成・編集・描画は未実装のためLIN-004は実装済みにはしない。UI-001は言語設定の端末保存とライブ切替を、主要画面、ダイアログ、2D/3D、折り手順、ARIA、通知、固定native警告まで日英で接続したため実装済みへ更新した。さらに固定GitHub Releases APIへの明示的な手動更新確認、端末ごとの無効設定、プライバシー説明と日英状態表示を利用者経路へ接続し、OPS-001/002/003を実装済みへ更新した。同日に認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ書き出す利用者経路を接続し、IO-007を実装済み、静的なBlender・3Dプリンター・Web等への受渡しをIO-008の部分実装へ更新した。名前付き複合折り技法は、日英の作成・厳格取込・複数技法選択編集・別名保存を1 MiB上限、通常ファイルno-follow読込、Rust/TypeScript二重検証、原子的保存へ接続したためINS-009を実装済み、timelineへの適用・自動実行を残すINS-008を部分実装へ更新した。展開フォルダー形式はstrict core、Windows/Unixのno-follow filesystem adapter、新規target限定の原子的保存・読込、pathless strict IPC、日英UIまで接続したためIO-003を部分実装へ更新した。既存targetのjournal置換とオーナー実施のWindows実機E2Eを残す。第三者監査本文の旧集計値は各時点の履歴であり、以下の87行の判定を正本とする。
+現在の行単位集計は **実装済み51 / 部分実装31 / 未着手5**。2026-07-18のオーナー決定によりSIM-010を追加し、macOS自動ビルド・CI検証へ確定したOPS-008を実装済みとして再評価した。2026-07-19に時間制限つき全体平坦折り3値判定、場所別層順序、進捗・中止・background worker・終端状態の利用者経路を接続し、VAL-003/005/006/007/009を実装済みへ更新した。同日に長さ表示単位の保存・換算・編集UIを接続してPRJ-008を、白黒でも識別できる5線種を画面・取込・SVG書出へ接続してLIN-003を、ライト・ダーク・OS連動とWindows/macOS共通標準shortcutを接続してUI-005/006を、2D/3D・プロパティ・折り手順領域の位置と大きさの変更・端末保存を接続してUI-004を、主要shortcutの変更・重複検出・端末保存を接続してUI-007を実装済みへ更新した。さらに新規用紙の幅・高さへnative高精度数式入力、式保存、式/評価値切替を接続し、EDT-004/005を部分実装へ更新した。2026-07-20に11種幾何制約の保存・履歴・一覧・削除、水平/垂直の作成、直接矛盾の原因と判定保留表示を利用者経路へ接続し、EDT-008/009を未着手から部分実装へ更新した。同日にproject/session単位の履歴件数上限UIと、30秒周期の端末内自動保存、起動時の必須復元・破棄workflow、正常完了時の復旧slot整理を接続し、HIS-003/004/005/006を実装済みへ更新した。さらに通常`.ori2`と復旧checkpointへ認証済みUndo/Redo両stack・履歴件数上限を保存し、再読込後も利用できる利用者経路を接続してHIS-002を実装済みへ更新した。LIN-004はversion固定のproject layer文書、折り線edge assignment、編集command、履歴、通常保存・復旧・strict IPC snapshotに加えて、layer作成・改名・並べ替え・削除・選択折り線の割当UIまで接続したため部分実装を維持する。layer共通の表示・lock・透明度はLIN-005として接続済みだが、注釈・下絵object自体の作成・編集・描画は未実装のためLIN-004は実装済みにはしない。UI-001は言語設定の端末保存とライブ切替を、主要画面、ダイアログ、2D/3D、折り手順、ARIA、通知、固定native警告まで日英で接続したため実装済みへ更新した。さらに固定GitHub Releases APIへの明示的な手動更新確認、端末ごとの無効設定、プライバシー説明と日英状態表示を利用者経路へ接続し、OPS-001/002/003を実装済みへ更新した。同日に認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ書き出す利用者経路を接続し、IO-007を実装済み、静的なBlender・3Dプリンター・Web等への受渡しをIO-008の部分実装へ更新した。名前付き複合折り技法は、日英の作成・厳格取込・複数技法選択編集・別名保存を1 MiB上限、通常ファイルno-follow読込、Rust/TypeScript二重検証、原子的保存へ接続してINS-009を実装済みとした。さらに技法情報・parameter・precondition・ordered operationを説明専用timeline案へ決定的に変換し、日英preview、明示確認、原子的追加、stale/取消/失敗時の無変更、一括Undo/Redoへ接続してINS-008を実装済みとした。技法から3D運動を生成・自動実行する機能はINS-008の実装根拠に含めない。展開フォルダー形式はstrict core、Windows/Unixのno-follow filesystem adapter、新規targetの原子的保存・読込、既存targetのimmutable phase journal差替え、native private registryによる起動時回復、pathless strict IPC、同一projectの安全な差替えと別projectの上書き拒否を明示する日英UIまで接続したためIO-003を部分実装として維持する。オーナー実施のWindows実機E2Eだけを残す。第三者監査本文の旧集計値は各時点の履歴であり、以下の87行の判定を正本とする。
 
 2026-07-19追記: SIM-010行で未実装としていた`deep-chain stress`のうち、非平行
 H8/H16のwatertight成功、H64の構造確認後の資源preflight即時拒否、subnormalの
@@ -217,7 +217,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | VAL-001 | 実装済み | 幾何・topology検証とUI結果表示 |
 | VAL-002 | 部分実装 | 紙内部の単一頂点・ゼロ厚モデルで川崎・前川条件を全頂点へ検証し、対象外・構造遮断・次数上限と両条件の根拠をUI表示。指定山谷の局所十分性、他の局所条件、厚さモデルを残す |
 | VAL-003 | 実装済み | 凸material face対象の`convex_faces_facewise_v1`で、時間制限つきの可・不可・不明3値判定と、証明済みの場所別`facewise_layer_order_v1`をUIから実行・確認できる。厚さ、連続折り経路、対象外形状は保証せず、不明へ分離する |
-| VAL-004 | 部分実装 | 選択1ヒンジの線形CCDでは衝突直前停止と理由表示が動作。加えて表示済みnative姿勢では、厚さ`+0.0`のdual-gate横断・非三角whole material face横断・180度共面正面積重なりと、有限な正厚でexact `E/F`の両方が証明した三角形中央面のstrict transversalを厳密診断し、安全認定不可・判定保留を表示する。共有点・共有辺だけの接触は貫通へ昇格しない。native診断自体による連続経路停止、正厚三角柱の完全分類、全3D折り操作経路への適用を残す |
+| VAL-004 | 部分実装 | 選択1ヒンジの線形CCDでは衝突直前停止と理由表示が動作。加えて表示済みnative姿勢では、全unordered face pairを公開6分類で保持し、厚さ`+0.0`のdual-gate横断・非三角whole material face横断・180度共面正面積重なりを厳密診断する。三角形共有ヒンジはwatertight exact poseにより境界だけの接触を`allowed`、正面積重なりを`penetrating`へ分離する。有限な正厚ではexact `E/F`双方が証明した中央面strict transversalと、2三角形面・1共有ヒンジ限定の完全solid分類を接続した。未証明のraw貫通候補と層ずらし未再現は赤い`indeterminate`へ閉じ、安全認定不可・判定保留を表示する。native診断自体による連続経路停止、共有ヒンジ一般、全3D折り操作経路への適用を残す |
 | VAL-005 | 実装済み | 全体平坦折り判定で1〜300秒の時間制限を選択でき、単調phase・経過時間・上限付き件数を表示する。時間切れは不可でなく不明として返す |
 | VAL-006 | 実装済み | 全体平坦折りpanelから実行中jobを中止でき、協調checkpointと世代照合により中止・再中止・旧job完了を現在結果へ混入させない |
 | VAL-007 | 実装済み | immutable snapshot取得後にproject lockを解放し、native background workerで解析する。編集とUI操作を継続でき、進捗はpollingで受け取る |
@@ -233,7 +233,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | SIM-003 | 部分実装 | 3D把持は選択1ヒンジ回転へ限定 |
 | SIM-004 | 実装済み | 固定面選択、reroot、従属面連動 |
 | SIM-005 | 実装済み | 表示厚と判定厚を分離し、正式仕様`centered_mid_surface_v1`で衝突へ反映。有限ヒンジ長を超えるcorridorは層ずらし未再現として判定不能へ退避 |
-| SIM-006 | 部分実装 | 1ヒンジの安全停止・原因表示に加え、同一generationへ束縛したnative静的診断を3D画面へ表示。process-wide RAII worker gate、busy時の全状態無変異、blocking結果のexact B再検証、stale結果のbinding除去を実装し、厚さ`+0.0`の証明済み面貫通・共面正面積重なりと、正厚の証明済み中央面横断を専用wire/UIでblocking表示する。native診断は読み取り専用で、全操作経路の適用遮断・巻戻し、正厚三角柱の完全分類には未対応 |
+| SIM-006 | 部分実装 | 1ヒンジの安全停止・原因表示に加え、同一generationへ束縛したnative静的診断を3D画面へ表示。process-wide RAII worker gate、busy時の全状態無変異、blocking結果のexact B再検証、stale結果のbinding除去を実装した。専用wire/UIは全pairの6分類とproof provenanceを厳密検証し、厚さ`+0.0`の証明済み面貫通・共面正面積重なり・共有ヒンジ境界許容、正厚の証明済み中央面横断、および2三角形面・1共有ヒンジ限定の許容積層／貫通／判定保留を表示する。`penetrating`と`indeterminate`は同じ赤系で優先し、200行超でもblocking pairと総数・省略数を保持する。native診断は読み取り専用で、全操作経路の適用遮断・巻戻し、共有ヒンジ一般には未対応 |
 | SIM-007 | 部分実装 | 表裏色は反映。画像・模様textureなし |
 | SIM-008 | 未着手 | 切断後の由来・接続を3Dへ反映しない |
 | SIM-009 | 部分実装 | 1万辺の生成・2D表示・索引検証あり。基本編集・3D全体を未検証 |
@@ -250,7 +250,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | INS-005 | 未着手 | 3D手指guideなし |
 | INS-006 | 部分実装 | 3Dへ実際に適用された現在姿勢を手動stepとして登録できる。操作軌跡や連続動作の登録は未実装 |
 | INS-007 | 未着手 | 3D操作の自動記録・再編集なし |
-| INS-008 | 部分実装 | 中割り・かぶせ・沈め折り、一直線の折り重ね、層選択説明を、複数操作・parameter・precondition・日英名を持つ名前付き宣言技法として作成・編集できる。未対応の物理操作は明示し、自動実行・project変更を行わない。技法からtimeline手順を生成・適用する利用者確認経路を残す |
+| INS-008 | 実装済み | 名前付き宣言技法の技法情報・parameter・precondition・ordered operationを欠落なく説明専用timeline案へ決定的に変換し、日英previewと明示確認後に一つの原子的commandで追加できる。project instance/revision/選択変更をstale拒否し、取消・失敗は無変更、全追加を一回でUndo/Redoできる。中割り・かぶせ・沈め・層選択・折り重ねは注意付き説明だけで、3D姿勢や物理commandを実行しない。`.ori2`/Project Folderの専用required feature、履歴・復旧、PDF/SVG placeholderを備える |
 | INS-009 | 実装済み | 日英UIから独自技法を新規作成して初回保存し、既存の共有JSONを取り込み、最大64技法を選択編集して別名保存できる。path/raw bytesはWebViewへ渡さず、1 MiB上限、通常ファイルno-follow、strict V1 JSON、Rust正本検証・決定的read-back・TypeScript再検証、single-flight、原子的保存を適用し、取消・失敗・古い応答では現在状態を変更しない |
 | INS-010 | 部分実装 | timelineの各手順を固定3D図、説明、注意事項付きのA4複数ページPDFまたはページ別SVG画像ZIPとして書き出せる。滑らかなanimation、折る方向の矢印、手指guideを残す |
 
@@ -260,7 +260,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 |---|---|---|
 | IO-001 | 実装済み | 検証付き`.ori2`読込・保存・原子的置換 |
 | IO-002 | 部分実装 | 展開図、紙の見た目、全姿勢付き折り手順、認証済みUndo/Redo両stackと履歴件数上限を格納。独立した現在3D状態、memo、thumbnailを残す |
-| IO-003 | 部分実装 | `.ori2`と同じ`ProjectDocument` / `EditorHistoryV1`正本を使うversion固定・決定的・資源上限付きcore、strict manifest、hash/size認証、読取専用SVG previewを、symlink/junction/reparse point/hard link・余分entry・差替えを拒否するnative adapterへ接続。日英UIから既存folderを読込み、新規target限定で検証済みtreeを原子的に保存でき、path/bytesはstrict IPCへ出さない。既存targetのjournal置換とオーナー実施のWindows実機E2Eを残す |
+| IO-003 | 部分実装 | `.ori2`と同じ`ProjectDocument` / `EditorHistoryV1`正本を使うversion固定・決定的・資源上限付きcore、strict manifest、hash/size認証、読取専用SVG previewを、symlink/junction/reparse point/hard link・余分entry・差替えを拒否するnative adapterへ接続。新規targetはno-replaceで原子的に公開し、同じproject IDの既存targetはimmutable phase journal、完全なWindows 128-bit file ID、native private registry、起動時/次回操作前recoveryを通して全tree差替えする。Windowsの差替えはlocal NTFS/ReFSだけを予約前に許可し、FAT/exFAT/remote/照会不明は専用固定errorで新しいfolder名を案内する。path/bytes/FS名はstrict IPCへ出さず、差替えを明示する日英UIへ接続済み。オーナー実施のWindows実機E2Eを残す |
 | IO-004 | 実装済み | FOLD 1/1.1/1.2の2D `creasePattern`と、SVG 1.1/2共通の静的直線subsetを、縮尺・線種・外周・情報損失の確認後に新規未保存projectへ取り込める。各形式の対応範囲外は契約どおり拒否または警告する |
 | IO-005 | 実装済み | SVGのstroke、dash、class、layer、`data-origami-kind`をsource groupとして表示し、全groupを6種へ明示割当する画面、外周選択、Cut許可、警告確認を提供 |
 | IO-006 | 実装済み | 現在の一枚紙展開図をFOLD 1.2、静的SVG、実寸PDF 1.7、DXF AC1021へ書き出せる。4形式とも情報損失確認、revision固定のimmutable stage、native原子的保存を共用し、形式固有の意味・実寸・資源上限を固定している |

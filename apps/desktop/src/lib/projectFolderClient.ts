@@ -16,6 +16,8 @@ export type ProjectFolderClientErrorCode =
   | 'save_failed'
   | 'target_exists'
   | 'project_changed'
+  | 'recovery_required'
+  | 'replacement_unsupported'
   | 'invalid_response'
 
 export type ProjectFolderNativeInvoke = (
@@ -39,6 +41,8 @@ const NATIVE_ERROR_CODES = Object.freeze({
   project_folder_save_failed: 'save_failed',
   project_folder_target_exists: 'target_exists',
   project_folder_project_changed: 'project_changed',
+  project_folder_recovery_required: 'recovery_required',
+  project_folder_replacement_unsupported: 'replacement_unsupported',
 } satisfies Record<string, ProjectFolderClientErrorCode>)
 
 export class ProjectFolderClientError extends Error {
@@ -162,16 +166,24 @@ export function projectFolderClientErrorMessage(
       en: 'The expanded folder changed during processing. Try again after changes stop.',
     },
     save_failed: {
-      ja: '新しい展開フォルダーを安全に保存できませんでした。保存先のアクセス権と空き容量を確認してください。',
-      en: 'The new expanded folder could not be saved safely. Check destination permissions and free space.',
+      ja: '展開フォルダーを安全に保存できませんでした。保存先のアクセス権と空き容量を確認してください。',
+      en: 'The expanded folder could not be saved safely. Check destination permissions and free space.',
     },
     target_exists: {
-      ja: '同じ名前の展開フォルダーが既にあります。既存フォルダーは上書きしないため、別の親フォルダーを選んでください。',
-      en: 'An expanded folder with the same name already exists. Existing folders are not overwritten; choose a different parent folder.',
+      ja: '同じ名前の展開フォルダーは別のプロジェクトに属するか、安全な置き換え条件を満たしていません。別の親フォルダーを選んでください。',
+      en: 'The same-named expanded folder belongs to another project or cannot be replaced safely. Choose a different parent folder.',
     },
     project_changed: {
       ja: '操作中にプロジェクトが変更されました。現在の内容でもう一度実行してください。',
       en: 'The project changed during the operation. Try again with the current content.',
+    },
+    recovery_required: {
+      ja: '前回の展開フォルダー置き換えを安全に完了する必要があります。保存先が外付けドライブ等にある場合は再接続してから、展開フォルダー操作をもう一度実行してください。',
+      en: 'A previous expanded-folder replacement must be recovered safely. If its destination is on an external drive, reconnect it and retry an expanded-folder operation.',
+    },
+    replacement_unsupported: {
+      ja: 'この保存先では既存フォルダーの安全な置き換えを保証できません。新しいフォルダー名で保存するか、ローカルのNTFS/ReFS保存先を選んでください。',
+      en: 'Safe replacement of an existing folder cannot be guaranteed at this destination. Save with a new folder name or choose a local NTFS/ReFS destination.',
     },
     invalid_response: {
       ja: '展開フォルダー操作の応答を確認できませんでした。もう一度実行してください。',

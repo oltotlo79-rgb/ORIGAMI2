@@ -72,7 +72,7 @@ use ori_domain::{
     GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionHingeAngle, InstructionPose,
     InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline,
     LayerContentKindV1, LayerId, LayerRecordV1, LengthDisplayUnit, MAX_INSTRUCTION_HINGES_PER_STEP,
-    Paper, Point2, ProjectId, ProjectLayerDocumentV1, RgbaColor, VertexId,
+    MAX_INSTRUCTION_STEPS, Paper, Point2, ProjectId, ProjectLayerDocumentV1, RgbaColor, VertexId,
 };
 use ori_formats::{
     CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldBoundaryCandidateId,
@@ -2295,6 +2295,191 @@ fn execute_redo(
         .map_err(|error| error.to_string())?;
     invalidation.commit();
     Ok(snapshot(project))
+}
+
+const NAMED_TECHNIQUE_TIMELINE_PROPOSAL_SCHEMA_VERSION_V1: u32 = 1;
+const MAX_NAMED_TECHNIQUE_TIMELINE_PROPOSAL_BYTES: usize = 2 * 1024 * 1024;
+const MAX_NAMED_TECHNIQUE_IDENTIFIER_BYTES: usize = 96;
+const MAX_NAMED_TECHNIQUE_VERSION: u32 = 1_000_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum NamedTechniqueTimelineSourceKindV1 {
+    Technique,
+    Parameter,
+    Precondition,
+    Operation,
+}
+
+impl NamedTechniqueTimelineSourceKindV1 {
+    const fn rank(self) -> u8 {
+        match self {
+            Self::Technique => 0,
+            Self::Parameter => 1,
+            Self::Precondition => 2,
+            Self::Operation => 3,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NamedTechniqueTimelineProposalStepV1 {
+    source_kind: NamedTechniqueTimelineSourceKindV1,
+    source_id: String,
+    chunk_index: u32,
+    chunk_count: u32,
+    title: String,
+    description: String,
+    caution: String,
+    duration_ms: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NamedTechniqueTimelineProposalV1 {
+    schema_version: u32,
+    package_id: String,
+    technique_id: String,
+    technique_version: u32,
+    steps: Vec<NamedTechniqueTimelineProposalStepV1>,
+}
+
+fn parse_named_technique_timeline_proposal(
+    proposal_json: &str,
+) -> Result<NamedTechniqueTimelineProposalV1, String> {
+    if proposal_json.len() > MAX_NAMED_TECHNIQUE_TIMELINE_PROPOSAL_BYTES {
+        return Err("the named-technique timeline proposal is too large".to_owned());
+    }
+    let proposal: NamedTechniqueTimelineProposalV1 = serde_json::from_str(proposal_json)
+        .map_err(|_| "the named-technique timeline proposal is invalid".to_owned())?;
+    if proposal.schema_version != NAMED_TECHNIQUE_TIMELINE_PROPOSAL_SCHEMA_VERSION_V1
+        || !is_named_technique_identifier(&proposal.package_id)
+        || !is_named_technique_identifier(&proposal.technique_id)
+        || !(1..=MAX_NAMED_TECHNIQUE_VERSION).contains(&proposal.technique_version)
+        || proposal.steps.is_empty()
+        || proposal.steps.len() > MAX_INSTRUCTION_STEPS
+        || proposal.steps.first().is_none_or(|step| {
+            step.source_kind != NamedTechniqueTimelineSourceKindV1::Technique
+                || step.source_id != proposal.technique_id
+        })
+    {
+        return Err("the named-technique timeline proposal is invalid".to_owned());
+    }
+
+    let mut previous_rank = 0_u8;
+    let mut previous_source: Option<(NamedTechniqueTimelineSourceKindV1, &str, u32, u32)> = None;
+    let mut seen_sources = HashSet::with_capacity(proposal.steps.len());
+    for step in &proposal.steps {
+        if !is_named_technique_identifier(&step.source_id)
+            || (step.source_kind == NamedTechniqueTimelineSourceKindV1::Technique
+                && step.source_id != proposal.technique_id)
+            || step.chunk_count == 0
+            || step.chunk_count as usize > MAX_INSTRUCTION_STEPS
+            || step.chunk_index == 0
+            || step.chunk_index > step.chunk_count
+            || step.source_kind.rank() < previous_rank
+        {
+            return Err("the named-technique timeline proposal is invalid".to_owned());
+        }
+        match previous_source {
+            Some((kind, source_id, chunk_index, _chunk_count))
+                if kind == step.source_kind && source_id == step.source_id =>
+            {
+                if step.chunk_index != chunk_index.saturating_add(1) {
+                    return Err("the named-technique timeline proposal is invalid".to_owned());
+                }
+            }
+            Some((_, _, chunk_index, chunk_count))
+                if chunk_index != chunk_count || step.chunk_index != 1 =>
+            {
+                return Err("the named-technique timeline proposal is invalid".to_owned());
+            }
+            _ if step.chunk_index != 1 => {
+                return Err("the named-technique timeline proposal is invalid".to_owned());
+            }
+            _ => {
+                if !seen_sources.insert((step.source_kind.rank(), step.source_id.clone())) {
+                    return Err("the named-technique timeline proposal is invalid".to_owned());
+                }
+            }
+        }
+        previous_rank = step.source_kind.rank();
+        previous_source = Some((
+            step.source_kind,
+            &step.source_id,
+            step.chunk_index,
+            step.chunk_count,
+        ));
+    }
+    if proposal
+        .steps
+        .last()
+        .is_some_and(|step| step.chunk_index != step.chunk_count)
+    {
+        return Err("the named-technique timeline proposal is invalid".to_owned());
+    }
+    Ok(proposal)
+}
+
+fn is_named_technique_identifier(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > MAX_NAMED_TECHNIQUE_IDENTIFIER_BYTES
+        || !bytes[0].is_ascii_lowercase()
+    {
+        return false;
+    }
+    bytes.iter().copied().enumerate().all(|(index, byte)| {
+        byte.is_ascii_lowercase()
+            || byte.is_ascii_digit()
+            || (matches!(byte, b'.' | b'_' | b'-')
+                && index + 1 < bytes.len()
+                && (bytes[index + 1].is_ascii_lowercase() || bytes[index + 1].is_ascii_digit()))
+    })
+}
+
+#[tauri::command]
+fn append_named_technique_instruction_steps(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    proposal_json: String,
+) -> Result<ProjectSnapshot, String> {
+    let proposal = parse_named_technique_timeline_proposal(&proposal_json)?;
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let fingerprint = project.editor.fold_model_fingerprint_v1();
+    let steps = proposal
+        .steps
+        .into_iter()
+        .map(|step| InstructionStep {
+            id: InstructionStepId::new(),
+            title: step.title,
+            description: step.description,
+            caution: step.caution,
+            duration_ms: step.duration_ms,
+            pose: InstructionPose {
+                model: InstructionPoseModel::DeclarativeOnlyV1,
+                source_model_fingerprint: fingerprint.clone(),
+                fixed_face: None,
+                hinge_angles: Vec::new(),
+            },
+        })
+        .collect();
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::AppendInstructionSteps { steps },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4776,12 +4961,10 @@ fn validate_document_instruction_poses(document: &ProjectDocument) -> Result<(),
     }
     let editor = EditorState::with_paper(document.crease_pattern.clone(), document.paper.clone());
     let current_fingerprint = editor.fold_model_fingerprint_v1();
-    if !document
-        .instruction_timeline
-        .steps
-        .iter()
-        .any(|step| step.pose.source_model_fingerprint == current_fingerprint)
-    {
+    if !document.instruction_timeline.steps.iter().any(|step| {
+        step.pose.model == InstructionPoseModel::AbsoluteHingeAnglesV1
+            && step.pose.source_model_fingerprint == current_fingerprint
+    }) {
         // Poses authored for an older crease pattern remain intentionally
         // loadable as stale, editable records. Playback keeps them disabled
         // until the user captures a new pose against the current model.
@@ -4797,7 +4980,9 @@ fn validate_document_instruction_poses(document: &ProjectDocument) -> Result<(),
     })?;
     let topology = prepare_instruction_topology(snapshot)?;
     for (index, step) in document.instruction_timeline.steps.iter().enumerate() {
-        if step.pose.source_model_fingerprint != current_fingerprint {
+        if step.pose.model == InstructionPoseModel::DeclarativeOnlyV1
+            || step.pose.source_model_fingerprint != current_fingerprint
+        {
             continue;
         }
         instruction_pose_from_context(
@@ -5312,16 +5497,21 @@ pub fn run() {
     let app = builder
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let recovery_root = app
-                .path()
-                .app_data_dir()
-                .map_err(|_| {
-                    std::io::Error::other("the private recovery directory could not be initialized")
-                })?
-                .join("recovery");
+            let app_data_root = app.path().app_data_dir().map_err(|_| {
+                std::io::Error::other("the private recovery directory could not be initialized")
+            })?;
+            let _ = std::fs::create_dir_all(&app_data_root);
+            let recovery_root = app_data_root.join("recovery");
             let recovery = RecoveryRuntime::new(recovery_root);
+            let project_folder_io =
+                ProjectFolderIoState::new(app_data_root.join("project-folder-recovery"));
+            // External parents may be offline during startup. Attempt
+            // recovery now, retain the native registry on failure, and let
+            // only project-folder commands retry/fail closed later.
+            let _ = project_folder_io.recover_pending_replacement();
             app.manage(AppState::new(initial_project_state()));
             app.manage(recovery);
+            app.manage(project_folder_io);
             app.manage(DiagnosticsState::from_app_handle(app.handle()));
             start_recovery_autosave_timer(app.handle().clone()).map_err(|_| {
                 std::io::Error::other("the private recovery timer could not be initialized")
@@ -5330,7 +5520,6 @@ pub fn run() {
         })
         .manage(FoldImportState::default())
         .manage(FoldTechniqueFileIoState::default())
-        .manage(ProjectFolderIoState::default())
         .manage(SvgImportState::default())
         .manage(CreaseExportState::default())
         .manage(StaticMeshExportState::default())
@@ -5400,6 +5589,7 @@ pub fn run() {
             undo,
             redo,
             add_instruction_step,
+            append_named_technique_instruction_steps,
             update_instruction_step_metadata,
             replace_instruction_step_pose,
             remove_instruction_step,
@@ -7023,6 +7213,110 @@ mod tests {
             )
             .expect_err("the first instruction player supports trees only"),
             "instruction poses currently require a tree-shaped fold graph"
+        );
+    }
+
+    #[test]
+    fn named_technique_timeline_proposal_is_strict_bounded_and_ordered() {
+        let valid = serde_json::json!({
+            "schema_version": 1,
+            "package_id": "builtin.origami2",
+            "technique_id": "inside-reverse",
+            "technique_version": 1,
+            "steps": [
+                {
+                    "source_kind": "technique",
+                    "source_id": "inside-reverse",
+                    "chunk_index": 1,
+                    "chunk_count": 1,
+                    "title": "Technique",
+                    "description": "source-json-v1:\n{}",
+                    "caution": "description only",
+                    "duration_ms": 1500
+                },
+                {
+                    "source_kind": "operation",
+                    "source_id": "open",
+                    "chunk_index": 1,
+                    "chunk_count": 2,
+                    "title": "Operation (1/2)",
+                    "description": "first",
+                    "caution": "no physical command",
+                    "duration_ms": 1500
+                },
+                {
+                    "source_kind": "operation",
+                    "source_id": "open",
+                    "chunk_index": 2,
+                    "chunk_count": 2,
+                    "title": "Operation (2/2)",
+                    "description": "second",
+                    "caution": "no physical command",
+                    "duration_ms": 1500
+                }
+            ]
+        });
+        let proposal = parse_named_technique_timeline_proposal(
+            &serde_json::to_string(&valid).expect("proposal JSON"),
+        )
+        .expect("valid proposal");
+        assert_eq!(proposal.steps.len(), 3);
+
+        let mut invalid_values = Vec::new();
+        let mut unknown_root = valid.clone();
+        unknown_root["private_path"] = serde_json::Value::String("secret".to_owned());
+        invalid_values.push(unknown_root);
+        let mut unknown_step = valid.clone();
+        unknown_step["steps"][0]["fixed_face"] = serde_json::Value::Null;
+        invalid_values.push(unknown_step);
+        let mut wrong_first_kind = valid.clone();
+        wrong_first_kind["steps"][0]["source_kind"] =
+            serde_json::Value::String("operation".to_owned());
+        invalid_values.push(wrong_first_kind);
+        let mut wrong_technique_source = valid.clone();
+        wrong_technique_source["steps"][0]["source_id"] =
+            serde_json::Value::String("other".to_owned());
+        invalid_values.push(wrong_technique_source);
+        let mut incomplete_chunks = valid.clone();
+        incomplete_chunks["steps"]
+            .as_array_mut()
+            .expect("steps")
+            .pop();
+        invalid_values.push(incomplete_chunks);
+        let mut repeated_source = valid.clone();
+        repeated_source["steps"]
+            .as_array_mut()
+            .expect("steps")
+            .push(serde_json::json!({
+                "source_kind": "operation",
+                "source_id": "open",
+                "chunk_index": 1,
+                "chunk_count": 1,
+                "title": "Repeated",
+                "description": "repeated",
+                "caution": "",
+                "duration_ms": 1500
+            }));
+        invalid_values.push(repeated_source);
+        let mut invalid_identifier = valid.clone();
+        invalid_identifier["package_id"] = serde_json::Value::String("../private".to_owned());
+        invalid_values.push(invalid_identifier);
+
+        for invalid in invalid_values {
+            assert_eq!(
+                parse_named_technique_timeline_proposal(
+                    &serde_json::to_string(&invalid).expect("invalid fixture JSON"),
+                )
+                .expect_err("invalid proposal"),
+                "the named-technique timeline proposal is invalid"
+            );
+        }
+        assert_eq!(
+            parse_named_technique_timeline_proposal(
+                &" ".repeat(MAX_NAMED_TECHNIQUE_TIMELINE_PROPOSAL_BYTES + 1),
+            )
+            .expect_err("oversized proposal"),
+            "the named-technique timeline proposal is too large"
         );
     }
 

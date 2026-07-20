@@ -2,7 +2,8 @@
 //!
 //! The format core owns schema and content admission. This module owns only
 //! native directory selection, no-follow filesystem admission, immutable
-//! project capture, and create-new directory publication.
+//! project capture, create-new publication, and journaled whole-tree
+//! replacement with startup recovery.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -22,7 +23,7 @@ use ori_formats::{
     PROJECT_FOLDER_PROJECT_PATH, ProjectFolderArtifactV1, ProjectFolderEntryV1,
     ProjectFolderLimits, read_project_folder_v1_with_limits, write_project_folder_v1,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
@@ -38,8 +39,19 @@ mod platform;
 #[cfg(target_os = "windows")]
 #[path = "project_folder_io/windows.rs"]
 mod platform;
+#[path = "project_folder_io/replacement.rs"]
+mod replacement;
 
 use platform::{PinnedDirectory, PinnedFile};
+use replacement::{PreparedReplacementProjectFolder, ReplacementRegistry};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryIdentity {
+    first: u64,
+    second: u64,
+    third: u64,
+}
 
 const OPEN_TITLE_JA: &str = "展開フォルダー形式のORIGAMI2プロジェクトを開く";
 const OPEN_TITLE_EN: &str = "Open expanded ORIGAMI2 project folder";
@@ -65,11 +77,13 @@ const ERROR_RACE: &str = "project_folder_changed_during_read";
 const ERROR_SAVE_FAILED: &str = "project_folder_save_failed";
 const ERROR_TARGET_EXISTS: &str = "project_folder_target_exists";
 const ERROR_STALE: &str = "project_folder_project_changed";
+const ERROR_RECOVERY_REQUIRED: &str = "project_folder_recovery_required";
+const ERROR_REPLACEMENT_UNSUPPORTED: &str = "project_folder_replacement_unsupported";
 
 static NEXT_STAGING_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProjectFolderFilesystemError {
+pub(super) enum ProjectFolderFilesystemError {
     InvalidRequest,
     OpenFailed,
     InvalidTree,
@@ -80,6 +94,10 @@ enum ProjectFolderFilesystemError {
     WriteFailed,
     TargetExists,
     StaleProject,
+    RecoveryRequired,
+    ReplacementUnsupported,
+    #[cfg(test)]
+    InjectedCrash,
 }
 
 impl ProjectFolderFilesystemError {
@@ -94,18 +112,49 @@ impl ProjectFolderFilesystemError {
             Self::WriteFailed => ERROR_SAVE_FAILED,
             Self::TargetExists => ERROR_TARGET_EXISTS,
             Self::StaleProject => ERROR_STALE,
+            Self::RecoveryRequired => ERROR_RECOVERY_REQUIRED,
+            Self::ReplacementUnsupported => ERROR_REPLACEMENT_UNSUPPORTED,
+            #[cfg(test)]
+            Self::InjectedCrash => ERROR_RECOVERY_REQUIRED,
         }
     }
 }
 
 type FsResult<T> = Result<T, ProjectFolderFilesystemError>;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(super) struct ProjectFolderIoState {
     busy: Arc<AtomicBool>,
+    replacement_registry: Option<ReplacementRegistry>,
+    unresolved_replacement_recovery: Arc<AtomicBool>,
 }
 
 impl ProjectFolderIoState {
+    pub(super) fn new(recovery_root: PathBuf) -> Self {
+        Self {
+            busy: Arc::new(AtomicBool::new(false)),
+            replacement_registry: Some(ReplacementRegistry::new(recovery_root)),
+            unresolved_replacement_recovery: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(super) fn recover_pending_replacement(&self) -> FsResult<()> {
+        let result = self
+            .replacement_registry
+            .as_ref()
+            .ok_or(ProjectFolderFilesystemError::RecoveryRequired)?
+            .recover_pending();
+        self.unresolved_replacement_recovery
+            .store(result.is_err(), Ordering::Release);
+        result
+    }
+
+    fn replacement_registry(&self) -> FsResult<ReplacementRegistry> {
+        self.replacement_registry
+            .clone()
+            .ok_or(ProjectFolderFilesystemError::RecoveryRequired)
+    }
+
     fn try_acquire(&self) -> Result<ProjectFolderIoPermit, String> {
         self.busy
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -113,6 +162,16 @@ impl ProjectFolderIoState {
         Ok(ProjectFolderIoPermit {
             busy: Arc::clone(&self.busy),
         })
+    }
+}
+
+impl Default for ProjectFolderIoState {
+    fn default() -> Self {
+        Self {
+            busy: Arc::new(AtomicBool::new(false)),
+            replacement_registry: None,
+            unresolved_replacement_recovery: Arc::new(AtomicBool::new(false)),
+        }
     }
 }
 
@@ -197,6 +256,13 @@ pub(super) async fn open_project_folder(
 ) -> Result<ProjectFolderFileResponse, String> {
     let locale = DialogLocale::parse(&locale)?;
     let permit = io_state.try_acquire()?;
+    let recovery_state = io_state.inner().clone();
+    let (recovery_result, permit) = tauri::async_runtime::spawn_blocking(move || {
+        (recovery_state.recover_pending_replacement(), permit)
+    })
+    .await
+    .map_err(|_| ERROR_RECOVERY_REQUIRED.to_owned())?;
+    recovery_result.map_err(error_string)?;
     let capture = {
         let project = lock_project(&state)?;
         capture_open_binding(&project).map_err(error_string)?
@@ -232,9 +298,11 @@ pub(super) async fn open_project_folder(
     Ok(response)
 }
 
-/// Saves a captured project into a new child of a native-selected parent.
+/// Saves a captured project below a native-selected parent.
 ///
-/// Existing target directories are never replaced by this V1 adapter.
+/// A missing target is published once with no replacement. An existing
+/// same-project target is replaced only through the durable journal and
+/// startup-recovery protocol.
 #[tauri::command]
 pub(super) async fn save_project_folder_as(
     app: AppHandle,
@@ -245,6 +313,14 @@ pub(super) async fn save_project_folder_as(
 ) -> Result<ProjectFolderFileResponse, String> {
     let locale = DialogLocale::parse(&locale)?;
     let permit = io_state.try_acquire()?;
+    let recovery_state = io_state.inner().clone();
+    let (recovery_result, permit) = tauri::async_runtime::spawn_blocking(move || {
+        (recovery_state.recover_pending_replacement(), permit)
+    })
+    .await
+    .map_err(|_| ERROR_RECOVERY_REQUIRED.to_owned())?;
+    recovery_result.map_err(error_string)?;
+    let registry = io_state.replacement_registry().map_err(error_string)?;
     let capture = {
         let project = lock_project(&state)?;
         capture_save_source(&project).map_err(error_string)?
@@ -275,7 +351,7 @@ pub(super) async fn save_project_folder_as(
     let target_name = capture.target_name.clone();
     let (prepared, _permit) = tauri::async_runtime::spawn_blocking(move || {
         (
-            prepare_new_project_folder(&parent, &target_name, artifact),
+            prepare_project_folder(&registry, &parent, &target_name, artifact),
             permit,
         )
     })
@@ -414,7 +490,8 @@ fn load_project_folder_artifact_from_pinned(
     root: &PinnedDirectory,
     limits: ProjectFolderLimits,
 ) -> FsResult<ProjectFolderArtifactV1> {
-    load_project_folder_artifact_from_pinned_with_hook(root, limits, || {})
+    pin_and_load_project_folder_artifact_from_pinned(root, limits, || {})
+        .map(|(artifact, _pinned_tree)| artifact)
 }
 
 fn load_project_folder_artifact_from_pinned_with_hook<F>(
@@ -422,6 +499,26 @@ fn load_project_folder_artifact_from_pinned_with_hook<F>(
     limits: ProjectFolderLimits,
     after_handles_open: F,
 ) -> FsResult<ProjectFolderArtifactV1>
+where
+    F: FnOnce(),
+{
+    pin_and_load_project_folder_artifact_from_pinned(root, limits, after_handles_open)
+        .map(|(artifact, _pinned_tree)| artifact)
+}
+
+struct PinnedProjectFolderTree {
+    _preview: PinnedDirectory,
+    _manifest: PinnedFile,
+    _project: PinnedFile,
+    _history: Option<PinnedFile>,
+    _preview_file: PinnedFile,
+}
+
+fn pin_and_load_project_folder_artifact_from_pinned<F>(
+    root: &PinnedDirectory,
+    limits: ProjectFolderLimits,
+    after_handles_open: F,
+) -> FsResult<(ProjectFolderArtifactV1, PinnedProjectFolderTree)>
 where
     F: FnOnce(),
 {
@@ -506,8 +603,18 @@ where
         PROJECT_FOLDER_PREVIEW_PATH,
         preview_bytes,
     ));
-    read_project_folder_v1_with_limits(&entries, limits)
-        .map_err(|_| ProjectFolderFilesystemError::InvalidTree)
+    let artifact = read_project_folder_v1_with_limits(&entries, limits)
+        .map_err(|_| ProjectFolderFilesystemError::InvalidTree)?;
+    Ok((
+        artifact,
+        PinnedProjectFolderTree {
+            _preview: preview,
+            _manifest: manifest,
+            _project: project,
+            _history: history,
+            _preview_file: preview_file,
+        },
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -579,7 +686,29 @@ fn validate_names(names: Vec<OsString>, maximum: usize) -> FsResult<Vec<String>>
     Ok(canonical)
 }
 
-struct PreparedProjectFolder {
+enum PreparedProjectFolder {
+    New(Box<PreparedNewProjectFolder>),
+    Replacement(Box<PreparedReplacementProjectFolder>),
+}
+
+impl PreparedProjectFolder {
+    fn publish(&mut self) -> FsResult<()> {
+        match self {
+            Self::New(prepared) => prepared.publish(),
+            Self::Replacement(prepared) => prepared.publish(),
+        }
+    }
+
+    #[cfg(test)]
+    fn staging_name(&self) -> &str {
+        match self {
+            Self::New(prepared) => &prepared.staging_name,
+            Self::Replacement(_) => panic!("replacement staging name is journal-private"),
+        }
+    }
+}
+
+struct PreparedNewProjectFolder {
     parent: PinnedDirectory,
     staging: PinnedDirectory,
     staging_name: String,
@@ -588,7 +717,7 @@ struct PreparedProjectFolder {
     committed: bool,
 }
 
-impl PreparedProjectFolder {
+impl PreparedNewProjectFolder {
     fn publish(&mut self) -> FsResult<()> {
         self.parent.revalidate_selected_path()?;
         self.parent
@@ -611,7 +740,7 @@ impl PreparedProjectFolder {
         self.parent.sync_directory()?;
         self.parent.publish_child_directory_no_replace(
             &self.staging_name,
-            &self.staging,
+            &mut self.staging,
             &self.target_name,
         )?;
         self.committed = true;
@@ -622,7 +751,7 @@ impl PreparedProjectFolder {
     }
 }
 
-impl Drop for PreparedProjectFolder {
+impl Drop for PreparedNewProjectFolder {
     fn drop(&mut self) {
         if self.committed {
             return;
@@ -647,14 +776,39 @@ fn prepare_new_project_folder(
         cleanup_owned_staging(&parent, &staging_name, &staging);
         return Err(error);
     }
-    Ok(PreparedProjectFolder {
-        parent,
-        staging,
-        staging_name,
-        target_name: target_name.to_owned(),
-        expected_artifact: artifact,
-        committed: false,
-    })
+    Ok(PreparedProjectFolder::New(Box::new(
+        PreparedNewProjectFolder {
+            parent,
+            staging,
+            staging_name,
+            target_name: target_name.to_owned(),
+            expected_artifact: artifact,
+            committed: false,
+        },
+    )))
+}
+
+fn prepare_project_folder(
+    registry: &ReplacementRegistry,
+    parent_path: &Path,
+    target_name: &str,
+    artifact: ProjectFolderArtifactV1,
+) -> FsResult<PreparedProjectFolder> {
+    validate_native_child_name(target_name)?;
+    let parent = PinnedDirectory::open_selected(parent_path)?;
+    if parent.child_exists(target_name)? {
+        drop(parent);
+        return PreparedReplacementProjectFolder::prepare(
+            registry,
+            parent_path,
+            target_name,
+            artifact,
+        )
+        .map(Box::new)
+        .map(PreparedProjectFolder::Replacement);
+    }
+    drop(parent);
+    prepare_new_project_folder(parent_path, target_name, artifact)
 }
 
 fn create_staging_directory(parent: &PinnedDirectory) -> FsResult<(String, PinnedDirectory)> {
@@ -716,28 +870,75 @@ fn artifact_entry<'a>(artifact: &'a ProjectFolderArtifactV1, path: &str) -> FsRe
 }
 
 fn cleanup_owned_staging(parent: &PinnedDirectory, staging_name: &str, staging: &PinnedDirectory) {
-    // Never clean by pathname unless it still resolves to the exact staging
-    // directory created by this operation. Cleanup is fixed-entry-only and
-    // intentionally leaves any unknown injected content in place.
-    if parent
-        .revalidate_child_directory(staging_name, staging)
-        .is_err()
-    {
-        return;
+    let _ =
+        cleanup_owned_project_directory(parent, staging_name, staging, staging.identity(), true);
+}
+
+fn cleanup_owned_project_directory(
+    parent: &PinnedDirectory,
+    directory_name: &str,
+    directory: &PinnedDirectory,
+    expected_identity: DirectoryIdentity,
+    allow_partial: bool,
+) -> FsResult<()> {
+    if directory.identity() != expected_identity {
+        return Err(ProjectFolderFilesystemError::ChangedDuringRead);
     }
-    let _ = staging.remove_child_file("manifest.json");
-    let _ = staging.remove_child_file("project.json");
-    let _ = staging.remove_child_file("editor-history.json");
-    if let Ok(preview) = staging.open_child_directory("preview") {
-        let _ = preview.remove_child_file("crease-pattern.svg");
+    parent.revalidate_child_directory(directory_name, directory)?;
+    if !allow_partial {
+        load_project_folder_artifact_from_pinned(directory, ProjectFolderLimits::default())?;
     }
-    let _ = staging.remove_child_directory("preview");
-    if parent
-        .revalidate_child_directory(staging_name, staging)
-        .is_ok()
-    {
-        let _ = parent.remove_child_directory_if_same(staging_name, staging);
+
+    let root_names = validate_names(
+        directory.list_names(MAX_ENUMERATED_ROOT_ENTRIES + 1)?,
+        MAX_ENUMERATED_ROOT_ENTRIES,
+    )?;
+    if root_names.iter().any(|name| {
+        !matches!(
+            name.as_str(),
+            "manifest.json" | "project.json" | "editor-history.json" | "preview"
+        )
+    }) {
+        return Err(ProjectFolderFilesystemError::InvalidTree);
     }
+
+    for name in ["manifest.json", "project.json", "editor-history.json"] {
+        remove_owned_file_if_present(directory, name, MAX_PROJECT_FOLDER_TOTAL_BYTES)?;
+    }
+    if root_names.iter().any(|name| name == "preview") {
+        let preview = directory.open_child_directory_for_rename("preview")?;
+        let preview_names = validate_names(
+            preview.list_names(MAX_ENUMERATED_PREVIEW_ENTRIES + 1)?,
+            MAX_ENUMERATED_PREVIEW_ENTRIES,
+        )?;
+        if preview_names
+            .iter()
+            .any(|name| name != "crease-pattern.svg")
+        {
+            return Err(ProjectFolderFilesystemError::InvalidTree);
+        }
+        remove_owned_file_if_present(
+            &preview,
+            "crease-pattern.svg",
+            MAX_PROJECT_FOLDER_PREVIEW_BYTES,
+        )?;
+        if !preview.list_names(1)?.is_empty() {
+            return Err(ProjectFolderFilesystemError::InvalidTree);
+        }
+        directory.remove_child_directory_if_same("preview", &preview)?;
+    }
+    if !directory.list_names(1)?.is_empty() {
+        return Err(ProjectFolderFilesystemError::InvalidTree);
+    }
+    parent.remove_child_directory_if_same(directory_name, directory)
+}
+
+fn remove_owned_file_if_present(parent: &PinnedDirectory, name: &str, limit: u64) -> FsResult<()> {
+    if !parent.child_exists(name)? {
+        return Ok(());
+    }
+    let file = parent.open_child_file_for_update(name, limit)?;
+    parent.remove_child_file_if_same(name, &file)
 }
 
 fn target_folder_name(project_name: &str, project_id: ProjectId) -> String {
@@ -1292,7 +1493,7 @@ mod tests {
         let target_name = "raced.origami2-folder";
         let mut prepared =
             prepare_new_project_folder(&directory.0, target_name, artifact).expect("prepare");
-        let staging_name = prepared.staging_name.clone();
+        let staging_name = prepared.staging_name().to_owned();
         let target = directory.0.join(target_name);
         fs::create_dir(&target).expect("create raced target");
         fs::write(target.join("sentinel"), b"keep").expect("write sentinel");
@@ -1316,7 +1517,7 @@ mod tests {
         let target_name = "late-extra.origami2-folder";
         let mut prepared =
             prepare_new_project_folder(&directory.0, target_name, artifact).expect("prepare");
-        let staging = directory.0.join(&prepared.staging_name);
+        let staging = directory.0.join(prepared.staging_name());
         fs::write(staging.join("unknown-sentinel"), b"keep").expect("inject unknown entry");
 
         assert!(matches!(
@@ -1339,7 +1540,7 @@ mod tests {
         let target_name = "late-payload.origami2-folder";
         let mut prepared =
             prepare_new_project_folder(&directory.0, target_name, artifact).expect("prepare");
-        let staging = directory.0.join(&prepared.staging_name);
+        let staging = directory.0.join(prepared.staging_name());
         fs::write(staging.join("project.json"), b"{}").expect("alter known payload");
 
         assert!(matches!(
@@ -1359,7 +1560,7 @@ mod tests {
         let target_name = "never-published.origami2-folder";
         let prepared =
             prepare_new_project_folder(&directory.0, target_name, artifact).expect("prepare");
-        let staging = directory.0.join(&prepared.staging_name);
+        let staging = directory.0.join(prepared.staging_name());
         fs::write(staging.join("unknown-sentinel"), b"keep").expect("inject unknown entry");
         drop(prepared);
 
@@ -1435,6 +1636,8 @@ mod tests {
             ProjectFolderFilesystemError::WriteFailed,
             ProjectFolderFilesystemError::TargetExists,
             ProjectFolderFilesystemError::StaleProject,
+            ProjectFolderFilesystemError::RecoveryRequired,
+            ProjectFolderFilesystemError::ReplacementUnsupported,
         ] {
             let code = error.code();
             assert!(code.starts_with("project_folder_"));

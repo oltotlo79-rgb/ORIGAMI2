@@ -21,7 +21,13 @@ test('the visible workflow uses the dedicated strict client end to end', () => {
   assert.match(app, /projectFolderClientErrorMessage\(error, 'en'\)/u)
   assert.match(app, /展開フォルダーを開く/u)
   assert.match(app, /展開フォルダー保存/u)
-  assert.match(app, /既存フォルダーは上書きしません/u)
+  assert.match(
+    app,
+    /ローカルNTFS\/ReFSでは同じプロジェクトの既存フォルダーを安全に置き換え/u,
+  )
+  assert.match(app, /それ以外の保存先では新規保存だけを行います/u)
+  assert.match(app, /別のプロジェクトは上書きしません/u)
+  assert.doesNotMatch(app, /既存フォルダーは上書きしません/u)
 })
 
 test('IPC accepts only locale and returns an exact pathless snapshot envelope', () => {
@@ -55,6 +61,8 @@ test('native errors and filesystem names remain closed categories', () => {
   assert.match(client, /const NATIVE_ERROR_CODES = Object\.freeze/u)
   assert.match(client, /project_folder_target_exists: 'target_exists'/u)
   assert.match(client, /project_folder_project_changed: 'project_changed'/u)
+  assert.match(client, /project_folder_recovery_required: 'recovery_required'/u)
+  assert.match(client, /project_folder_replacement_unsupported: 'replacement_unsupported'/u)
   assert.match(client, /return new ProjectFolderClientError\('invalid_response'\)/u)
   assert.doesNotMatch(
     functionSection(client, 'function mapNativeError(', '\n}'),

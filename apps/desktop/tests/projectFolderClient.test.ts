@@ -78,6 +78,20 @@ test('maps only fixed native categories and redacts arbitrary failures', async (
     error instanceof ProjectFolderClientError
       && error.code === 'project_changed')
 
+  const recovery = createProjectFolderClient(async () => {
+    throw 'project_folder_recovery_required'
+  }, () => true)
+  await assert.rejects(recovery.open('en'), (error: unknown) =>
+    error instanceof ProjectFolderClientError
+      && error.code === 'recovery_required')
+
+  const unsupportedReplacement = createProjectFolderClient(async () => {
+    throw 'project_folder_replacement_unsupported'
+  }, () => true)
+  await assert.rejects(unsupportedReplacement.saveAsNew('ja'), (error: unknown) =>
+    error instanceof ProjectFolderClientError
+      && error.code === 'replacement_unsupported')
+
   const hostile = createProjectFolderClient(async () => {
     throw new Error('C:\\Users\\alice\\private-project\\manifest.json')
   }, () => true)
@@ -92,10 +106,12 @@ test('maps only fixed native categories and redacts arbitrary failures', async (
 
 test('formats actionable Japanese and English messages without raw payloads', () => {
   const expectations = [
-    ['target_exists', '既にあります', 'already exists'],
+    ['target_exists', '別のプロジェクト', 'another project'],
     ['too_large', 'サイズ上限', 'size limit'],
     ['link_or_special_entry', '特殊ファイル', 'special file'],
     ['project_changed', 'プロジェクトが変更', 'project changed'],
+    ['recovery_required', '外付けドライブ', 'external drive'],
+    ['replacement_unsupported', '新しいフォルダー名', 'new folder name'],
     ['busy', '処理中', 'is running'],
   ] as const
   for (const [code, japanese, english] of expectations) {

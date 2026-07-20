@@ -125,7 +125,7 @@ describe('App locale integration', () => {
     expect(screen.getByRole('button', { name: '保存' })).toBeTruthy()
     expect(screen.getByRole('button', {
       name: '展開フォルダー保存',
-    }).getAttribute('title')).toContain('既存フォルダーは上書きしません')
+    }).getAttribute('title')).toContain('それ以外の保存先では新規保存だけを行います')
     expect(screen.getByText('ブラウザ試作モード')).toBeTruthy()
     expect(screen.getByText(/^ツール: 選択$/u)).toBeTruthy()
     expect(screen.getByRole('complementary', {

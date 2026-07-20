@@ -5,14 +5,14 @@ use std::{
     os::{
         fd::{AsRawFd, FromRawFd, RawFd},
         unix::{
-            ffi::{OsStrExt, OsStringExt},
+            ffi::OsStringExt,
             fs::{MetadataExt, OpenOptionsExt},
         },
     },
     path::{Path, PathBuf},
 };
 
-use super::{FsResult, ProjectFolderFilesystemError};
+use super::{DirectoryIdentity, FsResult, ProjectFolderFilesystemError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ObjectIdentity {
@@ -67,6 +67,10 @@ impl PinnedDirectory {
         open_directory_at(self, name, false)
     }
 
+    pub(super) fn open_child_directory_for_rename(&self, name: &str) -> FsResult<Self> {
+        open_directory_at(self, name, false)
+    }
+
     pub(super) fn create_child_directory(&self, name: &str, _deletable: bool) -> FsResult<Self> {
         let name_c = c_name(name)?;
         let created = unsafe {
@@ -84,6 +88,23 @@ impl PinnedDirectory {
     }
 
     pub(super) fn open_child_file(&self, name: &str, limit: u64) -> FsResult<PinnedFile> {
+        self.open_child_file_with_delete(name, limit, false)
+    }
+
+    pub(super) fn open_child_file_for_update(
+        &self,
+        name: &str,
+        limit: u64,
+    ) -> FsResult<PinnedFile> {
+        self.open_child_file_with_delete(name, limit, true)
+    }
+
+    fn open_child_file_with_delete(
+        &self,
+        name: &str,
+        limit: u64,
+        deletable: bool,
+    ) -> FsResult<PinnedFile> {
         let name_c = c_name(name)?;
         let fd = unsafe {
             // SAFETY: the parent fd and C string remain live for the call.
@@ -100,10 +121,21 @@ impl PinnedDirectory {
             // SAFETY: `openat` returned a new owned descriptor.
             File::from_raw_fd(fd)
         };
-        PinnedFile::admit(file, limit)
+        PinnedFile::admit(file, limit, deletable)
     }
 
     pub(super) fn write_child_file(&self, name: &str, bytes: &[u8]) -> FsResult<()> {
+        let pinned = self.write_child_file_pinned(name, bytes)?;
+        let identity = pinned.identity;
+        drop(pinned);
+        let reopened = self.open_child_file(name, bytes.len() as u64)?;
+        if reopened.identity != identity || reopened.declared_size != bytes.len() as u64 {
+            return Err(ProjectFolderFilesystemError::ChangedDuringRead);
+        }
+        Ok(())
+    }
+
+    pub(super) fn write_child_file_pinned(&self, name: &str, bytes: &[u8]) -> FsResult<PinnedFile> {
         let name_c = c_name(name)?;
         let fd = unsafe {
             // SAFETY: the parent fd and C string remain live for the call.
@@ -138,11 +170,12 @@ impl PinnedDirectory {
         if after.identity != initial.identity || after.size != bytes.len() as u64 {
             return Err(ProjectFolderFilesystemError::ChangedDuringRead);
         }
-        let reopened = self.open_child_file(name, bytes.len() as u64)?;
-        if reopened.identity != initial.identity || reopened.declared_size != bytes.len() as u64 {
-            return Err(ProjectFolderFilesystemError::ChangedDuringRead);
-        }
-        Ok(())
+        Ok(PinnedFile {
+            file,
+            identity: initial.identity,
+            declared_size: bytes.len() as u64,
+            deletable: true,
+        })
     }
 
     pub(super) fn child_exists(&self, name: &str) -> FsResult<bool> {
@@ -194,18 +227,30 @@ impl PinnedDirectory {
         child.revalidate_selected_path()
     }
 
+    pub(super) fn identity(&self) -> DirectoryIdentity {
+        DirectoryIdentity {
+            first: self.identity.device,
+            second: self.identity.inode,
+            third: 0,
+        }
+    }
+
+    pub(super) fn ensure_stable_replacement_identity(&self) -> FsResult<()> {
+        self.revalidate_selected_path()
+    }
+
     pub(super) fn sync_directory(&self) -> FsResult<()> {
         self.file
             .sync_all()
             .map_err(|_| ProjectFolderFilesystemError::WriteFailed)
     }
 
-    pub(super) fn remove_child_file(&self, name: &str) -> FsResult<()> {
+    pub(super) fn remove_child_file_if_same(&self, name: &str, child: &PinnedFile) -> FsResult<()> {
+        self.revalidate_child_file(name, child)?;
+        if !child.deletable {
+            return Err(ProjectFolderFilesystemError::WriteFailed);
+        }
         unlink_at(self.file.as_raw_fd(), name, 0)
-    }
-
-    pub(super) fn remove_child_directory(&self, name: &str) -> FsResult<()> {
-        unlink_at(self.file.as_raw_fd(), name, libc::AT_REMOVEDIR)
     }
 
     pub(super) fn remove_child_directory_if_same(&self, name: &str, child: &Self) -> FsResult<()> {
@@ -216,7 +261,7 @@ impl PinnedDirectory {
     pub(super) fn publish_child_directory_no_replace(
         &self,
         source_name: &str,
-        source: &Self,
+        source: &mut Self,
         target_name: &str,
     ) -> FsResult<()> {
         self.revalidate_child_directory(source_name, source)?;
@@ -253,6 +298,11 @@ impl PinnedDirectory {
         let renamed: libc::c_long = return Err(ProjectFolderFilesystemError::WriteFailed);
 
         if renamed == 0 {
+            let reopened = self.open_child_directory(target_name)?;
+            if reopened.identity != source.identity {
+                return Err(ProjectFolderFilesystemError::ChangedDuringRead);
+            }
+            source.path = self.path.join(target_name);
             return Ok(());
         }
         let error = std::io::Error::last_os_error();
@@ -265,21 +315,46 @@ impl PinnedDirectory {
             Err(ProjectFolderFilesystemError::WriteFailed)
         }
     }
+
+    pub(super) fn publish_child_file_no_replace(
+        &self,
+        source_name: &str,
+        source: &PinnedFile,
+        target_name: &str,
+    ) -> FsResult<()> {
+        self.revalidate_child_file(source_name, source)?;
+        rename_child_no_replace(self.file.as_raw_fd(), source_name, target_name)?;
+        let reopened = self.open_child_file(target_name, source.declared_size)?;
+        if reopened.identity != source.identity || reopened.declared_size != source.declared_size {
+            return Err(ProjectFolderFilesystemError::ChangedDuringRead);
+        }
+        Ok(())
+    }
+
+    fn revalidate_child_file(&self, name: &str, child: &PinnedFile) -> FsResult<()> {
+        let reopened = self.open_child_file(name, child.declared_size)?;
+        if reopened.identity != child.identity || reopened.declared_size != child.declared_size {
+            return Err(ProjectFolderFilesystemError::ChangedDuringRead);
+        }
+        Ok(())
+    }
 }
 
 pub(super) struct PinnedFile {
     file: File,
     identity: ObjectIdentity,
     declared_size: u64,
+    deletable: bool,
 }
 
 impl PinnedFile {
-    fn admit(file: File, limit: u64) -> FsResult<Self> {
+    fn admit(file: File, limit: u64, deletable: bool) -> FsResult<Self> {
         let admitted = validate_plain_file(&file.metadata().map_err(map_read_error)?, Some(limit))?;
         Ok(Self {
             file,
             identity: admitted.identity,
             declared_size: admitted.size,
+            deletable,
         })
     }
 
@@ -465,6 +540,50 @@ fn unlink_at(parent_fd: RawFd, name: &str, flags: i32) -> FsResult<()> {
     let error = std::io::Error::last_os_error();
     if error.raw_os_error() == Some(libc::ENOENT) {
         Ok(())
+    } else {
+        Err(ProjectFolderFilesystemError::WriteFailed)
+    }
+}
+
+fn rename_child_no_replace(parent_fd: RawFd, source: &str, target: &str) -> FsResult<()> {
+    let source_c = c_name(source)?;
+    let target_c = c_name(target)?;
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let renamed = unsafe {
+        // SAFETY: both names and the pinned parent fd remain live.
+        libc::syscall(
+            libc::SYS_renameat2,
+            parent_fd,
+            source_c.as_ptr(),
+            parent_fd,
+            target_c.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    let renamed = unsafe {
+        // SAFETY: both names and the pinned parent fd remain live.
+        libc::renameatx_np(
+            parent_fd,
+            source_c.as_ptr(),
+            parent_fd,
+            target_c.as_ptr(),
+            libc::RENAME_EXCL,
+        ) as libc::c_long
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+    let renamed: libc::c_long = return Err(ProjectFolderFilesystemError::WriteFailed);
+
+    if renamed == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if matches!(
+        error.raw_os_error(),
+        Some(code) if code == libc::EEXIST || code == libc::ENOTEMPTY
+    ) {
+        Err(ProjectFolderFilesystemError::TargetExists)
     } else {
         Err(ProjectFolderFilesystemError::WriteFailed)
     }

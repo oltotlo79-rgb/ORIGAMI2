@@ -23,6 +23,7 @@ import { DiagnosticsDialog } from './components/DiagnosticsDialog'
 import { FoldImportDialog } from './components/FoldImportDialog'
 import { FoldPreview } from './components/FoldPreview'
 import { FoldTechniqueEditorDialog } from './components/FoldTechniqueEditorDialog'
+import { FoldTechniqueTimelinePreviewDialog } from './components/FoldTechniqueTimelinePreviewDialog'
 import { GeometricConstraintPanel } from './components/GeometricConstraintPanel'
 import { GlobalFlatFoldabilityPanel } from './components/GlobalFlatFoldabilityPanel'
 import { HistoryLimitControl } from './components/HistoryLimitControl'
@@ -47,6 +48,7 @@ import {
   addEdge,
   addEdgeOrientationConstraint,
   addVertex,
+  appendNamedTechniqueInstructionSteps,
   analyzeGeometricConstraints,
   analyzeProjectTopology,
   applyFoldImport,
@@ -256,8 +258,19 @@ import {
 } from './lib/appMessages'
 import {
   createInitialFoldTechniqueDocumentV1,
+  foldTechniqueLocalizedTextV1,
   type FoldTechniqueFileDocumentV1,
 } from './lib/foldTechniqueEditor'
+import {
+  createFoldTechniqueTimelineProposalV1,
+  type FoldTechniqueTimelineProposalPreview,
+} from './lib/foldTechniqueTimelineProposal'
+import {
+  completeOwnedRequest,
+  createOwnedRequestGate,
+  ownedRequestActive,
+  tryBeginOwnedRequest,
+} from './lib/ownedRequestGate'
 import {
   foldTechniqueFileClientErrorCode,
   isNativeFoldTechniqueFileAvailable,
@@ -346,6 +359,15 @@ type FoldTechniqueEditorState = Readonly<{
   mode: 'create' | 'edit'
   initialDocument: FoldTechniqueFileDocumentV1
   techniqueIndex: number
+}>
+
+type FoldTechniqueTimelinePreviewState = Readonly<{
+  preview: Extract<FoldTechniqueTimelineProposalPreview, { ok: true }>
+  sourceDocument: FoldTechniqueFileDocumentV1
+  techniqueIndex: number
+  expectedProjectInstanceId: string
+  expectedProjectId: string
+  expectedRevision: number
 }>
 
 function appMessage(
@@ -594,6 +616,13 @@ function App() {
     useState<FoldTechniqueEditorState | null>(null)
   const [foldTechniqueBusy, setFoldTechniqueBusy] = useState(false)
   const [foldTechniqueSaveFailed, setFoldTechniqueSaveFailed] = useState(false)
+  const [foldTechniqueSelectedIndex, setFoldTechniqueSelectedIndex] = useState(0)
+  const [foldTechniqueTimelinePreview, setFoldTechniqueTimelinePreview] =
+    useState<FoldTechniqueTimelinePreviewState | null>(null)
+  const [foldTechniqueTimelineBusy, setFoldTechniqueTimelineBusy] =
+    useState(false)
+  const [foldTechniqueTimelineError, setFoldTechniqueTimelineError] =
+    useState<AppMessage | null>(null)
   const [foldImportPreview, setFoldImportPreview] = useState<FoldImportPreview | null>(null)
   const [foldImportErrorMessage, setFoldImportError] =
     useState<AppMessage | null>(null)
@@ -665,6 +694,10 @@ function App() {
     locale,
     instructionExportNoticeMessage,
   )
+  const foldTechniqueTimelineErrorText = appMessageText(
+    locale,
+    foldTechniqueTimelineError,
+  )
   const recoveryBlocking = recoveryStartup.kind !== 'ready'
   const coreOperationRef = useRef(false)
   const latestSnapshotRef = useRef<ProjectSnapshot | null>(null)
@@ -695,6 +728,8 @@ function App() {
   const foldTechniqueEditorDirtyRef = useRef(false)
   const foldTechniqueEditorOpenerRef = useRef<HTMLButtonElement | null>(null)
   const foldTechniqueRequestIdRef = useRef(0)
+  const foldTechniqueTimelineOpenerRef = useRef<HTMLButtonElement | null>(null)
+  const foldTechniqueTimelineRequestGateRef = useRef(createOwnedRequestGate())
   const foldImportButtonRef = useRef<HTMLButtonElement>(null)
   const svgImportButtonRef = useRef<HTMLButtonElement>(null)
   const creaseExportButtonRef = useRef<HTMLButtonElement>(null)
@@ -714,6 +749,7 @@ function App() {
   ) => {
     foldTechniqueWorkspaceRef.current = workspace
     setFoldTechniqueWorkspace(workspace)
+    setFoldTechniqueSelectedIndex(0)
   }, [])
   const setFoldTechniqueOperationBusy = useCallback((busy: boolean) => {
     foldTechniqueBusyRef.current = busy
@@ -793,10 +829,28 @@ function App() {
     nativeStaticCollisionRequest?.requestKey ?? null,
     boundNativeStaticCollisionView,
   )
+  const foldTechniqueTimelinePreviewStale = Boolean(
+    foldTechniqueTimelinePreview
+    && (
+      !nativeSnapshot
+      || nativeSnapshot.project_instance_id
+        !== foldTechniqueTimelinePreview.expectedProjectInstanceId
+      || nativeSnapshot.project_id
+        !== foldTechniqueTimelinePreview.expectedProjectId
+      || nativeSnapshot.revision
+        !== foldTechniqueTimelinePreview.expectedRevision
+      || foldTechniqueWorkspace?.document
+        !== foldTechniqueTimelinePreview.sourceDocument
+      || foldTechniqueSelectedIndex
+        !== foldTechniqueTimelinePreview.techniqueIndex
+    ),
+  )
   const modalOpen = newProjectOpen
     || diagnosticsDialogOpen
     || foldTechniqueEditor !== null
     || foldTechniqueBusy
+    || foldTechniqueTimelinePreview !== null
+    || foldTechniqueTimelineBusy
     || foldImportPreview !== null
     || svgImportPreview !== null
     || creaseExportOpen
@@ -1285,6 +1339,7 @@ function App() {
       !current
       || !preview
       || step.stale
+      || step.declarativeOnly
       || preview.projectId !== current.project_id
       || preview.revision !== current.revision
       || step.pose.source_model_fingerprint !== current.fold_model_fingerprint
@@ -3002,6 +3057,137 @@ function App() {
     }
   }
 
+  function previewSelectedFoldTechniqueTimeline(opener: HTMLButtonElement) {
+    const workspace = foldTechniqueWorkspaceRef.current
+    const current = latestSnapshotRef.current
+    if (
+      !workspace
+      || !current
+      || coreOperationRef.current
+      || foldTechniqueBusyRef.current
+      || ownedRequestActive(foldTechniqueTimelineRequestGateRef.current)
+      || !isNativeCoreAvailable()
+    ) return
+    const proposal = createFoldTechniqueTimelineProposalV1(
+      workspace.document,
+      foldTechniqueSelectedIndex,
+      locale,
+      current.instruction_timeline.steps.length,
+    )
+    if (!proposal.ok) {
+      const message = proposal.error === 'timeline_capacity'
+        ? appMessage({
+            ja: '折り手順の上限内に追加できません（必要 {required}、空き {available}）。',
+            en: 'The proposal does not fit in the instruction limit (requires {required}, {available} available).',
+          }, {
+            required: proposal.requiredSteps,
+            available: proposal.availableSteps,
+          })
+        : proposal.error === 'proposal_size'
+          ? appMessage({
+              ja: '折り技法の説明案が安全な入力サイズ上限を超えています。',
+              en: 'The fold-technique proposal exceeds the safe input-size limit.',
+            })
+          : appMessage({
+              ja: '選択中の折り技法から説明案を作成できませんでした。',
+              en: 'Could not build a proposal from the selected fold technique.',
+            })
+      setCoreStatus(message)
+      return
+    }
+    foldTechniqueTimelineOpenerRef.current = opener
+    setFoldTechniqueTimelineError(null)
+    setFoldTechniqueTimelinePreview({
+      preview: proposal,
+      sourceDocument: workspace.document,
+      techniqueIndex: foldTechniqueSelectedIndex,
+      expectedProjectInstanceId: current.project_instance_id,
+      expectedProjectId: current.project_id,
+      expectedRevision: current.revision,
+    })
+  }
+
+  function closeFoldTechniqueTimelinePreview() {
+    if (ownedRequestActive(foldTechniqueTimelineRequestGateRef.current)) return
+    const opener = foldTechniqueTimelineOpenerRef.current
+    foldTechniqueTimelineOpenerRef.current = null
+    setFoldTechniqueTimelinePreview(null)
+    setFoldTechniqueTimelineError(null)
+    requestAnimationFrame(() => opener?.focus())
+  }
+
+  async function confirmFoldTechniqueTimelineProposal() {
+    const pending = foldTechniqueTimelinePreview
+    const current = latestSnapshotRef.current
+    if (
+      !pending
+      || ownedRequestActive(foldTechniqueTimelineRequestGateRef.current)
+    ) return
+    if (
+      !current
+      || current.project_instance_id !== pending.expectedProjectInstanceId
+      || current.project_id !== pending.expectedProjectId
+      || current.revision !== pending.expectedRevision
+      || foldTechniqueWorkspaceRef.current?.document !== pending.sourceDocument
+      || foldTechniqueSelectedIndex !== pending.techniqueIndex
+    ) {
+      setFoldTechniqueTimelineError(appMessage({
+        ja: 'プロジェクトまたは選択中の技法が変わりました。案を閉じて作り直してください。',
+        en: 'The project or selected technique changed. Close and rebuild the proposal.',
+      }))
+      return
+    }
+
+    const requestId = tryBeginOwnedRequest(
+      foldTechniqueTimelineRequestGateRef.current,
+    )
+    if (requestId === null) return
+    setFoldTechniqueTimelineBusy(true)
+    setFoldTechniqueTimelineError(null)
+    let succeeded = false
+    try {
+      succeeded = await runNativeEdit((
+        projectId,
+        revision,
+        projectInstanceId,
+      ) => {
+        if (
+          projectInstanceId !== pending.expectedProjectInstanceId
+          || projectId !== pending.expectedProjectId
+          || revision !== pending.expectedRevision
+        ) return Promise.reject(new Error('stale named-technique proposal'))
+        return appendNamedTechniqueInstructionSteps(
+          projectId,
+          revision,
+          projectInstanceId,
+          pending.preview.proposal,
+        )
+      })
+    } catch {
+      succeeded = false
+    }
+    if (!completeOwnedRequest(
+      foldTechniqueTimelineRequestGateRef.current,
+      requestId,
+    )) return
+    setFoldTechniqueTimelineBusy(false)
+    if (!succeeded) {
+      setFoldTechniqueTimelineError(appMessage({
+        ja: '説明ステップを追加できませんでした。プロジェクトは変更されていません。',
+        en: 'Could not append the description steps. The project was not changed.',
+      }))
+      return
+    }
+    const opener = foldTechniqueTimelineOpenerRef.current
+    foldTechniqueTimelineOpenerRef.current = null
+    setFoldTechniqueTimelinePreview(null)
+    setCoreStatus(appMessage({
+      ja: '「{technique}」から説明専用の折り手順を追加しました。1回のUndoで戻せます。',
+      en: 'Added description-only steps from “{technique}”. One Undo removes the complete addition.',
+    }, { technique: pending.preview.techniqueName }))
+    requestAnimationFrame(() => opener?.focus())
+  }
+
   async function beginFoldImport() {
     if (!latestSnapshotRef.current || coreOperationRef.current) return
 
@@ -4214,8 +4400,8 @@ function App() {
               || !isNativeProjectFolderAvailable()
             }
             title={text({
-              ja: '選択した親フォルダー内へ新しい展開フォルダーを作成します。既存フォルダーは上書きしません',
-              en: 'Create a new expanded folder inside the selected parent. Existing folders are never overwritten',
+              ja: '選択した親フォルダーへ展開形式で保存します。ローカルNTFS/ReFSでは同じプロジェクトの既存フォルダーを安全に置き換え、それ以外の保存先では新規保存だけを行います。別のプロジェクトは上書きしません',
+              en: 'Save an expanded folder inside the selected parent. On local NTFS/ReFS, an existing folder for the same project is replaced safely; other destinations allow only a new save. A different project is never overwritten',
             })}
             onClick={() => void runProjectFolderOperation('folder_save')}
           >
@@ -5422,33 +5608,77 @@ function App() {
               })}
             </p>
             {foldTechniqueWorkspace && (
-              <dl>
-                <div>
-                  <dt>{text({ ja: 'パッケージID', en: 'Package ID' })}</dt>
-                  <dd>{foldTechniqueWorkspace.document.package_id}</dd>
-                </div>
-                <div>
-                  <dt>{text({ ja: '技法数', en: 'Techniques' })}</dt>
-                  <dd>
-                    {foldTechniqueWorkspace.document.techniques.length
-                      .toLocaleString(locale)}
-                  </dd>
-                </div>
-                <div>
-                  <dt>{text({ ja: '共有状態', en: 'Share state' })}</dt>
-                  <dd>
-                    {foldTechniqueWorkspace.dirty
-                      ? text({
-                          ja: '変更あり・別名保存が必要',
-                          en: 'Changed · Save as required',
-                        })
-                      : text({
-                          ja: '保存済み',
-                          en: 'Saved',
-                        })}
-                  </dd>
-                </div>
-              </dl>
+              <>
+                <dl>
+                  <div>
+                    <dt>{text({ ja: 'パッケージID', en: 'Package ID' })}</dt>
+                    <dd>{foldTechniqueWorkspace.document.package_id}</dd>
+                  </div>
+                  <div>
+                    <dt>{text({ ja: '技法数', en: 'Techniques' })}</dt>
+                    <dd>
+                      {foldTechniqueWorkspace.document.techniques.length
+                        .toLocaleString(locale)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{text({ ja: '共有状態', en: 'Share state' })}</dt>
+                    <dd>
+                      {foldTechniqueWorkspace.dirty
+                        ? text({
+                            ja: '変更あり・別名保存が必要',
+                            en: 'Changed · Save as required',
+                          })
+                        : text({
+                            ja: '保存済み',
+                            en: 'Saved',
+                          })}
+                    </dd>
+                  </div>
+                </dl>
+                <label className="dialog-field">
+                  <span>
+                    {text({
+                      ja: 'タイムラインへ追加する技法',
+                      en: 'Technique to add to timeline',
+                    })}
+                  </span>
+                  <select
+                    value={foldTechniqueSelectedIndex}
+                    disabled={
+                      coreBusy
+                      || foldTechniqueBusy
+                      || foldTechniqueTimelineBusy
+                    }
+                    onChange={(event) => {
+                      const nextIndex = Number(event.currentTarget.value)
+                      if (
+                        Number.isSafeInteger(nextIndex)
+                        && nextIndex >= 0
+                        && nextIndex
+                          < foldTechniqueWorkspace.document.techniques.length
+                      ) setFoldTechniqueSelectedIndex(nextIndex)
+                    }}
+                  >
+                    {foldTechniqueWorkspace.document.techniques.map(
+                      (technique, techniqueIndex) => (
+                        <option
+                          key={`${technique.id}:${technique.version}`}
+                          value={techniqueIndex}
+                        >
+                          {foldTechniqueLocalizedTextV1(
+                            technique.names,
+                            locale,
+                          ) || foldTechniqueLocalizedTextV1(
+                            technique.names,
+                            locale === 'ja' ? 'en' : 'ja',
+                          ) || technique.id}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </label>
+              </>
             )}
             <div className="property-actions fold-technique-actions">
               <button
@@ -5501,6 +5731,25 @@ function App() {
                 onClick={() => void saveCurrentFoldTechniqueAs()}
               >
                 {text({ ja: '別名保存', en: 'Save as' })}
+              </button>
+              <button
+                type="button"
+                disabled={
+                  coreBusy
+                  || foldTechniqueBusy
+                  || foldTechniqueTimelineBusy
+                  || !foldTechniqueWorkspace
+                  || !nativeSnapshot
+                  || !isNativeCoreAvailable()
+                }
+                aria-haspopup="dialog"
+                onClick={(event) =>
+                  previewSelectedFoldTechniqueTimeline(event.currentTarget)}
+              >
+                {text({
+                  ja: '折り手順案を作成',
+                  en: 'Build timeline proposal',
+                })}
               </button>
             </div>
             {foldTechniqueBusy && (
@@ -5901,6 +6150,17 @@ function App() {
           onCancel={closeFoldTechniqueEditor}
           onDirtyChange={noteFoldTechniqueEditorDirty}
           returnFocusTo={foldTechniqueEditorOpenerRef.current}
+        />
+      )}
+
+      {foldTechniqueTimelinePreview && (
+        <FoldTechniqueTimelinePreviewDialog
+          preview={foldTechniqueTimelinePreview.preview}
+          busy={foldTechniqueTimelineBusy}
+          stale={foldTechniqueTimelinePreviewStale}
+          error={foldTechniqueTimelineErrorText}
+          onConfirm={() => void confirmFoldTechniqueTimelineProposal()}
+          onCancel={closeFoldTechniqueTimelinePreview}
         />
       )}
 

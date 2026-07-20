@@ -77,6 +77,7 @@ const response = (revision = 3): StackedFoldReadResponse =>
       sampledNonblockingPoseCount: 1,
       intervalLeafCount: 8,
       intervalPairWork: 8,
+      intervalCandidateLimit: 512,
       firstSampledBlockingAngleDegrees: null,
       requestedAngleDegrees: 180,
       continuousClearanceCertified: false,

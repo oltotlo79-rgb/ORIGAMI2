@@ -35,12 +35,12 @@ pub const STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &s
 pub const STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_tree_interval_zero_thickness_continuous_certificate_v1";
 pub const MAX_STACKED_FOLD_PATH_SAMPLES_V1: usize = 64;
-pub const MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1: usize = 16;
-const MAX_STACKED_FOLD_INTERVAL_FACE_PAIRS_V1: usize = 136;
+pub const MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1: usize = 32;
+const MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1: usize = 512;
 const MAX_STACKED_FOLD_INTERVAL_LEAVES_V1: usize = 128;
 const MAX_STACKED_FOLD_INTERVAL_DEPTH_V1: usize = 7;
 const MAX_STACKED_FOLD_INTERVAL_WORK_V1: usize =
-    MAX_STACKED_FOLD_INTERVAL_LEAVES_V1 * MAX_STACKED_FOLD_INTERVAL_FACE_PAIRS_V1;
+    MAX_STACKED_FOLD_INTERVAL_LEAVES_V1 * MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackedFoldPathDiagnosticLimitsV1 {
@@ -98,6 +98,11 @@ impl StackedFoldBoundedPathDiagnosticV1 {
     #[must_use]
     pub const fn interval_pair_work(&self) -> usize {
         self.interval_pair_work
+    }
+
+    #[must_use]
+    pub const fn interval_candidate_limit(&self) -> usize {
+        MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1
     }
 
     #[must_use]
@@ -429,7 +434,7 @@ fn two_hinge_interval_clearance_premises(
 ) -> bool {
     let hinge_count = model.hinges().len();
     let face_count = model.face_ids().len();
-    let Some(pair_count) = face_count
+    let Some(_pair_count) = face_count
         .checked_mul(face_count.saturating_sub(1))
         .map(|n| n / 2)
     else {
@@ -439,10 +444,7 @@ fn two_hinge_interval_clearance_premises(
         || face_count != hinge_count + 1
         || moving.len() != hinge_count
         || interval_count == 0
-        || pair_count > MAX_STACKED_FOLD_INTERVAL_FACE_PAIRS_V1
-        || interval_count
-            .checked_mul(pair_count)
-            .is_none_or(|work| work > MAX_STACKED_FOLD_INTERVAL_WORK_V1)
+        || interval_count > MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
         || initial_pose.fixed_face().is_none()
         || !initial_pose.hinge_angles().iter().all(|angle| {
             moving.contains(&angle.edge()) && angle.angle_degrees().to_bits() == 0.0_f64.to_bits()
@@ -559,11 +561,28 @@ fn two_hinge_interval_clearance_premises(
             }
             bounds.push((*face, minimum, maximum));
         }
+        // Sweep-and-prune is complete because every omitted pair has a strict
+        // gap on axis 0 between its already interval-expanded boxes.
+        bounds.sort_by(|left, right| {
+            left.1[0]
+                .total_cmp(&right.1[0])
+                .then_with(|| left.0.canonical_bytes().cmp(&right.0.canonical_bytes()))
+        });
         let mut strict_margin = f64::INFINITY;
+        let mut candidate_count = 0_usize;
         for first in 0..bounds.len() {
             for second in first + 1..bounds.len() {
+                let x_gap = bounds[second].1[0] - bounds[first].2[0];
+                if x_gap > 0.0 {
+                    strict_margin = strict_margin.min(x_gap);
+                    break;
+                }
                 if adjacent(bounds[first].0, bounds[second].0) {
                     continue;
+                }
+                candidate_count = candidate_count.checked_add(1)?;
+                if candidate_count > MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1 {
+                    return None;
                 }
                 pair_work = pair_work.checked_add(1)?;
                 if pair_work > MAX_STACKED_FOLD_INTERVAL_WORK_V1 {
@@ -1341,6 +1360,65 @@ mod tests {
         assert!(!result.continuous_clearance_certified());
         assert_eq!(result.interval_leaf_count(), 0);
         assert_eq!(result.interval_pair_work(), 0);
+    }
+
+    #[test]
+    fn twenty_four_hinge_sparse_tree_uses_complete_sweep_candidates() {
+        let model = deep_strip_model(24);
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<HashSet<_>>();
+        let mut metrics = (0, 0);
+        assert!(two_hinge_interval_clearance_premises(
+            &model,
+            &pose,
+            &moving,
+            0.001,
+            1,
+            &mut metrics,
+        ));
+        assert_eq!(metrics.0, 1);
+        assert!(metrics.1 < MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1);
+    }
+
+    #[test]
+    fn thirty_two_hinge_dense_tree_exceeds_candidate_cap() {
+        let model = deep_strip_model(32);
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<HashSet<_>>();
+        let mut metrics = (0, 0);
+        assert!(!two_hinge_interval_clearance_premises(
+            &model,
+            &pose,
+            &moving,
+            180.0,
+            1,
+            &mut metrics,
+        ));
+        assert_eq!(metrics, (0, 0));
     }
 
     #[test]

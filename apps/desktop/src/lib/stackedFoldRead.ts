@@ -80,6 +80,7 @@ export type StackedFoldReadResponse = Readonly<{
     sampledNonblockingPoseCount: number
     intervalLeafCount: number
     intervalPairWork: number
+    intervalCandidateLimit: number
     firstSampledBlockingAngleDegrees: number | null
     requestedAngleDegrees: number
     continuousClearanceCertified: boolean
@@ -266,6 +267,7 @@ export function normalizeStackedFoldReadResponse(
       'sampledNonblockingPoseCount',
       'intervalLeafCount',
       'intervalPairWork',
+      'intervalCandidateLimit',
       'firstSampledBlockingAngleDegrees',
       'requestedAngleDegrees',
       'continuousClearanceCertified',
@@ -373,6 +375,7 @@ export function normalizeStackedFoldReadResponse(
     !isCount(continuousPath.sampledNonblockingPoseCount) ||
     !isCount(continuousPath.intervalLeafCount) ||
     !isCount(continuousPath.intervalPairWork) ||
+    !isCount(continuousPath.intervalCandidateLimit) ||
     continuousPath.sampledNonblockingPoseCount > continuousPath.sampledPoseCount ||
     (continuousPath.firstSampledBlockingAngleDegrees !== null &&
       (typeof continuousPath.firstSampledBlockingAngleDegrees !== 'number' ||

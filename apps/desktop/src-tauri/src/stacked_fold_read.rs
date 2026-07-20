@@ -188,6 +188,7 @@ struct StackedFoldContinuousPathDto {
     sampled_nonblocking_pose_count: usize,
     interval_leaf_count: usize,
     interval_pair_work: usize,
+    interval_candidate_limit: usize,
     first_sampled_blocking_angle_degrees: Option<f64>,
     requested_angle_degrees: f64,
     continuous_clearance_certified: bool,
@@ -735,6 +736,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             sampled_nonblocking_pose_count: continuous_path.sampled_nonblocking_pose_count(),
             interval_leaf_count: continuous_path.interval_leaf_count(),
             interval_pair_work: continuous_path.interval_pair_work(),
+            interval_candidate_limit: continuous_path.interval_candidate_limit(),
             first_sampled_blocking_angle_degrees: continuous_path
                 .first_sampled_blocking_angle_degrees(),
             requested_angle_degrees: continuous_path.requested_angle_degrees(),

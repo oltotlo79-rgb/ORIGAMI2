@@ -2,6 +2,7 @@
 
 mod crease_pattern_export;
 mod fold;
+mod fold_frames;
 mod instruction_export;
 mod mesh_animation_export;
 mod mesh_export;
@@ -36,6 +37,10 @@ pub use fold::{
     FoldConversionOptions, FoldCreasePatternConversion, FoldEdgeAssignment, FoldFrameUnit,
     FoldImportError, FoldImportLimits, FoldPreview, FoldPreviewEdge, FoldPreviewVertex,
     FoldPreviewWarning, read_fold_preview, read_fold_preview_with_limits,
+};
+pub use fold_frames::{
+    Fold3dFramePreviewV1, Fold3dFrameSelectionV1, Fold3dFramesImportErrorV1, Fold3dFramesPreviewV1,
+    MAX_FOLD_3D_FRAMES_V1, read_fold_3d_frames_preview_v1,
 };
 pub use instruction_export::{
     INSTRUCTION_EXPORT_PROFILE, INSTRUCTION_EXPORT_WARNINGS, INSTRUCTION_PROJECTION_PROFILE,

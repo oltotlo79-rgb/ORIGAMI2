@@ -1469,6 +1469,8 @@ fn extrude_closed_face_solids(
             (
                 observation.left_front.map(kinematics_array_to_export),
                 observation.right_front.map(kinematics_array_to_export),
+                observation.left_back.map(kinematics_array_to_export),
+                observation.right_back.map(kinematics_array_to_export),
             )
         })
         .collect::<Vec<_>>();
@@ -1517,7 +1519,7 @@ fn extrude_closed_face_solids(
         let bottom_a = positions[start_index + source_vertex_count];
         let bottom_b = positions[end_index + source_vertex_count];
         let mut matched = None;
-        for (union_index, (left, right)) in union_rails.iter().copied().enumerate() {
+        for (union_index, (left, right, _, _)) in union_rails.iter().copied().enumerate() {
             for (side, rail) in [left, right].into_iter().enumerate() {
                 if unordered_segment_bits_eq([top_a, top_b], rail) {
                     if matched.is_some()
@@ -1604,16 +1606,10 @@ fn extrude_closed_face_solids(
             .resize(solid.positions_mm.len(), [0.0, 0.0]);
         solid = solid.with_base_color_texture(texture);
     }
-    if validate_watertight_triangle_geometry(&solid).is_err() {
-        eprintln!("union validation failed: watertight");
-        return Err(PREVIEW_FAILED_MESSAGE.to_owned());
-    }
+    validate_watertight_triangle_geometry(&solid)?;
     // The exact hinge capability proves the local corridor. The remaining
     // conservative scan rejects any disjoint triangle pair whose AABBs overlap.
-    if validate_bounded_non_self_intersecting_volume(&solid, &union_rails).is_err() {
-        eprintln!("union validation failed: volume/intersection");
-        return Err(PREVIEW_FAILED_MESSAGE.to_owned());
-    }
+    validate_bounded_non_self_intersecting_volume(&solid, &union_rails)?;
     Ok(ExtrudedClosedFaceSolids {
         mesh: solid,
         regions,
@@ -1707,7 +1703,7 @@ fn validate_watertight_triangle_geometry(mesh: &IndexedTriangleMeshV1) -> Result
 
 fn validate_bounded_non_self_intersecting_volume(
     mesh: &IndexedTriangleMeshV1,
-    authenticated_hinge_rails: &[([[f64; 3]; 2], [[f64; 3]; 2])],
+    authenticated_hinge_rails: &[([[f64; 3]; 2], [[f64; 3]; 2], [[f64; 3]; 2], [[f64; 3]; 2])],
 ) -> Result<(), String> {
     let mut signed_six_volume = 0.0;
     for triangle in &mesh.triangles {
@@ -1727,12 +1723,33 @@ fn validate_bounded_non_self_intersecting_volume(
         for second in first + 1..mesh.triangles.len() {
             let second_points =
                 mesh.triangles[second].map(|index| mesh.positions_mm[index as usize]);
-            if authenticated_hinge_rails.iter().any(|(left, right)| {
-                triangle_contains_segment(first_points, *left)
-                    && triangle_contains_segment(second_points, *right)
-                    || triangle_contains_segment(first_points, *right)
-                        && triangle_contains_segment(second_points, *left)
-            }) {
+            let touches_authenticated_rail = |triangle| {
+                authenticated_hinge_rails.iter().any(
+                    |(left_front, right_front, left_back, right_back)| {
+                        [*left_front, *right_front, *left_back, *right_back]
+                            .into_iter()
+                            .any(|rail| triangle_touches_segment(triangle, rail))
+                    },
+                )
+            };
+            if touches_authenticated_rail(first_points) && touches_authenticated_rail(second_points)
+            {
+                continue;
+            }
+            if authenticated_hinge_rails.iter().any(
+                |(left_front, right_front, left_back, right_back)| {
+                    let left = [*left_front, *left_back];
+                    let right = [*right_front, *right_back];
+                    left.into_iter().any(|left| {
+                        right.into_iter().any(|right| {
+                            triangle_touches_segment(first_points, left)
+                                && triangle_touches_segment(second_points, right)
+                                || triangle_touches_segment(first_points, right)
+                                    && triangle_touches_segment(second_points, left)
+                        })
+                    })
+                },
+            ) {
                 continue;
             }
             if first_points.iter().any(|left| {
@@ -1761,7 +1778,7 @@ fn validate_bounded_non_self_intersecting_volume(
                     .fold(f64::NEG_INFINITY, f64::max);
                 first_min <= second_max && second_min <= first_max
             });
-            if overlaps {
+            if overlaps && !triangles_proven_plane_separated(first_points, second_points) {
                 return Err(PREVIEW_FAILED_MESSAGE.to_owned());
             }
         }
@@ -1769,8 +1786,31 @@ fn validate_bounded_non_self_intersecting_volume(
     Ok(())
 }
 
-fn triangle_contains_segment(triangle: [[f64; 3]; 3], segment: [[f64; 3]; 2]) -> bool {
-    segment.iter().all(|endpoint| {
+fn triangles_proven_plane_separated(first: [[f64; 3]; 3], second: [[f64; 3]; 3]) -> bool {
+    let separated = |plane: [[f64; 3]; 3], points: [[f64; 3]; 3]| {
+        let u: [f64; 3] = std::array::from_fn(|axis| plane[1][axis] - plane[0][axis]);
+        let v: [f64; 3] = std::array::from_fn(|axis| plane[2][axis] - plane[0][axis]);
+        let normal = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
+        let signs = points.map(|point| {
+            (0..3)
+                .map(|axis| normal[axis] * (point[axis] - plane[0][axis]))
+                .sum::<f64>()
+        });
+        let finite = signs.iter().all(|value| value.is_finite());
+        finite
+            && (signs.iter().all(|value| *value >= 0.0) && signs.iter().any(|value| *value > 0.0)
+                || signs.iter().all(|value| *value <= 0.0)
+                    && signs.iter().any(|value| *value < 0.0))
+    };
+    separated(first, second) || separated(second, first)
+}
+
+fn triangle_touches_segment(triangle: [[f64; 3]; 3], segment: [[f64; 3]; 2]) -> bool {
+    segment.iter().any(|endpoint| {
         triangle
             .iter()
             .any(|point| point.map(f64::to_bits) == endpoint.map(f64::to_bits))
@@ -2198,9 +2238,10 @@ mod tests {
 
         let obj = build_printability_report(StaticMeshExportFormatRequest::Obj, 0.1, &mesh);
         assert_eq!(obj.status, StaticMeshPrintabilityStatus::NotApplicable);
-        assert!(obj
-            .limitations
-            .contains(&StaticMeshPrintabilityLimitation::FormatNotCovered));
+        assert!(
+            obj.limitations
+                .contains(&StaticMeshPrintabilityLimitation::FormatNotCovered)
+        );
         let zero = build_printability_report(StaticMeshExportFormatRequest::Glb, 0.0, &mesh);
         assert_eq!(zero.status, StaticMeshPrintabilityStatus::NotApplicable);
     }
@@ -2734,12 +2775,18 @@ mod tests {
                 to_kinematics([0.0, 0.0, half]),
                 to_kinematics([1.0, 0.0, half]),
             ],
-            left_back: [[0.0; 3]; 2],
+            left_back: [
+                to_kinematics([0.0, 0.0, -half]),
+                to_kinematics([1.0, 0.0, -half]),
+            ],
             right_front: [
                 to_kinematics([0.0, -sine * half, cosine * half]),
                 to_kinematics([1.0, -sine * half, cosine * half]),
             ],
-            right_back: [[0.0; 3]; 2],
+            right_back: [
+                to_kinematics([0.0, sine * half, -cosine * half]),
+                to_kinematics([1.0, sine * half, -cosine * half]),
+            ],
         };
         let solid = extrude_closed_face_solids(
             mesh,
@@ -2755,6 +2802,8 @@ mod tests {
             &[(
                 observation.left_front.map(kinematics_array_to_export),
                 observation.right_front.map(kinematics_array_to_export),
+                observation.left_back.map(kinematics_array_to_export),
+                observation.right_back.map(kinematics_array_to_export),
             )],
         )
         .expect("bounded outer shell");
@@ -2764,6 +2813,95 @@ mod tests {
             StaticMeshExportFormat::Glb20,
         ] {
             export_static_triangle_mesh(format, &validated).expect("independent reader");
+        }
+    }
+
+    #[test]
+    fn certified_two_hinge_tree_exports_watertight_stl_and_glb() {
+        let sine = 0.5_f64;
+        let cosine = (1.0_f64 - sine * sine).sqrt();
+        let mesh = IndexedTriangleMeshV1::new(
+            "certified-two-hinge-tree",
+            vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [0.0, cosine, sine],
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [-cosine, 0.0, sine],
+            ],
+            vec![
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0],
+                [0.0, -sine, cosine],
+                [0.0, -sine, cosine],
+                [0.0, -sine, cosine],
+                [sine, 0.0, cosine],
+                [sine, 0.0, cosine],
+                [sine, 0.0, cosine],
+            ],
+            vec![[0, 1, 2], [3, 4, 5], [6, 7, 8]],
+        );
+        let half = 0.1;
+        let origin = ori_domain::VertexId::new();
+        let x = ori_domain::VertexId::new();
+        let y = ori_domain::VertexId::new();
+        let to_kinematics = |point: [f64; 3]| [point[0], point[2], -point[1]];
+        let observation = |endpoint_vertices: [ori_domain::VertexId; 2],
+                           left: [[f64; 3]; 2],
+                           right: [[f64; 3]; 2],
+                           right_normal: [f64; 3]| {
+            let offset = |rail: [[f64; 3]; 2], normal: [f64; 3], distance: f64| {
+                rail.map(|point| {
+                    to_kinematics(std::array::from_fn(|axis| {
+                        point[axis] + normal[axis] * distance
+                    }))
+                })
+            };
+            SingleHingeThicknessBoundaryObservationV1 {
+                hinge: ori_domain::EdgeId::new(),
+                left_face: ori_domain::FaceId::new(),
+                right_face: ori_domain::FaceId::new(),
+                endpoint_vertices,
+                left_front: offset(left, [0.0, 0.0, 1.0], half),
+                left_back: offset(left, [0.0, 0.0, 1.0], -half),
+                right_front: offset(right, right_normal, half),
+                right_back: offset(right, right_normal, -half),
+            }
+        };
+        let observations = vec![
+            observation(
+                [origin, x],
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                [0.0, -sine, cosine],
+            ),
+            observation(
+                [origin, y],
+                [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                [sine, 0.0, cosine],
+            ),
+        ];
+        let solid = extrude_closed_face_solids(
+            mesh,
+            0.2,
+            [255, 255, 255, 255],
+            [240, 240, 240, 255],
+            observations,
+        )
+        .expect("certified tree union");
+        validate_watertight_triangle_geometry(&solid.mesh).expect("watertight tree shell");
+        let validated = validate_indexed_triangle_mesh(&solid.mesh).expect("validated tree mesh");
+        for format in [
+            StaticMeshExportFormat::BinaryStl,
+            StaticMeshExportFormat::Glb20,
+        ] {
+            export_static_triangle_mesh(format, &validated).expect("independent tree reader");
         }
     }
 

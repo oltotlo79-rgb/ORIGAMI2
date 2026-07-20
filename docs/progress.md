@@ -2,11 +2,11 @@
 
 ## 完成率
 
-**全体完成率: 約46.5%（2026-07-20、暫定の重み付き概算）**
+**全体完成率: 約46.6%（2026-07-20、暫定の重み付き概算）**
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値46.39%に対し、認証済みinstruction timelineをGLB animationへ変換し、native immutable stage、no-follow原子的保存、strict frontend client、日英preview/save/cancel/retry UIまで接続したため、「入出力・互換性」を84%から87%へ更新した。差分は0.15ポイント（全体比率5% × 3ポイント）で、46.54%を小数第1位へ丸めて表示している。Blender、slicer、Web viewerのGUI実機受入、project texture assetの利用者経路、面間union・印刷可能性保証、GitHub Releasesへの正式版公開workflowは未完了である。正厚の完全衝突分類、native診断による操作の巻戻し・連続経路停止、専用の層順3D viewer、SIM-010の折り重ね、一般経路探索、FOLDの3D・複数frameも未完了である。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも残る。入力値自体が概数なので、46.54%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前値46.54%に対し、projectへPNG/JPEGをnative pickerで登録し、表面へ選択して認証済み静的GLBへ埋め込む利用者経路を接続したため、「入出力・互換性」を87%から89%へ更新した。差分は0.10ポイント（全体比率5% × 2ポイント）で、46.64%を小数第1位へ丸めて表示している。Blender、slicer、Web viewerのGUI実機受入、裏面・正厚texture、面間union・印刷可能性保証、GitHub Releasesへの正式版公開workflowは未完了である。正厚の完全衝突分類、一般姿勢のnative連続経路停止、専用の層順3D viewer、SIM-010の原子的折り重ね、一般経路探索、FOLDの3D・複数frameも未完了である。水平・垂直以外の幾何制約作成UI、拘束を満たす自動変形、非線形・推移的矛盾の完全solverも残る。入力値自体が概数なので、46.64%は追跡用の計算値であって測定誤差のない精密値ではない。
 
 ## 重み付け
 
@@ -19,13 +19,16 @@
 | 3D折り・紙厚・衝突 | 17% | 56% | 9.52% | 木構造多ヒンジの姿勢・紙厚・衝突・固定面・物理把持、高精度静的診断に加え、切断後pieceの同一sheet origin、境界間Cut、closed loop、open/branched seam、穴付き静的3D表示を接続。正厚三角柱の完全分類、native連続停止、専用層順3D表示、折り重ね、一般経路を残す |
 | 折り可能性・経路探索 | 18% | 35% | 6.30% | 1ヒンジCCD、補正候補の解析専用UI、川崎・前川局所条件に加え、凸面対象の全体平坦折り3値判定と場所別層順序を接続。候補3Dプレビュー・明示適用、局所十分性、一般経路探索を残す |
 | 折り手順・PDF | 10% | 25% | 2.50% | 手動step登録、説明編集、並べ替え、Undo/Redo、`.ori2`保存・読込、実姿勢確認付き段階再生に加え、固定3D図付きのA4複数ページPDF・SVGページ画像ZIP書き出しを実装。連続動作、折る方向の矢印、手指guideを残す |
-| 入出力・互換性 | 5% | 87% | 4.35% | `.ori2`、FOLD/SVG取込と4形式の展開図書き出しに加え、認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ、情報損失確認、姿勢・revision固定stage、native原子的保存付きで書き出せる。GLBのPBR material、紙厚付き形状の表裏色、面別closed solid、独立reader 3種の自動受入、instruction timelineのGLB animation書出しも実装。FOLDの3D・複数frame、project texture asset接続、面間union、GUI 3Dアプリでの実機受入を残す |
+| 入出力・互換性 | 5% | 89% | 4.45% | `.ori2`、FOLD/SVG取込と4形式の展開図書き出しに加え、認証済みの現在3D姿勢をOBJ・バイナリSTL・GLBへ、情報損失確認、姿勢・revision固定stage、native原子的保存付きで書き出せる。GLBのPBR material、紙厚付き形状の表裏色、面別closed solid、独立reader 3種の自動受入、instruction timeline animation、project PNG/JPEG表面textureの利用者経路も実装。FOLDの3D・複数frame、裏面・正厚texture、面間union、GUI 3Dアプリでの実機受入を残す |
 | 多言語・設定・配布・QA | 5% | 72% | 3.60% | frontend/Rustの自動回帰、Windows/macOS CI、redacted diagnostics、テーマ・shortcut・作業レイアウト、日英ライブ切替に加え、固定GitHub Releases APIへの手動更新確認、日英状態表示、端末ごとの無効設定、プライバシー説明を実装。自動取得・自動導入は行わず、GitHub Releases正式配布を残す |
 | 初心者向け自動設計 | 8% | 0% | 0.00% | 将来要件のみ |
-| **合計** | **100%** | — | **46.54%** | — |
+| **合計** | **100%** | — | **46.64%** | — |
 
 ## 完了
 
+- SIM-010の循環hinge endpointをclosure検証へ接続した。材料hinge graphのcanonical spanning subsetからcandidate face transformを生成し、closure hingeを捨てず全hingeの軸両端像とMountain/Valley符号付き相対回転を再観測する。source embeddingはface lineageでtargetへliftし、要求endpointは決定的spanning solve後に全constraintをfail-closed検証する。4面4hinge cycleの初期closure成功と90度nonclosing endpoint拒否を固定し、desktop read pipelineも循環targetをgraph経路へ分岐した。closure後も未対応の一般continuous collision authorityへ格上げせず安全に拒否するため、SIM-010状態と完成率は変更していない
+- IO-008のproject texture利用者経路を接続した。native pickerでPNG/JPEGを選び、bytesをWebViewへ渡さず、project instance・ID・revisionへ束縛したcommandでbounded registryへの登録と紙表面への選択を行う。置換前assetを履歴livenessのため有限registryへ保持し、置換・Undo・Redoの各文書を再検証する。frontendは日英の画像読込操作とcustom選択保持を既存paper設定へ接続し、認証済み静的GLB stageがUV付きPBR textureとして出力する。frontend 1450件、build、lint、desktop全target checkが成功した。「入出力・互換性」を89%、全体を46.64%（表示46.6%）へ更新した
+- SIM-010の連続経路証明を最小の閉じた対象へ追加した。bit-exact厚さ0、2面・1hinge、初期角0度、唯一のmoving hinge、全sampleの完全pair coverageが非blockingというnative条件をすべて満たす場合だけ、共有軸回転の0〜180度に限定したcontinuous certificate model IDを発行し、safe-stopを要求角へ進める。それ以外は従来どおり未証明・0度停止へ閉じ、mutation authorityは付与しない。一般tree・複数pair・正厚の解析的CCDは未実装なのでSIM-010状態と完成率は変更していない
 - SIM-010の読取専用候補へbounded path診断を接続した。target初期姿勢から要求角までを最大64区間（既定8）へ分割し、各sampleで完全hinge角vectorをnative solveして同じ静的衝突分類を実行する。最初のblocking sample角と集計を返し、診断が離散sampleであることを明示するため`continuous_clearance_certified`とmutation authorityは常にfalse、safe-stopはfail-closedな初期0度だけに固定した。endpointだけの安全判定や離散samplingを連続無衝突証明へ読み替えない。専用testとdesktop全target checkが成功した。解析的CCD、正のsafe-stop、連続経路certificateが未実装なのでSIM-010状態と完成率は変更していない
 - IO-008のtexture asset認証基盤をproject正本へ接続した。PNG/JPEGだけをmagic byteとmedia typeの一致まで検証するbounded registryを`.ori2`とexpanded folderの保存・読込・復旧へ保持し、asset単体16 MiB、合計32 MiB、64件の上限、nil・重複・未参照・参照欠損をfail-closedにした。静的GLB captureは同じrevisionのproject registryからfront textureだけを解決し、UV付きPBR baseColorTextureへ渡す。back textureと紙厚付きtextureは現行の単一material/primitive契約で黙って損失させず拒否する。`ori-formats` 268件、desktop mesh export 13件、format検査が成功した。assetを登録・選択する利用者UIは未接続なので完成率は変更していない
 - IO-008のGLB animation利用者経路を接続した。認証済みinstruction timelineからplanar初期frameと全step native poseをsolveし、STEP morph animationをimmutable native stageへ生成する。project instance・ID・revision・fingerprint・timeline・generationをpreview、dialog前後、書込直前に再検証し、native dialog、filename正規化、no-follow原子的保存、cancel retryを実装した。frontendは日英dialog、bounded metadata、情報損失warningの明示同意、preview/save/cancel/retryをcore operation gateとrequest generationでstale/reentryへ閉じる。native 8件、DOM 3件、integration 2件、lint、production buildが成功した。「入出力・互換性」を87%、全体を46.54%（表示46.5%）へ更新した

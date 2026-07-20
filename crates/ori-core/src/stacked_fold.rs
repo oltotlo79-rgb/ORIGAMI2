@@ -227,6 +227,29 @@ pub struct PreparedStackedFoldInitialPoseV1 {
     pose: MaterialTreePose,
 }
 
+pub struct PreparedStackedFoldRequestedPoseV1 {
+    initial: PreparedStackedFoldInitialPoseV1,
+    pose: MaterialTreePose,
+    requested_angle_degrees: f64,
+}
+
+impl PreparedStackedFoldRequestedPoseV1 {
+    #[must_use]
+    pub const fn initial(&self) -> &PreparedStackedFoldInitialPoseV1 {
+        &self.initial
+    }
+
+    #[must_use]
+    pub const fn pose(&self) -> &MaterialTreePose {
+        &self.pose
+    }
+
+    #[must_use]
+    pub const fn requested_angle_degrees(&self) -> f64 {
+        self.requested_angle_degrees
+    }
+}
+
 impl PreparedStackedFoldInitialPoseV1 {
     #[must_use]
     pub const fn target(&self) -> &PreparedStackedFoldTargetModelV1 {
@@ -334,6 +357,16 @@ pub enum PrepareStackedFoldInitialPoseErrorV1 {
     #[error("target descendant transform does not preserve source face {face:?}")]
     DescendantTransformMismatch { face: FaceId },
     #[error("target pose preparation failed: {0}")]
+    Kinematics(#[from] KinematicsError),
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum PrepareStackedFoldRequestedPoseErrorV1 {
+    #[error("requested angle must be finite and in (0, 180]")]
+    InvalidRequestedAngle,
+    #[error("an expected crease subdivision is absent from target hinges")]
+    ExpectedCreaseHingeMissing,
+    #[error("requested target pose preparation failed: {0}")]
     Kinematics(#[from] KinematicsError),
 }
 
@@ -1379,6 +1412,68 @@ pub fn prepare_stacked_fold_initial_pose_v1(
         }
     }
     Ok(PreparedStackedFoldInitialPoseV1 { target, pose })
+}
+
+/// Solves the requested endpoint by moving every proved new crease
+/// subdivision as one collective hinge angle.
+///
+/// This is endpoint geometry only. It deliberately carries no continuous
+/// collision, safe-stop, layer-order, timeline, or mutation authority.
+pub fn prepare_stacked_fold_requested_pose_v1(
+    initial: PreparedStackedFoldInitialPoseV1,
+    requested_angle_degrees: f64,
+) -> Result<PreparedStackedFoldRequestedPoseV1, PrepareStackedFoldRequestedPoseErrorV1> {
+    if !requested_angle_degrees.is_finite()
+        || requested_angle_degrees <= 0.0
+        || requested_angle_degrees > 180.0
+        || requested_angle_degrees.to_bits() == (-0.0_f64).to_bits()
+    {
+        return Err(PrepareStackedFoldRequestedPoseErrorV1::InvalidRequestedAngle);
+    }
+    let expected_edges = initial
+        .target
+        .geometry
+        .proof()
+        .expected_creases()
+        .iter()
+        .flat_map(|subdivision| subdivision.target_edges().iter().copied())
+        .collect::<HashSet<_>>();
+    let target_hinges = initial
+        .target
+        .model
+        .hinges()
+        .iter()
+        .map(|hinge| hinge.edge())
+        .collect::<HashSet<_>>();
+    if expected_edges.is_empty() || !expected_edges.is_subset(&target_hinges) {
+        return Err(PrepareStackedFoldRequestedPoseErrorV1::ExpectedCreaseHingeMissing);
+    }
+    let mut angles = initial
+        .pose
+        .hinge_angles()
+        .iter()
+        .map(|angle| {
+            HingeAngle::new(
+                angle.edge(),
+                if expected_edges.contains(&angle.edge()) {
+                    requested_angle_degrees
+                } else {
+                    angle.angle_degrees()
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    angles.sort_unstable_by_key(|angle| angle.edge().canonical_bytes());
+    let angles = CanonicalHingeAngles::new(angles)?;
+    let pose = initial
+        .target
+        .model
+        .solve(initial.pose.fixed_face(), &angles)?;
+    Ok(PreparedStackedFoldRequestedPoseV1 {
+        initial,
+        pose,
+        requested_angle_degrees,
+    })
 }
 
 fn compare_expected_crease(
@@ -2608,6 +2703,17 @@ mod tests {
         assert!(initial.target().model().owns_pose(initial.pose()));
         assert_eq!(initial.pose().hinge_angles().len(), 1);
         assert_eq!(initial.pose().hinge_angles()[0].angle_degrees(), 0.0);
+        let requested =
+            prepare_stacked_fold_requested_pose_v1(initial, 90.0).expect("solve requested pose");
+        assert!(
+            requested
+                .initial()
+                .target()
+                .model()
+                .owns_pose(requested.pose())
+        );
+        assert_eq!(requested.requested_angle_degrees(), 90.0);
+        assert_eq!(requested.pose().hinge_angles()[0].angle_degrees(), 90.0);
     }
 
     #[test]

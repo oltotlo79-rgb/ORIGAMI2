@@ -84,15 +84,17 @@ pub use stacked_fold::{
     ExpectedCreaseSubdivisionV1, ExpectedStackedFoldCreaseV1, FaceLineageError, FaceLineageInput,
     FaceLineageLimits, FaceLineageRecord, FaceLineageResource, FaceLineageTopology, FaceLineageV1,
     PrepareStackedFoldGeometryErrorV1, PrepareStackedFoldInitialPoseErrorV1,
-    PrepareStackedFoldTargetModelErrorV1, PreparedStackedFoldGeometryV1,
-    PreparedStackedFoldInitialPoseV1, PreparedStackedFoldTargetModelV1, SourceEdgeSubdivisionV1,
+    PrepareStackedFoldRequestedPoseErrorV1, PrepareStackedFoldTargetModelErrorV1,
+    PreparedStackedFoldGeometryV1, PreparedStackedFoldInitialPoseV1,
+    PreparedStackedFoldRequestedPoseV1, PreparedStackedFoldTargetModelV1, SourceEdgeSubdivisionV1,
     StackedFoldGeometryCarrierV1, StackedFoldGeometryErrorV1, StackedFoldGeometryInputV1,
     StackedFoldGeometryLimitsV1, StackedFoldGeometryProofV1, StackedFoldGeometryResourceV1,
     StackedFoldTopologyBuildErrorV1, StackedFoldTopologyBuildLimitsV1,
     StackedFoldTopologyBuildResourceV1, StackedFoldTopologyCandidateV1,
     build_stacked_fold_topology_v1, prepare_face_lineage_v1,
     prepare_stacked_fold_geometry_candidate_v1, prepare_stacked_fold_geometry_v1,
-    prepare_stacked_fold_initial_pose_v1, prepare_stacked_fold_target_model_v1,
+    prepare_stacked_fold_initial_pose_v1, prepare_stacked_fold_requested_pose_v1,
+    prepare_stacked_fold_target_model_v1,
 };
 pub use topology::{EditorTopology, TopologyAnalysisInput};
 pub use validation::EditorValidation;

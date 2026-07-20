@@ -48,6 +48,21 @@ describe('stacked-fold read boundary', () => {
       }],
     } as const
     assert.equal(isStackedFoldReadRequest({ ...request, linearCandidateV1 }), true)
+    const linearEntry = linearCandidateV1.entries[0]
+    assert.equal(isStackedFoldReadRequest({
+      ...request,
+      linearCandidateV1: {
+        version: 1,
+        entries: Array.from({ length: 64 }, () => linearEntry),
+      },
+    }), true)
+    assert.equal(isStackedFoldReadRequest({
+      ...request,
+      linearCandidateV1: {
+        version: 1,
+        entries: Array.from({ length: 65 }, () => linearEntry),
+      },
+    }), false)
     assert.equal(isStackedFoldReadRequest({
       ...request,
       cycleScheduleV1: schedule,

@@ -884,11 +884,11 @@ fn calculate_single_triangular_hinge_prerequisites_v1<'exact, 'pose>(
         return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
     }
 
-    validate_exact_pose_rational_inputs(exact, limits, work, meter)?;
     let Some(indexes) = authenticate_triangular_hinge_indexes(exact, source_hinge, hinge_index)
     else {
         return Ok(SingleTriangularHingePrerequisiteResult::Unresolved);
     };
+    validate_exact_pose_rational_inputs(exact, indexes, limits, work, meter)?;
 
     let rest_start = exact_point_at_stage(point3_array(source_hinge.start()), meter)?;
     let rest_end = exact_point_at_stage(point3_array(source_hinge.end()), meter)?;
@@ -1179,11 +1179,15 @@ fn charge_fixed_prerequisite_work(
 
 fn validate_exact_pose_rational_inputs(
     exact: &RationalCayleyTreePose<'_>,
+    indexes: AuthenticatedTriangleIndexes,
     limits: &SingleTriangularHingePrerequisiteLimits,
     work: &mut SingleTriangularHingePrerequisiteWork,
     meter: &mut WorkMeter<'_>,
 ) -> Result<(), CayleyError> {
-    for face in &exact.faces {
+    for face in [
+        &exact.faces[indexes.left_face_index],
+        &exact.faces[indexes.right_face_index],
+    ] {
         for value in face
             .transform
             .rotation
@@ -1199,7 +1203,7 @@ fn validate_exact_pose_rational_inputs(
             validate_prerequisite_rational_input(value, limits, work, meter)?;
         }
     }
-    for value in exact.hinges[0]
+    for value in exact.hinges[indexes.hinge_index]
         .world_endpoints
         .iter()
         .flat_map(|point| &point.coordinates)
@@ -2114,6 +2118,7 @@ pub fn prepare_single_hinge_thickness_boundary_v1(
         bound,
         paper_thickness_mm,
         bound.model().hinges()[0].edge(),
+        false,
     )
 }
 
@@ -2121,6 +2126,7 @@ fn prepare_single_hinge_thickness_boundary_for_edge_v1(
     bound: BoundMaterialTreePose<'_>,
     paper_thickness_mm: f64,
     target_edge: EdgeId,
+    allow_projected_geometry_only: bool,
 ) -> Result<Option<NativeSingleHingeThicknessBoundaryV1<'_>>, SingleHingeThicknessBoundaryErrorV1> {
     let diagnostic =
         diagnose_bound_shared_hinge_solid_for_edge_v1(bound, paper_thickness_mm, Some(target_edge))
@@ -2135,7 +2141,29 @@ fn prepare_single_hinge_thickness_boundary_for_edge_v1(
     if diagnostic.is_none_or(|summary| {
         summary.disposition != SharedHingeSolidDiagnosticDispositionV1::Allowed
     }) {
-        return Ok(None);
+        if !allow_projected_geometry_only {
+            return Ok(None);
+        }
+        let exact = prepare_rational_cayley_tree_pose_v1(bound, ExactTreePoseLimits::default())
+            .map_err(|error| match error {
+                CayleyError::ResourceLimitExceeded { .. } => {
+                    SingleHingeThicknessBoundaryErrorV1::ResourceLimitExceeded
+                }
+                _ => SingleHingeThicknessBoundaryErrorV1::InconsistentPose,
+            })?;
+        let projected = analyze_single_triangular_hinge_prerequisites_for_edge_v1(
+            &exact,
+            paper_thickness_mm,
+            Some(target_edge),
+            SingleTriangularHingePrerequisiteLimits::default(),
+        )
+        .map_err(|_| SingleHingeThicknessBoundaryErrorV1::ResourceLimitExceeded)?;
+        if !matches!(
+            projected.result,
+            SingleTriangularHingePrerequisiteResult::Authenticated(_)
+        ) {
+            return Ok(None);
+        }
     }
     let model = bound.model();
     let pose = bound.pose();
@@ -2268,6 +2296,7 @@ pub fn prepare_tree_hinge_thickness_boundaries_v1(
             bound,
             paper_thickness_mm,
             source_hinge.edge(),
+            true,
         )?
         else {
             return Ok(None);

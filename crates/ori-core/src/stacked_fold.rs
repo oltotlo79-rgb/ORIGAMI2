@@ -227,6 +227,8 @@ pub enum StackedFoldTopologyBuildErrorV1 {
     SourceEdgeEndpointMissing { edge: EdgeId },
     #[error("source geometry contains duplicate vertex coordinates")]
     DuplicateSourceVertexPosition,
+    #[error("source geometry contains duplicate vertex ID {vertex:?}")]
+    DuplicateSourceVertexId { vertex: VertexId },
     #[error("a derived target identity collides with an existing identity")]
     DerivedIdentityCollision,
     #[error("an expected crease is non-finite, degenerate, or not mountain/valley")]
@@ -235,6 +237,8 @@ pub enum StackedFoldTopologyBuildErrorV1 {
     CarrierOverlap { first: usize, second: usize },
     #[error("the paper boundary references a missing boundary carrier")]
     PaperBoundaryCarrierMissing,
+    #[error("the paper boundary references missing vertex {vertex:?}")]
+    PaperBoundaryVertexMissing { vertex: VertexId },
     #[error("exact geometry predicate failed: {0}")]
     Geometry(#[from] GeometryError),
 }
@@ -877,7 +881,14 @@ pub fn build_stacked_fold_topology_v1(
         if vertex_ids.insert(key, vertex.id).is_some() {
             return Err(StackedFoldTopologyBuildErrorV1::DuplicateSourceVertexPosition);
         }
-        source_positions.insert(vertex.id, vertex.position);
+        if source_positions
+            .insert(vertex.id, vertex.position)
+            .is_some()
+        {
+            return Err(StackedFoldTopologyBuildErrorV1::DuplicateSourceVertexId {
+                vertex: vertex.id,
+            });
+        }
     }
 
     let carrier_count = source_pattern
@@ -1066,19 +1077,25 @@ pub fn build_stacked_fold_topology_v1(
         let start_id = source_paper.boundary_vertices[index];
         let end_id =
             source_paper.boundary_vertices[(index + 1) % source_paper.boundary_vertices.len()];
+        let start_position = source_positions.get(&start_id).copied().ok_or(
+            StackedFoldTopologyBuildErrorV1::PaperBoundaryVertexMissing { vertex: start_id },
+        )?;
+        let end_position = source_positions.get(&end_id).copied().ok_or(
+            StackedFoldTopologyBuildErrorV1::PaperBoundaryVertexMissing { vertex: end_id },
+        )?;
         let carrier_index = carriers.iter().position(|carrier| {
             carrier.source_edge.is_some()
-                && ((point_bits(carrier.start) == point_bits(source_positions[&start_id])
-                    && point_bits(carrier.end) == point_bits(source_positions[&end_id]))
-                    || (point_bits(carrier.end) == point_bits(source_positions[&start_id])
-                        && point_bits(carrier.start) == point_bits(source_positions[&end_id])))
+                && ((point_bits(carrier.start) == point_bits(start_position)
+                    && point_bits(carrier.end) == point_bits(end_position))
+                    || (point_bits(carrier.end) == point_bits(start_position)
+                        && point_bits(carrier.start) == point_bits(end_position)))
         });
         let Some(carrier_index) = carrier_index else {
             return Err(StackedFoldTopologyBuildErrorV1::PaperBoundaryCarrierMissing);
         };
         let carrier = BuildCarrier {
-            start: source_positions[&start_id],
-            end: source_positions[&end_id],
+            start: start_position,
+            end: end_position,
             ..carriers[carrier_index]
         };
         let mut points = carrier_points[carrier_index].clone();
@@ -1115,9 +1132,10 @@ fn derived_vertex_id(
     point: Point2,
 ) -> VertexId {
     let mut name = b"stacked-fold-target-v1\0vertex\0".to_vec();
+    let (x, y) = point_bits(point);
     name.extend_from_slice(&source_revision.to_be_bytes());
-    name.extend_from_slice(&point.x.to_bits().to_be_bytes());
-    name.extend_from_slice(&point.y.to_bits().to_be_bytes());
+    name.extend_from_slice(&x.to_be_bytes());
+    name.extend_from_slice(&y.to_be_bytes());
     VertexId::derive_v5(identity_namespace, &name)
 }
 
@@ -1130,18 +1148,23 @@ fn derived_edge_id(
     kind: EdgeKind,
 ) -> EdgeId {
     let mut name = b"stacked-fold-target-v1\0edge\0".to_vec();
+    let (start_x, start_y) = point_bits(start);
+    let (end_x, end_y) = point_bits(end);
     name.extend_from_slice(&source_revision.to_be_bytes());
     name.extend_from_slice(&(carrier_index as u64).to_be_bytes());
-    name.extend_from_slice(&start.x.to_bits().to_be_bytes());
-    name.extend_from_slice(&start.y.to_bits().to_be_bytes());
-    name.extend_from_slice(&end.x.to_bits().to_be_bytes());
-    name.extend_from_slice(&end.y.to_bits().to_be_bytes());
+    name.extend_from_slice(&start_x.to_be_bytes());
+    name.extend_from_slice(&start_y.to_be_bytes());
+    name.extend_from_slice(&end_x.to_be_bytes());
+    name.extend_from_slice(&end_y.to_be_bytes());
     name.push(kind as u8);
     EdgeId::derive_v5(identity_namespace, &name)
 }
 
 fn point_bits(point: Point2) -> (u64, u64) {
-    (point.x.to_bits(), point.y.to_bits())
+    (
+        canonical_coordinate_bits(point.x),
+        canonical_coordinate_bits(point.y),
+    )
 }
 
 fn push_unique_point(points: &mut Vec<Point2>, point: Point2) {
@@ -2165,6 +2188,29 @@ mod tests {
         )
         .expect("repeat with reversed caller order and direction");
         assert_eq!(candidate, repeated);
+        let mut signed_zero_expected = expected;
+        for crease in &mut signed_zero_expected {
+            for coordinate in [
+                &mut crease.start.x,
+                &mut crease.start.y,
+                &mut crease.end.x,
+                &mut crease.end.y,
+            ] {
+                if *coordinate == 0.0 {
+                    *coordinate = -0.0;
+                }
+            }
+        }
+        let signed_zero = build_stacked_fold_topology_v1(
+            identity,
+            source_revision,
+            &source_pattern,
+            &source_paper,
+            &signed_zero_expected,
+            StackedFoldTopologyBuildLimitsV1::default(),
+        )
+        .expect("canonicalize signed zero");
+        assert_eq!(candidate, signed_zero);
 
         let source_layer_order =
             proven_layer_order(identity, source_revision, &source_pattern, &source_paper);
@@ -2280,6 +2326,20 @@ mod tests {
                 actual: source_pattern.edges.len(),
                 maximum: source_pattern.edges.len() - 1,
             })
+        );
+        let mut missing_boundary_vertex = source_paper.clone();
+        let missing = VertexId::new();
+        missing_boundary_vertex.boundary_vertices[0] = missing;
+        assert_eq!(
+            build_stacked_fold_topology_v1(
+                ProjectId::new(),
+                0,
+                &source_pattern,
+                &missing_boundary_vertex,
+                &[],
+                StackedFoldTopologyBuildLimitsV1::default(),
+            ),
+            Err(StackedFoldTopologyBuildErrorV1::PaperBoundaryVertexMissing { vertex: missing })
         );
     }
 

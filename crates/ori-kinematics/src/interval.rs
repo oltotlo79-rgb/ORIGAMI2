@@ -29,6 +29,22 @@ pub struct IntervalRigidTransformV1 {
 }
 
 impl IntervalRigidTransformV1 {
+    pub fn identity() -> Result<Self, OutwardIntervalErrorV1> {
+        Ok(Self {
+            rotation: IntervalRotationMatrixV1::identity()?,
+            translation: [OutwardIntervalV1::new(0.0, 0.0)?; 3],
+        })
+    }
+
+    #[must_use]
+    pub const fn rotation(&self) -> IntervalRotationMatrixV1 {
+        self.rotation
+    }
+
+    #[must_use]
+    pub const fn translation(&self) -> [OutwardIntervalV1; 3] {
+        self.translation
+    }
     pub fn about_axis(
         axis: [f64; 3],
         point: [f64; 3],
@@ -88,6 +104,13 @@ impl IntervalRigidTransformV1 {
 }
 
 impl IntervalRotationMatrixV1 {
+    pub fn identity() -> Result<Self, OutwardIntervalErrorV1> {
+        let zero = OutwardIntervalV1::new(0.0, 0.0)?;
+        let one = OutwardIntervalV1::new(1.0, 1.0)?;
+        Ok(Self {
+            entries: [[one, zero, zero], [zero, one, zero], [zero, zero, one]],
+        })
+    }
     pub fn from_unit_axis_degrees(
         axis: [f64; 3],
         degrees: OutwardIntervalV1,

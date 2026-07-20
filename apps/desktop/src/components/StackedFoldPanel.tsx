@@ -56,6 +56,9 @@ export function StackedFoldPanel({
   const [confirmed, setConfirmed] = useState(false)
   const [applying, setApplying] = useState(false)
   const [view, setView] = useState<View>({ kind: 'idle' })
+  const [selectedCell, setSelectedCell] = useState<string | null>(null)
+  const [selectedFace, setSelectedFace] = useState<string | null>(null)
+  const [hoveredFace, setHoveredFace] = useState<string | null>(null)
   const tokenRef = useRef<string | null>(null)
   const coordinator = useMemo<StackedFoldReadCoordinator>(() =>
     createStackedFoldReadCoordinator({
@@ -80,6 +83,9 @@ export function StackedFoldPanel({
     cancelToken(tokenRef.current)
     tokenRef.current = null
     setConfirmed(false)
+    setSelectedCell(null)
+    setSelectedFace(null)
+    setHoveredFace(null)
     setView({ kind: 'idle' })
   }, [
     coordinator,
@@ -244,6 +250,16 @@ export function StackedFoldPanel({
             <div><dt>{t('層順序', 'Layer order')}</dt><dd>{view.response.flatEndpointLayerOrder.certified ? t('証明済み', 'Certified') : t('未証明', 'Uncertified')}</dd></div>
             <div><dt>{t('追加頂点 / 辺', 'Added vertices / edges')}</dt><dd>{view.response.transactionProposal.addedVertexCount} / {view.response.transactionProposal.addedEdgeCount}</dd></div>
           </dl>
+          <LayerOrderViewer
+            locale={locale}
+            cells={view.response.crossedCells}
+            selectedCell={selectedCell}
+            selectedFace={selectedFace}
+            hoveredFace={hoveredFace}
+            onSelectCell={setSelectedCell}
+            onSelectFace={setSelectedFace}
+            onHoverFace={setHoveredFace}
+          />
           {failureText.map((failure) => <p role="status" key={failure}>{failure}</p>)}
           {view.applyFailed && (
             <p role="alert">{t('適用できませんでした。同じ証明済みpreviewで再試行できます。', 'Apply failed. You can retry with the same certified preview.')}</p>
@@ -260,4 +276,80 @@ export function StackedFoldPanel({
       )}
     </section>
   )
+}
+
+type ViewerCell = StackedFoldReadResponse['crossedCells'][number]
+
+function LayerOrderViewer({
+  locale,
+  cells,
+  selectedCell,
+  selectedFace,
+  hoveredFace,
+  onSelectCell,
+  onSelectFace,
+  onHoverFace,
+}: Readonly<{
+  locale: Locale
+  cells: readonly ViewerCell[]
+  selectedCell: string | null
+  selectedFace: string | null
+  hoveredFace: string | null
+  onSelectCell(value: string): void
+  onSelectFace(value: string): void
+  onHoverFace(value: string | null): void
+}>) {
+  const t = (ja: string, en: string) => selectLocalizedText(locale, { ja, en })
+  const active = cells.find((cell) => cell.cellKeySha256 === selectedCell) ?? cells[0]
+  if (!active) return null
+  const xs = active.boundaryWorld.map((point) => point[0])
+  const zs = active.boundaryWorld.map((point) => point[2])
+  const minX = Math.min(...xs); const maxX = Math.max(...xs)
+  const minZ = Math.min(...zs); const maxZ = Math.max(...zs)
+  const spanX = Math.max(maxX - minX, 1)
+  const spanZ = Math.max(maxZ - minZ, 1)
+  const polygon = active.boundaryWorld.map((point) =>
+    `${20 + ((point[0] - minX) / spanX) * 180},${20 + ((point[2] - minZ) / spanZ) * 110}`,
+  ).join(' ')
+  return <section className="stacked-fold-layer-viewer" aria-label={t('3D層順ビューア', '3D layer-order viewer')}>
+    <h3>{t('重なりセルと層順', 'Overlap cells and layer order')}</h3>
+    <p className="muted">{t(
+      '認証済みの現在poseと層順を読み取り専用で表示します。',
+      'Read-only view of the authenticated current pose and layer order.',
+    )}</p>
+    <div className="stacked-fold-cell-tabs" role="list">
+      {cells.map((cell, index) => <button type="button" role="listitem"
+        aria-pressed={cell.cellKeySha256 === active.cellKeySha256}
+        key={cell.cellKeySha256} onClick={() => onSelectCell(cell.cellKeySha256)}>
+        {t('cell', 'Cell')} {index + 1}
+      </button>)}
+    </div>
+    <svg viewBox="0 0 240 180" role="img"
+      aria-label={t('front/back層の分解表示', 'Exploded front/back layer stack')}>
+      {active.bottomToTopFaces.map((face, index) => {
+        const offset = (active.bottomToTopFaces.length - 1 - index) * 9
+        const highlighted = face === selectedFace || face === hoveredFace
+        return <polygon key={face} points={polygon} transform={`translate(${offset} ${-offset})`}
+          fill={highlighted ? '#f6b73c' : `hsl(${205 + index * 22} 55% 62%)`}
+          fillOpacity="0.72" stroke={highlighted ? '#6b3e00' : '#29465b'}
+          tabIndex={0} onClick={() => onSelectFace(face)}
+          onMouseEnter={() => onHoverFace(face)} onMouseLeave={() => onHoverFace(null)}
+          onFocus={() => onHoverFace(face)} onBlur={() => onHoverFace(null)}>
+          <title>{`${index === 0 ? 'back / bottom' : index === active.bottomToTopFaces.length - 1 ? 'front / top' : 'middle'}: ${face}`}</title>
+        </polygon>
+      })}
+    </svg>
+    <ol className="stacked-fold-layer-list">
+      {active.bottomToTopFaces.map((face, index) => <li key={face}>
+        <button type="button" aria-pressed={face === selectedFace}
+          onMouseEnter={() => onHoverFace(face)} onMouseLeave={() => onHoverFace(null)}
+          onClick={() => onSelectFace(face)}>
+          {index === 0 ? t('裏面 / 最下層', 'Back / bottom')
+            : index === active.bottomToTopFaces.length - 1
+              ? t('表面 / 最上層', 'Front / top')
+              : t('中間層', 'Middle')} · {face.slice(0, 8)}
+        </button>
+      </li>)}
+    </ol>
+  </section>
 }

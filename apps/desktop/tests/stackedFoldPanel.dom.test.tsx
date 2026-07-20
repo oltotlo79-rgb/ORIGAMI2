@@ -38,7 +38,11 @@ const ready = {
     layerOrderGeneration: 1,
   },
   support: 'bit_exact_flat_endpoint_tree',
-  crossedCells: [],
+  crossedCells: [{
+    cellKeySha256: 'c'.repeat(64),
+    bottomToTopFaces: [project, project],
+    boundaryWorld: [[0, 0, 0], [20, 0, 0], [20, 0, -10], [0, 0, -10]],
+  }],
   targetFaces: [project],
   materialSegments: [{
     faceId: project,
@@ -105,12 +109,12 @@ const ready = {
   work: {
     scannedCells: 0,
     totalBoundaryVertices: 4,
-    totalLayerRecords: 1,
+    totalLayerRecords: 2,
     orientationTests: 1,
     exactArithmeticOperations: 1,
     maximumExactIntegerBits: 64,
     totalExactIntegerBits: 64,
-    retainedCells: 0,
+    retainedCells: 1,
     retainedTargetFaces: 1,
   },
   authorizesProjectMutation: false,
@@ -142,6 +146,12 @@ describe('StackedFoldPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
     expect((await screen.findAllByText('Certified')).length).toBe(2)
+    expect(screen.getByRole('img', { name: 'Exploded front/back layer stack' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Back \/ bottom/ })).toBeTruthy()
+    const front = screen.getByRole('button', { name: /Front \/ top/ })
+    fireEvent.mouseEnter(front)
+    fireEvent.click(front)
+    expect(front.getAttribute('aria-pressed')).toBe('true')
     expect(transport.preview).toHaveBeenCalledWith(expect.objectContaining({
       first: [1, 0, -2],
       second: [3, 0, -4],

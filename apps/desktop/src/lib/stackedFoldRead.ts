@@ -35,6 +35,7 @@ export type StackedFoldReadResponse = Readonly<{
   crossedCells: readonly Readonly<{
     cellKeySha256: string
     bottomToTopFaces: readonly string[]
+    boundaryWorld: readonly (readonly [number, number, number])[]
   }>[]
   targetFaces: readonly string[]
   materialSegments: readonly Readonly<{
@@ -307,11 +308,15 @@ export function normalizeStackedFoldReadResponse(
     !value.crossedCells.every(
       (cell) =>
         isRecord(cell) &&
-        hasExactKeys(cell, ['cellKeySha256', 'bottomToTopFaces']) &&
+        hasExactKeys(cell, ['cellKeySha256', 'bottomToTopFaces', 'boundaryWorld']) &&
         isLowerSha256(cell.cellKeySha256) &&
         Array.isArray(cell.bottomToTopFaces) &&
         cell.bottomToTopFaces.length > 0 &&
-        cell.bottomToTopFaces.every(isCanonicalNonNilUuid),
+        cell.bottomToTopFaces.every(isCanonicalNonNilUuid) &&
+        Array.isArray(cell.boundaryWorld) &&
+        cell.boundaryWorld.length >= 3 &&
+        cell.boundaryWorld.length <= 4096 &&
+        cell.boundaryWorld.every(isFinitePoint),
     ) ||
     !Array.isArray(value.targetFaces) ||
     value.targetFaces.length === 0 ||

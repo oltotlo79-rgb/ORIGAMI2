@@ -14,6 +14,25 @@
   --valley: #3678d4;
 }
 
+.stacked-fold-layer-viewer {
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.stacked-fold-layer-viewer svg {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  margin: 8px 0;
+  overflow: visible;
+}
+.stacked-fold-layer-viewer polygon { cursor: pointer; outline: none; }
+.stacked-fold-layer-viewer polygon:focus { stroke-width: 3; }
+.stacked-fold-cell-tabs,
+.stacked-fold-layer-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.stacked-fold-layer-list { padding: 0; list-style: none; }
+
 html[data-theme='light'] {
   color-scheme: light;
 }

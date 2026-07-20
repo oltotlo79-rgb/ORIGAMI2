@@ -1400,7 +1400,7 @@ fn rational_from_binary64(value: f64) -> Result<BigRational, FlatEndpointLayerOr
     BigRational::from_float(value).ok_or(FlatEndpointLayerOrderAnchorErrorV1::InvalidExactPayload)
 }
 
-fn rational_point_to_world(
+pub(crate) fn rational_point_to_world(
     point: &RationalPoint,
 ) -> Result<Point3, FlatEndpointLayerOrderAnchorErrorV1> {
     let x = point

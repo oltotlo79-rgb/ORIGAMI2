@@ -126,6 +126,7 @@ struct StackedFoldReadBindingDto {
 struct StackedFoldReadCellDto {
     cell_key_sha256: String,
     bottom_to_top_faces: Vec<FaceId>,
+    boundary_world: Vec<[f64; 3]>,
 }
 
 #[derive(Debug, Serialize)]
@@ -587,6 +588,7 @@ pub(super) async fn propose_current_stacked_fold_read(
             .map(|cell| StackedFoldReadCellDto {
                 cell_key_sha256: lowercase_hex(cell.cell_key().canonical_bytes()),
                 bottom_to_top_faces: cell.bottom_to_top_faces().to_vec(),
+                boundary_world: cell.boundary_world().to_vec(),
             })
             .collect();
         let work = proposal.work();

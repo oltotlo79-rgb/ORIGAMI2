@@ -370,10 +370,11 @@ impl NativeStackedFoldReadGuardV1<'_> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StackedFoldReadCellV1 {
     cell_key: FlatEndpointCellKeyV1,
     bottom_to_top_faces: Vec<FaceId>,
+    boundary_world: Vec<[f64; 3]>,
 }
 
 impl StackedFoldReadCellV1 {
@@ -385,6 +386,10 @@ impl StackedFoldReadCellV1 {
     #[must_use]
     pub fn bottom_to_top_faces(&self) -> &[FaceId] {
         &self.bottom_to_top_faces
+    }
+    #[must_use]
+    pub fn boundary_world(&self) -> &[[f64; 3]] {
+        &self.boundary_world
     }
 }
 
@@ -1048,6 +1053,15 @@ fn analyze_candidate(
                 crossed_cells.push(StackedFoldReadCellV1 {
                     cell_key: cell.cell_key(),
                     bottom_to_top_faces: order,
+                    boundary_world: exact
+                        .polygon
+                        .iter()
+                        .map(super::flat_endpoint_layer_order::rational_point_to_world)
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|_| StackedFoldReadErrorV1::InternalIndeterminate)?
+                        .into_iter()
+                        .map(|point| [point.x(), point.y(), point.z()])
+                        .collect(),
                 });
             }
         }

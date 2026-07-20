@@ -43,7 +43,11 @@ describe('stacked-fold read boundary', () => {
         layerOrderGeneration: 8,
       },
       support: 'bit_exact_flat_endpoint_tree',
-      crossedCells: [{ cellKeySha256: 'c'.repeat(64), bottomToTopFaces: [faceId] }],
+      crossedCells: [{
+        cellKeySha256: 'c'.repeat(64),
+        bottomToTopFaces: [faceId],
+        boundaryWorld: [[0, 0, 0], [1, 0, 0], [0, 0, -1]],
+      }],
       targetFaces: [faceId],
       materialSegments: [
         {
@@ -161,7 +165,11 @@ describe('stacked-fold read boundary', () => {
         layerOrderGeneration: 9,
       },
       support: 'no_hinge_single_face',
-      crossedCells: [{ cellKeySha256: 'd'.repeat(64), bottomToTopFaces: [faceId] }],
+      crossedCells: [{
+        cellKeySha256: 'd'.repeat(64),
+        bottomToTopFaces: [faceId],
+        boundaryWorld: [[0, 0, 0], [1, 0, 0], [0, 0, -1]],
+      }],
       targetFaces: [faceId],
       materialSegments: [
         {

@@ -1,10 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use ori_domain::{EdgeId, FaceId};
 use ori_topology::TopologySnapshot;
 
 use crate::{
-    CanonicalHingeAngles, KinematicsError, RigidTransform, TreeHinge, TreeKinematicsLimits,
+    CanonicalHingeAngles, KinematicsError, MaterialHingeGraphGeometry, RigidTransform, TreeHinge,
+    TreeKinematicsLimits,
 };
 
 /// One caller-supplied face transform used only as closure evidence.
@@ -18,6 +19,214 @@ impl CandidateFaceTransform {
     #[must_use]
     pub const fn new(face: FaceId, transform: RigidTransform) -> Self {
         Self { face, transform }
+    }
+
+    #[must_use]
+    pub const fn face(self) -> FaceId {
+        self.face
+    }
+
+    #[must_use]
+    pub const fn transform(self) -> RigidTransform {
+        self.transform
+    }
+}
+
+/// A deterministic spanning-tree candidate whose every material hinge,
+/// including loop-closure hinges, has been observed to close.
+///
+/// This remains observation-only and grants no applied-pose or mutation
+/// authority.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClosedMaterialHingeGraphPose {
+    fixed_face: FaceId,
+    angles: CanonicalHingeAngles,
+    transforms: Vec<CandidateFaceTransform>,
+    closure: MaterialHingeClosureCertificate,
+}
+
+impl ClosedMaterialHingeGraphPose {
+    #[must_use]
+    pub const fn fixed_face(&self) -> FaceId {
+        self.fixed_face
+    }
+
+    #[must_use]
+    pub const fn hinge_angles(&self) -> &CanonicalHingeAngles {
+        &self.angles
+    }
+
+    #[must_use]
+    pub fn transforms(&self) -> &[CandidateFaceTransform] {
+        &self.transforms
+    }
+
+    #[must_use]
+    pub fn face_transform(&self, face: FaceId) -> Option<RigidTransform> {
+        self.transforms
+            .binary_search_by_key(&face.canonical_bytes(), |item| item.face.canonical_bytes())
+            .ok()
+            .map(|index| self.transforms[index].transform)
+    }
+
+    #[must_use]
+    pub const fn closure_certificate(&self) -> &MaterialHingeClosureCertificate {
+        &self.closure
+    }
+}
+
+impl MaterialHingeGraphGeometry {
+    /// Validates a complete caller-derived embedding against every material
+    /// hinge and packages it only when closure succeeds.
+    pub fn observe_closed(
+        &self,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        angles: &CanonicalHingeAngles,
+        candidate: &[CandidateFaceTransform],
+        tolerance: f64,
+    ) -> Result<ClosedMaterialHingeGraphPose, KinematicsError> {
+        if self.face_ids() != audit.faces()
+            || self
+                .face_ids()
+                .binary_search_by_key(&fixed_face.canonical_bytes(), FaceId::canonical_bytes)
+                .is_err()
+        {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+        let transforms = canonical_transforms(audit, candidate)?;
+        let closure = MaterialHingeClosureCertificate::observe(
+            audit,
+            self.hinges(),
+            angles,
+            &transforms,
+            tolerance,
+        )?;
+        Ok(ClosedMaterialHingeGraphPose {
+            fixed_face,
+            angles: angles.clone(),
+            transforms,
+            closure,
+        })
+    }
+
+    /// Propagates a canonical spanning tree and then verifies all retained
+    /// material hinges. No closure constraint is discarded.
+    pub fn solve_closed(
+        &self,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        angles: &CanonicalHingeAngles,
+        tolerance: f64,
+    ) -> Result<ClosedMaterialHingeGraphPose, KinematicsError> {
+        if self.face_ids() != audit.faces()
+            || self.hinges().len() != angles.as_slice().len()
+            || self.hinges().len() != audit.spanning_hinges().len() + audit.closure_hinges().len()
+            || self
+                .face_ids()
+                .binary_search_by_key(&fixed_face.canonical_bytes(), FaceId::canonical_bytes)
+                .is_err()
+        {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+        let angle_values = angles
+            .as_slice()
+            .iter()
+            .map(|angle| (angle.edge(), angle.angle_degrees()))
+            .collect::<HashMap<_, _>>();
+        if angle_values.len() != self.hinges().len()
+            || self
+                .hinges()
+                .iter()
+                .any(|hinge| !angle_values.contains_key(&hinge.edge()))
+        {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+
+        let spanning = audit
+            .spanning_hinges()
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let mut adjacency = HashMap::<FaceId, Vec<(FaceId, usize, f64)>>::new();
+        adjacency
+            .try_reserve(self.face_ids().len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        for face in self.face_ids() {
+            adjacency.insert(*face, Vec::new());
+        }
+        for (index, hinge) in self.hinges().iter().enumerate() {
+            if !spanning.contains(&hinge.edge()) {
+                continue;
+            }
+            let assignment_sign = match hinge.assignment() {
+                ori_topology::FoldAssignment::Mountain => 1.0,
+                ori_topology::FoldAssignment::Valley => -1.0,
+            };
+            adjacency
+                .get_mut(&hinge.left_face())
+                .ok_or(KinematicsError::UnsupportedTopology)?
+                .push((hinge.right_face(), index, assignment_sign));
+            adjacency
+                .get_mut(&hinge.right_face())
+                .ok_or(KinematicsError::UnsupportedTopology)?
+                .push((hinge.left_face(), index, -assignment_sign));
+        }
+        for neighbors in adjacency.values_mut() {
+            neighbors.sort_unstable_by_key(|(_, index, _)| {
+                self.hinges()[*index].edge().canonical_bytes()
+            });
+        }
+
+        let mut solved = HashMap::new();
+        solved
+            .try_reserve(self.face_ids().len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        solved.insert(fixed_face, RigidTransform::identity());
+        let mut queue = VecDeque::new();
+        queue
+            .try_reserve(self.face_ids().len())
+            .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+        queue.push_back(fixed_face);
+        while let Some(parent_face) = queue.pop_front() {
+            let parent = *solved
+                .get(&parent_face)
+                .ok_or(KinematicsError::UnsupportedTopology)?;
+            for &(child_face, hinge_index, rotation_sign) in adjacency
+                .get(&parent_face)
+                .ok_or(KinematicsError::UnsupportedTopology)?
+            {
+                if solved.contains_key(&child_face) {
+                    continue;
+                }
+                let hinge = &self.hinges()[hinge_index];
+                let angle = *angle_values
+                    .get(&hinge.edge())
+                    .ok_or(KinematicsError::UnsupportedTopology)?;
+                let local = RigidTransform::around_axis(
+                    hinge.start(),
+                    hinge.axis(),
+                    angle * rotation_sign,
+                )?;
+                solved.insert(child_face, parent.compose(local)?);
+                queue.push_back(child_face);
+            }
+        }
+        if solved.len() != self.face_ids().len() {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+        let transforms = self
+            .face_ids()
+            .iter()
+            .map(|face| {
+                solved
+                    .get(face)
+                    .copied()
+                    .map(|transform| CandidateFaceTransform::new(*face, transform))
+                    .ok_or(KinematicsError::UnsupportedTopology)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.observe_closed(audit, fixed_face, angles, &transforms, tolerance)
     }
 }
 

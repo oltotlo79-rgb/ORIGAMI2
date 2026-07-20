@@ -16,8 +16,9 @@ use ori_core::{
     ExpectedStackedFoldCreaseV1, FaceLineageLimits, StackedFoldGeometryLimitsV1,
     StackedFoldTopologyBuildLimitsV1, analyze_global_flat_foldability,
     analyze_local_flat_foldability, prepare_stacked_fold_geometry_candidate_v1,
-    prepare_stacked_fold_initial_pose_v1, prepare_stacked_fold_requested_pose_v1,
-    prepare_stacked_fold_target_model_v1,
+    prepare_stacked_fold_initial_graph_pose_v1, prepare_stacked_fold_initial_pose_v1,
+    prepare_stacked_fold_requested_graph_pose_v1, prepare_stacked_fold_requested_pose_v1,
+    prepare_stacked_fold_target_graph_audit_v1, prepare_stacked_fold_target_model_v1,
 };
 use ori_domain::{FaceId, ProjectId};
 use ori_foldability::{
@@ -316,8 +317,30 @@ pub(super) async fn propose_current_stacked_fold_read(
             StackedFoldGeometryLimitsV1::default(),
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-        let prepared_target = prepare_stacked_fold_target_model_v1(
+        let audited_target = prepare_stacked_fold_target_graph_audit_v1(
             prepared_geometry,
+            TreeKinematicsLimits::default(),
+        )
+        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        if audited_target.requires_closure_certificate() {
+            let initial = prepare_stacked_fold_initial_graph_pose_v1(
+                audited_target,
+                pose_capability.model(),
+                pose_capability.pose(),
+            )
+            .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+            let _closed_endpoint = prepare_stacked_fold_requested_graph_pose_v1(
+                initial,
+                candidate.requested_angle_degrees(),
+            )
+            .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+            // Collision and safe-stop diagnostics currently accept only an
+            // issuer-bound material-tree pose. Never downgrade a proved graph
+            // endpoint into that authority.
+            return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+        }
+        let prepared_target = prepare_stacked_fold_target_model_v1(
+            audited_target.into_geometry(),
             TreeKinematicsLimits::default(),
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;

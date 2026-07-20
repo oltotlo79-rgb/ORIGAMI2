@@ -14,9 +14,9 @@ use ori_geometry::{
     exact_orientation, point_polygon_relation, point_segment_relation, segment_intersection,
 };
 use ori_kinematics::{
-    CanonicalHingeAngles, HingeAngle, KinematicsError, MaterialHingeGraphAudit,
-    MaterialHingeGraphGeometry, MaterialTreeKinematicsModel, MaterialTreePose,
-    TreeKinematicsLimits,
+    CandidateFaceTransform, CanonicalHingeAngles, ClosedMaterialHingeGraphPose, HingeAngle,
+    KinematicsError, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
+    MaterialTreeKinematicsModel, MaterialTreePose, TreeKinematicsLimits,
 };
 use ori_topology::{
     Face, FaceExtractionInput, TopologyIssueSeverity, TopologySnapshot, analyze_faces,
@@ -188,6 +188,7 @@ pub const DEFAULT_MAX_STACKED_FOLD_BUILD_VERTICES: usize = 100_000;
 pub const DEFAULT_MAX_STACKED_FOLD_BUILD_EDGES: usize = 200_000;
 pub const STACKED_FOLD_TARGET_GRAPH_AUDIT_MODEL_ID_V1: &str =
     "native_stacked_fold_target_graph_audit_v1";
+pub const STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1: f64 = 1.0e-9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackedFoldTopologyBuildLimitsV1 {
@@ -247,6 +248,46 @@ pub struct PreparedStackedFoldRequestedPoseV1 {
     initial: PreparedStackedFoldInitialPoseV1,
     pose: MaterialTreePose,
     requested_angle_degrees: f64,
+}
+
+pub struct PreparedStackedFoldInitialGraphPoseV1 {
+    target: PreparedStackedFoldTargetGraphAuditV1,
+    pose: ClosedMaterialHingeGraphPose,
+}
+
+pub struct PreparedStackedFoldRequestedGraphPoseV1 {
+    initial: PreparedStackedFoldInitialGraphPoseV1,
+    pose: ClosedMaterialHingeGraphPose,
+    requested_angle_degrees: f64,
+}
+
+impl PreparedStackedFoldInitialGraphPoseV1 {
+    #[must_use]
+    pub const fn target(&self) -> &PreparedStackedFoldTargetGraphAuditV1 {
+        &self.target
+    }
+
+    #[must_use]
+    pub const fn pose(&self) -> &ClosedMaterialHingeGraphPose {
+        &self.pose
+    }
+}
+
+impl PreparedStackedFoldRequestedGraphPoseV1 {
+    #[must_use]
+    pub const fn initial(&self) -> &PreparedStackedFoldInitialGraphPoseV1 {
+        &self.initial
+    }
+
+    #[must_use]
+    pub const fn pose(&self) -> &ClosedMaterialHingeGraphPose {
+        &self.pose
+    }
+
+    #[must_use]
+    pub const fn requested_angle_degrees(&self) -> f64 {
+        self.requested_angle_degrees
+    }
 }
 
 impl PreparedStackedFoldRequestedPoseV1 {
@@ -326,6 +367,13 @@ impl PreparedStackedFoldTargetGraphAuditV1 {
     #[must_use]
     pub const fn authorizes_apply_stacked_fold(&self) -> bool {
         false
+    }
+
+    /// Returns the proved geometry for the existing tree-only pipeline after
+    /// the caller has inspected the graph audit.
+    #[must_use]
+    pub fn into_geometry(self) -> PreparedStackedFoldGeometryV1 {
+        self.geometry
     }
 }
 
@@ -1566,6 +1614,95 @@ pub fn prepare_stacked_fold_initial_pose_v1(
     Ok(PreparedStackedFoldInitialPoseV1 { target, pose })
 }
 
+/// Lifts the authenticated source embedding onto a proved target graph and
+/// admits it only after every spanning and closure hinge has been observed.
+pub fn prepare_stacked_fold_initial_graph_pose_v1(
+    target: PreparedStackedFoldTargetGraphAuditV1,
+    source_model: &MaterialTreeKinematicsModel,
+    source_pose: &MaterialTreePose,
+) -> Result<PreparedStackedFoldInitialGraphPoseV1, PrepareStackedFoldInitialPoseErrorV1> {
+    if !source_model.owns_pose(source_pose) {
+        return Err(PrepareStackedFoldInitialPoseErrorV1::SourcePoseIssuerMismatch);
+    }
+    let source_angles = source_pose
+        .hinge_angles()
+        .iter()
+        .map(|angle| (angle.edge(), angle.angle_degrees()))
+        .collect::<HashMap<_, _>>();
+    let proof = target.geometry.proof();
+    let mut target_angle_values = HashMap::<EdgeId, f64>::new();
+    for subdivision in proof.source_edges() {
+        if let Some(angle) = source_angles.get(&subdivision.source_edge()).copied() {
+            for edge in subdivision.target_edges() {
+                target_angle_values.insert(*edge, angle);
+            }
+        }
+    }
+    for subdivision in proof.expected_creases() {
+        for edge in subdivision.target_edges() {
+            target_angle_values.insert(*edge, 0.0);
+        }
+    }
+    let mut angles = target
+        .hinge_geometry
+        .hinges()
+        .iter()
+        .map(|hinge| {
+            let edge = hinge.edge();
+            let angle = target_angle_values
+                .get(&edge)
+                .copied()
+                .ok_or(PrepareStackedFoldInitialPoseErrorV1::TargetHingeWithoutCarrier { edge })?;
+            HingeAngle::new(edge, angle).map_err(PrepareStackedFoldInitialPoseErrorV1::from)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    angles.sort_unstable_by_key(|angle| angle.edge().canonical_bytes());
+    let angles = CanonicalHingeAngles::new(angles)?;
+    let lineage = proof.lineage();
+    let fixed_face = match source_pose.fixed_face() {
+        None => {
+            lineage
+                .records()
+                .first()
+                .and_then(|record| record.descendants().first())
+                .ok_or(PrepareStackedFoldInitialPoseErrorV1::SourceFixedFaceMissing)?
+                .face_id
+        }
+        Some(source_fixed) => {
+            lineage
+                .records()
+                .iter()
+                .find(|record| record.source().face_id == source_fixed)
+                .and_then(|record| record.descendants().first())
+                .ok_or(PrepareStackedFoldInitialPoseErrorV1::SourceFixedFaceMissing)?
+                .face_id
+        }
+    };
+    let mut candidate = Vec::new();
+    candidate
+        .try_reserve_exact(target.hinge_geometry.face_ids().len())
+        .map_err(|_| {
+            PrepareStackedFoldInitialPoseErrorV1::Kinematics(KinematicsError::ResourceLimitExceeded)
+        })?;
+    for record in lineage.records() {
+        let source_face = record.source().face_id;
+        let transform = source_pose.face_transform(source_face).ok_or(
+            PrepareStackedFoldInitialPoseErrorV1::SourcePoseFaceMissing { face: source_face },
+        )?;
+        for descendant in record.descendants() {
+            candidate.push(CandidateFaceTransform::new(descendant.face_id, transform));
+        }
+    }
+    let pose = target.hinge_geometry.observe_closed(
+        &target.audit,
+        fixed_face,
+        &angles,
+        &candidate,
+        STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+    )?;
+    Ok(PreparedStackedFoldInitialGraphPoseV1 { target, pose })
+}
+
 /// Solves the requested endpoint by moving every proved new crease
 /// subdivision as one collective hinge angle.
 ///
@@ -1622,6 +1759,68 @@ pub fn prepare_stacked_fold_requested_pose_v1(
         .model
         .solve(initial.pose.fixed_face(), &angles)?;
     Ok(PreparedStackedFoldRequestedPoseV1 {
+        initial,
+        pose,
+        requested_angle_degrees,
+    })
+}
+
+/// Solves a deterministic spanning candidate for a cyclic or acyclic target
+/// and fails closed unless every retained loop constraint closes.
+pub fn prepare_stacked_fold_requested_graph_pose_v1(
+    initial: PreparedStackedFoldInitialGraphPoseV1,
+    requested_angle_degrees: f64,
+) -> Result<PreparedStackedFoldRequestedGraphPoseV1, PrepareStackedFoldRequestedPoseErrorV1> {
+    if !requested_angle_degrees.is_finite()
+        || requested_angle_degrees <= 0.0
+        || requested_angle_degrees > 180.0
+        || requested_angle_degrees.to_bits() == (-0.0_f64).to_bits()
+    {
+        return Err(PrepareStackedFoldRequestedPoseErrorV1::InvalidRequestedAngle);
+    }
+    let expected_edges = initial
+        .target
+        .geometry
+        .proof()
+        .expected_creases()
+        .iter()
+        .flat_map(|subdivision| subdivision.target_edges().iter().copied())
+        .collect::<HashSet<_>>();
+    let target_edges = initial
+        .target
+        .hinge_geometry
+        .hinges()
+        .iter()
+        .map(|hinge| hinge.edge())
+        .collect::<HashSet<_>>();
+    if expected_edges.is_empty() || !expected_edges.is_subset(&target_edges) {
+        return Err(PrepareStackedFoldRequestedPoseErrorV1::ExpectedCreaseHingeMissing);
+    }
+    let mut angles = initial
+        .pose
+        .hinge_angles()
+        .as_slice()
+        .iter()
+        .map(|angle| {
+            HingeAngle::new(
+                angle.edge(),
+                if expected_edges.contains(&angle.edge()) {
+                    requested_angle_degrees
+                } else {
+                    angle.angle_degrees()
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    angles.sort_unstable_by_key(|angle| angle.edge().canonical_bytes());
+    let angles = CanonicalHingeAngles::new(angles)?;
+    let pose = initial.target.hinge_geometry.solve_closed(
+        &initial.target.audit,
+        initial.pose.fixed_face(),
+        &angles,
+        STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+    )?;
+    Ok(PreparedStackedFoldRequestedGraphPoseV1 {
         initial,
         pose,
         requested_angle_degrees,
@@ -2874,6 +3073,41 @@ mod tests {
         assert!(!package.authorizes_pose());
         assert!(!package.authorizes_apply_stacked_fold());
         assert_eq!(package.geometry().proof().expected_creases().len(), 2);
+        let source_topology = simulation_snapshot(
+            identity,
+            source_revision,
+            &source_paper,
+            &source_pattern,
+            FaceLineageTopology::Source,
+        )
+        .expect("source topology");
+        let source_model = MaterialTreeKinematicsModel::prepare(
+            &source_pattern,
+            &source_paper,
+            &source_topology,
+            TreeKinematicsLimits::default(),
+        )
+        .expect("source model");
+        let source_pose = source_model
+            .solve(
+                None,
+                &CanonicalHingeAngles::new(Vec::new()).expect("empty angles"),
+            )
+            .expect("source pose");
+        let initial =
+            prepare_stacked_fold_initial_graph_pose_v1(package, &source_model, &source_pose)
+                .expect("cycle initial embedding closes");
+        assert_eq!(
+            initial.pose().closure_certificate().checked_hinges().len(),
+            4
+        );
+        assert_eq!(initial.pose().transforms().len(), 4);
+        assert!(matches!(
+            prepare_stacked_fold_requested_graph_pose_v1(initial, 90.0),
+            Err(PrepareStackedFoldRequestedPoseErrorV1::Kinematics(
+                KinematicsError::UnsupportedTopology
+            ))
+        ));
 
         let limited = TreeKinematicsLimits {
             max_faces: 3,

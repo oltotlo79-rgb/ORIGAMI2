@@ -26,6 +26,7 @@
 
 ## 完了
 
+- SIM-010のproof-bearing transaction premiseをnative private registryへ保持した。非180 workerのPrepared target pose・continuous diagnostic・target layer orderをserializeやbooleanへ落とさずmoveし、project instance・ID・revision・source fingerprint・pose generation・layer generation全次元へ束縛する。premise内部整合を検査し、live pose/layer capability再認証後だけinstallする。generation token replacement、exact tokenのidempotent cancel、stale/ABA拒否を実装し、UIには公開しない。専用2件とdesktop全target checkがwarningなしで成功した。atomic editor mutationは未実装なので完成率は変更していない
 - IO-008のFOLD 3D複数frameをnative stagingへ接続した。専用picker・token registry・frame選択・cancel commandをproject instance・ID・revisionへ束縛し、新pickerのreentryで旧tokenを失効、cancelはexact tokenだけをidempotentに処理する。WebViewへはframe index・parent・inherit・vertex count・source digestだけを返し、bytes・3D座標とproject/applied pose/timeline authorityは渡さない。日英native picker、cancel/reentry/metadata redaction専用2件、desktop全target checkが成功した。native rendererと利用者UIは未接続なので完成率は変更していない
 
 - IO-008の正厚meshで狭域face unionを接続した。position・normal・UVがbinary64 exact一致する共面隣接faceだけをweldし、共有edgeをtriangle incidence 2として内部wall生成から除外する。extrusion後は全幾何edgeのincidenceがexactly 2であるwatertight性を検証し、重複coincident triangleはfail-closed、非共面・normal違いは従来どおり面別solidへ保つ。隣接2面のside 8・total 12、manifold、独立STL、正厚GLB E2E、frontend buildとUI回帰が成功した。「入出力・互換性」を92%、全体を46.79%（表示46.8%）へ更新した

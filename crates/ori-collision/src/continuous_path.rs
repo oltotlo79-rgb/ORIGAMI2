@@ -9,8 +9,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use ori_domain::{EdgeId, FaceId};
 use ori_kinematics::{
-    CanonicalHingeAngles, HingeAngle, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
-    MaterialTreeKinematicsModel, MaterialTreePose,
+    CanonicalHingeAngles, DyadicMaterialHingeIntervalClosureCertificateV1,
+    GeneratedMultiHingePathCandidateV1, HingeAngle, MaterialHingeGraphAudit,
+    MaterialHingeGraphGeometry, MaterialTreeKinematicsModel, MaterialTreePose,
 };
 use thiserror::Error;
 
@@ -1333,6 +1334,159 @@ pub fn diagnose_collective_cycle_path_v1(
             leaves += 1;
             pending.push((lower, midpoint, depth + 1));
             pending.push((midpoint, upper, depth + 1));
+        }
+    }
+    StackedFoldCyclePathDiagnosticV1 {
+        certified: true,
+        first_closure_failure_angle_degrees: None,
+        leaf_count: leaves,
+        pair_work: work,
+    }
+}
+
+/// Conservatively certifies zero-thickness clearance for the exact same
+/// per-hinge schedule already carrying a full-domain closure certificate.
+/// This remains observation-only and never authorizes mutation.
+pub fn diagnose_scheduled_cycle_path_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    candidate: &GeneratedMultiHingePathCandidateV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    interval_count: usize,
+) -> StackedFoldCyclePathDiagnosticV1 {
+    let failed = || StackedFoldCyclePathDiagnosticV1 {
+        certified: false,
+        first_closure_failure_angle_degrees: None,
+        leaf_count: 0,
+        pair_work: 0,
+    };
+    let schedule = candidate.schedule();
+    if interval_count == 0
+        || interval_count > MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
+        || closure.leaves().is_empty()
+        || closure.fixed_face() != fixed_face
+        || closure.schedule_binding_fingerprint_v1()
+            != schedule.certificate_binding_fingerprint_v1()
+        || closure.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
+        || !schedule.matches_binding(geometry, audit, fixed_face)
+    {
+        return failed();
+    }
+    let derivative_sum = geometry
+        .hinges()
+        .iter()
+        .try_fold(0.0, |sum, hinge| {
+            schedule
+                .derivative_bound(hinge.edge())
+                .map(|bound| sum + bound)
+        })
+        .filter(|value| value.is_finite());
+    let Some(derivative_sum) = derivative_sum else {
+        return failed();
+    };
+    let mut maximum_radius = 0.0_f64;
+    for face in geometry.face_ids() {
+        let Some(boundary) = geometry.face_boundary_vertices(*face) else {
+            return failed();
+        };
+        for vertex in boundary {
+            let Some(point) = geometry.vertex_position(*vertex) else {
+                return failed();
+            };
+            for hinge in geometry.hinges() {
+                let origin = hinge.start();
+                maximum_radius = maximum_radius.max(
+                    ((point.x() - origin.x()).powi(2)
+                        + (point.y() - origin.y()).powi(2)
+                        + (point.z() - origin.z()).powi(2))
+                    .sqrt(),
+                );
+            }
+        }
+    }
+    if !maximum_radius.is_finite() {
+        return failed();
+    }
+    let adjacent = |a: FaceId, b: FaceId| {
+        geometry.hinges().iter().any(|hinge| {
+            (hinge.left_face() == a && hinge.right_face() == b)
+                || (hinge.left_face() == b && hinge.right_face() == a)
+        })
+    };
+    let mut pending = (0..interval_count)
+        .map(|index| {
+            (
+                index as f64 / interval_count as f64,
+                (index + 1) as f64 / interval_count as f64,
+                0usize,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut leaves = interval_count;
+    let mut work = 0usize;
+    while let Some((lower, upper, depth)) = pending.pop() {
+        let midpoint = (lower + upper) * 0.5;
+        let Some(angles) = schedule.evaluate(midpoint) else {
+            return failed();
+        };
+        let Ok(pose) = geometry.solve_closed(audit, fixed_face, &angles, 1.0e-9) else {
+            return failed();
+        };
+        let expansion =
+            maximum_radius * derivative_sum * (upper - lower) * std::f64::consts::PI / 180.0;
+        let mut bounds = Vec::new();
+        for face in geometry.face_ids() {
+            let (Some(transform), Some(boundary)) = (
+                pose.face_transform(*face),
+                geometry.face_boundary_vertices(*face),
+            ) else {
+                return failed();
+            };
+            let mut min = [f64::INFINITY; 3];
+            let mut max = [f64::NEG_INFINITY; 3];
+            for vertex in boundary {
+                let Some(point) = geometry.vertex_position(*vertex) else {
+                    return failed();
+                };
+                let Ok(world) = transform.apply_point(point) else {
+                    return failed();
+                };
+                for (axis, value) in [world.x(), world.y(), world.z()].into_iter().enumerate() {
+                    min[axis] = min[axis].min(value - expansion);
+                    max[axis] = max[axis].max(value + expansion);
+                }
+            }
+            bounds.push((*face, min, max));
+        }
+        let mut clear = true;
+        for first in 0..bounds.len() {
+            for second in first + 1..bounds.len() {
+                if adjacent(bounds[first].0, bounds[second].0) {
+                    continue;
+                }
+                work = match work.checked_add(1) {
+                    Some(value) if value <= MAX_STACKED_FOLD_INTERVAL_WORK_V1 => value,
+                    _ => return failed(),
+                };
+                if !(0..3).any(|axis| {
+                    bounds[first].2[axis] < bounds[second].1[axis]
+                        || bounds[second].2[axis] < bounds[first].1[axis]
+                }) {
+                    clear = false;
+                    break;
+                }
+            }
+        }
+        if !clear {
+            if depth >= MAX_STACKED_FOLD_INTERVAL_DEPTH_V1
+                || leaves >= MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
+            {
+                return failed();
+            }
+            leaves += 1;
+            pending.push((midpoint, upper, depth + 1));
+            pending.push((lower, midpoint, depth + 1));
         }
     }
     StackedFoldCyclePathDiagnosticV1 {

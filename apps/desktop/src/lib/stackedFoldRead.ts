@@ -82,6 +82,10 @@ export type StackedFoldReadResponse = Readonly<{
     intervalLeafCount: number
     intervalPairWork: number
     intervalCandidateLimit: number
+    closureRequired: boolean
+    closureLeafCount: number
+    closurePairWork: number
+    firstClosureFailureAngleDegrees: number | null
     firstSampledBlockingAngleDegrees: number | null
     requestedAngleDegrees: number
     continuousClearanceCertified: boolean
@@ -269,6 +273,10 @@ export function normalizeStackedFoldReadResponse(
       'intervalLeafCount',
       'intervalPairWork',
       'intervalCandidateLimit',
+      'closureRequired',
+      'closureLeafCount',
+      'closurePairWork',
+      'firstClosureFailureAngleDegrees',
       'firstSampledBlockingAngleDegrees',
       'requestedAngleDegrees',
       'continuousClearanceCertified',
@@ -377,6 +385,12 @@ export function normalizeStackedFoldReadResponse(
     !isCount(continuousPath.intervalLeafCount) ||
     !isCount(continuousPath.intervalPairWork) ||
     !isCount(continuousPath.intervalCandidateLimit) ||
+    typeof continuousPath.closureRequired !== 'boolean' ||
+    !isCount(continuousPath.closureLeafCount) ||
+    !isCount(continuousPath.closurePairWork) ||
+    (continuousPath.firstClosureFailureAngleDegrees !== null &&
+      (typeof continuousPath.firstClosureFailureAngleDegrees !== 'number' ||
+        !Number.isFinite(continuousPath.firstClosureFailureAngleDegrees))) ||
     continuousPath.sampledNonblockingPoseCount > continuousPath.sampledPoseCount ||
     (continuousPath.firstSampledBlockingAngleDegrees !== null &&
       (typeof continuousPath.firstSampledBlockingAngleDegrees !== 'number' ||

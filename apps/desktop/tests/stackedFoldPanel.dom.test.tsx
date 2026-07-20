@@ -73,13 +73,17 @@ const ready = {
   },
   continuousPath: {
     modelId: 'stacked_fold_bounded_path_diagnostic_v1',
-    continuousCertificateModelId: 'stacked_fold_two_hinge_positive_thickness_continuous_certificate_v1',
+    continuousCertificateModelId: 'stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v1',
     paperThicknessMm: 0.1,
     sampledPoseCount: 2,
     sampledNonblockingPoseCount: 2,
     intervalLeafCount: 8,
     intervalPairWork: 8,
     intervalCandidateLimit: 2048,
+    closureRequired: false,
+    closureLeafCount: 0,
+    closurePairWork: 0,
+    firstClosureFailureAngleDegrees: null,
     firstSampledBlockingAngleDegrees: null,
     requestedAngleDegrees: 180,
     continuousClearanceCertified: true,
@@ -150,7 +154,7 @@ describe('StackedFoldPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
     expect((await screen.findAllByText('Certified')).length).toBe(2)
-    expect(screen.getByText('stacked_fold_two_hinge_positive_thickness_continuous_certificate_v1')).toBeTruthy()
+    expect(screen.getByText('stacked_fold_bounded_tree_positive_thickness_continuous_certificate_v1')).toBeTruthy()
     expect(screen.getByRole('img', { name: 'Exploded front/back layer stack' })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Back \/ bottom/ })).toBeTruthy()
     const front = screen.getByRole('button', { name: /Front \/ top/ })

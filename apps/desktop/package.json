@@ -11,6 +11,7 @@
     "test:dom": "vitest run --config vitest.config.ts",
     "test:snap": "node --test \"tests/*.test.ts\"",
     "test:gltf-validator": "node scripts/validate-generated-glb.mjs",
+    "test:gltf-sample-viewer": "node scripts/sample-viewer-runtime-e2e.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "bundle:windows:ci": "tauri build --ci --no-sign --bundles nsis",
@@ -35,6 +36,7 @@
     "gltf-validator": "2.0.0-dev.3.10",
     "jsdom": "^29.1.1",
     "oxlint": "^1.71.0",
+    "playwright": "1.61.1",
     "typescript": "~6.0.2",
     "vite": "^8.1.1",
     "vitest": "^4.1.10"

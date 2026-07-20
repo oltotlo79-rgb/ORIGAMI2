@@ -30,6 +30,10 @@ jobs:
       - run: npm test
       - name: Validate generated static, textured, and animated GLB
         run: npm run test:gltf-validator
+      - name: Install headless Chromium for Khronos Sample Viewer
+        run: npx playwright install --with-deps chromium
+      - name: Load generated GLB in pinned Khronos Sample Viewer
+        run: npm run test:gltf-sample-viewer
       - run: npm run build
       - run: npm run lint
 

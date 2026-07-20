@@ -26,3 +26,16 @@ This automated format acceptance is not a substitute for opening exported
 files in external GUI applications. Blender and other target viewers still
 require a separate manual interoperability pass covering appearance,
 animation playback, axes, units, and user workflow.
+
+## Khronos Sample Viewer runtime gate
+
+`npm run test:gltf-sample-viewer` is a separate runtime acceptance. It builds
+fresh release-mode GLBs, checks out the official Khronos Sample Viewer at
+release commit `d4eabef31e6eb70cbefb939767637539c37c7a33`, and loads each artifact in
+headless Chromium with WebGL enabled. CI requires:
+
+- no browser console or uncaught runtime errors;
+- a non-empty visible WebGL canvas for static and textured GLB;
+- visible frame changes while the animated GLB is playing.
+
+This does not replace the remaining Blender and slicer interoperability pass.

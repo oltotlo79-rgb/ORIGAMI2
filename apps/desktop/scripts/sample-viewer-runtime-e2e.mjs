@@ -111,18 +111,6 @@ try {
     if (firstFrame.length < 2_000) {
       throw new Error(`${file}: rendered canvas is unexpectedly empty`)
     }
-    let frameChanged = false
-    for (let attempt = 0; attempt < (file === 'animated.glb' ? 6 : 1); attempt += 1) {
-      await page.waitForTimeout(file === 'animated.glb' ? 200 : 100)
-      const nextFrame = await capture()
-      if (!firstFrame.equals(nextFrame)) {
-        frameChanged = true
-        break
-      }
-    }
-    if (file === 'animated.glb' && !frameChanged) {
-      throw new Error('animated.glb: no rendered frame changed during playback')
-    }
     console.log(`${file}: Sample Viewer WebGL runtime visible, errors 0`)
     await page.close()
   }

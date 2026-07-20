@@ -32,6 +32,20 @@ test('CI and formal release share the strict macOS bundle contract', () => {
   assert.match(verifier, /c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f/u)
 })
 
+test('CI and formal release share the strict Windows bundle contract', () => {
+  const ciWorkflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const releaseWorkflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const verifier = readFileSync(join(root, 'scripts/verify_windows_bundle.ps1'), 'utf8')
+  assert.match(ciWorkflow, /verify_windows_bundle\.ps1[\s\S]*-ExpectedSignatureStatus NotSigned/u)
+  assert.match(releaseWorkflow, /verify_windows_bundle\.ps1[\s\S]*-ExpectedVersion \$env:RELEASE_VERSION/u)
+  assert.match(releaseWorkflow, /SIGNATURE_STATUS:.*Valid.*NotSigned/u)
+  assert.match(verifier, /GetVersionInfo/u)
+  assert.match(verifier, /Get-AuthenticodeSignature/u)
+  assert.match(verifier, /Embedded Windows executable/u)
+  assert.match(verifier, /NotoSansJP-Variable\.ttf/u)
+  assert.match(verifier, /NotoSansJP-OFL\.txt/u)
+})
+
 test('dry-run validates without a tag or GitHub mutation', () => {
   const output = execFileSync('node', ['.github/scripts/validate_formal_release.mjs'], {
     cwd: root,

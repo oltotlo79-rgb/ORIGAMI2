@@ -1,7 +1,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string] $BundleDirectory
+    [string] $BundleDirectory,
+
+    [string] $ExpectedVersion = '',
+
+    [ValidateSet('Ignore', 'NotSigned', 'Valid')]
+    [string] $ExpectedSignatureStatus = 'Ignore',
+
+    [string] $PortableExecutable = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,6 +18,50 @@ $resolvedBundleDirectory = (Resolve-Path -LiteralPath $BundleDirectory).Path
 $installers = @(Get-ChildItem -LiteralPath $resolvedBundleDirectory -File -Filter '*.exe')
 if ($installers.Count -ne 1) {
     throw "Expected exactly one NSIS installer in '$resolvedBundleDirectory', found $($installers.Count)."
+}
+
+function Assert-Version {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $Label
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedVersion)) {
+        return
+    }
+    if ($ExpectedVersion -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+        throw "Expected version must be canonical stable SemVer."
+    }
+    $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
+    $candidates = @($info.ProductVersion, $info.FileVersion) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $escaped = [regex]::Escape($ExpectedVersion)
+    if (-not ($candidates | Where-Object { $_ -cmatch "^$escaped(?:\.0)?$" })) {
+        throw "$Label version does not match $ExpectedVersion."
+    }
+}
+
+function Assert-Signature {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $Label
+    )
+
+    if ($ExpectedSignatureStatus -eq 'Ignore') {
+        return
+    }
+    $actual = (Get-AuthenticodeSignature -LiteralPath $Path).Status.ToString()
+    if ($actual -cne $ExpectedSignatureStatus) {
+        throw "$Label Authenticode status is '$actual', expected '$ExpectedSignatureStatus'."
+    }
+}
+
+Assert-Version -Path $installers[0].FullName -Label 'Windows NSIS installer'
+Assert-Signature -Path $installers[0].FullName -Label 'Windows NSIS installer'
+if (-not [string]::IsNullOrWhiteSpace($PortableExecutable)) {
+    $resolvedPortable = (Resolve-Path -LiteralPath $PortableExecutable).Path
+    Assert-Version -Path $resolvedPortable -Label 'Windows portable executable'
+    Assert-Signature -Path $resolvedPortable -Label 'Windows portable executable'
 }
 
 $sevenZipCommand = Get-Command '7z.exe' -ErrorAction SilentlyContinue
@@ -54,6 +105,8 @@ try {
     if ($appExecutables.Count -ne 1) {
         throw "Expected exactly one bundled origami2-desktop executable, found $($appExecutables.Count)."
     }
+    Assert-Version -Path $appExecutables[0].FullName -Label 'Embedded Windows executable'
+    Assert-Signature -Path $appExecutables[0].FullName -Label 'Embedded Windows executable'
     if ($fontFiles[0].Directory.Name -cne 'fonts') {
         throw "Bundled Noto Sans JP font is not in the expected fonts directory."
     }

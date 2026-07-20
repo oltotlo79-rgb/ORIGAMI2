@@ -282,9 +282,16 @@ jobs:
         run: npm run bundle:windows:ci
       - name: Verify Windows installer resources
         shell: pwsh
-        run: >
-          ./scripts/verify_windows_bundle.ps1
-          -BundleDirectory ./target/release/bundle/nsis
+        run: |
+          $appVersion = (
+            Get-Content ./apps/desktop/src-tauri/tauri.conf.json -Raw |
+              ConvertFrom-Json
+          ).version
+          ./scripts/verify_windows_bundle.ps1 `
+            -BundleDirectory ./target/release/bundle/nsis `
+            -ExpectedVersion $appVersion `
+            -ExpectedSignatureStatus NotSigned `
+            -PortableExecutable ./target/release/origami2-desktop.exe
       - name: Verify Windows production release workflow contract
         shell: pwsh
         run: |

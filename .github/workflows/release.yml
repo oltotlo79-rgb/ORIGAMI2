@@ -127,6 +127,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
           & signtool verify /pa /all $file
           if ($LASTEXITCODE -ne 0) { throw "signature verification failed for $file" }
+      - name: Verify Windows installer and portable executable contract
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          SIGNATURE_STATUS: ${{ needs.validate.outputs.mode != 'dry-run' && 'Valid' || 'NotSigned' }}
+        run: >
+          ./scripts/verify_windows_bundle.ps1
+          -BundleDirectory ./target/release/bundle/nsis
+          -ExpectedVersion $env:RELEASE_VERSION
+          -ExpectedSignatureStatus $env:SIGNATURE_STATUS
+          -PortableExecutable ./target/release/origami2-desktop.exe
       - name: Build macOS application
         if: matrix.platform == 'macos-arm64'
         working-directory: apps/desktop

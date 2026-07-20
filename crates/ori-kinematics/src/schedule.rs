@@ -1634,21 +1634,21 @@ mod tests {
         )
         .unwrap();
         let result = geometry.prove_dyadic_schedule_closure_v1(
-                &audit,
-                fixed,
-                candidate.schedule(),
-                1.0e-9,
-                crate::DyadicIntervalClosureLimitsV1 {
-                    max_depth: 0,
-                    max_leaves: 1,
-                    max_work: 1_000_000,
-                    schedule_limits: CycleScheduleLimitsV1 {
-                        max_degree: 1,
-                        max_work: 100_000,
-                        ..CycleScheduleLimitsV1::default()
-                    },
+            &audit,
+            fixed,
+            candidate.schedule(),
+            1.0e-9,
+            crate::DyadicIntervalClosureLimitsV1 {
+                max_depth: 0,
+                max_leaves: 1,
+                max_work: 1_000_000,
+                schedule_limits: CycleScheduleLimitsV1 {
+                    max_degree: 1,
+                    max_work: 100_000,
+                    ..CycleScheduleLimitsV1::default()
                 },
-            );
+            },
+        );
         assert!(
             matches!(
                 result,

@@ -15218,4 +15218,107 @@ mod tests {
         )];
         assert!(reevaluate_saved_vertex_expressions(&project).is_err());
     }
+
+    #[test]
+    fn saved_expression_dependency_names_and_shared_vertex_cycles_fail_closed() {
+        let (mut project, _, vertex, _) = solver_stage_fixture();
+        project.numeric_expressions.vertex_coordinates = vec![VertexCoordinateExpressions::new(
+            vertex,
+            "vertex_x+1",
+            "2",
+            0.0,
+            0.0,
+        )];
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+        let binding = VertexCoordinateExpressions::new(vertex, "1", "2", 0.0, 0.0);
+        project.numeric_expressions.vertex_coordinates = vec![binding.clone(), binding];
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+    }
+
+    #[test]
+    fn ten_thousand_saved_expressions_are_rejected_before_evaluation_within_bound() {
+        let (mut project, _, _, _) = solver_stage_fixture();
+        project.numeric_expressions.vertex_coordinates = (0..10_000)
+            .map(|_| VertexCoordinateExpressions::new(VertexId::new(), "1", "2", 1.0, 2.0))
+            .collect();
+        let started = std::time::Instant::now();
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+    }
+
+    #[test]
+    fn expression_reexecution_after_undo_redo_uses_the_restored_binding() {
+        let (mut project, stage, vertex, _) = solver_stage_fixture();
+        project.numeric_expressions.vertex_coordinates =
+            vec![VertexCoordinateExpressions::new(vertex, "2", "3", 0.0, 0.0)];
+        apply_geometric_constraint_solve_stage(
+            &mut project,
+            &stage,
+            stage.project_instance_id,
+            stage.project_id,
+            0,
+            stage.token,
+        )
+        .unwrap();
+        execute_undo(&mut project, stage.project_id, 1).unwrap();
+        execute_redo(&mut project, stage.project_id, 2).unwrap();
+        assert_eq!(
+            reevaluate_saved_vertex_expressions(&project).unwrap(),
+            vec![(vertex, Point2::new(2.0, 3.0))]
+        );
+    }
+
+    #[test]
+    fn expression_reexecution_survives_project_document_round_trip() {
+        let (mut project, _, vertex, _) = solver_stage_fixture();
+        project.numeric_expressions.vertex_coordinates = vec![VertexCoordinateExpressions::new(
+            vertex, "6/2", "sqrt(16)", 3.0, 4.0,
+        )];
+        let reopened = ProjectState::from_document(
+            project.document(),
+            PathBuf::from("expression-round-trip.ori2"),
+        );
+        assert_eq!(
+            reevaluate_saved_vertex_expressions(&reopened).unwrap(),
+            vec![(vertex, Point2::new(3.0, 4.0))]
+        );
+    }
+
+    #[test]
+    fn saved_expression_constraint_conflict_does_not_mutate_project() {
+        let (mut project, _, start, original) = solver_stage_fixture();
+        let edge = project.editor.pattern().edges[0].clone();
+        let project_id = project.project_id;
+        execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::AddGeometricConstraint {
+                record: GeometricConstraintRecordV1 {
+                    id: ConstraintId::new(),
+                    constraint: GeometricConstraintKindV1::FixedLength {
+                        edge: edge.id,
+                        length_mm: 1.0,
+                    },
+                },
+            },
+        )
+        .unwrap();
+        project.numeric_expressions.vertex_coordinates = vec![
+            VertexCoordinateExpressions::new(start, "0", "0", 0.0, 0.0),
+            VertexCoordinateExpressions::new(edge.end, "2", "0", 2.0, 0.0),
+        ];
+        let drivers = reevaluate_saved_vertex_expressions(&project).unwrap();
+        assert!(
+            solve_geometric_constraints_with_drivers_v1(
+                project.editor.pattern(),
+                project.editor.geometric_constraints(),
+                &drivers,
+                ConstraintSolveLimitsV1::default(),
+            )
+            .is_err()
+        );
+        assert_eq!(project.editor.revision(), 1);
+        assert_eq!(solver_vertex_position(&project, start), original);
+    }
 }

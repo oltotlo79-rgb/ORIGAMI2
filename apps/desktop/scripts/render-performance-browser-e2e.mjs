@@ -1,0 +1,10 @@
+import { chromium } from 'playwright'; import { spawn } from 'node:child_process'; import { mkdir, writeFile } from 'node:fs/promises'; import { join, resolve } from 'node:path'
+const origin = 'http://127.0.0.1:4177'; const server = spawn(process.execPath, ['./node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '4177', '--strictPort'], { stdio: ['ignore', 'pipe', 'pipe'] }); let serverOutput = ''; server.stdout.on('data', x => { serverOutput += x }); server.stderr.on('data', x => { serverOutput += x }); let browser; let page; let result = null
+try {
+  for (let i = 0; i < 150; i += 1) { try { if ((await fetch(origin)).ok) break } catch {} await new Promise(r => setTimeout(r, 100)) }
+  browser = await chromium.launch({ headless: true }); page = await browser.newPage(); await page.goto(`${origin}/scripts/render-performance-harness.html`, { waitUntil: 'networkidle' })
+  result = await page.evaluate(() => window.runOrigami2RenderBenchmark())
+  if (result.edgeCount !== 10_000 || result.triangleCount !== 10_000 || result.warmupFrames !== 10 || result.measuredFrames !== 30) throw new Error('benchmark workload contract failed')
+  if (result.medianFrameWorkMs > 50 || result.p95FrameWorkMs > 120 || result.worstFrameWorkMs > 250) throw new Error(`software rendering frame budget exceeded: ${JSON.stringify(result)}`)
+  console.log(`software render benchmark passed: median=${result.medianFrameWorkMs.toFixed(2)}ms p95=${result.p95FrameWorkMs.toFixed(2)}ms worst=${result.worstFrameWorkMs.toFixed(2)}ms`)
+} catch (error) { const output = process.env.ORIGAMI2_RENDER_PERFORMANCE_ARTIFACT_DIRECTORY; if (output) { await mkdir(resolve(output), { recursive: true }); await writeFile(join(resolve(output), 'render-performance-failure.json'), `${JSON.stringify({ schema: 'origami2.render-performance-failure.v1', message: String(error), result, serverOutput: serverOutput.slice(-16000) }, null, 2)}\n`); try { await page?.screenshot({ path: join(resolve(output), 'render-performance-failure.png'), fullPage: true }) } catch {} } throw error } finally { await browser?.close(); server.kill('SIGTERM') }

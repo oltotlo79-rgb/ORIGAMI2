@@ -241,6 +241,8 @@ enum CommandV1 {
         description: String,
         caution: String,
         duration_ms: u32,
+        #[serde(default)]
+        visual: InstructionVisual,
     },
     ReplaceInstructionStepPose {
         step_id: InstructionStepId,
@@ -407,6 +409,8 @@ enum InverseV1 {
         description: String,
         caution: String,
         duration_ms: u32,
+        #[serde(default)]
+        visual: InstructionVisual,
     },
     RestoreInstructionStepPose {
         step_id: InstructionStepId,
@@ -614,12 +618,14 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             description,
             caution,
             duration_ms,
+            visual,
         } => CommandV1::UpdateInstructionStepMetadata {
             step_id: *step_id,
             title: title.clone(),
             description: description.clone(),
             caution: caution.clone(),
             duration_ms: *duration_ms,
+            visual: visual.clone(),
         },
         Command::ReplaceInstructionStepPose { step_id, pose } => {
             CommandV1::ReplaceInstructionStepPose {
@@ -806,12 +812,14 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
             description,
             caution,
             duration_ms,
+            visual,
         } => Command::UpdateInstructionStepMetadata {
             step_id,
             title,
             description,
             caution,
             duration_ms,
+            visual,
         },
         CommandV1::ReplaceInstructionStepPose { step_id, pose } => {
             Command::ReplaceInstructionStepPose { step_id, pose }
@@ -1079,12 +1087,14 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
             description,
             caution,
             duration_ms,
+            visual,
         } => InverseV1::RestoreInstructionStepMetadata {
             step_id: *step_id,
             title: title.clone(),
             description: description.clone(),
             caution: caution.clone(),
             duration_ms: *duration_ms,
+            visual: visual.clone(),
         },
         Inverse::RestoreInstructionStepPose { step_id, pose } => {
             InverseV1::RestoreInstructionStepPose {
@@ -1308,12 +1318,14 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
             description,
             caution,
             duration_ms,
+            visual,
         } => Inverse::RestoreInstructionStepMetadata {
             step_id,
             title,
             description,
             caution,
             duration_ms,
+            visual,
         },
         InverseV1::RestoreInstructionStepPose { step_id, pose } => {
             Inverse::RestoreInstructionStepPose { step_id, pose }
@@ -2172,6 +2184,7 @@ mod tests {
             description: "description".to_owned(),
             caution: "caution".to_owned(),
             duration_ms: 1_000,
+            visual: Default::default(),
             pose: instruction_pose(),
         }
     }
@@ -2183,6 +2196,7 @@ mod tests {
             description: "description-only".to_owned(),
             caution: "no physical command".to_owned(),
             duration_ms: 1_000,
+            visual: Default::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::DeclarativeOnlyV1,
                 source_model_fingerprint: "0".repeat(64),
@@ -2319,6 +2333,7 @@ mod tests {
                 description: "updated description".to_owned(),
                 caution: "updated caution".to_owned(),
                 duration_ms: 2_000,
+                visual: Default::default(),
             },
             Command::ReplaceInstructionStepPose {
                 step_id: step.id,
@@ -2553,6 +2568,7 @@ mod tests {
                 description: "old description".to_owned(),
                 caution: "old caution".to_owned(),
                 duration_ms: 1_000,
+                visual: Default::default(),
             },
             Inverse::RestoreInstructionStepPose {
                 step_id: step.id,

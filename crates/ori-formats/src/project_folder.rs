@@ -1257,6 +1257,7 @@ mod tests {
             description: "3D姿勢を変更しません。".to_owned(),
             caution: "物理操作は自動実行しません。".to_owned(),
             duration_ms: 1_500,
+            visual: Default::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::DeclarativeOnlyV1,
                 source_model_fingerprint: "0123456789abcdef".repeat(4),

@@ -1003,6 +1003,7 @@ mod tests {
                         description: "用紙全体の向きを確認します。".to_owned(),
                         caution: "表裏を取り違えないでください。".to_owned(),
                         duration_ms: 1_000,
+                        visual: Default::default(),
                         pose: InstructionPose {
                             model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                             source_model_fingerprint: fingerprint,

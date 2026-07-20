@@ -3,6 +3,7 @@ import type {
   InstructionPose,
   InstructionStep,
   InstructionTimeline,
+  InstructionVisual,
 } from './coreClient'
 import type { FoldPreviewAppliedPoseSnapshot } from './foldPreviewAppliedPose'
 import {
@@ -34,6 +35,7 @@ export type InstructionStepPresentation = Readonly<{
   description: string
   caution: string
   durationMs: number
+  visual: InstructionVisual
   pose: InstructionPose
   stale: boolean
   declarativeOnly: boolean
@@ -690,6 +692,7 @@ function parseStep(
       'description',
       'caution',
       'duration_ms',
+      'visual',
       'pose',
     ])
     || !validIdentity(value.id)
@@ -699,7 +702,8 @@ function parseStep(
     || !validDuration(value.duration_ms)
   ) return null
   const pose = parsePose(value.pose)
-  if (!pose) return null
+  const visual = parseInstructionVisual(value.visual)
+  if (!pose || !visual) return null
   return Object.freeze({
     index,
     id: value.id,
@@ -707,11 +711,92 @@ function parseStep(
     description: value.description,
     caution: value.caution,
     durationMs: value.duration_ms,
+    visual,
     pose,
     stale: pose.model === INSTRUCTION_POSE_MODEL
       && pose.source_model_fingerprint !== currentFingerprint,
     declarativeOnly: pose.model === DECLARATIVE_INSTRUCTION_POSE_MODEL,
   })
+}
+
+export function parseInstructionVisual(value: unknown): InstructionVisual | null {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, ['camera', 'arrows', 'focus_points'])
+    || !(value.camera === null || isCamera(value.camera))
+    || !Array.isArray(value.arrows)
+    || !Array.isArray(value.focus_points)
+    || value.arrows.length + value.focus_points.length > 64
+  ) return null
+  const arrows = value.arrows.map((arrow) => {
+    if (
+      !isRecord(arrow)
+      || !hasExactKeys(arrow, ['start', 'end', 'label'])
+      || !isPoint3(arrow.start)
+      || !isPoint3(arrow.end)
+      || samePoint3(arrow.start, arrow.end)
+      || !validMarkerLabel(arrow.label)
+    ) return null
+    return Object.freeze({ start: arrow.start, end: arrow.end, label: arrow.label })
+  })
+  const focusPoints = value.focus_points.map((focus) => {
+    if (
+      !isRecord(focus)
+      || !hasExactKeys(focus, ['position', 'radius', 'label'])
+      || !isPoint3(focus.position)
+      || typeof focus.radius !== 'number'
+      || !Number.isFinite(focus.radius)
+      || focus.radius <= 0
+      || !validMarkerLabel(focus.label)
+    ) return null
+    return Object.freeze({
+      position: focus.position,
+      radius: focus.radius,
+      label: focus.label,
+    })
+  })
+  if (arrows.some((arrow) => arrow === null) || focusPoints.some((focus) => focus === null)) {
+    return null
+  }
+  return Object.freeze({
+    camera: value.camera,
+    arrows: Object.freeze(arrows) as InstructionVisual['arrows'],
+    focus_points: Object.freeze(focusPoints) as InstructionVisual['focus_points'],
+  })
+}
+
+function isCamera(value: unknown): value is NonNullable<InstructionVisual['camera']> {
+  return isRecord(value)
+    && hasExactKeys(value, ['position', 'target', 'up'])
+    && isPoint3(value.position)
+    && isPoint3(value.target)
+    && isPoint3(value.up)
+    && !samePoint3(value.position, value.target)
+    && !samePoint3(value.up, { x: 0, y: 0, z: 0 })
+}
+
+function isPoint3(value: unknown): value is { x: number; y: number; z: number } {
+  return isRecord(value)
+    && hasExactKeys(value, ['x', 'y', 'z'])
+    && typeof value.x === 'number'
+    && typeof value.y === 'number'
+    && typeof value.z === 'number'
+    && Number.isFinite(value.x)
+    && Number.isFinite(value.y)
+    && Number.isFinite(value.z)
+}
+
+function samePoint3(
+  left: { x: number; y: number; z: number },
+  right: { x: number; y: number; z: number },
+) {
+  return left.x === right.x && left.y === right.y && left.z === right.z
+}
+
+function validMarkerLabel(value: unknown): value is string {
+  return typeof value === 'string'
+    && [...value].length <= 120
+    && ![...value].some((character) => /\p{Cc}/u.test(character))
 }
 
 function parsePose(value: unknown): InstructionPose | null {

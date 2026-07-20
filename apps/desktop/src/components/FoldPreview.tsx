@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import type { RgbaColor } from '../lib/coreClient'
+import type { InstructionVisual, RgbaColor } from '../lib/coreClient'
 import { reportUnexpected } from '../lib/diagnosticsRuntime'
 import {
   formatLength,
@@ -182,6 +182,7 @@ type FoldPreviewProps = {
   selectedFaceId?: string | null
   selectedVertexId?: string | null
   fixedFaceId?: string | null
+  instructionVisual?: InstructionVisual | null
   onSelectHinge?: (edgeId: string | null) => void
   onSelectFace?: (faceId: string | null) => void
   onSelectVertex?: (vertexId: string | null) => void
@@ -208,6 +209,7 @@ type PreviewRuntime = {
     selectedFaceId: string | null,
     selectedVertexId: string | null,
   ) => void
+  updateInstructionVisual: (visual: InstructionVisual | null) => void
   render: () => void
   cancelAngleDrag: () => void
   resetView: () => void
@@ -394,6 +396,7 @@ export function FoldPreview({
   selectedFaceId,
   selectedVertexId,
   fixedFaceId,
+  instructionVisual,
   onSelectHinge,
   onSelectFace,
   onSelectVertex,
@@ -996,6 +999,66 @@ export function FoldPreview({
           collisionPenetrationEdgeMaterial: createdCollisionPenetrationEdgeMaterial,
         },
       } = createdSceneRuntime
+      const instructionVisualGroup = new THREE.Group()
+      scene.add(instructionVisualGroup)
+      const updateInstructionVisual = (visual: InstructionVisual | null) => {
+        for (const child of [...instructionVisualGroup.children]) {
+          instructionVisualGroup.remove(child)
+          if (child instanceof THREE.ArrowHelper) {
+            child.line.geometry.dispose()
+            child.cone.geometry.dispose()
+            ;(child.line.material as THREE.Material).dispose()
+            ;(child.cone.material as THREE.Material).dispose()
+          } else if (child instanceof THREE.Mesh) {
+            child.geometry.dispose()
+            const childMaterial = child.material
+            if (Array.isArray(childMaterial)) {
+              for (const material of childMaterial) material.dispose()
+            } else {
+              childMaterial.dispose()
+            }
+          }
+        }
+        if (!visual) return
+        if (visual.camera) {
+          const { position, target, up } = visual.camera
+          camera.position.set(position.x, position.y, position.z)
+          camera.up.set(up.x, up.y, up.z)
+          createdControls.target.set(target.x, target.y, target.z)
+          camera.lookAt(createdControls.target)
+          createdControls.update()
+        }
+        for (const arrow of visual.arrows) {
+          const start = new THREE.Vector3(arrow.start.x, arrow.start.y, arrow.start.z)
+          const direction = new THREE.Vector3(
+            arrow.end.x - arrow.start.x,
+            arrow.end.y - arrow.start.y,
+            arrow.end.z - arrow.start.z,
+          )
+          const length = direction.length()
+          instructionVisualGroup.add(new THREE.ArrowHelper(
+            direction.normalize(),
+            start,
+            length,
+            0xd14900,
+            Math.min(length * 0.25, 0.25),
+            Math.min(length * 0.12, 0.12),
+          ))
+        }
+        for (const focus of visual.focus_points) {
+          const marker = new THREE.Mesh(
+            new THREE.SphereGeometry(focus.radius, 20, 12),
+            new THREE.MeshBasicMaterial({
+              color: 0x005fcc,
+              wireframe: true,
+              depthTest: false,
+            }),
+          )
+          marker.position.set(focus.position.x, focus.position.y, focus.position.z)
+          marker.renderOrder = 20
+          instructionVisualGroup.add(marker)
+        }
+      }
       const materials = [...paperMaterials]
       const createdSelectedFaceMaterial = new THREE.LineBasicMaterial({
         color: 0x005fcc,
@@ -3662,6 +3725,7 @@ export function FoldPreview({
         schedulePose,
         updateSelection,
         updateElementSelection,
+        updateInstructionVisual,
         render,
         cancelAngleDrag: () => {
           resetFoldGestures('reset')
@@ -3760,6 +3824,18 @@ export function FoldPreview({
       setRenderError('render_unavailable')
     }
   }, [selectedFaceId, selectedVertexId])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    try {
+      runtime.updateInstructionVisual(instructionVisual ?? null)
+      runtime.render()
+    } catch {
+      runtime.dispose()
+      setRenderError('render_unavailable')
+    }
+  }, [instructionVisual])
 
   const resetView = () => {
     const runtime = runtimeRef.current

@@ -472,6 +472,7 @@ mod tests {
                     description,
                     caution: "角を正確に合わせてください。".to_owned(),
                     duration_ms: 1_250,
+                    visual: Default::default(),
                     pose: InstructionPose {
                         model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                         source_model_fingerprint: FINGERPRINT.to_owned(),
@@ -488,6 +489,7 @@ mod tests {
                     description: "形を確認します。".to_owned(),
                     caution: String::new(),
                     duration_ms: 800,
+                    visual: Default::default(),
                     pose: InstructionPose {
                         model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                         source_model_fingerprint: FINGERPRINT.to_owned(),

@@ -8,6 +8,7 @@ import type {
   VertexCoordinateExpressionTransition,
 } from './coreClient.ts'
 import { normalizeGeometricConstraintDocument } from './geometricConstraints.ts'
+import { parseInstructionVisual } from './instructionTimeline.ts'
 import { normalizeProjectLayerDocument } from './projectLayers.ts'
 
 export const RECOVERY_SCHEMA_VERSION = 1 as const
@@ -1218,6 +1219,7 @@ function parseInstructionTimeline(
       'description',
       'caution',
       'duration_ms',
+      'visual',
       'pose',
     ])
     if (
@@ -1228,6 +1230,8 @@ function parseInstructionTimeline(
       || typeof step.caution !== 'string'
       || !isNonNegativeSafeInteger(step.duration_ms)
     ) return null
+    const visual = parseInstructionVisual(step.visual)
+    if (!visual) return null
     const pose = exactDataRecord(step.pose, [
       'model',
       'source_model_fingerprint',
@@ -1277,6 +1281,7 @@ function parseInstructionTimeline(
       description: step.description,
       caution: step.caution,
       duration_ms: step.duration_ms,
+      visual,
       pose: {
         model: pose.model,
         source_model_fingerprint: pose.source_model_fingerprint,

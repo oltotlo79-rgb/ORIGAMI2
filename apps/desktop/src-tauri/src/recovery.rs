@@ -1829,6 +1829,7 @@ mod tests {
                         description: String::new(),
                         caution: String::new(),
                         duration_ms: 1_000,
+                        visual: Default::default(),
                         pose: InstructionPose {
                             model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                             source_model_fingerprint: old_fingerprint,

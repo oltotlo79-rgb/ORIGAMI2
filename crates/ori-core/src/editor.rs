@@ -10,10 +10,10 @@ use ori_domain::{
     EdgeLayerAssignmentV1, GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1, GeometricConstraintDocumentV1,
     GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1,
     GeometricConstraintRecordV1, InstructionPose, InstructionStep, InstructionStepId,
-    InstructionTimeline, InstructionTimelineValidationError, LayerId, LayerRecordV1,
-    LengthDisplayUnit, MAX_LAYER_EDGE_ASSIGNMENTS, MAX_PROJECT_LAYER_INDEX_EDGES, Paper, Point2,
-    ProjectLayerDocumentV1, ProjectLayerDocumentValidationErrorV1, RgbaColor, Vertex, VertexId,
-    validate_geometric_constraint_document_v1, validate_instruction_timeline,
+    InstructionTimeline, InstructionTimelineValidationError, InstructionVisual, LayerId,
+    LayerRecordV1, LengthDisplayUnit, MAX_LAYER_EDGE_ASSIGNMENTS, MAX_PROJECT_LAYER_INDEX_EDGES,
+    Paper, Point2, ProjectLayerDocumentV1, ProjectLayerDocumentValidationErrorV1, RgbaColor,
+    Vertex, VertexId, validate_geometric_constraint_document_v1, validate_instruction_timeline,
     validate_project_layer_document_against_pattern_v1,
 };
 use ori_geometry::{
@@ -179,6 +179,7 @@ pub enum Command {
         description: String,
         caution: String,
         duration_ms: u32,
+        visual: InstructionVisual,
     },
     ReplaceInstructionStepPose {
         step_id: InstructionStepId,
@@ -717,6 +718,7 @@ enum Inverse {
         description: String,
         caution: String,
         duration_ms: u32,
+        visual: InstructionVisual,
     },
     RestoreInstructionStepPose {
         step_id: InstructionStepId,
@@ -2161,6 +2163,7 @@ impl EditorState {
                 ref description,
                 ref caution,
                 duration_ms,
+                ref visual,
             } => {
                 let mut candidate = self.instruction_timeline.clone();
                 let step = candidate
@@ -2174,11 +2177,13 @@ impl EditorState {
                     description: step.description.clone(),
                     caution: step.caution.clone(),
                     duration_ms: step.duration_ms,
+                    visual: step.visual.clone(),
                 };
                 step.title.clone_from(title);
                 step.description.clone_from(description);
                 step.caution.clone_from(caution);
                 step.duration_ms = duration_ms;
+                step.visual.clone_from(visual);
                 self.commit_instruction_timeline(candidate)?;
                 Ok(inverse)
             }
@@ -4604,6 +4609,7 @@ impl EditorState {
                 description,
                 caution,
                 duration_ms,
+                visual,
             } => {
                 let mut candidate = self.instruction_timeline.clone();
                 let step = candidate
@@ -4615,6 +4621,7 @@ impl EditorState {
                 step.description.clone_from(description);
                 step.caution.clone_from(caution);
                 step.duration_ms = *duration_ms;
+                step.visual.clone_from(visual);
                 self.commit_instruction_timeline(candidate)?;
             }
             Inverse::RestoreInstructionStepPose { step_id, pose } => {
@@ -12659,6 +12666,7 @@ mod tests {
             description: String::new(),
             caution: String::new(),
             duration_ms: 1_500,
+            visual: Default::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                 source_model_fingerprint,
@@ -12679,6 +12687,7 @@ mod tests {
             description: "説明テンプレート".to_owned(),
             caution: "物理操作は自動実行しません。".to_owned(),
             duration_ms: 1_500,
+            visual: Default::default(),
             pose: InstructionPose {
                 model: ori_domain::InstructionPoseModel::DeclarativeOnlyV1,
                 source_model_fingerprint,
@@ -12761,6 +12770,7 @@ mod tests {
                     description: "中央まで折る".to_owned(),
                     caution: "強く押さえない".to_owned(),
                     duration_ms: 2_000,
+                    visual: Default::default(),
                 },
             )
             .expect("update metadata");
@@ -12986,6 +12996,7 @@ mod tests {
                 description: "説明".to_owned(),
                 caution: "注意".to_owned(),
                 duration_ms: 3_000,
+                visual: Default::default(),
             },
             Command::ReplaceInstructionStepPose {
                 step_id: first_id,
@@ -13082,6 +13093,7 @@ mod tests {
                     description: String::new(),
                     caution: String::new(),
                     duration_ms: 1_500,
+                    visual: Default::default(),
                 },
             ),
             editor.execute(
@@ -13149,6 +13161,7 @@ mod tests {
                     description: String::new(),
                     caution: String::new(),
                     duration_ms: 1_500,
+                    visual: Default::default(),
                 },
             ),
             Err(CommandError::InstructionTimelineInvalid(_))
@@ -13217,6 +13230,7 @@ mod tests {
                     description: "説明".to_owned(),
                     caution: String::new(),
                     duration_ms: 2_000,
+                    visual: Default::default(),
                 },
             )
             .expect("update instruction");
@@ -13325,6 +13339,7 @@ mod tests {
                     description: "説明".to_owned(),
                     caution: "注意".to_owned(),
                     duration_ms: 2_000,
+                    visual: Default::default(),
                 },
             )
             .expect("update instruction metadata");
@@ -13336,6 +13351,7 @@ mod tests {
                 description,
                 caution,
                 duration_ms,
+                ..
             }) if *step_id == first_id
                 && title == "手順 1"
                 && description.is_empty()
@@ -13410,6 +13426,7 @@ mod tests {
                 description: String::new(),
                 caution: String::new(),
                 duration_ms: 1_500,
+                visual: Default::default(),
                 pose: InstructionPose {
                     model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                     source_model_fingerprint: "0".repeat(64),
@@ -13443,6 +13460,7 @@ mod tests {
                         description: String::new(),
                         caution: String::new(),
                         duration_ms: 1_500,
+                        visual: Default::default(),
                     },
                 )
                 .expect("update metadata on maximum timeline");
@@ -14043,6 +14061,7 @@ mod tests {
                 description: "説明".to_owned(),
                 caution: "注意".to_owned(),
                 duration_ms: 2_000,
+                visual: Default::default(),
             },
             Command::ReplaceInstructionStepPose {
                 step_id: first_id,

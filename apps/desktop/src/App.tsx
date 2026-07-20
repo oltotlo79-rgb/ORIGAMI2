@@ -101,6 +101,7 @@ import {
   updatePaperProperties,
   type ProjectSnapshot,
   type ProjectTopologyResponse,
+  type InstructionVisual,
   type RgbaColor,
   type ValidationSnapshot,
   validateSvgImportSettings,
@@ -532,6 +533,8 @@ function App() {
   })
   const [appliedFoldPose, setAppliedFoldPose] =
     useState<FoldPreviewAppliedPoseSnapshot | null>(null)
+  const [instructionVisual, setInstructionVisual] =
+    useState<InstructionVisual | null>(null)
   const [boundNativeStaticCollisionView, setBoundNativeStaticCollisionView] =
     useState<BoundNativeStaticCollisionView>({
       requestKey: null,
@@ -1416,6 +1419,7 @@ function App() {
       }
       setFixedFaceChoice({ projectId: preview.projectId, faceId: null })
       setFoldAngleOverrides({ projectId: preview.projectId, values: new Map() })
+      setInstructionVisual(step.visual)
       return true
     }
 
@@ -1444,6 +1448,7 @@ function App() {
       if (angleDegrees === undefined) return false
       setFoldAngle(angleDegrees)
       setFoldAngleOverrides({ projectId: preview.projectId, values: new Map() })
+      setInstructionVisual(step.visual)
       return true
     }
     if (preview.kinematics.kind !== 'tree') return false
@@ -1451,6 +1456,7 @@ function App() {
       projectId: preview.projectId,
       values: angles,
     })
+    setInstructionVisual(step.visual)
     return true
   }, [foldPreviewModel])
 
@@ -4985,6 +4991,7 @@ function App() {
               selectedFaceId={selectedFaceId}
               selectedVertexId={selectedVertexId}
               fixedFaceId={effectiveFixedFaceId}
+              instructionVisual={instructionVisual}
               onSelectHinge={benchmarkRun || foldPreviewHingeIds.size === 0
                 ? undefined
                 : (edgeId) => {

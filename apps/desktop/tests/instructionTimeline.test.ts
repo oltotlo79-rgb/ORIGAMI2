@@ -56,6 +56,45 @@ test('validates and detaches a current and a stale instruction step', () => {
   assert.equal(presentation.steps[0]?.title, '手順')
 })
 
+test('validates authored cameras, arrows, and focus points', () => {
+  const authored = step('step-1', CURRENT_FINGERPRINT, [])
+  authored.visual = {
+    camera: {
+      position: { x: 4, y: 3, z: 5 },
+      target: { x: 0, y: 0, z: 0 },
+      up: { x: 0, y: 1, z: 0 },
+    },
+    arrows: [{
+      start: { x: 0, y: 0, z: 0 },
+      end: { x: 1, y: 0, z: 0 },
+      label: 'fold',
+    }],
+    focus_points: [{
+      position: { x: 0.5, y: 0, z: 0 },
+      radius: 0.1,
+      label: 'corner',
+    }],
+  }
+  const presentation = createInstructionTimelinePresentation(
+    { steps: [authored] },
+    CURRENT_FINGERPRINT,
+  )
+  assert.equal(presentation.kind, 'ready')
+  if (presentation.kind !== 'ready') return
+  assert.deepEqual(presentation.steps[0]?.visual, authored.visual)
+
+  for (const visual of [
+    { ...authored.visual, camera: { ...authored.visual.camera!, target: { x: 4, y: 3, z: 5 } } },
+    { ...authored.visual, arrows: [{ ...authored.visual.arrows[0]!, end: { x: 0, y: 0, z: 0 } }] },
+    { ...authored.visual, focus_points: [{ ...authored.visual.focus_points[0]!, radius: 0 }] },
+  ]) {
+    assert.equal(createInstructionTimelinePresentation(
+      { steps: [{ ...authored, visual }] },
+      CURRENT_FINGERPRINT,
+    ).kind, 'invalid')
+  }
+})
+
 test('fails closed for unknown fields, models, fingerprints, duplicates, and invalid values', () => {
   const valid = { steps: [step('step-1', CURRENT_FINGERPRINT, [angle('hinge-1', 30)])] }
   const invalid: unknown[] = [
@@ -696,6 +735,11 @@ function step(
     description: '',
     caution: '',
     duration_ms: durationMs,
+    visual: {
+      camera: null,
+      arrows: [],
+      focus_points: [],
+    },
     pose: {
       model: 'absolute_hinge_angles_v1' as const,
       source_model_fingerprint: fingerprint,

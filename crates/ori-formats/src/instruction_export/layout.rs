@@ -995,6 +995,7 @@ mod tests {
                 description: "この説明はPDFとSVGに残ります。".to_owned(),
                 caution: "自動実行せず層を確認してください。".to_owned(),
                 duration_ms: 1_500,
+                visual: Default::default(),
                 pose: InstructionPose {
                     model: InstructionPoseModel::DeclarativeOnlyV1,
                     source_model_fingerprint: "f".repeat(64),

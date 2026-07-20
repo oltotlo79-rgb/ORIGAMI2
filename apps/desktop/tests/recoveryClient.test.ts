@@ -287,6 +287,11 @@ test('restore preserves declarative instruction text but rejects executable pose
     description: '説明テンプレート',
     caution: '物理操作は自動実行しません。',
     duration_ms: 1_500,
+    visual: {
+      camera: null,
+      arrows: [],
+      focus_points: [],
+    },
     pose: {
       model: 'declarative_only_v1',
       source_model_fingerprint: 'f'.repeat(64),

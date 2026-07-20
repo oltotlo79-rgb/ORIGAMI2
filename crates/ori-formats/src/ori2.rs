@@ -1114,6 +1114,7 @@ mod tests {
             description: "辺を正確に重ねます。".to_owned(),
             caution: String::new(),
             duration_ms: 1_500,
+            visual: Default::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                 source_model_fingerprint: "0123456789abcdef".repeat(4),
@@ -1133,6 +1134,7 @@ mod tests {
             description: "説明テンプレートとして追加します。".to_owned(),
             caution: "物理操作は自動実行しません。".to_owned(),
             duration_ms: 1_500,
+            visual: Default::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::DeclarativeOnlyV1,
                 source_model_fingerprint: "0123456789abcdef".repeat(4),

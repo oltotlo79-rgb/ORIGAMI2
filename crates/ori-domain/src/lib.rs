@@ -224,6 +224,8 @@ pub const MAX_INSTRUCTION_HINGE_RECORDS: usize = 100_000;
 pub const MAX_INSTRUCTION_TITLE_CHARS: usize = 120;
 pub const MAX_INSTRUCTION_DESCRIPTION_CHARS: usize = 4_000;
 pub const MAX_INSTRUCTION_CAUTION_CHARS: usize = 2_000;
+pub const MAX_INSTRUCTION_VISUAL_MARKERS: usize = 64;
+pub const MAX_INSTRUCTION_MARKER_LABEL_CHARS: usize = 120;
 pub const MIN_INSTRUCTION_DURATION_MS: u32 = 100;
 pub const MAX_INSTRUCTION_DURATION_MS: u32 = 600_000;
 pub const MIN_INSTRUCTION_ANGLE_DEGREES: f64 = 0.0;
@@ -248,7 +250,45 @@ pub struct InstructionStep {
     pub description: String,
     pub caution: String,
     pub duration_ms: u32,
+    #[serde(default)]
+    pub visual: InstructionVisual,
     pub pose: InstructionPose,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InstructionVisual {
+    pub camera: Option<InstructionCamera>,
+    pub arrows: Vec<InstructionArrow>,
+    pub focus_points: Vec<InstructionFocusPoint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct InstructionPoint3 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct InstructionCamera {
+    pub position: InstructionPoint3,
+    pub target: InstructionPoint3,
+    pub up: InstructionPoint3,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InstructionArrow {
+    pub start: InstructionPoint3,
+    pub end: InstructionPoint3,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InstructionFocusPoint {
+    pub position: InstructionPoint3,
+    pub radius: f64,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -320,6 +360,14 @@ pub enum InstructionTimelineValidationError {
     },
     CautionContainsUnsupportedControlCharacter {
         step_index: usize,
+    },
+    InvalidVisual {
+        step_index: usize,
+    },
+    TooManyVisualMarkers {
+        step_index: usize,
+        actual: usize,
+        maximum: usize,
     },
     DurationOutOfRange {
         step_index: usize,
@@ -420,6 +468,18 @@ impl fmt::Display for InstructionTimelineValidationError {
             Self::CautionContainsUnsupportedControlCharacter { step_index } => write!(
                 formatter,
                 "instruction step {step_index} caution contains an unsupported control character"
+            ),
+            Self::InvalidVisual { step_index } => write!(
+                formatter,
+                "instruction step {step_index} has an invalid camera or visual marker"
+            ),
+            Self::TooManyVisualMarkers {
+                step_index,
+                actual,
+                maximum,
+            } => write!(
+                formatter,
+                "instruction step {step_index} has {actual} visual markers; the limit is {maximum}"
             ),
             Self::DurationOutOfRange {
                 step_index,
@@ -568,6 +628,7 @@ fn validate_instruction_step(
             step_index,
         },
     )?;
+    validate_instruction_visual(&step.visual, step_index)?;
 
     if !(MIN_INSTRUCTION_DURATION_MS..=MAX_INSTRUCTION_DURATION_MS).contains(&step.duration_ms) {
         return Err(InstructionTimelineValidationError::DurationOutOfRange {
@@ -647,6 +708,62 @@ fn validate_instruction_step(
         }
     }
 
+    Ok(())
+}
+
+fn validate_instruction_visual(
+    visual: &InstructionVisual,
+    step_index: usize,
+) -> Result<(), InstructionTimelineValidationError> {
+    let marker_count = visual
+        .arrows
+        .len()
+        .saturating_add(visual.focus_points.len());
+    if marker_count > MAX_INSTRUCTION_VISUAL_MARKERS {
+        return Err(InstructionTimelineValidationError::TooManyVisualMarkers {
+            step_index,
+            actual: marker_count,
+            maximum: MAX_INSTRUCTION_VISUAL_MARKERS,
+        });
+    }
+    let finite = |point: InstructionPoint3| {
+        point.x.is_finite() && point.y.is_finite() && point.z.is_finite()
+    };
+    if let Some(camera) = visual.camera {
+        if !finite(camera.position)
+            || !finite(camera.target)
+            || !finite(camera.up)
+            || camera.position == camera.target
+            || camera.up
+                == (InstructionPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                })
+        {
+            return Err(InstructionTimelineValidationError::InvalidVisual { step_index });
+        }
+    }
+    for arrow in &visual.arrows {
+        if !finite(arrow.start)
+            || !finite(arrow.end)
+            || arrow.start == arrow.end
+            || arrow.label.chars().count() > MAX_INSTRUCTION_MARKER_LABEL_CHARS
+            || arrow.label.chars().any(char::is_control)
+        {
+            return Err(InstructionTimelineValidationError::InvalidVisual { step_index });
+        }
+    }
+    for focus in &visual.focus_points {
+        if !finite(focus.position)
+            || !focus.radius.is_finite()
+            || focus.radius <= 0.0
+            || focus.label.chars().count() > MAX_INSTRUCTION_MARKER_LABEL_CHARS
+            || focus.label.chars().any(char::is_control)
+        {
+            return Err(InstructionTimelineValidationError::InvalidVisual { step_index });
+        }
+    }
     Ok(())
 }
 
@@ -783,6 +900,7 @@ mod tests {
             description: "谷折りします。\n折り線を合わせます。".to_owned(),
             caution: "ずれに注意\tしてください。".to_owned(),
             duration_ms: 1_500,
+            visual: InstructionVisual::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                 source_model_fingerprint: "0123456789abcdef".repeat(4),
@@ -799,6 +917,7 @@ mod tests {
             description: "説明テンプレートです。自動実行しません。".to_owned(),
             caution: "層を確認してください。".to_owned(),
             duration_ms: 1_500,
+            visual: InstructionVisual::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::DeclarativeOnlyV1,
                 source_model_fingerprint: "0123456789abcdef".repeat(4),
@@ -810,9 +929,25 @@ mod tests {
 
     #[test]
     fn instruction_timeline_survives_json_round_trip() {
-        let timeline = InstructionTimeline {
-            steps: vec![valid_instruction_step()],
+        let mut step = valid_instruction_step();
+        step.visual = InstructionVisual {
+            camera: Some(InstructionCamera {
+                position: InstructionPoint3 { x: 4.0, y: 3.0, z: 5.0 },
+                target: InstructionPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+                up: InstructionPoint3 { x: 0.0, y: 1.0, z: 0.0 },
+            }),
+            arrows: vec![InstructionArrow {
+                start: InstructionPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+                end: InstructionPoint3 { x: 1.0, y: 0.0, z: 0.0 },
+                label: "fold".to_owned(),
+            }],
+            focus_points: vec![InstructionFocusPoint {
+                position: InstructionPoint3 { x: 0.5, y: 0.0, z: 0.0 },
+                radius: 0.1,
+                label: "corner".to_owned(),
+            }],
         };
+        let timeline = InstructionTimeline { steps: vec![step] };
 
         validate_instruction_timeline(&timeline).expect("valid timeline");
         let json = serde_json::to_string(&timeline).expect("serialize timeline");
@@ -822,6 +957,26 @@ mod tests {
 
         assert_eq!(restored, timeline);
         validate_instruction_timeline(&restored).expect("restored timeline");
+    }
+
+    #[test]
+    fn legacy_instruction_step_defaults_visuals_and_invalid_visuals_fail_closed() {
+        let step = valid_instruction_step();
+        let mut json = serde_json::to_value(&step).expect("serialize step");
+        json.as_object_mut().expect("step object").remove("visual");
+        let restored: InstructionStep = serde_json::from_value(json).expect("legacy step");
+        assert_eq!(restored.visual, InstructionVisual::default());
+
+        let mut invalid = step;
+        invalid.visual.focus_points.push(InstructionFocusPoint {
+            position: InstructionPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+            radius: 0.0,
+            label: String::new(),
+        });
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline { steps: vec![invalid] }),
+            Err(InstructionTimelineValidationError::InvalidVisual { step_index: 0 })
+        ));
     }
 
     #[test]

@@ -46,6 +46,11 @@ const SNAPSHOT = {
       description: 'Keep the edges aligned',
       caution: '',
       duration_ms: 1_500,
+      visual: {
+        camera: null,
+        arrows: [],
+        focus_points: [],
+      },
       pose: {
         model: 'absolute_hinge_angles_v1',
         source_model_fingerprint: FINGERPRINT,

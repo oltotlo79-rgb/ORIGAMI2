@@ -1561,6 +1561,7 @@ mod tests {
             description: "辺を正確に重ねます。".to_owned(),
             caution: "強く折りすぎないでください。".to_owned(),
             duration_ms: 1_500,
+            visual: Default::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                 source_model_fingerprint: "0123456789abcdef".repeat(4),

@@ -12,6 +12,7 @@ import {
   removeInstructionStep,
   replaceInstructionStepPose,
   updateInstructionStepMetadata,
+  type InstructionVisual,
   type ProjectSnapshot,
 } from '../lib/coreClient'
 import type { FoldPreviewAppliedPoseSnapshot } from '../lib/foldPreviewAppliedPose'
@@ -56,6 +57,7 @@ type InstructionEditorState = {
   description: string
   caution: string
   durationMs: string
+  visualJson: string
 }
 
 type InstructionTimelinePanelProps = {
@@ -179,6 +181,7 @@ export function InstructionTimelinePanel({
       description: selectedStep.description,
       caution: selectedStep.caution,
       durationMs: String(selectedStep.durationMs),
+      visualJson: JSON.stringify(selectedStep.visual, null, 2),
     })
     setEditorError(null)
   }, [selectedStep])
@@ -391,6 +394,13 @@ export function InstructionTimelinePanel({
       setEditorError('invalid_metadata')
       return
     }
+    let visual: InstructionVisual
+    try {
+      visual = JSON.parse(editor.visualJson) as InstructionVisual
+    } catch {
+      setEditorError('invalid_metadata')
+      return
+    }
     cancelPlayback('revision_changed')
     const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
       updateInstructionStepMetadata(
@@ -402,6 +412,7 @@ export function InstructionTimelinePanel({
         metadata.description,
         metadata.caution,
         metadata.durationMs,
+        visual,
       ))
     setEditorError(succeeded ? null : 'update_failed')
     setNotice(succeeded
@@ -734,6 +745,20 @@ export function InstructionTimelinePanel({
                       ms
                     </span>
                   </label>
+                  <label>
+                    <span>{selectLocalizedText(locale, TEXT.visualLabel)}</span>
+                    <textarea
+                      value={editor.visualJson}
+                      rows={10}
+                      spellCheck={false}
+                      disabled={editingDisabled}
+                      onChange={(event) => setEditor({
+                        ...editor,
+                        visualJson: event.currentTarget.value,
+                      })}
+                    />
+                    <small>{selectLocalizedText(locale, TEXT.visualHelp)}</small>
+                  </label>
                   <div className="instruction-editor-actions">
                     <button type="submit" disabled={editingDisabled}>
                       {selectLocalizedText(locale, TEXT.saveMetadata)}
@@ -910,6 +935,11 @@ const TEXT = Object.freeze({
   cautionLabel: localized('注意', 'Caution'),
   durationLabel: localized('表示時間', 'Display time'),
   saveMetadata: localized('説明を保存', 'Save details'),
+  visualLabel: localized('カメラ・矢印・注目箇所（JSON）', 'Camera, arrows, and focus points (JSON)'),
+  visualHelp: localized(
+    'cameraはposition/target/up、arrowsはstart/end/label、focus_pointsはposition/radius/labelを指定します。',
+    'Set camera position/target/up, arrow start/end/label, and focus-point position/radius/label.',
+  ),
   showIn3d: localized('3Dに表示', 'Show in 3D'),
   updateCurrentPose: localized(
     '現在の3D姿勢で更新',

@@ -71,8 +71,9 @@ use ori_domain::{
     ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
     GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionHingeAngle, InstructionPose,
     InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline,
-    LayerContentKindV1, LayerId, LayerRecordV1, LengthDisplayUnit, MAX_INSTRUCTION_HINGES_PER_STEP,
-    MAX_INSTRUCTION_STEPS, Paper, Point2, ProjectId, ProjectLayerDocumentV1, RgbaColor, VertexId,
+    InstructionVisual, LayerContentKindV1, LayerId, LayerRecordV1, LengthDisplayUnit,
+    MAX_INSTRUCTION_HINGES_PER_STEP, MAX_INSTRUCTION_STEPS, Paper, Point2, ProjectId,
+    ProjectLayerDocumentV1, RgbaColor, VertexId,
 };
 use ori_formats::{
     CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldBoundaryCandidateId,
@@ -2995,6 +2996,7 @@ fn append_named_technique_instruction_steps(
             description: step.description,
             caution: step.caution,
             duration_ms: step.duration_ms,
+            visual: Default::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::DeclarativeOnlyV1,
                 source_model_fingerprint: fingerprint.clone(),
@@ -3055,6 +3057,7 @@ async fn add_instruction_step(
                 description,
                 caution,
                 duration_ms,
+                visual: Default::default(),
                 pose,
             },
         },
@@ -3073,6 +3076,7 @@ fn update_instruction_step_metadata(
     description: String,
     caution: String,
     duration_ms: u32,
+    visual: InstructionVisual,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
     execute_command(
@@ -3086,6 +3090,7 @@ fn update_instruction_step_metadata(
             description,
             caution,
             duration_ms,
+            visual,
         },
     )
 }
@@ -7994,6 +7999,7 @@ mod tests {
                     description: "平らな開始姿勢".to_owned(),
                     caution: String::new(),
                     duration_ms: 1_500,
+                    visual: Default::default(),
                     pose: InstructionPose {
                         model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                         source_model_fingerprint: fingerprint.clone(),
@@ -8042,6 +8048,7 @@ mod tests {
             description: String::new(),
             caution: String::new(),
             duration_ms: 1_000,
+            visual: Default::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                 source_model_fingerprint: current_fingerprint,
@@ -8153,6 +8160,7 @@ mod tests {
             description: String::new(),
             caution: String::new(),
             duration_ms: 1_000,
+            visual: Default::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                 source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
@@ -8486,6 +8494,7 @@ mod tests {
                     description: String::new(),
                     caution: String::new(),
                     duration_ms: 1_000,
+                    visual: Default::default(),
                     pose: InstructionPose {
                         model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                         source_model_fingerprint: old_fingerprint.clone(),
@@ -8543,6 +8552,7 @@ mod tests {
                     description: String::new(),
                     caution: String::new(),
                     duration_ms: 1_000,
+                    visual: Default::default(),
                     pose: InstructionPose {
                         model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                         source_model_fingerprint: fingerprint,
@@ -11830,6 +11840,7 @@ mod tests {
             description: String::new(),
             caution: String::new(),
             duration_ms: 1_000,
+            visual: Default::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                 source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),

@@ -781,6 +781,7 @@ mod tests {
                     description: String::new(),
                     caution: String::new(),
                     duration_ms: 1_000,
+                    visual: Default::default(),
                     pose: InstructionPose {
                         model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                         source_model_fingerprint: FINGERPRINT.to_owned(),
@@ -802,6 +803,7 @@ mod tests {
             description: "説明テンプレート".to_owned(),
             caution: "物理操作なし".to_owned(),
             duration_ms: 1_000,
+            visual: Default::default(),
             pose: InstructionPose {
                 model: InstructionPoseModel::DeclarativeOnlyV1,
                 source_model_fingerprint: "f".repeat(64),

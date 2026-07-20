@@ -207,6 +207,25 @@ export type InstructionPose = {
   hinge_angles: readonly InstructionHingeAngle[]
 }
 
+export type InstructionPoint3 = { x: number; y: number; z: number }
+export type InstructionVisual = {
+  camera: {
+    position: InstructionPoint3
+    target: InstructionPoint3
+    up: InstructionPoint3
+  } | null
+  arrows: readonly {
+    start: InstructionPoint3
+    end: InstructionPoint3
+    label: string
+  }[]
+  focus_points: readonly {
+    position: InstructionPoint3
+    radius: number
+    label: string
+  }[]
+}
+
 export type NamedTechniqueTimelineSourceKindV1 =
   | 'technique'
   | 'parameter'
@@ -254,6 +273,7 @@ export type InstructionStep = {
   description: string
   caution: string
   duration_ms: number
+  visual: InstructionVisual
   pose: InstructionPose
 }
 
@@ -846,6 +866,7 @@ export function updateInstructionStepMetadata(
   description: string,
   caution: string,
   durationMs: number,
+  visual: InstructionVisual,
 ) {
   return invoke<ProjectSnapshot>('update_instruction_step_metadata', {
     expectedProjectInstanceId,
@@ -856,6 +877,7 @@ export function updateInstructionStepMetadata(
     description,
     caution,
     durationMs,
+    visual,
   })
 }
 

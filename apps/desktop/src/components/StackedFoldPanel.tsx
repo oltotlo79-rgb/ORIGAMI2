@@ -35,7 +35,7 @@ type View =
   | Readonly<{ kind: 'idle' }>
   | Readonly<{ kind: 'reading' }>
   | Readonly<{ kind: 'ready'; response: StackedFoldReadResponse; applyFailed: boolean }>
-  | Readonly<{ kind: 'failed'; reason: 'analysis' | 'invalid' | 'apply' | 'stale' }>
+  | Readonly<{ kind: 'failed'; reason: 'analysis' | 'invalid' | 'apply' | 'stale' | 'cycle_nonclosing' | 'cycle_path_uncertified' }>
   | Readonly<{ kind: 'refresh_failed' }>
 
 export function StackedFoldPanel({
@@ -117,7 +117,14 @@ export function StackedFoldPanel({
       tokenRef.current = result.response.transactionProposal.transactionToken
       setView({ kind: 'ready', response: result.response, applyFailed: false })
     } else if (result.status === 'failed') {
-      setView({ kind: 'failed', reason: result.reason === 'invalid_response' ? 'invalid' : 'analysis' })
+      setView({
+        kind: 'failed',
+        reason: result.reason === 'invalid_response'
+          ? 'invalid'
+          : result.reason === 'cycle_nonclosing' || result.reason === 'cycle_path_uncertified'
+            ? result.reason
+            : 'analysis',
+      })
     } else if (result.reason === 'stale_authority') {
       setView({ kind: 'failed', reason: 'stale' })
     } else {
@@ -208,6 +215,10 @@ export function StackedFoldPanel({
         <p role="alert">
           {view.reason === 'stale'
             ? t('編集内容が変わりました。もう一度確認してください。', 'The project changed. Verify again.')
+            : view.reason === 'cycle_nonclosing'
+              ? t('循環hingeの終端が閉じないため適用できません。', 'The cyclic hinge endpoint does not close, so apply is disabled.')
+              : view.reason === 'cycle_path_uncertified'
+                ? t('循環hingeの終端は閉じますが、連続経路を証明できないため適用できません。', 'The cyclic endpoint closes, but its continuous path is uncertified, so apply is disabled.')
             : view.reason === 'apply'
               ? t('適用できませんでした。プレビューは失効しました。', 'Apply failed; the preview is no longer trusted.')
               : t('この入力ではnative証明を完成できませんでした。', 'A native proof could not be completed for this input.')}
@@ -226,8 +237,10 @@ export function StackedFoldPanel({
           <dl>
             <div><dt>{t('対象面', 'Target faces')}</dt><dd>{view.response.targetFaces.length}</dd></div>
             <div><dt>{t('折り線', 'Creases')}</dt><dd>{view.response.materialSegments.length}</dd></div>
+            <div><dt>{t('対象hinge', 'Target hinges')}</dt><dd>{view.response.topologyProof.targetHingeCount}</dd></div>
             <div><dt>{t('終端衝突', 'Endpoint collision')}</dt><dd>{view.response.endpointCollision.hasBlockingHold ? t('停止', 'Blocked') : t('なし', 'Clear')}</dd></div>
             <div><dt>{t('連続経路', 'Continuous path')}</dt><dd>{view.response.continuousPath.continuousClearanceCertified ? t('証明済み', 'Certified') : t('未証明', 'Uncertified')}</dd></div>
+            <div><dt>{t('経路証明model', 'Path certificate model')}</dt><dd>{view.response.continuousPath.continuousCertificateModelId ?? t('なし', 'None')}</dd></div>
             <div><dt>{t('層順序', 'Layer order')}</dt><dd>{view.response.flatEndpointLayerOrder.certified ? t('証明済み', 'Certified') : t('未証明', 'Uncertified')}</dd></div>
             <div><dt>{t('追加頂点 / 辺', 'Added vertices / edges')}</dt><dd>{view.response.transactionProposal.addedVertexCount} / {view.response.transactionProposal.addedEdgeCount}</dd></div>
           </dl>

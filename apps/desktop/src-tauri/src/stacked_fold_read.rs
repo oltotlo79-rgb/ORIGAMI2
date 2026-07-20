@@ -44,6 +44,8 @@ const UNAVAILABLE_MESSAGE: &str =
 const INVALID_REQUEST_MESSAGE: &str = "The stacked-fold line request is invalid.";
 const ANALYSIS_FAILED_MESSAGE: &str =
     "The stacked-fold proposal is unsupported or could not be certified.";
+const CYCLE_NONCLOSING_MESSAGE: &str = "stacked_fold_cycle_nonclosing";
+const CYCLE_PATH_UNCERTIFIED_MESSAGE: &str = "stacked_fold_cycle_path_uncertified";
 const BUSY_MESSAGE: &str = "Another native pose analysis is already running.";
 const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
@@ -364,11 +366,11 @@ pub(super) async fn propose_current_stacked_fold_read(
                 initial,
                 candidate.requested_angle_degrees(),
             )
-            .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+            .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned())?;
             // Collision and safe-stop diagnostics currently accept only an
             // issuer-bound material-tree pose. Never downgrade a proved graph
             // endpoint into that authority.
-            return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+            return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
         }
         let prepared_target = prepare_stacked_fold_target_model_v1(
             audited_target.into_geometry(),

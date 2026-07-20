@@ -632,7 +632,27 @@ export function proposeCurrentStackedFoldRead(
     const response = normalizeStackedFoldReadResponse(value, request)
     if (!response) throw new Error('invalid stacked-fold response')
     return response
+  }, (error: unknown) => {
+    if (error === 'stacked_fold_cycle_nonclosing') {
+      throw new StackedFoldReadNativeError('cycle_nonclosing')
+    }
+    if (error === 'stacked_fold_cycle_path_uncertified') {
+      throw new StackedFoldReadNativeError('cycle_path_uncertified')
+    }
+    throw new StackedFoldReadNativeError('native_failure')
   })
+}
+
+export class StackedFoldReadNativeError extends Error {
+  readonly reason:
+    | 'cycle_nonclosing'
+    | 'cycle_path_uncertified'
+    | 'native_failure'
+
+  constructor(reason: StackedFoldReadNativeError['reason']) {
+    super('stacked-fold read failed')
+    this.reason = reason
+  }
 }
 
 export function cancelStackedFoldTransactionPreview(token: string): Promise<void> {

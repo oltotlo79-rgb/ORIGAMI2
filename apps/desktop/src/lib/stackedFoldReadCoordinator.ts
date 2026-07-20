@@ -28,7 +28,7 @@ export type StackedFoldReadCoordinatorState =
       status: 'failed'
       generation: number
       request: StackedFoldReadRequest
-      reason: 'native_failure' | 'invalid_response'
+      reason: 'native_failure' | 'invalid_response' | 'cycle_nonclosing' | 'cycle_path_uncertified'
     }>
 
 export type StackedFoldReadCoordinatorResult =
@@ -37,7 +37,7 @@ export type StackedFoldReadCoordinatorResult =
       status: 'cancelled'
       reason: 'superseded' | 'invalidated' | 'disposed' | 'stale_authority'
     }>
-  | Readonly<{ status: 'failed'; reason: 'native_failure' | 'invalid_response' }>
+  | Readonly<{ status: 'failed'; reason: 'native_failure' | 'invalid_response' | 'cycle_nonclosing' | 'cycle_path_uncertified' }>
 
 export type StackedFoldReadCoordinator = Readonly<{
   read(request: StackedFoldReadRequest): Promise<StackedFoldReadCoordinatorResult>
@@ -218,7 +218,7 @@ export function createStackedFoldReadCoordinator(
             }
             settle(owner, { status: 'ready', response })
           },
-          () => {
+          (error: unknown) => {
             if (owner.settled) return
             if (active !== owner || disposed || generation !== owner.generation) {
               settle(owner, {
@@ -227,16 +227,22 @@ export function createStackedFoldReadCoordinator(
               })
               return
             }
+            const reason =
+              typeof error === 'object' && error !== null && 'reason' in error &&
+              (error.reason === 'cycle_nonclosing' ||
+                error.reason === 'cycle_path_uncertified')
+                ? error.reason
+                : 'native_failure'
             publish(
               {
                 status: 'failed',
                 generation: ownerGeneration,
                 request: snapshot,
-                reason: 'native_failure',
+                reason,
               },
               ownerGeneration,
             )
-            settle(owner, { status: 'failed', reason: 'native_failure' })
+            settle(owner, { status: 'failed', reason })
           },
         )
       })

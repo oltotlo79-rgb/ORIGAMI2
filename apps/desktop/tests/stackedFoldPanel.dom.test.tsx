@@ -246,4 +246,25 @@ describe('StackedFoldPanel', () => {
     expect(transport.apply).toHaveBeenCalledTimes(1)
     expect(refresh).toHaveBeenCalledTimes(2)
   })
+
+  it.each([
+    ['cycle_nonclosing', 'The cyclic hinge endpoint does not close, so apply is disabled.'],
+    ['cycle_path_uncertified', 'The cyclic endpoint closes, but its continuous path is uncertified, so apply is disabled.'],
+  ] as const)('shows the bounded cycle failure %s without an apply action', async (reason, copy) => {
+    transport.cancel.mockResolvedValue(undefined)
+    transport.preview.mockRejectedValue({ reason })
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    expect(await screen.findByText(copy)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Apply stacked fold' })).toBeNull()
+  })
 })

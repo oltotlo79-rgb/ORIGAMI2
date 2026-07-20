@@ -627,6 +627,7 @@ impl ProjectState {
             numeric_expressions,
             geometric_constraints: self.editor.geometric_constraints().clone(),
             layers: self.editor.project_layers().clone(),
+            annotations: ori_domain::AnnotationDocumentV1::default(),
             element_metadata: self.editor.element_metadata().clone(),
             texture_assets: self.texture_assets.clone(),
         };

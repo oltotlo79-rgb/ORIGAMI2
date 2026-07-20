@@ -13,10 +13,11 @@ mod svg;
 use std::collections::BTreeSet;
 
 use ori_domain::{
-    AssetId, ConstraintId, CreasePattern, EdgeId, GeometricConstraintDocumentV1,
-    GeometricConstraintDocumentValidationErrorV1, GeometricConstraintKindV1, InstructionPose,
-    InstructionTimeline, InstructionTimelineValidationError, Paper, ProjectId,
-    ProjectLayerDocumentV1, ProjectLayerDocumentValidationErrorV1, VertexId,
+    AnnotationDocumentV1, AssetId, ConstraintId, CreasePattern, EdgeId,
+    GeometricConstraintDocumentV1, GeometricConstraintDocumentValidationErrorV1,
+    GeometricConstraintKindV1, InstructionPose, InstructionTimeline,
+    InstructionTimelineValidationError, Paper, ProjectId, ProjectLayerDocumentV1,
+    ProjectLayerDocumentValidationErrorV1, VertexId, validate_annotation_document_v1,
     validate_geometric_constraint_document_v1, validate_instruction_timeline,
     validate_project_layer_document_against_pattern_v1,
 };
@@ -303,6 +304,8 @@ pub struct ProjectDocument {
     /// The exact default is omitted so legacy V1 JSON remains byte-stable.
     #[serde(default, skip_serializing_if = "ProjectLayerDocumentV1::is_default")]
     pub layers: ProjectLayerDocumentV1,
+    #[serde(default, skip_serializing_if = "AnnotationDocumentV1::is_empty")]
+    pub annotations: AnnotationDocumentV1,
     #[serde(
         default,
         skip_serializing_if = "ori_domain::ElementMetadataDocumentV1::is_empty"
@@ -329,6 +332,7 @@ impl ProjectDocument {
             numeric_expressions: ProjectNumericExpressions::default(),
             geometric_constraints: GeometricConstraintDocumentV1::default(),
             layers: ProjectLayerDocumentV1::default(),
+            annotations: AnnotationDocumentV1::default(),
             element_metadata: ori_domain::ElementMetadataDocumentV1::default(),
             texture_assets: Vec::new(),
         }
@@ -457,6 +461,8 @@ pub enum FormatError {
     InvalidGeometricConstraints(#[from] GeometricConstraintDocumentValidationErrorV1),
     #[error("project layer metadata is invalid: {0}")]
     InvalidProjectLayers(#[from] ProjectLayerDocumentValidationErrorV1),
+    #[error("project annotation metadata is invalid")]
+    InvalidAnnotations,
     #[error(
         "cannot validate geometric constraints against {actual} crease-pattern vertices; the hard maximum is {maximum}"
     )]
@@ -495,6 +501,7 @@ fn write_project_json_with_size_limit(
     validate_current_vertex_expression_bindings(document)?;
     validate_project_geometric_constraints(document)?;
     validate_project_layer_document_against_pattern_v1(&document.layers, &document.crease_pattern)?;
+    validate_project_annotations(document)?;
     let bytes = serde_json::to_vec_pretty(document)?;
     ensure_project_json_size(bytes.len(), requested_limit)?;
     Ok(bytes)
@@ -520,7 +527,25 @@ pub fn read_project_json_with_limits(
     validate_current_vertex_expression_bindings(&document)?;
     validate_project_geometric_constraints(&document)?;
     validate_project_layer_document_against_pattern_v1(&document.layers, &document.crease_pattern)?;
+    validate_project_annotations(&document)?;
     Ok(document)
+}
+
+fn validate_project_annotations(document: &ProjectDocument) -> Result<(), FormatError> {
+    validate_annotation_document_v1(&document.annotations)
+        .map_err(|_| FormatError::InvalidAnnotations)?;
+    for annotation in &document.annotations.annotations {
+        let layer = document
+            .layers
+            .layers
+            .iter()
+            .find(|layer| layer.id == annotation.layer)
+            .ok_or(FormatError::InvalidAnnotations)?;
+        if layer.content_kind != ori_domain::LayerContentKindV1::Annotation {
+            return Err(FormatError::InvalidAnnotations);
+        }
+    }
+    Ok(())
 }
 
 fn validate_project_envelope(document: &ProjectDocument) -> Result<(), FormatError> {

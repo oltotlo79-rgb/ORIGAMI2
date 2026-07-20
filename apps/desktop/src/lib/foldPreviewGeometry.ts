@@ -30,9 +30,10 @@ const TRIANGLE_COMPONENTS = 3 * POSITION_COMPONENTS
 export function createFoldPreviewFaceGeometry(
   polygon: readonly FoldPreviewGeometryPoint[],
   visualThickness: number,
+  holes: readonly (readonly FoldPreviewGeometryPoint[])[] = [],
 ): BufferGeometry {
   validateThickness(visualThickness)
-  const { signedDoubleArea, triangles } = validatedTriangulation(polygon)
+  const { points, triangles } = validatedTriangulation(polygon, holes)
 
   const halfThickness = visualThickness * 0.5
   if (!Number.isFinite(halfThickness) || halfThickness <= 0) {
@@ -44,29 +45,24 @@ export function createFoldPreviewFaceGeometry(
 
   const frontStart = vertexCount(positions)
   for (const triangle of triangles) {
-    appendCapTriangle(positions, normals, polygon, triangle, halfThickness, true)
+    appendCapTriangle(positions, normals, points, triangle, halfThickness, true)
   }
   const frontCount = vertexCount(positions) - frontStart
 
   const backStart = vertexCount(positions)
   for (const triangle of triangles) {
-    appendCapTriangle(positions, normals, polygon, triangle, -halfThickness, false)
+    appendCapTriangle(positions, normals, points, triangle, -halfThickness, false)
   }
   const backCount = vertexCount(positions) - backStart
 
   const sideStart = vertexCount(positions)
-  const polygonWinding = Math.sign(signedDoubleArea)
-  for (let index = 0; index < polygon.length; index += 1) {
-    const current = polygon[index]
-    const next = polygon[(index + 1) % polygon.length]
-    appendSide(
-      positions,
-      normals,
-      current,
-      next,
-      halfThickness,
-      polygonWinding,
-    )
+  for (const boundary of [polygon, ...holes]) {
+    const winding = Math.sign(polygonSignedDoubleArea(boundary))
+    for (let index = 0; index < boundary.length; index += 1) {
+      const current = boundary[index]
+      const next = boundary[(index + 1) % boundary.length]
+      appendSide(positions, normals, current, next, halfThickness, winding)
+    }
   }
   const sideCount = vertexCount(positions) - sideStart
 
@@ -125,18 +121,38 @@ export function triangulateFoldPreviewPolygon(
   return validatedTriangulation(polygon).triangles
 }
 
-function validatedTriangulation(polygon: readonly FoldPreviewGeometryPoint[]) {
+function validatedTriangulation(
+  polygon: readonly FoldPreviewGeometryPoint[],
+  holes: readonly (readonly FoldPreviewGeometryPoint[])[] = [],
+) {
   validatePolygon(polygon)
   const signedDoubleArea = polygonSignedDoubleArea(polygon)
   if (signedDoubleArea === 0) {
     throw new RangeError('fold preview polygon must have non-zero area')
   }
+  for (const hole of holes) {
+    validatePolygon(hole)
+    if (polygonSignedDoubleArea(hole) === 0) {
+      throw new RangeError('fold preview hole must have non-zero area')
+    }
+  }
   const contour = polygon.map((point) => new Vector2(point.x, point.z))
-  const rawTriangles = ShapeUtils.triangulateShape(contour, [])
-  validateTriangulation(polygon, rawTriangles, signedDoubleArea)
+  const holeContours = holes.map((hole) =>
+    hole.map((point) => new Vector2(point.x, point.z)))
+  const rawTriangles = ShapeUtils.triangulateShape(contour, holeContours)
+  const points = [...polygon, ...holes.flatMap((hole) => [...hole])]
+  const expectedDoubleArea = Math.abs(signedDoubleArea)
+    - holes.reduce(
+      (sum, hole) => sum + Math.abs(polygonSignedDoubleArea(hole)),
+      0,
+    )
+  if (!(expectedDoubleArea > 0) || !Number.isFinite(expectedDoubleArea)) {
+    throw new RangeError('fold preview holes consume the complete polygon')
+  }
+  validateTriangulation(points, rawTriangles, expectedDoubleArea)
   const triangles = rawTriangles.map(([first, second, third]) =>
     [first, second, third] as FoldPreviewTriangleIndices)
-  return { signedDoubleArea, triangles }
+  return { points, triangles }
 }
 
 function validatePolygon(polygon: readonly FoldPreviewGeometryPoint[]) {
@@ -194,7 +210,7 @@ function polygonSignedDoubleArea(polygon: readonly FoldPreviewGeometryPoint[]) {
 function validateTriangulation(
   polygon: readonly FoldPreviewGeometryPoint[],
   triangles: number[][],
-  polygonSignedDoubleArea: number,
+  expectedDoubleArea: number,
 ) {
   if (triangles.length === 0) {
     throw new RangeError('fold preview polygon triangulation produced no faces')
@@ -221,7 +237,6 @@ function validateTriangulation(
     triangulatedDoubleArea += Math.abs(triangleArea)
   }
 
-  const expectedDoubleArea = Math.abs(polygonSignedDoubleArea)
   const comparisonScale = Math.max(expectedDoubleArea, triangulatedDoubleArea)
   const tolerance = comparisonScale * Number.EPSILON * Math.max(32, polygon.length * 8)
   if (

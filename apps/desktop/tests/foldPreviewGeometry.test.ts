@@ -73,6 +73,30 @@ test('weak-convex input preserves its collinear boundary point and valid side wa
   assert.equal(disposed, true)
 })
 
+test('a clockwise hole removes both caps and creates inward thickness walls', () => {
+  const outer = [
+    { x: -3, z: -3 },
+    { x: 3, z: -3 },
+    { x: 3, z: 3 },
+    { x: -3, z: 3 },
+  ] as const
+  const hole = [
+    { x: -1, z: -1 },
+    { x: -1, z: 1 },
+    { x: 1, z: 1 },
+    { x: 1, z: -1 },
+  ] as const
+  const geometry = createFoldPreviewFaceGeometry(outer, 0.2, [hole])
+
+  assert.equal(geometry.groups.length, 3)
+  assert.equal(geometry.groups[2].count, (outer.length + hole.length) * 6)
+  assert.ok(geometry.groups[0].count > 6)
+  assert.equal(geometry.groups[0].count, geometry.groups[1].count)
+  assertBounds(geometry, [-3, -0.1, -3], [3, 0.1, 3])
+  assertFiniteGeometry(geometry)
+  assertGroupNormalsAndWinding(geometry)
+})
+
 test('invalid, non-finite, and degenerate inputs fail deterministically', () => {
   const cases: ReadonlyArray<readonly [string, () => unknown]> = [
     ['too few points', () => createFoldPreviewFaceGeometry(rectangle.slice(0, 2), 0.2)],

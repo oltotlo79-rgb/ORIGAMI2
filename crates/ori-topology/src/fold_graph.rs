@@ -484,12 +484,13 @@ fn ensure_simple_material_walks(walks: &PaperWalkSet) -> Result<(), FoldGraphErr
         let mut vertices = HashSet::with_capacity(walk.half_edges.len());
         let mut repeated = false;
         for half_edge in &walk.half_edges {
-            let origin = walks
+            let record = walks
                 .half_edges()
                 .get(half_edge.0)
-                .map(|record| record.origin)
                 .ok_or(FoldGraphError::InternalInvariant)?;
-            repeated |= !vertices.insert(origin);
+            if record.kind != EdgeKind::Cut {
+                repeated |= !vertices.insert(record.origin);
+            }
         }
         if repeated {
             found_repeated_vertex = true;
@@ -545,23 +546,48 @@ where
         if walk_index == walks.exterior() || walk.orientation != Orientation::CounterClockwise {
             continue;
         }
-        let half_edges = walk
+        let records = walk
             .half_edges
             .iter()
             .map(|index| {
                 walks
                     .half_edges()
                     .get(index.0)
-                    .map(|half_edge| HalfEdgeRef {
-                        edge: half_edge.edge,
-                        origin: half_edge.origin,
-                        destination: half_edge.destination,
+                    .map(|half_edge| {
+                        (
+                            half_edge.kind,
+                            HalfEdgeRef {
+                                edge: half_edge.edge,
+                                origin: half_edge.origin,
+                                destination: half_edge.destination,
+                            },
+                        )
                     })
                     .ok_or({
                         CooperativeOperationError::Operation(FoldGraphError::InternalInvariant)
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let mut cut_occurrences = HashMap::<EdgeId, usize>::new();
+        for (kind, half_edge) in &records {
+            if *kind == EdgeKind::Cut {
+                *cut_occurrences.entry(half_edge.edge).or_default() += 1;
+            }
+        }
+        let half_edges = records
+            .iter()
+            .filter(|(kind, half_edge)| {
+                *kind != EdgeKind::Cut || cut_occurrences.get(&half_edge.edge).copied() != Some(2)
+            })
+            .map(|(_, half_edge)| *half_edge)
+            .collect::<Vec<_>>();
+        let seam_half_edges = records
+            .iter()
+            .filter(|(kind, half_edge)| {
+                *kind == EdgeKind::Cut && cut_occurrences.get(&half_edge.edge).copied() == Some(2)
+            })
+            .map(|(_, half_edge)| *half_edge)
+            .collect::<Vec<_>>();
         let face = face_from_walk(
             identity_namespace,
             BoundaryWalk {
@@ -570,6 +596,13 @@ where
             },
         )
         .map_err(|error| CooperativeOperationError::Operation(FoldGraphError::FaceBuild(error)))?;
+        let mut face = face;
+        if !seam_half_edges.is_empty() {
+            face.seams.push(BoundaryWalk {
+                half_edges: seam_half_edges,
+                signed_double_area: 0.0,
+            });
+        }
         if !keys.insert(face.key) || !ids.insert(face.id) {
             return Err(CooperativeOperationError::Operation(
                 FoldGraphError::InternalInvariant,
@@ -1340,6 +1373,41 @@ mod tests {
                 Some(EdgeIncidence::Cut { left, right }) if left == right
             )
         }));
+    }
+
+    #[test]
+    fn boundary_connected_open_cut_is_removed_from_the_outer_cycle_and_kept_as_a_seam() {
+        let namespace = fixed_id(1);
+        let a = vertex(0xa01, 0.0, 0.0);
+        let b = vertex(0xa02, 8.0, 0.0);
+        let c = vertex(0xa03, 8.0, 8.0);
+        let d = vertex(0xa04, 0.0, 8.0);
+        let tip = vertex(0xa05, 4.0, 4.0);
+        let boundary = [&a, &b, &c, &d];
+        let cut = edge(0xa20, &a, &tip, EdgeKind::Cut);
+        let mut edges = boundary_edges(&boundary, 0xa10);
+        edges.push(cut.clone());
+        let pattern = CreasePattern {
+            vertices: vec![a.clone(), b.clone(), c.clone(), d.clone(), tip],
+            edges,
+        };
+        let source_paper = paper(&boundary, true);
+
+        let snapshot = extract_fold_graph_snapshot(input(namespace, &source_paper, &pattern))
+            .expect("boundary-connected seam");
+        assert_eq!(snapshot.faces.len(), 1);
+        assert_eq!(snapshot.faces[0].outer.half_edges.len(), 4);
+        assert_eq!(snapshot.faces[0].seams.len(), 1);
+        assert_eq!(snapshot.faces[0].seams[0].half_edges.len(), 2);
+        assert_eq!(snapshot.material_components.len(), 1);
+        assert!(matches!(
+            snapshot
+                .edge_incidence
+                .iter()
+                .find(|(edge, _)| *edge == cut.id)
+                .map(|(_, incidence)| incidence),
+            Some(EdgeIncidence::Cut { left, right }) if left == right
+        ));
     }
 
     fn hinge_faces(snapshot: &TopologySnapshot, edge: EdgeId) -> [FaceId; 2] {

@@ -16,6 +16,7 @@ export type FoldPreviewWorldVertex = Readonly<{
 export type FoldPreviewFaceModel = Readonly<{
   id: string
   polygon: readonly FoldPreviewWorldVertex[]
+  holes?: readonly (readonly FoldPreviewWorldVertex[])[]
 }>
 
 export type FoldPreviewHingeModel = Readonly<{
@@ -609,12 +610,15 @@ function parseFaces(
     const key = faceKey(rawFace.key)
     const area = positiveNumber(rawFace.area)
     const signedDoubleArea = positiveNumber(rawFace.outer.signed_double_area)
+    const rawHoles = rawFace.holes === undefined ? [] : rawFace.holes
+    const rawSeams = rawFace.seams === undefined ? [] : rawFace.seams
     if (
       !id
       || !key
       || area === null
       || signedDoubleArea === null
-      || area !== signedDoubleArea * 0.5
+      || !Array.isArray(rawHoles)
+      || !Array.isArray(rawSeams)
       || faceIds.has(id)
     ) return null
     const keyToken = key.join(',')
@@ -631,13 +635,37 @@ function parseFaces(
     if (worldPolygon.some((point) => !point)) return null
     const resolvedWorldPolygon = worldPolygon as FoldPreviewWorldVertex[]
     if (!hasRenderableCounterClockwiseArea(resolvedWorldPolygon)) return null
+    const worldHoles: FoldPreviewWorldVertex[][] = []
+    let holeDoubleArea = 0
+    for (const rawHole of rawHoles) {
+      if (!isRecord(rawHole) || !Array.isArray(rawHole.half_edges)) return null
+      const measuredArea = finiteNumber(rawHole.signed_double_area)
+      const halfEdges = parseHalfEdges(rawHole.half_edges, positions)
+      if (measuredArea === null || measuredArea >= 0 || !halfEdges) return null
+      const points = halfEdges.map((edge) => positions.get(edge.origin))
+      if (points.some((point) => !point)) return null
+      const world = (points as PaperPoint[]).map((point) => frame.toWorld(point))
+      if (world.some((point) => !point)) return null
+      worldHoles.push(world as FoldPreviewWorldVertex[])
+      holeDoubleArea += Math.abs(measuredArea)
+    }
+    for (const rawSeam of rawSeams) {
+      if (!isRecord(rawSeam) || !Array.isArray(rawSeam.half_edges)) return null
+      if (rawSeam.signed_double_area !== 0
+        || !parseHalfEdges(rawSeam.half_edges, positions)) return null
+    }
+    if (area !== (signedDoubleArea - holeDoubleArea) * 0.5) return null
 
     faces.push({
       id,
       key,
       halfEdges,
       paperPolygon: resolvedPolygon,
-      worldFace: { id, polygon: resolvedWorldPolygon },
+      worldFace: {
+        id,
+        polygon: resolvedWorldPolygon,
+        ...(worldHoles.length > 0 ? { holes: worldHoles } : {}),
+      },
     })
   }
   return faces

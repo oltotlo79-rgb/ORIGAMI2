@@ -425,6 +425,8 @@ export type TopologyFace = {
   /** Canonical SHA-256 digest serialized as exactly 32 bytes. */
   key: number[]
   outer: TopologyBoundaryWalk
+  holes?: TopologyBoundaryWalk[]
+  seams?: TopologyBoundaryWalk[]
   area: number
 }
 

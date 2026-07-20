@@ -604,7 +604,11 @@ export function FoldPreview({
         geometries.push(movingGeometry)
       } else {
         for (const face of model.faces) {
-          const geometry = createFoldPreviewFaceGeometry(face.polygon, previewThickness)
+          const geometry = createFoldPreviewFaceGeometry(
+            face.polygon,
+            previewThickness,
+            face.holes ?? [],
+          )
           geometries.push(geometry)
           staticFaces.push({ face, geometry })
         }

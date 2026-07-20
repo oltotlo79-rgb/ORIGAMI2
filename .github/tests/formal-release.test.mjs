@@ -367,6 +367,19 @@ test('Windows CI rejects bounded adversarial bundle fixtures', () => {
   }
 })
 
+test('Windows CI executes native recovery close and diagnostics persistence contracts', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const start = workflow.indexOf('Verify Windows-native recovery close and diagnostics persistence')
+  const end = workflow.indexOf('Remove stale Windows bundle outputs', start)
+  assert.ok(start > 0 && end > start)
+  const step = workflow.slice(start, end)
+  assert.match(step, /cargo test -p origami2-desktop --lib recovery::tests -- --test-threads=1/u)
+  assert.match(step, /cargo test -p origami2-desktop --lib diagnostics::tests -- --test-threads=1/u)
+  assert.match(step, /Windows recovery and close contract failed/u)
+  assert.match(step, /Windows diagnostics persistence contract failed/u)
+  assert.doesNotMatch(step, /continue-on-error|\|\| true/u)
+})
+
 test('promotion reuses and verifies the complete prerelease asset set', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const promote = workflow.slice(workflow.indexOf('  promote:'))

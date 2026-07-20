@@ -292,6 +292,14 @@ jobs:
       - name: Install frontend dependencies for bundle checks
         working-directory: apps/desktop
         run: npm ci
+      - name: Verify Windows-native recovery close and diagnostics persistence
+        shell: pwsh
+        run: |
+          $env:RUST_TEST_THREADS = '1'
+          cargo test -p origami2-desktop --lib recovery::tests -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Windows recovery and close contract failed.' }
+          cargo test -p origami2-desktop --lib diagnostics::tests -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw 'Windows diagnostics persistence contract failed.' }
       - name: Remove stale Windows bundle outputs
         shell: pwsh
         run: |

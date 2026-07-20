@@ -2,14 +2,16 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use num_bigint::BigInt;
-use ori_domain::{CreasePattern, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, VertexId};
+use ori_domain::{
+    CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, Vertex, VertexId,
+};
 use ori_foldability::{
     FoldModelFingerprintV1, GlobalFlatFoldabilityProvenance, LAYER_ORDER_MODEL_ID, LayerFace,
     LayerOrderSnapshot, fold_model_fingerprint_v1,
 };
 use ori_geometry::{
-    GeometryError, Orientation, PointPolygonRelation, PointSegmentRelation, exact_orientation,
-    point_polygon_relation, point_segment_relation,
+    GeometryError, Orientation, PointPolygonRelation, PointSegmentRelation, SegmentIntersection,
+    exact_orientation, point_polygon_relation, point_segment_relation, segment_intersection,
 };
 use ori_topology::{
     Face, FaceExtractionInput, TopologyIssueSeverity, TopologySnapshot, analyze_faces,
@@ -175,6 +177,65 @@ pub const DEFAULT_MAX_STACKED_FOLD_CARRIER_OVERLAP_TESTS: usize = 10_000_000;
 pub const DEFAULT_MAX_STACKED_FOLD_LINEAGE_RECORDS: usize = DEFAULT_MAX_FACE_LINEAGE_SOURCE_FACES;
 pub const DEFAULT_MAX_STACKED_FOLD_LINEAGE_DESCENDANTS: usize =
     DEFAULT_MAX_FACE_LINEAGE_TARGET_FACES;
+pub const DEFAULT_MAX_STACKED_FOLD_BUILD_CARRIERS: usize = 12_048;
+pub const DEFAULT_MAX_STACKED_FOLD_BUILD_INTERSECTIONS: usize = 2_000_000;
+pub const DEFAULT_MAX_STACKED_FOLD_BUILD_VERTICES: usize = 100_000;
+pub const DEFAULT_MAX_STACKED_FOLD_BUILD_EDGES: usize = 200_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StackedFoldTopologyBuildLimitsV1 {
+    pub max_carriers: usize,
+    pub max_pair_tests: usize,
+    pub max_vertices: usize,
+    pub max_edges: usize,
+}
+
+impl Default for StackedFoldTopologyBuildLimitsV1 {
+    fn default() -> Self {
+        Self {
+            max_carriers: DEFAULT_MAX_STACKED_FOLD_BUILD_CARRIERS,
+            max_pair_tests: DEFAULT_MAX_STACKED_FOLD_BUILD_INTERSECTIONS,
+            max_vertices: DEFAULT_MAX_STACKED_FOLD_BUILD_VERTICES,
+            max_edges: DEFAULT_MAX_STACKED_FOLD_BUILD_EDGES,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StackedFoldTopologyCandidateV1 {
+    pub pattern: CreasePattern,
+    pub paper: Paper,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackedFoldTopologyBuildResourceV1 {
+    Carriers,
+    PairTests,
+    Vertices,
+    Edges,
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum StackedFoldTopologyBuildErrorV1 {
+    #[error("{resource:?} exceeds its limit: {actual} > {maximum}")]
+    ResourceLimit {
+        resource: StackedFoldTopologyBuildResourceV1,
+        actual: usize,
+        maximum: usize,
+    },
+    #[error("source edge {edge:?} has a missing endpoint")]
+    SourceEdgeEndpointMissing { edge: EdgeId },
+    #[error("source geometry contains duplicate vertex coordinates")]
+    DuplicateSourceVertexPosition,
+    #[error("an expected crease is non-finite, degenerate, or not mountain/valley")]
+    InvalidExpectedCrease,
+    #[error("carriers {first} and {second} overlap collinearly")]
+    CarrierOverlap { first: usize, second: usize },
+    #[error("the paper boundary references a missing boundary carrier")]
+    PaperBoundaryCarrierMissing,
+    #[error("exact geometry predicate failed: {0}")]
+    Geometry(#[from] GeometryError),
+}
 
 /// Deterministic count limits for one stacked-fold geometry-delta proof.
 ///
@@ -780,6 +841,261 @@ struct GeometryCarrier {
     start: Point2,
     end: Point2,
     kind: EdgeKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BuildCarrier {
+    source_edge: Option<EdgeId>,
+    start: Point2,
+    end: Point2,
+    kind: EdgeKind,
+}
+
+/// Builds the complete planar arrangement required by a stacked-fold
+/// candidate. All source edges and expected creases are split at their mutual
+/// point intersections. Source vertices and one subdivision identity per
+/// source edge are preserved; boundary split vertices are inserted into the
+/// paper cycle.
+///
+/// The result is detached data and grants no mutation authority. Callers must
+/// still run face-lineage and stacked-fold geometry proofs and reauthenticate
+/// all live capabilities before an atomic commit.
+pub fn build_stacked_fold_topology_v1(
+    source_pattern: &CreasePattern,
+    source_paper: &Paper,
+    expected_creases: &[ExpectedStackedFoldCreaseV1],
+    limits: StackedFoldTopologyBuildLimitsV1,
+) -> Result<StackedFoldTopologyCandidateV1, StackedFoldTopologyBuildErrorV1> {
+    let mut source_positions = HashMap::with_capacity(source_pattern.vertices.len());
+    let mut vertex_ids = HashMap::with_capacity(source_pattern.vertices.len());
+    for vertex in &source_pattern.vertices {
+        let key = point_bits(vertex.position);
+        if vertex_ids.insert(key, vertex.id).is_some() {
+            return Err(StackedFoldTopologyBuildErrorV1::DuplicateSourceVertexPosition);
+        }
+        source_positions.insert(vertex.id, vertex.position);
+    }
+
+    let carrier_count = source_pattern
+        .edges
+        .len()
+        .checked_add(expected_creases.len())
+        .unwrap_or(usize::MAX);
+    build_limit(
+        StackedFoldTopologyBuildResourceV1::Carriers,
+        carrier_count,
+        limits.max_carriers,
+    )?;
+    let pair_tests = carrier_count
+        .checked_mul(carrier_count.saturating_sub(1))
+        .and_then(|value| value.checked_div(2))
+        .unwrap_or(usize::MAX);
+    build_limit(
+        StackedFoldTopologyBuildResourceV1::PairTests,
+        pair_tests,
+        limits.max_pair_tests,
+    )?;
+
+    let mut carriers = Vec::with_capacity(carrier_count);
+    for edge in &source_pattern.edges {
+        let start = source_positions
+            .get(&edge.start)
+            .copied()
+            .ok_or(StackedFoldTopologyBuildErrorV1::SourceEdgeEndpointMissing { edge: edge.id })?;
+        let end = source_positions
+            .get(&edge.end)
+            .copied()
+            .ok_or(StackedFoldTopologyBuildErrorV1::SourceEdgeEndpointMissing { edge: edge.id })?;
+        carriers.push(BuildCarrier {
+            source_edge: Some(edge.id),
+            start,
+            end,
+            kind: edge.kind,
+        });
+    }
+    for crease in expected_creases {
+        if !crease.start.x.is_finite()
+            || !crease.start.y.is_finite()
+            || !crease.end.x.is_finite()
+            || !crease.end.y.is_finite()
+            || crease.start == crease.end
+            || !matches!(crease.kind, EdgeKind::Mountain | EdgeKind::Valley)
+        {
+            return Err(StackedFoldTopologyBuildErrorV1::InvalidExpectedCrease);
+        }
+        carriers.push(BuildCarrier {
+            source_edge: None,
+            start: crease.start,
+            end: crease.end,
+            kind: crease.kind,
+        });
+    }
+
+    let mut carrier_points = carriers
+        .iter()
+        .map(|carrier| vec![carrier.start, carrier.end])
+        .collect::<Vec<_>>();
+    for first in 0..carriers.len() {
+        for second in first + 1..carriers.len() {
+            match segment_intersection(
+                carriers[first].start,
+                carriers[first].end,
+                carriers[second].start,
+                carriers[second].end,
+            )? {
+                SegmentIntersection::None => {}
+                SegmentIntersection::Point(point) => {
+                    push_unique_point(&mut carrier_points[first], point);
+                    push_unique_point(&mut carrier_points[second], point);
+                }
+                SegmentIntersection::CollinearOverlap => {
+                    return Err(StackedFoldTopologyBuildErrorV1::CarrierOverlap { first, second });
+                }
+            }
+        }
+    }
+
+    for (carrier, points) in carriers.iter().zip(&mut carrier_points) {
+        points.sort_unstable_by(|left, right| compare_along(*carrier, *left, *right));
+        points.dedup_by(|left, right| point_bits(*left) == point_bits(*right));
+        for point in points.iter().copied() {
+            vertex_ids
+                .entry(point_bits(point))
+                .or_insert_with(VertexId::new);
+        }
+    }
+    build_limit(
+        StackedFoldTopologyBuildResourceV1::Vertices,
+        vertex_ids.len(),
+        limits.max_vertices,
+    )?;
+
+    let mut vertices = source_pattern.vertices.clone();
+    let source_vertex_ids = vertices
+        .iter()
+        .map(|vertex| vertex.id)
+        .collect::<HashSet<_>>();
+    let mut new_vertices = vertex_ids
+        .iter()
+        .filter(|(_, id)| !source_vertex_ids.contains(id))
+        .map(|(&(x, y), &id)| Vertex {
+            id,
+            position: Point2::new(f64::from_bits(x), f64::from_bits(y)),
+        })
+        .collect::<Vec<_>>();
+    new_vertices.sort_unstable_by_key(|vertex| vertex.id.canonical_bytes());
+    vertices.extend(new_vertices);
+
+    let estimated_edges = carrier_points
+        .iter()
+        .try_fold(0_usize, |total, points| {
+            total.checked_add(points.len().saturating_sub(1))
+        })
+        .unwrap_or(usize::MAX);
+    build_limit(
+        StackedFoldTopologyBuildResourceV1::Edges,
+        estimated_edges,
+        limits.max_edges,
+    )?;
+    let mut edges = Vec::with_capacity(estimated_edges);
+    for (carrier, points) in carriers.iter().zip(&carrier_points) {
+        for (index, pair) in points.windows(2).enumerate() {
+            edges.push(Edge {
+                id: if index == 0 {
+                    carrier.source_edge.unwrap_or_else(EdgeId::new)
+                } else {
+                    EdgeId::new()
+                },
+                start: vertex_ids[&point_bits(pair[0])],
+                end: vertex_ids[&point_bits(pair[1])],
+                kind: carrier.kind,
+            });
+        }
+    }
+
+    let mut paper = source_paper.clone();
+    let mut boundary = Vec::new();
+    for index in 0..source_paper.boundary_vertices.len() {
+        let start_id = source_paper.boundary_vertices[index];
+        let end_id =
+            source_paper.boundary_vertices[(index + 1) % source_paper.boundary_vertices.len()];
+        let carrier_index = carriers.iter().position(|carrier| {
+            carrier.source_edge.is_some()
+                && ((point_bits(carrier.start) == point_bits(source_positions[&start_id])
+                    && point_bits(carrier.end) == point_bits(source_positions[&end_id]))
+                    || (point_bits(carrier.end) == point_bits(source_positions[&start_id])
+                        && point_bits(carrier.start) == point_bits(source_positions[&end_id])))
+        });
+        let Some(carrier_index) = carrier_index else {
+            return Err(StackedFoldTopologyBuildErrorV1::PaperBoundaryCarrierMissing);
+        };
+        let carrier = BuildCarrier {
+            start: source_positions[&start_id],
+            end: source_positions[&end_id],
+            ..carriers[carrier_index]
+        };
+        let mut points = carrier_points[carrier_index].clone();
+        points.sort_unstable_by(|left, right| compare_along(carrier, *left, *right));
+        boundary.extend(
+            points[..points.len() - 1]
+                .iter()
+                .map(|point| vertex_ids[&point_bits(*point)]),
+        );
+    }
+    paper.boundary_vertices = boundary;
+
+    Ok(StackedFoldTopologyCandidateV1 {
+        pattern: CreasePattern { vertices, edges },
+        paper,
+    })
+}
+
+fn point_bits(point: Point2) -> (u64, u64) {
+    (point.x.to_bits(), point.y.to_bits())
+}
+
+fn push_unique_point(points: &mut Vec<Point2>, point: Point2) {
+    if !points
+        .iter()
+        .any(|candidate| point_bits(*candidate) == point_bits(point))
+    {
+        points.push(point);
+    }
+}
+
+fn compare_along(carrier: BuildCarrier, left: Point2, right: Point2) -> Ordering {
+    let dx = (carrier.end.x - carrier.start.x).abs();
+    let dy = (carrier.end.y - carrier.start.y).abs();
+    let ordering = if dx >= dy {
+        if carrier.start.x <= carrier.end.x {
+            left.x.total_cmp(&right.x)
+        } else {
+            right.x.total_cmp(&left.x)
+        }
+    } else if carrier.start.y <= carrier.end.y {
+        left.y.total_cmp(&right.y)
+    } else {
+        right.y.total_cmp(&left.y)
+    };
+    ordering
+        .then_with(|| left.x.total_cmp(&right.x))
+        .then_with(|| left.y.total_cmp(&right.y))
+}
+
+fn build_limit(
+    resource: StackedFoldTopologyBuildResourceV1,
+    actual: usize,
+    maximum: usize,
+) -> Result<(), StackedFoldTopologyBuildErrorV1> {
+    if actual > maximum {
+        Err(StackedFoldTopologyBuildErrorV1::ResourceLimit {
+            resource,
+            actual,
+            maximum,
+        })
+    } else {
+        Ok(())
+    }
 }
 
 /// Proves the exact, narrow geometry-delta class admitted by stacked-fold v1.
@@ -1703,6 +2019,150 @@ mod tests {
             target_paper: fixture.target_paper,
             expected_creases,
         }
+    }
+
+    #[test]
+    fn topology_builder_creates_provable_cross_arrangement() {
+        let identity = ProjectId::new();
+        let source_revision = 31;
+        let sheet = create_rectangular_sheet(400.0, 400.0, false).expect("create rectangle");
+        let (source_pattern, source_paper) = sheet.into_parts();
+        let corners = source_paper
+            .boundary_vertices
+            .iter()
+            .map(|id| vertex_position(&source_pattern, *id))
+            .collect::<Vec<_>>();
+        let expected = [
+            ExpectedStackedFoldCreaseV1 {
+                start: corners[0],
+                end: corners[2],
+                kind: EdgeKind::Mountain,
+            },
+            ExpectedStackedFoldCreaseV1 {
+                start: corners[1],
+                end: corners[3],
+                kind: EdgeKind::Valley,
+            },
+        ];
+
+        let candidate = build_stacked_fold_topology_v1(
+            &source_pattern,
+            &source_paper,
+            &expected,
+            StackedFoldTopologyBuildLimitsV1::default(),
+        )
+        .expect("build crossing crease arrangement");
+        assert_eq!(candidate.pattern.vertices.len(), 5);
+        assert_eq!(candidate.pattern.edges.len(), 8);
+        assert_eq!(
+            candidate.paper.boundary_vertices,
+            source_paper.boundary_vertices
+        );
+
+        let source_layer_order =
+            proven_layer_order(identity, source_revision, &source_pattern, &source_paper);
+        let lineage = prepare_face_lineage_v1(
+            FaceLineageInput {
+                identity_namespace: identity,
+                source_revision,
+                source_paper: &source_paper,
+                source_pattern: &source_pattern,
+                source_layer_order: &source_layer_order,
+                target_revision: source_revision + 1,
+                target_paper: &candidate.paper,
+                target_pattern: &candidate.pattern,
+            },
+            FaceLineageLimits::default(),
+        )
+        .expect("prove generated face lineage");
+        let proof = prepare_stacked_fold_geometry_v1(
+            StackedFoldGeometryInputV1 {
+                identity_namespace: identity,
+                source_revision,
+                source_paper: &source_paper,
+                source_pattern: &source_pattern,
+                target_revision: source_revision + 1,
+                target_paper: &candidate.paper,
+                target_pattern: &candidate.pattern,
+                face_lineage: &lineage,
+                expected_creases: &expected,
+            },
+            StackedFoldGeometryLimitsV1::default(),
+        )
+        .expect("prove generated geometry");
+        assert_eq!(proof.expected_creases().len(), 2);
+        assert_eq!(
+            proof
+                .expected_creases()
+                .iter()
+                .map(|crease| crease.target_edges().len())
+                .collect::<Vec<_>>(),
+            vec![2, 2]
+        );
+    }
+
+    #[test]
+    fn topology_builder_splits_paper_boundary_at_crease_endpoint() {
+        let sheet = create_rectangular_sheet(400.0, 400.0, false).expect("create rectangle");
+        let (source_pattern, source_paper) = sheet.into_parts();
+        let corner = vertex_position(&source_pattern, source_paper.boundary_vertices[0]);
+        let opposite = vertex_position(&source_pattern, source_paper.boundary_vertices[2]);
+        let expected = [ExpectedStackedFoldCreaseV1 {
+            start: Point2::new((corner.x + opposite.x) * 0.5, corner.y),
+            end: Point2::new((corner.x + opposite.x) * 0.5, opposite.y),
+            kind: EdgeKind::Mountain,
+        }];
+
+        let candidate = build_stacked_fold_topology_v1(
+            &source_pattern,
+            &source_paper,
+            &expected,
+            StackedFoldTopologyBuildLimitsV1::default(),
+        )
+        .expect("build boundary-to-boundary crease");
+        assert_eq!(candidate.pattern.vertices.len(), 6);
+        assert_eq!(candidate.pattern.edges.len(), 7);
+        assert_eq!(candidate.paper.boundary_vertices.len(), 6);
+    }
+
+    #[test]
+    fn topology_builder_rejects_overlapping_carriers_and_exact_limits() {
+        let sheet = create_rectangular_sheet(400.0, 400.0, false).expect("create rectangle");
+        let (source_pattern, source_paper) = sheet.into_parts();
+        let start = vertex_position(&source_pattern, source_paper.boundary_vertices[0]);
+        let end = vertex_position(&source_pattern, source_paper.boundary_vertices[1]);
+        let expected = [ExpectedStackedFoldCreaseV1 {
+            start,
+            end,
+            kind: EdgeKind::Mountain,
+        }];
+        let carriers = source_pattern.edges.len() + expected.len();
+        let pair_tests = carriers * (carriers - 1) / 2;
+        let inclusive = StackedFoldTopologyBuildLimitsV1 {
+            max_carriers: carriers,
+            max_pair_tests: pair_tests,
+            ..StackedFoldTopologyBuildLimitsV1::default()
+        };
+        assert!(matches!(
+            build_stacked_fold_topology_v1(&source_pattern, &source_paper, &expected, inclusive),
+            Err(StackedFoldTopologyBuildErrorV1::CarrierOverlap { .. })
+        ));
+        assert_eq!(
+            build_stacked_fold_topology_v1(
+                &source_pattern,
+                &source_paper,
+                &[],
+                StackedFoldTopologyBuildLimitsV1 {
+                    max_carriers: source_pattern.edges.len() - 1,
+                    ..StackedFoldTopologyBuildLimitsV1::default()
+                }
+            ),
+            Err(StackedFoldTopologyBuildErrorV1::ResourceLimit {
+                resource: StackedFoldTopologyBuildResourceV1::Carriers,
+                actual: source_pattern.edges.len(),
+                maximum: source_pattern.edges.len() - 1,
+            })
+        );
     }
 
     fn subdivided_cross_geometry_fixture() -> GeometryFixture {

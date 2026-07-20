@@ -76,14 +76,19 @@ pub use sheet::{SheetCreationError, SheetProject, create_rectangular_sheet};
 pub use stacked_fold::{
     DEFAULT_MAX_FACE_LINEAGE_BOUNDARY_HALF_EDGES, DEFAULT_MAX_FACE_LINEAGE_EXACT_CONTAINMENT_TESTS,
     DEFAULT_MAX_FACE_LINEAGE_FACE_PAIRS, DEFAULT_MAX_FACE_LINEAGE_SOURCE_FACES,
-    DEFAULT_MAX_FACE_LINEAGE_TARGET_FACES, DEFAULT_MAX_STACKED_FOLD_CARRIER_OVERLAP_TESTS,
+    DEFAULT_MAX_FACE_LINEAGE_TARGET_FACES, DEFAULT_MAX_STACKED_FOLD_BUILD_CARRIERS,
+    DEFAULT_MAX_STACKED_FOLD_BUILD_EDGES, DEFAULT_MAX_STACKED_FOLD_BUILD_INTERSECTIONS,
+    DEFAULT_MAX_STACKED_FOLD_BUILD_VERTICES, DEFAULT_MAX_STACKED_FOLD_CARRIER_OVERLAP_TESTS,
     DEFAULT_MAX_STACKED_FOLD_EDGE_CARRIER_TESTS, DEFAULT_MAX_STACKED_FOLD_EXPECTED_CREASES,
     DEFAULT_MAX_STACKED_FOLD_LINEAGE_DESCENDANTS, DEFAULT_MAX_STACKED_FOLD_LINEAGE_RECORDS,
     ExpectedCreaseSubdivisionV1, ExpectedStackedFoldCreaseV1, FaceLineageError, FaceLineageInput,
     FaceLineageLimits, FaceLineageRecord, FaceLineageResource, FaceLineageTopology, FaceLineageV1,
     SourceEdgeSubdivisionV1, StackedFoldGeometryCarrierV1, StackedFoldGeometryErrorV1,
     StackedFoldGeometryInputV1, StackedFoldGeometryLimitsV1, StackedFoldGeometryProofV1,
-    StackedFoldGeometryResourceV1, prepare_face_lineage_v1, prepare_stacked_fold_geometry_v1,
+    StackedFoldGeometryResourceV1, StackedFoldTopologyBuildErrorV1,
+    StackedFoldTopologyBuildLimitsV1, StackedFoldTopologyBuildResourceV1,
+    StackedFoldTopologyCandidateV1, build_stacked_fold_topology_v1, prepare_face_lineage_v1,
+    prepare_stacked_fold_geometry_v1,
 };
 pub use topology::{EditorTopology, TopologyAnalysisInput};
 pub use validation::EditorValidation;

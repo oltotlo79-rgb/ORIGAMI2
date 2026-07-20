@@ -127,7 +127,7 @@ use recovery::{
     get_recovery_candidate, prepare_window_close, restore_recovery, start_recovery_autosave_timer,
 };
 use serde::{Deserialize, Serialize};
-use stacked_fold_read::propose_current_stacked_fold_read;
+use stacked_fold_read::{propose_current_stacked_fold_read, read_live_hinge_registry_v1};
 use stacked_fold_transaction::{
     apply_stacked_fold_transaction, cancel_stacked_fold_transaction_preview,
 };
@@ -8187,6 +8187,7 @@ pub fn run() {
             get_global_flat_foldability_result,
             cancel_global_flat_foldability,
             propose_current_stacked_fold_read,
+            read_live_hinge_registry_v1,
             cancel_stacked_fold_transaction_preview,
             apply_stacked_fold_transaction,
             open_project,

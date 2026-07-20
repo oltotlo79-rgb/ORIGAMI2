@@ -56,6 +56,66 @@ export type RationalCoefficientRequestV1 = Readonly<{
   denominator: number
 }>
 
+export type LiveHingeRegistryRequestV1 = Readonly<{
+  expectedProjectInstanceId: string
+  expectedProjectId: string
+  expectedRevision: number
+}>
+
+export type LiveHingeRegistryResponseV1 = Readonly<{
+  version: 1
+  projectInstanceId: string
+  projectId: string
+  revision: number
+  poseGeneration: number
+  graphFingerprintSha256: string
+  entries: readonly Readonly<{
+    edge: string
+    initialAngleDegrees: number
+  }>[]
+  authorizesProjectMutation: false
+}>
+
+export function normalizeLiveHingeRegistryV1(
+  value: unknown,
+  expected: LiveHingeRegistryRequestV1,
+): LiveHingeRegistryResponseV1 | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'version',
+      'projectInstanceId',
+      'projectId',
+      'revision',
+      'poseGeneration',
+      'graphFingerprintSha256',
+      'entries',
+      'authorizesProjectMutation',
+    ]) ||
+    value.version !== 1 ||
+    value.projectInstanceId !== expected.expectedProjectInstanceId ||
+    value.projectId !== expected.expectedProjectId ||
+    value.revision !== expected.expectedRevision ||
+    !isCount(value.poseGeneration) ||
+    !isLowerSha256(value.graphFingerprintSha256) ||
+    value.authorizesProjectMutation !== false ||
+    !Array.isArray(value.entries) ||
+    value.entries.length > 64 ||
+    !value.entries.every(
+      (entry, index, entries) =>
+        isRecord(entry) &&
+        hasExactKeys(entry, ['edge', 'initialAngleDegrees']) &&
+        isCanonicalNonNilUuid(entry.edge) &&
+        typeof entry.initialAngleDegrees === 'number' &&
+        Number.isFinite(entry.initialAngleDegrees) &&
+        entry.initialAngleDegrees >= 0 &&
+        entry.initialAngleDegrees <= 180 &&
+        (index === 0 || String(entries[index - 1]?.edge) < entry.edge),
+    )
+  ) return null
+  return value as LiveHingeRegistryResponseV1
+}
+
 export type StackedFoldReadResponse = Readonly<{
   guardModelId: string
   proposalModelId: string

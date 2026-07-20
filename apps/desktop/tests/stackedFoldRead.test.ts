@@ -6,6 +6,7 @@ import {
   STACKED_FOLD_READ_PROPOSAL_MODEL_ID_V1,
   isStackedFoldReadRequest,
   normalizeStackedFoldReadResponse,
+  normalizeLiveHingeRegistryV1,
 } from '../src/lib/stackedFoldRead.ts'
 
 const projectInstanceId = '018f47a2-4b7a-7cc1-8abc-112233445566'
@@ -23,6 +24,38 @@ const request = {
 } as const
 
 describe('stacked-fold read boundary', () => {
+  it('admits only a canonical stale-bound live hinge registry', () => {
+    const expected = {
+      expectedProjectInstanceId: projectInstanceId,
+      expectedProjectId: projectId,
+      expectedRevision: 3,
+    }
+    const registry = {
+      version: 1,
+      projectInstanceId,
+      projectId,
+      revision: 3,
+      poseGeneration: 7,
+      graphFingerprintSha256: 'a'.repeat(64),
+      entries: [{ edge: faceId, initialAngleDegrees: 20 }],
+      authorizesProjectMutation: false,
+    } as const
+    assert.deepEqual(normalizeLiveHingeRegistryV1(registry, expected), registry)
+    assert.equal(normalizeLiveHingeRegistryV1({ ...registry, revision: 4 }, expected), null)
+    assert.equal(normalizeLiveHingeRegistryV1({
+      ...registry,
+      entries: Array.from({ length: 65 }, () => registry.entries[0]),
+    }, expected), null)
+    assert.equal(normalizeLiveHingeRegistryV1({
+      ...registry,
+      entries: [registry.entries[0], registry.entries[0]],
+    }, expected), null)
+    assert.equal(normalizeLiveHingeRegistryV1({
+      ...registry,
+      authorizesProjectMutation: true,
+    }, expected), null)
+  })
+
   it('admits only finite, non-degenerate, closed-enum requests', () => {
     assert.equal(isStackedFoldReadRequest(request), true)
     assert.equal(isStackedFoldReadRequest({ ...request, second: [0, 0, 0] }), false)

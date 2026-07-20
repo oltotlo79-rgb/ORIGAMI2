@@ -3,6 +3,7 @@ import {
   applyStackedFoldTransaction,
   cancelStackedFoldTransactionPreview,
   proposeCurrentStackedFoldRead,
+  readLiveHingeRegistryV1,
   type ProjectSnapshot,
 } from '../lib/coreClient'
 import { selectLocalizedText, type Locale } from '../lib/i18n'
@@ -59,6 +60,11 @@ export function StackedFoldPanel({
     useState<StackedFoldRotationDirection>('positive')
   const [angle, setAngle] = useState('180')
   const [cycleScheduleText, setCycleScheduleText] = useState('')
+  const [liveHinges, setLiveHinges] = useState<readonly Readonly<{
+    edge: string
+    initialAngleDegrees: number
+  }>[]>([])
+  const [requestedHingeAngles, setRequestedHingeAngles] = useState<Record<string, number>>({})
   const [confirmed, setConfirmed] = useState(false)
   const [applying, setApplying] = useState(false)
   const [view, setView] = useState<View>({ kind: 'idle' })
@@ -110,6 +116,29 @@ export function StackedFoldPanel({
     cancelToken(tokenRef.current)
   }, [coordinator])
 
+  useEffect(() => {
+    let current = true
+    void readLiveHingeRegistryV1({
+      expectedProjectInstanceId: snapshot.project_instance_id,
+      expectedProjectId: snapshot.project_id,
+      expectedRevision: snapshot.revision,
+    }).then((registry) => {
+      if (!current) return
+      setLiveHinges(registry.entries)
+      setRequestedHingeAngles(Object.fromEntries(
+        registry.entries.map((entry) => [entry.edge, entry.initialAngleDegrees]),
+      ))
+    }).catch(() => {
+      if (current) {
+        setLiveHinges([])
+        setRequestedHingeAngles({})
+      }
+    })
+    return () => {
+      current = false
+    }
+  }, [snapshot.project_instance_id, snapshot.project_id, snapshot.revision])
+
   async function preview(event: FormEvent) {
     event.preventDefault()
     if (!selectedLine || disabled || applying) return
@@ -139,6 +168,15 @@ export function StackedFoldPanel({
       } catch {
         setView({ kind: 'failed', reason: 'invalid' })
         return
+      }
+    } else if (liveHinges.length > 0) {
+      linearCandidateV1 = {
+        version: 1,
+        entries: liveHinges.map((entry) => ({
+          edge: entry.edge,
+          initialAngleDegrees: entry.initialAngleDegrees,
+          requestedAngleDegrees: requestedHingeAngles[entry.edge] ?? entry.initialAngleDegrees,
+        })),
       }
     }
     setConfirmed(false)
@@ -230,6 +268,36 @@ export function StackedFoldPanel({
           ? t('選択中の線を折り軸としてnative証明を作成します。', 'The selected line is used as the axis for a native proof.')
           : t('2Dキャンバスで折り軸にする線を選択してください。', 'Select a fold-axis line on the 2D canvas.')}
       </p>
+      {liveHinges.length > 0 && view.kind !== 'ready' && (
+        <fieldset>
+          <legend>{t('ヒンジ角度候補', 'Hinge angle candidate')}</legend>
+          {liveHinges.map((hinge) => (
+            <div key={hinge.edge}>
+              <label>
+                <span>{t('初期角度（読み取り専用）', 'Initial angle (read only)')}</span>
+                <input aria-label={`${t('初期角度', 'Initial angle')} ${hinge.edge}`} type="number" value={hinge.initialAngleDegrees} readOnly />
+              </label>
+              <label>
+                <span>{t('要求角度', 'Requested angle')}</span>
+                <input
+                  aria-label={`${t('要求角度', 'Requested angle')} ${hinge.edge}`}
+                  type="number"
+                  min="0"
+                  max="180"
+                  step="any"
+                  value={requestedHingeAngles[hinge.edge] ?? hinge.initialAngleDegrees}
+                  disabled={disabled || applying}
+                  onChange={(event) => {
+                    const requested = Number(event.target.value)
+                    if (!Number.isFinite(requested) || requested < 0 || requested > 180) return
+                    setRequestedHingeAngles((current) => ({ ...current, [hinge.edge]: requested }))
+                  }}
+                />
+              </label>
+            </div>
+          ))}
+        </fieldset>
+      )}
       <form onSubmit={(event) => void preview(event)}>
         <label>
           <span>{t('固定側', 'Fixed side')}</span>
@@ -291,10 +359,10 @@ export function StackedFoldPanel({
       )}
       {view.kind === 'ready' && (
         <div className="stacked-fold-proof" data-ready={ready}>
-          {view.response.liveGraphHingeAngles.length > 0 && (
+          {liveHinges.length > 0 && (
             <fieldset>
               <legend>{t('ヒンジ角度候補', 'Hinge angle candidate')}</legend>
-              {view.response.liveGraphHingeAngles.map((hinge) => (
+              {liveHinges.map((hinge) => (
                 <div key={hinge.edge}>
                   <label>
                     <span>{t('初期角度（読み取り専用）', 'Initial angle (read only)')}</span>
@@ -313,19 +381,15 @@ export function StackedFoldPanel({
                       min="0"
                       max="180"
                       step="any"
-                      defaultValue={hinge.initialAngleDegrees}
+                      value={requestedHingeAngles[hinge.edge] ?? hinge.initialAngleDegrees}
                       disabled={disabled || applying}
                       onChange={(event) => {
                         const requested = Number(event.target.value)
                         if (!Number.isFinite(requested) || requested < 0 || requested > 180) return
-                        const current = view.response.liveGraphHingeAngles.map((entry) => ({
-                          edge: entry.edge,
-                          initialAngleDegrees: entry.initialAngleDegrees,
-                          requestedAngleDegrees: entry.edge === hinge.edge
-                            ? requested
-                            : entry.initialAngleDegrees,
+                        setRequestedHingeAngles((current) => ({
+                          ...current,
+                          [hinge.edge]: requested,
                         }))
-                        setCycleScheduleText(JSON.stringify({ version: 1, entries: current }))
                       }}
                     />
                   </label>

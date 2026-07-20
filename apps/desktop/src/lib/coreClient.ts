@@ -50,7 +50,10 @@ import {
 } from './projectLayers.ts'
 import {
   isStackedFoldReadRequest,
+  normalizeLiveHingeRegistryV1,
   normalizeStackedFoldReadResponse,
+  type LiveHingeRegistryRequestV1,
+  type LiveHingeRegistryResponseV1,
   type StackedFoldReadRequest,
   type StackedFoldReadResponse,
 } from './stackedFoldRead.ts'
@@ -1155,6 +1158,16 @@ export function proposeCurrentStackedFoldRead(
       throw new StackedFoldReadNativeError('cycle_path_uncertified')
     }
     throw new StackedFoldReadNativeError('native_failure')
+  })
+}
+
+export function readLiveHingeRegistryV1(
+  request: LiveHingeRegistryRequestV1,
+): Promise<LiveHingeRegistryResponseV1> {
+  return invoke<unknown>('read_live_hinge_registry_v1', { request }).then((value) => {
+    const response = normalizeLiveHingeRegistryV1(value, request)
+    if (!response) throw new Error('invalid live hinge registry response')
+    return response
   })
 }
 

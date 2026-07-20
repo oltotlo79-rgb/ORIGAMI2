@@ -105,6 +105,27 @@ pub(super) struct StackedFoldReadRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct LiveHingeRegistryRequestV1 {
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LiveHingeRegistryResponseV1 {
+    version: u32,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    pose_generation: u64,
+    graph_fingerprint_sha256: String,
+    entries: Vec<LiveGraphHingeAngleDto>,
+    authorizes_project_mutation: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LinearCandidateRequestV1 {
     version: u32,
     entries: Vec<LinearCandidateEntryRequestV1>,
@@ -348,9 +369,7 @@ struct LiveGraphHingeAngleDto {
     initial_angle_degrees: f64,
 }
 
-fn live_hinge_registry(
-    angles: &[ori_kinematics::HingeAngle],
-) -> Vec<LiveGraphHingeAngleDto> {
+fn live_hinge_registry(angles: &[ori_kinematics::HingeAngle]) -> Vec<LiveGraphHingeAngleDto> {
     angles
         .iter()
         .map(|angle| LiveGraphHingeAngleDto {
@@ -358,6 +377,61 @@ fn live_hinge_registry(
             initial_angle_degrees: angle.angle_degrees(),
         })
         .collect()
+}
+
+#[tauri::command]
+pub(super) async fn read_live_hinge_registry_v1(
+    app_state: State<'_, AppState>,
+    request: LiveHingeRegistryRequestV1,
+) -> Result<LiveHingeRegistryResponseV1, String> {
+    let _worker_permit = app_state
+        .try_acquire_native_pose_worker()
+        .ok_or_else(|| BUSY_MESSAGE.to_owned())?;
+    let (capability, fingerprint, entries) = {
+        let project = lock_project(&app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+        if project.instance_id != request.expected_project_instance_id
+            || project.project_id != request.expected_project_id
+            || project.editor.revision() != request.expected_revision
+        {
+            return Err(STALE_MESSAGE.to_owned());
+        }
+        let capability = project
+            .applied_pose_authority
+            .capture_capability(&project)
+            .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
+            .ok_or_else(|| UNAVAILABLE_MESSAGE.to_owned())?;
+        let entries = live_hinge_registry(capability.pose().hinge_angles());
+        if entries.len() > 64 {
+            return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+        }
+        (
+            capability,
+            project.editor.fold_model_fingerprint_v1(),
+            entries,
+        )
+    };
+    {
+        let project = lock_project(&app_state).map_err(|_| STALE_MESSAGE.to_owned())?;
+        if project.editor.fold_model_fingerprint_v1() != fingerprint
+            || project
+                .applied_pose_authority
+                .revalidate_capability(&project, &capability)
+                .map_err(|_| STALE_MESSAGE.to_owned())?
+                .is_none()
+        {
+            return Err(STALE_MESSAGE.to_owned());
+        }
+    }
+    Ok(LiveHingeRegistryResponseV1 {
+        version: 1,
+        project_instance_id: request.expected_project_instance_id,
+        project_id: request.expected_project_id,
+        revision: request.expected_revision,
+        pose_generation: capability.generation(),
+        graph_fingerprint_sha256: fingerprint,
+        entries,
+        authorizes_project_mutation: false,
+    })
 }
 
 #[derive(Debug, Serialize)]

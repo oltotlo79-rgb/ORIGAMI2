@@ -2010,8 +2010,9 @@ fn cancel_job(
         .as_ref()
         .is_some_and(|terminal| terminal.job_id == job_id)
     {
-        slot.current_layer_order = None;
-        slot.last_cancelled_id = Some(job_id);
+        // Completion has already won the race. Cancellation is idempotent for
+        // the caller, but must not revoke a certificate produced by that
+        // completed Possible result or relabel the terminal job as cancelled.
         return Ok(());
     }
     if slot.last_cancelled_id == Some(job_id) {
@@ -3562,6 +3563,41 @@ mod tests {
             Some(GlobalFlatFoldabilityJobDto::Cancelled { .. })
         ));
         assert!(cancel_job(&mut slot, job_id).is_ok());
+    }
+
+    #[test]
+    fn cancelling_completed_possible_job_preserves_layer_order_authority() {
+        let project = initial_project_state();
+        let state = GlobalFlatFoldabilityState::default();
+        install_possible_layer_order(&state, &project);
+
+        let mut slot = lock_foldability_state(&state).expect("lock completed possible job");
+        let job_id = slot
+            .terminal
+            .as_ref()
+            .expect("possible result has terminal job")
+            .job_id;
+        let certificate = Arc::clone(
+            slot.current_layer_order
+                .as_ref()
+                .expect("possible result has layer-order authority"),
+        );
+
+        cancel_job(&mut slot, job_id).expect("late cancellation is idempotent");
+
+        assert!(Arc::ptr_eq(
+            slot.current_layer_order
+                .as_ref()
+                .expect("late cancellation preserves authority"),
+            &certificate,
+        ));
+        assert_ne!(slot.last_cancelled_id, Some(job_id));
+        assert!(matches!(
+            slot.terminal.as_ref().map(|terminal| &terminal.dto),
+            Some(GlobalFlatFoldabilityJobDto::Completed {
+                result: GlobalFlatFoldabilityResultDto::Possible { .. }
+            })
+        ));
     }
 
     #[test]

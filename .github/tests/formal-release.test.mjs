@@ -685,6 +685,28 @@ test('merged release verification binds update manifests to signed payload polic
   assert.match(workflow, /REQUIRE_SIGNATURE:.*mode != 'dry-run'[\s\S]*EXPECTED_SIGNATURE_POLICY:.*mode != 'dry-run'/u)
 })
 
+test('CI attempt and suite evidence is transitively bound to every release integrity layer', () => {
+  const artifactVerifier = readFileSync(
+    join(root, '.github/scripts/verify_formal_release.mjs'),
+    'utf8',
+  )
+  const manifestWriter = readFileSync(
+    join(root, '.github/scripts/write_update_manifest.mjs'),
+    'utf8',
+  )
+  const provenanceVerifier = readFileSync(
+    join(root, '.github/scripts/verify_release_provenance.sh'),
+    'utf8',
+  )
+  assert.match(artifactVerifier, /runAttempt: releaseEvidence\.ciChecks\.runAttempt/u)
+  assert.match(artifactVerifier, /checkSuiteId: releaseEvidence\.ciChecks\.checkSuiteId/u)
+  assert.match(artifactVerifier, /CycloneDX SBOM canonical release evidence mismatch/u)
+  assert.match(manifestWriter, /`\$\{prefix\}\.cdx\.json`/u)
+  assert.match(provenanceVerifier, /\.cdx\.json"/u)
+  assert.match(provenanceVerifier, /\.update\.json"/u)
+  assert.match(provenanceVerifier, /SHA256SUMS-/u)
+})
+
 test('CI and formal release share the strict macOS bundle contract', () => {
   const ciWorkflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const releaseWorkflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')

@@ -161,6 +161,15 @@ if (
   || JSON.stringify(releaseEvidence.ciChecks.checks)
     !== JSON.stringify([...releaseEvidence.ciChecks.checks].sort((left, right) =>
       left.name.localeCompare(right.name)))
+  || JSON.stringify(releaseEvidence.ciChecks) !== JSON.stringify({
+    schema: releaseEvidence.ciChecks.schema,
+    sourceCommit: releaseEvidence.ciChecks.sourceCommit,
+    workflow: releaseEvidence.ciChecks.workflow,
+    workflowRunId: releaseEvidence.ciChecks.workflowRunId,
+    runAttempt: releaseEvidence.ciChecks.runAttempt,
+    checkSuiteId: releaseEvidence.ciChecks.checkSuiteId,
+    checks: releaseEvidence.ciChecks.checks,
+  })
   || (process.env.RELEASE_RUN_ID !== undefined && releaseEvidence.ciRunId !== process.env.RELEASE_RUN_ID)
   || (process.env.EXECUTED_TEST_COUNT !== undefined
     && releaseEvidence.executedTestCount !== Number(process.env.EXECUTED_TEST_COUNT))

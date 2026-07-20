@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1, BeginnerSkeletonSegmentV1,
-    BeginnerTargetCategoryV1, BeginnerTargetPartKindV1, BeginnerTargetPartRecordV1, CreasePattern,
-    Edge, EdgeId, EdgeKind, Point2, ProjectId, Vertex, VertexId,
+    BeginnerTargetAssetReferenceV1, BeginnerTargetCategoryV1, BeginnerTargetPartKindV1,
+    BeginnerTargetPartRecordV1, CreasePattern, Edge, EdgeId, EdgeKind, Point2, ProjectId, Vertex,
+    VertexId,
 };
 
 pub const BEGINNER_GENERATOR_SCHEMA_VERSION_V1: u32 = 1;
@@ -27,6 +28,7 @@ pub struct BeginnerGeneratedPlanV1 {
     pub instruction_codes: Vec<String>,
     pub target_parts: Vec<BeginnerTargetPartRecordV1>,
     pub skeleton_segments: Vec<BeginnerSkeletonSegmentV1>,
+    pub target_asset: Option<BeginnerTargetAssetReferenceV1>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +187,7 @@ pub fn generate_beginner_plans_v1(
                 instruction_codes: vec![instruction.to_owned()],
                 target_parts: constraints.target_parts.clone(),
                 skeleton_segments: constraints.skeleton_segments.clone(),
+                target_asset: constraints.target_asset,
             }
         })
         .collect())

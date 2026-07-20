@@ -1514,15 +1514,32 @@ fn evaluate_beginner_candidates(
         project.editor.beginner_design_profile(),
     );
     candidates.truncate(usize::from(requested_candidate_count));
-    let (generation_status, mut generated_plans) = match ori_domain::generate_beginner_plans_v1(
-        project.project_id,
-        pattern,
-        &project.editor.paper().boundary_vertices,
-        &project
-            .editor
-            .beginner_design_profile()
-            .generation_constraints,
-    ) {
+    let constraints = &project
+        .editor
+        .beginner_design_profile()
+        .generation_constraints;
+    let generation = if target_asset_reference_is_live(&project, constraints.target_asset) {
+        ori_domain::generate_beginner_plans_v1(
+            project.project_id,
+            pattern,
+            &project.editor.paper().boundary_vertices,
+            constraints,
+        )
+    } else {
+        return Ok(BeginnerCandidateResponse {
+            schema_version: ori_domain::BEGINNER_CANDIDATE_SCHEMA_VERSION_V1,
+            project_instance_id: project.instance_id,
+            project_id: project.project_id,
+            revision: project.editor.revision(),
+            requested_candidate_count,
+            bulge_treatment: ori_domain::BeginnerBulgeTreatmentV1::TargetShapeApproximation,
+            elasticity_model: ori_domain::BeginnerElasticityModelV1::NotComputed,
+            candidates,
+            generation_status: "missing_target_asset",
+            generated_plans: Vec::new(),
+        });
+    };
+    let (generation_status, mut generated_plans) = match generation {
         Ok(plans) => ("ready", plans),
         Err(ori_domain::BeginnerGeneratorErrorV1::ResourceLimit) => ("resource_limit", Vec::new()),
         Err(ori_domain::BeginnerGeneratorErrorV1::UnsupportedPaper) => {
@@ -1575,6 +1592,12 @@ fn apply_beginner_generated_plan(
     )?;
     if project.editor.beginner_design_profile() != &expected_profile {
         return Err("the beginner design profile changed before apply".to_owned());
+    }
+    if !target_asset_reference_is_live(
+        &project,
+        expected_profile.generation_constraints.target_asset,
+    ) {
+        return Err("the target reference image changed before apply".to_owned());
     }
     let plans = ori_domain::generate_beginner_plans_v1(
         project.project_id,
@@ -1637,6 +1660,33 @@ fn apply_beginner_generated_plan(
     )
 }
 
+fn target_asset_reference_is_live(
+    project: &ProjectState,
+    reference: Option<ori_domain::BeginnerTargetAssetReferenceV1>,
+) -> bool {
+    let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage {
+        underlay_id,
+        asset_id,
+    }) = reference
+    else {
+        return true;
+    };
+    project
+        .editor
+        .underlays()
+        .underlays
+        .iter()
+        .any(|underlay| underlay.id == underlay_id && underlay.asset == asset_id)
+        && project.texture_assets.iter().any(|asset| {
+            asset.id == asset_id
+                && asset.bytes.len() <= MAX_PROJECT_TEXTURE_ASSET_BYTES
+                && matches!(
+                    asset.media_type,
+                    ProjectTextureMediaTypeV1::Png | ProjectTextureMediaTypeV1::Jpeg
+                )
+        })
+}
+
 #[tauri::command]
 fn update_project_memo(
     state: State<'_, AppState>,
@@ -1675,6 +1725,9 @@ fn update_beginner_design_profile(
         return Err("invalid beginner design profile".to_owned());
     }
     let mut project = lock_project(&state)?;
+    if !target_asset_reference_is_live(&project, profile.generation_constraints.target_asset) {
+        return Err("the target reference image is unavailable".to_owned());
+    }
     execute_command(
         &mut project,
         expected_project_instance_id,
@@ -4074,6 +4127,19 @@ fn update_underlay(
     record: ori_domain::UnderlayRecordV1,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
+    if matches!(
+        project
+            .editor
+            .beginner_design_profile()
+            .generation_constraints
+            .target_asset,
+        Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage {
+            underlay_id,
+            asset_id,
+        }) if underlay_id == record.id && asset_id != record.asset
+    ) {
+        return Err("the target reference image asset cannot be replaced".to_owned());
+    }
     ensure_underlay_asset_exists(&project, record.asset)?;
     execute_command(
         &mut project,
@@ -4102,6 +4168,19 @@ fn remove_underlay(
     id: ori_domain::UnderlayId,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
+    if matches!(
+        project
+            .editor
+            .beginner_design_profile()
+            .generation_constraints
+            .target_asset,
+        Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage {
+            underlay_id,
+            ..
+        }) if underlay_id == id
+    ) {
+        return Err("the underlay is the active beginner target reference image".to_owned());
+    }
     execute_command(
         &mut project,
         expected_project_instance_id,

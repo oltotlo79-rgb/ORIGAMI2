@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::{AssetId, UnderlayId};
 pub const BEGINNER_GENERATION_CONSTRAINTS_SCHEMA_VERSION_V1: u32 = 1;
 pub const MIN_BEGINNER_GENERATION_STEPS_V1: u16 = 1;
 pub const MAX_BEGINNER_GENERATION_STEPS_V1: u16 = 500;
@@ -76,6 +77,15 @@ pub struct BeginnerSkeletonSegmentV1 {
     pub thickness_tenths_mm: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BeginnerTargetAssetReferenceV1 {
+    ReferenceImage {
+        underlay_id: UnderlayId,
+        asset_id: AssetId,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BeginnerGenerationConstraintsV1 {
@@ -88,6 +98,8 @@ pub struct BeginnerGenerationConstraintsV1 {
     pub target_parts: Vec<BeginnerTargetPartRecordV1>,
     #[serde(default)]
     pub skeleton_segments: Vec<BeginnerSkeletonSegmentV1>,
+    #[serde(default)]
+    pub target_asset: Option<BeginnerTargetAssetReferenceV1>,
     pub allowed_techniques: Vec<BeginnerFoldTechniqueV1>,
 }
 
@@ -100,6 +112,7 @@ impl Default for BeginnerGenerationConstraintsV1 {
             target_category: None,
             target_parts: Vec::new(),
             skeleton_segments: Vec::new(),
+            target_asset: None,
             allowed_techniques: vec![
                 BeginnerFoldTechniqueV1::ValleyFold,
                 BeginnerFoldTechniqueV1::MountainFold,

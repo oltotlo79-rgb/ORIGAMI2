@@ -31,8 +31,8 @@ pub use beginner_design::{
 pub use beginner_generation::{
     BEGINNER_GENERATION_CONSTRAINTS_SCHEMA_VERSION_V1, BeginnerDetailLevelV1,
     BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1, BeginnerSkeletonPointV1,
-    BeginnerSkeletonSegmentV1, BeginnerTargetCategoryV1, BeginnerTargetPartKindV1,
-    BeginnerTargetPartRecordV1, MAX_BEGINNER_ALLOWED_TECHNIQUES_V1,
+    BeginnerSkeletonSegmentV1, BeginnerTargetAssetReferenceV1, BeginnerTargetCategoryV1,
+    BeginnerTargetPartKindV1, BeginnerTargetPartRecordV1, MAX_BEGINNER_ALLOWED_TECHNIQUES_V1,
     MAX_BEGINNER_GENERATION_STEPS_V1, MAX_BEGINNER_SKELETON_COORDINATE_TENTHS_MM_V1,
     MAX_BEGINNER_SKELETON_SEGMENTS_V1, MAX_BEGINNER_SKELETON_THICKNESS_TENTHS_MM_V1,
     MAX_BEGINNER_TARGET_PART_COUNT_V1, MAX_BEGINNER_TARGET_PART_RECORDS_V1,

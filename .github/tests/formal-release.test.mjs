@@ -272,11 +272,16 @@ test('publication verifies current-run artifact archive digests before extractio
   assert.doesNotMatch(publish, /actions\/download-artifact@/u)
   assert.match(publish, /unzip -Z1/u)
   assert.match(publish, /sort -u "\$entries"/u)
+  assert.match(publish, /tolower\(\$0\).*sort -u/su)
   assert.match(publish, /content_length.*stat -c '%s'/su)
+  assert.match(publish, /sha256sum --check --strict "\$archive\.sha256"/u)
+  assert.match(publish, /find release -type f -links \+1/u)
+  assert.match(publish, /release_root="\$\(realpath -e release\)"/u)
+  assert.match(publish, /test "\$\(dirname "\$resolved"\)" = "\$release_root"/u)
   assert.match(publish, /unzip -tqq/u)
   assert.match(publish, /entry_count.*-le 16/u)
   assert.match(publish, /archive_bytes \* 200 \+ 1048576/u)
-  assert.match(publish, /find release -type l/u)
+  assert.match(publish, /find release -mindepth 1 -maxdepth 1 ! -type f/u)
 
   const directory = mkdtempSync(join(tmpdir(), 'origami2-artifact-metadata-'))
   try {

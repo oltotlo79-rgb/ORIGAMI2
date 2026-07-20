@@ -346,6 +346,7 @@ jobs:
             test "$content_length" -eq "$(stat -c '%s' "$archive")"
             actual_digest="$(sha256sum "$archive" | cut -d' ' -f1)"
             test "$actual_digest" = "$expected_digest"
+            printf '%s  %s\n' "$actual_digest" "$archive" > "$archive.sha256"
           done < <(node .github/scripts/verify_workflow_artifact_metadata.mjs "$metadata")
       - name: Extract only the digest-verified artifact archives
         run: |
@@ -353,6 +354,7 @@ jobs:
           mkdir release
           for archive in "$RUNNER_TEMP"/formal-release-*.zip
           do
+            sha256sum --check --strict "$archive.sha256"
             archive_bytes="$(stat -c '%s' "$archive")"
             test "$archive_bytes" -gt 0
             test "$archive_bytes" -le 2147483648
@@ -360,6 +362,7 @@ jobs:
             entries="$RUNNER_TEMP/$(basename "$archive").entries"
             unzip -Z1 "$archive" > "$entries"
             test "$(wc -l < "$entries")" -eq "$(LC_ALL=C sort -u "$entries" | wc -l)"
+            test "$(wc -l < "$entries")" -eq "$(awk '{ print tolower($0) }' "$entries" | LC_ALL=C sort -u | wc -l)"
             entry_count=0
             while IFS= read -r entry
             do
@@ -377,8 +380,18 @@ jobs:
             test "$expanded_bytes" -le "$ratio_bound"
             unzip -q "$archive" -d release
           done
-          test -z "$(find release -type l -print -quit)"
+          test -z "$(find release -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          test -z "$(find release -type f -links +1 -print -quit)"
           test "$(find release -maxdepth 1 -type f | wc -l)" -eq 9
+          release_root="$(realpath -e release)"
+          while IFS= read -r file
+          do
+            resolved="$(realpath -e "$file")"
+            test "$(dirname "$resolved")" = "$release_root"
+            test "$(basename "$resolved")" = "$(basename "$file")"
+          done < <(find release -mindepth 1 -maxdepth 1 -type f -print)
+          test "$(find release -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | wc -l)" -eq \
+            "$(find release -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | awk '{ print tolower($0) }' | LC_ALL=C sort -u | wc -l)"
       - name: Verify the complete merged release set before publication
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
@@ -397,6 +410,8 @@ jobs:
             "$RUNNER_TEMP/formal-release-artifacts.json" \
             "$RUNNER_TEMP/formal-release-artifacts.headers" \
             "$RUNNER_TEMP"/formal-release-*.zip \
+            "$RUNNER_TEMP"/formal-release-*.zip.sha256 \
+            "$RUNNER_TEMP"/formal-release-*.zip.entries \
             "$RUNNER_TEMP"/formal-release-*.headers
       - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:

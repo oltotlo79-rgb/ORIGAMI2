@@ -3,6 +3,7 @@
 mod crease_pattern_export;
 mod fold;
 mod instruction_export;
+mod mesh_animation_export;
 mod mesh_export;
 mod ori2;
 mod project_folder;
@@ -42,6 +43,12 @@ pub use instruction_export::{
     MAX_INSTRUCTION_EXPORT_PAGE_BYTES, MAX_INSTRUCTION_EXPORT_PAGES,
     MAX_INSTRUCTION_EXPORT_TITLE_CHARS, export_instruction_document,
     export_instruction_document_with_limits,
+};
+pub use mesh_animation_export::{
+    INDEXED_TRIANGLE_MESH_ANIMATION_SCHEMA_VERSION_V1, IndexedTriangleMeshAnimationV1,
+    MAX_MESH_ANIMATION_DURATION_SECONDS, MAX_MESH_ANIMATION_FRAMES, MeshAnimationExportArtifact,
+    MeshAnimationExportError, export_animated_triangle_mesh_glb,
+    export_animated_triangle_mesh_glb_with_limits,
 };
 pub use mesh_export::{
     INDEXED_TRIANGLE_MESH_SCHEMA_VERSION_V1, IndexedTriangleMeshV1, MAX_STATIC_MESH_EXPORT_BYTES,

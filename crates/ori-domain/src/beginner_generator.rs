@@ -109,6 +109,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     SymmetricSixLegBase,
     CenterAxisTailBase,
     CenterAxisHornBase,
+    CenterAxisAntennaBase,
     VerticalBookFold,
     HorizontalBookFold,
     DiagonalFold,
@@ -261,6 +262,7 @@ pub fn estimate_symmetric_parameters_v1(
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 1 => 1,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Antenna) == 2 => 2,
+        BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Antenna) == 1 => 1,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Leg) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Leg) == 6 => 6,
         _ => return None,
@@ -464,7 +466,23 @@ pub fn generate_beginner_plans_v1(
             }
         }
         BeginnerTargetCategoryV1::Insect => {
-            if part_count(BeginnerTargetPartKindV1::Leg) == 6 {
+            if part_count(BeginnerTargetPartKindV1::Antenna) == 1 {
+                let endpoint = parameterized_center_axis_endpoint(constraints, true)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
+                symmetric_template(
+                    namespace,
+                    source,
+                    BeginnerGeneratedPlanKindV1::CenterAxisAntennaBase,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &[endpoint],
+                    "center_axis_antenna_base",
+                    constraints,
+                )
+            } else if part_count(BeginnerTargetPartKindV1::Leg) == 6 {
                 let bindings = insect_three_pair_bindings_v1(constraints)
                     .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
                 let mut endpoints = Vec::with_capacity(12);
@@ -712,12 +730,24 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
             }
         }
         Some(BeginnerTargetCategoryV1::Insect) => {
-            parameterized_symmetric_endpoints(constraints, 2, false).and_then(|_| {
-                constraints
-                    .protrusions
-                    .iter()
-                    .find(|target| target.count == 2)
-            })
+            if constraints
+                .target_parts
+                .iter()
+                .any(|part| part.kind == BeginnerTargetPartKindV1::Antenna && part.count == 1)
+            {
+                parameterized_center_axis_endpoint(constraints, true).and_then(|_| {
+                    constraints.protrusions.iter().find(|target| {
+                        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                    })
+                })
+            } else {
+                parameterized_symmetric_endpoints(constraints, 2, false).and_then(|_| {
+                    constraints
+                        .protrusions
+                        .iter()
+                        .find(|target| target.count == 2)
+                })
+            }
         }
         None => None,
     };
@@ -1140,6 +1170,19 @@ mod tests {
             antenna_plans[0].kind,
             BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
         );
+        let mut single_antenna = antenna.clone();
+        single_antenna.target_parts[2].count = 1;
+        single_antenna.protrusions[0].count = 1;
+        single_antenna.protrusions[0].symmetry = BeginnerProtrusionSymmetryV1::None;
+        single_antenna.protrusions[0].direction_milli = [0, -1_000, 0];
+        single_antenna.protrusions[0].length_tenths_mm = 4;
+        let single_antenna_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &single_antenna).unwrap();
+        assert_eq!(
+            single_antenna_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::CenterAxisAntennaBase
+        );
+        assert_eq!(single_antenna_plans[0].crease_pattern.edges.len(), 1);
         let mut leg_pair = constraints.clone();
         leg_pair.target_parts[2].kind = BeginnerTargetPartKindV1::Leg;
         let leg_plans = generate_beginner_plans_v1(namespace, &source, &ids, &leg_pair).unwrap();

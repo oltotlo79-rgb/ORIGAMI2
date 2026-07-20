@@ -382,7 +382,13 @@ pub(crate) fn apply_beginner_part_assignments(
         .filter(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Horn)
         .map(|assignment| assignment.candidate_id)
         .collect::<Vec<_>>();
-    let mut counts = [0_u8; 6];
+    let antenna_candidate_ids = request
+        .assignments
+        .iter()
+        .filter(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Antenna)
+        .map(|assignment| assignment.candidate_id)
+        .collect::<Vec<_>>();
+    let mut counts = [0_u8; 7];
     for assignment in &request.assignments {
         let index = match assignment.kind {
             ori_domain::BeginnerTargetPartKindV1::Torso => 0,
@@ -391,6 +397,7 @@ pub(crate) fn apply_beginner_part_assignments(
             ori_domain::BeginnerTargetPartKindV1::Wing => 3,
             ori_domain::BeginnerTargetPartKindV1::Tail => 4,
             ori_domain::BeginnerTargetPartKindV1::Horn => 5,
+            ori_domain::BeginnerTargetPartKindV1::Antenna => 6,
             _ => return Err("part_assignment_invalid".to_owned()),
         };
         counts[index] += 1;
@@ -402,6 +409,7 @@ pub(crate) fn apply_beginner_part_assignments(
         ori_domain::BeginnerTargetPartKindV1::Wing,
         ori_domain::BeginnerTargetPartKindV1::Tail,
         ori_domain::BeginnerTargetPartKindV1::Horn,
+        ori_domain::BeginnerTargetPartKindV1::Antenna,
     ]
     .into_iter()
     .zip(counts)
@@ -420,13 +428,23 @@ pub(crate) fn apply_beginner_part_assignments(
     }
     let mut profile = project.editor.beginner_design_profile().clone();
     profile.generation_constraints.target_parts = target_parts;
-    if horn_candidate_ids.len() == 1
+    let vertical_candidate_ids = if horn_candidate_ids.len() == 1
         && profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
     {
+        Some(&horn_candidate_ids)
+    } else if antenna_candidate_ids.len() == 1
+        && profile.generation_constraints.target_category
+            == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
+    {
+        Some(&antenna_candidate_ids)
+    } else {
+        None
+    };
+    if let Some(vertical_candidate_ids) = vertical_candidate_ids {
         let horn = candidates
             .iter()
-            .find(|candidate| candidate.id == horn_candidate_ids[0])
+            .find(|candidate| candidate.id == vertical_candidate_ids[0])
             .ok_or_else(|| "part_assignment_horn_binding_invalid".to_owned())?;
         let torso_center_y_twice = i64::from(request.selected_outline.bounds.min_y)
             + i64::from(request.selected_outline.bounds.max_y);

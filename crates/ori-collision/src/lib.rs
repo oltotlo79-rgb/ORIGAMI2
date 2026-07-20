@@ -73,11 +73,12 @@ pub use stacked_fold_read::{
 };
 pub use static_collision::{
     CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
-    NATIVE_STATIC_COLLISION_MAX_PAIR_DIAGNOSTICS_V1, NativeStaticCollisionGeometryProof,
-    StaticCollisionDiagnosticSnapshot, StaticCollisionError, StaticCollisionLimits,
-    StaticCollisionPairDiagnostic, StaticCollisionPairDisposition,
+    NATIVE_STATIC_COLLISION_MAX_PAIR_DIAGNOSTICS_V1, NativePositiveThicknessPairSeparationV1,
+    NativeStaticCollisionGeometryProof, StaticCollisionDiagnosticSnapshot, StaticCollisionError,
+    StaticCollisionLimits, StaticCollisionPairDiagnostic, StaticCollisionPairDisposition,
     classify_static_collision_pair_disposition, diagnose_static_collision_geometry,
-    prove_static_collision_geometry,
+    prepare_positive_thickness_pair_separation_v1, prove_static_collision_geometry,
+    revalidate_positive_thickness_pair_separation_v1,
 };
 
 /// Immutable identifier for the first native topology/contact policy.

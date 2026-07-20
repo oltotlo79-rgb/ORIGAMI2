@@ -15,7 +15,8 @@ use thiserror::Error;
 
 use crate::{
     StaticCollisionLimits, diagnose_static_collision_geometry,
-    prepare_single_hinge_thickness_boundary_v1, prepare_tree_hinge_thickness_boundaries_v1,
+    prepare_positive_thickness_pair_separation_v1, prepare_single_hinge_thickness_boundary_v1,
+    prepare_tree_hinge_thickness_boundaries_v1, revalidate_positive_thickness_pair_separation_v1,
     revalidate_single_hinge_thickness_boundary_v1, revalidate_tree_hinge_thickness_boundaries_v1,
 };
 
@@ -253,38 +254,59 @@ pub fn diagnose_collective_hinge_path_v1(
             let bound = model
                 .bind_pose(&pose)
                 .map_err(|_| StackedFoldPathDiagnosticErrorV1::PoseIssuerMismatch)?;
-            all_positive_thickness_outer_shells &= if positive_two_hinge_topology {
-                prepare_tree_hinge_thickness_boundaries_v1(bound, paper_thickness_mm)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|boundary| {
-                        revalidate_tree_hinge_thickness_boundaries_v1(
-                            &boundary,
-                            bound,
-                            paper_thickness_mm,
-                        )
-                        .is_some_and(|observations| observations.len() == 2)
-                            && diagnose_static_collision_geometry(
-                                model,
-                                &pose,
+            all_positive_thickness_outer_shells &=
+                if positive_two_hinge_topology {
+                    prepare_tree_hinge_thickness_boundaries_v1(bound, paper_thickness_mm)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|boundary| {
+                            revalidate_tree_hinge_thickness_boundaries_v1(
+                                &boundary,
+                                bound,
                                 paper_thickness_mm,
-                                limits.static_collision,
                             )
-                            .is_ok_and(|snapshot| !snapshot.has_prominent_blocking_hold())
-                    })
-            } else {
-                prepare_single_hinge_thickness_boundary_v1(bound, paper_thickness_mm)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|boundary| {
-                        revalidate_single_hinge_thickness_boundary_v1(
-                            &boundary,
-                            bound,
-                            paper_thickness_mm,
-                        )
-                        .is_some()
-                    })
-            };
+                            .is_some_and(|observations| observations.len() == 2)
+                                && model.face_ids().iter().enumerate().all(|(index, first)| {
+                                    model.face_ids().iter().skip(index + 1).all(|second| {
+                                        let adjacent = model.hinges().iter().any(|hinge| {
+                                            (hinge.left_face() == *first
+                                                && hinge.right_face() == *second)
+                                                || (hinge.left_face() == *second
+                                                    && hinge.right_face() == *first)
+                                        });
+                                        adjacent
+                                            || prepare_positive_thickness_pair_separation_v1(
+                                                bound,
+                                                paper_thickness_mm,
+                                                *first,
+                                                *second,
+                                                limits.static_collision,
+                                            )
+                                            .is_ok_and(|capability| {
+                                                capability.is_some_and(|capability| {
+                                                revalidate_positive_thickness_pair_separation_v1(
+                                                    &capability,
+                                                    bound,
+                                                    paper_thickness_mm,
+                                                )
+                                            })
+                                            })
+                                    })
+                                })
+                        })
+                } else {
+                    prepare_single_hinge_thickness_boundary_v1(bound, paper_thickness_mm)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|boundary| {
+                            revalidate_single_hinge_thickness_boundary_v1(
+                                &boundary,
+                                bound,
+                                paper_thickness_mm,
+                            )
+                            .is_some()
+                        })
+                };
             if all_positive_thickness_outer_shells {
                 // The opaque boundary capability is issued only after the
                 // complete shared-hinge solid classifier returns Allowed.

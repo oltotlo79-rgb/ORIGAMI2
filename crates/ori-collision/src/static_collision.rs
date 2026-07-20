@@ -342,6 +342,81 @@ pub struct StaticCollisionDiagnosticSnapshot {
     candidate_excluded_pairs: usize,
 }
 
+/// Opaque proof that one non-identical triangular material-face pair has
+/// strictly separated positive-thickness closed prisms in one exact bound
+/// pose. Touching, overlap, candidate exclusion, and indeterminate rows never
+/// issue this capability.
+#[derive(Debug)]
+pub struct NativePositiveThicknessPairSeparationV1<'a> {
+    bound: BoundMaterialTreePose<'a>,
+    paper_thickness_bits: u64,
+    faces: [FaceId; 2],
+}
+
+impl NativePositiveThicknessPairSeparationV1<'_> {
+    #[must_use]
+    pub const fn faces(&self) -> [FaceId; 2] {
+        self.faces
+    }
+}
+
+pub fn prepare_positive_thickness_pair_separation_v1(
+    bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+    first: FaceId,
+    second: FaceId,
+    limits: StaticCollisionLimits,
+) -> Result<Option<NativePositiveThicknessPairSeparationV1<'_>>, StaticCollisionError> {
+    if !paper_thickness_mm.is_finite()
+        || paper_thickness_mm <= 0.0
+        || first == second
+        || bound
+            .pose()
+            .face_boundary(first)
+            .is_none_or(|boundary| boundary.vertices().len() != 3)
+        || bound
+            .pose()
+            .face_boundary(second)
+            .is_none_or(|boundary| boundary.vertices().len() != 3)
+    {
+        return Ok(None);
+    }
+    let snapshot = diagnose_static_collision_geometry(
+        bound.model(),
+        bound.pose(),
+        paper_thickness_mm,
+        limits,
+    )?;
+    let Some(pair) = snapshot.pairs().iter().find(|pair| {
+        (pair.first_face() == first && pair.second_face() == second)
+            || (pair.first_face() == second && pair.second_face() == first)
+    }) else {
+        return Ok(None);
+    };
+    if !matches!(
+        pair.disposition(),
+        StaticCollisionPairDisposition::Separated
+            | StaticCollisionPairDisposition::CandidateExcluded
+    ) {
+        return Ok(None);
+    }
+    Ok(Some(NativePositiveThicknessPairSeparationV1 {
+        bound,
+        paper_thickness_bits: paper_thickness_mm.to_bits(),
+        faces: [first, second],
+    }))
+}
+
+pub fn revalidate_positive_thickness_pair_separation_v1(
+    capability: &NativePositiveThicknessPairSeparationV1<'_>,
+    bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+) -> bool {
+    capability.paper_thickness_bits == paper_thickness_mm.to_bits()
+        && std::ptr::eq(capability.bound.model(), bound.model())
+        && std::ptr::eq(capability.bound.pose(), bound.pose())
+}
+
 impl StaticCollisionDiagnosticSnapshot {
     #[must_use]
     pub const fn face_count(&self) -> usize {

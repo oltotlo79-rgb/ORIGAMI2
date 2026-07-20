@@ -54,7 +54,8 @@ use instruction_export::{
     get_instruction_export_progress, preview_instruction_export, save_instruction_export,
 };
 use mesh_animation_export::{
-    MeshAnimationExportState, cancel_instruction_mesh_animation, preview_instruction_mesh_animation,
+    MeshAnimationExportState, cancel_instruction_mesh_animation,
+    preview_instruction_mesh_animation, save_instruction_mesh_animation,
 };
 use mesh_export::{
     StaticMeshExportState, cancel_static_mesh_export, preview_static_mesh_export,
@@ -6538,6 +6539,7 @@ pub fn run() {
             save_static_mesh_export,
             cancel_static_mesh_export,
             preview_instruction_mesh_animation,
+            save_instruction_mesh_animation,
             cancel_instruction_mesh_animation,
             begin_instruction_export,
             preview_instruction_export,

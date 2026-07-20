@@ -540,20 +540,37 @@ jobs:
           test "$(jq -r .tag_name "$before")" = "$RELEASE_TAG"
           test "$(jq -r .target_commitish "$before")" = "$RELEASE_COMMIT"
           test "$(jq -r .draft "$before")" = false
-          test "$(jq -r .prerelease "$before")" = true
+          before_prerelease="$(jq -r .prerelease "$before")"
+          test "$before_prerelease" = true || test "$before_prerelease" = false
           test "$(timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)" = "$release_id"
           test "$(timeout 60s gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_COMMIT"
           patch_status=0
-          timeout 60s gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
-            -F prerelease=false -f make_latest=true >/dev/null || patch_status=$?
-          timeout 60s gh api "repos/$GH_REPO/releases/$release_id" \
-            --jq '{id,tag_name,target_commitish,draft,prerelease,assets:[.assets[]|{id,name,size,digest,updated_at}]|sort_by(.name)}' \
-            > "$after"
+          if [ "$before_prerelease" = true ]; then
+            timeout 60s gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
+              -F prerelease=false -f make_latest=true >/dev/null || patch_status=$?
+          fi
+          final_verified=false
+          for attempt in 1 2 3; do
+            if timeout 60s gh api "repos/$GH_REPO/releases/$release_id" \
+              --jq '{id,tag_name,target_commitish,draft,prerelease,assets:[.assets[]|{id,name,size,digest,updated_at}]|sort_by(.name)}' \
+              > "$after" \
+              && test "$(jq -r .id "$after")" = "$release_id" \
+              && test "$(jq -r .draft "$after")" = false \
+              && test "$(jq -r .prerelease "$after")" = false
+            then
+              final_verified=true
+              break
+            fi
+            [ "$attempt" -eq 3 ] || sleep 5
+          done
+          test "$final_verified" = true
           test "$(jq -r .id "$after")" = "$release_id"
           test "$(jq -r .tag_name "$after")" = "$RELEASE_TAG"
           test "$(jq -r .target_commitish "$after")" = "$RELEASE_COMMIT"
           test "$(jq -r .draft "$after")" = false
           test "$(jq -r .prerelease "$after")" = false
+          test "$(timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)" = "$release_id"
+          test "$(timeout 60s gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_COMMIT"
           jq -S .assets "$before" > "$RUNNER_TEMP/assets-before.json"
           jq -S .assets "$after" > "$RUNNER_TEMP/assets-after.json"
           cmp "$RUNNER_TEMP/assets-before.json" "$RUNNER_TEMP/assets-after.json"

@@ -529,17 +529,42 @@ test('promotion reuses and verifies the complete prerelease asset set', () => {
   assert.match(promote, /gh release download "\$RELEASE_TAG"/u)
   assert.match(promote, /verify_merged_release_set\.mjs release/u)
   assert.match(promote, /verify_release_provenance\.sh/u)
-  assert.match(promote, /\.prerelease "\$before"\)" = true/u)
+  assert.match(promote, /before_prerelease="\$\(jq -r \.prerelease "\$before"\)"/u)
+  assert.match(promote, /test "\$before_prerelease" = true \|\| test "\$before_prerelease" = false/u)
   assert.match(promote, /cmp "\$RUNNER_TEMP\/assets-before\.json"/u)
   assert.match(promote, /releases\/tags\/\$RELEASE_TAG" --jq \.id\)" = "\$release_id"/u)
   assert.match(promote, /commits\/\$RELEASE_TAG" --jq \.sha\)" = "\$RELEASE_COMMIT"/u)
   assert.match(promote, /patch_status=0/u)
+  assert.match(promote, /if \[ "\$before_prerelease" = true \]; then/u)
+  assert.match(promote, /for attempt in 1 2 3/u)
+  assert.match(promote, /test "\$final_verified" = true/u)
   assert.match(promote, /releases\/\$release_id/u)
   assert.doesNotMatch(promote, /tauri build|tauri bundle|cargo build|npm run build/u)
   assert.ok(
     promote.indexOf('verify_release_provenance.sh') <
       promote.indexOf('gh api --method PATCH'),
   )
+  assert.ok(
+    promote.lastIndexOf('releases/tags/$RELEASE_TAG')
+      > promote.indexOf('gh api --method PATCH'),
+  )
+  assert.ok(
+    promote.lastIndexOf('commits/$RELEASE_TAG')
+      > promote.indexOf('gh api --method PATCH'),
+  )
+})
+
+test('promotion is retry-safe and accepts only an ID-bound fully verified final state', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const promote = workflow.slice(workflow.indexOf('  promote:'))
+  assert.match(workflow, /group: formal-release-\$\{\{ inputs\.tag \|\| github\.ref_name \|\| github\.sha \}\}/u)
+  assert.match(workflow, /cancel-in-progress: false/u)
+  assert.match(promote, /before_prerelease.*true.*false/su)
+  assert.match(promote, /if \[ "\$before_prerelease" = true \]; then[\s\S]*--method PATCH/u)
+  assert.match(promote, /patch_status=0[\s\S]*final_verified=false[\s\S]*for attempt in 1 2 3/u)
+  assert.match(promote, /\.id "\$after"\)" = "\$release_id"/u)
+  assert.match(promote, /\.prerelease "\$after"\)" = false/u)
+  assert.match(promote, /cmp "\$RUNNER_TEMP\/assets-before\.json" "\$RUNNER_TEMP\/assets-after\.json"/u)
 })
 
 test('publication and promotion share the exact merged release verifier', () => {

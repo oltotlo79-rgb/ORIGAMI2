@@ -18,8 +18,9 @@ use crate::{
     CURRENT_FORMAT_VERSION, FormatError, MAX_EDITOR_HISTORY_JSON_BYTES, MAX_PROJECT_JSON_BYTES,
     ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1, ORI2_FEATURE_EDITOR_HISTORY_V1,
     ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1, ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
-    ORI2_FEATURE_LAYERS_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, Ori2ProjectArchive,
-    ProjectDocument, ProjectJsonLimits, read_project_json_with_limits, write_project_json,
+    ORI2_FEATURE_LAYERS_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
+    ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1, Ori2ProjectArchive, ProjectDocument, ProjectJsonLimits,
+    read_project_json_with_limits, write_project_json,
 };
 
 pub const PROJECT_FOLDER_CONTAINER_IDENTIFIER: &str = "ORIGAMI2_EXPANDED_FOLDER";
@@ -757,6 +758,9 @@ fn required_features(document: &ProjectDocument, has_history: bool) -> Vec<Strin
     if !document.layers.is_default() {
         features.push(ORI2_FEATURE_LAYERS_V1.to_owned());
     }
+    if !document.reference_model_assets.is_empty() {
+        features.push(ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1.to_owned());
+    }
     if has_history {
         features.push(ORI2_FEATURE_EDITOR_HISTORY_V1.to_owned());
     }
@@ -771,6 +775,7 @@ fn is_known_feature(feature: &str) -> bool {
             | ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
             | ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1
             | ORI2_FEATURE_LAYERS_V1
+            | ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1
             | ORI2_FEATURE_EDITOR_HISTORY_V1
     )
 }
@@ -1204,9 +1209,24 @@ fn canonical_number(value: f64) -> String {
 mod tests {
     use super::*;
     use ori_domain::{
-        CreasePattern, Edge, EdgeId, InstructionPose, InstructionPoseModel, InstructionStep,
-        InstructionStepId, ProjectId, Vertex,
+        AssetId, CreasePattern, Edge, EdgeId, InstructionPose, InstructionPoseModel,
+        InstructionStep, InstructionStepId, ProjectId, Vertex,
     };
+
+    fn minimal_reference_glb() -> Vec<u8> {
+        let json = br#"{"asset":{"version":"2.0"}}"#;
+        let padded_len = (json.len() + 3) & !3;
+        let total_len = 12 + 8 + padded_len;
+        let mut bytes = Vec::with_capacity(total_len);
+        bytes.extend_from_slice(b"glTF");
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        bytes.extend_from_slice(&(total_len as u32).to_le_bytes());
+        bytes.extend_from_slice(&(padded_len as u32).to_le_bytes());
+        bytes.extend_from_slice(&0x4E4F_534A_u32.to_le_bytes());
+        bytes.extend_from_slice(json);
+        bytes.resize(total_len, b' ');
+        bytes
+    }
 
     fn sample_document() -> ProjectDocument {
         let first = VertexId::new();
@@ -2507,5 +2527,40 @@ mod tests {
         let read =
             read_project_folder_v1_with_limits(written.entries(), relaxed).expect("bounded read");
         assert_eq!(read, written);
+    }
+
+    #[test]
+    fn reference_model_assets_require_the_expanded_folder_feature() {
+        let mut document = sample_document();
+        document
+            .reference_model_assets
+            .push(crate::ProjectReferenceModelAssetV1 {
+                id: AssetId::new(),
+                bytes: minimal_reference_glb(),
+            });
+        let original =
+            write_project_folder_v1(&Ori2ProjectArchive::document_only(document.clone()))
+                .expect("write reference model folder");
+        assert_eq!(
+            manifest(original.entries()).required_features,
+            vec![ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1.to_owned()]
+        );
+        assert_eq!(
+            read_project_folder_v1(original.entries())
+                .expect("read reference model folder")
+                .archive()
+                .document
+                .reference_model_assets,
+            document.reference_model_assets
+        );
+
+        let mut missing = original.entries().to_vec();
+        let mut missing_manifest = manifest(&missing);
+        missing_manifest.required_features.clear();
+        replace_manifest(&mut missing, &missing_manifest);
+        assert!(matches!(
+            read_project_folder_v1(&missing),
+            Err(ProjectFolderError::RequiredFeaturesMismatch { .. })
+        ));
     }
 }

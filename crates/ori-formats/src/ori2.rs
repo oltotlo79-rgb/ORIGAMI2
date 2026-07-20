@@ -24,6 +24,7 @@ pub const ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1: &str = "declarative_ins
 pub const ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1: &str = "numeric_expressions_v1";
 pub const ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1: &str = "geometric_constraints_v1";
 pub const ORI2_FEATURE_LAYERS_V1: &str = "layers_v1";
+pub const ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1: &str = "reference_model_assets_v1";
 pub const ORI2_FEATURE_EDITOR_HISTORY_V1: &str = "editor_history_v1";
 pub const MAX_EDITOR_HISTORY_JSON_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -252,6 +253,9 @@ fn write_project_archive_parts(
     if !document.layers.is_default() {
         required_features.push(ORI2_FEATURE_LAYERS_V1.to_owned());
     }
+    if !document.reference_model_assets.is_empty() {
+        required_features.push(ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1.to_owned());
+    }
     if history_bytes.is_some() {
         required_features.push(ORI2_FEATURE_EDITOR_HISTORY_V1.to_owned());
     }
@@ -469,6 +473,16 @@ pub fn read_project_archive_ori2_with_limits(
     {
         return Err(FormatError::MissingRequiredFeature {
             feature: ORI2_FEATURE_LAYERS_V1,
+        });
+    }
+    if !project.reference_model_assets.is_empty()
+        && !manifest
+            .required_features
+            .iter()
+            .any(|feature| feature == ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1)
+    {
+        return Err(FormatError::MissingRequiredFeature {
+            feature: ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1,
         });
     }
 
@@ -718,6 +732,7 @@ fn validate_manifest(manifest: &Ori2Manifest) -> Result<(), FormatError> {
                     | ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1
                     | ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1
                     | ORI2_FEATURE_LAYERS_V1
+                    | ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1
                     | ORI2_FEATURE_EDITOR_HISTORY_V1
             )
         })
@@ -904,6 +919,21 @@ mod tests {
         LayerContentKindV1, LayerId, LayerRecordV1, Paper, PaperAppearance, Point2, RgbaColor,
         Vertex, VertexId,
     };
+
+    fn minimal_reference_glb() -> Vec<u8> {
+        let json = br#"{"asset":{"version":"2.0"}}"#;
+        let padded_len = (json.len() + 3) & !3;
+        let total_len = 12 + 8 + padded_len;
+        let mut bytes = Vec::with_capacity(total_len);
+        bytes.extend_from_slice(b"glTF");
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        bytes.extend_from_slice(&(total_len as u32).to_le_bytes());
+        bytes.extend_from_slice(&(padded_len as u32).to_le_bytes());
+        bytes.extend_from_slice(&0x4E4F_534A_u32.to_le_bytes());
+        bytes.extend_from_slice(json);
+        bytes.resize(total_len, b' ');
+        bytes
+    }
 
     fn sample_document() -> ProjectDocument {
         let start = VertexId::new();
@@ -2741,5 +2771,42 @@ mod tests {
             reopened.project_layers(),
             &ori_domain::ProjectLayerDocumentV1::default()
         );
+    }
+
+    #[test]
+    fn reference_model_assets_require_their_manifest_feature() {
+        let mut document = sample_document();
+        document
+            .reference_model_assets
+            .push(crate::ProjectReferenceModelAssetV1 {
+                id: AssetId::new(),
+                bytes: minimal_reference_glb(),
+            });
+        let archive = write_project_ori2(&document).expect("write reference model");
+        let manifest = manifest_from_archive(&archive);
+        assert!(
+            manifest
+                .required_features
+                .contains(&ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1.to_owned())
+        );
+        assert_eq!(
+            read_project_ori2(&archive)
+                .expect("read reference model")
+                .reference_model_assets,
+            document.reference_model_assets
+        );
+
+        let project = write_project_json(&document).expect("project fixture");
+        let missing_manifest = manifest_for(&project);
+        let missing = raw_zip(&[
+            (ORI2_MANIFEST_PATH, missing_manifest.as_slice()),
+            (ORI2_PROJECT_PATH, project.as_slice()),
+        ]);
+        assert!(matches!(
+            read_project_ori2(&missing),
+            Err(FormatError::MissingRequiredFeature {
+                feature: ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1
+            })
+        ));
     }
 }

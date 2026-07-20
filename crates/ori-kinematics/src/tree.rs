@@ -260,6 +260,52 @@ pub struct MaterialTreeKinematicsModel {
     tree: Arc<PreparedTree>,
 }
 
+/// Validated material face and hinge geometry for connected graphs, including
+/// cycles. This observation-only model does not solve poses.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaterialHingeGraphGeometry {
+    face_ids: Vec<FaceId>,
+    hinges: Vec<TreeHinge>,
+}
+
+impl MaterialHingeGraphGeometry {
+    /// Prepares canonical material-mm hinge axes without imposing the tree
+    /// cardinality required by [`MaterialTreeKinematicsModel`].
+    pub fn prepare(
+        pattern: &CreasePattern,
+        paper: &Paper,
+        topology: &TopologySnapshot,
+        limits: TreeKinematicsLimits,
+    ) -> Result<Self, KinematicsError> {
+        let positions = pattern
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.position.x.is_finite() && vertex.position.y.is_finite())
+            .map(|vertex| {
+                Ok(VertexPosition3::new(
+                    vertex.id,
+                    Point3::new(vertex.position.x, 0.0, -vertex.position.y)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, KinematicsError>>()?;
+        let prepared = prepare_material_graph(pattern, paper, topology, &positions, limits)?;
+        Ok(Self {
+            face_ids: prepared.face_ids,
+            hinges: prepared.hinges,
+        })
+    }
+
+    #[must_use]
+    pub fn face_ids(&self) -> &[FaceId] {
+        &self.face_ids
+    }
+
+    #[must_use]
+    pub fn hinges(&self) -> &[TreeHinge] {
+        &self.hinges
+    }
+}
+
 /// Caller-embedded kinematics for projection and other observation-only uses.
 ///
 /// Its distinct type prevents a display embedding from being confused with a
@@ -1456,6 +1502,92 @@ fn owns_material_face_boundary(source: &PreparedTree, boundary: MaterialFaceBoun
             .face_boundaries
             .get(boundary.index)
             .is_some_and(|candidate| candidate.face == boundary.face())
+}
+
+struct PreparedMaterialGraph {
+    face_ids: Vec<FaceId>,
+    hinges: Vec<TreeHinge>,
+}
+
+fn prepare_material_graph(
+    pattern: &CreasePattern,
+    paper: &Paper,
+    topology: &TopologySnapshot,
+    supplied_positions: &[VertexPosition3],
+    limits: TreeKinematicsLimits,
+) -> Result<PreparedMaterialGraph, KinematicsError> {
+    check_raw_resource_counts(pattern, paper, topology, supplied_positions.len(), limits)?;
+    validate_paper_scalar_fields(paper)?;
+    if topology.faces.is_empty() || paper.boundary_vertices.len() < 3 {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    let (mut positions, source_positions) = unique_positions(pattern, supplied_positions)?;
+    let mut simple_boundary_budget = SimpleBoundaryValidationBudget::production();
+    let edges = unique_edges(
+        pattern,
+        paper,
+        &positions,
+        &source_positions,
+        &mut simple_boundary_budget,
+    )?;
+    let incidences = unique_incidences(topology, &edges)?;
+    let (face_ids, _face_boundaries, face_keys, occurrences) = validate_faces(
+        topology,
+        &edges,
+        &positions,
+        &source_positions,
+        &mut simple_boundary_budget,
+    )?;
+    validate_incidences(&edges, &incidences, &face_ids, &occurrences)?;
+    validate_adjacency_registry(topology, &incidences, &face_keys)?;
+    retain_material_positions(&mut positions, &edges)?;
+
+    let mut hinges = Vec::new();
+    hinges
+        .try_reserve_exact(topology.hinge_adjacency.len())
+        .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+    for adjacent in &topology.hinge_adjacency {
+        let EdgeIncidence::Hinge {
+            left,
+            right,
+            assignment,
+        } = incidences
+            .get(&adjacent.edge)
+            .copied()
+            .ok_or(KinematicsError::UnsupportedTopology)?
+        else {
+            return Err(KinematicsError::UnsupportedTopology);
+        };
+        let source = edges
+            .get(&adjacent.edge)
+            .copied()
+            .ok_or(KinematicsError::UnsupportedTopology)?;
+        let (start_id, end_id) = canonical_endpoints(source.start, source.end);
+        let start = positions
+            .get(&start_id)
+            .copied()
+            .ok_or(KinematicsError::UnsupportedTopology)?;
+        let end = positions
+            .get(&end_id)
+            .copied()
+            .ok_or(KinematicsError::UnsupportedTopology)?;
+        let delta = subtract(end, start)?;
+        let axis = scale(delta, 1.0 / length(delta)?)?;
+        hinges.push(TreeHinge {
+            edge: adjacent.edge,
+            assignment,
+            left_face: left,
+            right_face: right,
+            start,
+            end,
+            axis,
+        });
+    }
+    hinges.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
+    if hinges.windows(2).any(|pair| pair[0].edge == pair[1].edge) {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    Ok(PreparedMaterialGraph { face_ids, hinges })
 }
 
 fn solve_tree(

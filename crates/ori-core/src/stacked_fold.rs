@@ -15,7 +15,8 @@ use ori_geometry::{
 };
 use ori_kinematics::{
     CanonicalHingeAngles, HingeAngle, KinematicsError, MaterialHingeGraphAudit,
-    MaterialTreeKinematicsModel, MaterialTreePose, TreeKinematicsLimits,
+    MaterialHingeGraphGeometry, MaterialTreeKinematicsModel, MaterialTreePose,
+    TreeKinematicsLimits,
 };
 use ori_topology::{
     Face, FaceExtractionInput, TopologyIssueSeverity, TopologySnapshot, analyze_faces,
@@ -234,6 +235,7 @@ pub struct PreparedStackedFoldTargetModelV1 {
 pub struct PreparedStackedFoldTargetGraphAuditV1 {
     geometry: PreparedStackedFoldGeometryV1,
     audit: MaterialHingeGraphAudit,
+    hinge_geometry: MaterialHingeGraphGeometry,
 }
 
 pub struct PreparedStackedFoldInitialPoseV1 {
@@ -304,6 +306,11 @@ impl PreparedStackedFoldTargetGraphAuditV1 {
     #[must_use]
     pub const fn audit(&self) -> &MaterialHingeGraphAudit {
         &self.audit
+    }
+
+    #[must_use]
+    pub const fn hinge_geometry(&self) -> &MaterialHingeGraphGeometry {
+        &self.hinge_geometry
     }
 
     #[must_use]
@@ -1394,7 +1401,26 @@ pub fn prepare_stacked_fold_target_graph_audit_v1(
             }
             _ => PrepareStackedFoldTargetGraphAuditErrorV1::UnsupportedTopology,
         })?;
-    Ok(PreparedStackedFoldTargetGraphAuditV1 { geometry, audit })
+    let hinge_geometry = MaterialHingeGraphGeometry::prepare(
+        &geometry.candidate.pattern,
+        &geometry.candidate.paper,
+        &topology,
+        limits,
+    )
+    .map_err(|error| match error {
+        KinematicsError::ResourceLimitExceeded => {
+            PrepareStackedFoldTargetGraphAuditErrorV1::ResourceLimit
+        }
+        KinematicsError::UnrepresentableGeometry => {
+            PrepareStackedFoldTargetGraphAuditErrorV1::UnrepresentableGeometry
+        }
+        _ => PrepareStackedFoldTargetGraphAuditErrorV1::UnsupportedTopology,
+    })?;
+    Ok(PreparedStackedFoldTargetGraphAuditV1 {
+        geometry,
+        audit,
+        hinge_geometry,
+    })
 }
 
 /// Reconstructs and admits the proved target as a native material-tree model.
@@ -2842,6 +2868,8 @@ mod tests {
         assert_eq!(package.audit().faces().len(), 4);
         assert_eq!(package.audit().spanning_hinges().len(), 3);
         assert_eq!(package.audit().closure_hinges().len(), 1);
+        assert_eq!(package.hinge_geometry().face_ids().len(), 4);
+        assert_eq!(package.hinge_geometry().hinges().len(), 4);
         assert!(package.requires_closure_certificate());
         assert!(!package.authorizes_pose());
         assert!(!package.authorizes_apply_stacked_fold());

@@ -80,9 +80,9 @@ pub use graph::{CandidateFaceTransform, MaterialHingeClosureCertificate, Materia
 pub use transform::{Point3, RigidTransform, deterministic_sin_cos_degrees};
 pub use tree::{
     BoundMaterialTreePose, CALLER_EMBEDDING_OBSERVATION_MODEL_ID, CanonicalHingeAngles, HingeAngle,
-    MATERIAL_TREE_KINEMATICS_MODEL_ID, MaterialFaceBoundary, MaterialTreeKinematicsModel,
-    MaterialTreePose, ObservationTreeKinematicsModel, ObservationTreePose, TreeHinge,
-    TreeKinematicsLimits, VertexPosition3,
+    MATERIAL_TREE_KINEMATICS_MODEL_ID, MaterialFaceBoundary, MaterialHingeGraphGeometry,
+    MaterialTreeKinematicsModel, MaterialTreePose, ObservationTreeKinematicsModel,
+    ObservationTreePose, TreeHinge, TreeKinematicsLimits, VertexPosition3,
 };
 
 /// A fail-closed error produced while preparing or solving tree kinematics.

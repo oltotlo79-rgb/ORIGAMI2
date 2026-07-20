@@ -11,6 +11,7 @@ import { GeometricConstraintPanel } from '../src/components/GeometricConstraintP
 import type {
   GeometricConstraintDocument,
   GeometricConstraintPreflightResult,
+  GeometricConstraintSolvePreview,
 } from '../src/lib/coreClient'
 import type { LocaleStore } from '../src/lib/i18n'
 import { localeFixture } from './localeTestFixture'
@@ -23,6 +24,35 @@ const IDS = Array.from(
 afterEach(cleanup)
 
 describe('GeometricConstraintPanel', () => {
+  it('requires preview before an explicit atomic solver apply', async () => {
+    const onPreviewSolve = vi.fn().mockResolvedValue({
+      token: IDS[20],
+      revision: 7,
+      iterations: 3,
+      maximumResidual: 1e-9,
+      changedVertices: [{ vertexId: IDS[6], x: 12, y: 8 }],
+    })
+    const onApplySolve = vi.fn().mockResolvedValue(true)
+    renderPanel({
+      selectedVertexId: IDS[6],
+      selectedVertexPosition: { x: 1, y: 2 },
+      onPreviewSolve,
+      onApplySolve,
+      localeStore: localeFixture('en'),
+    })
+
+    fireEvent.change(screen.getByLabelText('Solver X'), { target: { value: '12' } })
+    fireEvent.change(screen.getByLabelText('Solver Y'), { target: { value: '8' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    await screen.findByText(/Changed vertices: 1/u)
+    expect(onApplySolve).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    await act(async () => undefined)
+    expect(onPreviewSolve).toHaveBeenCalledWith(IDS[6], 12, 8)
+    expect(onApplySolve).toHaveBeenCalledWith(IDS[20])
+  })
+
   it('adds only a horizontal or vertical constraint to an explicitly selected edge', () => {
     const onAddOrientation = vi.fn()
     const { rerender } = renderPanel({ onAddOrientation })
@@ -491,6 +521,7 @@ function panel(overrides: Partial<{
   analysisFailed: boolean
   selectedEdgeId: string | null
   selectedVertexId: string | null
+  selectedVertexPosition: Readonly<{ x: number; y: number }> | null
   edges: readonly Readonly<{ id: string }>[]
   vertices: readonly Readonly<{ id: string }>[]
   disabled: boolean
@@ -499,6 +530,8 @@ function panel(overrides: Partial<{
   onRemove: (id: string) => void
   onSelectEdge: (id: string) => void
   onRetryAnalysis: () => void
+  onPreviewSolve: (vertexId: string, x: number, y: number) => Promise<GeometricConstraintSolvePreview>
+  onApplySolve: (token: string) => Promise<boolean>
   localeStore: LocaleStore
 }> = {}) {
   return (
@@ -509,6 +542,7 @@ function panel(overrides: Partial<{
       analysisFailed={overrides.analysisFailed ?? false}
       selectedEdgeId={overrides.selectedEdgeId ?? null}
       selectedVertexId={overrides.selectedVertexId ?? null}
+      selectedVertexPosition={overrides.selectedVertexPosition ?? null}
       edges={overrides.edges ?? []}
       vertices={overrides.vertices ?? []}
       disabled={overrides.disabled ?? false}
@@ -517,6 +551,8 @@ function panel(overrides: Partial<{
       onRemove={overrides.onRemove ?? (() => undefined)}
       onSelectEdge={overrides.onSelectEdge ?? (() => undefined)}
       onRetryAnalysis={overrides.onRetryAnalysis ?? (() => undefined)}
+      onPreviewSolve={overrides.onPreviewSolve}
+      onApplySolve={overrides.onApplySolve}
       localeStore={overrides.localeStore}
     />
   )

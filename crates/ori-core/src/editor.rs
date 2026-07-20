@@ -2969,6 +2969,32 @@ impl EditorState {
         if self.geometric_constraints.constraints.is_empty() {
             return Ok(());
         }
+        if let Command::MoveVertices { updates } = command {
+            let mut candidate = self.pattern.clone();
+            let mut complete = true;
+            for update in updates {
+                if let Some(vertex) = candidate
+                    .vertices
+                    .iter_mut()
+                    .find(|vertex| vertex.id == update.vertex)
+                {
+                    vertex.position = update.position;
+                } else {
+                    complete = false;
+                    break;
+                }
+            }
+            if complete
+                && crate::verify_geometric_constraint_solution_v1(
+                    &candidate,
+                    &self.geometric_constraints,
+                    crate::ConstraintSolveLimitsV1::default().residual_tolerance,
+                )
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
         let targets = self.constraint_mutation_targets(command)?;
         if targets.is_empty() {
             return Ok(());

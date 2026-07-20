@@ -190,6 +190,33 @@ pub fn solve_geometric_constraints_v1(
     Err(ConstraintSolveErrorV1::NonConvergent)
 }
 
+/// Verifies a complete candidate pattern against every solver-supported hard constraint.
+///
+/// Unsupported, invalid, degenerate, or non-finite systems fail closed.
+pub fn verify_geometric_constraint_solution_v1(
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+    residual_tolerance: f64,
+) -> Result<f64, ConstraintSolveErrorV1> {
+    if !residual_tolerance.is_finite() || residual_tolerance <= 0.0 {
+        return Err(ConstraintSolveErrorV1::InvalidLimits);
+    }
+    prepare_geometric_constraints_v1(pattern, document, GeometricConstraintLimitsV1::default())
+        .map_err(|_| ConstraintSolveErrorV1::InvalidConstraintDocumentOrGeometry)?;
+    hard_len(document)?;
+    let positions = pattern
+        .vertices
+        .iter()
+        .map(|vertex| (vertex.id, vertex.position))
+        .collect::<HashMap<_, _>>();
+    let maximum = maximum_absolute(&residuals(pattern, document, &positions)?);
+    if maximum <= residual_tolerance {
+        Ok(maximum)
+    } else {
+        Err(ConstraintSolveErrorV1::NonConvergent)
+    }
+}
+
 fn validate_limits(limits: ConstraintSolveLimitsV1) -> Result<(), ConstraintSolveErrorV1> {
     if limits.max_vertices == 0
         || limits.max_vertices > 256

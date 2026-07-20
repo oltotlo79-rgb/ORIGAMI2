@@ -3699,7 +3699,8 @@ fn import_front_paper_texture(
 
     let metadata = std::fs::metadata(&selected)
         .map_err(|_| "テクスチャ画像を読み込めませんでした。".to_owned())?;
-    if !metadata.is_file() || metadata.len() == 0
+    if !metadata.is_file()
+        || metadata.len() == 0
         || metadata.len() > MAX_PROJECT_TEXTURE_ASSET_BYTES as u64
     {
         return Err("テクスチャ画像は16 MiB以下のPNG/JPEGを選択してください。".to_owned());
@@ -3856,9 +3857,13 @@ fn register_back_texture(
         expected_project_id,
         expected_revision,
     )?;
-    let total = project.texture_assets.iter().try_fold(bytes.len(), |total, asset| {
-        total.checked_add(asset.bytes.len())
-    }).ok_or_else(|| "プロジェクト内テクスチャが大きすぎます。".to_owned())?;
+    let total = project
+        .texture_assets
+        .iter()
+        .try_fold(bytes.len(), |total, asset| {
+            total.checked_add(asset.bytes.len())
+        })
+        .ok_or_else(|| "プロジェクト内テクスチャが大きすぎます。".to_owned())?;
     if total > MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES
         || project.texture_assets.len() >= ori_formats::MAX_PROJECT_TEXTURE_ASSETS
     {
@@ -6937,10 +6942,10 @@ pub fn run() {
             select_fold_3d_frame,
             prepare_fold_3d_applied_pose,
             apply_fold_3d_applied_pose,
-            cancel_fold_3d_frames,
-            apply_fold_import,
             prepare_fold_3d_instruction_timeline,
             apply_fold_3d_instruction_timeline,
+            cancel_fold_3d_frames,
+            apply_fold_import,
             cancel_fold_import,
             preview_svg_import,
             validate_svg_import_settings,
@@ -10021,14 +10026,24 @@ mod tests {
             bytes
         };
         register_back_texture(
-            &mut project, instance_id, project_id, 0,
-            ProjectTextureMediaTypeV1::Png, png(1),
-        ).expect("first back texture");
+            &mut project,
+            instance_id,
+            project_id,
+            0,
+            ProjectTextureMediaTypeV1::Png,
+            png(1),
+        )
+        .expect("first back texture");
         let first = project.editor.paper().back.texture_asset.unwrap();
         register_back_texture(
-            &mut project, instance_id, project_id, 1,
-            ProjectTextureMediaTypeV1::Png, png(2),
-        ).expect("replacement back texture");
+            &mut project,
+            instance_id,
+            project_id,
+            1,
+            ProjectTextureMediaTypeV1::Png,
+            png(2),
+        )
+        .expect("replacement back texture");
         let second = project.editor.paper().back.texture_asset.unwrap();
         assert_ne!(first, second);
         project.editor.undo(2).expect("undo back texture");

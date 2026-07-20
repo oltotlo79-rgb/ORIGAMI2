@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type {
+  GeometricConstraintSolvePreview,
   GeometricConstraintDocument,
   GeometricConstraintKind,
   GeometricConstraintPreflightResult,
@@ -87,6 +88,7 @@ type GeometricConstraintPanelProps = {
   analysisFailed: boolean
   selectedEdgeId: string | null
   selectedVertexId?: string | null
+  selectedVertexPosition?: Readonly<{ x: number; y: number }> | null
   edges?: readonly Readonly<{ id: string }>[]
   vertices?: readonly Readonly<{ id: string }>[]
   disabled: boolean
@@ -95,6 +97,8 @@ type GeometricConstraintPanelProps = {
   onRemove: (constraintId: string) => void
   onSelectEdge: (edgeId: string) => void
   onRetryAnalysis: () => void
+  onPreviewSolve?: (vertexId: string, x: number, y: number) => Promise<GeometricConstraintSolvePreview>
+  onApplySolve?: (token: string) => Promise<boolean>
   localeStore?: LocaleStore
 }
 
@@ -105,6 +109,7 @@ export function GeometricConstraintPanel({
   analysisFailed,
   selectedEdgeId,
   selectedVertexId = null,
+  selectedVertexPosition = null,
   edges = [],
   vertices = [],
   disabled,
@@ -113,6 +118,8 @@ export function GeometricConstraintPanel({
   onRemove,
   onSelectEdge,
   onRetryAnalysis,
+  onPreviewSolve,
+  onApplySolve,
   localeStore: localeStore_ = localeStore,
 }: GeometricConstraintPanelProps) {
   const locale = useLocale(localeStore_)
@@ -123,6 +130,11 @@ export function GeometricConstraintPanel({
   const [creationTargets, setCreationTargets] = useState<Record<string, string>>({})
   const [creationScalar, setCreationScalar] = useState('10')
   const [creationInvalid, setCreationInvalid] = useState(false)
+  const [solveX, setSolveX] = useState('')
+  const [solveY, setSolveY] = useState('')
+  const [solvePreview, setSolvePreview] = useState<GeometricConstraintSolvePreview | null>(null)
+  const [solveError, setSolveError] = useState(false)
+  const [solveBusy, setSolveBusy] = useState(false)
   const edgeIds = uniqueIds(edges.map(({ id }) => id), selectedEdgeId)
   const vertexIds = uniqueIds(vertices.map(({ id }) => id), selectedVertexId)
   const creationFields = CONSTRAINT_CREATION_FIELDS[creationKind]
@@ -164,6 +176,104 @@ export function GeometricConstraintPanel({
           )}
         </button>
       </div>
+      <fieldset disabled={disabled || solveBusy}>
+        <legend>{localized(locale, '拘束を保った移動', 'Constraint-preserving move')}</legend>
+        <label className="field">
+          X (mm)
+          <input
+            aria-label="Solver X"
+            inputMode="decimal"
+            value={solveX}
+            placeholder={selectedVertexPosition?.x.toString() ?? ''}
+            onChange={(event) => {
+              setSolveX(event.currentTarget.value)
+              setSolvePreview(null)
+            }}
+          />
+        </label>
+        <label className="field">
+          Y (mm)
+          <input
+            aria-label="Solver Y"
+            inputMode="decimal"
+            value={solveY}
+            placeholder={selectedVertexPosition?.y.toString() ?? ''}
+            onChange={(event) => {
+              setSolveY(event.currentTarget.value)
+              setSolvePreview(null)
+            }}
+          />
+        </label>
+        <button
+          type="button"
+          disabled={selectedVertexId === null || !onPreviewSolve}
+          onClick={() => {
+            if (!selectedVertexId || !onPreviewSolve) return
+            const x = solveX === '' ? selectedVertexPosition?.x : Number(solveX)
+            const y = solveY === '' ? selectedVertexPosition?.y : Number(solveY)
+            if (x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) {
+              setSolveError(true)
+              return
+            }
+            setSolveBusy(true)
+            setSolveError(false)
+            void onPreviewSolve(selectedVertexId, x, y)
+              .then(setSolvePreview)
+              .catch(() => setSolveError(true))
+              .finally(() => setSolveBusy(false))
+          }}
+        >
+          {localized(locale, 'プレビュー', 'Preview')}
+        </button>
+        {solvePreview && (
+          <div className="geometric-constraint-solve-preview" role="status">
+            <p>
+              {localized(locale, '変更頂点', 'Changed vertices')}: {solvePreview.changedVertices.length}
+              {' · '}{localized(locale, '反復', 'Iterations')}: {solvePreview.iterations}
+              {' · '}residual: {solvePreview.maximumResidual.toExponential(2)}
+            </p>
+            <svg viewBox="-2 -2 4 4" aria-label={localized(locale, '移動プレビュー', 'Move preview')}>
+              {solvePreview.changedVertices.slice(0, 256).map((vertex) => (
+                <circle
+                  key={vertex.vertexId}
+                  cx={vertex.x}
+                  cy={vertex.y}
+                  r="0.06"
+                  className="constraint-solver-ghost"
+                />
+              ))}
+            </svg>
+            <button
+              type="button"
+              onClick={() => {
+                if (!onApplySolve) return
+                setSolveBusy(true)
+                void onApplySolve(solvePreview.token)
+                  .then((applied) => {
+                    if (applied) setSolvePreview(null)
+                    else setSolveError(true)
+                  })
+                  .catch(() => setSolveError(true))
+                  .finally(() => setSolveBusy(false))
+              }}
+            >
+              {localized(locale, '適用', 'Apply')}
+            </button>
+            <button type="button" onClick={() => setSolvePreview(null)}>
+              {localized(locale, 'キャンセル', 'Cancel')}
+            </button>
+          </div>
+        )}
+        {solveError && (
+          <p role="alert">
+            {localized(
+              locale,
+              '拘束を満たす解を安全に作成できませんでした。',
+              'A safe constraint solution could not be created.',
+            )}
+          </p>
+        )}
+      </fieldset>
       {selectedEdgeId === null && (
         <p className="muted">
           {localized(

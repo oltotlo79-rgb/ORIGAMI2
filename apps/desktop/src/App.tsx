@@ -57,6 +57,7 @@ import {
   appendNamedTechniqueInstructionSteps,
   analyzeGeometricConstraints,
   analyzeProjectTopology,
+  applyGeometricConstraintSolve,
   applyFoldImport,
   applySvgImport,
   assignEdgeToProjectLayer,
@@ -86,6 +87,7 @@ import {
   openProject,
   previewCreasePatternExport,
   previewFoldImport,
+  previewGeometricConstraintSolve,
   previewInstructionExport,
   previewInstructionMeshAnimation,
   previewStaticMeshExport,
@@ -2152,6 +2154,34 @@ function App() {
         constraint,
       ))
   }, [runNativeEdit])
+
+  const previewConstraintSolve = useCallback((
+    vertexId: string,
+    x: number,
+    y: number,
+  ) => {
+    const current = latestSnapshotRef.current
+    if (!current || coreOperationRef.current || recoveryBlockingRef.current) {
+      return Promise.reject(new Error('project unavailable'))
+    }
+    return previewGeometricConstraintSolve(
+      current.project_id,
+      current.revision,
+      current.project_instance_id,
+      vertexId,
+      x,
+      y,
+    )
+  }, [])
+
+  const applyConstraintSolve = useCallback((token: string) =>
+    runNativeEdit((projectId, revision, projectInstanceId) =>
+      applyGeometricConstraintSolve(
+        projectId,
+        revision,
+        projectInstanceId,
+        token,
+      )), [runNativeEdit])
 
   const startGlobalFlatFoldability = useCallback((
     timeLimitSeconds: GlobalFlatFoldabilityTimePreset,
@@ -6566,6 +6596,9 @@ function App() {
               }
               selectedEdgeId={selectedLine?.id ?? null}
               selectedVertexId={selectedVertexId}
+              selectedVertexPosition={
+                nativeVertices.find(({ id }) => id === selectedVertexId) ?? null
+              }
               edges={nativeLines}
               vertices={nativeVertices}
               disabled={coreBusy || geometricConstraintDocumentInvalid}
@@ -6578,6 +6611,8 @@ function App() {
                 setSelectedVertexId(null)
               }}
               onRetryAnalysis={retryGeometricConstraintAnalysis}
+              onPreviewSolve={previewConstraintSolve}
+              onApplySolve={applyConstraintSolve}
             />
           )}
           {validation && (

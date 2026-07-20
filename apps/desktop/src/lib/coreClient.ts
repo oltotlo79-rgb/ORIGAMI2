@@ -1277,6 +1277,46 @@ export function moveVertices(
   })
 }
 
+export type GeometricConstraintSolvePreview = {
+  token: string
+  revision: number
+  iterations: number
+  maximumResidual: number
+  changedVertices: Array<{ vertexId: string; x: number; y: number }>
+}
+
+export function previewGeometricConstraintSolve(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  drivingVertex: string,
+  xMm: number,
+  yMm: number,
+) {
+  return invoke<GeometricConstraintSolvePreview>('preview_geometric_constraint_solve', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    drivingVertex,
+    xMm,
+    yMm,
+  })
+}
+
+export function applyGeometricConstraintSolve(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  token: string,
+) {
+  return invoke<ProjectSnapshot>('apply_geometric_constraint_solve', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    token,
+  })
+}
+
 export function removeVertex(
   expectedProjectId: string,
   expectedRevision: number,

@@ -2522,6 +2522,182 @@ fn mirror_point_about_axis(point: Point2, axis: MirrorAxisV1) -> Option<Point2> 
     (mirrored.x.is_finite() && mirrored.y.is_finite()).then_some(mirrored)
 }
 
+fn build_mirrored_selection(
+    project: &ProjectState,
+    request: &MirrorSelectionRequestV1,
+) -> Result<(CreasePattern, ProjectLayerDocumentV1), &'static str> {
+    let preflight = validate_mirror_selection_request_v1(request);
+    if let Some(issue) = preflight.issue {
+        return Err(issue);
+    }
+    let mut pattern = project.editor.pattern().clone();
+    let mut layers = project.editor.project_layers().clone();
+    let selected_vertices = request.vertices.iter().copied().collect::<HashSet<_>>();
+    let selected_edges = request.edges.iter().copied().collect::<HashSet<_>>();
+    for edge in &pattern.edges {
+        if selected_edges.contains(&edge.id)
+            && (!selected_vertices.contains(&edge.start) || !selected_vertices.contains(&edge.end))
+        {
+            return Err("edge_endpoints_not_selected");
+        }
+        if selected_edges.contains(&edge.id) && edge.kind == EdgeKind::Boundary {
+            return Err("boundary_selected");
+        }
+    }
+    for id in &request.vertices {
+        if project.editor.paper().boundary_vertices.contains(id) {
+            return Err("boundary_selected");
+        }
+    }
+    for edge in &pattern.edges {
+        if selected_edges.contains(&edge.id) {
+            let layer = layers.layer_for_edge(edge.id);
+            if layers
+                .layers
+                .iter()
+                .any(|item| item.id == layer && item.locked)
+            {
+                return Err("layer_locked");
+            }
+        }
+    }
+    let mirrored = request
+        .vertices
+        .iter()
+        .map(|id| {
+            let source = pattern
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == *id)
+                .ok_or("vertex_not_found")?;
+            mirror_point_about_axis(source.position, request.axis).ok_or("invalid_axis_result")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for (source_id, position) in request.vertices.iter().zip(&mirrored) {
+        if pattern.vertices.iter().any(|vertex| {
+            (request.mode == MirrorSelectionModeV1::Duplicate || vertex.id != *source_id)
+                && vertex.position == *position
+        }) {
+            return Err("duplicate_vertex");
+        }
+    }
+    match request.mode {
+        MirrorSelectionModeV1::Move => {
+            for (id, position) in request.vertices.iter().zip(mirrored) {
+                pattern
+                    .vertices
+                    .iter_mut()
+                    .find(|vertex| vertex.id == *id)
+                    .ok_or("vertex_not_found")?
+                    .position = position;
+            }
+        }
+        MirrorSelectionModeV1::Duplicate => {
+            let id_map = request
+                .vertices
+                .iter()
+                .copied()
+                .zip(request.new_vertices.iter().copied())
+                .collect::<HashMap<_, _>>();
+            for (new_id, position) in request.new_vertices.iter().zip(mirrored) {
+                if pattern.vertices.iter().any(|vertex| vertex.id == *new_id) {
+                    return Err("duplicate_new_id");
+                }
+                pattern.vertices.push(ori_domain::Vertex {
+                    id: *new_id,
+                    position,
+                });
+            }
+            for (source_id, new_id) in request.edges.iter().zip(&request.new_edges) {
+                let source = pattern
+                    .edges
+                    .iter()
+                    .find(|edge| edge.id == *source_id)
+                    .ok_or("edge_not_found")?
+                    .clone();
+                pattern.edges.push(ori_domain::Edge {
+                    id: *new_id,
+                    start: *id_map
+                        .get(&source.start)
+                        .ok_or("edge_endpoints_not_selected")?,
+                    end: *id_map
+                        .get(&source.end)
+                        .ok_or("edge_endpoints_not_selected")?,
+                    kind: source.kind,
+                });
+                let layer = layers.layer_for_edge(source.id);
+                if layer != ori_domain::DEFAULT_PROJECT_LAYER_ID {
+                    layers
+                        .edge_assignments
+                        .push(ori_domain::EdgeLayerAssignmentV1 {
+                            edge: *new_id,
+                            layer,
+                        });
+                }
+            }
+        }
+    }
+    Ok((pattern, layers))
+}
+
+#[tauri::command]
+fn preflight_mirror_selection(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    request: MirrorSelectionRequestV1,
+) -> Result<MirrorSelectionPreflightV1, String> {
+    let project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let mut result = validate_mirror_selection_request_v1(&request);
+    if result.allowed
+        && let Err(issue) = build_mirrored_selection(&project, &request)
+    {
+        result.allowed = false;
+        result.issue = Some(issue);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn apply_mirror_selection(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    request: MirrorSelectionRequestV1,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let (pattern, project_layers) =
+        build_mirrored_selection(&project, &request).map_err(str::to_owned)?;
+    let paper = project.editor.paper().clone();
+    let timeline = project.editor.instruction_timeline().clone();
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::ApplyStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline: timeline,
+            project_layers,
+        },
+    )
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 fn rotate_edge_about_point(
@@ -7908,6 +8084,8 @@ pub fn run() {
             move_vertex,
             move_edge,
             mirror_edge_left_right,
+            preflight_mirror_selection,
+            apply_mirror_selection,
             rotate_edge_about_point,
             move_vertices,
             preview_geometric_constraint_solve,

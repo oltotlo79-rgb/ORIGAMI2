@@ -28,6 +28,8 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
       - run: npm test
+      - name: Validate generated static, textured, and animated GLB
+        run: npm run test:gltf-validator
       - run: npm run build
       - run: npm run lint
 

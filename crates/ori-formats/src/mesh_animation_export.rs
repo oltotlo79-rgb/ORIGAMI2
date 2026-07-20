@@ -251,6 +251,26 @@ fn serialize(
 
     let mut targets = Vec::new();
     for frame in frames {
+        let position_delta_min = (0..3)
+            .map(|axis| {
+                frame
+                    .positions_mm()
+                    .iter()
+                    .zip(base.positions_mm())
+                    .map(|(point, base_point)| (point[axis] - base_point[axis]) * 0.001)
+                    .fold(f64::INFINITY, f64::min)
+            })
+            .collect::<Vec<_>>();
+        let position_delta_max = (0..3)
+            .map(|axis| {
+                frame
+                    .positions_mm()
+                    .iter()
+                    .zip(base.positions_mm())
+                    .map(|(point, base_point)| (point[axis] - base_point[axis]) * 0.001)
+                    .fold(f64::NEG_INFINITY, f64::max)
+            })
+            .collect::<Vec<_>>();
         let position_delta = frame
             .positions_mm()
             .iter()
@@ -273,8 +293,8 @@ fn serialize(
             5_126,
             base.positions_mm().len(),
             "VEC3",
-            None,
-            None,
+            Some(json!(position_delta_min)),
+            Some(json!(position_delta_max)),
         );
         let n = append(
             &normal_delta,

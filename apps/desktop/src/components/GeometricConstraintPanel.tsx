@@ -368,8 +368,8 @@ export function GeometricConstraintPanel({
       <p className="muted">
         {localized(
           locale,
-          '頂点参照: v.<正規UUID>.x または v.<正規UUID>.y',
-          'Vertex reference: v.<canonical-uuid>.x or v.<canonical-uuid>.y',
+          '参照: v.<正規UUID>.x/y、e.<正規UUID>.length/angle',
+          'References: v.<canonical-uuid>.x/y, e.<canonical-uuid>.length/angle',
         )}
       </p>
       {selectedEdgeId === null && (

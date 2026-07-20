@@ -2893,9 +2893,104 @@ fn expand_saved_vertex_references(
 ) -> Result<String, String> {
     let mut result = String::with_capacity(source.len());
     let mut cursor = 0;
-    while let Some(relative) = source[cursor..].find("v.") {
+    loop {
+        let remaining = &source[cursor..];
+        let vertex_start = remaining.find("v.");
+        let edge_start = remaining.find("e.");
+        let Some(relative) = (match (vertex_start, edge_start) {
+            (Some(vertex), Some(edge)) => Some(vertex.min(edge)),
+            (Some(vertex), None) => Some(vertex),
+            (None, Some(edge)) => Some(edge),
+            (None, None) => None,
+        }) else {
+            break;
+        };
         let start = cursor + relative;
         result.push_str(&source[cursor..start]);
+        if source[start..].starts_with("e.") {
+            let id_end = start
+                .checked_add(38)
+                .ok_or_else(|| "invalid edge reference".to_owned())?;
+            let uuid = source
+                .get(start + 2..id_end)
+                .ok_or_else(|| "invalid edge reference".to_owned())?;
+            let suffix = source
+                .get(id_end..)
+                .ok_or_else(|| "invalid edge reference".to_owned())?;
+            let (y_axis_angle, end) = if suffix.starts_with(".length") {
+                (false, id_end + 7)
+            } else if suffix.starts_with(".angle") {
+                (true, id_end + 6)
+            } else {
+                return Err("invalid edge reference".to_owned());
+            };
+            let referenced: EdgeId = serde_json::from_str(&format!("\"{uuid}\""))
+                .map_err(|_| "invalid edge reference".to_owned())?;
+            let canonical = serde_json::to_value(referenced)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .ok_or_else(|| "invalid edge reference".to_owned())?;
+            if canonical != uuid {
+                return Err("invalid edge reference".to_owned());
+            }
+            let edge = project
+                .editor
+                .pattern()
+                .edges
+                .iter()
+                .find(|edge| edge.id == referenced)
+                .ok_or_else(|| {
+                    "saved numeric expression has a dangling edge reference".to_owned()
+                })?;
+            *work = work
+                .checked_add(1)
+                .ok_or_else(|| "expression reference limit".to_owned())?;
+            if *work > MAX_SAVED_EXPRESSION_REFERENCES {
+                return Err("expression reference limit".to_owned());
+            }
+            let start_x = resolve_saved_coordinate(
+                project,
+                edge.start,
+                false,
+                memo,
+                visiting,
+                work,
+                depth + 1,
+            )?;
+            let start_y = resolve_saved_coordinate(
+                project,
+                edge.start,
+                true,
+                memo,
+                visiting,
+                work,
+                depth + 1,
+            )?;
+            let end_x = resolve_saved_coordinate(
+                project,
+                edge.end,
+                false,
+                memo,
+                visiting,
+                work,
+                depth + 1,
+            )?;
+            let end_y =
+                resolve_saved_coordinate(project, edge.end, true, memo, visiting, work, depth + 1)?;
+            let value = if y_axis_angle {
+                (end_y - start_y).atan2(end_x - start_x).to_degrees()
+            } else {
+                (end_x - start_x).hypot(end_y - start_y)
+            };
+            if !value.is_finite() {
+                return Err("edge reference result is non-finite".to_owned());
+            }
+            result.push('(');
+            result.push_str(&value.to_string());
+            result.push(')');
+            cursor = end;
+            continue;
+        }
         let end = start
             .checked_add(40)
             .ok_or_else(|| "invalid vertex reference".to_owned())?;
@@ -5592,7 +5687,9 @@ fn validate_loaded_numeric_expression_bindings(document: &ProjectDocument) -> Re
         validate_loaded_numeric_expression_binding(binding)?;
     }
     for binding in &document.numeric_expressions.vertex_coordinates {
-        if !binding.x_source.contains("v.") && !binding.y_source.contains("v.") {
+        if !contains_geometry_reference(&binding.x_source)
+            && !contains_geometry_reference(&binding.y_source)
+        {
             validate_coordinate_expression_pair(
                 &binding.x_source,
                 &binding.y_source,
@@ -5634,7 +5731,10 @@ fn validate_loaded_numeric_expression_bindings(document: &ProjectDocument) -> Re
         .numeric_expressions
         .vertex_coordinates
         .iter()
-        .any(|binding| binding.x_source.contains("v.") || binding.y_source.contains("v."))
+        .any(|binding| {
+            contains_geometry_reference(&binding.x_source)
+                || contains_geometry_reference(&binding.y_source)
+        })
     {
         let staged = ProjectState::from_document(document.clone(), PathBuf::new());
         let resolved = reevaluate_saved_vertex_expressions(&staged)
@@ -5690,6 +5790,10 @@ fn validate_loaded_numeric_expression_bindings(document: &ProjectDocument) -> Re
         }
     }
     Ok(())
+}
+
+fn contains_geometry_reference(source: &str) -> bool {
+    source.contains("v.") || source.contains("e.")
 }
 
 fn validate_loaded_numeric_expression_binding(
@@ -15443,6 +15547,15 @@ mod tests {
         format!("v.{id}.{axis}")
     }
 
+    fn edge_reference(id: EdgeId, field: &str) -> String {
+        let id = serde_json::to_value(id)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned();
+        format!("e.{id}.{field}")
+    }
+
     static VERTEX_REFERENCE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
@@ -15584,6 +15697,62 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(reevaluate_saved_vertex_expressions(&project).is_err());
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn saved_edge_length_and_angle_follow_endpoint_dag() {
+        let _serial = VERTEX_REFERENCE_TEST_LOCK.lock().unwrap();
+        let (project, _, start, _) = solver_stage_fixture();
+        let edge = project.editor.pattern().edges[0].clone();
+        let derived = VertexId::new();
+        let mut pattern = project.editor.pattern().clone();
+        pattern.vertices.push(ori_domain::Vertex {
+            id: derived,
+            position: Point2::new(0.0, 0.0),
+        });
+        let mut project = ProjectState::new(pattern);
+        project.numeric_expressions.vertex_coordinates = vec![
+            VertexCoordinateExpressions::new(start, "0", "0", 0.0, 0.0),
+            VertexCoordinateExpressions::new(edge.end, "3", "4", 3.0, 4.0),
+            VertexCoordinateExpressions::new(
+                derived,
+                edge_reference(edge.id, "length"),
+                edge_reference(edge.id, "angle"),
+                5.0,
+                53.13010235415598,
+            ),
+        ];
+        let values = reevaluate_saved_vertex_expressions(&project).unwrap();
+        let point = values
+            .iter()
+            .find(|(vertex, _)| *vertex == derived)
+            .unwrap()
+            .1;
+        assert_eq!(point.x, 5.0);
+        assert!((point.y - 53.13010235415598).abs() <= 1e-12);
+    }
+
+    #[test]
+    fn saved_edge_reference_cycle_and_dangling_fail_closed() {
+        let _serial = VERTEX_REFERENCE_TEST_LOCK.lock().unwrap();
+        let (mut project, _, _, _) = solver_stage_fixture();
+        let edge = project.editor.pattern().edges[0].clone();
+        project.numeric_expressions.vertex_coordinates = vec![VertexCoordinateExpressions::new(
+            edge.end,
+            edge_reference(edge.id, "length"),
+            "0",
+            0.0,
+            0.0,
+        )];
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
+        project.numeric_expressions.vertex_coordinates = vec![VertexCoordinateExpressions::new(
+            edge.end,
+            edge_reference(EdgeId::new(), "length"),
+            "0",
+            0.0,
+            0.0,
+        )];
+        assert!(reevaluate_saved_vertex_expressions(&project).is_err());
     }
 
     #[test]

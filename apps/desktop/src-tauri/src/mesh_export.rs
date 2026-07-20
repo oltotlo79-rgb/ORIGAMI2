@@ -2103,8 +2103,7 @@ mod tests {
             8
         );
         validate_watertight_triangle_geometry(&solid.mesh).expect("manifold");
-        let validated =
-            validate_indexed_triangle_mesh(&solid.mesh).expect("validated union mesh");
+        let validated = validate_indexed_triangle_mesh(&solid.mesh).expect("validated union mesh");
         let stl = export_static_triangle_mesh(StaticMeshExportFormat::BinaryStl, &validated)
             .expect("independently verified STL");
         assert_eq!(stl.triangle_count, 12);

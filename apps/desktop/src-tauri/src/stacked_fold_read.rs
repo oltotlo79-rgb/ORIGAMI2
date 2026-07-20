@@ -11,9 +11,8 @@ use ori_collision::{
     propose_linear_stacked_fold_read_v1, reverse_map_linear_stacked_fold_material_v1,
 };
 use ori_core::{
-    ExpectedStackedFoldCreaseV1, FaceLineageInput, FaceLineageLimits, StackedFoldGeometryInputV1,
-    StackedFoldGeometryLimitsV1, StackedFoldTopologyBuildLimitsV1, build_stacked_fold_topology_v1,
-    prepare_face_lineage_v1, prepare_stacked_fold_geometry_v1,
+    ExpectedStackedFoldCreaseV1, FaceLineageLimits, StackedFoldGeometryLimitsV1,
+    StackedFoldTopologyBuildLimitsV1, prepare_stacked_fold_geometry_candidate_v1,
 };
 use ori_domain::{FaceId, ProjectId};
 use ori_kinematics::Point3;
@@ -256,48 +255,21 @@ pub(super) async fn propose_current_stacked_fold_read(
                 kind: segment.assignment(),
             })
             .collect::<Vec<_>>();
-        let topology = build_stacked_fold_topology_v1(
+        let prepared_geometry = prepare_stacked_fold_geometry_candidate_v1(
             binding.project_id(),
             binding.source_revision(),
             &pattern,
             &paper,
+            layer_capability.snapshot(),
             &expected_creases,
             StackedFoldTopologyBuildLimitsV1::default(),
-        )
-        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-        let target_revision = binding
-            .source_revision()
-            .checked_add(1)
-            .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-        let lineage = prepare_face_lineage_v1(
-            FaceLineageInput {
-                identity_namespace: binding.project_id(),
-                source_revision: binding.source_revision(),
-                source_paper: &paper,
-                source_pattern: &pattern,
-                source_layer_order: layer_capability.snapshot(),
-                target_revision,
-                target_paper: &topology.paper,
-                target_pattern: &topology.pattern,
-            },
             FaceLineageLimits::default(),
-        )
-        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-        let geometry_proof = prepare_stacked_fold_geometry_v1(
-            StackedFoldGeometryInputV1 {
-                identity_namespace: binding.project_id(),
-                source_revision: binding.source_revision(),
-                source_paper: &paper,
-                source_pattern: &pattern,
-                target_revision,
-                target_paper: &topology.paper,
-                target_pattern: &topology.pattern,
-                face_lineage: &lineage,
-                expected_creases: &expected_creases,
-            },
             StackedFoldGeometryLimitsV1::default(),
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+        let topology = prepared_geometry.candidate();
+        let geometry_proof = prepared_geometry.proof();
+        let lineage = geometry_proof.lineage();
         let topology_proof = StackedFoldTopologyProofDto {
             target_fingerprint_sha256: lineage.target_fingerprint().to_hex(),
             target_vertex_count: topology.pattern.vertices.len(),

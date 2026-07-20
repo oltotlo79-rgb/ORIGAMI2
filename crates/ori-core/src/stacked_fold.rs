@@ -207,6 +207,24 @@ pub struct StackedFoldTopologyCandidateV1 {
     pub paper: Paper,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparedStackedFoldGeometryV1 {
+    candidate: StackedFoldTopologyCandidateV1,
+    proof: StackedFoldGeometryProofV1,
+}
+
+impl PreparedStackedFoldGeometryV1 {
+    #[must_use]
+    pub const fn candidate(&self) -> &StackedFoldTopologyCandidateV1 {
+        &self.candidate
+    }
+
+    #[must_use]
+    pub const fn proof(&self) -> &StackedFoldGeometryProofV1 {
+        &self.proof
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StackedFoldTopologyBuildResourceV1 {
     Carriers,
@@ -241,6 +259,18 @@ pub enum StackedFoldTopologyBuildErrorV1 {
     PaperBoundaryVertexMissing { vertex: VertexId },
     #[error("exact geometry predicate failed: {0}")]
     Geometry(#[from] GeometryError),
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum PrepareStackedFoldGeometryErrorV1 {
+    #[error("source revision cannot advance")]
+    SourceRevisionCannotAdvance,
+    #[error("target topology construction failed: {0}")]
+    Topology(#[from] StackedFoldTopologyBuildErrorV1),
+    #[error("target face lineage failed: {0}")]
+    Lineage(#[from] FaceLineageError),
+    #[error("target geometry proof failed: {0}")]
+    Geometry(#[from] StackedFoldGeometryErrorV1),
 }
 
 /// Deterministic count limits for one stacked-fold geometry-delta proof.
@@ -1112,6 +1142,66 @@ pub fn build_stacked_fold_topology_v1(
         pattern: CreasePattern { vertices, edges },
         paper,
     })
+}
+
+/// Builds and proves one detached stacked-fold geometry candidate as a single
+/// fail-closed operation.
+///
+/// Keeping the candidate and its owning proof together prevents callers from
+/// accidentally mixing geometry, lineage, or revisions between preparation
+/// phases. The package remains read-only and must be rebound to live
+/// pose/layer/collision authority by the eventual commit command.
+pub fn prepare_stacked_fold_geometry_candidate_v1(
+    identity_namespace: ProjectId,
+    source_revision: Revision,
+    source_pattern: &CreasePattern,
+    source_paper: &Paper,
+    source_layer_order: &LayerOrderSnapshot,
+    expected_creases: &[ExpectedStackedFoldCreaseV1],
+    topology_limits: StackedFoldTopologyBuildLimitsV1,
+    lineage_limits: FaceLineageLimits,
+    geometry_limits: StackedFoldGeometryLimitsV1,
+) -> Result<PreparedStackedFoldGeometryV1, PrepareStackedFoldGeometryErrorV1> {
+    let target_revision = source_revision
+        .checked_add(1)
+        .filter(|revision| *revision <= MAX_REVISION)
+        .ok_or(PrepareStackedFoldGeometryErrorV1::SourceRevisionCannotAdvance)?;
+    let candidate = build_stacked_fold_topology_v1(
+        identity_namespace,
+        source_revision,
+        source_pattern,
+        source_paper,
+        expected_creases,
+        topology_limits,
+    )?;
+    let lineage = prepare_face_lineage_v1(
+        FaceLineageInput {
+            identity_namespace,
+            source_revision,
+            source_paper,
+            source_pattern,
+            source_layer_order,
+            target_revision,
+            target_paper: &candidate.paper,
+            target_pattern: &candidate.pattern,
+        },
+        lineage_limits,
+    )?;
+    let proof = prepare_stacked_fold_geometry_v1(
+        StackedFoldGeometryInputV1 {
+            identity_namespace,
+            source_revision,
+            source_paper,
+            source_pattern,
+            target_revision,
+            target_paper: &candidate.paper,
+            target_pattern: &candidate.pattern,
+            face_lineage: &lineage,
+            expected_creases,
+        },
+        geometry_limits,
+    )?;
+    Ok(PreparedStackedFoldGeometryV1 { candidate, proof })
 }
 
 fn compare_expected_crease(
@@ -2252,6 +2342,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![2, 2]
         );
+        let prepared = prepare_stacked_fold_geometry_candidate_v1(
+            identity,
+            source_revision,
+            &source_pattern,
+            &source_paper,
+            &source_layer_order,
+            &expected,
+            StackedFoldTopologyBuildLimitsV1::default(),
+            FaceLineageLimits::default(),
+            StackedFoldGeometryLimitsV1::default(),
+        )
+        .expect("build and prove one owning package");
+        assert_eq!(prepared.candidate(), &candidate);
+        assert_eq!(prepared.proof(), &proof);
     }
 
     #[test]

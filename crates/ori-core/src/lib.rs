@@ -83,12 +83,13 @@ pub use stacked_fold::{
     DEFAULT_MAX_STACKED_FOLD_LINEAGE_DESCENDANTS, DEFAULT_MAX_STACKED_FOLD_LINEAGE_RECORDS,
     ExpectedCreaseSubdivisionV1, ExpectedStackedFoldCreaseV1, FaceLineageError, FaceLineageInput,
     FaceLineageLimits, FaceLineageRecord, FaceLineageResource, FaceLineageTopology, FaceLineageV1,
-    SourceEdgeSubdivisionV1, StackedFoldGeometryCarrierV1, StackedFoldGeometryErrorV1,
-    StackedFoldGeometryInputV1, StackedFoldGeometryLimitsV1, StackedFoldGeometryProofV1,
-    StackedFoldGeometryResourceV1, StackedFoldTopologyBuildErrorV1,
-    StackedFoldTopologyBuildLimitsV1, StackedFoldTopologyBuildResourceV1,
-    StackedFoldTopologyCandidateV1, build_stacked_fold_topology_v1, prepare_face_lineage_v1,
-    prepare_stacked_fold_geometry_v1,
+    PrepareStackedFoldGeometryErrorV1, PreparedStackedFoldGeometryV1, SourceEdgeSubdivisionV1,
+    StackedFoldGeometryCarrierV1, StackedFoldGeometryErrorV1, StackedFoldGeometryInputV1,
+    StackedFoldGeometryLimitsV1, StackedFoldGeometryProofV1, StackedFoldGeometryResourceV1,
+    StackedFoldTopologyBuildErrorV1, StackedFoldTopologyBuildLimitsV1,
+    StackedFoldTopologyBuildResourceV1, StackedFoldTopologyCandidateV1,
+    build_stacked_fold_topology_v1, prepare_face_lineage_v1,
+    prepare_stacked_fold_geometry_candidate_v1, prepare_stacked_fold_geometry_v1,
 };
 pub use topology::{EditorTopology, TopologyAnalysisInput};
 pub use validation::EditorValidation;

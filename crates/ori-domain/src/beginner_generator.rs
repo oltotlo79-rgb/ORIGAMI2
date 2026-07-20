@@ -33,6 +33,45 @@ pub struct BeginnerGeneratedPlanV1 {
     pub target_asset: Option<BeginnerTargetAssetReferenceV1>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerSymmetricParameterEstimateV1 {
+    pub protrusion_count: u8,
+    pub scale_percent: u8,
+    pub spacing_percent: u8,
+}
+
+#[must_use]
+pub fn estimate_symmetric_parameters_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<BeginnerSymmetricParameterEstimateV1> {
+    let count = |kind| {
+        constraints
+            .target_parts
+            .iter()
+            .find(|part| part.kind == kind)
+            .map_or(0, |part| part.count)
+    };
+    if count(BeginnerTargetPartKindV1::Head) != 1 || count(BeginnerTargetPartKindV1::Torso) != 1 {
+        return None;
+    }
+    let protrusion_count = match constraints.target_category? {
+        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Leg) == 4 => 4,
+        BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
+        _ => return None,
+    };
+    let scale_percent = match constraints.detail_level {
+        crate::BeginnerDetailLevelV1::Simple => 20,
+        crate::BeginnerDetailLevelV1::Standard => 25,
+        crate::BeginnerDetailLevelV1::Detailed => 30,
+    };
+    Some(BeginnerSymmetricParameterEstimateV1 {
+        protrusion_count,
+        scale_percent,
+        spacing_percent: if protrusion_count == 4 { 35 } else { 50 },
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BeginnerGeneratorErrorV1 {
     ResourceLimit,
@@ -272,7 +311,13 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
         }
         None => None,
     };
-    target.map_or(0, |target| 60 + target.priority.min(100) * 2 / 5)
+    target.map_or_else(
+        || {
+            estimate_symmetric_parameters_v1(constraints)
+                .map_or(0, |estimate| 40 + estimate.scale_percent + estimate.spacing_percent / 5)
+        },
+        |target| 60 + target.priority.min(100) * 2 / 5,
+    )
 }
 
 fn has_bilateral_protrusion_count(
@@ -619,6 +664,39 @@ mod tests {
             generate_beginner_plans_v1(namespace, &source, &ids, &constraints),
             Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)
         );
+    }
+
+    #[test]
+    fn target_parts_estimate_bounded_symmetric_parameters_deterministically() {
+        let constraints = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::Animal),
+            target_parts: vec![
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Head,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Torso,
+                    count: 1,
+                },
+                BeginnerTargetPartRecordV1 {
+                    kind: BeginnerTargetPartKindV1::Leg,
+                    count: 4,
+                },
+            ],
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        assert_eq!(
+            estimate_symmetric_parameters_v1(&constraints),
+            Some(BeginnerSymmetricParameterEstimateV1 {
+                protrusion_count: 4,
+                scale_percent: 25,
+                spacing_percent: 35,
+            })
+        );
+        let mut ambiguous = constraints;
+        ambiguous.target_parts[2].count = 3;
+        assert_eq!(estimate_symmetric_parameters_v1(&ambiguous), None);
     }
 
     fn skeleton(

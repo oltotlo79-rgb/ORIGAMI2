@@ -519,6 +519,41 @@ pub(crate) fn apply_beginner_part_assignments(
             side: ori_domain::BeginnerProtrusionSideV1::Either,
             priority: 50,
         }];
+        if horn_candidate_ids.len() == 1 && ear_candidate_ids.len() == 2 {
+            let mut ears = ear_candidate_ids
+                .iter()
+                .filter_map(|id| candidates.iter().find(|candidate| candidate.id == *id))
+                .collect::<Vec<_>>();
+            ears.sort_by_key(|candidate| candidate.bounds.min_x);
+            let left_center = i64::from(ears[0].bounds.min_x) + i64::from(ears[0].bounds.max_x);
+            let right_center = i64::from(ears[1].bounds.min_x) + i64::from(ears[1].bounds.max_x);
+            let left_y = i64::from(ears[0].bounds.min_y) + i64::from(ears[0].bounds.max_y);
+            let right_y = i64::from(ears[1].bounds.min_y) + i64::from(ears[1].bounds.max_y);
+            if (left_center + right_center - axis_twice * 2).abs() > 2
+                || (left_y - right_y).abs() > 2
+            {
+                return Err("part_assignment_horn_ear_binding_invalid".to_owned());
+            }
+            let mut ear_target = profile.generation_constraints.protrusions[0].clone();
+            ear_target.id = 2;
+            ear_target.count = 2;
+            ear_target.length_tenths_mm = u32::try_from(
+                (right_center - left_center)
+                    .unsigned_abs()
+                    .saturating_mul(5)
+                    .max(1),
+            )
+            .map_err(|_| "part_assignment_horn_ear_binding_invalid")?;
+            ear_target.position_tenths_mm[1] =
+                i32::try_from((left_y + right_y).saturating_mul(5) / 2)
+                    .map_err(|_| "part_assignment_horn_ear_binding_invalid")?;
+            ear_target.direction_milli = [1000, 0, 0];
+            ear_target.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
+            profile.generation_constraints.protrusions.push(ear_target);
+            if ori_domain::animal_horn_ear_bindings_v1(&profile.generation_constraints).is_none() {
+                return Err("part_assignment_horn_ear_binding_invalid".to_owned());
+            }
+        }
     }
     if tail_candidate_ids.len() == 1
         && profile.generation_constraints.target_category

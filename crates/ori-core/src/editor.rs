@@ -2273,6 +2273,7 @@ impl EditorState {
         project_layers: ProjectLayerDocumentV1,
         applied_pose: AppliedPoseV1,
     ) -> Result<CommandResult, CommandError> {
+        let pose_before = self.current_applied_pose.clone();
         let result = self.execute(
             expected_revision,
             Command::ApplyStackedFoldDocument {
@@ -2287,10 +2288,15 @@ impl EditorState {
             .undo_stack
             .last_mut()
             .ok_or(CommandError::InvalidStackedFoldDocument)?;
-        let AppliedPoseHistoryTransition::Restore { after, .. } = &mut entry.applied_pose else {
-            return Err(CommandError::InvalidStackedFoldDocument);
-        };
-        *after = Some(applied_pose);
+        match &mut entry.applied_pose {
+            AppliedPoseHistoryTransition::Restore { after, .. } => *after = Some(applied_pose),
+            transition @ AppliedPoseHistoryTransition::PreserveCurrent => {
+                *transition = AppliedPoseHistoryTransition::Restore {
+                    before: pose_before,
+                    after: Some(applied_pose),
+                };
+            }
+        }
         Ok(result)
     }
 
@@ -2377,7 +2383,6 @@ impl EditorState {
                 ref project_layers,
             } => {
                 if paper.thickness_mm.to_bits() != self.paper.thickness_mm.to_bits()
-                    || (*pattern == self.pattern && *paper == self.paper)
                     || instruction_timeline.steps.len() <= self.instruction_timeline.steps.len()
                     || instruction_timeline.steps.len()
                         > self.instruction_timeline.steps.len().saturating_add(31)
@@ -15067,6 +15072,27 @@ mod tests {
         assert_eq!(editor.pattern(), &target_pattern);
         assert_eq!(editor.instruction_timeline(), &timeline);
         assert_eq!(editor.current_applied_pose(), Some(&after_pose));
+
+        let mut pose_editor = EditorState::with_paper(target_pattern.clone(), source_paper.clone());
+        let before_pose = runtime_pose(0.0);
+        pose_editor.adopt_current_applied_pose(before_pose.clone());
+        pose_editor
+            .execute_stacked_fold_document(
+                0,
+                target_pattern.clone(),
+                source_paper,
+                timeline.clone(),
+                ProjectLayerDocumentV1::default(),
+                after_pose.clone(),
+            )
+            .expect("atomic already-cyclic pose timeline");
+        assert_eq!(pose_editor.current_applied_pose(), Some(&after_pose));
+        pose_editor.undo(1).unwrap();
+        assert_eq!(pose_editor.current_applied_pose(), Some(&before_pose));
+        assert!(pose_editor.instruction_timeline().steps.is_empty());
+        pose_editor.redo(2).unwrap();
+        assert_eq!(pose_editor.current_applied_pose(), Some(&after_pose));
+        assert_eq!(pose_editor.instruction_timeline(), &timeline);
     }
 
     #[test]

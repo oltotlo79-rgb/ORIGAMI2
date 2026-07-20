@@ -63,6 +63,7 @@ pub fn prepare_cycle_fold_transaction_v1(
         || !schedule.matches_binding(geometry, audit, fixed)
         || certificate.schedule_binding_fingerprint_v1()
             != schedule.certificate_binding_fingerprint_v1()
+        || certificate.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
         || certificate
             .leaves()
             .iter()

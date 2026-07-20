@@ -1104,6 +1104,12 @@ impl CanonicalCycleScheduleV1 {
     pub const fn certificate_binding_fingerprint_v1(&self) -> [u8; 32] {
         self.schedule_fingerprint
     }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn graph_binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.binding_fingerprint
+    }
 }
 
 fn schedule_fingerprint_v1(
@@ -1160,6 +1166,10 @@ fn binding_fingerprint(
         hash.update(hinge.edge().canonical_bytes());
         hash.update(hinge.left_face().canonical_bytes());
         hash.update(hinge.right_face().canonical_bytes());
+        hash.update([match hinge.assignment() {
+            ori_topology::FoldAssignment::Mountain => 0,
+            ori_topology::FoldAssignment::Valley => 1,
+        }]);
         for value in [
             hinge.start().x(),
             hinge.start().y(),
@@ -1167,6 +1177,9 @@ fn binding_fingerprint(
             hinge.end().x(),
             hinge.end().y(),
             hinge.end().z(),
+            hinge.axis().x(),
+            hinge.axis().y(),
+            hinge.axis().z(),
         ] {
             hash.update(value.to_bits().to_be_bytes());
         }

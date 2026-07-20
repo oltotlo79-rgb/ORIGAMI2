@@ -2587,6 +2587,8 @@ pub fn prepare_stacked_fold_requested_scheduled_graph_pose_v1(
         )
         || schedule.certificate_binding_fingerprint_v1()
             != interval_closure.schedule_binding_fingerprint_v1()
+        || schedule.graph_binding_fingerprint_v1()
+            != interval_closure.graph_binding_fingerprint_v1()
     {
         return Err(PrepareStackedFoldRequestedPoseErrorV1::InvalidRequestedAngle);
     }

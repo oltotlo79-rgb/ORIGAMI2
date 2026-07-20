@@ -180,6 +180,54 @@ describe('FoldTechniqueEditorDialog', () => {
     )
   })
 
+  it('selects and edits every technique in a multi-technique package', () => {
+    localeStore.setLocale('en')
+    const initial = clone(createInitialFoldTechniqueDocumentV1())
+    const second = clone(initial.techniques[0])
+    second.id = 'user.second-technique'
+    second.names = [
+      { locale: 'ja', text: '二つ目の折り技法' },
+      { locale: 'en', text: 'Second folding technique' },
+    ]
+    initial.techniques.push(second)
+    const onConfirm = vi.fn()
+    renderDialog({ mode: 'edit', initialDocument: initial, onConfirm })
+
+    fireEvent.change(screen.getByLabelText('Technique name (English)'), {
+      target: { value: 'First edited technique' },
+    })
+    fireEvent.change(screen.getByLabelText('Technique to edit'), {
+      target: { value: '1' },
+    })
+    expect(
+      (screen.getByLabelText('Technique name (English)') as HTMLInputElement)
+        .value,
+    ).toBe('Second folding technique')
+    fireEvent.change(screen.getByLabelText('Technique name (English)'), {
+      target: { value: 'Second edited technique' },
+    })
+    fireEvent.change(screen.getByLabelText('Technique to edit'), {
+      target: { value: '0' },
+    })
+    expect(
+      (screen.getByLabelText('Technique name (English)') as HTMLInputElement)
+        .value,
+    ).toBe('First edited technique')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply changes' }))
+    const confirmed =
+      onConfirm.mock.calls[0]?.[0] as FoldTechniqueFileDocumentV1
+    expect(confirmed.techniques).toHaveLength(2)
+    expect(confirmed.techniques[0]?.names).toContainEqual({
+      locale: 'en',
+      text: 'First edited technique',
+    })
+    expect(confirmed.techniques[1]?.names).toContainEqual({
+      locale: 'en',
+      text: 'Second edited technique',
+    })
+  })
+
   it('rejects hostile initial values without invoking accessors', () => {
     const hostile = clone(createInitialFoldTechniqueDocumentV1())
     let calls = 0

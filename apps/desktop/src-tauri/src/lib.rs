@@ -1,6 +1,7 @@
 mod applied_pose;
 mod crease_export;
 mod diagnostics;
+mod fold_technique_file_io;
 mod global_flat_foldability;
 mod history_settings;
 mod instruction_export;
@@ -35,6 +36,9 @@ use crease_export::{
 use diagnostics::{
     DiagnosticsState, prepare_diagnostics_share_preview, record_unexpected_diagnostic,
     save_diagnostics_share_preview,
+};
+use fold_technique_file_io::{
+    FoldTechniqueFileIoState, open_fold_technique_file, save_fold_technique_file_as,
 };
 use global_flat_foldability::{
     GlobalFlatFoldabilityState, begin_global_flat_foldability, cancel_global_flat_foldability,
@@ -1982,6 +1986,14 @@ fn rename_project_layer_in_project(
     )
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectLayerPresentationInput {
+    visible: bool,
+    locked: bool,
+    opacity: f64,
+}
+
 #[tauri::command]
 fn update_project_layer_presentation(
     state: State<'_, AppState>,
@@ -1989,9 +2001,7 @@ fn update_project_layer_presentation(
     expected_project_id: ProjectId,
     expected_revision: u64,
     layer: LayerId,
-    visible: bool,
-    locked: bool,
-    opacity: f64,
+    presentation: ProjectLayerPresentationInput,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
     update_project_layer_presentation_in_project(
@@ -2000,9 +2010,7 @@ fn update_project_layer_presentation(
         expected_project_id,
         expected_revision,
         layer,
-        visible,
-        locked,
-        opacity,
+        presentation,
     )
 }
 
@@ -2012,9 +2020,7 @@ fn update_project_layer_presentation_in_project(
     expected_project_id: ProjectId,
     expected_revision: u64,
     layer: LayerId,
-    visible: bool,
-    locked: bool,
-    opacity: f64,
+    presentation: ProjectLayerPresentationInput,
 ) -> Result<ProjectSnapshot, String> {
     execute_command(
         project,
@@ -2023,9 +2029,9 @@ fn update_project_layer_presentation_in_project(
         expected_revision,
         Command::UpdateLayerPresentation {
             layer,
-            visible,
-            locked,
-            opacity,
+            visible: presentation.visible,
+            locked: presentation.locked,
+            opacity: presentation.opacity,
         },
     )
 }
@@ -5321,6 +5327,7 @@ pub fn run() {
             Ok(())
         })
         .manage(FoldImportState::default())
+        .manage(FoldTechniqueFileIoState::default())
         .manage(SvgImportState::default())
         .manage(CreaseExportState::default())
         .manage(StaticMeshExportState::default())
@@ -5352,6 +5359,8 @@ pub fn run() {
             open_project,
             save_project,
             save_project_as,
+            open_fold_technique_file,
+            save_fold_technique_file_as,
             preview_crease_pattern_export,
             save_crease_pattern_export,
             cancel_crease_pattern_export,
@@ -6196,9 +6205,11 @@ mod tests {
             project_id,
             3,
             crease_layer,
-            false,
-            true,
-            0.4,
+            ProjectLayerPresentationInput {
+                visible: false,
+                locked: true,
+                opacity: 0.4,
+            },
         )
         .expect("update project layer presentation");
         let presented_layer = presented
@@ -6217,9 +6228,11 @@ mod tests {
             project_id,
             4,
             crease_layer,
-            true,
-            false,
-            0.4,
+            ProjectLayerPresentationInput {
+                visible: true,
+                locked: false,
+                opacity: 0.4,
+            },
         )
         .expect("unlock project layer");
         assert!(!unlocked.project_layers.layers[1].locked);
@@ -6278,6 +6291,35 @@ mod tests {
         );
         assert_eq!(project.editor.revision(), 8);
         assert_eq!(project.editor.project_layers(), &deleted.project_layers);
+    }
+
+    #[test]
+    fn project_layer_presentation_ipc_input_is_a_strict_nested_record() {
+        let admitted = serde_json::from_value::<ProjectLayerPresentationInput>(serde_json::json!({
+            "visible": false,
+            "locked": true,
+            "opacity": 0.4
+        }))
+        .expect("strict presentation input");
+        assert!(!admitted.visible);
+        assert!(admitted.locked);
+        assert_eq!(admitted.opacity, 0.4);
+        assert!(
+            serde_json::from_value::<ProjectLayerPresentationInput>(serde_json::json!({
+                "visible": false,
+                "locked": true,
+                "opacity": 0.4,
+                "future": "rejected"
+            }),)
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ProjectLayerPresentationInput>(serde_json::json!({
+                "visible": false,
+                "opacity": 0.4
+            }),)
+            .is_err()
+        );
     }
 
     #[test]

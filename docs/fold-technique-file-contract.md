@@ -160,3 +160,18 @@ operation順序を除くunorderedな入力順が異なっても同じcanonical b
 - unsupported physical operationの`declarative_only`への偽装、別operation名への差替え、必要capability欠落を拒否する
 - unordered集合の順序差が同じbytesへcanonical化される
 - boundedな多数の利用者定義fixtureについて`write(read(write(x))) == write(x)`を確認する
+
+## 9. デスクトップ版のファイル利用経路
+
+Windows正式版では、Appの「名前付き折り技法」から次を実行できる。
+
+- 厳格な初期テンプレートを編集し、native保存ダイアログで初回保存する
+- native読込ダイアログで既存JSONを取り込み、Rust検証後の文書をTypeScriptでも独立に再検証する
+- 1ファイル内の最大64技法を選択し、順序付きoperationを編集する
+- 編集済み文書をnative保存ダイアログから別ファイルへ保存する
+
+ファイルpathとraw bytesはWebViewへ返さない。読込は1 MiBを確保前に確認し、最終componentを追跡しない同一file handleを開いて通常ファイル・再解析point・実サイズを再検証してから、`ori-instructions`正本readerへ渡す。保存はWebViewから受けたdocumentをRust正本validatorへ戻し、決定的serializeと独立read-backを完了してから、保存先と同じdirectoryの検証済み一時fileを原子的に公開する。既存destinationがlinkへ差し替わってもtargetは開かず、そのdirectory entryだけをreplace/no-replace規約で処理する。
+
+読込・保存はprocess単位のsingle-flightとし、blocking workerが呼出元futureより長く残ってもworker終了までgateを保持する。Appはrequest IDを照合し、取消・失敗・古い応答では現在の技法documentとeditorを変更しない。作成時は初期documentでも保存可能とし、既存documentの編集では実差分がない限り確定buttonを無効にする。
+
+この利用経路によりINS-009を実装済みとする。INS-008は名前付き複合技法の作成・編集までを部分実装とし、利用者確認を伴うtimeline生成・適用と自動実行は未実装のまま維持する。共有documentは引き続き純粋な宣言dataであり、project変更、折り動作、code実行、外部取得の権限を持たない。

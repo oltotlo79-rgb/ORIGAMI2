@@ -1027,9 +1027,11 @@ export function updateProjectLayerPresentation(
     expectedProjectId,
     expectedRevision,
     layer,
-    visible,
-    locked,
-    opacity,
+    presentation: {
+      visible,
+      locked,
+      opacity,
+    },
   }).then(
     (value) => admitProjectLayerMutationSnapshot(
       value,

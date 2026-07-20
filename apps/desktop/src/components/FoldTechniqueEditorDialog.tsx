@@ -82,6 +82,7 @@ const COPY = {
     license: 'SPDXライセンスID',
     techniqueTitle: '技法',
     techniquePosition: '編集中の技法',
+    techniqueSelection: '編集する技法',
     techniqueId: '技法ID',
     techniqueVersion: '技法の改訂番号',
     nameJa: '技法名（日本語）',
@@ -175,6 +176,7 @@ const COPY = {
     license: 'SPDX license ID',
     techniqueTitle: 'Technique',
     techniquePosition: 'Technique being edited',
+    techniqueSelection: 'Technique to edit',
     techniqueId: 'Technique ID',
     techniqueVersion: 'Technique revision',
     nameJa: 'Technique name (Japanese)',
@@ -256,7 +258,7 @@ export function FoldTechniqueEditorDialog({
     () => admitFoldTechniqueDocumentV1(initialDocument),
     [initialDocument],
   )
-  const selectedIndex = Number.isSafeInteger(techniqueIndex)
+  const initialSelectedIndex = Number.isSafeInteger(techniqueIndex)
     && techniqueIndex >= 0
     && baseline
     && techniqueIndex < baseline.techniques.length
@@ -265,8 +267,9 @@ export function FoldTechniqueEditorDialog({
   const [draft, setDraft] = useState<FoldTechniqueFileDocumentV1 | null>(
     () => baseline,
   )
-  const initialVersion = selectedIndex >= 0
-    ? baseline?.techniques[selectedIndex]?.version
+  const [selectedIndex, setSelectedIndex] = useState(initialSelectedIndex)
+  const initialVersion = initialSelectedIndex >= 0
+    ? baseline?.techniques[initialSelectedIndex]?.version
     : null
   const [versionInput, setVersionInput] = useState(
     initialVersion === null || initialVersion === undefined
@@ -276,16 +279,17 @@ export function FoldTechniqueEditorDialog({
   const dialogRef = useRef<HTMLElement>(null)
   const firstInputRef = useRef<HTMLInputElement>(null)
   const initialCanEditRef = useRef(
-    !busy && Boolean(draft) && selectedIndex >= 0,
+    !busy && Boolean(draft) && initialSelectedIndex >= 0,
   )
 
   useEffect(() => {
     setDraft(baseline)
-    const version = selectedIndex >= 0
-      ? baseline?.techniques[selectedIndex]?.version
+    setSelectedIndex(initialSelectedIndex)
+    const version = initialSelectedIndex >= 0
+      ? baseline?.techniques[initialSelectedIndex]?.version
       : null
     setVersionInput(version === null || version === undefined ? '' : String(version))
-  }, [baseline, selectedIndex])
+  }, [baseline, initialSelectedIndex])
 
   useEffect(() => {
     const previouslyFocused = document.activeElement instanceof HTMLElement
@@ -365,6 +369,15 @@ export function FoldTechniqueEditorDialog({
       techniqueIndex: selectedIndex,
       value: parsed,
     })
+  }
+
+  const selectTechnique = (value: string) => {
+    if (!draft || !/^(?:0|[1-9][0-9]?)$/u.test(value)) return
+    const index = Number(value)
+    const selected = draft.techniques[index]
+    if (!selected) return
+    setSelectedIndex(index)
+    setVersionInput(String(selected.version))
   }
 
   const updateAuthor = (index: number, value: string) => {
@@ -611,10 +624,31 @@ export function FoldTechniqueEditorDialog({
               <section aria-labelledby="fold-technique-template-title">
                 <h3 id="fold-technique-template-title">{copy.techniqueTitle}</h3>
                 {draft.techniques.length > 1 && (
-                  <p>
-                    {copy.techniquePosition}: {selectedIndex + 1}/
-                    {draft.techniques.length}
-                  </p>
+                  <label htmlFor="fold-technique-selection">
+                    <span>{copy.techniqueSelection}</span>
+                    <select
+                      id="fold-technique-selection"
+                      aria-label={copy.techniqueSelection}
+                      value={selectedIndex}
+                      onChange={(event) =>
+                        selectTechnique(event.currentTarget.value)}
+                    >
+                      {draft.techniques.map((candidate, index) => (
+                        <option key={candidate.id} value={index}>
+                          {index + 1}/{draft.techniques.length}
+                          {' · '}
+                          {foldTechniqueLocalizedTextV1(
+                            candidate.names,
+                            locale,
+                          ) || candidate.id}
+                        </option>
+                      ))}
+                    </select>
+                    <small>
+                      {copy.techniquePosition}: {selectedIndex + 1}/
+                      {draft.techniques.length}
+                    </small>
+                  </label>
                 )}
                 <div className="fold-technique-editor-grid">
                   <label>

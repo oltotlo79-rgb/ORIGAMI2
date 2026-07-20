@@ -1313,6 +1313,12 @@ html[data-theme='dark'] .svg-import-loss-badge {
   font-size: 11px;
 }
 .property-actions button.danger { color: #a73535; border-color: #d9a7a7; }
+.fold-technique-workspace > .muted { line-height: 1.5; }
+.fold-technique-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.fold-technique-actions button { min-width: 0; }
 .project-layers-heading {
   display: flex;
   align-items: baseline;

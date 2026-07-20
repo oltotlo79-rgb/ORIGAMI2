@@ -134,7 +134,7 @@ pub(super) fn inspect_recovery_project(path: &Path) -> RecoveryProjectLoad {
         return RecoveryProjectLoad::Invalid;
     }
 
-    let file = match open_recovery_regular_file_no_follow(path) {
+    let file = match open_regular_file_no_follow(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return RecoveryProjectLoad::Missing;
@@ -176,7 +176,7 @@ pub(super) fn inspect_recovery_project(path: &Path) -> RecoveryProjectLoad {
 }
 
 #[cfg(unix)]
-fn open_recovery_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
+pub(super) fn open_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options
         .read(true)
@@ -185,7 +185,7 @@ fn open_recovery_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
 }
 
 #[cfg(target_os = "windows")]
-fn open_recovery_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
+pub(super) fn open_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options
         .read(true)
@@ -196,11 +196,11 @@ fn open_recovery_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
 }
 
 #[cfg(not(any(unix, target_os = "windows")))]
-fn open_recovery_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
+pub(super) fn open_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
     File::open(path)
 }
 
-fn metadata_is_plain_regular_file(metadata: &std::fs::Metadata) -> bool {
+pub(super) fn metadata_is_plain_regular_file(metadata: &std::fs::Metadata) -> bool {
     if !metadata.file_type().is_file() {
         return false;
     }

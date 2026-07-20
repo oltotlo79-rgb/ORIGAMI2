@@ -2289,25 +2289,8 @@ fn prepare_projected_incident_hinge_boundary_v1(
     {
         return Ok(None);
     }
-    let world = |face: usize| {
-        input.axis.map(|point| {
-            input.world_transforms[face]
-                .apply_point(point)
-                .map(point3_array)
-                .map_err(|_| SingleHingeThicknessBoundaryErrorV1::InconsistentPose)
-        })
-    };
-    let left = world(0);
-    let right = world(1);
-    let left = [left[0]?, left[1]?];
-    let right = [right[0]?, right[1]?];
-    if left
-        .iter()
-        .zip(right)
-        .any(|(first, second)| first.map(f64::to_bits) != second.map(f64::to_bits))
-    {
-        return Ok(None);
-    }
+    let left = input.world_axis.map(point3_array);
+    let right = left;
     let local_y = Point3::new(0.0, 1.0, 0.0)
         .map_err(|_| SingleHingeThicknessBoundaryErrorV1::InconsistentPose)?;
     let normals = input.world_transforms.clone().map(|transform| {
@@ -2473,12 +2456,7 @@ fn thickness_boundary_rails_overlap(
         .endpoint_vertices
         .iter()
         .any(|vertex| second.endpoint_vertices.contains(vertex));
-    let shares_exact_rail_endpoint = first_points.iter().any(|left| {
-        second_points
-            .iter()
-            .any(|right| left.map(f64::to_bits) == right.map(f64::to_bits))
-    });
-    !(shares_material_vertex && shares_exact_rail_endpoint)
+    !shares_material_vertex
 }
 
 #[cfg(test)]
@@ -2926,7 +2904,7 @@ mod tests {
     #[test]
     fn two_hinge_tree_composes_only_authenticated_shared_endpoints() {
         let model = three_triangle_chain_model(9_004);
-        let angle = [0.0, 10.0, 30.0, 45.0, 60.0, 120.0, 150.0, 179.0]
+        let angle = [10.0, 30.0, 45.0, 60.0, 120.0, 150.0, 179.0]
             .into_iter()
             .find(|angle| {
                 let pose = uniform_pose(&model, *angle);

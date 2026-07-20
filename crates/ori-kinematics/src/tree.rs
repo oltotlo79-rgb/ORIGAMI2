@@ -358,10 +358,12 @@ pub struct MaterialHingePairCanonicalInputV1 {
     pub assignment: FoldAssignment,
     pub angle_degrees: f64,
     pub axis: [Point3; 2],
+    pub world_axis: [Point3; 2],
     pub boundaries: [Vec<VertexId>; 2],
     pub boundary_edges: [Vec<EdgeId>; 2],
     pub rest_positions: [Vec<Point3>; 2],
     pub world_transforms: [RigidTransform; 2],
+    pub exact_binary64_affine_bits: [[[u64; 4]; 3]; 2],
 }
 
 #[derive(Debug)]
@@ -730,6 +732,22 @@ pub fn prepare_material_hinge_pair_projection_v1(
         .find(|angle| angle.edge() == edge)
         .ok_or(KinematicsError::UnsupportedTopology)?
         .angle_degrees();
+    let parent_transform = bound
+        .pose
+        .hinge_parent_transform(edge)
+        .ok_or(KinematicsError::UnsupportedTopology)?;
+    let canonical_world = |point: Point3| {
+        let point = parent_transform.apply_point(point)?;
+        Point3::new(
+            canonical_zero(point.x()),
+            canonical_zero(point.y()),
+            canonical_zero(point.z()),
+        )
+    };
+    let world_axis = [
+        canonical_world(hinge.start())?,
+        canonical_world(hinge.end())?,
+    ];
     let world_transforms = faces.map(|face| {
         bound
             .pose
@@ -747,12 +765,42 @@ pub fn prepare_material_hinge_pair_projection_v1(
         assignment: hinge.assignment(),
         angle_degrees,
         axis: [hinge.start(), hinge.end()],
+        world_axis,
         boundaries,
         boundary_edges,
         rest_positions: [rest_positions[0].clone()?, rest_positions[1].clone()?],
         world_transforms: [world_transforms[0].clone()?, world_transforms[1].clone()?],
+        exact_binary64_affine_bits: [
+            affine_bits(world_transforms[0].clone()?),
+            affine_bits(world_transforms[1].clone()?),
+        ],
     };
     Ok(MaterialHingePairProjectionV1 { bound, input })
+}
+
+fn affine_bits(transform: RigidTransform) -> [[u64; 4]; 3] {
+    let rotation = transform.rotation_rows();
+    let translation = transform.translation();
+    [
+        [
+            rotation[0][0].to_bits(),
+            rotation[0][1].to_bits(),
+            rotation[0][2].to_bits(),
+            translation.x().to_bits(),
+        ],
+        [
+            rotation[1][0].to_bits(),
+            rotation[1][1].to_bits(),
+            rotation[1][2].to_bits(),
+            translation.y().to_bits(),
+        ],
+        [
+            rotation[2][0].to_bits(),
+            rotation[2][1].to_bits(),
+            rotation[2][2].to_bits(),
+            translation.z().to_bits(),
+        ],
+    ]
 }
 
 pub fn revalidate_material_hinge_pair_projection_v1(

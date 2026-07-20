@@ -84,7 +84,8 @@ pub use ori2::{
     ORI2_EDITOR_HISTORY_PATH, ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1,
     ORI2_FEATURE_EDITOR_HISTORY_V1, ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
     ORI2_FEATURE_INSTRUCTION_TIMELINE_V1, ORI2_FEATURE_LAYERS_V1,
-    ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH,
+    ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1,
+    ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH,
     Ori2EditorHistoryEntry, Ori2Limits, Ori2Manifest, Ori2ProjectArchive, Ori2ProjectEntry,
     read_project_archive_ori2, read_project_archive_ori2_with_limits, read_project_ori2,
     read_project_ori2_with_limits, write_project_archive_ori2,
@@ -104,7 +105,9 @@ pub use project_folder::{
     write_project_folder_v1_with_limits,
 };
 pub use reference_glb::{
-    MAX_REFERENCE_GLB_BYTES_V1, ReferenceGlbErrorV1, validate_reference_glb_v1,
+    MAX_REFERENCE_GLB_BYTES_V1, MAX_REFERENCE_GLB_TRIANGLES_V1, MAX_REFERENCE_GLB_VERTICES_V1,
+    ReferenceGlbErrorV1, ReferenceGlbGeometryV1, read_reference_glb_geometry_v1,
+    validate_reference_glb_v1,
 };
 pub use svg::{
     SvgBoundaryCandidate, SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionError,

@@ -1,6 +1,8 @@
 use serde_json::Value;
 
 pub const MAX_REFERENCE_GLB_BYTES_V1: usize = 16 * 1024 * 1024;
+pub const MAX_REFERENCE_GLB_VERTICES_V1: usize = 20_000;
+pub const MAX_REFERENCE_GLB_TRIANGLES_V1: usize = 40_000;
 const MAX_REFERENCE_GLB_JSON_BYTES_V1: usize = 2 * 1024 * 1024;
 const JSON_CHUNK_TYPE: u32 = 0x4e4f_534a;
 const BIN_CHUNK_TYPE: u32 = 0x004e_4942;
@@ -11,6 +13,13 @@ pub enum ReferenceGlbErrorV1 {
     Container,
     Json,
     UnsupportedContent,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReferenceGlbGeometryV1 {
+    pub positions: Vec<[f32; 3]>,
+    pub triangle_indices: Vec<[u32; 3]>,
+    pub material_color: [u8; 4],
 }
 
 /// Admits a passive GLB 2.0 subset for project-local visual reference.
@@ -68,6 +77,69 @@ pub fn validate_reference_glb_v1(bytes: &[u8]) -> Result<(), ReferenceGlbErrorV1
         return Err(ReferenceGlbErrorV1::UnsupportedContent);
     }
     Ok(())
+}
+
+/// Extracts only bounded inert triangle geometry after the passive-container check.
+pub fn read_reference_glb_geometry_v1(
+    bytes: &[u8],
+) -> Result<ReferenceGlbGeometryV1, ReferenceGlbErrorV1> {
+    validate_reference_glb_v1(bytes)?;
+    let gltf = gltf::Gltf::from_slice(bytes).map_err(|_| ReferenceGlbErrorV1::Json)?;
+    let blob = gltf.blob.as_deref().ok_or(ReferenceGlbErrorV1::UnsupportedContent)?;
+    let mut positions = Vec::new();
+    let mut triangle_indices = Vec::new();
+    let mut material_color = [184, 192, 204, 255];
+    for mesh in gltf.meshes() {
+        for primitive in mesh.primitives() {
+            if primitive.mode() != gltf::mesh::Mode::Triangles {
+                return Err(ReferenceGlbErrorV1::UnsupportedContent);
+            }
+            let reader = primitive.reader(|buffer| (buffer.index() == 0).then_some(blob));
+            let local = reader
+                .read_positions()
+                .ok_or(ReferenceGlbErrorV1::UnsupportedContent)?
+                .collect::<Vec<_>>();
+            if local.is_empty()
+                || positions.len().saturating_add(local.len()) > MAX_REFERENCE_GLB_VERTICES_V1
+                || local
+                    .iter()
+                    .flatten()
+                    .any(|coordinate| !coordinate.is_finite())
+            {
+                return Err(ReferenceGlbErrorV1::Size);
+            }
+            let base = u32::try_from(positions.len()).map_err(|_| ReferenceGlbErrorV1::Size)?;
+            let indices = reader
+                .read_indices()
+                .map(|indices| indices.into_u32().collect::<Vec<_>>())
+                .unwrap_or_else(|| (0..local.len() as u32).collect());
+            if indices.len() % 3 != 0
+                || indices.iter().any(|index| *index as usize >= local.len())
+                || triangle_indices.len().saturating_add(indices.len() / 3)
+                    > MAX_REFERENCE_GLB_TRIANGLES_V1
+            {
+                return Err(ReferenceGlbErrorV1::Size);
+            }
+            triangle_indices.extend(
+                indices
+                    .chunks_exact(3)
+                    .map(|triangle| [base + triangle[0], base + triangle[1], base + triangle[2]]),
+            );
+            positions.extend(local);
+            let factor = primitive.material().pbr_metallic_roughness().base_color_factor();
+            material_color = factor.map(|channel| {
+                (channel.clamp(0.0, 1.0) * 255.0).round() as u8
+            });
+        }
+    }
+    if positions.is_empty() || triangle_indices.is_empty() {
+        return Err(ReferenceGlbErrorV1::UnsupportedContent);
+    }
+    Ok(ReferenceGlbGeometryV1 {
+        positions,
+        triangle_indices,
+        material_color,
+    })
 }
 
 fn contains_forbidden_member(value: &Value) -> bool {

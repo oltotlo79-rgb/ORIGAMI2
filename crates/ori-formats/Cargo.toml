@@ -11,6 +11,7 @@ ori-domain = { path = "../ori-domain" }
 ori-geometry = { path = "../ori-geometry" }
 ori-instructions = { path = "../ori-instructions" }
 ori-topology = { path = "../ori-topology" }
+gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 quick-xml = { version = "0.41.0", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
@@ -25,6 +26,5 @@ zip = { version = "8.6", default-features = false, features = ["deflate-flate2-z
 # the current clock, so the `.ori2` determinism test detects an implicit timestamp.
 zip = { version = "8.6", default-features = false, features = ["time"] }
 # Independent ecosystem readers used only for interchange acceptance tests.
-gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 stl_io = "0.11.0"
 tobj = { version = "4.0.4", default-features = false }

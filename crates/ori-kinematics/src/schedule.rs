@@ -1612,6 +1612,53 @@ mod tests {
     }
 
     #[test]
+    fn nonclosing_linear_candidate_never_produces_closure_authority() {
+        let (geometry, audit, fixed, mut edges) = fixture();
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let angles = |value| {
+            CanonicalHingeAngles::new(
+                edges
+                    .iter()
+                    .map(|edge| HingeAngle::new(*edge, value).unwrap())
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let candidate = generate_linear_multi_hinge_path_candidate_v1(
+            &geometry,
+            &audit,
+            fixed,
+            &angles(20.0),
+            &angles(40.0),
+            MultiHingePathCandidateLimitsV1::default(),
+        )
+        .unwrap();
+        let result = geometry.prove_dyadic_schedule_closure_v1(
+                &audit,
+                fixed,
+                candidate.schedule(),
+                1.0e-9,
+                crate::DyadicIntervalClosureLimitsV1 {
+                    max_depth: 0,
+                    max_leaves: 1,
+                    max_work: 1_000_000,
+                    schedule_limits: CycleScheduleLimitsV1 {
+                        max_degree: 1,
+                        max_work: 100_000,
+                        ..CycleScheduleLimitsV1::default()
+                    },
+                },
+            );
+        assert!(
+            matches!(
+                result,
+                Err(crate::DyadicIntervalClosureErrorV1::ResourceLimit)
+            ),
+            "{result:?}"
+        );
+    }
+
+    #[test]
     fn schedule_binding_rejects_assignment_and_axis_aba() {
         let (geometry, audit, fixed, edges) = fixture();
         let schedule = CanonicalCycleScheduleV1::prepare(

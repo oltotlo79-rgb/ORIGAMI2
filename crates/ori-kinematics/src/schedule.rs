@@ -337,6 +337,13 @@ mod tests {
         )
         .unwrap();
         assert!(schedule.matches_binding(&geometry, &audit, fixed));
+        let forged_fixed = audit
+            .faces()
+            .iter()
+            .copied()
+            .find(|face| *face != fixed)
+            .unwrap();
+        assert!(!schedule.matches_binding(&geometry, &audit, forged_fixed));
         assert_eq!(
             schedule.evaluate(0.5).unwrap().as_slice()[0].angle_degrees(),
             90.0
@@ -384,6 +391,39 @@ mod tests {
                 [0.0, 1.0],
                 excessive,
                 limits
+            ),
+            Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+        );
+        let mut wide = entries(&edges);
+        wide[0].chebyshev_coefficients[0].numerator = 1_i64 << 54;
+        assert_eq!(
+            CanonicalCycleScheduleV1::prepare(&geometry, &audit, fixed, [0.0, 1.0], wide, limits),
+            Err(CycleSchedulePrepareErrorV1::InvalidInput)
+        );
+        let mut out_of_range = entries(&edges);
+        out_of_range[0].chebyshev_coefficients[1].numerator = 91;
+        assert_eq!(
+            CanonicalCycleScheduleV1::prepare(
+                &geometry,
+                &audit,
+                fixed,
+                [0.0, 1.0],
+                out_of_range,
+                limits,
+            ),
+            Err(CycleSchedulePrepareErrorV1::AngleRange)
+        );
+        assert_eq!(
+            CanonicalCycleScheduleV1::prepare(
+                &geometry,
+                &audit,
+                fixed,
+                [0.0, 1.0],
+                entries(&edges),
+                CycleScheduleLimitsV1 {
+                    max_work: 1,
+                    ..limits
+                },
             ),
             Err(CycleSchedulePrepareErrorV1::ResourceLimit)
         );

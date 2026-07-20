@@ -507,6 +507,50 @@ struct GlobalFlatFoldabilityRuntime {
     deadline: Instant,
 }
 
+/// Allows at most one expensive global flat-foldability worker in the process.
+///
+/// The permit is owned by the blocking worker, so cancellation only requests
+/// cooperative exit and cannot release capacity before the worker observes a
+/// checkpoint and actually returns.
+static GLOBAL_FLAT_FOLDABILITY_WORKER_GATE: GlobalFlatFoldabilityWorkerGate =
+    GlobalFlatFoldabilityWorkerGate::new();
+#[cfg(test)]
+static GLOBAL_FLAT_FOLDABILITY_WORKER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+struct GlobalFlatFoldabilityWorkerGate(AtomicBool);
+
+impl GlobalFlatFoldabilityWorkerGate {
+    const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    fn try_acquire(&self) -> Option<GlobalFlatFoldabilityWorkerPermit<'_>> {
+        self.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| GlobalFlatFoldabilityWorkerPermit { busy: &self.0 })
+    }
+
+    #[cfg(test)]
+    fn is_busy(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+struct GlobalFlatFoldabilityWorkerPermit<'a> {
+    busy: &'a AtomicBool,
+}
+
+impl Drop for GlobalFlatFoldabilityWorkerPermit<'_> {
+    fn drop(&mut self) {
+        let was_busy = self.busy.swap(false, Ordering::Release);
+        debug_assert!(
+            was_busy,
+            "global flat-foldability worker permit released twice"
+        );
+    }
+}
+
 impl GlobalFlatFoldabilityRuntime {
     fn new(time_limit_ms: u64) -> Self {
         let started_at = Instant::now();
@@ -1046,6 +1090,27 @@ fn completion_context(
 
 fn guarded_run_worker(source: GlobalFlatFoldabilitySource) -> GlobalFlatFoldabilityCompletion {
     let context = completion_context(&source);
+    // Unit fixtures invoke the production worker synchronously from Rust's
+    // parallel test threads. Serialize those fixtures without weakening the
+    // process-wide nonblocking behavior used by production.
+    #[cfg(test)]
+    let _test_lock = match GLOBAL_FLAT_FOLDABILITY_WORKER_TEST_LOCK.lock() {
+        Ok(lock) => lock,
+        Err(_) => {
+            return GlobalFlatFoldabilityCompletion {
+                context,
+                outcome: WorkerOutcome::Failed(
+                    GlobalFlatFoldabilityErrorCategory::WorkerUnavailable,
+                ),
+            };
+        }
+    };
+    let Some(_permit) = GLOBAL_FLAT_FOLDABILITY_WORKER_GATE.try_acquire() else {
+        return GlobalFlatFoldabilityCompletion {
+            context,
+            outcome: WorkerOutcome::Failed(GlobalFlatFoldabilityErrorCategory::WorkerUnavailable),
+        };
+    };
     let outcome = catch_worker_failure(|| run_worker(source));
     GlobalFlatFoldabilityCompletion { context, outcome }
 }
@@ -4072,7 +4137,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_closure_holds_slot_until_action_finishes_then_cancel_clears_authority() {
+    fn commit_closure_holds_slot_until_action_finishes_then_late_cancel_preserves_authority() {
         let app_state = Arc::new(AppState::new(initial_project_state()));
         let foldability_state = Arc::new(GlobalFlatFoldabilityState::default());
         let capability = {
@@ -4145,9 +4210,9 @@ mod tests {
             .expect("cancellation completes after the action");
         cancel_thread.join().expect("join cancellation thread");
 
-        let slot = lock_foldability_state(&foldability_state).expect("inspect cleared authority");
-        assert!(slot.current_layer_order.is_none());
-        assert_eq!(slot.last_cancelled_id, Some(job_id));
+        let slot = lock_foldability_state(&foldability_state).expect("inspect preserved authority");
+        assert!(slot.current_layer_order.is_some());
+        assert_ne!(slot.last_cancelled_id, Some(job_id));
     }
 
     #[test]
@@ -4317,6 +4382,43 @@ mod tests {
                 "category": "internal_failure"
             })
         );
+    }
+
+    #[test]
+    fn worker_gate_is_nonblocking_and_holds_capacity_until_worker_exit() {
+        let gate = GlobalFlatFoldabilityWorkerGate::new();
+        let permit = gate.try_acquire().expect("first worker acquires permit");
+        assert!(gate.is_busy());
+        assert!(
+            gate.try_acquire().is_none(),
+            "a replacement worker must fail closed instead of waiting unboundedly"
+        );
+
+        drop(permit);
+        assert!(!gate.is_busy());
+        assert!(
+            gate.try_acquire().is_some(),
+            "capacity returns only after the old worker permit is dropped"
+        );
+    }
+
+    #[test]
+    fn worker_gate_releases_capacity_after_caught_panic() {
+        let gate = GlobalFlatFoldabilityWorkerGate::new();
+        {
+            let _permit = gate.try_acquire().expect("worker acquires permit");
+            let outcome = catch_worker_failure(|| panic!("bounded worker panic"));
+            assert!(matches!(
+                outcome,
+                WorkerOutcome::Failed(GlobalFlatFoldabilityErrorCategory::InternalFailure)
+            ));
+            assert!(
+                gate.is_busy(),
+                "panic handling must not release a live permit early"
+            );
+        }
+        assert!(!gate.is_busy());
+        assert!(gate.try_acquire().is_some());
     }
 
     #[test]

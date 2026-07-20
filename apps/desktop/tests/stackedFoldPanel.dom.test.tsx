@@ -260,11 +260,47 @@ describe('StackedFoldPanel', () => {
     fireEvent.change(screen.getByLabelText('Cycle path definition (JSON, cyclic patterns only)'), {
       target: { value: JSON.stringify(schedule) },
     })
+    expect(await screen.findByRole('status')).toHaveProperty(
+      'textContent',
+      'Bounded schedule: 1/64 hinges; at most 9 coefficients each',
+    )
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
     await screen.findByText('Target faces')
     expect(transport.preview).toHaveBeenCalledWith(expect.objectContaining({
       cycleScheduleV1: schedule,
     }))
+  })
+
+  it('rejects an unbounded or malformed half-angle draft before native transport', async () => {
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText('Cycle path definition (JSON, cyclic patterns only)'), {
+      target: { value: JSON.stringify({
+        version: 1,
+        entries: [{
+          edge: token,
+          uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }],
+          numeratorPowerCoefficients: [{ numerator: 1, denominator: 0 }],
+          denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+          requestedAngleDegrees: 90,
+        }],
+      }) },
+    })
+    expect(await screen.findByRole('status')).toHaveProperty(
+      'textContent',
+      'Invalid schedule. Denominators must be positive integers, coefficients 1–9 each, and angles 0–180°.',
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    await screen.findByRole('alert')
+    expect(transport.preview).not.toHaveBeenCalled()
   })
 
   it('keeps a closure-certified graph transaction ready and exposes bounded closure work', async () => {

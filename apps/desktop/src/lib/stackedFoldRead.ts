@@ -293,52 +293,35 @@ const hasExactKeys = (value: Record<string, unknown>, fields: readonly string[])
   return keys.length === fields.length && keys.every((key) => fields.includes(key))
 }
 
+export function isCycleScheduleRequestV1(value: unknown): value is CycleScheduleRequestV1 {
+  if (!isRecord(value) || !hasExactKeys(value, ['version', 'entries']) || value.version !== 1 ||
+      !Array.isArray(value.entries) || value.entries.length === 0 || value.entries.length > 64) return false
+  const rational = (candidate: unknown): candidate is RationalCoefficientRequestV1 =>
+    isRecord(candidate) && hasExactKeys(candidate, ['numerator', 'denominator']) &&
+    Number.isSafeInteger(candidate.numerator) && Number.isSafeInteger(candidate.denominator) &&
+    Number(candidate.denominator) > 0
+  return value.entries.every((entry) =>
+    isRecord(entry) && hasExactKeys(entry, [
+      'edge', 'uDomain', 'numeratorPowerCoefficients',
+      'denominatorPowerCoefficients', 'requestedAngleDegrees',
+    ]) && isCanonicalNonNilUuid(entry.edge) && Array.isArray(entry.uDomain) &&
+    entry.uDomain.length === 2 && entry.uDomain.every(rational) &&
+    Array.isArray(entry.numeratorPowerCoefficients) &&
+    entry.numeratorPowerCoefficients.length > 0 && entry.numeratorPowerCoefficients.length <= 9 &&
+    entry.numeratorPowerCoefficients.every(rational) &&
+    Array.isArray(entry.denominatorPowerCoefficients) &&
+    entry.denominatorPowerCoefficients.length > 0 && entry.denominatorPowerCoefficients.length <= 9 &&
+    entry.denominatorPowerCoefficients.every(rational) &&
+    typeof entry.requestedAngleDegrees === 'number' && Number.isFinite(entry.requestedAngleDegrees) &&
+    entry.requestedAngleDegrees >= 0 && entry.requestedAngleDegrees <= 180)
+}
+
 export function isStackedFoldReadRequest(value: unknown): value is StackedFoldReadRequest {
   if (!isRecord(value)) return false
   const first = value.first
   const second = value.second
-  const rational = (candidate: unknown): candidate is RationalCoefficientRequestV1 =>
-    isRecord(candidate) &&
-    hasExactKeys(candidate, ['numerator', 'denominator']) &&
-    Number.isSafeInteger(candidate.numerator) &&
-    Number.isSafeInteger(candidate.denominator) &&
-    Number(candidate.denominator) > 0
   const schedule = value.cycleScheduleV1
-  const scheduleValid =
-    schedule === undefined ||
-    (isRecord(schedule) &&
-      hasExactKeys(schedule, ['version', 'entries']) &&
-      schedule.version === 1 &&
-      Array.isArray(schedule.entries) &&
-      schedule.entries.length > 0 &&
-      schedule.entries.length <= 64 &&
-      schedule.entries.every(
-        (entry) =>
-          isRecord(entry) &&
-          hasExactKeys(entry, [
-            'edge',
-            'uDomain',
-            'numeratorPowerCoefficients',
-            'denominatorPowerCoefficients',
-            'requestedAngleDegrees',
-          ]) &&
-          isCanonicalNonNilUuid(entry.edge) &&
-          Array.isArray(entry.uDomain) &&
-          entry.uDomain.length === 2 &&
-          entry.uDomain.every(rational) &&
-          Array.isArray(entry.numeratorPowerCoefficients) &&
-          entry.numeratorPowerCoefficients.length > 0 &&
-          entry.numeratorPowerCoefficients.length <= 9 &&
-          entry.numeratorPowerCoefficients.every(rational) &&
-          Array.isArray(entry.denominatorPowerCoefficients) &&
-          entry.denominatorPowerCoefficients.length > 0 &&
-          entry.denominatorPowerCoefficients.length <= 9 &&
-          entry.denominatorPowerCoefficients.every(rational) &&
-          typeof entry.requestedAngleDegrees === 'number' &&
-          Number.isFinite(entry.requestedAngleDegrees) &&
-          entry.requestedAngleDegrees >= 0 &&
-          entry.requestedAngleDegrees <= 180,
-      ))
+  const scheduleValid = schedule === undefined || isCycleScheduleRequestV1(schedule)
   const linear = value.linearCandidateV1
   const linearValid =
     linear === undefined ||

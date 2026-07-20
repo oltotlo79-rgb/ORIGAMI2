@@ -21,6 +21,7 @@ import type {
   StackedFoldReadResponse,
   StackedFoldRotationDirection,
 } from '../lib/stackedFoldRead'
+import { isCycleScheduleRequestV1 } from '../lib/stackedFoldRead'
 import type { LayerOrderViewerCell } from '../lib/currentLayerOrderView'
 
 type SelectedLine = Readonly<{
@@ -77,6 +78,15 @@ export function StackedFoldPanel({
     useState<StackedFoldRotationDirection>('positive')
   const [angle, setAngle] = useState('180')
   const [cycleScheduleText, setCycleScheduleText] = useState('')
+  const authoredCycleSchedule = useMemo(() => {
+    if (!cycleScheduleText.trim()) return null
+    try {
+      const value: unknown = JSON.parse(cycleScheduleText)
+      return isCycleScheduleRequestV1(value) ? value : null
+    } catch {
+      return null
+    }
+  }, [cycleScheduleText])
   const [liveHinges, setLiveHinges] = useState<readonly Readonly<{
     edge: string
     initialAngleDegrees: number
@@ -240,8 +250,11 @@ export function StackedFoldPanel({
           'initialAngleDegrees' in parsed.entries[0]
         ) {
           linearCandidateV1 = parsed as LinearCandidateRequestV1
-        } else {
+        } else if (isCycleScheduleRequestV1(parsed)) {
           cycleScheduleV1 = parsed as CycleScheduleRequestV1
+        } else {
+          setView({ kind: 'failed', reason: 'invalid' })
+          return
         }
       } catch {
         setView({ kind: 'failed', reason: 'invalid' })
@@ -411,6 +424,19 @@ export function StackedFoldPanel({
             )}
             disabled={disabled || applying}
           />
+          {cycleScheduleText.trim() && (
+            <small role="status">
+              {authoredCycleSchedule
+                ? t(
+                    `有界schedule: ${authoredCycleSchedule.entries.length}/64 hinge、係数は各9以下`,
+                    `Bounded schedule: ${authoredCycleSchedule.entries.length}/64 hinges; at most 9 coefficients each`,
+                  )
+                : t(
+                    'scheduleが不正です。分母は正整数、係数は各1〜9個、角度は0〜180度です。',
+                    'Invalid schedule. Denominators must be positive integers, coefficients 1–9 each, and angles 0–180°.',
+                  )}
+            </small>
+          )}
         </label>
         <label>
           <span>{t('回転方向', 'Rotation direction')}</span>

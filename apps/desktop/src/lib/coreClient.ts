@@ -1982,7 +1982,7 @@ export type BeginnerPartSuggestionsResponse = Readonly<{
   suggestions: ReadonlyArray<Readonly<{
     candidate_id: number
     suggested_kind: 'torso' | 'head' | 'leg' | 'wing'
-    confidence_reason: 'selected_primary_outline' | 'largest_secondary_outline' | 'small_secondary_outline'
+    confidence_reason: 'selected_primary_outline' | 'largest_secondary_outline' | 'small_secondary_outline' | 'bilateral_secondary_pair'
   }>>
 }>
 
@@ -2005,7 +2005,7 @@ export async function recognizeBeginnerPartSuggestions(
     const item = exactCoreDataRecord(value, ['candidate_id', 'suggested_kind', 'confidence_reason'] as const)
     if (!item || !Number.isInteger(item.candidate_id)
       || !['torso', 'head', 'leg', 'wing'].includes(String(item.suggested_kind))
-      || !['selected_primary_outline', 'largest_secondary_outline', 'small_secondary_outline'].includes(String(item.confidence_reason))) {
+      || !['selected_primary_outline', 'largest_secondary_outline', 'small_secondary_outline', 'bilateral_secondary_pair'].includes(String(item.confidence_reason))) {
       throw new BeginnerRecognitionError('native_failure')
     }
     return Object.freeze(item) as BeginnerPartSuggestionsResponse['suggestions'][number]

@@ -163,7 +163,7 @@ pub(crate) fn recognize_beginner_part_suggestions(
         underlay_id: request.underlay_id,
         asset_id: request.asset_id,
     };
-    let (bytes, target_category) = {
+    let (bytes, target_category, target_parts) = {
         let project = lock_project(&state)?;
         ensure_recognition_binding(&project, binding)?;
         let bytes = project
@@ -179,6 +179,12 @@ pub(crate) fn recognize_beginner_part_suggestions(
                 .beginner_design_profile()
                 .generation_constraints
                 .target_category,
+            project
+                .editor
+                .beginner_design_profile()
+                .generation_constraints
+                .target_parts
+                .clone(),
         )
     };
     let (width, height, rgba) = decode_general_image(&bytes)?;
@@ -200,10 +206,47 @@ pub(crate) fn recognize_beginner_part_suggestions(
         suggested_kind: ori_domain::BeginnerTargetPartKindV1::Torso,
         confidence_reason: "selected_primary_outline",
     }];
+    let axis_twice =
+        i64::from(request.candidate.bounds.min_x) + i64::from(request.candidate.bounds.max_x);
+    let mut bilateral = std::collections::HashSet::new();
+    for (index, left) in others.iter().enumerate() {
+        for right in others.iter().skip(index + 1) {
+            let left_center_twice = i64::from(left.bounds.min_x) + i64::from(left.bounds.max_x);
+            let right_center_twice = i64::from(right.bounds.min_x) + i64::from(right.bounds.max_x);
+            let same_height = left.bounds.min_y.abs_diff(right.bounds.min_y) <= 1
+                && left.bounds.max_y.abs_diff(right.bounds.max_y) <= 1;
+            let area_close = left.area_pixels.abs_diff(right.area_pixels)
+                <= left.area_pixels.max(right.area_pixels) / 10 + 1;
+            if (left_center_twice + right_center_twice - axis_twice * 2).abs() <= 2
+                && same_height
+                && area_close
+            {
+                bilateral.insert(left.id);
+                bilateral.insert(right.id);
+            }
+        }
+    }
+    let requested_bilateral_kind = if target_parts
+        .iter()
+        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Wing && part.count == 2)
+    {
+        ori_domain::BeginnerTargetPartKindV1::Wing
+    } else if target_parts
+        .iter()
+        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Fin && part.count == 2)
+    {
+        ori_domain::BeginnerTargetPartKindV1::Fin
+    } else if target_category == Some(ori_domain::BeginnerTargetCategoryV1::Insect) {
+        ori_domain::BeginnerTargetPartKindV1::Wing
+    } else {
+        ori_domain::BeginnerTargetPartKindV1::Leg
+    };
     for (index, candidate) in others.into_iter().enumerate() {
         suggestions.push(BeginnerPartSuggestionV1 {
             candidate_id: candidate.id,
-            suggested_kind: if index == 0
+            suggested_kind: if bilateral.contains(&candidate.id) {
+                requested_bilateral_kind
+            } else if index == 0
                 && candidate.area_pixels.saturating_mul(4) >= request.candidate.area_pixels
             {
                 ori_domain::BeginnerTargetPartKindV1::Head
@@ -214,7 +257,9 @@ pub(crate) fn recognize_beginner_part_suggestions(
                     ori_domain::BeginnerTargetPartKindV1::Leg
                 }
             },
-            confidence_reason: if index == 0 {
+            confidence_reason: if bilateral.contains(&candidate.id) {
+                "bilateral_secondary_pair"
+            } else if index == 0 {
                 "largest_secondary_outline"
             } else {
                 "small_secondary_outline"

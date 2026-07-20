@@ -704,6 +704,49 @@ impl PreparedHalfAngleRationalEntryV1 {
             max_work,
         )
     }
+
+    fn angle_enclosure_dyadic(
+        &self,
+        depth: u32,
+        index: u64,
+        max_coefficient_bits: u32,
+        max_degree: usize,
+        max_work: usize,
+    ) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
+        if depth >= 64 || index >= (1u64 << depth) {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        let denominator = BigInt::from(1u64 << depth);
+        let width = &self.u_domain[1] - &self.u_domain[0];
+        let lower =
+            &self.u_domain[0] + &width * BigRational::new(BigInt::from(index), denominator.clone());
+        let upper =
+            &self.u_domain[0] + width * BigRational::new(BigInt::from(index + 1), denominator);
+        let domain = [lower, upper];
+        let numerator = prepare_exact_pole_free_bernstein_certificate(
+            affine_reparameterize_power(
+                &self.numerator_power_coefficients,
+                &domain,
+                max_coefficient_bits,
+                max_work,
+            )?,
+            max_degree,
+            max_coefficient_bits,
+            max_work,
+        )?;
+        let denominator = prepare_exact_pole_free_bernstein_certificate(
+            affine_reparameterize_power(
+                &self.denominator_power_coefficients,
+                &domain,
+                max_coefficient_bits,
+                max_work,
+            )?,
+            max_degree,
+            max_coefficient_bits,
+            max_work,
+        )?;
+        evaluate_half_angle_rational_degrees_interval_v1(&numerator, &denominator, max_work)
+    }
 }
 
 fn evaluate_exact_power_horner(
@@ -937,6 +980,37 @@ impl CanonicalCycleScheduleV1 {
         self.half_angle_entries
             .iter()
             .map(|entry| Ok((entry.edge(), entry.angle_enclosure(max_work)?)))
+            .collect()
+    }
+
+    /// Evaluates one exact dyadic leaf. Adjacent leaf indices share the exact
+    /// rational endpoint used during affine reparameterization.
+    pub fn evaluate_angle_box_dyadic(
+        &self,
+        depth: u32,
+        index: u64,
+        limits: CycleScheduleLimitsV1,
+    ) -> Result<Vec<(EdgeId, OutwardIntervalV1)>, CycleSchedulePrepareErrorV1> {
+        if self.half_angle_entries.is_empty()
+            || depth > limits.max_degree as u32
+            || self.half_angle_entries.len() > limits.max_hinges
+        {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        self.half_angle_entries
+            .iter()
+            .map(|entry| {
+                Ok((
+                    entry.edge(),
+                    entry.angle_enclosure_dyadic(
+                        depth,
+                        index,
+                        limits.max_coefficient_bits,
+                        limits.max_degree,
+                        limits.max_work,
+                    )?,
+                ))
+            })
             .collect()
     }
 
@@ -1510,6 +1584,55 @@ mod tests {
                     16,
                 )
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn dyadic_angle_boxes_cover_in_canonical_shared_endpoint_order() {
+        let (geometry, audit, fixed, edges) = fixture();
+        let mut inputs = edges
+            .into_iter()
+            .map(|edge| HalfAngleRationalEntryInputV1 {
+                edge,
+                u_domain: [
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                numerator_power_coefficients: vec![RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                }],
+                denominator_power_coefficients: vec![RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                }],
+            })
+            .collect::<Vec<_>>();
+        inputs.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            inputs,
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        let left = schedule
+            .evaluate_angle_box_dyadic(1, 0, CycleScheduleLimitsV1::default())
+            .unwrap();
+        let right = schedule
+            .evaluate_angle_box_dyadic(1, 1, CycleScheduleLimitsV1::default())
+            .unwrap();
+        assert_eq!(left, right);
+        assert_eq!(
+            schedule.evaluate_angle_box_dyadic(1, 2, CycleScheduleLimitsV1::default()),
+            Err(CycleSchedulePrepareErrorV1::InvalidInput)
         );
     }
 }

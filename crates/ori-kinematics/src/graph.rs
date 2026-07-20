@@ -4,8 +4,9 @@ use ori_domain::{EdgeId, FaceId};
 use ori_topology::TopologySnapshot;
 
 use crate::{
-    CanonicalHingeAngles, IntervalRigidTransformV1, KinematicsError, MaterialHingeGraphGeometry,
-    OutwardIntervalV1, RigidTransform, TreeHinge, TreeKinematicsLimits,
+    CanonicalCycleScheduleV1, CanonicalHingeAngles, CycleScheduleLimitsV1,
+    IntervalRigidTransformV1, KinematicsError, MaterialHingeGraphGeometry, OutwardIntervalV1,
+    RigidTransform, TreeHinge, TreeKinematicsLimits,
 };
 
 pub const MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1: u32 = 1;
@@ -36,6 +37,39 @@ impl MaterialHingeIntervalClosureCertificateV1 {
     pub fn checked_hinges(&self) -> &[EdgeId] {
         &self.checked_hinges
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DyadicIntervalClosureLimitsV1 {
+    pub max_depth: u32,
+    pub max_leaves: usize,
+    pub max_work: usize,
+    pub schedule_limits: CycleScheduleLimitsV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DyadicMaterialHingeIntervalClosureCertificateV1 {
+    fixed_face: FaceId,
+    leaves: Vec<(u32, u64, MaterialHingeIntervalClosureCertificateV1)>,
+}
+
+impl DyadicMaterialHingeIntervalClosureCertificateV1 {
+    #[must_use]
+    pub const fn fixed_face(&self) -> FaceId {
+        self.fixed_face
+    }
+
+    #[must_use]
+    pub fn leaves(&self) -> &[(u32, u64, MaterialHingeIntervalClosureCertificateV1)] {
+        &self.leaves
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DyadicIntervalClosureErrorV1 {
+    InvalidInput,
+    ResourceLimit,
+    UnprovenClosure { depth: u32, index: u64 },
 }
 
 /// One caller-supplied face transform used only as closure evidence.
@@ -106,6 +140,76 @@ impl ClosedMaterialHingeGraphPose {
 }
 
 impl MaterialHingeGraphGeometry {
+    /// Covers the complete schedule domain with deterministic left-first
+    /// dyadic leaves and proves every leaf. A rejected leaf is subdivided;
+    /// exhausting depth is reported separately from malformed input or work.
+    pub fn prove_dyadic_schedule_closure_v1(
+        &self,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        schedule: &CanonicalCycleScheduleV1,
+        tolerance: f64,
+        limits: DyadicIntervalClosureLimitsV1,
+    ) -> Result<DyadicMaterialHingeIntervalClosureCertificateV1, DyadicIntervalClosureErrorV1> {
+        if !schedule.matches_binding(self, audit, fixed_face)
+            || limits.max_depth >= 64
+            || limits.max_leaves == 0
+            || limits.max_work == 0
+        {
+            return Err(DyadicIntervalClosureErrorV1::InvalidInput);
+        }
+        let mut pending = vec![(0u32, 0u64)];
+        let mut leaves = Vec::new();
+        let mut work = 0usize;
+        while let Some((depth, index)) = pending.pop() {
+            work = work
+                .checked_add(1)
+                .filter(|value| *value <= limits.max_work)
+                .ok_or(DyadicIntervalClosureErrorV1::ResourceLimit)?;
+            let boxes = schedule
+                .evaluate_angle_box_dyadic(depth, index, limits.schedule_limits)
+                .map_err(|error| match error {
+                    crate::CycleSchedulePrepareErrorV1::ResourceLimit => {
+                        DyadicIntervalClosureErrorV1::ResourceLimit
+                    }
+                    _ => DyadicIntervalClosureErrorV1::InvalidInput,
+                })?;
+            match self.prove_interval_closure_v1(
+                audit,
+                fixed_face,
+                &boxes,
+                tolerance,
+                limits.max_work,
+            ) {
+                Ok(certificate) => {
+                    if leaves.len() >= limits.max_leaves {
+                        return Err(DyadicIntervalClosureErrorV1::ResourceLimit);
+                    }
+                    leaves.push((depth, index, certificate));
+                }
+                Err(KinematicsError::ResourceLimitExceeded) => {
+                    return Err(DyadicIntervalClosureErrorV1::ResourceLimit);
+                }
+                Err(_) if depth < limits.max_depth => {
+                    let child_depth = depth + 1;
+                    let left = index
+                        .checked_mul(2)
+                        .ok_or(DyadicIntervalClosureErrorV1::ResourceLimit)?;
+                    // Stack order makes the deterministic traversal left-first.
+                    pending.push((child_depth, left + 1));
+                    pending.push((child_depth, left));
+                    if pending.len().saturating_add(leaves.len()) > limits.max_leaves {
+                        return Err(DyadicIntervalClosureErrorV1::ResourceLimit);
+                    }
+                }
+                Err(_) => {
+                    return Err(DyadicIntervalClosureErrorV1::UnprovenClosure { depth, index });
+                }
+            }
+        }
+        Ok(DyadicMaterialHingeIntervalClosureCertificateV1 { fixed_face, leaves })
+    }
+
     /// Proves closure for every value in a canonical vector of angle boxes.
     ///
     /// The fixed material face is exactly identity. Each local material-hinge

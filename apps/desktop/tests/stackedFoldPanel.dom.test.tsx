@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { StackedFoldPanel } from '../src/components/StackedFoldPanel'
 import type { ProjectSnapshot } from '../src/lib/coreClient'
 
@@ -7,6 +7,7 @@ const transport = vi.hoisted(() => ({
   preview: vi.fn(),
   apply: vi.fn(),
   cancel: vi.fn(),
+  registry: vi.fn(),
 }))
 
 vi.mock('../src/lib/coreClient', async (importOriginal) => ({
@@ -14,6 +15,7 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => ({
   proposeCurrentStackedFoldRead: transport.preview,
   applyStackedFoldTransaction: transport.apply,
   cancelStackedFoldTransactionPreview: transport.cancel,
+  readLiveHingeRegistryV1: transport.registry,
 }))
 
 const instance = '018f47a2-4b7a-7cc1-8abc-112233445566'
@@ -141,7 +143,50 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+beforeEach(() => {
+  transport.registry.mockResolvedValue({
+    version: 1,
+    projectInstanceId: instance,
+    projectId: project,
+    revision: 12,
+    poseGeneration: 4,
+    graphFingerprintSha256: 'a'.repeat(64),
+    entries: [
+      { edge: project, initialAngleDegrees: 10 },
+      { edge: token, initialAngleDegrees: 20 },
+    ],
+    authorizesProjectMutation: false,
+  })
+})
+
 describe('StackedFoldPanel', () => {
+  it('bootstraps canonical linear candidate entries from the read-only live registry', async () => {
+    transport.cancel.mockResolvedValue(undefined)
+    transport.preview.mockResolvedValue(ready)
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    const requested = await screen.findByLabelText(`Requested angle ${project}`)
+    fireEvent.change(requested, { target: { value: '30' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    await waitFor(() => expect(transport.preview).toHaveBeenCalledWith(expect.objectContaining({
+      linearCandidateV1: {
+        version: 1,
+        entries: [
+          { edge: project, initialAngleDegrees: 10, requestedAngleDegrees: 30 },
+          { edge: token, initialAngleDegrees: 20, requestedAngleDegrees: 20 },
+        ],
+      },
+    })))
+  })
+
   it('passes an explicitly authored versioned cycle schedule to native proof', async () => {
     transport.cancel.mockResolvedValue(undefined)
     transport.preview.mockResolvedValue(ready)

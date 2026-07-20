@@ -1350,6 +1350,50 @@ pub(super) mod tests {
         (authority, capability)
     }
 
+    pub(super) fn install_flat_pose_authority(
+        project: &mut ProjectState,
+    ) -> (CurrentAppliedPoseAuthority, CurrentAppliedPoseCapability) {
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze()
+            .simulation_snapshot()
+            .cloned()
+            .expect("simulation topology");
+        let model = MaterialTreeKinematicsModel::prepare(
+            project.editor.pattern(),
+            project.editor.paper(),
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .expect("tree pose fixture");
+        let authority = project.applied_pose_authority.clone();
+        let captured = authority
+            .capture_request(
+                project,
+                NativePoseRequest {
+                    expected_project_instance_id: project.instance_id,
+                    expected_project_id: project.project_id,
+                    expected_revision: project.editor.revision(),
+                    fixed_face_id: model.face_ids().first().copied(),
+                    complete_hinge_angles: model
+                        .hinges()
+                        .iter()
+                        .map(|hinge| NativePoseHingeAngleRequest {
+                            edge_id: hinge.edge(),
+                            angle_degrees: 180.0,
+                        })
+                        .collect(),
+                },
+            )
+            .expect("capture flat pose");
+        let prepared = captured.prepare().expect("prepare flat pose");
+        let capability = authority
+            .commit_prepared(project, prepared)
+            .expect("commit flat pose");
+        (authority, capability)
+    }
+
     #[test]
     fn no_hinge_pose_is_adopted_without_revision_or_history_and_marks_document_dirty() {
         let mut project = no_hinge_project();

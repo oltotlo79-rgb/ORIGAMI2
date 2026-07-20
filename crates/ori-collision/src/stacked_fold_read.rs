@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use num_rational::BigRational;
 use num_traits::{Signed, ToPrimitive, Zero};
-use ori_domain::{FaceId, Point2, ProjectId};
+use ori_domain::{EdgeKind, FaceId, Point2, ProjectId};
 use ori_foldability::LayerOrderSnapshot;
 use ori_kinematics::{MaterialTreeKinematicsModel, MaterialTreePose, Point3};
 use thiserror::Error;
@@ -419,6 +419,8 @@ pub struct StackedFoldMaterialSegmentV1 {
     face: FaceId,
     start: Point2,
     end: Point2,
+    fixed_side: StackedFoldFixedSideV1,
+    assignment: EdgeKind,
 }
 
 impl StackedFoldMaterialSegmentV1 {
@@ -435,6 +437,16 @@ impl StackedFoldMaterialSegmentV1 {
     #[must_use]
     pub const fn end(self) -> Point2 {
         self.end
+    }
+
+    #[must_use]
+    pub const fn fixed_side(self) -> StackedFoldFixedSideV1 {
+        self.fixed_side
+    }
+
+    #[must_use]
+    pub const fn assignment(self) -> EdgeKind {
+        self.assignment
     }
 }
 
@@ -690,6 +702,7 @@ pub fn reverse_map_linear_stacked_fold_material_v1<'snapshot>(
     segments
         .try_reserve_exact(proposal.target_faces().len())
         .map_err(|_| StackedFoldMaterialMapErrorV1::AllocationFailed)?;
+    let fixed_probe = fixed_side_world_probe(proposal.candidate())?;
     for face in proposal.target_faces() {
         let boundary = input
             .model
@@ -713,11 +726,36 @@ pub fn reverse_map_linear_stacked_fold_material_v1<'snapshot>(
         let second = transform
             .inverse_apply_point(proposal.candidate().second())
             .map_err(|_| StackedFoldMaterialMapErrorV1::MaterialPlaneMismatch)?;
-        if first.y().to_bits() != 0.0_f64.to_bits() || second.y().to_bits() != 0.0_f64.to_bits() {
+        let probe = transform
+            .inverse_apply_point(fixed_probe)
+            .map_err(|_| StackedFoldMaterialMapErrorV1::MaterialPlaneMismatch)?;
+        if first.y().to_bits() != 0.0_f64.to_bits()
+            || second.y().to_bits() != 0.0_f64.to_bits()
+            || probe.y().to_bits() != 0.0_f64.to_bits()
+        {
             return Err(StackedFoldMaterialMapErrorV1::MaterialPlaneMismatch);
         }
         let line_first = rational_point_from_material(first)?;
         let line_second = rational_point_from_material(second)?;
+        let fixed_probe = rational_point_from_material(probe)?;
+        let fixed_orientation = rational_orientation(&line_first, &line_second, &fixed_probe);
+        let fixed_side = if fixed_orientation.is_positive() {
+            StackedFoldFixedSideV1::Left
+        } else if fixed_orientation.is_negative() {
+            StackedFoldFixedSideV1::Right
+        } else {
+            return Err(StackedFoldMaterialMapErrorV1::MaterialIntersectionIndeterminate);
+        };
+        let assignment = match (proposal.candidate().rotation_direction(), fixed_side) {
+            (StackedFoldRotationDirectionV1::Positive, StackedFoldFixedSideV1::Left)
+            | (StackedFoldRotationDirectionV1::Negative, StackedFoldFixedSideV1::Right) => {
+                EdgeKind::Mountain
+            }
+            (StackedFoldRotationDirectionV1::Positive, StackedFoldFixedSideV1::Right)
+            | (StackedFoldRotationDirectionV1::Negative, StackedFoldFixedSideV1::Left) => {
+                EdgeKind::Valley
+            }
+        };
         let mut polygon = Vec::new();
         polygon
             .try_reserve_exact(boundary.vertices().len())
@@ -735,12 +773,41 @@ pub fn reverse_map_linear_stacked_fold_material_v1<'snapshot>(
             face: *face,
             start: rational_point_to_point2(&start)?,
             end: rational_point_to_point2(&end)?,
+            fixed_side,
+            assignment,
         });
     }
     Ok(NativeStackedFoldMaterialMapV1 {
         proposal: proposal.clone(),
         segments,
     })
+}
+
+fn fixed_side_world_probe(
+    candidate: StackedFoldLinearCandidateV1,
+) -> Result<Point3, StackedFoldMaterialMapErrorV1> {
+    let first = candidate.first();
+    let second = candidate.second();
+    let direction_x = second.x() - first.x();
+    let direction_z = second.z() - first.z();
+    let sign = match candidate.fixed_side() {
+        StackedFoldFixedSideV1::Left => 1.0,
+        StackedFoldFixedSideV1::Right => -1.0,
+    };
+    Point3::new(
+        first.x() + sign * direction_z,
+        0.0,
+        first.z() - sign * direction_x,
+    )
+    .map_err(|_| StackedFoldMaterialMapErrorV1::MaterialPlaneMismatch)
+}
+
+fn rational_orientation(
+    first: &RationalPoint,
+    second: &RationalPoint,
+    point: &RationalPoint,
+) -> BigRational {
+    (&second.x - &first.x) * (&point.y - &first.y) - (&second.y - &first.y) * (&point.x - &first.x)
 }
 
 fn rational_point_from_material(

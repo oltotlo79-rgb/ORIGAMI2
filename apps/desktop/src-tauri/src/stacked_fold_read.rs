@@ -117,6 +117,8 @@ struct StackedFoldMaterialSegmentDto {
     face_id: FaceId,
     start: [f64; 2],
     end: [f64; 2],
+    fixed_side: &'static str,
+    assignment: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -245,6 +247,15 @@ pub(super) async fn propose_current_stacked_fold_read(
                 face_id: segment.face(),
                 start: [segment.start().x, segment.start().y],
                 end: [segment.end().x, segment.end().y],
+                fixed_side: match segment.fixed_side() {
+                    StackedFoldFixedSideV1::Left => "left",
+                    StackedFoldFixedSideV1::Right => "right",
+                },
+                assignment: match segment.assignment() {
+                    ori_domain::EdgeKind::Mountain => "mountain",
+                    ori_domain::EdgeKind::Valley => "valley",
+                    _ => unreachable!("material map emits only mountain or valley"),
+                },
             })
             .collect();
         drop(material_map);

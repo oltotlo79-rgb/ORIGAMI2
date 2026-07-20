@@ -328,7 +328,11 @@ fn no_hinge_and_flat_tree_issue_complete_read_only_proposals() {
                 .segments()
                 .iter()
                 .zip(proposal.target_faces())
-                .all(|(segment, face)| segment.face() == *face && segment.start() != segment.end())
+                .all(|(segment, face)| segment.face() == *face
+                    && segment.start() != segment.end()
+                    && matches!(segment.assignment(), EdgeKind::Mountain | EdgeKind::Valley)
+                    && (segment.assignment() == EdgeKind::Mountain)
+                        == (segment.fixed_side() == StackedFoldFixedSideV1::Left))
         );
         assert!(!material_map.authorizes_project_mutation());
         assert!(!material_map.authorizes_apply_stacked_fold());
@@ -394,6 +398,58 @@ fn material_reverse_mapping_is_bounded_and_revalidates_the_exact_proposal() {
         ),
         Err(StackedFoldMaterialMapErrorV1::ReadProposalInvalid)
     ));
+
+    for (fixed_side, rotation_direction, expected_assignment) in [
+        (
+            StackedFoldFixedSideV1::Left,
+            StackedFoldRotationDirectionV1::Positive,
+            EdgeKind::Mountain,
+        ),
+        (
+            StackedFoldFixedSideV1::Left,
+            StackedFoldRotationDirectionV1::Negative,
+            EdgeKind::Valley,
+        ),
+        (
+            StackedFoldFixedSideV1::Right,
+            StackedFoldRotationDirectionV1::Positive,
+            EdgeKind::Valley,
+        ),
+        (
+            StackedFoldFixedSideV1::Right,
+            StackedFoldRotationDirectionV1::Negative,
+            EdgeKind::Mountain,
+        ),
+    ] {
+        let candidate = StackedFoldLinearCandidateV1::new(
+            Point3::new(200.0, 0.0, 0.0).unwrap(),
+            Point3::new(200.0, 0.0, -400.0).unwrap(),
+            fixed_side,
+            rotation_direction,
+            90.0,
+        )
+        .unwrap();
+        let proposal = propose_linear_stacked_fold_read_v1(
+            &guard,
+            binding(&fixture),
+            input(&fixture, &pose, &fixture.layer_order),
+            candidate,
+            limits,
+        )
+        .unwrap();
+        let material_map = reverse_map_linear_stacked_fold_material_v1(
+            &proposal,
+            &guard,
+            binding(&fixture),
+            input(&fixture, &pose, &fixture.layer_order),
+            limits,
+            StackedFoldMaterialMapLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(material_map.segments().iter().all(|segment| {
+            segment.fixed_side() == fixed_side && segment.assignment() == expected_assignment
+        }));
+    }
 }
 
 #[test]

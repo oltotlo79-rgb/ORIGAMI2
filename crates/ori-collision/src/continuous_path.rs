@@ -69,6 +69,8 @@ pub struct StackedFoldBoundedPathDiagnosticV1 {
     analytic_positive_two_hinge_clearance: bool,
     interval_two_hinge_chain_clearance: bool,
     interval_tree_hinge_count: usize,
+    interval_leaf_count: usize,
+    interval_pair_work: usize,
     positive_thickness_outer_shell: bool,
 }
 
@@ -86,6 +88,16 @@ impl StackedFoldBoundedPathDiagnosticV1 {
     #[must_use]
     pub const fn sampled_nonblocking_pose_count(&self) -> usize {
         self.sampled_nonblocking_pose_count
+    }
+
+    #[must_use]
+    pub const fn interval_leaf_count(&self) -> usize {
+        self.interval_leaf_count
+    }
+
+    #[must_use]
+    pub const fn interval_pair_work(&self) -> usize {
+        self.interval_pair_work
     }
 
     #[must_use]
@@ -223,6 +235,7 @@ pub fn diagnose_collective_hinge_path_v1(
             requested_angle_degrees,
         );
     let positive_thickness = paper_thickness_mm.is_finite() && paper_thickness_mm > 0.0;
+    let mut interval_metrics = (0_usize, 0_usize);
     let interval_two_hinge_chain_topology = zero_thickness
         && two_hinge_interval_clearance_premises(
             model,
@@ -230,6 +243,7 @@ pub fn diagnose_collective_hinge_path_v1(
             &moving,
             requested_angle_degrees,
             limits.sample_intervals,
+            &mut interval_metrics,
         );
     let positive_two_hinge_topology = positive_thickness
         && model.face_ids().len() == 3
@@ -399,6 +413,8 @@ pub fn diagnose_collective_hinge_path_v1(
         } else {
             0
         },
+        interval_leaf_count: interval_metrics.0,
+        interval_pair_work: interval_metrics.1,
         positive_thickness_outer_shell: positive_thickness && all_positive_thickness_outer_shells,
     })
 }
@@ -409,6 +425,7 @@ fn two_hinge_interval_clearance_premises(
     moving: &HashSet<EdgeId>,
     requested_angle_degrees: f64,
     interval_count: usize,
+    metrics: &mut (usize, usize),
 ) -> bool {
     let hinge_count = model.hinges().len();
     let face_count = model.face_ids().len();
@@ -516,55 +533,25 @@ fn two_hinge_interval_clearance_premises(
                 || (hinge.left_face() == second && hinge.right_face() == first)
         })
     };
-    let mut pending = (0..interval_count)
-        .map(|interval| {
-            (
-                requested_angle_degrees * interval as f64 / interval_count as f64,
-                requested_angle_degrees * (interval + 1) as f64 / interval_count as f64,
-                0_usize,
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut leaf_count = interval_count;
     let mut pair_work = 0_usize;
-    while !pending.is_empty() {
-        // Process the narrowest interval first, then its lower endpoint. This
-        // fixed priority makes subdivision independent of source storage order.
-        pending.sort_by(|left, right| {
-            (left.1 - left.0)
-                .total_cmp(&(right.1 - right.0))
-                .then_with(|| left.0.total_cmp(&right.0))
-        });
-        let (lower, upper, subdivision_depth) = pending.remove(0);
+    let mut evaluate = |lower: f64, upper: f64| -> Option<(bool, f64)> {
         let midpoint = (lower + upper) / 2.0;
         let half_width_radians = (upper - lower) * std::f64::consts::PI / 360.0;
-        let Some(pose) = solve_collective_pose(model, initial_pose, moving, midpoint) else {
-            return false;
-        };
+        let pose = solve_collective_pose(model, initial_pose, moving, midpoint)?;
         let mut bounds = Vec::new();
         for face in model.face_ids() {
-            let Some(face_depth) = depth.get(face) else {
-                return false;
-            };
-            let expansion = *face_depth as f64 * maximum_radius * half_width_radians;
+            let expansion = *depth.get(face)? as f64 * maximum_radius * half_width_radians;
             if !expansion.is_finite() {
-                return false;
+                return None;
             }
-            let Some(transform) = pose.face_transform(*face) else {
-                return false;
-            };
-            let Some(boundary) = model.face_boundary(*face) else {
-                return false;
-            };
+            let transform = pose.face_transform(*face)?;
+            let boundary = model.face_boundary(*face)?;
             let mut minimum = [f64::INFINITY; 3];
             let mut maximum = [f64::NEG_INFINITY; 3];
             for vertex in boundary.vertices() {
-                let Some(point) = initial_pose.vertex_position(*vertex) else {
-                    return false;
-                };
-                let Ok(world) = transform.apply_point(point) else {
-                    return false;
-                };
+                let world = transform
+                    .apply_point(initial_pose.vertex_position(*vertex)?)
+                    .ok()?;
                 for (axis, value) in [world.x(), world.y(), world.z()].into_iter().enumerate() {
                     minimum[axis] = minimum[axis].min(value - expansion);
                     maximum[axis] = maximum[axis].max(value + expansion);
@@ -572,43 +559,76 @@ fn two_hinge_interval_clearance_premises(
             }
             bounds.push((*face, minimum, maximum));
         }
-        let mut all_separated = true;
+        let mut strict_margin = f64::INFINITY;
         for first in 0..bounds.len() {
             for second in first + 1..bounds.len() {
                 if adjacent(bounds[first].0, bounds[second].0) {
                     continue;
                 }
-                pair_work = match pair_work.checked_add(1) {
-                    Some(value) if value <= MAX_STACKED_FOLD_INTERVAL_WORK_V1 => value,
-                    _ => return false,
-                };
-                let separated = (0..3).any(|axis| {
-                    bounds[first].2[axis] < bounds[second].1[axis]
-                        || bounds[second].2[axis] < bounds[first].1[axis]
-                });
-                if !separated {
-                    all_separated = false;
-                    break;
+                pair_work = pair_work.checked_add(1)?;
+                if pair_work > MAX_STACKED_FOLD_INTERVAL_WORK_V1 {
+                    return None;
                 }
-            }
-            if !all_separated {
-                break;
+                let pair_margin = (0..3)
+                    .map(|axis| {
+                        (bounds[second].1[axis] - bounds[first].2[axis])
+                            .max(bounds[first].1[axis] - bounds[second].2[axis])
+                    })
+                    .max_by(f64::total_cmp)?;
+                strict_margin = strict_margin.min(pair_margin);
             }
         }
-        if !all_separated {
-            if subdivision_depth >= MAX_STACKED_FOLD_INTERVAL_DEPTH_V1
-                || leaf_count >= MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
-                || !midpoint.is_finite()
-                || midpoint <= lower
-                || midpoint >= upper
-            {
-                return false;
-            }
-            leaf_count += 1;
-            pending.push((lower, midpoint, subdivision_depth + 1));
-            pending.push((midpoint, upper, subdivision_depth + 1));
+        Some((strict_margin > 0.0, strict_margin))
+    };
+    let mut pending = Vec::with_capacity(interval_count);
+    for interval in 0..interval_count {
+        let lower = requested_angle_degrees * interval as f64 / interval_count as f64;
+        let upper = requested_angle_degrees * (interval + 1) as f64 / interval_count as f64;
+        let (certified, margin) = match evaluate(lower, upper) {
+            Some(value) => value,
+            None => return false,
+        };
+        pending.push((lower, upper, 0_usize, certified, margin));
+    }
+    let mut leaf_count = interval_count;
+    while !pending.is_empty() {
+        // The least separated leaf is refined first. Lower endpoint and depth
+        // are stable tie-breakers, independent of model storage order.
+        pending.sort_by(|left, right| {
+            left.4
+                .total_cmp(&right.4)
+                .then_with(|| left.0.total_cmp(&right.0))
+                .then_with(|| left.2.cmp(&right.2))
+        });
+        let (lower, upper, subdivision_depth, certified, _) = pending.remove(0);
+        if certified {
+            continue;
+        }
+        let midpoint = (lower + upper) / 2.0;
+        if subdivision_depth >= MAX_STACKED_FOLD_INTERVAL_DEPTH_V1
+            || leaf_count >= MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
+            || !midpoint.is_finite()
+            || midpoint <= lower
+            || midpoint >= upper
+        {
+            return false;
+        }
+        leaf_count += 1;
+        for (child_lower, child_upper) in [(lower, midpoint), (midpoint, upper)] {
+            let (child_certified, child_margin) = match evaluate(child_lower, child_upper) {
+                Some(value) => value,
+                None => return false,
+            };
+            pending.push((
+                child_lower,
+                child_upper,
+                subdivision_depth + 1,
+                child_certified,
+                child_margin,
+            ));
         }
     }
+    *metrics = (leaf_count, pair_work);
     true
 }
 
@@ -1010,6 +1030,59 @@ mod tests {
         .unwrap()
     }
 
+    fn deep_strip_model(hinge_count: usize) -> MaterialTreeKinematicsModel {
+        let column_count = hinge_count + 2;
+        let mut points = (0..column_count)
+            .map(|column| (column as f64 * 100.0, 0.0))
+            .collect::<Vec<_>>();
+        points.extend(
+            (0..column_count)
+                .rev()
+                .map(|column| (column as f64 * 100.0, 4.0)),
+        );
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(index, &(x, y))| Vertex {
+                id: fixed_id("8400", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: fixed_id("9400", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        edges.extend((1..=hinge_count).map(|column| Edge {
+            id: fixed_id("9400", 100 + column as u64),
+            start: boundary[column],
+            end: boundary[2 * column_count - 1 - column],
+            kind: EdgeKind::Mountain,
+        }));
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("b400", hinge_count as u64),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        MaterialTreeKinematicsModel::prepare(
+            &pattern,
+            &paper,
+            &report.snapshot.unwrap(),
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn limits_fail_closed_before_geometry_access() {
         assert_eq!(MAX_STACKED_FOLD_PATH_SAMPLES_V1, 64);
@@ -1028,6 +1101,8 @@ mod tests {
                 analytic_positive_two_hinge_clearance: false,
                 interval_two_hinge_chain_clearance: false,
                 interval_tree_hinge_count: 0,
+                interval_leaf_count: 0,
+                interval_pair_work: 0,
                 positive_thickness_outer_shell: false,
             }
             .safe_stop_angle_degrees()
@@ -1183,6 +1258,89 @@ mod tests {
         .unwrap();
         assert!(!result.continuous_clearance_certified());
         assert_eq!(result.safe_stop_angle_degrees(), 0.0);
+    }
+
+    #[test]
+    fn nine_hinge_deep_tree_is_certified_deterministically_across_input_permutation() {
+        let model = deep_strip_model(9);
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        let first = diagnose_collective_hinge_path_v1(
+            &model,
+            &pose,
+            &moving,
+            0.01,
+            0.0,
+            StackedFoldPathDiagnosticLimitsV1 {
+                sample_intervals: 1,
+                ..StackedFoldPathDiagnosticLimitsV1::default()
+            },
+        )
+        .unwrap();
+        let mut reversed = moving;
+        reversed.reverse();
+        let second = diagnose_collective_hinge_path_v1(
+            &model,
+            &pose,
+            &reversed,
+            0.01,
+            0.0,
+            StackedFoldPathDiagnosticLimitsV1 {
+                sample_intervals: 1,
+                ..StackedFoldPathDiagnosticLimitsV1::default()
+            },
+        )
+        .unwrap();
+        assert!(first.continuous_clearance_certified());
+        assert_eq!(first, second);
+        assert!(first.interval_leaf_count() >= 1);
+        assert!(first.interval_pair_work() > 0);
+    }
+
+    #[test]
+    fn sixteen_hinge_overlap_exhausts_adaptive_budget_fail_closed() {
+        let model = deep_strip_model(16);
+        let angles = CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = model.solve(Some(model.face_ids()[0]), &angles).unwrap();
+        let moving = model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        let result = diagnose_collective_hinge_path_v1(
+            &model,
+            &pose,
+            &moving,
+            180.0,
+            0.0,
+            StackedFoldPathDiagnosticLimitsV1 {
+                sample_intervals: 1,
+                ..StackedFoldPathDiagnosticLimitsV1::default()
+            },
+        )
+        .unwrap();
+        assert!(!result.continuous_clearance_certified());
+        assert_eq!(result.interval_leaf_count(), 0);
+        assert_eq!(result.interval_pair_work(), 0);
     }
 
     #[test]

@@ -249,6 +249,8 @@ export function StackedFoldPanel({
             <div><dt>{t('連続経路', 'Continuous path')}</dt><dd>{view.response.continuousPath.continuousClearanceCertified ? t('証明済み', 'Certified') : t('未証明', 'Uncertified')}</dd></div>
             <div><dt>{t('最初の停止確認角', 'First proven blocking sample')}</dt><dd>{view.response.continuousPath.firstSampledBlockingAngleDegrees === null ? t('なし', 'None') : `${view.response.continuousPath.firstSampledBlockingAngleDegrees}°`}</dd></div>
             <div><dt>{t('経路証明model', 'Path certificate model')}</dt><dd>{view.response.continuousPath.continuousCertificateModelId ?? t('なし', 'None')}</dd></div>
+            <div><dt>{t('区間leaf数', 'Interval leaves')}</dt><dd>{view.response.continuousPath.intervalLeafCount}</dd></div>
+            <div><dt>{t('区間pair work', 'Interval pair work')}</dt><dd>{view.response.continuousPath.intervalPairWork}</dd></div>
             <div><dt>{t('証明済み紙厚', 'Certified thickness')}</dt><dd>{view.response.continuousPath.paperThicknessMm} mm</dd></div>
             <div><dt>{t('層順序', 'Layer order')}</dt><dd>{view.response.flatEndpointLayerOrder.certified ? t('証明済み', 'Certified') : t('未証明', 'Uncertified')}</dd></div>
             <div><dt>{t('追加頂点 / 辺', 'Added vertices / edges')}</dt><dd>{view.response.transactionProposal.addedVertexCount} / {view.response.transactionProposal.addedEdgeCount}</dd></div>

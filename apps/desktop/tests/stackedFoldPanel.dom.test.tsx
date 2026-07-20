@@ -77,6 +77,8 @@ const ready = {
     paperThicknessMm: 0,
     sampledPoseCount: 2,
     sampledNonblockingPoseCount: 2,
+    intervalLeafCount: 8,
+    intervalPairWork: 8,
     firstSampledBlockingAngleDegrees: null,
     requestedAngleDegrees: 180,
     continuousClearanceCertified: true,

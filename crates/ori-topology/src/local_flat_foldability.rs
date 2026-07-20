@@ -1152,6 +1152,20 @@ mod tests {
                 reduction_steps: 0,
             }
         );
+        let invalid_assignment =
+            octagonal_sheet(&[1, 5], &[EdgeKind::Mountain, EdgeKind::Valley]);
+        assert_eq!(
+            prove_assigned_local_sufficiency_v1(
+                &invalid_assignment.paper,
+                &invalid_assignment.pattern,
+                invalid_assignment.center,
+                AssignedLocalSufficiencyLimitsV1::default(),
+            ),
+            AssignedLocalSufficiencyV1::Indeterminate {
+                vertex: invalid_assignment.center,
+                reason: AssignedLocalSufficiencyReasonV1::NecessaryConditionsNotSatisfied,
+            }
+        );
 
         let degree_four = octagonal_sheet(
             &[0, 2, 4, 6],

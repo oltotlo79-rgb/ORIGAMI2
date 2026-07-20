@@ -2,8 +2,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use ori_collision::StackedFoldBoundedPathDiagnosticV1;
 use ori_core::{
-    AppliedPoseLimitsV1, PreparedStackedFoldRequestedPoseV1, StackedFoldNonFlatLayerOrderV1,
-    prepare_applied_pose_v1,
+    AppliedPoseLimitsV1, PreparedStackedFoldGeometryV1, PreparedStackedFoldRequestedGraphPoseV1,
+    PreparedStackedFoldRequestedPoseV1, StackedFoldNonFlatLayerOrderV1, prepare_applied_pose_v1,
 };
 use ori_domain::{
     InstructionHingeAngle, InstructionPose, InstructionPoseModel, InstructionStep,
@@ -45,11 +45,87 @@ pub(super) struct PendingStackedFoldTransaction {
     expected_source_fingerprint: [u8; 32],
     expected_pose_generation: u64,
     expected_layer_generation: u64,
-    requested: PreparedStackedFoldRequestedPoseV1,
-    continuous: StackedFoldBoundedPathDiagnosticV1,
+    requested: PendingStackedFoldRequestedPose,
     layer_order: StackedFoldNonFlatLayerOrderV1,
     pose_capability: CurrentAppliedPoseCapability,
     layer_capability: CurrentLayerOrderCapability,
+}
+
+pub(super) enum PendingStackedFoldRequestedPose {
+    Tree {
+        requested: PreparedStackedFoldRequestedPoseV1,
+        continuous: StackedFoldBoundedPathDiagnosticV1,
+    },
+    #[allow(dead_code)]
+    Graph {
+        requested: PreparedStackedFoldRequestedGraphPoseV1,
+        continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
+    },
+}
+
+impl PendingStackedFoldRequestedPose {
+    fn geometry(&self) -> &PreparedStackedFoldGeometryV1 {
+        match self {
+            Self::Tree { requested, .. } => requested.initial().target().geometry(),
+            Self::Graph { requested, .. } => requested.initial().target().geometry(),
+        }
+    }
+    fn continuous_certified(&self) -> bool {
+        match self {
+            Self::Tree { continuous, .. } => continuous.continuous_clearance_certified(),
+            Self::Graph { continuous, .. } => {
+                continuous.continuous_certificate_model_id().is_some()
+            }
+        }
+    }
+    fn pose_components(
+        &self,
+    ) -> (
+        Vec<ori_domain::FaceId>,
+        Vec<ori_domain::EdgeId>,
+        Option<ori_domain::FaceId>,
+        Vec<(ori_domain::EdgeId, f64)>,
+    ) {
+        match self {
+            Self::Tree { requested, .. } => {
+                let pose = requested.pose();
+                (
+                    pose.face_ids().to_vec(),
+                    pose.hinges().iter().map(|hinge| hinge.edge()).collect(),
+                    pose.fixed_face(),
+                    pose.hinge_angles()
+                        .iter()
+                        .map(|angle| (angle.edge(), angle.angle_degrees()))
+                        .collect(),
+                )
+            }
+            Self::Graph { requested, .. } => {
+                let pose = requested.pose();
+                (
+                    requested
+                        .initial()
+                        .target()
+                        .hinge_geometry()
+                        .face_ids()
+                        .to_vec(),
+                    requested
+                        .initial()
+                        .target()
+                        .hinge_geometry()
+                        .hinges()
+                        .iter()
+                        .map(|hinge| hinge.edge())
+                        .collect(),
+                    Some(pose.fixed_face()),
+                    pose.hinge_angles()
+                        .as_slice()
+                        .iter()
+                        .map(|angle| (angle.edge(), angle.angle_degrees()))
+                        .collect(),
+                )
+            }
+        }
+    }
 }
 
 pub(super) struct PendingStackedFoldPremises {
@@ -61,6 +137,19 @@ pub(super) struct PendingStackedFoldPremises {
     pub expected_layer_generation: u64,
     pub requested: PreparedStackedFoldRequestedPoseV1,
     pub continuous: StackedFoldBoundedPathDiagnosticV1,
+    pub layer_order: StackedFoldNonFlatLayerOrderV1,
+}
+
+#[allow(dead_code)]
+pub(super) struct PendingStackedFoldGraphPremises {
+    pub expected_instance_id: ProjectId,
+    pub expected_project_id: ProjectId,
+    pub expected_revision: u64,
+    pub expected_source_fingerprint: [u8; 32],
+    pub expected_pose_generation: u64,
+    pub expected_layer_generation: u64,
+    pub requested: PreparedStackedFoldRequestedGraphPoseV1,
+    pub continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
     pub layer_order: StackedFoldNonFlatLayerOrderV1,
 }
 
@@ -97,14 +186,10 @@ impl PendingStackedFoldTransaction {
                 pose_generation,
                 layer_generation,
             ),
-        ) && self.continuous.continuous_clearance_certified()
-            && self.continuous.requested_angle_degrees().to_bits()
-                == self.requested.requested_angle_degrees().to_bits()
+        ) && self.requested.continuous_certified()
             && self.layer_order.target_revision()
                 == self
                     .requested
-                    .initial()
-                    .target()
                     .geometry()
                     .proof()
                     .lineage()
@@ -139,8 +224,10 @@ pub(super) fn install_pending_stacked_fold(
         expected_source_fingerprint: premises.expected_source_fingerprint,
         expected_pose_generation: premises.expected_pose_generation,
         expected_layer_generation: premises.expected_layer_generation,
-        requested: premises.requested,
-        continuous: premises.continuous,
+        requested: PendingStackedFoldRequestedPose::Tree {
+            requested: premises.requested,
+            continuous: premises.continuous,
+        },
         layer_order: premises.layer_order,
         pose_capability,
         layer_capability,
@@ -156,6 +243,46 @@ pub(super) fn install_pending_stacked_fold(
     {
         return Err("The stacked-fold transaction premises are inconsistent.".to_owned());
     }
+    slot.active_generation = Some(token);
+    slot.pending = Some(pending);
+    Ok(token)
+}
+
+#[allow(dead_code)]
+pub(super) fn install_pending_stacked_fold_graph(
+    state: &StackedFoldTransactionState,
+    premises: PendingStackedFoldGraphPremises,
+    pose_capability: CurrentAppliedPoseCapability,
+    layer_capability: CurrentLayerOrderCapability,
+) -> Result<ProjectId, String> {
+    let token = ProjectId::new();
+    let pending = PendingStackedFoldTransaction {
+        token,
+        expected_instance_id: premises.expected_instance_id,
+        expected_project_id: premises.expected_project_id,
+        expected_revision: premises.expected_revision,
+        expected_source_fingerprint: premises.expected_source_fingerprint,
+        expected_pose_generation: premises.expected_pose_generation,
+        expected_layer_generation: premises.expected_layer_generation,
+        requested: PendingStackedFoldRequestedPose::Graph {
+            requested: premises.requested,
+            continuous: premises.continuous,
+        },
+        layer_order: premises.layer_order,
+        pose_capability,
+        layer_capability,
+    };
+    if !pending.matches_live_binding(
+        pending.expected_instance_id,
+        pending.expected_project_id,
+        pending.expected_revision,
+        pending.expected_source_fingerprint,
+        pending.expected_pose_generation,
+        pending.expected_layer_generation,
+    ) {
+        return Err("The stacked-fold graph transaction premises are inconsistent.".to_owned());
+    }
+    let mut slot = lock_slot(state)?;
     slot.active_generation = Some(token);
     slot.pending = Some(pending);
     Ok(token)
@@ -230,25 +357,17 @@ pub(super) fn apply_stacked_fold_transaction(
     .ok_or_else(|| "The stacked-fold transaction preview is stale.".to_owned())?;
 
     let requested = &pending.requested;
-    let target = requested.initial().target();
-    let target_pose = requested.pose();
+    let target = requested.geometry();
+    let (face_ids, hinge_ids, fixed_face, hinge_angles) = requested.pose_components();
     let applied_pose = prepare_applied_pose_v1(
-        target_pose.face_ids(),
-        &target_pose
-            .hinges()
-            .iter()
-            .map(|hinge| hinge.edge())
-            .collect::<Vec<_>>(),
-        target_pose.fixed_face(),
-        &target_pose
-            .hinge_angles()
-            .iter()
-            .map(|angle| (angle.edge(), angle.angle_degrees()))
-            .collect::<Vec<_>>(),
+        &face_ids,
+        &hinge_ids,
+        fixed_face,
+        &hinge_angles,
         AppliedPoseLimitsV1::default(),
     )
     .map_err(|_| "The target pose is inconsistent.".to_owned())?;
-    let candidate = target.geometry().candidate();
+    let candidate = target.candidate();
     let mut timeline = project.editor.instruction_timeline().clone();
     timeline.steps.push(InstructionStep {
         id: InstructionStepId::new(),
@@ -259,19 +378,13 @@ pub(super) fn apply_stacked_fold_transaction(
         visual: InstructionVisual::default(),
         pose: InstructionPose {
             model: InstructionPoseModel::AbsoluteHingeAnglesV1,
-            source_model_fingerprint: target
-                .geometry()
-                .proof()
-                .lineage()
-                .target_fingerprint()
-                .to_hex(),
-            fixed_face: target_pose.fixed_face(),
-            hinge_angles: target_pose
-                .hinge_angles()
+            source_model_fingerprint: target.proof().lineage().target_fingerprint().to_hex(),
+            fixed_face,
+            hinge_angles: hinge_angles
                 .iter()
-                .map(|angle| InstructionHingeAngle {
-                    edge: angle.edge(),
-                    angle_degrees: angle.angle_degrees(),
+                .map(|(edge, angle_degrees)| InstructionHingeAngle {
+                    edge: *edge,
+                    angle_degrees: *angle_degrees,
                 })
                 .collect(),
         },

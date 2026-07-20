@@ -94,11 +94,12 @@ impl CanonicalCycleScheduleV1 {
         if work > limits.max_work {
             return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
         }
-        let expected = geometry
+        let mut expected = geometry
             .hinges()
             .iter()
             .map(|hinge| hinge.edge())
             .collect::<Vec<_>>();
+        expected.sort_unstable_by_key(EdgeId::canonical_bytes);
         if entries.iter().map(|entry| entry.edge).collect::<Vec<_>>() != expected {
             return Err(CycleSchedulePrepareErrorV1::NonCanonical);
         }
@@ -228,4 +229,163 @@ fn binding_fingerprint(
         }
     }
     hash.finalize().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use ori_domain::{EdgeId, FaceId, ProjectId};
+    use ori_topology::{
+        BoundaryWalk, Face, FaceAdjacency, FaceKey, FoldAssignment, TopologySnapshot,
+    };
+
+    use super::*;
+    use crate::{Point3, TreeHinge, TreeKinematicsLimits};
+
+    fn fixture() -> (
+        MaterialHingeGraphGeometry,
+        MaterialHingeGraphAudit,
+        FaceId,
+        Vec<EdgeId>,
+    ) {
+        let ns = ProjectId::new();
+        let faces = [b"a", b"b", b"c"].map(|name| FaceId::derive_v5(ns, name));
+        let edges = [b"ab", b"bc", b"ca"].map(|name| EdgeId::derive_v5(ns, name));
+        let topology = TopologySnapshot {
+            source_revision: 1,
+            faces: faces
+                .iter()
+                .map(|id| Face {
+                    id: *id,
+                    key: FaceKey(id.canonical_bytes().repeat(2).try_into().unwrap()),
+                    outer: BoundaryWalk {
+                        half_edges: Vec::new(),
+                        signed_double_area: 1.0,
+                    },
+                    holes: Vec::new(),
+                    seams: Vec::new(),
+                    area: 0.5,
+                })
+                .collect(),
+            edge_incidence: Vec::new(),
+            hinge_adjacency: (0..3)
+                .map(|i| FaceAdjacency {
+                    edge: edges[i],
+                    first: faces[i],
+                    second: faces[(i + 1) % 3],
+                    assignment: FoldAssignment::Mountain,
+                })
+                .collect(),
+            material_components: Vec::new(),
+        };
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        let start = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let end = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let hinges = (0..3)
+            .map(|i| {
+                TreeHinge::new_for_test(
+                    edges[i],
+                    FoldAssignment::Mountain,
+                    faces[i],
+                    faces[(i + 1) % 3],
+                    start,
+                    end,
+                    end,
+                )
+            })
+            .collect();
+        (
+            MaterialHingeGraphGeometry::new_for_test(faces.to_vec(), hinges),
+            audit,
+            faces[0],
+            edges.to_vec(),
+        )
+    }
+
+    fn entries(edges: &[EdgeId]) -> Vec<CycleScheduleEntryInputV1> {
+        let mut entries = edges
+            .iter()
+            .map(|edge| CycleScheduleEntryInputV1 {
+                edge: *edge,
+                initial_angle_degrees_bits: 90.0_f64.to_bits(),
+                chebyshev_coefficients: vec![
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 10,
+                        denominator: 1,
+                    },
+                ],
+            })
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        entries
+    }
+
+    #[test]
+    fn canonical_schedule_evaluates_and_bounds_derivative() {
+        let (geometry, audit, fixed, edges) = fixture();
+        let schedule = CanonicalCycleScheduleV1::prepare(
+            &geometry,
+            &audit,
+            fixed,
+            [0.0, 1.0],
+            entries(&edges),
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(schedule.matches_binding(&geometry, &audit, fixed));
+        assert_eq!(
+            schedule.evaluate(0.5).unwrap().as_slice()[0].angle_degrees(),
+            90.0
+        );
+        assert_eq!(schedule.derivative_bound(edges[0]), Some(20.0));
+        assert!(schedule.evaluate(-0.1).is_none());
+    }
+
+    #[test]
+    fn malformed_order_coefficients_and_limits_fail_closed() {
+        let (geometry, audit, fixed, edges) = fixture();
+        let limits = CycleScheduleLimitsV1::default();
+        let mut reversed = entries(&edges);
+        reversed.reverse();
+        assert_eq!(
+            CanonicalCycleScheduleV1::prepare(
+                &geometry,
+                &audit,
+                fixed,
+                [0.0, 1.0],
+                reversed,
+                limits
+            ),
+            Err(CycleSchedulePrepareErrorV1::NonCanonical)
+        );
+        let mut bad = entries(&edges);
+        bad[0].chebyshev_coefficients[0].denominator = 0;
+        assert_eq!(
+            CanonicalCycleScheduleV1::prepare(&geometry, &audit, fixed, [0.0, 1.0], bad, limits),
+            Err(CycleSchedulePrepareErrorV1::InvalidInput)
+        );
+        let mut excessive = entries(&edges);
+        excessive[0].chebyshev_coefficients.resize(
+            limits.max_degree + 2,
+            RationalCoefficientV1 {
+                numerator: 0,
+                denominator: 1,
+            },
+        );
+        assert_eq!(
+            CanonicalCycleScheduleV1::prepare(
+                &geometry,
+                &audit,
+                fixed,
+                [0.0, 1.0],
+                excessive,
+                limits
+            ),
+            Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+        );
+    }
 }

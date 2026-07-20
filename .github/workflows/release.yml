@@ -166,6 +166,28 @@ jobs:
           codesign --force --deep --options runtime --timestamp --sign "$SIGNING_IDENTITY" \
             target/release/bundle/macos/ORIGAMI2.app
           codesign --verify --deep --strict --verbose=2 target/release/bundle/macos/ORIGAMI2.app
+      - name: Notarize and staple macOS application
+        if: matrix.platform == 'macos-arm64' && needs.validate.outputs.mode != 'dry-run'
+        env:
+          APPLE_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_NOTARY_KEY_BASE64"
+          test -n "$APPLE_NOTARY_KEY_ID"
+          test -n "$APPLE_NOTARY_ISSUER_ID"
+          key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          archive="$RUNNER_TEMP/ORIGAMI2-notarization.zip"
+          trap 'rm -f -- "$key" "$archive"' EXIT
+          echo "$APPLE_NOTARY_KEY_BASE64" | base64 --decode > "$key"
+          chmod 600 "$key"
+          ditto -c -k --keepParent target/release/bundle/macos/ORIGAMI2.app "$archive"
+          xcrun notarytool submit "$archive" --key "$key" \
+            --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait
+          xcrun stapler staple target/release/bundle/macos/ORIGAMI2.app
+          xcrun stapler validate target/release/bundle/macos/ORIGAMI2.app
+          spctl --assess --type execute --verbose=4 target/release/bundle/macos/ORIGAMI2.app
       - name: Verify macOS application bundle contract
         if: matrix.platform == 'macos-arm64'
         shell: bash

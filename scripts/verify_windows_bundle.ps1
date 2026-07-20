@@ -75,9 +75,23 @@ function Assert-Signature {
     if ($ExpectedSignatureStatus -eq 'Ignore') {
         return
     }
-    $actual = (Get-AuthenticodeSignature -LiteralPath $Path).Status.ToString()
+    $signature = Get-AuthenticodeSignature -LiteralPath $Path
+    $actual = $signature.Status.ToString()
     if ($actual -cne $ExpectedSignatureStatus) {
         throw "$Label Authenticode status is '$actual', expected '$ExpectedSignatureStatus'."
+    }
+    if ($ExpectedSignatureStatus -eq 'Valid') {
+        if ($null -eq $signature.SignerCertificate) {
+            throw "$Label has no Authenticode signer certificate."
+        }
+        if ($null -eq $signature.TimeStamperCertificate) {
+            throw "$Label has no trusted RFC 3161 timestamp certificate."
+        }
+        $timestampStart = $signature.TimeStamperCertificate.NotBefore.ToUniversalTime()
+        $timestampEnd = $signature.TimeStamperCertificate.NotAfter.ToUniversalTime()
+        if ($timestampEnd -le $timestampStart) {
+            throw "$Label timestamp certificate validity is invalid."
+        }
     }
 }
 

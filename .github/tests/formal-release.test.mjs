@@ -398,6 +398,10 @@ test('CI and formal release share the strict macOS bundle contract', () => {
   assert.match(verifier, /CFBundleShortVersionString/u)
   assert.match(verifier, /\[\[ -x "\$bundle\/Contents\/MacOS\/\$executable_name" \]\]/u)
   assert.match(verifier, /c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f/u)
+  assert.match(releaseWorkflow, /xcrun notarytool submit/u)
+  assert.match(releaseWorkflow, /xcrun stapler staple/u)
+  assert.match(releaseWorkflow, /spctl --assess --type execute/u)
+  assert.match(releaseWorkflow, /APPLE_NOTARY_KEY_BASE64/u)
 })
 
 test('CI and formal release share the strict Windows bundle contract', () => {
@@ -409,6 +413,8 @@ test('CI and formal release share the strict Windows bundle contract', () => {
   assert.match(releaseWorkflow, /SIGNATURE_STATUS:.*Valid.*NotSigned/u)
   assert.match(verifier, /GetVersionInfo/u)
   assert.match(verifier, /Get-AuthenticodeSignature/u)
+  assert.match(verifier, /TimeStamperCertificate/u)
+  assert.match(verifier, /RFC 3161 timestamp/u)
   assert.match(verifier, /Embedded Windows executable/u)
   assert.match(verifier, /NotoSansJP-Variable\.ttf/u)
   assert.match(verifier, /NotoSansJP-OFL\.txt/u)
@@ -737,6 +743,10 @@ test('local artifact verifier requires explicit signature policy and verifies pa
   )
   assert.match(verifier, /origami2-desktop\.exe/u)
   assert.match(verifier, /origami2-macos-signature-/u)
+  assert.match(verifier, /TimeStamperCertificate/u)
+  assert.match(verifier, /signtool.*verify.*\/pa.*\/all/su)
+  assert.match(verifier, /stapler', 'validate'/u)
+  assert.match(verifier, /spctl', \['--assess'/u)
   assert.doesNotMatch(
     verifier,
     /target['"], ['"]release['"], ['"]bundle['"], ['"]macos/u,

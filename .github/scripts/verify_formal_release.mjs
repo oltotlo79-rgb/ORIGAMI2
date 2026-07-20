@@ -133,9 +133,11 @@ if (process.env.REQUIRE_SIGNATURE === 'true') {
         throw new Error('portable archive executable contract failed')
       }
       for (const executable of signedExecutables) {
-        const command = `(Get-AuthenticodeSignature -LiteralPath '${executable.replaceAll("'", "''")}').Status`
+        const escaped = executable.replaceAll("'", "''")
+        const command = `$s = Get-AuthenticodeSignature -LiteralPath '${escaped}'; if ($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate -or $null -eq $s.TimeStamperCertificate) { throw 'signature, chain, or RFC 3161 timestamp failed' }; $s.Status`
         const status = execFileSync('pwsh', ['-NoProfile', '-Command', command], { encoding: 'utf8' }).trim()
         if (status !== 'Valid') throw new Error(`${basename(executable)} Authenticode status is ${status}`)
+        execFileSync('signtool', ['verify', '/pa', '/all', executable], { stdio: 'inherit' })
       }
     } finally {
       rmSync(extracted, { recursive: true, force: true })
@@ -163,6 +165,10 @@ if (process.env.REQUIRE_SIGNATURE === 'true') {
         throw new Error('macOS archive application contract failed')
       }
       execFileSync('codesign', ['--verify', '--deep', '--strict', app], { stdio: 'inherit' })
+      execFileSync('xcrun', ['stapler', 'validate', app], { stdio: 'inherit' })
+      execFileSync('spctl', ['--assess', '--type', 'execute', '--verbose=4', app], {
+        stdio: 'inherit',
+      })
     } finally {
       rmSync(extracted, { recursive: true, force: true })
     }

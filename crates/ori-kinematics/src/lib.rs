@@ -86,8 +86,8 @@ pub use interval::{OutwardIntervalErrorV1, OutwardIntervalV1, atan_interval_v1};
 pub use schedule::{
     CanonicalCycleScheduleV1, CycleScheduleEntryInputV1, CycleScheduleLimitsV1,
     CycleSchedulePrepareErrorV1, HalfAngleDomainV1, PoleFreeBernsteinCertificateV1,
-    RationalCoefficientV1,
-    evaluate_half_angle_rational_degrees_interval_v1, evaluate_pole_free_atan2_interval_v1,
+    RationalCoefficientV1, evaluate_half_angle_rational_degrees_interval_v1,
+    evaluate_half_angle_rational_derivative_interval_v1, evaluate_pole_free_atan2_interval_v1,
     evaluate_pole_free_rational_interval_v1, prepare_pole_free_bernstein_certificate_v1,
 };
 pub use transform::{Point3, RigidTransform, deterministic_sin_cos_degrees};

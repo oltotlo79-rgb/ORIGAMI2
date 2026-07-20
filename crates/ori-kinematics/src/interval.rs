@@ -132,10 +132,7 @@ pub fn atan_interval_v1(
     let mut result = reduced.mul(polynomial)?;
     let max_abs = reduced.lower.abs().max(reduced.upper.abs());
     let remainder = OutwardIntervalV1::from_rounded(libm::pow(max_abs, 67.0) / 67.0)?;
-    result = result.add(OutwardIntervalV1::new(
-        -remainder.upper,
-        remainder.upper,
-    )?)?;
+    result = result.add(OutwardIntervalV1::new(-remainder.upper, remainder.upper)?)?;
     if let Some(offset) = offset {
         result = offset.add(result)?;
     }
@@ -242,11 +239,16 @@ mod tests {
                 .div(OutwardIntervalV1::new(-1.0, 1.0).unwrap()),
             Err(OutwardIntervalErrorV1::DivisionByZeroInterval)
         );
-        assert_eq!(OutwardIntervalV1::new(-0.0, 0.0).unwrap().lower().to_bits(), 0);
-        assert!(OutwardIntervalV1::new(f64::MAX, f64::MAX)
-            .unwrap()
-            .add(OutwardIntervalV1::new(f64::MAX, f64::MAX).unwrap())
-            .is_err());
+        assert_eq!(
+            OutwardIntervalV1::new(-0.0, 0.0).unwrap().lower().to_bits(),
+            0
+        );
+        assert!(
+            OutwardIntervalV1::new(f64::MAX, f64::MAX)
+                .unwrap()
+                .add(OutwardIntervalV1::new(f64::MAX, f64::MAX).unwrap())
+                .is_err()
+        );
     }
 
     #[test]

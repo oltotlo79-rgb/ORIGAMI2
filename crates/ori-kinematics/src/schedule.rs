@@ -70,6 +70,27 @@ struct ExactBernsteinRangeV1 {
 }
 
 impl ExactBernsteinRangeV1 {
+    fn range_interval(&self) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
+        let lower = self
+            .coefficients
+            .iter()
+            .min()
+            .and_then(|value| value.to_f64())
+            .ok_or(CycleSchedulePrepareErrorV1::InvalidInput)?;
+        let upper = self
+            .coefficients
+            .iter()
+            .max()
+            .and_then(|value| value.to_f64())
+            .ok_or(CycleSchedulePrepareErrorV1::InvalidInput)?;
+        let lower = OutwardIntervalV1::from_rounded(lower)
+            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+        let upper = OutwardIntervalV1::from_rounded(upper)
+            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+        OutwardIntervalV1::new(lower.lower(), upper.upper())
+            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)
+    }
+
     fn derivative(
         &self,
         max_coefficient_bits: u32,
@@ -115,6 +136,28 @@ impl ExactBernsteinRangeV1 {
         Ok(Self { coefficients })
     }
 
+    fn add_same_degree(
+        &self,
+        rhs: &Self,
+        max_coefficient_bits: u32,
+        max_work: usize,
+    ) -> Result<Self, CycleSchedulePrepareErrorV1> {
+        if self.coefficients.len() != rhs.coefficients.len() {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        if self.coefficients.len() > max_work {
+            return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+        }
+        let coefficients = self
+            .coefficients
+            .iter()
+            .zip(&rhs.coefficients)
+            .map(|(left, right)| left + right)
+            .collect::<Vec<_>>();
+        validate_exact_bits(&coefficients, max_coefficient_bits)?;
+        Ok(Self { coefficients })
+    }
+
     fn product(
         &self,
         rhs: &Self,
@@ -141,10 +184,7 @@ impl ExactBernsteinRangeV1 {
                     .ok_or(CycleSchedulePrepareErrorV1::ResourceLimit)?;
                 value += &self.coefficients[i]
                     * &rhs.coefficients[j]
-                    * BigRational::new(
-                        BigInt::from(weight),
-                        BigInt::from(binomial(n + m, k)),
-                    );
+                    * BigRational::new(BigInt::from(weight), BigInt::from(binomial(n + m, k)));
             }
             coefficients.push(value);
         }
@@ -305,6 +345,52 @@ pub fn evaluate_half_angle_rational_degrees_interval_v1(
         .mul(two)
         .and_then(|value| value.mul(degrees))
         .and_then(|value| value.div(pi))
+        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)
+}
+
+pub fn evaluate_half_angle_rational_derivative_interval_v1(
+    numerator: &PoleFreeBernsteinCertificateV1,
+    denominator: &PoleFreeBernsteinCertificateV1,
+    max_coefficient_bits: u32,
+    max_work: usize,
+) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
+    let p = ExactBernsteinRangeV1 {
+        coefficients: numerator.coefficients.clone(),
+    };
+    let q = ExactBernsteinRangeV1 {
+        coefficients: denominator.coefficients.clone(),
+    };
+    let p_derivative = p.derivative(max_coefficient_bits, max_work)?;
+    let q_derivative = q.derivative(max_coefficient_bits, max_work)?;
+    let left = p_derivative.product(&q, max_coefficient_bits, max_work)?;
+    let right = p.product(&q_derivative, max_coefficient_bits, max_work)?;
+    let derivative_numerator = left.sub(&right, max_coefficient_bits, max_work)?;
+    let p_squared = p.product(&p, max_coefficient_bits, max_work)?;
+    let q_squared = q.product(&q, max_coefficient_bits, max_work)?;
+    let denominator_degree = p_squared
+        .coefficients
+        .len()
+        .max(q_squared.coefficients.len())
+        - 1;
+    let derivative_denominator = p_squared
+        .elevate(denominator_degree, max_coefficient_bits, max_work)?
+        .add_same_degree(
+            &q_squared.elevate(denominator_degree, max_coefficient_bits, max_work)?,
+            max_coefficient_bits,
+            max_work,
+        )?;
+    if !derivative_denominator
+        .coefficients
+        .iter()
+        .all(|value| value.is_positive())
+    {
+        return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+    }
+    let numerator_interval = derivative_numerator.range_interval()?;
+    let denominator_interval = derivative_denominator.range_interval()?;
+    numerator_interval
+        .div(denominator_interval)
+        .and_then(|value| value.mul(OutwardIntervalV1::from_rounded(2.0)?))
         .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)
 }
 
@@ -848,8 +934,7 @@ mod tests {
             16,
         )
         .unwrap();
-        let large =
-            evaluate_pole_free_rational_interval_v1(&positive, &near_zero, 16).unwrap();
+        let large = evaluate_pole_free_rational_interval_v1(&positive, &near_zero, 16).unwrap();
         assert!(large.upper().is_finite());
         assert!(large.lower() > 0.0);
         for invalid in [
@@ -903,12 +988,7 @@ mod tests {
         let tangent = domain.half_angle_tangent();
         assert!(tangent.lower() <= -1.0);
         assert!(tangent.upper() >= 1.0);
-        for invalid in [
-            [-180.0, 0.0],
-            [0.0, 180.0],
-            [1.0, 1.0],
-            [f64::NAN, 1.0],
-        ] {
+        for invalid in [[-180.0, 0.0], [0.0, 180.0], [1.0, 1.0], [f64::NAN, 1.0]] {
             assert_eq!(
                 HalfAngleDomainV1::prepare(invalid),
                 Err(CycleSchedulePrepareErrorV1::InvalidInput)
@@ -1021,5 +1101,35 @@ mod tests {
             linear.product(&linear, 16, 1),
             Err(CycleSchedulePrepareErrorV1::ResourceLimit)
         );
+        let p = prepare_pole_free_bernstein_certificate_v1(
+            &[
+                RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                },
+                RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                },
+            ],
+            2,
+            32,
+            16,
+        )
+        .unwrap();
+        let q = prepare_pole_free_bernstein_certificate_v1(
+            &[RationalCoefficientV1 {
+                numerator: 1,
+                denominator: 1,
+            }],
+            2,
+            32,
+            16,
+        )
+        .unwrap();
+        let derivative =
+            evaluate_half_angle_rational_derivative_interval_v1(&p, &q, 64, 64).unwrap();
+        assert!(derivative.lower() <= 0.4);
+        assert!(derivative.upper() >= 1.0);
     }
 }

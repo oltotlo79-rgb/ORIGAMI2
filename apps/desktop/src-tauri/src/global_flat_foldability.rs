@@ -2252,6 +2252,39 @@ mod tests {
         assert_eq!(project.editor.revision(), revision);
     }
 
+    #[test]
+    fn certified_target_install_remints_generation_and_rejects_old_aba_capability() {
+        let project = initial_project_state();
+        let state = GlobalFlatFoldabilityState::default();
+        install_possible_layer_order(&state, &project);
+        let old = capture_current_layer_order_capability(&state, &project)
+            .unwrap()
+            .expect("old capability");
+        let old_generation = old.generation();
+        let snapshot = old.snapshot().clone();
+        let guard = lock_revalidated_current_layer_order_for_commit(&state, &project, &old)
+            .unwrap()
+            .expect("commit guard");
+        guard
+            .install_certified_target_after_project_mutation(&project, snapshot)
+            .expect("remint target certificate");
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &old)
+                .unwrap()
+                .is_none(),
+            "old Arc identity must not survive a remint"
+        );
+        let current = capture_current_layer_order_capability(&state, &project)
+            .unwrap()
+            .expect("reminted capability");
+        assert_eq!(current.generation(), old_generation + 1);
+        assert!(
+            revalidate_current_layer_order_capability(&state, &project, &current)
+                .unwrap()
+                .is_some()
+        );
+    }
+
     fn deep_clone_layer_order_certificate(
         certificate: &CurrentLayerOrderCertificate,
     ) -> CurrentLayerOrderCertificate {

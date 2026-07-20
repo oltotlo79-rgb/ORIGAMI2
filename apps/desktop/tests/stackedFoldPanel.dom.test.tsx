@@ -135,6 +135,48 @@ afterEach(() => {
 })
 
 describe('StackedFoldPanel', () => {
+  it('keeps a closure-certified graph transaction ready and exposes bounded closure work', async () => {
+    transport.cancel.mockResolvedValue(undefined)
+    transport.preview.mockResolvedValue({
+      ...ready,
+      continuousPath: {
+        ...ready.continuousPath,
+        modelId: 'stacked_fold_bounded_path_diagnostic_v1',
+        continuousCertificateModelId: 'stacked_fold_cycle_interval_zero_thickness_continuous_certificate_v1',
+        paperThicknessMm: 0,
+        closureRequired: true,
+        closureLeafCount: 12,
+        closurePairWork: 7,
+        requestedAngleDegrees: 180,
+        safeStopAngleDegrees: 180,
+      },
+      transactionProposal: {
+        ...ready.transactionProposal,
+        requestedAngleDegrees: 180,
+      },
+    })
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    await screen.findByText('Closure leaves')
+    expect(screen.getByText('12')).toBeTruthy()
+    expect(screen.getByText('Closure pair work')).toBeTruthy()
+    expect(screen.getByText('7')).toBeTruthy()
+    const apply = screen.getByRole('button', { name: 'Apply stacked fold' })
+    expect((apply as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('checkbox'))
+    expect((apply as HTMLButtonElement).disabled).toBe(false)
+  })
+
   it('uses the selected canvas line and applies only after explicit confirmation', async () => {
     transport.cancel.mockResolvedValue(undefined)
     transport.preview.mockResolvedValue(ready)

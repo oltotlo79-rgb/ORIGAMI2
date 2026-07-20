@@ -88,7 +88,14 @@ pub fn score_beginner_candidates_v1(
 }
 
 fn adjust_score(score: u8, delta: i16) -> u8 {
-    (score as i16 + delta).clamp(0, 100) as u8
+    let adjusted = score as i16 + delta;
+    if adjusted < 0 {
+        0
+    } else if adjusted > 100 {
+        100
+    } else {
+        adjusted as u8
+    }
 }
 
 const fn candidate_kind_order(kind: BeginnerCandidateKindV1) -> u8 {

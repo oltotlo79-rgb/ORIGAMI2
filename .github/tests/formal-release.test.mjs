@@ -20,6 +20,23 @@ test('release workflow keeps publication permissions out of build jobs', () => {
   assert.doesNotMatch(workflow, /pull_request:/u)
 })
 
+test('publication binds generated notes tag and immutable remote commit', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const publish = workflow.slice(workflow.indexOf('  publish:'), workflow.indexOf('  promote:'))
+  assert.match(workflow, /commit: \$\{\{ steps\.contract\.outputs\.commit \}\}/u)
+  assert.match(publish, /commits\/\$RELEASE_TAG.*--jq \.sha/u)
+  assert.match(publish, /test "\$remote_commit" = "\$RELEASE_COMMIT"/u)
+  assert.match(publish, /releases\/generate-notes/u)
+  assert.match(publish, /target_commitish="\$RELEASE_COMMIT"/u)
+  assert.match(publish, /\.name "\$notes_json"\)" = "\$RELEASE_TAG"/u)
+  assert.match(publish, /--verify-tag --target "\$RELEASE_COMMIT"/u)
+  assert.match(publish, /--notes-file "\$notes_file"/u)
+  assert.doesNotMatch(publish, /--generate-notes|gh release upload|gh release delete/u)
+  assert.ok(
+    publish.indexOf('! gh release view') < publish.indexOf('gh release create'),
+  )
+})
+
 test('all workflow actions are immutable SHA-pinned with bounded release jobs', () => {
   const workflowNames = ['ci.yml', 'release.yml', 'release-windows.yml']
   for (const name of workflowNames) {

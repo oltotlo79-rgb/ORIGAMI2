@@ -18,6 +18,7 @@ if (cargoVersion !== version) {
   throw new Error(`Cargo workspace version ${cargoVersion} does not match application ${version}`)
 }
 let tag = ''
+const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
 if (mode === 'dry-run') {
   if (requestedTag !== undefined && requestedTag !== '') {
     throw new Error('dry-run must not select a release tag')
@@ -27,12 +28,11 @@ if (mode === 'dry-run') {
   if (tag !== `v${version}`) throw new Error(`tag ${tag} does not match application v${version}`)
   execFileSync('git', ['verify-tag', tag], { stdio: 'inherit' })
   const tagCommit = execFileSync('git', ['rev-list', '-n', '1', tag], { encoding: 'utf8' }).trim()
-  const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
   if (tagCommit !== head) throw new Error(`signed tag ${tag} does not resolve to HEAD`)
 }
 const output = process.env.GITHUB_OUTPUT
 if (output) {
   const { appendFileSync } = await import('node:fs')
-  appendFileSync(output, `mode=${mode}\ntag=${tag}\nversion=${version}\n`)
+  appendFileSync(output, `mode=${mode}\ntag=${tag}\nversion=${version}\ncommit=${head}\n`)
 }
 console.log(`formal release contract: mode=${mode}, tag=${tag || '(dry-run)'}, version=${version}`)

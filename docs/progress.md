@@ -26,6 +26,7 @@
 
 ## 完了
 
+- IO-008の裏面texture登録経路を追加した。表面と同じnative-only PNG/JPEG picker、project instance・ID・revision再検証、単体16 MiB・合計32 MiB・64件上限、履歴livenessを使い、paper設定から日英UIで裏面画像を登録・選択・保存しUndo/Redoできる。desktop全target check、frontend build・lint、mutation integration 46件が成功した。現行GLBは裏面用の別primitive/materialをまだ持たないため埋込出力へは接続せず、完成率は変更していない
 - SIM-010の循環hinge endpointをclosure検証へ接続した。材料hinge graphのcanonical spanning subsetからcandidate face transformを生成し、closure hingeを捨てず全hingeの軸両端像とMountain/Valley符号付き相対回転を再観測する。source embeddingはface lineageでtargetへliftし、要求endpointは決定的spanning solve後に全constraintをfail-closed検証する。4面4hinge cycleの初期closure成功と90度nonclosing endpoint拒否を固定し、desktop read pipelineも循環targetをgraph経路へ分岐した。closure後も未対応の一般continuous collision authorityへ格上げせず安全に拒否するため、SIM-010状態と完成率は変更していない
 - IO-008のproject texture利用者経路を接続した。native pickerでPNG/JPEGを選び、bytesをWebViewへ渡さず、project instance・ID・revisionへ束縛したcommandでbounded registryへの登録と紙表面への選択を行う。置換前assetを履歴livenessのため有限registryへ保持し、置換・Undo・Redoの各文書を再検証する。frontendは日英の画像読込操作とcustom選択保持を既存paper設定へ接続し、認証済み静的GLB stageがUV付きPBR textureとして出力する。frontend 1450件、build、lint、desktop全target checkが成功した。「入出力・互換性」を89%、全体を46.64%（表示46.6%）へ更新した
 - SIM-010の連続経路証明を最小の閉じた対象へ追加した。bit-exact厚さ0、2面・1hinge、初期角0度、唯一のmoving hinge、全sampleの完全pair coverageが非blockingというnative条件をすべて満たす場合だけ、共有軸回転の0〜180度に限定したcontinuous certificate model IDを発行し、safe-stopを要求角へ進める。それ以外は従来どおり未証明・0度停止へ閉じ、mutation authorityは付与しない。一般tree・複数pair・正厚の解析的CCDは未実装なのでSIM-010状態と完成率は変更していない

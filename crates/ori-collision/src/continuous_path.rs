@@ -1999,7 +1999,7 @@ mod tests {
     }
 
     #[test]
-    fn split_existing_hinge_cycle_certifies_roundoff_bounded_flat_root_only() {
+    fn physical_four_vertex_cycle_has_four_radial_hinges_and_only_the_flat_uniform_root() {
         let points = [
             (0.0, 0.0),
             (400.0, 0.0),
@@ -2063,6 +2063,31 @@ mod tests {
         .expect("cycle geometry");
         let audit =
             MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        assert_eq!(geometry.hinges().len(), 4);
+        assert_eq!(audit.closure_hinges().len(), 1);
+        let directed_axes = geometry
+            .hinges()
+            .iter()
+            .map(|hinge| {
+                (
+                    hinge.axis().x().to_bits(),
+                    hinge.axis().y().to_bits(),
+                    hinge.axis().z().to_bits(),
+                )
+            })
+            .collect::<HashSet<_>>();
+        assert_eq!(directed_axes.len(), 4);
+        let mut flat = crease_edges
+            .iter()
+            .map(|edge| HingeAngle::new(*edge, 180.0).unwrap())
+            .collect::<Vec<_>>();
+        flat.sort_unstable_by_key(|angle| angle.edge().canonical_bytes());
+        let flat = CanonicalHingeAngles::new(flat).unwrap();
+        assert!(
+            geometry
+                .solve_closed(&audit, audit.faces()[0], &flat, 1.0e-9)
+                .is_ok()
+        );
         let moving = vec![crease_edges[1], crease_edges[3]];
         let mut initial = crease_edges
             .iter()

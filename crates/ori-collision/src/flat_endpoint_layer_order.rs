@@ -1,5 +1,6 @@
-//! Observation-only transport of a facewise flat layer order to one exact
-//! native 180-degree material pose.
+//! Observation-only transport of a certified flat layer order to one exact
+//! native material pose. Version 1 admits either the no-hinge single-face
+//! identity pose or a material tree whose every hinge is bit-exact 180 degrees.
 //!
 //! This module deliberately does not authenticate a public
 //! [`LayerOrderSnapshot`]. The desktop's private current-layer-order guard must
@@ -152,13 +153,15 @@ pub enum FlatEndpointLayerOrderAnchorErrorV1 {
     ModelSourceMismatch,
     #[error("the material pose was issued by a different model instance")]
     PoseIssuerMismatch,
-    #[error("the flat-endpoint anchor requires a multi-face tree ({faces} faces, {hinges} hinges)")]
+    #[error(
+        "the flat-endpoint anchor requires either one face without hinges or a multi-face tree ({faces} faces, {hinges} hinges)"
+    )]
     UnsupportedPoseClass { faces: usize, hinges: usize },
     #[error("hinge {edge:?} is not at the bit-exact 180-degree endpoint")]
     NotBitExactFlatEndpoint { edge: EdgeId },
-    #[error("the pose root is not the facewise reference face")]
+    #[error("the pose root is not compatible with the layer-order reference face")]
     ReferenceFaceMismatch,
-    #[error("the supplied layer-order model or derivation is not the admitted facewise model")]
+    #[error("the supplied layer-order model or derivation is not the admitted flat model")]
     LayerOrderModelMismatch,
     #[error("the layer-order material face registry is incomplete or foreign")]
     MaterialFaceRegistryMismatch,
@@ -226,6 +229,7 @@ struct FlatEndpointLayerOrderAnchorProofV1 {
     source_revision: u64,
     source_fingerprint: FoldModelFingerprintV1,
     material_faces: Vec<LayerFace>,
+    exact_cells: Vec<CellGeometry>,
     cells: Vec<FlatEndpointLayerCellV1>,
     work: FlatEndpointLayerOrderWorkV1,
 }
@@ -285,6 +289,22 @@ impl<'snapshot> NativeFlatEndpointLayerOrderAnchorV1<'snapshot> {
         &self.proof.cells
     }
 
+    pub(crate) fn exact_cells(&self) -> &[CellGeometry] {
+        &self.proof.exact_cells
+    }
+
+    pub(crate) fn identity_namespace(&self) -> ProjectId {
+        self.proof.identity_namespace
+    }
+
+    pub(crate) fn source_revision(&self) -> u64 {
+        self.proof.source_revision
+    }
+
+    pub(crate) const fn snapshot(&self) -> &'snapshot LayerOrderSnapshot {
+        self.snapshot
+    }
+
     #[must_use]
     pub fn work(&self) -> FlatEndpointLayerOrderWorkV1 {
         self.proof.work
@@ -308,6 +328,7 @@ struct Analysis {
     source_revision: u64,
     source_fingerprint: FoldModelFingerprintV1,
     material_faces: Vec<LayerFace>,
+    exact_cells: Vec<CellGeometry>,
     cells: Vec<FlatEndpointLayerCellV1>,
     work: FlatEndpointLayerOrderWorkV1,
 }
@@ -325,6 +346,7 @@ pub fn anchor_flat_endpoint_layer_order_v1<'snapshot>(
             source_revision: analysis.source_revision,
             source_fingerprint: analysis.source_fingerprint,
             material_faces: analysis.material_faces,
+            exact_cells: analysis.exact_cells,
             cells: analysis.cells,
             work: analysis.work,
         }),
@@ -345,6 +367,7 @@ pub fn revalidate_flat_endpoint_layer_order_anchor_v1(
         || anchor.proof.source_revision != analysis.source_revision
         || anchor.proof.source_fingerprint != analysis.source_fingerprint
         || anchor.proof.material_faces != analysis.material_faces
+        || anchor.proof.exact_cells != analysis.exact_cells
         || anchor.proof.work != analysis.work
         || !cells_bit_exact_equal(&anchor.proof.cells, &analysis.cells)
     {
@@ -430,9 +453,9 @@ impl WorkTracker {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RationalPoint {
-    x: BigRational,
-    y: BigRational,
+pub(crate) struct RationalPoint {
+    pub(crate) x: BigRational,
+    pub(crate) y: BigRational,
 }
 
 #[derive(Debug, Clone)]
@@ -471,12 +494,13 @@ struct FaceGeometry {
     polygon: Vec<RationalPoint>,
 }
 
-struct CellGeometry {
-    key: OverlapCellKey,
-    polygon: Vec<RationalPoint>,
-    covering_indices: Vec<usize>,
-    bottom_indices: Vec<usize>,
-    exact_area: BigRational,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CellGeometry {
+    pub(crate) key: OverlapCellKey,
+    pub(crate) polygon: Vec<RationalPoint>,
+    pub(crate) covering_indices: Vec<usize>,
+    pub(crate) bottom_indices: Vec<usize>,
+    pub(crate) exact_area: BigRational,
 }
 
 fn analyze(
@@ -515,7 +539,9 @@ fn analyze(
         hinge_count,
         limits.max_hinges,
     )?;
-    if face_count < 2 || hinge_count != face_count.saturating_sub(1) {
+    let single_face = face_count == 1 && hinge_count == 0;
+    let flat_tree = face_count >= 2 && hinge_count == face_count.saturating_sub(1);
+    if !single_face && !flat_tree {
         return Err(FlatEndpointLayerOrderAnchorErrorV1::UnsupportedPoseClass {
             faces: face_count,
             hinges: hinge_count,
@@ -552,7 +578,7 @@ fn analyze(
     }
 
     let topology = reconstruct_topology(input)?;
-    let registry = canonical_material_registry(&topology);
+    let registry = canonical_material_registry(&topology)?;
     if registry.len() != face_count
         || input.layer_order.material_faces != registry
         || input.layer_order.folded_faces.len() != face_count
@@ -565,9 +591,12 @@ fn analyze(
         .layer_order
         .reference_face
         .ok_or(FlatEndpointLayerOrderAnchorErrorV1::ReferenceFaceMismatch)?;
-    if registry.first().copied() != Some(reference)
-        || input.pose.fixed_face() != Some(reference.face_id)
-    {
+    let expected_root = if single_face {
+        None
+    } else {
+        Some(reference.face_id)
+    };
+    if registry.first().copied() != Some(reference) || input.pose.fixed_face() != expected_root {
         return Err(FlatEndpointLayerOrderAnchorErrorV1::ReferenceFaceMismatch);
     }
     validate_derivation(input, &topology, &registry, reference)?;
@@ -613,6 +642,7 @@ fn analyze(
         source_revision: input.source_revision,
         source_fingerprint: fingerprint,
         material_faces: registry,
+        exact_cells: cell_geometry,
         cells,
         work: tracker.work,
     })
@@ -631,17 +661,19 @@ fn reconstruct_topology(
     .ok_or(FlatEndpointLayerOrderAnchorErrorV1::SourceGeometryUnavailable)
 }
 
-fn canonical_material_registry(topology: &TopologySnapshot) -> Vec<LayerFace> {
-    let mut result = topology
-        .faces
-        .iter()
-        .map(|face| LayerFace {
-            face_id: face.id,
-            face_key: face.key,
-        })
-        .collect::<Vec<_>>();
-    result.sort_unstable_by_key(|face| (face.face_key, face.face_id.canonical_bytes()));
+fn canonical_material_registry(
+    topology: &TopologySnapshot,
+) -> Result<Vec<LayerFace>, FlatEndpointLayerOrderAnchorErrorV1> {
+    let mut result = Vec::new();
     result
+        .try_reserve_exact(topology.faces.len())
+        .map_err(|_| FlatEndpointLayerOrderAnchorErrorV1::AllocationFailed)?;
+    result.extend(topology.faces.iter().map(|face| LayerFace {
+        face_id: face.id,
+        face_key: face.key,
+    }));
+    result.sort_unstable_by_key(|face| (face.face_key, face.face_id.canonical_bytes()));
+    Ok(result)
 }
 
 fn source_vertex_positions(
@@ -778,6 +810,13 @@ fn validate_derivation(
     reference: LayerFace,
 ) -> Result<(), FlatEndpointLayerOrderAnchorErrorV1> {
     match input.layer_order.provenance.derivation {
+        LayerOrderDerivation::SingleFace { face }
+            if registry.len() == 1 && topology.hinge_adjacency.is_empty() =>
+        {
+            if face != reference || registry.first().copied() != Some(face) {
+                return Err(FlatEndpointLayerOrderAnchorErrorV1::LayerOrderModelMismatch);
+            }
+        }
         LayerOrderDerivation::SingleHinge {
             hinge_edge,
             assignment,
@@ -1068,15 +1107,21 @@ fn validate_cells(
             bottom_indices,
             exact_area,
         });
+        let mut covering_faces = Vec::new();
+        covering_faces
+            .try_reserve_exact(cell.covering_faces.len())
+            .map_err(|_| FlatEndpointLayerOrderAnchorErrorV1::AllocationFailed)?;
+        covering_faces.extend(cell.covering_faces.iter().map(|face| face.face_id));
+        let mut bottom_to_top_faces = Vec::new();
+        bottom_to_top_faces
+            .try_reserve_exact(cell.bottom_to_top_faces.len())
+            .map_err(|_| FlatEndpointLayerOrderAnchorErrorV1::AllocationFailed)?;
+        bottom_to_top_faces.extend_from_slice(&cell.bottom_to_top_faces);
         output.push(FlatEndpointLayerCellV1 {
             cell_key: FlatEndpointCellKeyV1(cell.cell_key.0),
             world_boundary,
-            covering_faces: cell
-                .covering_faces
-                .iter()
-                .map(|face| face.face_id)
-                .collect(),
-            bottom_to_top_faces: cell.bottom_to_top_faces.clone(),
+            covering_faces,
+            bottom_to_top_faces,
         });
     }
     if covered_faces != (0..registry.len()).collect() {

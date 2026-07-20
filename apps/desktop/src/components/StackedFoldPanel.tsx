@@ -11,6 +11,7 @@ import {
   type StackedFoldReadCoordinator,
 } from '../lib/stackedFoldReadCoordinator'
 import type {
+  CycleScheduleRequestV1,
   StackedFoldFixedSide,
   StackedFoldReadResponse,
   StackedFoldRotationDirection,
@@ -54,6 +55,7 @@ export function StackedFoldPanel({
   const [rotationDirection, setRotationDirection] =
     useState<StackedFoldRotationDirection>('positive')
   const [angle, setAngle] = useState('180')
+  const [cycleScheduleText, setCycleScheduleText] = useState('')
   const [confirmed, setConfirmed] = useState(false)
   const [applying, setApplying] = useState(false)
   const [view, setView] = useState<View>({ kind: 'idle' })
@@ -97,6 +99,7 @@ export function StackedFoldPanel({
     fixedSide,
     rotationDirection,
     angle,
+    cycleScheduleText,
   ])
 
   useEffect(() => () => {
@@ -108,6 +111,15 @@ export function StackedFoldPanel({
     event.preventDefault()
     if (!selectedLine || disabled || applying) return
     const requestedAngleDegrees = Number(angle)
+    let cycleScheduleV1: CycleScheduleRequestV1 | undefined
+    if (cycleScheduleText.trim()) {
+      try {
+        cycleScheduleV1 = JSON.parse(cycleScheduleText) as CycleScheduleRequestV1
+      } catch {
+        setView({ kind: 'failed', reason: 'invalid' })
+        return
+      }
+    }
     setConfirmed(false)
     setView({ kind: 'reading' })
     const result = await coordinator.read({
@@ -119,6 +131,7 @@ export function StackedFoldPanel({
       fixedSide,
       rotationDirection,
       requestedAngleDegrees,
+      ...(cycleScheduleV1 ? { cycleScheduleV1 } : {}),
     })
     if (result.status === 'ready') {
       tokenRef.current = result.response.transactionProposal.transactionToken
@@ -202,6 +215,20 @@ export function StackedFoldPanel({
             <option value="left">{t('線の左側', 'Left of line')}</option>
             <option value="right">{t('線の右側', 'Right of line')}</option>
           </select>
+        </label>
+        <label>
+          <span>{t('閉路スケジュール（JSON、閉路パターンのみ）', 'Cycle schedule (JSON, cyclic patterns only)')}</span>
+          <textarea
+            value={cycleScheduleText}
+            onChange={(event) => setCycleScheduleText(event.target.value)}
+            rows={4}
+            spellCheck={false}
+            placeholder={t(
+              'version 1 の半角有理スケジュール。未入力の閉路は安全のため適用できません。',
+              'Version 1 half-angle rational schedule. Cycles without one cannot be applied.',
+            )}
+            disabled={disabled || applying}
+          />
         </label>
         <label>
           <span>{t('回転方向', 'Rotation direction')}</span>

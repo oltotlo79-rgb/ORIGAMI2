@@ -138,6 +138,38 @@ afterEach(() => {
 })
 
 describe('StackedFoldPanel', () => {
+  it('passes an explicitly authored versioned cycle schedule to native proof', async () => {
+    transport.cancel.mockResolvedValue(undefined)
+    transport.preview.mockResolvedValue(ready)
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    const schedule = {
+      version: 1,
+      entries: [{
+        edge: token,
+        uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }],
+        numeratorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+        denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+      }],
+    }
+    fireEvent.change(screen.getByLabelText('Cycle schedule (JSON, cyclic patterns only)'), {
+      target: { value: JSON.stringify(schedule) },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    await screen.findByText('Target faces')
+    expect(transport.preview).toHaveBeenCalledWith(expect.objectContaining({
+      cycleScheduleV1: schedule,
+    }))
+  })
+
   it('keeps a closure-certified graph transaction ready and exposes bounded closure work', async () => {
     transport.cancel.mockResolvedValue(undefined)
     transport.preview.mockResolvedValue({

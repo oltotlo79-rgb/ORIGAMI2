@@ -131,7 +131,11 @@ pub fn apply_ready_cycle_fold_transaction_v1(
 
 #[cfg(test)]
 mod tests {
-    use ori_domain::{FaceId, ProjectLayerDocumentV1};
+    use ori_domain::{
+        FaceId, InstructionPose, InstructionPoseModel, InstructionStep, InstructionStepId,
+        InstructionVisual, MIN_INSTRUCTION_DURATION_MS, Point2, ProjectLayerDocumentV1, Vertex,
+        VertexId,
+    };
 
     use super::*;
     use crate::{AppliedPoseLimitsV1, create_rectangular_sheet, prepare_applied_pose_v1};
@@ -146,15 +150,38 @@ mod tests {
         let face = FaceId::new();
         let pose = prepare_applied_pose_v1(&[face], &[], None, &[], AppliedPoseLimitsV1::default())
             .unwrap();
+        let mut pattern = editor.pattern().clone();
+        pattern.vertices.push(Vertex {
+            id: VertexId::new(),
+            position: Point2::new(50.0, 50.0),
+        });
+        let mut instruction_timeline = editor.instruction_timeline().clone();
+        instruction_timeline.steps.push(InstructionStep {
+            id: InstructionStepId::new(),
+            title: "Cycle fold".to_owned(),
+            description: String::new(),
+            caution: String::new(),
+            duration_ms: MIN_INSTRUCTION_DURATION_MS,
+            visual: InstructionVisual::default(),
+            pose: InstructionPose {
+                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                source_model_fingerprint: crate::fold_model_fingerprint_v1(
+                    &pattern,
+                    editor.paper(),
+                ),
+                fixed_face: None,
+                hinge_angles: Vec::new(),
+            },
+        });
         ReadyCycleFoldTransactionV1 {
             project,
             revision: editor.revision(),
             fold_model_fingerprint: editor.fold_model_fingerprint_v1(),
             previous_pose: editor.current_applied_pose().cloned(),
             payload: Some(CycleFoldPayloadV1 {
-                pattern: editor.pattern().clone(),
+                pattern,
                 paper: editor.paper().clone(),
-                instruction_timeline: editor.instruction_timeline().clone(),
+                instruction_timeline,
                 project_layers: ProjectLayerDocumentV1::default(),
                 applied_pose: pose,
             }),

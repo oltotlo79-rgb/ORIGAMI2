@@ -1,15 +1,99 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
-    BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1, BeginnerProtrusionSymmetryV1,
-    BeginnerSkeletonSegmentV1, BeginnerTargetAssetReferenceV1, BeginnerTargetCategoryV1,
-    BeginnerTargetPartKindV1, BeginnerTargetPartRecordV1, CreasePattern, Edge, EdgeId, EdgeKind,
-    Point2, ProjectId, Vertex, VertexId,
+    BeginnerDetailLevelV1, BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1,
+    BeginnerProtrusionSymmetryV1, BeginnerSkeletonSegmentV1, BeginnerTargetAssetReferenceV1,
+    BeginnerTargetCategoryV1, BeginnerTargetPartKindV1, BeginnerTargetPartRecordV1, CreasePattern,
+    Edge, EdgeId, EdgeKind, Point2, ProjectId, Vertex, VertexId,
 };
 
 pub const BEGINNER_GENERATOR_SCHEMA_VERSION_V1: u32 = 1;
 pub const MAX_BEGINNER_GENERATED_CANDIDATES_V1: usize = 3;
 pub const MAX_BEGINNER_GENERATOR_INPUT_VERTICES_V1: usize = 10_000;
+pub const BEGINNER_PARAMETER_GRID_SIZE_V1: usize = 27;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerParameterGridPointV1 {
+    pub id: u8,
+    pub scale_percent: u8,
+    pub spacing_percent: u8,
+    pub detail_level: BeginnerDetailLevelV1,
+}
+
+#[cfg(test)]
+mod parameter_grid_tests {
+    use super::*;
+
+    #[test]
+    fn grid_is_canonical_bounded_and_hash_sensitive() {
+        let grid = beginner_parameter_grid_v1();
+        assert_eq!(grid.len(), BEGINNER_PARAMETER_GRID_SIZE_V1);
+        for (id, point) in grid.iter().enumerate() {
+            assert_eq!(point.id, id as u8);
+            assert!((10..=45).contains(&point.scale_percent));
+            assert!((20..=80).contains(&point.spacing_percent));
+        }
+        let hash = beginner_parameter_grid_hash_v1(&grid);
+        assert_eq!(
+            hash,
+            beginner_parameter_grid_hash_v1(&beginner_parameter_grid_v1())
+        );
+        let mut changed = grid;
+        changed[0].scale_percent += 1;
+        assert_ne!(hash, beginner_parameter_grid_hash_v1(&changed));
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct BeginnerParameterGridHashV1(pub [u8; 32]);
+
+#[must_use]
+pub fn beginner_parameter_grid_v1()
+-> [BeginnerParameterGridPointV1; BEGINNER_PARAMETER_GRID_SIZE_V1] {
+    let scales = [10, 27, 45];
+    let spacings = [20, 50, 80];
+    let details = [
+        BeginnerDetailLevelV1::Simple,
+        BeginnerDetailLevelV1::Standard,
+        BeginnerDetailLevelV1::Detailed,
+    ];
+    std::array::from_fn(|id| {
+        let detail_index = id / 9;
+        let scale_index = (id % 9) / 3;
+        let spacing_index = id % 3;
+        BeginnerParameterGridPointV1 {
+            id: id as u8,
+            scale_percent: scales[scale_index],
+            spacing_percent: spacings[spacing_index],
+            detail_level: details[detail_index],
+        }
+    })
+}
+
+#[must_use]
+pub fn beginner_parameter_grid_hash_v1(
+    grid: &[BeginnerParameterGridPointV1],
+) -> BeginnerParameterGridHashV1 {
+    let mut hash = Sha256::new();
+    hash.update(b"ORIGAMI2_BEGINNER_PARAMETER_GRID_V1");
+    hash.update((grid.len() as u64).to_be_bytes());
+    for point in grid {
+        hash.update([
+            point.id,
+            point.scale_percent,
+            point.spacing_percent,
+            match point.detail_level {
+                BeginnerDetailLevelV1::Simple => 0,
+                BeginnerDetailLevelV1::Standard => 1,
+                BeginnerDetailLevelV1::Detailed => 2,
+            },
+        ]);
+    }
+    BeginnerParameterGridHashV1(hash.finalize().into())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

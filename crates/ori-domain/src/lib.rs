@@ -9,9 +9,10 @@ mod element_metadata;
 mod layers;
 
 pub use annotations::{
-    ANNOTATION_SCHEMA_VERSION_V1, AnnotationDocumentV1, AnnotationId, AnnotationRecordV1,
-    AnnotationStyleV1, MAX_ANNOTATION_FONT_SIZE_MM_V1, MAX_ANNOTATION_TEXT_BYTES_V1,
-    MAX_ANNOTATIONS_V1, MIN_ANNOTATION_FONT_SIZE_MM_V1, validate_annotation_document_v1,
+    ANNOTATION_SCHEMA_VERSION_V1, AnnotationAnchorV1, AnnotationDocumentV1, AnnotationId,
+    AnnotationRecordV1, AnnotationStyleV1, MAX_ANNOTATION_FONT_SIZE_MM_V1,
+    MAX_ANNOTATION_TEXT_BYTES_V1, MAX_ANNOTATIONS_V1, MIN_ANNOTATION_FONT_SIZE_MM_V1,
+    validate_annotation_document_v1,
 };
 pub use constraints::{
     ConstraintId, DEFAULT_MAX_CONSTRAINT_EDGES, DEFAULT_MAX_CONSTRAINT_RECORDS,

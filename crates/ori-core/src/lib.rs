@@ -1,5 +1,6 @@
 use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
 
+mod annotation_editor;
 mod applied_pose;
 mod constraint_solver;
 mod constraints;
@@ -10,6 +11,7 @@ mod stacked_fold;
 mod topology;
 mod validation;
 
+pub use annotation_editor::{AnnotationEditErrorV1, AnnotationEditorV1};
 pub use applied_pose::{
     APPLIED_POSE_MODEL_ID_V1, AppliedHingeAngleV1, AppliedPoseErrorV1, AppliedPoseLimitsV1,
     AppliedPoseResourceV1, AppliedPoseV1, prepare_applied_pose_v1,

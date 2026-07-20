@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{LayerId, Point2, RgbaColor};
+use crate::{LayerId, Point2, RgbaColor, VertexId};
 
 pub const ANNOTATION_SCHEMA_VERSION_V1: u32 = 1;
 pub const MAX_ANNOTATIONS_V1: usize = 10_000;
@@ -47,9 +47,16 @@ pub struct AnnotationStyleV1 {
 pub struct AnnotationRecordV1 {
     pub id: AnnotationId,
     pub text: String,
-    pub anchor: Point2,
+    pub anchor: AnnotationAnchorV1,
     pub style: AnnotationStyleV1,
     pub layer: LayerId,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AnnotationAnchorV1 {
+    Absolute { position: Point2 },
+    Vertex { vertex: VertexId, offset: Point2 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,8 +102,12 @@ pub fn validate_annotation_document_v1(
         {
             return Err("invalid annotation text");
         }
-        if !annotation.anchor.x.is_finite()
-            || !annotation.anchor.y.is_finite()
+        let anchor_point = match annotation.anchor {
+            AnnotationAnchorV1::Absolute { position } => position,
+            AnnotationAnchorV1::Vertex { offset, .. } => offset,
+        };
+        if !anchor_point.x.is_finite()
+            || !anchor_point.y.is_finite()
             || !annotation.style.font_size_mm.is_finite()
             || !(MIN_ANNOTATION_FONT_SIZE_MM_V1..=MAX_ANNOTATION_FONT_SIZE_MM_V1)
                 .contains(&annotation.style.font_size_mm)
@@ -118,7 +129,9 @@ mod tests {
             annotations: vec![AnnotationRecordV1 {
                 id: AnnotationId::new(),
                 text: "Fold here".to_owned(),
-                anchor: Point2::new(1.0, 2.0),
+                anchor: AnnotationAnchorV1::Absolute {
+                    position: Point2::new(1.0, 2.0),
+                },
                 style: AnnotationStyleV1 {
                     color: RgbaColor {
                         red: 0,
@@ -145,7 +158,9 @@ mod tests {
             annotations: vec![AnnotationRecordV1 {
                 id: AnnotationId::new(),
                 text: "bad\ntext".to_owned(),
-                anchor: Point2::new(0.0, 0.0),
+                anchor: AnnotationAnchorV1::Absolute {
+                    position: Point2::new(0.0, 0.0),
+                },
                 style: AnnotationStyleV1 {
                     color: RgbaColor {
                         red: 0,
@@ -162,7 +177,9 @@ mod tests {
         };
         assert!(validate_annotation_document_v1(&document).is_err());
         document.annotations[0].text = "ok".to_owned();
-        document.annotations[0].anchor.x = f64::NAN;
+        document.annotations[0].anchor = AnnotationAnchorV1::Absolute {
+            position: Point2::new(f64::NAN, 0.0),
+        };
         assert!(validate_annotation_document_v1(&document).is_err());
     }
 }

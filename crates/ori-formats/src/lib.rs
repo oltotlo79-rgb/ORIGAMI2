@@ -544,6 +544,15 @@ fn validate_project_annotations(document: &ProjectDocument) -> Result<(), Format
         if layer.content_kind != ori_domain::LayerContentKindV1::Annotation {
             return Err(FormatError::InvalidAnnotations);
         }
+        if let ori_domain::AnnotationAnchorV1::Vertex { vertex, .. } = annotation.anchor
+            && !document
+                .crease_pattern
+                .vertices
+                .iter()
+                .any(|candidate| candidate.id == vertex)
+        {
+            return Err(FormatError::InvalidAnnotations);
+        }
     }
     Ok(())
 }

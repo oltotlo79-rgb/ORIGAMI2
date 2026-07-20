@@ -16,6 +16,7 @@ pub const MAX_BEGINNER_RECOGNITION_COMPONENTS_V1: usize = 64;
 #[serde(rename_all = "snake_case")]
 pub enum BeginnerRecognitionFormatV1 {
     MarkerPngV1,
+    SilhouettePngV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +53,165 @@ pub enum BeginnerRecognitionErrorV1 {
     ComponentLimit,
     PartLimit,
     SkeletonLimit,
+    AmbiguousSilhouette,
+    UnsupportedSilhouette,
+}
+
+pub fn analyze_silhouette_png_rgba_v1(
+    source_underlay_id: UnderlayId,
+    source_asset_id: AssetId,
+    source_sha256: [u8; 32],
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> Result<BeginnerRecognitionProposalV1, BeginnerRecognitionErrorV1> {
+    validate_dimensions_and_rgba(width, height, rgba)?;
+    let pixels = width as usize * height as usize;
+    let mut foreground = vec![false; pixels];
+    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+        match [pixel[0], pixel[1], pixel[2], pixel[3]] {
+            [0, 0, 0, 255] => foreground[index] = true,
+            [_, _, _, 0] => {}
+            _ => return Err(BeginnerRecognitionErrorV1::UnsupportedSilhouette),
+        }
+    }
+    let foreground_count = foreground.iter().filter(|value| **value).count();
+    if foreground_count < 4 || foreground_count == pixels {
+        return Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette);
+    }
+    let mut visited = vec![false; pixels];
+    let mut component = Vec::new();
+    for start in 0..pixels {
+        if !foreground[start] || visited[start] {
+            continue;
+        }
+        if !component.is_empty() {
+            return Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette);
+        }
+        let mut queue = VecDeque::from([start]);
+        visited[start] = true;
+        while let Some(index) = queue.pop_front() {
+            component.push(index);
+            let x = index % width as usize;
+            let y = index / width as usize;
+            for neighbor in [
+                (x > 0).then(|| index - 1),
+                (x + 1 < width as usize).then(|| index + 1),
+                (y > 0).then(|| index - width as usize),
+                (y + 1 < height as usize).then(|| index + width as usize),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if foreground[neighbor] && !visited[neighbor] {
+                    visited[neighbor] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+    }
+    let min_x = component
+        .iter()
+        .map(|index| index % width as usize)
+        .min()
+        .unwrap() as u32;
+    let max_x = component
+        .iter()
+        .map(|index| index % width as usize)
+        .max()
+        .unwrap() as u32;
+    let min_y = component
+        .iter()
+        .map(|index| index / width as usize)
+        .min()
+        .unwrap() as u32;
+    let max_y = component
+        .iter()
+        .map(|index| index / width as usize)
+        .max()
+        .unwrap() as u32;
+    if min_x == max_x || min_y == max_y {
+        return Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette);
+    }
+    let center_x = ((min_x + max_x) / 2) as i32 * 10;
+    let center_y = ((min_y + max_y) / 2) as i32 * 10;
+    let horizontal = max_x - min_x >= max_y - min_y;
+    let skeleton_segments = vec![BeginnerSkeletonSegmentV1 {
+        id: 0,
+        start: BeginnerSkeletonPointV1 {
+            x_tenths_mm: if horizontal {
+                min_x as i32 * 10
+            } else {
+                center_x
+            },
+            y_tenths_mm: if horizontal {
+                center_y
+            } else {
+                min_y as i32 * 10
+            },
+        },
+        end: BeginnerSkeletonPointV1 {
+            x_tenths_mm: if horizontal {
+                max_x as i32 * 10
+            } else {
+                center_x
+            },
+            y_tenths_mm: if horizontal {
+                center_y
+            } else {
+                max_y as i32 * 10
+            },
+        },
+        thickness_tenths_mm: ((if horizontal {
+            max_y - min_y + 1
+        } else {
+            max_x - min_x + 1
+        }) * 10)
+            .min(10_000) as u16,
+    }];
+    Ok(BeginnerRecognitionProposalV1 {
+        schema_version: BEGINNER_RECOGNITION_SCHEMA_VERSION_V1,
+        format: BeginnerRecognitionFormatV1::SilhouettePngV1,
+        source_underlay_id,
+        source_asset_id,
+        source_sha256,
+        width,
+        height,
+        shape_bounds: BeginnerRecognitionBoundsV1 {
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+        },
+        target_parts: Vec::new(),
+        skeleton_segments,
+    })
+}
+
+fn validate_dimensions_and_rgba(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> Result<(), BeginnerRecognitionErrorV1> {
+    if width == 0
+        || height == 0
+        || width > MAX_BEGINNER_RECOGNITION_DIMENSION_V1
+        || height > MAX_BEGINNER_RECOGNITION_DIMENSION_V1
+    {
+        return Err(BeginnerRecognitionErrorV1::InvalidDimensions);
+    }
+    let pixels = width as usize * height as usize;
+    if pixels > MAX_BEGINNER_RECOGNITION_PIXELS_V1 {
+        return Err(BeginnerRecognitionErrorV1::PixelLimit);
+    }
+    if rgba.len()
+        != pixels
+            .checked_mul(4)
+            .ok_or(BeginnerRecognitionErrorV1::PixelLimit)?
+    {
+        return Err(BeginnerRecognitionErrorV1::InvalidRgbaLength);
+    }
+    Ok(())
 }
 
 pub fn analyze_marker_png_rgba_v1(
@@ -341,6 +501,56 @@ mod tests {
                 &too_many_components,
             ),
             Err(BeginnerRecognitionErrorV1::ComponentLimit)
+        );
+    }
+
+    #[test]
+    fn recognizes_one_bounded_silhouette_without_inferring_parts() {
+        let mut rgba = vec![0_u8; 4 * 4 * 4];
+        for y in 1..=2 {
+            for x in 0..=2 {
+                rgba[(y * 4 + x) * 4..(y * 4 + x) * 4 + 4].copy_from_slice(&[0, 0, 0, 255]);
+            }
+        }
+        let proposal =
+            analyze_silhouette_png_rgba_v1(UnderlayId::new(), AssetId::new(), [9; 32], 4, 4, &rgba)
+                .unwrap();
+        assert_eq!(
+            proposal.format,
+            BeginnerRecognitionFormatV1::SilhouettePngV1
+        );
+        assert!(proposal.target_parts.is_empty());
+        assert_eq!(proposal.skeleton_segments.len(), 1);
+        assert_eq!(proposal.shape_bounds.min_y, 1);
+    }
+
+    #[test]
+    fn rejects_ambiguous_and_unsupported_silhouettes() {
+        let mut disconnected = vec![0_u8; 5 * 5 * 4];
+        for index in [0, 1, 5, 6, 18, 19, 23, 24] {
+            disconnected[index * 4..index * 4 + 4].copy_from_slice(&[0, 0, 0, 255]);
+        }
+        assert_eq!(
+            analyze_silhouette_png_rgba_v1(
+                UnderlayId::new(),
+                AssetId::new(),
+                [0; 32],
+                5,
+                5,
+                &disconnected,
+            ),
+            Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette)
+        );
+        assert_eq!(
+            analyze_silhouette_png_rgba_v1(
+                UnderlayId::new(),
+                AssetId::new(),
+                [0; 32],
+                2,
+                2,
+                &[255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            ),
+            Err(BeginnerRecognitionErrorV1::UnsupportedSilhouette)
         );
     }
 }

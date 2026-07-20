@@ -370,13 +370,20 @@ pub(crate) fn apply_beginner_part_assignments(
         .filter(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Leg)
         .map(|assignment| assignment.candidate_id)
         .collect::<Vec<_>>();
-    let mut counts = [0_u8; 4];
+    let tail_candidate_ids = request
+        .assignments
+        .iter()
+        .filter(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Tail)
+        .map(|assignment| assignment.candidate_id)
+        .collect::<Vec<_>>();
+    let mut counts = [0_u8; 5];
     for assignment in &request.assignments {
         let index = match assignment.kind {
             ori_domain::BeginnerTargetPartKindV1::Torso => 0,
             ori_domain::BeginnerTargetPartKindV1::Head => 1,
             ori_domain::BeginnerTargetPartKindV1::Leg => 2,
             ori_domain::BeginnerTargetPartKindV1::Wing => 3,
+            ori_domain::BeginnerTargetPartKindV1::Tail => 4,
             _ => return Err("part_assignment_invalid".to_owned()),
         };
         counts[index] += 1;
@@ -386,6 +393,7 @@ pub(crate) fn apply_beginner_part_assignments(
         ori_domain::BeginnerTargetPartKindV1::Head,
         ori_domain::BeginnerTargetPartKindV1::Leg,
         ori_domain::BeginnerTargetPartKindV1::Wing,
+        ori_domain::BeginnerTargetPartKindV1::Tail,
     ]
     .into_iter()
     .zip(counts)
@@ -404,6 +412,55 @@ pub(crate) fn apply_beginner_part_assignments(
     }
     let mut profile = project.editor.beginner_design_profile().clone();
     profile.generation_constraints.target_parts = target_parts;
+    if tail_candidate_ids.len() == 1
+        && profile.generation_constraints.target_category
+            == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
+    {
+        let tail = candidates
+            .iter()
+            .find(|candidate| candidate.id == tail_candidate_ids[0])
+            .ok_or_else(|| "part_assignment_tail_binding_invalid".to_owned())?;
+        let axis_twice = i64::from(request.selected_outline.bounds.min_x)
+            + i64::from(request.selected_outline.bounds.max_x);
+        let center_x_twice = i64::from(tail.bounds.min_x) + i64::from(tail.bounds.max_x);
+        let center_y_twice = i64::from(tail.bounds.min_y) + i64::from(tail.bounds.max_y);
+        let direction = if center_x_twice < axis_twice {
+            -1000
+        } else {
+            1000
+        };
+        profile.generation_constraints.protrusions = vec![ori_domain::BeginnerProtrusionTargetV1 {
+            id: 1,
+            count: 1,
+            length_tenths_mm: u32::try_from(
+                (center_x_twice - axis_twice)
+                    .unsigned_abs()
+                    .saturating_mul(5)
+                    .max(1),
+            )
+            .map_err(|_| "part_assignment_tail_binding_invalid")?,
+            thickness_tenths_mm: u16::try_from(
+                (tail.bounds.max_y - tail.bounds.min_y + 1)
+                    .saturating_mul(10)
+                    .min(10_000),
+            )
+            .map_err(|_| "part_assignment_tail_binding_invalid")?,
+            position_tenths_mm: [
+                i32::try_from(axis_twice.saturating_mul(5))
+                    .map_err(|_| "part_assignment_tail_binding_invalid")?,
+                i32::try_from(center_y_twice.saturating_mul(5))
+                    .map_err(|_| "part_assignment_tail_binding_invalid")?,
+                0,
+            ],
+            direction_milli: [direction, 0, 0],
+            symmetry: ori_domain::BeginnerProtrusionSymmetryV1::None,
+            curvature_degrees: 0,
+            joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
+            motion_degrees: [0, 0],
+            side: ori_domain::BeginnerProtrusionSideV1::Either,
+            priority: 50,
+        }];
+    }
     if leg_candidate_ids.len() == 6
         && profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Insect)

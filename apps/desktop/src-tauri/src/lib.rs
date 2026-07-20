@@ -2199,6 +2199,15 @@ fn symmetric_plan_kind(
             .any(|part| part.kind == kind && part.count == 2)
     };
     if profile.generation_constraints.target_category
+        == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1)
+    {
+        ori_domain::BeginnerGeneratedPlanKindV1::CenterAxisTailBase
+    } else if profile.generation_constraints.target_category
         == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
     {
         if profile
@@ -2448,6 +2457,11 @@ fn configure_symmetric_profile(
 ) {
     let insect = profile.generation_constraints.target_category
         == Some(ori_domain::BeginnerTargetCategoryV1::Insect);
+    let single_tail = profile
+        .generation_constraints
+        .target_parts
+        .iter()
+        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1);
     let skeleton = |id, start_x, start_y, end_x, end_y| ori_domain::BeginnerSkeletonSegmentV1 {
         id,
         start: ori_domain::BeginnerSkeletonPointV1 {
@@ -2475,8 +2489,16 @@ fn configure_symmetric_profile(
         length_tenths_mm: u32::from(scale_percent) * 10,
         thickness_tenths_mm: u16::from(spacing_percent) * 2,
         position_tenths_mm: [0, 0, 0],
-        direction_milli: if insect { [1000, 0, 0] } else { [0, 1000, 0] },
-        symmetry: ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+        direction_milli: if insect || single_tail {
+            [1000, 0, 0]
+        } else {
+            [0, 1000, 0]
+        },
+        symmetry: if single_tail {
+            ori_domain::BeginnerProtrusionSymmetryV1::None
+        } else {
+            ori_domain::BeginnerProtrusionSymmetryV1::Bilateral
+        },
         curvature_degrees: 0,
         joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
         motion_degrees: [0, 0],
@@ -2544,6 +2566,7 @@ fn apply_beginner_generated_plan(
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricSixLegBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::CenterAxisTailBase
     ) {
         return Err("the selected generated plan is preview-only".to_owned());
     }
@@ -2656,6 +2679,11 @@ fn apply_beginner_generated_plan(
             "Create three individually bound bilateral insect-leg pairs.",
             "All three pair positions and the global proof were revalidated before apply.",
         ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CenterAxisTailBase => (
+            "Center-axis tail base",
+            "Create one bounded tail ray from the body center axis.",
+            "The target remains a limited single-tail family and is revalidated before apply.",
+        ),
         ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold => (
             "Diagonal fold",
             "Fold the rectangular sheet on the generated diagonal.",
@@ -2763,6 +2791,11 @@ fn apply_grid_plan_document(
             "Symmetric complete six-leg grid candidate",
             "Apply the globally proven three-pair parameter-grid insect base.",
             "All three pair positions and the global proof were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CenterAxisTailBase => (
+            "Center-axis tail grid candidate",
+            "Apply the globally proven single-tail parameter-grid candidate.",
+            "The live target, proof, and candidate identity were revalidated before apply.",
         ),
         _ => return Err("grid_candidate_kind_invalid".to_owned()),
     };
@@ -3185,6 +3218,9 @@ fn derive_reference_model_suggestion_v1(
     let requested_six_legs = target_parts
         .iter()
         .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6);
+    let requested_single_tail = target_parts
+        .iter()
+        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1);
     let requested_pair = target_parts.iter().find(|part| {
         part.count == 2
             && matches!(
@@ -3197,7 +3233,9 @@ fn derive_reference_model_suggestion_v1(
                     | ori_domain::BeginnerTargetPartKindV1::Leg
             )
     });
-    let suggested_part_kind = if requested_six_legs && bilateral {
+    let suggested_part_kind = if requested_single_tail {
+        Some(ori_domain::BeginnerTargetPartKindV1::Tail)
+    } else if requested_six_legs && bilateral {
         Some(ori_domain::BeginnerTargetPartKindV1::Leg)
     } else {
         requested_pair.filter(|_| bilateral).map(|part| part.kind)
@@ -3218,7 +3256,9 @@ fn derive_reference_model_suggestion_v1(
         .map_err(|_| "reference_model_feature_range".to_owned())?;
     let base = ori_domain::BeginnerProtrusionTargetV1 {
         id: 1,
-        count: if suggested_part_kind.is_some() {
+        count: if requested_single_tail {
+            1
+        } else if suggested_part_kind.is_some() {
             2
         } else {
             match category {
@@ -3233,7 +3273,11 @@ fn derive_reference_model_suggestion_v1(
             bbox_min_tenths_mm[axis].saturating_add(bbox_max_tenths_mm[axis]) / 2
         }),
         direction_milli,
-        symmetry: ori_domain::BeginnerProtrusionSymmetryV1::Bilateral,
+        symmetry: if requested_single_tail {
+            ori_domain::BeginnerProtrusionSymmetryV1::None
+        } else {
+            ori_domain::BeginnerProtrusionSymmetryV1::Bilateral
+        },
         curvature_degrees: 0,
         joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
         motion_degrees: [0, 0],
@@ -3255,6 +3299,7 @@ fn derive_reference_model_suggestion_v1(
     };
     let pair_bindings = protrusions
         .iter()
+        .filter(|_| !requested_single_tail)
         .enumerate()
         .map(
             |(index, target)| ori_domain::BeginnerBilateralPairBindingV1 {
@@ -10381,6 +10426,27 @@ mod tests {
                 suggestion.protrusions[index].position_tenths_mm[1]
             );
         }
+        let tail = derive_reference_model_suggestion_v1(
+            AssetId::new(),
+            &geometry,
+            Some(ori_domain::BeginnerTargetCategoryV1::Animal),
+            &[ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Tail,
+                count: 1,
+            }],
+        )
+        .expect("bounded center-axis tail suggestion");
+        assert_eq!(
+            tail.suggested_part_kind,
+            Some(ori_domain::BeginnerTargetPartKindV1::Tail)
+        );
+        assert_eq!(tail.protrusions.len(), 1);
+        assert_eq!(tail.protrusions[0].count, 1);
+        assert_eq!(
+            tail.protrusions[0].symmetry,
+            ori_domain::BeginnerProtrusionSymmetryV1::None
+        );
+        assert!(tail.pair_bindings.is_empty());
     }
 
     #[test]

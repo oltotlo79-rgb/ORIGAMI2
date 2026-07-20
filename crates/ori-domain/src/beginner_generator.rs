@@ -107,6 +107,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     SymmetricAntennaBase,
     SymmetricInsectLegPairBase,
     SymmetricSixLegBase,
+    CenterAxisTailBase,
     VerticalBookFold,
     HorizontalBookFold,
     DiagonalFold,
@@ -255,6 +256,7 @@ pub fn estimate_symmetric_parameters_v1(
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Fin) == 2 => 2,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Ear) == 2 => 2,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 2 => 2,
+        BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Tail) == 1 => 1,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Antenna) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Leg) == 2 => 2,
@@ -363,67 +365,85 @@ pub fn generate_beginner_plans_v1(
     };
     let template = match target_category {
         BeginnerTargetCategoryV1::Animal => {
-            let (required_count, vertical, plan_kind, instruction) =
-                if part_count(BeginnerTargetPartKindV1::Leg) == 4 {
-                    (
-                        4,
-                        true,
-                        BeginnerGeneratedPlanKindV1::SymmetricFourLegBase,
-                        "symmetric_four_leg_base",
-                    )
-                } else if part_count(BeginnerTargetPartKindV1::Wing) == 2 {
-                    (
-                        2,
-                        false,
-                        BeginnerGeneratedPlanKindV1::SymmetricBirdBase,
-                        "symmetric_bird_base",
-                    )
-                } else if part_count(BeginnerTargetPartKindV1::Fin) == 2 {
-                    (
-                        2,
-                        false,
-                        BeginnerGeneratedPlanKindV1::SymmetricFishBase,
-                        "symmetric_fish_base",
-                    )
-                } else if part_count(BeginnerTargetPartKindV1::Ear) == 2 {
-                    (
-                        2,
-                        false,
-                        BeginnerGeneratedPlanKindV1::SymmetricEarBase,
-                        "symmetric_ear_base",
-                    )
-                } else if part_count(BeginnerTargetPartKindV1::Horn) == 2 {
-                    (
-                        2,
-                        false,
-                        BeginnerGeneratedPlanKindV1::SymmetricHornBase,
-                        "symmetric_horn_base",
-                    )
-                } else {
-                    return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
-                };
-            if constraints.skeleton_segments.len() < if vertical { 3 } else { 2 }
-                || !has_bilateral_skeleton(constraints)
-                || !has_bilateral_protrusion_count(constraints, required_count)
-            {
-                return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
-            }
-            let endpoints =
-                parameterized_symmetric_endpoints(constraints, required_count, vertical)
+            if part_count(BeginnerTargetPartKindV1::Tail) == 1 {
+                let endpoint = parameterized_center_axis_endpoint(constraints)
                     .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
-            symmetric_template(
-                namespace,
-                source,
-                plan_kind,
-                kind,
-                min_x,
-                max_x,
-                min_y,
-                max_y,
-                &endpoints,
-                instruction,
-                constraints,
-            )
+                symmetric_template(
+                    namespace,
+                    source,
+                    BeginnerGeneratedPlanKindV1::CenterAxisTailBase,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &[endpoint],
+                    "center_axis_tail_base",
+                    constraints,
+                )
+            } else {
+                let (required_count, vertical, plan_kind, instruction) =
+                    if part_count(BeginnerTargetPartKindV1::Leg) == 4 {
+                        (
+                            4,
+                            true,
+                            BeginnerGeneratedPlanKindV1::SymmetricFourLegBase,
+                            "symmetric_four_leg_base",
+                        )
+                    } else if part_count(BeginnerTargetPartKindV1::Wing) == 2 {
+                        (
+                            2,
+                            false,
+                            BeginnerGeneratedPlanKindV1::SymmetricBirdBase,
+                            "symmetric_bird_base",
+                        )
+                    } else if part_count(BeginnerTargetPartKindV1::Fin) == 2 {
+                        (
+                            2,
+                            false,
+                            BeginnerGeneratedPlanKindV1::SymmetricFishBase,
+                            "symmetric_fish_base",
+                        )
+                    } else if part_count(BeginnerTargetPartKindV1::Ear) == 2 {
+                        (
+                            2,
+                            false,
+                            BeginnerGeneratedPlanKindV1::SymmetricEarBase,
+                            "symmetric_ear_base",
+                        )
+                    } else if part_count(BeginnerTargetPartKindV1::Horn) == 2 {
+                        (
+                            2,
+                            false,
+                            BeginnerGeneratedPlanKindV1::SymmetricHornBase,
+                            "symmetric_horn_base",
+                        )
+                    } else {
+                        return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
+                    };
+                if constraints.skeleton_segments.len() < if vertical { 3 } else { 2 }
+                    || !has_bilateral_skeleton(constraints)
+                    || !has_bilateral_protrusion_count(constraints, required_count)
+                {
+                    return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
+                }
+                let endpoints =
+                    parameterized_symmetric_endpoints(constraints, required_count, vertical)
+                        .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+                symmetric_template(
+                    namespace,
+                    source,
+                    plan_kind,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &endpoints,
+                    instruction,
+                    constraints,
+                )
+            }
         }
         BeginnerTargetCategoryV1::Insect => {
             if part_count(BeginnerTargetPartKindV1::Leg) == 6 {
@@ -576,25 +596,71 @@ pub fn generate_beginner_plans_v1(
     Ok(plans)
 }
 
+fn parameterized_center_axis_endpoint(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<(f64, f64)> {
+    let target = constraints.protrusions.iter().find(|target| {
+        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
+    })?;
+    let (minimum_x, maximum_x, minimum_y, maximum_y) =
+        skeleton_bounds(&constraints.skeleton_segments)?;
+    let span_x = maximum_x.checked_sub(minimum_x)?;
+    let span_y = maximum_y.checked_sub(minimum_y)?;
+    if span_x <= 0
+        || span_y <= 0
+        || target.position_tenths_mm[0].checked_mul(2)? != minimum_x.checked_add(maximum_x)?
+    {
+        return None;
+    }
+    let length_ratio = f64::from(target.length_tenths_mm) / f64::from(span_x as u32);
+    if !(0.02..=0.45).contains(&length_ratio) || target.direction_milli[0] == 0 {
+        return None;
+    }
+    let center_y =
+        f64::from(target.position_tenths_mm[1].checked_sub(minimum_y)?) / f64::from(span_y as u32);
+    let reach = length_ratio
+        * (0.75 + f64::from(target.priority) / 400.0)
+        * f64::from(target.direction_milli[0].unsigned_abs())
+        / 1_000.0;
+    let x = if target.direction_milli[0] < 0 {
+        0.5 - reach
+    } else {
+        0.5 + reach
+    };
+    ((0.0..1.0).contains(&x) && (0.0..1.0).contains(&center_y)).then_some((x, center_y))
+}
+
 #[must_use]
 pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationConstraintsV1) -> u8 {
     let target = match constraints.target_category {
         Some(BeginnerTargetCategoryV1::Animal) => {
-            let (count, vertical) = if constraints
+            if constraints
                 .target_parts
                 .iter()
-                .any(|part| part.kind == BeginnerTargetPartKindV1::Leg && part.count == 4)
+                .any(|part| part.kind == BeginnerTargetPartKindV1::Tail && part.count == 1)
             {
-                (4, true)
+                parameterized_center_axis_endpoint(constraints).and_then(|_| {
+                    constraints.protrusions.iter().find(|target| {
+                        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                    })
+                })
             } else {
-                (2, false)
-            };
-            parameterized_symmetric_endpoints(constraints, count, vertical).and_then(|_| {
-                constraints
-                    .protrusions
+                let (count, vertical) = if constraints
+                    .target_parts
                     .iter()
-                    .find(|target| target.count == count)
-            })
+                    .any(|part| part.kind == BeginnerTargetPartKindV1::Leg && part.count == 4)
+                {
+                    (4, true)
+                } else {
+                    (2, false)
+                };
+                parameterized_symmetric_endpoints(constraints, count, vertical).and_then(|_| {
+                    constraints
+                        .protrusions
+                        .iter()
+                        .find(|target| target.count == count)
+                })
+            }
         }
         Some(BeginnerTargetCategoryV1::Insect) => {
             parameterized_symmetric_endpoints(constraints, 2, false).and_then(|_| {
@@ -906,6 +972,26 @@ mod tests {
             assert_eq!(plans[0].crease_pattern.edges.len(), 4);
             assert_eq!(beginner_target_approximation_score_v1(&family), 92);
         }
+        let mut tail = constraints.clone();
+        tail.target_parts[2] = BeginnerTargetPartRecordV1 {
+            kind: BeginnerTargetPartKindV1::Tail,
+            count: 1,
+        };
+        tail.protrusions[0] = bilateral_protrusion(1, 1);
+        tail.protrusions[0].symmetry = BeginnerProtrusionSymmetryV1::None;
+        tail.protrusions[0].direction_milli = [1_000, 0, 0];
+        let tail_plans = generate_beginner_plans_v1(namespace, &source, &ids, &tail).unwrap();
+        assert_eq!(
+            tail_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::CenterAxisTailBase
+        );
+        assert_eq!(tail_plans[0].crease_pattern.vertices.len(), 2);
+        assert_eq!(tail_plans[0].crease_pattern.edges.len(), 1);
+        tail.protrusions[0].symmetry = BeginnerProtrusionSymmetryV1::Bilateral;
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &tail),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         let mut higher_priority = constraints.clone();
         higher_priority.protrusions[0].priority = 100;
         let scaled =

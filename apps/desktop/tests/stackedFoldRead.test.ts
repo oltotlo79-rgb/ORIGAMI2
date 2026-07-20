@@ -39,6 +39,20 @@ describe('stacked-fold read boundary', () => {
       }],
     } as const
     assert.equal(isStackedFoldReadRequest({ ...request, cycleScheduleV1: schedule }), true)
+    const linearCandidateV1 = {
+      version: 1,
+      entries: [{
+        edge: faceId,
+        initialAngleDegrees: 20,
+        requestedAngleDegrees: 40,
+      }],
+    } as const
+    assert.equal(isStackedFoldReadRequest({ ...request, linearCandidateV1 }), true)
+    assert.equal(isStackedFoldReadRequest({
+      ...request,
+      cycleScheduleV1: schedule,
+      linearCandidateV1,
+    }), false)
     assert.equal(isStackedFoldReadRequest({
       ...request,
       cycleScheduleV1: { ...schedule, version: 2 },

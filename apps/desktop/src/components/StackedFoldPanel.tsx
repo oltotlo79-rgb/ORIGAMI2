@@ -12,6 +12,7 @@ import {
 } from '../lib/stackedFoldReadCoordinator'
 import type {
   CycleScheduleRequestV1,
+  LinearCandidateRequestV1,
   StackedFoldFixedSide,
   StackedFoldReadResponse,
   StackedFoldRotationDirection,
@@ -114,13 +115,27 @@ export function StackedFoldPanel({
     if (!selectedLine || disabled || applying) return
     const requestedAngleDegrees = Number(angle)
     let cycleScheduleV1: CycleScheduleRequestV1 | undefined
+    let linearCandidateV1: LinearCandidateRequestV1 | undefined
     if (cycleScheduleText.trim()) {
       if (new TextEncoder().encode(cycleScheduleText).byteLength > MAX_CYCLE_SCHEDULE_JSON_BYTES) {
         setView({ kind: 'failed', reason: 'invalid' })
         return
       }
       try {
-        cycleScheduleV1 = JSON.parse(cycleScheduleText) as CycleScheduleRequestV1
+        const parsed = JSON.parse(cycleScheduleText) as
+          | CycleScheduleRequestV1
+          | LinearCandidateRequestV1
+        if (
+          typeof parsed === 'object' &&
+          parsed !== null &&
+          Array.isArray(parsed.entries) &&
+          parsed.entries.length > 0 &&
+          'initialAngleDegrees' in parsed.entries[0]
+        ) {
+          linearCandidateV1 = parsed as LinearCandidateRequestV1
+        } else {
+          cycleScheduleV1 = parsed as CycleScheduleRequestV1
+        }
       } catch {
         setView({ kind: 'failed', reason: 'invalid' })
         return
@@ -138,6 +153,7 @@ export function StackedFoldPanel({
       rotationDirection,
       requestedAngleDegrees,
       ...(cycleScheduleV1 ? { cycleScheduleV1 } : {}),
+      ...(linearCandidateV1 ? { linearCandidateV1 } : {}),
     })
     if (result.status === 'ready') {
       tokenRef.current = result.response.transactionProposal.transactionToken
@@ -223,7 +239,7 @@ export function StackedFoldPanel({
           </select>
         </label>
         <label>
-          <span>{t('閉路スケジュール（JSON、閉路パターンのみ）', 'Cycle schedule (JSON, cyclic patterns only)')}</span>
+          <span>{t('閉路経路定義（JSON、閉路パターンのみ）', 'Cycle path definition (JSON, cyclic patterns only)')}</span>
           <textarea
             value={cycleScheduleText}
             onChange={(event) => setCycleScheduleText(event.target.value)}

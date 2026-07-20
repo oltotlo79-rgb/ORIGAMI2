@@ -8,9 +8,8 @@ use ori_collision::{
     FlatEndpointLayerOrderInputV1, StackedFoldFixedSideV1, StackedFoldLinearCandidateV1,
     StackedFoldMaterialMapLimitsV1, StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1,
     StackedFoldReadLimitsV1, StackedFoldReadSupportV1, StackedFoldRotationDirectionV1,
-    StaticCollisionLimits, UniformCycleClosureRootsV1, capture_stacked_fold_read_guard_v1,
-    diagnose_collective_cycle_path_v1, diagnose_collective_hinge_path_v1,
-    diagnose_static_collision_geometry, enumerate_uniform_cycle_closure_roots_v1,
+    StaticCollisionLimits, capture_stacked_fold_read_guard_v1, diagnose_collective_hinge_path_v1,
+    diagnose_scheduled_cycle_path_v1, diagnose_static_collision_geometry,
     propose_linear_stacked_fold_read_v1, reverse_map_linear_stacked_fold_material_v1,
 };
 use ori_core::{
@@ -28,8 +27,8 @@ use ori_foldability::{
     GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, GlobalFlatFoldabilityOutcome,
 };
 use ori_kinematics::{
-    CanonicalCycleScheduleV1, CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1,
-    HalfAngleRationalEntryInputV1, Point3, RationalCoefficientV1, TreeKinematicsLimits,
+    CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1, MultiHingePathCandidateLimitsV1, Point3,
+    TreeKinematicsLimits, generate_linear_multi_hinge_path_candidate_v1,
 };
 use ori_topology::{FaceExtractionInput, TopologyIssueSeverity, analyze_faces};
 use serde::{Deserialize, Serialize};
@@ -100,6 +99,23 @@ pub(super) struct StackedFoldReadRequest {
     requested_angle_degrees: f64,
     #[serde(default)]
     cycle_schedule_v1: Option<CycleScheduleRequestV1>,
+    #[serde(default)]
+    linear_candidate_v1: Option<LinearCandidateRequestV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LinearCandidateRequestV1 {
+    version: u32,
+    entries: Vec<LinearCandidateEntryRequestV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LinearCandidateEntryRequestV1 {
+    edge: ori_domain::EdgeId,
+    initial_angle_degrees: f64,
+    requested_angle_degrees: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -413,110 +429,39 @@ pub(super) async fn propose_current_stacked_fold_read(
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
         if audited_target.requires_closure_certificate() {
-            let schedule_request = request
-                .cycle_schedule_v1
-                .as_ref()
-                .filter(|schedule| schedule.version == 1)
-                .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
             let initial = prepare_stacked_fold_initial_graph_pose_v1(
                 audited_target,
                 pose_capability.model(),
                 pose_capability.pose(),
             )
             .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            let moving_edges = initial
-                .target()
-                .geometry()
-                .proof()
-                .expected_creases()
-                .iter()
-                .flat_map(|subdivision| subdivision.target_edges().iter().copied())
-                .collect::<Vec<_>>();
-            let schedule_entries = schedule_request
-                .entries
-                .iter()
-                .map(|entry| HalfAngleRationalEntryInputV1 {
-                    edge: entry.edge,
-                    u_domain: entry.u_domain.map(|value| RationalCoefficientV1 {
-                        numerator: value.numerator,
-                        denominator: value.denominator,
-                    }),
-                    numerator_power_coefficients: entry
-                        .numerator_power_coefficients
-                        .iter()
-                        .map(|value| RationalCoefficientV1 {
-                            numerator: value.numerator,
-                            denominator: value.denominator,
-                        })
-                        .collect(),
-                    denominator_power_coefficients: entry
-                        .denominator_power_coefficients
-                        .iter()
-                        .map(|value| RationalCoefficientV1 {
-                            numerator: value.numerator,
-                            denominator: value.denominator,
-                        })
-                        .collect(),
-                })
-                .collect();
-            let cycle_limits = CycleScheduleLimitsV1::default();
-            let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
-                initial.target().hinge_geometry(),
-                initial.target().audit(),
-                initial.pose().fixed_face(),
-                schedule_entries,
-                cycle_limits,
-            )
-            .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-            let initial_box = schedule
-                .evaluate_endpoint_angle_box(false, cycle_limits)
-                .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-            let requested_box = schedule
-                .evaluate_endpoint_angle_box(true, cycle_limits)
-                .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-            if initial_box.iter().zip(requested_box.iter()).zip(
-                initial
-                    .pose()
-                    .hinge_angles()
-                    .as_slice()
-                    .iter()
-                    .zip(schedule_request.entries.iter()),
-            )
-            .any(|(((initial_edge, initial_interval), (requested_edge, requested_interval)), (initial_angle, requested_entry))| {
-                *initial_edge != initial_angle.edge()
-                    || *requested_edge != requested_entry.edge
-                    || initial_angle.angle_degrees() < initial_interval.lower()
-                    || initial_angle.angle_degrees() > initial_interval.upper()
-                    || requested_entry.requested_angle_degrees < requested_interval.lower()
-                    || requested_entry.requested_angle_degrees > requested_interval.upper()
-            }) {
+            if request.cycle_schedule_v1.is_some() {
                 return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
             }
-            let interval_closure = initial
-                .target()
-                .hinge_geometry()
-                .prove_dyadic_schedule_closure_v1(
-                    initial.target().audit(),
-                    initial.pose().fixed_face(),
-                    &schedule,
-                    ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
-                    DyadicIntervalClosureLimitsV1 {
-                        max_depth: 8,
-                        max_leaves: 256,
-                        max_work: cycle_limits.max_work,
-                        schedule_limits: cycle_limits,
-                    },
-                )
-                .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-            // The legacy collision diagnostic below samples one collective
-            // uniform angle. It is not evidence for this per-hinge schedule.
-            // Until collision receives the exact same schedule parameter,
-            // closure proof alone must never mint an apply token.
-            if !schedule_request.entries.is_empty() {
+            let linear = request
+                .linear_candidate_v1
+                .as_ref()
+                .filter(|value| value.version == 1)
+                .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+            let initial_angles = ori_kinematics::CanonicalHingeAngles::new(
+                linear
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        ori_kinematics::HingeAngle::new(
+                            entry.edge,
+                            entry.initial_angle_degrees,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?,
+            )
+            .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+            if initial_angles != *initial.pose().hinge_angles() {
                 return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
             }
             let requested_angles = ori_kinematics::CanonicalHingeAngles::new(
-                schedule_request
+                linear
                     .entries
                     .iter()
                     .map(|entry| {
@@ -529,47 +474,54 @@ pub(super) async fn propose_current_stacked_fold_read(
                     .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?,
             )
             .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-            let closed_endpoint = ori_core::prepare_stacked_fold_requested_scheduled_graph_pose_v1(
-                initial,
-                &schedule,
-                &interval_closure,
-                requested_angles,
-                candidate.requested_angle_degrees(),
+            let generated = generate_linear_multi_hinge_path_candidate_v1(
+                initial.target().hinge_geometry(),
+                initial.target().audit(),
+                initial.pose().fixed_face(),
+                &initial_angles,
+                &requested_angles,
+                MultiHingePathCandidateLimitsV1::default(),
             )
-            .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned())?;
-            match enumerate_uniform_cycle_closure_roots_v1(
-                closed_endpoint.initial().target().hinge_geometry(),
-                closed_endpoint.initial().target().audit(),
-                closed_endpoint.pose().fixed_face(),
-                closed_endpoint.initial().pose().hinge_angles(),
-                &moving_edges,
-                candidate.requested_angle_degrees(),
-                128,
-            ) {
-                UniformCycleClosureRootsV1::Roots(roots)
-                    if roots.iter().any(|root| {
-                        root.to_bits() == candidate.requested_angle_degrees().to_bits()
-                    }) => {}
-                UniformCycleClosureRootsV1::Roots(_)
-                | UniformCycleClosureRootsV1::ProvenInfeasible { .. } => {
-                    return Err(CYCLE_NONCLOSING_MESSAGE.to_owned());
-                }
-                UniformCycleClosureRootsV1::Indeterminate { .. } => {
-                    return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
-                }
-            }
-            let continuous = diagnose_collective_cycle_path_v1(
-                closed_endpoint.initial().target().hinge_geometry(),
-                closed_endpoint.initial().target().audit(),
-                closed_endpoint.pose().fixed_face(),
-                closed_endpoint.initial().pose().hinge_angles(),
-                &moving_edges,
-                candidate.requested_angle_degrees(),
+            .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+            let cycle_limits = CycleScheduleLimitsV1::default();
+            let interval_closure = initial
+                .target()
+                .hinge_geometry()
+                .prove_dyadic_schedule_closure_v1(
+                    initial.target().audit(),
+                    initial.pose().fixed_face(),
+                    generated.schedule(),
+                    ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                    DyadicIntervalClosureLimitsV1 {
+                        max_depth: 8,
+                        max_leaves: 256,
+                        max_work: cycle_limits.max_work,
+                        schedule_limits: CycleScheduleLimitsV1 {
+                            max_degree: 1,
+                            ..cycle_limits
+                        },
+                    },
+                )
+                .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+            let continuous = diagnose_scheduled_cycle_path_v1(
+                initial.target().hinge_geometry(),
+                initial.target().audit(),
+                initial.pose().fixed_face(),
+                &generated,
+                &interval_closure,
                 StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
             );
             if continuous.continuous_certificate_model_id().is_none() {
                 return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
             }
+            let closed_endpoint = ori_core::prepare_stacked_fold_requested_scheduled_graph_pose_v1(
+                initial,
+                generated.schedule(),
+                &interval_closure,
+                requested_angles,
+                candidate.requested_angle_degrees(),
+            )
+            .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned())?;
             let geometry_proof = closed_endpoint.initial().target().geometry().proof();
             let topology = closed_endpoint
                 .initial()
@@ -578,7 +530,9 @@ pub(super) async fn propose_current_stacked_fold_read(
                 .candidate();
             let lineage = geometry_proof.lineage();
             let (layer_proof, layer_material_face_count, layer_overlap_cell_count) =
-                if candidate.requested_angle_degrees().to_bits() == 180.0_f64.to_bits() {
+                if linear.entries.iter().all(|entry| {
+                    entry.requested_angle_degrees.to_bits() == 180.0_f64.to_bits()
+                }) {
                     let report = analyze_faces(FaceExtractionInput {
                         identity_namespace: binding.project_id(),
                         source_revision: lineage.target_revision(),

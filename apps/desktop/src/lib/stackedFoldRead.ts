@@ -28,6 +28,16 @@ export type StackedFoldReadRequest = Readonly<{
   rotationDirection: StackedFoldRotationDirection
   requestedAngleDegrees: number
   cycleScheduleV1?: CycleScheduleRequestV1
+  linearCandidateV1?: LinearCandidateRequestV1
+}>
+
+export type LinearCandidateRequestV1 = Readonly<{
+  version: 1
+  entries: readonly Readonly<{
+    edge: string
+    initialAngleDegrees: number
+    requestedAngleDegrees: number
+  }>[]
 }>
 
 export type CycleScheduleRequestV1 = Readonly<{
@@ -228,6 +238,29 @@ export function isStackedFoldReadRequest(value: unknown): value is StackedFoldRe
           entry.requestedAngleDegrees >= 0 &&
           entry.requestedAngleDegrees <= 180,
       ))
+  const linear = value.linearCandidateV1
+  const linearValid =
+    linear === undefined ||
+    (isRecord(linear) &&
+      hasExactKeys(linear, ['version', 'entries']) &&
+      linear.version === 1 &&
+      Array.isArray(linear.entries) &&
+      linear.entries.length > 0 &&
+      linear.entries.length <= 64 &&
+      linear.entries.every(
+        (entry) =>
+          isRecord(entry) &&
+          hasExactKeys(entry, ['edge', 'initialAngleDegrees', 'requestedAngleDegrees']) &&
+          isCanonicalNonNilUuid(entry.edge) &&
+          typeof entry.initialAngleDegrees === 'number' &&
+          Number.isFinite(entry.initialAngleDegrees) &&
+          entry.initialAngleDegrees >= 0 &&
+          entry.initialAngleDegrees <= 180 &&
+          typeof entry.requestedAngleDegrees === 'number' &&
+          Number.isFinite(entry.requestedAngleDegrees) &&
+          entry.requestedAngleDegrees >= 0 &&
+          entry.requestedAngleDegrees <= 180,
+      ))
   return (
     isCanonicalNonNilUuid(value.expectedProjectInstanceId) &&
     isCanonicalNonNilUuid(value.expectedProjectId) &&
@@ -241,7 +274,9 @@ export function isStackedFoldReadRequest(value: unknown): value is StackedFoldRe
     Number.isFinite(value.requestedAngleDegrees) &&
     value.requestedAngleDegrees > 0 &&
     value.requestedAngleDegrees <= 180 &&
-    scheduleValid
+    scheduleValid &&
+    linearValid &&
+    !(schedule !== undefined && linear !== undefined)
   )
 }
 

@@ -161,7 +161,7 @@ describe('StackedFoldPanel', () => {
         requestedAngleDegrees: 90,
       }],
     }
-    fireEvent.change(screen.getByLabelText('Cycle schedule (JSON, cyclic patterns only)'), {
+    fireEvent.change(screen.getByLabelText('Cycle path definition (JSON, cyclic patterns only)'), {
       target: { value: JSON.stringify(schedule) },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))

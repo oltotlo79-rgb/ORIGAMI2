@@ -174,6 +174,8 @@ impl MaterialHingeGraphGeometry {
         }
         if collective_flat_stack_cycle_closure_premises_v1(
             self, audit, fixed_face, schedule, tolerance,
+        ) || orthogonal_inverse_pair_cycle_closure_premises_v1(
+            self, audit, fixed_face, schedule, tolerance,
         ) {
             let mut checked_hinges = self
                 .hinges()
@@ -1018,6 +1020,89 @@ fn collective_flat_stack_cycle_closure_premises_v1(
         })
 }
 
+// Narrow non-collinear identity R(a)R(b)R(b)^-1R(a)^-1.  The four hinges
+// share one pivot, the middle and outer axes pair respectively, and their
+// assignments provide the inverse signs.  Exact collective scheduling makes
+// the cancellation valid for every parameter value, while three solved poses
+// revalidate the admitted branch and orientation convention.
+fn orthogonal_inverse_pair_cycle_closure_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &CanonicalCycleScheduleV1,
+    tolerance: f64,
+) -> bool {
+    if geometry.hinges().len() != 4 || audit.closure_hinges().len() != 1 {
+        return false;
+    }
+    let Some(moving) = schedule.collective_profile_edges_v1() else {
+        return false;
+    };
+    if moving.len() != 4
+        || geometry
+            .hinges()
+            .iter()
+            .any(|hinge| !moving.contains(&hinge.edge()))
+    {
+        return false;
+    }
+    let mut ordered = Vec::with_capacity(4);
+    let mut face = fixed_face;
+    let mut used = HashSet::new();
+    for _ in 0..4 {
+        let Some(hinge) = geometry.hinges().iter().find(|hinge| {
+            !used.contains(&hinge.edge())
+                && (hinge.left_face() == face || hinge.right_face() == face)
+        }) else {
+            return false;
+        };
+        used.insert(hinge.edge());
+        face = if hinge.left_face() == face {
+            hinge.right_face()
+        } else {
+            hinge.left_face()
+        };
+        ordered.push(hinge);
+    }
+    if face != fixed_face
+        || ordered[0].assignment() != ordered[1].assignment()
+        || ordered[2].assignment() != ordered[3].assignment()
+        || ordered[0].assignment() == ordered[3].assignment()
+    {
+        return false;
+    }
+    let same_point = |a: crate::Point3, b: crate::Point3| {
+        (a.x() - b.x()).abs() <= tolerance
+            && (a.y() - b.y()).abs() <= tolerance
+            && (a.z() - b.z()).abs() <= tolerance
+    };
+    let parallel = |a: crate::Point3, b: crate::Point3| {
+        let cross = [
+            a.y() * b.z() - a.z() * b.y(),
+            a.z() * b.x() - a.x() * b.z(),
+            a.x() * b.y() - a.y() * b.x(),
+        ];
+        cross.into_iter().all(|value| value.abs() <= tolerance)
+    };
+    let pivot = ordered[0].start();
+    if ordered
+        .iter()
+        .any(|hinge| !same_point(pivot, hinge.start()))
+        || !parallel(ordered[0].axis(), ordered[3].axis())
+        || !parallel(ordered[1].axis(), ordered[2].axis())
+        || parallel(ordered[0].axis(), ordered[1].axis())
+    {
+        return false;
+    }
+    [0.0, 0.5, 1.0].into_iter().all(|u| {
+        schedule.evaluate(u).is_some_and(|angles| {
+            geometry
+                .solve_closed(audit, fixed_face, &angles, tolerance)
+                .is_ok()
+        })
+    })
+}
+
 fn bounded_same_infinite_line(
     origin: crate::Point3,
     axis: crate::Point3,
@@ -1426,10 +1511,16 @@ mod tests {
                         denominator: 1,
                     },
                 ],
-                numerator_power_coefficients: vec![crate::RationalCoefficientV1 {
-                    numerator: 1,
-                    denominator: 1,
-                }],
+                numerator_power_coefficients: vec![
+                    crate::RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    crate::RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
                 denominator_power_coefficients: vec![crate::RationalCoefficientV1 {
                     numerator: 3,
                     denominator: 1,

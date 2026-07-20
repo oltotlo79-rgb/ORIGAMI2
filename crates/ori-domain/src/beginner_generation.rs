@@ -55,6 +55,7 @@ pub enum BeginnerTargetPartKindV1 {
     Ear,
     Wing,
     Fin,
+    Antenna,
     Tail,
 }
 

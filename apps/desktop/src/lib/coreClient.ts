@@ -173,7 +173,7 @@ export type BeginnerGenerationConstraintsV1 = {
   detail_level: 'simple' | 'standard' | 'detailed'
   target_category: 'animal' | 'insect' | null
   target_parts: Array<{
-    kind: 'head' | 'torso' | 'leg' | 'horn' | 'ear' | 'wing' | 'fin' | 'tail'
+    kind: 'head' | 'torso' | 'leg' | 'horn' | 'ear' | 'wing' | 'fin' | 'antenna' | 'tail'
     count: number
   }>
   skeleton_segments: Array<{
@@ -330,7 +330,7 @@ function normalizeBeginnerGenerationConstraints(
     const item = exactCoreDataRecord(part, ['kind', 'count'] as const)
     if (
       !item
-      || !['head', 'torso', 'leg', 'horn', 'ear', 'wing', 'fin', 'tail'].includes(String(item.kind))
+      || !['head', 'torso', 'leg', 'horn', 'ear', 'wing', 'fin', 'antenna', 'tail'].includes(String(item.kind))
       || !Number.isInteger(item.count)
       || Number(item.count) < 1
       || Number(item.count) > 8
@@ -585,6 +585,7 @@ export type BeginnerGeneratedPlanV1 = {
     | 'symmetric_fish_base'
     | 'symmetric_ear_base'
     | 'symmetric_horn_base'
+    | 'symmetric_antenna_base'
     | 'vertical_book_fold'
     | 'horizontal_book_fold'
     | 'diagonal_fold'
@@ -693,7 +694,7 @@ function normalizeBeginnerCandidateResponse(
     if (
       !record
       || record.schema_version !== 1
-      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
+      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
       || !pattern
       || !Array.isArray(pattern.vertices)
       || pattern.vertices.length < 2
@@ -704,7 +705,7 @@ function normalizeBeginnerCandidateResponse(
       || !Array.isArray(record.instruction_codes)
       || record.instruction_codes.length !== 1
       || !record.instruction_codes.every((code) =>
-        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
+        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
     ) return null
     const normalizedPlanInputs = normalizeBeginnerGenerationConstraints({
       schema_version: 1,
@@ -1528,7 +1529,7 @@ export type BeginnerReferenceModelSuggestionV1 = Readonly<{
   surface_area_milli: number
   protrusion: NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
   method: 'bounded_bbox_area_normal_v1'
-  suggested_part_kind: 'wing' | 'fin' | 'ear' | 'horn' | null
+  suggested_part_kind: 'wing' | 'fin' | 'ear' | 'horn' | 'antenna' | null
 }>
 
 export async function suggestBeginnerReferenceModelFeatures(
@@ -1548,7 +1549,7 @@ export async function suggestBeginnerReferenceModelFeatures(
     || response.project_id !== expectedProjectId || response.revision !== expectedRevision
     || !suggestion || !isCanonicalNonNilUuid(suggestion.asset_id)
     || suggestion.method !== 'bounded_bbox_area_normal_v1'
-    || ![null, 'wing', 'fin', 'ear', 'horn'].includes(suggestion.suggested_part_kind as null | string)
+    || ![null, 'wing', 'fin', 'ear', 'horn', 'antenna'].includes(suggestion.suggested_part_kind as null | string)
     || !isBoundedIntegerTuple(suggestion.bbox_min_tenths_mm, 3, 2_147_483_648)
     || !isBoundedIntegerTuple(suggestion.bbox_max_tenths_mm, 3, 2_147_483_647)
     || !isBoundedIntegerTuple(suggestion.dominant_normal_milli, 3, 1000)
@@ -2045,6 +2046,7 @@ export function applyBeginnerGeneratedPlan(
     'symmetric_fish_base',
     'symmetric_ear_base',
     'symmetric_horn_base',
+    'symmetric_antenna_base',
   ].includes(selectedKind) || !isCanonicalNonNilUuid(expectedCandidateEdgeId)) {
     return Promise.reject(new Error('unsupported generated plan'))
   }

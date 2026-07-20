@@ -2170,7 +2170,11 @@ fn symmetric_plan_kind(
     if profile.generation_constraints.target_category
         == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
     {
-        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
+        if has(ori_domain::BeginnerTargetPartKindV1::Antenna) {
+            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
+        } else {
+            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
+        }
     } else if has(ori_domain::BeginnerTargetPartKindV1::Wing) {
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase
     } else if has(ori_domain::BeginnerTargetPartKindV1::Fin) {
@@ -2497,6 +2501,7 @@ fn apply_beginner_generated_plan(
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricHornBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
     ) {
         return Err("the selected generated plan is preview-only".to_owned());
     }
@@ -2594,6 +2599,11 @@ fn apply_beginner_generated_plan(
             "Create the bounded bilateral horn base creases.",
             "Confirm the saved head, torso, and two-horn target still match.",
         ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricAntennaBase => (
+            "Symmetric antenna base",
+            "Create the bounded bilateral insect-antenna base creases.",
+            "Confirm the saved head, torso, and two-antenna target still match.",
+        ),
         ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold => (
             "Diagonal fold",
             "Fold the rectangular sheet on the generated diagonal.",
@@ -2685,6 +2695,11 @@ fn apply_grid_plan_document(
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricHornBase => (
             "Symmetric horn grid candidate",
             "Apply the globally proven parameter-grid horn base.",
+            "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricAntennaBase => (
+            "Symmetric antenna grid candidate",
+            "Apply the globally proven parameter-grid antenna base.",
             "The canonical grid tuple and proof were revalidated immediately before apply.",
         ),
         _ => return Err("grid_candidate_kind_invalid".to_owned()),
@@ -3112,6 +3127,7 @@ fn derive_reference_model_suggestion_v1(
                     | ori_domain::BeginnerTargetPartKindV1::Fin
                     | ori_domain::BeginnerTargetPartKindV1::Ear
                     | ori_domain::BeginnerTargetPartKindV1::Horn
+                    | ori_domain::BeginnerTargetPartKindV1::Antenna
             )
     });
     let suggested_part_kind = requested_pair.filter(|_| bilateral).map(|part| part.kind);

@@ -104,6 +104,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     SymmetricFishBase,
     SymmetricEarBase,
     SymmetricHornBase,
+    SymmetricAntennaBase,
     VerticalBookFold,
     HorizontalBookFold,
     DiagonalFold,
@@ -198,6 +199,7 @@ pub fn estimate_symmetric_parameters_v1(
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Ear) == 2 => 2,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 2 => 2,
         BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
+        BeginnerTargetCategoryV1::Insect if count(BeginnerTargetPartKindV1::Antenna) == 2 => 2,
         _ => return None,
     };
     let scale_percent = match constraints.detail_level {
@@ -365,8 +367,20 @@ pub fn generate_beginner_plans_v1(
             )
         }
         BeginnerTargetCategoryV1::Insect => {
-            if part_count(BeginnerTargetPartKindV1::Wing) != 2
-                || constraints.skeleton_segments.len() < 2
+            let (plan_kind, instruction) = if part_count(BeginnerTargetPartKindV1::Wing) == 2 {
+                (
+                    BeginnerGeneratedPlanKindV1::SymmetricWingBase,
+                    "symmetric_wing_base",
+                )
+            } else if part_count(BeginnerTargetPartKindV1::Antenna) == 2 {
+                (
+                    BeginnerGeneratedPlanKindV1::SymmetricAntennaBase,
+                    "symmetric_antenna_base",
+                )
+            } else {
+                return Err(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate);
+            };
+            if constraints.skeleton_segments.len() < 2
                 || !has_bilateral_skeleton(constraints)
                 || !has_bilateral_protrusion_count(constraints, 2)
             {
@@ -377,14 +391,14 @@ pub fn generate_beginner_plans_v1(
             symmetric_template(
                 namespace,
                 source,
-                BeginnerGeneratedPlanKindV1::SymmetricWingBase,
+                plan_kind,
                 kind,
                 min_x,
                 max_x,
                 min_y,
                 max_y,
                 &endpoints,
-                "symmetric_wing_base",
+                instruction,
                 constraints,
             )
         }
@@ -876,6 +890,13 @@ mod tests {
             BeginnerGeneratedPlanKindV1::SymmetricWingBase
         );
         assert_eq!(plans[0].crease_pattern.edges.len(), 4);
+        let mut antenna = constraints.clone();
+        antenna.target_parts[2].kind = BeginnerTargetPartKindV1::Antenna;
+        let antenna_plans = generate_beginner_plans_v1(namespace, &source, &ids, &antenna).unwrap();
+        assert_eq!(
+            antenna_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::SymmetricAntennaBase
+        );
         constraints.skeleton_segments[1].end.y_tenths_mm = 11;
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &constraints),

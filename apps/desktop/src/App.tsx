@@ -3616,7 +3616,7 @@ function App() {
     const targetUnderlay = current.underlays?.underlays
       .find((underlay) => underlay.id === targetUnderlayId)
     const targetParts = ([
-      'head', 'torso', 'leg', 'horn', 'ear', 'wing', 'fin', 'tail',
+      'head', 'torso', 'leg', 'horn', 'ear', 'wing', 'fin', 'antenna', 'tail',
     ] as const).map((kind) => ({
       kind,
       count: Number(data.get(`target_part_${kind}`)),
@@ -4134,7 +4134,7 @@ function App() {
   }
 
   function confirmAndApplyBeginnerPlan(
-    kind: 'diagonal_fold' | 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base',
+    kind: 'diagonal_fold' | 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' | 'symmetric_antenna_base',
     expectedCandidateEdgeId: string,
   ) {
     const current = latestSnapshotRef.current
@@ -7970,6 +7970,8 @@ function App() {
                                             ? text({ ja: '左右対称の長い耳のベースを作ります。', en: 'Create the bilateral long-ear base.' })
                                             : code === 'symmetric_horn_base'
                                               ? text({ ja: '左右対称の角のベースを作ります。', en: 'Create the bilateral horn base.' })
+                                              : code === 'symmetric_antenna_base'
+                                                ? text({ ja: '左右対称の昆虫の触角ベースを作ります。', en: 'Create the bilateral insect-antenna base.' })
                                           : code === 'book_fold_vertical'
                                     ? text({ ja: '縦の中心線で二つ折りします。', en: 'Fold in half on the vertical center line.' })
                                     : code === 'book_fold_horizontal'
@@ -7988,6 +7990,7 @@ function App() {
                                   ear: { ja: '耳', en: 'ear' },
                                   wing: { ja: '翼', en: 'wing' },
                                   fin: { ja: 'ひれ', en: 'fin' },
+                                  antenna: { ja: '触角', en: 'antenna' },
                                   tail: { ja: '尾', en: 'tail' },
                                 }[part.kind]
                                 return `${text(label)} × ${part.count}`
@@ -10261,11 +10264,12 @@ function isBeginnerSymmetricTemplate(
     | 'symmetric_fish_base'
     | 'symmetric_ear_base'
     | 'symmetric_horn_base'
+    | 'symmetric_antenna_base'
     | 'vertical_book_fold'
     | 'horizontal_book_fold'
     | 'diagonal_fold',
-): kind is 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' {
-  return ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base'].includes(kind)
+): kind is 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' | 'symmetric_antenna_base' {
+  return ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base'].includes(kind)
 }
 
 function sameRecoveryCandidate(

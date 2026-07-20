@@ -2429,6 +2429,64 @@ function App() {
       moveVertex(projectId, revision, projectInstanceId, selectedVertex.id, x, y))
   }
 
+  async function submitDirectVertex(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const current = latestSnapshotRef.current
+    if (!current || benchmarkRun || nativeLayerView.defaultLayerLocked) return
+    const currentUnit = resolveLengthDisplayUnit(current)
+    const x = readLengthInputMillimetres(
+      event.currentTarget,
+      'direct_x_display',
+      0,
+      currentUnit,
+    )
+    const y = readLengthInputMillimetres(
+      event.currentTarget,
+      'direct_y_display',
+      0,
+      currentUnit,
+    )
+    if (x === null || y === null) {
+      setCoreStatus(appMessage({
+        ja: '有限な数値座標を入力してください。',
+        en: 'Enter finite numeric coordinates.',
+      }))
+      return
+    }
+
+    const previousVertexIds = new Set(
+      current.crease_pattern.vertices.map(({ id }) => id),
+    )
+    const result: { snapshot: ProjectSnapshot | null } = { snapshot: null }
+    const succeeded = await runNativeEdit(async (
+      projectId,
+      revision,
+      projectInstanceId,
+    ) => {
+      const snapshot = await addVertex(
+        projectId,
+        revision,
+        projectInstanceId,
+        x,
+        y,
+      )
+      result.snapshot = snapshot
+      return snapshot
+    })
+    if (!succeeded || !result.snapshot) return
+    const added = result.snapshot.crease_pattern.vertices.find(
+      ({ id }) => !previousVertexIds.has(id),
+    )
+    setPendingEdgeStart(null)
+    setSelectedLineId(null)
+    setSelectedVertexId(added?.id ?? null)
+    setActiveTool('select')
+    setCoreStatus(appMessage({
+      ja: '指定座標に頂点を追加しました。',
+      en: 'Added a vertex at the specified coordinates.',
+    }))
+  }
+
   function submitPaperProperties(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const current = latestSnapshotRef.current
@@ -5016,11 +5074,68 @@ function App() {
                   </p>
                 </form>
               </>
+            ) : nativeSnapshot && !benchmarkRun ? (
+              <>
+                <p className="muted">
+                  {text({
+                    ja: '線または頂点を選択するか、座標を指定して頂点を追加します。',
+                    en: 'Select a line or vertex, or add a vertex by coordinates.',
+                  })}
+                </p>
+                <form
+                  key={`${nativeSnapshot.project_instance_id}:${lengthDisplayUnit.key}`}
+                  className="coordinate-form"
+                  onSubmit={(event) => void submitDirectVertex(event)}
+                >
+                  <label className="field">
+                    {`X (${lengthDisplayUnitLabelText})`}
+                    <LengthValueInput
+                      name="direct_x_display"
+                      disabled={coreBusy || nativeLayerView.defaultLayerLocked}
+                      initialMillimetres={0}
+                      unit={lengthDisplayUnit}
+                      ariaLabel={formattedText({
+                        ja: '新しい頂点のX座標 ({unit})',
+                        en: 'New vertex X coordinate ({unit})',
+                      }, { unit: lengthDisplayUnitLabelText })}
+                    />
+                  </label>
+                  <label className="field">
+                    {`Y (${lengthDisplayUnitLabelText})`}
+                    <LengthValueInput
+                      name="direct_y_display"
+                      disabled={coreBusy || nativeLayerView.defaultLayerLocked}
+                      initialMillimetres={0}
+                      unit={lengthDisplayUnit}
+                      ariaLabel={formattedText({
+                        ja: '新しい頂点のY座標 ({unit})',
+                        en: 'New vertex Y coordinate ({unit})',
+                      }, { unit: lengthDisplayUnitLabelText })}
+                    />
+                  </label>
+                  <div className="property-actions">
+                    <button
+                      type="submit"
+                      disabled={coreBusy || nativeLayerView.defaultLayerLocked}
+                    >
+                      {text({ ja: '座標から頂点を追加', en: 'Add vertex by coordinates' })}
+                    </button>
+                  </div>
+                  {nativeLayerView.defaultLayerLocked && (
+                    <p className="muted">
+                      {text({
+                        ja: '既定レイヤーがロックされているため頂点を追加できません。',
+                        en: 'Unlock the default layer before adding a vertex.',
+                      })}
+                    </p>
+                  )}
+                </form>
+              </>
             ) : (
               <p className="muted">
                 {text({
-                  ja: '線または頂点を選択してください',
-                  en: 'Select a line or vertex',
+                  ja: '線または頂点を選択してください。',
+                  en: 'Select a line or vertex.',
                 })}
               </p>
             )}

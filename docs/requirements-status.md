@@ -260,7 +260,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 |---|---|---|
 | IO-001 | 実装済み | 検証付き`.ori2`読込・保存・原子的置換 |
 | IO-002 | 部分実装 | 展開図、紙の見た目、全姿勢付き折り手順、認証済みUndo/Redo両stackと履歴件数上限を格納。独立した現在3D状態、memo、thumbnailを残す |
-| IO-003 | 未着手 | 展開folder形式なし |
+| IO-003 | 未着手 | `.ori2`と同じ`ProjectDocument` / `EditorHistoryV1`正本を使うversion固定・決定的・資源上限付きin-memory展開folder core、strict manifest、hash/size認証、安全な読取専用SVG previewは完成。filesystem adapter、symlink/junction/reparse point/hard link拒否、安全なdirectory保存・読込と原子的置換、desktop UI、Windows E2Eが未接続のためUI利用基準では未着手を維持 |
 | IO-004 | 実装済み | FOLD 1/1.1/1.2の2D `creasePattern`と、SVG 1.1/2共通の静的直線subsetを、縮尺・線種・外周・情報損失の確認後に新規未保存projectへ取り込める。各形式の対応範囲外は契約どおり拒否または警告する |
 | IO-005 | 実装済み | SVGのstroke、dash、class、layer、`data-origami-kind`をsource groupとして表示し、全groupを6種へ明示割当する画面、外周選択、Cut許可、警告確認を提供 |
 | IO-006 | 実装済み | 現在の一枚紙展開図をFOLD 1.2、静的SVG、実寸PDF 1.7、DXF AC1021へ書き出せる。4形式とも情報損失確認、revision固定のimmutable stage、native原子的保存を共用し、形式固有の意味・実寸・資源上限を固定している |

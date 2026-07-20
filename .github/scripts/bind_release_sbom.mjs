@@ -4,6 +4,13 @@ import { resolve } from 'node:path'
 import { buildDependencyPolicy } from './dependency_policy.mjs'
 
 const path = process.argv[2]
+if (
+  typeof path !== 'string'
+  || path.length < 1
+  || path.length > 4096
+  || /[\u0000-\u001f\u007f*?\[\]]/u.test(path)
+  || path.startsWith('-')
+) throw new Error('invalid SBOM path')
 const repositoryRoot = resolve(import.meta.dirname, '..', '..')
 const sbom = JSON.parse(readFileSync(path, 'utf8'))
 const version = process.env.VERSION
@@ -29,8 +36,10 @@ if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(version ?? ''))
 }
 if (!['windows-x64', 'macos-arm64'].includes(platform)) throw new Error('invalid SBOM platform')
 if (!/^[0-9a-f]{40}$/u.test(commit ?? '')) throw new Error('invalid SBOM source commit')
-if (!/^rustc [0-9]+\.[0-9]+\.[0-9]+/u.test(rustc ?? '')) throw new Error('invalid rustc version')
-if (!/^v[0-9]+\.[0-9]+\.[0-9]+/u.test(node ?? '')) throw new Error('invalid Node.js version')
+if (!/^rustc [0-9]+\.[0-9]+\.[0-9]+(?: \([^\u0000-\u001f\u007f()]{1,200}\))?$/u.test(rustc ?? '')) {
+  throw new Error('invalid rustc version')
+}
+if (!/^v[0-9]+\.[0-9]+\.[0-9]+$/u.test(node ?? '')) throw new Error('invalid Node.js version')
 if (!['signed-release', 'unsigned-dry-run'].includes(buildMode)) throw new Error('invalid build mode')
 const expectedTarget = platform === 'windows-x64'
   ? 'x86_64-pc-windows-msvc'

@@ -1,6 +1,13 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+if ($env:VERSION -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+    throw 'Release version must be canonical stable SemVer.'
+}
+if ($env:PLATFORM -cnotin @('windows-x64', 'macos-arm64')) {
+    throw 'Release platform is unsupported.'
+}
+
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $releaseRoot = Join-Path $repositoryRoot 'target\release'
 $output = Join-Path $repositoryRoot 'target\formal-release'
@@ -19,8 +26,6 @@ if ($env:PLATFORM -eq 'windows-x64') {
 } elseif ($env:PLATFORM -eq 'macos-arm64') {
     tar -C (Join-Path $releaseRoot 'bundle/macos') -czf (Join-Path $output "$prefix-app.tar.gz") 'ORIGAMI2.app'
     if ($LASTEXITCODE -ne 0) { throw 'Could not archive the macOS application.' }
-} else {
-    throw "Unsupported platform '$env:PLATFORM'."
 }
 
 node (Join-Path $PSScriptRoot 'write_update_manifest.mjs') $output

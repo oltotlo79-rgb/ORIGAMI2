@@ -620,6 +620,101 @@ test('update manifest generator emits canonical version and digest bindings', ()
   }
 })
 
+test('release helpers reject hostile shell inputs without reflecting secret values', () => {
+  const rejectedStderr = (command, args, env) => {
+    try {
+      execFileSync(command, args, { cwd: root, env: { ...process.env, ...env }, stdio: 'pipe' })
+      assert.fail('hostile release input was accepted')
+    } catch (error) {
+      return `${error.stdout ?? ''}${error.stderr ?? ''}`
+    }
+  }
+  const secret = 'DO_NOT_LOG_release_secret_7f3a'
+  for (const hostileMode of [`stable\n${secret}`, `--${secret}`, `*${secret}`]) {
+    const stderr = rejectedStderr(
+      'node',
+      ['.github/scripts/validate_formal_release.mjs'],
+      { REQUESTED_MODE: hostileMode, REQUESTED_TAG: '' },
+    )
+    assert.match(stderr, /unsupported release mode/u)
+    assert.doesNotMatch(stderr, new RegExp(secret, 'u'))
+  }
+  for (const hostileTag of [`v0.1.0\n${secret}`, `--${secret}`, `v0.1.*${secret}`]) {
+    const stderr = rejectedStderr(
+      'node',
+      ['.github/scripts/validate_formal_release.mjs'],
+      { REQUESTED_MODE: 'stable', REQUESTED_TAG: hostileTag },
+    )
+    assert.match(stderr, /release tag does not match application version/u)
+    assert.doesNotMatch(stderr, new RegExp(secret, 'u'))
+  }
+  for (const [name, value] of [
+    ['VERSION', `0.1.0\n${secret}`],
+    ['PLATFORM', `--${secret}`],
+    ['PLATFORM', `*${secret}`],
+  ]) {
+    const stderr = rejectedStderr(
+      process.platform === 'win32' ? 'powershell.exe' : 'pwsh',
+      ['-NoProfile', '-File', '.github/scripts/package_formal_release.ps1'],
+      {
+        VERSION: '0.1.0',
+        PLATFORM: 'windows-x64',
+        [name]: value,
+      },
+    )
+    assert.match(stderr, /Release (?:version|platform)/u)
+    assert.doesNotMatch(stderr, new RegExp(secret, 'u'))
+  }
+  for (const hostilePath of [`--${secret}`, `*${secret}`, `bad\n${secret}`]) {
+    const stderr = rejectedStderr(
+      'node',
+      ['.github/scripts/write_update_manifest.mjs', hostilePath],
+      {
+        VERSION: '0.1.0',
+        PLATFORM: 'windows-x64',
+        SIGNATURE_POLICY: 'unsigned-dry-run',
+      },
+    )
+    assert.match(stderr, /invalid update manifest directory path/u)
+    assert.doesNotMatch(stderr, new RegExp(secret, 'u'))
+  }
+  const sbomDirectory = mkdtempSync(join(tmpdir(), 'origami2-hostile-identity-'))
+  try {
+    const sbomPath = join(sbomDirectory, 'fixture.cdx.json')
+    for (const [name, value] of [
+      ['RUSTC_VERSION', `rustc 1.90.0\n${secret}`],
+      ['NODE_VERSION', `v24.0.0*${secret}`],
+      ['TARGET_TRIPLE', `--${secret}`],
+    ]) {
+      writeFileSync(sbomPath, JSON.stringify({ bomFormat: 'CycloneDX', components: [] }))
+      const stderr = rejectedStderr(
+        'node',
+        ['.github/scripts/bind_release_sbom.mjs', sbomPath],
+        {
+          VERSION: '0.1.0',
+          PLATFORM: 'windows-x64',
+          RELEASE_COMMIT: 'a'.repeat(40),
+          RUSTC_VERSION: 'rustc 1.90.0 (fixture)',
+          NODE_VERSION: 'v24.0.0',
+          BUILD_MODE: 'unsigned-dry-run',
+          TARGET_TRIPLE: 'x86_64-pc-windows-msvc',
+          RELEASE_RUN_ID: '12345',
+          EXECUTED_TEST_COUNT: '33',
+          CI_CHECK_EVIDENCE_JSON: JSON.stringify({
+            schema: 'origami2.ci-check-evidence.v1',
+            sourceCommit: 'a'.repeat(40),
+          }),
+          [name]: value,
+        },
+      )
+      assert.match(stderr, /invalid (?:rustc version|Node\.js version|build target triple)/u)
+      assert.doesNotMatch(stderr, new RegExp(secret, 'u'))
+    }
+  } finally {
+    rmSync(sbomDirectory, { recursive: true, force: true })
+  }
+})
+
 test('credential-free dry-run fixture proves the complete nine-asset handoff', () => {
   const directory = mkdtempSync(join(tmpdir(), 'origami2-formal-dry-run-'))
   try {

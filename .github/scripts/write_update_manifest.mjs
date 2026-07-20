@@ -2,7 +2,15 @@ import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 
-const directory = resolve(process.argv[2])
+const directoryArgument = process.argv[2]
+if (
+  typeof directoryArgument !== 'string'
+  || directoryArgument.length < 1
+  || directoryArgument.length > 4096
+  || /[\u0000-\u001f\u007f*?\[\]]/u.test(directoryArgument)
+  || directoryArgument.startsWith('-')
+) throw new Error('invalid update manifest directory path')
+const directory = resolve(directoryArgument)
 const platform = process.env.PLATFORM
 const version = process.env.VERSION
 const signaturePolicy = process.env.SIGNATURE_POLICY

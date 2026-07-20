@@ -107,6 +107,20 @@ jobs:
           path: ${{ runner.temp }}/render-performance-browser
           if-no-files-found: error
           retention-days: 7
+      - name: Measure 10000-edge project save open and undo-redo browser boundary
+        id: large-project-io-browser
+        working-directory: apps/desktop
+        env:
+          ORIGAMI2_LARGE_PROJECT_ARTIFACT_DIRECTORY: ${{ runner.temp }}/large-project-io-browser
+        run: npm run test:large-project-io-browser
+      - name: Upload large project IO browser failure evidence
+        if: failure() && steps.large-project-io-browser.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: large-project-io-browser-failure
+          path: ${{ runner.temp }}/large-project-io-browser
+          if-no-files-found: error
+          retention-days: 7
       - name: Load generated GLB in pinned Khronos Sample Viewer
         id: sample-viewer
         shell: bash

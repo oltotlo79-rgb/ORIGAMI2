@@ -1157,3 +1157,86 @@ mod recovery_entry_tests {
         );
     }
 }
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_large_archive_budget_tests {
+    use std::{fs, time::Instant};
+
+    use ori_core::EditorState;
+    use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, ProjectId, Vertex, VertexId};
+
+    use super::*;
+
+    #[test]
+    fn ten_thousand_edge_archive_save_open_and_history_stay_bounded() {
+        let namespace = ProjectId::new();
+        let vertices = (0..=10_000)
+            .map(|index| Vertex {
+                id: VertexId::derive_v5(namespace, format!("v-{index}").as_bytes()),
+                position: Point2::new((index % 101) as f64, (index / 101) as f64),
+            })
+            .collect::<Vec<_>>();
+        let edges = (0..10_000)
+            .map(|index| Edge {
+                id: EdgeId::derive_v5(namespace, format!("e-{index}").as_bytes()),
+                start: vertices[index].id,
+                end: vertices[index + 1].id,
+                kind: if index % 2 == 0 {
+                    EdgeKind::Mountain
+                } else {
+                    EdgeKind::Valley
+                },
+            })
+            .collect::<Vec<_>>();
+        let pattern = CreasePattern { vertices, edges };
+        let document = ProjectDocument::new("Windows 10k archive budget", pattern.clone());
+        let mut editor = EditorState::new(pattern);
+        editor
+            .set_history_entry_limit(64)
+            .expect("set bounded non-default history limit");
+        let history = editor
+            .export_history_v1(document.project_id)
+            .expect("export bounded history metadata");
+        let archive = Ori2ProjectArchive {
+            document,
+            editor_history: Some(history),
+        };
+        let directory = std::env::temp_dir().join(format!(
+            "origami2-windows-10k-budget-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir(&directory).expect("create bounded archive test directory");
+        let path = directory.join("target-file.ori2");
+
+        let save_started = Instant::now();
+        persist_project_archive(&path, &archive).expect("save 10k archive atomically");
+        let save_elapsed = save_started.elapsed();
+        let bytes = fs::metadata(&path).expect("saved metadata").len();
+        assert!(
+            bytes > 0 && bytes <= 16 * 1024 * 1024,
+            "archive bytes: {bytes}"
+        );
+        assert!(
+            save_elapsed <= Duration::from_secs(10),
+            "save elapsed: {save_elapsed:?}"
+        );
+
+        let open_started = Instant::now();
+        let reopened = load_project_archive_from_path(&path).expect("open 10k archive");
+        let open_elapsed = open_started.elapsed();
+        assert_eq!(reopened.document.crease_pattern.edges.len(), 10_000);
+        let reopened_history = reopened
+            .editor_history
+            .expect("history entry remains authenticated");
+        assert_eq!(reopened_history.undo_len(), 0);
+        assert_eq!(reopened_history.redo_len(), 0);
+        assert_eq!(reopened_history.history_entry_limit(), 64);
+        assert!(
+            open_elapsed <= Duration::from_secs(10),
+            "open elapsed: {open_elapsed:?}"
+        );
+        fs::remove_file(&path).expect("remove archive fixture");
+        fs::remove_dir(&directory).expect("remove archive test directory");
+    }
+}

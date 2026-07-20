@@ -13,12 +13,13 @@ use ori_collision::{
     reverse_map_linear_stacked_fold_material_v1,
 };
 use ori_core::{
-    ExpectedStackedFoldCreaseV1, FaceLineageLimits, StackedFoldGeometryLimitsV1,
-    StackedFoldTopologyBuildLimitsV1, analyze_global_flat_foldability,
+    DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS, ExpectedStackedFoldCreaseV1, FaceLineageLimits,
+    StackedFoldGeometryLimitsV1, StackedFoldTopologyBuildLimitsV1, analyze_global_flat_foldability,
     analyze_local_flat_foldability, prepare_stacked_fold_geometry_candidate_v1,
     prepare_stacked_fold_initial_graph_pose_v1, prepare_stacked_fold_initial_pose_v1,
-    prepare_stacked_fold_requested_graph_pose_v1, prepare_stacked_fold_requested_pose_v1,
-    prepare_stacked_fold_target_graph_audit_v1, prepare_stacked_fold_target_model_v1,
+    prepare_stacked_fold_non_flat_layer_order_v1, prepare_stacked_fold_requested_graph_pose_v1,
+    prepare_stacked_fold_requested_pose_v1, prepare_stacked_fold_target_graph_audit_v1,
+    prepare_stacked_fold_target_model_v1,
 };
 use ori_domain::{FaceId, ProjectId};
 use ori_foldability::{
@@ -469,11 +470,17 @@ pub(super) async fn propose_current_stacked_fold_read(
                     }
                 }
             } else {
+                let non_flat = prepare_stacked_fold_non_flat_layer_order_v1(
+                    &prepared_requested_pose,
+                    layer_capability.snapshot(),
+                    DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+                )
+                .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
                 StackedFoldFlatEndpointLayerOrderDto {
-                    applicable: false,
-                    certified: false,
-                    material_face_count: 0,
-                    overlap_cell_count: 0,
+                    applicable: true,
+                    certified: true,
+                    material_face_count: non_flat.material_faces().len(),
+                    overlap_cell_count: non_flat.overlap_cell_count(),
                 }
             };
         let lineage = geometry_proof.lineage();

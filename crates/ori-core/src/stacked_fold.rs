@@ -16,7 +16,7 @@ use ori_geometry::{
 use ori_kinematics::{
     CandidateFaceTransform, CanonicalHingeAngles, ClosedMaterialHingeGraphPose, HingeAngle,
     KinematicsError, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
-    MaterialTreeKinematicsModel, MaterialTreePose, TreeKinematicsLimits,
+    MaterialTreeKinematicsModel, MaterialTreePose, Point3, TreeKinematicsLimits,
 };
 use ori_topology::{
     Face, FaceExtractionInput, TopologyIssueSeverity, TopologySnapshot, analyze_faces,
@@ -189,6 +189,9 @@ pub const DEFAULT_MAX_STACKED_FOLD_BUILD_EDGES: usize = 200_000;
 pub const STACKED_FOLD_TARGET_GRAPH_AUDIT_MODEL_ID_V1: &str =
     "native_stacked_fold_target_graph_audit_v1";
 pub const STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1: f64 = 1.0e-9;
+pub const DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS: usize = 2_000_000;
+pub const STACKED_FOLD_NON_FLAT_LAYER_ORDER_MODEL_ID_V1: &str =
+    "native_stacked_fold_non_flat_planar_order_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackedFoldTopologyBuildLimitsV1 {
@@ -259,6 +262,79 @@ pub struct PreparedStackedFoldRequestedGraphPoseV1 {
     initial: PreparedStackedFoldInitialGraphPoseV1,
     pose: ClosedMaterialHingeGraphPose,
     requested_angle_degrees: f64,
+}
+
+/// Bounded proof that a non-flat endpoint has no pair of faces sharing one
+/// planar support, hence has no planar overlap cell requiring a ply order.
+///
+/// This is read-only transport evidence. It grants no collision, timeline, or
+/// mutation authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackedFoldNonFlatLayerOrderV1 {
+    target_revision: Revision,
+    material_faces: Vec<LayerFace>,
+    tested_face_pairs: usize,
+    source_overlap_cells_authenticated: usize,
+}
+
+impl StackedFoldNonFlatLayerOrderV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        STACKED_FOLD_NON_FLAT_LAYER_ORDER_MODEL_ID_V1
+    }
+
+    #[must_use]
+    pub const fn target_revision(&self) -> Revision {
+        self.target_revision
+    }
+
+    #[must_use]
+    pub fn material_faces(&self) -> &[LayerFace] {
+        &self.material_faces
+    }
+
+    #[must_use]
+    pub const fn tested_face_pairs(&self) -> usize {
+        self.tested_face_pairs
+    }
+
+    #[must_use]
+    pub const fn overlap_cell_count(&self) -> usize {
+        0
+    }
+
+    #[must_use]
+    pub const fn face_pair_order_count(&self) -> usize {
+        0
+    }
+
+    #[must_use]
+    pub const fn source_overlap_cells_authenticated(&self) -> usize {
+        self.source_overlap_cells_authenticated
+    }
+
+    #[must_use]
+    pub const fn authorizes_apply_stacked_fold(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum PrepareStackedFoldNonFlatLayerOrderErrorV1 {
+    #[error("the requested endpoint is flat or invalid")]
+    NotNonFlatEndpoint,
+    #[error("the source layer snapshot is stale or belongs to another model")]
+    SourceLayerOrderMismatch,
+    #[error("target face-pair work exceeds its configured limit")]
+    ResourceLimit,
+    #[error("target pose issuer or material registry is inconsistent")]
+    TargetPoseMismatch,
+    #[error("a target face has no finitely representable planar support")]
+    UnrepresentableFacePlane,
+    #[error("target faces {first:?} and {second:?} may share one planar support")]
+    CoincidentPlanarSupports { first: FaceId, second: FaceId },
+    #[error("target pose geometry failed: {0}")]
+    Kinematics(#[from] KinematicsError),
 }
 
 impl PreparedStackedFoldInitialGraphPoseV1 {
@@ -1765,6 +1841,184 @@ pub fn prepare_stacked_fold_requested_pose_v1(
     })
 }
 
+/// Re-authenticates the source layer snapshot and recomputes the narrow
+/// non-flat target class whose face supports are pairwise non-coincident.
+///
+/// Pairwise intersecting or merely near-coincident planes are not silently
+/// ordered: the former remains collision analysis' responsibility and the
+/// latter is rejected here because a local ply order could be required.
+pub fn prepare_stacked_fold_non_flat_layer_order_v1(
+    requested: &PreparedStackedFoldRequestedPoseV1,
+    source_layer_order: &LayerOrderSnapshot,
+    max_face_pairs: usize,
+) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let angle = requested.requested_angle_degrees();
+    if !angle.is_finite() || angle <= 0.0 || angle >= 180.0 {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::NotNonFlatEndpoint);
+    }
+    let lineage = requested.initial.target.geometry.proof.lineage();
+    let provenance = &source_layer_order.provenance.source;
+    if source_layer_order.model_id != LAYER_ORDER_MODEL_ID
+        || provenance.identity_namespace != Some(lineage.identity_namespace())
+        || provenance.source_revision != lineage.source_revision()
+        || provenance.source_fingerprint != Some(lineage.source_fingerprint())
+    {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch);
+    }
+    let mut source_faces = lineage
+        .records()
+        .iter()
+        .map(FaceLineageRecord::source)
+        .collect::<Vec<_>>();
+    source_faces.sort_unstable_by(|first, second| {
+        first.face_key.cmp(&second.face_key).then_with(|| {
+            first
+                .face_id
+                .canonical_bytes()
+                .cmp(&second.face_id.canonical_bytes())
+        })
+    });
+    if source_layer_order.material_faces != source_faces {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch);
+    }
+    let pose = requested.pose();
+    if !requested.initial.target.model.owns_pose(pose) {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch);
+    }
+    let mut material_faces = lineage
+        .records()
+        .iter()
+        .flat_map(|record| record.descendants().iter().copied())
+        .collect::<Vec<_>>();
+    material_faces.sort_unstable_by(|first, second| {
+        first.face_key.cmp(&second.face_key).then_with(|| {
+            first
+                .face_id
+                .canonical_bytes()
+                .cmp(&second.face_id.canonical_bytes())
+        })
+    });
+    let mut material_face_ids = material_faces
+        .iter()
+        .map(|face| face.face_id)
+        .collect::<Vec<_>>();
+    material_face_ids.sort_unstable_by_key(FaceId::canonical_bytes);
+    if material_face_ids != pose.face_ids() {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch);
+    }
+    let tested_face_pairs = material_faces
+        .len()
+        .checked_mul(material_faces.len().saturating_sub(1))
+        .and_then(|value| value.checked_div(2))
+        .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::ResourceLimit)?;
+    if tested_face_pairs > max_face_pairs {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::ResourceLimit);
+    }
+    let planes = material_faces
+        .iter()
+        .map(|face| target_face_plane(pose, face.face_id))
+        .collect::<Result<Vec<_>, _>>()?;
+    for first in 0..planes.len() {
+        for second in (first + 1)..planes.len() {
+            if planar_supports_may_coincide(planes[first], planes[second])? {
+                return Err(
+                    PrepareStackedFoldNonFlatLayerOrderErrorV1::CoincidentPlanarSupports {
+                        first: material_faces[first].face_id,
+                        second: material_faces[second].face_id,
+                    },
+                );
+            }
+        }
+    }
+    Ok(StackedFoldNonFlatLayerOrderV1 {
+        target_revision: lineage.target_revision(),
+        material_faces,
+        tested_face_pairs,
+        source_overlap_cells_authenticated: source_layer_order.overlap_cells.len(),
+    })
+}
+
+fn target_face_plane(
+    pose: &MaterialTreePose,
+    face: FaceId,
+) -> Result<(Point3, Point3), PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let boundary = pose
+        .face_boundary(face)
+        .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)?;
+    let transform = pose
+        .face_transform(face)
+        .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)?;
+    let points = boundary
+        .vertices()
+        .iter()
+        .map(|vertex| {
+            pose.vertex_position(*vertex)
+                .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)
+                .and_then(|point| transform.apply_point(point).map_err(Into::into))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let origin = *points
+        .first()
+        .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::UnrepresentableFacePlane)?;
+    for index in 1..points.len().saturating_sub(1) {
+        let first = point_delta(points[index], origin);
+        let second = point_delta(points[index + 1], origin);
+        let cross = point_cross(first, second);
+        let length = point_length(cross);
+        if length.is_finite() && length > 1.0e-12 {
+            return Ok((origin, point_scale(cross, 1.0 / length)?));
+        }
+    }
+    Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::UnrepresentableFacePlane)
+}
+
+fn planar_supports_may_coincide(
+    first: (Point3, Point3),
+    second: (Point3, Point3),
+) -> Result<bool, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let normal_cross = point_length(point_cross(point_values(first.1), point_values(second.1)));
+    let separation = point_dot(point_delta(second.0, first.0), first.1).abs();
+    if !normal_cross.is_finite() || !separation.is_finite() {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::UnrepresentableFacePlane);
+    }
+    Ok(normal_cross <= 1.0e-9 && separation <= 1.0e-9)
+}
+
+fn point_delta(first: Point3, second: Point3) -> [f64; 3] {
+    [
+        first.x() - second.x(),
+        first.y() - second.y(),
+        first.z() - second.z(),
+    ]
+}
+
+fn point_values(point: Point3) -> [f64; 3] {
+    [point.x(), point.y(), point.z()]
+}
+
+fn point_cross(first: [f64; 3], second: [f64; 3]) -> [f64; 3] {
+    [
+        first[1] * second[2] - first[2] * second[1],
+        first[2] * second[0] - first[0] * second[2],
+        first[0] * second[1] - first[1] * second[0],
+    ]
+}
+
+fn point_dot(first: [f64; 3], second: Point3) -> f64 {
+    first[0] * second.x() + first[1] * second.y() + first[2] * second.z()
+}
+
+fn point_length(point: [f64; 3]) -> f64 {
+    (point[0].powi(2) + point[1].powi(2) + point[2].powi(2)).sqrt()
+}
+
+fn point_scale(
+    point: [f64; 3],
+    scale: f64,
+) -> Result<Point3, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    Point3::new(point[0] * scale, point[1] * scale, point[2] * scale).map_err(Into::into)
+}
+
 /// Solves a deterministic spanning candidate for a cyclic or acyclic target
 /// and fails closed unless every retained loop constraint closes.
 pub fn prepare_stacked_fold_requested_graph_pose_v1(
@@ -3194,6 +3448,21 @@ mod tests {
         );
         assert_eq!(requested.requested_angle_degrees(), 90.0);
         assert_eq!(requested.pose().hinge_angles()[0].angle_degrees(), 90.0);
+        let non_flat_order = prepare_stacked_fold_non_flat_layer_order_v1(
+            &requested,
+            &fixture.source_layer_order,
+            1,
+        )
+        .expect("pairwise non-coincident target supports");
+        assert_eq!(
+            non_flat_order.model_id(),
+            STACKED_FOLD_NON_FLAT_LAYER_ORDER_MODEL_ID_V1
+        );
+        assert_eq!(non_flat_order.material_faces().len(), 2);
+        assert_eq!(non_flat_order.tested_face_pairs(), 1);
+        assert_eq!(non_flat_order.overlap_cell_count(), 0);
+        assert_eq!(non_flat_order.face_pair_order_count(), 0);
+        assert!(!non_flat_order.authorizes_apply_stacked_fold());
 
         let rebuild = || {
             let geometry = prepare_stacked_fold_geometry_candidate_v1(
@@ -3220,6 +3489,34 @@ mod tests {
                 Err(PrepareStackedFoldRequestedPoseErrorV1::InvalidRequestedAngle)
             ));
         }
+        let flat =
+            prepare_stacked_fold_requested_pose_v1(rebuild(), 180.0).expect("solve flat endpoint");
+        assert_eq!(
+            prepare_stacked_fold_non_flat_layer_order_v1(
+                &flat,
+                &fixture.source_layer_order,
+                usize::MAX,
+            ),
+            Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::NotNonFlatEndpoint)
+        );
+        let bounded = prepare_stacked_fold_requested_pose_v1(rebuild(), 90.0)
+            .expect("solve bounded endpoint");
+        assert_eq!(
+            prepare_stacked_fold_non_flat_layer_order_v1(&bounded, &fixture.source_layer_order, 0,),
+            Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::ResourceLimit)
+        );
+        let authenticated = prepare_stacked_fold_requested_pose_v1(rebuild(), 90.0)
+            .expect("solve authenticated endpoint");
+        let mut stale_layer_order = fixture.source_layer_order.clone();
+        stale_layer_order.provenance.source.source_revision += 1;
+        assert_eq!(
+            prepare_stacked_fold_non_flat_layer_order_v1(
+                &authenticated,
+                &stale_layer_order,
+                usize::MAX,
+            ),
+            Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch)
+        );
     }
 
     #[test]

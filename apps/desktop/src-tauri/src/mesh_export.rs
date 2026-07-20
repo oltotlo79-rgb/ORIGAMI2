@@ -2352,6 +2352,7 @@ mod tests {
             hinge: ori_domain::EdgeId::new(),
             left_face: ori_domain::FaceId::new(),
             right_face: ori_domain::FaceId::new(),
+            endpoint_vertices: [ori_domain::VertexId::new(), ori_domain::VertexId::new()],
             left_front: [
                 to_kinematics([0.0, 0.0, half]),
                 to_kinematics([1.0, 0.0, half]),

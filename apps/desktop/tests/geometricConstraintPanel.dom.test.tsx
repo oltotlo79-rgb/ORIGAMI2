@@ -41,6 +41,32 @@ describe('GeometricConstraintPanel', () => {
     expect(onAddOrientation.mock.calls).toEqual([['horizontal'], ['vertical']])
   })
 
+  it('creates a typed multi-target constraint without JSON', () => {
+    const onAddConstraint = vi.fn()
+    renderPanel({
+      edges: IDS.slice(0, 6).map((id) => ({ id })),
+      vertices: IDS.slice(6, 10).map((id) => ({ id })),
+      selectedEdgeId: IDS[0],
+      selectedVertexId: IDS[6],
+      onAddConstraint,
+      localeStore: localeFixture('en'),
+    })
+    fireEvent.change(screen.getByLabelText('Constraint kind'), {
+      target: { value: 'rotational_symmetry' },
+    })
+    fireEvent.change(screen.getByLabelText('Angle (degrees)'), {
+      target: { value: '90' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add form constraint' }))
+    expect(onAddConstraint).toHaveBeenCalledWith({
+      kind: 'rotational_symmetry',
+      center_vertex: IDS[6],
+      source_vertex: IDS[7],
+      target_vertex: IDS[8],
+      angle_degrees: 90,
+    })
+  })
+
   it('lists and allows deleting every persisted V1 constraint kind', () => {
     const onRemove = vi.fn()
     const onSelectEdge = vi.fn()
@@ -464,6 +490,9 @@ function panel(overrides: Partial<{
   analyzing: boolean
   analysisFailed: boolean
   selectedEdgeId: string | null
+  selectedVertexId: string | null
+  edges: readonly Readonly<{ id: string }>[]
+  vertices: readonly Readonly<{ id: string }>[]
   disabled: boolean
   onAddOrientation: (orientation: 'horizontal' | 'vertical') => void
   onAddConstraint: (constraint: GeometricConstraintDocument['constraints'][number]['constraint']) => void
@@ -479,6 +508,9 @@ function panel(overrides: Partial<{
       analyzing={overrides.analyzing ?? false}
       analysisFailed={overrides.analysisFailed ?? false}
       selectedEdgeId={overrides.selectedEdgeId ?? null}
+      selectedVertexId={overrides.selectedVertexId ?? null}
+      edges={overrides.edges ?? []}
+      vertices={overrides.vertices ?? []}
       disabled={overrides.disabled ?? false}
       onAddOrientation={overrides.onAddOrientation ?? (() => undefined)}
       onAddConstraint={overrides.onAddConstraint ?? (() => undefined)}

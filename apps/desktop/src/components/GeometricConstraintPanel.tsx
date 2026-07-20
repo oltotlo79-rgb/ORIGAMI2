@@ -20,6 +20,65 @@ import {
 const MAX_VISIBLE_CONSTRAINTS = 200
 const MAX_VISIBLE_DIRECT_CONFLICTS = 50
 const MAX_VISIBLE_UNCHECKED_CONSTRAINT_IDS = 20
+const CONSTRAINT_KINDS: readonly GeometricConstraintKind['kind'][] = [
+  'fixed_length', 'fixed_angle', 'horizontal', 'vertical', 'equal_length',
+  'parallel', 'point_on_line', 'mirror_symmetry', 'rotational_symmetry',
+  'angle_bisector', 'length_ratio',
+]
+type CreationField = Readonly<{
+  name: string
+  resource: 'edge' | 'vertex'
+  ja: string
+  en: string
+}>
+const edgeField = (name: string, ja: string, en: string): CreationField =>
+  ({ name, resource: 'edge', ja, en })
+const vertexField = (name: string, ja: string, en: string): CreationField =>
+  ({ name, resource: 'vertex', ja, en })
+const CONSTRAINT_CREATION_FIELDS: Readonly<
+  Record<GeometricConstraintKind['kind'], readonly CreationField[]>
+> = {
+  fixed_length: [edgeField('edge', '対象線', 'Target line')],
+  fixed_angle: [
+    vertexField('vertex', '角の頂点', 'Angle vertex'),
+    edgeField('first_edge', '1本目の線', 'First line'),
+    edgeField('second_edge', '2本目の線', 'Second line'),
+  ],
+  horizontal: [edgeField('edge', '対象線', 'Target line')],
+  vertical: [edgeField('edge', '対象線', 'Target line')],
+  equal_length: [
+    edgeField('first_edge', '1本目の線', 'First line'),
+    edgeField('second_edge', '2本目の線', 'Second line'),
+  ],
+  parallel: [
+    edgeField('first_edge', '1本目の線', 'First line'),
+    edgeField('second_edge', '2本目の線', 'Second line'),
+  ],
+  point_on_line: [
+    vertexField('vertex', '対象点', 'Target point'),
+    edgeField('line_edge', '基準線', 'Reference line'),
+  ],
+  mirror_symmetry: [
+    vertexField('first_vertex', '1点目', 'First point'),
+    vertexField('second_vertex', '2点目', 'Second point'),
+    edgeField('axis_edge', '対称軸', 'Symmetry axis'),
+  ],
+  rotational_symmetry: [
+    vertexField('center_vertex', '回転中心', 'Rotation center'),
+    vertexField('source_vertex', '元の点', 'Source point'),
+    vertexField('target_vertex', '対応点', 'Target point'),
+  ],
+  angle_bisector: [
+    vertexField('vertex', '角の頂点', 'Angle vertex'),
+    edgeField('first_edge', '1本目の線', 'First line'),
+    edgeField('second_edge', '2本目の線', 'Second line'),
+    edgeField('bisector_edge', '二等分線', 'Bisector line'),
+  ],
+  length_ratio: [
+    edgeField('numerator_edge', '分子側の線', 'Numerator line'),
+    edgeField('denominator_edge', '分母側の線', 'Denominator line'),
+  ],
+}
 
 type GeometricConstraintPanelProps = {
   document: GeometricConstraintDocument
@@ -27,6 +86,9 @@ type GeometricConstraintPanelProps = {
   analyzing: boolean
   analysisFailed: boolean
   selectedEdgeId: string | null
+  selectedVertexId?: string | null
+  edges?: readonly Readonly<{ id: string }>[]
+  vertices?: readonly Readonly<{ id: string }>[]
   disabled: boolean
   onAddOrientation: (orientation: 'horizontal' | 'vertical') => void
   onAddConstraint: (constraint: GeometricConstraintKind) => void
@@ -42,6 +104,9 @@ export function GeometricConstraintPanel({
   analyzing,
   analysisFailed,
   selectedEdgeId,
+  selectedVertexId = null,
+  edges = [],
+  vertices = [],
   disabled,
   onAddOrientation,
   onAddConstraint,
@@ -53,6 +118,14 @@ export function GeometricConstraintPanel({
   const locale = useLocale(localeStore_)
   const [constraintJson, setConstraintJson] = useState('')
   const [constraintJsonInvalid, setConstraintJsonInvalid] = useState(false)
+  const [creationKind, setCreationKind] =
+    useState<GeometricConstraintKind['kind']>('fixed_length')
+  const [creationTargets, setCreationTargets] = useState<Record<string, string>>({})
+  const [creationScalar, setCreationScalar] = useState('10')
+  const [creationInvalid, setCreationInvalid] = useState(false)
+  const edgeIds = uniqueIds(edges.map(({ id }) => id), selectedEdgeId)
+  const vertexIds = uniqueIds(vertices.map(({ id }) => id), selectedVertexId)
+  const creationFields = CONSTRAINT_CREATION_FIELDS[creationKind]
   return (
     <section className="geometric-constraints" aria-labelledby="geometric-constraints-title">
       <div className="geometric-constraints-heading">
@@ -100,6 +173,111 @@ export function GeometricConstraintPanel({
           )}
         </p>
       )}
+      <fieldset disabled={disabled}>
+        <legend>{localized(locale, '制約をフォームから追加', 'Add constraint from form')}</legend>
+        <label className="field">
+          {localized(locale, '制約種別', 'Constraint kind')}
+          <select
+            value={creationKind}
+            onChange={(event) => {
+              setCreationKind(event.currentTarget.value as GeometricConstraintKind['kind'])
+              setCreationTargets({})
+              setCreationInvalid(false)
+            }}
+          >
+            {CONSTRAINT_KINDS.map((kind) => (
+              <option key={kind} value={kind}>
+                {formatLocalizedText(locale, {
+                  ja: '{name}を作成',
+                  en: 'Create {name}',
+                }, { name: constraintKindName(kind, locale) })}
+              </option>
+            ))}
+          </select>
+        </label>
+        {creationFields.map((field, index) => {
+          const options = field.resource === 'edge' ? edgeIds : vertexIds
+          const resourceIndex = creationFields.slice(0, index)
+            .filter(({ resource }) => resource === field.resource).length
+          const preferred = field.resource === 'edge' && resourceIndex === 0
+            ? selectedEdgeId
+            : field.resource === 'vertex' && resourceIndex === 0
+              ? selectedVertexId
+              : null
+          const value = creationTargets[field.name]
+            ?? preferred ?? options[resourceIndex] ?? options[0] ?? ''
+          return (
+            <label className="field" key={field.name}>
+              {localized(locale, field.ja, field.en)}
+              <select
+                aria-label={localized(locale, field.ja, field.en)}
+                value={value}
+                onChange={(event) => {
+                  setCreationTargets((current) => ({
+                    ...current,
+                    [field.name]: event.currentTarget.value,
+                  }))
+                  setCreationInvalid(false)
+                }}
+              >
+                <option value="">{localized(locale, '選択してください', 'Select…')}</option>
+                {options.map((id) => <option key={id} value={id}>{shortId(id)}</option>)}
+              </select>
+            </label>
+          )
+        })}
+        {constraintScalar(creationKind) && (
+          <label className="field">
+            {localized(locale, constraintScalar(creationKind)!.ja, constraintScalar(creationKind)!.en)}
+            <input
+              type="number"
+              step="any"
+              value={creationScalar}
+              aria-invalid={creationInvalid}
+              onChange={(event) => {
+                setCreationScalar(event.currentTarget.value)
+                setCreationInvalid(false)
+              }}
+            />
+          </label>
+        )}
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => {
+            const resolved = Object.fromEntries(creationFields.map((field, index) => {
+              const options = field.resource === 'edge' ? edgeIds : vertexIds
+              const resourceIndex = creationFields.slice(0, index)
+                .filter(({ resource }) => resource === field.resource).length
+              const preferred = field.resource === 'edge' && resourceIndex === 0
+                ? selectedEdgeId
+                : field.resource === 'vertex' && resourceIndex === 0
+                  ? selectedVertexId
+                  : null
+              return [field.name, creationTargets[field.name]
+                ?? preferred ?? options[resourceIndex] ?? options[0] ?? '']
+            }))
+            const constraint = createConstraint(
+              creationKind,
+              resolved,
+              Number(creationScalar),
+            )
+            if (!constraint) {
+              setCreationInvalid(true)
+              return
+            }
+            onAddConstraint(constraint)
+            setCreationInvalid(false)
+          }}
+        >
+          {localized(locale, 'フォームの制約を追加', 'Add form constraint')}
+        </button>
+        <p className={creationInvalid ? 'status-invalid' : 'muted'}>
+          {creationInvalid
+            ? localized(locale, '必要な対象と有効な数値を指定してください。', 'Choose every required target and enter a valid value.')
+            : localized(locale, '対象は現在のproject要素から選択します。追加は一回のUndoで戻せます。', 'Targets come from the current project. One Undo removes the addition.')}
+        </p>
+      </fieldset>
       <fieldset disabled={disabled}>
         <legend>
           {localized(locale, '全11種の制約を追加', 'Add any of the 11 constraint kinds')}
@@ -421,6 +599,79 @@ function directConflictLabel(
         'Parallel edges are separately constrained as horizontal and vertical',
       )
   }
+}
+
+function uniqueIds(values: readonly string[], preferred: string | null) {
+  return [...new Set(preferred ? [preferred, ...values] : values)]
+    .filter(isCanonicalNonNilUuid)
+}
+
+function shortId(id: string) {
+  return `${id.slice(0, 8)}…${id.slice(-4)}`
+}
+
+function constraintKindName(kind: GeometricConstraintKind['kind'], locale: Locale) {
+  const names: Record<GeometricConstraintKind['kind'], readonly [string, string]> = {
+    fixed_length: ['長さ固定', 'Fixed length'],
+    fixed_angle: ['角度固定', 'Fixed angle'],
+    horizontal: ['水平', 'Horizontal'],
+    vertical: ['垂直', 'Vertical'],
+    equal_length: ['等長', 'Equal length'],
+    parallel: ['平行', 'Parallel'],
+    point_on_line: ['点を線上に配置', 'Point on line'],
+    mirror_symmetry: ['線対称', 'Mirror symmetry'],
+    rotational_symmetry: ['回転対称', 'Rotational symmetry'],
+    angle_bisector: ['角の二等分', 'Angle bisector'],
+    length_ratio: ['長さの比', 'Length ratio'],
+  }
+  return localized(locale, ...names[kind])
+}
+
+function constraintScalar(kind: GeometricConstraintKind['kind']) {
+  if (kind === 'fixed_length') return { ja: '長さ (mm)', en: 'Length (mm)' }
+  if (kind === 'fixed_angle' || kind === 'rotational_symmetry') {
+    return { ja: '角度 (度)', en: 'Angle (degrees)' }
+  }
+  if (kind === 'length_ratio') return { ja: '長さの比', en: 'Length ratio' }
+  return null
+}
+
+function createConstraint(
+  kind: GeometricConstraintKind['kind'],
+  target: Readonly<Record<string, string>>,
+  scalar: number,
+): GeometricConstraintKind | null {
+  const raw: unknown = (() => {
+    switch (kind) {
+      case 'fixed_length':
+        return { kind, edge: target.edge, length_mm: scalar }
+      case 'fixed_angle':
+        return { kind, vertex: target.vertex, first_edge: target.first_edge,
+          second_edge: target.second_edge, angle_degrees: scalar }
+      case 'horizontal':
+      case 'vertical':
+        return { kind, edge: target.edge }
+      case 'equal_length':
+      case 'parallel':
+        return { kind, first_edge: target.first_edge, second_edge: target.second_edge }
+      case 'point_on_line':
+        return { kind, vertex: target.vertex, line_edge: target.line_edge }
+      case 'mirror_symmetry':
+        return { kind, first_vertex: target.first_vertex,
+          second_vertex: target.second_vertex, axis_edge: target.axis_edge }
+      case 'rotational_symmetry':
+        return { kind, center_vertex: target.center_vertex,
+          source_vertex: target.source_vertex, target_vertex: target.target_vertex,
+          angle_degrees: scalar }
+      case 'angle_bisector':
+        return { kind, vertex: target.vertex, first_edge: target.first_edge,
+          second_edge: target.second_edge, bisector_edge: target.bisector_edge }
+      case 'length_ratio':
+        return { kind, numerator_edge: target.numerator_edge,
+          denominator_edge: target.denominator_edge, ratio: scalar }
+    }
+  })()
+  return normalizeGeometricConstraintKind(raw)
 }
 
 function primaryEdgeId(constraint: GeometricConstraintKind) {

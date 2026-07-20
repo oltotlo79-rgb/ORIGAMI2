@@ -6565,6 +6565,9 @@ function App() {
                 geometricConstraintAnalysisFailed || geometricConstraintDocumentInvalid
               }
               selectedEdgeId={selectedLine?.id ?? null}
+              selectedVertexId={selectedVertexId}
+              edges={nativeLines}
+              vertices={nativeVertices}
               disabled={coreBusy || geometricConstraintDocumentInvalid}
               onAddOrientation={addSelectedEdgeOrientationConstraint}
               onAddConstraint={addConstraint}

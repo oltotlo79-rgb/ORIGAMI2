@@ -110,6 +110,49 @@ pub fn evaluate_pole_free_rational_interval_v1(
         .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)
 }
 
+pub fn evaluate_pole_free_atan2_interval_v1(
+    y: &PoleFreeBernsteinCertificateV1,
+    x: &PoleFreeBernsteinCertificateV1,
+    max_work: usize,
+) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
+    let ratio = evaluate_pole_free_rational_interval_v1(y, x, max_work)?;
+    let mut angle = crate::atan_interval_v1(ratio, max_work)
+        .map_err(|_| CycleSchedulePrepareErrorV1::ResourceLimit)?;
+    if !x.positive {
+        let pi = OutwardIntervalV1::from_rounded(core::f64::consts::PI)
+            .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+        angle = if y.positive {
+            angle.add(pi)
+        } else {
+            angle.sub(pi)
+        }
+        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+    }
+    if angle.work() > max_work {
+        return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
+    }
+    Ok(angle)
+}
+
+pub fn evaluate_half_angle_rational_degrees_interval_v1(
+    numerator: &PoleFreeBernsteinCertificateV1,
+    denominator: &PoleFreeBernsteinCertificateV1,
+    max_work: usize,
+) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
+    let radians = evaluate_pole_free_atan2_interval_v1(numerator, denominator, max_work)?;
+    let two = OutwardIntervalV1::from_rounded(2.0)
+        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+    let degrees = OutwardIntervalV1::from_rounded(180.0)
+        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+    let pi = OutwardIntervalV1::from_rounded(core::f64::consts::PI)
+        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)?;
+    radians
+        .mul(two)
+        .and_then(|value| value.mul(degrees))
+        .and_then(|value| value.div(pi))
+        .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput)
+}
+
 pub fn prepare_pole_free_bernstein_certificate_v1(
     power_coefficients: &[RationalCoefficientV1],
     max_degree: usize,
@@ -711,5 +754,39 @@ mod tests {
         let near_poles = HalfAngleDomainV1::prepare([-179.0, 179.0]).unwrap();
         assert!(near_poles.half_angle_tangent().lower() < -100.0);
         assert!(near_poles.half_angle_tangent().upper() > 100.0);
+    }
+
+    #[test]
+    fn pole_free_atan2_encloses_all_strict_quadrants_and_half_angles() {
+        let certificate = |numerator| {
+            prepare_pole_free_bernstein_certificate_v1(
+                &[RationalCoefficientV1 {
+                    numerator,
+                    denominator: 1,
+                }],
+                1,
+                8,
+                4,
+            )
+            .unwrap()
+        };
+        let positive = certificate(1);
+        let negative = certificate(-1);
+        for (y, x, expected) in [
+            (&positive, &positive, core::f64::consts::FRAC_PI_4),
+            (&positive, &negative, 3.0 * core::f64::consts::FRAC_PI_4),
+            (&negative, &negative, -3.0 * core::f64::consts::FRAC_PI_4),
+            (&negative, &positive, -core::f64::consts::FRAC_PI_4),
+        ] {
+            let angle = evaluate_pole_free_atan2_interval_v1(y, x, 512).unwrap();
+            assert!(angle.lower() <= expected && expected <= angle.upper());
+        }
+        let half =
+            evaluate_half_angle_rational_degrees_interval_v1(&positive, &positive, 512).unwrap();
+        assert!(half.lower() <= 90.0 && half.upper() >= 90.0);
+        assert_eq!(
+            evaluate_pole_free_atan2_interval_v1(&positive, &positive, 1),
+            Err(CycleSchedulePrepareErrorV1::ResourceLimit)
+        );
     }
 }

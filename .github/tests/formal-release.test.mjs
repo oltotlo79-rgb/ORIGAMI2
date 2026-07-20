@@ -31,10 +31,23 @@ test('publication binds generated notes tag and immutable remote commit', () => 
   assert.match(publish, /\.name "\$notes_json"\)" = "\$RELEASE_TAG"/u)
   assert.match(publish, /--verify-tag --target "\$RELEASE_COMMIT"/u)
   assert.match(publish, /--notes-file "\$notes_file"/u)
-  assert.doesNotMatch(publish, /--generate-notes|gh release upload|gh release delete/u)
+  assert.doesNotMatch(publish, /--generate-notes|--clobber|gh release delete/u)
   assert.ok(
     publish.indexOf('! gh release view') < publish.indexOf('gh release create'),
   )
+})
+
+test('release publication uses a bounded rollback-safe draft transaction', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const publish = workflow.slice(workflow.indexOf('  publish:'), workflow.indexOf('  promote:'))
+  assert.match(publish, /trap cleanup_partial_draft EXIT/u)
+  assert.match(publish, /--title "ORIGAMI2 \$RELEASE_TAG" --draft/u)
+  assert.match(publish, /timeout 600s gh release upload/u)
+  assert.match(publish, /verify_remote_release_assets\.mjs/u)
+  assert.match(publish, /--draft=false/u)
+  assert.match(publish, /gh api --method DELETE "repos\/\$GH_REPO\/releases\/\$created_release_id"/u)
+  assert.match(publish, /\.target_commitish.*= "\$RELEASE_COMMIT"/u)
+  assert.ok(publish.indexOf('verify_remote_release_assets.mjs') < publish.indexOf('--draft=false'))
 })
 
 test('all workflow actions are immutable SHA-pinned with bounded release jobs', () => {

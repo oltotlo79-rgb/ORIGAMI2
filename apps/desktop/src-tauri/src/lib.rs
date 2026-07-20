@@ -1895,14 +1895,15 @@ fn import_beginner_reference_model(
     let path = selected
         .into_path()
         .map_err(|_| "ローカルGLBを選択してください / Select a local GLB".to_owned())?;
-    let metadata =
-        std::fs::metadata(&path).map_err(|_| "GLBを読み込めません / Could not read GLB".to_owned())?;
+    let metadata = std::fs::metadata(&path)
+        .map_err(|_| "GLBを読み込めません / Could not read GLB".to_owned())?;
     if !metadata.is_file()
         || metadata.len() == 0
         || metadata.len() > ori_formats::MAX_REFERENCE_GLB_BYTES_V1 as u64
     {
-        return Err("GLBは16 MiB以下である必要があります / GLB must be no larger than 16 MiB"
-            .to_owned());
+        return Err(
+            "GLBは16 MiB以下である必要があります / GLB must be no larger than 16 MiB".to_owned(),
+        );
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     File::open(path)
@@ -1930,8 +1931,7 @@ fn import_beginner_reference_model(
             total.saturating_add(asset.bytes.len())
         });
     if retained_total > ori_formats::MAX_PROJECT_REFERENCE_MODEL_ASSET_TOTAL_BYTES
-        || project.reference_model_assets.len()
-            >= ori_formats::MAX_PROJECT_REFERENCE_MODEL_ASSETS
+        || project.reference_model_assets.len() >= ori_formats::MAX_PROJECT_REFERENCE_MODEL_ASSETS
     {
         return Err(
             "参照モデルのプロジェクト上限を超えます / Project reference-model limit exceeded"
@@ -1941,7 +1941,10 @@ fn import_beginner_reference_model(
     let asset_id = AssetId::new();
     project
         .reference_model_assets
-        .push(ori_formats::ProjectReferenceModelAssetV1 { id: asset_id, bytes });
+        .push(ori_formats::ProjectReferenceModelAssetV1 {
+            id: asset_id,
+            bytes,
+        });
     let mut profile = project.editor.beginner_design_profile().clone();
     profile.generation_constraints.target_asset =
         Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id });

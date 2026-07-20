@@ -1299,6 +1299,10 @@ test('release CI evidence rejects duplicate and incomplete check runs', () => {
   assert.match(verifierSource, /retry-after/u)
   assert.match(verifierSource, /x-ratelimit-remaining/u)
   assert.match(verifierSource, /seconds > 30/u)
+  assert.match(verifierSource, /unexpected 304 response/u)
+  assert.match(verifierSource, /response identity changed during retry/u)
+  assert.match(verifierSource, /accept-encoding': 'identity'/u)
+  assert.match(verifierSource, /body is partial or oversized/u)
   const directory = mkdtempSync(join(tmpdir(), 'origami2-ci-evidence-'))
   try {
     const runsPath = join(directory, 'runs.json')

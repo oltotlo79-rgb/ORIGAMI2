@@ -14,6 +14,7 @@ const retryDelay = (response) => {
   return Math.ceil(seconds * 1000)
 }
 async function boundedFetch(url, options, label) {
+  let retryIdentity = null
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     let response
     try {
@@ -23,10 +24,22 @@ async function boundedFetch(url, options, label) {
       await new Promise((resolve) => setTimeout(resolve, attempt * 1000))
       continue
     }
+    if (response.status === 304) throw new Error(`${label} returned an unexpected 304 response`)
+    const responseIdentity = JSON.stringify({
+      etag: response.headers.get('etag'),
+      lastModified: response.headers.get('last-modified'),
+    })
     const delay = retryDelay(response)
     const retryable = response.status === 408 || response.status === 429 || response.status >= 500
       || (response.status === 403 && (delay !== null || response.headers.get('x-ratelimit-remaining') === '0'))
-    if (!retryable || attempt === 3) return response
+    if (!retryable || attempt === 3) {
+      if (retryIdentity !== null && responseIdentity !== retryIdentity) throw new Error(`${label} response identity changed during retry`)
+      return response
+    }
+    if (response.headers.get('etag') !== null || response.headers.get('last-modified') !== null) {
+      if (retryIdentity !== null && retryIdentity !== responseIdentity) throw new Error(`${label} response identity changed during retry`)
+      retryIdentity = responseIdentity
+    }
     await response.body?.cancel()
     await new Promise((resolve) => setTimeout(resolve, delay ?? attempt * 1000))
   }
@@ -45,19 +58,24 @@ async function loadJson(path, url) {
       authorization: `Bearer ${token}`,
       accept: 'application/vnd.github+json',
       'x-github-api-version': '2022-11-28',
+      'accept-encoding': 'identity',
     },
     redirect: 'error',
   }, 'GitHub CI evidence API')
   if (!response.ok) throw new Error(`GitHub CI evidence API failed: ${response.status}`)
+  if (!/^(?:W\/)?"[^"\r\n]{1,200}"$/u.test(response.headers.get('etag') ?? '')) throw new Error('GitHub CI evidence ETag is missing or invalid')
+  if (!['', 'identity'].includes(response.headers.get('content-encoding') ?? '')) throw new Error('GitHub CI evidence content encoding is invalid')
   if ((response.headers.get('link') ?? '').trim() !== '') throw new Error('GitHub CI evidence pagination is forbidden')
-  const text = await response.text()
-  if (text.length > 4_194_304) throw new Error('GitHub CI evidence exceeds the response bound')
-  return JSON.parse(text)
+  const declaredSize = Number(response.headers.get('content-length'))
+  if (!Number.isSafeInteger(declaredSize) || declaredSize < 1 || declaredSize > 4_194_304) throw new Error('GitHub CI evidence content length is invalid')
+  const bytes = Buffer.from(await response.arrayBuffer())
+  if (bytes.length !== declaredSize) throw new Error('GitHub CI evidence body is partial or oversized')
+  return JSON.parse(bytes.toString('utf8'))
 }
 
 async function loadArtifactBytes(path, url) {
   if (path) return readFileSync(path)
-  const headers = { authorization: `Bearer ${process.env.GH_TOKEN}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' }
+  const headers = { authorization: `Bearer ${process.env.GH_TOKEN}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28', 'accept-encoding': 'identity' }
   const initial = await boundedFetch(url, { headers, redirect: 'manual' }, 'GitHub CI artifact API')
   if (![301, 302, 303, 307, 308].includes(initial.status)) throw new Error(`GitHub CI artifact download failed: ${initial.status}`)
   const location = new URL(initial.headers.get('location') ?? '')
@@ -65,8 +83,9 @@ async function loadArtifactBytes(path, url) {
     location.protocol !== 'https:' || location.port !== '' || location.username !== '' || location.password !== ''
     || !['.actions.githubusercontent.com', '.blob.core.windows.net'].some((suffix) => location.hostname.endsWith(suffix))
   ) throw new Error('GitHub CI artifact redirect is invalid')
-  const response = await boundedFetch(location, { redirect: 'error' }, 'GitHub CI artifact storage')
+  const response = await boundedFetch(location, { redirect: 'error', headers: { 'accept-encoding': 'identity' } }, 'GitHub CI artifact storage')
   if (!response.ok) throw new Error(`GitHub CI artifact storage download failed: ${response.status}`)
+  if (!['', 'identity'].includes(response.headers.get('content-encoding') ?? '')) throw new Error('GitHub CI artifact content encoding is invalid')
   const declaredSize = Number(response.headers.get('content-length'))
   if (Number.isFinite(declaredSize) && (declaredSize < 1 || declaredSize > 16_777_216)) throw new Error('GitHub CI artifact size is outside bounds')
   const bytes = Buffer.from(await response.arrayBuffer())

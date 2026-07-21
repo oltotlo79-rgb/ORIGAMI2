@@ -4404,10 +4404,18 @@ mod tests {
     #[test]
     fn rank4_cycle_transports_layer_order_and_applies_atomically() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        for thickness_mm in [0.1, 1.0, 3.0, 10_000.0] {
+        for (columns, rows, thickness_mm) in [
+            (3, 3, 0.1),
+            (3, 3, 1.0),
+            (3, 3, 3.0),
+            (3, 3, 10_000.0),
+            (3, 5, 0.1),
+            (5, 5, 0.1),
+            (5, 9, 0.1),
+        ] {
             let (pattern, mut paper, horizontal, _) =
-                super::dense_grid_cycle_test_support::three_by_three_miura_authority_pattern();
-            let moving = horizontal.into_iter().take(3).collect::<Vec<_>>();
+                super::dense_grid_cycle_test_support::miura_authority_pattern(columns, rows);
+            let moving = horizontal.into_iter().take(columns).collect::<Vec<_>>();
             paper.thickness_mm = thickness_mm;
             let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
             let topology = project
@@ -4438,7 +4446,7 @@ mod tests {
             let transactions =
                 super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
             let schedule_for = |mask: usize| {
-                let mut schedule = dense_grid_schedule(&hinges, &moving, 4);
+                let mut schedule = dense_grid_schedule(&hinges, &moving, 100);
                 for (index, entry) in schedule
                     .entries
                     .iter_mut()

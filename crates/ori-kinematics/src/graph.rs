@@ -1651,6 +1651,13 @@ pub fn enumerate_even_single_vertex_opposite_pairs_v1(
     let count = geometry.hinges().len();
     if !bounded_even_single_vertex_sector_count_v1(geometry.face_ids().len(), count)
         || audit.closure_hinges().len() != 1
+        || geometry
+            .hinges()
+            .iter()
+            .map(TreeHinge::edge)
+            .collect::<HashSet<_>>()
+            .len()
+            != count
     {
         return Err(KinematicsError::UnsupportedTopology);
     }
@@ -3511,13 +3518,95 @@ mod tests {
         );
         assert!(!basis.is_for_geometry(&foreign));
     }
-}
-#[test]
-fn opposite_pair_sector_bound_rejects_odd_mismatched_and_over_limit_graphs() {
-    assert!(bounded_even_single_vertex_sector_count_v1(4, 4));
-    assert!(bounded_even_single_vertex_sector_count_v1(16, 16));
-    assert!(!bounded_even_single_vertex_sector_count_v1(5, 5));
-    assert!(!bounded_even_single_vertex_sector_count_v1(17, 17));
-    assert!(!bounded_even_single_vertex_sector_count_v1(18, 18));
-    assert!(!bounded_even_single_vertex_sector_count_v1(16, 15));
+
+    #[test]
+    fn opposite_pair_sector_bound_rejects_odd_mismatched_and_over_limit_graphs() {
+        assert!(bounded_even_single_vertex_sector_count_v1(4, 4));
+        assert!(bounded_even_single_vertex_sector_count_v1(16, 16));
+        assert!(!bounded_even_single_vertex_sector_count_v1(5, 5));
+        assert!(!bounded_even_single_vertex_sector_count_v1(17, 17));
+        assert!(!bounded_even_single_vertex_sector_count_v1(18, 18));
+        assert!(!bounded_even_single_vertex_sector_count_v1(16, 15));
+    }
+
+    #[test]
+    fn four_sector_auto_discovery_rejects_assignment_axis_and_resource_tamper() {
+        let namespace = ProjectId::new();
+        let faces = [b"a", b"b", b"c", b"d"].map(|name| FaceId::derive_v5(namespace, name));
+        let edges = [b"ab", b"bc", b"cd", b"da"].map(|name| EdgeId::derive_v5(namespace, name));
+        let topology = topology(
+            &faces,
+            &[
+                (edges[0], faces[0], faces[1]),
+                (edges[1], faces[1], faces[2]),
+                (edges[2], faces[2], faces[3]),
+                (edges[3], faces[3], faces[0]),
+            ],
+        );
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        let origin = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let axes = [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)];
+        let make = |assignment_tamper: bool, axis_tamper: bool| {
+            let hinges = (0..4)
+                .map(|index| {
+                    let (x, y) = if axis_tamper && index == 2 {
+                        (1.0, 0.0)
+                    } else {
+                        axes[index]
+                    };
+                    let axis = Point3::new(x, y, 0.0).unwrap();
+                    TreeHinge::new_for_test(
+                        edges[index],
+                        if assignment_tamper && index == 2 {
+                            FoldAssignment::Valley
+                        } else {
+                            FoldAssignment::Mountain
+                        },
+                        faces[index],
+                        faces[(index + 1) % 4],
+                        origin,
+                        axis,
+                        axis,
+                    )
+                })
+                .collect::<Vec<_>>();
+            MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), hinges)
+        };
+        let discovered =
+            enumerate_even_single_vertex_opposite_pairs_v1(&make(false, false), &audit, 6).unwrap();
+        assert_eq!(discovered.len(), 2);
+        assert!(matches!(
+            enumerate_even_single_vertex_opposite_pairs_v1(&make(false, false), &audit, 5),
+            Err(KinematicsError::ResourceLimitExceeded)
+        ));
+        assert_eq!(
+            enumerate_even_single_vertex_opposite_pairs_v1(&make(true, false), &audit, 6)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            enumerate_even_single_vertex_opposite_pairs_v1(&make(false, true), &audit, 6)
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut duplicate_hinges = make(false, false).hinges().to_vec();
+        duplicate_hinges[3] = TreeHinge::new_for_test(
+            edges[0],
+            FoldAssignment::Mountain,
+            faces[3],
+            faces[0],
+            origin,
+            Point3::new(0.0, -1.0, 0.0).unwrap(),
+            Point3::new(0.0, -1.0, 0.0).unwrap(),
+        );
+        let duplicate =
+            MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), duplicate_hinges);
+        assert!(matches!(
+            enumerate_even_single_vertex_opposite_pairs_v1(&duplicate, &audit, 6),
+            Err(KinematicsError::UnsupportedTopology)
+        ));
+    }
 }

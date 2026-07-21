@@ -2674,6 +2674,31 @@ mod tests {
         serde_json::from_str(&format!("\"00000000-0000-4000-{group}-{index:012x}\"")).unwrap()
     }
 
+    fn automatic_opposite_pairs(
+        project: &super::super::ProjectState,
+        snapshot: &ori_topology::TopologySnapshot,
+    ) -> Vec<[ori_domain::EdgeId; 2]> {
+        let geometry = ori_kinematics::MaterialHingeGraphGeometry::prepare(
+            project.editor.pattern(),
+            project.editor.paper(),
+            snapshot,
+            ori_kinematics::TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        let audit = ori_kinematics::MaterialHingeGraphAudit::prepare(
+            snapshot,
+            ori_kinematics::TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        let count = geometry.hinges().len();
+        ori_kinematics::enumerate_even_single_vertex_opposite_pairs_v1(
+            &geometry,
+            &audit,
+            count * (count - 1) / 2,
+        )
+        .unwrap()
+    }
+
     fn two_hinge_tree_project() -> super::super::ProjectState {
         use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
         let points = [
@@ -4543,6 +4568,27 @@ mod tests {
         let snapshot = topology.simulation_snapshot().unwrap();
         assert_eq!(snapshot.faces.len(), 6);
         assert_eq!(snapshot.hinge_adjacency.len(), 6);
+        let discovered = automatic_opposite_pairs(&project, &snapshot);
+        assert!(
+            discovered
+                .iter()
+                .any(|pair| pair.iter().all(|edge| moving.contains(edge)))
+        );
+        let mut reordered_pattern = project.editor.pattern().clone();
+        reordered_pattern.edges.reverse();
+        let reordered = super::super::ProjectState::new_with_paper(
+            reordered_pattern,
+            project.editor.paper().clone(),
+        );
+        let reordered_analysis = reordered
+            .editor
+            .topology_analysis_input(reordered.project_id)
+            .analyze();
+        let reordered_snapshot = reordered_analysis.simulation_snapshot().unwrap();
+        assert_eq!(
+            automatic_opposite_pairs(&reordered, &reordered_snapshot),
+            discovered
+        );
         let hinges = snapshot
             .hinge_adjacency
             .iter()
@@ -4700,6 +4746,11 @@ mod tests {
         let snapshot = topology.simulation_snapshot().unwrap();
         assert_eq!(snapshot.faces.len(), 8);
         assert_eq!(snapshot.hinge_adjacency.len(), 8);
+        assert!(
+            automatic_opposite_pairs(&project, &snapshot)
+                .iter()
+                .any(|pair| pair.iter().all(|edge| moving.contains(edge)))
+        );
         let hinges = snapshot
             .hinge_adjacency
             .iter()
@@ -5275,6 +5326,40 @@ mod tests {
                 project.editor.redo(undone).unwrap();
                 assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
                 if cycle_count == 16 {
+                    let pose = project.editor.current_applied_pose().unwrap();
+                    let fixed_face = pose.fixed_face().unwrap();
+                    let angles = ori_kinematics::CanonicalHingeAngles::new(
+                        pose.hinge_angles()
+                            .iter()
+                            .map(|angle| {
+                                ori_kinematics::HingeAngle::new(angle.edge(), angle.angle_degrees())
+                                    .unwrap()
+                            })
+                            .collect(),
+                    )
+                    .unwrap();
+                    let flat =
+                        super::super::global_flat_foldability::reanalyze_current_flat_layer_order(
+                            &project,
+                        )
+                        .unwrap();
+                    let proof = ori_core::revalidate_current_graph_non_flat_layer_order_v1(
+                        project.project_id,
+                        project.editor.revision(),
+                        project.editor.pattern(),
+                        project.editor.paper(),
+                        fixed_face,
+                        &angles,
+                        &flat,
+                        None,
+                        ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+                    )
+                    .unwrap();
+                    project.current_layer_evidence = Some(
+                        super::super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(
+                            proof,
+                        ),
+                    );
                     let archive = project
                         .project_archive()
                         .expect("serialize positive-thickness C16 cycle");

@@ -29,6 +29,7 @@ function Harness() {
   const [glbWitness, setGlbWitness] = useState<{ bounds: string, bulges: number, discrepancy: number } | null>(null)
   const [mergedAuthorities, setMergedAuthorities] = useState(false)
   const [authorityValid, setAuthorityValid] = useState(true)
+  const [imageDecode, setImageDecode] = useState<string | null>(null)
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
     + bindings.reduce((sum, target) => sum + Math.max(0, (target.local_outline_tenths_mm?.length ?? 3) - 3), 0))
@@ -77,6 +78,12 @@ function Harness() {
     setKinds(['tail', 'fin'])
     setRecognized(true); setPreview(false); setCandidateShortage(false); setStatus(`${source} recognized two bounded bindings`)
     setMergedAuthorities(false)
+    if (source === 'Image' || source === 'JPEG EXIF') {
+      setOutlineMode('general'); setOutline([[-50, -40], [50, -40], [45, 40], [-40, 40]])
+      setBindings(initialBindings.map((target, index) => index === 0 ? { ...target,
+        local_outline_tenths_mm: [[-18, -8], [18, -8], [0, 28]] } : { ...target }))
+      setImageDecode(source === 'JPEG EXIF' ? 'JPEG RGB · EXIF orientation 6 normalized' : 'PNG RGBA · alpha/luminance mask')
+    } else setImageDecode(null)
     if (source === 'GLB') {
       setOutlineMode('general'); setOutline([[-60, -40], [60, -40], [55, 40], [-50, 40]])
       setBindings(initialBindings.map((target) => ({ ...target,
@@ -87,6 +94,9 @@ function Harness() {
   return <main><h1>Bounded generic target</h1>
     <button onClick={() => recognize('Empty generic target')}>Create empty generic target</button>
     <button onClick={() => recognize('Image')}>Recognize mixed target image</button>
+    <button onClick={() => recognize('JPEG EXIF')}>Recognize EXIF JPEG silhouette</button>
+    <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected image: decoded pixel resource limit') }}>Try oversized decoded image</button>
+    <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected image: stale decoded asset') }}>Try stale decoded image</button>
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
     <button onClick={() => {
       setRecognized(true); setPreview(false); setCandidateShortage(false); setMergedAuthorities(true)
@@ -123,6 +133,7 @@ function Harness() {
     }}>Try strict dense contour</button>
     <p role="status">{status}</p>
     {recognized && <p>Contour approximation score: {contourScore}</p>}
+    {imageDecode && <p>Decoded image preview: {imageDecode} · body {outline.length} · local 1:3</p>}
     {glbWitness && <section aria-label="GLB geometry witness">
       <p>3D bounds {glbWitness.bounds} · 2D silhouette difference {glbWitness.discrepancy}% · bulge targets {glbWitness.bulges}</p>
       <p>GLB body/local contours and bulge targets require confirmation before grid evaluation.</p>
@@ -172,6 +183,7 @@ function Harness() {
       <button aria-pressed={selectedCandidate === 1} onClick={() => setSelectedCandidate(1)}>Select contour candidate 1</button>
       <button aria-pressed={selectedCandidate === 2} onClick={() => setSelectedCandidate(2)}>Select contour candidate 2</button>
       <p>Contour placement witness candidate {selectedCandidate}: body {outline.length || 4}, local {bindings.filter((binding) => binding.local_outline_tenths_mm).map((binding) => `${binding.id}:${binding.local_outline_tenths_mm!.length}`).join(', ') || 'none'}</p>
+      {imageDecode && <p>Image silhouette grid witness: {imageDecode}</p>}
       {glbWitness && <p>GLB evaluation witness: bounds {glbWitness.bounds}, silhouette difference {glbWitness.discrepancy}%, bulges {glbWitness.bulges}</p>}
       {mergedAuthorities && <p>Merged authority witness: image contours + GLB depth/bulges</p>}
       {mergedAuthorities && <p>3D candidate score {threeDimensionalScore}/100 · bounded depth error {depthError} mm</p>}
@@ -190,6 +202,7 @@ function Harness() {
     {applied && <section aria-label="Generic target history">
       <p>Applied synthesized candidate set: {synthesizedCandidateCount} bounded designs</p>
       <p>Applied contour placement witness candidate {selectedCandidate}</p>
+      {imageDecode && <p>Applied image silhouette authority: {imageDecode}</p>}
       {glbWitness && <p>Applied GLB witness: bounds {glbWitness.bounds}, bulges {glbWitness.bulges}</p>}
       {mergedAuthorities && <p>Applied merged authority witness: image contours + GLB depth/bulges</p>}
       {mergedAuthorities && <p>Applied 3D candidate score {threeDimensionalScore}/100 · depth error {depthError} mm</p>}

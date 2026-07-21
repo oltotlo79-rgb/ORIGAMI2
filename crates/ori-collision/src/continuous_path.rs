@@ -1634,8 +1634,12 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
         schedule
             .collective_profile_edges_v1()
             .or_else(|| schedule.collective_half_angle_profile_edges_v1())
+            .or_else(|| equal_endpoint_moving_edges_v1(schedule))
             .is_some_and(|moving| {
-                moving.len() == rows * (columns - 1) || moving.len() == columns * (rows - 1)
+                moving.len() == rows * (columns - 1)
+                    || moving.len() == columns * (rows - 1)
+                    || ((moving.len() == columns || moving.len() == rows)
+                        && moving_edges_are_collinear_v1(geometry, &moving))
             })
     }) && [0.0, 0.5, 1.0].into_iter().all(|progress| {
         schedule.evaluate(progress).is_some_and(|angles| {
@@ -1784,6 +1788,60 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
         pair_work: work,
         positive_thickness_bits: paper_thickness_mm.map(f64::to_bits),
     }
+}
+
+fn equal_endpoint_moving_edges_v1(
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+) -> Option<Vec<EdgeId>> {
+    let initial = schedule.evaluate(0.0)?;
+    let target = schedule.evaluate(1.0)?;
+    let initial_by_edge = initial
+        .as_slice()
+        .iter()
+        .map(|angle| (angle.edge(), angle.angle_degrees().to_bits()))
+        .collect::<HashMap<_, _>>();
+    let moving = target
+        .as_slice()
+        .iter()
+        .filter(|angle| {
+            initial_by_edge.get(&angle.edge()).copied() != Some(angle.angle_degrees().to_bits())
+        })
+        .map(|angle| angle.edge())
+        .collect::<Vec<_>>();
+    let common = target
+        .as_slice()
+        .iter()
+        .find(|angle| moving.contains(&angle.edge()))?
+        .angle_degrees()
+        .to_bits();
+    (!moving.is_empty()
+        && target.as_slice().iter().all(|angle| {
+            !moving.contains(&angle.edge()) || angle.angle_degrees().to_bits() == common
+        }))
+    .then_some(moving)
+}
+
+fn moving_edges_are_collinear_v1(geometry: &MaterialHingeGraphGeometry, moving: &[EdgeId]) -> bool {
+    let hinges = geometry
+        .hinges()
+        .iter()
+        .filter(|hinge| moving.contains(&hinge.edge()))
+        .collect::<Vec<_>>();
+    hinges.first().is_some_and(|reference| {
+        hinges.iter().all(|hinge| {
+            exact_collinear_line(
+                reference.start(),
+                reference.axis(),
+                hinge.start(),
+                hinge.axis(),
+            ) && exact_collinear_line(
+                reference.start(),
+                reference.axis(),
+                hinge.end(),
+                hinge.axis(),
+            )
+        })
+    })
 }
 
 fn theta_collective_axis_continuous_premises_v1(
@@ -7970,7 +8028,7 @@ mod tests {
                     },
                 ],
                 denominator_power_coefficients: vec![ori_kinematics::RationalCoefficientV1 {
-                    numerator: 1,
+                    numerator: if active.contains(edge) { 100 } else { 1 },
                     denominator: 1,
                 }],
             })
@@ -7999,5 +8057,59 @@ mod tests {
             )
             .unwrap();
         assert!(closure.every_leaf_covers_graph_v1(&geometry));
+        let expected_pairs = geometry.face_ids().len() * (geometry.face_ids().len() - 1) / 2;
+        for thickness in [0.1, 1.0, 3.0] {
+            let diagnostic = diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+                &geometry, &audit, fixed, &schedule, &closure, thickness, 1,
+            );
+            assert!(diagnostic.continuous_certificate_model_id().is_some());
+            assert_eq!(diagnostic.pair_work(), expected_pairs);
+            assert_eq!(
+                diagnostic.positive_thickness_bits(),
+                Some(thickness.to_bits())
+            );
+        }
+        assert!(
+            diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+                &geometry, &audit, fixed, &schedule, &closure, 10_000.0, 1,
+            )
+            .continuous_certificate_model_id()
+            .is_none()
+        );
+        let initial_pose = geometry
+            .solve_closed(&audit, fixed, &schedule.evaluate(0.0).unwrap(), 1.0e-9)
+            .unwrap();
+        assert!(matches!(
+            prove_positive_thickness_graph_geometry_v1(
+                &geometry,
+                &initial_pose,
+                0.1,
+                PositiveThicknessGraphLimitsV1 {
+                    max_unordered_face_pairs: expected_pairs - 1,
+                    ..PositiveThicknessGraphLimitsV1::default()
+                },
+            ),
+            Err(crate::PositiveThicknessGraphProofErrorV1::ResourceLimit)
+        ));
+        let foreign_geometry = MaterialHingeGraphGeometry::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        assert!(
+            diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+                &foreign_geometry,
+                &audit,
+                fixed,
+                &schedule,
+                &closure,
+                0.1,
+                1,
+            )
+            .continuous_certificate_model_id()
+            .is_none()
+        );
     }
 }

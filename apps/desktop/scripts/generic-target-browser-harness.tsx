@@ -24,6 +24,8 @@ function Harness() {
   const [kinds, setKinds] = useState<Array<'leg' | 'horn' | 'ear' | 'wing' | 'fin' | 'antenna' | 'tail'>>(['tail', 'fin'])
   const [outline, setOutline] = useState<Array<[number, number]>>([])
   const [outlineMode, setOutlineMode] = useState<'symmetric' | 'general'>('symmetric')
+  const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
+    + bindings.reduce((sum, target) => sum + Math.max(0, (target.local_outline_tenths_mm?.length ?? 3) - 3), 0))
   const evaluate = useRef<HTMLButtonElement>(null)
   const focus = () => requestAnimationFrame(() => evaluate.current?.focus())
   const canonicalize = (targets: typeof bindings) => targets.map(
@@ -54,12 +56,13 @@ function Harness() {
       onCopy={() => {
         recognize('Image contour proposal')
         setBindings(initialBindings.map((target, index) => index === 0
-          ? { ...target, local_outline_tenths_mm: [[-20, -10], [20, -10], [0, 20]] }
+          ? { ...target, local_outline_tenths_mm: [[-20, -10], [0, -20], [20, -10], [10, 20], [-10, 20]] }
           : { ...target }))
         setOutlineMode('general'); setOutline([[-50, -50], [50, -50], [40, 50], [-30, 50]])
       }} />
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected: target exceeds eight bindings') }}>Try oversized target</button>
     <p role="status">{status}</p>
+    {recognized && <p>Contour approximation score: {contourScore}</p>}
     {recognized && <GenericBodyOutlineEditor locale="en" points={outline} onChange={setOutline}
       mode={outlineMode} onModeChange={setOutlineMode} />}
     {recognized && <BeginnerShapeCanvasPreview locale="en" bodySize={[400, 300]}

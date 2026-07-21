@@ -1196,7 +1196,9 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
                 hinge.start()
             };
             let x = endpoint.x() - center.x();
-            let y = endpoint.y() - center.y();
+            // Material geometry embeds the source sheet in the native X/Z
+            // plane; Y is the out-of-sheet axis used by folded poses.
+            let y = endpoint.z() - center.z();
             let length_squared = x.mul_add(x, y * y);
             (length_squared > 0.0)
                 .then_some((hinge.edge(), x, y, length_squared))
@@ -2047,9 +2049,9 @@ mod tests {
         let start = Point3::new(0.0, 0.0, 0.0).unwrap();
         let ends = [
             Point3::new(1.0, 0.0, 0.0).unwrap(),
-            Point3::new(-0.5, 0.866_025_403_784_438_6, 0.0).unwrap(),
-            Point3::new(-0.5, -0.866_025_403_784_438_6, 0.0).unwrap(),
-            Point3::new(0.5, -0.866_025_403_784_438_6, 0.0).unwrap(),
+            Point3::new(-0.5, 0.0, 0.866_025_403_784_438_6).unwrap(),
+            Point3::new(-0.5, 0.0, -0.866_025_403_784_438_6).unwrap(),
+            Point3::new(0.5, 0.0, -0.866_025_403_784_438_6).unwrap(),
         ];
         let geometry = MaterialHingeGraphGeometry::new_for_test(
             faces.to_vec(),

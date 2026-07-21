@@ -1969,6 +1969,7 @@ fn certify_beginner_fold_path_v1(
         };
         let schedule_limits = ori_kinematics::CycleScheduleLimitsV1 {
             max_degree: 1,
+            max_work: 1_048_576,
             ..ori_kinematics::CycleScheduleLimitsV1::default()
         };
         let closure = geometry
@@ -1976,10 +1977,10 @@ fn certify_beginner_fold_path_v1(
                 &audit,
                 fixed_face,
                 generated.schedule(),
-                ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                1.0e-8,
                 ori_kinematics::DyadicIntervalClosureLimitsV1 {
-                    max_depth: 8,
-                    max_leaves: 256,
+                    max_depth: 16,
+                    max_leaves: 65_536,
                     max_work: schedule_limits.max_work,
                     schedule_limits,
                 },
@@ -1999,11 +2000,11 @@ fn certify_beginner_fold_path_v1(
                 &generated,
                 &closure,
                 paper.thickness_mm,
-                8,
+                32,
             )
         } else if paper.thickness_mm == 0.0 {
             ori_collision::diagnose_scheduled_cycle_path_v1(
-                &geometry, &audit, fixed_face, &generated, &closure, 8,
+                &geometry, &audit, fixed_face, &generated, &closure, 32,
             )
         } else {
             return None;
@@ -15130,6 +15131,59 @@ mod tests {
                 .topology_analysis_input(ProjectId::new())
                 .analyze();
             let topology = topology.simulation_snapshot().expect("cyclic topology");
+            let geometry = ori_kinematics::MaterialHingeGraphGeometry::prepare(
+                &pattern,
+                &paper,
+                topology,
+                ori_kinematics::TreeKinematicsLimits::default(),
+            )
+            .expect("cyclic geometry");
+            let audit = ori_kinematics::MaterialHingeGraphAudit::prepare(
+                topology,
+                ori_kinematics::TreeKinematicsLimits::default(),
+            )
+            .expect("cyclic audit");
+            let fixed = geometry.face_ids()[0];
+            let generated = ori_kinematics::generate_kawasaki_120_120_60_60_path_candidate_v1(
+                &geometry,
+                &audit,
+                fixed,
+                ori_kinematics::CycleScheduleLimitsV1::default(),
+            )
+            .expect("native Kawasaki schedule");
+            let closure = geometry
+                .prove_dyadic_schedule_closure_v1(
+                    &audit,
+                    fixed,
+                    generated.schedule(),
+                    1.0e-8,
+                    ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                        max_depth: 16,
+                        max_leaves: 65_536,
+                        max_work: 1_048_576,
+                        schedule_limits: ori_kinematics::CycleScheduleLimitsV1::default(),
+                    },
+                )
+                .expect("native Kawasaki closure");
+            let path = if thickness_mm > 0.0 {
+                ori_collision::diagnose_scheduled_positive_thickness_cycle_path_v1(
+                    &geometry,
+                    &audit,
+                    fixed,
+                    &generated,
+                    &closure,
+                    thickness_mm,
+                    32,
+                )
+            } else {
+                ori_collision::diagnose_scheduled_cycle_path_v1(
+                    &geometry, &audit, fixed, &generated, &closure, 32,
+                )
+            };
+            assert!(
+                path.continuous_certificate_model_id().is_some(),
+                "native Kawasaki CCD at {thickness_mm} mm"
+            );
             let plan = ori_domain::BeginnerGeneratedPlanV1 {
                 schema_version: 1,
                 kind: ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase,

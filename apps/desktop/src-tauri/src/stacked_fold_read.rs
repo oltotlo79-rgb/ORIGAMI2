@@ -3710,6 +3710,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parametric_oblique_dense_static_authority_is_available_on_desktop() {
+        for angle_degrees in [30.0, 45.0, 120.0] {
+            for thickness_mm in [0.1, 1.0, 3.0] {
+                let (pattern, mut paper, _, _) =
+                    super::dense_grid_cycle_test_support::angled_dense_cycle_pattern(
+                        3,
+                        3,
+                        angle_degrees,
+                    );
+                paper.thickness_mm = thickness_mm;
+                let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+                let topology = project
+                    .editor
+                    .topology_analysis_input(project.project_id)
+                    .analyze();
+                let snapshot = topology.simulation_snapshot().unwrap();
+                let hinges = snapshot
+                    .hinge_adjacency
+                    .iter()
+                    .map(|hinge| hinge.edge)
+                    .collect();
+                let fixed = snapshot.faces[0].id;
+                super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+                    &mut project,
+                    hinges,
+                    fixed,
+                );
+                let state = AppState::new(project);
+                assert!(
+                    crate::applied_pose::certify_current_static_collision(
+                        &state,
+                        ori_collision::StaticCollisionLimits::default(),
+                    )
+                    .expect("parametric oblique static diagnosis")
+                    .is_some()
+                );
+            }
+        }
+    }
+
     fn four_bay_cycle_schedule(hinges: &[ori_domain::EdgeId]) -> CycleScheduleRequestV1 {
         let triples = [
             (3, 5),

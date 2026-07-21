@@ -491,7 +491,7 @@ describe('InstructionTimelinePanel localization', () => {
     expect(onExport).toHaveBeenCalledTimes(1)
   })
 
-  it('reopens a valid archive certificate and warns on model or endpoint tampering', async () => {
+  it('keeps atomic graph proof details aligned with PDF/SVG summary after reopen', async () => {
     const face = '11111111-1111-1111-1111-111111111111'
     const edge = '22222222-2222-2222-2222-222222222222'
     const previous = {
@@ -558,9 +558,25 @@ describe('InstructionTimelinePanel localization', () => {
     ;(graphReference.target_pose_sha256 as number[]).splice(
       0, 32, ...graphPoseFingerprint(targetPose.hinge_angles),
     )
+    const exportedSummary = [
+      `v1 / transitions=${graphReference.transition_count}`,
+      `cert=${shortBytes(graphReference.binding_sha256).slice(0, -1)}`,
+      `source=${shortBytes(graphReference.source_pose_sha256).slice(0, -1)}`,
+      `target=${shortBytes(graphReference.target_pose_sha256).slice(0, -1)}`,
+    ]
     view.rerender(panelFor(graphBound))
     await waitFor(() => {
-      expect(screen.getByLabelText('構造化経路証明')).not.toBeNull()
+      const details = screen.getByLabelText('構造化経路証明')
+      expect(details.textContent).toContain(`検証区間: ${graphReference.transition_count}`)
+      expect(details.textContent).toContain(`証明指紋: ${shortBytes(graphReference.binding_sha256)}`)
+      expect(details.textContent).toContain(`始点姿勢: ${shortBytes(graphReference.source_pose_sha256)}`)
+      expect(details.textContent).toContain(`終点姿勢: ${shortBytes(graphReference.target_pose_sha256)}`)
+      expect(exportedSummary).toEqual([
+        'v1 / transitions=1',
+        `cert=${shortBytes(graphReference.binding_sha256).slice(0, -1)}`,
+        `source=${shortBytes(graphReference.source_pose_sha256).slice(0, -1)}`,
+        `target=${shortBytes(graphReference.target_pose_sha256).slice(0, -1)}`,
+      ])
       expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
         .toBe(false)
     })

@@ -43,8 +43,8 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard, OnceLock,
     },
 };
 
@@ -77,104 +77,106 @@ impl Drop for BeginnerGridWorkRegistration {
 }
 
 use applied_pose::{
-    ApplyCurrentNativePoseResponse, CurrentAppliedPoseAuthority,
-    CurrentStaticCollisionDiagnosticResponse, NativePoseRequest,
     apply_current_native_pose as apply_current_native_pose_authority, commit_project_replacement,
     inspect_current_static_collision as inspect_current_static_collision_authority,
-    restore_persisted_current_pose,
+    restore_persisted_current_pose, ApplyCurrentNativePoseResponse, CurrentAppliedPoseAuthority,
+    CurrentStaticCollisionDiagnosticResponse, NativePoseRequest,
 };
 use crease_export::{
-    CreaseExportState, cancel_crease_pattern_export, preview_crease_pattern_export,
-    save_crease_pattern_export,
+    cancel_crease_pattern_export, preview_crease_pattern_export, save_crease_pattern_export,
+    CreaseExportState,
 };
 use diagnostics::{
-    DiagnosticsState, prepare_diagnostics_share_preview, record_unexpected_diagnostic,
-    save_diagnostics_share_preview,
+    prepare_diagnostics_share_preview, record_unexpected_diagnostic,
+    save_diagnostics_share_preview, DiagnosticsState,
 };
 use fold_3d_frames_import::{
-    Fold3dFramesImportState, apply_fold_3d_applied_pose, apply_fold_3d_instruction_timeline,
-    cancel_fold_3d_frames, prepare_fold_3d_applied_pose, prepare_fold_3d_instruction_timeline,
-    preview_fold_3d_frames, select_fold_3d_frame,
+    apply_fold_3d_applied_pose, apply_fold_3d_instruction_timeline, cancel_fold_3d_frames,
+    prepare_fold_3d_applied_pose, prepare_fold_3d_instruction_timeline, preview_fold_3d_frames,
+    select_fold_3d_frame, Fold3dFramesImportState,
 };
 use fold_technique_file_io::{
-    FoldTechniqueFileIoState, open_fold_technique_file, save_fold_technique_file_as,
+    open_fold_technique_file, save_fold_technique_file_as, FoldTechniqueFileIoState,
 };
 use global_flat_foldability::{
-    GlobalFlatFoldabilityState, begin_global_flat_foldability, cancel_global_flat_foldability,
-    get_current_layer_order_view, get_global_flat_foldability_progress,
-    get_global_flat_foldability_result,
+    begin_global_flat_foldability, cancel_global_flat_foldability, get_current_layer_order_view,
+    get_global_flat_foldability_progress, get_global_flat_foldability_result,
+    GlobalFlatFoldabilityState,
 };
 use history_settings::{get_history_entry_limit, set_history_entry_limit};
 use instruction_export::{
-    InstructionExportState, begin_instruction_export, cancel_instruction_export,
-    get_instruction_export_progress, preview_instruction_export, save_instruction_export,
+    begin_instruction_export, cancel_instruction_export, get_instruction_export_progress,
+    preview_instruction_export, save_instruction_export, InstructionExportState,
 };
 use mesh_animation_export::{
-    MeshAnimationExportState, cancel_instruction_mesh_animation,
-    preview_instruction_mesh_animation, save_instruction_mesh_animation,
+    cancel_instruction_mesh_animation, preview_instruction_mesh_animation,
+    save_instruction_mesh_animation, MeshAnimationExportState,
 };
 use mesh_export::{
-    StaticMeshExportState, cancel_static_mesh_export, preview_static_mesh_export,
-    save_static_mesh_export,
+    cancel_static_mesh_export, preview_static_mesh_export, save_static_mesh_export,
+    StaticMeshExportState,
 };
 use numeric_expression::{
-    PositiveMillimetrePairError, evaluate_finite_millimetre_pair, evaluate_numeric_expression,
+    evaluate_finite_millimetre_pair, evaluate_numeric_expression,
     evaluate_positive_millimetre_pair, evaluate_positive_millimetre_pair_in_worker,
+    PositiveMillimetrePairError,
 };
 use ori_core::{
-    BoundaryEdgeRef, Command, ConstraintPreflightV1, ConstraintSolveLimitsV1,
-    DirectConstraintConflictV1, EditorState, EditorTopology, GeometricConstraintLimitsV1,
-    GeometricConstraintUnknownReasonV1, GlobalFlatFoldabilityCheckpoint,
-    GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, GlobalFlatFoldabilityObserver,
-    GlobalFlatFoldabilityOutcome, GlobalFlatFoldabilityUnknownReason, IntersectionEdgeTarget,
-    JunctionVertexIntent, LocalFlatFoldabilityReport, LocalFlatFoldabilityReportStatus,
-    MAX_EDITOR_HISTORY_ENTRIES, MirrorAxisV1, MirrorSelectionModeV1, PaperValidationIssue,
-    PointPolygonRelation, TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
-    VertexPositionUpdate, analyze_global_flat_foldability_with_observer,
-    analyze_local_flat_foldability, create_rectangular_sheet, prepare_geometric_constraints_v1,
-    segment_midpoint_polygon_relation, solve_geometric_constraints_v1,
-    solve_geometric_constraints_with_drivers_v1, validate_crease_pattern, validate_paper,
+    analyze_global_flat_foldability_with_observer, analyze_local_flat_foldability,
+    create_rectangular_sheet, prepare_geometric_constraints_v1, segment_midpoint_polygon_relation,
+    solve_geometric_constraints_v1, solve_geometric_constraints_with_drivers_v1,
+    validate_crease_pattern, validate_paper, BoundaryEdgeRef, Command, ConstraintPreflightV1,
+    ConstraintSolveLimitsV1, DirectConstraintConflictV1, EditorState, EditorTopology,
+    GeometricConstraintLimitsV1, GeometricConstraintUnknownReasonV1,
+    GlobalFlatFoldabilityCheckpoint, GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits,
+    GlobalFlatFoldabilityObserver, GlobalFlatFoldabilityOutcome,
+    GlobalFlatFoldabilityUnknownReason, IntersectionEdgeTarget, JunctionVertexIntent,
+    LocalFlatFoldabilityReport, LocalFlatFoldabilityReportStatus, MirrorAxisV1,
+    MirrorSelectionModeV1, PaperValidationIssue, PointPolygonRelation, TopologyAnalysisInput,
+    TopologyIssue, TopologySnapshot, ValidationIssue, VertexPositionUpdate,
+    MAX_EDITOR_HISTORY_ENTRIES,
 };
 use ori_domain::{
     AssetId, ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
     GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionHingeAngle, InstructionPose,
     InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline,
-    InstructionVisual, LayerContentKindV1, LayerId, LayerRecordV1, LengthDisplayUnit,
-    MAX_INSTRUCTION_HINGES_PER_STEP, MAX_INSTRUCTION_STEPS, Paper, Point2, ProjectId,
-    ProjectLayerDocumentV1, RgbaColor, VertexId,
+    InstructionVisual, LayerContentKindV1, LayerId, LayerRecordV1, LengthDisplayUnit, Paper,
+    Point2, ProjectId, ProjectLayerDocumentV1, RgbaColor, VertexId,
+    MAX_INSTRUCTION_HINGES_PER_STEP, MAX_INSTRUCTION_STEPS,
 };
 use ori_formats::{
-    CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldBoundaryCandidateId,
-    FoldBoundaryCandidateSource, FoldConversionOptions, FoldEdgeAssignment, FoldFrameUnit,
-    FoldPreview, FoldPreviewWarning, MAX_PROJECT_TEXTURE_ASSET_BYTES,
-    MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES, Ori2ProjectArchive, PolarVertexConstructionExpressions,
-    ProjectDocument, ProjectNumericExpressions, ProjectTextureAssetV1, ProjectTextureMediaTypeV1,
+    generate_project_thumbnail_svg, read_fold_preview, read_svg_preview, FoldAssignmentMapping,
+    FoldAssignmentTarget, FoldBoundaryCandidateId, FoldBoundaryCandidateSource,
+    FoldConversionOptions, FoldEdgeAssignment, FoldFrameUnit, FoldPreview, FoldPreviewWarning,
+    Ori2ProjectArchive, PolarVertexConstructionExpressions, ProjectDocument,
+    ProjectNumericExpressions, ProjectTextureAssetV1, ProjectTextureMediaTypeV1,
     RectangularPaperCreationExpressions, SvgBoundaryCandidateId, SvgBoundaryCandidateKind,
     SvgConversionOptions, SvgDashPattern, SvgGroupMapping, SvgGroupTarget, SvgLineCap, SvgPreview,
     SvgPreviewWarning, SvgRootPhysicalSize, SvgRootViewBox, SvgStyleGroupId, SvgWarningKind,
     VertexCoordinateExpressionChange, VertexCoordinateExpressionTransition,
-    VertexCoordinateExpressions, generate_project_thumbnail_svg, read_fold_preview,
-    read_svg_preview,
+    VertexCoordinateExpressions, CURRENT_FORMAT_VERSION, MAX_PROJECT_TEXTURE_ASSET_BYTES,
+    MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES,
 };
-use project_folder_io::{ProjectFolderIoState, open_project_folder, save_project_folder_as};
-#[cfg(test)]
-use project_persistence::{
-    PROJECT_FILE_INVALID_MESSAGE, PROJECT_FILE_OPEN_FAILED_MESSAGE, PROJECT_FILE_TOO_LARGE_MESSAGE,
-    PROJECT_INSTRUCTIONS_INVALID_MESSAGE, PROJECT_INSTRUCTIONS_SAVE_FAILED_MESSAGE,
-    containing_directory, load_document_from_path, persist_document, persist_project_archive,
-    verify_generated_ori2,
-};
-use project_persistence::{
-    PROJECT_FILE_INVALID_MESSAGE as PROJECT_ARCHIVE_INVALID_MESSAGE,
-    PROJECT_SERIALIZATION_FAILED_MESSAGE, StagedFile, create_staged_file,
-    load_project_archive_from_path, persist_project_archive_to_destination,
-};
+use project_folder_io::{open_project_folder, save_project_folder_as, ProjectFolderIoState};
 #[cfg(all(test, not(target_os = "windows")))]
 use project_persistence::{commit_unix_staged_project_file, prepare_staged_file};
+#[cfg(test)]
+use project_persistence::{
+    containing_directory, load_document_from_path, persist_document, persist_project_archive,
+    verify_generated_ori2, PROJECT_FILE_INVALID_MESSAGE, PROJECT_FILE_OPEN_FAILED_MESSAGE,
+    PROJECT_FILE_TOO_LARGE_MESSAGE, PROJECT_INSTRUCTIONS_INVALID_MESSAGE,
+    PROJECT_INSTRUCTIONS_SAVE_FAILED_MESSAGE,
+};
+use project_persistence::{
+    create_staged_file, load_project_archive_from_path, persist_project_archive_to_destination,
+    StagedFile, PROJECT_FILE_INVALID_MESSAGE as PROJECT_ARCHIVE_INVALID_MESSAGE,
+    PROJECT_SERIALIZATION_FAILED_MESSAGE,
+};
 use recovery::{
-    ExitRecoveryAuthorization, ExitRecoveryDisposition, PreparedWindowCloseSettlement,
-    RecoveryRuntime, cancel_window_close_prepare, discard_recovery, get_recovery_autosave_status,
+    cancel_window_close_prepare, discard_recovery, get_recovery_autosave_status,
     get_recovery_candidate, prepare_window_close, restore_recovery, start_recovery_autosave_timer,
+    ExitRecoveryAuthorization, ExitRecoveryDisposition, PreparedWindowCloseSettlement,
+    RecoveryRuntime,
 };
 use serde::{Deserialize, Serialize};
 use stacked_fold_read::{
@@ -198,12 +200,12 @@ use std::{
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_RENAME_INFO, FileRenameInfo, SetFileInformationByHandle,
+    FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO,
 };
 
 #[cfg(target_os = "macos")]
 use tauri::menu::{
-    AboutMetadata, HELP_SUBMENU_ID, Menu, MenuItem, PredefinedMenuItem, Submenu, WINDOW_SUBMENU_ID,
+    AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID,
 };
 
 const UNTITLED_PROJECT_NAME: &str = "Untitled";
@@ -5686,7 +5688,11 @@ fn resolve_saved_coordinate(
             evaluate_finite_millimetre_pair(expanded, "0".to_owned())
         }
         .map_err(|error| error.user_input_message().to_owned())?;
-        if y_axis { pair.1 } else { pair.0 }
+        if y_axis {
+            pair.1
+        } else {
+            pair.0
+        }
     } else {
         let point = project
             .editor
@@ -5696,7 +5702,11 @@ fn resolve_saved_coordinate(
             .find(|candidate| candidate.id == vertex)
             .map(|candidate| candidate.position)
             .ok_or_else(|| "saved numeric expression has a dangling vertex reference".to_owned())?;
-        if y_axis { point.y } else { point.x }
+        if y_axis {
+            point.y
+        } else {
+            point.x
+        }
     };
     visiting.remove(&key);
     memo.insert(key, value);
@@ -10855,9 +10865,8 @@ mod tests {
         collections::BTreeSet,
         fs,
         sync::{
-            Arc,
             atomic::{AtomicU64, Ordering as AtomicOrdering},
-            mpsc,
+            mpsc, Arc,
         },
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
@@ -10865,7 +10874,7 @@ mod tests {
 
     use ori_domain::{Edge, LayerContentKindV1, LayerRecordV1, Vertex};
     use ori_formats::{
-        Ori2Limits, read_project_ori2_with_limits, write_project_archive_ori2, write_project_ori2,
+        read_project_ori2_with_limits, write_project_archive_ori2, write_project_ori2, Ori2Limits,
     };
     #[cfg(target_os = "windows")]
     use std::fs::OpenOptions;
@@ -10898,12 +10907,10 @@ mod tests {
         .expect("bounded symmetric GLB suggestion");
         assert_eq!(suggestion.protrusions.len(), 3);
         assert_eq!(suggestion.pair_bindings.len(), 3);
-        assert!(
-            suggestion
-                .protrusions
-                .windows(2)
-                .all(|pair| { pair[0].position_tenths_mm[1] < pair[1].position_tenths_mm[1] })
-        );
+        assert!(suggestion
+            .protrusions
+            .windows(2)
+            .all(|pair| { pair[0].position_tenths_mm[1] < pair[1].position_tenths_mm[1] }));
         for (index, binding) in suggestion.pair_bindings.iter().enumerate() {
             assert_eq!(binding.pair_index, index as u8);
             assert_eq!(binding.protrusion_id, suggestion.protrusions[index].id);
@@ -11243,14 +11250,9 @@ mod tests {
         }
 
         let mut generatable = source.clone();
-        let wing = generatable
-            .generation_constraints
-            .protrusions
-            .iter_mut()
-            .find(|target| target.id == 1)
-            .unwrap();
-        wing.length_tenths_mm = 270;
-        wing.thickness_tenths_mm = 50;
+        for target in &mut generatable.generation_constraints.protrusions {
+            target.length_tenths_mm = 270;
+        }
         let mut project = initial_project_state();
         let plan = grid_template_plan(
             project.project_id,
@@ -11874,17 +11876,15 @@ mod tests {
         let edge = project.editor.pattern().edges[0].id;
         let original_document = project.document();
 
-        assert!(
-            create_project_layer_in_project(
-                &mut project,
-                ProjectId::new(),
-                project_id,
-                0,
-                "Foreign".to_owned(),
-                LayerContentKindV1::CreasePattern,
-            )
-            .is_err()
-        );
+        assert!(create_project_layer_in_project(
+            &mut project,
+            ProjectId::new(),
+            project_id,
+            0,
+            "Foreign".to_owned(),
+            LayerContentKindV1::CreasePattern,
+        )
+        .is_err());
         assert_eq!(project.document(), original_document);
         assert_eq!(project.editor.revision(), 0);
 
@@ -11998,24 +11998,20 @@ mod tests {
             deleted.project_layers.layer_for_edge(edge),
             ori_domain::DEFAULT_PROJECT_LAYER_ID
         );
-        assert!(
-            deleted
-                .project_layers
-                .layers
-                .iter()
-                .all(|layer| layer.id != crease_layer)
-        );
+        assert!(deleted
+            .project_layers
+            .layers
+            .iter()
+            .all(|layer| layer.id != crease_layer));
 
-        assert!(
-            delete_project_layer_in_project(
-                &mut project,
-                project_instance_id,
-                project_id,
-                8,
-                ori_domain::DEFAULT_PROJECT_LAYER_ID,
-            )
-            .is_err()
-        );
+        assert!(delete_project_layer_in_project(
+            &mut project,
+            project_instance_id,
+            project_id,
+            8,
+            ori_domain::DEFAULT_PROJECT_LAYER_ID,
+        )
+        .is_err());
         assert_eq!(project.editor.revision(), 8);
         assert_eq!(project.editor.project_layers(), &deleted.project_layers);
     }
@@ -14311,13 +14307,11 @@ mod tests {
             original_vertex_ids
         );
         assert_eq!(response.crease_pattern.edges, original_edges);
-        assert!(
-            response
-                .crease_pattern
-                .vertices
-                .iter()
-                .any(|vertex| vertex.position == Point2::new(210.0, 297.0))
-        );
+        assert!(response
+            .crease_pattern
+            .vertices
+            .iter()
+            .any(|vertex| vertex.position == Point2::new(210.0, 297.0)));
         assert!(validation_snapshot(&project).is_valid);
         let resized_document = project.document();
         assert_ne!(resized_document, original_document);
@@ -14556,11 +14550,9 @@ mod tests {
             .filter(|edge| !original_edge_ids.contains(&edge.id))
             .collect::<Vec<_>>();
         assert_eq!(generated_edges.len(), 2);
-        assert!(
-            generated_edges
-                .iter()
-                .all(|edge| edge.start == response.vertex_id)
-        );
+        assert!(generated_edges
+            .iter()
+            .all(|edge| edge.start == response.vertex_id));
         assert_eq!(
             generated_edges
                 .iter()
@@ -14901,14 +14893,12 @@ mod tests {
             response.snapshot.crease_pattern.edges.len(),
             original_document.crease_pattern.edges.len() + 2
         );
-        assert!(
-            response
-                .snapshot
-                .crease_pattern
-                .edges
-                .iter()
-                .any(|edge| edge == &stem)
-        );
+        assert!(response
+            .snapshot
+            .crease_pattern
+            .edges
+            .iter()
+            .any(|edge| edge == &stem));
         for edge in [&horizontal, &vertical] {
             let split_original = response
                 .snapshot
@@ -15097,14 +15087,12 @@ mod tests {
         assert_eq!(generated.start, junction);
         assert_eq!(generated.end, interior.end);
         assert_eq!(generated.kind, EdgeKind::Mountain);
-        assert!(
-            response
-                .snapshot
-                .crease_pattern
-                .edges
-                .iter()
-                .any(|edge| edge == &stem)
-        );
+        assert!(response
+            .snapshot
+            .crease_pattern
+            .edges
+            .iter()
+            .any(|edge| edge == &stem));
         assert!(validation_snapshot(&project).is_valid);
         let connected_document = project.document();
 
@@ -15182,14 +15170,12 @@ mod tests {
         assert_eq!(generated.start, junction);
         assert_eq!(generated.end, boundary.end);
         assert_eq!(generated.kind, EdgeKind::Boundary);
-        assert!(
-            response
-                .snapshot
-                .crease_pattern
-                .edges
-                .iter()
-                .any(|edge| edge == &stem)
-        );
+        assert!(response
+            .snapshot
+            .crease_pattern
+            .edges
+            .iter()
+            .any(|edge| edge == &stem));
         assert!(validation_snapshot(&project).is_valid);
         let connected_document = project.document();
 
@@ -15370,23 +15356,19 @@ mod tests {
             response.paper.boundary_vertices,
             vec![previous, next, remaining]
         );
-        assert!(
-            !response
-                .crease_pattern
-                .vertices
-                .iter()
-                .any(|vertex| vertex.id == target)
-        );
+        assert!(!response
+            .crease_pattern
+            .vertices
+            .iter()
+            .any(|vertex| vertex.id == target));
         assert_eq!(response.crease_pattern.edges[0].id, kept_edge.id);
         assert_eq!(response.crease_pattern.edges[0].start, previous);
         assert_eq!(response.crease_pattern.edges[0].end, next);
-        assert!(
-            !response
-                .crease_pattern
-                .edges
-                .iter()
-                .any(|edge| edge.id == removed_edge.id)
-        );
+        assert!(!response
+            .crease_pattern
+            .edges
+            .iter()
+            .any(|edge| edge.id == removed_edge.id));
         assert!(validation_snapshot(&project).is_valid);
         let removed_document = project.document();
         assert_ne!(removed_document, original_document);
@@ -15456,28 +15438,24 @@ mod tests {
         let project_id = project.project_id;
         let before = project_state_signature(&project);
 
-        assert!(
-            replace_with_new_project(
-                &mut project,
-                instance_id,
-                ProjectId::new(),
-                0,
-                new_project_parameters(),
-            )
-            .is_err()
-        );
+        assert!(replace_with_new_project(
+            &mut project,
+            instance_id,
+            ProjectId::new(),
+            0,
+            new_project_parameters(),
+        )
+        .is_err());
         assert_eq!(project_state_signature(&project), before);
 
-        assert!(
-            replace_with_new_project(
-                &mut project,
-                instance_id,
-                project_id,
-                1,
-                new_project_parameters(),
-            )
-            .is_err()
-        );
+        assert!(replace_with_new_project(
+            &mut project,
+            instance_id,
+            project_id,
+            1,
+            new_project_parameters(),
+        )
+        .is_err());
         assert_eq!(project_state_signature(&project), before);
 
         let mut invalid_name = new_project_parameters();
@@ -15490,18 +15468,26 @@ mod tests {
 
         let mut invalid_dimensions = new_project_parameters();
         invalid_dimensions.width_mm = 0.0;
-        assert!(
-            replace_with_new_project(&mut project, instance_id, project_id, 0, invalid_dimensions,)
-                .is_err()
-        );
+        assert!(replace_with_new_project(
+            &mut project,
+            instance_id,
+            project_id,
+            0,
+            invalid_dimensions,
+        )
+        .is_err());
         assert_eq!(project_state_signature(&project), before);
 
         let mut invalid_thickness = new_project_parameters();
         invalid_thickness.thickness_mm = f64::NAN;
-        assert!(
-            replace_with_new_project(&mut project, instance_id, project_id, 0, invalid_thickness,)
-                .is_err()
-        );
+        assert!(replace_with_new_project(
+            &mut project,
+            instance_id,
+            project_id,
+            0,
+            invalid_thickness,
+        )
+        .is_err());
         assert_eq!(project_state_signature(&project), before);
     }
 
@@ -15793,13 +15779,11 @@ mod tests {
         assert_eq!(project.editor.paper().boundary_vertices.len(), 4);
         assert_eq!(snapshot.crease_pattern.vertices.len(), 4);
         assert_eq!(snapshot.crease_pattern.edges.len(), 4);
-        assert!(
-            snapshot
-                .crease_pattern
-                .edges
-                .iter()
-                .all(|edge| edge.kind == EdgeKind::Boundary)
-        );
+        assert!(snapshot
+            .crease_pattern
+            .edges
+            .iter()
+            .all(|edge| edge.kind == EdgeKind::Boundary));
     }
 
     #[test]
@@ -15920,12 +15904,10 @@ mod tests {
             .find(|issue| issue.code == "unsplit_intersection")
             .expect("crease-pattern issue");
         assert_eq!(crossing.edges, vec![first_edge, second_edge]);
-        assert!(
-            response
-                .issues
-                .iter()
-                .any(|issue| issue.code == "too_few_boundary_vertices")
-        );
+        assert!(response
+            .issues
+            .iter()
+            .any(|issue| issue.code == "too_few_boundary_vertices"));
     }
 
     #[test]
@@ -17488,12 +17470,10 @@ mod tests {
             .collect::<Vec<_>>();
         let snapshot = svg_import_preview_snapshot(ProjectId::new(), &preview)
             .expect("build candidate snapshot");
-        assert!(
-            snapshot
-                .boundary_candidates
-                .iter()
-                .any(|candidate| candidate.kind == "polygon")
-        );
+        assert!(snapshot
+            .boundary_candidates
+            .iter()
+            .any(|candidate| candidate.kind == "polygon"));
 
         let state = SvgImportState::default();
         let project = initial_project_state();
@@ -17603,26 +17583,22 @@ mod tests {
         )
         .expect("stage validation fixture");
 
-        assert!(
-            begin_svg_import_settings_validation(
-                &state,
-                ProjectId::new(),
-                ProjectId::new(),
-                project.project_id,
-                0,
-            )
-            .is_err()
-        );
-        assert!(
-            begin_svg_import_settings_validation(
-                &state,
-                ProjectId::new(),
-                import_id,
-                project.project_id,
-                1,
-            )
-            .is_err()
-        );
+        assert!(begin_svg_import_settings_validation(
+            &state,
+            ProjectId::new(),
+            ProjectId::new(),
+            project.project_id,
+            0,
+        )
+        .is_err());
+        assert!(begin_svg_import_settings_validation(
+            &state,
+            ProjectId::new(),
+            import_id,
+            project.project_id,
+            1,
+        )
+        .is_err());
 
         let first_validation_id = ProjectId::new();
         let first = begin_svg_import_settings_validation(
@@ -17692,17 +17668,15 @@ mod tests {
             .expect("complete current generation");
             let pending =
                 pending_svg_import_in_slot(&slot, import_id, project.project_id, 0).unwrap();
-            assert!(
-                ensure_svg_import_settings_validation(
-                    &slot,
-                    pending,
-                    first_validation_id,
-                    None,
-                    2.0,
-                    &mappings,
-                )
-                .is_err()
-            );
+            assert!(ensure_svg_import_settings_validation(
+                &slot,
+                pending,
+                first_validation_id,
+                None,
+                2.0,
+                &mappings,
+            )
+            .is_err());
             assert!(
                 ensure_svg_import_settings_validation(
                     &slot,
@@ -17795,26 +17769,24 @@ mod tests {
 
         {
             let mut slot = lock_svg_import(&state).unwrap();
-            assert!(
-                complete_svg_import_settings_validation(
-                    &mut slot,
-                    &project,
-                    SvgImportSettingsValidationCompletion {
-                        validation: SvgImportSettingsValidation {
-                            validation_id,
-                            import_id: pending.import_id,
-                            expected_instance_id: pending.expected_instance_id,
-                            expected_project_id: pending.expected_project_id,
-                            expected_revision: pending.expected_revision,
-                            millimeters_per_unit_bits: 1.0_f64.to_bits(),
-                            boundary_candidate: None,
-                            group_mappings: mappings,
-                        },
-                        geometry,
+            assert!(complete_svg_import_settings_validation(
+                &mut slot,
+                &project,
+                SvgImportSettingsValidationCompletion {
+                    validation: SvgImportSettingsValidation {
+                        validation_id,
+                        import_id: pending.import_id,
+                        expected_instance_id: pending.expected_instance_id,
+                        expected_project_id: pending.expected_project_id,
+                        expected_revision: pending.expected_revision,
+                        millimeters_per_unit_bits: 1.0_f64.to_bits(),
+                        boundary_candidate: None,
+                        group_mappings: mappings,
                     },
-                )
-                .is_err()
-            );
+                    geometry,
+                },
+            )
+            .is_err());
             assert!(slot.validation.is_none());
             assert!(slot.pending.is_some());
         }
@@ -18178,19 +18150,17 @@ mod tests {
             }])
             .is_err()
         );
-        assert!(
-            validate_fold_import_mapping_requests(vec![
-                FoldImportAssignmentMappingRequest {
-                    source: "F".to_owned(),
-                    target: FoldImportTargetRequest::Auxiliary,
-                },
-                FoldImportAssignmentMappingRequest {
-                    source: "F".to_owned(),
-                    target: FoldImportTargetRequest::Ignore,
-                },
-            ])
-            .is_err()
-        );
+        assert!(validate_fold_import_mapping_requests(vec![
+            FoldImportAssignmentMappingRequest {
+                source: "F".to_owned(),
+                target: FoldImportTargetRequest::Auxiliary,
+            },
+            FoldImportAssignmentMappingRequest {
+                source: "F".to_owned(),
+                target: FoldImportTargetRequest::Ignore,
+            },
+        ])
+        .is_err());
     }
 
     #[test]
@@ -18393,14 +18363,12 @@ mod tests {
         assert_eq!(replacement.editor.pattern().vertices.len(), 4);
         assert_eq!(replacement.editor.pattern().edges.len(), 5);
         assert_eq!(replacement.editor.paper().boundary_vertices.len(), 4);
-        assert!(
-            replacement
-                .editor
-                .pattern()
-                .vertices
-                .iter()
-                .any(|vertex| vertex.position == Point2::new(20.0, 20.0))
-        );
+        assert!(replacement
+            .editor
+            .pattern()
+            .vertices
+            .iter()
+            .any(|vertex| vertex.position == Point2::new(20.0, 20.0)));
         assert_eq!(
             replacement
                 .editor
@@ -18438,13 +18406,11 @@ mod tests {
         let candidate = &response.boundary_candidates[0];
         assert_eq!(candidate.source, "inferred_outer_face");
         assert_eq!(candidate.edge_indices, vec![0, 1, 2, 3]);
-        assert!(
-            response
-                .preview_edges
-                .iter()
-                .filter(|edge| candidate.edge_indices.contains(&edge.source_index))
-                .all(|edge| edge.assignment == "U")
-        );
+        assert!(response
+            .preview_edges
+            .iter()
+            .filter(|edge| candidate.edge_indices.contains(&edge.source_index))
+            .all(|edge| edge.assignment == "U"));
 
         let replacement = build_fold_import_replacement(
             &bytes,
@@ -18577,14 +18543,12 @@ mod tests {
             1
         );
         assert!(replacement.editor.paper().cutting_allowed);
-        assert!(
-            replacement
-                .editor
-                .pattern()
-                .vertices
-                .iter()
-                .any(|vertex| vertex.position == Point2::new(10.0, 10.0))
-        );
+        assert!(replacement
+            .editor
+            .pattern()
+            .vertices
+            .iter()
+            .any(|vertex| vertex.position == Point2::new(10.0, 10.0)));
     }
 
     #[test]
@@ -18637,12 +18601,10 @@ mod tests {
             vec!["B", "F"]
         );
         assert!(response.warnings.iter().all(|warning| !warning.is_ascii()));
-        assert!(
-            response
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("ファイル分類"))
-        );
+        assert!(response
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("ファイル分類")));
     }
 
     #[test]
@@ -18785,27 +18747,21 @@ mod tests {
             edge.start < response.preview_vertices.len()
                 && edge.end < response.preview_vertices.len()
         }));
-        assert!(
-            response
-                .boundary_candidates
-                .iter()
-                .any(|candidate| candidate.kind == "view_box")
-        );
-        assert!(
-            response
-                .boundary_candidates
-                .iter()
-                .any(|candidate| candidate.kind == "rectangle")
-        );
+        assert!(response
+            .boundary_candidates
+            .iter()
+            .any(|candidate| candidate.kind == "view_box"));
+        assert!(response
+            .boundary_candidates
+            .iter()
+            .any(|candidate| candidate.kind == "rectangle"));
         assert!(response.boundary_candidates.iter().all(|candidate| {
             candidate.segment_count == candidate.vertices.len() && candidate.segment_count >= 3
         }));
-        assert!(
-            response
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("data-origami-kind"))
-        );
+        assert!(response
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("data-origami-kind")));
 
         let rectangle = preview
             .boundary_candidates()
@@ -19048,17 +19004,15 @@ mod tests {
     #[test]
     fn constraint_solver_stale_token_is_atomic() {
         let (mut project, stage, vertex, original) = solver_stage_fixture();
-        assert!(
-            apply_geometric_constraint_solve_stage(
-                &mut project,
-                &stage,
-                stage.project_instance_id,
-                stage.project_id,
-                0,
-                ProjectId::new(),
-            )
-            .is_err()
-        );
+        assert!(apply_geometric_constraint_solve_stage(
+            &mut project,
+            &stage,
+            stage.project_instance_id,
+            stage.project_id,
+            0,
+            ProjectId::new(),
+        )
+        .is_err());
         assert_eq!(project.editor.revision(), 0);
         assert_eq!(solver_vertex_position(&project, vertex), original);
     }
@@ -19080,17 +19034,15 @@ mod tests {
         )
         .unwrap();
         stage.revision = 1;
-        assert!(
-            apply_geometric_constraint_solve_stage(
-                &mut project,
-                &stage,
-                stage.project_instance_id,
-                stage.project_id,
-                1,
-                stage.token,
-            )
-            .is_err()
-        );
+        assert!(apply_geometric_constraint_solve_stage(
+            &mut project,
+            &stage,
+            stage.project_instance_id,
+            stage.project_id,
+            1,
+            stage.token,
+        )
+        .is_err());
         assert_eq!(project.editor.revision(), 1);
         assert_eq!(solver_vertex_position(&project, vertex), original);
     }
@@ -19288,34 +19240,30 @@ mod tests {
         let mut visiting = HashSet::new();
         let mut work = 0;
         let started = std::time::Instant::now();
-        assert!(
-            expand_saved_vertex_references(
-                &project,
-                &source,
-                &mut memo,
-                &mut visiting,
-                &mut work,
-                0,
-            )
-            .is_ok()
-        );
+        assert!(expand_saved_vertex_references(
+            &project,
+            &source,
+            &mut memo,
+            &mut visiting,
+            &mut work,
+            0,
+        )
+        .is_ok());
         assert_eq!(work, 4_096);
         assert!(
             started.elapsed() < std::time::Duration::from_secs(10),
             "the maximum-size reference graph must remain bounded on loaded CI hosts"
         );
         let too_many = format!("{source}+{reference}");
-        assert!(
-            expand_saved_vertex_references(
-                &project,
-                &too_many,
-                &mut HashMap::new(),
-                &mut HashSet::new(),
-                &mut 0,
-                0,
-            )
-            .is_err()
-        );
+        assert!(expand_saved_vertex_references(
+            &project,
+            &too_many,
+            &mut HashMap::new(),
+            &mut HashSet::new(),
+            &mut 0,
+            0,
+        )
+        .is_err());
     }
 
     #[test]
@@ -19620,15 +19568,13 @@ mod tests {
             VertexCoordinateExpressions::new(edge.end, "2", "0", 2.0, 0.0),
         ];
         let drivers = reevaluate_saved_vertex_expressions(&project).unwrap();
-        assert!(
-            solve_geometric_constraints_with_drivers_v1(
-                project.editor.pattern(),
-                project.editor.geometric_constraints(),
-                &drivers,
-                ConstraintSolveLimitsV1::default(),
-            )
-            .is_err()
-        );
+        assert!(solve_geometric_constraints_with_drivers_v1(
+            project.editor.pattern(),
+            project.editor.geometric_constraints(),
+            &drivers,
+            ConstraintSolveLimitsV1::default(),
+        )
+        .is_err());
         assert_eq!(project.editor.revision(), 1);
         assert_eq!(solver_vertex_position(&project, start), original);
     }

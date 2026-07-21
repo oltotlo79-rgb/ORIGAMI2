@@ -1286,6 +1286,34 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
     admit_canonical_multi_hinge_path_candidate_v1(schedule, &initial, &requested)
 }
 
+/// Automatically admits the bounded degree-four Kawasaki spherical-linkage
+/// mode from material geometry and its physical mountain/valley assignment.
+/// The first production family is the exact 120/120/60/60 rational class;
+/// all four hinges move and the unique mountain must belong to the scaled
+/// opposite pair required by the closure theorem.
+pub fn generate_bounded_degree_four_kawasaki_path_candidate_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    limits: CycleScheduleLimitsV1,
+) -> Result<GeneratedMultiHingePathCandidateV1, MultiHingePathCandidateErrorV1> {
+    let generated =
+        generate_kawasaki_120_120_60_60_path_candidate_v1(geometry, audit, fixed_face, limits)?;
+    let (_, scaled, _, _) = generated
+        .schedule()
+        .bounded_symmetric_kawasaki_profile_v1()
+        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    let mountains = geometry
+        .hinges()
+        .iter()
+        .filter(|hinge| hinge.assignment() == ori_topology::FoldAssignment::Mountain)
+        .collect::<Vec<_>>();
+    if mountains.len() != 1 || !scaled.contains(&mountains[0].edge()) {
+        return Err(MultiHingePathCandidateErrorV1::CandidateRejected);
+    }
+    Ok(generated)
+}
+
 fn binary64_to_rational_coefficient_v1(
     value: f64,
 ) -> Result<RationalCoefficientV1, MultiHingePathCandidateErrorV1> {
@@ -2059,7 +2087,11 @@ mod tests {
                 .map(|index| {
                     TreeHinge::new_for_test(
                         edges[index],
-                        FoldAssignment::Mountain,
+                        if index == 3 {
+                            FoldAssignment::Mountain
+                        } else {
+                            FoldAssignment::Valley
+                        },
                         faces[index],
                         faces[(index + 1) % 4],
                         start,
@@ -2092,6 +2124,91 @@ mod tests {
                 .schedule()
                 .kawasaki_120_120_60_60_half_angle_pairs_v1()
                 .is_some()
+        );
+        let automatic = generate_bounded_degree_four_kawasaki_path_candidate_v1(
+            &geometry,
+            &audit,
+            faces[0],
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        assert_eq!(automatic.moving_hinges().len(), 4);
+        for u in [0.0, 0.5, 1.0] {
+            let angles = automatic.schedule().evaluate(u).unwrap();
+            geometry
+                .solve_closed(&audit, faces[0], &angles, 1.0e-8)
+                .unwrap();
+        }
+        assert_eq!(
+            generate_bounded_degree_four_kawasaki_path_candidate_v1(
+                &geometry,
+                &audit,
+                faces[0],
+                CycleScheduleLimitsV1 {
+                    max_hinges: 3,
+                    ..CycleScheduleLimitsV1::default()
+                },
+            ),
+            Err(MultiHingePathCandidateErrorV1::InvalidBinding)
+        );
+        let assignment_tamper = MaterialHingeGraphGeometry::new_for_test(
+            faces.to_vec(),
+            geometry
+                .hinges()
+                .iter()
+                .map(|hinge| {
+                    TreeHinge::new_for_test(
+                        hinge.edge(),
+                        FoldAssignment::Mountain,
+                        hinge.left_face(),
+                        hinge.right_face(),
+                        hinge.start(),
+                        hinge.end(),
+                        hinge.axis(),
+                    )
+                })
+                .collect(),
+        );
+        assert_eq!(
+            generate_bounded_degree_four_kawasaki_path_candidate_v1(
+                &assignment_tamper,
+                &audit,
+                faces[0],
+                CycleScheduleLimitsV1::default(),
+            ),
+            Err(MultiHingePathCandidateErrorV1::CandidateRejected)
+        );
+        let non_kawasaki = MaterialHingeGraphGeometry::new_for_test(
+            faces.to_vec(),
+            geometry
+                .hinges()
+                .iter()
+                .map(|hinge| {
+                    let end = if hinge.edge() == edges[2] {
+                        Point3::new(0.0, 0.0, -1.0).unwrap()
+                    } else {
+                        hinge.end()
+                    };
+                    TreeHinge::new_for_test(
+                        hinge.edge(),
+                        hinge.assignment(),
+                        hinge.left_face(),
+                        hinge.right_face(),
+                        hinge.start(),
+                        end,
+                        end,
+                    )
+                })
+                .collect(),
+        );
+        assert_eq!(
+            generate_bounded_degree_four_kawasaki_path_candidate_v1(
+                &non_kawasaki,
+                &audit,
+                faces[0],
+                CycleScheduleLimitsV1::default(),
+            ),
+            Err(MultiHingePathCandidateErrorV1::CandidateRejected)
         );
         assert_eq!(
             generate_kawasaki_120_120_60_60_path_candidate_v1(

@@ -2669,6 +2669,10 @@ export function normalizeCurrentCyclePosePreviewResponseV1(
       throw new Error('invalid current-cycle preview response')
     }
     const value = payload as Record<string, unknown>
+    const continuousLayerTransitionCount =
+      value.continuousLayerTransitionCount
+    const sourceLayerOrder = value.sourceLayerOrder
+    const targetLayerOrder = value.targetLayerOrder
     if (
       Object.keys(value).sort().join(',') !==
         'authorizesProjectMutation,checkedHingeCount,closureLeafCount,closureMaxDepth,continuousLayerPairOrderCount,continuousLayerTargetOrderSha256,continuousLayerTransitionCount,continuousLayerTransportModelId,continuousPathCertified,sourceLayerOrder,sourceRevision,targetLayerOrder,targetRevision,totalHingeCount,transactionToken,version' ||
@@ -2690,22 +2694,25 @@ export function normalizeCurrentCyclePosePreviewResponseV1(
       value.continuousPathCertified !== true ||
       (value.continuousLayerTransportModelId !== null &&
         value.continuousLayerTransportModelId !== 'native_continuous_layer_transport_certificate_v1') ||
-      !Number.isSafeInteger(value.continuousLayerTransitionCount) ||
-      Number(value.continuousLayerTransitionCount) < 0 ||
+      typeof continuousLayerTransitionCount !== 'number' ||
+      !Number.isSafeInteger(continuousLayerTransitionCount) ||
+      continuousLayerTransitionCount < 0 ||
       !Number.isSafeInteger(value.continuousLayerPairOrderCount) ||
       Number(value.continuousLayerPairOrderCount) < 0 ||
       (value.continuousLayerTargetOrderSha256 !== null &&
         (typeof value.continuousLayerTargetOrderSha256 !== 'string' ||
           !/^[0-9a-f]{64}$/.test(value.continuousLayerTargetOrderSha256))) ||
-      !isLayerOrderPairsV1(value.sourceLayerOrder) ||
-      !isLayerOrderPairsV1(value.targetLayerOrder) ||
-      JSON.stringify(value.sourceLayerOrder) !== JSON.stringify(value.targetLayerOrder) ||
+      !Array.isArray(sourceLayerOrder) ||
+      !Array.isArray(targetLayerOrder) ||
+      !isLayerOrderPairsV1(sourceLayerOrder) ||
+      !isLayerOrderPairsV1(targetLayerOrder) ||
+      JSON.stringify(sourceLayerOrder) !== JSON.stringify(targetLayerOrder) ||
       (value.continuousLayerTransportModelId === null
-        ? value.continuousLayerTransitionCount !== 0 ||
+        ? continuousLayerTransitionCount !== 0 ||
           value.continuousLayerPairOrderCount !== 0 ||
           value.continuousLayerTargetOrderSha256 !== null
-        : value.continuousLayerTransitionCount <= 0 ||
-          value.continuousLayerPairOrderCount !== value.sourceLayerOrder.length ||
+        : continuousLayerTransitionCount <= 0 ||
+          value.continuousLayerPairOrderCount !== sourceLayerOrder.length ||
           value.continuousLayerTargetOrderSha256 === null) ||
       value.authorizesProjectMutation !== false
     ) throw new Error('invalid current-cycle preview response')

@@ -38,6 +38,7 @@ function Harness() {
   const [skeletonTreeConfirmed, setSkeletonTreeConfirmed] = useState(true)
   const [recognizedSkeletonEndMm, setRecognizedSkeletonEndMm] = useState(10)
   const [activeReferenceAsset, setActiveReferenceAsset] = useState(1)
+  const [archivedReferences, setArchivedReferences] = useState<number[]>([])
   const [mergedAuthorities, setMergedAuthorities] = useState(false)
   const [authorityValid, setAuthorityValid] = useState(true)
   const [imageDecode, setImageDecode] = useState<string | null>(null)
@@ -244,9 +245,16 @@ function Harness() {
     {glbWitness && <section aria-label="GLB geometry witness">
       <ul aria-label="Project 3D reference assets">{[1, 2].map((asset) => <li key={asset}>
         GLB {asset} · SHA-256 {asset === 1 ? '91a70f2c' : 'a72be019'}
-        {activeReferenceAsset === asset ? ' · Active reference' : <button onClick={() => {
+        {activeReferenceAsset === asset ? ' · Active reference' : !archivedReferences.includes(asset) && <button onClick={() => {
           setActiveReferenceAsset(asset); setStatus(`Activated exact GLB reference ${asset}`)
         }}>Activate GLB reference {asset}</button>}
+        <button onClick={() => {
+          const archived = archivedReferences.includes(asset)
+          setArchivedReferences((current) => archived ? current.filter((id) => id !== asset) : [...current, asset])
+          if (!archived && activeReferenceAsset === asset) setActiveReferenceAsset(0)
+          setStatus(archived ? `Restored archived GLB reference ${asset}`
+            : `Archived GLB reference ${asset} without deleting bytes; active reference cleared`)
+        }}>{archivedReferences.includes(asset) ? `Restore archived GLB reference ${asset}` : `Archive GLB reference ${asset}`}</button>
       </li>)}</ul>
       <p>3D bounds {glbWitness.bounds} · 2D silhouette difference {glbWitness.discrepancy}% · bulge targets {glbWitness.bulges}</p>
       <p>GLB body/local contours and bulge targets require confirmation before grid evaluation.</p>

@@ -137,6 +137,7 @@ import {
   updateBeginnerDesignProfile,
   importBeginnerReferenceModel,
   activateBeginnerReferenceModelAsset,
+  archiveBeginnerReferenceModelAsset,
   recognizeBeginnerOutlineCandidates,
   applyBeginnerOutlineCandidate,
   recognizeBeginnerPartSuggestions,
@@ -3789,6 +3790,11 @@ function App() {
   function activateBeginnerReferenceAsset(assetId: string) {
     void runNativeEdit((projectId, revision, projectInstanceId) =>
       activateBeginnerReferenceModelAsset(projectId, revision, projectInstanceId, assetId))
+  }
+
+  function archiveBeginnerReferenceAsset(assetId: string, archived: boolean) {
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      archiveBeginnerReferenceModelAsset(projectId, revision, projectInstanceId, assetId, archived))
   }
 
   function toggleBeginnerReferenceModelPreview() {
@@ -8565,13 +8571,18 @@ function App() {
                       const active = nativeSnapshot.beginner_design_profile.generation_constraints.target_asset
                         ?.kind === 'reference_model'
                         && nativeSnapshot.beginner_design_profile.generation_constraints.target_asset.asset_id === asset.asset_id
+                      const archived = nativeSnapshot.beginner_design_profile.archived_reference_model_asset_ids
+                        ?.includes(asset.asset_id) ?? false
                       return <li key={asset.asset_id}>
                         {`GLB ${index + 1} · SHA-256 ${asset.sha256.slice(0, 4)
                           .map((byte) => byte.toString(16).padStart(2, '0')).join('')}`}
-                        {active ? <span> · Active reference</span> : <button type="button"
+                        {active ? <span> · Active reference</span> : !archived && <button type="button"
                           onClick={() => activateBeginnerReferenceAsset(asset.asset_id)}>
                           Activate this reference
                         </button>}
+                        <button type="button" onClick={() => archiveBeginnerReferenceAsset(asset.asset_id, !archived)}>
+                          {archived ? 'Restore archived reference' : 'Archive reference without deleting bytes'}
+                        </button>
                       </li>
                     })}
                   </ul>}

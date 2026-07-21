@@ -1209,6 +1209,22 @@ fn revalidate_archived_layer_evidence(
                 &flat,
                 ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
             )
+            .or_else(|tree_error| {
+                let Some(fixed_face) = fixed_face else {
+                    return Err(tree_error);
+                };
+                ori_core::revalidate_current_graph_non_flat_layer_order_v1(
+                    project.project_id,
+                    project.editor.revision(),
+                    project.editor.pattern(),
+                    project.editor.paper(),
+                    fixed_face,
+                    &angles,
+                    &flat,
+                    None,
+                    ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+                )
+            })
             .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
             let materials_match = trusted.material_faces().len() == material_faces.len()
                 && trusted
@@ -4410,6 +4426,50 @@ fn apply_beginner_symmetric_parameters(
 }
 
 #[tauri::command]
+fn archive_beginner_reference_model_asset(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    asset_id: AssetId,
+    archived: bool,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    if !project
+        .reference_model_assets
+        .iter()
+        .any(|asset| asset.id == asset_id)
+    {
+        return Err("reference_model_asset_stale".to_owned());
+    }
+    let mut profile = project.editor.beginner_design_profile().clone();
+    profile
+        .archived_reference_model_asset_ids
+        .retain(|id| *id != asset_id);
+    if archived {
+        profile.archived_reference_model_asset_ids.push(asset_id);
+        if profile.generation_constraints.target_asset
+            == Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id })
+        {
+            profile.generation_constraints.target_asset = None;
+        }
+    }
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::UpdateBeginnerDesignProfile { profile },
+    )
+}
+
+#[tauri::command]
 fn apply_beginner_generated_plan(
     state: State<'_, AppState>,
     expected_project_instance_id: ProjectId,
@@ -5425,6 +5485,9 @@ fn import_beginner_reference_model(
             bytes,
         });
     let mut profile = project.editor.beginner_design_profile().clone();
+    profile
+        .archived_reference_model_asset_ids
+        .retain(|id| *id != asset_id);
     profile.generation_constraints.target_asset =
         Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id });
     let result = execute_command(
@@ -13362,6 +13425,7 @@ pub fn run() {
             update_beginner_design_profile,
             import_beginner_reference_model,
             activate_beginner_reference_model_asset,
+            archive_beginner_reference_model_asset,
             get_beginner_reference_model_geometry,
             suggest_beginner_reference_model_features,
             apply_beginner_reference_model_features,

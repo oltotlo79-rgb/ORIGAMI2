@@ -214,6 +214,7 @@ export type BeginnerDesignProfileV1 = {
     schema_version: 1; source_asset_id: string; source_sha256: ReadonlyArray<number>
     edits: ReadonlyArray<Readonly<Record<string, unknown>>>
   }>
+  archived_reference_model_asset_ids?: ReadonlyArray<string>
 }
 
 export type BeginnerGenerationConstraintsV1 = {
@@ -1128,7 +1129,8 @@ export function normalizeBeginnerDesignProfile(
   const record = snapshotCoreDataRecord(value)
   if (!record || requiredKeys.some((key) => !Object.hasOwn(record, key))
     || Object.keys(record).some((key) => ![...requiredKeys, 'generation_provenance',
-      'reference_surface_landmarks_tenths_mm', 'outline_edit_authority'].includes(key as never))) return null
+      'reference_surface_landmarks_tenths_mm', 'outline_edit_authority',
+      'archived_reference_model_asset_ids'].includes(key as never))) return null
   if (!record || record.schema_version !== 1 || (
     record.preset !== 'balanced'
     && record.preset !== 'shape_priority'
@@ -1198,6 +1200,11 @@ export function normalizeBeginnerDesignProfile(
     return Object.freeze({ ...record })
   })
   if (outlineEdits.some((edit) => edit === null)) return null
+  const archivedAssets = record.archived_reference_model_asset_ids === undefined ? []
+    : record.archived_reference_model_asset_ids
+  if (!Array.isArray(archivedAssets) || archivedAssets.length > 8
+    || archivedAssets.some((id) => !isCanonicalNonNilUuid(id))
+    || new Set(archivedAssets).size !== archivedAssets.length) return null
   return Object.freeze({
     schema_version: 1,
     preset: record.preset,
@@ -1215,6 +1222,9 @@ export function normalizeBeginnerDesignProfile(
       source_sha256: Object.freeze((outlineAuthority.source_sha256 as number[]).slice()),
       edits: Object.freeze(outlineEdits as ReadonlyArray<Readonly<Record<string, unknown>>>),
     }) }),
+    ...(archivedAssets.length === 0 ? {} : {
+      archived_reference_model_asset_ids: Object.freeze(archivedAssets.slice() as string[]),
+    }),
     ...(provenance === null ? {} : { generation_provenance: Object.freeze({
       schema_version: 1 as const,
       topology_authority_sha256: Object.freeze(
@@ -1250,6 +1260,8 @@ function sameBeginnerDesignProfile(
       === JSON.stringify(expected.reference_surface_landmarks_tenths_mm)
     && JSON.stringify(profile.outline_edit_authority)
       === JSON.stringify(expected.outline_edit_authority)
+    && JSON.stringify(profile.archived_reference_model_asset_ids ?? [])
+      === JSON.stringify(expected.archived_reference_model_asset_ids ?? [])
 }
 
 export type AnnotationAnchorV1 =
@@ -1837,6 +1849,16 @@ export function activateBeginnerReferenceModelAsset(
   if (!isCanonicalNonNilUuid(assetId)) return Promise.reject(new Error('invalid reference model asset'))
   return invoke<ProjectSnapshot>('activate_beginner_reference_model_asset', {
     expectedProjectInstanceId, expectedProjectId, expectedRevision, assetId,
+  })
+}
+
+export function archiveBeginnerReferenceModelAsset(
+  expectedProjectId: string, expectedRevision: number, expectedProjectInstanceId: string,
+  assetId: string, archived: boolean,
+) {
+  if (!isCanonicalNonNilUuid(assetId)) return Promise.reject(new Error('invalid reference model asset'))
+  return invoke<ProjectSnapshot>('archive_beginner_reference_model_asset', {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision, assetId, archived,
   })
 }
 

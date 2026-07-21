@@ -118,6 +118,17 @@ test('AUT-004 retains multiple GLB references and switches exact active asset au
   assert.match(app, /Active reference/u)
 })
 
+test('AUT-004 archives references without deleting bytes and keeps the transition undoable', () => {
+  assert.match(native, /fn archive_beginner_reference_model_asset/u)
+  assert.match(native, /archived_reference_model_asset_ids/u)
+  assert.match(native, /profile\.generation_constraints\.target_asset = None/u)
+  assert.match(native, /Command::UpdateBeginnerDesignProfile \{ profile \}/u)
+  assert.match(client, /archive_beginner_reference_model_asset/u)
+  assert.match(client, /archived_reference_model_asset_ids/u)
+  assert.match(app, /Archive reference without deleting bytes/u)
+  assert.match(app, /Restore archived reference/u)
+})
+
 test('AUT-004 proposes only deterministic safe GLB geometry ranges and applies atomically', () => {
   assert.match(native, /derive_reference_model_suggestion_v1/u)
   assert.match(native, /bounded_bbox_area_normal_v1/u)

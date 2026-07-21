@@ -33,6 +33,8 @@ pub struct BeginnerDesignProfileV1 {
     pub reference_surface_landmarks_tenths_mm: Option<Vec<[i32; 3]>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outline_edit_authority: Option<BeginnerOutlineEditAuthorityV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archived_reference_model_asset_ids: Vec<AssetId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +88,7 @@ impl Default for BeginnerDesignProfileV1 {
             generation_provenance: None,
             reference_surface_landmarks_tenths_mm: None,
             outline_edit_authority: None,
+            archived_reference_model_asset_ids: Vec::new(),
         }
     }
 }
@@ -131,6 +134,13 @@ pub fn validate_beginner_design_profile_v1(profile: &BeginnerDesignProfileV1) ->
                         } => source_candidate_ids[0] < source_candidate_ids[1],
                     })
             })
+        && profile.archived_reference_model_asset_ids.len() <= 8
+        && profile
+            .archived_reference_model_asset_ids
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            == profile.archived_reference_model_asset_ids.len()
 }
 
 /// Validates the bounded, versioned provenance independently of its profile.

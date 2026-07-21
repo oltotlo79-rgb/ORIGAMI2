@@ -3,9 +3,9 @@ import type { Locale } from '../lib/i18n.ts'
 import { createRecentProjectsClient, type RecentProjectItem } from '../lib/recentProjectsClient.ts'
 import type { ProjectSnapshot } from '../lib/coreClient.ts'
 
-const client = createRecentProjectsClient()
+const defaultClient = createRecentProjectsClient()
 
-export function RecentProjectsControl({ locale, onOpen }: Readonly<{ locale: Locale; onOpen: (project: ProjectSnapshot) => void }>) {
+export function RecentProjectsControl({ locale, onOpen, client = defaultClient }: Readonly<{ locale: Locale; onOpen: (project: ProjectSnapshot) => void; client?: ReturnType<typeof createRecentProjectsClient> }>) {
   const [items, setItems] = useState<readonly RecentProjectItem[]>([])
   const [status, setStatus] = useState('')
   const [busy, setBusy] = useState(false)

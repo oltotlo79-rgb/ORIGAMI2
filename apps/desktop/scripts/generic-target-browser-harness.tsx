@@ -125,6 +125,8 @@ function Harness() {
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected merge: stale image or GLB asset') }}>Try stale recognition merge</button>
     <button onClick={() => { setAuthorityValid(false); setPreview(false); setStatus('Rejected merge: damaged depth authority') }}>Damage merged authority</button>
     <button onClick={() => { setAuthorityValid(false); setPreview(false); setStatus('Rejected merge: one-short bulge resource') }}>Try one-short bulge resource</button>
+    <button onClick={() => { setPreview(false); setStatus('Rejected GLB landmarks: 257 exceeds 256 samples') }}>Try 257 GLB landmarks</button>
+    <button onClick={() => { setPreview(false); setStatus('Rejected GLB landmarks: digest tampered') }}>Try tampered GLB landmark digest</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setGlbWitness(null); setStatus('Rejected GLB: non-finite or oversized bounds') }}>Try invalid GLB bounds</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setGlbWitness(null); setStatus('Rejected GLB: dense or multiple components') }}>Try dense multi-component GLB</button>
     <RecognitionContourCopyAction locale="en" bodyPointCount={4} localContourCount={1}
@@ -222,6 +224,7 @@ function Harness() {
       {segmentation && <p>Segmented local contour witness: binding 1:3, binding 2:3</p>}
       {confidence && <p>Confidence authority witness: {confidence.score}/100 · {confidence.reason}</p>}
       {glbWitness && <p>GLB evaluation witness: bounds {glbWitness.bounds}, silhouette difference {glbWitness.discrepancy}%, bulges {glbWitness.bulges}</p>}
+      {glbWitness && <p>Typed GLB surface landmarks: 4/256 samples · digest 7f3a9c21 · deterministic quantization</p>}
       {mergedAuthorities && <p>Merged authority witness: image contours + GLB depth/bulges</p>}
       {mergedAuthorities && <p>3D candidate score {threeDimensionalScore}/100 · bounded depth error {depthError} mm</p>}
       {mergedAuthorities && <p>Native folded landmarks: body/local 3D · Hausdorff 4% · depth {depthError} mm · bulge error 2% · collision clear</p>}
@@ -242,6 +245,7 @@ function Harness() {
       <p>Applied contour placement witness candidate {selectedCandidate}</p>
       {imageDecode && <p>Applied image silhouette authority: {imageDecode}</p>}
       {glbWitness && <p>Applied GLB witness: bounds {glbWitness.bounds}, bulges {glbWitness.bulges}</p>}
+      {glbWitness && <p>Applied typed surface landmarks: 4 samples · digest 7f3a9c21 · archive retained</p>}
       {mergedAuthorities && <p>Applied merged authority witness: image contours + GLB depth/bulges</p>}
       {mergedAuthorities && <p>Applied 3D candidate score {threeDimensionalScore}/100 · depth error {depthError} mm</p>}
       <canvas ref={witnessCanvas} width={320} height={200} role="img" aria-label={`Applied contour placement correspondence candidate ${selectedCandidate}`} />

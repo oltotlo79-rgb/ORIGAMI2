@@ -2437,6 +2437,9 @@ fn transaction_failure_classes(
 #[cfg(test)]
 #[path = "../../../../test-support/four_bay_cycle.rs"]
 mod four_bay_cycle_test_support;
+#[cfg(test)]
+#[path = "../../../../test-support/theta_cycle.rs"]
+mod theta_cycle_test_support;
 
 #[cfg(test)]
 mod tests {
@@ -3359,6 +3362,67 @@ mod tests {
         }
     }
 
+    fn theta_cycle_schedule(
+        hinges: &[ori_domain::EdgeId],
+        moving: &[ori_domain::EdgeId],
+    ) -> CycleScheduleRequestV1 {
+        let moving = moving
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        let mut entries = hinges
+            .iter()
+            .copied()
+            .map(|edge| {
+                let moves = moving.contains(&edge);
+                CycleScheduleEntryRequestV1 {
+                    edge,
+                    u_domain: [
+                        RationalCoefficientRequestV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientRequestV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ],
+                    numerator_power_coefficients: if moves {
+                        vec![
+                            RationalCoefficientRequestV1 {
+                                numerator: 0,
+                                denominator: 1,
+                            },
+                            RationalCoefficientRequestV1 {
+                                numerator: 2,
+                                denominator: 15,
+                            },
+                        ]
+                    } else {
+                        vec![RationalCoefficientRequestV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        }]
+                    },
+                    denominator_power_coefficients: vec![RationalCoefficientRequestV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    }],
+                    requested_angle_degrees: if moves {
+                        2.0 * (2.0_f64 / 15.0).atan().to_degrees()
+                    } else {
+                        0.0
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        CycleScheduleRequestV1 {
+            version: 1,
+            entries,
+        }
+    }
+
     #[test]
     fn four_leaf_cycle_preview_applies_atomically_and_round_trips_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
@@ -3613,6 +3677,75 @@ mod tests {
                 project.editor.redo(undone).unwrap();
                 assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
             }
+        }
+    }
+
+    #[test]
+    #[ignore = "theta native transition evidence is not yet issued by the certified path bridge"]
+    fn theta_positive_thickness_preview_applies_and_round_trips_history() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        for thickness_mm in [0.1, 1.0, 3.0] {
+            let (pattern, mut paper, hinges, moving) =
+                super::theta_cycle_test_support::theta_shared_hinge_pattern();
+            paper.thickness_mm = thickness_mm;
+            let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+            let topology = project
+                .editor
+                .topology_analysis_input(project.project_id)
+                .analyze();
+            let snapshot = topology.simulation_snapshot().unwrap();
+            let fixed = snapshot.faces[0].id;
+            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+                &mut project,
+                hinges.clone(),
+                fixed,
+            );
+            let instance = project.instance_id;
+            let project_id = project.project_id;
+            let revision = project.editor.revision();
+            let app_state = AppState::new(project);
+            let transactions =
+                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+            let request = || CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                cycle_schedule_v1: theta_cycle_schedule(&hinges, &moving),
+            };
+            let cancelled =
+                propose_current_cycle_pose_inner(None, &app_state, &transactions, request())
+                    .expect("theta preview");
+            super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
+                &transactions,
+                cancelled.transaction_token,
+            )
+            .unwrap();
+            assert!(
+                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                    &app_state,
+                    &GlobalFlatFoldabilityState::default(),
+                    &transactions,
+                    cancelled.transaction_token,
+                )
+                .is_err()
+            );
+            let response =
+                propose_current_cycle_pose_inner(None, &app_state, &transactions, request())
+                    .expect("theta retry");
+            let applied =
+                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                    &app_state,
+                    &GlobalFlatFoldabilityState::default(),
+                    &transactions,
+                    response.transaction_token,
+                )
+                .unwrap();
+            let mut project = super::super::lock_project(&app_state).unwrap();
+            project.editor.undo(applied).unwrap();
+            let undone = project.editor.revision();
+            project.editor.redo(undone).unwrap();
+            assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
         }
     }
 

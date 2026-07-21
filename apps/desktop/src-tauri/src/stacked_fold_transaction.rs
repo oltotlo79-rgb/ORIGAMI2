@@ -793,7 +793,7 @@ pub(super) fn apply_named_accordion_fold_transaction(
             )
         })
         .count();
-    if segment_count < 3 || segment_count > 31 {
+    if !(3..=31).contains(&segment_count) {
         return Err("At least three bounded accordion segments are required.".to_owned());
     }
     {

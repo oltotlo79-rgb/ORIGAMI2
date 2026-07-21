@@ -3608,9 +3608,7 @@ fn beginner_contour_placement_witness(
                     })
                 })?
             });
-            let Some((parent_id, child, parent_endpoint, child_endpoint)) = next else {
-                return None;
-            };
+            let (parent_id, child, parent_endpoint, child_endpoint) = next?;
             visited.insert(child.id);
             skeleton_branch_bindings.push(BeginnerSkeletonBranchBindingWitness {
                 segment_id: child.id,

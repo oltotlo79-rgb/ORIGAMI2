@@ -2821,6 +2821,66 @@ mod tests {
         .unwrap()
     }
 
+    fn uncertified_rational_kawasaki_project(
+        numerator: f64,
+        denominator: f64,
+        complement: f64,
+    ) -> (super::super::ProjectState, Vec<ori_domain::EdgeId>) {
+        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
+        let ratio = numerator / denominator;
+        let sine = complement / denominator;
+        let points = [
+            (1.0, 0.0),
+            (-ratio, sine),
+            (2.0 * ratio * ratio - 1.0, -2.0 * ratio * sine),
+            (ratio, -sine),
+            (0.0, 0.0),
+        ];
+        let vertices = points
+            .into_iter()
+            .map(|(x, y)| Vertex {
+                id: ori_domain::VertexId::new(),
+                position: Point2::new(x * 100.0, y * 100.0),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices[..4]
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect::<Vec<_>>();
+        let center = vertices[4].id;
+        let mut edges = (0..4)
+            .map(|index| Edge {
+                id: ori_domain::EdgeId::new(),
+                start: boundary[index],
+                end: boundary[(index + 1) % 4],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let hinges = (0..4)
+            .map(|_| ori_domain::EdgeId::new())
+            .collect::<Vec<_>>();
+        edges.extend((0..4).map(|index| Edge {
+            id: hinges[index],
+            start: boundary[index],
+            end: center,
+            kind: if index == 3 {
+                EdgeKind::Mountain
+            } else {
+                EdgeKind::Valley
+            },
+        }));
+        (
+            super::super::ProjectState::new_with_paper(
+                CreasePattern { vertices, edges },
+                Paper {
+                    boundary_vertices: boundary,
+                    ..Paper::default()
+                },
+            ),
+            hinges,
+        )
+    }
+
     fn two_hinge_tree_project() -> super::super::ProjectState {
         use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
         let points = [
@@ -4907,6 +4967,55 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn uncertified_rational_kawasaki_endpoints_are_atomic_no_ops() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        for (numerator, denominator, complement) in [(5.0, 13.0, 12.0), (7.0, 25.0, 24.0)] {
+            let (mut project, hinges) =
+                uncertified_rational_kawasaki_project(numerator, denominator, complement);
+            super::super::applied_pose::tests::install_flat_graph_pose_authority(
+                &mut project,
+                hinges,
+            );
+            let instance = project.instance_id;
+            let project_id = project.project_id;
+            let revision = project.editor.revision();
+            let state = AppState::new(project);
+            let transactions =
+                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+            let result = propose_current_cycle_pose_inner(
+                None,
+                &state,
+                &transactions,
+                CurrentCyclePosePreviewRequestV1 {
+                    progress_request_id: None,
+                    expected_project_instance_id: instance,
+                    expected_project_id: project_id,
+                    expected_revision: revision,
+                    cycle_schedule_v1: CycleScheduleRequestV1 {
+                        version: 2,
+                        entries: Vec::new(),
+                    },
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(reason) if reason == CYCLE_PATH_UNCERTIFIED_MESSAGE
+            ));
+            let project = super::super::lock_project(&state).unwrap();
+            assert_eq!(project.editor.revision(), revision);
+            assert!(project.editor.instruction_timeline().steps.is_empty());
+            assert!(
+                project
+                    .applied_pose_authority
+                    .capture_capability(&project)
+                    .unwrap()
+                    .is_some(),
+                "a rejected preview must not consume source pose authority"
+            );
+        }
     }
 
     #[test]

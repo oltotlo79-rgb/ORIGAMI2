@@ -205,6 +205,15 @@ test('JSON parsing is bounded by UTF-8 bytes before retaining fields', () => {
       null,
     )
   }
+  for (const hostile of [
+    `{"n\\u0061me":null,${valid.slice(1)}`,
+    `{"b\\u006fdy":null,${valid.slice(1)}`,
+    `{"__proto__":{},${valid.slice(1)}`,
+    `{"safe":{"constructor":{}},${valid.slice(1)}`,
+    `${'['.repeat(33)}null${']'.repeat(33)}`,
+    JSON.stringify({ ...release(), extra: Array.from({ length: 4_097 }, () => 0) }),
+    `{"\\ud83d\\ude00":1,"😀":2,${valid.slice(1)}`,
+  ]) assert.equal(parseGitHubLatestReleaseResponseJson(hostile), null)
 })
 
 test('SemVer precedence follows the complete stable and prerelease ordering', () => {

@@ -16,6 +16,8 @@ const MAX_RELEASE_URL_CODE_UNITS = 512
 const MAX_RELEASE_BODY_CODE_UNITS = 100_000
 const EXPECTED_RELEASE_ASSET_COUNT = 9
 const MAX_RELEASE_ROOT_FIELDS = 128
+const MAX_JSON_NESTING_DEPTH = 32
+const MAX_JSON_TOKENS = 4_096
 const MAX_CONTENT_TYPE_CODE_UNITS = 128
 const UTF8_ENCODER = new TextEncoder()
 
@@ -241,7 +243,7 @@ export function parseGitHubLatestReleaseResponseJson(
   const bodyStatus = boundedJsonBody(body)
   if (bodyStatus.kind !== 'ready') return null
   try {
-    if (hasDuplicateRootJsonKeys(bodyStatus.body)) return null
+    if (hasUnsafeJsonShape(bodyStatus.body)) return null
     const parsed: unknown = JSON.parse(bodyStatus.body)
     return parseGitHubLatestReleaseResponse(parsed)
   } catch {
@@ -298,24 +300,34 @@ export function parseGitHubLatestReleaseResponse(
   }
 }
 
-function hasDuplicateRootJsonKeys(body: string): boolean {
-  const keys = new Set<string>()
-  let depth = 0
-  let expectsKey = false
+function hasUnsafeJsonShape(body: string): boolean {
+  const rootKeys = new Set<string>()
+  const containerIsObject: boolean[] = []
+  const objectExpectsKey: boolean[] = []
+  let tokens = 0
   for (let index = 0; index < body.length; index += 1) {
     const character = body[index]
     if (character === '"') {
+      tokens += 1
+      if (tokens > MAX_JSON_TOKENS) return true
       const start = index
       for (index += 1; index < body.length; index += 1) {
         if (body[index] === '\\') index += 1
         else if (body[index] === '"') break
       }
-      if (depth === 1 && expectsKey) {
+      const depth = containerIsObject.length
+      if (depth > 0 && containerIsObject[depth - 1] && objectExpectsKey[depth - 1]) {
         try {
           const key: unknown = JSON.parse(body.slice(start, index + 1))
-          if (typeof key !== 'string' || keys.has(key)) return true
-          keys.add(key)
-          expectsKey = false
+          if (
+            typeof key !== 'string'
+            || key === '__proto__'
+            || key === 'prototype'
+            || key === 'constructor'
+            || (depth === 1 && rootKeys.has(key))
+          ) return true
+          if (depth === 1) rootKeys.add(key)
+          objectExpectsKey[depth - 1] = false
         } catch {
           return true
         }
@@ -323,10 +335,22 @@ function hasDuplicateRootJsonKeys(body: string): boolean {
       continue
     }
     if (character === '{' || character === '[') {
-      depth += 1
-      if (depth === 1 && character === '{') expectsKey = true
-    } else if (character === '}' || character === ']') depth -= 1
-    else if (character === ',' && depth === 1) expectsKey = true
+      tokens += 1
+      containerIsObject.push(character === '{')
+      objectExpectsKey.push(character === '{')
+      if (containerIsObject.length > MAX_JSON_NESTING_DEPTH) return true
+    } else if (character === '}' || character === ']') {
+      tokens += 1
+      containerIsObject.pop()
+      objectExpectsKey.pop()
+    } else if (character === ',') {
+      tokens += 1
+      const depth = containerIsObject.length
+      if (depth > 0 && containerIsObject[depth - 1]) {
+        objectExpectsKey[depth - 1] = true
+      }
+    }
+    if (tokens > MAX_JSON_TOKENS) return true
   }
   return false
 }

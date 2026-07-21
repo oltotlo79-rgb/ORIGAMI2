@@ -147,6 +147,9 @@ test('AUT-006 stores every bounded protrusion target attribute in profile histor
   assert.match(generation, /pub generic_body_outline_tenths_mm: Option<Vec<\[i32; 2\]>>/u)
   assert.match(client, /isCanonicalGenericBodyOutline/u)
   assert.match(app, /generic_body_outline_tenths_mm: beginnerBodyOutline/u)
+  assert.match(generation, /enum BeginnerBodyOutlineModeV1[\s\S]*Symmetric[\s\S]*General/u)
+  assert.match(client, /generic_body_outline_mode\?: 'symmetric' \| 'general'/u)
+  assert.match(app, /generic_body_outline_mode: beginnerBodyOutlineMode/u)
 })
 
 test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticity', () => {

@@ -205,6 +205,7 @@ export type BeginnerGenerationConstraintsV1 = {
   detail_level: 'simple' | 'standard' | 'detailed'
   generic_body_size_tenths_mm?: [number, number]
   generic_body_outline_tenths_mm?: Array<[number, number]>
+  generic_body_outline_mode?: 'symmetric' | 'general'
   target_category: 'animal' | 'insect' | null
   target_parts: Array<{
     kind: 'head' | 'torso' | 'leg' | 'horn' | 'ear' | 'wing' | 'fin' | 'antenna' | 'tail'
@@ -299,7 +300,9 @@ function isBoundedIntegerTuple(
     && value.every((item) => Number.isInteger(item) && Math.abs(item) <= absoluteMaximum)
 }
 
-function isCanonicalGenericBodyOutline(value: unknown): value is Array<[number, number]> {
+function isCanonicalGenericBodyOutline(
+  value: unknown, mode: 'symmetric' | 'general',
+): value is Array<[number, number]> {
   if (!Array.isArray(value) || value.length < 4 || value.length > 16
     || value.some((point) => !isBoundedIntegerTuple(point, 2, 100_000))) return false
   const points = value as Array<[number, number]>
@@ -310,12 +313,12 @@ function isCanonicalGenericBodyOutline(value: unknown): value is Array<[number, 
       const [rx, ry] = right.split(',').map(Number)
       return lx - rx || ly - ry
     })[0]
-    || points.some(([x, y]) => !keys.includes(`${-x},${y}`))) return false
+    || (mode === 'symmetric' && points.some(([x, y]) => !keys.includes(`${-x},${y}`)))) return false
   const area = points.reduce((sum, [x, y], index) => {
     const next = points[(index + 1) % points.length]!
     return sum + x * next[1] - next[0] * y
   }, 0)
-  if (!Number.isSafeInteger(area) || area >= 0) return false
+  if (!Number.isSafeInteger(area) || (mode === 'symmetric' ? area >= 0 : area <= 0)) return false
   const orient = (a: [number, number], b: [number, number], c: [number, number]) =>
     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
   for (let first = 0; first < points.length; first += 1) {
@@ -346,6 +349,7 @@ function normalizeBeginnerGenerationConstraints(
     'detail_level',
     'generic_body_size_tenths_mm',
     'generic_body_outline_tenths_mm',
+    'generic_body_outline_mode',
     'target_category',
     'target_parts',
     'skeleton_segments',
@@ -356,7 +360,8 @@ function normalizeBeginnerGenerationConstraints(
   ] as const
   const requiredKeys = currentKeys.filter(
     (key) => key !== 'generic_body_size_tenths_mm'
-      && key !== 'generic_body_outline_tenths_mm' && key !== 'protrusions' && key !== 'bulge_targets',
+      && key !== 'generic_body_outline_tenths_mm' && key !== 'generic_body_outline_mode'
+      && key !== 'protrusions' && key !== 'bulge_targets',
   )
   const snapshot = snapshotCoreDataRecord(value)
   if (!snapshot) return null
@@ -392,7 +397,11 @@ function normalizeBeginnerGenerationConstraints(
       && (!isBoundedIntegerTuple(record.generic_body_size_tenths_mm, 2, 1_000_000)
         || record.generic_body_size_tenths_mm.some((axis) => axis < 1)))
     || (record.generic_body_outline_tenths_mm !== undefined
-      && !isCanonicalGenericBodyOutline(record.generic_body_outline_tenths_mm))
+      && !isCanonicalGenericBodyOutline(record.generic_body_outline_tenths_mm,
+        record.generic_body_outline_mode === 'general' ? 'general' : 'symmetric'))
+    || (record.generic_body_outline_mode !== undefined
+      && record.generic_body_outline_mode !== 'symmetric'
+      && record.generic_body_outline_mode !== 'general')
     || !Array.isArray(record.skeleton_segments)
     || record.skeleton_segments.length > 64
     || !Array.isArray(record.protrusions)
@@ -564,6 +573,7 @@ function normalizeBeginnerGenerationConstraints(
       generic_body_outline_tenths_mm: (record.generic_body_outline_tenths_mm as Array<[number, number]>)
         .map((point) => [...point] as [number, number]),
     }),
+    generic_body_outline_mode: record.generic_body_outline_mode === 'general' ? 'general' : 'symmetric',
     target_category: record.target_category,
     target_parts: targetParts,
     skeleton_segments: skeletonSegments,

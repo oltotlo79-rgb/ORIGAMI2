@@ -38,6 +38,14 @@ pub enum BeginnerDetailLevelV1 {
     Detailed,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeginnerBodyOutlineModeV1 {
+    #[default]
+    Symmetric,
+    General,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BeginnerTargetCategoryV1 {
@@ -159,6 +167,8 @@ pub struct BeginnerGenerationConstraintsV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generic_body_outline_tenths_mm: Option<Vec<[i32; 2]>>,
     #[serde(default)]
+    pub generic_body_outline_mode: BeginnerBodyOutlineModeV1,
+    #[serde(default)]
     pub target_category: Option<BeginnerTargetCategoryV1>,
     #[serde(default)]
     pub target_parts: Vec<BeginnerTargetPartRecordV1>,
@@ -181,6 +191,7 @@ impl Default for BeginnerGenerationConstraintsV1 {
             detail_level: BeginnerDetailLevelV1::Standard,
             generic_body_size_tenths_mm: None,
             generic_body_outline_tenths_mm: None,
+            generic_body_outline_mode: BeginnerBodyOutlineModeV1::Symmetric,
             target_category: None,
             target_parts: Vec::new(),
             skeleton_segments: Vec::new(),
@@ -262,7 +273,9 @@ pub fn validate_beginner_generation_constraints_v1(
     let body_outline_valid = constraints
         .generic_body_outline_tenths_mm
         .as_deref()
-        .is_none_or(valid_generic_body_outline_v1);
+        .is_none_or(|points| {
+            valid_generic_body_outline_v1(points, constraints.generic_body_outline_mode)
+        });
     let protrusions_valid = skeletons_valid
         && body_size_valid
         && body_outline_valid
@@ -323,7 +336,7 @@ pub fn validate_beginner_generation_constraints_v1(
         })
 }
 
-fn valid_generic_body_outline_v1(points: &[[i32; 2]]) -> bool {
+fn valid_generic_body_outline_v1(points: &[[i32; 2]], mode: BeginnerBodyOutlineModeV1) -> bool {
     if !(4..=16).contains(&points.len())
         || points
             .iter()
@@ -341,11 +354,15 @@ fn valid_generic_body_outline_v1(points: &[[i32; 2]]) -> bool {
             sum + i128::from(point[0]) * i128::from(next[1])
                 - i128::from(next[0]) * i128::from(point[1])
         });
-    if twice_area >= 0
+    let winding_valid = match mode {
+        BeginnerBodyOutlineModeV1::Symmetric => twice_area < 0,
+        BeginnerBodyOutlineModeV1::General => twice_area > 0,
+    };
+    let symmetry_valid = mode == BeginnerBodyOutlineModeV1::General
         || points
             .iter()
-            .any(|point| !points.contains(&[-point[0], point[1]]))
-    {
+            .all(|point| points.contains(&[-point[0], point[1]]));
+    if !winding_valid || !symmetry_valid {
         return false;
     }
     for first in 0..points.len() {
@@ -467,6 +484,10 @@ mod tests {
         let restored: BeginnerGenerationConstraintsV1 = serde_json::from_value(old).unwrap();
         assert_eq!(restored.generic_body_size_tenths_mm, None);
         assert_eq!(restored.generic_body_outline_tenths_mm, None);
+        assert_eq!(
+            restored.generic_body_outline_mode,
+            BeginnerBodyOutlineModeV1::Symmetric
+        );
 
         let mut constraints = BeginnerGenerationConstraintsV1::default();
         constraints.generic_body_size_tenths_mm = Some([1_200, 800]);
@@ -507,6 +528,18 @@ mod tests {
         assert!(!validate_beginner_generation_constraints_v1(&constraints));
         constraints.generic_body_outline_tenths_mm =
             Some(vec![[-100, -50], [100, 50], [-100, 50], [100, -50]]);
+        assert!(!validate_beginner_generation_constraints_v1(&constraints));
+    }
+
+    #[test]
+    fn general_body_outline_is_explicit_asymmetric_and_counter_clockwise() {
+        let mut constraints = BeginnerGenerationConstraintsV1::default();
+        constraints.generic_body_outline_mode = BeginnerBodyOutlineModeV1::General;
+        constraints.generic_body_outline_tenths_mm =
+            Some(vec![[-120, -40], [80, -60], [100, 50], [-70, 80]]);
+        assert!(validate_beginner_generation_constraints_v1(&constraints));
+        constraints.generic_body_outline_tenths_mm =
+            Some(vec![[-120, -40], [-70, 80], [100, 50], [80, -60]]);
         assert!(!validate_beginner_generation_constraints_v1(&constraints));
     }
 

@@ -742,6 +742,8 @@ function App() {
   const [beginnerProtrusions, setBeginnerProtrusions] =
     useState<NonNullable<BeginnerDesignProfileV1['generation_constraints']['protrusions']>>([])
   const [beginnerBodyOutline, setBeginnerBodyOutline] = useState<Array<[number, number]>>([])
+  const [beginnerBodyOutlineMode, setBeginnerBodyOutlineMode] =
+    useState<'symmetric' | 'general'>('symmetric')
   const [beginnerProtrusionKinds, setBeginnerProtrusionKinds] =
     useState<Array<BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']>>([])
   const [beginnerBulgeTargets, setBeginnerBulgeTargets] =
@@ -788,6 +790,10 @@ function App() {
     setBeginnerBodyOutline(
       nativeSnapshot?.beginner_design_profile.generation_constraints.generic_body_outline_tenths_mm
         ?.map((point) => [...point] as [number, number]) ?? [],
+    )
+    setBeginnerBodyOutlineMode(
+      nativeSnapshot?.beginner_design_profile.generation_constraints.generic_body_outline_mode
+        === 'general' ? 'general' : 'symmetric',
     )
     setBeginnerProtrusionKinds(
       nativeSnapshot?.beginner_design_profile.generation_constraints.target_parts
@@ -3667,6 +3673,7 @@ function App() {
       ...(beginnerBodyOutline.length === 0 ? {} : {
         generic_body_outline_tenths_mm: beginnerBodyOutline,
       }),
+      generic_body_outline_mode: beginnerBodyOutlineMode,
       target_category: targetCategory as 'animal' | 'insect',
       target_parts: targetParts,
       skeleton_segments: beginnerSkeletonSegments,
@@ -8244,6 +8251,7 @@ function App() {
                   nativeSnapshot.beginner_design_profile.generation_constraints.detail_level,
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.generic_body_size_tenths_mm),
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.generic_body_outline_tenths_mm),
+                  nativeSnapshot.beginner_design_profile.generation_constraints.generic_body_outline_mode ?? 'symmetric',
                   nativeSnapshot.beginner_design_profile.generation_constraints.target_category ?? 'unset',
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.target_parts),
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.skeleton_segments),
@@ -8623,7 +8631,10 @@ function App() {
                   })}</p>
                 </fieldset>
                 <GenericBodyOutlineEditor locale={locale} points={beginnerBodyOutline}
-                  onChange={setBeginnerBodyOutline} />
+                  mode={beginnerBodyOutlineMode} onModeChange={(mode) => {
+                    setBeginnerBodyOutlineMode(mode)
+                    setBeginnerBodyOutline([])
+                  }} onChange={setBeginnerBodyOutline} />
                 <output id="beginner-target-parts-total" aria-live="polite">
                   {formattedText({
                     ja: '部品合計: {total} / 32',

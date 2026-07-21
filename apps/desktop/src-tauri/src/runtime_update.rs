@@ -63,7 +63,7 @@ impl Adapter for ProductionAdapter {
         {
             return Err(());
         }
-        fs::create_dir_all(&self.root).map_err(|_| ())?;
+        ensure_secure_root(&self.root)?;
         let output_path = reserve_http_output(&self.root)?;
         let limit_text = limit.to_string();
         let output = match Command::new(curl_executable())
@@ -129,7 +129,7 @@ impl Adapter for ProductionAdapter {
 
     fn verify_signature(&mut self, name: &str, bytes: &[u8]) -> Result<bool, ()> {
         ensure_safe_name(name)?;
-        fs::create_dir_all(&self.root).map_err(|_| ())?;
+        ensure_secure_root(&self.root)?;
         let path = self.root.join(format!("verify-{name}"));
         write_new_synced(&path, bytes)?;
         let valid = verify_platform_signature(&path);
@@ -139,11 +139,15 @@ impl Adapter for ProductionAdapter {
 
     fn stage_atomic(&mut self, name: &str, bytes: &[u8]) -> Result<(), ()> {
         ensure_safe_name(name)?;
-        fs::create_dir_all(&self.root).map_err(|_| ())?;
+        ensure_secure_root(&self.root)?;
         let temporary = self.root.join(format!(".{name}.partial"));
         let destination = self.root.join(name);
         write_new_synced(&temporary, bytes)?;
         if destination.exists() {
+            let _ = fs::remove_file(&temporary);
+            return Err(());
+        }
+        if temporary.parent() != destination.parent() {
             let _ = fs::remove_file(&temporary);
             return Err(());
         }
@@ -302,19 +306,55 @@ fn ensure_safe_name(name: &str) -> Result<(), ()> {
     }
 }
 fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), ()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|_| ())?;
+    let mut file = open_new_nofollow(path).map_err(|_| ())?;
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|_| ())
 }
+fn ensure_secure_root(root: &Path) -> Result<(), ()> {
+    if root.as_os_str().is_empty() {
+        return Err(());
+    }
+    fs::create_dir_all(root).map_err(|_| ())?;
+    for path in [root, root.parent().ok_or(())?] {
+        let metadata = fs::symlink_metadata(path).map_err(|_| ())?;
+        if is_link_or_reparse(&metadata) || !metadata.is_dir() {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+#[cfg(windows)]
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_type().is_symlink()
+        || metadata.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+}
+#[cfg(not(windows))]
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+fn open_new_nofollow(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    options.open(path)
+}
 fn reserve_http_output(root: &Path) -> Result<PathBuf, ()> {
     for suffix in 0_u8..16 {
         let path = root.join(format!(".http-response-{}-{suffix}", std::process::id()));
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
+        match open_new_nofollow(&path) {
             Ok(file) => {
                 file.sync_all().map_err(|_| ())?;
                 return Ok(path);
@@ -327,11 +367,34 @@ fn reserve_http_output(root: &Path) -> Result<PathBuf, ()> {
 }
 #[cfg(target_os = "windows")]
 fn verify_platform_signature(path: &Path) -> Result<bool, ()> {
-    let escaped = path.to_string_lossy().replace('\'', "''");
-    Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &format!("$s=Get-AuthenticodeSignature -LiteralPath '{escaped}'; $s.Status -eq 'Valid' -and $null -ne $s.SignerCertificate -and $null -ne $s.TimeStamperCertificate")]).output().map(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).trim().eq_ignore_ascii_case("true")).map_err(|_| ())
+    let escaped = powershell_single_quoted_path(path);
+    Command::new(powershell_executable()).args(["-NoProfile", "-NonInteractive", "-Command", &format!("$s=Get-AuthenticodeSignature -LiteralPath {escaped}; $s.Status -eq 'Valid' -and $null -ne $s.SignerCertificate -and $null -ne $s.TimeStamperCertificate")]).output().map(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).trim().eq_ignore_ascii_case("true")).map_err(|_| ())
+}
+fn powershell_single_quoted_path(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "''"))
+}
+#[cfg(target_os = "windows")]
+fn powershell_executable() -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join("System32/WindowsPowerShell/v1.0/powershell.exe")
 }
 #[cfg(target_os = "macos")]
 fn verify_platform_signature(path: &Path) -> Result<bool, ()> {
+    {
+        use std::io::{Seek, SeekFrom};
+        let mut archive = File::open(path).map_err(|_| ())?;
+        if archive.metadata().map_err(|_| ())?.len() < 4 {
+            return Ok(false);
+        }
+        archive.seek(SeekFrom::End(-4)).map_err(|_| ())?;
+        let mut isize = [0_u8; 4];
+        archive.read_exact(&mut isize).map_err(|_| ())?;
+        if u32::from_le_bytes(isize) > 2 * 1024 * 1024 * 1024 {
+            return Ok(false);
+        }
+    }
     let listing = Command::new("/usr/bin/tar")
         .args(["-tzf"])
         .arg(path)
@@ -341,20 +404,7 @@ fn verify_platform_signature(path: &Path) -> Result<bool, ()> {
         return Ok(false);
     }
     let entries = String::from_utf8(listing.stdout).map_err(|_| ())?;
-    let mut count = 0_usize;
-    for entry in entries.lines() {
-        count += 1;
-        if count > 4096
-            || entry.is_empty()
-            || entry.starts_with('/')
-            || entry.contains("..")
-            || entry.contains('\\')
-            || !(entry == "ORIGAMI2.app" || entry.starts_with("ORIGAMI2.app/"))
-        {
-            return Ok(false);
-        }
-    }
-    if count == 0 {
+    if !archive_listing_is_safe(&entries) {
         return Ok(false);
     }
     let directory = path
@@ -397,7 +447,7 @@ fn launch_platform_installer(path: &Path) -> Result<bool, ()> {
 }
 #[cfg(target_os = "macos")]
 fn launch_platform_installer(path: &Path) -> Result<bool, ()> {
-    Command::new("open")
+    Command::new("/usr/bin/open")
         .arg(path)
         .status()
         .map(|status| status.success())
@@ -406,6 +456,22 @@ fn launch_platform_installer(path: &Path) -> Result<bool, ()> {
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn launch_platform_installer(_: &Path) -> Result<bool, ()> {
     Ok(false)
+}
+fn archive_listing_is_safe(entries: &str) -> bool {
+    let mut count = 0_usize;
+    for entry in entries.lines() {
+        count += 1;
+        if count > 4096
+            || entry.is_empty()
+            || entry.starts_with('/')
+            || entry.contains("..")
+            || entry.contains('\\')
+            || !(entry == "ORIGAMI2.app" || entry.starts_with("ORIGAMI2.app/"))
+        {
+            return false;
+        }
+    }
+    count > 0
 }
 
 #[derive(Clone, Deserialize)]
@@ -733,12 +799,21 @@ mod tests {
         signature: bool,
         confirm: bool,
         pending: bool,
+        applied: bool,
+        cancel_on_payload: Option<Arc<AtomicBool>>,
+        stage_fail: bool,
     }
     impl Adapter for Mock {
         fn get(&mut self, _: &str, timeout: u64, limit: usize) -> Result<Response, ()> {
             assert_eq!(timeout, TIMEOUT_SECS);
             assert!(matches!(limit, METADATA_LIMIT | PAYLOAD_LIMIT));
-            self.responses.pop_front().unwrap_or(Err(()))
+            let response = self.responses.pop_front().unwrap_or(Err(()));
+            if limit == PAYLOAD_LIMIT {
+                if let Some(cancel) = &self.cancel_on_payload {
+                    cancel.store(true, Ordering::Release);
+                }
+            }
+            response
         }
         fn verify_signature(&mut self, _: &str, _: &[u8]) -> Result<bool, ()> {
             self.events.push("signature");
@@ -746,7 +821,7 @@ mod tests {
         }
         fn stage_atomic(&mut self, _: &str, _: &[u8]) -> Result<(), ()> {
             self.events.push("stage");
-            Ok(())
+            if self.stage_fail { Err(()) } else { Ok(()) }
         }
         fn write_pending(&mut self, _: &str, _: &str) -> Result<(), ()> {
             self.events.push("journal");
@@ -767,6 +842,7 @@ mod tests {
         }
         fn mark_applied(&mut self, _: &str) -> Result<(), ()> {
             self.events.push("applied");
+            self.applied = true;
             Ok(())
         }
         fn clear_pending(&mut self) -> Result<(), ()> {
@@ -782,7 +858,7 @@ mod tests {
             Ok(self.pending)
         }
         fn was_applied(&mut self, _: &str) -> Result<bool, ()> {
-            Ok(false)
+            Ok(self.applied)
         }
     }
     fn fixture(redirected: bool, signature: bool, confirm: bool) -> Updater<Mock> {
@@ -810,6 +886,9 @@ mod tests {
             signature,
             confirm,
             pending: false,
+            applied: false,
+            cancel_on_payload: None,
+            stage_fail: false,
         })
     }
     #[test]
@@ -818,8 +897,9 @@ mod tests {
         assert!(updater.check().is_ok());
         assert_eq!(updater.download("2.0.0", "windows-x64"), Ok("verified"));
         assert_eq!(updater.apply("2.0.0", "windows-x64"), Ok("applied"));
+        assert_eq!(updater.apply("2.0.0", "windows-x64"), Err("rollback"));
         assert_eq!(
-            updater.adapter.events,
+            &updater.adapter.events[..9],
             [
                 "signature",
                 "stage",
@@ -832,6 +912,7 @@ mod tests {
                 "flush"
             ]
         );
+        assert_eq!(updater.adapter.events.len(), 9);
     }
     #[test]
     fn redirects_signature_failure_and_failed_confirmation_are_fail_closed() {
@@ -849,6 +930,30 @@ mod tests {
                 .events
                 .ends_with(&["rollback", "clear", "flush"])
         );
+    }
+
+    #[test]
+    fn cancellation_racing_with_payload_response_never_reaches_staging() {
+        let mut updater = fixture(false, true, true);
+        updater.check().unwrap();
+        updater.adapter.cancel_on_payload = Some(Arc::clone(&updater.cancelled));
+        assert_eq!(updater.download("2.0.0", "windows-x64"), Err("offline"));
+        assert!(!updater.adapter.events.contains(&"stage"));
+    }
+
+    #[test]
+    fn staging_disk_failure_rolls_back_without_handoff() {
+        let mut updater = fixture(false, true, true);
+        updater.check().unwrap();
+        updater.adapter.stage_fail = true;
+        assert_eq!(updater.download("2.0.0", "windows-x64"), Err("disk"));
+        assert!(
+            updater
+                .adapter
+                .events
+                .ends_with(&["stage", "rollback", "clear", "flush"])
+        );
+        assert!(!updater.adapter.events.contains(&"handoff"));
     }
 
     #[test]
@@ -871,6 +976,41 @@ mod tests {
         assert_eq!(compare_stable_versions("2.0.0", "1.99.99"), Ok(1));
         assert_eq!(compare_stable_versions("1.0.0", "1.0.0"), Ok(0));
         assert_eq!(compare_stable_versions("0.9.9", "1.0.0"), Ok(-1));
+        assert_eq!(
+            powershell_single_quoted_path(Path::new("C:\\Updates\\O'Brien.exe")),
+            "'C:\\Updates\\O''Brien.exe'"
+        );
+        assert!(archive_listing_is_safe(
+            "ORIGAMI2.app/\nORIGAMI2.app/Contents/MacOS/ORIGAMI2\n"
+        ));
+        assert!(!archive_listing_is_safe("ORIGAMI2.app/../../escape\n"));
+        let bomb = "ORIGAMI2.app/x\n".repeat(4097);
+        assert!(!archive_listing_is_safe(&bomb));
+        let source = include_str!("runtime_update.rs");
+        for contract in [
+            "--proto",
+            "=https",
+            "--max-redirs",
+            "--max-filesize",
+            "temporary.parent() != destination.parent()",
+        ] {
+            assert!(source.contains(contract));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_root_rejects_symbolic_links() {
+        use std::os::unix::fs::symlink;
+        let base =
+            std::env::temp_dir().join(format!("origami2-updater-link-test-{}", std::process::id()));
+        let target = base.join("target");
+        let link = base.join("link");
+        fs::create_dir_all(&target).unwrap();
+        symlink(&target, &link).unwrap();
+        assert_eq!(ensure_secure_root(&link), Err(()));
+        fs::remove_file(link).unwrap();
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
@@ -914,6 +1054,9 @@ mod tests {
             signature: true,
             confirm: true,
             pending: false,
+            applied: false,
+            cancel_on_payload: None,
+            stage_fail: false,
         };
         let mut updater = Updater::new(adapter);
         assert!(updater.check().is_ok());

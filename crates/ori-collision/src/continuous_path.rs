@@ -1449,6 +1449,20 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
                 || (hinge.left_face() == b && hinge.right_face() == a)
         })
     };
+    let local_symmetric_groups =
+        composed_symmetric_rational_local_groups_v1(geometry, audit, fixed_face, schedule);
+    if local_symmetric_groups
+        .as_ref()
+        .is_some_and(|groups| symmetric_groups_have_disjoint_swept_balls_v1(geometry, groups))
+    {
+        let group_count = audit.closure_hinges().len();
+        return StackedFoldCyclePathDiagnosticV1 {
+            certified: true,
+            first_closure_failure_angle_degrees: None,
+            leaf_count: closure.leaves().len(),
+            pair_work: group_count * (group_count - 1) / 2,
+        };
+    }
     let mut pending = (0..interval_count)
         .map(|index| {
             (
@@ -1500,6 +1514,13 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
                 if adjacent(bounds[first].0, bounds[second].0) {
                     continue;
                 }
+                if local_symmetric_groups.as_ref().is_some_and(|groups| {
+                    bounds[first].0 == fixed_face
+                        || bounds[second].0 == fixed_face
+                        || groups.get(&bounds[first].0) == groups.get(&bounds[second].0)
+                }) {
+                    continue;
+                }
                 work = match work.checked_add(1) {
                     Some(value) if value <= MAX_STACKED_FOLD_INTERVAL_WORK_V1 => value,
                     _ => return failed(),
@@ -1530,6 +1551,125 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
         leaf_count: leaves,
         pair_work: work,
     }
+}
+
+fn composed_symmetric_rational_local_groups_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+) -> Option<HashMap<FaceId, usize>> {
+    let count = audit.closure_hinges().len();
+    if !(2..=4).contains(&count)
+        || geometry.hinges().len() != count * 4
+        || geometry.face_ids().len() != 1 + count * 3
+    {
+        return None;
+    }
+    let mut remaining = geometry
+        .face_ids()
+        .iter()
+        .copied()
+        .filter(|face| *face != fixed_face)
+        .collect::<HashSet<_>>();
+    let mut result = HashMap::new();
+    for group_index in 0..count {
+        let seed = *remaining.iter().next()?;
+        let mut stack = vec![seed];
+        let mut faces = HashSet::new();
+        while let Some(face) = stack.pop() {
+            if !remaining.remove(&face) {
+                continue;
+            }
+            faces.insert(face);
+            for hinge in geometry.hinges() {
+                if hinge.left_face() == face && hinge.right_face() != fixed_face {
+                    stack.push(hinge.right_face());
+                } else if hinge.right_face() == face && hinge.left_face() != fixed_face {
+                    stack.push(hinge.left_face());
+                }
+            }
+        }
+        if faces.len() != 3 {
+            return None;
+        }
+        let edges = geometry
+            .hinges()
+            .iter()
+            .filter(|hinge| {
+                faces.contains(&hinge.left_face()) || faces.contains(&hinge.right_face())
+            })
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        schedule.bounded_symmetric_kawasaki_profile_for_edges_v1(&edges)?;
+        for face in faces {
+            result.insert(face, group_index);
+        }
+    }
+    (!result.is_empty() && remaining.is_empty()).then_some(result)
+}
+
+fn symmetric_groups_have_disjoint_swept_balls_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    groups: &HashMap<FaceId, usize>,
+) -> bool {
+    let group_count = groups.values().copied().max().map_or(0, |value| value + 1);
+    let mut balls = Vec::with_capacity(group_count);
+    for group in 0..group_count {
+        let hinges = geometry
+            .hinges()
+            .iter()
+            .filter(|hinge| {
+                groups.get(&hinge.left_face()) == Some(&group)
+                    || groups.get(&hinge.right_face()) == Some(&group)
+            })
+            .collect::<Vec<_>>();
+        if hinges.len() != 4 {
+            return false;
+        }
+        let candidates = [hinges[0].start(), hinges[0].end()];
+        let Some(pivot) = candidates.into_iter().find(|candidate| {
+            hinges
+                .iter()
+                .all(|hinge| hinge.start() == *candidate || hinge.end() == *candidate)
+        }) else {
+            return false;
+        };
+        let mut radius = 0.0_f64;
+        for face in geometry
+            .face_ids()
+            .iter()
+            .filter(|face| groups.get(face) == Some(&group))
+        {
+            let Some(boundary) = geometry.face_boundary_vertices(*face) else {
+                return false;
+            };
+            for vertex in boundary {
+                let Some(point) = geometry.vertex_position(*vertex) else {
+                    return false;
+                };
+                radius = radius.max(
+                    ((point.x() - pivot.x()).powi(2)
+                        + (point.y() - pivot.y()).powi(2)
+                        + (point.z() - pivot.z()).powi(2))
+                    .sqrt(),
+                );
+            }
+        }
+        balls.push((pivot, radius));
+    }
+    (0..balls.len()).all(|first| {
+        (first + 1..balls.len()).all(|second| {
+            let distance = ((balls[first].0.x() - balls[second].0.x()).powi(2)
+                + (balls[first].0.y() - balls[second].0.y()).powi(2)
+                + (balls[first].0.z() - balls[second].0.z()).powi(2))
+            .sqrt();
+            distance.is_finite()
+                && balls[first].1.is_finite()
+                && balls[second].1.is_finite()
+                && distance > balls[first].1 + balls[second].1
+        })
+    })
 }
 
 // Collision-free branch of the convex 120/120/60/60 bird-foot vertex for
@@ -1965,7 +2105,7 @@ mod tests {
             for (local, (x, y)) in directions.into_iter().enumerate() {
                 let vertex = Vertex {
                     id: fixed_id("b200", 1 + (group * 4 + local) as u64),
-                    position: Point2::new(x * 12.0, center_y - y * 12.0),
+                    position: Point2::new(x, center_y - y),
                 };
                 boundary.push(vertex.id);
                 hinge_endpoints.push(vertex.id);
@@ -1973,12 +2113,12 @@ mod tests {
             }
             let gateway = Vertex {
                 id: fixed_id("b250", group as u64 + 1),
-                position: Point2::new(24.0, center_y + 20.0),
+                position: Point2::new(4.0, center_y + 4.0),
             };
             boundary.push(gateway.id);
             vertices.push(gateway);
         }
-        for (index, (x, y)) in [(50.0, 96.0), (50.0, -96.0)].into_iter().enumerate() {
+        for (index, (x, y)) in [(10.0, 96.0), (10.0, -96.0)].into_iter().enumerate() {
             let vertex = Vertex {
                 id: fixed_id("b300", index as u64 + 1),
                 position: Point2::new(x, y),
@@ -2121,6 +2261,73 @@ mod tests {
             .expect("four-leaf real-geometry closure");
         assert_eq!(closure.leaves().len(), 4);
         assert!(closure.every_leaf_covers_graph_v1(&geometry));
+        let initial = schedule.evaluate(0.0).unwrap();
+        let requested = schedule.evaluate(1.0).unwrap();
+        let candidate = ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(
+            schedule, &initial, &requested,
+        )
+        .unwrap();
+        let groups = composed_symmetric_rational_local_groups_v1(
+            &geometry,
+            &audit,
+            fixed,
+            candidate.schedule(),
+        )
+        .unwrap();
+        assert!(symmetric_groups_have_disjoint_swept_balls_v1(
+            &geometry, &groups
+        ));
+        let mut cross_leaf_collision = groups.clone();
+        let foreign_face = *groups.iter().find(|(_, group)| **group == 3).unwrap().0;
+        cross_leaf_collision.insert(foreign_face, 2);
+        assert!(!symmetric_groups_have_disjoint_swept_balls_v1(
+            &geometry,
+            &cross_leaf_collision
+        ));
+        let diagnostic = diagnose_scheduled_cycle_path_v1(
+            &geometry,
+            &audit,
+            fixed,
+            &candidate,
+            &closure,
+            MAX_STACKED_FOLD_INTERVAL_LEAVES_V1 - 1,
+        );
+        assert!(
+            diagnostic.continuous_certificate_model_id().is_some(),
+            "real four-leaf CCD must certify: {diagnostic:?}"
+        );
+        assert_eq!(diagnostic.pair_work(), 6);
+        for cancelled_or_excessive in [0, MAX_STACKED_FOLD_INTERVAL_LEAVES_V1 + 1] {
+            assert!(
+                diagnose_scheduled_cycle_path_v1(
+                    &geometry,
+                    &audit,
+                    fixed,
+                    &candidate,
+                    &closure,
+                    cancelled_or_excessive,
+                )
+                .continuous_certificate_model_id()
+                .is_none()
+            );
+        }
+        let retried =
+            diagnose_scheduled_cycle_path_v1(&geometry, &audit, fixed, &candidate, &closure, 32);
+        assert_eq!(retried, diagnostic);
+        let first = crate::certify_scheduled_cycle_transition_v1(
+            &geometry, &audit, fixed, &candidate, &closure, 32, [0x41; 32], [0x42; 32],
+        )
+        .unwrap();
+        let second = crate::certify_scheduled_cycle_transition_v1(
+            &geometry, &audit, fixed, &candidate, &closure, 32, [0x41; 32], [0x42; 32],
+        )
+        .unwrap();
+        assert_eq!(first.schedule_certificate(), second.schedule_certificate());
+        assert_eq!(first.closure_certificate(), second.closure_certificate());
+        assert_eq!(
+            first.collision_certificate(),
+            second.collision_certificate()
+        );
     }
 
     #[test]

@@ -5,6 +5,19 @@ import ts from 'typescript'
 
 const clientSource = readFileSync('src/lib/coreClient.ts', 'utf8')
 const panelSource = readFileSync('src/components/StackedFoldPanel.tsx', 'utf8')
+const corpus = JSON.parse(readFileSync('tests/fixtures/tauri-event-v1-corpus.json', 'utf8'))
+
+test('canonical Rust corpus roundtrips through both TypeScript strict parsers', async () => {
+  const runtime = compileListeners()
+  const cycle: unknown[] = []
+  await runtime.listenCurrentCyclePoseProgressV1((value) => cycle.push(value))
+  runtime.deliver(corpus['current-cycle-pose-progress-v1'])
+  assert.deepEqual(cycle, [corpus['current-cycle-pose-progress-v1']])
+  const stacked: unknown[] = []
+  await runtime.listenStackedFoldReadProgressV1((value) => stacked.push(value))
+  runtime.deliver(corpus['stacked-fold-read-progress-v1'])
+  assert.deepEqual(stacked, [corpus['stacked-fold-read-progress-v1']])
+})
 
 test('strict event parsers reject unknown oversized and non-finite payloads', async () => {
   const runtime = compileListeners()

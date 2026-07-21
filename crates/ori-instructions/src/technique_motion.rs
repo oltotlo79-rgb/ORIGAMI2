@@ -81,6 +81,55 @@ pub struct SinkFoldMotionRequestV1<'a> {
     pub second_path_certificate: &'a CertifiedPoseGraphPathCertificateV1,
 }
 
+pub type LayerSelectiveMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
+
+pub fn compile_certified_layer_selective_timeline_v1(
+    request: LayerSelectiveMotionRequestV1<'_>,
+) -> Result<InstructionTimeline, ReverseFoldMotionError> {
+    let technique = request
+        .technique_file
+        .document()
+        .techniques
+        .iter()
+        .find(|technique| technique.id == request.technique_id)
+        .ok_or(ReverseFoldMotionError::UnsupportedTechnique)?;
+    let operation = technique
+        .operations
+        .iter()
+        .find(|operation| {
+            matches!(
+                operation.action,
+                FoldTechniqueActionV1::LayerSelectiveManipulation { .. }
+            )
+        })
+        .ok_or(ReverseFoldMotionError::UnsupportedTechnique)?;
+    if !operation
+        .required_capabilities
+        .contains(&FoldTechniqueCapabilityV1::LayerSelectiveMotionV1)
+    {
+        return Err(ReverseFoldMotionError::UnsupportedTechnique);
+    }
+    let title = technique
+        .names
+        .iter()
+        .find(|text| text.locale == "ja")
+        .or_else(|| technique.names.first())
+        .map(|text| text.text.as_str())
+        .ok_or(ReverseFoldMotionError::UnsupportedTechnique)?;
+    compile_two_segment_motion(
+        title,
+        request.source_model_fingerprint,
+        request.fixed_face,
+        request.first_edge,
+        request.second_edge,
+        request.source_hinge_angles,
+        request.intermediate_angle_microdegrees,
+        request.target_angle_microdegrees,
+        request.first_path_certificate,
+        request.second_path_certificate,
+    )
+}
+
 /// Compiles the closest validated V1 equivalent to a squash/petal motion: an
 /// open or closed sink fold. Both native segments remain exact proof premises.
 pub fn compile_certified_sink_fold_timeline_v1(

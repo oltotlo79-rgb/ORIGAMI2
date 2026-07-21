@@ -21,9 +21,10 @@ pub use fold_technique_file::{
 };
 pub use technique_motion::{
     AccordionFoldMotionError, AccordionFoldMotionRequestV1, BookFoldMotionError,
-    BookFoldMotionRequestV1, ReverseFoldKindV1, ReverseFoldMotionError, ReverseFoldMotionRequestV1,
-    SinkFoldMotionRequestV1, compile_certified_accordion_fold_timeline_v1,
-    compile_certified_book_fold_timeline_v1, compile_certified_reverse_fold_timeline_v1,
+    BookFoldMotionRequestV1, LayerSelectiveMotionRequestV1, ReverseFoldKindV1,
+    ReverseFoldMotionError, ReverseFoldMotionRequestV1, SinkFoldMotionRequestV1,
+    compile_certified_accordion_fold_timeline_v1, compile_certified_book_fold_timeline_v1,
+    compile_certified_layer_selective_timeline_v1, compile_certified_reverse_fold_timeline_v1,
     compile_certified_sink_fold_timeline_v1, instruction_pose_fingerprint_v1,
 };
 

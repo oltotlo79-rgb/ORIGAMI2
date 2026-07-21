@@ -1932,11 +1932,26 @@ mod tests {
     fn json_round_trip_preserves_instruction_timeline() {
         let mut original = sample_document();
         add_sample_instruction(&mut original);
+        original.instruction_timeline.steps[0]
+            .visual
+            .cycle_layer_order_proof_v1 = Some(ori_domain::CycleLayerOrderProofV1 {
+            version: 1,
+            model_id: ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1.to_owned(),
+            target_order_sha256: [0xa5; 32],
+            transition_count: 5,
+            pairs: Vec::new(),
+        });
 
         let bytes = write_project_json(&original).expect("write instructions");
         let restored = read_project_json(&bytes).expect("read instructions");
 
         assert_eq!(restored.instruction_timeline, original.instruction_timeline);
+        let proof = restored.instruction_timeline.steps[0]
+            .visual
+            .cycle_layer_order_proof_v1
+            .as_ref()
+            .expect("saved layer transport proof");
+        assert_eq!(proof.target_order_sha256, [0xa5; 32]);
     }
 
     #[test]

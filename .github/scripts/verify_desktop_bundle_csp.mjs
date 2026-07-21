@@ -7,7 +7,7 @@ if (!lstatSync(directory).isDirectory() || realpathSync(directory) !== directory
 }
 const htmlPath = join(directory, 'index.html')
 const html = readPinnedFile(htmlPath, 65_536)
-if (/<style\b|<script\b(?![^>]*\bsrc=)|\sstyle\s*=|\ssrcset\s*=|<base\b|<meta\b[^>]*http-equiv\s*=\s*["']?refresh|(?:data|blob|https?):|\b(?:src|href)\s*=\s*["']\/\//iu.test(html)) {
+if (/<style\b|<script\b(?![^>]*\bsrc=)|\sstyle\s*=|\s(?:srcset|ping|action|formaction)\s*=|<base\b|<meta\b[^>]*http-equiv\s*=\s*["']?refresh|(?:data|blob|https?):|\b(?:src|href)\s*=\s*["']\/\//iu.test(html)) {
   throw new Error('desktop bundle HTML requires forbidden inline or remote CSP authority')
 }
 const scripts = [...html.matchAll(/<script type="module" crossorigin src="(\/assets\/[A-Za-z0-9_-]+\.js)"><\/script>/gu)]
@@ -29,7 +29,7 @@ if (/url\(\s*["']?(?:data|blob|https?):/iu.test(canonicalCss) || /@import\b/iu.t
   throw new Error('desktop bundle CSS contains remote, blob, data, or imported content')
 }
 const canonicalJavaScript = foldStaticJavaScriptStrings(decodeJavaScriptEscapes(javascript))
-if (/\b(?:importScripts|WebSocket|EventSource|XMLHttpRequest)\s*\(|\bimport\s*\(|[#@]\s*sourceMappingURL\s*=|\bfetch\s*\(\s*["'`]https?:\/\//u.test(canonicalJavaScript)
+if (/\b(?:importScripts|WebSocket|XMLHttpRequest|WebTransport|RTCPeerConnection|webkitRTCPeerConnection)\s*\(|\bEventSource\b|\.\s*createDataChannel\s*\(|\bimport\s*\(|[#@]\s*sourceMappingURL\s*=|\bfetch\s*\(\s*["'`]https?:\/\//u.test(canonicalJavaScript)
   || /\b(?:globalThis|window|self)\s*\[\s*["'`]fetch["'`]\s*\]/u.test(canonicalJavaScript)
   || /\bnavigator\s*(?:\.\s*sendBeacon|\[\s*["'`]sendBeacon["'`]\s*\])/u.test(canonicalJavaScript)
   || /\(\s*0\s*,\s*fetch\s*\)\s*\(\s*["'`]https?:\/\//u.test(canonicalJavaScript)) {

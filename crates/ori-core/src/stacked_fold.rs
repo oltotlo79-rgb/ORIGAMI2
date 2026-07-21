@@ -1975,6 +1975,146 @@ pub fn prepare_stacked_fold_non_flat_layer_order_v1(
     )
 }
 
+/// Re-solves read-only current tree pose evidence and freshly mints the same
+/// sealed non-flat representation used by stacked-fold targets.
+pub fn revalidate_current_non_flat_layer_order_v1(
+    identity_namespace: ProjectId,
+    revision: Revision,
+    pattern: &CreasePattern,
+    paper: &Paper,
+    fixed_face: Option<FaceId>,
+    hinge_angles: &CanonicalHingeAngles,
+    current_flat: &LayerOrderSnapshot,
+    max_face_pairs: usize,
+) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let fingerprint = fold_model_fingerprint_v1(pattern, paper);
+    let provenance = current_flat.provenance.source;
+    if current_flat.model_id != LAYER_ORDER_MODEL_ID
+        || provenance.identity_namespace != Some(identity_namespace)
+        || provenance.source_revision != revision
+        || provenance.source_fingerprint != Some(fingerprint)
+    {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch);
+    }
+    let topology = simulation_snapshot(
+        identity_namespace,
+        revision,
+        paper,
+        pattern,
+        FaceLineageTopology::Source,
+    )
+    .map_err(|_| PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)?;
+    let material_faces = canonical_registry(&topology);
+    if current_flat.material_faces != material_faces {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch);
+    }
+    let model = MaterialTreeKinematicsModel::prepare(
+        pattern,
+        paper,
+        &topology,
+        TreeKinematicsLimits::default(),
+    )?;
+    let pose = model.solve(fixed_face, hinge_angles)?;
+    if pose.hinge_angles().iter().all(|angle| {
+        angle.angle_degrees().to_bits() == 0.0_f64.to_bits()
+            || angle.angle_degrees().to_bits() == 180.0_f64.to_bits()
+    }) {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::NotNonFlatEndpoint);
+    }
+    let tested_face_pairs = material_faces
+        .len()
+        .checked_mul(material_faces.len().saturating_sub(1))
+        .and_then(|value| value.checked_div(2))
+        .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::ResourceLimit)?;
+    if tested_face_pairs > max_face_pairs {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::ResourceLimit);
+    }
+    let planes = material_faces
+        .iter()
+        .map(|face| target_face_plane(&pose, face.face_id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let folded_faces = material_faces
+        .iter()
+        .zip(&planes)
+        .map(|(face, plane)| {
+            pose.face_transform(face.face_id)
+                .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)
+                .and_then(|transform| exact_folded_face(*face, transform, plane.1))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let source_by_target = material_faces
+        .iter()
+        .map(|face| (face.face_id, face.face_id))
+        .collect::<HashMap<_, _>>();
+    let mut overlap_cells = Vec::new();
+    let mut face_pair_orders = Vec::new();
+    for first in 0..planes.len() {
+        for second in first + 1..planes.len() {
+            let normal_cross = point_length(point_cross(
+                point_values(planes[first].1),
+                point_values(planes[second].1),
+            ));
+            if !normal_cross.is_finite() {
+                return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::UnrepresentableFacePlane);
+            }
+            if normal_cross > 1.0e-9 {
+                continue;
+            }
+            let overlap = projected_convex_overlap(&planes[first], &planes[second])?;
+            if overlap.len() < 3 || polygon_double_area(&overlap).abs() <= 1.0e-12 {
+                continue;
+            }
+            let separation = point_dot(
+                point_delta(planes[second].0, planes[first].0),
+                planes[first].1,
+            );
+            let (lower_face, upper_face) = if separation.abs() > 1.0e-9 {
+                if separation > 0.0 {
+                    (
+                        material_faces[first].face_id,
+                        material_faces[second].face_id,
+                    )
+                } else {
+                    (
+                        material_faces[second].face_id,
+                        material_faces[first].face_id,
+                    )
+                }
+            } else {
+                inherited_source_order(
+                    material_faces[first].face_id,
+                    material_faces[second].face_id,
+                    &source_by_target,
+                    current_flat,
+                )?
+            };
+            overlap_cells.push(StackedFoldNonFlatOverlapCellV1 {
+                exact_boundary: overlap.iter().copied().map(exact_point_from_f64).collect(),
+                boundary: overlap,
+                lower_face,
+                upper_face,
+            });
+            face_pair_orders.push(StackedFoldNonFlatFacePairOrderV1 {
+                lower_face,
+                upper_face,
+            });
+        }
+    }
+    Ok(StackedFoldNonFlatLayerOrderV1 {
+        identity_namespace,
+        target_revision: revision,
+        target_fingerprint: fingerprint,
+        fixed_face: pose.fixed_face(),
+        hinge_angles: pose.hinge_angles().to_vec(),
+        folded_faces,
+        material_faces,
+        tested_face_pairs,
+        source_overlap_cells_authenticated: current_flat.overlap_cells.len(),
+        overlap_cells,
+        face_pair_orders,
+    })
+}
+
 /// Continues non-flat layer authority without pretending that it is a global
 /// flat-foldability snapshot. All source cells and pair orders remain sealed.
 pub fn prepare_stacked_fold_non_flat_layer_order_from_non_flat_v1(

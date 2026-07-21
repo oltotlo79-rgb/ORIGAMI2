@@ -1045,6 +1045,14 @@ pub(crate) fn apply_beginner_part_assignments(
                     | ori_domain::BeginnerTargetPartKindV1::Horn
                     | ori_domain::BeginnerTargetPartKindV1::Antenna
             );
+            let half_width = i32::try_from(max_x.saturating_sub(min_x).saturating_add(1))
+                .unwrap_or(2_000)
+                .saturating_mul(5)
+                .clamp(1, 10_000);
+            let half_height = i32::try_from(max_y.saturating_sub(min_y).saturating_add(1))
+                .unwrap_or(2_000)
+                .saturating_mul(5)
+                .clamp(1, 10_000);
             generic.push(ori_domain::BeginnerProtrusionTargetV1 {
                 id: index as u16 + 1,
                 count: part.count,
@@ -1066,7 +1074,12 @@ pub(crate) fn apply_beginner_part_assignments(
                 .clamp(1, 10_000),
                 root_width_tenths_mm: None,
                 tip_width_tenths_mm: None,
-                local_outline_tenths_mm: None,
+                local_outline_tenths_mm: Some(vec![
+                    [-half_width, -half_height],
+                    [half_width, -half_height],
+                    [half_width, half_height],
+                    [-half_width, half_height],
+                ]),
                 position_tenths_mm: [
                     i32::try_from(axis_twice.saturating_mul(5))
                         .map_err(|_| "part_assignment_generic_binding_invalid")?,

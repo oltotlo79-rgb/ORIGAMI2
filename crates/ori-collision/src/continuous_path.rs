@@ -1383,7 +1383,7 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
     };
     if interval_count == 0
         || interval_count > MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
-        || closure.leaves().is_empty()
+        || !closure.every_leaf_covers_graph_v1(geometry)
         || closure.fixed_face() != fixed_face
         || closure.schedule_binding_fingerprint_v1()
             != schedule.certificate_binding_fingerprint_v1()
@@ -2058,6 +2058,19 @@ mod tests {
             diagnostic.continuous_certificate_model_id(),
             Some(STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1),
         );
+        for cancelled_or_excessive in [0, MAX_STACKED_FOLD_INTERVAL_LEAVES_V1 + 1] {
+            let rejected = diagnose_scheduled_cycle_path_v1(
+                &geometry,
+                &audit,
+                fixed,
+                &candidate,
+                &closure,
+                cancelled_or_excessive,
+            );
+            assert!(rejected.continuous_certificate_model_id().is_none());
+            assert_eq!(rejected.leaf_count(), 0);
+            assert_eq!(rejected.pair_work(), 0);
+        }
         assert!(
             crate::certify_scheduled_cycle_transition_v1(
                 &geometry, &audit, fixed, &candidate, &closure, 8, [0x11; 32], [0x22; 32],

@@ -99,7 +99,7 @@ pub fn certify_scheduled_cycle_transition_v1(
 ) -> Option<CertifiedPathTransitionEvidenceV1> {
     let schedule = candidate.schedule();
     if closure.fixed_face() != fixed_face
-        || closure.leaves().is_empty()
+        || !closure.every_leaf_covers_graph_v1(geometry)
         || closure.schedule_binding_fingerprint_v1()
             != schedule.certificate_binding_fingerprint_v1()
         || closure.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
@@ -122,7 +122,7 @@ pub fn certify_scheduled_cycle_transition_v1(
         &[
             &schedule_certificate,
             &closure.graph_binding_fingerprint_v1(),
-            &(closure.leaves().len() as u64).to_be_bytes(),
+            &closure.partition_binding_fingerprint_v1(),
         ],
     );
     let collision_certificate = hash_certificate_binding(

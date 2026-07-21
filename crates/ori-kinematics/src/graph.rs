@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use ori_domain::{EdgeId, FaceId};
 use ori_topology::TopologySnapshot;
+use sha2::{Digest, Sha256};
 
 use crate::{
     CanonicalCycleScheduleV1, CanonicalHingeAngles, CycleScheduleLimitsV1,
@@ -83,6 +84,45 @@ impl DyadicMaterialHingeIntervalClosureCertificateV1 {
             cursor += width;
         }
         cursor == (1_u128 << 64)
+    }
+
+    /// Confirms that every partition leaf independently covers the complete
+    /// canonical hinge carrier of the bound material graph.
+    #[must_use]
+    pub fn every_leaf_covers_graph_v1(&self, geometry: &MaterialHingeGraphGeometry) -> bool {
+        let mut hinges = geometry
+            .hinges()
+            .iter()
+            .map(TreeHinge::edge)
+            .collect::<Vec<_>>();
+        hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        self.has_canonical_complete_partition_v1()
+            && self.leaves.iter().all(|(_, _, leaf)| {
+                leaf.fixed_face == self.fixed_face && leaf.checked_hinges == hinges
+            })
+    }
+
+    /// Native binding for the exact ordered partition and every independent
+    /// leaf proof. This does not grant pose or mutation authority.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn partition_binding_fingerprint_v1(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(b"ORIGAMI2_DYADIC_CLOSURE_PARTITION_BINDING_V1");
+        hash.update(self.fixed_face.canonical_bytes());
+        hash.update(self.schedule_binding_fingerprint);
+        hash.update(self.graph_binding_fingerprint);
+        hash.update((self.leaves.len() as u64).to_be_bytes());
+        for (depth, index, leaf) in &self.leaves {
+            hash.update(depth.to_be_bytes());
+            hash.update(index.to_be_bytes());
+            hash.update(leaf.fixed_face.canonical_bytes());
+            hash.update((leaf.checked_hinges.len() as u64).to_be_bytes());
+            for edge in &leaf.checked_hinges {
+                hash.update(edge.canonical_bytes());
+            }
+        }
+        hash.finalize().into()
     }
 
     #[doc(hidden)]
@@ -2030,22 +2070,30 @@ mod tests {
                 },
             )
             .unwrap();
+        assert!(closure.every_leaf_covers_graph_v1(&geometry));
 
         let mut reordered = closure.clone();
         reordered.leaves.swap(1, 2);
         assert!(!reordered.has_canonical_complete_partition_v1());
+        assert_ne!(
+            reordered.partition_binding_fingerprint_v1(),
+            closure.partition_binding_fingerprint_v1()
+        );
 
         let mut gapped = closure.clone();
         gapped.leaves.remove(1);
         assert!(!gapped.has_canonical_complete_partition_v1());
 
         let mut stale = closure;
+        let valid_binding = stale.partition_binding_fingerprint_v1();
         stale.leaves[2].2.checked_hinges.pop();
         assert!(stale.has_canonical_complete_partition_v1());
+        assert!(!stale.every_leaf_covers_graph_v1(&geometry));
         assert_ne!(
             stale.leaves[2].2.checked_hinges(),
             stale.leaves[0].2.checked_hinges()
         );
+        assert_ne!(stale.partition_binding_fingerprint_v1(), valid_binding);
     }
 
     #[test]

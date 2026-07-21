@@ -12,6 +12,7 @@ import {
   listenCurrentCyclePoseProgressV1,
   proposeCurrentCyclePoseV1,
   proposeCurrentStackedFoldRead,
+  readEvenCycleCandidatesV1,
   readLiveHingeRegistryV1,
   type ProjectSnapshot,
   type CurrentCyclePosePreviewResponseV1,
@@ -109,6 +110,11 @@ export function StackedFoldPanel({
     initialAngleDegrees: number
   }>[]>([])
   const [requestedHingeAngles, setRequestedHingeAngles] = useState<Record<string, number>>({})
+  const [evenCycleCandidates, setEvenCycleCandidates] = useState<readonly Readonly<{
+    edges: readonly [string, string]
+    reason: 'same_assignment_geometrically_opposite'
+  }>[]>([])
+  const [evenCycleStatus, setEvenCycleStatus] = useState<string>('unsupported')
   const [confirmed, setConfirmed] = useState(false)
   const [applying, setApplying] = useState(false)
   const [view, setView] = useState<View>({ kind: 'idle' })
@@ -254,11 +260,12 @@ export function StackedFoldPanel({
     if (!selectedLine) {
       setLiveHinges([])
       setRequestedHingeAngles({})
+      setEvenCycleCandidates([])
       return () => {
         current = false
       }
     }
-    void readLiveHingeRegistryV1({
+    void Promise.all([readLiveHingeRegistryV1({
       expectedProjectInstanceId: snapshot.project_instance_id,
       expectedProjectId: snapshot.project_id,
       expectedRevision: snapshot.revision,
@@ -267,9 +274,16 @@ export function StackedFoldPanel({
       fixedSide,
       rotationDirection,
       requestedAngleDegrees: Number(angle),
-    }).then((registry) => {
+    }), readEvenCycleCandidatesV1({
+      expectedProjectInstanceId: snapshot.project_instance_id,
+      expectedProjectId: snapshot.project_id,
+      expectedRevision: snapshot.revision,
+      maxPairTests: 120,
+    })]).then(([registry, automatic]) => {
       if (!current) return
       setLiveHinges(registry.entries)
+      setEvenCycleCandidates(automatic.candidates)
+      setEvenCycleStatus(automatic.status)
       setRequestedHingeAngles(Object.fromEntries(
         registry.entries.map((entry) => [entry.edge, entry.initialAngleDegrees]),
       ))
@@ -277,6 +291,8 @@ export function StackedFoldPanel({
       if (current) {
         setLiveHinges([])
         setRequestedHingeAngles({})
+        setEvenCycleCandidates([])
+        setEvenCycleStatus('unsupported')
       }
     })
     return () => {
@@ -572,6 +588,38 @@ export function StackedFoldPanel({
             </div>
           ))}
         </fieldset>
+      )}
+      {liveHinges.length > 0 && view.kind !== 'ready' && (
+        <section aria-label={t('偶数単頂点の自動候補', 'Automatic even-cycle candidates')}>
+          <h3>{t('偶数単頂点の自動候補', 'Automatic even-cycle candidates')}</h3>
+          {evenCycleCandidates.map((candidate) => (
+            <button
+              type="button"
+              key={candidate.edges.join(':')}
+              data-testid="even-cycle-candidate"
+              disabled={disabled || applying}
+              onClick={() => {
+                const selected = new Set(candidate.edges)
+                const requested = Number(angle)
+                setRequestedHingeAngles(Object.fromEntries(liveHinges.map((hinge) => [
+                  hinge.edge,
+                  selected.has(hinge.edge) ? requested : hinge.initialAngleDegrees,
+                ])))
+              }}
+            >
+              {candidate.edges.join(' / ')} — {t('同一割当・反対軸', 'same assignment, opposite axes')}
+            </button>
+          ))}
+          {evenCycleCandidates.length === 0 && (
+            <p role="status" data-even-cycle-status={evenCycleStatus}>
+              {evenCycleStatus === 'resource_limit'
+                ? t('候補探索の上限を超えました。', 'Candidate search exceeded its resource bound.')
+                : evenCycleStatus === 'none'
+                  ? t('適合する反対ヒンジ対はありません。', 'No matching opposite hinge pair exists.')
+                  : t('現在の形状は対応する偶数単頂点サイクルではありません。', 'The current shape is not a supported even single-vertex cycle.')}
+            </p>
+          )}
+        </section>
       )}
       <form onSubmit={(event) => void preview(event)}>
         <label>

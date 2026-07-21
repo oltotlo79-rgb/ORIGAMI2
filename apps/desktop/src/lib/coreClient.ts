@@ -2973,6 +2973,68 @@ export function proposeCurrentStackedFoldRead(
   })
 }
 
+export type EvenCycleCandidatesRequestV1 = Readonly<{
+  expectedProjectInstanceId: string
+  expectedProjectId: string
+  expectedRevision: number
+  maxPairTests: number
+}>
+
+export type EvenCycleCandidatesResponseV1 = Readonly<{
+  version: 1
+  projectInstanceId: string
+  projectId: string
+  revision: number
+  status: 'ready' | 'none' | 'resource_limit' | 'unsupported'
+  reason: string
+  candidates: readonly Readonly<{
+    version: 1
+    edges: readonly [string, string]
+    reason: 'same_assignment_geometrically_opposite'
+  }>[]
+  authorizesProjectMutation: false
+}>
+
+export function readEvenCycleCandidatesV1(
+  request: EvenCycleCandidatesRequestV1,
+): Promise<EvenCycleCandidatesResponseV1> {
+  if (!isCanonicalNonNilUuid(request.expectedProjectInstanceId)
+    || !isCanonicalNonNilUuid(request.expectedProjectId)
+    || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
+    || !Number.isSafeInteger(request.maxPairTests) || request.maxPairTests < 0) {
+    return Promise.reject(new Error('invalid even-cycle candidate request'))
+  }
+  return invoke<unknown>('read_even_cycle_candidates_v1', { request }).then((value) => {
+    if (!isCoreDataRecord(value)
+      || Object.keys(value).sort().join(',') !== 'authorizesProjectMutation,candidates,projectId,projectInstanceId,reason,revision,status,version'
+      || value.version !== 1
+      || value.projectInstanceId !== request.expectedProjectInstanceId
+      || value.projectId !== request.expectedProjectId
+      || value.revision !== request.expectedRevision
+      || !['ready', 'none', 'resource_limit', 'unsupported'].includes(String(value.status))
+      || typeof value.reason !== 'string'
+      || value.authorizesProjectMutation !== false
+      || !Array.isArray(value.candidates) || value.candidates.length > 8) throw new Error('invalid even-cycle candidate response')
+    const seen = new Set<string>()
+    for (const candidate of value.candidates) {
+      if (!isCoreDataRecord(candidate) || candidate.version !== 1
+        || Object.keys(candidate).sort().join(',') !== 'edges,reason,version'
+        || candidate.reason !== 'same_assignment_geometrically_opposite'
+        || !Array.isArray(candidate.edges) || candidate.edges.length !== 2
+        || !candidate.edges.every(isCanonicalNonNilUuid)
+        || String(candidate.edges[0]).localeCompare(String(candidate.edges[1])) >= 0
+        || seen.has(candidate.edges.join(':'))) {
+        throw new Error('invalid even-cycle candidate response')
+      }
+      seen.add(candidate.edges.join(':'))
+    }
+    if ((value.status === 'ready') !== (value.candidates.length > 0)) {
+      throw new Error('invalid even-cycle candidate response')
+    }
+    return value as EvenCycleCandidatesResponseV1
+  })
+}
+
 export function proposeCurrentCyclePoseV1(
   request: CurrentCyclePosePreviewRequestV1,
 ): Promise<CurrentCyclePosePreviewResponseV1> {

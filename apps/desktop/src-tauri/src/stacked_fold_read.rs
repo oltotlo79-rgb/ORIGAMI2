@@ -188,6 +188,109 @@ pub(super) struct LiveHingeRegistryResponseV1 {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct EvenCycleCandidatesRequestV1 {
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    max_pair_tests: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct EvenCycleCandidatesResponseV1 {
+    version: u32,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    status: &'static str,
+    reason: &'static str,
+    candidates: Vec<EvenCycleCandidateDtoV1>,
+    authorizes_project_mutation: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EvenCycleCandidateDtoV1 {
+    version: u32,
+    edges: [ori_domain::EdgeId; 2],
+    reason: &'static str,
+}
+
+#[tauri::command]
+pub(super) fn read_even_cycle_candidates_v1(
+    app_state: State<'_, AppState>,
+    request: EvenCycleCandidatesRequestV1,
+) -> Result<EvenCycleCandidatesResponseV1, String> {
+    read_even_cycle_candidates_inner_v1(&app_state, request)
+}
+
+fn read_even_cycle_candidates_inner_v1(
+    app_state: &AppState,
+    request: EvenCycleCandidatesRequestV1,
+) -> Result<EvenCycleCandidatesResponseV1, String> {
+    let project = lock_project(app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+    if project.instance_id != request.expected_project_instance_id
+        || project.project_id != request.expected_project_id
+        || project.editor.revision() != request.expected_revision
+    {
+        return Err(STALE_MESSAGE.to_owned());
+    }
+    let pose_capability = project
+        .applied_pose_authority
+        .capture_capability(&project)
+        .ok()
+        .flatten();
+    let graph = pose_capability
+        .as_ref()
+        .and_then(|capability| capability.graph());
+    let (status, reason, candidates) = match graph {
+        None => (
+            "unsupported",
+            "current_pose_is_not_a_material_hinge_graph",
+            Vec::new(),
+        ),
+        Some((geometry, audit, _)) => {
+            match ori_kinematics::enumerate_even_single_vertex_opposite_pairs_v1(
+                geometry,
+                audit,
+                request.max_pair_tests,
+            ) {
+                Ok(pairs) if pairs.is_empty() => {
+                    ("none", "no_same_assignment_opposite_pair", Vec::new())
+                }
+                Ok(pairs) => ("ready", "same_assignment_geometrically_opposite", pairs),
+                Err(ori_kinematics::KinematicsError::ResourceLimitExceeded) => {
+                    ("resource_limit", "pair_test_limit_exceeded", Vec::new())
+                }
+                Err(_) => (
+                    "unsupported",
+                    "not_a_bounded_even_single_vertex_cycle",
+                    Vec::new(),
+                ),
+            }
+        }
+    };
+    Ok(EvenCycleCandidatesResponseV1 {
+        version: 1,
+        project_instance_id: project.instance_id,
+        project_id: project.project_id,
+        revision: project.editor.revision(),
+        status,
+        reason,
+        candidates: candidates
+            .into_iter()
+            .map(|edges| EvenCycleCandidateDtoV1 {
+                version: 1,
+                edges,
+                reason: "same_assignment_geometrically_opposite",
+            })
+            .collect(),
+        authorizes_project_mutation: false,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LinearCandidateRequestV1 {
     version: u32,
     entries: Vec<LinearCandidateEntryRequestV1>,

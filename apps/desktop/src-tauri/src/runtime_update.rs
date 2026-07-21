@@ -370,6 +370,7 @@ fn verify_platform_signature(path: &Path) -> Result<bool, ()> {
     let escaped = powershell_single_quoted_path(path);
     Command::new(powershell_executable()).args(["-NoProfile", "-NonInteractive", "-Command", &format!("$s=Get-AuthenticodeSignature -LiteralPath {escaped}; $s.Status -eq 'Valid' -and $null -ne $s.SignerCertificate -and $null -ne $s.TimeStamperCertificate")]).output().map(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).trim().eq_ignore_ascii_case("true")).map_err(|_| ())
 }
+#[cfg(any(target_os = "windows", test))]
 fn powershell_single_quoted_path(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "''"))
 }
@@ -457,6 +458,7 @@ fn launch_platform_installer(path: &Path) -> Result<bool, ()> {
 fn launch_platform_installer(_: &Path) -> Result<bool, ()> {
     Ok(false)
 }
+#[cfg(any(target_os = "macos", test))]
 fn archive_listing_is_safe(entries: &str) -> bool {
     let mut count = 0_usize;
     for entry in entries.lines() {

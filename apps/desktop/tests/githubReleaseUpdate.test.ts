@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import test from 'node:test'
 
 import {
@@ -36,8 +38,7 @@ test('the network and release-page authorities are fixed to the official reposit
 
 test('the parser retains only a stable version and its official release page', () => {
   const parsed = parseGitHubLatestReleaseResponse(release({
-    name: 'Private project path C:\\Users\\alice\\secret.ori',
-    body: 'arbitrary release notes',
+    body: 'Private project path C:\\Users\\alice\\secret.ori',
     author: { login: 'arbitrary-author' },
     assets: [{
       browser_download_url: 'https://evil.example/payload.exe',
@@ -76,8 +77,23 @@ test('draft prerelease inconsistent and malformed versions are rejected', () => 
     release({ tag_name: 'v1.2.3/../../evil' }),
     release({ draft: 'false' }),
     release({ prerelease: 0 }),
+    release({ name: 'QUARANTINED v1.2.3' }),
+    release({ name: 'ORIGAMI2 v9.9.9' }),
+    release({ body: '## QUARANTINED RELEASE\n\nDo not install.' }),
+    release({ body: '<!-- origami2-release-owner-sha256:abc123 -->' }),
   ]) {
     assert.equal(parseGitHubLatestReleaseResponse(candidate), null)
+  }
+})
+
+test('native and frontend dependency surfaces contain no automatic updater', () => {
+  const desktop = resolve(import.meta.dirname, '..')
+  for (const path of [
+    resolve(desktop, 'package.json'),
+    resolve(desktop, 'src-tauri', 'Cargo.toml'),
+    resolve(desktop, 'src-tauri', 'tauri.conf.json'),
+  ]) {
+    assert.doesNotMatch(readFileSync(path, 'utf8'), /tauri-plugin-updater|@tauri-apps\/plugin-updater|"updater"/iu)
   }
 })
 
@@ -150,7 +166,7 @@ test('the release boundary rejects accessors proxies symbols and excessive field
   const acceptedLimit = Object.assign(
     release(),
     Object.fromEntries(
-      Array.from({ length: 124 }, (_, index) => [`extra_${index}`, index]),
+      Array.from({ length: 122 }, (_, index) => [`extra_${index}`, index]),
     ),
   )
   assert.ok(parseGitHubLatestReleaseResponse(acceptedLimit))
@@ -531,6 +547,8 @@ function release(
       'https://github.com/oltotlo79-rgb/ORIGAMI2/releases/tag/v1.2.3',
     draft: false,
     prerelease: false,
+    name: 'ORIGAMI2 v1.2.3',
+    body: 'Canonical generated release notes.',
     ...overrides,
   }
 }

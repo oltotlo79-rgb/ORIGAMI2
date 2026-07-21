@@ -247,7 +247,7 @@ export function parseGitHubLatestReleaseResponseJson(
 }
 
 /**
- * Admits only the four public GitHub fields required by update checking.
+ * Admits only the public GitHub fields required by update checking.
  * Release notes, asset URLs, download URLs, author data, and arbitrary fields
  * are never copied into the trusted DTO.
  */
@@ -257,7 +257,7 @@ export function parseGitHubLatestReleaseResponse(
   try {
     const fields = selectedDataRecord(
       value,
-      ['tag_name', 'html_url', 'draft', 'prerelease'],
+      ['tag_name', 'html_url', 'name', 'body', 'draft', 'prerelease'],
       MAX_RELEASE_ROOT_FIELDS,
     )
     if (
@@ -266,11 +266,18 @@ export function parseGitHubLatestReleaseResponse(
       || fields.prerelease !== false
       || typeof fields.tag_name !== 'string'
       || typeof fields.html_url !== 'string'
+      || typeof fields.name !== 'string'
+      || typeof fields.body !== 'string'
       || fields.html_url.length > MAX_RELEASE_URL_CODE_UNITS
     ) return null
 
     const version = parseSemanticVersion(fields.tag_name)
     if (!version || version.prerelease.length !== 0) return null
+    if (
+      fields.name !== `ORIGAMI2 ${fields.tag_name}`
+      || fields.body.startsWith('## QUARANTINED RELEASE')
+      || fields.body.includes('origami2-release-owner-sha256:')
+    ) return null
     const releasePageUrl = trustedReleasePageUrl(
       fields.html_url,
       fields.tag_name,

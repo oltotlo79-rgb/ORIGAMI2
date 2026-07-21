@@ -1454,6 +1454,25 @@ fn parameterized_center_axis_endpoint(
 
 #[must_use]
 pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationConstraintsV1) -> u8 {
+    if !crate::validate_beginner_generation_constraints_v1(constraints) {
+        return 0;
+    }
+    let feature_records = constraints
+        .target_parts
+        .iter()
+        .filter(|part| {
+            !matches!(
+                part.kind,
+                BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
+            )
+        })
+        .count();
+    if feature_records >= 2
+        && feature_records == constraints.protrusions.len()
+        && bounded_generic_composite_endpoints(constraints).is_none()
+    {
+        return 0;
+    }
     let target = match constraints.target_category {
         Some(BeginnerTargetCategoryV1::Animal) => {
             if constraints
@@ -1538,7 +1557,7 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
         }
         None => None,
     };
-    target.map_or_else(
+    let base = target.map_or_else(
         || {
             if constraints.protrusions.is_empty() {
                 estimate_symmetric_parameters_v1(constraints).map_or(0, |estimate| {
@@ -1549,7 +1568,20 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
             }
         },
         |target| 60 + target.priority.min(100) * 2 / 5,
-    )
+    );
+    let body_detail = constraints
+        .generic_body_outline_tenths_mm
+        .as_ref()
+        .map_or(0, |outline| outline.len().saturating_sub(4));
+    let local_detail = constraints
+        .protrusions
+        .iter()
+        .filter_map(|target| target.local_outline_tenths_mm.as_ref())
+        .map(|outline| outline.len().saturating_sub(3))
+        .sum::<usize>();
+    let contour_bonus =
+        u8::try_from(body_detail.saturating_add(local_detail).min(15)).unwrap_or(15);
+    base.saturating_add(contour_bonus).min(100)
 }
 
 fn has_bilateral_protrusion_count(
@@ -2243,11 +2275,31 @@ mod tests {
         assert_eq!(generic_plans[0].crease_pattern.edges.len(), 8);
         let mut locally_outlined = generic.clone();
         locally_outlined.protrusions[0].local_outline_tenths_mm =
-            Some(vec![[-2, -1], [2, -1], [0, 2]]);
+            Some(vec![[-2, -1], [0, -2], [2, -1], [1, 2], [-1, 2]]);
         let local_plans =
             generate_beginner_plans_v1(namespace, &source, &ids, &locally_outlined).unwrap();
-        assert_eq!(local_plans[0].crease_pattern.vertices.len(), 12);
-        assert_eq!(local_plans[0].crease_pattern.edges.len(), 11);
+        assert_eq!(local_plans[0].crease_pattern.vertices.len(), 14);
+        assert_eq!(local_plans[0].crease_pattern.edges.len(), 13);
+        assert!(
+            beginner_target_approximation_score_v1(&locally_outlined)
+                > beginner_target_approximation_score_v1(&generic)
+        );
+        let mut one_over_local_limit = locally_outlined.clone();
+        one_over_local_limit.protrusions[0].local_outline_tenths_mm = Some(vec![
+            [-4, -2],
+            [-2, -4],
+            [0, -5],
+            [2, -4],
+            [4, -2],
+            [4, 2],
+            [2, 4],
+            [0, 5],
+            [-2, 4],
+        ]);
+        assert_eq!(
+            beginner_target_approximation_score_v1(&one_over_local_limit),
+            0
+        );
         locally_outlined.protrusions[0].local_outline_tenths_mm =
             Some(vec![[-20, -1], [20, -1], [0, 2]]);
         assert_eq!(

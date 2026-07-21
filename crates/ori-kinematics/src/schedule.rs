@@ -1236,7 +1236,12 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
                 (magnitude - numerator as f64 / denominator as f64).abs(),
             ))
         })
-        .min_by(|first, second| first.2.total_cmp(&second.2))
+        .min_by(|first, second| {
+            first
+                .2
+                .total_cmp(&second.2)
+                .then_with(|| first.1.cmp(&second.1))
+        })
         .filter(|(numerator, denominator, error)| {
             *error <= 1.0e-9
                 && numerator * 8 >= *denominator as i64
@@ -1274,11 +1279,7 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
                         denominator: 1,
                     },
                     RationalCoefficientV1 {
-                        numerator: if unit_edges.contains(edge) {
-                            1
-                        } else {
-                            ratio.0
-                        },
+                        numerator: 1,
                         denominator: 1,
                     },
                 ],
@@ -1288,7 +1289,11 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
                         denominator: 1,
                     },
                     RationalCoefficientV1 {
-                        numerator: 1,
+                        numerator: if unit_edges.contains(edge) {
+                            1
+                        } else {
+                            ratio.0
+                        },
                         denominator: 1,
                     },
                 ],
@@ -2217,6 +2222,13 @@ mod tests {
             CycleScheduleLimitsV1::default(),
         )
         .unwrap();
+        assert_eq!(
+            candidate
+                .schedule()
+                .bounded_symmetric_kawasaki_profile_v1()
+                .map(|(_, _, numerator, denominator)| (numerator, denominator)),
+            Some((3, 5))
+        );
         assert!(
             bounded_unproven
                 .prove_dyadic_schedule_closure_v1(

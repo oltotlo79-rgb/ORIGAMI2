@@ -368,12 +368,35 @@ describe('InstructionTimelinePanel localization', () => {
     expect(screen.getAllByText(/展開図が変わった手順のため再生を停止/u).length)
       .toBeGreaterThan(0)
   })
+
+  it('keeps the reopened proof binding visible when browser UI starts diagram export', () => {
+    const onExport = vi.fn()
+    const proof = `${'7c'.repeat(32)} / 元モデル SHA-256: ${FINGERPRINT}`
+    renderPanel({
+      ...SNAPSHOT,
+      instruction_timeline: {
+        steps: [{
+          ...SNAPSHOT.instruction_timeline.steps[0]!,
+          description: `経路証明 SHA-256: ${proof}`,
+        }],
+      },
+    }, vi.fn(() => true), APPLIED_POSE, onExport)
+
+    fireEvent.click(screen.getByText('1. Fold crane · 完成形サムネイル').closest('button')!)
+    expect(screen.getByRole('textbox', { name: '説明' })).toHaveProperty(
+      'value',
+      `経路証明 SHA-256: ${proof}`,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '折り図を書き出す' }))
+    expect(onExport).toHaveBeenCalledTimes(1)
+  })
 })
 
 function renderPanel(
   snapshot = SNAPSHOT,
   applyStepPose = vi.fn(() => true),
   appliedPose: FoldPreviewAppliedPoseSnapshot | null = APPLIED_POSE,
+  onExport = vi.fn(),
 ) {
   return render(
     <InstructionTimelinePanel
@@ -388,7 +411,7 @@ function renderPanel(
       exportButtonRef={{ current: null }}
       runNativeEdit={vi.fn(async () => snapshot)}
       applyStepPose={applyStepPose}
-      onExport={vi.fn()}
+      onExport={onExport}
     />,
   )
 }

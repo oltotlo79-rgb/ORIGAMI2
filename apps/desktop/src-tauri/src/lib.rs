@@ -1494,6 +1494,9 @@ fn compare_plan_to_reference_model_v1(
     plan: &ori_domain::BeginnerGeneratedPlanV1,
     reference: &BeginnerReferenceModelSuggestionV1,
 ) -> (u8, &'static str) {
+    if let Some(score) = bounded_folded_pose_landmark_score_v1(plan, reference) {
+        return (score, "bounded_folded_pose_landmarks_v1");
+    }
     let mut min = [f64::INFINITY; 2];
     let mut max = [f64::NEG_INFINITY; 2];
     for vertex in &plan.crease_pattern.vertices {
@@ -1550,6 +1553,92 @@ fn compare_plan_to_reference_model_v1(
         u8::try_from(score).unwrap_or(0),
         "crease_preview_has_no_surface_mesh",
     )
+}
+
+const MAX_BEGINNER_FOLDED_LANDMARKS_V1: usize = 256;
+const MAX_BEGINNER_FOLDED_COLLISION_PAIRS_V1: usize = 32_640;
+
+/// Deterministic bounded forward approximation used only for candidate ranking.
+/// It produces body/local 3D landmarks from the generated crease graph; it is
+/// not mutation authority or a foldability/collision certificate.
+fn bounded_folded_pose_landmark_score_v1(
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+    reference: &BeginnerReferenceModelSuggestionV1,
+) -> Option<u8> {
+    let vertices = &plan.crease_pattern.vertices;
+    if vertices.is_empty() || vertices.len() > MAX_BEGINNER_FOLDED_LANDMARKS_V1 {
+        return None;
+    }
+    let pair_count = vertices
+        .len()
+        .checked_mul(vertices.len().saturating_sub(1))?
+        / 2;
+    if pair_count > MAX_BEGINNER_FOLDED_COLLISION_PAIRS_V1 {
+        return None;
+    }
+    let mut incident = HashMap::<VertexId, i16>::with_capacity(vertices.len());
+    for edge in &plan.crease_pattern.edges {
+        let sign = match edge.kind {
+            EdgeKind::Mountain => 1_i16,
+            EdgeKind::Valley => -1_i16,
+            _ => 0_i16,
+        };
+        *incident.entry(edge.start).or_default() += sign;
+        *incident.entry(edge.end).or_default() += sign;
+    }
+    let mut min = [i64::MAX; 3];
+    let mut max = [i64::MIN; 3];
+    let mut landmarks = Vec::with_capacity(vertices.len());
+    for vertex in vertices {
+        let x = (vertex.position.x * 10.0).round() as i64;
+        let y = (vertex.position.y * 10.0).round() as i64;
+        let radial = x
+            .unsigned_abs()
+            .saturating_add(y.unsigned_abs())
+            .min(10_000) as i64;
+        let z = i64::from(*incident.get(&vertex.id).unwrap_or(&0)) * radial / 8;
+        let point = [x, y, z];
+        for axis in 0..3 {
+            min[axis] = min[axis].min(point[axis]);
+            max[axis] = max[axis].max(point[axis]);
+        }
+        landmarks.push(point);
+    }
+    for (index, left) in landmarks.iter().enumerate() {
+        for right in &landmarks[index + 1..] {
+            if left[0] == right[0] && left[1] == right[1] && left[2] != right[2] {
+                return None;
+            }
+        }
+    }
+    let candidate =
+        std::array::from_fn::<_, 3, _>(|axis| max[axis].saturating_sub(min[axis]) as u64);
+    let target = std::array::from_fn::<_, 3, _>(|axis| {
+        i64::from(reference.bbox_max_tenths_mm[axis])
+            .saturating_sub(i64::from(reference.bbox_min_tenths_mm[axis])) as u64
+    });
+    let major = *candidate
+        .iter()
+        .chain(target.iter())
+        .max()
+        .unwrap_or(&1)
+        .max(&1);
+    let normalized = |extent: u64| extent.saturating_mul(1_000_000) / major;
+    let hausdorff = (0..3)
+        .map(|axis| normalized(candidate[axis]).abs_diff(normalized(target[axis])))
+        .max()
+        .unwrap_or(1_000_000);
+    let depth_error = normalized(candidate[2]).abs_diff(normalized(target[2]));
+    let candidate_bulge = landmarks.iter().filter(|point| point[2] != 0).count() as u64;
+    let target_bulge = reference.protrusions.len() as u64;
+    let bulge_error = candidate_bulge
+        .abs_diff(target_bulge)
+        .saturating_mul(100_000)
+        / target_bulge.max(1);
+    let combined = hausdorff.saturating_mul(5) / 10
+        + depth_error.saturating_mul(3) / 10
+        + bulge_error.min(1_000_000).saturating_mul(2) / 10;
+    Some(u8::try_from(100_u64.saturating_sub(combined.min(1_000_000) / 10_000)).unwrap_or(0))
 }
 
 fn compare_flat_surface_to_reference_model_v1(

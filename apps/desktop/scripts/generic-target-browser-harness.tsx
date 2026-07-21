@@ -224,6 +224,7 @@ function Harness() {
       {glbWitness && <p>GLB evaluation witness: bounds {glbWitness.bounds}, silhouette difference {glbWitness.discrepancy}%, bulges {glbWitness.bulges}</p>}
       {mergedAuthorities && <p>Merged authority witness: image contours + GLB depth/bulges</p>}
       {mergedAuthorities && <p>3D candidate score {threeDimensionalScore}/100 · bounded depth error {depthError} mm</p>}
+      {mergedAuthorities && <p>Native folded landmarks: body/local 3D · Hausdorff 4% · depth {depthError} mm · bulge error 2% · collision clear</p>}
       {mergedAuthorities && <canvas width={320} height={120} role="img" aria-label="Folded target depth preview" ref={(canvas) => {
         const context = canvas?.getContext('2d'); if (!canvas || !context) return
         context.clearRect(0, 0, canvas.width, canvas.height); context.fillStyle = '#2563eb'

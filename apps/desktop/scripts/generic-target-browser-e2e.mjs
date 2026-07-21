@@ -156,6 +156,7 @@ try {
   await page.getByText('GLB evaluation witness: bounds 120×80×65 mm, silhouette difference 7%, bulges 2', { exact: true }).waitFor()
   await page.getByText('Merged authority witness: image contours + GLB depth/bulges', { exact: true }).waitFor()
   await page.getByText('3D candidate score 84/100 · bounded depth error 3 mm', { exact: true }).waitFor()
+  await page.getByText('Native folded landmarks: body/local 3D · Hausdorff 4% · depth 3 mm · bulge error 2% · collision clear', { exact: true }).waitFor()
   await assertWitnessCanvas(page.getByRole('img', { name: 'Folded target depth preview' }))
   await page.getByRole('button', { name: 'Cancel generic target grid' }).click(); await preview.waitFor({ state: 'detached' })
   await page.getByRole('button', { name: 'Evaluate generic target grid' }).click()

@@ -4404,15 +4404,17 @@ mod tests {
     #[test]
     fn rank4_cycle_transports_layer_order_and_applies_atomically() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        for (columns, rows, thickness_mm) in [
-            (3, 3, 0.1),
-            (3, 3, 1.0),
-            (3, 3, 3.0),
-            (3, 3, 10_000.0),
-            (3, 5, 0.1),
-            (5, 5, 0.1),
-            (5, 9, 0.1),
-            (7, 7, 0.1),
+        for (columns, rows, thickness_mm, expected_cycle_rank) in [
+            (3, 3, 0.1, 4),
+            (3, 3, 1.0, 4),
+            (3, 3, 3.0, 4),
+            (3, 3, 10_000.0, 4),
+            (3, 5, 0.1, 8),
+            (5, 5, 0.1, 16),
+            (5, 9, 0.1, 32),
+            (7, 7, 0.1, 36),
+            (7, 9, 0.1, 48),
+            (8, 9, 0.1, 56),
         ] {
             let (pattern, mut paper, horizontal, _) =
                 super::dense_grid_cycle_test_support::miura_authority_pattern(columns, rows);
@@ -4424,6 +4426,10 @@ mod tests {
                 .topology_analysis_input(project.project_id)
                 .analyze();
             let snapshot = topology.simulation_snapshot().unwrap();
+            assert_eq!(
+                snapshot.hinge_adjacency.len() + 1 - snapshot.faces.len(),
+                expected_cycle_rank
+            );
             let hinges = snapshot
                 .hinge_adjacency
                 .iter()
@@ -4527,7 +4533,7 @@ mod tests {
                     .ok()
                     .map(|preview| (mask, preview))
                 })
-                .expect("one Kawasaki rank4 orientation must close");
+                .expect("one bounded Kawasaki orientation must close");
             assert_eq!(
                 preview.continuous_layer_transport_model_id,
                 Some(ori_collision::GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1)

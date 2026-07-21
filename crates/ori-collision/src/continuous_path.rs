@@ -2639,6 +2639,22 @@ mod tests {
             first.collision_certificate(),
             reversed.collision_certificate()
         );
+        for thickness in [0.1, 1.0, 3.0] {
+            assert_eq!(
+                diagnose_scheduled_positive_thickness_cycle_path_v1(
+                    &geometry, &audit, fixed, &candidate, &closure, thickness, 32,
+                ),
+                diagnose_scheduled_positive_thickness_cycle_path_v1(
+                    &reversed_geometry,
+                    &reversed_audit,
+                    reversed_fixed,
+                    &reversed_candidate,
+                    &reversed_closure,
+                    thickness,
+                    32,
+                )
+            );
+        }
     }
 
     #[test]
@@ -2744,10 +2760,17 @@ mod tests {
             .unwrap();
         let ri = rs.evaluate(0.0).unwrap();
         let rr = rs.evaluate(1.0).unwrap();
-        let candidate =
+        let reversed_candidate =
             ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(rs, &ri, &rr).unwrap();
         let reversed = crate::certify_scheduled_cycle_transition_v1(
-            &rg, &ra, rf, &candidate, &rc, 32, [0x51; 32], [0x52; 32],
+            &rg,
+            &ra,
+            rf,
+            &reversed_candidate,
+            &rc,
+            32,
+            [0x51; 32],
+            [0x52; 32],
         )
         .unwrap();
         assert_eq!(
@@ -2759,6 +2782,22 @@ mod tests {
             first.collision_certificate(),
             reversed.collision_certificate()
         );
+        for thickness in [0.1, 1.0, 3.0] {
+            assert_eq!(
+                diagnose_scheduled_positive_thickness_cycle_path_v1(
+                    &geometry, &audit, fixed, &candidate, &closure, thickness, 32,
+                ),
+                diagnose_scheduled_positive_thickness_cycle_path_v1(
+                    &rg,
+                    &ra,
+                    rf,
+                    &reversed_candidate,
+                    &rc,
+                    thickness,
+                    32,
+                )
+            );
+        }
     }
 
     #[test]
@@ -2862,6 +2901,22 @@ mod tests {
             first.collision_certificate(),
             reversed.collision_certificate()
         );
+        for thickness in [0.1, 1.0, 3.0] {
+            assert_eq!(
+                diagnose_scheduled_positive_thickness_cycle_path_v1(
+                    &geometry, &audit, fixed, &candidate, &closure, thickness, 32,
+                ),
+                diagnose_scheduled_positive_thickness_cycle_path_v1(
+                    &rg,
+                    &ra,
+                    rf,
+                    &reversed_candidate,
+                    &rc,
+                    thickness,
+                    32,
+                )
+            );
+        }
     }
 
     #[test]

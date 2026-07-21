@@ -981,6 +981,43 @@ pub struct StackedFoldCyclePathDiagnosticV1 {
     positive_thickness_bits: Option<u64>,
 }
 
+/// Opaque authority for one exact positive-thickness continuous schedule.
+#[derive(Debug, Clone)]
+pub struct PositiveThicknessContinuousCertificateV1 {
+    issuer: MaterialHingeGraphGeometry,
+    fixed_face: FaceId,
+    schedule_hash: [u8; 32],
+    closure_hash: [u8; 32],
+    thickness_bits: u64,
+    leaf_count: usize,
+    pair_work: usize,
+}
+
+impl PositiveThicknessContinuousCertificateV1 {
+    #[must_use]
+    pub fn is_for(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+        fixed_face: FaceId,
+        schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+        closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+        thickness: f64,
+    ) -> bool {
+        self.issuer.same_instance(geometry)
+            && self.fixed_face == fixed_face
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
+            && self.closure_hash == closure.partition_binding_fingerprint_v1()
+            && self.thickness_bits == thickness.to_bits()
+            && self.leaf_count == closure.leaves().len()
+            && self.pair_work <= geometry.face_ids().len() * geometry.face_ids().len()
+    }
+
+    #[must_use]
+    pub const fn thickness_bits(&self) -> u64 {
+        self.thickness_bits
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum UniformCycleClosureRootsV1 {
     Roots(Vec<f64>),
@@ -1420,6 +1457,39 @@ pub fn diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
         interval_count,
         Some(paper_thickness_mm),
     )
+}
+
+/// Mints an issuer-bound authority only after the full positive-thickness
+/// continuous classifier succeeds for the exact schedule and closure.
+pub fn certify_canonical_positive_thickness_cycle_schedule_path_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    paper_thickness_mm: f64,
+    interval_count: usize,
+) -> Option<PositiveThicknessContinuousCertificateV1> {
+    let diagnostic = diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+        geometry,
+        audit,
+        fixed_face,
+        schedule,
+        closure,
+        paper_thickness_mm,
+        interval_count,
+    );
+    (diagnostic.continuous_certificate_model_id()
+        == Some(STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1))
+    .then(|| PositiveThicknessContinuousCertificateV1 {
+        issuer: geometry.clone(),
+        fixed_face,
+        schedule_hash: schedule.certificate_binding_fingerprint_v1(),
+        closure_hash: closure.partition_binding_fingerprint_v1(),
+        thickness_bits: paper_thickness_mm.to_bits(),
+        leaf_count: diagnostic.leaf_count(),
+        pair_work: diagnostic.pair_work(),
+    })
 }
 
 /// Runs the bounded cycle CCD oracle against a canonical schedule directly.
@@ -8068,6 +8138,11 @@ mod tests {
                 diagnostic.positive_thickness_bits(),
                 Some(thickness.to_bits())
             );
+            let certificate = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+                &geometry, &audit, fixed, &schedule, &closure, thickness, 1,
+            )
+            .unwrap();
+            assert!(certificate.is_for(&geometry, fixed, &schedule, &closure, thickness));
         }
         assert!(
             diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
@@ -8076,6 +8151,16 @@ mod tests {
             .continuous_certificate_model_id()
             .is_none()
         );
+        assert!(
+            certify_canonical_positive_thickness_cycle_schedule_path_v1(
+                &geometry, &audit, fixed, &schedule, &closure, 10_000.0, 1,
+            )
+            .is_none()
+        );
+        let bound_certificate = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+            &geometry, &audit, fixed, &schedule, &closure, 0.1, 1,
+        )
+        .unwrap();
         let initial_pose = geometry
             .solve_closed(&audit, fixed, &schedule.evaluate(0.0).unwrap(), 1.0e-9)
             .unwrap();
@@ -8098,6 +8183,7 @@ mod tests {
             TreeKinematicsLimits::default(),
         )
         .unwrap();
+        assert!(!bound_certificate.is_for(&foreign_geometry, fixed, &schedule, &closure, 0.1));
         assert!(
             diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
                 &foreign_geometry,

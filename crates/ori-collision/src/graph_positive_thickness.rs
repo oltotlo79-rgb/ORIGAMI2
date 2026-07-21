@@ -287,6 +287,98 @@ pub fn prove_positive_thickness_graph_geometry_v1(
                                 first_max < second_min || second_max < first_min
                             })
                         });
+                let prism_separated = {
+                    let prism = |face, polygon: &[Point3]| {
+                        let transform = pose.face_transform(face)?;
+                        let normal = transform
+                            .apply_vector(Point3::new(0.0, 1.0, 0.0).ok()?)
+                            .ok()?;
+                        let vertices = polygon
+                            .iter()
+                            .flat_map(|point| {
+                                [-1.0, 1.0].map(|sign| {
+                                    (
+                                        point.x() + sign * paper_thickness_mm * 0.5 * normal.x(),
+                                        point.y() + sign * paper_thickness_mm * 0.5 * normal.y(),
+                                        point.z() + sign * paper_thickness_mm * 0.5 * normal.z(),
+                                    )
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        let edges = (0..polygon.len())
+                            .map(|index| {
+                                let start = polygon[index];
+                                let end = polygon[(index + 1) % polygon.len()];
+                                (
+                                    end.x() - start.x(),
+                                    end.y() - start.y(),
+                                    end.z() - start.z(),
+                                )
+                            })
+                            .chain(std::iter::once((normal.x(), normal.y(), normal.z())))
+                            .collect::<Vec<_>>();
+                        Some((normal, vertices, edges))
+                    };
+                    let (first_normal, first_vertices, first_edges) = prism(first, &first_polygon)
+                        .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)?;
+                    let (second_normal, second_vertices, second_edges) =
+                        prism(*second, &second_polygon)
+                            .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)?;
+                    let cross = |a: (f64, f64, f64), b: (f64, f64, f64)| {
+                        (
+                            a.1 * b.2 - a.2 * b.1,
+                            a.2 * b.0 - a.0 * b.2,
+                            a.0 * b.1 - a.1 * b.0,
+                        )
+                    };
+                    let mut axes = vec![
+                        (first_normal.x(), first_normal.y(), first_normal.z()),
+                        (second_normal.x(), second_normal.y(), second_normal.z()),
+                    ];
+                    for edge in &first_edges {
+                        axes.push(cross(*edge, axes[0]));
+                    }
+                    for edge in &second_edges {
+                        axes.push(cross(*edge, axes[1]));
+                    }
+                    for first_edge in &first_edges {
+                        for second_edge in &second_edges {
+                            axes.push(cross(*first_edge, *second_edge));
+                        }
+                    }
+                    axes.into_iter().any(|axis| {
+                        let squared = axis.0 * axis.0 + axis.1 * axis.1 + axis.2 * axis.2;
+                        if !squared.is_finite() || squared <= f64::EPSILON {
+                            return false;
+                        }
+                        let interval = |vertices: &[(f64, f64, f64)]| {
+                            vertices.iter().fold(
+                                (None::<BigRational>, None::<BigRational>),
+                                |(lower, upper), vertex| {
+                                    let value = BigRational::from_float(vertex.0).unwrap()
+                                        * BigRational::from_float(axis.0).unwrap()
+                                        + BigRational::from_float(vertex.1).unwrap()
+                                            * BigRational::from_float(axis.1).unwrap()
+                                        + BigRational::from_float(vertex.2).unwrap()
+                                            * BigRational::from_float(axis.2).unwrap();
+                                    (
+                                        Some(lower.map_or_else(
+                                            || value.clone(),
+                                            |current| current.min(value.clone()),
+                                        )),
+                                        Some(upper.map_or_else(
+                                            || value.clone(),
+                                            |current| current.max(value.clone()),
+                                        )),
+                                    )
+                                },
+                            )
+                        };
+                        let (first_min, first_max) = interval(&first_vertices);
+                        let (second_min, second_max) = interval(&second_vertices);
+                        first_max < second_min || second_max < first_min
+                    })
+                };
                 let exact_point = |point: Point3| {
                     (
                         BigRational::from_float(point.x()).unwrap(),
@@ -312,7 +404,7 @@ pub fn prove_positive_thickness_graph_geometry_v1(
                         ab_c.signum() != ab_d.signum() && cd_a.signum() != cd_b.signum()
                     })
                 });
-                if separated || (planar && !boundaries_cross) {
+                if separated || prism_separated || (planar && !boundaries_cross) {
                     continue;
                 }
                 return Err(PositiveThicknessGraphProofErrorV1::PairEvidenceUnavailable);

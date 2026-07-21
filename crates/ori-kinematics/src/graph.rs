@@ -480,7 +480,7 @@ impl MaterialHingeGraphGeometry {
             || collective_flat_stack_cycle_closure_premises_v1(
                 self, audit, fixed_face, schedule, tolerance,
             )
-            || single_vertex_opposite_pair_cycle_closure_premises_v1(
+            || even_single_vertex_opposite_pair_cycle_closure_premises_v1(
                 self, audit, fixed_face, schedule, tolerance,
             )
             || orthogonal_inverse_pair_cycle_closure_premises_v1(
@@ -1550,20 +1550,22 @@ fn collective_flat_stack_cycle_closure_premises_v1(
         })
 }
 
-// Exact identity for a straight fold through one degree-six vertex. The two
+// Exact identity for a straight fold through one bounded even-degree vertex. The two
 // moving material hinges leave the common pivot in opposite directions and
 // share one canonical angle profile. Their rotations therefore cancel around
 // the six-face loop for the complete parameter domain. Solved midpoint and
 // endpoint poses revalidate the admitted assignment/orientation branch.
-fn single_vertex_opposite_pair_cycle_closure_premises_v1(
+fn even_single_vertex_opposite_pair_cycle_closure_premises_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
     fixed_face: FaceId,
     schedule: &CanonicalCycleScheduleV1,
     tolerance: f64,
 ) -> bool {
-    if geometry.face_ids().len() != 6
-        || geometry.hinges().len() != 6
+    let sector_count = geometry.face_ids().len();
+    if !(4..=16).contains(&sector_count)
+        || !sector_count.is_multiple_of(2)
+        || geometry.hinges().len() != sector_count
         || audit.closure_hinges().len() != 1
         || !schedule.matches_binding(geometry, audit, fixed_face)
         || !tolerance.is_finite()

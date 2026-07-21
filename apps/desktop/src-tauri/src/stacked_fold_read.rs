@@ -4140,6 +4140,71 @@ mod tests {
         )
     }
 
+    fn octagonal_eight_sector_cycle_pattern() -> (
+        ori_domain::CreasePattern,
+        ori_domain::Paper,
+        Vec<ori_domain::EdgeId>,
+    ) {
+        use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
+        let namespace = ProjectId::schema_namespace([
+            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x05, 0x42,
+        ]);
+        let center = Vertex {
+            id: VertexId::derive_v5(namespace, b"octagonal-center"),
+            position: Point2::new(0.0, 0.0),
+        };
+        let boundary = [
+            (100.0, 0.0),
+            (70.0, 70.0),
+            (0.0, 100.0),
+            (-70.0, 70.0),
+            (-100.0, 0.0),
+            (-70.0, -70.0),
+            (0.0, -100.0),
+            (70.0, -70.0),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (x, y))| Vertex {
+            id: VertexId::derive_v5(namespace, format!("octagonal-{index}").as_bytes()),
+            position: Point2::new(x, y),
+        })
+        .collect::<Vec<_>>();
+        let mut edges = (0..8)
+            .map(|index| Edge {
+                id: EdgeId::derive_v5(namespace, format!("boundary-{index}").as_bytes()),
+                start: boundary[index].id,
+                end: boundary[(index + 1) % 8].id,
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let hinges = (0..8)
+            .map(|index| EdgeId::derive_v5(namespace, format!("spoke-{index}").as_bytes()))
+            .collect::<Vec<_>>();
+        edges.extend((0..8).map(|index| Edge {
+            id: hinges[index],
+            start: center.id,
+            end: boundary[index].id,
+            kind: if matches!(index, 0 | 1 | 3 | 4 | 6) {
+                EdgeKind::Mountain
+            } else {
+                EdgeKind::Valley
+            },
+        }));
+        let mut vertices = vec![center];
+        vertices.extend(boundary.iter().cloned());
+        (
+            CreasePattern { vertices, edges },
+            Paper {
+                boundary_vertices: boundary.iter().map(|vertex| vertex.id).collect(),
+                thickness_mm: 0.0,
+                ..Paper::default()
+            },
+            vec![hinges[0], hinges[4]],
+        )
+    }
+
     #[test]
     fn balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
@@ -4242,6 +4307,97 @@ mod tests {
             std::path::PathBuf::from("balloon-cycle.ori2"),
         )
         .expect("reopen applied balloon cycle");
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+        let reopened_revision = reopened.editor.revision();
+        reopened.editor.undo(reopened_revision).unwrap();
+        assert!(reopened.editor.instruction_timeline().steps.is_empty());
+        let reopened_undone = reopened.editor.revision();
+        reopened.editor.redo(reopened_undone).unwrap();
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+    }
+
+    #[test]
+    fn octagonal_eight_sector_cycle_previews_applies_and_reopens_history() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (pattern, paper, moving) = octagonal_eight_sector_cycle_pattern();
+        assert_eq!(
+            pattern
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == ori_domain::EdgeKind::Mountain)
+                .count(),
+            5
+        );
+        assert_eq!(
+            pattern
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == ori_domain::EdgeKind::Valley)
+                .count(),
+            3
+        );
+        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        assert_eq!(snapshot.faces.len(), 8);
+        assert_eq!(snapshot.hinge_adjacency.len(), 8);
+        let hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        let fixed = snapshot.faces[0].id;
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            fixed,
+        );
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let state = AppState::new(project);
+        let transactions =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let preview = propose_current_cycle_pose_inner(
+            None,
+            &state,
+            &transactions,
+            CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                cycle_schedule_v1: dense_grid_schedule(&hinges, &moving, 100),
+            },
+        )
+        .expect("octagonal straight-line cycle must certify");
+        assert_eq!(preview.checked_hinge_count, 8);
+        assert_eq!(preview.total_hinge_count, 8);
+        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            &state,
+            &GlobalFlatFoldabilityState::default(),
+            &transactions,
+            preview.transaction_token,
+        )
+        .expect("octagonal straight-line cycle apply");
+        let mut project = super::super::lock_project(&state).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        project.editor.undo(applied).unwrap();
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        let archive = project
+            .project_archive()
+            .expect("serialize applied octagonal cycle");
+        let mut reopened = super::super::ProjectState::from_project_archive(
+            archive,
+            std::path::PathBuf::from("octagonal-cycle.ori2"),
+        )
+        .expect("reopen applied octagonal cycle");
         assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
         let reopened_revision = reopened.editor.revision();
         reopened.editor.undo(reopened_revision).unwrap();

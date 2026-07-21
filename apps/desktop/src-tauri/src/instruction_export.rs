@@ -1322,6 +1322,34 @@ mod tests {
     }
 
     #[test]
+    fn reopened_proof_binding_reaches_native_export_and_tampering_stays_opaque() {
+        let project = project_with_instruction();
+        let mut source = source_for(&project, InstructionExportFormatRequest::Pdf);
+        let model = source.current_fold_model_fingerprint.clone();
+        source.timeline.steps[0].description = format!(
+            "経路証明 SHA-256: {} / 元モデル SHA-256: {model}",
+            "7c".repeat(32)
+        );
+        let archived = serde_json::to_vec(&source.timeline).expect("archive timeline");
+        source.timeline = serde_json::from_slice(&archived).expect("reopen timeline");
+        let reopened = build_pending_export(source).expect("native PDF export after reopen");
+        assert_eq!(reopened.step_count, 1);
+        assert!(reopened.bytes.starts_with(b"%PDF-1.7"));
+
+        let mut tampered = source_for(&project, InstructionExportFormatRequest::SvgZip);
+        tampered.timeline.steps[0].description = format!(
+            "経路証明 SHA-256: {} / 元モデル SHA-256: {}",
+            "7c".repeat(32),
+            "b".repeat(64)
+        );
+        assert_eq!(
+            build_pending_export(tampered).map(|_| ()),
+            Err(InstructionExportErrorCategory::DocumentInputInvalid),
+            "strict IPC exposes only the closed error category"
+        );
+    }
+
+    #[test]
     fn warnings_are_always_present_and_acknowledgement_is_enforced() {
         let project = project_with_instruction();
         let pending = fake_pending(&project, InstructionExportFormatRequest::Pdf, b"%PDF");

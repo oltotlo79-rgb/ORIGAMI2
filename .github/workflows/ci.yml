@@ -311,7 +311,7 @@ jobs:
         env:
           RUST_BACKTRACE: "1"
           CARGO_TERM_COLOR: always
-          RUST_TEST_THREADS: "2"
+          RUST_TEST_THREADS: "4"
         run: |
           set -o pipefail
           test_status=0
@@ -324,7 +324,14 @@ jobs:
                 | sed -E 's/[[:space:]]+/ /g'
             )"
             if [ -z "$failure_summary" ]; then
-              failure_summary="Rust tests failed. Download rust-test-log-${{ matrix.os }} for the complete output."
+              failure_summary="$(
+                tail -n 24 cargo-test.log \
+                  | tr '\n' ' ' \
+                  | sed -E 's/[[:space:]]+/ /g'
+              )"
+            fi
+            if [ -z "$failure_summary" ]; then
+              failure_summary="Rust tests failed without diagnostic output."
             fi
             failure_summary="${failure_summary//'%'/'%25'}"
             failure_summary="${failure_summary//$'\r'/'%0D'}"

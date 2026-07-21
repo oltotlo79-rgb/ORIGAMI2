@@ -4205,6 +4205,78 @@ mod tests {
         )
     }
 
+    fn sixteen_sector_cycle_pattern(
+        moving_second: usize,
+    ) -> (
+        ori_domain::CreasePattern,
+        ori_domain::Paper,
+        Vec<ori_domain::EdgeId>,
+    ) {
+        use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
+        let namespace = ProjectId::schema_namespace([
+            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x05, 0x43,
+        ]);
+        let center = Vertex {
+            id: VertexId::derive_v5(namespace, b"sixteen-center"),
+            position: Point2::new(0.0, 0.0),
+        };
+        let half = [
+            (100.0, 0.0),
+            (92.0, 38.0),
+            (71.0, 71.0),
+            (38.0, 92.0),
+            (0.0, 100.0),
+            (-38.0, 92.0),
+            (-71.0, 71.0),
+            (-92.0, 38.0),
+        ];
+        let coordinates = half
+            .into_iter()
+            .chain(half.into_iter().map(|(x, y)| (-x, -y)))
+            .collect::<Vec<_>>();
+        let boundary = coordinates
+            .into_iter()
+            .enumerate()
+            .map(|(index, (x, y))| Vertex {
+                id: VertexId::derive_v5(namespace, format!("sixteen-{index}").as_bytes()),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let mut edges = (0..16)
+            .map(|index| Edge {
+                id: EdgeId::derive_v5(namespace, format!("boundary-{index}").as_bytes()),
+                start: boundary[index].id,
+                end: boundary[(index + 1) % 16].id,
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let hinges = (0..16)
+            .map(|index| EdgeId::derive_v5(namespace, format!("spoke-{index}").as_bytes()))
+            .collect::<Vec<_>>();
+        edges.extend((0..16).map(|index| Edge {
+            id: hinges[index],
+            start: center.id,
+            end: boundary[index].id,
+            kind: if index <= 8 {
+                EdgeKind::Mountain
+            } else {
+                EdgeKind::Valley
+            },
+        }));
+        let mut vertices = vec![center];
+        vertices.extend(boundary.iter().cloned());
+        (
+            CreasePattern { vertices, edges },
+            Paper {
+                boundary_vertices: boundary.iter().map(|vertex| vertex.id).collect(),
+                thickness_mm: 0.0,
+                ..Paper::default()
+            },
+            vec![hinges[0], hinges[moving_second]],
+        )
+    }
+
     #[test]
     fn balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
@@ -4405,6 +4477,113 @@ mod tests {
         let reopened_undone = reopened.editor.revision();
         reopened.editor.redo(reopened_undone).unwrap();
         assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+    }
+
+    #[test]
+    fn sixteen_sector_upper_bound_previews_applies_reopens_and_rejects_nonopposite_pair() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (pattern, paper, moving) = sixteen_sector_cycle_pattern(8);
+        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        assert_eq!(snapshot.faces.len(), 16);
+        assert_eq!(snapshot.hinge_adjacency.len(), 16);
+        let hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        let fixed = snapshot.faces[0].id;
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            fixed,
+        );
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let state = AppState::new(project);
+        let transactions =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let preview = propose_current_cycle_pose_inner(
+            None,
+            &state,
+            &transactions,
+            CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                cycle_schedule_v1: dense_grid_schedule(&hinges, &moving, 100),
+            },
+        )
+        .expect("sixteen-sector opposite pair must certify");
+        assert_eq!(preview.checked_hinge_count, 16);
+        assert_eq!(preview.total_hinge_count, 16);
+        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            &state,
+            &GlobalFlatFoldabilityState::default(),
+            &transactions,
+            preview.transaction_token,
+        )
+        .expect("sixteen-sector opposite pair apply");
+        let mut project = super::super::lock_project(&state).unwrap();
+        project.editor.undo(applied).unwrap();
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        let archive = project.project_archive().expect("serialize C16 cycle");
+        let mut reopened = super::super::ProjectState::from_project_archive(
+            archive,
+            std::path::PathBuf::from("sixteen-cycle.ori2"),
+        )
+        .expect("reopen C16 cycle");
+        let reopened_revision = reopened.editor.revision();
+        reopened.editor.undo(reopened_revision).unwrap();
+        let reopened_undone = reopened.editor.revision();
+        reopened.editor.redo(reopened_undone).unwrap();
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+
+        let (pattern, paper, nonopposite) = sixteen_sector_cycle_pattern(7);
+        let mut rejected = super::super::ProjectState::new_with_paper(pattern, paper);
+        let rejected_topology = rejected
+            .editor
+            .topology_analysis_input(rejected.project_id)
+            .analyze();
+        let rejected_snapshot = rejected_topology.simulation_snapshot().unwrap();
+        let rejected_hinges = rejected_snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut rejected,
+            rejected_hinges.clone(),
+            rejected_snapshot.faces[0].id,
+        );
+        let rejected_instance = rejected.instance_id;
+        let rejected_project_id = rejected.project_id;
+        let rejected_revision = rejected.editor.revision();
+        let rejected_state = AppState::new(rejected);
+        assert_eq!(
+            propose_current_cycle_pose_inner(
+                None,
+                &rejected_state,
+                &super::super::stacked_fold_transaction::StackedFoldTransactionState::default(),
+                CurrentCyclePosePreviewRequestV1 {
+                    progress_request_id: None,
+                    expected_project_instance_id: rejected_instance,
+                    expected_project_id: rejected_project_id,
+                    expected_revision: rejected_revision,
+                    cycle_schedule_v1: dense_grid_schedule(&rejected_hinges, &nonopposite, 100,),
+                },
+            )
+            .unwrap_err(),
+            CYCLE_NONCLOSING_MESSAGE
+        );
     }
 
     #[test]

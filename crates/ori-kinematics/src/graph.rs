@@ -1563,9 +1563,7 @@ fn even_single_vertex_opposite_pair_cycle_closure_premises_v1(
     tolerance: f64,
 ) -> bool {
     let sector_count = geometry.face_ids().len();
-    if !(4..=16).contains(&sector_count)
-        || !sector_count.is_multiple_of(2)
-        || geometry.hinges().len() != sector_count
+    if !bounded_even_single_vertex_sector_count_v1(sector_count, geometry.hinges().len())
         || audit.closure_hinges().len() != 1
         || !schedule.matches_binding(geometry, audit, fixed_face)
         || !tolerance.is_finite()
@@ -1635,6 +1633,10 @@ fn even_single_vertex_opposite_pair_cycle_closure_premises_v1(
                 .solve_closed(audit, fixed_face, &angles, tolerance)
                 .is_ok()
         })
+}
+
+fn bounded_even_single_vertex_sector_count_v1(face_count: usize, hinge_count: usize) -> bool {
+    (4..=16).contains(&face_count) && face_count.is_multiple_of(2) && hinge_count == face_count
 }
 
 // Narrow non-collinear identity R(a)R(b)R(b)^-1R(a)^-1.  The four hinges
@@ -3438,4 +3440,13 @@ mod tests {
         );
         assert!(!basis.is_for_geometry(&foreign));
     }
+}
+#[test]
+fn opposite_pair_sector_bound_rejects_odd_mismatched_and_over_limit_graphs() {
+    assert!(bounded_even_single_vertex_sector_count_v1(4, 4));
+    assert!(bounded_even_single_vertex_sector_count_v1(16, 16));
+    assert!(!bounded_even_single_vertex_sector_count_v1(5, 5));
+    assert!(!bounded_even_single_vertex_sector_count_v1(17, 17));
+    assert!(!bounded_even_single_vertex_sector_count_v1(18, 18));
+    assert!(!bounded_even_single_vertex_sector_count_v1(16, 15));
 }

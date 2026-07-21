@@ -6,7 +6,7 @@ use ori_domain::FaceId;
 use ori_foldability::LayerOrderSnapshot;
 use ori_kinematics::{
     CanonicalCycleScheduleV1, DyadicMaterialHingeIntervalClosureCertificateV1,
-    MaterialHingeGraphGeometry,
+    MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -196,6 +196,138 @@ pub fn prove_continuous_layer_transport_v1(
         transition_hashes: hashes,
         pair_order_count: expected.len(),
     })
+}
+
+/// Derives every transition order from issuer-owned face poses. The caller
+/// supplies only the lineage and one finite world-space separation axis; no
+/// target order witness is accepted as input.
+pub fn derive_continuous_layer_transport_from_poses_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    source: &LayerOrderSnapshot,
+    source_to_target: &[(FaceId, FaceId)],
+    schedule: &CanonicalCycleScheduleV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    separation_axis: [f64; 3],
+    tolerance: f64,
+    limits: ContinuousLayerTransportLimitsV1,
+) -> Result<ContinuousLayerTransportCertificateV1, ContinuousLayerTransportErrorV1> {
+    let norm_squared = separation_axis
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>();
+    if !norm_squared.is_finite()
+        || norm_squared <= 0.0
+        || !tolerance.is_finite()
+        || tolerance < 0.0
+        || !schedule.matches_binding(geometry, audit, closure.fixed_face())
+    {
+        return Err(ContinuousLayerTransportErrorV1::BindingMismatch);
+    }
+    let inverse_norm = norm_squared.sqrt().recip();
+    let axis = separation_axis.map(|value| value * inverse_norm);
+    let mapping = source_to_target.iter().copied().collect::<HashMap<_, _>>();
+    if mapping.len() != source_to_target.len() {
+        return Err(ContinuousLayerTransportErrorV1::BindingMismatch);
+    }
+    let mut parameters = closure
+        .leaves()
+        .iter()
+        .map(|(depth, index, _)| *index as f64 / 2_f64.powi(*depth as i32))
+        .collect::<Vec<_>>();
+    parameters.push(1.0);
+    preflight_continuous_layer_transport_work_v1(
+        parameters.len(),
+        source.face_pair_orders.len(),
+        limits,
+    )?;
+    let mut transition_orders = Vec::with_capacity(parameters.len());
+    let mut pose_order_hashes = Vec::with_capacity(parameters.len());
+    for parameter in parameters {
+        let angles = schedule
+            .evaluate(parameter)
+            .ok_or(ContinuousLayerTransportErrorV1::BindingMismatch)?;
+        let pose = geometry
+            .solve_closed(audit, closure.fixed_face(), &angles, tolerance.max(1.0e-12))
+            .map_err(|_| ContinuousLayerTransportErrorV1::BindingMismatch)?;
+        let mut orders = Vec::with_capacity(source.face_pair_orders.len());
+        let mut pose_hash = Sha256::new();
+        pose_hash.update(b"ORIGAMI2_DERIVED_CONTINUOUS_LAYER_ORDER_V1");
+        pose_hash.update(parameter.to_bits().to_be_bytes());
+        for expected in &source.face_pair_orders {
+            let lower = *mapping
+                .get(&expected.lower_face.face_id)
+                .ok_or(ContinuousLayerTransportErrorV1::BindingMismatch)?;
+            let upper = *mapping
+                .get(&expected.upper_face.face_id)
+                .ok_or(ContinuousLayerTransportErrorV1::BindingMismatch)?;
+            let lower_projection = face_centroid_projection(geometry, &pose, lower, axis)?;
+            let upper_projection = face_centroid_projection(geometry, &pose, upper, axis)?;
+            let separation = upper_projection - lower_projection;
+            if separation.abs() <= tolerance {
+                return Err(ContinuousLayerTransportErrorV1::AmbiguousOrder);
+            }
+            if separation < 0.0 {
+                return Err(ContinuousLayerTransportErrorV1::Crossing);
+            }
+            pose_hash.update(lower.canonical_bytes());
+            pose_hash.update(upper.canonical_bytes());
+            pose_hash.update(lower_projection.to_bits().to_be_bytes());
+            pose_hash.update(upper_projection.to_bits().to_be_bytes());
+            orders.push((lower, upper));
+        }
+        transition_orders.push(orders);
+        pose_order_hashes.push(pose_hash.finalize().into());
+    }
+    let mut certificate = prove_continuous_layer_transport_v1(
+        geometry,
+        source,
+        source_to_target,
+        schedule,
+        closure,
+        &transition_orders,
+        limits,
+    )?;
+    certificate.target_order_hash = *pose_order_hashes
+        .last()
+        .ok_or(ContinuousLayerTransportErrorV1::AmbiguousOrder)?;
+    certificate.transition_hashes = pose_order_hashes;
+    Ok(certificate)
+}
+
+fn face_centroid_projection(
+    geometry: &MaterialHingeGraphGeometry,
+    pose: &ori_kinematics::ClosedMaterialHingeGraphPose,
+    face: FaceId,
+    axis: [f64; 3],
+) -> Result<f64, ContinuousLayerTransportErrorV1> {
+    let boundary = geometry
+        .face_boundary_vertices(face)
+        .ok_or(ContinuousLayerTransportErrorV1::BindingMismatch)?;
+    if boundary.is_empty() {
+        return Err(ContinuousLayerTransportErrorV1::BindingMismatch);
+    }
+    let transform = pose
+        .face_transform(face)
+        .ok_or(ContinuousLayerTransportErrorV1::BindingMismatch)?;
+    let mut sum = [0.0; 3];
+    for vertex in boundary {
+        let point = geometry
+            .vertex_position(*vertex)
+            .ok_or(ContinuousLayerTransportErrorV1::BindingMismatch)?;
+        let world = transform
+            .apply_point(point)
+            .map_err(|_| ContinuousLayerTransportErrorV1::BindingMismatch)?;
+        sum[0] += world.x();
+        sum[1] += world.y();
+        sum[2] += world.z();
+    }
+    let divisor = boundary.len() as f64;
+    let projection = (sum[0] * axis[0] + sum[1] * axis[1] + sum[2] * axis[2]) / divisor;
+    projection
+        .is_finite()
+        .then_some(projection)
+        .ok_or(ContinuousLayerTransportErrorV1::BindingMismatch)
 }
 
 fn hash_orders(orders: &[(FaceId, FaceId)]) -> [u8; 32] {

@@ -57,7 +57,8 @@ pub use certified_path_graph::{
 pub use continuous_layer_transport::{
     CONTINUOUS_LAYER_TRANSPORT_CERTIFICATE_MODEL_ID_V1, ContinuousLayerTransportCertificateV1,
     ContinuousLayerTransportErrorV1, ContinuousLayerTransportLimitsV1,
-    preflight_continuous_layer_transport_work_v1, prove_continuous_layer_transport_v1,
+    derive_continuous_layer_transport_from_poses_v1, preflight_continuous_layer_transport_work_v1,
+    prove_continuous_layer_transport_v1,
 };
 pub use continuous_path::{
     MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1, MAX_STACKED_FOLD_PATH_SAMPLES_V1,

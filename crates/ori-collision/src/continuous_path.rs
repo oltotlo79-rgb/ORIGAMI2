@@ -7557,7 +7557,7 @@ mod tests {
             Err(crate::ContinuousLayerTransportErrorV1::ResourceLimit)
         ));
 
-        for rank in [8, 16, 32] {
+        for rank in [4, 8, 16, 32] {
             let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(rank, false);
             let closure = geometry
                 .prove_dyadic_schedule_closure_v1(
@@ -7654,6 +7654,130 @@ mod tests {
                 exact,
             )
             .unwrap();
+            if rank == 4 {
+                let mut derivation_source = source.clone();
+                if rank == 4 {
+                    derivation_source.face_pair_orders.truncate(1);
+                }
+                let positive_axis = [1.0, 0.0, 0.0];
+                let (derived, separation_axis) =
+                    match crate::derive_continuous_layer_transport_from_poses_v1(
+                        &geometry,
+                        &audit,
+                        &derivation_source,
+                        &mapping,
+                        &schedule,
+                        &closure,
+                        positive_axis,
+                        1.0e-9,
+                        exact,
+                    ) {
+                        Ok(proof) => (proof, positive_axis),
+                        Err(crate::ContinuousLayerTransportErrorV1::Crossing) if rank == 4 => {
+                            let negative_axis = [-1.0, 0.0, 0.0];
+                            (
+                                crate::derive_continuous_layer_transport_from_poses_v1(
+                                    &geometry,
+                                    &audit,
+                                    &derivation_source,
+                                    &mapping,
+                                    &schedule,
+                                    &closure,
+                                    negative_axis,
+                                    1.0e-9,
+                                    exact,
+                                )
+                                .unwrap(),
+                                negative_axis,
+                            )
+                        }
+                        result => panic!("derived target order failed: {result:?}"),
+                    };
+                assert_eq!(
+                    derived.transition_hashes().len(),
+                    closure.leaves().len() + 1
+                );
+                if rank == 4 {
+                    assert!(
+                        derived
+                            .transition_hashes()
+                            .windows(2)
+                            .any(|pair| pair[0] != pair[1])
+                    );
+                }
+                assert!(matches!(
+                    crate::derive_continuous_layer_transport_from_poses_v1(
+                        &geometry,
+                        &audit,
+                        &derivation_source,
+                        &mapping,
+                        &schedule,
+                        &closure,
+                        separation_axis,
+                        1.0e9,
+                        exact,
+                    ),
+                    Err(crate::ContinuousLayerTransportErrorV1::AmbiguousOrder)
+                ));
+                assert!(matches!(
+                    crate::derive_continuous_layer_transport_from_poses_v1(
+                        &geometry,
+                        &audit,
+                        &derivation_source,
+                        &mapping,
+                        &schedule,
+                        &closure,
+                        [0.0; 3],
+                        1.0e-9,
+                        exact,
+                    ),
+                    Err(crate::ContinuousLayerTransportErrorV1::BindingMismatch)
+                ));
+                assert!(matches!(
+                    crate::derive_continuous_layer_transport_from_poses_v1(
+                        &geometry,
+                        &audit,
+                        &derivation_source,
+                        &mapping,
+                        &schedule,
+                        &closure,
+                        separation_axis,
+                        1.0e-9,
+                        crate::ContinuousLayerTransportLimitsV1 {
+                            max_pair_orders: (closure.leaves().len() + 1)
+                                * derivation_source.face_pair_orders.len()
+                                - 1,
+                            ..exact
+                        },
+                    ),
+                    Err(crate::ContinuousLayerTransportErrorV1::ResourceLimit)
+                ));
+                if rank == 4 {
+                    let mut cyclic = derivation_source.clone();
+                    cyclic.face_pair_orders.push(FacePairOrderSnapshot {
+                        lower_face: faces[1],
+                        upper_face: faces[0],
+                        supporting_cells: Vec::new(),
+                    });
+                    assert!(matches!(
+                        crate::derive_continuous_layer_transport_from_poses_v1(
+                            &geometry,
+                            &audit,
+                            &cyclic,
+                            &mapping,
+                            &schedule,
+                            &closure,
+                            separation_axis,
+                            1.0e-9,
+                            crate::ContinuousLayerTransportLimitsV1 {
+                                max_pair_orders: exact.max_pair_orders * 2,
+                                ..exact
+                            },
+                        ),
+                        Err(crate::ContinuousLayerTransportErrorV1::Crossing)
+                    ));
+                }
+            }
             assert_eq!(proof.transition_hashes().len(), transitions.len());
             assert_eq!(geometry.face_ids().len(), 1 + rank * 3);
             assert_eq!(geometry.hinges().len(), rank * 4);

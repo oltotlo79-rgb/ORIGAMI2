@@ -764,6 +764,8 @@ function App() {
     useState<Array<{
       candidate_id: number
       kind: BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']
+      source_candidate_ids?: number[]
+      split_fragment?: number
     }>>([])
   const [excludedBeginnerPartAssignments, setExcludedBeginnerPartAssignments] =
     useState<typeof beginnerPartAssignments>([])
@@ -8659,7 +8661,7 @@ function App() {
                         <fieldset>
                           <legend>{text({ ja: '部位の明示割当', en: 'Explicit part assignments' })}</legend>
                           {beginnerPartAssignments.map((assignment, index) => (
-                            <label key={assignment.candidate_id}>
+                            <label key={`${assignment.candidate_id}:${assignment.split_fragment ?? 'original'}:${index}`}>
                               {formattedText({ ja: '候補 {id}', en: 'Candidate {id}' }, { id: assignment.candidate_id + 1 })}
                               <select value={assignment.kind} onChange={(event) => {
                                 const kind = event.currentTarget.value as
@@ -8716,6 +8718,45 @@ function App() {
                               ))}
                             </section>
                           )}
+                          <section aria-label={text({
+                            ja: '輪郭成分の編集案', en: 'Outline component edit proposal',
+                          })}>
+                            <p>{text({
+                              ja: '分割・結合は元画像digestに束縛された非権威的な案です。確認するまで生成へ反映されません。',
+                              en: 'Split and merge edits are non-authoritative proposals bound to the source-image digest. They affect generation only after explicit confirmation.',
+                            })}</p>
+                            <button type="button" onClick={() => setBeginnerPartAssignments((items) => {
+                              const index = items.findIndex((item) => item.kind !== 'torso'
+                                && item.split_fragment === undefined)
+                              if (index < 0 || items.length >= 10) return items
+                              const source = items[index]
+                              const split = [
+                                { ...source, source_candidate_ids: [source.candidate_id], split_fragment: 0 },
+                                { ...source, kind: 'tail' as const,
+                                  source_candidate_ids: [source.candidate_id], split_fragment: 1 },
+                              ]
+                              return [...items.slice(0, index), ...split, ...items.slice(index + 1)]
+                            })}>
+                              {text({ ja: '最初の部位候補を二分割', en: 'Split first part candidate' })}
+                            </button>
+                            <button type="button" onClick={() => setBeginnerPartAssignments((items) => {
+                              const indexes = items.map((item, index) => ({ item, index }))
+                                .filter(({ item }) => item.kind !== 'torso'
+                                  && item.split_fragment === undefined).slice(0, 2)
+                              if (indexes.length !== 2) return items
+                              const first = indexes[0]!
+                              const second = indexes[1]!
+                              const merged = { ...first.item,
+                                candidate_id: Math.min(first.item.candidate_id, second.item.candidate_id),
+                                source_candidate_ids: [first.item.candidate_id, second.item.candidate_id]
+                                  .sort((left, right) => left - right),
+                              }
+                              return items.filter((_, index) => index !== first.index && index !== second.index)
+                                .concat(merged).sort((left, right) => left.candidate_id - right.candidate_id)
+                            })}>
+                              {text({ ja: '最初の二部位候補を結合', en: 'Merge first two part candidates' })}
+                            </button>
+                          </section>
                           <p>{text({
                             ja: '画像は各候補の輪郭だけを証明します。部位の意味は、ここで確認した割当だけを使用します。',
                             en: 'The image proves only each candidate outline. Part meanings come only from the assignments you confirm here.',

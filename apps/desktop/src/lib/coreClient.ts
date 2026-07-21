@@ -2405,6 +2405,7 @@ export type BeginnerOutlineCandidatesResponse = Readonly<{
   revision: number
   underlay_id: string
   asset_id: string
+  source_sha256: readonly number[]
   candidates: ReadonlyArray<Readonly<{
     id: number
     bounds: Readonly<{ min_x: number; min_y: number; max_x: number; max_y: number }>
@@ -2425,11 +2426,13 @@ export async function recognizeBeginnerOutlineCandidates(
   }
   const value = await invoke<unknown>('recognize_beginner_outline_candidates', { request })
   const record = exactCoreDataRecord(value, [
-    'project_instance_id', 'project_id', 'revision', 'underlay_id', 'asset_id', 'candidates',
+    'project_instance_id', 'project_id', 'revision', 'underlay_id', 'asset_id', 'source_sha256', 'candidates',
   ] as const)
   if (!record || record.project_instance_id !== expectedProjectInstanceId
     || record.project_id !== expectedProjectId || record.revision !== expectedRevision
     || record.underlay_id !== underlayId || record.asset_id !== assetId
+    || !isBoundedIntegerTuple(record.source_sha256, 32, 255)
+    || record.source_sha256.some((byte) => byte < 0)
     || !Array.isArray(record.candidates) || record.candidates.length > 16) {
     throw new BeginnerRecognitionError('native_failure')
   }
@@ -2463,6 +2466,7 @@ export async function recognizeBeginnerOutlineCandidates(
     revision: expectedRevision,
     underlay_id: underlayId,
     asset_id: assetId,
+    source_sha256: Object.freeze(record.source_sha256.slice()),
     candidates: Object.freeze(candidates),
   })
 }
@@ -2531,12 +2535,22 @@ export function applyBeginnerPartAssignments(
   assignments: ReadonlyArray<{
     candidate_id: number
     kind: BeginnerGenerationConstraintsV1['target_parts'][number]['kind']
+    source_candidate_ids?: number[]
+    split_fragment?: number
   }>,
 ) {
+  if (assignments.some((assignment) => assignment.source_candidate_ids
+    && (assignment.source_candidate_ids.length < 1 || assignment.source_candidate_ids.length > 2
+      || new Set(assignment.source_candidate_ids).size !== assignment.source_candidate_ids.length
+      || assignment.source_candidate_ids.some((id) => !Number.isInteger(id) || id < 0 || id > 15)))
+    || assignments.some((assignment) => assignment.split_fragment !== undefined
+      && assignment.split_fragment !== 0 && assignment.split_fragment !== 1)) {
+    return Promise.reject(new BeginnerRecognitionError('native_failure'))
+  }
   return invoke<ProjectSnapshot>('apply_beginner_part_assignments', { request: {
     expectedProjectInstanceId: outline.project_instance_id, expectedProjectId: outline.project_id,
     expectedRevision: outline.revision, underlayId: outline.underlay_id, assetId: outline.asset_id,
-    selectedOutline, assignments, confirmed: true,
+    sourceSha256: [...outline.source_sha256], selectedOutline, assignments, confirmed: true,
   } })
 }
 

@@ -91,6 +91,7 @@ pub(crate) struct BeginnerOutlineCandidatesResponse {
     revision: u64,
     underlay_id: UnderlayId,
     asset_id: AssetId,
+    source_sha256: [u8; 32],
     candidates: Vec<ori_domain::BeginnerOutlineCandidateV1>,
 }
 
@@ -147,6 +148,7 @@ pub(crate) fn recognize_beginner_outline_candidates(
         revision: project.editor.revision(),
         underlay_id: request.underlay_id,
         asset_id: request.asset_id,
+        source_sha256: source_hash,
         candidates,
     })
 }
@@ -304,6 +306,10 @@ pub(crate) fn recognize_beginner_part_suggestions(
 pub(crate) struct BeginnerPartAssignmentV1 {
     candidate_id: u8,
     kind: ori_domain::BeginnerTargetPartKindV1,
+    #[serde(default)]
+    source_candidate_ids: Vec<u8>,
+    #[serde(default)]
+    split_fragment: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -314,6 +320,7 @@ pub(crate) struct ApplyBeginnerPartAssignmentsRequest {
     expected_revision: u64,
     underlay_id: UnderlayId,
     asset_id: AssetId,
+    source_sha256: [u8; 32],
     selected_outline: ori_domain::BeginnerOutlineCandidateV1,
     assignments: Vec<BeginnerPartAssignmentV1>,
     confirmed: bool,
@@ -360,6 +367,9 @@ pub(crate) fn apply_beginner_part_assignments(
             .ok_or_else(|| "recognition_asset_unavailable".to_owned())?
     };
     let source_hash: [u8; 32] = Sha256::digest(&bytes).into();
+    if request.source_sha256 != source_hash {
+        return Err("part_assignment_edit_digest_tampered".to_owned());
+    }
     let (width, height, rgba) = decode_general_image(&bytes)?;
     let candidates = ori_domain::analyze_outline_candidates_rgba_v1(width, height, &rgba)
         .map_err(|_| "recognition_resource_limit".to_owned())?;
@@ -367,17 +377,57 @@ pub(crate) fn apply_beginner_part_assignments(
         return Err("part_assignment_stale".to_owned());
     }
     let mut seen = std::collections::BTreeSet::new();
+    let mut edited_sources = std::collections::BTreeSet::new();
     if request.assignments.iter().any(|assignment| {
-        !seen.insert(assignment.candidate_id)
-            || !candidates
+        let sources_valid = match assignment.source_candidate_ids.as_slice() {
+            [] => assignment.split_fragment.is_none(),
+            [source] => {
+                *source == assignment.candidate_id
+                    && assignment
+                        .split_fragment
+                        .is_some_and(|fragment| fragment < 2)
+            }
+            [first, second] => {
+                first < second
+                    && *first == assignment.candidate_id
+                    && assignment.split_fragment.is_none()
+            }
+            _ => false,
+        };
+        let source_ids = if assignment.source_candidate_ids.is_empty() {
+            vec![assignment.candidate_id]
+        } else {
+            assignment.source_candidate_ids.clone()
+        };
+        let key = (assignment.candidate_id, assignment.split_fragment);
+        !sources_valid
+            || !seen.insert(key)
+            || source_ids
                 .iter()
-                .any(|candidate| candidate.id == assignment.candidate_id)
+                .any(|source| !candidates.iter().any(|candidate| candidate.id == *source))
+            || (!assignment.source_candidate_ids.is_empty()
+                && !edited_sources.insert((source_ids, assignment.split_fragment)))
     }) || !request
         .assignments
         .iter()
         .any(|assignment| assignment.kind == ori_domain::BeginnerTargetPartKindV1::Torso)
     {
         return Err("part_assignment_invalid".to_owned());
+    }
+    for source in request.assignments.iter().filter_map(|assignment| {
+        (assignment.source_candidate_ids.len() == 1).then_some(assignment.candidate_id)
+    }) {
+        let fragments = request
+            .assignments
+            .iter()
+            .filter(|assignment| {
+                assignment.candidate_id == source
+                    && assignment.source_candidate_ids.as_slice() == [source]
+            })
+            .collect::<Vec<_>>();
+        if fragments.len() != 2 || fragments[0].kind == fragments[1].kind {
+            return Err("part_assignment_split_semantics_unconfirmed".to_owned());
+        }
     }
     let leg_candidate_ids = request
         .assignments

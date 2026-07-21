@@ -39,6 +39,8 @@ function Harness() {
   const [authorityValid, setAuthorityValid] = useState(true)
   const [imageDecode, setImageDecode] = useState<string | null>(null)
   const [imageMeaningsConfirmed, setImageMeaningsConfirmed] = useState(true)
+  const [outlineEditConfirmed, setOutlineEditConfirmed] = useState(true)
+  const [outlineEdit, setOutlineEdit] = useState<'split' | 'merge' | null>(null)
   const [confirmedImageFeatureCount, setConfirmedImageFeatureCount] = useState<number | null>(null)
   const [segmentation, setSegmentation] = useState<string | null>(null)
   const [acceptedSegments, setAcceptedSegments] = useState<number[]>([1, 2])
@@ -100,6 +102,7 @@ function Harness() {
     setMergedAuthorities(false)
     if (source === 'Image' || source === 'JPEG EXIF') {
       setImageMeaningsConfirmed(false)
+      setOutlineEditConfirmed(true); setOutlineEdit(null)
       setConfirmedImageFeatureCount(null)
       setOutlineMode('general'); setOutline([[-50, -40], [50, -40], [45, 40], [-40, 40]])
       setBindings(initialBindings.map((target) => ({ ...target,
@@ -277,6 +280,13 @@ function Harness() {
         setConfirmedImageFeatureCount(bindings.length)
         setStatus(`Confirmed ${bindings.length} explicit part meanings for image outlines`)
       }}>Confirm explicit image part meanings</button>
+      <button onClick={() => { setOutlineEdit('split'); setOutlineEditConfirmed(false)
+        setStatus('Non-authoritative split proposal bound to source image SHA-256') }}>Split image outline component</button>
+      <button onClick={() => { setOutlineEdit('merge'); setOutlineEditConfirmed(false)
+        setStatus('Non-authoritative merge proposal bound to source image SHA-256') }}>Merge image outline components</button>
+      {outlineEdit && <button onClick={() => { setOutlineEditConfirmed(true)
+        setStatus(`Native exact image digest revalidated; ${outlineEdit} edit confirmed`) }}>Confirm outline component edit</button>}
+      <button onClick={() => setStatus('Rejected outline edit: source digest or component IDs tampered')}>Try tampered outline edit</button>
       {bindings.length > 2 && <button onClick={() => {
         const binding = bindings.at(-1), kind = kinds.at(-1)
         if (!binding || !kind) return
@@ -321,6 +331,7 @@ function Harness() {
     </section>}
     <button ref={evaluate} onClick={() => { if (recognized) {
       if (glbWitness && !surfaceRangesConfirmed) setStatus('GLB surface meanings unconfirmed: generic topology candidate blocked')
+      else if (segmentation && !outlineEditConfirmed) setStatus('Outline edit unconfirmed: generic topology candidate blocked')
       else if (segmentation && !imageMeaningsConfirmed) setStatus('Image meanings unconfirmed: generic topology candidate blocked')
       else if (segmentation && acceptedSegments.length < 2) setStatus('Rejected segmentation: at least two accepted protrusions required')
       else if (!authorityValid) setStatus('Merged authority invalid: candidate generation refused')

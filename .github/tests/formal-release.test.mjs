@@ -1269,6 +1269,57 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
   }
 })
 
+test('release chronology rejects missing offset future and replayed evidence at exact boundaries', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'origami2-chronology-'))
+  const path = join(directory, 'sbom.json')
+  const ciEvidence = (createdAt = '2026-07-20T00:00:00.000Z') => ({
+    schema: 'origami2.ci-check-evidence.v1', sourceCommit: 'a'.repeat(40),
+    workflow: '.github/workflows/ci.yml', workflowRunId: '67890', runAttempt: 1,
+    checkSuiteId: '24680', checks: [{ name: 'test', conclusion: 'success' }],
+    artifacts: ciArtifactsFixture.map((artifact) => ({
+      ...artifact,
+      createdAt,
+      expiresAt: new Date(Date.parse(createdAt) + 7 * 86_400_000).toISOString(),
+    })),
+    rustsecReviewArtifact: ciArtifactFixture,
+  })
+  const run = (overrides = {}) => {
+    writeFileSync(path, JSON.stringify({ bomFormat: 'CycloneDX', components: [] }))
+    return execFileSync('node', ['.github/scripts/bind_release_sbom.mjs', path], {
+      cwd: root, stdio: 'pipe',
+      env: {
+        ...process.env, VERSION: '0.1.0', PLATFORM: 'windows-x64',
+        RELEASE_COMMIT: 'a'.repeat(40), RUSTC_VERSION: 'rustc 1.90.0 (fixture)',
+        NODE_VERSION: 'v24.0.0', BUILD_MODE: 'unsigned-dry-run',
+        TARGET_TRIPLE: 'x86_64-pc-windows-msvc', RELEASE_RUN_ID: '12345',
+        RELEASE_RUN_STARTED_AT: '2026-07-21T00:00:00Z',
+        SOURCE_COMMIT_AUTHORED_AT: '2026-07-18T00:00:00Z',
+        SOURCE_COMMIT_COMMITTED_AT: '2026-07-19T00:00:00Z', RELEASE_TAG_CREATED_AT: '',
+        EXECUTED_TEST_COUNT: '28', CI_CHECK_EVIDENCE_JSON: JSON.stringify(ciEvidence()),
+        ...overrides,
+      },
+    })
+  }
+  try {
+    assert.throws(() => run({ RELEASE_RUN_STARTED_AT: '' }), /run start time/u)
+    assert.throws(() => run({ SOURCE_COMMIT_AUTHORED_AT: '2026-07-18T00:00:00+00:00' }), /author time/u)
+    assert.throws(() => run({ SOURCE_COMMIT_COMMITTED_AT: '2026-07-21T00:06:00Z' }), /chronology/u)
+    assert.throws(() => run({
+      SOURCE_COMMIT_COMMITTED_AT: '2026-07-20T00:10:00Z',
+      CI_CHECK_EVIDENCE_JSON: JSON.stringify(ciEvidence('2026-07-20T00:04:59.000Z')),
+    }), /chronology/u)
+    assert.doesNotThrow(() => run({
+      SOURCE_COMMIT_AUTHORED_AT: '2026-07-21T00:05:00Z',
+      SOURCE_COMMIT_COMMITTED_AT: '2026-07-21T00:05:00Z',
+      CI_CHECK_EVIDENCE_JSON: JSON.stringify(ciEvidence('2026-07-21T00:05:00.000Z')),
+    }))
+    const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+    assert.match(workflow, /git cat-file -t "refs\/tags\/\$RELEASE_TAG"\)" = tag/u)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('credential-free dependency policy bounds lock integrity and npm licenses', () => {
   const policy = buildDependencyPolicy()
   assert.equal(policy.schema, 'origami2.dependency-policy.v1')

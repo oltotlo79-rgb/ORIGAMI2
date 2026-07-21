@@ -88,6 +88,7 @@ jobs:
           echo "::add-mask::$GH_TOKEN"
           identity="$RUNNER_TEMP/release-run-identity.json"
           timeout 60s gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID" > "$identity"
+          test "$(grep -Eo '"run_started_at"[[:space:]]*:' "$identity" | wc -l)" -eq 1
           test "$(jq -r .id "$identity")" = "$GITHUB_RUN_ID"
           test "$(jq -r .run_attempt "$identity")" = "$GITHUB_RUN_ATTEMPT"
           test "$(jq -r .head_sha "$identity")" = "$RELEASE_COMMIT"
@@ -99,7 +100,9 @@ jobs:
           commit_committed_at="$(normalize_time "$(git show -s --format=%cI "$RELEASE_COMMIT")")"
           tag_created_at=''
           if [ "$RELEASE_MODE" != dry-run ]; then
+            test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
             tag_created_at="$(normalize_time "$(git for-each-ref --format='%(taggerdate:iso-strict)' "refs/tags/$RELEASE_TAG")")"
+            test -n "$tag_created_at"
           fi
           echo "commit_authored_at=$commit_authored_at" >> "$GITHUB_OUTPUT"
           echo "commit_committed_at=$commit_committed_at" >> "$GITHUB_OUTPUT"

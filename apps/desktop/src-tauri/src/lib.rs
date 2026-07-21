@@ -2505,6 +2505,65 @@ struct BeginnerContourPlacementWitness {
     witnessed_vertices: u16,
     witnessed_creases: u16,
     topology_authority_hash: [u8; 32],
+    max_contour_error_millionths: u32,
+}
+
+fn normalized_contour_error_millionths(
+    target: &[[i32; 2]],
+    generated: &[ori_domain::Vertex],
+) -> Option<u32> {
+    if target.len() != generated.len() || target.is_empty() {
+        return None;
+    }
+    let (target_min_x, target_max_x) = target
+        .iter()
+        .map(|point| point[0])
+        .fold((i32::MAX, i32::MIN), |(min, max), value| {
+            (min.min(value), max.max(value))
+        });
+    let (target_min_y, target_max_y) = target
+        .iter()
+        .map(|point| point[1])
+        .fold((i32::MAX, i32::MIN), |(min, max), value| {
+            (min.min(value), max.max(value))
+        });
+    let (generated_min_x, generated_max_x) = generated
+        .iter()
+        .map(|vertex| vertex.position.x)
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
+            (min.min(value), max.max(value))
+        });
+    let (generated_min_y, generated_max_y) = generated
+        .iter()
+        .map(|vertex| vertex.position.y)
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
+            (min.min(value), max.max(value))
+        });
+    let target_span_x = f64::from(target_max_x - target_min_x);
+    let target_span_y = f64::from(target_max_y - target_min_y);
+    let generated_span_x = generated_max_x - generated_min_x;
+    let generated_span_y = generated_max_y - generated_min_y;
+    if target_span_x <= 0.0
+        || target_span_y <= 0.0
+        || generated_span_x <= 0.0
+        || generated_span_y <= 0.0
+        || !generated_span_x.is_finite()
+        || !generated_span_y.is_finite()
+    {
+        return None;
+    }
+    let maximum = target
+        .iter()
+        .zip(generated)
+        .map(|(point, vertex)| {
+            let tx = f64::from(point[0] - target_min_x) / target_span_x;
+            let ty = f64::from(point[1] - target_min_y) / target_span_y;
+            let gx = (vertex.position.x - generated_min_x) / generated_span_x;
+            let gy = (vertex.position.y - generated_min_y) / generated_span_y;
+            (tx - gx).hypot(ty - gy)
+        })
+        .fold(0.0_f64, f64::max);
+    u32::try_from((maximum * 1_000_000.0).round() as u64).ok()
 }
 
 fn beginner_contour_placement_witness(
@@ -2571,6 +2630,36 @@ fn beginner_contour_placement_witness(
     {
         return None;
     }
+    let base_vertex_count = plan.crease_pattern.vertices.len().checked_sub(witnessed)?;
+    let mut max_contour_error_millionths = 0;
+    if let Some(outline) = constraints.generic_body_outline_tenths_mm.as_deref() {
+        max_contour_error_millionths =
+            max_contour_error_millionths.max(normalized_contour_error_millionths(
+                outline,
+                plan.crease_pattern
+                    .vertices
+                    .get(base_vertex_count..base_vertex_count + outline.len())?,
+            )?);
+    }
+    for binding in &local_bindings {
+        let outline = constraints
+            .protrusions
+            .iter()
+            .find(|target| target.id == binding.protrusion_id)?
+            .local_outline_tenths_mm
+            .as_deref()?;
+        let start = usize::from(binding.vertex_start);
+        max_contour_error_millionths =
+            max_contour_error_millionths.max(normalized_contour_error_millionths(
+                outline,
+                plan.crease_pattern
+                    .vertices
+                    .get(start..start + outline.len())?,
+            )?);
+    }
+    if max_contour_error_millionths > 1 {
+        return None;
+    }
     let topology_authority_hash: [u8; 32] = sha2::Sha256::digest(
         serde_json::to_vec(&(
             &constraints.generic_body_outline_tenths_mm,
@@ -2586,6 +2675,7 @@ fn beginner_contour_placement_witness(
         witnessed_vertices: u16::try_from(witnessed).ok()?,
         witnessed_creases: u16::try_from(witnessed).ok()?,
         topology_authority_hash,
+        max_contour_error_millionths,
     })
 }
 
@@ -12113,15 +12203,16 @@ mod tests {
             witness.topology_authority_hash,
         );
         let mut tampered_plan = archived_plan.clone();
-        tampered_plan.crease_pattern.vertices[0].position.x += 0.001;
-        assert_ne!(
+        let contour_start = tampered_plan.crease_pattern.vertices.len() - 7;
+        tampered_plan.crease_pattern.vertices[contour_start]
+            .position
+            .x += 0.001;
+        assert!(
             beginner_contour_placement_witness(
                 &archived_profile.generation_constraints,
                 &tampered_plan,
             )
-            .unwrap()
-            .topology_authority_hash,
-            witness.topology_authority_hash,
+            .is_none()
         );
         let alternate_point = ori_domain::beginner_parameter_grid_v1()[14];
         let alternate_plan = grid_template_plan(

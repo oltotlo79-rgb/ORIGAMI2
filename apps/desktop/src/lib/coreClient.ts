@@ -1812,6 +1812,7 @@ export type BeginnerContourPlacementWitnessV1 = Readonly<{
   witnessed_vertices: number
   witnessed_creases: number
   topology_authority_hash: ReadonlyArray<number>
+  max_contour_error_millionths: number
 }>
 
 export type BeginnerGridEvaluationResponse = Readonly<{
@@ -1893,6 +1894,7 @@ export async function evaluateBeginnerParameterGrid(
     ] as const)
     const witness = exactCoreDataRecord(candidate.contour_witness, [
       'body_contour_points', 'local_bindings', 'witnessed_vertices', 'witnessed_creases', 'topology_authority_hash',
+      'max_contour_error_millionths',
     ] as const)
     const bindings = witness && Array.isArray(witness.local_bindings)
       ? witness.local_bindings.map((binding) => exactCoreDataRecord(binding, [
@@ -1928,6 +1930,8 @@ export async function evaluateBeginnerParameterGrid(
       || !Number.isInteger(witness.witnessed_creases) || Number(witness.witnessed_creases) !== witnessPointCount
       || !Array.isArray(witness.topology_authority_hash) || witness.topology_authority_hash.length !== 32
       || witness.topology_authority_hash.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
+      || !Number.isInteger(witness.max_contour_error_millionths)
+      || Number(witness.max_contour_error_millionths) < 0 || Number(witness.max_contour_error_millionths) > 1
       || normalizedPlans.generated_plans[index].crease_pattern.vertices.length < witnessPointCount
       || normalizedPlans.generated_plans[index].crease_pattern.edges.length < witnessPointCount
       || bindings.some((binding) => Number(binding?.vertex_start) + Number(binding?.contour_points)
@@ -1963,6 +1967,7 @@ export async function evaluateBeginnerParameterGrid(
         witnessed_vertices: Number(witness.witnessed_vertices),
         witnessed_creases: Number(witness.witnessed_creases),
         topology_authority_hash: Object.freeze(witness.topology_authority_hash.slice()) as ReadonlyArray<number>,
+        max_contour_error_millionths: Number(witness.max_contour_error_millionths),
       }) })
   })
   if (new Set(candidates.map((candidate) => candidate.point.id)).size !== candidates.length) {

@@ -7959,7 +7959,7 @@ function App() {
                           shape: candidate.assessment.shape_difference_reason ?? 'none' })}</span>
                         <span className="muted">{formattedText({
                           ja: '輪郭配置証明: 胴体 {body}点・局所 {local}・頂点 {vertices}・折線 {creases}',
-                          en: 'Contour placement witness: body {body} points · local {local} · vertices {vertices} · creases {creases}',
+                          en: 'Contour placement witness: body {body} points · local {local} · vertices {vertices} · creases {creases} · Hausdorff-like error {error}/1000000',
                         }, {
                           body: candidate.contour_witness.body_contour_points,
                           local: candidate.contour_witness.local_bindings.length === 0
@@ -7969,6 +7969,7 @@ function App() {
                               .join(', '),
                           vertices: candidate.contour_witness.witnessed_vertices,
                           creases: candidate.contour_witness.witnessed_creases,
+                          error: candidate.contour_witness.max_contour_error_millionths,
                         })}</span>
                         {candidate.assessment.proof_scope === 'sufficient'
                           && candidate.assessment.reason === 'global_flat_foldability_proven'

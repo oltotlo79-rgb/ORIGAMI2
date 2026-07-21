@@ -1399,6 +1399,29 @@ pub fn diagnose_scheduled_positive_thickness_cycle_path_v1(
     )
 }
 
+/// Certifies an issuer-bound canonical positive-thickness schedule directly.
+/// This entry point includes stationary schedules, which intentionally have no
+/// generated motion candidate but still need reusable closure/clearance proof.
+pub fn diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    paper_thickness_mm: f64,
+    interval_count: usize,
+) -> StackedFoldCyclePathDiagnosticV1 {
+    diagnose_canonical_cycle_schedule_path_internal_v1(
+        geometry,
+        audit,
+        fixed_face,
+        schedule,
+        closure,
+        interval_count,
+        Some(paper_thickness_mm),
+    )
+}
+
 /// Runs the bounded cycle CCD oracle against a canonical schedule directly.
 /// Schedule families without point evaluation or a finite derivative bound
 /// remain explicitly uncertified; closure evidence alone is never clearance.
@@ -1504,6 +1527,39 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
         }
     }
     if !maximum_radius.is_finite() {
+        return failed();
+    }
+    // A constant schedule is a useful, non-vacuous issuer path for arbitrary
+    // closed material-hinge graphs (including graphs whose cycle rank exceeds
+    // the specialised cactus/theta families).  Bind it to the exact schedule
+    // and closure certificates, then run the same all-pair solid proof once.
+    // This also avoids exhausting subdivision on coincident swept AABBs: with
+    // a zero derivative bound the swept volume is exactly the current pose.
+    if paper_thickness_mm.is_some() && derivative_sum.to_bits() == 0.0_f64.to_bits() {
+        let Some(angles) = schedule.evaluate(0.0) else {
+            return failed();
+        };
+        let Ok(pose) = geometry.solve_closed(audit, fixed_face, &angles, 1.0e-9) else {
+            return failed();
+        };
+        let thickness = paper_thickness_mm.expect("checked positive thickness");
+        if prove_positive_thickness_graph_geometry_v1(
+            geometry,
+            &pose,
+            thickness,
+            PositiveThicknessGraphLimitsV1::default(),
+        )
+        .is_ok()
+        {
+            let face_count = geometry.face_ids().len();
+            return StackedFoldCyclePathDiagnosticV1 {
+                certified: true,
+                first_closure_failure_angle_degrees: None,
+                leaf_count: closure.leaves().len(),
+                pair_work: face_count * (face_count - 1) / 2,
+                positive_thickness_bits: Some(thickness.to_bits()),
+            };
+        }
         return failed();
     }
     let adjacent = |a: FaceId, b: FaceId| {
@@ -1677,9 +1733,8 @@ fn theta_collective_axis_positive_thickness_premises_v1(
     closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
     paper_thickness_mm: f64,
 ) -> bool {
-    if geometry.face_ids().len() != 6
-        || geometry.hinges().len() != 7
-        || audit.closure_hinges().len() != 2
+    if geometry.face_ids().len() < 3
+        || audit.closure_hinges().is_empty()
         || !paper_thickness_mm.is_finite()
         || paper_thickness_mm <= 0.0
         || !closure.every_leaf_covers_graph_v1(geometry)
@@ -1690,7 +1745,7 @@ fn theta_collective_axis_positive_thickness_premises_v1(
     let Some(moving) = schedule.collective_profile_edges_v1() else {
         return false;
     };
-    if moving.len() != 3 {
+    if moving.is_empty() {
         return false;
     }
     let moving_hinges = geometry

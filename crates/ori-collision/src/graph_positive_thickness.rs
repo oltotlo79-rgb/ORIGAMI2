@@ -80,7 +80,7 @@ pub fn prove_positive_thickness_graph_geometry_v1(
     let face_count = geometry.face_ids().len();
     let checked_hinges = pose.closure_certificate().checked_hinges();
     let checked_hinge_set = checked_hinges.iter().copied().collect::<HashSet<_>>();
-    if !(4..=49).contains(&face_count)
+    if !(3..=49).contains(&face_count)
         || !paper_thickness_mm.is_finite()
         || paper_thickness_mm <= 0.0
         || checked_hinges.len() != geometry.hinges().len()
@@ -380,6 +380,167 @@ mod tests {
                 ..Paper::default()
             },
         )
+    }
+
+    fn three_by_three_dense_cycle_pattern() -> (CreasePattern, Paper) {
+        let namespace = ProjectId::new();
+        let vertices = (0..4)
+            .flat_map(|y| {
+                (0..4).map(move |x| Vertex {
+                    id: VertexId::derive_v5(namespace, &[0x31, y, x]),
+                    position: Point2::new(f64::from(x), f64::from(y)),
+                })
+            })
+            .collect::<Vec<_>>();
+        let vertex = |x: usize, y: usize| vertices[y * 4 + x].id;
+        let mut edges = Vec::new();
+        for y in 0..4 {
+            for x in 0..3 {
+                edges.push(Edge {
+                    id: ori_domain::EdgeId::derive_v5(namespace, &[0x32, y as u8, x as u8]),
+                    start: vertex(x, y),
+                    end: vertex(x + 1, y),
+                    kind: if y == 0 || y == 3 {
+                        EdgeKind::Boundary
+                    } else {
+                        EdgeKind::Mountain
+                    },
+                });
+            }
+        }
+        for x in 0..4 {
+            for y in 0..3 {
+                edges.push(Edge {
+                    id: ori_domain::EdgeId::derive_v5(namespace, &[0x33, x as u8, y as u8]),
+                    start: vertex(x, y),
+                    end: vertex(x, y + 1),
+                    kind: if x == 0 || x == 3 {
+                        EdgeKind::Boundary
+                    } else {
+                        EdgeKind::Valley
+                    },
+                });
+            }
+        }
+        let boundary_vertices = (0..4)
+            .map(|x| vertex(x, 0))
+            .chain((1..4).map(|y| vertex(3, y)))
+            .chain((0..3).rev().map(|x| vertex(x, 3)))
+            .chain((1..3).rev().map(|y| vertex(0, y)))
+            .collect();
+        (
+            CreasePattern { vertices, edges },
+            Paper {
+                boundary_vertices,
+                thickness_mm: 0.1,
+                ..Paper::default()
+            },
+        )
+    }
+
+    #[test]
+    fn dense_rank_four_graph_constant_path_is_exact_resource_bound_and_instance_bound() {
+        let (pattern, paper) = three_by_three_dense_cycle_pattern();
+        let topology = analyze_faces(FaceExtractionInput {
+            identity_namespace: ProjectId::new(),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .snapshot
+        .expect("three-by-three material grid");
+        assert_eq!(
+            (topology.faces.len(), topology.hinge_adjacency.len()),
+            (9, 12)
+        );
+        let geometry = MaterialHingeGraphGeometry::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        assert_eq!(audit.closure_hinges().len(), 4, "cycle rank exceeds theta");
+        let fixed = geometry.face_ids()[0];
+        let schedule = CanonicalCycleScheduleV1::prepare(
+            &geometry,
+            &audit,
+            fixed,
+            [0.0, 1.0],
+            geometry
+                .hinges()
+                .iter()
+                .map(|hinge| CycleScheduleEntryInputV1 {
+                    edge: hinge.edge(),
+                    initial_angle_degrees_bits: 0.0_f64.to_bits(),
+                    chebyshev_coefficients: vec![RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    }],
+                })
+                .collect(),
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        let closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                fixed,
+                &schedule,
+                0.0,
+                DyadicIntervalClosureLimitsV1 {
+                    max_depth: 0,
+                    max_leaves: 1,
+                    max_work: 1,
+                    schedule_limits: CycleScheduleLimitsV1::default(),
+                },
+            )
+            .expect("stationary dense graph has exact one-leaf closure");
+        let angles = schedule.evaluate(0.0).unwrap();
+        let diagnosis = crate::diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+            &geometry,
+            &audit,
+            fixed,
+            &schedule,
+            &closure,
+            paper.thickness_mm,
+            1,
+        );
+        assert!(diagnosis.continuous_certificate_model_id().is_some());
+        assert_eq!(diagnosis.pair_work(), 36);
+        assert_eq!(diagnosis.leaf_count(), 1);
+
+        let pose = geometry.solve_closed(&audit, fixed, &angles, 0.0).unwrap();
+        assert!(matches!(
+            prove_positive_thickness_graph_geometry_v1(
+                &geometry,
+                &pose,
+                paper.thickness_mm,
+                PositiveThicknessGraphLimitsV1 {
+                    max_unordered_face_pairs: 35,
+                    max_shared_feature_pairs: 36
+                },
+            ),
+            Err(PositiveThicknessGraphProofErrorV1::ResourceLimit)
+        ));
+        let proof = prove_positive_thickness_graph_geometry_v1(
+            &geometry,
+            &pose,
+            paper.thickness_mm,
+            PositiveThicknessGraphLimitsV1 {
+                max_unordered_face_pairs: 36,
+                max_shared_feature_pairs: 36,
+            },
+        )
+        .unwrap();
+        assert_eq!(proof.analyzed_unordered_face_pairs(), 36);
+        assert!(!proof.is_for_geometry(
+            &geometry,
+            &pose,
+            f64::from_bits(paper.thickness_mm.to_bits() + 1)
+        ));
     }
 
     #[test]

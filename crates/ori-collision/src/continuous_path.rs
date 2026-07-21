@@ -8291,8 +8291,8 @@ mod tests {
     }
 
     #[test]
-    fn miura_rank_eight_to_thirty_two_cell_proofs_are_bounded_and_deterministic() {
-        for (columns, rows, rank) in [(3, 5, 8usize), (5, 5, 16), (5, 9, 32)] {
+    fn miura_rank_eight_to_sixty_four_cell_proofs_are_bounded_and_deterministic() {
+        for (columns, rows, rank) in [(3, 5, 8usize), (5, 5, 16), (5, 9, 32), (9, 9, 64)] {
             let (pattern, paper, horizontal, _) =
                 super::dense_grid_cycle_test_support::miura_authority_pattern(columns, rows);
             let project = ProjectId::new();
@@ -8325,6 +8325,10 @@ mod tests {
                     .unwrap();
             assert_eq!(audit.closure_hinges().len(), rank);
             let fixed = geometry.face_ids()[0];
+            let schedule_limits = CycleScheduleLimitsV1 {
+                max_hinges: geometry.hinges().len(),
+                ..CycleScheduleLimitsV1::default()
+            };
             let active = horizontal.into_iter().take(columns).collect::<HashSet<_>>();
             let mut entries = geometry
                 .hinges()
@@ -8367,7 +8371,7 @@ mod tests {
                 &audit,
                 fixed,
                 entries,
-                CycleScheduleLimitsV1::default(),
+                schedule_limits,
             )
             .unwrap();
             let closure = geometry
@@ -8380,7 +8384,7 @@ mod tests {
                         max_depth: 8,
                         max_leaves: 256,
                         max_work: 1_000_000,
-                        schedule_limits: CycleScheduleLimitsV1::default(),
+                        schedule_limits,
                     },
                 )
                 .unwrap();

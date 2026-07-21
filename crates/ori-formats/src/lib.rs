@@ -33,6 +33,7 @@ pub use crease_pattern_export::{
     MAX_CREASE_PATTERN_EXPORT_EDGES, MAX_CREASE_PATTERN_EXPORT_INTERSECTION_CANDIDATES,
     MAX_CREASE_PATTERN_EXPORT_TITLE_CHARS, MAX_CREASE_PATTERN_EXPORT_VERTICES,
     export_crease_pattern, export_crease_pattern_with_limits,
+    export_crease_pattern_with_provenance,
 };
 pub use fold::{
     FoldAssignmentCounts, FoldAssignmentMapping, FoldAssignmentTarget, FoldBoundaryCandidate,

@@ -8,7 +8,9 @@ mod pdf;
 
 use std::{collections::HashMap, fmt::Write as _};
 
-use ori_domain::{CreasePattern, EdgeKind, Paper, Point2, VertexId};
+use ori_domain::{
+    BeginnerGenerationProvenanceV1, CreasePattern, EdgeKind, Paper, Point2, VertexId,
+};
 use ori_geometry::{
     PaperValidationIssue, ValidationIssue, validate_crease_pattern, validate_paper,
 };
@@ -214,6 +216,66 @@ pub fn export_crease_pattern(
         paper,
         CreasePatternExportLimits::default(),
     )
+}
+
+/// Exports a crease pattern and embeds the typed generation provenance when present.
+pub fn export_crease_pattern_with_provenance(
+    format: CreasePatternExportFormat,
+    title: &str,
+    crease_pattern: &CreasePattern,
+    paper: &Paper,
+    provenance: Option<&BeginnerGenerationProvenanceV1>,
+) -> Result<CreasePatternExportArtifact, CreasePatternExportError> {
+    let mut artifact = export_crease_pattern(format, title, crease_pattern, paper)?;
+    let Some(provenance) = provenance else {
+        return Ok(artifact);
+    };
+    let json =
+        serde_json::to_vec(provenance).map_err(CreasePatternExportError::FoldSerialization)?;
+    let hex = json
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    artifact.bytes = match format {
+        CreasePatternExportFormat::Fold12 => {
+            let mut value: serde_json::Value = serde_json::from_slice(&artifact.bytes)
+                .map_err(CreasePatternExportError::FoldSerialization)?;
+            value.as_object_mut().expect("FOLD root object").insert(
+                "origami2_generation_provenance".to_owned(),
+                serde_json::to_value(provenance)
+                    .map_err(CreasePatternExportError::FoldSerialization)?,
+            );
+            serde_json::to_vec(&value).map_err(CreasePatternExportError::FoldSerialization)?
+        }
+        CreasePatternExportFormat::Svg => {
+            let text = String::from_utf8(artifact.bytes).expect("generated SVG is UTF-8");
+            text.replacen(
+                "</svg>",
+                &format!("<metadata id=\"origami2-generation-provenance\">{hex}</metadata></svg>"),
+                1,
+            )
+            .into_bytes()
+        }
+        CreasePatternExportFormat::Pdf17 => {
+            artifact.bytes.extend_from_slice(
+                format!("\n% ORIGAMI2_GENERATION_PROVENANCE {hex}\n").as_bytes(),
+            );
+            artifact.bytes
+        }
+        CreasePatternExportFormat::Dxf2007Ascii => {
+            artifact.bytes.extend_from_slice(
+                format!("999\r\nORIGAMI2_GENERATION_PROVENANCE {hex}\r\n").as_bytes(),
+            );
+            artifact.bytes
+        }
+    };
+    if artifact.bytes.len() > MAX_CREASE_PATTERN_EXPORT_BYTES {
+        return Err(CreasePatternExportError::OutputTooLarge {
+            actual: artifact.bytes.len(),
+            maximum: MAX_CREASE_PATTERN_EXPORT_BYTES,
+        });
+    }
+    Ok(artifact)
 }
 
 /// Exports a crease pattern using caller-supplied resource limits.
@@ -1347,5 +1409,53 @@ mod tests {
             })
         );
         assert_eq!(preview.recommended_millimetres_per_unit(), Some(1.0));
+    }
+
+    #[test]
+    fn typed_generation_provenance_is_embedded_in_every_export() {
+        let (pattern, paper) = sample_pattern();
+        let provenance = BeginnerGenerationProvenanceV1 {
+            schema_version: 1,
+            topology_authority_sha256: [0xabu8; 32],
+            confidence_score: 87,
+            confidence_reasons: vec!["native_topology_witness".to_owned()],
+            explicit_override: false,
+            source_asset_fingerprint: "asset:test".to_owned(),
+        };
+        for format in [
+            CreasePatternExportFormat::Fold12,
+            CreasePatternExportFormat::Svg,
+            CreasePatternExportFormat::Pdf17,
+            CreasePatternExportFormat::Dxf2007Ascii,
+        ] {
+            let plain =
+                export_crease_pattern_with_provenance(format, "provenance", &pattern, &paper, None)
+                    .unwrap();
+            assert_eq!(
+                plain,
+                export_crease_pattern(format, "provenance", &pattern, &paper).unwrap()
+            );
+            let artifact = export_crease_pattern_with_provenance(
+                format,
+                "provenance",
+                &pattern,
+                &paper,
+                Some(&provenance),
+            )
+            .unwrap();
+            if format == CreasePatternExportFormat::Fold12 {
+                let value: serde_json::Value = serde_json::from_slice(&artifact.bytes).unwrap();
+                assert_eq!(
+                    value["origami2_generation_provenance"]["confidence_score"],
+                    87
+                );
+            } else {
+                let text = String::from_utf8_lossy(&artifact.bytes);
+                assert!(
+                    text.contains("ORIGAMI2_GENERATION_PROVENANCE")
+                        || text.contains("origami2-generation-provenance")
+                );
+            }
+        }
     }
 }

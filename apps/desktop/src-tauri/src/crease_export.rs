@@ -5,7 +5,9 @@ use std::{
 };
 
 use ori_domain::{EdgeKind, ProjectId};
-use ori_formats::{CreasePatternExportArtifact, CreasePatternExportFormat, export_crease_pattern};
+use ori_formats::{
+    CreasePatternExportArtifact, CreasePatternExportFormat, export_crease_pattern_with_provenance,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
@@ -159,6 +161,7 @@ struct CreaseExportSource {
     pattern: ori_domain::CreasePattern,
     paper: ori_domain::Paper,
     instruction_step_count: usize,
+    generation_provenance: Option<ori_domain::BeginnerGenerationProvenanceV1>,
 }
 
 #[tauri::command]
@@ -369,6 +372,11 @@ fn capture_export_source(
         pattern: project.editor.pattern().clone(),
         paper: project.editor.paper().clone(),
         instruction_step_count: project.editor.instruction_timeline().steps.len(),
+        generation_provenance: project
+            .editor
+            .beginner_design_profile()
+            .generation_provenance
+            .clone(),
     })
 }
 
@@ -381,11 +389,12 @@ fn validate_project_for_export(project: &ProjectState) -> Result<(), String> {
 }
 
 fn build_pending_export(source: CreaseExportSource) -> Result<PendingCreaseExport, String> {
-    let artifact = export_crease_pattern(
+    let artifact = export_crease_pattern_with_provenance(
         source.format.exporter_format(),
         &source.name,
         &source.pattern,
         &source.paper,
+        source.generation_provenance.as_ref(),
     )
     .map_err(|error| format!("展開図データを生成できませんでした: {error}"))?;
     validate_artifact_contract(source.format, &source.pattern, &artifact)?;
@@ -789,6 +798,11 @@ mod tests {
             pattern: project.editor.pattern().clone(),
             paper: project.editor.paper().clone(),
             instruction_step_count: project.editor.instruction_timeline().steps.len(),
+            generation_provenance: project
+                .editor
+                .beginner_design_profile()
+                .generation_provenance
+                .clone(),
         })
         .expect("build export")
     }
@@ -1330,6 +1344,7 @@ mod tests {
                 pattern: project.editor.pattern().clone(),
                 paper: project.editor.paper().clone(),
                 instruction_step_count: 0,
+                generation_provenance: None,
             })
             .is_err()
         );

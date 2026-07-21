@@ -2383,6 +2383,12 @@ mod tests {
     // an unrelated preview observe a foreign cancellation.
     static STACKED_FOLD_READ_GENERATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn lock_stacked_fold_read_generation_test() -> std::sync::MutexGuard<'static, ()> {
+        STACKED_FOLD_READ_GENERATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn fixed_id<T: serde::de::DeserializeOwned>(group: &str, index: u64) -> T {
         serde_json::from_str(&format!("\"00000000-0000-4000-{group}-{index:012x}\"")).unwrap()
     }
@@ -3291,6 +3297,7 @@ mod tests {
 
     #[test]
     fn four_leaf_cycle_preview_applies_atomically_and_round_trips_history() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
         let (pattern, paper, hinges) =
             super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern();
         let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
@@ -3417,6 +3424,7 @@ mod tests {
 
     #[test]
     fn coupled_figure_eight_preview_applies_and_round_trips_history() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
         let (pattern, paper, hinges) =
             super::four_bay_cycle_test_support::two_bay_rational_cycle_pattern();
         let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
@@ -3507,6 +3515,7 @@ mod tests {
 
     #[test]
     fn eight_leaf_cycle_preview_applies_and_round_trips_history() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
         let (pattern, paper, hinges) =
             super::four_bay_cycle_test_support::eight_bay_rational_cycle_pattern();
         let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
@@ -3570,6 +3579,7 @@ mod tests {
 
     #[test]
     fn sixteen_leaf_cycle_preview_applies_and_round_trips_history() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
         let (pattern, paper, hinges) =
             super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern();
         let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
@@ -3633,6 +3643,7 @@ mod tests {
 
     #[test]
     fn current_graph_cycle_authenticates_or_fails_closed_three_times() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
         let mut authenticated = 0;
         for iteration in 0..3 {
             let (mut project, hinges) =

@@ -119,3 +119,28 @@ pub fn angled_dense_cycle_pattern(
     }
     (pattern, paper, horizontal, vertical)
 }
+
+#[allow(dead_code)]
+pub fn three_by_three_miura_authority_pattern() -> (CreasePattern, Paper, Vec<EdgeId>, Vec<EdgeId>)
+{
+    let (mut pattern, paper, horizontal, vertical) = orthogonal_dense_cycle_pattern(3, 3);
+    let vertical_set = vertical
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    for edge in &mut pattern.edges {
+        if vertical_set.contains(&edge.id) {
+            let segment = vertical
+                .iter()
+                .position(|candidate| *candidate == edge.id)
+                .expect("vertical carrier")
+                % 3;
+            edge.kind = if segment == 1 {
+                EdgeKind::Mountain
+            } else {
+                EdgeKind::Valley
+            };
+        }
+    }
+    (pattern, paper, horizontal, vertical)
+}

@@ -7890,4 +7890,27 @@ mod tests {
             ));
         }
     }
+
+    #[test]
+    fn miura_rank_four_fixture_issues_global_layer_authority() {
+        let (pattern, paper, _, _) =
+            super::dense_grid_cycle_test_support::three_by_three_miura_authority_pattern();
+        let project = fixed_id("b602", 1);
+        let report = analyze_faces(FaceExtractionInput {
+            identity_namespace: project,
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        let topology = report.snapshot.expect("convex Miura topology");
+        let local = ori_topology::analyze_local_flat_foldability(&paper, &pattern);
+        let global = ori_foldability::analyze_global_flat_foldability(
+            ori_foldability::GlobalFlatFoldabilityInput::current_with_geometry(
+                project, &paper, &pattern, &topology, &local,
+            ),
+            ori_foldability::GlobalFlatFoldabilityLimits::default(),
+        )
+        .unwrap();
+        assert!(global.layer_order().is_some(), "{:?}", global.outcome);
+    }
 }

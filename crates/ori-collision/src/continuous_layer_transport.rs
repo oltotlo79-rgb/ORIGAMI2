@@ -34,6 +34,25 @@ pub enum ContinuousLayerTransportErrorV1 {
     Collision,
 }
 
+/// Performs the allocation-free checkpoint used before retaining transition
+/// witnesses. Callers can therefore cancel even a maximum-size graph without
+/// constructing or hashing any layer-order payload.
+pub fn preflight_continuous_layer_transport_work_v1(
+    transition_count: usize,
+    pair_order_count: usize,
+    limits: ContinuousLayerTransportLimitsV1,
+) -> Result<usize, ContinuousLayerTransportErrorV1> {
+    if transition_count == 0 || transition_count > limits.max_transitions {
+        return Err(ContinuousLayerTransportErrorV1::ResourceLimit);
+    }
+    let work = transition_count
+        .checked_mul(pair_order_count)
+        .ok_or(ContinuousLayerTransportErrorV1::ResourceLimit)?;
+    (work <= limits.max_pair_orders)
+        .then_some(work)
+        .ok_or(ContinuousLayerTransportErrorV1::ResourceLimit)
+}
+
 #[derive(Debug, Clone)]
 pub struct ContinuousLayerTransportCertificateV1 {
     issuer: MaterialHingeGraphGeometry,
@@ -114,9 +133,7 @@ pub fn prove_continuous_layer_transport_v1(
         .len()
         .checked_add(1)
         .ok_or(ContinuousLayerTransportErrorV1::ResourceLimit)?;
-    if transition_orders.len() != expected_transitions
-        || expected_transitions > limits.max_transitions
-    {
+    if transition_orders.len() != expected_transitions {
         return Err(ContinuousLayerTransportErrorV1::ResourceLimit);
     }
     let source_faces = source
@@ -146,13 +163,7 @@ pub fn prove_continuous_layer_transport_v1(
             ))
         })
         .collect::<Result<HashSet<_>, _>>()?;
-    let work = expected
-        .len()
-        .checked_mul(expected_transitions)
-        .ok_or(ContinuousLayerTransportErrorV1::ResourceLimit)?;
-    if work > limits.max_pair_orders {
-        return Err(ContinuousLayerTransportErrorV1::ResourceLimit);
-    }
+    preflight_continuous_layer_transport_work_v1(expected_transitions, expected.len(), limits)?;
     let mut hashes = Vec::with_capacity(expected_transitions);
     for orders in transition_orders {
         if orders.iter().any(|(lower, upper)| lower == upper) {

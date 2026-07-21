@@ -7542,6 +7542,21 @@ mod tests {
         };
         use ori_topology::FaceKey;
 
+        // A rank-64 carrier has 65 faces and at most 2,080 unordered face
+        // pairs. Cancellation is observed before retaining any of its 65
+        // transition witnesses or performing one hash operation.
+        assert!(matches!(
+            crate::preflight_continuous_layer_transport_work_v1(
+                65,
+                2_080,
+                crate::ContinuousLayerTransportLimitsV1 {
+                    max_transitions: 0,
+                    max_pair_orders: usize::MAX,
+                },
+            ),
+            Err(crate::ContinuousLayerTransportErrorV1::ResourceLimit)
+        ));
+
         for rank in [8, 16, 32] {
             let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(rank, false);
             let closure = geometry

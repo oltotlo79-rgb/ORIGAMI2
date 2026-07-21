@@ -1792,11 +1792,19 @@ fn theta_collective_axis_continuous_premises_v1(
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
     closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
 ) -> bool {
-    if geometry.face_ids().len() < 3
-        || audit.closure_hinges().is_empty()
-        || !closure.every_leaf_covers_graph_v1(geometry)
-        || closure.fixed_face() != fixed_face
-    {
+    if !closure.every_leaf_covers_graph_v1(geometry) || closure.fixed_face() != fixed_face {
+        return false;
+    }
+    theta_collective_axis_schedule_premises_v1(geometry, audit, fixed_face, schedule)
+}
+
+fn theta_collective_axis_schedule_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+) -> bool {
+    if geometry.face_ids().len() < 3 || audit.closure_hinges().is_empty() {
         return false;
     }
     let Some(moving) = schedule.collective_profile_edges_v1() else {
@@ -1834,6 +1842,45 @@ fn theta_collective_axis_continuous_premises_v1(
                 && geometry
                     .solve_closed(audit, fixed_face, &angles, 1.0e-9)
                     .is_ok()
+        })
+    })
+}
+
+/// Reports whether positive-thickness scheduled CCD has an exact specialised
+/// theorem for this bound graph and schedule. This is a structural admission
+/// check only; the positive-thickness proof must still succeed for the actual
+/// thickness before a continuous certificate can be issued.
+#[must_use]
+pub fn supports_scheduled_positive_thickness_path_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+) -> bool {
+    if !schedule.matches_binding(geometry, audit, fixed_face) {
+        return false;
+    }
+    if theta_collective_axis_schedule_premises_v1(geometry, audit, fixed_face, schedule) {
+        return true;
+    }
+    if composed_symmetric_rational_local_groups_v1(geometry, audit, fixed_face, schedule)
+        .or_else(|| rational_cactus_star_local_groups_v1(geometry, audit, fixed_face, schedule))
+        .is_some()
+    {
+        return true;
+    }
+    let face_count = geometry.face_ids().len();
+    (3usize..=7).any(|columns| {
+        (3usize..=7).any(|rows| {
+            columns * rows == face_count
+                && geometry.hinges().len() == 2 * columns * rows - columns - rows
+                && audit.closure_hinges().len() == (columns - 1) * (rows - 1)
+                && schedule
+                    .collective_profile_edges_v1()
+                    .or_else(|| schedule.collective_half_angle_profile_edges_v1())
+                    .is_some_and(|moving| {
+                        moving.len() == rows * (columns - 1) || moving.len() == columns * (rows - 1)
+                    })
         })
     })
 }
@@ -7343,6 +7390,20 @@ mod tests {
         for rank in [8usize, 16, 32] {
             let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(rank, false);
             assert_eq!(audit.closure_hinges().len(), rank);
+            assert!(supports_scheduled_positive_thickness_path_v1(
+                &geometry, &audit, fixed, &schedule,
+            ));
+            let wrong_fixed = *geometry
+                .face_ids()
+                .iter()
+                .find(|face| **face != fixed)
+                .unwrap();
+            assert!(!supports_scheduled_positive_thickness_path_v1(
+                &geometry,
+                &audit,
+                wrong_fixed,
+                &schedule,
+            ));
             let basis_limits = ori_kinematics::CycleBasisLimitsV1::default();
             let basis = geometry
                 .extract_canonical_cycle_basis_v1(&audit, basis_limits)

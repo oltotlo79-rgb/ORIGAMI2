@@ -18160,6 +18160,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(editor.instruction_timeline().steps, vec![original]);
+        let mut forged = editor.instruction_timeline().clone();
+        forged.steps[0].title = "改ざん".to_owned();
+        assert_eq!(
+            editor.execute(
+                5,
+                Command::RewriteInstructionTimelineSplitMerge { timeline: forged }
+            ),
+            Err(CommandError::InstructionStepAppendHistoryMismatch),
+        );
     }
 
     #[test]

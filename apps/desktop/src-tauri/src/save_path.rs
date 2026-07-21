@@ -153,6 +153,23 @@ mod tests {
         assert!(corrected.is_dir());
     }
 
+    #[test]
+    fn corrected_hard_link_is_rejected_without_replacing_either_name() {
+        let directory = TestDirectory::new();
+        let selected = directory.0.join("private-link.txt");
+        let original = directory.0.join("original.bin");
+        let corrected = directory.0.join("private-link.ori2");
+        fs::write(&original, b"owner data").unwrap();
+        fs::hard_link(&original, &corrected).unwrap();
+
+        let error = normalize_dialog_save_path(selected, "ori2").unwrap_err();
+
+        assert!(error.contains("上書き確認"));
+        assert!(!error.contains("private-link"));
+        assert_eq!(fs::read(original).unwrap(), b"owner data");
+        assert_eq!(fs::read(corrected).unwrap(), b"owner data");
+    }
+
     #[cfg(unix)]
     #[test]
     fn corrected_dangling_symlink_is_rejected_without_following_it() {

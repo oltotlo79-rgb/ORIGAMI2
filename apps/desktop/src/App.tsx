@@ -100,7 +100,6 @@ import {
   moveVertices,
   moveVertex,
   newProject,
-  openProject,
   previewCreasePatternExport,
   previewFoldImport,
   previewGeometricConstraintSolve,
@@ -120,8 +119,6 @@ import {
   removeGeometricConstraint,
   removeVertex,
   resizeRectangularPaper,
-  saveProject,
-  saveProjectAs,
   saveCreasePatternExport,
   saveInstructionExport,
   saveInstructionMeshAnimation,
@@ -175,6 +172,7 @@ import {
   type AssignedLocalSufficiencyResponseV1,
   type AssignedLocalSufficiencySummaryResponseV1,
 } from './lib/coreClient'
+import { runProjectFileOperation } from './lib/projectFileClient'
 import { createAssignedLocalSufficiencySummaryCoordinator } from './lib/assignedLocalSufficiencySummaryCoordinator'
 import { createProofScopePresentation } from './lib/proofScopePresentation'
 import {
@@ -4606,13 +4604,7 @@ function App() {
     setFileOperation(operation)
     setCancelInteractionToken((token) => token + 1)
     try {
-      const response = await (
-        operation === 'open'
-          ? openProject()
-          : operation === 'save'
-            ? saveProject()
-            : saveProjectAs()
-      )
+      const response = await runProjectFileOperation(operation)
       applySnapshot(
         response.project,
         operation === 'open' && !response.canceled,

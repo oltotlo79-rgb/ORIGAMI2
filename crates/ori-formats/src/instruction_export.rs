@@ -825,6 +825,10 @@ mod tests {
             .map(layout::PageText::scalar_text)
             .collect::<String>();
         assert!(first_step_text.contains(&certificate_reference));
+        let archived = serde_json::to_vec(&timeline).expect("archive proof-bearing timeline");
+        let reopened: InstructionTimeline =
+            serde_json::from_slice(&archived).expect("reopen proof-bearing timeline");
+        assert_eq!(reopened, timeline);
 
         for format in [
             InstructionExportFormat::Pdf17,
@@ -836,15 +840,15 @@ mod tests {
                 FINGERPRINT,
                 &fixture.pattern,
                 &fixture.paper,
-                &timeline,
+                &reopened,
                 &fixture.topology,
             )
             .expect("proof-bearing export");
-            assert_eq!(artifact.step_count, timeline.steps.len());
+            assert_eq!(artifact.step_count, reopened.steps.len());
             assert_eq!(artifact.page_count, plan.pages.len());
         }
 
-        let mut malformed_reference = timeline.clone();
+        let mut malformed_reference = reopened.clone();
         malformed_reference.steps[0].description = format!(
             "経路証明 SHA-256: {}G",
             &certificate_reference[..certificate_reference.len() - 1]
@@ -862,7 +866,7 @@ mod tests {
             Err(InstructionExportError::InvalidPathCertificateReference { step_index: 0 })
         ));
 
-        let mut mismatched_model_reference = timeline.clone();
+        let mut mismatched_model_reference = reopened.clone();
         mismatched_model_reference.steps[0].description = format!(
             "経路証明 SHA-256: {certificate_reference} / 元モデル SHA-256: {}",
             "b".repeat(64)
@@ -880,7 +884,7 @@ mod tests {
             Err(InstructionExportError::InvalidPathCertificateReference { step_index: 0 })
         ));
 
-        let mut foreign_model = timeline;
+        let mut foreign_model = reopened;
         foreign_model.steps[0].pose.source_model_fingerprint = "b".repeat(64);
         foreign_model.steps[0].description = format!(
             "経路証明 SHA-256: {certificate_reference} / 元モデル SHA-256: {}",

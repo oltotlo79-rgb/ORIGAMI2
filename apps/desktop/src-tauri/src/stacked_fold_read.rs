@@ -3457,6 +3457,27 @@ mod tests {
                 ),
                 (1, 12, 12)
             );
+            if thickness_mm == 1.0 {
+                super::super::lock_project(&app_state).unwrap().instance_id = ProjectId::new();
+                assert!(
+                    super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                        &app_state,
+                        &GlobalFlatFoldabilityState::default(),
+                        &transactions,
+                        preview.transaction_token,
+                    )
+                    .is_err()
+                );
+                assert!(
+                    super::super::lock_project(&app_state)
+                        .unwrap()
+                        .editor
+                        .instruction_timeline()
+                        .steps
+                        .is_empty()
+                );
+                continue;
+            }
             super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
                 &transactions,
                 preview.transaction_token,

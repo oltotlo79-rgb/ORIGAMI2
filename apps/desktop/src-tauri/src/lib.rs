@@ -13608,29 +13608,38 @@ mod tests {
     #[test]
     fn asymmetric_landmark_native_apply_undo_redo_and_archive_round_trip() {
         let _serial = serial_beginner_grid_test();
-        for (plan_kind, target_kind, target_count, archive_name, insect_landmarks) in [
+        for (plan_kind, target_kind, target_count, archive_name, semantic_binding_count) in [
             (
                 ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase,
                 ori_domain::BeginnerTargetPartKindV1::Wing,
                 2,
                 "asymmetric-bird.ori2",
-                false,
+                None,
             ),
             (
                 ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase,
                 ori_domain::BeginnerTargetPartKindV1::Leg,
                 4,
                 "asymmetric-four-leg.ori2",
-                false,
+                None,
             ),
             (
                 ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase,
                 ori_domain::BeginnerTargetPartKindV1::Tail,
                 1,
                 "asymmetric-insect.ori2",
-                true,
+                Some(10),
+            ),
+            (
+                ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase,
+                ori_domain::BeginnerTargetPartKindV1::Fin,
+                2,
+                "asymmetric-fish.ori2",
+                Some(4),
             ),
         ] {
+            let insect_landmarks = semantic_binding_count == Some(10);
+            let fish_landmarks = semantic_binding_count == Some(4);
             let mut profile = ori_domain::BeginnerDesignProfileV1::default();
             profile.generation_constraints.target_category =
                 Some(ori_domain::BeginnerTargetCategoryV1::Animal);
@@ -13646,6 +13655,13 @@ mod tests {
                     (ori_domain::BeginnerTargetPartKindV1::Tail, 1),
                     (ori_domain::BeginnerTargetPartKindV1::Wing, 2),
                     (ori_domain::BeginnerTargetPartKindV1::Leg, 6),
+                ]
+            } else if fish_landmarks {
+                vec![
+                    (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+                    (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+                    (ori_domain::BeginnerTargetPartKindV1::Tail, 1),
+                    (ori_domain::BeginnerTargetPartKindV1::Fin, 2),
                 ]
             } else {
                 vec![
@@ -13723,6 +13739,12 @@ mod tests {
                     targets.push(leg);
                 }
                 targets
+            } else if fish_landmarks {
+                let mut tail = left.clone();
+                tail.id = 3;
+                tail.position_tenths_mm = [0, -5, 0];
+                tail.direction_milli = [100, -1_000, 0];
+                vec![left, right, tail]
             } else if target_count == 4 {
                 let mut rear_left = left.clone();
                 rear_left.id = 3;
@@ -13948,14 +13970,21 @@ mod tests {
                 .as_ref()
                 .unwrap();
             assert!(provenance.fold_path_certificate_sha256.is_some());
-            if insect_landmarks {
+            if let Some(expected_count) = semantic_binding_count {
                 let semantic = provenance
                     .semantic_landmark_provenance
                     .as_ref()
-                    .expect("asymmetric insect semantic provenance");
-                assert_eq!(semantic.ordered_bindings.len(), 10);
+                    .expect("asymmetric semantic provenance");
+                assert_eq!(semantic.ordered_bindings.len(), expected_count);
                 assert_eq!(semantic.ordered_bindings[0].role, "head");
-                assert_eq!(semantic.ordered_bindings[9].role, "leg_rear_right");
+                assert_eq!(
+                    semantic.ordered_bindings.last().unwrap().role,
+                    if fish_landmarks {
+                        "fin_right"
+                    } else {
+                        "leg_rear_right"
+                    }
+                );
                 assert!(ori_domain::validate_beginner_generation_provenance_v1(
                     provenance
                 ));
@@ -13983,7 +14012,7 @@ mod tests {
                     .and_then(|value| value.fold_path_certificate_sha256)
                     .is_some()
             );
-            if insect_landmarks {
+            if let Some(expected_count) = semantic_binding_count {
                 assert_eq!(
                     reopened
                         .editor
@@ -13992,7 +14021,7 @@ mod tests {
                         .as_ref()
                         .and_then(|value| value.semantic_landmark_provenance.as_ref())
                         .map(|semantic| semantic.ordered_bindings.len()),
-                    Some(10)
+                    Some(expected_count)
                 );
             }
         }

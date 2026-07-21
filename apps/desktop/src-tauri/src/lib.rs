@@ -106,7 +106,8 @@ use fold_technique_file_io::{
 use global_flat_foldability::{
     GlobalFlatFoldabilityState, begin_global_flat_foldability, cancel_global_flat_foldability,
     get_current_layer_order_view, get_global_flat_foldability_progress,
-    get_global_flat_foldability_result, revalidate_archived_flat_layer_evidence,
+    get_global_flat_foldability_result, reanalyze_current_flat_layer_order,
+    revalidate_archived_flat_layer_evidence,
 };
 use history_settings::{get_history_entry_limit, set_history_entry_limit};
 use instruction_export::{
@@ -151,17 +152,18 @@ use ori_domain::{
 use ori_formats::{
     CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldBoundaryCandidateId,
     FoldBoundaryCandidateSource, FoldConversionOptions, FoldEdgeAssignment, FoldFrameUnit,
-    FoldPreview, FoldPreviewWarning, MAX_PROJECT_TEXTURE_ASSET_BYTES,
-    LayerEvidenceArchiveKindV1, LayerEvidenceArchiveV1, MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES,
-    Ori2ProjectArchive, PolarVertexConstructionExpressions,
-    ProjectDocument, ProjectNumericExpressions, ProjectTextureAssetV1, ProjectTextureMediaTypeV1,
-    RectangularPaperCreationExpressions, SvgBoundaryCandidateId, SvgBoundaryCandidateKind,
-    SvgConversionOptions, SvgDashPattern, SvgGroupMapping, SvgGroupTarget, SvgLineCap, SvgPreview,
-    SvgPreviewWarning, SvgRootPhysicalSize, SvgRootViewBox, SvgStyleGroupId, SvgWarningKind,
+    FoldPreview, FoldPreviewWarning, LayerEvidenceArchiveKindV1, LayerEvidenceArchiveV1,
+    MAX_PROJECT_TEXTURE_ASSET_BYTES, MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES, Ori2ProjectArchive,
+    PolarVertexConstructionExpressions, ProjectDocument, ProjectNumericExpressions,
+    ProjectTextureAssetV1, ProjectTextureMediaTypeV1, RectangularPaperCreationExpressions,
+    SvgBoundaryCandidateId, SvgBoundaryCandidateKind, SvgConversionOptions, SvgDashPattern,
+    SvgGroupMapping, SvgGroupTarget, SvgLineCap, SvgPreview, SvgPreviewWarning,
+    SvgRootPhysicalSize, SvgRootViewBox, SvgStyleGroupId, SvgWarningKind,
     VertexCoordinateExpressionChange, VertexCoordinateExpressionTransition,
     VertexCoordinateExpressions, generate_project_thumbnail_svg, read_fold_preview,
     read_svg_preview,
 };
+use ori_kinematics::{CanonicalHingeAngles, HingeAngle};
 use project_folder_io::{ProjectFolderIoState, open_project_folder, save_project_folder_as};
 #[cfg(test)]
 use project_persistence::{
@@ -659,6 +661,7 @@ impl ProjectState {
     }
 
     fn from_recovery_project_archive(project: Ori2ProjectArchive) -> Result<Self, ()> {
+        let archived_layer_evidence = project.layer_evidence.clone();
         let history_lengths = project
             .editor_history
             .as_ref()
@@ -693,6 +696,10 @@ impl ProjectState {
         };
         if let Some(pose) = persisted_pose.as_ref() {
             restore_persisted_current_pose(&mut restored, pose).map_err(|_| ())?;
+        }
+        if let Some(evidence) = archived_layer_evidence.as_ref() {
+            restored.current_layer_evidence =
+                Some(revalidate_archived_layer_evidence(&restored, evidence).map_err(|_| ())?);
         }
         Ok(restored)
     }
@@ -757,10 +764,82 @@ impl ProjectState {
         )
         .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?;
         Ok(Ori2ProjectArchive {
-            layer_evidence: None,
+            layer_evidence: self.archived_layer_evidence()?,
             document,
             editor_history: (!history.is_default_empty()).then_some(history),
         })
+    }
+
+    fn archived_layer_evidence(&self) -> Result<Option<LayerEvidenceArchiveV1>, String> {
+        let Some(current) = &self.current_layer_evidence else {
+            return Ok(None);
+        };
+        let evidence = match current {
+            stacked_fold_transaction::CurrentLayerEvidence::CertifiedFlat(snapshot) => {
+                LayerEvidenceArchiveKindV1::Flat {
+                    canonical_snapshot_json: serde_json::to_string(snapshot)
+                        .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?,
+                }
+            }
+            stacked_fold_transaction::CurrentLayerEvidence::NonFlat(proof) => {
+                LayerEvidenceArchiveKindV1::NonFlat {
+                    fixed_face: proof.fixed_face().map(|face| wire_id(&face)).transpose()?,
+                    hinge_angles: proof
+                        .hinge_angles()
+                        .iter()
+                        .map(|angle| {
+                            Ok(ori_formats::LayerEvidenceHingeAngleV1 {
+                                edge: wire_id(&angle.edge())?,
+                                angle_degrees: angle.angle_degrees(),
+                            })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                    material_faces: proof
+                        .material_faces()
+                        .iter()
+                        .map(|face| {
+                            Ok(ori_formats::LayerEvidenceFaceV1 {
+                                face_id: wire_id(&face.face_id)?,
+                                face_key_sha256: lowercase_hex(&face.face_key.0),
+                            })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                    cells: proof
+                        .overlap_cells()
+                        .iter()
+                        .map(|cell| {
+                            Ok(ori_formats::LayerEvidenceCellV1 {
+                                boundary_xy: cell
+                                    .boundary()
+                                    .iter()
+                                    .map(|point| [point.x, point.y])
+                                    .collect(),
+                                lower_face: wire_id(&cell.lower_face())?,
+                                upper_face: wire_id(&cell.upper_face())?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                    pair_orders: proof
+                        .face_pair_orders()
+                        .iter()
+                        .map(|pair| {
+                            Ok(ori_formats::LayerEvidencePairOrderV1 {
+                                lower_face: wire_id(&pair.lower_face())?,
+                                upper_face: wire_id(&pair.upper_face())?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                }
+            }
+        };
+        Ok(Some(LayerEvidenceArchiveV1 {
+            version: ori_formats::LAYER_EVIDENCE_SCHEMA_VERSION_V1,
+            project_instance_id: wire_id(&self.instance_id)?,
+            project_id: wire_id(&self.project_id)?,
+            revision: self.editor.revision(),
+            fold_model_fingerprint_sha256: self.editor.fold_model_fingerprint_v1(),
+            evidence,
+        }))
     }
 
     fn is_dirty(&self) -> bool {
@@ -1077,15 +1156,13 @@ fn revalidate_archived_layer_evidence(
         archived.project_instance_id.clone(),
     ))
     .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
-    let archived_project = serde_json::from_value::<ProjectId>(serde_json::Value::String(
-        archived.project_id.clone(),
-    ))
-    .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+    let archived_project =
+        serde_json::from_value::<ProjectId>(serde_json::Value::String(archived.project_id.clone()))
+            .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
     if archived_instance.canonical_bytes() == [0; 16]
         || archived_project != project.project_id
         || archived.revision != project.editor.revision()
-        || archived.fold_model_fingerprint_sha256
-            != project.editor.fold_model_fingerprint_v1()
+        || archived.fold_model_fingerprint_sha256 != project.editor.fold_model_fingerprint_v1()
     {
         return Err(PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned());
     }
@@ -1094,10 +1171,118 @@ fn revalidate_archived_layer_evidence(
             canonical_snapshot_json,
         } => revalidate_archived_flat_layer_evidence(project, canonical_snapshot_json)
             .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned()),
-        LayerEvidenceArchiveKindV1::NonFlat { .. } => {
-            Err(PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())
+        LayerEvidenceArchiveKindV1::NonFlat {
+            fixed_face,
+            hinge_angles,
+            material_faces,
+            cells,
+            pair_orders,
+        } => {
+            let parse_face = |value: &str| {
+                serde_json::from_value::<FaceId>(serde_json::Value::String(value.to_owned()))
+                    .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())
+            };
+            let parse_edge = |value: &str| {
+                serde_json::from_value::<EdgeId>(serde_json::Value::String(value.to_owned()))
+                    .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())
+            };
+            let fixed_face = fixed_face.as_deref().map(parse_face).transpose()?;
+            let mut angles = hinge_angles
+                .iter()
+                .map(|angle| {
+                    HingeAngle::new(parse_edge(&angle.edge)?, angle.angle_degrees)
+                        .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            angles.sort_unstable_by_key(|angle| angle.edge().canonical_bytes());
+            let angles = CanonicalHingeAngles::new(angles)
+                .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+            let flat = reanalyze_current_flat_layer_order(project)
+                .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+            let trusted = ori_core::revalidate_current_non_flat_layer_order_v1(
+                project.project_id,
+                project.editor.revision(),
+                project.editor.pattern(),
+                project.editor.paper(),
+                fixed_face,
+                &angles,
+                &flat,
+                ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+            )
+            .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+            let materials_match = trusted.material_faces().len() == material_faces.len()
+                && trusted
+                    .material_faces()
+                    .iter()
+                    .zip(material_faces)
+                    .all(|(actual, expected)| {
+                        parse_face(&expected.face_id) == Ok(actual.face_id)
+                            && lowercase_hex_matches(&actual.face_key.0, &expected.face_key_sha256)
+                    });
+            let cells_match = trusted.overlap_cells().len() == cells.len()
+                && trusted
+                    .overlap_cells()
+                    .iter()
+                    .zip(cells)
+                    .all(|(actual, expected)| {
+                        parse_face(&expected.lower_face) == Ok(actual.lower_face())
+                            && parse_face(&expected.upper_face) == Ok(actual.upper_face())
+                            && actual.boundary().len() == expected.boundary_xy.len()
+                            && actual.boundary().iter().zip(&expected.boundary_xy).all(
+                                |(point, expected)| {
+                                    point.x.to_bits() == expected[0].to_bits()
+                                        && point.y.to_bits() == expected[1].to_bits()
+                                },
+                            )
+                    });
+            let pairs_match =
+                trusted.face_pair_orders().len() == pair_orders.len()
+                    && trusted.face_pair_orders().iter().zip(pair_orders).all(
+                        |(actual, expected)| {
+                            parse_face(&expected.lower_face) == Ok(actual.lower_face())
+                                && parse_face(&expected.upper_face) == Ok(actual.upper_face())
+                        },
+                    );
+            if trusted.fixed_face() != fixed_face
+                || trusted.hinge_angles() != angles.as_slice()
+                || !materials_match
+                || !cells_match
+                || !pairs_match
+            {
+                return Err(PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned());
+            }
+            Ok(stacked_fold_transaction::CurrentLayerEvidence::NonFlat(
+                trusted,
+            ))
         }
     }
+}
+
+fn lowercase_hex_matches(bytes: &[u8], expected: &str) -> bool {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    expected.len() == bytes.len() * 2
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            expected.as_bytes()[index * 2] == HEX[(byte >> 4) as usize]
+                && expected.as_bytes()[index * 2 + 1] == HEX[(byte & 0x0f) as usize]
+        })
+}
+
+fn lowercase_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut value = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        value.push(HEX[(byte >> 4) as usize] as char);
+        value.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    value
+}
+
+fn wire_id(value: &impl Serialize) -> Result<String, String> {
+    serde_json::to_value(value)
+        .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())
 }
 
 fn validate_reachable_history_instruction_poses(
@@ -5300,6 +5485,8 @@ struct BeginnerReferenceSurfaceEditV1 {
     range_id: u16,
     base_digest_sha256: [u8; 32],
     triangle_indices: Vec<u32>,
+    bulge_direction_milli: [i16; 3],
+    bulge_amount_tenths_mm: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -5826,6 +6013,9 @@ fn reference_model_surface_selection_matches_live_v1(
                 digest_sha256: live_range.digest_sha256,
             };
             edit.base_digest_sha256 == live_range.digest_sha256
+                && edit.bulge_direction_milli != [0, 0, 0]
+                && edit.bulge_direction_milli.iter().all(|value| value.unsigned_abs() <= 1_000)
+                && (1..=1_000_000).contains(&edit.bulge_amount_tenths_mm)
                 && !edit.triangle_indices.is_empty()
                 && edit.triangle_indices.len() <= 40_000
                 && edit
@@ -6034,6 +6224,38 @@ fn apply_beginner_reference_model_features(
         .filter(|target| selected_protrusions.contains(&target.id))
         .cloned()
         .collect();
+    let face_id = project.editor.pattern().faces.first().map(|face| face.id)
+        .ok_or_else(|| "reference_model_surface_selection_tampered".to_owned())?;
+    let fingerprint = project.editor.fold_model_fingerprint_v1();
+    profile.generation_constraints.bulge_targets = surface_assignments.iter().enumerate()
+        .map(|(index, assignment)| {
+            let edit = surface_edits.iter().find(|edit| edit.range_id == assignment.range_id)
+                .ok_or_else(|| "reference_model_surface_selection_tampered".to_owned())?;
+            let mut minimum = [i32::MAX; 3];
+            let mut maximum = [i32::MIN; 3];
+            for triangle_index in &edit.triangle_indices {
+                for vertex_index in geometry.triangle_indices[*triangle_index as usize] {
+                    let position = geometry.positions[vertex_index as usize];
+                    for axis in 0..3 {
+                        let coordinate = (f64::from(position[axis]) * 10_000.0).round() as i32;
+                        minimum[axis] = minimum[axis].min(coordinate);
+                        maximum[axis] = maximum[axis].max(coordinate);
+                    }
+                }
+            }
+            Ok(ori_domain::BeginnerBulgeTargetV1 {
+                id: u16::try_from(index + 1).map_err(|_| "reference_model_surface_selection_tampered")?,
+                face_ids: vec![face_id], range_min_tenths_mm: minimum,
+                range_max_tenths_mm: maximum, direction_milli: edit.bulge_direction_milli,
+                amount_tenths_mm: edit.bulge_amount_tenths_mm,
+                source_fold_model_fingerprint: fingerprint.clone(),
+                reference_surface_binding: Some(ori_domain::BeginnerReferenceSurfaceBindingV1 {
+                    asset_id, range_id: edit.range_id, protrusion_id: assignment.protrusion_id,
+                    triangle_indices: edit.triangle_indices.clone(),
+                    range_digest_sha256: edit.base_digest_sha256,
+                }),
+            })
+        }).collect::<Result<Vec<_>, String>>()?;
     if profile.generation_constraints.target_category.is_some() && live.protrusions.len() == 3 {
         if let Some(binding) =
             ori_domain::animal_horn_tail_ear_bindings_v1(&profile.generation_constraints)

@@ -35,6 +35,16 @@ pub(super) fn revalidate_archived_flat_layer_evidence(
     project: &ProjectState,
     canonical_snapshot_json: &str,
 ) -> Result<CurrentLayerEvidence, ()> {
+    let layer_order = reanalyze_current_flat_layer_order(project)?;
+    if serde_json::to_string(&layer_order).map_err(|_| ())? != canonical_snapshot_json {
+        return Err(());
+    }
+    Ok(CurrentLayerEvidence::CertifiedFlat(layer_order))
+}
+
+pub(super) fn reanalyze_current_flat_layer_order(
+    project: &ProjectState,
+) -> Result<LayerOrderSnapshot, ()> {
     let topology_input = project.editor.topology_analysis_input(project.project_id);
     if topology_input.revision() != project.editor.revision() {
         return Err(());
@@ -62,11 +72,10 @@ pub(super) fn revalidate_archived_flat_layer_evidence(
         || provenance.source_fingerprint.is_none_or(|fingerprint| {
             fingerprint.to_hex() != project.editor.fold_model_fingerprint_v1()
         })
-        || serde_json::to_string(&layer_order).map_err(|_| ())? != canonical_snapshot_json
     {
         return Err(());
     }
-    Ok(CurrentLayerEvidence::CertifiedFlat(*layer_order))
+    Ok(*layer_order)
 }
 
 const MIN_TIME_LIMIT_MS: u64 = 1_000;
@@ -2310,6 +2319,34 @@ pub(super) mod tests {
                 "fixture must install native layer authority"
             );
         }
+    }
+
+    #[test]
+    fn archived_flat_snapshot_is_recomputed_before_native_install() {
+        let project = initial_project_state();
+        let state = GlobalFlatFoldabilityState::default();
+        install_possible_layer_order(&state, &project);
+        let canonical = {
+            let slot = lock_foldability_state(&state).unwrap();
+            serde_json::to_string(
+                slot.current_layer_order
+                    .as_ref()
+                    .expect("installed layer order")
+                    .snapshot
+                    .as_ref(),
+            )
+            .unwrap()
+        };
+
+        let restored = revalidate_archived_flat_layer_evidence(&project, &canonical).unwrap();
+        let CurrentLayerEvidence::CertifiedFlat(snapshot) = restored else {
+            panic!("flat archive must restore flat evidence");
+        };
+        assert_eq!(serde_json::to_string(&snapshot).unwrap(), canonical);
+
+        let mut stale: serde_json::Value = serde_json::from_str(&canonical).unwrap();
+        stale["model_id"] = serde_json::Value::String("forged".to_owned());
+        assert!(revalidate_archived_flat_layer_evidence(&project, &stale.to_string()).is_err());
     }
 
     fn copy_layer_order_capability(

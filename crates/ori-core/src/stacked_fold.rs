@@ -1977,6 +1977,7 @@ pub fn prepare_stacked_fold_non_flat_layer_order_v1(
 
 /// Re-solves read-only current tree pose evidence and freshly mints the same
 /// sealed non-flat representation used by stacked-fold targets.
+#[allow(clippy::too_many_arguments)]
 pub fn revalidate_current_non_flat_layer_order_v1(
     identity_namespace: ProjectId,
     revision: Revision,

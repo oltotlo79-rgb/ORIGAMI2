@@ -2389,6 +2389,7 @@ dependencies = [
  "num-integer",
  "num-rational",
  "num-traits",
+ "ori-core",
  "ori-domain",
  "ori-foldability",
  "ori-kinematics",

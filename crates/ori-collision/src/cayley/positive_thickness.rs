@@ -1788,9 +1788,19 @@ pub(crate) enum SharedHingeSolidDiagnosticErrorV1 {
 pub(crate) enum PositiveThicknessPrismPairDispositionV1 {
     Separated,
     Touching,
+    SharedHingeCorridorAllowed,
+    SharedVertexCorridorAllowed,
     Penetrating,
     Indeterminate,
 }
+
+// Version-fixed finite joint envelope. Exact SAT overlap may be admitted only
+// when every intersection vertex stays inside this bounded expansion of the
+// authenticated shared vertex or hinge segment. It is deliberately small
+// relative to the production triangular fixtures and never scales with face
+// size, so a transversal extending into either face cannot become joint
+// contact merely because the paper is large.
+const SHARED_FEATURE_CORRIDOR_HALF_EXTENT_MULTIPLIER_V1: i64 = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PositiveThicknessPrismPairDiagnosticV1 {
@@ -1871,6 +1881,49 @@ pub(crate) fn diagnose_bound_positive_thickness_prism_pairs_v1(
             let intersection = intersection
                 .intersection
                 .ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?;
+            let mut shared_vertices = [None, None, None];
+            let mut shared_vertex_count = 0;
+            for entry in &exact.faces[first].boundary {
+                if exact.faces[second]
+                    .boundary
+                    .iter()
+                    .any(|(other, _)| *other == entry.0)
+                {
+                    shared_vertices[shared_vertex_count] = Some(entry);
+                    shared_vertex_count += 1;
+                }
+            }
+            let shared_vertex_corridor = (shared_vertex_count == 1).then(|| {
+                let center = &shared_vertices[0].expect("one counted shared vertex").1;
+                let radius = &half_thickness
+                    * BigRational::from_integer(
+                        SHARED_FEATURE_CORRIDOR_HALF_EXTENT_MULTIPLIER_V1.into(),
+                    );
+                intersection.canonical_vertices().iter().all(|point| {
+                    point
+                        .coordinates
+                        .iter()
+                        .zip(&center.coordinates)
+                        .all(|(coordinate, origin)| (coordinate - origin).abs() <= radius)
+                })
+            }) == Some(true);
+            let shared_hinge_corridor = (shared_vertex_count == 2).then(|| {
+                let first_shared = shared_vertices[0].expect("two counted shared vertices");
+                let second_shared = shared_vertices[1].expect("two counted shared vertices");
+                let radius = &half_thickness
+                    * BigRational::from_integer(
+                        SHARED_FEATURE_CORRIDOR_HALF_EXTENT_MULTIPLIER_V1.into(),
+                    );
+                intersection.canonical_vertices().iter().all(|point| {
+                    (0..3).all(|axis| {
+                        let first = &first_shared.1.coordinates[axis];
+                        let second = &second_shared.1.coordinates[axis];
+                        let lower = first.min(second) - &radius;
+                        let upper = first.max(second) + &radius;
+                        point.coordinates[axis] >= lower && point.coordinates[axis] <= upper
+                    })
+                })
+            }) == Some(true);
             let disposition = match intersection.kind() {
                 ExactPrismIntersectionKind::Empty => {
                     PositiveThicknessPrismPairDispositionV1::Separated
@@ -1879,6 +1932,12 @@ pub(crate) fn diagnose_bound_positive_thickness_prism_pairs_v1(
                 | ExactPrismIntersectionKind::Line
                 | ExactPrismIntersectionKind::CoplanarArea => {
                     PositiveThicknessPrismPairDispositionV1::Touching
+                }
+                ExactPrismIntersectionKind::PositiveVolume if shared_hinge_corridor => {
+                    PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed
+                }
+                ExactPrismIntersectionKind::PositiveVolume if shared_vertex_corridor => {
+                    PositiveThicknessPrismPairDispositionV1::SharedVertexCorridorAllowed
                 }
                 ExactPrismIntersectionKind::PositiveVolume => {
                     PositiveThicknessPrismPairDispositionV1::Penetrating

@@ -1067,6 +1067,54 @@ fn positive_thickness_exact_prism_safe_proof_admits_shared_hinge_with_finite_bou
 }
 
 #[test]
+fn three_face_positive_thickness_proof_admits_the_finite_vertex_corridor() {
+    for (reverse_source, reverse_root, thickness) in
+        [(false, false, 0.1), (true, true, 1.0), (false, true, 3.0)]
+    {
+        let fixture = midpoint_mountain_400mm_fixture(reverse_source);
+        let root = if reverse_root {
+            *fixture.model.face_ids().last().unwrap()
+        } else {
+            fixture.model.face_ids()[0]
+        };
+        let angles = CanonicalHingeAngles::new(
+            fixture
+                .hinges
+                .iter()
+                .copied()
+                .map(|hinge| HingeAngle::new(hinge, 10.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = fixture.model.solve(Some(root), &angles).unwrap();
+        let proof = prove_static_collision_geometry(
+            &fixture.model,
+            &pose,
+            thickness,
+            StaticCollisionLimits::default(),
+        )
+        .expect("two hinge corridors and one vertex corridor");
+        assert!(proof.is_for_geometry(&fixture.model, &pose, thickness));
+        assert_eq!(proof.expected_unordered_face_pairs(), 3);
+        assert_eq!(proof.analyzed_unordered_face_pairs(), 3);
+        if thickness == 0.1 {
+            assert!(matches!(
+                prove_static_collision_geometry(
+                    &fixture.model,
+                    &pose,
+                    thickness,
+                    StaticCollisionLimits {
+                        max_shared_hinge_solid_diagnostics: 2,
+                        ..StaticCollisionLimits::default()
+                    },
+                ),
+                Err(StaticCollisionError::ResourceLimitExceeded)
+            ));
+        }
+    }
+}
+
+#[test]
 fn positive_thickness_ninety_degree_hold_is_identity_and_root_invariant() {
     for namespace_index in 1_u64..=8 {
         for first in 1_u64..=4 {

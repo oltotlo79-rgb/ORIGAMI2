@@ -763,16 +763,24 @@ pub fn prove_static_collision_geometry(
                     .face_boundary(*first)
                     .zip(pose.face_boundary(*second))
                     .is_some_and(|(first_boundary, second_boundary)| {
-                        !first_boundary.vertices().iter().any(|vertex| {
-                            second_boundary
-                                .vertices()
-                                .iter()
-                                .any(|other| other == vertex)
-                        })
+                        first_boundary
+                            .vertices()
+                            .iter()
+                            .filter(|vertex| second_boundary.vertices().contains(vertex))
+                            .count()
+                            <= 1
                     })
         })
     });
-    if paper_thickness_mm > 0.0 && all_faces_triangular && prism_pair_topology_supported {
+    let finite_corridor_angle_supported = pose
+        .hinge_angles()
+        .iter()
+        .all(|angle| angle.angle_degrees() < 90.0);
+    if paper_thickness_mm > 0.0
+        && all_faces_triangular
+        && prism_pair_topology_supported
+        && finite_corridor_angle_supported
+    {
         let prism_triangle_inputs = expected_unordered_face_pairs
             .checked_mul(2)
             .ok_or(StaticCollisionError::ResourceLimitExceeded)?;
@@ -802,17 +810,29 @@ pub fn prove_static_collision_geometry(
         if prism_pairs.len() != expected_unordered_face_pairs {
             return Err(StaticCollisionError::InconsistentMaterialPose);
         }
-        let shared_hinge_count = prism_pairs
+        let shared_feature_count = prism_pairs
             .iter()
             .filter(|pair| {
-                pose.hinges().iter().any(|hinge| {
+                let shared_hinge = pose.hinges().iter().any(|hinge| {
                     (hinge.left_face() == pair.first_face && hinge.right_face() == pair.second_face)
                         || (hinge.left_face() == pair.second_face
                             && hinge.right_face() == pair.first_face)
-                })
+                });
+                let shared_vertex = pose
+                    .face_boundary(pair.first_face)
+                    .zip(pose.face_boundary(pair.second_face))
+                    .is_some_and(|(first, second)| {
+                        first
+                            .vertices()
+                            .iter()
+                            .filter(|vertex| second.vertices().contains(vertex))
+                            .count()
+                            == 1
+                    });
+                shared_hinge || shared_vertex
             })
             .count();
-        if shared_hinge_count > limits.max_shared_hinge_solid_diagnostics {
+        if shared_feature_count > limits.max_shared_hinge_solid_diagnostics {
             return Err(StaticCollisionError::ResourceLimitExceeded);
         }
         for pair in &prism_pairs {
@@ -840,6 +860,14 @@ pub fn prove_static_collision_geometry(
                             ],
                         });
                     }
+                    _ if matches!(
+                        pair.disposition,
+                        PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed
+                    ) && pose.hinge_angles().iter().any(|angle| {
+                        angle.edge() == hinge.edge()
+                            && angle.angle_degrees().to_bits() != 90.0_f64.to_bits()
+                            && angle.angle_degrees().to_bits() != 180.0_f64.to_bits()
+                    }) => {}
                     _ => {
                         return Err(StaticCollisionError::PairEvidenceUnavailable {
                             expected_unordered_face_pairs,
@@ -849,7 +877,9 @@ pub fn prove_static_collision_geometry(
             } else {
                 match pair.disposition {
                     PositiveThicknessPrismPairDispositionV1::Separated
-                    | PositiveThicknessPrismPairDispositionV1::Touching => {}
+                    | PositiveThicknessPrismPairDispositionV1::Touching
+                    | PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed
+                    | PositiveThicknessPrismPairDispositionV1::SharedVertexCorridorAllowed => {}
                     PositiveThicknessPrismPairDispositionV1::Penetrating => {
                         return Err(StaticCollisionError::ProvenPositiveThicknessPenetration {
                             expected_unordered_face_pairs,

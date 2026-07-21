@@ -109,20 +109,13 @@ pub fn prove_positive_thickness_graph_geometry_v1(
     let thickness_squared = BigRational::from_float(paper_thickness_mm)
         .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)?
         .pow(2);
-    let mut longest_material_span_squared = BigRational::from_integer(0.into());
-    for face in geometry.face_ids() {
-        let boundary = geometry
-            .face_boundary_vertices(*face)
-            .filter(|boundary| boundary.len() >= 3)
-            .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)?;
-        for index in 0..boundary.len() {
-            let start = geometry
-                .vertex_position(boundary[index])
-                .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)?;
-            let end = geometry
-                .vertex_position(boundary[(index + 1) % boundary.len()])
-                .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)?;
-            let squared_length = [
+    let longest_hinge_span_squared = geometry
+        .hinges()
+        .iter()
+        .map(|hinge| {
+            let start = hinge.start();
+            let end = hinge.end();
+            let squared = [
                 end.x() - start.x(),
                 end.y() - start.y(),
                 end.z() - start.z(),
@@ -136,15 +129,17 @@ pub fn prove_positive_thickness_graph_geometry_v1(
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .sum::<BigRational>();
-            longest_material_span_squared = longest_material_span_squared.max(squared_length);
-        }
-    }
-    // At least one in-plane material span must contain the hinge corridor.
-    // The global span tolerates split/identity vertices and narrow auxiliary
-    // faces while still excluding extrusion thicker than the whole pattern.
+            Ok(squared)
+        })
+        .collect::<Result<Vec<_>, PositiveThicknessGraphProofErrorV1>>()?
+        .into_iter()
+        .max()
+        .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)?;
+    // Bind thickness to a local material hinge feature. Pattern-wide offsets
+    // must not inflate this corridor and admit arbitrarily thick extrusion.
     let corridor_span_squared =
-        longest_material_span_squared.clone() * BigRational::from_integer(64.into());
-    if longest_material_span_squared <= BigRational::from_integer(0.into())
+        longest_hinge_span_squared.clone() * BigRational::from_integer(64.into());
+    if longest_hinge_span_squared <= BigRational::from_integer(0.into())
         || thickness_squared > corridor_span_squared
     {
         return Err(PositiveThicknessGraphProofErrorV1::PairEvidenceUnavailable);

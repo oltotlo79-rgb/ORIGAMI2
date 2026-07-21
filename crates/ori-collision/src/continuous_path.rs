@@ -8161,6 +8161,96 @@ mod tests {
             &geometry, &audit, fixed, &schedule, &closure, 0.1, 1,
         )
         .unwrap();
+        let source = global.layer_order().unwrap();
+        let cell_work = source
+            .overlap_cells
+            .iter()
+            .map(|cell| cell.exact_boundary.len() * cell.bottom_to_top_faces.len())
+            .sum::<usize>()
+            * (closure.leaves().len() + 1);
+        let cell_limits = crate::GeneralCellTransportLimitsV1 {
+            max_transitions: closure.leaves().len() + 1,
+            max_cells: source.overlap_cells.len(),
+            max_layer_records: source
+                .overlap_cells
+                .iter()
+                .map(|cell| cell.bottom_to_top_faces.len())
+                .sum(),
+            max_boundary_samples: cell_work,
+        };
+        for thickness in [0.1, 1.0, 3.0] {
+            let authority = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+                &geometry, &audit, fixed, &schedule, &closure, thickness, 1,
+            )
+            .unwrap();
+            let cell_proof = crate::certify_general_multi_face_cell_transport_v1(
+                crate::GeneralCellTransportInputV1 {
+                    geometry: &geometry,
+                    audit: &audit,
+                    source,
+                    schedule: &schedule,
+                    closure: &closure,
+                    positive_continuous: &authority,
+                    paper_thickness_mm: thickness,
+                    tolerance: 1.0e-9,
+                    limits: cell_limits,
+                },
+            )
+            .unwrap();
+            assert!(cell_proof.is_for(&geometry, source, &schedule, &closure, thickness));
+        }
+        assert!(matches!(
+            crate::certify_general_multi_face_cell_transport_v1(
+                crate::GeneralCellTransportInputV1 {
+                    geometry: &geometry,
+                    audit: &audit,
+                    source,
+                    schedule: &schedule,
+                    closure: &closure,
+                    positive_continuous: &bound_certificate,
+                    paper_thickness_mm: 0.1,
+                    tolerance: 1.0e-9,
+                    limits: crate::GeneralCellTransportLimitsV1 {
+                        max_boundary_samples: cell_work - 1,
+                        ..cell_limits
+                    },
+                },
+            ),
+            Err(crate::GeneralCellTransportErrorV1::ResourceLimit)
+        ));
+        let bound_cell_proof = crate::certify_general_multi_face_cell_transport_v1(
+            crate::GeneralCellTransportInputV1 {
+                geometry: &geometry,
+                audit: &audit,
+                source,
+                schedule: &schedule,
+                closure: &closure,
+                positive_continuous: &bound_certificate,
+                paper_thickness_mm: 0.1,
+                tolerance: 1.0e-9,
+                limits: cell_limits,
+            },
+        )
+        .unwrap();
+        let mut tampered_source = source.clone();
+        tampered_source.provenance.source.source_revision += 1;
+        assert!(!bound_cell_proof.is_for(&geometry, &tampered_source, &schedule, &closure, 0.1));
+        assert!(matches!(
+            crate::certify_general_multi_face_cell_transport_v1(
+                crate::GeneralCellTransportInputV1 {
+                    geometry: &geometry,
+                    audit: &audit,
+                    source,
+                    schedule: &schedule,
+                    closure: &closure,
+                    positive_continuous: &bound_certificate,
+                    paper_thickness_mm: 10_000.0,
+                    tolerance: 1.0e-9,
+                    limits: cell_limits,
+                },
+            ),
+            Err(crate::GeneralCellTransportErrorV1::BindingMismatch)
+        ));
         let initial_pose = geometry
             .solve_closed(&audit, fixed, &schedule.evaluate(0.0).unwrap(), 1.0e-9)
             .unwrap();
@@ -8183,6 +8273,7 @@ mod tests {
             TreeKinematicsLimits::default(),
         )
         .unwrap();
+        assert!(!bound_cell_proof.is_for(&foreign_geometry, source, &schedule, &closure, 0.1));
         assert!(!bound_certificate.is_for(&foreign_geometry, fixed, &schedule, &closure, 0.1));
         assert!(
             diagnose_canonical_positive_thickness_cycle_schedule_path_v1(

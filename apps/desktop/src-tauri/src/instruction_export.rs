@@ -946,7 +946,7 @@ fn ensure_export_extension(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         collections::BTreeSet,
         fs,
@@ -1155,6 +1155,21 @@ mod tests {
             current_fold_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
             cancellation: Arc::new(AtomicBool::new(false)),
             phase: Arc::new(AtomicU8::new(PHASE_VALIDATING)),
+        }
+    }
+
+    pub(crate) fn assert_structured_timeline_exports_pdf_and_svg_zip(
+        project: &super::super::ProjectState,
+        expected_steps: usize,
+    ) {
+        for (format, magic) in [
+            (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+            (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+        ] {
+            let pending = build_pending_export(source_for(project, format))
+                .expect("proof-bearing project exports through the native formatter");
+            assert_eq!(pending.step_count, expected_steps);
+            assert!(pending.bytes.starts_with(magic));
         }
     }
 

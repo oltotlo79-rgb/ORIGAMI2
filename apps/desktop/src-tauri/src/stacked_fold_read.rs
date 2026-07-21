@@ -6235,24 +6235,60 @@ mod tests {
             },
         )
         .expect("all three degree-six proof families mint a one-shot preview");
+        let apply_request =
+            |expected_revision: u64, path: String| ApplyDyadicPathPreviewRequestV1 {
+                preview_token: preview.preview_token,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision,
+                expected_target_binding_sha256: preview.target_binding_sha256.clone(),
+                expected_path_binding_sha256: path,
+                expected_positive_thickness_binding_sha256: preview
+                    .positive_thickness_binding_sha256
+                    .clone(),
+                expected_layer_transport_binding_sha256: preview
+                    .layer_transport_binding_sha256
+                    .clone(),
+            };
+        for rejected in [
+            apply_request(revision, "00".repeat(32)),
+            apply_request(revision + 1, preview.path_binding_sha256.clone()),
+        ] {
+            assert!(
+                apply_dyadic_pose_path_preview_inner_v1(
+                    &state,
+                    &layer_state,
+                    &preview_state,
+                    rejected,
+                )
+                .is_err()
+            );
+            assert_eq!(
+                super::super::lock_project(&state)
+                    .unwrap()
+                    .editor
+                    .revision(),
+                revision,
+                "tamper and stale attempts are atomic no-ops"
+            );
+        }
         let applied = apply_dyadic_pose_path_preview_inner_v1(
             &state,
             &layer_state,
             &preview_state,
-            ApplyDyadicPathPreviewRequestV1 {
-                preview_token: preview.preview_token,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                expected_target_binding_sha256: preview.target_binding_sha256,
-                expected_path_binding_sha256: preview.path_binding_sha256,
-                expected_positive_thickness_binding_sha256: preview
-                    .positive_thickness_binding_sha256,
-                expected_layer_transport_binding_sha256: preview.layer_transport_binding_sha256,
-            },
+            apply_request(revision, preview.path_binding_sha256.clone()),
         )
         .expect("proof-complete degree-six balloon path applies atomically");
-        let project = super::super::lock_project(&state).unwrap();
+        assert!(
+            apply_dyadic_pose_path_preview_inner_v1(
+                &state,
+                &layer_state,
+                &preview_state,
+                apply_request(revision, preview.path_binding_sha256),
+            )
+            .is_err()
+        );
+        let mut project = super::super::lock_project(&state).unwrap();
         assert_eq!(applied, revision + 1);
         assert_eq!(
             project.editor.instruction_timeline().steps.len(),
@@ -6262,6 +6298,34 @@ mod tests {
             project.editor.instruction_timeline().steps[1..]
                 .iter()
                 .all(|step| { step.visual.path_certificate_reference_v1.is_some() })
+        );
+        project.editor.undo(applied).unwrap();
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
+        assert_eq!(
+            project.editor.instruction_timeline().steps.len(),
+            expected_steps
+        );
+        let archive = project.project_archive().unwrap();
+        drop(project);
+        let reopened = super::super::ProjectState::from_project_archive(
+            archive,
+            std::path::PathBuf::from("balloon-dyadic-authority.ori2"),
+        )
+        .expect("reopen proof-bearing degree-six balloon path");
+        assert_eq!(
+            reopened.editor.instruction_timeline().steps.len(),
+            expected_steps
+        );
+        assert!(
+            reopened.editor.instruction_timeline().steps[1..]
+                .iter()
+                .all(|step| { step.visual.path_certificate_reference_v1.is_some() })
+        );
+        super::super::instruction_export::tests::assert_structured_timeline_exports_pdf_and_svg_zip(
+            &reopened,
+            expected_steps,
         );
     }
 

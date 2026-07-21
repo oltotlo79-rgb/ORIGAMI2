@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+test -n "${GH_TOKEN:-}"
+printf '::add-mask::%s\n' "$GH_TOKEN"
+
 directory="${1:-}"
 version="${2:-}"
 repository="${3:-}"

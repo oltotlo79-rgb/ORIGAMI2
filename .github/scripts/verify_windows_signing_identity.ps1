@@ -36,8 +36,13 @@ if (-not @($signature.TimeStamperCertificate.EnhancedKeyUsageList).ObjectId.Valu
     throw 'Windows Authenticode timestamp certificate lacks timestamping usage.'
 }
 
-& signtool verify /pa /all /tw /v $File
-if ($LASTEXITCODE -ne 0) {
-    throw 'Windows Authenticode policy, chain, or RFC 3161 timestamp verification failed.'
+$verificationLog = Join-Path $env:RUNNER_TEMP 'windows-signature-verification.log'
+try {
+    & signtool verify /q /pa /all /tw $File *> $verificationLog
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Windows Authenticode policy, chain, or RFC 3161 timestamp verification failed.'
+    }
+} finally {
+    Remove-Item -LiteralPath $verificationLog -Force -ErrorAction SilentlyContinue
 }
 Write-Output 'Verified Windows Authenticode identity, chain, and RFC 3161 timestamp.'

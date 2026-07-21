@@ -481,6 +481,8 @@ test('signing secrets are approval-gated masked cleaned and absent from fork CI'
   assert.match(build, /trap cleanup_signing_material EXIT/u)
   assert.match(build, /trap 'rm -f -- "\$key" "\$archive"' EXIT/u)
   assert.match(build, /::add-mask::\$SIGNING_IDENTITY/u)
+  assert.match(build, /::add-mask::\$env:CERTIFICATE_PASSWORD/u)
+  assert.match(build, /::add-mask::\$APPLE_NOTARY_KEY_BASE64/u)
   assert.match(build, /::add-mask::\$APPLE_NOTARY_KEY_ID/u)
   const secretReferences = build.match(/\$\{\{ secrets\.[A-Z0-9_]+ \}\}/gu) ?? []
   assert.equal(secretReferences.length, 10)
@@ -528,7 +530,9 @@ test('Windows signing binds each asset to the configured PFX chain and RFC 3161 
   assert.match(verifier, /SignerCertificate\.Thumbprint -cne \$leafCertificates\[0\]\.Thumbprint/u)
   assert.match(verifier, /1\.3\.6\.1\.5\.5\.7\.3\.3/u)
   assert.match(verifier, /1\.3\.6\.1\.5\.5\.7\.3\.8/u)
-  assert.match(verifier, /signtool verify \/pa \/all \/tw \/v/u)
+  assert.match(verifier, /signtool verify \/q \/pa \/all \/tw/u)
+  assert.doesNotMatch(verifier, /signtool verify[^\n]*\/v/u)
+  assert.match(verifier, /windows-signature-verification\.log/u)
   assert.doesNotMatch(verifier, /Write-Output[^\n]*(?:Thumbprint|Subject|passwordText)/u)
 })
 

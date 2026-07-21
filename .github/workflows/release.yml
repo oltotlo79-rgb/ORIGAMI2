@@ -66,6 +66,7 @@ jobs:
           RELEASE_COMMIT: ${{ steps.contract.outputs.commit }}
         run: |
           set -euo pipefail
+          echo "::add-mask::$GH_TOKEN"
           evidence="$(node .github/scripts/verify_release_ci.mjs)"
           echo "json=$evidence" >> "$GITHUB_OUTPUT"
       - id: release-tests
@@ -128,11 +129,13 @@ jobs:
               [string]::IsNullOrWhiteSpace($env:CERTIFICATE_PASSWORD)) {
             throw 'Windows signing credentials are required for publication.'
           }
+          Write-Output "::add-mask::$env:CERTIFICATE_BASE64"
+          Write-Output "::add-mask::$env:CERTIFICATE_PASSWORD"
           $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
           try {
             [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
             $file = (Resolve-Path 'target/release/origami2-desktop.exe').Path
-            & signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
+            & signtool sign /q /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
               /f $certificate /p $env:CERTIFICATE_PASSWORD $file
             if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
             $env:WINDOWS_CERTIFICATE_PASSWORD = $env:CERTIFICATE_PASSWORD
@@ -156,11 +159,13 @@ jobs:
               [string]::IsNullOrWhiteSpace($env:CERTIFICATE_PASSWORD)) {
             throw 'Windows signing credentials are required for publication.'
           }
+          Write-Output "::add-mask::$env:CERTIFICATE_BASE64"
+          Write-Output "::add-mask::$env:CERTIFICATE_PASSWORD"
           $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
           try {
             [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
             $file = (Get-ChildItem 'target/release/bundle/nsis' -Filter '*.exe' -File -Recurse -ErrorAction Stop).FullName
-            & signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
+            & signtool sign /q /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
               /f $certificate /p $env:CERTIFICATE_PASSWORD $file
             if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
             $env:WINDOWS_CERTIFICATE_PASSWORD = $env:CERTIFICATE_PASSWORD
@@ -196,6 +201,8 @@ jobs:
           test -n "$CERTIFICATE_BASE64"
           test -n "$CERTIFICATE_PASSWORD"
           test -n "$SIGNING_IDENTITY"
+          echo "::add-mask::$CERTIFICATE_BASE64"
+          echo "::add-mask::$CERTIFICATE_PASSWORD"
           echo "::add-mask::$SIGNING_IDENTITY"
           keychain="$RUNNER_TEMP/origami2-signing.keychain-db"
           certificate="$RUNNER_TEMP/apple-signing.p12"
@@ -225,6 +232,7 @@ jobs:
           test -n "$APPLE_NOTARY_KEY_BASE64"
           test -n "$APPLE_NOTARY_KEY_ID"
           test -n "$APPLE_NOTARY_ISSUER_ID"
+          echo "::add-mask::$APPLE_NOTARY_KEY_BASE64"
           echo "::add-mask::$APPLE_NOTARY_KEY_ID"
           echo "::add-mask::$APPLE_NOTARY_ISSUER_ID"
           key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
@@ -237,7 +245,7 @@ jobs:
             --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait
           xcrun stapler staple target/release/bundle/macos/ORIGAMI2.app
           xcrun stapler validate target/release/bundle/macos/ORIGAMI2.app
-          spctl --assess --type execute --verbose=4 target/release/bundle/macos/ORIGAMI2.app
+          spctl --assess --type execute target/release/bundle/macos/ORIGAMI2.app
       - name: Verify macOS application bundle contract
         if: matrix.platform == 'macos-arm64'
         shell: bash
@@ -314,6 +322,7 @@ jobs:
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
         run: |
           set -euo pipefail
+          echo "::add-mask::$GH_TOKEN"
           metadata="$RUNNER_TEMP/formal-release-artifacts.json"
           metadata_headers="$RUNNER_TEMP/formal-release-artifacts.headers"
           curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
@@ -341,6 +350,8 @@ jobs:
               --write-out '%{url_effective}' \
               "https://api.github.com/repos/$GH_REPO/actions/artifacts/$artifact_id/zip")"
             [[ "$final_url" =~ ^https://[A-Za-z0-9.-]+\.blob\.core\.windows\.net/[^[:space:]]+$ ]]
+            unset final_url
+            sed -E -i 's/^(location:).*/\1 [REDACTED]/I' "$archive_headers"
             grep -Eiq '^content-type: (application/zip|application/octet-stream)(;|\r?$)' "$archive_headers"
             content_length="$(awk 'BEGIN { IGNORECASE=1 } /^content-length:/ { gsub("\r", "", $2); value=$2 } END { print value }' "$archive_headers")"
             test "$content_length" -eq "$(stat -c '%s' "$archive")"
@@ -445,6 +456,7 @@ jobs:
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
         run: |
           set -euo pipefail
+          echo "::add-mask::$GH_TOKEN"
           created_release_id=''
           draft_created=false
           transaction_name="ORIGAMI2 draft transaction $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -573,7 +585,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-        run: gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir release
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$GH_TOKEN"
+          gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir release
       - name: Verify the complete immutable asset set
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
@@ -594,6 +609,7 @@ jobs:
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
         run: |
           set -euo pipefail
+          echo "::add-mask::$GH_TOKEN"
           before="$RUNNER_TEMP/release-assets-before.json"
           after="$RUNNER_TEMP/release-assets-after.json"
           gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" \

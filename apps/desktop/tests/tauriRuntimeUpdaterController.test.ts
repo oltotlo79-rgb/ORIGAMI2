@@ -25,6 +25,16 @@ test('fails closed for offline malformed stale and cancelled native responses', 
   assert.equal(await malformed.check(new AbortController().signal), 'malformed')
   const offline = createTauriRuntimeUpdaterController(async () => 'offline')
   assert.equal(await offline.check(new AbortController().signal), 'offline')
+  const signature = createTauriRuntimeUpdaterController(async () => {
+    throw new Error('signature')
+  })
+  assert.equal(
+    await signature.downloadAndVerify(
+      { version: '2.0.0', platform: 'windows-x64', byteLength: 42, releaseNotes: '' },
+      new AbortController().signal,
+    ),
+    'signature',
+  )
   let resolve!: (value: unknown) => void
   const calls: string[] = []
   const stale = createTauriRuntimeUpdaterController((command) => {

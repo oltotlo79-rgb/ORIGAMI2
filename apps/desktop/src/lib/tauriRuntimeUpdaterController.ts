@@ -13,7 +13,15 @@ export function createTauriRuntimeUpdaterController(
   let generation = 0
   const call = async (command: string, payload?: Record<string, unknown>) => {
     const requestGeneration = ++generation
-    const value = await invokeCommand<unknown>(command, payload)
+    let value: unknown
+    try {
+      value = await invokeCommand<unknown>(command, payload)
+    } catch (error) {
+      if (isError(error)) value = error
+      else if (error instanceof Error && isError(error.message)) {
+        value = error.message
+      } else throw error
+    }
     if (requestGeneration !== generation) throw new Error('stale updater response')
     return value
   }

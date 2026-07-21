@@ -1,6 +1,8 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const forbidden = [
@@ -19,6 +21,37 @@ for (const name of forbidden) {
 }
 if (process.env.GITHUB_REF?.startsWith('refs/tags/')) {
   throw new Error('release dry-run refuses tag refs')
+}
+
+const smokeRoot = mkdtempSync(join(tmpdir(), 'origami2-release-smoke-'))
+try {
+  for (const directory of [
+    'windows/resources',
+    'macos/ORIGAMI2.app/Contents/MacOS',
+    'macos/ORIGAMI2.app/Contents/Resources',
+  ]) mkdirSync(join(smokeRoot, directory), { recursive: true })
+  const launcher = "if(process.env.ORIGAMI2_NETWORK_DISABLED!=='1')process.exit(9);console.log('ORIGAMI2_SMOKE_OK')\n"
+  for (const target of [
+    'windows/portable.mock.js',
+    'windows/installer.mock.js',
+    'macos/ORIGAMI2.app/Contents/MacOS/ORIGAMI2.mock.js',
+  ]) writeFileSync(join(smokeRoot, target), launcher)
+  writeFileSync(join(smokeRoot, 'windows/resources/app.asar'), 'bounded offline resource')
+  writeFileSync(join(smokeRoot, 'macos/ORIGAMI2.app/Contents/Resources/app.asar'), 'bounded offline resource')
+  writeFileSync(join(smokeRoot, 'windows/installer-manifest.json'), JSON.stringify({
+    networkAuthorities: [], resources: ['resources/app.asar'],
+    uninstall: { displayName: 'ORIGAMI2', quietCommand: 'uninstall.exe /S' },
+  }))
+  writeFileSync(join(smokeRoot, 'macos/ORIGAMI2.app/Contents/Info.plist'),
+    '<plist><dict><key>CFBundleIdentifier</key><string>com.origami2.desktop</string><key>CFBundleExecutable</key><string>ORIGAMI2.mock.js</string></dict></plist>')
+  const smoke = spawnSync(process.execPath, [join(root, '.github/scripts/verify_release_smoke_fixture.mjs'), smokeRoot], {
+    cwd: root, env: process.env, encoding: 'utf8',
+  })
+  process.stdout.write(smoke.stdout ?? '')
+  process.stderr.write(smoke.stderr ?? '')
+  if (smoke.status !== 0) process.exit(smoke.status ?? 1)
+} finally {
+  rmSync(smokeRoot, { recursive: true, force: true })
 }
 
 const result = spawnSync(

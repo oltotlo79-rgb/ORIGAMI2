@@ -940,6 +940,7 @@ function App() {
   const benchmarkRequestIdRef = useRef(0)
   const topologyRequestIdRef = useRef(0)
   const diagnosticsButtonRef = useRef<HTMLButtonElement>(null)
+  const beginnerGridButtonRef = useRef<HTMLButtonElement>(null)
   const foldTechniqueWorkspaceRef = useRef<FoldTechniqueWorkspace | null>(
     foldTechniqueWorkspace,
   )
@@ -4104,7 +4105,10 @@ function App() {
       if (requestId === beginnerGridRequestRef.current) setBeginnerGrid(null)
     }).finally(() => {
       window.clearInterval(poll)
-      if (requestId === beginnerGridRequestRef.current) setBeginnerGridBusy(false)
+      if (requestId === beginnerGridRequestRef.current) {
+        beginnerGridGenerationRef.current = null
+        setBeginnerGridBusy(false)
+      }
     })
   }
 
@@ -4115,6 +4119,7 @@ function App() {
     if (generationId) void cancelBeginnerParameterGrid(generationId).catch(() => undefined)
     setBeginnerGridBusy(false)
     setBeginnerGrid(null)
+    requestAnimationFrame(() => beginnerGridButtonRef.current?.focus())
   }
 
   function confirmAndApplyBeginnerGridCandidate(
@@ -4129,9 +4134,11 @@ function App() {
     void runNativeEdit(() => applyBeginnerParameterGridCandidate(
       current.project_id, current.revision, current.project_instance_id,
       grid, current.beginner_design_profile, candidate,
-    )).then(() => {
+    )).then((applied) => {
+      if (!applied) return
       beginnerGridRequestRef.current += 1
       setBeginnerGrid(null)
+      requestAnimationFrame(() => beginnerGridButtonRef.current?.focus())
     })
   }
 
@@ -7780,7 +7787,7 @@ function App() {
                     ? text({ ja: '候補を評価中…', en: 'Scoring candidates…' })
                     : text({ ja: '候補を評価', en: 'Score candidates' })}
                 </button>
-                <button type="button" onClick={requestBeginnerGrid}
+                <button ref={beginnerGridButtonRef} type="button" onClick={requestBeginnerGrid}
                   disabled={coreBusy || recoveryBlocking || beginnerGridBusy}>
                   {beginnerGridBusy
                     ? text({ ja: '27案を評価中…', en: 'Evaluating 27 designs…' })

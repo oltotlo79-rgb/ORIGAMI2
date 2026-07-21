@@ -47,6 +47,8 @@ test('AUT-101 exposes bounded generated crease patterns and instructions as read
   assert.match(client, /response\.generated_plans\.length > 3/)
   assert.match(client, /record\.kind === 'composite_horn_tail_ear_base' \? 7/u)
   assert.match(client, /record\.kind === 'composite_horn_tail_ear_base' \? 6/u)
+  assert.match(client, /record\.kind === 'composite_complete_insect_base' \? 21/u)
+  assert.match(client, /record\.kind === 'composite_complete_insect_base' \? 20/u)
   assert.match(client, /vertexIds\.has\(edge\.start\)/)
   assert.match(client, /new Set\(admittedEdges\.map\(\(edge\) => edge\.id\)\)/)
   assert.match(app, /Candidate crease-pattern preview/)
@@ -60,12 +62,16 @@ test('AUT-101 exposes bounded generated crease patterns and instructions as read
 test('AUT-101 admits only explicit symmetric animal and insect templates', () => {
   assert.match(client, /'symmetric_four_leg_base'/)
   assert.match(client, /'symmetric_wing_base'/)
+  assert.match(client, /'composite_complete_insect_base'/)
   assert.match(native, /UnsupportedAnimalTemplate/)
   assert.match(native, /UnsupportedInsectTemplate/)
+  assert.match(native, /insect_complete_bindings_v1/)
   assert.match(app, /bilateral four-part protrusion target/)
   assert.match(app, /bilateral two-part protrusion target/)
   assert.match(app, /Create the symmetric four-leg base/)
   assert.match(app, /Create the bilateral wing base/)
+  assert.match(app, /翅・触角・六脚の完全複合昆虫ベース/)
+  assert.match(app, /Complete composite insect base/)
 })
 
 test('AUT-106 presents one recommendation first and adds bounded candidates on demand', () => {

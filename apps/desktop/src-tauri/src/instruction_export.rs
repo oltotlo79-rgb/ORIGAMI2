@@ -1594,6 +1594,41 @@ pub(crate) mod tests {
             assert!(build_pending_export(source).is_ok());
         }
 
+        let mut layer_selective_timeline = sink_timeline;
+        layer_selective_timeline.steps[0].title = "層選択折りの開始姿勢".to_owned();
+        layer_selective_timeline.steps[1].title = "層選択折り 1".to_owned();
+        layer_selective_timeline.steps[2].title = "層選択折り 2".to_owned();
+        let layer_selective_archive = serde_json::to_vec(&layer_selective_timeline)
+            .expect("archive layer-selective fold");
+        let reopened_layer_selective: ori_domain::InstructionTimeline =
+            serde_json::from_slice(&layer_selective_archive)
+                .expect("reopen layer-selective fold");
+        for (format, magic) in [
+            (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+            (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = reopened_layer_selective.clone();
+            let artifact =
+                build_pending_export(source).expect("native layer-selective export");
+            assert_eq!(artifact.step_count, 3);
+            assert!(artifact.bytes.starts_with(magic));
+        }
+
+        let mut uncertified_layer_selective = reopened_layer_selective;
+        for step in &mut uncertified_layer_selective.steps[1..] {
+            step.visual.path_certificate_reference_v1 = None;
+            step.description = "手動で作成された層選択折りです。".to_owned();
+        }
+        for format in [
+            InstructionExportFormatRequest::Pdf,
+            InstructionExportFormatRequest::SvgZip,
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = uncertified_layer_selective.clone();
+            assert!(build_pending_export(source).is_ok());
+        }
+
         let mut tampered_reverse = reopened_reverse.clone();
         tampered_reverse.steps[2]
             .visual

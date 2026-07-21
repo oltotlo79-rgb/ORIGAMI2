@@ -1452,7 +1452,7 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
     let local_symmetric_groups = composed_symmetric_rational_local_groups_v1(
         geometry, audit, fixed_face, schedule,
     )
-    .or_else(|| coupled_figure_eight_local_groups_v1(geometry, audit, fixed_face, schedule));
+    .or_else(|| rational_cactus_star_local_groups_v1(geometry, audit, fixed_face, schedule));
     if local_symmetric_groups
         .as_ref()
         .is_some_and(|groups| symmetric_groups_have_disjoint_swept_balls_v1(geometry, groups))
@@ -1611,15 +1611,16 @@ fn composed_symmetric_rational_local_groups_v1(
     (!result.is_empty() && remaining.is_empty()).then_some(result)
 }
 
-fn coupled_figure_eight_local_groups_v1(
+fn rational_cactus_star_local_groups_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
     fixed_face: FaceId,
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
 ) -> Option<HashMap<FaceId, usize>> {
-    if geometry.hinges().len() != 8
-        || geometry.face_ids().len() != 7
-        || audit.closure_hinges().len() != 2
+    let count = audit.closure_hinges().len();
+    if !(2..=16).contains(&count)
+        || geometry.hinges().len() != count * 4
+        || geometry.face_ids().len() != 1 + count * 3
     {
         return None;
     }
@@ -1637,7 +1638,7 @@ fn coupled_figure_eight_local_groups_v1(
             .collect::<HashSet<_>>();
         let mut result = HashMap::new();
         let mut valid = true;
-        for group_index in 0..2 {
+        for group_index in 0..count {
             let Some(seed) = remaining.iter().next().copied() else {
                 valid = false;
                 break;
@@ -1677,7 +1678,7 @@ fn coupled_figure_eight_local_groups_v1(
                 result.insert(face, group_index);
             }
         }
-        if valid && remaining.is_empty() && result.len() == 6 {
+        if valid && remaining.is_empty() && result.len() == count * 3 {
             return Some(result);
         }
     }
@@ -2411,6 +2412,30 @@ mod tests {
             first.collision_certificate(),
             reversed.collision_certificate()
         );
+    }
+
+    #[test]
+    fn cactus_star_groups_three_or_more_cycles_around_an_articulation_face() {
+        let (geometry, audit, schedule, _common) = rational_cycle_bay_geometry(4, false);
+        let exclusive = geometry
+            .face_ids()
+            .iter()
+            .copied()
+            .min_by_key(|face| {
+                geometry
+                    .hinges()
+                    .iter()
+                    .filter(|hinge| hinge.left_face() == *face || hinge.right_face() == *face)
+                    .count()
+            })
+            .unwrap();
+        let groups = rational_cactus_star_local_groups_v1(&geometry, &audit, exclusive, &schedule)
+            .expect("four-cycle cactus block-cut star");
+        assert_eq!(groups.len(), 12);
+        assert_eq!(groups.values().copied().collect::<HashSet<_>>().len(), 4);
+        assert!(symmetric_groups_have_disjoint_swept_balls_v1(
+            &geometry, &groups
+        ));
     }
 
     #[test]

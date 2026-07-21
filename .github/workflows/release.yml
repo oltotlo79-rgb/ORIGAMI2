@@ -648,6 +648,23 @@ jobs:
           created_release_id=''
           draft_created=false
           transaction_name="ORIGAMI2 draft transaction $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          ownership_token="$(node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('hex'))")"
+          test "${#ownership_token}" -eq 64
+          ownership_marker="<!-- origami2-release-owner:$ownership_token -->"
+          verify_owned_draft() {
+            owned_id="$1"
+            owned_state="$2"
+            test "$owned_id" -gt 0
+            timeout 60s gh api "repos/$GH_REPO/releases/$owned_id" > "$owned_state"
+            jq -e --argjson id "$owned_id" --arg name "$transaction_name" \
+              --arg tag "$RELEASE_TAG" --arg commit "$RELEASE_COMMIT" \
+              --arg marker "$ownership_marker" \
+              '.id == $id and .name == $name and .tag_name == $tag
+                and .target_commitish == $commit and .draft == true
+                and (.body | strings | endswith("\n\n" + $marker + "\n"))' "$owned_state" >/dev/null
+            test "$(timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)" = "$owned_id"
+            node .github/scripts/verify_remote_release_assets.mjs release "$owned_state" --allow-subset
+          }
           cleanup_partial_draft() {
             status=$?
             trap - EXIT
@@ -656,23 +673,29 @@ jobs:
               if [ -z "$created_release_id" ]; then
                 candidate="$RUNNER_TEMP/partial-release-candidate.json"
                 if timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > "$candidate" \
-                  && test "$(jq -r .name "$candidate")" = "$transaction_name"
+                  && jq -e --arg name "$transaction_name" --arg marker "$ownership_marker" \
+                    '.id | numbers | . > 0' "$candidate" >/dev/null \
+                  && jq -e --arg name "$transaction_name" --arg marker "$ownership_marker" \
+                    '.name == $name and (.body | strings | endswith("\n\n" + $marker + "\n"))' "$candidate" >/dev/null
                 then
                   created_release_id="$(jq -r .id "$candidate")"
                 fi
               fi
               if test -n "$created_release_id" \
-                && timeout 60s gh api "repos/$GH_REPO/releases/$created_release_id" > "$state" \
-                && test "$(jq -r .name "$state")" = "$transaction_name" \
-                && test "$(jq -r .draft "$state")" = true \
-                && test "$(jq -r .tag_name "$state")" = "$RELEASE_TAG" \
-                && test "$(jq -r .target_commitish "$state")" = "$RELEASE_COMMIT"
+                && verify_owned_draft "$created_release_id" "$state"
               then
-                if node .github/scripts/verify_remote_release_assets.mjs \
-                  release "$state" --allow-subset
-                then
-                  timeout 60s gh api --method DELETE "repos/$GH_REPO/releases/$created_release_id"
-                fi
+                rollback_complete=false
+                for rollback_attempt in 1 2 3; do
+                  if verify_owned_draft "$created_release_id" "$state" \
+                    && timeout 60s gh api --method DELETE "repos/$GH_REPO/releases/$created_release_id" \
+                    && ! timeout 60s gh api "repos/$GH_REPO/releases/$created_release_id" >/dev/null 2>&1
+                  then
+                    rollback_complete=true
+                    break
+                  fi
+                  [ "$rollback_attempt" -eq 3 ] || sleep 2
+                done
+                test "$rollback_complete" = true
               fi
             fi
             exit "$status"
@@ -693,23 +716,21 @@ jobs:
           test "$(jq -r .name "$notes_json")" = "$RELEASE_TAG"
           jq -er '.body | strings | select(length > 0 and length <= 1000000)' "$notes_json" > "$notes_file"
           test -s "$notes_file"
+          printf '\n\n%s\n' "$ownership_marker" >> "$notes_file"
           created="$RUNNER_TEMP/created-draft-release.json"
           draft_created=true
           timeout 60s gh api --method POST "repos/$GH_REPO/releases" \
             -f tag_name="$RELEASE_TAG" -f target_commitish="$RELEASE_COMMIT" \
             -f name="$transaction_name" -F body=@"$notes_file" \
             -F draft=true -F prerelease=false > "$created"
-          created_release_id="$(jq -r .id "$created")"
-          test "$created_release_id" -gt 0
-          test "$(jq -r .draft "$created")" = true
-          test "$(jq -r .tag_name "$created")" = "$RELEASE_TAG"
-          test "$(jq -r .target_commitish "$created")" = "$RELEASE_COMMIT"
+          created_release_id="$(jq -er '.id | numbers | select(. > 0)' "$created" || true)"
+          test -n "$created_release_id"
+          verify_owned_draft "$created_release_id" "$created"
           test "$(jq '.assets | length' "$created")" -eq 0
           for asset in release/*
           do
             sha256sum --check --strict "$RUNNER_TEMP/release-staging.sha256"
-            state_id="$(timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)"
-            test "$state_id" = "$created_release_id"
+            verify_owned_draft "$created_release_id" "$RUNNER_TEMP/pre-upload-draft.json"
             exec {asset_fd}<"$asset"
             timeout 600s gh api --method POST --hostname uploads.github.com \
               "repos/$GH_REPO/releases/$created_release_id/assets?name=$(basename "$asset")" \
@@ -719,7 +740,7 @@ jobs:
             sha256sum --check --strict "$RUNNER_TEMP/release-staging.sha256"
           done
           remote_release="$RUNNER_TEMP/remote-draft-release.json"
-          timeout 60s gh api "repos/$GH_REPO/releases/$created_release_id" > "$remote_release"
+          verify_owned_draft "$created_release_id" "$remote_release"
           node .github/scripts/verify_remote_release_assets.mjs release "$remote_release"
           sha256sum --check --strict "$RUNNER_TEMP/release-staging.sha256"
           test "$(jq -r .draft "$remote_release")" = true

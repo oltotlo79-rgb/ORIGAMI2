@@ -2428,8 +2428,7 @@ impl EditorState {
             {
                 let fraction = segment_fraction(start_position, end_position, point);
                 if fraction.is_finite()
-                    && fraction >= 0.0
-                    && fraction <= 1.0
+                    && (0.0..=1.0).contains(&fraction)
                     && !points.iter().any(|(_, candidate)| *candidate == point)
                 {
                     points.push((fraction, point));

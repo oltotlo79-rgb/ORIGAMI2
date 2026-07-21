@@ -2112,15 +2112,27 @@ fn temporary_symmetric_profile_for_grid(
     }
 
     let preserved_pair_ids =
-        ori_domain::insect_complete_bindings_v1(&source.generation_constraints)
+        ori_domain::animal_complete_bindings_v1(&source.generation_constraints)
             .map(|binding| {
                 vec![
-                    binding.wing_pair_protrusion_id,
-                    binding.antenna_pair_protrusion_id,
-                    binding.leg_pair_protrusion_ids[0],
-                    binding.leg_pair_protrusion_ids[1],
-                    binding.leg_pair_protrusion_ids[2],
+                    binding.horn_protrusion_id,
+                    binding.tail_protrusion_id,
+                    binding.ear_pair_protrusion_id,
+                    binding.leg_protrusion_id,
                 ]
+            })
+            .or_else(|| {
+                ori_domain::insect_complete_bindings_v1(&source.generation_constraints).map(
+                    |binding| {
+                        vec![
+                            binding.wing_pair_protrusion_id,
+                            binding.antenna_pair_protrusion_id,
+                            binding.leg_pair_protrusion_ids[0],
+                            binding.leg_pair_protrusion_ids[1],
+                            binding.leg_pair_protrusion_ids[2],
+                        ]
+                    },
+                )
             })
             .or_else(|| {
                 ori_domain::insect_three_pair_bindings_v1(&source.generation_constraints).map(
@@ -11574,12 +11586,40 @@ mod tests {
         assert!(ori_domain::animal_complete_bindings_v1(&profile.generation_constraints).is_some());
 
         let point = ori_domain::beginner_parameter_grid_v1()[13];
+        let apply_profile = profile.clone();
+        for target in &mut profile.generation_constraints.protrusions {
+            target.length_tenths_mm = 270 + u32::from(target.id) * 10;
+            target.thickness_tenths_mm = 50 + target.id;
+            target.direction_milli[0] = -target.direction_milli[0];
+            target.direction_milli[1] = -target.direction_milli[1];
+        }
+        profile.generation_constraints.protrusions.reverse();
+        let temporary = temporary_symmetric_profile_for_grid(&profile, point).unwrap();
+        assert_eq!(
+            temporary
+                .generation_constraints
+                .protrusions
+                .iter()
+                .map(|target| target.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        for target in &temporary.generation_constraints.protrusions {
+            assert_eq!(
+                target.length_tenths_mm,
+                ((270 + u32::from(target.id) * 10) * u32::from(point.scale_percent) / 27).max(1)
+            );
+            assert_eq!(
+                target.thickness_tenths_mm,
+                ((50 + target.id) * u16::from(point.spacing_percent) / 50).max(1)
+            );
+        }
         let mut project = initial_project_state();
         let plan = grid_template_plan(
             project.project_id,
             project.editor.pattern(),
             &project.editor.paper().boundary_vertices,
-            &profile,
+            &apply_profile,
             point,
         )
         .unwrap()
@@ -11595,7 +11635,9 @@ mod tests {
             &mut project,
             project_id,
             revision,
-            Command::UpdateBeginnerDesignProfile { profile },
+            Command::UpdateBeginnerDesignProfile {
+                profile: apply_profile,
+            },
         )
         .unwrap();
         assert!(

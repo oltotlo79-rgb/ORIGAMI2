@@ -6,7 +6,7 @@ use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, Vertex, VertexId,
 };
 use ori_foldability::{
-    ExactPointValue, ExactRationalValue, ExactSign, FoldModelFingerprintV1,
+    ExactAffineTransform, ExactPointValue, ExactRationalValue, ExactSign, FoldModelFingerprintV1,
     GlobalFlatFoldabilityProvenance, LAYER_ORDER_MODEL_ID, LayerFace, LayerOrderSnapshot,
     fold_model_fingerprint_v1,
 };
@@ -17,7 +17,7 @@ use ori_geometry::{
 use ori_kinematics::{
     CandidateFaceTransform, CanonicalHingeAngles, ClosedMaterialHingeGraphPose, HingeAngle,
     KinematicsError, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
-    MaterialTreeKinematicsModel, MaterialTreePose, Point3, TreeKinematicsLimits,
+    MaterialTreeKinematicsModel, MaterialTreePose, Point3, RigidTransform, TreeKinematicsLimits,
 };
 use ori_topology::{
     Face, FaceExtractionInput, TopologyIssueSeverity, TopologySnapshot, analyze_faces,
@@ -277,6 +277,7 @@ pub struct StackedFoldNonFlatLayerOrderV1 {
     target_fingerprint: FoldModelFingerprintV1,
     fixed_face: Option<FaceId>,
     hinge_angles: Vec<HingeAngle>,
+    folded_faces: Vec<StackedFoldNonFlatFoldedFaceV1>,
     material_faces: Vec<LayerFace>,
     tested_face_pairs: usize,
     source_overlap_cells_authenticated: usize,
@@ -290,6 +291,28 @@ pub struct StackedFoldNonFlatOverlapCellV1 {
     exact_boundary: Vec<ExactPointValue>,
     lower_face: FaceId,
     upper_face: FaceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackedFoldNonFlatFoldedFaceV1 {
+    face: LayerFace,
+    dropped_world_axis: u8,
+    source_to_plane: ExactAffineTransform,
+}
+
+impl StackedFoldNonFlatFoldedFaceV1 {
+    #[must_use]
+    pub const fn face(&self) -> LayerFace {
+        self.face
+    }
+    #[must_use]
+    pub const fn dropped_world_axis(&self) -> u8 {
+        self.dropped_world_axis
+    }
+    #[must_use]
+    pub const fn source_to_plane(&self) -> &ExactAffineTransform {
+        &self.source_to_plane
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,6 +380,11 @@ impl StackedFoldNonFlatLayerOrderV1 {
     #[must_use]
     pub fn hinge_angles(&self) -> &[HingeAngle] {
         &self.hinge_angles
+    }
+
+    #[must_use]
+    pub fn folded_faces(&self) -> &[StackedFoldNonFlatFoldedFaceV1] {
+        &self.folded_faces
     }
 
     #[must_use]
@@ -2137,6 +2165,15 @@ fn prepare_stacked_fold_non_flat_layer_order_from_source_v1(
         .iter()
         .map(|face| target_face_plane(pose, face.face_id))
         .collect::<Result<Vec<_>, _>>()?;
+    let folded_faces = material_faces
+        .iter()
+        .zip(&planes)
+        .map(|(face, plane)| {
+            pose.face_transform(face.face_id)
+                .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)
+                .and_then(|transform| exact_folded_face(*face, transform, plane.1))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let source_by_target = lineage
         .records()
         .iter()
@@ -2207,6 +2244,7 @@ fn prepare_stacked_fold_non_flat_layer_order_from_source_v1(
         target_fingerprint: lineage.target_fingerprint(),
         fixed_face: pose.fixed_face(),
         hinge_angles: pose.hinge_angles().to_vec(),
+        folded_faces,
         material_faces,
         tested_face_pairs,
         source_overlap_cells_authenticated: source_layer_order.overlap_cell_count(),
@@ -2316,6 +2354,15 @@ fn prepare_stacked_fold_graph_non_flat_layer_order_from_source_v1(
         .iter()
         .map(|face| target_graph_face_plane(&target.hinge_geometry, pose, face.face_id))
         .collect::<Result<Vec<_>, _>>()?;
+    let folded_faces = material_faces
+        .iter()
+        .zip(&planes)
+        .map(|(face, plane)| {
+            pose.face_transform(face.face_id)
+                .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)
+                .and_then(|transform| exact_folded_face(*face, transform, plane.1))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let source_by_target = lineage
         .records()
         .iter()
@@ -2386,6 +2433,7 @@ fn prepare_stacked_fold_graph_non_flat_layer_order_from_source_v1(
         target_fingerprint: lineage.target_fingerprint(),
         fixed_face: Some(pose.fixed_face()),
         hinge_angles: pose.hinge_angles().as_slice().to_vec(),
+        folded_faces,
         material_faces,
         tested_face_pairs,
         source_overlap_cells_authenticated: source_layer_order.overlap_cell_count(),
@@ -2600,6 +2648,45 @@ fn exact_point_from_f64(point: Point2) -> ExactPointValue {
         x: exact_rational_from_f64(point.x),
         y: exact_rational_from_f64(point.y),
     }
+}
+
+fn exact_folded_face(
+    face: LayerFace,
+    transform: RigidTransform,
+    normal: Point3,
+) -> Result<StackedFoldNonFlatFoldedFaceV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let normal = point_values(normal);
+    let dropped_world_axis =
+        if normal[0].abs() >= normal[1].abs() && normal[0].abs() >= normal[2].abs() {
+            0
+        } else if normal[1].abs() >= normal[2].abs() {
+            1
+        } else {
+            2
+        };
+    let origin = transform.apply_point(Point3::new(0.0, 0.0, 0.0)?)?;
+    let x_axis = transform.apply_point(Point3::new(1.0, 0.0, 0.0)?)?;
+    let y_axis = transform.apply_point(Point3::new(0.0, 1.0, 0.0)?)?;
+    let project = |point: Point3| match dropped_world_axis {
+        0 => [point.y(), point.z()],
+        1 => [point.x(), point.z()],
+        _ => [point.x(), point.y()],
+    };
+    let origin = project(origin);
+    let x_axis = project(x_axis);
+    let y_axis = project(y_axis);
+    Ok(StackedFoldNonFlatFoldedFaceV1 {
+        face,
+        dropped_world_axis,
+        source_to_plane: ExactAffineTransform {
+            m00: exact_rational_from_f64(x_axis[0] - origin[0]),
+            m01: exact_rational_from_f64(y_axis[0] - origin[0]),
+            m10: exact_rational_from_f64(x_axis[1] - origin[1]),
+            m11: exact_rational_from_f64(y_axis[1] - origin[1]),
+            tx: exact_rational_from_f64(origin[0]),
+            ty: exact_rational_from_f64(origin[1]),
+        },
+    })
 }
 
 /// Canonical exact rational for one already-validated finite binary64 value.
@@ -4306,6 +4393,13 @@ mod tests {
             STACKED_FOLD_NON_FLAT_LAYER_ORDER_MODEL_ID_V1
         );
         assert_eq!(non_flat_order.material_faces().len(), 2);
+        assert_eq!(non_flat_order.folded_faces().len(), 2);
+        assert!(non_flat_order.folded_faces().iter().all(|folded| {
+            non_flat_order.material_faces().contains(&folded.face())
+                && folded.dropped_world_axis() <= 2
+                && folded.source_to_plane().m00.to_f64().is_some()
+                && folded.source_to_plane().m11.to_f64().is_some()
+        }));
         assert_eq!(non_flat_order.identity_namespace(), fixture.identity);
         assert_eq!(
             non_flat_order.target_revision(),

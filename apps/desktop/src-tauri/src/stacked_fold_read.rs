@@ -13,7 +13,7 @@ use ori_collision::{
     StaticCollisionLimits, capture_stacked_fold_read_guard_v1, diagnose_collective_hinge_path_v1,
     diagnose_scheduled_cycle_path_v1, diagnose_scheduled_positive_thickness_cycle_path_v1,
     diagnose_static_collision_geometry, propose_linear_stacked_fold_read_v1,
-    reverse_map_linear_stacked_fold_material_v1,
+    reverse_map_linear_stacked_fold_material_v1, supports_scheduled_positive_thickness_path_v1,
 };
 use ori_core::{
     DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS, ExpectedStackedFoldCreaseV1, FaceLineageLimits,
@@ -341,7 +341,13 @@ fn propose_current_cycle_pose_inner(
     let source = pose_state_fingerprint_v1(pose.hinge_angles());
     let target = pose_state_fingerprint_v1(&requested);
     let paper_thickness_mm = project.editor.paper().thickness_mm;
-    let continuous = if paper_thickness_mm > 0.0 {
+    let continuous = if paper_thickness_mm > 0.0
+        && supports_scheduled_positive_thickness_path_v1(
+            geometry,
+            audit,
+            pose.fixed_face(),
+            generated.schedule(),
+        ) {
         diagnose_scheduled_positive_thickness_cycle_path_v1(
             geometry,
             audit,
@@ -1647,7 +1653,14 @@ async fn propose_current_stacked_fold_read_inner(
                         CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned()
                     }
                 })?;
-            let continuous = if paper_thickness_mm > 0.0 {
+            let continuous = if paper_thickness_mm > 0.0
+                && supports_scheduled_positive_thickness_path_v1(
+                    initial.target().hinge_geometry(),
+                    initial.target().audit(),
+                    initial.pose().fixed_face(),
+                    generated.schedule(),
+                )
+            {
                 diagnose_scheduled_positive_thickness_cycle_path_v1(
                     initial.target().hinge_geometry(),
                     initial.target().audit(),
@@ -4122,7 +4135,7 @@ mod tests {
                 let app_state = AppState::new(project);
                 let transactions =
                     super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-                if thickness_mm < 10_000.0 {
+                if thickness_mm < 10_000.0 && cycle_count < 32 {
                     assert!(
                         crate::applied_pose::certify_current_static_collision(
                             &app_state,

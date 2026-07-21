@@ -4033,12 +4033,14 @@ mod tests {
     #[test]
     fn coupled_cactus_previews_apply_and_round_trip_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        for cycle_count in [2, 3, 16] {
+        for cycle_count in [2, 3, 4, 16] {
             for thickness_mm in [10_000.0, 0.1, 1.0, 3.0] {
                 let (pattern, mut paper, hinges) = if cycle_count == 2 {
                     super::four_bay_cycle_test_support::two_bay_rational_cycle_pattern()
                 } else if cycle_count == 3 {
                     super::four_bay_cycle_test_support::three_bay_rational_cycle_pattern()
+                } else if cycle_count == 4 {
+                    super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern()
                 } else {
                     super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern()
                 };

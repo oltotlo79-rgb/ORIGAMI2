@@ -472,14 +472,33 @@ fn propose_current_cycle_pose_inner_with_layers(
     let (geometry, audit, pose) = pose_capability
         .graph()
         .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
-    let schedule = prepare_requested_cycle_schedule_v1(
-        &request.cycle_schedule_v1,
-        geometry,
-        audit,
-        pose.fixed_face(),
-        pose.hinge_angles(),
-    )
-    .map_err(str::to_owned)?;
+    let automatic_kawasaki = request.cycle_schedule_v1.version == 2
+        && request.cycle_schedule_v1.entries.is_empty();
+    let schedule = if automatic_kawasaki {
+        ori_kinematics::generate_bounded_degree_four_kawasaki_path_candidate_v1(
+            geometry,
+            audit,
+            pose.fixed_face(),
+            production_cycle_schedule_limits_v1(),
+        )
+        .map_err(|error| match error {
+            ori_kinematics::MultiHingePathCandidateErrorV1::ResourceLimit => {
+                CYCLE_PATH_RESOURCE_MESSAGE.to_owned()
+            }
+            _ => CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned(),
+        })?
+        .schedule()
+        .clone()
+    } else {
+        prepare_requested_cycle_schedule_v1(
+            &request.cycle_schedule_v1,
+            geometry,
+            audit,
+            pose.fixed_face(),
+            pose.hinge_angles(),
+        )
+        .map_err(str::to_owned)?
+    };
     let requested = schedule
         .evaluate(1.0)
         .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
@@ -5429,63 +5448,14 @@ mod tests {
                 project.editor.redo(undone).unwrap();
                 assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
                 if cycle_count == 16 {
-                    let pose = project.editor.current_applied_pose().unwrap();
-                    let fixed_face = pose.fixed_face().unwrap();
-                    let angles = ori_kinematics::CanonicalHingeAngles::new(
-                        pose.hinge_angles()
-                            .iter()
-                            .map(|angle| {
-                                ori_kinematics::HingeAngle::new(angle.edge(), angle.angle_degrees())
-                                    .unwrap()
-                            })
-                            .collect(),
-                    )
-                    .unwrap();
-                    let flat =
-                        super::super::global_flat_foldability::reanalyze_current_flat_layer_order(
-                            &project,
-                        )
-                        .unwrap();
-                    let proof = ori_core::revalidate_current_graph_non_flat_layer_order_v1(
-                        project.project_id,
-                        project.editor.revision(),
-                        project.editor.pattern(),
-                        project.editor.paper(),
-                        fixed_face,
-                        &angles,
-                        &flat,
-                        None,
-                        ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
-                    )
-                    .unwrap();
-                    project.current_layer_evidence = Some(
-                        super::super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(
-                            proof,
-                        ),
-                    );
                     let archive = project
                         .project_archive()
                         .expect("serialize positive-thickness C16 cycle");
-                    assert!(matches!(
-                        &archive.layer_evidence,
-                        Some(ori_formats::LayerEvidenceArchiveV1 {
-                            evidence: ori_formats::LayerEvidenceArchiveKindV1::NonFlat { .. },
-                            ..
-                        })
-                    ));
                     let mut reopened = super::super::ProjectState::from_project_archive(
                         archive,
                         std::path::PathBuf::from(format!("positive-c16-{thickness_mm}.ori2")),
                     )
                     .expect("reopen positive-thickness C16 cycle");
-                    assert!(matches!(
-                        &reopened.current_layer_evidence,
-                        Some(
-                            super::super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(
-                                _
-                            )
-                        )
-                    ));
                     assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
                     let reopened_revision = reopened.editor.revision();
                     reopened.editor.undo(reopened_revision).unwrap();
@@ -5710,6 +5680,74 @@ mod tests {
                 ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1
             );
             assert_eq!(persisted.target_order_sha256.len(), 32);
+            if expected_cycle_rank == 16 {
+                let pose = project.editor.current_applied_pose().unwrap();
+                let fixed_face = pose.fixed_face().unwrap();
+                let angles = ori_kinematics::CanonicalHingeAngles::new(
+                    pose.hinge_angles()
+                        .iter()
+                        .map(|angle| {
+                            ori_kinematics::HingeAngle::new(angle.edge(), angle.angle_degrees())
+                                .unwrap()
+                        })
+                        .collect(),
+                )
+                .unwrap();
+                let flat =
+                    super::super::global_flat_foldability::reanalyze_current_flat_layer_order(
+                        &project,
+                    )
+                    .unwrap();
+                let proof = ori_core::revalidate_current_graph_non_flat_layer_order_v1(
+                    project.project_id,
+                    project.editor.revision(),
+                    project.editor.pattern(),
+                    project.editor.paper(),
+                    fixed_face,
+                    &angles,
+                    &flat,
+                    None,
+                    ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+                )
+                .unwrap();
+                project.current_layer_evidence = Some(
+                    super::super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(proof),
+                );
+                let archive = project.project_archive().unwrap();
+                assert!(matches!(
+                    &archive.layer_evidence,
+                    Some(ori_formats::LayerEvidenceArchiveV1 {
+                        evidence: ori_formats::LayerEvidenceArchiveKindV1::NonFlat { .. },
+                        ..
+                    })
+                ));
+                let mut reopened = super::super::ProjectState::from_project_archive(
+                    archive,
+                    std::path::PathBuf::from("rank16-graph-layer-evidence.ori2"),
+                )
+                .unwrap();
+                assert!(matches!(
+                    &reopened.current_layer_evidence,
+                    Some(super::super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(_))
+                ));
+                let revision = reopened.editor.revision();
+                let reopened_instance = reopened.instance_id;
+                let reopened_project = reopened.project_id;
+                let vertex = reopened.editor.pattern().vertices[0].id;
+                let position = reopened.editor.pattern().vertices[0].position;
+                super::super::execute_command(
+                    &mut reopened,
+                    reopened_instance,
+                    reopened_project,
+                    revision,
+                    ori_core::Command::MoveVertex {
+                        id: vertex,
+                        position: ori_domain::Point2::new(position.x + 0.125, position.y),
+                    },
+                )
+                .unwrap();
+                assert!(reopened.current_layer_evidence.is_none());
+            }
             project.editor.undo(applied).unwrap();
             assert!(project.editor.instruction_timeline().steps.is_empty());
             let undone = project.editor.revision();

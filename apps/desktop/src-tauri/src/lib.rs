@@ -776,8 +776,10 @@ impl ProjectState {
         };
         let evidence = match current {
             stacked_fold_transaction::CurrentLayerEvidence::CertifiedFlat(snapshot) => {
+                let mut snapshot = snapshot.clone();
+                snapshot.provenance.source.source_revision = 0;
                 LayerEvidenceArchiveKindV1::Flat {
-                    canonical_snapshot_json: serde_json::to_string(snapshot)
+                    canonical_snapshot_json: serde_json::to_string(&snapshot)
                         .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?,
                 }
             }
@@ -836,7 +838,10 @@ impl ProjectState {
             version: ori_formats::LAYER_EVIDENCE_SCHEMA_VERSION_V1,
             project_instance_id: wire_id(&self.instance_id)?,
             project_id: wire_id(&self.project_id)?,
-            revision: self.editor.revision(),
+            // Persisted editor history deliberately reopens at revision zero.
+            // Bind evidence to that canonical admission revision rather than
+            // to the process-local counter that is not part of the archive.
+            revision: 0,
             fold_model_fingerprint_sha256: self.editor.fold_model_fingerprint_v1(),
             evidence,
         }))

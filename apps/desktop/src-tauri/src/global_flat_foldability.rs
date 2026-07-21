@@ -2349,6 +2349,47 @@ pub(super) mod tests {
         assert!(revalidate_archived_flat_layer_evidence(&project, &stale.to_string()).is_err());
     }
 
+    #[test]
+    fn flat_evidence_reopens_at_canonical_revision_and_next_edit_invalidates_it() {
+        let mut project = initial_project_state();
+        project
+            .editor
+            .execute(
+                0,
+                ori_core::Command::UpdateProjectMemo {
+                    memo: "revision-one".to_owned(),
+                },
+            )
+            .unwrap();
+        let snapshot = reanalyze_current_flat_layer_order(&project).unwrap();
+        project.current_layer_evidence = Some(CurrentLayerEvidence::CertifiedFlat(snapshot));
+        let archive = project.project_archive().unwrap();
+        assert_eq!(archive.layer_evidence.as_ref().unwrap().revision, 0);
+        let mut reopened = ProjectState::from_project_archive(
+            archive,
+            PathBuf::from("flat-layer-evidence-canonical-revision.ori2"),
+        )
+        .unwrap();
+        assert!(matches!(
+            &reopened.current_layer_evidence,
+            Some(CurrentLayerEvidence::CertifiedFlat(_))
+        ));
+        let revision = reopened.editor.revision();
+        let instance = reopened.instance_id;
+        let project_id = reopened.project_id;
+        crate::execute_command(
+            &mut reopened,
+            instance,
+            project_id,
+            revision,
+            ori_core::Command::UpdateProjectMemo {
+                memo: "next-edit".to_owned(),
+            },
+        )
+        .unwrap();
+        assert!(reopened.current_layer_evidence.is_none());
+    }
+
     fn copy_layer_order_capability(
         capability: &CurrentLayerOrderCapability,
     ) -> CurrentLayerOrderCapability {

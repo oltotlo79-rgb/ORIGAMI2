@@ -1584,6 +1584,73 @@ impl CanonicalCycleScheduleV1 {
         (unit.len() == 2 && scaled.len() == 2).then_some((unit, scaled))
     }
 
+    /// Extracts the only bounded rational symmetric degree-4 profile admitted
+    /// by the generic closure theorem. The reduced ratio is intentionally
+    /// capped and kept away from zero and one so near-degenerate sectors and
+    /// oversized exact coefficients fail closed.
+    #[must_use]
+    pub fn bounded_symmetric_kawasaki_profile_v1(
+        &self,
+    ) -> Option<(Vec<EdgeId>, Vec<EdgeId>, i64, u64)> {
+        const MAX_TERM: i64 = 64;
+        if self.half_angle_entries.len() != 4 {
+            return None;
+        }
+        let rational = |numerator: i64, denominator: i64| {
+            BigRational::new(numerator.into(), denominator.into())
+        };
+        let domain = [rational(0, 1), rational(1, 1)];
+        let unit_numerator = [rational(0, 1), rational(1, 1)];
+        let mut unit = Vec::new();
+        let mut scaled = Vec::new();
+        let mut ratio = None;
+        for entry in &self.half_angle_entries {
+            if entry.u_domain != domain || entry.denominator_power_coefficients.len() != 1 {
+                return None;
+            }
+            if entry.numerator_power_coefficients == unit_numerator
+                && entry.denominator_power_coefficients == [rational(1, 1)]
+            {
+                unit.push(entry.edge);
+                continue;
+            }
+            let [zero, slope] = entry.numerator_power_coefficients.as_slice() else {
+                return None;
+            };
+            if !zero.is_zero() || slope <= &BigRational::zero() {
+                return None;
+            }
+            if entry.denominator_power_coefficients[0] <= BigRational::zero() {
+                return None;
+            }
+            let candidate = slope / &entry.denominator_power_coefficients[0];
+            if candidate <= BigRational::zero() || candidate >= BigRational::from_integer(1.into())
+            {
+                return None;
+            }
+            if ratio.as_ref().is_some_and(|current| current != &candidate) {
+                return None;
+            }
+            ratio = Some(candidate);
+            scaled.push(entry.edge);
+        }
+        let ratio = ratio?;
+        let numerator = ratio.numer().to_i64()?;
+        let denominator = ratio.denom().to_i64()?;
+        if unit.len() != 2
+            || scaled.len() != 2
+            || numerator <= 0
+            || denominator <= 0
+            || numerator > MAX_TERM
+            || denominator > MAX_TERM
+            || numerator * 8 < denominator
+            || numerator * 8 > denominator * 7
+        {
+            return None;
+        }
+        Some((unit, scaled, numerator, u64::try_from(denominator).ok()?))
+    }
+
     #[must_use]
     pub fn matches_binding(
         &self,

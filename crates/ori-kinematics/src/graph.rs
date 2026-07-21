@@ -1116,16 +1116,12 @@ fn symmetric_rational_kawasaki_cycle_closure_premises_v1(
     if geometry.hinges().len() != 4 || audit.closure_hinges().len() != 1 {
         return false;
     }
-    let Some((unit_edges, scaled_edges, sector_cosine)) = [(1, 2, 0.5), (3, 5, 0.6)]
-        .into_iter()
-        .find_map(|(numerator, denominator, cosine)| {
-            schedule
-                .symmetric_kawasaki_half_angle_pairs_v1(numerator, denominator)
-                .map(|(unit, scaled)| (unit, scaled, cosine))
-        })
+    let Some((unit_edges, scaled_edges, numerator, denominator)) =
+        schedule.bounded_symmetric_kawasaki_profile_v1()
     else {
         return false;
     };
+    let sector_cosine = numerator as f64 / denominator as f64;
     let unit = unit_edges.into_iter().collect::<HashSet<_>>();
     let scaled = scaled_edges.into_iter().collect::<HashSet<_>>();
     let mut ordered = Vec::with_capacity(4);
@@ -1513,6 +1509,9 @@ mod tests {
     }
 
     fn rational_symmetric_cycle_fixture(
+        numerator: i64,
+        denominator: i64,
+        pythagorean_leg: i64,
         axis_perturbation: f64,
         sign: i64,
     ) -> Result<
@@ -1541,11 +1540,19 @@ mod tests {
         let audit =
             MaterialHingeGraphAudit::prepare(&source, TreeKinematicsLimits::default()).unwrap();
         let origin = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let p = numerator as f64;
+        let q = denominator as f64;
+        let leg = pythagorean_leg as f64;
         let axes = [
             Point3::new(1.0, 0.0, 0.0).unwrap(),
-            Point3::new(-0.6, 0.8, 0.0).unwrap(),
-            Point3::new(-0.28, -0.96 + axis_perturbation, 0.0).unwrap(),
-            Point3::new(0.6, -0.8, 0.0).unwrap(),
+            Point3::new(-p / q, leg / q, 0.0).unwrap(),
+            Point3::new(
+                (2.0 * p * p - q * q) / (q * q),
+                -2.0 * p * leg / (q * q) + axis_perturbation,
+                0.0,
+            )
+            .unwrap(),
+            Point3::new(p / q, -leg / q, 0.0).unwrap(),
         ];
         let hinges = (0..4)
             .map(|index| {
@@ -1582,12 +1589,16 @@ mod tests {
                         denominator: 1,
                     },
                     RationalCoefficientV1 {
-                        numerator: if index % 2 == 0 { sign } else { 3 * sign },
+                        numerator: if index % 2 == 0 {
+                            sign
+                        } else {
+                            numerator * sign
+                        },
                         denominator: 1,
                     },
                 ],
                 denominator_power_coefficients: vec![RationalCoefficientV1 {
-                    numerator: if index % 2 == 0 { 1 } else { 5 },
+                    numerator: if index % 2 == 0 { 1 } else { denominator },
                     denominator: 1,
                 }],
             })
@@ -1604,28 +1615,32 @@ mod tests {
     }
 
     #[test]
-    fn rational_three_fifths_sector_closes_exactly() {
-        let (geometry, audit, schedule) = rational_symmetric_cycle_fixture(0.0, 1).unwrap();
-        let closure = geometry
-            .prove_dyadic_schedule_closure_v1(
-                &audit,
-                audit.faces()[0],
-                &schedule,
-                1.0e-9,
-                DyadicIntervalClosureLimitsV1 {
-                    max_depth: 16,
-                    max_leaves: 65_536,
-                    max_work: 1_048_576,
-                    schedule_limits: CycleScheduleLimitsV1::default(),
-                },
-            )
-            .expect("exact 3/5 symmetric sector closure");
-        assert_eq!(closure.leaves().len(), 1);
+    fn bounded_rational_symmetric_sectors_close_exactly() {
+        for (numerator, denominator, leg) in [(3, 5, 4), (6, 10, 8), (5, 13, 12), (8, 17, 15)] {
+            let (geometry, audit, schedule) =
+                rational_symmetric_cycle_fixture(numerator, denominator, leg, 0.0, 1).unwrap();
+            let closure = geometry
+                .prove_dyadic_schedule_closure_v1(
+                    &audit,
+                    audit.faces()[0],
+                    &schedule,
+                    1.0e-9,
+                    DyadicIntervalClosureLimitsV1 {
+                        max_depth: 16,
+                        max_leaves: 65_536,
+                        max_work: 1_048_576,
+                        schedule_limits: CycleScheduleLimitsV1::default(),
+                    },
+                )
+                .expect("exact bounded rational symmetric sector closure");
+            assert_eq!(closure.leaves().len(), 1);
+        }
     }
 
     #[test]
     fn rational_sector_rejects_near_degenerate_and_mixed_sign_profiles() {
-        let (geometry, audit, schedule) = rational_symmetric_cycle_fixture(1.0e-5, 1).unwrap();
+        let (geometry, audit, schedule) =
+            rational_symmetric_cycle_fixture(3, 5, 4, 1.0e-5, 1).unwrap();
         assert!(
             geometry
                 .prove_dyadic_schedule_closure_v1(
@@ -1642,7 +1657,30 @@ mod tests {
                 )
                 .is_err()
         );
-        assert!(rational_symmetric_cycle_fixture(0.0, -1).is_err());
+        assert!(rational_symmetric_cycle_fixture(3, 5, 4, 0.0, -1).is_err());
+        let (large_geometry, large_audit, large_schedule) =
+            rational_symmetric_cycle_fixture(65, 97, 72, 0.0, 1).unwrap();
+        assert!(
+            large_schedule
+                .bounded_symmetric_kawasaki_profile_v1()
+                .is_none()
+        );
+        assert!(
+            large_geometry
+                .prove_dyadic_schedule_closure_v1(
+                    &large_audit,
+                    large_audit.faces()[0],
+                    &large_schedule,
+                    1.0e-9,
+                    DyadicIntervalClosureLimitsV1 {
+                        max_depth: 0,
+                        max_leaves: 1,
+                        max_work: 1,
+                        schedule_limits: CycleScheduleLimitsV1::default(),
+                    },
+                )
+                .is_err()
+        );
         assert!(
             schedule
                 .symmetric_kawasaki_half_angle_pairs_v1(3, 4)

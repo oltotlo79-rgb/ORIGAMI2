@@ -3099,7 +3099,7 @@ mod tests {
     #[test]
     fn current_graph_cycle_authenticates_or_fails_closed_three_times() {
         let mut authenticated = 0;
-        for _ in 0..3 {
+        for iteration in 0..3 {
             let (mut project, hinges) =
                 super::super::applied_pose::tests::four_vertex_cycle_project();
             super::super::applied_pose::tests::install_flat_graph_pose_authority(
@@ -3112,6 +3112,20 @@ mod tests {
             let app_state = AppState::new(project);
             let transaction_state =
                 super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+            assert_eq!(
+                propose_current_cycle_pose_inner(
+                    &app_state,
+                    &transaction_state,
+                    CurrentCyclePosePreviewRequestV1 {
+                        expected_project_instance_id: instance,
+                        expected_project_id: project_id,
+                        expected_revision: revision + 1,
+                        cycle_schedule_v1: physical_four_vertex_cycle_schedule(&hinges),
+                    },
+                )
+                .unwrap_err(),
+                STALE_MESSAGE
+            );
             let response = propose_current_cycle_pose_inner(
                 &app_state,
                 &transaction_state,
@@ -3123,8 +3137,46 @@ mod tests {
                 },
             );
             match response {
-                Ok(response) => {
+                Ok(mut response) => {
                     authenticated += 1;
+                    assert!(
+                        super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                            &app_state,
+                            &GlobalFlatFoldabilityState::default(),
+                            &transaction_state,
+                            ProjectId::new(),
+                        )
+                        .is_err()
+                    );
+                    if iteration == 0 {
+                        let cancelled = response.transaction_token;
+                        super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
+                            &transaction_state,
+                            cancelled,
+                        )
+                        .unwrap();
+                        assert!(
+                            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                                &app_state,
+                                &GlobalFlatFoldabilityState::default(),
+                                &transaction_state,
+                                cancelled,
+                            )
+                            .is_err()
+                        );
+                        response = propose_current_cycle_pose_inner(
+                            &app_state,
+                            &transaction_state,
+                            CurrentCyclePosePreviewRequestV1 {
+                                expected_project_instance_id: instance,
+                                expected_project_id: project_id,
+                                expected_revision: revision,
+                                cycle_schedule_v1: physical_four_vertex_cycle_schedule(&hinges),
+                            },
+                        )
+                        .expect("replacement authenticated preview");
+                        assert_ne!(response.transaction_token, cancelled);
+                    }
                     assert!(!response.authorizes_project_mutation);
                     assert!(response.continuous_path_certified);
                     let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
@@ -3154,5 +3206,18 @@ mod tests {
             }
         }
         assert_eq!(authenticated, 3, "fixed native fixture must authenticate");
+    }
+
+    #[test]
+    fn current_cycle_preview_request_rejects_unknown_dto_fields() {
+        let id = ProjectId::new();
+        let value = serde_json::json!({
+            "expectedProjectInstanceId": id,
+            "expectedProjectId": id,
+            "expectedRevision": 0,
+            "cycleScheduleV1": { "version": 1, "entries": [] },
+            "unexpected": true
+        });
+        assert!(serde_json::from_value::<CurrentCyclePosePreviewRequestV1>(value).is_err());
     }
 }

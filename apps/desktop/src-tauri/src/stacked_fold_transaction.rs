@@ -12,6 +12,7 @@ use ori_domain::{
 };
 use ori_foldability::LayerOrderSnapshot;
 use ori_foldability::fold_model_fingerprint_v1;
+use sha2::{Digest, Sha256};
 use tauri::State;
 
 use super::{
@@ -301,6 +302,39 @@ impl PendingStackedFoldRequestedPose {
             _ => vec![self.pose_components().3],
         }
     }
+
+    fn certified_graph_path(&self) -> Option<&ori_collision::CertifiedPoseGraphPathCertificateV1> {
+        match self {
+            Self::Graph {
+                certified_path: Some(path),
+                ..
+            } => Some(path),
+            _ => None,
+        }
+    }
+
+    fn certified_graph_source_angles(&self) -> Option<Vec<(ori_domain::EdgeId, f64)>> {
+        let Self::Graph {
+            certified_path: Some(_),
+            certified_edges,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        certified_edges
+            .first()?
+            .generated
+            .schedule()
+            .evaluate(0.0)
+            .map(|angles| {
+                angles
+                    .as_slice()
+                    .iter()
+                    .map(|angle| (angle.edge(), angle.angle_degrees()))
+                    .collect()
+            })
+    }
 }
 
 fn bit_exact_canonical_angles_match(
@@ -323,6 +357,16 @@ fn certified_edge_target_matches_schedule(edge: &PendingCertifiedPathEdgeV1) -> 
         .schedule()
         .evaluate(1.0)
         .is_some_and(|expected| bit_exact_canonical_angles_match(&expected, &edge.target_angles))
+}
+
+fn lowercase_hex(bytes: [u8; 32]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(64);
+    for byte in bytes {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 pub(super) struct PendingStackedFoldPremises {
@@ -1087,7 +1131,63 @@ fn apply_stacked_fold_transaction_with_title(
     } else {
         certified_path_angles
     };
+    let source_model_fingerprint = target.map_or_else(
+        || project.editor.fold_model_fingerprint_v1(),
+        |target| target.proof().lineage().target_fingerprint().to_hex(),
+    );
+    let certified_graph_path = requested.certified_graph_path();
+    if let (Some(title), Some(source_angles), Some(_)) = (
+        named_title,
+        requested.certified_graph_source_angles(),
+        certified_graph_path,
+    ) {
+        timeline.steps.push(InstructionStep {
+            id: InstructionStepId::new(),
+            title: format!("「{title}」の開始姿勢"),
+            description: "構造化証明の始点姿勢です。".to_owned(),
+            caution: String::new(),
+            duration_ms: MIN_INSTRUCTION_DURATION_MS,
+            visual: InstructionVisual::default(),
+            pose: InstructionPose {
+                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                source_model_fingerprint: source_model_fingerprint.clone(),
+                fixed_face,
+                hinge_angles: source_angles
+                    .into_iter()
+                    .map(|(edge, angle_degrees)| InstructionHingeAngle {
+                        edge,
+                        angle_degrees,
+                    })
+                    .collect(),
+            },
+        });
+    }
     for (index, step_angles) in ordered_timeline_angles.into_iter().enumerate() {
+        let path_reference = certified_graph_path.and_then(|path| {
+            let edge = path.edges().get(index)?;
+            let mut model_hash = Sha256::new();
+            model_hash.update(b"path_certificate_source_model_binding_v1");
+            model_hash.update(source_model_fingerprint.as_bytes());
+            Some(ori_domain::PathCertificateReferenceV1 {
+                version: 1,
+                model_id: ori_domain::PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1.to_owned(),
+                binding_sha256: path.binding_fingerprint_v1(),
+                source_pose_sha256: edge.source(),
+                target_pose_sha256: edge.target(),
+                source_model_binding_sha256: model_hash.finalize().into(),
+                transition_count: path.edges().len(),
+            })
+        });
+        let description = match (named_title, path_reference.as_ref()) {
+            (Some(title), Some(reference)) => format!(
+                "認証済みの連続折り経路で名前付き技法「{title}」を適用します。経路証明 SHA-256: {} / 元モデル SHA-256: {source_model_fingerprint}",
+                lowercase_hex(reference.binding_sha256),
+            ),
+            (Some(title), None) => format!(
+                "証明参照のない名前付き技法「{title}」の姿勢です。連続折り経路は未証明です。"
+            ),
+            (None, _) => String::new(),
+        };
         timeline.steps.push(InstructionStep {
             id: InstructionStepId::new(),
             title: if index == 0 {
@@ -1095,21 +1195,17 @@ fn apply_stacked_fold_transaction_with_title(
             } else {
                 format!("{} {}", named_title.unwrap_or("Stacked fold"), index + 1)
             },
-            description: named_title.map_or_else(String::new, |title| {
-                format!("認証済みの連続折り経路で名前付き技法「{title}」を適用します。")
-            }),
+            description,
             caution: String::new(),
             duration_ms: MIN_INSTRUCTION_DURATION_MS,
             visual: InstructionVisual {
                 cycle_layer_order_proof_v1: persisted_layer_proof.clone(),
+                path_certificate_reference_v1: path_reference,
                 ..InstructionVisual::default()
             },
             pose: InstructionPose {
                 model: InstructionPoseModel::AbsoluteHingeAnglesV1,
-                source_model_fingerprint: target.map_or_else(
-                    || project.editor.fold_model_fingerprint_v1(),
-                    |target| target.proof().lineage().target_fingerprint().to_hex(),
-                ),
+                source_model_fingerprint: source_model_fingerprint.clone(),
                 fixed_face,
                 hinge_angles: step_angles
                     .iter()

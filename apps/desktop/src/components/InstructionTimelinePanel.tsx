@@ -180,16 +180,22 @@ export function InstructionTimelinePanel({
   const selectedProofDisplay = selectedStep
     ? createPathCertificateDisplay(selectedStep)
     : null
-  const [proofEndpointStatus, setProofEndpointStatus] = useState<'checking' | 'valid' | 'invalid'>('checking')
+  const [proofEndpointValidation, setProofEndpointValidation] = useState<Readonly<{
+    step: InstructionStepPresentation
+    status: 'checking' | 'valid' | 'invalid'
+  }> | null>(null)
   useEffect(() => {
     let active = true
-    setProofEndpointStatus('checking')
+    if (selectedStep) setProofEndpointValidation({ step: selectedStep, status: 'checking' })
     if (!selectedStep || selectedProofDisplay?.kind !== 'verified') return () => { active = false }
     const index = steps.findIndex((step) => step.id === selectedStep.id)
     void pathCertificateEndpointsMatch(steps[index - 1], selectedStep).then((matches) => {
-      if (active) setProofEndpointStatus(matches ? 'valid' : 'invalid')
+      if (active) setProofEndpointValidation({
+        step: selectedStep,
+        status: matches ? 'valid' : 'invalid',
+      })
     }, () => {
-      if (active) setProofEndpointStatus('invalid')
+      if (active) setProofEndpointValidation({ step: selectedStep, status: 'invalid' })
     })
     return () => { active = false }
   }, [selectedStep, selectedProofDisplay?.kind, steps])
@@ -968,7 +974,9 @@ export function InstructionTimelinePanel({
                       })}
                     />
                   </label>
-                  {selectedProofDisplay?.kind === 'verified' && proofEndpointStatus === 'valid' && (
+                  {selectedProofDisplay?.kind === 'verified'
+                    && proofEndpointValidation?.step === selectedStep
+                    && proofEndpointValidation.status === 'valid' && (
                     <aside className="instruction-notice" aria-label={locale === 'ja'
                       ? '構造化経路証明'
                       : 'Structured path certificate'}>
@@ -984,7 +992,9 @@ export function InstructionTimelinePanel({
                         : 'Saved DTO identity; diagram export rechecks the previous pose, current pose, and source model.'}</small>
                     </aside>
                   )}
-                  {selectedProofDisplay?.kind === 'verified' && proofEndpointStatus === 'invalid' && (
+                  {selectedProofDisplay?.kind === 'verified'
+                    && proofEndpointValidation?.step === selectedStep
+                    && proofEndpointValidation.status === 'invalid' && (
                     <p className="instruction-timeline-error" role="alert">
                       {locale === 'ja'
                         ? '証明の元モデルまたは姿勢端点が構造化データと一致しません。書き出しは拒否されます。'

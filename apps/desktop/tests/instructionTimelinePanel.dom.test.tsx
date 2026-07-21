@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
@@ -523,6 +524,22 @@ describe('InstructionTimelinePanel localization', () => {
     fireEvent.click(exportButton)
     expect(onExport).toHaveBeenCalledTimes(1)
 
+    const graphBound = JSON.parse(JSON.stringify(reopened)) as ProjectSnapshot
+    const graphReference = graphBound.instruction_timeline.steps[1]!
+      .visual.path_certificate_reference_v1!
+    ;(graphReference.source_pose_sha256 as number[]).splice(
+      0, 32, ...graphPoseFingerprint(previous.pose.hinge_angles),
+    )
+    ;(graphReference.target_pose_sha256 as number[]).splice(
+      0, 32, ...graphPoseFingerprint(targetPose.hinge_angles),
+    )
+    view.rerender(panelFor(graphBound))
+    await waitFor(() => {
+      expect(screen.getByLabelText('構造化経路証明')).not.toBeNull()
+      expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
+        .toBe(false)
+    })
+
     const tamperedModel = JSON.parse(JSON.stringify(reopened)) as ProjectSnapshot
     tamperedModel.instruction_timeline.steps[1]!.visual.path_certificate_reference_v1!
       .source_model_binding_sha256[0] ^= 1
@@ -561,6 +578,18 @@ function poseFingerprint(model: string, face: string, hinges: readonly { edge: s
   const fields: Buffer[] = [
     Buffer.from('origami2_instruction_pose_fingerprint_v1'), Buffer.from(model), uuidBuffer(face),
   ]
+  for (const hinge of [...hinges].sort((a, b) => a.edge.localeCompare(b.edge))) {
+    const angle = Buffer.alloc(8)
+    angle.writeDoubleBE(hinge.angle_degrees)
+    fields.push(uuidBuffer(hinge.edge), angle)
+  }
+  return sha256Bytes(fields)
+}
+
+function graphPoseFingerprint(hinges: readonly { edge: string; angle_degrees: number }[]) {
+  const count = Buffer.alloc(8)
+  count.writeBigUInt64BE(BigInt(hinges.length))
+  const fields: Buffer[] = [Buffer.from('stacked_fold_certified_path_graph_state_v1'), count]
   for (const hinge of [...hinges].sort((a, b) => a.edge.localeCompare(b.edge))) {
     const angle = Buffer.alloc(8)
     angle.writeDoubleBE(hinge.angle_degrees)

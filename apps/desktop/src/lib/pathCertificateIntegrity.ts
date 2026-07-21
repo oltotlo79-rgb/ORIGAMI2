@@ -11,14 +11,36 @@ export async function pathCertificateEndpointsMatch(
   if (!reference || !previous || !fixedFace
     || previous.pose.source_model_fingerprint !== step.pose.source_model_fingerprint) return false
   const model = step.pose.source_model_fingerprint
-  const [modelBinding, source, target] = await Promise.all([
+  const [modelBinding, source, target, graphSource, graphTarget] = await Promise.all([
     digest([encoder.encode('path_certificate_source_model_binding_v1'), encoder.encode(model)]),
     poseDigest(model, fixedFace, previous.pose.hinge_angles),
     poseDigest(model, fixedFace, step.pose.hinge_angles),
+    graphPoseDigest(previous.pose.hinge_angles),
+    graphPoseDigest(step.pose.hinge_angles),
   ])
   return equal(modelBinding, reference.source_model_binding_sha256)
-    && equal(source, reference.source_pose_sha256)
-    && equal(target, reference.target_pose_sha256)
+    && ((equal(source, reference.source_pose_sha256)
+        && equal(target, reference.target_pose_sha256))
+      || (equal(graphSource, reference.source_pose_sha256)
+        && equal(graphTarget, reference.target_pose_sha256)))
+}
+
+async function graphPoseDigest(
+  hinges: InstructionStepPresentation['pose']['hinge_angles'],
+): Promise<Uint8Array> {
+  const fields: Uint8Array[] = [encoder.encode('stacked_fold_certified_path_graph_state_v1')]
+  const count = new Uint8Array(8)
+  new DataView(count.buffer).setBigUint64(0, BigInt(hinges.length), false)
+  fields.push(count)
+  const sorted = [...hinges].sort((left, right) => left.edge.localeCompare(right.edge))
+  for (const hinge of sorted) {
+    const edge = uuidBytes(hinge.edge)
+    if (!edge) return new Uint8Array()
+    const angle = new Uint8Array(8)
+    new DataView(angle.buffer).setFloat64(0, hinge.angle_degrees, false)
+    fields.push(edge, angle)
+  }
+  return digest(fields)
 }
 
 async function poseDigest(

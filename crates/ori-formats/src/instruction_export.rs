@@ -427,21 +427,26 @@ fn validate_path_certificate_references(
                 let mut model_hash = Sha256::new();
                 model_hash.update(b"path_certificate_source_model_binding_v1");
                 model_hash.update(step.pose.source_model_fingerprint.as_bytes());
-                if described_binding != Some(reference.binding_sha256)
-                    || reference.source_model_binding_sha256
-                        != <[u8; 32]>::from(model_hash.finalize())
-                    || reference.source_pose_sha256
-                        != instruction_pose_fingerprint_v1(
-                            &step.pose.source_model_fingerprint,
-                            fixed_face,
-                            &previous.pose.hinge_angles,
-                        )
-                    || reference.target_pose_sha256
-                        != instruction_pose_fingerprint_v1(
+                let instruction_endpoints_match = reference.source_pose_sha256
+                    == instruction_pose_fingerprint_v1(
+                        &step.pose.source_model_fingerprint,
+                        fixed_face,
+                        &previous.pose.hinge_angles,
+                    )
+                    && reference.target_pose_sha256
+                        == instruction_pose_fingerprint_v1(
                             &step.pose.source_model_fingerprint,
                             fixed_face,
                             &step.pose.hinge_angles,
-                        )
+                        );
+                let graph_endpoints_match = reference.source_pose_sha256
+                    == stacked_fold_graph_pose_fingerprint_v1(&previous.pose.hinge_angles)
+                    && reference.target_pose_sha256
+                        == stacked_fold_graph_pose_fingerprint_v1(&step.pose.hinge_angles);
+                if described_binding != Some(reference.binding_sha256)
+                    || reference.source_model_binding_sha256
+                        != <[u8; 32]>::from(model_hash.finalize())
+                    || !(instruction_endpoints_match || graph_endpoints_match)
                 {
                     return Err(InstructionExportError::InvalidPathCertificateReference {
                         step_index,
@@ -454,6 +459,21 @@ fn validate_path_certificate_references(
         }
     }
     Ok(())
+}
+
+fn stacked_fold_graph_pose_fingerprint_v1(
+    hinge_angles: &[ori_domain::InstructionHingeAngle],
+) -> [u8; 32] {
+    let mut canonical = hinge_angles.to_vec();
+    canonical.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
+    let mut hash = Sha256::new();
+    hash.update(b"stacked_fold_certified_path_graph_state_v1");
+    hash.update((canonical.len() as u64).to_be_bytes());
+    for hinge in canonical {
+        hash.update(hinge.edge.canonical_bytes());
+        hash.update(hinge.angle_degrees.to_bits().to_be_bytes());
+    }
+    hash.finalize().into()
 }
 
 fn decode_lower_hex_32(value: &str) -> Option<[u8; 32]> {
@@ -1081,6 +1101,36 @@ mod tests {
             .expect("proof-bearing export");
             assert_eq!(artifact.step_count, reopened.steps.len());
             assert_eq!(artifact.page_count, plan.pages.len());
+        }
+
+        let mut graph_bound_reopened = reopened.clone();
+        let graph_source = stacked_fold_graph_pose_fingerprint_v1(
+            &graph_bound_reopened.steps[0].pose.hinge_angles,
+        );
+        let graph_target = stacked_fold_graph_pose_fingerprint_v1(
+            &graph_bound_reopened.steps[1].pose.hinge_angles,
+        );
+        let graph_reference = graph_bound_reopened.steps[1]
+            .visual
+            .path_certificate_reference_v1
+            .as_mut()
+            .expect("graph-bound structured proof reference");
+        graph_reference.source_pose_sha256 = graph_source;
+        graph_reference.target_pose_sha256 = graph_target;
+        for format in [
+            InstructionExportFormat::Pdf17,
+            InstructionExportFormat::SvgPageZip,
+        ] {
+            export_instruction_document(
+                format,
+                "pose-graph証明付き手順",
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &graph_bound_reopened,
+                &fixture.topology,
+            )
+            .expect("graph-bound proof-bearing export");
         }
 
         let mut malformed_reference = reopened.clone();

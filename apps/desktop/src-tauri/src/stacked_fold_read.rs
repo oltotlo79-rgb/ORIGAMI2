@@ -338,13 +338,8 @@ fn propose_current_cycle_pose_inner(
     let source = pose_state_fingerprint_v1(pose.hinge_angles());
     let target = pose_state_fingerprint_v1(&requested);
     let paper_thickness_mm = project.editor.paper().thickness_mm;
-    let positive_graph_supported = geometry.face_ids().len() == 6
-        && geometry.hinges().len() == 7
-        && audit.closure_hinges().len() == 2
-        && generated
-            .schedule()
-            .collective_profile_edges_v1()
-            .is_some_and(|moving| moving.len() == 3);
+    let positive_graph_supported =
+        positive_collective_axis_graph_v1(geometry, audit, generated.schedule());
     let continuous = if paper_thickness_mm > 0.0 && positive_graph_supported {
         diagnose_scheduled_positive_thickness_cycle_path_v1(
             geometry,
@@ -436,6 +431,45 @@ fn propose_current_cycle_pose_inner(
         continuous_path_certified: true,
         authorizes_project_mutation: false,
     })
+}
+
+fn positive_collective_axis_graph_v1(
+    geometry: &ori_kinematics::MaterialHingeGraphGeometry,
+    audit: &ori_kinematics::MaterialHingeGraphAudit,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+) -> bool {
+    let Some(moving) = schedule.collective_profile_edges_v1() else {
+        return false;
+    };
+    if moving.is_empty() || audit.closure_hinges().is_empty() {
+        return false;
+    }
+    let hinges = geometry
+        .hinges()
+        .iter()
+        .filter(|hinge| moving.contains(&hinge.edge()))
+        .collect::<Vec<_>>();
+    let Some(reference) = hinges.first() else {
+        return false;
+    };
+    let origin = reference.start();
+    let axis = reference.axis();
+    let on_line = |point: ori_kinematics::Point3| {
+        let delta = [
+            point.x() - origin.x(),
+            point.y() - origin.y(),
+            point.z() - origin.z(),
+        ];
+        let cross = [
+            delta[1] * axis.z() - delta[2] * axis.y(),
+            delta[2] * axis.x() - delta[0] * axis.z(),
+            delta[0] * axis.y() - delta[1] * axis.x(),
+        ];
+        cross.into_iter().all(|value| value.abs() <= 1.0e-12)
+    };
+    hinges
+        .iter()
+        .all(|hinge| on_line(hinge.start()) && on_line(hinge.end()))
 }
 
 fn emit_current_cycle_status_v1(
@@ -1653,13 +1687,11 @@ async fn propose_current_stacked_fold_read_inner(
                 })?;
             let graph_geometry = initial.target().hinge_geometry();
             let graph_audit = initial.target().audit();
-            let positive_graph_supported = graph_geometry.face_ids().len() == 6
-                && graph_geometry.hinges().len() == 7
-                && graph_audit.closure_hinges().len() == 2
-                && generated
-                    .schedule()
-                    .collective_profile_edges_v1()
-                    .is_some_and(|moving| moving.len() == 3);
+            let positive_graph_supported = positive_collective_axis_graph_v1(
+                graph_geometry,
+                graph_audit,
+                generated.schedule(),
+            );
             let continuous = if paper_thickness_mm > 0.0 && positive_graph_supported
             {
                 diagnose_scheduled_positive_thickness_cycle_path_v1(

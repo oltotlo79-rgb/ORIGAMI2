@@ -68,19 +68,32 @@ try {
   await page.getByRole('list', { name: 'Bounded generic target binding dimensions' }).getByText(/length 315/).waitFor()
   await page.getByRole('button', { name: 'Evaluate generic target grid' }).click()
   const preview = page.getByRole('region', { name: 'Generic target candidate preview' }); await preview.waitFor()
+  await assertWitnessCanvas(page.getByRole('img', { name: 'Contour placement correspondence candidate 1' }))
+  await page.getByRole('button', { name: 'Select contour candidate 2' }).click()
+  await page.getByText(/Contour placement witness candidate 2: body 4, local/).waitFor()
+  await assertWitnessCanvas(page.getByRole('img', { name: 'Contour placement correspondence candidate 2' }))
   await page.getByRole('button', { name: 'Replace recognized target' }).click(); await preview.waitFor({ state: 'detached' })
   await page.getByRole('button', { name: 'Recognize mixed target GLB' }).click(); await assertBindings(page)
   await page.getByRole('button', { name: 'Evaluate generic target grid' }).click()
   await page.getByRole('button', { name: 'Cancel generic target grid' }).click(); await preview.waitFor({ state: 'detached' })
   await page.getByRole('button', { name: 'Evaluate generic target grid' }).click()
+  await page.getByRole('button', { name: 'Select contour candidate 2' }).click()
   await page.getByRole('button', { name: 'Confirm and apply generic target' }).click(); await preview.waitFor({ state: 'detached' })
   await page.waitForFunction(() => document.activeElement?.textContent === 'Evaluate generic target grid')
+  await page.getByText('Applied contour placement witness candidate 2', { exact: true }).waitFor()
+  await assertWitnessCanvas(page.getByRole('img', { name: 'Applied contour placement correspondence candidate 2' }))
   for (const [button, status] of [['Undo generic target', 'Generic target undone'], ['Redo generic target', 'Generic target redone'], ['Save and reopen generic target', 'Generic target saved and reopened']]) {
     await page.getByRole('button', { name: button }).click(); await page.getByText(status, { exact: true }).waitFor()
+    await page.getByText('Applied contour placement witness candidate 2', { exact: true }).waitFor()
   }
   console.log('generic target browser E2E passed: image/GLB, add/remove/reorder bounds, stale/cancel, apply history/save')
 } finally { await browser?.close(); server.kill('SIGTERM') }
 async function assertBindings(page) {
   const list = page.getByRole('list', { name: 'Bounded generic target binding dimensions' }); await list.waitFor()
   if (await list.getByRole('listitem').count() !== 2) throw new Error('generic binding count changed')
+}
+async function assertWitnessCanvas(canvas) {
+  await canvas.waitFor()
+  const painted = await canvas.evaluate((element) => element.getContext('2d').getImageData(0, 0, element.width, element.height).data.some((value) => value !== 0))
+  if (!painted) throw new Error('contour placement correspondence was not painted')
 }

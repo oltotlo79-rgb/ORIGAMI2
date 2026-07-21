@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { GenericTargetBindingList } from '../src/components/GenericTargetBindingList.tsx'
 import { ProtrusionDimensionEditor } from '../src/components/ProtrusionDimensionEditor.tsx'
 import { GenericBodyOutlineEditor } from '../src/components/GenericBodyOutlineEditor.tsx'
@@ -24,9 +24,27 @@ function Harness() {
   const [kinds, setKinds] = useState<Array<'leg' | 'horn' | 'ear' | 'wing' | 'fin' | 'antenna' | 'tail'>>(['tail', 'fin'])
   const [outline, setOutline] = useState<Array<[number, number]>>([])
   const [outlineMode, setOutlineMode] = useState<'symmetric' | 'general'>('symmetric')
+  const [selectedCandidate, setSelectedCandidate] = useState(1)
+  const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
     + bindings.reduce((sum, target) => sum + Math.max(0, (target.local_outline_tenths_mm?.length ?? 3) - 3), 0))
   const evaluate = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!preview && !applied) return
+    const canvas = witnessCanvas.current, context = canvas?.getContext('2d')
+    if (!canvas || !context) return
+    context.clearRect(0, 0, canvas.width, canvas.height)
+    const points = outline.length >= 4 ? outline : [[-50, -50], [50, -50], [50, 50], [-50, 50]]
+    const scale = selectedCandidate === 1 ? 1 : 0.82
+    context.strokeStyle = '#2563eb'; context.lineWidth = 3; context.beginPath()
+    points.forEach(([x, y], index) => { const px = 160 + x * scale, py = 100 + y * scale
+      if (index === 0) context.moveTo(px, py); else context.lineTo(px, py) })
+    context.closePath(); context.stroke()
+    context.strokeStyle = '#dc2626'; context.lineWidth = 1
+    points.forEach(([x, y], index) => { const angle = index * Math.PI * 2 / points.length
+      context.beginPath(); context.moveTo(160 + x * scale, 100 + y * scale)
+      context.lineTo(160 + Math.cos(angle) * 78, 100 + Math.sin(angle) * 78); context.stroke() })
+  }, [preview, applied, outline, selectedCandidate])
   const focus = () => requestAnimationFrame(() => evaluate.current?.focus())
   const canonicalize = (targets: typeof bindings) => targets.map(
     (target, index) => ({ ...target, id: index + 1 }),
@@ -92,12 +110,18 @@ function Harness() {
     )}</ul>}
     <button ref={evaluate} onClick={() => { if (recognized) { setPreview(true); setStatus('Generic target grid ready') } }}>Evaluate generic target grid</button>
     {preview && <section aria-label="Generic target candidate preview"><p>Global flat-foldability proven</p>
+      <button aria-pressed={selectedCandidate === 1} onClick={() => setSelectedCandidate(1)}>Select contour candidate 1</button>
+      <button aria-pressed={selectedCandidate === 2} onClick={() => setSelectedCandidate(2)}>Select contour candidate 2</button>
+      <p>Contour placement witness candidate {selectedCandidate}: body {outline.length || 4}, local {bindings.filter((binding) => binding.local_outline_tenths_mm).map((binding) => `${binding.id}:${binding.local_outline_tenths_mm!.length}`).join(', ') || 'none'}</p>
+      <canvas ref={witnessCanvas} width={320} height={200} role="img" aria-label={`Contour placement correspondence candidate ${selectedCandidate}`} />
       <button onClick={() => { setPreview(false); setStatus('Stale generic target replaced') }}>Replace recognized target</button>
       <button onClick={() => { finishBeginnerGridCancellation(() => setPreview(false), focus); setStatus('Generic target grid canceled') }}>Cancel generic target grid</button>
       <button onClick={() => void runBeginnerGridApplyWorkflow({ confirm: () => true, apply: async () => true,
         clearPreview: () => setPreview(false), restoreFocus: focus }).then((ok) => { if (ok) { setApplied(true); setStatus('Generic target applied') } })}>Confirm and apply generic target</button>
     </section>}
     {applied && <section aria-label="Generic target history">
+      <p>Applied contour placement witness candidate {selectedCandidate}</p>
+      <canvas ref={witnessCanvas} width={320} height={200} role="img" aria-label={`Applied contour placement correspondence candidate ${selectedCandidate}`} />
       <button onClick={() => setStatus('Generic target undone')}>Undo generic target</button>
       <button onClick={() => setStatus('Generic target redone')}>Redo generic target</button>
       <button onClick={() => setStatus('Generic target saved and reopened')}>Save and reopen generic target</button>

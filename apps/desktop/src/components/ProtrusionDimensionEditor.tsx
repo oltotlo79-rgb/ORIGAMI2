@@ -24,6 +24,19 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
     if (field === 'length_tenths_mm' && tenths <= 1_000_000) onChange({ ...target, [field]: tenths })
     if (field === 'thickness_tenths_mm' && tenths <= 10_000) onChange({ ...target, [field]: tenths })
   }
+  const updatePosition = (index: 1 | 2, value: number) => {
+    if (!Number.isFinite(value) || Math.abs(value) > 10_000) return
+    const position = [...target.position_tenths_mm] as [number, number, number]
+    position[index] = Math.round(value * 10)
+    onChange({ ...target, position_tenths_mm: position })
+  }
+  const updateDirection = (index: 0 | 1, value: number) => {
+    if (!Number.isFinite(value) || Math.abs(value) > 1) return
+    const direction = [...target.direction_milli] as [number, number, number]
+    direction[index] = Math.round(value * 1_000)
+    if (direction.every((component) => component === 0)) return
+    onChange({ ...target, direction_milli: direction })
+  }
   const symmetry = locale === 'ja'
     ? target.symmetry === 'none' ? '非対称単独' : '左右対称'
     : target.symmetry === 'none' ? 'Asymmetric single' : 'Bilateral'
@@ -54,11 +67,39 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
         value={target.length_tenths_mm / 10}
         onChange={(event) => update('length_tenths_mm', Number(event.currentTarget.value))} />
     </label>
-    <label>{locale === 'ja' ? '厚さ (mm)' : 'Thickness (mm)'}
+    <label>{target.symmetry === 'bilateral'
+      ? locale === 'ja' ? '左右間隔 (mm)' : 'Bilateral spacing (mm)'
+      : locale === 'ja' ? '厚さ (mm)' : 'Thickness (mm)'}
       <input type="number" min="0.1" max="1000" step="0.1"
-        aria-label={`${locale === 'ja' ? '厚さ' : 'Thickness'} binding ${target.id} (mm)`}
+        aria-label={`${target.symmetry === 'bilateral'
+          ? locale === 'ja' ? '左右間隔' : 'Bilateral spacing'
+          : locale === 'ja' ? '厚さ' : 'Thickness'} binding ${target.id} (mm)`}
         value={target.thickness_tenths_mm / 10}
         onChange={(event) => update('thickness_tenths_mm', Number(event.currentTarget.value))} />
+    </label>
+    <label>{locale === 'ja' ? '取付位置 上下 (mm)' : 'Mount vertical (mm)'}
+      <input type="number" min="-10000" max="10000" step="0.1"
+        aria-label={`${locale === 'ja' ? '取付位置 上下' : 'Mount vertical'} binding ${target.id} (mm)`}
+        value={target.position_tenths_mm[1] / 10}
+        onChange={(event) => updatePosition(1, Number(event.currentTarget.value))} />
+    </label>
+    <label>{locale === 'ja' ? '取付位置 前後 (mm)' : 'Mount fore-aft (mm)'}
+      <input type="number" min="-10000" max="10000" step="0.1"
+        aria-label={`${locale === 'ja' ? '取付位置 前後' : 'Mount fore-aft'} binding ${target.id} (mm)`}
+        value={target.position_tenths_mm[2] / 10}
+        onChange={(event) => updatePosition(2, Number(event.currentTarget.value))} />
+    </label>
+    <label>{locale === 'ja' ? '向き 左右' : 'Direction horizontal'}
+      <input type="number" min="-1" max="1" step="0.001"
+        aria-label={`${locale === 'ja' ? '向き 左右' : 'Direction horizontal'} binding ${target.id}`}
+        value={target.direction_milli[0] / 1_000}
+        onChange={(event) => updateDirection(0, Number(event.currentTarget.value))} />
+    </label>
+    <label>{locale === 'ja' ? '向き 上下' : 'Direction vertical'}
+      <input type="number" min="-1" max="1" step="0.001"
+        aria-label={`${locale === 'ja' ? '向き 上下' : 'Direction vertical'} binding ${target.id}`}
+        value={target.direction_milli[1] / 1_000}
+        onChange={(event) => updateDirection(1, Number(event.currentTarget.value))} />
     </label>
     <button type="button" disabled={!canRemove} onClick={onRemove}>{locale === 'ja' ? '削除' : 'Remove'}</button>
     <button type="button" disabled={!canMoveUp} onClick={onMoveUp}>

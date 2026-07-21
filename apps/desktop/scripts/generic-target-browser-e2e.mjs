@@ -21,6 +21,13 @@ try {
   await editor.getByRole('button', { name: 'Move down' }).first().click()
   if (await page.getByLabel('Length binding 1 (mm)').inputValue() !== '22') throw new Error('reorder was not canonicalized')
   if (await page.getByLabel('Part kind binding 1').inputValue() !== 'fin') throw new Error('part kind was detached during reorder')
+  await page.getByLabel('Mount vertical binding 1 (mm)').fill('12.5')
+  await page.getByLabel('Mount fore-aft binding 1 (mm)').fill('-3.5')
+  await page.getByLabel('Direction horizontal binding 1').fill('0.75')
+  await page.getByLabel('Bilateral spacing binding 1 (mm)').fill('6.5')
+  if (await page.getByLabel('Mount vertical binding 1 (mm)').inputValue() !== '12.5'
+    || await page.getByLabel('Mount fore-aft binding 1 (mm)').inputValue() !== '-3.5'
+    || await page.getByLabel('Direction horizontal binding 1').inputValue() !== '0.75') throw new Error('mount geometry edit was not retained')
   await page.getByLabel('Part kind binding 1').selectOption('wing')
   if (await page.getByLabel('Part kind binding 1').inputValue() !== 'wing') throw new Error('part kind was not editable')
   await page.getByRole('button', { name: 'Add binding' }).click()

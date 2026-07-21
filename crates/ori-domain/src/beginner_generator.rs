@@ -1632,24 +1632,31 @@ fn bounded_generic_composite_endpoints(
         isolated
             .protrusions
             .retain(|candidate| candidate.id == target.id);
-        match (target.count, target.symmetry) {
+        let candidates = match (target.count, target.symmetry) {
             (1, BeginnerProtrusionSymmetryV1::None) => {
-                endpoints.push(parameterized_center_axis_endpoint(
+                vec![parameterized_center_axis_endpoint(
                     &isolated,
                     target.direction_milli[1].unsigned_abs()
                         >= target.direction_milli[0].unsigned_abs(),
-                )?)
+                )?]
             }
-            (2 | 4, BeginnerProtrusionSymmetryV1::Bilateral) => {
-                endpoints.extend(parameterized_symmetric_endpoints(
-                    &isolated,
-                    target.count,
-                    target.direction_milli[1].unsigned_abs()
-                        > target.direction_milli[0].unsigned_abs(),
-                )?)
-            }
+            (2 | 4, BeginnerProtrusionSymmetryV1::Bilateral) => parameterized_symmetric_endpoints(
+                &isolated,
+                target.count,
+                target.direction_milli[1].unsigned_abs() > target.direction_milli[0].unsigned_abs(),
+            )?
+            .to_vec(),
             _ => return None,
+        };
+        if candidates.iter().any(|candidate| {
+            endpoints.iter().any(|existing: &(f64, f64)| {
+                (existing.0 - candidate.0).abs() < f64::EPSILON
+                    && (existing.1 - candidate.1).abs() < f64::EPSILON
+            })
+        }) {
+            return None;
         }
+        endpoints.extend(candidates);
     }
     Some(endpoints)
 }
@@ -2091,6 +2098,15 @@ mod tests {
         );
         assert_eq!(generic_plans[0].crease_pattern.vertices.len(), 9);
         assert_eq!(generic_plans[0].crease_pattern.edges.len(), 8);
+        let mut intersecting_generic = generic.clone();
+        let mut overlapping = intersecting_generic.protrusions[0].clone();
+        overlapping.id = 2;
+        intersecting_generic.protrusions[1] = overlapping;
+        intersecting_generic.target_parts.last_mut().unwrap().count = 1;
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &intersecting_generic),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         let mut reordered_generic = generic.clone();
         reordered_generic.protrusions.reverse();
         assert_eq!(

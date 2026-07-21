@@ -50,4 +50,16 @@ describe('ProtrusionDimensionEditor', () => {
     fireEvent.change(screen.getByLabelText('Part kind binding 1'), { target: { value: 'wing' } })
     expect(kindChange).toHaveBeenCalledWith('wing')
   })
+  it('bounds mount position and direction edits and labels bilateral spacing', () => {
+    const change = vi.fn()
+    render(<ul><ProtrusionDimensionEditor locale="en"
+      target={{ ...target, count: 2, symmetry: 'bilateral' }} onChange={change} onRemove={() => {}} /></ul>)
+    expect(screen.getByLabelText('Bilateral spacing binding 1 (mm)')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Mount vertical binding 1 (mm)'), { target: { value: '12.5' } })
+    expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ position_tenths_mm: [0, 125, 0] }))
+    fireEvent.change(screen.getByLabelText('Mount fore-aft binding 1 (mm)'), { target: { value: '10001' } })
+    expect(change).toHaveBeenCalledTimes(1)
+    fireEvent.change(screen.getByLabelText('Direction horizontal binding 1'), { target: { value: '0.5' } })
+    expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ direction_milli: [500, 0, 0] }))
+  })
 })

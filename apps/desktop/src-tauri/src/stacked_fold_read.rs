@@ -248,6 +248,8 @@ pub(super) struct DyadicPoseGraphReadRequestV1 {
     target_angles: Vec<DyadicPoseGraphAngleDtoV1>,
     max_states: usize,
     max_transitions: usize,
+    #[serde(default)]
+    cycle_schedule_v1: Option<CycleScheduleRequestV1>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -355,6 +357,8 @@ pub(super) struct DyadicPathPreviewRequestV1 {
     target_angles: Vec<DyadicPoseGraphAngleDtoV1>,
     max_states: usize,
     max_transitions: usize,
+    #[serde(default)]
+    cycle_schedule_v1: Option<CycleScheduleRequestV1>,
     expected_path_binding_sha256: String,
     expected_positive_thickness_binding_sha256: String,
     expected_layer_transport_binding_sha256: String,
@@ -477,6 +481,7 @@ fn mint_dyadic_pose_path_preview_inner_v1(
             target_angles: request.target_angles,
             max_states: request.max_states,
             max_transitions: request.max_transitions,
+            cycle_schedule_v1: request.cycle_schedule_v1,
         },
         Some(&mut native_authority),
     )?;
@@ -737,6 +742,26 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
             .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?,
     )
     .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+    let collective_schedule = request
+        .cycle_schedule_v1
+        .as_ref()
+        .map(|schedule| {
+            prepare_requested_cycle_schedule_v1(
+                schedule,
+                geometry,
+                audit,
+                pose.fixed_face(),
+                pose.hinge_angles(),
+            )
+        })
+        .transpose()
+        .map_err(str::to_owned)?;
+    if collective_schedule
+        .as_ref()
+        .is_some_and(|schedule| schedule.evaluate(1.0).as_ref() != Some(&target))
+    {
+        return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+    }
     let graph = match ori_kinematics::generate_bounded_dyadic_pose_graph_v1(
         pose.hinge_angles(),
         &target,
@@ -868,12 +893,16 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 .iter()
                 .position(|value| value == &edge.target)?;
             let generated = if source == graph.source_state() && target == graph.target_state() {
+                collective_schedule.as_ref().and_then(|schedule| {
+                    ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(
+                        schedule.clone(), pose.hinge_angles(), &graph.states()[target]).ok()
+                }).or_else(||
                 [1, 2, 4, 8, 16].into_iter().find_map(|denominator| {
                     let generated = ori_kinematics::generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v1(
                         geometry, audit, pose.fixed_face(), denominator, production_cycle_schedule_limits_v1()).ok()?;
                     (generated.schedule().evaluate(1.0).as_ref() == Some(&graph.states()[target]))
                         .then_some(generated)
-                })
+                }))
             } else {
                 None
             }
@@ -3961,6 +3990,7 @@ mod tests {
                 .collect(),
             max_states,
             max_transitions: 64,
+            cycle_schedule_v1: None,
         };
         let limited_request = request(8);
         let live_request = request(32);
@@ -7179,6 +7209,7 @@ mod tests {
                     .collect(),
                 max_states: 32,
                 max_transitions: 128,
+                cycle_schedule_v1: None,
             };
             read_bounded_dyadic_pose_graph_inner_v1(&state, Some(&layer_state), request, None)
                 .expect("real Kawasaki dyadic read")
@@ -7198,6 +7229,7 @@ mod tests {
                 .collect(),
             max_states: 32,
             max_transitions: 128,
+            cycle_schedule_v1: None,
             expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
             expected_positive_thickness_binding_sha256: observed
                 .positive_thickness_binding_sha256

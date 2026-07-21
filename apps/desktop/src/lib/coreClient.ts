@@ -3095,6 +3095,7 @@ export function readBoundedDyadicPoseGraphV1(request: Readonly<{
   targetAngles: readonly Readonly<{ edge: string; angleDegrees: number }>[]
   maxStates: number
   maxTransitions: number
+  cycleScheduleV1?: CycleScheduleRequestV1
 }>): Promise<DyadicPoseGraphReadResponseV1> {
   if (!isCanonicalNonNilUuid(request.expectedProjectInstanceId)
     || !isCanonicalNonNilUuid(request.expectedProjectId)
@@ -3149,6 +3150,7 @@ export function mintDyadicPosePathPreviewV1(request: Readonly<{
   targetAngles: readonly Readonly<{ edge: string; angleDegrees: number }>[]
   maxStates: number
   maxTransitions: number
+  cycleScheduleV1?: CycleScheduleRequestV1
   expectedPathBindingSha256: string
   expectedPositiveThicknessBindingSha256: string
   expectedLayerTransportBindingSha256: string

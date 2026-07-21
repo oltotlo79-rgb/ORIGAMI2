@@ -12,6 +12,11 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_WRITE};
+
 const SCHEMA: u8 = 1;
 const MAX_RECENT: usize = 10;
 const MAX_DISPLAY_NAME_BYTES: usize = 160;
@@ -132,11 +137,7 @@ impl RecentProjectStorage for FileRecentProjectStorage {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err(()),
         }
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staged)
-            .map_err(|_| ())?;
+        let mut file = open_staged_create_new(&staged)?;
         let result = (|| {
             file.write_all(bytes).map_err(|_| ())?;
             file.sync_all().map_err(|_| ())?;
@@ -152,6 +153,25 @@ impl RecentProjectStorage for FileRecentProjectStorage {
         }
         result
     }
+}
+
+#[cfg(not(windows))]
+fn open_staged_create_new(path: &Path) -> Result<fs::File, ()> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|_| ())
+}
+
+#[cfg(windows)]
+fn open_staged_create_new(path: &Path) -> Result<fs::File, ()> {
+    OpenOptions::new()
+        .write(true)
+        .access_mode(FILE_GENERIC_WRITE | DELETE)
+        .create_new(true)
+        .open(path)
+        .map_err(|_| ())
 }
 
 fn content_digest(bytes: &[u8]) -> [u8; 32] {

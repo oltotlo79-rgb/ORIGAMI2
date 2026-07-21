@@ -603,6 +603,56 @@ describe('InstructionTimelinePanel localization', () => {
     expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
       .toBe(true)
   })
+
+  it('reopens a multi-segment Miura atomic timeline with exportable read-only proof details', async () => {
+    const face = '11111111-1111-1111-1111-111111111111'
+    const edge = '22222222-2222-2222-2222-222222222222'
+    const poses = [5, 45, 90].map((angle) => ({
+      ...SNAPSHOT.instruction_timeline.steps[0]!.pose,
+      fixed_face: face,
+      hinge_angles: [{ edge, angle_degrees: angle }],
+    }))
+    const binding = Array(32).fill(0x6d)
+    const modelBinding = sha256Bytes([
+      Buffer.from('path_certificate_source_model_binding_v1'),
+      Buffer.from(FINGERPRINT),
+    ])
+    const steps = poses.map((pose, index) => ({
+      ...SNAPSHOT.instruction_timeline.steps[0]!,
+      id: `miura-${index}`,
+      title: index === 0 ? 'Miura開始姿勢' : `Miura atomic ${index}`,
+      description: index === 0
+        ? '構造化証明の始点姿勢です。'
+        : `認証済みの連続折り経路で「Miura atomic」を適用します。経路証明 SHA-256: ${'6d'.repeat(32)} / 元モデル SHA-256: ${FINGERPRINT}`,
+      pose,
+      visual: index === 0 ? SNAPSHOT.instruction_timeline.steps[0]!.visual : {
+        ...SNAPSHOT.instruction_timeline.steps[0]!.visual,
+        path_certificate_reference_v1: {
+          version: 1 as const,
+          model_id: 'bounded_certified_pose_graph_path_reference_v1' as const,
+          binding_sha256: binding,
+          source_pose_sha256: graphPoseFingerprint(poses[index - 1]!.hinge_angles),
+          target_pose_sha256: graphPoseFingerprint(pose.hinge_angles),
+          source_model_binding_sha256: modelBinding,
+          transition_count: 2,
+        },
+      },
+    }))
+    const reopened = JSON.parse(JSON.stringify({
+      ...SNAPSHOT,
+      instruction_timeline: { steps },
+    })) as ProjectSnapshot
+    renderPanel(reopened)
+    fireEvent.click(screen.getByText('3. Miura atomic 2 · 完成形サムネイル').closest('button')!)
+    const details = await screen.findByLabelText('構造化経路証明')
+    expect(details.textContent).toContain('検証区間: 2')
+    expect(details.textContent).toContain('証明指紋: 6d6d6d6d6d6d…')
+    expect(details.textContent).toContain(`始点姿勢: ${shortBytes(graphPoseFingerprint(poses[1]!.hinge_angles))}`)
+    expect(details.textContent).toContain(`終点姿勢: ${shortBytes(graphPoseFingerprint(poses[2]!.hinge_angles))}`)
+    expect(details.querySelector('input, textarea, button')).toBeNull()
+    expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
+      .toBe(false)
+  })
 })
 
 function panelFor(snapshot: ProjectSnapshot) {

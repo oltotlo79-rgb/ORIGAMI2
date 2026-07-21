@@ -30,8 +30,9 @@ use ori_foldability::{
     GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, GlobalFlatFoldabilityOutcome,
 };
 use ori_kinematics::{
-    CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1, MultiHingePathCandidateLimitsV1, Point3,
-    TreeKinematicsLimits, generate_linear_multi_hinge_path_candidate_v1,
+    CycleBasisLimitsV1, CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1,
+    MultiHingePathCandidateLimitsV1, Point3, TreeKinematicsLimits,
+    generate_linear_multi_hinge_path_candidate_v1,
 };
 use ori_topology::{FaceExtractionInput, TopologyIssueSeverity, analyze_faces};
 use serde::{Deserialize, Serialize};
@@ -321,12 +322,13 @@ fn propose_current_cycle_pose_inner(
         &requested,
     )
     .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
-    let closure = geometry
-        .prove_dyadic_schedule_closure_v1(
+    let basis_closure = geometry
+        .prove_simultaneous_cycle_basis_schedule_closure_v1(
             audit,
             pose.fixed_face(),
             generated.schedule(),
             ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+            CycleBasisLimitsV1::default(),
             DyadicIntervalClosureLimitsV1 {
                 max_depth: 16,
                 max_leaves: 65_536,
@@ -335,6 +337,7 @@ fn propose_current_cycle_pose_inner(
             },
         )
         .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned())?;
+    let closure = basis_closure.closure().clone();
     let source = pose_state_fingerprint_v1(pose.hinge_angles());
     let target = pose_state_fingerprint_v1(&requested);
     let paper_thickness_mm = project.editor.paper().thickness_mm;

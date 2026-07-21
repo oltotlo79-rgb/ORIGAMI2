@@ -1598,17 +1598,14 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
             positive_thickness_bits: Some(thickness.to_bits()),
         };
     }
-    if let Some(thickness) = paper_thickness_mm
-        && theta_collective_axis_positive_thickness_premises_v1(
-            geometry, audit, fixed_face, schedule, closure, thickness,
-        )
+    if theta_collective_axis_continuous_premises_v1(geometry, audit, fixed_face, schedule, closure)
     {
         return StackedFoldCyclePathDiagnosticV1 {
             certified: true,
             first_closure_failure_angle_degrees: None,
             leaf_count: closure.leaves().len(),
             pair_work: geometry.face_ids().len() * (geometry.face_ids().len() - 1) / 2,
-            positive_thickness_bits: Some(thickness.to_bits()),
+            positive_thickness_bits: paper_thickness_mm.map(f64::to_bits),
         };
     }
     let mut pending = (0..interval_count)
@@ -1725,18 +1722,15 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
     }
 }
 
-fn theta_collective_axis_positive_thickness_premises_v1(
+fn theta_collective_axis_continuous_premises_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
     fixed_face: FaceId,
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
     closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
-    paper_thickness_mm: f64,
 ) -> bool {
     if geometry.face_ids().len() < 3
         || audit.closure_hinges().is_empty()
-        || !paper_thickness_mm.is_finite()
-        || paper_thickness_mm <= 0.0
         || !closure.every_leaf_covers_graph_v1(geometry)
         || closure.fixed_face() != fixed_face
     {

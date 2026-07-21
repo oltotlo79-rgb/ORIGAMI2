@@ -3681,7 +3681,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "theta native transition evidence is not yet issued by the certified path bridge"]
     fn theta_positive_thickness_preview_applies_and_round_trips_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         for thickness_mm in [0.1, 1.0, 3.0] {

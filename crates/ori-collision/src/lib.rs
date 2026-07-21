@@ -101,8 +101,9 @@ pub use graph_positive_thickness::{
     prove_positive_thickness_graph_geometry_v1,
 };
 pub use non_flat_cell_transport::{
-    NON_FLAT_CELL_TRANSPORT_MODEL_ID_V1, NonFlatCellTransportErrorV1, NonFlatCellTransportProofV1,
-    certify_non_flat_cell_transport_v1,
+    NON_FLAT_CELL_TRANSPORT_MODEL_ID_V1, NonFlatCellTransportErrorV1, NonFlatCellTransportLimitsV1,
+    NonFlatCellTransportProofV1, certify_non_flat_cell_transport_v1,
+    certify_non_flat_cell_transport_with_limits_v1, preflight_non_flat_cell_transport_v1,
 };
 pub use stacked_fold_read::{
     NativeStackedFoldMaterialMapV1, NativeStackedFoldReadGuardV1, NativeStackedFoldReadProposalV1,

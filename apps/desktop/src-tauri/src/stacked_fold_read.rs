@@ -4662,22 +4662,57 @@ mod tests {
             preview.transaction_token,
         )
         .expect("sixteen-sector opposite pair apply");
+        let second_preview = propose_current_cycle_pose_inner(
+            None,
+            &state,
+            &transactions,
+            CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: applied,
+                cycle_schedule_v1: advance_collective_schedule(&hinges, &moving, 100),
+            },
+        )
+        .expect("C16 rebound authority must authorize the second preview");
+        assert_eq!(second_preview.checked_hinge_count, 16);
+        assert_eq!(second_preview.total_hinge_count, 16);
+        let second_applied =
+            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                &state,
+                &GlobalFlatFoldabilityState::default(),
+                &transactions,
+                second_preview.transaction_token,
+            )
+            .expect("second C16 operation applies atomically");
         let mut project = super::super::lock_project(&state).unwrap();
-        project.editor.undo(applied).unwrap();
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
+        project.editor.undo(second_applied).unwrap();
+        let first_undone = project.editor.revision();
+        project.editor.undo(first_undone).unwrap();
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+        let first_redo = project.editor.revision();
+        project.editor.redo(first_redo).unwrap();
+        let second_redo = project.editor.revision();
+        project.editor.redo(second_redo).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
         let archive = project.project_archive().expect("serialize C16 cycle");
         let mut reopened = super::super::ProjectState::from_project_archive(
             archive,
             std::path::PathBuf::from("sixteen-cycle.ori2"),
         )
         .expect("reopen C16 cycle");
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
         let reopened_revision = reopened.editor.revision();
         reopened.editor.undo(reopened_revision).unwrap();
-        let reopened_undone = reopened.editor.revision();
-        reopened.editor.redo(reopened_undone).unwrap();
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+        let reopened_first_undone = reopened.editor.revision();
+        reopened.editor.undo(reopened_first_undone).unwrap();
+        assert!(reopened.editor.instruction_timeline().steps.is_empty());
+        let reopened_first_redo = reopened.editor.revision();
+        reopened.editor.redo(reopened_first_redo).unwrap();
+        let reopened_second_redo = reopened.editor.revision();
+        reopened.editor.redo(reopened_second_redo).unwrap();
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
 
         let (pattern, paper, nonopposite) = sixteen_sector_cycle_pattern(7);
         let mut rejected = super::super::ProjectState::new_with_paper(pattern, paper);

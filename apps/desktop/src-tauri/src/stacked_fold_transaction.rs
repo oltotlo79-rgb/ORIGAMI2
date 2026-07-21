@@ -1155,10 +1155,7 @@ fn apply_stacked_fold_transaction_with_title(
         )
         .map_err(|_| "The stacked-fold transaction could not be applied atomically.".to_owned())?;
     drop(_pose_guard);
-    if restore_persisted_current_pose(&mut project, &persisted_current_pose).is_err() {
-        project.editor = editor_before;
-        return Err("The target pose authority could not be installed atomically.".to_owned());
-    }
+    reissue_target_pose_or_rollback(&mut project, &persisted_current_pose, editor_before)?;
     match (&applied_layer_order, layer_guard) {
         (Some(PendingStackedFoldLayerProof::NonFlat(_)) | None, layer_guard) => {
             if let Some(layer_guard) = layer_guard {
@@ -1186,6 +1183,18 @@ fn apply_stacked_fold_transaction_with_title(
             .is_none_or(|order| order.target_revision() == result.revision)
     );
     Ok(result.revision)
+}
+
+fn reissue_target_pose_or_rollback(
+    project: &mut super::ProjectState,
+    persisted_current_pose: &InstructionPose,
+    editor_before: ori_core::EditorState,
+) -> Result<(), String> {
+    if restore_persisted_current_pose(project, persisted_current_pose).is_err() {
+        project.editor = editor_before;
+        return Err("The target pose authority could not be installed atomically.".to_owned());
+    }
+    Ok(())
 }
 
 fn lock_slot(
@@ -1220,6 +1229,27 @@ mod tests {
         }
         assert!(cancel_pending_stacked_fold(&state, first).is_err());
         assert_eq!(lock_slot(&state).unwrap().active_generation, Some(second));
+    }
+
+    #[test]
+    fn target_pose_reissue_failure_restores_the_complete_editor() {
+        let mut project = super::super::initial_project_state();
+        let editor_before = project.editor.clone();
+        let document_before = project.document();
+        project.editor = ori_core::EditorState::with_paper(
+            ori_domain::CreasePattern::empty(),
+            ori_domain::Paper::default(),
+        );
+        let invalid_pose = InstructionPose {
+            model: InstructionPoseModel::DeclarativeOnlyV1,
+            source_model_fingerprint: String::new(),
+            fixed_face: None,
+            hinge_angles: Vec::new(),
+        };
+        assert!(
+            reissue_target_pose_or_rollback(&mut project, &invalid_pose, editor_before).is_err()
+        );
+        assert_eq!(project.document(), document_before);
     }
 
     #[test]

@@ -1985,30 +1985,36 @@ fn certify_beginner_fold_path_v1(
                 },
             )
             .ok()?;
-        let path = if paper.thickness_mm > 0.0
-            && ori_collision::supports_scheduled_positive_thickness_path_v1(
+        let certificate_model = if paper.thickness_mm > 0.0 {
+            let certificate =
+                ori_collision::certify_canonical_positive_thickness_cycle_schedule_path_v1(
+                    &geometry,
+                    &audit,
+                    fixed_face,
+                    generated.schedule(),
+                    &closure,
+                    paper.thickness_mm,
+                    32,
+                )?;
+            if !certificate.is_for(
                 &geometry,
-                &audit,
                 fixed_face,
                 generated.schedule(),
-            ) {
-            ori_collision::diagnose_scheduled_positive_thickness_cycle_path_v1(
-                &geometry,
-                &audit,
-                fixed_face,
-                &generated,
                 &closure,
                 paper.thickness_mm,
-                32,
-            )
+            ) {
+                return None;
+            }
+            ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
         } else if paper.thickness_mm == 0.0 {
-            ori_collision::diagnose_scheduled_cycle_path_v1(
+            let path = ori_collision::diagnose_scheduled_cycle_path_v1(
                 &geometry, &audit, fixed_face, &generated, &closure, 32,
-            )
+            );
+            path.continuous_certificate_model_id()?
         } else {
             return None;
         };
-        (path.continuous_certificate_model_id()?, requested)
+        (certificate_model, requested)
     };
     let bytes = serde_json::to_vec(&(
         "bounded_native_fold_path_v2",
@@ -15241,14 +15247,14 @@ mod tests {
                     *fixed,
                     ori_kinematics::CycleScheduleLimitsV1::default(),
                 )
-                    .is_ok_and(|candidate| {
-                        ori_collision::supports_scheduled_positive_thickness_path_v1(
-                            &geometry,
-                            &audit,
-                            *fixed,
-                            candidate.schedule(),
-                        )
-                    })
+                .is_ok_and(|candidate| {
+                    ori_collision::supports_scheduled_positive_thickness_path_v1(
+                        &geometry,
+                        &audit,
+                        *fixed,
+                        candidate.schedule(),
+                    )
+                })
             });
             let certificate = fixed_faces.into_iter().find_map(|fixed| {
                 let generated = ori_kinematics::generate_kawasaki_120_120_60_60_path_candidate_v1(

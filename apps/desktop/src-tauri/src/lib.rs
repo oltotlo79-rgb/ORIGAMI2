@@ -2977,10 +2977,21 @@ struct BeginnerGenericFeatureBindingWitness {
 }
 
 #[derive(Debug, Serialize)]
+struct BeginnerSkeletonBranchBindingWitness {
+    segment_id: u16,
+    parent_segment_id: Option<u16>,
+    parent_endpoint: Option<&'static str>,
+    child_endpoint: Option<&'static str>,
+    generated_feature_ids: Vec<u8>,
+}
+
+#[derive(Debug, Serialize)]
 struct BeginnerContourPlacementWitness {
     body_contour_points: u8,
     local_bindings: Vec<BeginnerContourBindingWitness>,
     generic_feature_bindings: Vec<BeginnerGenericFeatureBindingWitness>,
+    skeleton_branch_bindings: Vec<BeginnerSkeletonBranchBindingWitness>,
+    skeleton_tree_authority_sha256: [u8; 32],
     witnessed_vertices: u16,
     witnessed_creases: u16,
     topology_authority_hash: [u8; 32],
@@ -3276,6 +3287,89 @@ fn beginner_contour_placement_witness(
     if max_contour_error_millionths > 1 {
         return None;
     }
+    let mut skeleton_branch_bindings = Vec::new();
+    if plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
+        let mut segments = constraints.skeleton_segments.iter().collect::<Vec<_>>();
+        segments.sort_unstable_by_key(|segment| segment.id);
+        if segments.is_empty() || segments.windows(2).any(|pair| pair[0].id >= pair[1].id) {
+            return None;
+        }
+        let point =
+            |point: ori_domain::BeginnerSkeletonPointV1| (point.x_tenths_mm, point.y_tenths_mm);
+        let adjacency = |left: &ori_domain::BeginnerSkeletonSegmentV1,
+                         right: &ori_domain::BeginnerSkeletonSegmentV1| {
+            [("start", point(left.start)), ("end", point(left.end))]
+                .into_iter()
+                .find_map(|(left_endpoint, left_point)| {
+                    [("start", point(right.start)), ("end", point(right.end))]
+                        .into_iter()
+                        .find(|(_, right_point)| *right_point == left_point)
+                        .map(|(right_endpoint, _)| (left_endpoint, right_endpoint))
+                })
+        };
+        let skeleton_points = segments
+            .iter()
+            .flat_map(|segment| [point(segment.start), point(segment.end)])
+            .collect::<HashSet<_>>();
+        if segments
+            .iter()
+            .any(|segment| point(segment.start) == point(segment.end))
+            || segments.len() != skeleton_points.len().saturating_sub(1)
+            || segments.iter().enumerate().any(|(index, left)| {
+                segments.iter().skip(index + 1).any(|right| {
+                    (point(left.start) == point(right.start) && point(left.end) == point(right.end))
+                        || (point(left.start) == point(right.end)
+                            && point(left.end) == point(right.start))
+                })
+            })
+        {
+            return None;
+        }
+        let mut visited = HashSet::from([segments[0].id]);
+        skeleton_branch_bindings.push(BeginnerSkeletonBranchBindingWitness {
+            segment_id: segments[0].id,
+            parent_segment_id: None,
+            parent_endpoint: None,
+            child_endpoint: None,
+            generated_feature_ids: generic_feature_bindings
+                .iter()
+                .filter(|binding| binding.skeleton_segment_id == segments[0].id)
+                .map(|binding| binding.generated_feature_id)
+                .collect(),
+        });
+        while visited.len() < segments.len() {
+            let next = segments.iter().find_map(|child| {
+                (!visited.contains(&child.id)).then(|| {
+                    segments.iter().find_map(|parent| {
+                        visited.contains(&parent.id).then(|| {
+                            adjacency(parent, child).map(|(parent_endpoint, child_endpoint)| {
+                                (parent.id, child, parent_endpoint, child_endpoint)
+                            })
+                        })?
+                    })
+                })?
+            });
+            let Some((parent_id, child, parent_endpoint, child_endpoint)) = next else {
+                return None;
+            };
+            visited.insert(child.id);
+            skeleton_branch_bindings.push(BeginnerSkeletonBranchBindingWitness {
+                segment_id: child.id,
+                parent_segment_id: Some(parent_id),
+                parent_endpoint: Some(parent_endpoint),
+                child_endpoint: Some(child_endpoint),
+                generated_feature_ids: generic_feature_bindings
+                    .iter()
+                    .filter(|binding| binding.skeleton_segment_id == child.id)
+                    .map(|binding| binding.generated_feature_id)
+                    .collect(),
+            });
+        }
+    }
+    let skeleton_tree_authority_sha256: [u8; 32] = sha2::Sha256::digest(
+        serde_json::to_vec(&(&constraints.skeleton_segments, &skeleton_branch_bindings)).ok()?,
+    )
+    .into();
     let topology_authority_hash: [u8; 32] = sha2::Sha256::digest(
         serde_json::to_vec(&(
             &constraints.generic_body_outline_tenths_mm,
@@ -3290,6 +3384,8 @@ fn beginner_contour_placement_witness(
         body_contour_points: u8::try_from(body_contour_points).ok()?,
         local_bindings,
         generic_feature_bindings,
+        skeleton_branch_bindings,
+        skeleton_tree_authority_sha256,
         witnessed_vertices: u16::try_from(witnessed).ok()?,
         witnessed_creases: u16::try_from(witnessed).ok()?,
         topology_authority_hash,
@@ -14005,6 +14101,21 @@ mod tests {
         .unwrap();
         let witness = beginner_contour_placement_witness(&profile.generation_constraints, &plan)
             .expect("generated contour geometry must provide a bounded witness");
+        let mut duplicate_skeleton = profile.generation_constraints.clone();
+        let mut duplicate = duplicate_skeleton.skeleton_segments[0].clone();
+        duplicate.id = 99;
+        duplicate_skeleton.skeleton_segments.push(duplicate);
+        assert!(beginner_contour_placement_witness(&duplicate_skeleton, &plan).is_none());
+        let mut cyclic_skeleton = profile.generation_constraints.clone();
+        cyclic_skeleton
+            .skeleton_segments
+            .push(ori_domain::BeginnerSkeletonSegmentV1 {
+                id: 99,
+                start: cyclic_skeleton.skeleton_segments[0].start,
+                end: cyclic_skeleton.skeleton_segments[1].start,
+                thickness_tenths_mm: 50,
+            });
+        assert!(beginner_contour_placement_witness(&cyclic_skeleton, &plan).is_none());
         let mut reordered_constraints = profile.generation_constraints.clone();
         reordered_constraints.protrusions.reverse();
         let reordered_witness = beginner_contour_placement_witness(&reordered_constraints, &plan)

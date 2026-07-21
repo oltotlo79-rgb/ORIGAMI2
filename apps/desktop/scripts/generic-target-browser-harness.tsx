@@ -378,6 +378,8 @@ function Harness() {
       {mergedAuthorities && <p>Landmark error vectors: 4 · maximum error point 3 · combined score {threeDimensionalScore}/100</p>}
       <p>Generic feature topology witness: {[...bindings].sort((left, right) => left.id - right.id).map((binding) =>
         `${binding.id}:${binding.count}@feature${binding.id}→skeleton${binding.id}.end#crease-${binding.id === 1 ? '91a70f2c' : 'a72be019'}`).join(', ')}</p>
+      <p>Confirmed tree skeleton: root→1[feature 1], 1→2[feature 2] · authority c31488da</p>
+      <button onClick={() => setStatus('Rejected skeleton graph: cycle, duplicate edge, or branch authority tampered')}>Try tampered skeleton branch graph</button>
       {mergedAuthorities && <canvas width={320} height={120} role="img" aria-label="Folded target and candidate landmark overlay" ref={(canvas) => {
         const context = canvas?.getContext('2d'); if (!canvas || !context) return
         context.clearRect(0, 0, canvas.width, canvas.height); context.fillStyle = '#2563eb'
@@ -400,6 +402,7 @@ function Harness() {
       <p>Automatic fold instructions: summary + {bindings.length} topology-bound generic feature steps</p>
       <p>Generic feature topology witness: {[...bindings].sort((left, right) => left.id - right.id).map((binding) =>
         `${binding.id}:${binding.count}@feature${binding.id}→skeleton${binding.id}.end#crease-${binding.id === 1 ? '91a70f2c' : 'a72be019'}`).join(', ')}</p>
+      <p>Persisted tree skeleton mapping: root→1[feature 1], 1→2[feature 2] · authority c31488da</p>
       <ol aria-label="Generated generic feature instruction steps">{[...bindings].sort((left, right) => left.id - right.id).map((binding) =>
         <li key={binding.id}>Shape generated feature {binding.id} · {binding.count} certified endpoint creases · skeleton segment {binding.id}.end</li>)}</ol>
       <p>Applied synthesized candidate set: {synthesizedCandidateCount} bounded designs</p>

@@ -8012,6 +8012,18 @@ function App() {
                                   .map((byte) => byte.toString(16).padStart(2, '0')).join('')}`)
                               .join(', '),
                         })}</span>
+                        {candidate.contour_witness.skeleton_branch_bindings.length > 0 && (
+                          <span className="muted">{formattedText({
+                            ja: '確認済みtree skeleton: {branches}・authority {digest}',
+                            en: 'Confirmed tree skeleton: {branches}; authority {digest}',
+                          }, {
+                            branches: candidate.contour_witness.skeleton_branch_bindings
+                              .map((branch) => `${branch.parent_segment_id ?? 'root'}→${branch.segment_id}`
+                                + `[feature ${branch.generated_feature_ids.join(',') || 'none'}]`).join(', '),
+                            digest: candidate.contour_witness.skeleton_tree_authority_sha256.slice(0, 4)
+                              .map((byte) => byte.toString(16).padStart(2, '0')).join(''),
+                          })}</span>
+                        )}
                         {candidate.assessment.proof_scope === 'sufficient'
                           && candidate.assessment.reason === 'global_flat_foldability_proven'
                           && candidate.assessment.apply_allowed && (

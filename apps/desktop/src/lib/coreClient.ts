@@ -2007,6 +2007,12 @@ export type BeginnerContourPlacementWitnessV1 = Readonly<{
     skeleton_segment_id: number, skeleton_endpoint: 'start' | 'end',
     mount_distance_squared_tenths_mm: number,
   }>>
+  skeleton_branch_bindings: ReadonlyArray<Readonly<{
+    segment_id: number, parent_segment_id: number | null,
+    parent_endpoint: 'start' | 'end' | null, child_endpoint: 'start' | 'end' | null,
+    generated_feature_ids: ReadonlyArray<number>,
+  }>>
+  skeleton_tree_authority_sha256: ReadonlyArray<number>
   witnessed_vertices: number
   witnessed_creases: number
   topology_authority_hash: ReadonlyArray<number>
@@ -2098,7 +2104,8 @@ export async function evaluateBeginnerParameterGrid(
       'id', 'scale_percent', 'spacing_percent', 'detail_level',
     ] as const)
     const witness = exactCoreDataRecord(candidate.contour_witness, [
-      'body_contour_points', 'local_bindings', 'generic_feature_bindings', 'witnessed_vertices', 'witnessed_creases', 'topology_authority_hash',
+      'body_contour_points', 'local_bindings', 'generic_feature_bindings', 'skeleton_branch_bindings',
+      'skeleton_tree_authority_sha256', 'witnessed_vertices', 'witnessed_creases', 'topology_authority_hash',
       'max_contour_error_millionths',
     ] as const)
     const bindings = witness && Array.isArray(witness.local_bindings)
@@ -2116,6 +2123,11 @@ export async function evaluateBeginnerParameterGrid(
     const witnessPointCount = witness && bindings.every((binding) => binding !== null)
       ? Number(witness.body_contour_points) + bindings.reduce((sum, binding) => sum + Number(binding?.contour_points), 0)
       : -1
+    const branchBindings = witness && Array.isArray(witness.skeleton_branch_bindings)
+      ? witness.skeleton_branch_bindings.map((branch) => exactCoreDataRecord(branch, [
+          'segment_id', 'parent_segment_id', 'parent_endpoint', 'child_endpoint',
+          'generated_feature_ids',
+        ] as const)) : []
     if (!point || !witness || !Number.isInteger(point.id) || Number(point.id) < 0 || Number(point.id) > 26
       || !Number.isInteger(point.scale_percent) || Number(point.scale_percent) < 10 || Number(point.scale_percent) > 45
       || !Number.isInteger(point.spacing_percent) || Number(point.spacing_percent) < 20 || Number(point.spacing_percent) > 80
@@ -2129,6 +2141,8 @@ export async function evaluateBeginnerParameterGrid(
       || bindings.length !== (witness.local_bindings as unknown[]).length || bindings.length > 8
       || featureBindings.length !== (witness.generic_feature_bindings as unknown[]).length
       || featureBindings.length > 8
+      || branchBindings.length !== (witness.skeleton_branch_bindings as unknown[]).length
+      || branchBindings.length > 32
       || (normalizedPlans.generated_plans[index].kind === 'composite_generic_target_base'
         ? featureBindings.length < 2
         : featureBindings.length !== 0)
@@ -2164,6 +2178,22 @@ export async function evaluateBeginnerParameterGrid(
         index !== otherIndex && binding && other
           && Number(binding.crease_start) < Number(other.crease_start) + Number(other.endpoint_count)
           && Number(other.crease_start) < Number(binding.crease_start) + Number(binding.endpoint_count)))
+      || branchBindings.some((branch, index) => !branch
+        || !Number.isInteger(branch.segment_id) || Number(branch.segment_id) < 1
+        || (index === 0 ? branch.parent_segment_id !== null
+          : !Number.isInteger(branch.parent_segment_id) || Number(branch.parent_segment_id) < 1)
+        || (index === 0 ? branch.parent_endpoint !== null || branch.child_endpoint !== null
+          : !['start', 'end'].includes(String(branch.parent_endpoint))
+            || !['start', 'end'].includes(String(branch.child_endpoint))
+            || !branchBindings.slice(0, index).some(
+              (parent) => parent?.segment_id === branch.parent_segment_id))
+        || branchBindings.slice(0, index).some(
+          (previous) => previous?.segment_id === branch.segment_id)
+        || !Array.isArray(branch.generated_feature_ids)
+        || new Set(branch.generated_feature_ids).size !== branch.generated_feature_ids.length
+        || branch.generated_feature_ids.some((id) => !featureBindings.some(
+          (binding) => binding?.generated_feature_id === id)))
+      || !isBoundedIntegerTuple(witness.skeleton_tree_authority_sha256, 32, 255)
       || !Number.isInteger(witness.witnessed_vertices) || Number(witness.witnessed_vertices) !== witnessPointCount
       || !Number.isInteger(witness.witnessed_creases) || Number(witness.witnessed_creases) !== witnessPointCount
       || !Array.isArray(witness.topology_authority_hash) || witness.topology_authority_hash.length !== 32
@@ -2221,6 +2251,15 @@ export async function evaluateBeginnerParameterGrid(
           skeleton_endpoint: String(binding?.skeleton_endpoint) as 'start' | 'end',
           mount_distance_squared_tenths_mm: Number(binding?.mount_distance_squared_tenths_mm),
         }))),
+        skeleton_branch_bindings: Object.freeze(branchBindings.map((branch) => Object.freeze({
+          segment_id: Number(branch?.segment_id),
+          parent_segment_id: branch?.parent_segment_id === null ? null : Number(branch?.parent_segment_id),
+          parent_endpoint: branch?.parent_endpoint as 'start' | 'end' | null,
+          child_endpoint: branch?.child_endpoint as 'start' | 'end' | null,
+          generated_feature_ids: Object.freeze((branch?.generated_feature_ids as number[]).slice()),
+        }))),
+        skeleton_tree_authority_sha256: Object.freeze(
+          witness.skeleton_tree_authority_sha256.slice()) as ReadonlyArray<number>,
         witnessed_vertices: Number(witness.witnessed_vertices),
         witnessed_creases: Number(witness.witnessed_creases),
         topology_authority_hash: Object.freeze(witness.topology_authority_hash.slice()) as ReadonlyArray<number>,

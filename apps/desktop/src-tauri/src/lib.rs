@@ -15077,6 +15077,7 @@ mod tests {
 
     #[test]
     fn beginner_cyclic_path_certificate_is_bound_across_supported_thicknesses() {
+        let mut thickness_certificates = Vec::new();
         for thickness_mm in [0.0, 0.1, 1.0, 3.0] {
             let points = [
                 (100.0, 0.0),
@@ -15193,11 +15194,25 @@ mod tests {
                 skeleton_segments: Vec::new(),
                 target_asset: None,
             };
-            assert!(
-                certify_beginner_fold_path_v1(&plan, &paper, &pattern, topology).is_some(),
-                "native cyclic certificate at {thickness_mm} mm"
+            let original_pattern = pattern.clone();
+            let original_paper = paper.clone();
+            let certificate = certify_beginner_fold_path_v1(&plan, &paper, &pattern, topology)
+                .expect("native cyclic certificate");
+            assert_eq!(
+                certificate,
+                certify_beginner_fold_path_v1(&plan, &paper, &pattern, topology)
+                    .expect("deterministic native cyclic certificate"),
+                "certificate is deterministic at {thickness_mm} mm"
             );
+            assert_eq!(
+                pattern, original_pattern,
+                "document pattern is observation-only"
+            );
+            assert_eq!(paper, original_paper, "document paper is observation-only");
+            thickness_certificates.push(certificate);
         }
+        let unique = thickness_certificates.iter().collect::<HashSet<_>>();
+        assert_eq!(unique.len(), thickness_certificates.len());
     }
 
     #[test]

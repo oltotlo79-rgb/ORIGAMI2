@@ -7654,7 +7654,7 @@ mod tests {
                 exact,
             )
             .unwrap();
-            if rank <= 16 {
+            if rank <= 32 {
                 let axes = [
                     [1.0, 0.0, 0.0],
                     [-1.0, 0.0, 0.0],
@@ -7705,6 +7705,23 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(derived.transition_hashes(), repeated.transition_hashes());
+                if rank == 32 {
+                    let (foreign, foreign_audit, _, _) = rational_cycle_bay_geometry(rank, false);
+                    assert!(matches!(
+                        crate::derive_continuous_layer_transport_from_poses_v1(
+                            &foreign,
+                            &foreign_audit,
+                            &derivation_source,
+                            &mapping,
+                            &schedule,
+                            &closure,
+                            separation_axis,
+                            1.0e-9,
+                            exact,
+                        ),
+                        Err(crate::ContinuousLayerTransportErrorV1::BindingMismatch)
+                    ));
+                }
                 assert!(matches!(
                     crate::derive_continuous_layer_transport_from_poses_v1(
                         &geometry,

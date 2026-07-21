@@ -12057,6 +12057,7 @@ fn runtime_update_check(
     if !valid_runtime_update_token(&token) {
         return Err("malformed".into());
     }
+    *state.2.lock().map_err(|_| "disk".to_owned())? = Some(token);
     state
         .0
         .lock()
@@ -12073,6 +12074,9 @@ fn runtime_update_download_verify_stage(
     state: tauri::State<'_, runtime_update::State>,
 ) -> Result<&'static str, String> {
     if !valid_runtime_update_token(&token) {
+        return Err("malformed".into());
+    }
+    if state.2.lock().map_err(|_| "disk".to_owned())?.as_deref() != Some(token.as_str()) {
         return Err("malformed".into());
     }
     state
@@ -12098,8 +12102,14 @@ fn runtime_update_apply(
 }
 
 #[tauri::command]
-fn runtime_update_cancel(_token: String, state: tauri::State<'_, runtime_update::State>) {
-    state.1.store(true, std::sync::atomic::Ordering::Release);
+fn runtime_update_cancel(token: String, state: tauri::State<'_, runtime_update::State>) {
+    if state
+        .2
+        .lock()
+        .is_ok_and(|active| active.as_deref() == Some(token.as_str()))
+    {
+        state.1.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 pub fn run() {

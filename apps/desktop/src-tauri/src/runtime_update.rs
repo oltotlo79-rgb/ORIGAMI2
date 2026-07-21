@@ -781,12 +781,16 @@ fn hex_sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-pub struct State(pub Mutex<Updater<ProductionAdapter>>, pub Arc<AtomicBool>);
+pub struct State(
+    pub Mutex<Updater<ProductionAdapter>>,
+    pub Arc<AtomicBool>,
+    pub Mutex<Option<String>>,
+);
 impl Default for State {
     fn default() -> Self {
         let updater = Updater::new(ProductionAdapter::default());
         let cancel = Arc::clone(&updater.cancelled);
-        Self(Mutex::new(updater), cancel)
+        Self(Mutex::new(updater), cancel, Mutex::new(None))
     }
 }
 

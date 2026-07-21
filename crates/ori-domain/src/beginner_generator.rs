@@ -114,6 +114,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     CompositeHornEarBase,
     CompositeHornTailBase,
     CompositeHornTailEarBase,
+    CompositeCompleteAnimalBase,
     CompositeWingAntennaBase,
     CompositeCompleteInsectBase,
     VerticalBookFold,
@@ -187,6 +188,15 @@ pub struct BeginnerHornTailEarBindingV1 {
     pub horn_protrusion_id: u16,
     pub tail_protrusion_id: u16,
     pub ear_pair_protrusion_id: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerCompleteAnimalBindingV1 {
+    pub horn_protrusion_id: u16,
+    pub tail_protrusion_id: u16,
+    pub ear_pair_protrusion_id: u16,
+    pub leg_protrusion_id: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -361,6 +371,47 @@ pub fn animal_horn_tail_ear_bindings_v1(
         tail_protrusion_id: tail.id,
         ear_pair_protrusion_id: ears.id,
     })
+}
+
+#[must_use]
+pub fn animal_complete_bindings_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<BeginnerCompleteAnimalBindingV1> {
+    let base = animal_horn_tail_ear_bindings_v1(constraints)?;
+    let legs = constraints
+        .target_parts
+        .iter()
+        .filter(|part| part.kind == BeginnerTargetPartKindV1::Leg)
+        .collect::<Vec<_>>();
+    if legs.len() != 1 || legs[0].count != 4 {
+        return None;
+    }
+    let leg_targets = constraints
+        .protrusions
+        .iter()
+        .filter(|target| {
+            target.count == 4 && target.symmetry == BeginnerProtrusionSymmetryV1::Bilateral
+        })
+        .collect::<Vec<_>>();
+    if leg_targets.len() != 1 {
+        return None;
+    }
+    let leg_protrusion_id = leg_targets[0].id;
+    let mut ids = [
+        base.horn_protrusion_id,
+        base.tail_protrusion_id,
+        base.ear_pair_protrusion_id,
+        leg_protrusion_id,
+    ];
+    ids.sort_unstable();
+    ids.windows(2)
+        .all(|pair| pair[0] != pair[1])
+        .then_some(BeginnerCompleteAnimalBindingV1 {
+            horn_protrusion_id: base.horn_protrusion_id,
+            tail_protrusion_id: base.tail_protrusion_id,
+            ear_pair_protrusion_id: base.ear_pair_protrusion_id,
+            leg_protrusion_id,
+        })
 }
 
 #[must_use]
@@ -731,6 +782,7 @@ pub fn generate_beginner_plans_v1(
                 && part_count(BeginnerTargetPartKindV1::Tail) == 1
                 && part_count(BeginnerTargetPartKindV1::Ear) == 2
             {
+                let complete = animal_complete_bindings_v1(constraints);
                 let bindings = animal_horn_tail_ear_bindings_v1(constraints)
                     .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
                 let mut horn_only = constraints.clone();
@@ -753,17 +805,37 @@ pub fn generate_beginner_plans_v1(
                     .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
                 let mut endpoints = vec![horn, tail];
                 endpoints.extend(ears);
+                if let Some(complete) = complete {
+                    let mut leg_only = constraints.clone();
+                    leg_only
+                        .protrusions
+                        .retain(|target| target.id == complete.leg_protrusion_id);
+                    endpoints.extend(
+                        parameterized_symmetric_endpoints(&leg_only, 4, true)
+                            .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?,
+                    );
+                } else if part_count(BeginnerTargetPartKindV1::Leg) != 0 {
+                    return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
+                }
                 symmetric_template(
                     namespace,
                     source,
-                    BeginnerGeneratedPlanKindV1::CompositeHornTailEarBase,
+                    if complete.is_some() {
+                        BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase
+                    } else {
+                        BeginnerGeneratedPlanKindV1::CompositeHornTailEarBase
+                    },
                     kind,
                     min_x,
                     max_x,
                     min_y,
                     max_y,
                     &endpoints,
-                    "composite_horn_tail_ear_base",
+                    if complete.is_some() {
+                        "composite_complete_animal_base"
+                    } else {
+                        "composite_horn_tail_ear_base"
+                    },
                     constraints,
                 )
             } else if part_count(BeginnerTargetPartKindV1::Horn) == 1
@@ -1727,6 +1799,39 @@ mod tests {
                 ear_pair_protrusion_id: 3,
             })
         );
+        let mut complete_animal = triple.clone();
+        complete_animal
+            .target_parts
+            .push(BeginnerTargetPartRecordV1 {
+                kind: BeginnerTargetPartKindV1::Leg,
+                count: 4,
+            });
+        let mut legs = bilateral_protrusion(4, 4);
+        legs.direction_milli = [0, 1_000, 0];
+        complete_animal.protrusions.push(legs);
+        let complete_animal_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &complete_animal).unwrap();
+        assert_eq!(
+            complete_animal_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase
+        );
+        assert_eq!(complete_animal_plans[0].crease_pattern.vertices.len(), 11);
+        assert_eq!(complete_animal_plans[0].crease_pattern.edges.len(), 10);
+        assert_eq!(
+            animal_complete_bindings_v1(&complete_animal),
+            Some(BeginnerCompleteAnimalBindingV1 {
+                horn_protrusion_id: 1,
+                tail_protrusion_id: 2,
+                ear_pair_protrusion_id: 3,
+                leg_protrusion_id: 4,
+            })
+        );
+        let mut duplicate_leg = complete_animal.clone();
+        duplicate_leg.protrusions.push(legs);
+        assert_eq!(animal_complete_bindings_v1(&duplicate_leg), None);
+        let mut missing_leg = complete_animal.clone();
+        missing_leg.protrusions.retain(|target| target.id != 4);
+        assert_eq!(animal_complete_bindings_v1(&missing_leg), None);
         let mut horn_ear = horn.clone();
         horn_ear.target_parts.push(BeginnerTargetPartRecordV1 {
             kind: BeginnerTargetPartKindV1::Ear,

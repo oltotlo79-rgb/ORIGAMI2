@@ -7,9 +7,12 @@ try {
   for (let i = 0; i < 150; i += 1) { try { if ((await fetch(origin)).ok) break } catch {}; await new Promise((r) => setTimeout(r, 100)) }
   browser = await chromium.launch({ headless: true }); const page = await browser.newPage()
   await page.goto(`${origin}/scripts/generic-target-browser-harness.html`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Create empty generic target' }).click(); await assertBindings(page)
   await page.getByRole('button', { name: 'Try oversized target' }).click()
   if (await page.getByRole('list').count()) throw new Error('oversized target reached UI')
   await page.getByRole('button', { name: 'Recognize mixed target image' }).click(); await assertBindings(page)
+  await page.getByLabel('Thickness binding 1 (mm)').fill('0')
+  if (await page.getByLabel('Thickness binding 1 (mm)').inputValue() !== '5') throw new Error('invalid dimension was accepted')
   const editor = page.getByRole('list', { name: 'Editable generic target dimensions' })
   await editor.getByRole('button', { name: 'Move down' }).first().click()
   if (await page.getByLabel('Length binding 1 (mm)').inputValue() !== '22') throw new Error('reorder was not canonicalized')

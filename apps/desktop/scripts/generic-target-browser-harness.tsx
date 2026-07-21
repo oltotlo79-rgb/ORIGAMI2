@@ -42,6 +42,7 @@ function Harness() {
     setRecognized(true); setPreview(false); setStatus(`${source} recognized two bounded bindings`)
   }
   return <main><h1>Bounded generic target</h1>
+    <button onClick={() => recognize('Empty generic target')}>Create empty generic target</button>
     <button onClick={() => recognize('Image')}>Recognize mixed target image</button>
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected: target exceeds eight bindings') }}>Try oversized target</button>

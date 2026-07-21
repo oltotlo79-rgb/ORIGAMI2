@@ -4040,6 +4040,18 @@ function App() {
     ])
   }
 
+  function createEmptyGenericTarget() {
+    if (beginnerProtrusions.length !== 0) return
+    const base: NonNullable<BeginnerDesignProfileV1['generation_constraints']['protrusions']>[number] = {
+      id: 1, count: 1, length_tenths_mm: 200, thickness_tenths_mm: 20,
+      position_tenths_mm: [0, 0, 0], direction_milli: [0, 1_000, 0],
+      symmetry: 'none', curvature_degrees: 0, joint: 'fixed', motion_degrees: [0, 0],
+      side: 'either', priority: 50,
+    }
+    setBeginnerProtrusions([base, { ...base, id: 2, direction_milli: [1_000, 0, 0] }])
+    setBeginnerProtrusionKinds(['tail', 'fin'])
+  }
+
   function addBeginnerBulgeTarget(form: HTMLFormElement) {
     const current = latestSnapshotRef.current
     if (!current || !selectedFaceId || beginnerBulgeTargets.length >= 32) return
@@ -8684,6 +8696,10 @@ function App() {
                       && addBeginnerProtrusion(event.currentTarget.form)}>
                     {text({ ja: '突起目標を追加', en: 'Add protrusion target' })}
                   </button>
+                  {beginnerProtrusions.length === 0 && <button type="button" disabled={coreBusy}
+                    onClick={createEmptyGenericTarget}>
+                    {text({ ja: '空の汎用目標を新規作成', en: 'Create empty generic target' })}
+                  </button>}
                   <ul aria-label={text({ ja: '突起目標一覧', en: 'Protrusion target list' })}>
                     {beginnerProtrusions.map((target, index) => (
                       <ProtrusionDimensionEditor key={target.id} locale={locale} target={target}
@@ -8700,6 +8716,7 @@ function App() {
                             .map((item, canonicalIndex) => ({ ...item, id: canonicalIndex + 1 })))
                           setBeginnerProtrusionKinds((kinds) => kinds.filter((_, kindIndex) => kindIndex !== index))
                         }}
+                        canRemove={beginnerProtrusions.length !== 2}
                         canMoveUp={index > 0} canMoveDown={index + 1 < beginnerProtrusions.length}
                         onMoveUp={() => {
                           setBeginnerProtrusions((targets) => {

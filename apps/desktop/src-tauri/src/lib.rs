@@ -4056,6 +4056,37 @@ fn apply_grid_plan_document(
             hinge_angles: Vec::new(),
         },
     });
+    if selected_kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
+        let maximum_steps = usize::from(
+            project
+                .editor
+                .beginner_design_profile()
+                .generation_constraints
+                .maximum_steps,
+        );
+        let remaining = maximum_steps.saturating_sub(instruction_timeline.steps.len());
+        for (generated_face_id, vertices, creases) in topology_ids.iter().take(remaining) {
+            instruction_timeline.steps.push(InstructionStep {
+                id: InstructionStepId::new(),
+                title: format!("Shape generated face {generated_face_id}"),
+                description: format!(
+                    "Fold the {} generated creases around the {}-vertex local contour in canonical order.",
+                    creases.len(), vertices.len(),
+                ),
+                caution: format!(
+                    "This declarative step is bound to topology authority SHA-256: {authority_hex}. Revalidate the live folded preview before performing it."
+                ),
+                duration_ms: 1_500,
+                visual: InstructionVisual::default(),
+                pose: InstructionPose {
+                    model: InstructionPoseModel::DeclarativeOnlyV1,
+                    source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
+                    fixed_face: None,
+                    hinge_angles: Vec::new(),
+                },
+            });
+        }
+    }
     let paper = project.editor.paper().clone();
     let project_layers = project.editor.project_layers().clone();
     let mut beginner_design_profile = project.editor.beginner_design_profile().clone();

@@ -191,6 +191,7 @@ try {
     await page.getByText(/Applied synthesized candidate set: [3-8] bounded designs/).waitFor()
     await page.getByText('Applied GLB witness: bounds 120×80×65 mm, bulges 2', { exact: true }).waitFor()
     await page.getByText('Applied typed surface landmarks: 4 samples · digest 7f3a9c21 · archive retained', { exact: true }).waitFor()
+    await page.getByText(/Automatic fold instructions: summary \+ \d+ topology-bound local face steps/).waitFor()
     await page.getByText('Applied merged authority witness: image contours + GLB depth/bulges', { exact: true }).waitFor()
     await page.getByText('Applied 3D candidate score 68/100 · depth error 7 mm', { exact: true }).waitFor()
   }

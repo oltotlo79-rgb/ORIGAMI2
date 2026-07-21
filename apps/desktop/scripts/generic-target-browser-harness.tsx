@@ -254,6 +254,7 @@ function Harness() {
         clearPreview: () => setPreview(false), restoreFocus: focus }).then((ok) => { if (ok) { setApplied(true); setStatus('Generic target applied') } })}>Confirm and apply generic target</button>
     </section>}
     {applied && <section aria-label="Generic target history">
+      <p>Automatic fold instructions: summary + {bindings.length} topology-bound local face steps</p>
       <p>Applied synthesized candidate set: {synthesizedCandidateCount} bounded designs</p>
       <p>Applied contour placement witness candidate {selectedCandidate}</p>
       {imageDecode && <p>Applied image silhouette authority: {imageDecode}</p>}

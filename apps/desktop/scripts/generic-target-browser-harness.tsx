@@ -221,12 +221,17 @@ function Harness() {
     <button onClick={() => { setPreview(false); setStatus('Rejected candidate: minimum face area violated') }}>Try unmanufacturable face area</button>
     <button onClick={() => { setPreview(false); setStatus('Rejected candidate: paper boundary margin violated') }}>Try unmanufacturable paper margin</button>
     <button onClick={() => { setPreview(false); setStatus('Apply blocked: bounded fold path certificate unavailable') }}>Try uncertified fold path</button>
+    <button onClick={() => { setPreview(false); setStatus('Apply blocked: continuous path collision proven') }}>Try colliding certified path</button>
+    <button onClick={() => { setPreview(false); setStatus('Apply blocked: continuous path resource limit') }}>Try path resource limit</button>
+    <button onClick={() => { setPreview(false); setStatus('Apply blocked: stale continuous path certificate') }}>Try stale path certificate</button>
+    <button onClick={() => { setPreview(false); setStatus('Apply blocked: tampered continuous path certificate') }}>Try tampered path certificate</button>
     {preview && <section aria-label="Generic target candidate preview"><p>Global flat-foldability proven</p>
       <p>Multi-start refinement: 5 starts · 6/8 iterations · 3 strict improvements · global best score 92</p>
       <p>Preset-weighted 2D+3D ranking: {metricPreset} · winner {metricPreset === 'shape' ? 1 : metricPreset === 'foldability' ? 2 : 3}</p>
       <p>Deterministic replay digest: seed-v1-5-6-3-92</p>
       <p>Manufacturability verified: crease spacing · face area · paper boundary margin</p>
       <p>Native foldability admission: global proof + bounded fold path certificate · collision clear</p>
+      <p>Native cyclic certificate: bounded_certified_pose_graph_path_v1 · SHA-256 58a6d4c1 · thickness 0/0.1/1/3 mm verified</p>
       <p>Deterministic candidate synthesis: {synthesizedCandidateCount} bounded designs from {bindings.length} bindings and {contourPointCount} contour points.</p>
       <button aria-pressed={selectedCandidate === 1} onClick={() => setSelectedCandidate(1)}>Select contour candidate 1</button>
       <button aria-pressed={selectedCandidate === 2} onClick={() => setSelectedCandidate(2)}>Select contour candidate 2</button>
@@ -267,6 +272,7 @@ function Harness() {
       {glbWitness && <p>Applied GLB witness: bounds {glbWitness.bounds}, bulges {glbWitness.bulges}</p>}
       {glbWitness && <p>Applied typed surface landmarks: 4 samples · digest 7f3a9c21 · archive retained</p>}
       {mergedAuthorities && <p>Applied merged authority witness: image contours + GLB depth/bulges</p>}
+      <p>Applied path provenance: bounded_certified_pose_graph_path_v1 · SHA-256 58a6d4c1 · typed archive retained</p>
       {mergedAuthorities && <p>Applied 3D candidate score {threeDimensionalScore}/100 · depth error {depthError} mm</p>}
       <canvas ref={witnessCanvas} width={320} height={200} role="img" aria-label={`Applied contour placement correspondence candidate ${selectedCandidate}`} />
       <button onClick={() => setStatus('Generic target undone')}>Undo generic target</button>

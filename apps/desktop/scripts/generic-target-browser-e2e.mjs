@@ -56,6 +56,15 @@ try {
   }
   await page.getByRole('button', { name: 'Try uncertified fold path' }).click()
   await page.getByText('Apply blocked: bounded fold path certificate unavailable', { exact: true }).waitFor()
+  for (const [button, status] of [
+    ['Try colliding certified path', 'Apply blocked: continuous path collision proven'],
+    ['Try path resource limit', 'Apply blocked: continuous path resource limit'],
+    ['Try stale path certificate', 'Apply blocked: stale continuous path certificate'],
+    ['Try tampered path certificate', 'Apply blocked: tampered continuous path certificate'],
+  ]) {
+    await page.getByRole('button', { name: button }).click()
+    await page.getByText(status, { exact: true }).waitFor()
+  }
   await page.getByText('Deterministic silhouette segmentation: 2 protrusions · binding 1 asymmetric · binding 2 bilateral', { exact: true }).waitFor()
   await page.getByLabel('Accept segmented protrusion 1').uncheck()
   await page.getByLabel('Accept segmented protrusion 2').uncheck()
@@ -163,6 +172,7 @@ try {
   await page.getByText('Deterministic replay digest: seed-v1-5-6-3-92', { exact: true }).waitFor()
   await page.getByText('Manufacturability verified: crease spacing · face area · paper boundary margin', { exact: true }).waitFor()
   await page.getByText('Native foldability admission: global proof + bounded fold path certificate · collision clear', { exact: true }).waitFor()
+  await page.getByText('Native cyclic certificate: bounded_certified_pose_graph_path_v1 · SHA-256 58a6d4c1 · thickness 0/0.1/1/3 mm verified', { exact: true }).waitFor()
   await assertWitnessCanvas(page.getByRole('img', { name: 'Contour placement correspondence candidate 1' }))
   await page.getByRole('button', { name: 'Select contour candidate 2' }).click()
   await page.getByText(/Contour placement witness candidate 2: body 4, local/).waitFor()
@@ -205,6 +215,7 @@ try {
     await page.getByText('Applied typed surface landmarks: 4 samples · digest 7f3a9c21 · archive retained', { exact: true }).waitFor()
     await page.getByText(/Automatic fold instructions: summary \+ \d+ topology-bound local face steps/).waitFor()
     await page.getByText('Applied merged authority witness: image contours + GLB depth/bulges', { exact: true }).waitFor()
+    await page.getByText('Applied path provenance: bounded_certified_pose_graph_path_v1 · SHA-256 58a6d4c1 · typed archive retained', { exact: true }).waitFor()
     await page.getByText('Applied 3D candidate score 68/100 · depth error 7 mm', { exact: true }).waitFor()
   }
   for (const format of ['SVG', 'FOLD', 'ORIPA', 'Instruction PDF', 'Instruction SVG ZIP']) {

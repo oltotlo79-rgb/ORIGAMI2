@@ -1628,10 +1628,28 @@ fn bounded_generic_composite_endpoints(
     }
     let (minimum_x, maximum_x, minimum_y, maximum_y) =
         skeleton_bounds(&constraints.skeleton_segments)?;
-    let available_body = [
+    let skeleton_body = [
         u32::try_from(maximum_x.checked_sub(minimum_x)?).ok()?,
         u32::try_from(maximum_y.checked_sub(minimum_y)?).ok()?,
     ];
+    let available_body = if let Some(outline) = &constraints.generic_body_outline_tenths_mm {
+        if outline.iter().any(|point| {
+            !(minimum_x..=maximum_x).contains(&point[0])
+                || !(minimum_y..=maximum_y).contains(&point[1])
+        }) {
+            return None;
+        }
+        let outline_min_x = outline.iter().map(|point| point[0]).min()?;
+        let outline_max_x = outline.iter().map(|point| point[0]).max()?;
+        let outline_min_y = outline.iter().map(|point| point[1]).min()?;
+        let outline_max_y = outline.iter().map(|point| point[1]).max()?;
+        [
+            u32::try_from(outline_max_x.checked_sub(outline_min_x)?).ok()?,
+            u32::try_from(outline_max_y.checked_sub(outline_min_y)?).ok()?,
+        ]
+    } else {
+        skeleton_body
+    };
     let body = constraints
         .generic_body_size_tenths_mm
         .unwrap_or(available_body);
@@ -1824,6 +1842,47 @@ fn symmetric_template(
             end: id,
             kind: edge_kind,
         });
+    }
+    if let Some(outline) = &constraints.generic_body_outline_tenths_mm {
+        let Some((skeleton_min_x, skeleton_max_x, skeleton_min_y, skeleton_max_y)) =
+            skeleton_bounds(&constraints.skeleton_segments)
+        else {
+            return BeginnerGeneratedPlanV1 {
+                schema_version: BEGINNER_GENERATOR_SCHEMA_VERSION_V1,
+                kind: plan_kind,
+                crease_pattern: CreasePattern { vertices, edges },
+                instruction_codes: vec![instruction.to_owned()],
+                target_parts: constraints.target_parts.clone(),
+                skeleton_segments: constraints.skeleton_segments.clone(),
+                target_asset: constraints.target_asset,
+            };
+        };
+        let skeleton_span_x = f64::from(skeleton_max_x - skeleton_min_x);
+        let skeleton_span_y = f64::from(skeleton_max_y - skeleton_min_y);
+        let outline_ids = outline
+            .iter()
+            .enumerate()
+            .map(|(index, point)| {
+                let position = Point2::new(
+                    min_x
+                        + (max_x - min_x) * f64::from(point[0] - skeleton_min_x) / skeleton_span_x,
+                    min_y
+                        + (max_y - min_y) * f64::from(point[1] - skeleton_min_y) / skeleton_span_y,
+                );
+                let id =
+                    VertexId::derive_v5(namespace, format!("{prefix}-body-v-{index}").as_bytes());
+                vertices.push(Vertex { id, position });
+                id
+            })
+            .collect::<Vec<_>>();
+        for index in 0..outline_ids.len() {
+            edges.push(Edge {
+                id: EdgeId::derive_v5(namespace, format!("{prefix}-body-e-{index}").as_bytes()),
+                start: outline_ids[index],
+                end: outline_ids[(index + 1) % outline_ids.len()],
+                kind: edge_kind,
+            });
+        }
     }
     BeginnerGeneratedPlanV1 {
         schema_version: BEGINNER_GENERATOR_SCHEMA_VERSION_V1,
@@ -2126,6 +2185,13 @@ mod tests {
         );
         assert_eq!(generic_plans[0].crease_pattern.vertices.len(), 9);
         assert_eq!(generic_plans[0].crease_pattern.edges.len(), 8);
+        let mut outlined_generic = generic.clone();
+        outlined_generic.generic_body_outline_tenths_mm =
+            Some(vec![[-5, -5], [-5, 5], [5, 5], [5, -5]]);
+        let outlined_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &outlined_generic).unwrap();
+        assert_eq!(outlined_plans[0].crease_pattern.vertices.len(), 13);
+        assert_eq!(outlined_plans[0].crease_pattern.edges.len(), 12);
         let mut tapered_generic = generic.clone();
         tapered_generic.protrusions[1].root_width_tenths_mm = Some(1);
         tapered_generic.protrusions[1].tip_width_tenths_mm = Some(1);

@@ -2512,7 +2512,7 @@ fn normalized_contour_error_millionths(
     target: &[[i32; 2]],
     generated: &[ori_domain::Vertex],
 ) -> Option<u32> {
-    if target.len() != generated.len() || target.is_empty() {
+    if target.len() < 3 || generated.len() < 3 {
         return None;
     }
     let (target_min_x, target_max_x) = target
@@ -2552,17 +2552,66 @@ fn normalized_contour_error_millionths(
     {
         return None;
     }
-    let maximum = target
+    let target = target
         .iter()
-        .zip(generated)
-        .map(|(point, vertex)| {
-            let tx = f64::from(point[0] - target_min_x) / target_span_x;
-            let ty = f64::from(point[1] - target_min_y) / target_span_y;
-            let gx = (vertex.position.x - generated_min_x) / generated_span_x;
-            let gy = (vertex.position.y - generated_min_y) / generated_span_y;
-            (tx - gx).hypot(ty - gy)
+        .map(|point| {
+            [
+                f64::from(point[0] - target_min_x) / target_span_x,
+                f64::from(point[1] - target_min_y) / target_span_y,
+            ]
         })
-        .fold(0.0_f64, f64::max);
+        .collect::<Vec<_>>();
+    let generated = generated
+        .iter()
+        .map(|vertex| {
+            [
+                (vertex.position.x - generated_min_x) / generated_span_x,
+                (vertex.position.y - generated_min_y) / generated_span_y,
+            ]
+        })
+        .collect::<Vec<_>>();
+    let point_segment_distance = |point: [f64; 2], start: [f64; 2], end: [f64; 2]| {
+        let delta = [end[0] - start[0], end[1] - start[1]];
+        let length_squared = delta[0] * delta[0] + delta[1] * delta[1];
+        if length_squared <= f64::EPSILON {
+            return f64::INFINITY;
+        }
+        let projection = (((point[0] - start[0]) * delta[0] + (point[1] - start[1]) * delta[1])
+            / length_squared)
+            .clamp(0.0, 1.0);
+        (point[0] - start[0] - projection * delta[0])
+            .hypot(point[1] - start[1] - projection * delta[1])
+    };
+    let directed = |source: &[[f64; 2]], destination: &[[f64; 2]]| {
+        source
+            .iter()
+            .enumerate()
+            .flat_map(|(index, start)| {
+                let end = source[(index + 1) % source.len()];
+                (0..=32).map(move |sample| {
+                    let ratio = f64::from(sample) / 32.0;
+                    [
+                        start[0] + (end[0] - start[0]) * ratio,
+                        start[1] + (end[1] - start[1]) * ratio,
+                    ]
+                })
+            })
+            .map(|point| {
+                destination
+                    .iter()
+                    .enumerate()
+                    .map(|(index, start)| {
+                        point_segment_distance(
+                            point,
+                            *start,
+                            destination[(index + 1) % destination.len()],
+                        )
+                    })
+                    .fold(f64::INFINITY, f64::min)
+            })
+            .fold(0.0_f64, f64::max)
+    };
+    let maximum = directed(&target, &generated).max(directed(&generated, &target));
     u32::try_from((maximum * 1_000_000.0).round() as u64).ok()
 }
 
@@ -12189,6 +12238,33 @@ mod tests {
         .unwrap();
         let witness = beginner_contour_placement_witness(&profile.generation_constraints, &plan)
             .expect("generated contour geometry must provide a bounded witness");
+        let body_start = plan.crease_pattern.vertices.len() - 7;
+        let mut cyclic_body = plan.crease_pattern.vertices[body_start..body_start + 4].to_vec();
+        cyclic_body.rotate_left(2);
+        cyclic_body.reverse();
+        assert_eq!(
+            normalized_contour_error_millionths(
+                profile
+                    .generation_constraints
+                    .generic_body_outline_tenths_mm
+                    .as_deref()
+                    .unwrap(),
+                &cyclic_body,
+            ),
+            Some(0)
+        );
+        cyclic_body.pop();
+        assert!(
+            normalized_contour_error_millionths(
+                profile
+                    .generation_constraints
+                    .generic_body_outline_tenths_mm
+                    .as_deref()
+                    .unwrap(),
+                &cyclic_body,
+            )
+            .is_some_and(|error| error > 1)
+        );
         let archived_profile: ori_domain::BeginnerDesignProfileV1 =
             serde_json::from_slice(&serde_json::to_vec(&profile).unwrap()).unwrap();
         let archived_plan: ori_domain::BeginnerGeneratedPlanV1 =

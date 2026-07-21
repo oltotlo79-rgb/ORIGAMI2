@@ -108,7 +108,7 @@ test('AUT-004 proposes only deterministic safe GLB geometry ranges and applies a
   assert.match(native, /bounded_bbox_area_normal_v1/u)
   assert.match(native, /surface_area_milli/u)
   assert.match(native, /dominant_normal_milli/u)
-  assert.match(native, /if live != expected_suggestion/u)
+  assert.match(native, /reference_model_suggestion_matches_live_v1\(&expected_suggestion, &live\)/u)
   assert.match(native, /Command::UpdateBeginnerDesignProfile \{ profile \}/u)
   assert.match(client, /suggest_beginner_reference_model_features/u)
   assert.match(client, /apply_beginner_reference_model_features/u)

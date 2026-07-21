@@ -362,6 +362,7 @@ import {
 } from './lib/foldTechniqueFileClient'
 import './App.css'
 import { CompleteAnimalBindingList } from './components/CompleteAnimalBindingList'
+import { BeginnerGridProgressStatus } from './components/BeginnerGridProgressStatus'
 
 const SNAP_OPTIONS: ReadonlyArray<{
   kind: keyof SnapSettings
@@ -7785,14 +7786,9 @@ function App() {
                     ? text({ ja: '27案を評価中…', en: 'Evaluating 27 designs…' })
                     : text({ ja: '27案から上位3案を評価', en: 'Evaluate top 3 of 27 designs' })}
                 </button>
-                {beginnerGridBusy && <button type="button" onClick={cancelBeginnerGrid}>
-                  {text({ ja: '27案の評価をキャンセル', en: 'Cancel 27-design evaluation' })}
-                </button>}
-                {beginnerGridBusy && <p role="status" className="muted">{formattedText({
-                  ja: '列挙 {enumerated}/27・大域検証 {checked}/3',
-                  en: 'Enumerated {enumerated}/27 · globally checked {checked}/3',
-                }, { enumerated: beginnerGridProgress.enumerated,
-                  checked: beginnerGridProgress.globalChecked })}</p>}
+                <BeginnerGridProgressStatus locale={locale} busy={beginnerGridBusy}
+                  enumerated={beginnerGridProgress.enumerated}
+                  checked={beginnerGridProgress.globalChecked} onCancel={cancelBeginnerGrid} />
                 {beginnerGrid && (
                   <section aria-label={text({ ja: '27案探索の上位3案', en: 'Top 3 from the 27-design search' })}>
                     <p className="muted">{formattedText({

@@ -3245,7 +3245,7 @@ mod tests {
         let observed = read_bounded_dyadic_pose_graph_inner_v1(&state, live_request).unwrap();
         assert_eq!(observed.state_count, 9);
         assert_eq!(observed.transition_count, 24);
-        assert!(matches!(observed.status, "certified" | "no_path"));
+        assert_eq!(observed.status, "no_path");
         assert!(!observed.authorizes_project_mutation);
         assert!(
             super::super::lock_project(&state)

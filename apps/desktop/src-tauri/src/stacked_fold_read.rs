@@ -338,10 +338,7 @@ fn propose_current_cycle_pose_inner(
     let source = pose_state_fingerprint_v1(pose.hinge_angles());
     let target = pose_state_fingerprint_v1(&requested);
     let paper_thickness_mm = project.editor.paper().thickness_mm;
-    let positive_graph_supported =
-        positive_collective_axis_graph_v1(geometry, audit, pose.fixed_face(), generated.schedule())
-            || dense_parallel_grid_graph_v1(geometry, audit, generated.schedule());
-    let continuous = if paper_thickness_mm > 0.0 && positive_graph_supported {
+    let continuous = if paper_thickness_mm > 0.0 {
         diagnose_scheduled_positive_thickness_cycle_path_v1(
             geometry,
             audit,
@@ -432,45 +429,6 @@ fn propose_current_cycle_pose_inner(
         continuous_path_certified: true,
         authorizes_project_mutation: false,
     })
-}
-
-fn positive_collective_axis_graph_v1(
-    geometry: &ori_kinematics::MaterialHingeGraphGeometry,
-    audit: &ori_kinematics::MaterialHingeGraphAudit,
-    fixed_face: FaceId,
-    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
-) -> bool {
-    ori_kinematics::theta_opposite_pair_cycle_closure_premises_v1(
-        geometry,
-        audit,
-        fixed_face,
-        schedule,
-        ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
-    )
-}
-
-fn dense_parallel_grid_graph_v1(
-    geometry: &ori_kinematics::MaterialHingeGraphGeometry,
-    audit: &ori_kinematics::MaterialHingeGraphAudit,
-    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
-) -> bool {
-    let face_count = geometry.face_ids().len();
-    let Some((columns, rows)) = (3usize..=7).find_map(|columns| {
-        (3usize..=7).find_map(|rows| {
-            (columns * rows == face_count
-                && geometry.hinges().len() == 2 * columns * rows - columns - rows
-                && audit.closure_hinges().len() == (columns - 1) * (rows - 1))
-                .then_some((columns, rows))
-        })
-    }) else {
-        return false;
-    };
-    schedule
-        .collective_profile_edges_v1()
-        .or_else(|| schedule.collective_half_angle_profile_edges_v1())
-        .is_some_and(|moving| {
-            moving.len() == rows * (columns - 1) || moving.len() == columns * (rows - 1)
-        })
 }
 
 fn emit_current_cycle_status_v1(
@@ -1686,20 +1644,7 @@ async fn propose_current_stacked_fold_read_inner(
                         CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned()
                     }
                 })?;
-            let graph_geometry = initial.target().hinge_geometry();
-            let graph_audit = initial.target().audit();
-            let positive_graph_supported = positive_collective_axis_graph_v1(
-                graph_geometry,
-                graph_audit,
-                initial.pose().fixed_face(),
-                generated.schedule(),
-            ) || dense_parallel_grid_graph_v1(
-                graph_geometry,
-                graph_audit,
-                generated.schedule(),
-            );
-            let continuous = if paper_thickness_mm > 0.0 && positive_graph_supported
-            {
+            let continuous = if paper_thickness_mm > 0.0 {
                 diagnose_scheduled_positive_thickness_cycle_path_v1(
                     initial.target().hinge_geometry(),
                     initial.target().audit(),
@@ -3643,11 +3588,13 @@ mod tests {
                 fixed,
             );
             let instance = project.instance_id;
+            let project_id = project.project_id;
+            let revision = project.editor.revision();
             let request = |expected_project_instance_id| CurrentCyclePosePreviewRequestV1 {
                 progress_request_id: None,
                 expected_project_instance_id,
-                expected_project_id: project.project_id,
-                expected_revision: project.editor.revision(),
+                expected_project_id: project_id,
+                expected_revision: revision,
                 cycle_schedule_v1: dense_grid_schedule(&hinges, &horizontal, 4),
             };
             let state = AppState::new(project);
@@ -3709,55 +3656,33 @@ mod tests {
                 hinges.clone(),
                 fixed,
             );
-            let request = CurrentCyclePosePreviewRequestV1 {
+            let instance = project.instance_id;
+            let project_id = project.project_id;
+            let revision = project.editor.revision();
+            let request = |expected_project_instance_id| CurrentCyclePosePreviewRequestV1 {
                 progress_request_id: None,
-                expected_project_instance_id: project.instance_id,
-                expected_project_id: project.project_id,
-                expected_revision: project.editor.revision(),
+                expected_project_instance_id,
+                expected_project_id: project_id,
+                expected_revision: revision,
                 cycle_schedule_v1: dense_grid_schedule(&hinges, &horizontal, 100),
             };
             let state = AppState::new(project);
             let transactions =
                 super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-            let preview = propose_current_cycle_pose_inner(None, &state, &transactions, request);
-            if thickness_mm == 10_000.0 {
-                assert_eq!(preview.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
-            } else {
-                let preview =
-                    preview.unwrap_or_else(|error| panic!("oblique {thickness_mm}mm: {error}"));
-                if thickness_mm == 1.0 {
-                    super::super::lock_project(&state).unwrap().instance_id = ProjectId::new();
-                    assert!(super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                        &state, &GlobalFlatFoldabilityState::default(), &transactions, preview.transaction_token,
-                    ).is_err());
-                    continue;
-                }
-                if thickness_mm == 0.1 {
-                    super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
-                        &transactions,
-                        preview.transaction_token,
-                    )
-                    .unwrap();
-                    assert!(super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                        &state, &GlobalFlatFoldabilityState::default(), &transactions, preview.transaction_token,
-                    ).is_err());
-                    let retry = propose_current_cycle_pose_inner(
-                        None,
-                        &state,
-                        &transactions,
-                        request(instance),
-                    )
-                    .expect("oblique retry");
-                    let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                        &state, &GlobalFlatFoldabilityState::default(), &transactions, retry.transaction_token,
-                    ).expect("oblique retry apply");
-                    super::super::lock_project(&state)
-                        .unwrap()
-                        .editor
-                        .undo(applied)
-                        .unwrap();
-                    continue;
-                }
+            assert_eq!(
+                propose_current_cycle_pose_inner(
+                    None,
+                    &state,
+                    &transactions,
+                    request(ProjectId::new())
+                )
+                .unwrap_err(),
+                STALE_MESSAGE
+            );
+            let preview =
+                propose_current_cycle_pose_inner(None, &state, &transactions, request(instance));
+            if thickness_mm == 3.0 {
+                let preview = preview.expect("3mm oblique prism separation");
                 let applied =
                     super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
                         &state,
@@ -3765,20 +3690,22 @@ mod tests {
                         &transactions,
                         preview.transaction_token,
                     )
-                    .expect("oblique dense apply");
+                    .expect("3mm oblique apply");
                 let mut project = super::super::lock_project(&state).unwrap();
                 project.editor.undo(applied).unwrap();
                 let undone = project.editor.revision();
                 project.editor.redo(undone).unwrap();
+            } else {
+                assert_eq!(preview.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
             }
-            assert!(
+            assert_eq!(
                 super::super::lock_project(&state)
                     .unwrap()
                     .editor
                     .instruction_timeline()
                     .steps
-                    .len()
-                    <= 1
+                    .len(),
+                usize::from(thickness_mm == 3.0)
             );
         }
     }

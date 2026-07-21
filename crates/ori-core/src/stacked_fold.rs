@@ -4535,11 +4535,22 @@ mod tests {
         let source_paper = source.paper;
         let source_layer_order =
             proven_layer_order(identity, source_revision, &source_pattern, &source_paper);
-        let expected = [ExpectedStackedFoldCreaseV1 {
-            start: corners[1],
-            end: corners[3],
-            kind: EdgeKind::Valley,
-        }];
+        let center = Point2::new(
+            (corners[0].x + corners[2].x) / 2.0,
+            (corners[0].y + corners[2].y) / 2.0,
+        );
+        let expected = [
+            ExpectedStackedFoldCreaseV1 {
+                start: corners[1],
+                end: center,
+                kind: EdgeKind::Mountain,
+            },
+            ExpectedStackedFoldCreaseV1 {
+                start: center,
+                end: corners[3],
+                kind: EdgeKind::Valley,
+            },
+        ];
         let geometry = prepare_stacked_fold_geometry_candidate_v1(
             identity,
             source_revision,
@@ -4564,10 +4575,13 @@ mod tests {
                 .iter()
                 .any(|edge| edge.id == source_subdivision.source_edge())
         );
-        assert_eq!(geometry.proof().expected_creases().len(), 1);
-        assert_eq!(
-            geometry.proof().expected_creases()[0].target_edges().len(),
-            2
+        assert_eq!(geometry.proof().expected_creases().len(), 2);
+        assert!(
+            geometry
+                .proof()
+                .expected_creases()
+                .iter()
+                .all(|crease| crease.target_edges().len() == 1)
         );
         let target =
             prepare_stacked_fold_target_graph_audit_v1(geometry, TreeKinematicsLimits::default())

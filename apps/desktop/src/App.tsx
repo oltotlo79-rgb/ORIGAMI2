@@ -371,6 +371,7 @@ import { GenericTargetBindingList } from './components/GenericTargetBindingList'
 import { ProtrusionDimensionEditor } from './components/ProtrusionDimensionEditor'
 import { GenericBodyOutlineEditor } from './components/GenericBodyOutlineEditor'
 import { BeginnerShapeCanvasPreview } from './components/BeginnerShapeCanvasPreview'
+import { RecognitionContourCopyAction } from './components/RecognitionContourCopyAction'
 import { BeginnerGridProgressStatus } from './components/BeginnerGridProgressStatus'
 
 const SNAP_OPTIONS: ReadonlyArray<{
@@ -3809,6 +3810,26 @@ function App() {
       )).finally(() => setBeginnerReferenceSuggestion(null))
   }
 
+  function copyBeginnerReferenceContours() {
+    const suggestion = beginnerReferenceSuggestion
+    const current = latestSnapshotRef.current
+    const targetAsset = current?.beginner_design_profile.generation_constraints.target_asset
+    if (!suggestion || !current || targetAsset?.kind !== 'reference_model'
+      || targetAsset.asset_id !== suggestion.asset_id) return
+    if (suggestion.generic_body_outline_tenths_mm) {
+      setBeginnerBodyOutline(suggestion.generic_body_outline_tenths_mm.map(
+        (point) => [...point] as [number, number]))
+      setBeginnerBodyOutlineMode(suggestion.generic_body_outline_mode === 'general' ? 'general' : 'symmetric')
+    }
+    setBeginnerProtrusions(suggestion.protrusions.map((target) => ({
+      ...target,
+      ...(target.local_outline_tenths_mm ? {
+        local_outline_tenths_mm: target.local_outline_tenths_mm.map(
+          (point) => [...point] as [number, number]),
+      } : {}),
+    })))
+  }
+
   function requestBeginnerRecognition(mode: 'marker' | 'silhouette' = 'marker') {
     const current = latestSnapshotRef.current
     const form = beginnerDesignFormRef.current
@@ -3977,7 +3998,14 @@ function App() {
   function copyBeginnerRecognitionProposal() {
     const proposal = beginnerRecognitionProposal
     const form = beginnerDesignFormRef.current
-    if (!proposal || !form) return
+    const current = latestSnapshotRef.current
+    const liveUnderlay = current?.underlays?.underlays.find(
+      (underlay) => underlay.id === proposal?.source_underlay_id
+        && underlay.asset === proposal.source_asset_id)
+    if (!proposal || !form || !current || !liveUnderlay || !window.confirm(text({
+      ja: '認識候補を編集欄へコピーしますか？保存するまでprojectは変更されません。',
+      en: 'Copy this recognition proposal into the editor? The project stays unchanged until saved.',
+    }))) return
     if (proposal.target_parts.length > 0) {
       const counts = new Map(proposal.target_parts.map((part) => [part.kind, part.count]))
       form.querySelectorAll<HTMLInputElement>('input[name^="target_part_"]').forEach((input) => {
@@ -3991,6 +4019,20 @@ function App() {
       start: { ...segment.start },
       end: { ...segment.end },
     })))
+    if (proposal.generic_body_outline_tenths_mm) {
+      setBeginnerBodyOutline(proposal.generic_body_outline_tenths_mm.map(
+        (point) => [...point] as [number, number]))
+      setBeginnerBodyOutlineMode(proposal.generic_body_outline_mode === 'general' ? 'general' : 'symmetric')
+    }
+    if (proposal.protrusions) {
+      setBeginnerProtrusions(proposal.protrusions.map((target) => ({
+        ...target,
+        ...(target.local_outline_tenths_mm ? {
+          local_outline_tenths_mm: target.local_outline_tenths_mm.map(
+            (point) => [...point] as [number, number]),
+        } : {}),
+      })))
+    }
     setCoreStatus(appMessage({
       ja: '認識案を編集欄へコピーしました。保存すると履歴に追加されます。',
       en: 'Copied the proposal into the editor. Save it to add it to history.',
@@ -8401,6 +8443,27 @@ function App() {
                           <button type="button" onClick={confirmBeginnerReferenceSuggestion}>
                             {text({ ja: '確認して範囲候補を適用', en: 'Confirm and apply suggested ranges' })}
                           </button>
+                          {(beginnerReferenceSuggestion.generic_body_outline_tenths_mm
+                            || beginnerReferenceSuggestion.protrusions.some(
+                              (target) => target.local_outline_tenths_mm)) && <>
+                            <p>{formattedText({
+                              ja: '編集可能な胴体輪郭 {body} 点・局所輪郭 {local} 件',
+                              en: 'Editable body contour: {body} points; local contours: {local}',
+                            }, {
+                              body: beginnerReferenceSuggestion.generic_body_outline_tenths_mm?.length ?? 0,
+                              local: beginnerReferenceSuggestion.protrusions.filter(
+                                (target) => target.local_outline_tenths_mm).length,
+                            })}</p>
+                            <button type="button" hidden onClick={copyBeginnerReferenceContours}>
+                              {text({ ja: '確認して輪郭を編集欄へコピー', en: 'Review and copy contours to editor' })}
+                            </button>
+                          </>}
+                          <RecognitionContourCopyAction locale={locale}
+                            bodyPointCount={beginnerReferenceSuggestion
+                              .generic_body_outline_tenths_mm?.length ?? 0}
+                            localContourCount={beginnerReferenceSuggestion.protrusions.filter(
+                              (target) => target.local_outline_tenths_mm).length}
+                            onCopy={copyBeginnerReferenceContours} />
                         </div>
                       )}
                       {beginnerReferenceGeometry && (
@@ -8570,6 +8633,16 @@ function App() {
                       <button type="button" onClick={copyBeginnerRecognitionProposal}>
                         {text({ ja: '編集欄へコピー', en: 'Copy to editable fields' })}
                       </button>
+                      {(beginnerRecognitionProposal.generic_body_outline_tenths_mm
+                        || beginnerRecognitionProposal.protrusions?.some(
+                          (target) => target.local_outline_tenths_mm)) && <p>{formattedText({
+                        ja: '認識輪郭: 胴体 {body} 点・局所 {local} 件（コピー前に確認します）',
+                        en: 'Recognized contours: {body} body points and {local} local contours; confirmation is required before copying.',
+                      }, {
+                        body: beginnerRecognitionProposal.generic_body_outline_tenths_mm?.length ?? 0,
+                        local: beginnerRecognitionProposal.protrusions?.filter(
+                          (target) => target.local_outline_tenths_mm).length ?? 0,
+                      })}</p>}
                     </section>
                   )}
                 </div>

@@ -279,6 +279,9 @@ export type BeginnerRecognitionProposalV1 = {
   }
   target_parts: BeginnerGenerationConstraintsV1['target_parts']
   skeleton_segments: BeginnerGenerationConstraintsV1['skeleton_segments']
+  generic_body_outline_tenths_mm?: Array<[number, number]>
+  generic_body_outline_mode?: 'symmetric' | 'general'
+  protrusions?: BeginnerGenerationConstraintsV1['protrusions']
 }
 
 const BEGINNER_TECHNIQUES = [
@@ -596,11 +599,15 @@ function normalizeBeginnerRecognitionProposal(
   expectedAssetId: string,
   expectedFormat: BeginnerRecognitionProposalV1['format'] = 'marker_png_v1',
 ): BeginnerRecognitionProposalV1 | null {
-  const record = exactCoreDataRecord(value, [
+  const requiredKeys = [
     'schema_version', 'format', 'source_underlay_id', 'source_asset_id',
     'source_sha256', 'width', 'height', 'shape_bounds', 'target_parts',
     'skeleton_segments',
-  ] as const)
+  ] as const
+  const optionalKeys = ['generic_body_outline_tenths_mm', 'generic_body_outline_mode', 'protrusions'] as const
+  const record = snapshotCoreDataRecord(value)
+  if (!record || requiredKeys.some((key) => !Object.hasOwn(record, key))
+    || Object.keys(record).some((key) => ![...requiredKeys, ...optionalKeys].includes(key as never))) return null
   if (!record || record.schema_version !== 1 || record.format !== expectedFormat
     || record.source_underlay_id !== expectedUnderlayId
     || record.source_asset_id !== expectedAssetId
@@ -625,7 +632,13 @@ function normalizeBeginnerRecognitionProposal(
     target_category: 'animal',
     target_parts: record.target_parts,
     skeleton_segments: record.skeleton_segments,
-    protrusions: [],
+    protrusions: record.protrusions ?? [],
+    ...(record.generic_body_outline_tenths_mm === undefined ? {} : {
+      generic_body_outline_tenths_mm: record.generic_body_outline_tenths_mm,
+    }),
+    ...(record.generic_body_outline_mode === undefined ? {} : {
+      generic_body_outline_mode: record.generic_body_outline_mode,
+    }),
     bulge_targets: [],
     target_asset: null,
     allowed_techniques: ['valley_fold'],
@@ -645,6 +658,13 @@ function normalizeBeginnerRecognitionProposal(
     }),
     target_parts: constraints.target_parts,
     skeleton_segments: constraints.skeleton_segments,
+    ...(constraints.generic_body_outline_tenths_mm === undefined ? {} : {
+      generic_body_outline_tenths_mm: constraints.generic_body_outline_tenths_mm,
+    }),
+    ...(record.generic_body_outline_mode === undefined ? {} : {
+      generic_body_outline_mode: constraints.generic_body_outline_mode,
+    }),
+    ...(record.protrusions === undefined ? {} : { protrusions: constraints.protrusions }),
   })
 }
 
@@ -1670,6 +1690,8 @@ export type BeginnerReferenceModelSuggestionV1 = Readonly<{
   dominant_normal_milli: readonly [number, number, number]
   surface_area_milli: number
   protrusions: readonly NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number][]
+  generic_body_outline_tenths_mm?: readonly (readonly [number, number])[]
+  generic_body_outline_mode?: 'symmetric' | 'general'
   pair_bindings: readonly Readonly<{ pair_index: number; protrusion_id: number; center_y_tenths_mm: number }>[]
   method: 'bounded_bbox_area_normal_v1'
   suggested_part_kind: 'wing' | 'fin' | 'ear' | 'horn' | 'antenna' | 'leg' | 'tail' | null
@@ -1684,10 +1706,16 @@ export async function suggestBeginnerReferenceModelFeatures(
   const response = exactCoreDataRecord(value, [
     'project_instance_id', 'project_id', 'revision', 'suggestion',
   ] as const)
-  const suggestion = exactCoreDataRecord(response?.suggestion, [
+  const suggestionKeys = [
     'asset_id', 'bbox_min_tenths_mm', 'bbox_max_tenths_mm', 'dominant_normal_milli',
     'surface_area_milli', 'protrusions', 'pair_bindings', 'method', 'suggested_part_kind',
-  ] as const)
+  ] as const
+  const suggestion = snapshotCoreDataRecord(response?.suggestion)
+  if (!suggestion || suggestionKeys.some((key) => !Object.hasOwn(suggestion, key))
+    || Object.keys(suggestion).some((key) => ![...suggestionKeys,
+      'generic_body_outline_tenths_mm', 'generic_body_outline_mode'].includes(key))) {
+    throw new Error('invalid reference model suggestion')
+  }
   if (!response || response.project_instance_id !== expectedProjectInstanceId
     || response.project_id !== expectedProjectId || response.revision !== expectedRevision
     || !suggestion || !isCanonicalNonNilUuid(suggestion.asset_id)
@@ -1701,6 +1729,12 @@ export async function suggestBeginnerReferenceModelFeatures(
   const constraints = normalizeBeginnerGenerationConstraints({
     schema_version: 1, maximum_steps: 1, detail_level: 'simple', target_category: 'animal',
     target_parts: [], skeleton_segments: [], protrusions: suggestion.protrusions,
+    ...(suggestion.generic_body_outline_tenths_mm === undefined ? {} : {
+      generic_body_outline_tenths_mm: suggestion.generic_body_outline_tenths_mm,
+    }),
+    ...(suggestion.generic_body_outline_mode === undefined ? {} : {
+      generic_body_outline_mode: suggestion.generic_body_outline_mode,
+    }),
     bulge_targets: [], target_asset: null, allowed_techniques: ['valley_fold'],
   })
   const protrusions = constraints?.protrusions ?? []
@@ -1716,7 +1750,12 @@ export async function suggestBeginnerReferenceModelFeatures(
     })) {
     throw new Error('invalid reference model suggestion')
   }
-  return Object.freeze({ ...suggestion, protrusions: Object.freeze(protrusions.slice()), pair_bindings: Object.freeze(suggestion.pair_bindings.slice()) }) as BeginnerReferenceModelSuggestionV1
+  return Object.freeze({ ...suggestion,
+    ...(constraints.generic_body_outline_tenths_mm === undefined ? {} : {
+      generic_body_outline_tenths_mm: constraints.generic_body_outline_tenths_mm,
+      generic_body_outline_mode: constraints.generic_body_outline_mode,
+    }),
+    protrusions: Object.freeze(protrusions.slice()), pair_bindings: Object.freeze(suggestion.pair_bindings.slice()) }) as BeginnerReferenceModelSuggestionV1
 }
 
 export function applyBeginnerReferenceModelFeatures(

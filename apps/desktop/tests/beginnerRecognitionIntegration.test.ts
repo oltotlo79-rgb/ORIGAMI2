@@ -55,6 +55,11 @@ test('bounded PNG or JPEG silhouette recognition fails closed without inferred p
   assert.match(app, /Recognize outline from image/u)
   assert.match(app, /read-only outline proposal/u)
   assert.match(app, /proposal\.target_parts\.length > 0/u)
+  assert.match(client, /generic_body_outline_tenths_mm\?: Array<\[number, number\]>/u)
+  assert.match(client, /protrusions\?: BeginnerGenerationConstraintsV1\['protrusions'\]/u)
+  assert.match(app, /setBeginnerBodyOutline\(proposal\.generic_body_outline_tenths_mm/u)
+  assert.match(app, /underlay\.asset === proposal\.source_asset_id/u)
+  assert.match(app, /RecognitionContourCopyAction/u)
 })
 
 test('multiple outline candidates stay strict, stale-safe, and read-only', () => {

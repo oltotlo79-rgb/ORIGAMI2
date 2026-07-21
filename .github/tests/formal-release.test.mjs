@@ -489,6 +489,11 @@ test('signing secrets are approval-gated masked cleaned and absent from fork CI'
   assert.match(build, /trap 'cleanup_signing_material 143' TERM/u)
   assert.match(build, /trap 'cleanup_notary_material 143' TERM/u)
   assert.doesNotMatch(build, /Remove-Item[^\n]*SilentlyContinue/u)
+  assert.doesNotMatch(build, /signtool sign[^\n]*\/p/u)
+  assert.match(build, /Import-PfxCertificate[\s\S]*Cert:\\CurrentUser\\My/u)
+  assert.match(build, /ulimit -c 0/u)
+  assert.doesNotMatch(release, /GITHUB_(?:ENV|OUTPUT)[^\n]*(?:TOKEN|PASSWORD|CERTIFICATE|SIGNING|NOTARY)/iu)
+  assert.doesNotMatch(release, /actions\/cache@[\s\S]{0,500}(?:\.pfx|\.p12|\.p8|keychain|signature-verification)/iu)
   const secretReferences = build.match(/\$\{\{ secrets\.[A-Z0-9_]+ \}\}/gu) ?? []
   assert.equal(secretReferences.length, 10)
   for (const step of [

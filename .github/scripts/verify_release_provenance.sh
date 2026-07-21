@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+ulimit -c 0
 
 test -n "${GH_TOKEN:-}"
 printf '::add-mask::%s\n' "$GH_TOKEN"

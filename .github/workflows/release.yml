@@ -66,6 +66,7 @@ jobs:
           RELEASE_COMMIT: ${{ steps.contract.outputs.commit }}
         run: |
           set -euo pipefail
+          ulimit -c 0
           echo "::add-mask::$GH_TOKEN"
           evidence="$(node .github/scripts/verify_release_ci.mjs)"
           echo "json=$evidence" >> "$GITHUB_OUTPUT"
@@ -131,18 +132,33 @@ jobs:
           }
           Write-Output "::add-mask::$env:CERTIFICATE_BASE64"
           Write-Output "::add-mask::$env:CERTIFICATE_PASSWORD"
+          $env:COMPlus_DbgEnableMiniDump = '0'
+          $env:DOTNET_DbgEnableMiniDump = '0'
           $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
+          $thumbprintFile = Join-Path $env:RUNNER_TEMP 'windows-signing-thumbprint.txt'
+          $importedCertificate = $null
           try {
             [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
+            $securePassword = ConvertTo-SecureString -String $env:CERTIFICATE_PASSWORD -AsPlainText -Force
+            $importedCertificate = Import-PfxCertificate -FilePath $certificate `
+              -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -Exportable:$false
+            [IO.File]::WriteAllText($thumbprintFile, $importedCertificate.Thumbprint)
             $file = (Resolve-Path 'target/release/origami2-desktop.exe').Path
             & signtool sign /q /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
-              /f $certificate /p $env:CERTIFICATE_PASSWORD $file
+              /sha1 $importedCertificate.Thumbprint $file
             if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
             $env:WINDOWS_CERTIFICATE_PASSWORD = $env:CERTIFICATE_PASSWORD
             & .\..\..\.github\scripts\verify_windows_signing_identity.ps1 `
               -File $file -Certificate $certificate
           } finally {
             $env:WINDOWS_CERTIFICATE_PASSWORD = $null
+            $securePassword = $null
+            if ($null -ne $importedCertificate) {
+              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($importedCertificate.Thumbprint)" -Force -ErrorAction Stop
+            }
+            if (Test-Path -LiteralPath $thumbprintFile) {
+              Remove-Item -LiteralPath $thumbprintFile -Force -ErrorAction Stop
+            }
             if (Test-Path -LiteralPath $certificate) {
               Remove-Item -LiteralPath $certificate -Force -ErrorAction Stop
             }
@@ -164,18 +180,33 @@ jobs:
           }
           Write-Output "::add-mask::$env:CERTIFICATE_BASE64"
           Write-Output "::add-mask::$env:CERTIFICATE_PASSWORD"
+          $env:COMPlus_DbgEnableMiniDump = '0'
+          $env:DOTNET_DbgEnableMiniDump = '0'
           $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
+          $thumbprintFile = Join-Path $env:RUNNER_TEMP 'windows-signing-thumbprint.txt'
+          $importedCertificate = $null
           try {
             [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
+            $securePassword = ConvertTo-SecureString -String $env:CERTIFICATE_PASSWORD -AsPlainText -Force
+            $importedCertificate = Import-PfxCertificate -FilePath $certificate `
+              -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -Exportable:$false
+            [IO.File]::WriteAllText($thumbprintFile, $importedCertificate.Thumbprint)
             $file = (Get-ChildItem 'target/release/bundle/nsis' -Filter '*.exe' -File -Recurse -ErrorAction Stop).FullName
             & signtool sign /q /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
-              /f $certificate /p $env:CERTIFICATE_PASSWORD $file
+              /sha1 $importedCertificate.Thumbprint $file
             if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
             $env:WINDOWS_CERTIFICATE_PASSWORD = $env:CERTIFICATE_PASSWORD
             & .\..\..\.github\scripts\verify_windows_signing_identity.ps1 `
               -File $file -Certificate $certificate
           } finally {
             $env:WINDOWS_CERTIFICATE_PASSWORD = $null
+            $securePassword = $null
+            if ($null -ne $importedCertificate) {
+              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($importedCertificate.Thumbprint)" -Force -ErrorAction Stop
+            }
+            if (Test-Path -LiteralPath $thumbprintFile) {
+              Remove-Item -LiteralPath $thumbprintFile -Force -ErrorAction Stop
+            }
             if (Test-Path -LiteralPath $certificate) {
               Remove-Item -LiteralPath $certificate -Force -ErrorAction Stop
             }
@@ -187,7 +218,14 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
           $verificationLog = Join-Path $env:RUNNER_TEMP 'windows-signature-verification.log'
-          foreach ($path in @($certificate, $verificationLog)) {
+          $thumbprintFile = Join-Path $env:RUNNER_TEMP 'windows-signing-thumbprint.txt'
+          if (Test-Path -LiteralPath $thumbprintFile) {
+            $thumbprint = [IO.File]::ReadAllText($thumbprintFile).Trim()
+            if ($thumbprint -notmatch '^[0-9A-F]{40}$') { throw 'Invalid signing certificate cleanup identity.' }
+            $storePath = "Cert:\CurrentUser\My\$thumbprint"
+            if (Test-Path -LiteralPath $storePath) { Remove-Item -LiteralPath $storePath -Force -ErrorAction Stop }
+          }
+          foreach ($path in @($certificate, $verificationLog, $thumbprintFile)) {
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
           }
       - name: Verify Windows installer and portable executable contract
@@ -214,6 +252,7 @@ jobs:
           SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
+          ulimit -c 0
           test -n "$CERTIFICATE_BASE64"
           test -n "$CERTIFICATE_PASSWORD"
           test -n "$SIGNING_IDENTITY"
@@ -222,12 +261,13 @@ jobs:
           echo "::add-mask::$SIGNING_IDENTITY"
           keychain="$RUNNER_TEMP/origami2-signing.keychain-db"
           certificate="$RUNNER_TEMP/apple-signing.p12"
+          signing_pem="$RUNNER_TEMP/apple-signing.pem"
           cleanup_signing_material() {
             status="$1"
             trap - EXIT HUP INT TERM
             cleanup_status=0
             security delete-keychain "$keychain" >/dev/null 2>&1 || cleanup_status=$?
-            rm -f -- "$certificate" || cleanup_status=$?
+            rm -f -- "$certificate" "$signing_pem" || cleanup_status=$?
             [ "$status" -ne 0 ] && exit "$status"
             exit "$cleanup_status"
           }
@@ -236,9 +276,12 @@ jobs:
           trap 'cleanup_signing_material 130' INT
           trap 'cleanup_signing_material 143' TERM
           echo "$CERTIFICATE_BASE64" | base64 --decode > "$certificate"
+          chmod 600 "$certificate"
+          openssl pkcs12 -in "$certificate" -passin env:CERTIFICATE_PASSWORD -nodes -out "$signing_pem"
+          chmod 600 "$signing_pem"
           security create-keychain -p temporary "$keychain"
           security unlock-keychain -p temporary "$keychain"
-          security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security import "$signing_pem" -k "$keychain" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k temporary "$keychain"
           codesign --force --deep --options runtime --timestamp --sign "$SIGNING_IDENTITY" \
             target/release/bundle/macos/ORIGAMI2.app
@@ -253,6 +296,7 @@ jobs:
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
         run: |
           set -euo pipefail
+          ulimit -c 0
           test -n "$APPLE_NOTARY_KEY_BASE64"
           test -n "$APPLE_NOTARY_KEY_ID"
           test -n "$APPLE_NOTARY_ISSUER_ID"
@@ -287,11 +331,13 @@ jobs:
           set -euo pipefail
           keychain="$RUNNER_TEMP/origami2-signing.keychain-db"
           certificate="$RUNNER_TEMP/apple-signing.p12"
+          signing_pem="$RUNNER_TEMP/apple-signing.pem"
           archive="$RUNNER_TEMP/ORIGAMI2-notarization.zip"
           if [ -e "$keychain" ]; then security delete-keychain "$keychain" >/dev/null 2>&1; fi
-          rm -f -- "$certificate" "$archive" "$RUNNER_TEMP"/AuthKey_*.p8
+          rm -f -- "$certificate" "$signing_pem" "$archive" "$RUNNER_TEMP"/AuthKey_*.p8
           test ! -e "$keychain"
           test ! -e "$certificate"
+          test ! -e "$signing_pem"
           test ! -e "$archive"
           ! compgen -G "$RUNNER_TEMP/AuthKey_*.p8" >/dev/null
       - name: Verify macOS application bundle contract
@@ -370,6 +416,7 @@ jobs:
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
         run: |
           set -euo pipefail
+          ulimit -c 0
           echo "::add-mask::$GH_TOKEN"
           metadata="$RUNNER_TEMP/formal-release-artifacts.json"
           metadata_headers="$RUNNER_TEMP/formal-release-artifacts.headers"
@@ -508,6 +555,7 @@ jobs:
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
         run: |
           set -euo pipefail
+          ulimit -c 0
           echo "::add-mask::$GH_TOKEN"
           created_release_id=''
           draft_created=false
@@ -639,6 +687,7 @@ jobs:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
           set -euo pipefail
+          ulimit -c 0
           echo "::add-mask::$GH_TOKEN"
           gh release download "$RELEASE_TAG" --repo "$GH_REPO" --dir release
       - name: Verify the complete immutable asset set

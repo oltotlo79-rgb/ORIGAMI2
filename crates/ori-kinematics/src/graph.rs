@@ -480,6 +480,9 @@ impl MaterialHingeGraphGeometry {
             || collective_flat_stack_cycle_closure_premises_v1(
                 self, audit, fixed_face, schedule, tolerance,
             )
+            || single_vertex_opposite_pair_cycle_closure_premises_v1(
+                self, audit, fixed_face, schedule, tolerance,
+            )
             || orthogonal_inverse_pair_cycle_closure_premises_v1(
                 self, audit, fixed_face, schedule, tolerance,
             )
@@ -1541,6 +1544,91 @@ fn collective_flat_stack_cycle_closure_premises_v1(
     [midpoint_angles, requested_angles]
         .into_iter()
         .all(|angles| {
+            geometry
+                .solve_closed(audit, fixed_face, &angles, tolerance)
+                .is_ok()
+        })
+}
+
+// Exact identity for a straight fold through one degree-six vertex. The two
+// moving material hinges leave the common pivot in opposite directions and
+// share one canonical angle profile. Their rotations therefore cancel around
+// the six-face loop for the complete parameter domain. Solved midpoint and
+// endpoint poses revalidate the admitted assignment/orientation branch.
+fn single_vertex_opposite_pair_cycle_closure_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &CanonicalCycleScheduleV1,
+    tolerance: f64,
+) -> bool {
+    if geometry.face_ids().len() != 6
+        || geometry.hinges().len() != 6
+        || audit.closure_hinges().len() != 1
+        || !schedule.matches_binding(geometry, audit, fixed_face)
+        || !tolerance.is_finite()
+        || tolerance < 0.0
+    {
+        return false;
+    }
+    let Some(moving) = schedule.collective_profile_edges_v1() else {
+        return false;
+    };
+    if moving.len() != 2 {
+        return false;
+    }
+    let (Some(initial), Some(midpoint), Some(target)) = (
+        schedule.evaluate(0.0),
+        schedule.evaluate(0.5),
+        schedule.evaluate(1.0),
+    ) else {
+        return false;
+    };
+    if initial
+        .as_slice()
+        .iter()
+        .any(|angle| angle.angle_degrees().to_bits() != 0.0_f64.to_bits())
+    {
+        return false;
+    }
+    let moving_hinges = geometry
+        .hinges()
+        .iter()
+        .filter(|hinge| moving.contains(&hinge.edge()))
+        .collect::<Vec<_>>();
+    let [first, second] = moving_hinges.as_slice() else {
+        return false;
+    };
+    let common_pivot = [first.start(), first.end()].into_iter().find(|point| {
+        (*point == second.start() || *point == second.end())
+            && geometry
+                .hinges()
+                .iter()
+                .all(|hinge| hinge.start() == *point || hinge.end() == *point)
+    });
+    let Some(pivot) = common_pivot else {
+        return false;
+    };
+    let outward_axis = |hinge: &TreeHinge| {
+        if hinge.start() == pivot {
+            Some(hinge.axis())
+        } else {
+            crate::Point3::new(-hinge.axis().x(), -hinge.axis().y(), -hinge.axis().z()).ok()
+        }
+    };
+    let (Some(first_axis), Some(second_axis)) = (outward_axis(first), outward_axis(second)) else {
+        return false;
+    };
+    if first_axis.x() != -second_axis.x()
+        || first_axis.y() != -second_axis.y()
+        || first_axis.z() != -second_axis.z()
+    {
+        return false;
+    }
+    geometry
+        .solve_closed(audit, fixed_face, &initial, tolerance)
+        .is_ok()
+        && [midpoint, target].into_iter().all(|angles| {
             geometry
                 .solve_closed(audit, fixed_face, &angles, tolerance)
                 .is_ok()

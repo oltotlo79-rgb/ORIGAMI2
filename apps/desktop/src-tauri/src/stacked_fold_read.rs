@@ -4077,6 +4077,150 @@ mod tests {
         }
     }
 
+    fn balloon_six_sector_cycle_pattern() -> (
+        ori_domain::CreasePattern,
+        ori_domain::Paper,
+        Vec<ori_domain::EdgeId>,
+    ) {
+        use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
+        let namespace = ProjectId::schema_namespace([
+            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x05, 0x41,
+        ]);
+        let center = Vertex {
+            id: VertexId::derive_v5(namespace, b"balloon-center"),
+            position: Point2::new(0.0, 0.0),
+        };
+        let boundary = [
+            (100.0, 0.0),
+            (50.0, 100.0),
+            (-50.0, 100.0),
+            (-100.0, 0.0),
+            (-50.0, -100.0),
+            (50.0, -100.0),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (x, y))| Vertex {
+            id: VertexId::derive_v5(namespace, format!("balloon-{index}").as_bytes()),
+            position: Point2::new(x, y),
+        })
+        .collect::<Vec<_>>();
+        let mut edges = (0..6)
+            .map(|index| Edge {
+                id: EdgeId::derive_v5(namespace, format!("boundary-{index}").as_bytes()),
+                start: boundary[index].id,
+                end: boundary[(index + 1) % 6].id,
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let hinges = (0..6)
+            .map(|index| EdgeId::derive_v5(namespace, format!("spoke-{index}").as_bytes()))
+            .collect::<Vec<_>>();
+        edges.extend((0..6).map(|index| Edge {
+            id: hinges[index],
+            start: center.id,
+            end: boundary[index].id,
+            kind: if matches!(index, 0 | 1 | 3 | 4) {
+                EdgeKind::Mountain
+            } else {
+                EdgeKind::Valley
+            },
+        }));
+        let mut vertices = vec![center];
+        vertices.extend(boundary.iter().cloned());
+        (
+            CreasePattern { vertices, edges },
+            Paper {
+                boundary_vertices: boundary.iter().map(|vertex| vertex.id).collect(),
+                thickness_mm: 0.0,
+                ..Paper::default()
+            },
+            vec![hinges[0], hinges[3]],
+        )
+    }
+
+    #[test]
+    fn balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (pattern, paper, moving) = balloon_six_sector_cycle_pattern();
+        assert_eq!(
+            pattern
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == ori_domain::EdgeKind::Mountain)
+                .count(),
+            4
+        );
+        assert_eq!(
+            pattern
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == ori_domain::EdgeKind::Valley)
+                .count(),
+            2
+        );
+        assert!(
+            pattern
+                .edges
+                .iter()
+                .filter(|edge| moving.contains(&edge.id))
+                .all(|edge| edge.kind == ori_domain::EdgeKind::Mountain)
+        );
+        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        assert_eq!(snapshot.faces.len(), 6);
+        assert_eq!(snapshot.hinge_adjacency.len(), 6);
+        let hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        let fixed = snapshot.faces[0].id;
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            fixed,
+        );
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let state = AppState::new(project);
+        let transactions =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let preview = propose_current_cycle_pose_inner(
+            None,
+            &state,
+            &transactions,
+            CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                cycle_schedule_v1: dense_grid_schedule(&hinges, &moving, 100),
+            },
+        )
+        .expect("balloon straight-line cycle must certify");
+        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            &state,
+            &GlobalFlatFoldabilityState::default(),
+            &transactions,
+            preview.transaction_token,
+        )
+        .expect("balloon straight-line cycle apply");
+        let mut project = super::super::lock_project(&state).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        project.editor.undo(applied).unwrap();
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+    }
+
     #[test]
     fn four_leaf_cycle_preview_applies_atomically_and_round_trips_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();

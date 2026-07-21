@@ -6814,6 +6814,55 @@ mod tests {
     }
 
     #[test]
+    fn add_edge_normalizes_multiple_distinct_intersections_in_descending_order() {
+        let left_low = vertex_at(-1.0, -0.5);
+        let right_low = vertex_at(1.0, -0.5);
+        let left_high = vertex_at(-1.0, 0.5);
+        let right_high = vertex_at(1.0, 0.5);
+        let bottom = vertex_at(0.0, -1.0);
+        let top = vertex_at(0.0, 1.0);
+        let low = Edge {
+            id: EdgeId::new(),
+            start: left_low.id,
+            end: right_low.id,
+            kind: EdgeKind::Mountain,
+        };
+        let high = Edge {
+            id: EdgeId::new(),
+            start: left_high.id,
+            end: right_high.id,
+            kind: EdgeKind::Valley,
+        };
+        let original = CreasePattern {
+            vertices: vec![
+                left_low,
+                right_low,
+                left_high,
+                right_high,
+                bottom.clone(),
+                top.clone(),
+            ],
+            edges: vec![low, high],
+        };
+        let mut editor = EditorState::new(original.clone());
+        editor
+            .execute_add_edge_with_intersections(
+                0,
+                EdgeId::new(),
+                bottom.id,
+                top.id,
+                EdgeKind::Auxiliary,
+            )
+            .expect("normalize two crossings");
+        assert_eq!(editor.pattern().vertices.len(), 8);
+        assert_eq!(editor.pattern().edges.len(), 7);
+        editor
+            .undo(1)
+            .expect("undo all crossings and authored edge");
+        assert_eq!(editor.pattern(), &original);
+    }
+
+    #[test]
     fn underlay_crud_undo_redo_and_layer_guards_are_atomic() {
         let mut editor = EditorState::new(CreasePattern::empty());
         let layer = LayerRecordV1 {

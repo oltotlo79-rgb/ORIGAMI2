@@ -8642,7 +8642,11 @@ function App() {
                     setBeginnerBodyOutline([])
                   }} onChange={setBeginnerBodyOutline} />
                 <BeginnerShapeCanvasPreview locale={locale} bodySize={beginnerBodySize}
-                  bodyOutline={beginnerBodyOutline} protrusions={beginnerProtrusions} />
+                  bodyOutline={beginnerBodyOutline} bodyMode={beginnerBodyOutlineMode}
+                  protrusions={beginnerProtrusions} onBodyOutlineChange={setBeginnerBodyOutline}
+                  onProtrusionChange={(changed) => setBeginnerProtrusions((targets) => targets.map(
+                    (target) => target.id === changed.id ? changed : target,
+                  ))} />
                 <output id="beginner-target-parts-total" aria-live="polite">
                   {formattedText({
                     ja: '部品合計: {total} / 32',

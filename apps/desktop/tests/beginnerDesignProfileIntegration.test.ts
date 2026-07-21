@@ -155,6 +155,8 @@ test('AUT-006 stores every bounded protrusion target attribute in profile histor
   assert.match(app, /BeginnerShapeCanvasPreview/u)
   assert.match(app, /bodyOutline=\{beginnerBodyOutline\}/u)
   assert.match(app, /protrusions=\{beginnerProtrusions\}/u)
+  assert.match(app, /onBodyOutlineChange=\{setBeginnerBodyOutline\}/u)
+  assert.match(app, /onProtrusionChange=\{\(changed\)/u)
 })
 
 test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticity', () => {

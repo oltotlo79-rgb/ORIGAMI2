@@ -2111,7 +2111,27 @@ fn temporary_symmetric_profile_for_grid(
         return Err("beginner_parameter_grid_point_invalid".to_owned());
     }
 
-    let three_pairs = ori_domain::insect_three_pair_bindings_v1(&source.generation_constraints);
+    let preserved_pair_ids =
+        ori_domain::insect_complete_bindings_v1(&source.generation_constraints)
+            .map(|binding| {
+                vec![
+                    binding.wing_pair_protrusion_id,
+                    binding.antenna_pair_protrusion_id,
+                    binding.leg_pair_protrusion_ids[0],
+                    binding.leg_pair_protrusion_ids[1],
+                    binding.leg_pair_protrusion_ids[2],
+                ]
+            })
+            .or_else(|| {
+                ori_domain::insect_three_pair_bindings_v1(&source.generation_constraints).map(
+                    |bindings| {
+                        bindings
+                            .into_iter()
+                            .map(|binding| binding.protrusion_id)
+                            .collect()
+                    },
+                )
+            });
     let mut profile = source.clone();
     profile.generation_constraints.detail_level = point.detail_level;
     let estimate = ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints)
@@ -2122,15 +2142,15 @@ fn temporary_symmetric_profile_for_grid(
         point.scale_percent,
         point.spacing_percent,
     );
-    if let Some(bindings) = three_pairs {
-        profile.generation_constraints.protrusions = bindings
+    if let Some(pair_ids) = preserved_pair_ids {
+        profile.generation_constraints.protrusions = pair_ids
             .into_iter()
-            .filter_map(|binding| {
+            .filter_map(|protrusion_id| {
                 source
                     .generation_constraints
                     .protrusions
                     .iter()
-                    .find(|target| target.id == binding.protrusion_id)
+                    .find(|target| target.id == protrusion_id)
                     .cloned()
             })
             .map(|mut target| {
@@ -11131,6 +11151,79 @@ mod tests {
         assert_eq!(undone.revision, snapshot.revision + 1);
         let redone = execute_redo(&mut project, project_id, undone.revision).unwrap();
         assert_eq!(redone.revision, undone.revision + 1);
+    }
+
+    #[test]
+    fn complete_insect_grid_preserves_all_five_pair_dimensions_and_bindings() {
+        let mut source = ori_domain::BeginnerDesignProfileV1::default();
+        source.generation_constraints.target_category =
+            Some(ori_domain::BeginnerTargetCategoryV1::Insect);
+        source.generation_constraints.target_parts = vec![
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Head,
+                count: 1,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Torso,
+                count: 1,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Wing,
+                count: 2,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Antenna,
+                count: 2,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Leg,
+                count: 6,
+            },
+        ];
+        configure_symmetric_profile(
+            &mut source,
+            ori_domain::BeginnerSymmetricParameterEstimateV1 {
+                protrusion_count: 10,
+                scale_percent: 27,
+                spacing_percent: 50,
+            },
+            27,
+            50,
+        );
+        for (index, target) in source
+            .generation_constraints
+            .protrusions
+            .iter_mut()
+            .enumerate()
+        {
+            target.length_tenths_mm = if index == 0 { 1 } else { 270 + index as u32 * 27 };
+            target.thickness_tenths_mm = if index == 0 { 1 } else { 50 + index as u16 * 10 };
+            target.direction_milli[0] = -target.direction_milli[0];
+            target.direction_milli[1] = -target.direction_milli[1];
+        }
+        source.generation_constraints.protrusions.reverse();
+        let point = ori_domain::beginner_parameter_grid_v1()[26];
+        let temporary = temporary_symmetric_profile_for_grid(&source, point).unwrap();
+
+        assert_eq!(temporary.generation_constraints.protrusions.len(), 5);
+        assert!(
+            ori_domain::insect_complete_bindings_v1(&temporary.generation_constraints).is_some()
+        );
+        for (index, target) in temporary
+            .generation_constraints
+            .protrusions
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(target.id, index as u16 + 1);
+            let source_length = if index == 0 { 1 } else { 270 + index as u32 * 27 };
+            let source_thickness = if index == 0 { 1 } else { 50 + index as u16 * 10 };
+            assert_eq!(target.length_tenths_mm, (source_length * 45 / 27).max(1));
+            assert_eq!(
+                target.thickness_tenths_mm,
+                (source_thickness * 80 / 50).max(1)
+            );
+        }
     }
 
     #[test]

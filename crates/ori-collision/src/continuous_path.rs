@@ -1449,8 +1449,10 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
                 || (hinge.left_face() == b && hinge.right_face() == a)
         })
     };
-    let local_symmetric_groups =
-        composed_symmetric_rational_local_groups_v1(geometry, audit, fixed_face, schedule);
+    let local_symmetric_groups = composed_symmetric_rational_local_groups_v1(
+        geometry, audit, fixed_face, schedule,
+    )
+    .or_else(|| coupled_figure_eight_local_groups_v1(geometry, audit, fixed_face, schedule));
     if local_symmetric_groups
         .as_ref()
         .is_some_and(|groups| symmetric_groups_have_disjoint_swept_balls_v1(geometry, groups))
@@ -1515,8 +1517,8 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
                     continue;
                 }
                 if local_symmetric_groups.as_ref().is_some_and(|groups| {
-                    bounds[first].0 == fixed_face
-                        || bounds[second].0 == fixed_face
+                    !groups.contains_key(&bounds[first].0)
+                        || !groups.contains_key(&bounds[second].0)
                         || groups.get(&bounds[first].0) == groups.get(&bounds[second].0)
                 }) {
                     continue;
@@ -1607,6 +1609,79 @@ fn composed_symmetric_rational_local_groups_v1(
         }
     }
     (!result.is_empty() && remaining.is_empty()).then_some(result)
+}
+
+fn coupled_figure_eight_local_groups_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+) -> Option<HashMap<FaceId, usize>> {
+    if geometry.hinges().len() != 8
+        || geometry.face_ids().len() != 7
+        || audit.closure_hinges().len() != 2
+    {
+        return None;
+    }
+    for shared in geometry
+        .face_ids()
+        .iter()
+        .copied()
+        .filter(|face| *face != fixed_face)
+    {
+        let mut remaining = geometry
+            .face_ids()
+            .iter()
+            .copied()
+            .filter(|face| *face != shared)
+            .collect::<HashSet<_>>();
+        let mut result = HashMap::new();
+        let mut valid = true;
+        for group_index in 0..2 {
+            let Some(seed) = remaining.iter().next().copied() else {
+                valid = false;
+                break;
+            };
+            let mut stack = vec![seed];
+            let mut faces = HashSet::new();
+            while let Some(face) = stack.pop() {
+                if !remaining.remove(&face) {
+                    continue;
+                }
+                faces.insert(face);
+                for hinge in geometry.hinges() {
+                    if hinge.left_face() == face && hinge.right_face() != shared {
+                        stack.push(hinge.right_face());
+                    } else if hinge.right_face() == face && hinge.left_face() != shared {
+                        stack.push(hinge.left_face());
+                    }
+                }
+            }
+            let edges = geometry
+                .hinges()
+                .iter()
+                .filter(|hinge| {
+                    faces.contains(&hinge.left_face()) || faces.contains(&hinge.right_face())
+                })
+                .map(|hinge| hinge.edge())
+                .collect::<Vec<_>>();
+            if faces.len() != 3
+                || schedule
+                    .bounded_symmetric_kawasaki_profile_for_edges_v1(&edges)
+                    .is_none()
+            {
+                valid = false;
+                break;
+            }
+            for face in faces {
+                result.insert(face, group_index);
+            }
+        }
+        if valid && remaining.is_empty() && result.len() == 6 {
+            return Some(result);
+        }
+    }
+    None
 }
 
 fn symmetric_groups_have_disjoint_swept_balls_v1(

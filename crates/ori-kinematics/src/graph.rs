@@ -233,7 +233,13 @@ impl MaterialHingeGraphGeometry {
         }
         if let Some(group_count) = composed_symmetric_rational_cycles_premises_v1(
             self, audit, fixed_face, schedule, tolerance,
-        ) {
+        )
+        .or_else(|| {
+            coupled_figure_eight_rational_cycles_premises_v1(
+                self, audit, fixed_face, schedule, tolerance,
+            )
+            .then_some(2)
+        }) {
             let required_depth = usize::BITS - (group_count - 1).leading_zeros();
             if limits.max_leaves < group_count
                 || limits.max_work < group_count
@@ -1282,6 +1288,89 @@ fn composed_symmetric_rational_cycles_premises_v1(
     .then_some(group_count)
 }
 
+fn coupled_figure_eight_rational_cycles_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &CanonicalCycleScheduleV1,
+    tolerance: f64,
+) -> bool {
+    if geometry.hinges().len() != 8
+        || geometry.face_ids().len() != 7
+        || audit.closure_hinges().len() != 2
+    {
+        return false;
+    }
+    geometry
+        .face_ids()
+        .iter()
+        .copied()
+        .filter(|candidate| *candidate != fixed_face)
+        .any(|shared| {
+            let mut remaining = geometry
+                .face_ids()
+                .iter()
+                .copied()
+                .filter(|face| *face != shared)
+                .collect::<HashSet<_>>();
+            let mut groups = Vec::new();
+            while let Some(seed) = remaining.iter().next().copied() {
+                let mut faces = HashSet::from([seed]);
+                let mut queue = VecDeque::from([seed]);
+                remaining.remove(&seed);
+                while let Some(face) = queue.pop_front() {
+                    for hinge in geometry.hinges() {
+                        let next = if hinge.left_face() == face {
+                            Some(hinge.right_face())
+                        } else if hinge.right_face() == face {
+                            Some(hinge.left_face())
+                        } else {
+                            None
+                        };
+                        if let Some(next) = next
+                            && next != shared
+                            && remaining.remove(&next)
+                        {
+                            faces.insert(next);
+                            queue.push_back(next);
+                        }
+                    }
+                }
+                groups.push(faces);
+            }
+            if groups.len() != 2 || groups.iter().any(|group| group.len() != 3) {
+                return false;
+            }
+            let mut used_edges = HashSet::new();
+            let valid = groups.iter().all(|group| {
+                let edges = geometry
+                    .hinges()
+                    .iter()
+                    .filter(|hinge| {
+                        [hinge.left_face(), hinge.right_face()]
+                            .into_iter()
+                            .all(|face| face == shared || group.contains(&face))
+                    })
+                    .map(|hinge| hinge.edge())
+                    .collect::<Vec<_>>();
+                edges.len() == 4
+                    && edges.iter().all(|edge| used_edges.insert(*edge))
+                    && symmetric_rational_cycle_group_premises_v1(
+                        geometry, shared, schedule, &edges, tolerance,
+                    )
+            });
+            valid
+                && used_edges.len() == geometry.hinges().len()
+                && [0.0, 0.5, 1.0].into_iter().all(|u| {
+                    schedule.evaluate(u).is_some_and(|angles| {
+                        geometry
+                            .solve_closed(audit, fixed_face, &angles, tolerance)
+                            .is_ok()
+                    })
+                })
+        })
+}
+
 fn symmetric_rational_kawasaki_cycle_closure_premises_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
@@ -1915,6 +2004,20 @@ mod tests {
         CanonicalCycleScheduleV1,
         FaceId,
     ) {
+        composed_rational_cycles_fixture_with_fixed(group_count, corrupt_group, reverse_hinges, 0)
+    }
+
+    fn composed_rational_cycles_fixture_with_fixed(
+        group_count: usize,
+        corrupt_group: Option<usize>,
+        reverse_hinges: bool,
+        fixed_face_index: usize,
+    ) -> (
+        MaterialHingeGraphGeometry,
+        MaterialHingeGraphAudit,
+        CanonicalCycleScheduleV1,
+        FaceId,
+    ) {
         let namespace = ProjectId::new();
         let faces = (0..(1 + group_count * 3))
             .map(|index| FaceId::derive_v5(namespace, &[index as u8]))
@@ -2041,15 +2144,16 @@ mod tests {
             })
             .collect::<Vec<_>>();
         inputs.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        let fixed = faces[fixed_face_index];
         let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
             &geometry,
             &audit,
-            faces[0],
+            fixed,
             inputs,
             CycleScheduleLimitsV1::default(),
         )
         .unwrap();
-        (geometry, audit, schedule, faces[0])
+        (geometry, audit, schedule, fixed)
     }
 
     #[test]
@@ -2244,6 +2348,65 @@ mod tests {
                 },
             ),
             Err(DyadicIntervalClosureErrorV1::InvalidInput)
+        );
+    }
+
+    #[test]
+    fn coupled_figure_eight_cycles_share_only_one_nonfixed_face() {
+        let limits = DyadicIntervalClosureLimitsV1 {
+            max_depth: 1,
+            max_leaves: 2,
+            max_work: 2,
+            schedule_limits: CycleScheduleLimitsV1::default(),
+        };
+        for reverse in [false, true] {
+            let (geometry, audit, schedule, fixed) =
+                composed_rational_cycles_fixture_with_fixed(2, None, reverse, 1);
+            let closure = geometry
+                .prove_dyadic_schedule_closure_v1(&audit, fixed, &schedule, 1.0e-9, limits)
+                .expect("coupled figure-eight closure");
+            assert_eq!(
+                closure
+                    .leaves()
+                    .iter()
+                    .map(|leaf| (leaf.0, leaf.1))
+                    .collect::<Vec<_>>(),
+                vec![(1, 0), (1, 1)]
+            );
+        }
+        let (geometry, audit, schedule, fixed) =
+            composed_rational_cycles_fixture_with_fixed(2, None, false, 1);
+        for short in [
+            DyadicIntervalClosureLimitsV1 {
+                max_depth: 0,
+                ..limits
+            },
+            DyadicIntervalClosureLimitsV1 {
+                max_leaves: 1,
+                ..limits
+            },
+            DyadicIntervalClosureLimitsV1 {
+                max_work: 1,
+                ..limits
+            },
+        ] {
+            assert_eq!(
+                geometry.prove_dyadic_schedule_closure_v1(&audit, fixed, &schedule, 1.0e-9, short,),
+                Err(DyadicIntervalClosureErrorV1::ResourceLimit)
+            );
+        }
+        let (corrupt, corrupt_audit, corrupt_schedule, corrupt_fixed) =
+            composed_rational_cycles_fixture_with_fixed(2, Some(1), false, 1);
+        assert!(
+            corrupt
+                .prove_dyadic_schedule_closure_v1(
+                    &corrupt_audit,
+                    corrupt_fixed,
+                    &corrupt_schedule,
+                    1.0e-9,
+                    limits,
+                )
+                .is_err()
         );
     }
 

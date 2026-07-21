@@ -1592,8 +1592,28 @@ impl CanonicalCycleScheduleV1 {
     pub fn bounded_symmetric_kawasaki_profile_v1(
         &self,
     ) -> Option<(Vec<EdgeId>, Vec<EdgeId>, i64, u64)> {
+        let edges = self
+            .half_angle_entries
+            .iter()
+            .map(|entry| entry.edge)
+            .collect::<Vec<_>>();
+        self.bounded_symmetric_kawasaki_profile_for_edges_v1(&edges)
+    }
+
+    #[must_use]
+    pub fn bounded_symmetric_kawasaki_profile_for_edges_v1(
+        &self,
+        edges: &[EdgeId],
+    ) -> Option<(Vec<EdgeId>, Vec<EdgeId>, i64, u64)> {
         const MAX_TERM: i64 = 64;
-        if self.half_angle_entries.len() != 4 {
+        if edges.len() != 4 {
+            return None;
+        }
+        let selected = edges
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        if selected.len() != 4 {
             return None;
         }
         let rational = |numerator: i64, denominator: i64| {
@@ -1604,7 +1624,11 @@ impl CanonicalCycleScheduleV1 {
         let mut unit = Vec::new();
         let mut scaled = Vec::new();
         let mut ratio = None;
-        for entry in &self.half_angle_entries {
+        for entry in self
+            .half_angle_entries
+            .iter()
+            .filter(|entry| selected.contains(&entry.edge))
+        {
             if entry.u_domain != domain || entry.denominator_power_coefficients.len() != 1 {
                 return None;
             }
@@ -1637,7 +1661,8 @@ impl CanonicalCycleScheduleV1 {
         let ratio = ratio?;
         let numerator = ratio.numer().to_i64()?;
         let denominator = ratio.denom().to_i64()?;
-        if unit.len() != 2
+        if unit.len() + scaled.len() != 4
+            || unit.len() != 2
             || scaled.len() != 2
             || numerator <= 0
             || denominator <= 0

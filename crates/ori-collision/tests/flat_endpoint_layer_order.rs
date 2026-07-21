@@ -109,6 +109,57 @@ fn zabuton_five_faces_classify_eight_certified_stacks_and_two_separated_pairs() 
     assert_eq!(diagnostic.penetrating_pairs(), 0);
 }
 
+#[test]
+fn three_face_two_hinge_chain_never_reports_flat_shared_hinges_as_penetrating() {
+    let fixture = three_panel_fixture(false);
+    let pose = facewise_endpoint_pose(&fixture);
+    let unauthenticated = diagnose_static_collision_geometry(
+        &fixture.model,
+        &pose,
+        0.0,
+        StaticCollisionLimits::default(),
+    )
+    .expect("three-panel diagnostic without layer authority");
+    let unauthenticated_hinges = unauthenticated
+        .pairs()
+        .iter()
+        .filter(|pair| pair.topology().identifier() == "shared_hinge_edge")
+        .collect::<Vec<_>>();
+    assert_eq!(unauthenticated_hinges.len(), 2);
+    assert!(unauthenticated_hinges.iter().all(|pair| {
+        pair.disposition() == StaticCollisionPairDisposition::Indeterminate
+            && pair.evidence().identifier() == "shared_feature_flat_stack"
+    }));
+
+    let anchor = anchor_flat_endpoint_layer_order_v1(
+        input(&fixture, &pose, &fixture.layer_order),
+        FlatEndpointLayerOrderLimitsV1::default(),
+    )
+    .expect("three-panel flat endpoint layer-order anchor");
+    let diagnostic = diagnose_static_collision_geometry_with_flat_layer_order_v1(
+        &fixture.model,
+        &pose,
+        0.0,
+        StaticCollisionLimits::default(),
+        &anchor,
+    )
+    .expect("three-panel layer-bound collision diagnostic");
+    let authenticated_hinges = diagnostic
+        .pairs()
+        .iter()
+        .filter(|pair| pair.topology().identifier() == "shared_hinge_edge")
+        .collect::<Vec<_>>();
+    assert_eq!(authenticated_hinges.len(), 2);
+    assert!(authenticated_hinges.iter().all(|pair| {
+        pair.disposition() == StaticCollisionPairDisposition::Allowed
+            && pair.evidence().identifier() == "shared_feature_flat_stack"
+    }));
+    // The two non-adjacent end panels genuinely overlap and retain their
+    // separate no-shared-feature penetration result. That must never leak
+    // onto either of the two shared hinges.
+    assert_eq!(diagnostic.penetrating_pairs(), 1);
+}
+
 struct Fixture {
     project: ProjectId,
     paper: Paper,

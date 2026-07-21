@@ -28,10 +28,13 @@ function Harness() {
   const [candidateShortage, setCandidateShortage] = useState(false)
   const [glbWitness, setGlbWitness] = useState<{ bounds: string, bulges: number, discrepancy: number } | null>(null)
   const [mergedAuthorities, setMergedAuthorities] = useState(false)
+  const [authorityValid, setAuthorityValid] = useState(true)
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
     + bindings.reduce((sum, target) => sum + Math.max(0, (target.local_outline_tenths_mm?.length ?? 3) - 3), 0))
   const evaluate = useRef<HTMLButtonElement>(null)
+  const depthError = glbWitness ? Math.abs(65 - (selectedCandidate === 1 ? 62 : 58)) : 0
+  const threeDimensionalScore = Math.max(0, 100 - depthError * 4 - (glbWitness?.bulges ?? 0) * 2)
   useEffect(() => {
     if (!preview && !applied) return
     const canvas = witnessCanvas.current, context = canvas?.getContext('2d')
@@ -65,6 +68,7 @@ function Harness() {
     return canonicalize(moved)
   })
   const recognize = (source: string) => {
+    setAuthorityValid(true)
     setBindings(initialBindings.map((target) => ({ ...target })))
     setKinds(['tail', 'fin'])
     setRecognized(true); setPreview(false); setCandidateShortage(false); setStatus(`${source} recognized two bounded bindings`)
@@ -82,6 +86,8 @@ function Harness() {
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
     <button onClick={() => {
       setRecognized(true); setPreview(false); setCandidateShortage(false); setMergedAuthorities(true)
+      setAuthorityValid(true)
+      setSelectedCandidate(1)
       setOutlineMode('general'); setOutline([[-50, -50], [50, -50], [40, 50], [-30, 50]])
       setBindings(initialBindings.map((target, index) => index === 0 ? { ...target,
         local_outline_tenths_mm: [[-20, -10], [20, -10], [0, 30]] } : { ...target }))
@@ -90,6 +96,8 @@ function Harness() {
     }}>Confirm image and GLB merge</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected merge: conflicting bounds or part bindings') }}>Try conflicting recognition merge</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected merge: stale image or GLB asset') }}>Try stale recognition merge</button>
+    <button onClick={() => { setAuthorityValid(false); setPreview(false); setStatus('Rejected merge: damaged depth authority') }}>Damage merged authority</button>
+    <button onClick={() => { setAuthorityValid(false); setPreview(false); setStatus('Rejected merge: one-short bulge resource') }}>Try one-short bulge resource</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setGlbWitness(null); setStatus('Rejected GLB: non-finite or oversized bounds') }}>Try invalid GLB bounds</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setGlbWitness(null); setStatus('Rejected GLB: dense or multiple components') }}>Try dense multi-component GLB</button>
     <RecognitionContourCopyAction locale="en" bodyPointCount={4} localContourCount={1}
@@ -151,7 +159,8 @@ function Harness() {
       }}>Relax contour to 12 points and regenerate</button>
     </section>}
     <button ref={evaluate} onClick={() => { if (recognized) {
-      if (candidateShortage) setStatus('Contour candidate shortage: safe relaxation is required')
+      if (!authorityValid) setStatus('Merged authority invalid: candidate generation refused')
+      else if (candidateShortage) setStatus('Contour candidate shortage: safe relaxation is required')
       else { setPreview(true); setStatus('Generic target grid ready') }
     } }}>Evaluate generic target grid</button>
     {preview && <section aria-label="Generic target candidate preview"><p>Global flat-foldability proven</p>
@@ -160,6 +169,13 @@ function Harness() {
       <p>Contour placement witness candidate {selectedCandidate}: body {outline.length || 4}, local {bindings.filter((binding) => binding.local_outline_tenths_mm).map((binding) => `${binding.id}:${binding.local_outline_tenths_mm!.length}`).join(', ') || 'none'}</p>
       {glbWitness && <p>GLB evaluation witness: bounds {glbWitness.bounds}, silhouette difference {glbWitness.discrepancy}%, bulges {glbWitness.bulges}</p>}
       {mergedAuthorities && <p>Merged authority witness: image contours + GLB depth/bulges</p>}
+      {mergedAuthorities && <p>3D candidate score {threeDimensionalScore}/100 · bounded depth error {depthError} mm</p>}
+      {mergedAuthorities && <canvas width={320} height={120} role="img" aria-label="Folded target depth preview" ref={(canvas) => {
+        const context = canvas?.getContext('2d'); if (!canvas || !context) return
+        context.clearRect(0, 0, canvas.width, canvas.height); context.fillStyle = '#2563eb'
+        context.fillRect(40, 60 - (selectedCandidate === 1 ? 31 : 29), 240, selectedCandidate === 1 ? 62 : 58)
+        context.strokeStyle = '#dc2626'; context.strokeRect(36, 27, 248, 65)
+      }} />}
       <canvas ref={witnessCanvas} width={320} height={200} role="img" aria-label={`Contour placement correspondence candidate ${selectedCandidate}`} />
       <button onClick={() => { setPreview(false); setStatus('Stale generic target replaced') }}>Replace recognized target</button>
       <button onClick={() => { finishBeginnerGridCancellation(() => setPreview(false), focus); setStatus('Generic target grid canceled') }}>Cancel generic target grid</button>
@@ -170,6 +186,7 @@ function Harness() {
       <p>Applied contour placement witness candidate {selectedCandidate}</p>
       {glbWitness && <p>Applied GLB witness: bounds {glbWitness.bounds}, bulges {glbWitness.bulges}</p>}
       {mergedAuthorities && <p>Applied merged authority witness: image contours + GLB depth/bulges</p>}
+      {mergedAuthorities && <p>Applied 3D candidate score {threeDimensionalScore}/100 · depth error {depthError} mm</p>}
       <canvas ref={witnessCanvas} width={320} height={200} role="img" aria-label={`Applied contour placement correspondence candidate ${selectedCandidate}`} />
       <button onClick={() => setStatus('Generic target undone')}>Undo generic target</button>
       <button onClick={() => setStatus('Generic target redone')}>Redo generic target</button>

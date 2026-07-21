@@ -1173,6 +1173,44 @@ mod tests {
     }
 
     #[test]
+    fn expanded_folder_round_trips_typed_fold_path_provenance_and_legacy() {
+        for typed in [false, true] {
+            let directory = TestDirectory::new("typed-provenance");
+            let root = directory.0.join("project");
+            let mut archive = sample_archive(false);
+            if typed {
+                archive
+                    .document
+                    .beginner_design_profile
+                    .generation_provenance = Some(ori_domain::BeginnerGenerationProvenanceV1 {
+                    schema_version: 1,
+                    topology_authority_sha256: [0x31; 32],
+                    fold_path_certificate_sha256: Some([0x62; 32]),
+                    confidence_score: 93,
+                    confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
+                    explicit_override: false,
+                    source_asset_fingerprint: "asset:expanded-folder".to_owned(),
+                });
+            }
+            let artifact = write_project_folder_v1(&archive).expect("write folder provenance");
+            write_fixture(&root, &artifact);
+            let reopened = load_project_folder_artifact(&root, ProjectFolderLimits::default())
+                .expect("read folder provenance");
+            assert_eq!(reopened.archive(), &archive);
+            assert_eq!(
+                reopened
+                    .archive()
+                    .document
+                    .beginner_design_profile
+                    .generation_provenance
+                    .as_ref()
+                    .and_then(|value| value.fold_path_certificate_sha256),
+                typed.then_some([0x62; 32]),
+            );
+        }
+    }
+
+    #[test]
     fn directory_enumeration_restarts_from_the_beginning() {
         let directory = TestDirectory::new("repeat-enumeration");
         fs::write(directory.0.join("first"), b"1").expect("first");

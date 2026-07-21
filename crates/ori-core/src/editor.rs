@@ -2375,14 +2375,14 @@ impl EditorState {
 
     /// Adds one authored edge and normalizes every non-boundary intersection
     /// it creates as one authenticated history operation.
-    pub fn execute_add_edge_with_intersections(
-        &mut self,
+    pub fn plan_add_edge_with_intersections(
+        &self,
         expected_revision: Revision,
         id: EdgeId,
         start: VertexId,
         end: VertexId,
         kind: EdgeKind,
-    ) -> Result<CommandResult, CommandError> {
+    ) -> Result<Command, CommandError> {
         self.ensure_revision(expected_revision)?;
         let start_position = self
             .pattern
@@ -2534,13 +2534,28 @@ impl EditorState {
             revision += 1;
         }
 
-        self.execute(
+        Ok(Command::ApplyNormalizedEdgeDocument {
+            pattern: staged.pattern.clone(),
+            project_layers: staged.project_layers.clone(),
+        })
+    }
+
+    pub fn execute_add_edge_with_intersections(
+        &mut self,
+        expected_revision: Revision,
+        id: EdgeId,
+        start: VertexId,
+        end: VertexId,
+        kind: EdgeKind,
+    ) -> Result<CommandResult, CommandError> {
+        let command = self.plan_add_edge_with_intersections(
             expected_revision,
-            Command::ApplyNormalizedEdgeDocument {
-                pattern: staged.pattern.clone(),
-                project_layers: staged.project_layers.clone(),
-            },
-        )
+            id,
+            start,
+            end,
+            kind,
+        )?;
+        self.execute(expected_revision, command)
     }
 
     pub fn undo(&mut self, expected_revision: Revision) -> Result<CommandResult, CommandError> {

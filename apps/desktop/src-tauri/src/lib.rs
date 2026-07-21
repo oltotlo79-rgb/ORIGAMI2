@@ -5925,8 +5925,9 @@ async fn apply_current_native_pose(
 #[tauri::command]
 async fn inspect_current_static_collision(
     state: State<'_, AppState>,
+    foldability_state: State<'_, GlobalFlatFoldabilityState>,
 ) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
-    inspect_current_static_collision_authority(&state).await
+    inspect_current_static_collision_authority(&state, &foldability_state).await
 }
 
 #[tauri::command]
@@ -7828,18 +7829,17 @@ fn add_edge(
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
     ensure_project_instance_identity(&project, expected_project_instance_id, expected_project_id)?;
-    let authority = project.applied_pose_authority.clone();
-    let invalidation = authority
-        .begin_invalidation()
-        .map_err(|error| error.to_string())?;
-    project
+    let command = project
         .editor
-        .execute_add_edge_with_intersections(expected_revision, EdgeId::new(), start, end, kind)
+        .plan_add_edge_with_intersections(expected_revision, EdgeId::new(), start, end, kind)
         .map_err(|error| error.to_string())?;
-    project.record_numeric_expression_edit();
-    project.reconcile_vertex_coordinate_expressions();
-    invalidation.commit();
-    Ok(snapshot(&project))
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        command,
+    )
 }
 
 #[tauri::command]

@@ -25,6 +25,18 @@ async function mintPreview(page, hinges = 6) {
   await page.getByText(/authenticated one-shot/).waitFor()
 }
 
+async function verifyHigherDegreeLifecycle(hinges, label) {
+  const page = await openScenario('success', hinges)
+  await mintPreview(page, hinges)
+  await page.getByRole('button', { name: 'Apply authenticated path' }).click()
+  await page.getByText('applied-revision-2-timeline-dto-2').waitFor()
+  for (const name of ['undo', 'redo', 'reopen']) await page.getByRole('button', { name }).click()
+  const evidence = await page.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)
+  const expected = { reads: 1, readHinges: hinges, readScheduleHinges: hinges, mints: 1, mintHinges: hinges, mintScheduleHinges: hinges, applyAttempts: 1, mutations: 1, failures: 0, cancels: 0, timelineDtos: 2, undos: 1, redos: 1, reopens: 1 }
+  if (JSON.stringify(evidence) !== JSON.stringify(expected)) throw new Error(`${label}: ${JSON.stringify(evidence)}`)
+  await page.close()
+}
+
 try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(origin)).ok) break } catch {} await new Promise(resolve => setTimeout(resolve, 100)) }
   browser = await chromium.launch({ headless: true })
@@ -44,14 +56,8 @@ try {
   if (JSON.stringify(successEvidence) !== JSON.stringify({ reads: 1, readHinges: 6, readScheduleHinges: 6, mints: 1, mintHinges: 6, mintScheduleHinges: 6, applyAttempts: 2, mutations: 1, failures: 1, cancels: 0, timelineDtos: 2, undos: 1, redos: 1, reopens: 1 })) throw new Error(JSON.stringify(successEvidence))
   await success.close()
 
-  const octagonal = await openScenario('success', 8)
-  await mintPreview(octagonal, 8)
-  await octagonal.getByRole('button', { name: 'Apply authenticated path' }).click()
-  await octagonal.getByText('applied-revision-2-timeline-dto-2').waitFor()
-  for (const name of ['undo', 'redo', 'reopen']) await octagonal.getByRole('button', { name }).click()
-  const octagonalEvidence = await octagonal.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)
-  if (JSON.stringify(octagonalEvidence) !== JSON.stringify({ reads: 1, readHinges: 8, readScheduleHinges: 8, mints: 1, mintHinges: 8, mintScheduleHinges: 8, applyAttempts: 1, mutations: 1, failures: 0, cancels: 0, timelineDtos: 2, undos: 1, redos: 1, reopens: 1 })) throw new Error(`C8: ${JSON.stringify(octagonalEvidence)}`)
-  await octagonal.close()
+  await verifyHigherDegreeLifecycle(8, 'C8')
+  await verifyHigherDegreeLifecycle(16, 'C16')
 
   for (const scenario of ['stale', 'aba', 'tamper']) {
     const page = await openScenario(scenario)

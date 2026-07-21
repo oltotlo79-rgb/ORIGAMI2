@@ -6131,6 +6131,7 @@ mod tests {
         for (fixture_name, (pattern, mut paper, moving)) in [
             ("balloon-c6", balloon_six_sector_cycle_pattern()),
             ("octagonal-c8", octagonal_eight_sector_cycle_pattern()),
+            ("radial-c16", sixteen_sector_cycle_pattern(8)),
         ] {
             paper.thickness_mm = 0.1;
             let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
@@ -6208,6 +6209,8 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("{fixture_name} exact schedule dyadic read: {error}"));
             assert_eq!(observed.status, "certified");
+            assert_eq!(observed.state_count, 3);
+            assert_eq!(observed.transition_count, 4);
             assert!(observed.certified_transition_count > 0);
             assert!(observed.positive_thickness_certified);
             assert!(observed.layer_transport_certified);

@@ -13,6 +13,8 @@ export const MAX_GITHUB_RELEASE_RESPONSE_BYTES = 128 * 1024
 const MAX_SEMANTIC_VERSION_CODE_UNITS = 128
 const MAX_SEMANTIC_VERSION_IDENTIFIERS = 32
 const MAX_RELEASE_URL_CODE_UNITS = 512
+const MAX_RELEASE_BODY_CODE_UNITS = 100_000
+const EXPECTED_RELEASE_ASSET_COUNT = 9
 const MAX_RELEASE_ROOT_FIELDS = 128
 const MAX_CONTENT_TYPE_CODE_UNITS = 128
 const UTF8_ENCODER = new TextEncoder()
@@ -239,6 +241,7 @@ export function parseGitHubLatestReleaseResponseJson(
   const bodyStatus = boundedJsonBody(body)
   if (bodyStatus.kind !== 'ready') return null
   try {
+    if (hasDuplicateRootJsonKeys(bodyStatus.body)) return null
     const parsed: unknown = JSON.parse(bodyStatus.body)
     return parseGitHubLatestReleaseResponse(parsed)
   } catch {
@@ -257,7 +260,7 @@ export function parseGitHubLatestReleaseResponse(
   try {
     const fields = selectedDataRecord(
       value,
-      ['tag_name', 'html_url', 'name', 'body', 'draft', 'prerelease'],
+      ['tag_name', 'html_url', 'name', 'body', 'assets', 'draft', 'prerelease'],
       MAX_RELEASE_ROOT_FIELDS,
     )
     if (
@@ -268,6 +271,9 @@ export function parseGitHubLatestReleaseResponse(
       || typeof fields.html_url !== 'string'
       || typeof fields.name !== 'string'
       || typeof fields.body !== 'string'
+      || fields.body.length > MAX_RELEASE_BODY_CODE_UNITS
+      || !Array.isArray(fields.assets)
+      || fields.assets.length !== EXPECTED_RELEASE_ASSET_COUNT
       || fields.html_url.length > MAX_RELEASE_URL_CODE_UNITS
     ) return null
 
@@ -290,6 +296,39 @@ export function parseGitHubLatestReleaseResponse(
   } catch {
     return null
   }
+}
+
+function hasDuplicateRootJsonKeys(body: string): boolean {
+  const keys = new Set<string>()
+  let depth = 0
+  let expectsKey = false
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index]
+    if (character === '"') {
+      const start = index
+      for (index += 1; index < body.length; index += 1) {
+        if (body[index] === '\\') index += 1
+        else if (body[index] === '"') break
+      }
+      if (depth === 1 && expectsKey) {
+        try {
+          const key: unknown = JSON.parse(body.slice(start, index + 1))
+          if (typeof key !== 'string' || keys.has(key)) return true
+          keys.add(key)
+          expectsKey = false
+        } catch {
+          return true
+        }
+      }
+      continue
+    }
+    if (character === '{' || character === '[') {
+      depth += 1
+      if (depth === 1 && character === '{') expectsKey = true
+    } else if (character === '}' || character === ']') depth -= 1
+    else if (character === ',' && depth === 1) expectsKey = true
+  }
+  return false
 }
 
 /**

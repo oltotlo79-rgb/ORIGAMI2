@@ -40,10 +40,10 @@ test('the parser retains only a stable version and its official release page', (
   const parsed = parseGitHubLatestReleaseResponse(release({
     body: 'Private project path C:\\Users\\alice\\secret.ori',
     author: { login: 'arbitrary-author' },
-    assets: [{
+    assets: Array.from({ length: 9 }, () => ({
       browser_download_url: 'https://evil.example/payload.exe',
       signature: 'forged-native-updater-signature',
-    }],
+    })),
     tarball_url: 'https://evil.example/archive',
     zipball_url: 'https://evil.example/archive',
   }))
@@ -81,6 +81,11 @@ test('draft prerelease inconsistent and malformed versions are rejected', () => 
     release({ name: 'ORIGAMI2 v9.9.9' }),
     release({ body: '## QUARANTINED RELEASE\n\nDo not install.' }),
     release({ body: '<!-- origami2-release-owner-sha256:abc123 -->' }),
+    release({ body: 'x'.repeat(100_001) }),
+    release({ assets: [] }),
+    release({ assets: Array.from({ length: 10 }, () => ({})) }),
+    release({ tag_name: 'ｖ1.2.3' }),
+    release({ name: 'ＯＲＩＧＡＭＩ２ v1.2.3' }),
   ]) {
     assert.equal(parseGitHubLatestReleaseResponse(candidate), null)
   }
@@ -166,7 +171,7 @@ test('the release boundary rejects accessors proxies symbols and excessive field
   const acceptedLimit = Object.assign(
     release(),
     Object.fromEntries(
-      Array.from({ length: 122 }, (_, index) => [`extra_${index}`, index]),
+      Array.from({ length: 121 }, (_, index) => [`extra_${index}`, index]),
     ),
   )
   assert.ok(parseGitHubLatestReleaseResponse(acceptedLimit))
@@ -192,6 +197,13 @@ test('JSON parsing is bounded by UTF-8 bytes before retaining fields', () => {
     }),
   ]) {
     assert.equal(parseGitHubLatestReleaseResponseJson(value), null)
+  }
+  for (const key of ['name', 'body', 'assets']) {
+    const validRecord = valid.slice(1, -1)
+    assert.equal(
+      parseGitHubLatestReleaseResponseJson(`{"${key}":null,${validRecord}}`),
+      null,
+    )
   }
 })
 
@@ -549,6 +561,7 @@ function release(
     prerelease: false,
     name: 'ORIGAMI2 v1.2.3',
     body: 'Canonical generated release notes.',
+    assets: Array.from({ length: 9 }, (_, id) => ({ id: id + 1 })),
     ...overrides,
   }
 }

@@ -13,14 +13,21 @@ if (
 ) throw new Error('invalid SBOM path')
 const repositoryRoot = resolve(import.meta.dirname, '..', '..')
 const pathStat = lstatSync(path)
-if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.size < 2 || pathStat.size > 16_777_216) throw new Error('SBOM path is not a bounded regular file')
+if (
+  !pathStat.isFile()
+  || pathStat.isSymbolicLink()
+  || pathStat.nlink !== 1
+  || pathStat.size < 2
+  || pathStat.size > 16_777_216
+  || (process.platform !== 'win32' && Number.isSafeInteger(pathStat.blocks) && pathStat.blocks * 512 < pathStat.size)
+) throw new Error('SBOM path is not a bounded exclusive non-sparse regular file')
 const sbomFd = openSync(path, 'r+')
 let sbomFdOpen = true
 process.on('exit', () => {
   if (sbomFdOpen) closeSync(sbomFd)
 })
 const openedStat = fstatSync(sbomFd)
-if (!openedStat.isFile() || openedStat.dev !== pathStat.dev || openedStat.ino !== pathStat.ino) throw new Error('SBOM file identity changed before open')
+if (!openedStat.isFile() || openedStat.nlink !== 1 || openedStat.dev !== pathStat.dev || openedStat.ino !== pathStat.ino) throw new Error('SBOM file identity changed before open')
 const sourceBytes = readFileSync(sbomFd)
 const sbom = JSON.parse(sourceBytes.toString('utf8'))
 const version = process.env.VERSION
@@ -183,7 +190,7 @@ sbom.metadata = {
   properties: Object.entries(properties).map(([name, value]) => ({ name, value })),
 }
 const finalStat = fstatSync(sbomFd)
-if (finalStat.dev !== openedStat.dev || finalStat.ino !== openedStat.ino || finalStat.size !== openedStat.size) throw new Error('SBOM file changed during binding')
+if (finalStat.nlink !== 1 || finalStat.dev !== openedStat.dev || finalStat.ino !== openedStat.ino || finalStat.size !== openedStat.size) throw new Error('SBOM file changed during binding')
 const currentBytes = Buffer.alloc(sourceBytes.length)
 if (readSync(sbomFd, currentBytes, 0, currentBytes.length, 0) !== currentBytes.length || !currentBytes.equals(sourceBytes)) throw new Error('SBOM bytes changed during binding')
 const output = Buffer.from(`${JSON.stringify(sbom)}\n`)

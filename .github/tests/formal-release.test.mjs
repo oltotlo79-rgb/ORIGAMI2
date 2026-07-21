@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -1333,6 +1333,34 @@ test('release chronology rejects missing offset future and replayed evidence at 
     assert.match(binder, /file changed during binding/u)
     assert.match(binder, /bytes changed during binding/u)
     assert.match(binder, /writeSync\(sbomFd, output, 0, output\.length, 0\)/u)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('SBOM binder rejects shared and non-writable filesystem identities', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'origami2-sbom-filesystem-'))
+  try {
+    const source = join(directory, 'source.json')
+    const hardlink = join(directory, 'hardlink.json')
+    writeFileSync(source, '{"bomFormat":"CycloneDX","components":[]}')
+    linkSync(source, hardlink)
+    assert.throws(
+      () => execFileSync('node', ['.github/scripts/bind_release_sbom.mjs', hardlink], { cwd: root, stdio: 'pipe' }),
+      /exclusive non-sparse regular file/u,
+    )
+    if (process.platform !== 'win32') {
+      rmSync(hardlink)
+      chmodSync(source, 0o444)
+      assert.throws(
+        () => execFileSync('node', ['.github/scripts/bind_release_sbom.mjs', source], { cwd: root, stdio: 'pipe' }),
+      )
+      chmodSync(source, 0o644)
+    }
+    const binder = readFileSync(join(root, '.github/scripts/bind_release_sbom.mjs'), 'utf8')
+    assert.match(binder, /pathStat\.blocks \* 512 < pathStat\.size/u)
+    assert.match(binder, /fsyncSync\(sbomFd\)/u)
+    assert.match(binder, /openedStat\.nlink !== 1/u)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

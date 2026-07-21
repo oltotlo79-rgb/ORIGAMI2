@@ -24,6 +24,75 @@ use crate::{
     static_collision::prepare_positive_thickness_tree_endpoint_topology_memo_v1,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ExactDyadicPathIntersectionErrorV1 {
+    #[error("exact path intersection work exceeds its bound")]
+    ResourceLimit,
+    #[error("exact path intersection was cancelled")]
+    Cancelled,
+    #[error("exact path segment is invalid")]
+    InvalidSegment,
+}
+
+pub fn classify_exact_dyadic_path_self_intersection_v1(
+    segments: &[crate::DyadicSegmentV1],
+    limits: crate::ExactDyadicIntersectionLimitsV1,
+    max_pair_tests: usize,
+) -> Result<Option<(usize, usize, crate::ExactSegmentRelationV1)>, ExactDyadicPathIntersectionErrorV1>
+{
+    classify_exact_dyadic_path_self_intersection_with_cancel_v1(
+        segments,
+        limits,
+        max_pair_tests,
+        || false,
+    )
+}
+
+pub fn classify_exact_dyadic_path_self_intersection_with_cancel_v1(
+    segments: &[crate::DyadicSegmentV1],
+    limits: crate::ExactDyadicIntersectionLimitsV1,
+    max_pair_tests: usize,
+    cancelled: impl Fn() -> bool,
+) -> Result<Option<(usize, usize, crate::ExactSegmentRelationV1)>, ExactDyadicPathIntersectionErrorV1>
+{
+    let required = segments
+        .len()
+        .checked_mul(segments.len().saturating_sub(1))
+        .and_then(|value| value.checked_div(2))
+        .ok_or(ExactDyadicPathIntersectionErrorV1::ResourceLimit)?;
+    if required > max_pair_tests {
+        return Err(ExactDyadicPathIntersectionErrorV1::ResourceLimit);
+    }
+    for first in 0..segments.len() {
+        for second in first + 1..segments.len() {
+            if cancelled() {
+                return Err(ExactDyadicPathIntersectionErrorV1::Cancelled);
+            }
+            let relation = crate::classify_exact_dyadic_segment_intersection_v1(
+                segments[first],
+                segments[second],
+                limits,
+            )
+            .map_err(|error| match error {
+                crate::ExactDyadicIntersectionErrorV1::ResourceLimit => {
+                    ExactDyadicPathIntersectionErrorV1::ResourceLimit
+                }
+                crate::ExactDyadicIntersectionErrorV1::Degenerate => {
+                    ExactDyadicPathIntersectionErrorV1::InvalidSegment
+                }
+            })?;
+            if matches!(
+                relation,
+                crate::ExactSegmentRelationV1::ProperCrossing
+                    | crate::ExactSegmentRelationV1::CollinearOverlap
+            ) {
+                return Ok(Some((first, second, relation)));
+            }
+        }
+    }
+    Ok(None)
+}
+
 pub const STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1: &str =
     "stacked_fold_bounded_path_diagnostic_v1";
 pub const STACKED_FOLD_SINGLE_HINGE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =

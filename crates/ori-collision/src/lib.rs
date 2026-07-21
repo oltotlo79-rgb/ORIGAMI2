@@ -64,8 +64,9 @@ pub use continuous_layer_transport::{
     preflight_continuous_layer_transport_work_v1, prove_continuous_layer_transport_v1,
 };
 pub use continuous_path::{
-    MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1, MAX_STACKED_FOLD_PATH_SAMPLES_V1,
-    PositiveThicknessContinuousCertificateV1, STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1,
+    ExactDyadicPathIntersectionErrorV1, MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1,
+    MAX_STACKED_FOLD_PATH_SAMPLES_V1, PositiveThicknessContinuousCertificateV1,
+    STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1,
     STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_COLLINEAR_TREE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
@@ -77,6 +78,8 @@ pub use continuous_path::{
     StackedFoldBoundedPathDiagnosticV1, StackedFoldCyclePathDiagnosticV1,
     StackedFoldPathDiagnosticErrorV1, StackedFoldPathDiagnosticLimitsV1,
     UniformCycleClosureRootsV1, certify_canonical_positive_thickness_cycle_schedule_path_v1,
+    classify_exact_dyadic_path_self_intersection_v1,
+    classify_exact_dyadic_path_self_intersection_with_cancel_v1,
     diagnose_canonical_cycle_schedule_path_v1,
     diagnose_canonical_positive_thickness_cycle_schedule_path_v1,
     diagnose_collective_cycle_path_v1, diagnose_collective_hinge_path_v1,

@@ -188,5 +188,32 @@ mod tests {
             ),
             Err(ExactDyadicIntersectionErrorV1::ResourceLimit)
         ));
+        let crossing = [
+            base,
+            DyadicSegmentV1 {
+                start: p(1, -1, 80),
+                end: p(1, 1, 80),
+            },
+        ];
+        assert_eq!(
+            crate::classify_exact_dyadic_path_self_intersection_v1(&crossing, l, 1)
+                .unwrap()
+                .unwrap()
+                .2,
+            ExactSegmentRelationV1::ProperCrossing
+        );
+        assert!(matches!(
+            crate::classify_exact_dyadic_path_self_intersection_v1(&crossing, l, 0),
+            Err(crate::ExactDyadicPathIntersectionErrorV1::ResourceLimit)
+        ));
+        assert!(matches!(
+            crate::classify_exact_dyadic_path_self_intersection_with_cancel_v1(
+                &crossing,
+                l,
+                1,
+                || true
+            ),
+            Err(crate::ExactDyadicPathIntersectionErrorV1::Cancelled)
+        ));
     }
 }

@@ -13479,187 +13479,237 @@ mod tests {
     }
 
     #[test]
-    fn asymmetric_bird_native_apply_undo_redo_and_archive_round_trip() {
+    fn asymmetric_landmark_native_apply_undo_redo_and_archive_round_trip() {
         let _serial = serial_beginner_grid_test();
-        let mut profile = ori_domain::BeginnerDesignProfileV1::default();
-        profile.generation_constraints.target_category =
-            Some(ori_domain::BeginnerTargetCategoryV1::Animal);
-        profile.generation_constraints.target_parts = vec![
-            (ori_domain::BeginnerTargetPartKindV1::Head, 1),
-            (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
-            (ori_domain::BeginnerTargetPartKindV1::Wing, 2),
-        ]
-        .into_iter()
-        .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
-        .collect();
-        configure_symmetric_profile(
-            &mut profile,
-            ori_domain::BeginnerSymmetricParameterEstimateV1 {
-                protrusion_count: 2,
-                scale_percent: 27,
-                spacing_percent: 50,
-            },
-            27,
-            50,
-        );
-        profile.generation_constraints.skeleton_segments.truncate(2);
-        profile.generation_constraints.skeleton_segments[0]
-            .start
-            .x_tenths_mm = -10;
-        profile.generation_constraints.skeleton_segments[0]
-            .start
-            .y_tenths_mm = 0;
-        profile.generation_constraints.skeleton_segments[0]
-            .end
-            .x_tenths_mm = 0;
-        profile.generation_constraints.skeleton_segments[0]
-            .end
-            .y_tenths_mm = 10;
-        profile.generation_constraints.skeleton_segments[1]
-            .start
-            .x_tenths_mm = 10;
-        profile.generation_constraints.skeleton_segments[1]
-            .start
-            .y_tenths_mm = 0;
-        profile.generation_constraints.skeleton_segments[1]
-            .end
-            .x_tenths_mm = 0;
-        profile.generation_constraints.skeleton_segments[1]
-            .end
-            .y_tenths_mm = 10;
-        let mut left = profile.generation_constraints.protrusions[0].clone();
-        left.count = 1;
-        left.length_tenths_mm = 4;
-        left.thickness_tenths_mm = 2;
-        left.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::None;
-        left.position_tenths_mm = [-4, 0, 0];
-        left.direction_milli = [-1_000, 200, 0];
-        let mut right = left.clone();
-        right.id = 2;
-        right.position_tenths_mm = [5, 1, 0];
-        right.direction_milli = [1_000, -100, 0];
-        profile.generation_constraints.protrusions = vec![left, right];
-
-        let half_height = 86.602_540_378_443_86;
-        let mut project = ProjectState::new(CreasePattern::empty());
-        let geometry_namespace = ProjectId::schema_namespace([
-            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x04, 0x97,
-        ]);
-        let boundary_positions = [
-            Point2::new(100.0, 0.0),
-            Point2::new(-50.0, half_height),
-            Point2::new(-50.0, -half_height),
-            Point2::new(50.0, -half_height),
-        ];
-        let vertices = boundary_positions
+        for (plan_kind, target_kind, target_count, archive_name) in [
+            (
+                ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase,
+                ori_domain::BeginnerTargetPartKindV1::Wing,
+                2,
+                "asymmetric-bird.ori2",
+            ),
+            (
+                ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase,
+                ori_domain::BeginnerTargetPartKindV1::Leg,
+                4,
+                "asymmetric-four-leg.ori2",
+            ),
+        ] {
+            let mut profile = ori_domain::BeginnerDesignProfileV1::default();
+            profile.generation_constraints.target_category =
+                Some(ori_domain::BeginnerTargetCategoryV1::Animal);
+            profile.generation_constraints.target_parts = vec![
+                (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+                (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+                (target_kind, target_count),
+            ]
             .into_iter()
-            .enumerate()
-            .map(|(index, position)| Vertex {
-                id: VertexId::derive_v5(geometry_namespace, format!("vertex-{index}").as_bytes()),
-                position,
-            })
-            .collect::<Vec<_>>();
-        let edges = (0..vertices.len())
-            .map(|index| Edge {
-                id: EdgeId::derive_v5(geometry_namespace, format!("boundary-{index}").as_bytes()),
-                start: vertices[index].id,
-                end: vertices[(index + 1) % vertices.len()].id,
-                kind: EdgeKind::Boundary,
-            })
+            .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
             .collect();
-        let paper = Paper {
-            boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
-            thickness_mm: 0.0,
-            ..Paper::default()
-        };
-        project.editor = EditorState::with_paper(CreasePattern { vertices, edges }, paper);
-        project.saved_document = Some(project.document());
-        let project_id = project.project_id;
-        let instance_id = project.instance_id;
-        let revision = project.editor.revision();
-        let saved = execute_command(
-            &mut project,
-            project_id,
-            revision,
-            Command::UpdateBeginnerDesignProfile {
-                profile: profile.clone(),
-            },
-        )
-        .unwrap();
-        let plan = ori_domain::generate_beginner_plans_v1(
-            project_id,
-            project.editor.pattern(),
-            &project.editor.paper().boundary_vertices,
-            &profile.generation_constraints,
-        )
-        .unwrap()
-        .into_iter()
-        .find(|plan| {
-            plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
-        })
-        .unwrap();
-        let candidate_edge = plan.crease_pattern.edges[0].id;
-        let canonical_edge_ids = plan
-            .crease_pattern
-            .edges
-            .iter()
-            .map(|edge| edge.id)
-            .collect::<Vec<_>>();
-        for _ in 0..32 {
-            let authority = ProjectId::new();
-            let authority_plan = ori_domain::generate_beginner_plans_v1(
-                authority,
+            configure_symmetric_profile(
+                &mut profile,
+                ori_domain::BeginnerSymmetricParameterEstimateV1 {
+                    protrusion_count: 2,
+                    scale_percent: 27,
+                    spacing_percent: 50,
+                },
+                27,
+                50,
+            );
+            profile
+                .generation_constraints
+                .skeleton_segments
+                .truncate(if target_count == 4 { 3 } else { 2 });
+            profile.generation_constraints.skeleton_segments[0]
+                .start
+                .x_tenths_mm = -10;
+            profile.generation_constraints.skeleton_segments[0]
+                .start
+                .y_tenths_mm = 0;
+            profile.generation_constraints.skeleton_segments[0]
+                .end
+                .x_tenths_mm = 0;
+            profile.generation_constraints.skeleton_segments[0]
+                .end
+                .y_tenths_mm = 10;
+            profile.generation_constraints.skeleton_segments[1]
+                .start
+                .x_tenths_mm = 10;
+            profile.generation_constraints.skeleton_segments[1]
+                .start
+                .y_tenths_mm = 0;
+            profile.generation_constraints.skeleton_segments[1]
+                .end
+                .x_tenths_mm = 0;
+            profile.generation_constraints.skeleton_segments[1]
+                .end
+                .y_tenths_mm = 10;
+            let mut left = profile.generation_constraints.protrusions[0].clone();
+            left.count = 1;
+            left.length_tenths_mm = 4;
+            left.thickness_tenths_mm = 2;
+            left.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::None;
+            left.position_tenths_mm = [-4, 0, 0];
+            left.direction_milli = [-1_000, 200, 0];
+            let mut right = left.clone();
+            right.id = 2;
+            right.position_tenths_mm = [5, 1, 0];
+            right.direction_milli = [1_000, -100, 0];
+            profile.generation_constraints.protrusions = if target_count == 4 {
+                let mut rear_left = left.clone();
+                rear_left.id = 3;
+                rear_left.position_tenths_mm = [-5, -4, 0];
+                rear_left.direction_milli = [-900, -300, 0];
+                let mut rear_right = right.clone();
+                rear_right.id = 4;
+                rear_right.position_tenths_mm = [4, -5, 0];
+                rear_right.direction_milli = [900, -200, 0];
+                vec![left, right, rear_left, rear_right]
+            } else {
+                vec![left, right]
+            };
+
+            let half_height = 86.602_540_378_443_86;
+            let mut project = ProjectState::new(CreasePattern::empty());
+            let geometry_namespace = ProjectId::schema_namespace([
+                0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x04, 0x97,
+            ]);
+            let boundary_positions = [
+                Point2::new(100.0, 0.0),
+                Point2::new(-50.0, half_height),
+                Point2::new(-50.0, -half_height),
+                Point2::new(50.0, -half_height),
+            ];
+            let vertices = boundary_positions
+                .into_iter()
+                .enumerate()
+                .map(|(index, position)| Vertex {
+                    id: VertexId::derive_v5(
+                        geometry_namespace,
+                        format!("vertex-{index}").as_bytes(),
+                    ),
+                    position,
+                })
+                .collect::<Vec<_>>();
+            let edges = (0..vertices.len())
+                .map(|index| Edge {
+                    id: EdgeId::derive_v5(
+                        geometry_namespace,
+                        format!("boundary-{index}").as_bytes(),
+                    ),
+                    start: vertices[index].id,
+                    end: vertices[(index + 1) % vertices.len()].id,
+                    kind: EdgeKind::Boundary,
+                })
+                .collect();
+            let paper = Paper {
+                boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
+                thickness_mm: 0.0,
+                ..Paper::default()
+            };
+            project.editor = EditorState::with_paper(CreasePattern { vertices, edges }, paper);
+            project.saved_document = Some(project.document());
+            let project_id = project.project_id;
+            let instance_id = project.instance_id;
+            let revision = project.editor.revision();
+            let saved = execute_command(
+                &mut project,
+                project_id,
+                revision,
+                Command::UpdateBeginnerDesignProfile {
+                    profile: profile.clone(),
+                },
+            )
+            .unwrap();
+            let plan = ori_domain::generate_beginner_plans_v1(
+                project_id,
                 project.editor.pattern(),
                 &project.editor.paper().boundary_vertices,
                 &profile.generation_constraints,
             )
             .unwrap()
             .into_iter()
-            .find(|candidate| {
-                candidate.kind
-                    == ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
-            })
+            .find(|plan| plan.kind == plan_kind)
             .unwrap();
-            assert_eq!(
-                authority_plan
-                    .crease_pattern
-                    .edges
-                    .iter()
-                    .map(|edge| edge.id)
-                    .collect::<Vec<_>>(),
-                canonical_edge_ids
-            );
-            let assessment = assess_beginner_generated_plan(
-                authority,
-                project.editor.paper(),
-                project.editor.pattern(),
-                &authority_plan,
-                None,
-            );
-            assert_eq!(assessment.proof_scope, "sufficient");
-            assert!(assessment.apply_allowed);
-        }
-        let state = AppState::new(project);
-        let before = {
-            let project = lock_project(&state).unwrap();
-            project_state_signature(&project)
-        };
-        let mut tampered = profile.clone();
-        tampered.generation_constraints.protrusions[0].priority += 1;
-        for (foreign_instance, foreign_project, stale_revision) in [
-            (ProjectId::new(), project_id, saved.revision),
-            (instance_id, ProjectId::new(), saved.revision),
-            (instance_id, project_id, saved.revision.saturating_sub(1)),
-        ] {
+            let candidate_edge = plan.crease_pattern.edges[0].id;
+            let canonical_edge_ids = plan
+                .crease_pattern
+                .edges
+                .iter()
+                .map(|edge| edge.id)
+                .collect::<Vec<_>>();
+            for _ in 0..32 {
+                let authority = ProjectId::new();
+                let authority_plan = ori_domain::generate_beginner_plans_v1(
+                    authority,
+                    project.editor.pattern(),
+                    &project.editor.paper().boundary_vertices,
+                    &profile.generation_constraints,
+                )
+                .unwrap()
+                .into_iter()
+                .find(|candidate| candidate.kind == plan_kind)
+                .unwrap();
+                assert_eq!(
+                    authority_plan
+                        .crease_pattern
+                        .edges
+                        .iter()
+                        .map(|edge| edge.id)
+                        .collect::<Vec<_>>(),
+                    canonical_edge_ids
+                );
+                let assessment = assess_beginner_generated_plan(
+                    authority,
+                    project.editor.paper(),
+                    project.editor.pattern(),
+                    &authority_plan,
+                    None,
+                );
+                assert_eq!(assessment.proof_scope, "sufficient");
+                assert!(assessment.apply_allowed);
+            }
+            let state = AppState::new(project);
+            let before = {
+                let project = lock_project(&state).unwrap();
+                project_state_signature(&project)
+            };
+            let mut tampered = profile.clone();
+            tampered.generation_constraints.protrusions[0].priority += 1;
+            for (foreign_instance, foreign_project, stale_revision) in [
+                (ProjectId::new(), project_id, saved.revision),
+                (instance_id, ProjectId::new(), saved.revision),
+                (instance_id, project_id, saved.revision.saturating_sub(1)),
+            ] {
+                assert!(
+                    apply_beginner_generated_plan_document(
+                        &state,
+                        foreign_instance,
+                        foreign_project,
+                        stale_revision,
+                        profile.clone(),
+                        plan_kind,
+                        candidate_edge,
+                    )
+                    .is_err()
+                );
+                assert_eq!(
+                    {
+                        let project = lock_project(&state).unwrap();
+                        project_state_signature(&project)
+                    },
+                    before
+                );
+            }
             assert!(
                 apply_beginner_generated_plan_document(
                     &state,
-                    foreign_instance,
-                    foreign_project,
-                    stale_revision,
-                    profile.clone(),
-                    ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase,
+                    instance_id,
+                    project_id,
+                    saved.revision,
+                    tampered,
+                    plan_kind,
                     candidate_edge,
                 )
                 .is_err()
@@ -13671,108 +13721,89 @@ mod tests {
                 },
                 before
             );
-        }
-        assert!(
-            apply_beginner_generated_plan_document(
+
+            let applied = apply_beginner_generated_plan_document(
                 &state,
                 instance_id,
                 project_id,
                 saved.revision,
-                tampered,
-                ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase,
+                profile.clone(),
+                plan_kind,
                 candidate_edge,
             )
-            .is_err()
-        );
-        assert_eq!(
-            {
+            .unwrap();
+            let after_apply = {
                 let project = lock_project(&state).unwrap();
                 project_state_signature(&project)
-            },
-            before
-        );
-
-        let applied = apply_beginner_generated_plan_document(
-            &state,
-            instance_id,
-            project_id,
-            saved.revision,
-            profile.clone(),
-            ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase,
-            candidate_edge,
-        )
-        .unwrap();
-        let after_apply = {
-            let project = lock_project(&state).unwrap();
-            project_state_signature(&project)
-        };
-        for (rejected_instance, rejected_project, rejected_revision, rejected_edge) in [
-            (instance_id, project_id, saved.revision, candidate_edge),
-            (
-                ProjectId::new(),
-                project_id,
-                applied.revision,
-                candidate_edge,
-            ),
-            (
-                instance_id,
-                ProjectId::new(),
-                applied.revision,
-                candidate_edge,
-            ),
-            (instance_id, project_id, applied.revision, EdgeId::new()),
-        ] {
-            assert!(
-                apply_beginner_generated_plan_document(
-                    &state,
-                    rejected_instance,
-                    rejected_project,
-                    rejected_revision,
-                    profile.clone(),
-                    ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase,
-                    rejected_edge,
-                )
-                .is_err()
-            );
-            assert_eq!(
-                {
-                    let project = lock_project(&state).unwrap();
-                    project_state_signature(&project)
-                },
-                after_apply
-            );
-        }
-        let mut project = lock_project(&state).unwrap();
-        let provenance = project
-            .editor
-            .beginner_design_profile()
-            .generation_provenance
-            .as_ref()
-            .unwrap();
-        assert!(provenance.fold_path_certificate_sha256.is_some());
-        let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
-        assert!(
-            project
-                .editor
-                .beginner_design_profile()
-                .generation_provenance
-                .is_none()
-        );
-        execute_redo(&mut project, project_id, undone.revision).unwrap();
-        let document = project.document();
-        let bytes = write_project_ori2(&document).unwrap();
-        let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default()).unwrap();
-        let reopened = ProjectState::from_document(restored, PathBuf::from("asymmetric-bird.ori2"));
-        assert_eq!(reopened.document(), document);
-        assert!(
-            reopened
+            };
+            for (rejected_instance, rejected_project, rejected_revision, rejected_edge) in [
+                (instance_id, project_id, saved.revision, candidate_edge),
+                (
+                    ProjectId::new(),
+                    project_id,
+                    applied.revision,
+                    candidate_edge,
+                ),
+                (
+                    instance_id,
+                    ProjectId::new(),
+                    applied.revision,
+                    candidate_edge,
+                ),
+                (instance_id, project_id, applied.revision, EdgeId::new()),
+            ] {
+                assert!(
+                    apply_beginner_generated_plan_document(
+                        &state,
+                        rejected_instance,
+                        rejected_project,
+                        rejected_revision,
+                        profile.clone(),
+                        plan_kind,
+                        rejected_edge,
+                    )
+                    .is_err()
+                );
+                assert_eq!(
+                    {
+                        let project = lock_project(&state).unwrap();
+                        project_state_signature(&project)
+                    },
+                    after_apply
+                );
+            }
+            let mut project = lock_project(&state).unwrap();
+            let provenance = project
                 .editor
                 .beginner_design_profile()
                 .generation_provenance
                 .as_ref()
-                .and_then(|value| value.fold_path_certificate_sha256)
-                .is_some()
-        );
+                .unwrap();
+            assert!(provenance.fold_path_certificate_sha256.is_some());
+            let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
+            assert!(
+                project
+                    .editor
+                    .beginner_design_profile()
+                    .generation_provenance
+                    .is_none()
+            );
+            execute_redo(&mut project, project_id, undone.revision).unwrap();
+            let document = project.document();
+            let bytes = write_project_ori2(&document).unwrap();
+            let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default()).unwrap();
+            let reopened = ProjectState::from_document(restored, PathBuf::from(archive_name));
+            assert_eq!(reopened.document(), document);
+            assert!(
+                reopened
+                    .editor
+                    .beginner_design_profile()
+                    .generation_provenance
+                    .as_ref()
+                    .and_then(|value| value.fold_path_certificate_sha256)
+                    .is_some()
+            );
+        }
     }
 
     #[test]

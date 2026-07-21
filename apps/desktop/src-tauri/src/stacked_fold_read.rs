@@ -3673,6 +3673,52 @@ mod tests {
         }
     }
 
+    #[test]
+    fn oblique_dense_rank_four_collision_fails_closed_before_preview() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (pattern, paper, horizontal, _) =
+            super::dense_grid_cycle_test_support::oblique_dense_cycle_pattern(3, 3);
+        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        let hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        let fixed = snapshot.faces[0].id;
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            fixed,
+        );
+        let request = CurrentCyclePosePreviewRequestV1 {
+            progress_request_id: None,
+            expected_project_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: project.editor.revision(),
+            cycle_schedule_v1: dense_grid_schedule(&hinges, &horizontal, 100),
+        };
+        let state = AppState::new(project);
+        let transactions =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        assert_eq!(
+            propose_current_cycle_pose_inner(None, &state, &transactions, request).unwrap_err(),
+            CYCLE_PATH_UNCERTIFIED_MESSAGE
+        );
+        assert!(
+            super::super::lock_project(&state)
+                .unwrap()
+                .editor
+                .instruction_timeline()
+                .steps
+                .is_empty()
+        );
+    }
+
     fn four_bay_cycle_schedule(hinges: &[ori_domain::EdgeId]) -> CycleScheduleRequestV1 {
         let triples = [
             (3, 5),

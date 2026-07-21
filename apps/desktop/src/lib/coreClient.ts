@@ -1918,10 +1918,16 @@ export async function suggestBeginnerReferenceModelFeatures(
 export function applyBeginnerReferenceModelFeatures(
   expectedProjectId: string, expectedRevision: number, expectedProjectInstanceId: string,
   expectedSuggestion: BeginnerReferenceModelSuggestionV1,
+  selectedSurfaceRangeIds: readonly number[],
 ) {
+  if (selectedSurfaceRangeIds.length < 2 || selectedSurfaceRangeIds.length > 8
+    || new Set(selectedSurfaceRangeIds).size !== selectedSurfaceRangeIds.length
+    || selectedSurfaceRangeIds.some((id) => !Number.isInteger(id) || id < 1 || id > 8)) {
+    return Promise.reject(new Error('invalid reference model surface selection'))
+  }
   return invoke<ProjectSnapshot>('apply_beginner_reference_model_features', {
     expectedProjectInstanceId, expectedProjectId, expectedRevision,
-    expectedSuggestion, confirmed: true,
+    expectedSuggestion, selectedSurfaceRangeIds: [...selectedSurfaceRangeIds], confirmed: true,
   })
 }
 

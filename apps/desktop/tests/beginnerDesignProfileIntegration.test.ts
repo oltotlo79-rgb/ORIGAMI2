@@ -116,6 +116,11 @@ test('AUT-004 proposes only deterministic safe GLB geometry ranges and applies a
   assert.match(app, /This is not 3D recognition/u)
   assert.match(app, /Confirm and apply suggested ranges/u)
   assert.match(app, /window\.confirm/u)
+  assert.match(native, /reference_model_surface_selection_confirmation_required/u)
+  assert.match(native, /reference_model_surface_selection_tampered/u)
+  assert.match(client, /selectedSurfaceRangeIds/u)
+  assert.match(app, /Explicitly assign measured surface ranges to 2–8 parts/u)
+  assert.match(app, /Duplicate, unconfirmed, or tampered ranges are rejected natively/u)
 })
 
 test('AUT-006 stores every bounded protrusion target attribute in profile history', () => {

@@ -5556,6 +5556,7 @@ fn apply_beginner_reference_model_features(
     expected_project_id: ProjectId,
     expected_revision: u64,
     expected_suggestion: BeginnerReferenceModelSuggestionV1,
+    selected_surface_range_ids: Vec<u16>,
     confirmed: bool,
 ) -> Result<ProjectSnapshot, String> {
     if !confirmed {
@@ -5589,6 +5590,21 @@ fn apply_beginner_reference_model_features(
     )?;
     if !reference_model_suggestion_matches_live_v1(&expected_suggestion, &live) {
         return Err("reference_model_suggestion_stale".to_owned());
+    }
+    if !(2..=8).contains(&selected_surface_range_ids.len()) {
+        return Err("reference_model_surface_selection_confirmation_required".to_owned());
+    }
+    let selected = selected_surface_range_ids
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let measured = live
+        .protrusions
+        .iter()
+        .map(|target| target.id)
+        .collect::<HashSet<_>>();
+    if selected.len() != selected_surface_range_ids.len() || selected != measured {
+        return Err("reference_model_surface_selection_tampered".to_owned());
     }
     profile.generation_constraints.protrusions = live.protrusions.clone();
     if live.protrusions.len() == 3 {

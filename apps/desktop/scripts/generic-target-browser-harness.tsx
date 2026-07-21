@@ -33,6 +33,8 @@ function Harness() {
   const [selectedCandidate, setSelectedCandidate] = useState(1)
   const [candidateShortage, setCandidateShortage] = useState(false)
   const [glbWitness, setGlbWitness] = useState<{ bounds: string, bulges: number, discrepancy: number } | null>(null)
+  const [selectedSurfaceRanges, setSelectedSurfaceRanges] = useState<number[]>([])
+  const [surfaceRangesConfirmed, setSurfaceRangesConfirmed] = useState(false)
   const [mergedAuthorities, setMergedAuthorities] = useState(false)
   const [authorityValid, setAuthorityValid] = useState(true)
   const [imageDecode, setImageDecode] = useState<string | null>(null)
@@ -109,6 +111,7 @@ function Harness() {
       setConfidenceOverride(false)
     } else { setImageDecode(null); setSegmentation(null); setConfidence(null); setImageMeaningsConfirmed(true) }
     if (source === 'GLB') {
+      setSelectedSurfaceRanges([]); setSurfaceRangesConfirmed(false)
       setOutlineMode('general'); setOutline([[-60, -40], [60, -40], [55, 40], [-50, 40]])
       setBindings(initialBindings.map((target) => ({ ...target,
         local_outline_tenths_mm: [[-20, -10], [20, -10], [0, 30]] })))
@@ -183,6 +186,7 @@ function Harness() {
       setBindings(initialBindings.map((target, index) => index === 0 ? { ...target,
         local_outline_tenths_mm: [[-20, -10], [20, -10], [0, 30]] } : { ...target }))
       setGlbWitness({ bounds: '120×80×65 mm', bulges: 2, discrepancy: 7 })
+      setSelectedSurfaceRanges([1, 2]); setSurfaceRangesConfirmed(true)
       setStatus('Merged after confirmation: image controls contours; GLB controls depth and bulges')
     }}>Confirm image and GLB merge</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected merge: conflicting bounds or part bindings') }}>Try conflicting recognition merge</button>
@@ -233,6 +237,24 @@ function Harness() {
     {glbWitness && <section aria-label="GLB geometry witness">
       <p>3D bounds {glbWitness.bounds} · 2D silhouette difference {glbWitness.discrepancy}% · bulge targets {glbWitness.bulges}</p>
       <p>GLB body/local contours and bulge targets require confirmation before grid evaluation.</p>
+      <fieldset><legend>Explicitly assign GLB-measured surface ranges</legend>
+        {[1, 2].map((id) => <label key={id}><input type="checkbox"
+          aria-label={`Assign measured surface range ${id}`}
+          checked={selectedSurfaceRanges.includes(id)}
+          onChange={(event) => {
+            setSurfaceRangesConfirmed(false)
+            setSelectedSurfaceRanges((current) => event.target.checked
+              ? [...new Set([...current, id])].sort() : current.filter((item) => item !== id))
+          }} />Surface range {id} · GLB triangle interval {id * 4 - 4}–{id * 4 - 1}</label>)}
+      </fieldset>
+      <button onClick={() => {
+        if (selectedSurfaceRanges.length < 2 || new Set(selectedSurfaceRanges).size !== selectedSurfaceRanges.length) {
+          setStatus('Rejected GLB surface assignment: duplicate range or fewer than two parts'); return
+        }
+        setSurfaceRangesConfirmed(true)
+        setStatus('Confirmed two unique GLB surface ranges for generic topology')
+      }}>Confirm GLB surface assignments</button>
+      <button onClick={() => setStatus('Rejected GLB surface assignment: tampered triangle range')}>Try tampered GLB surface range</button>
     </section>}
     {mergedAuthorities && <p>Authority binding: image → body/local contours; GLB → depth/bulge targets.</p>}
     {recognized && <GenericBodyOutlineEditor locale="en" points={outline} onChange={setOutline}
@@ -298,7 +320,8 @@ function Harness() {
       }}>Relax contour to 12 points and regenerate</button>
     </section>}
     <button ref={evaluate} onClick={() => { if (recognized) {
-      if (segmentation && !imageMeaningsConfirmed) setStatus('Image meanings unconfirmed: generic topology candidate blocked')
+      if (glbWitness && !surfaceRangesConfirmed) setStatus('GLB surface meanings unconfirmed: generic topology candidate blocked')
+      else if (segmentation && !imageMeaningsConfirmed) setStatus('Image meanings unconfirmed: generic topology candidate blocked')
       else if (segmentation && acceptedSegments.length < 2) setStatus('Rejected segmentation: at least two accepted protrusions required')
       else if (!authorityValid) setStatus('Merged authority invalid: candidate generation refused')
       else if (candidateShortage) setStatus('Contour candidate shortage: safe relaxation is required')

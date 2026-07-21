@@ -32,6 +32,7 @@ function Harness() {
   const [authorityValid, setAuthorityValid] = useState(true)
   const [imageDecode, setImageDecode] = useState<string | null>(null)
   const [imageMeaningsConfirmed, setImageMeaningsConfirmed] = useState(true)
+  const [confirmedImageFeatureCount, setConfirmedImageFeatureCount] = useState<number | null>(null)
   const [segmentation, setSegmentation] = useState<string | null>(null)
   const [acceptedSegments, setAcceptedSegments] = useState<number[]>([1, 2])
   const [confidence, setConfidence] = useState<{ score: number, reason: string, low: boolean } | null>(null)
@@ -91,6 +92,7 @@ function Harness() {
     setMergedAuthorities(false)
     if (source === 'Image' || source === 'JPEG EXIF') {
       setImageMeaningsConfirmed(false)
+      setConfirmedImageFeatureCount(null)
       setOutlineMode('general'); setOutline([[-50, -40], [50, -40], [45, 40], [-40, 40]])
       setBindings(initialBindings.map((target) => ({ ...target,
         local_outline_tenths_mm: [[-18, -8], [18, -8], [0, 28]] })))
@@ -232,6 +234,7 @@ function Harness() {
       <p>Outline evidence: decoded image components only. Suggested names grant no design authority.</p>
       <button onClick={() => {
         setImageMeaningsConfirmed(true)
+        setConfirmedImageFeatureCount(bindings.length)
         setStatus(`Confirmed ${bindings.length} explicit part meanings for image outlines`)
       }}>Confirm explicit image part meanings</button>
     </section>}
@@ -330,6 +333,8 @@ function Harness() {
       <p>Applied synthesized candidate set: {synthesizedCandidateCount} bounded designs</p>
       <p>Applied contour placement witness candidate {selectedCandidate}</p>
       {imageDecode && <p>Applied image silhouette authority: {imageDecode}</p>}
+      {confirmedImageFeatureCount !== null
+        && <p>Applied image outline evidence + {confirmedImageFeatureCount} explicitly confirmed part meanings</p>}
       {glbWitness && <p>Applied GLB witness: bounds {glbWitness.bounds}, bulges {glbWitness.bulges}</p>}
       {glbWitness && <p>Applied typed surface landmarks: 4 samples · digest 7f3a9c21 · archive retained</p>}
       {mergedAuthorities && <p>Applied merged authority witness: image contours + GLB depth/bulges</p>}

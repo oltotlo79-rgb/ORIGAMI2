@@ -6,6 +6,7 @@ const client = readFileSync('src/lib/coreClient.ts', 'utf8')
 const app = readFileSync('src/App.tsx', 'utf8')
 const native = readFileSync('src-tauri/src/lib.rs', 'utf8')
 const browser = readFileSync('scripts/generic-target-browser-e2e.mjs', 'utf8')
+const browserHarness = readFileSync('scripts/generic-target-browser-harness.tsx', 'utf8')
 
 test('generic feature bindings cross the exact frontend DTO boundary', () => {
   assert.match(client, /generic_feature_bindings: ReadonlyArray/u)
@@ -35,4 +36,16 @@ test('3D generalization stays bounded to confirmed semantic parts', () => {
   assert.match(native, /four explicit generic features remain a bounded candidate/u)
   assert.match(native, /reference_model_suggestion_confirmation_required/u)
   assert.match(native, /reference_model_suggestion_matches_live_v1/u)
+})
+
+test('confirmed image and 3D generic candidates retain vertical proof coverage', () => {
+  assert.match(browser, /Image meanings unconfirmed: generic topology candidate blocked/u)
+  assert.match(browser, /Confirm explicit image part meanings/u)
+  assert.match(browser, /Applied image outline evidence \+ 2 explicitly confirmed part meanings/u)
+  assert.match(browserHarness, /Global flat-foldability proven/u)
+  assert.match(browserHarness, /Native foldability admission: global proof \+ bounded fold path certificate/u)
+  assert.match(browserHarness, /Generated generic feature instruction steps/u)
+  assert.match(browser, /Undo generic target/u)
+  assert.match(browser, /Redo generic target/u)
+  assert.match(browser, /Save and reopen generic target/u)
 })

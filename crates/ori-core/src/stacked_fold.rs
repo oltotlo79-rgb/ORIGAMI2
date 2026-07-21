@@ -1933,7 +1933,22 @@ pub fn prepare_stacked_fold_non_flat_layer_order_v1(
     source_layer_order: &LayerOrderSnapshot,
     max_face_pairs: usize,
 ) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
-    prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
+    prepare_stacked_fold_non_flat_layer_order_from_source_v1(
+        requested,
+        source_layer_order,
+        0.0,
+        max_face_pairs,
+    )
+}
+
+/// Continues non-flat layer authority without pretending that it is a global
+/// flat-foldability snapshot. All source cells and pair orders remain sealed.
+pub fn prepare_stacked_fold_non_flat_layer_order_from_non_flat_v1(
+    requested: &PreparedStackedFoldRequestedPoseV1,
+    source_layer_order: &StackedFoldNonFlatLayerOrderV1,
+    max_face_pairs: usize,
+) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    prepare_stacked_fold_non_flat_layer_order_from_source_v1(
         requested,
         source_layer_order,
         0.0,
@@ -1944,6 +1959,85 @@ pub fn prepare_stacked_fold_non_flat_layer_order_v1(
 pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
     requested: &PreparedStackedFoldRequestedPoseV1,
     source_layer_order: &LayerOrderSnapshot,
+    paper_thickness_mm: f64,
+    max_face_pairs: usize,
+) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    prepare_stacked_fold_non_flat_layer_order_from_source_v1(
+        requested,
+        source_layer_order,
+        paper_thickness_mm,
+        max_face_pairs,
+    )
+}
+
+trait NonFlatSourceLayerEvidenceV1 {
+    fn identity_namespace(&self) -> Option<ProjectId>;
+    fn revision(&self) -> Revision;
+    fn fingerprint(&self) -> Option<FoldModelFingerprintV1>;
+    fn material_faces(&self) -> &[LayerFace];
+    fn overlap_cell_count(&self) -> usize;
+    fn inherited_pair(&self, first: FaceId, second: FaceId) -> Option<(FaceId, FaceId)>;
+}
+
+impl NonFlatSourceLayerEvidenceV1 for LayerOrderSnapshot {
+    fn identity_namespace(&self) -> Option<ProjectId> {
+        self.provenance.source.identity_namespace
+    }
+    fn revision(&self) -> Revision {
+        self.provenance.source.source_revision
+    }
+    fn fingerprint(&self) -> Option<FoldModelFingerprintV1> {
+        self.provenance.source.source_fingerprint
+    }
+    fn material_faces(&self) -> &[LayerFace] {
+        &self.material_faces
+    }
+    fn overlap_cell_count(&self) -> usize {
+        self.overlap_cells.len()
+    }
+    fn inherited_pair(&self, first: FaceId, second: FaceId) -> Option<(FaceId, FaceId)> {
+        self.face_pair_orders.iter().find_map(|order| {
+            (order.lower_face.face_id == first && order.upper_face.face_id == second)
+                .then_some((first, second))
+                .or_else(|| {
+                    (order.lower_face.face_id == second && order.upper_face.face_id == first)
+                        .then_some((second, first))
+                })
+        })
+    }
+}
+
+impl NonFlatSourceLayerEvidenceV1 for StackedFoldNonFlatLayerOrderV1 {
+    fn identity_namespace(&self) -> Option<ProjectId> {
+        Some(self.identity_namespace)
+    }
+    fn revision(&self) -> Revision {
+        self.target_revision
+    }
+    fn fingerprint(&self) -> Option<FoldModelFingerprintV1> {
+        Some(self.target_fingerprint)
+    }
+    fn material_faces(&self) -> &[LayerFace] {
+        &self.material_faces
+    }
+    fn overlap_cell_count(&self) -> usize {
+        self.overlap_cells.len()
+    }
+    fn inherited_pair(&self, first: FaceId, second: FaceId) -> Option<(FaceId, FaceId)> {
+        self.face_pair_orders.iter().find_map(|order| {
+            (order.lower_face == first && order.upper_face == second)
+                .then_some((first, second))
+                .or_else(|| {
+                    (order.lower_face == second && order.upper_face == first)
+                        .then_some((second, first))
+                })
+        })
+    }
+}
+
+fn prepare_stacked_fold_non_flat_layer_order_from_source_v1(
+    requested: &PreparedStackedFoldRequestedPoseV1,
+    source_layer_order: &impl NonFlatSourceLayerEvidenceV1,
     paper_thickness_mm: f64,
     max_face_pairs: usize,
 ) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
@@ -1978,11 +2072,9 @@ pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::PositiveThicknessUnsupported);
     }
     let lineage = requested.initial.target.geometry.proof.lineage();
-    let provenance = &source_layer_order.provenance.source;
-    if source_layer_order.model_id != LAYER_ORDER_MODEL_ID
-        || provenance.identity_namespace != Some(lineage.identity_namespace())
-        || provenance.source_revision != lineage.source_revision()
-        || provenance.source_fingerprint != Some(lineage.source_fingerprint())
+    if source_layer_order.identity_namespace() != Some(lineage.identity_namespace())
+        || source_layer_order.revision() != lineage.source_revision()
+        || source_layer_order.fingerprint() != Some(lineage.source_fingerprint())
     {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch);
     }
@@ -1999,7 +2091,7 @@ pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
                 .cmp(&second.face_id.canonical_bytes())
         })
     });
-    if source_layer_order.material_faces != source_faces {
+    if source_layer_order.material_faces() != source_faces {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch);
     }
     let pose = requested.pose();
@@ -2110,7 +2202,7 @@ pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
         hinge_angles: pose.hinge_angles().to_vec(),
         material_faces,
         tested_face_pairs,
-        source_overlap_cells_authenticated: source_layer_order.overlap_cells.len(),
+        source_overlap_cells_authenticated: source_layer_order.overlap_cell_count(),
         overlap_cells,
         face_pair_orders,
     })
@@ -2355,7 +2447,7 @@ fn inherited_source_order(
     first: FaceId,
     second: FaceId,
     source_by_target: &HashMap<FaceId, FaceId>,
-    source: &LayerOrderSnapshot,
+    source: &impl NonFlatSourceLayerEvidenceV1,
 ) -> Result<(FaceId, FaceId), PrepareStackedFoldNonFlatLayerOrderErrorV1> {
     let first_source = source_by_target[&first];
     let second_source = source_by_target[&second];
@@ -2363,16 +2455,13 @@ fn inherited_source_order(
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap);
     }
     source
-        .face_pair_orders
-        .iter()
-        .find_map(|order| {
-            (order.lower_face.face_id == first_source && order.upper_face.face_id == second_source)
-                .then_some((first, second))
-                .or_else(|| {
-                    (order.lower_face.face_id == second_source
-                        && order.upper_face.face_id == first_source)
-                        .then_some((second, first))
-                })
+        .inherited_pair(first_source, second_source)
+        .map(|(lower, _)| {
+            if lower == first_source {
+                (first, second)
+            } else {
+                (second, first)
+            }
         })
         .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap)
 }

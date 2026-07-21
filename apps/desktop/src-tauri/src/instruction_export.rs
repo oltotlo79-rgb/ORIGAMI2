@@ -659,6 +659,7 @@ fn instruction_document_failure_category(
     match error {
         InstructionExportError::TitleTooLong { .. }
         | InstructionExportError::InvalidTitle
+        | InstructionExportError::InvalidPathCertificateReference { .. }
         | InstructionExportError::UnsupportedGlyph { .. } => {
             InstructionExportErrorCategory::DocumentInputInvalid
         }

@@ -22,6 +22,9 @@ const buildMode = process.env.BUILD_MODE
 const targetTriple = process.env.TARGET_TRIPLE
 const releaseRunId = process.env.RELEASE_RUN_ID
 const releaseRunStartedAt = process.env.RELEASE_RUN_STARTED_AT
+const sourceCommitAuthoredAt = process.env.SOURCE_COMMIT_AUTHORED_AT
+const sourceCommitCommittedAt = process.env.SOURCE_COMMIT_COMMITTED_AT
+const releaseTagCreatedAt = process.env.RELEASE_TAG_CREATED_AT || null
 const executedTestCount = Number(process.env.EXECUTED_TEST_COUNT)
 let ciChecks
 try {
@@ -48,6 +51,23 @@ const expectedTarget = platform === 'windows-x64'
 if (targetTriple !== expectedTarget) throw new Error('invalid build target triple')
 if (!/^[1-9][0-9]*$/u.test(releaseRunId ?? '')) throw new Error('invalid release CI run ID')
 if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseRunStartedAt ?? '')) throw new Error('invalid release CI run start time')
+for (const [name, value] of [['author', sourceCommitAuthoredAt], ['committer', sourceCommitCommittedAt]]) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value ?? '')) throw new Error(`invalid source commit ${name} time`)
+}
+if ((buildMode === 'signed-release') !== (releaseTagCreatedAt !== null) || (releaseTagCreatedAt !== null && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseTagCreatedAt))) throw new Error('invalid release tag time')
+const runStartMillis = Date.parse(releaseRunStartedAt)
+const authoredMillis = Date.parse(sourceCommitAuthoredAt)
+const committedMillis = Date.parse(sourceCommitCommittedAt)
+const tagMillis = releaseTagCreatedAt === null ? null : Date.parse(releaseTagCreatedAt)
+if (
+  authoredMillis > runStartMillis + 300_000
+  || committedMillis > runStartMillis + 300_000
+  || (tagMillis !== null && (tagMillis < committedMillis || tagMillis > runStartMillis + 300_000))
+  || ciChecks.artifacts.some(({ createdAt }) => {
+    const artifactMillis = Date.parse(createdAt)
+    return artifactMillis < committedMillis - 300_000 || artifactMillis > runStartMillis + 300_000
+  })
+) throw new Error('release chronology is inconsistent or replayed')
 if (!Number.isSafeInteger(executedTestCount) || executedTestCount < 1 || executedTestCount > 100000) {
   throw new Error('invalid executed test count')
 }
@@ -127,6 +147,9 @@ properties['origami2.release.evidence-json'] = JSON.stringify({
   sourceCommit: commit,
   ciRunId: releaseRunId,
   runStartedAt: releaseRunStartedAt,
+  sourceCommitAuthoredAt,
+  sourceCommitCommittedAt,
+  releaseTagCreatedAt,
   executedTestCount,
   executedSuites: ['formal-release-contract'],
   ciChecks,

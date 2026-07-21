@@ -141,6 +141,15 @@ if (
   || releaseEvidence.sourceCommit !== process.env.RELEASE_COMMIT
   || !/^[1-9][0-9]*$/u.test(releaseEvidence.ciRunId ?? '')
   || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseEvidence.runStartedAt ?? '')
+  || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseEvidence.sourceCommitAuthoredAt ?? '')
+  || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseEvidence.sourceCommitCommittedAt ?? '')
+  || !(releaseEvidence.releaseTagCreatedAt === null || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseEvidence.releaseTagCreatedAt))
+  || Date.parse(releaseEvidence.sourceCommitAuthoredAt) > Date.parse(releaseEvidence.runStartedAt) + 300_000
+  || Date.parse(releaseEvidence.sourceCommitCommittedAt) > Date.parse(releaseEvidence.runStartedAt) + 300_000
+  || (releaseEvidence.releaseTagCreatedAt !== null && (
+    Date.parse(releaseEvidence.releaseTagCreatedAt) < Date.parse(releaseEvidence.sourceCommitCommittedAt)
+    || Date.parse(releaseEvidence.releaseTagCreatedAt) > Date.parse(releaseEvidence.runStartedAt) + 300_000
+  ))
   || !Number.isSafeInteger(releaseEvidence.executedTestCount)
   || releaseEvidence.executedTestCount < 1
   || releaseEvidence.executedTestCount > 100000
@@ -164,6 +173,8 @@ if (
     !/^[1-9][0-9]*$/u.test(artifact?.artifactId ?? '')
     || !/^sha256:[0-9a-f]{64}$/u.test(artifact?.digest ?? '')
     || !Number.isSafeInteger(artifact?.size) || artifact.size < 1 || artifact.size > 2_147_483_648
+    || Date.parse(artifact.createdAt) < Date.parse(releaseEvidence.sourceCommitCommittedAt) - 300_000
+    || Date.parse(artifact.createdAt) > Date.parse(releaseEvidence.runStartedAt) + 300_000
   ))
   || releaseEvidence.ciChecks?.rustsecReviewArtifact?.name !== 'rustsec-warning-review'
   || releaseEvidence.ciChecks?.rustsecReviewArtifact?.digest

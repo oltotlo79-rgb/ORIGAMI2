@@ -990,6 +990,9 @@ test('release helpers reject hostile shell inputs without reflecting secret valu
           TARGET_TRIPLE: 'x86_64-pc-windows-msvc',
           RELEASE_RUN_ID: '12345',
           RELEASE_RUN_STARTED_AT: '2026-07-21T00:00:00Z',
+          SOURCE_COMMIT_AUTHORED_AT: '2026-07-18T00:00:00Z',
+          SOURCE_COMMIT_COMMITTED_AT: '2026-07-19T00:00:00Z',
+          RELEASE_TAG_CREATED_AT: '',
           EXECUTED_TEST_COUNT: '33',
           CI_CHECK_EVIDENCE_JSON: JSON.stringify({
             schema: 'origami2.ci-check-evidence.v1',
@@ -1050,6 +1053,9 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
               : 'aarch64-apple-darwin',
             RELEASE_RUN_ID: '12345',
             RELEASE_RUN_STARTED_AT: '2026-07-21T00:00:00Z',
+            SOURCE_COMMIT_AUTHORED_AT: '2026-07-18T00:00:00Z',
+            SOURCE_COMMIT_COMMITTED_AT: '2026-07-19T00:00:00Z',
+            RELEASE_TAG_CREATED_AT: '',
             EXECUTED_TEST_COUNT: '28',
             CI_CHECK_EVIDENCE_JSON: JSON.stringify({
               schema: 'origami2.ci-check-evidence.v1',
@@ -1144,6 +1150,9 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
         TARGET_TRIPLE: 'x86_64-pc-windows-msvc',
         RELEASE_RUN_ID: '12345',
         RELEASE_RUN_STARTED_AT: '2026-07-21T00:00:00Z',
+        SOURCE_COMMIT_AUTHORED_AT: '2026-07-18T00:00:00Z',
+        SOURCE_COMMIT_COMMITTED_AT: '2026-07-19T00:00:00Z',
+        RELEASE_TAG_CREATED_AT: '',
         EXECUTED_TEST_COUNT: '28',
         CI_CHECK_EVIDENCE_JSON: JSON.stringify({
           schema: 'origami2.ci-check-evidence.v1',
@@ -1198,6 +1207,9 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
       sourceCommit: 'a'.repeat(40),
       ciRunId: '12345',
       runStartedAt: '2026-07-21T00:00:00Z',
+      sourceCommitAuthoredAt: '2026-07-18T00:00:00Z',
+      sourceCommitCommittedAt: '2026-07-19T00:00:00Z',
+      releaseTagCreatedAt: null,
       executedTestCount: 28,
       executedSuites: ['formal-release-contract'],
       ciChecks: {
@@ -1228,6 +1240,9 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
         TARGET_TRIPLE: 'x86_64-pc-windows-msvc',
         RELEASE_RUN_ID: '12345',
         RELEASE_RUN_STARTED_AT: '2026-07-21T00:00:00Z',
+        SOURCE_COMMIT_AUTHORED_AT: '2026-07-18T00:00:00Z',
+        SOURCE_COMMIT_COMMITTED_AT: '2026-07-19T00:00:00Z',
+        RELEASE_TAG_CREATED_AT: '',
         EXECUTED_TEST_COUNT: '28',
         CI_CHECK_EVIDENCE_JSON: JSON.stringify({
           schema: 'origami2.ci-check-evidence.v1',

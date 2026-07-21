@@ -79,6 +79,12 @@ export type CurrentCyclePosePreviewResponseV1 = Readonly<{
   checkedHingeCount: number
   totalHingeCount: number
   continuousPathCertified: true
+  continuousLayerTransportModelId: 'native_continuous_layer_transport_certificate_v1' | null
+  continuousLayerTransitionCount: number
+  continuousLayerPairOrderCount: number
+  continuousLayerTargetOrderSha256: string | null
+  sourceLayerOrder: readonly Readonly<{ lowerFace: string; upperFace: string }>[]
+  targetLayerOrder: readonly Readonly<{ lowerFace: string; upperFace: string }>[]
   authorizesProjectMutation: false
 }>
 
@@ -2647,7 +2653,7 @@ export function normalizeCurrentCyclePosePreviewResponseV1(
     const value = payload as Record<string, unknown>
     if (
       Object.keys(value).sort().join(',') !==
-        'authorizesProjectMutation,checkedHingeCount,closureLeafCount,closureMaxDepth,continuousPathCertified,sourceRevision,targetRevision,totalHingeCount,transactionToken,version' ||
+        'authorizesProjectMutation,checkedHingeCount,closureLeafCount,closureMaxDepth,continuousLayerPairOrderCount,continuousLayerTargetOrderSha256,continuousLayerTransitionCount,continuousLayerTransportModelId,continuousPathCertified,sourceLayerOrder,sourceRevision,targetLayerOrder,targetRevision,totalHingeCount,transactionToken,version' ||
       value.version !== 1 ||
       !isCanonicalNonNilUuid(value.transactionToken) ||
       value.sourceRevision !== expectedRevision ||
@@ -2662,11 +2668,38 @@ export function normalizeCurrentCyclePosePreviewResponseV1(
       !Number.isSafeInteger(value.totalHingeCount) ||
       Number(value.checkedHingeCount) <= 0 ||
       value.checkedHingeCount !== value.totalHingeCount ||
-      Number(value.totalHingeCount) > 64 ||
+      Number(value.totalHingeCount) > 128 ||
       value.continuousPathCertified !== true ||
+      (value.continuousLayerTransportModelId !== null &&
+        value.continuousLayerTransportModelId !== 'native_continuous_layer_transport_certificate_v1') ||
+      !Number.isSafeInteger(value.continuousLayerTransitionCount) ||
+      Number(value.continuousLayerTransitionCount) < 0 ||
+      !Number.isSafeInteger(value.continuousLayerPairOrderCount) ||
+      Number(value.continuousLayerPairOrderCount) < 0 ||
+      (value.continuousLayerTargetOrderSha256 !== null &&
+        (typeof value.continuousLayerTargetOrderSha256 !== 'string' ||
+          !/^[0-9a-f]{64}$/.test(value.continuousLayerTargetOrderSha256))) ||
+      !isLayerOrderPairsV1(value.sourceLayerOrder) ||
+      !isLayerOrderPairsV1(value.targetLayerOrder) ||
+      (value.continuousLayerTransportModelId === null
+        ? value.continuousLayerTransitionCount !== 0 ||
+          value.continuousLayerPairOrderCount !== 0 ||
+          value.continuousLayerTargetOrderSha256 !== null
+        : value.continuousLayerTransitionCount <= 0 ||
+          value.continuousLayerPairOrderCount !== value.sourceLayerOrder.length ||
+          value.continuousLayerTargetOrderSha256 === null) ||
       value.authorizesProjectMutation !== false
     ) throw new Error('invalid current-cycle preview response')
     return value as CurrentCyclePosePreviewResponseV1
+}
+
+function isLayerOrderPairsV1(value: unknown): boolean {
+  return Array.isArray(value) && value.every((pair) => {
+    if (typeof pair !== 'object' || pair === null || Array.isArray(pair)) return false
+    const record = pair as Record<string, unknown>
+    return Object.keys(record).sort().join(',') === 'lowerFace,upperFace' &&
+      isCanonicalNonNilUuid(record.lowerFace) && isCanonicalNonNilUuid(record.upperFace)
+  })
 }
 
 export function listenCurrentCyclePoseProgressV1(

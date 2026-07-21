@@ -662,7 +662,33 @@ export function StackedFoldPanel({
                   <dt>{t('適用後リビジョン', 'Target revision')}</dt>
                   <dd>{cyclePosePreview.targetRevision}</dd>
                 </div>
+                <div>
+                  <dt>Layer-order transitions</dt>
+                  <dd data-testid="cycle-layer-transition-count">{cyclePosePreview.continuousLayerTransitionCount}</dd>
+                </div>
+                <div>
+                  <dt>Layer-order pairs</dt>
+                  <dd>{cyclePosePreview.continuousLayerPairOrderCount}</dd>
+                </div>
+                <div>
+                  <dt>Layer-order proof hash</dt>
+                  <dd>{cyclePosePreview.continuousLayerTargetOrderSha256 ?? 'Unavailable'}</dd>
+                </div>
               </dl>
+              {cyclePosePreview.continuousLayerTransportModelId && (
+                <div data-testid="cycle-layer-order-viewer">
+                  <h4>Layer-order preview</h4>
+                  <p>Source: {cyclePosePreview.sourceLayerOrder.length}</p>
+                  <p>Target: {cyclePosePreview.targetLayerOrder.length}</p>
+                  <ol>
+                    {cyclePosePreview.targetLayerOrder.map((pair) => (
+                      <li key={`${pair.lowerFace}:${pair.upperFace}`}>
+                        {pair.lowerFace} → {pair.upperFace}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
               <p>
                 {t(
                   'この表示は読み取り専用です。下の適用操作まで作品は変更されません。',

@@ -675,12 +675,21 @@ describe('StackedFoldPanel', () => {
       version: 1, transactionToken: project, sourceRevision: 3, targetRevision: 4,
       closureLeafCount: 4, closureMaxDepth: 2, checkedHingeCount: 16, totalHingeCount: 16,
       continuousPathCertified: true, authorizesProjectMutation: false,
+      continuousLayerTransportModelId: 'native_continuous_layer_transport_certificate_v1',
+      continuousLayerTransitionCount: 5, continuousLayerPairOrderCount: 1,
+      continuousLayerTargetOrderSha256: 'ab'.repeat(32),
+      sourceLayerOrder: [{ lowerFace: project, upperFace: token }],
+      targetLayerOrder: [{ lowerFace: project, upperFace: token }],
     })
     await waitFor(() => expect(
       screen.getByRole('region', { name: 'Current-pose cycle preview' }).textContent,
     ).toContain('Closure intervals4'))
     expect(screen.getByText('Maximum proof depth').nextElementSibling?.textContent).toBe('2')
     expect(screen.getByText('All hinges covered').nextElementSibling?.textContent).toBe('16/16')
+    expect(screen.getByTestId('cycle-layer-transition-count').textContent).toBe('5')
+    expect(screen.getByTestId('cycle-layer-order-viewer').textContent).toContain('Target: 1')
+    expect(screen.getByText('Layer-order proof hash').nextElementSibling?.textContent)
+      .toBe('ab'.repeat(32))
     resolveFirst({
       version: 1, transactionToken: token, sourceRevision: 3, targetRevision: 4,
       closureLeafCount: 99, closureMaxDepth: 7, checkedHingeCount: 4, totalHingeCount: 4,

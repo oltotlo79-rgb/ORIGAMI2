@@ -12,6 +12,18 @@ const valid = {
   checkedHingeCount: 16,
   totalHingeCount: 16,
   continuousPathCertified: true,
+  continuousLayerTransportModelId: 'native_continuous_layer_transport_certificate_v1',
+  continuousLayerTransitionCount: 5,
+  continuousLayerPairOrderCount: 1,
+  continuousLayerTargetOrderSha256: 'ab'.repeat(32),
+  sourceLayerOrder: [{
+    lowerFace: '018f47a2-4b7a-7cc1-8abc-111111111111',
+    upperFace: '018f47a2-4b7a-7cc1-8abc-222222222222',
+  }],
+  targetLayerOrder: [{
+    lowerFace: '018f47a2-4b7a-7cc1-8abc-111111111111',
+    upperFace: '018f47a2-4b7a-7cc1-8abc-222222222222',
+  }],
   authorizesProjectMutation: false,
 }
 
@@ -25,7 +37,9 @@ test('current-cycle proof summary rejects tampering, bounds, and partial coverag
     { ...valid, closureLeafCount: 65_537 },
     { ...valid, closureMaxDepth: 17 },
     { ...valid, checkedHingeCount: 15 },
-    { ...valid, totalHingeCount: 65, checkedHingeCount: 65 },
+    { ...valid, totalHingeCount: 129, checkedHingeCount: 129 },
+    { ...valid, continuousLayerTargetOrderSha256: '00' },
+    { ...valid, continuousLayerPairOrderCount: 2 },
     { ...valid, targetRevision: 5 },
   ]
   for (const value of invalid) {

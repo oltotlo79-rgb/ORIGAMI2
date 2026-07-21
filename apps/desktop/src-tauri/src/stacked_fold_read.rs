@@ -7,15 +7,15 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ori_collision::{
-    ContinuousLayerTransportLimitsV1, FlatEndpointLayerOrderInputV1, StackedFoldFixedSideV1,
-    StackedFoldLinearCandidateV1, StackedFoldMaterialMapLimitsV1,
-    StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1, StackedFoldReadLimitsV1,
-    StackedFoldReadSupportV1, StackedFoldRotationDirectionV1, StaticCollisionLimits,
-    capture_stacked_fold_read_guard_v1, derive_continuous_layer_transport_from_poses_v1,
-    diagnose_collective_hinge_path_v1, diagnose_scheduled_cycle_path_v1,
-    diagnose_scheduled_positive_thickness_cycle_path_v1, diagnose_static_collision_geometry,
-    propose_linear_stacked_fold_read_v1, reverse_map_linear_stacked_fold_material_v1,
-    supports_scheduled_positive_thickness_path_v1,
+    ContinuousLayerTransportFromPosesInputV1, ContinuousLayerTransportLimitsV1,
+    FlatEndpointLayerOrderInputV1, StackedFoldFixedSideV1, StackedFoldLinearCandidateV1,
+    StackedFoldMaterialMapLimitsV1, StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1,
+    StackedFoldReadLimitsV1, StackedFoldReadSupportV1, StackedFoldRotationDirectionV1,
+    StaticCollisionLimits, capture_stacked_fold_read_guard_v1,
+    derive_continuous_layer_transport_from_poses_v1, diagnose_collective_hinge_path_v1,
+    diagnose_scheduled_cycle_path_v1, diagnose_scheduled_positive_thickness_cycle_path_v1,
+    diagnose_static_collision_geometry, propose_linear_stacked_fold_read_v1,
+    reverse_map_linear_stacked_fold_material_v1, supports_scheduled_positive_thickness_path_v1,
 };
 use ori_core::{
     DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS, ExpectedStackedFoldCreaseV1, FaceLineageLimits,
@@ -256,6 +256,7 @@ pub(super) struct CurrentCyclePosePreviewResponseV1 {
     continuous_layer_transport_model_id: Option<&'static str>,
     continuous_layer_transition_count: usize,
     continuous_layer_pair_order_count: usize,
+    continuous_layer_target_order_sha256: Option<String>,
     source_layer_order: Vec<LayerOrderPairDtoV1>,
     target_layer_order: Vec<LayerOrderPairDtoV1>,
     authorizes_project_mutation: bool,
@@ -449,20 +450,22 @@ fn propose_current_cycle_pose_inner_with_layers(
             .collect::<Vec<_>>();
         Some(
             derive_continuous_layer_transport_from_poses_v1(
-                geometry,
-                audit,
-                capability.snapshot(),
-                &lineage,
-                generated.schedule(),
-                &closure,
-                [0.0, 0.0, 1.0],
-                ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
-                ContinuousLayerTransportLimitsV1 {
-                    max_transitions: closure_leaf_count + 1,
-                    max_pair_orders: source_orders
-                        .len()
-                        .checked_mul(closure_leaf_count + 1)
-                        .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?,
+                ContinuousLayerTransportFromPosesInputV1 {
+                    geometry,
+                    audit,
+                    source: capability.snapshot(),
+                    source_to_target: &lineage,
+                    schedule: generated.schedule(),
+                    closure: &closure,
+                    separation_axis: [0.0, 0.0, 1.0],
+                    tolerance: ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                    limits: ContinuousLayerTransportLimitsV1 {
+                        max_transitions: closure_leaf_count + 1,
+                        max_pair_orders: source_orders
+                            .len()
+                            .checked_mul(closure_leaf_count + 1)
+                            .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?,
+                    },
                 },
             )
             .map_err(|error| match error {
@@ -480,6 +483,11 @@ fn propose_current_cycle_pose_inner_with_layers(
             certificate.model_id(),
             certificate.transition_hashes().len(),
             certificate.pair_order_count(),
+            certificate
+                .target_order_hash()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
         )
     });
     emit_current_cycle_progress_v1(app, progress_request_id, 1, 1);
@@ -518,6 +526,10 @@ fn propose_current_cycle_pose_inner_with_layers(
         layer_capability,
     )?;
     let source_layer_order = source_layer_order.unwrap_or_default();
+    let (layer_model_id, layer_transition_count, layer_pair_count, layer_target_hash) =
+        layer_transport_metadata.map_or((None, 0, 0, None), |value| {
+            (Some(value.0), value.1, value.2, Some(value.3))
+        });
     Ok(CurrentCyclePosePreviewResponseV1 {
         version: 1,
         transaction_token: token,
@@ -528,9 +540,10 @@ fn propose_current_cycle_pose_inner_with_layers(
         checked_hinge_count,
         total_hinge_count,
         continuous_path_certified: true,
-        continuous_layer_transport_model_id: layer_transport_metadata.map(|value| value.0),
-        continuous_layer_transition_count: layer_transport_metadata.map_or(0, |value| value.1),
-        continuous_layer_pair_order_count: layer_transport_metadata.map_or(0, |value| value.2),
+        continuous_layer_transport_model_id: layer_model_id,
+        continuous_layer_transition_count: layer_transition_count,
+        continuous_layer_pair_order_count: layer_pair_count,
+        continuous_layer_target_order_sha256: layer_target_hash,
         target_layer_order: source_layer_order.clone(),
         source_layer_order,
         authorizes_project_mutation: false,

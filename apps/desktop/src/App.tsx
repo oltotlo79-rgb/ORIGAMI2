@@ -7991,6 +7991,10 @@ function App() {
                         }, { local: candidate.local_proof_scope, global: candidate.global_proof_scope,
                           complexity: candidate.complexity_score })}</span>
                         <span className="muted">{formattedText({
+                          ja: '紙効率 {paper}/100',
+                          en: 'Paper efficiency {paper}/100',
+                        }, { paper: candidate.paper_efficiency_score })}</span>
+                        <span className="muted">{formattedText({
                           ja: '減点: 尺度 {scale}・間隔 {spacing}・詳細度 {detail}',
                           en: 'Penalties: scale {scale} · spacing {spacing} · detail {detail}',
                         }, { scale: candidate.scale_deviation_penalty,

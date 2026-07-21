@@ -2097,6 +2097,7 @@ export type BeginnerGridEvaluationResponse = Readonly<{
     local_proof_scope: 'necessary'
     global_proof_scope: 'necessary' | 'sufficient' | 'indeterminate'
     complexity_score: number
+    paper_efficiency_score: number
     scale_deviation_penalty: number
     spacing_deviation_penalty: number
     detail_mismatch_penalty: number
@@ -2134,6 +2135,7 @@ export async function evaluateBeginnerParameterGrid(
   const rawCandidates = response.candidates.map((value) => exactCoreDataRecord(
     value, ['point', 'primary_score', 'plan', 'assessment', 'local_proof_scope',
       'global_proof_scope', 'complexity_score', 'scale_deviation_penalty',
+      'paper_efficiency_score',
       'spacing_deviation_penalty', 'detail_mismatch_penalty', 'outcome_reason', 'contour_witness',
       'refinement_iterations', 'strict_improvements', 'refinement_starts'] as const,
   ))
@@ -2268,6 +2270,8 @@ export async function evaluateBeginnerParameterGrid(
         || Number(binding?.crease_start) + Number(binding?.contour_points)
           > normalizedPlans.generated_plans[index].crease_pattern.edges.length)
       || !Number.isInteger(candidate.complexity_score) || Number(candidate.complexity_score) < 0 || Number(candidate.complexity_score) > 100
+      || !Number.isInteger(candidate.paper_efficiency_score)
+      || Number(candidate.paper_efficiency_score) < 0 || Number(candidate.paper_efficiency_score) > 100
       || !Number.isInteger(candidate.refinement_iterations) || Number(candidate.refinement_iterations) < 0 || Number(candidate.refinement_iterations) > 8
       || !Number.isInteger(candidate.strict_improvements) || Number(candidate.strict_improvements) < 0
       || Number(candidate.strict_improvements) > Number(candidate.refinement_iterations) + 1
@@ -2287,6 +2291,7 @@ export async function evaluateBeginnerParameterGrid(
       assessment: normalizedPlans.plan_assessments[index], local_proof_scope: 'necessary' as const,
       global_proof_scope: candidate.global_proof_scope as BeginnerGeneratedPlanAssessmentV1['proof_scope'],
       complexity_score: Number(candidate.complexity_score),
+      paper_efficiency_score: Number(candidate.paper_efficiency_score),
       scale_deviation_penalty: Number(candidate.scale_deviation_penalty),
       spacing_deviation_penalty: Number(candidate.spacing_deviation_penalty),
       detail_mismatch_penalty: Number(candidate.detail_mismatch_penalty),

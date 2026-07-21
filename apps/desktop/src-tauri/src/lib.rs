@@ -3403,6 +3403,7 @@ struct BeginnerGridCandidateResponse {
     local_proof_scope: &'static str,
     global_proof_scope: &'static str,
     complexity_score: u8,
+    paper_efficiency_score: u8,
     scale_deviation_penalty: u16,
     spacing_deviation_penalty: u16,
     detail_mismatch_penalty: u16,
@@ -3411,6 +3412,63 @@ struct BeginnerGridCandidateResponse {
     refinement_iterations: u8,
     strict_improvements: u8,
     refinement_starts: u8,
+}
+
+fn beginner_plan_paper_efficiency_score_v1(
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+    paper: &Paper,
+) -> u8 {
+    let boundary = paper
+        .boundary_vertices
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let bounds = |points: Vec<Point2>| -> Option<[f64; 4]> {
+        (!points.is_empty()).then(|| {
+            points.iter().fold(
+                [
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                ],
+                |mut bounds, point| {
+                    bounds[0] = bounds[0].min(point.x);
+                    bounds[1] = bounds[1].max(point.x);
+                    bounds[2] = bounds[2].min(point.y);
+                    bounds[3] = bounds[3].max(point.y);
+                    bounds
+                },
+            )
+        })
+    };
+    let paper_bounds = bounds(
+        plan.crease_pattern
+            .vertices
+            .iter()
+            .filter(|vertex| boundary.contains(&vertex.id))
+            .map(|vertex| vertex.position)
+            .collect(),
+    );
+    let feature_bounds = bounds(
+        plan.crease_pattern
+            .vertices
+            .iter()
+            .filter(|vertex| !boundary.contains(&vertex.id))
+            .map(|vertex| vertex.position)
+            .collect(),
+    );
+    let (Some(paper), Some(feature)) = (paper_bounds, feature_bounds) else {
+        return 0;
+    };
+    let width = (paper[1] - paper[0]).abs();
+    let height = (paper[3] - paper[2]).abs();
+    if width <= f64::EPSILON || height <= f64::EPSILON {
+        return 0;
+    }
+    let horizontal = ((feature[1] - feature[0]).abs() / width).clamp(0.0, 1.0);
+    let vertical = ((feature[3] - feature[2]).abs() / height).clamp(0.0, 1.0);
+    ((horizontal + vertical) * 50.0).round() as u8
 }
 
 #[derive(Debug, Serialize)]
@@ -3733,7 +3791,7 @@ fn evaluate_beginner_parameter_grid(
     let reference = live_reference_model_suggestion_v1(&project).ok();
     let mut candidates = primary
         .into_iter()
-        .map(|(primary_score, point, plan)| {
+        .map(|(_primary_score, point, plan)| {
             if work.cancelled.load(Ordering::Acquire) {
                 work.terminal.store(2, Ordering::Release);
                 return Err("grid_evaluation_cancelled".to_owned());
@@ -3758,6 +3816,11 @@ fn evaluate_beginner_parameter_grid(
                 } else {
                     10
                 };
+            let primary_score = 1000_u16.saturating_sub(
+                u16::from(point.scale_percent.abs_diff(estimate.scale_percent)) * 10
+                    + u16::from(point.spacing_percent.abs_diff(estimate.spacing_percent)) * 5
+                    + detail_penalty,
+            );
             let assessment = assess_beginner_generated_plan_with_deadline(
                 project.project_id,
                 project.editor.paper(),
@@ -3781,6 +3844,8 @@ fn evaluate_beginner_parameter_grid(
             let contour_witness =
                 beginner_contour_placement_witness(&profile.generation_constraints, &plan)
                     .ok_or_else(|| "grid_contour_witness_invalid".to_owned())?;
+            let paper_efficiency_score =
+                beginner_plan_paper_efficiency_score_v1(&plan, project.editor.paper());
             work.global_checked.fetch_add(1, Ordering::Release);
             Ok(BeginnerGridCandidateResponse {
                 point,
@@ -3790,6 +3855,7 @@ fn evaluate_beginner_parameter_grid(
                 local_proof_scope: "necessary",
                 global_proof_scope,
                 complexity_score,
+                paper_efficiency_score,
                 scale_deviation_penalty: u16::from(
                     point.scale_percent.abs_diff(estimate.scale_percent),
                 ) * 10,

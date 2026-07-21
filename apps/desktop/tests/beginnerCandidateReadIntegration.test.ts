@@ -159,3 +159,16 @@ test('AUT-101 apply rebinds candidate authority natively and requires confirmati
   assert.match(app, /Review and apply this candidate/)
   assert.match(app, /対角折り候補を確認して適用/)
 })
+
+test('AUT-101 compares bounded tree-skeleton synthesis by quality and paper efficiency', () => {
+  assert.match(native, /beginner_contour_placement_witness/u)
+  assert.match(native, /skeleton_tree_authority_sha256/u)
+  assert.match(native, /generic_feature_bindings/u)
+  assert.match(native, /beginner_plan_paper_efficiency_score_v1/u)
+  assert.match(native, /paper_efficiency_score/u)
+  assert.match(native, /let primary_score = 1000_u16\.saturating_sub/u)
+  assert.match(client, /paper_efficiency_score/u)
+  assert.match(app, /Paper efficiency \{paper\}\/100/u)
+  assert.match(app, /Evaluate top 3 of 27 designs/u)
+  assert.match(app, /Revalidate and apply this design/u)
+})

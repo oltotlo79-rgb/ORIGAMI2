@@ -67,6 +67,8 @@ test('bundle CSP verifier rejects linked and syntactically hidden authorities', 
       '<base href="https://evil.example/">',
       '<meta http-equiv="refresh" content="0;url=https://evil.example/">',
       '<img srcset="https://evil.example/a.png 1x">',
+      '<link rel="modulepreload" href="//evil.example/chunk.js">',
+      '<link rel="preload" href="data:text/javascript,alert(1)">',
     ]) {
       writeFileSync(htmlPath, validHtml.replace('</head>', `${hostile}</head>`))
       assert.throws(verify)
@@ -81,6 +83,18 @@ test('bundle CSP verifier rejects linked and syntactically hidden authorities', 
       assert.throws(verify)
     }
     writeFileSync(cssPath, '.root{color:#000}\n')
+    for (const hostileJavaScript of [
+      'import("./late.js")',
+      'importScripts("/worker.js")',
+      'new WebSocket("wss://evil.example")',
+      'new EventSource("https://evil.example/events")',
+      'fetch("https://evil.example/payload")',
+      '//# sourceMappingURL=app.js.map',
+    ]) {
+      writeFileSync(jsPath, hostileJavaScript)
+      assert.throws(verify)
+    }
+    writeFileSync(jsPath, 'export {}\n')
     const hardlink = join(assets, 'hardlink.js')
     linkSync(jsPath, hardlink)
     assert.throws(verify)

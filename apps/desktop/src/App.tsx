@@ -366,6 +366,7 @@ import {
 } from './lib/foldTechniqueFileClient'
 import './App.css'
 import { CompleteAnimalBindingList } from './components/CompleteAnimalBindingList'
+import { CompleteInsectBindingList } from './components/CompleteInsectBindingList'
 import { BeginnerGridProgressStatus } from './components/BeginnerGridProgressStatus'
 
 const SNAP_OPTIONS: ReadonlyArray<{
@@ -8038,6 +8039,10 @@ function App() {
                             {(plan.kind === 'composite_complete_animal_base'
                               || plan.kind === 'composite_complete_winged_animal_base') && (
                               <CompleteAnimalBindingList locale={locale}
+                                protrusions={nativeSnapshot.beginner_design_profile.generation_constraints.protrusions ?? []} />
+                            )}
+                            {plan.kind === 'composite_complete_insect_base' && (
+                              <CompleteInsectBindingList locale={locale}
                                 protrusions={nativeSnapshot.beginner_design_profile.generation_constraints.protrusions ?? []} />
                             )}
                             {plan.skeleton_segments.length > 0 && (

@@ -2644,6 +2644,13 @@ fn evaluate_beginner_parameter_grid(
         work.enumerated.fetch_add(1, Ordering::Release);
     }
     primary.sort_by_key(|(score, point, _)| (std::cmp::Reverse(*score), point.id));
+    primary.retain(|(_, _, plan)| {
+        beginner_contour_placement_witness(&profile.generation_constraints, plan).is_some()
+    });
+    if primary.len() < 3 {
+        work.terminal.store(3, Ordering::Release);
+        return Err("grid_contour_candidate_shortage".to_owned());
+    }
     primary.truncate(3);
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(750);
@@ -12009,6 +12016,54 @@ mod tests {
             beginner_contour_placement_witness(&profile.generation_constraints, &one_short,)
                 .is_none()
         );
+        for point_count in 4..=16 {
+            let mut bounded = profile.clone();
+            bounded.generation_constraints.target_category = None;
+            bounded.generation_constraints.target_parts.clear();
+            bounded.generation_constraints.generic_body_outline_mode =
+                ori_domain::BeginnerBodyOutlineModeV1::General;
+            let mut outline = (0..point_count)
+                .map(|index| {
+                    let angle = std::f64::consts::TAU * f64::from(u32::try_from(index).unwrap())
+                        / f64::from(u32::try_from(point_count).unwrap());
+                    [
+                        (angle.cos() * 1_000.0).round() as i32,
+                        (angle.sin() * 1_000.0).round() as i32,
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let canonical = outline
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, point)| **point)
+                .map(|(index, _)| index)
+                .unwrap();
+            outline.rotate_left(canonical);
+            bounded
+                .generation_constraints
+                .generic_body_outline_tenths_mm = Some(outline);
+            let bounded_plan = grid_template_plan(
+                project.project_id,
+                project.editor.pattern(),
+                &project.editor.paper().boundary_vertices,
+                &bounded,
+                point,
+            )
+            .unwrap()
+            .into_iter()
+            .find(|candidate| {
+                candidate.kind
+                    == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+            })
+            .unwrap();
+            let bounded_witness =
+                beginner_contour_placement_witness(&bounded.generation_constraints, &bounded_plan)
+                    .unwrap();
+            assert_eq!(
+                usize::from(bounded_witness.body_contour_points),
+                point_count
+            );
+        }
         let project_id = project.project_id;
         let instance_id = project.instance_id;
         let revision = project.editor.revision();

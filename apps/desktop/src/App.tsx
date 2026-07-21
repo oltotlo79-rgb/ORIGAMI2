@@ -4278,7 +4278,7 @@ function App() {
   }
 
   function confirmAndApplyBeginnerPlan(
-    kind: 'diagonal_fold' | 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'asymmetric_bird_landmark_base' | 'asymmetric_four_leg_landmark_base' | 'asymmetric_insect_landmark_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' | 'symmetric_antenna_base' | 'symmetric_insect_leg_pair_base' | 'symmetric_six_leg_base' | 'center_axis_tail_base' | 'center_axis_horn_base' | 'center_axis_antenna_base' | 'composite_tail_ear_base' | 'composite_horn_ear_base' | 'composite_horn_tail_base' | 'composite_horn_tail_ear_base' | 'composite_wing_antenna_base' | 'composite_complete_insect_base' | 'composite_complete_animal_base' | 'composite_complete_winged_animal_base' | 'composite_generic_target_base',
+    kind: 'diagonal_fold' | 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'asymmetric_bird_landmark_base' | 'asymmetric_four_leg_landmark_base' | 'asymmetric_insect_landmark_base' | 'asymmetric_fish_landmark_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' | 'symmetric_antenna_base' | 'symmetric_insect_leg_pair_base' | 'symmetric_six_leg_base' | 'center_axis_tail_base' | 'center_axis_horn_base' | 'center_axis_antenna_base' | 'composite_tail_ear_base' | 'composite_horn_ear_base' | 'composite_horn_tail_base' | 'composite_horn_tail_ear_base' | 'composite_wing_antenna_base' | 'composite_complete_insect_base' | 'composite_complete_animal_base' | 'composite_complete_winged_animal_base' | 'composite_generic_target_base',
     expectedCandidateEdgeId: string,
   ) {
     const current = latestSnapshotRef.current
@@ -8124,6 +8124,8 @@ function App() {
                                             ? text({ ja: '4本の個別ランドマークに結合した非対称の脚ベースを作ります。', en: 'Create the asymmetric four-leg base bound to four individual landmarks.' })
                                           : code === 'asymmetric_insect_landmark_base'
                                             ? text({ ja: '10個の意味ランドマークを証明済み4放射へ結合します。', en: 'Bind ten ordered insect landmarks to the certified four-ray base.' })
+                                          : code === 'asymmetric_fish_landmark_base'
+                                            ? text({ ja: '頭・尾・左右のひれを証明済み4放射へ結合します。', en: 'Bind the head, tail, and left/right fins to the certified four-ray base.' })
                                         : code === 'symmetric_fish_base'
                                           ? text({ ja: '左右対称の魚のひれベースを作ります。', en: 'Create the bilateral fish-fin base.' })
                                           : code === 'symmetric_ear_base'
@@ -10604,6 +10606,7 @@ function isBeginnerSymmetricTemplate(
     | 'asymmetric_bird_landmark_base'
     | 'asymmetric_four_leg_landmark_base'
     | 'asymmetric_insect_landmark_base'
+    | 'asymmetric_fish_landmark_base'
     | 'symmetric_fish_base'
     | 'symmetric_ear_base'
     | 'symmetric_horn_base'
@@ -10625,8 +10628,8 @@ function isBeginnerSymmetricTemplate(
     | 'vertical_book_fold'
     | 'horizontal_book_fold'
     | 'diagonal_fold',
-): kind is 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'asymmetric_bird_landmark_base' | 'asymmetric_four_leg_landmark_base' | 'asymmetric_insect_landmark_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' | 'symmetric_antenna_base' | 'symmetric_insect_leg_pair_base' | 'symmetric_six_leg_base' | 'center_axis_tail_base' | 'center_axis_horn_base' | 'center_axis_antenna_base' | 'composite_tail_ear_base' | 'composite_horn_ear_base' | 'composite_horn_tail_base' | 'composite_horn_tail_ear_base' | 'composite_wing_antenna_base' | 'composite_complete_insect_base' | 'composite_complete_animal_base' | 'composite_complete_winged_animal_base' | 'composite_generic_target_base' {
-  return ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'asymmetric_bird_landmark_base', 'asymmetric_four_leg_landmark_base', 'asymmetric_insect_landmark_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'composite_generic_target_base'].includes(kind)
+): kind is 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'asymmetric_bird_landmark_base' | 'asymmetric_four_leg_landmark_base' | 'asymmetric_insect_landmark_base' | 'asymmetric_fish_landmark_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' | 'symmetric_antenna_base' | 'symmetric_insect_leg_pair_base' | 'symmetric_six_leg_base' | 'center_axis_tail_base' | 'center_axis_horn_base' | 'center_axis_antenna_base' | 'composite_tail_ear_base' | 'composite_horn_ear_base' | 'composite_horn_tail_base' | 'composite_horn_tail_ear_base' | 'composite_wing_antenna_base' | 'composite_complete_insect_base' | 'composite_complete_animal_base' | 'composite_complete_winged_animal_base' | 'composite_generic_target_base' {
+  return ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'asymmetric_bird_landmark_base', 'asymmetric_four_leg_landmark_base', 'asymmetric_insect_landmark_base', 'asymmetric_fish_landmark_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'composite_generic_target_base'].includes(kind)
 }
 
 function sameRecoveryCandidate(
@@ -11324,13 +11327,15 @@ function selectedNamedBookFold(
   const physical = technique.operations.filter(
     (operation) => [
       'straight_line_stacked_fold', 'inside_reverse_fold', 'outside_reverse_fold',
+      'sink_fold',
     ].includes(operation.action.kind),
   )
   const isReverse = physical[0]?.action.kind === 'inside_reverse_fold'
     || physical[0]?.action.kind === 'outside_reverse_fold'
   const isAccordion = physical.length >= 3
     && physical.every((operation) => operation.action.kind === 'straight_line_stacked_fold')
-  if ((!isAccordion && physical.length !== 1) || (!isReverse && !isAccordion && technique.operations.some(
+  const isSink = physical[0]?.action.kind === 'sink_fold'
+  if ((!isAccordion && physical.length !== 1) || (!isReverse && !isAccordion && !isSink && technique.operations.some(
       (operation) => operation.execution_support.status
         === 'unsupported_physical_operation',
     ))) return null
@@ -11341,7 +11346,8 @@ function selectedNamedBookFold(
       ?? technique.names.find((entry) => entry.locale === 'ja')?.text
       ?? technique.names[0]?.text
       ?? technique.id,
-    kind: isAccordion ? 'accordion' as const : isReverse ? 'reverse' as const : 'book' as const,
+    kind: isAccordion ? 'accordion' as const : isReverse ? 'reverse' as const
+      : isSink ? 'sink' as const : 'book' as const,
   })
 }
 

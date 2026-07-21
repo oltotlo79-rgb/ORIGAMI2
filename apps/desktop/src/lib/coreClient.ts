@@ -776,6 +776,7 @@ export type BeginnerGeneratedPlanV1 = {
     | 'asymmetric_bird_landmark_base'
     | 'asymmetric_four_leg_landmark_base'
     | 'asymmetric_insect_landmark_base'
+    | 'asymmetric_fish_landmark_base'
     | 'symmetric_fish_base'
     | 'symmetric_ear_base'
     | 'symmetric_horn_base'
@@ -908,7 +909,7 @@ function normalizeBeginnerCandidateResponse(
     if (
       !record
       || record.schema_version !== 1
-      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'asymmetric_bird_landmark_base', 'asymmetric_four_leg_landmark_base', 'asymmetric_insect_landmark_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'composite_generic_target_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
+      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'asymmetric_bird_landmark_base', 'asymmetric_four_leg_landmark_base', 'asymmetric_insect_landmark_base', 'asymmetric_fish_landmark_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'composite_generic_target_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
       || !pattern
       || !Array.isArray(pattern.vertices)
       || pattern.vertices.length < 2
@@ -919,7 +920,7 @@ function normalizeBeginnerCandidateResponse(
       || !Array.isArray(record.instruction_codes)
       || record.instruction_codes.length !== 1
       || !record.instruction_codes.every((code) =>
-        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'asymmetric_bird_landmark_base', 'asymmetric_four_leg_landmark_base', 'asymmetric_insect_landmark_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'composite_generic_target_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
+        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'asymmetric_bird_landmark_base', 'asymmetric_four_leg_landmark_base', 'asymmetric_insect_landmark_base', 'asymmetric_fish_landmark_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'composite_generic_target_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
     ) return null
     const normalizedPlanInputs = normalizeBeginnerGenerationConstraints({
       schema_version: 1,
@@ -936,14 +937,18 @@ function normalizeBeginnerCandidateResponse(
       : exactCoreDataRecord(record.semantic_landmark_provenance, [
         'schema_version', 'ordered_bindings', 'physical_ray_group_sha256',
       ] as const)
-    const semanticRoles = [
-      'head', 'tail', 'wing_left', 'wing_right', 'leg_front_left', 'leg_front_right',
-      'leg_middle_left', 'leg_middle_right', 'leg_rear_left', 'leg_rear_right',
-    ]
+    const semanticRoles = record.kind === 'asymmetric_insect_landmark_base'
+      ? [
+        'head', 'tail', 'wing_left', 'wing_right', 'leg_front_left', 'leg_front_right',
+        'leg_middle_left', 'leg_middle_right', 'leg_rear_left', 'leg_rear_right',
+      ]
+      : record.kind === 'asymmetric_fish_landmark_base'
+        ? ['head', 'tail', 'fin_left', 'fin_right']
+        : null
     const semanticBindings = semantic && Array.isArray(semantic.ordered_bindings)
       ? semantic.ordered_bindings.map((value, index) => {
         const binding = exactCoreDataRecord(value, ['ordinal', 'role', 'physical_ray'] as const)
-        return binding && binding.ordinal === index && binding.role === semanticRoles[index]
+        return binding && binding.ordinal === index && binding.role === semanticRoles?.[index]
           && Number.isInteger(binding.physical_ray) && Number(binding.physical_ray) >= 0
           && Number(binding.physical_ray) < 4
           ? { ordinal: index, role: String(binding.role), physical_ray: Number(binding.physical_ray) }
@@ -951,8 +956,9 @@ function normalizeBeginnerCandidateResponse(
       }) : null
     const rayDigests = semantic && Array.isArray(semantic.physical_ray_group_sha256)
       ? semantic.physical_ray_group_sha256 : null
-    if ((record.kind === 'asymmetric_insect_landmark_base') !== (semantic !== null)
-      || (semantic && (semantic.schema_version !== 1 || semanticBindings?.length !== 10
+    if ((semanticRoles !== null) !== (semantic !== null)
+      || (semantic && (semantic.schema_version !== 1 || !semanticBindings
+        || semanticBindings.length !== semanticRoles?.length
         || semanticBindings.some((binding) => binding === null)
         || rayDigests?.length !== 4
         || rayDigests.some((digest) => !Array.isArray(digest) || digest.length !== 32
@@ -2466,6 +2472,7 @@ export function applyBeginnerGeneratedPlan(
     'asymmetric_bird_landmark_base',
     'asymmetric_four_leg_landmark_base',
     'asymmetric_insect_landmark_base',
+    'asymmetric_fish_landmark_base',
     'symmetric_fish_base',
     'symmetric_ear_base',
     'symmetric_horn_base',

@@ -3618,6 +3618,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn orthogonal_dense_rank_four_horizontal_axis_previews_and_applies() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (pattern, paper, horizontal, _) =
+            super::dense_grid_cycle_test_support::orthogonal_dense_cycle_pattern(3, 3);
+        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        let hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        let fixed = snapshot.faces[0].id;
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            fixed,
+        );
+        let request = CurrentCyclePosePreviewRequestV1 {
+            progress_request_id: None,
+            expected_project_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: project.editor.revision(),
+            cycle_schedule_v1: dense_grid_schedule(&hinges, &horizontal, 4),
+        };
+        let state = AppState::new(project);
+        let transactions =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let preview = propose_current_cycle_pose_inner(None, &state, &transactions, request)
+            .expect("orthogonal horizontal dense preview");
+        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            &state,
+            &GlobalFlatFoldabilityState::default(),
+            &transactions,
+            preview.transaction_token,
+        )
+        .expect("orthogonal horizontal dense apply");
+        let mut project = super::super::lock_project(&state).unwrap();
+        project.editor.undo(applied).unwrap();
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
+    }
+
     fn four_bay_cycle_schedule(hinges: &[ori_domain::EdgeId]) -> CycleScheduleRequestV1 {
         let triples = [
             (3, 5),

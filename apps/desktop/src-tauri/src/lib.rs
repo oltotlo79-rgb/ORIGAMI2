@@ -3601,11 +3601,16 @@ fn apply_grid_plan_document(
         ),
         _ => return Err("grid_candidate_kind_invalid".to_owned()),
     };
+    let authority_hex = topology_witness
+        .topology_authority_hash
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     instruction_timeline.steps.push(InstructionStep {
         id: InstructionStepId::new(),
         title: title.to_owned(),
         description: description.to_owned(),
-        caution: caution.to_owned(),
+        caution: format!("{caution} Topology authority SHA-256: {authority_hex}."),
         duration_ms: 2_000,
         visual: InstructionVisual::default(),
         pose: InstructionPose {
@@ -12377,6 +12382,14 @@ mod tests {
         assert_eq!(
             reopened.editor.beginner_design_profile(),
             &saved.beginner_design_profile
+        );
+        assert!(
+            reopened
+                .editor
+                .instruction_timeline()
+                .steps
+                .last()
+                .is_some_and(|step| step.caution.contains("Topology authority SHA-256:"))
         );
     }
 

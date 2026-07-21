@@ -95,3 +95,17 @@ pub fn orthogonal_dense_cycle_pattern(
         vertical,
     )
 }
+
+#[allow(dead_code)]
+pub fn oblique_dense_cycle_pattern(
+    columns: usize,
+    rows: usize,
+) -> (CreasePattern, Paper, Vec<EdgeId>, Vec<EdgeId>) {
+    let (mut pattern, paper, horizontal, vertical) = orthogonal_dense_cycle_pattern(columns, rows);
+    for vertex in &mut pattern.vertices {
+        let x = vertex.position.x;
+        let y = vertex.position.y;
+        vertex.position = Point2::new(x + y * 0.5, y * 3.0_f64.sqrt() * 0.5);
+    }
+    (pattern, paper, horizontal, vertical)
+}

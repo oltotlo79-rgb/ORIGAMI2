@@ -25,6 +25,7 @@ mod cell_order_transport;
 mod certified_path_graph;
 mod continuous_layer_transport;
 mod continuous_path;
+mod exact_dyadic_intersection;
 mod flat_endpoint_layer_order;
 mod general_cell_transport;
 mod graph_positive_thickness;
@@ -81,6 +82,11 @@ pub use continuous_path::{
     diagnose_collective_cycle_path_v1, diagnose_collective_hinge_path_v1,
     diagnose_scheduled_cycle_path_v1, diagnose_scheduled_positive_thickness_cycle_path_v1,
     enumerate_uniform_cycle_closure_roots_v1, supports_scheduled_positive_thickness_path_v1,
+};
+pub use exact_dyadic_intersection::{
+    DyadicPointV1, DyadicSegmentV1, ExactDyadicIntersectionErrorV1,
+    ExactDyadicIntersectionLimitsV1, ExactSegmentRelationV1,
+    classify_exact_dyadic_segment_intersection_v1,
 };
 pub use flat_endpoint_layer_order::{
     FLAT_ENDPOINT_LAYER_ORDER_ANCHOR_MODEL_ID_V1, FlatEndpointCellKeyV1, FlatEndpointLayerCellV1,

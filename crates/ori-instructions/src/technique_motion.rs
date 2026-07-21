@@ -245,8 +245,8 @@ fn compile_two_segment_motion(
         return Err(ReverseFoldMotionError::PathSegmentMismatch);
     }
     let certificate_references = [
-        path_certificate_reference_v1(first),
-        path_certificate_reference_v1(second),
+        path_certificate_reference_v1(first, model),
+        path_certificate_reference_v1(second, model),
     ];
     let steps = [("開始", source), ("沈め", middle), ("完了", target)]
         .into_iter()
@@ -413,7 +413,9 @@ pub fn compile_certified_accordion_fold_timeline_v1(
     let certificate_references = request
         .ordered_path_certificates
         .iter()
-        .map(path_certificate_reference_v1)
+        .map(|certificate| {
+            path_certificate_reference_v1(certificate, request.source_model_fingerprint)
+        })
         .collect::<Vec<_>>();
     let steps = poses
         .into_iter()
@@ -544,8 +546,8 @@ pub fn compile_certified_reverse_fold_timeline_v1(
         fixed_face: Some(request.fixed_face),
         hinge_angles,
     };
-    let first_reference = path_certificate_reference_v1(first);
-    let second_reference = path_certificate_reference_v1(second);
+    let first_reference = path_certificate_reference_v1(first, request.source_model_fingerprint);
+    let second_reference = path_certificate_reference_v1(second, request.source_model_fingerprint);
     let step = |suffix: &str, description: &str, angles| InstructionStep {
         id: InstructionStepId::new(),
         title: format!("{title}：{suffix}"),
@@ -592,12 +594,16 @@ fn set_hinge_angle(angles: &mut Vec<InstructionHingeAngle>, edge: EdgeId, microd
     }
 }
 
-fn path_certificate_reference_v1(certificate: &CertifiedPoseGraphPathCertificateV1) -> String {
-    certificate
+fn path_certificate_reference_v1(
+    certificate: &CertifiedPoseGraphPathCertificateV1,
+    source_model_fingerprint: &str,
+) -> String {
+    let certificate = certificate
         .binding_fingerprint_v1()
         .into_iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect()
+        .collect::<String>();
+    format!("{certificate} / 元モデル SHA-256: {source_model_fingerprint}")
 }
 
 /// Compiles a validated named straight-line fold into a two-pose timeline.
@@ -708,7 +714,8 @@ pub fn compile_certified_book_fold_timeline_v1(
         fixed_face: Some(request.fixed_face),
         hinge_angles,
     };
-    let certificate_reference = path_certificate_reference_v1(request.path_certificate);
+    let certificate_reference =
+        path_certificate_reference_v1(request.path_certificate, request.source_model_fingerprint);
     let timeline = InstructionTimeline {
         steps: vec![
             InstructionStep {
@@ -946,12 +953,12 @@ mod tests {
         assert!(
             timeline.steps[1]
                 .description
-                .contains(&path_certificate_reference_v1(&first))
+                .contains(&path_certificate_reference_v1(&first, &model))
         );
         assert!(
             timeline.steps[2]
                 .description
-                .contains(&path_certificate_reference_v1(&second))
+                .contains(&path_certificate_reference_v1(&second, &model))
         );
     }
 
@@ -1036,7 +1043,7 @@ mod tests {
             assert!(
                 timeline.steps[index + 1]
                     .description
-                    .contains(&path_certificate_reference_v1(certificate))
+                    .contains(&path_certificate_reference_v1(certificate, &model))
             );
         }
     }
@@ -1120,12 +1127,12 @@ mod tests {
             assert!(
                 timeline.steps[1]
                     .description
-                    .contains(&path_certificate_reference_v1(&first))
+                    .contains(&path_certificate_reference_v1(&first, &model))
             );
             assert!(
                 timeline.steps[2]
                     .description
-                    .contains(&path_certificate_reference_v1(&second))
+                    .contains(&path_certificate_reference_v1(&second, &model))
             );
         }
     }

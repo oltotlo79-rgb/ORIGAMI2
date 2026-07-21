@@ -20,6 +20,7 @@ pub const INSTRUCTION_EXPORT_PROFILE: &str = "instruction_export_v1";
 pub const INSTRUCTION_PROJECTION_PROFILE: &str = "orthographic_isometric_v1";
 const UNTITLED_INSTRUCTION_TITLE: &str = "無題";
 const PATH_CERTIFICATE_REFERENCE_LABEL: &str = "経路証明 SHA-256: ";
+const SOURCE_MODEL_REFERENCE_LABEL: &str = " / 元モデル SHA-256: ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InstructionExportWarning {
@@ -367,7 +368,22 @@ fn validate_path_certificate_references(
                     || !value.as_bytes()[..64]
                         .iter()
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
-                    || value
+                {
+                    return Err(InstructionExportError::InvalidPathCertificateReference {
+                        step_index,
+                    });
+                }
+                let model_value = value[64..]
+                    .strip_prefix(SOURCE_MODEL_REFERENCE_LABEL)
+                    .ok_or(InstructionExportError::InvalidPathCertificateReference {
+                        step_index,
+                    })?;
+                if model_value.len() < 64
+                    || !model_value.as_bytes()[..64]
+                        .iter()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+                    || model_value[..64] != step.pose.source_model_fingerprint
+                    || model_value
                         .as_bytes()
                         .get(64)
                         .is_some_and(|byte| !byte.is_ascii_whitespace())
@@ -376,7 +392,7 @@ fn validate_path_certificate_references(
                         step_index,
                     });
                 }
-                remainder = &value[64..];
+                remainder = &model_value[64..];
             }
         }
     }
@@ -787,7 +803,7 @@ mod tests {
         let timeline = timeline(
             &fixture,
             format!(
-                "衝突・閉包証明に結合された区間です。経路証明 SHA-256: {certificate_reference}"
+                "衝突・閉包証明に結合された区間です。経路証明 SHA-256: {certificate_reference} / 元モデル SHA-256: {FINGERPRINT}"
             ),
         );
         let (plan, font) = build_canonical_instruction_plan(
@@ -846,8 +862,30 @@ mod tests {
             Err(InstructionExportError::InvalidPathCertificateReference { step_index: 0 })
         ));
 
+        let mut mismatched_model_reference = timeline.clone();
+        mismatched_model_reference.steps[0].description = format!(
+            "経路証明 SHA-256: {certificate_reference} / 元モデル SHA-256: {}",
+            "b".repeat(64)
+        );
+        assert!(matches!(
+            export_instruction_document(
+                InstructionExportFormat::Pdf17,
+                "証明付き手順",
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &mismatched_model_reference,
+                &fixture.topology,
+            ),
+            Err(InstructionExportError::InvalidPathCertificateReference { step_index: 0 })
+        ));
+
         let mut foreign_model = timeline;
         foreign_model.steps[0].pose.source_model_fingerprint = "b".repeat(64);
+        foreign_model.steps[0].description = format!(
+            "経路証明 SHA-256: {certificate_reference} / 元モデル SHA-256: {}",
+            "b".repeat(64)
+        );
         assert!(matches!(
             export_instruction_document(
                 InstructionExportFormat::SvgPageZip,

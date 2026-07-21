@@ -9,6 +9,7 @@ const dialogSource = read('../src/components/InstructionExportDialog.tsx')
 const nativeSource = read('../src-tauri/src/lib.rs')
 const nativeExportSource = read('../src-tauri/src/instruction_export.rs')
 const layoutSource = read('../../../crates/ori-formats/src/instruction_export/layout.rs')
+const exportModelSource = read('../src/lib/instructionExport.ts')
 
 test('the current authored timeline opens one background-blocking instruction export flow', () => {
   assert.match(appSource, /\|\| instructionExportOpen/u)
@@ -70,6 +71,26 @@ test('save remains bound to one project revision and requires warning acknowledg
   assert.match(dialogSource, /\(busy && !generationActive\)/u)
   assert.match(dialogSource, /生成を中止/u)
   assert.match(dialogSource, /aria-modal="true"/u)
+})
+
+test('proof-bearing browser requests keep strict native errors closed through the dialog', () => {
+  assert.match(
+    clientSource,
+    /preview_instruction_export[\s\S]*exportId,[\s\S]*expectedProjectId,[\s\S]*expectedRevision,[\s\S]*format/u,
+  )
+  assert.match(
+    nativeExportSource,
+    /InvalidPathCertificateReference \{ \.\. \}[\s\S]*DocumentInputInvalid/u,
+  )
+  assert.match(
+    nativeExportSource,
+    /StaleStep \{ \.\. \}[\s\S]*TimelineStale/u,
+  )
+  assert.match(exportModelSource, /document_input_invalid:[\s\S]*折り図に含められない/u)
+  assert.match(exportModelSource, /timeline_stale:[\s\S]*現在の展開図より古い/u)
+  assert.match(exportModelSource, /project_changed:[\s\S]*編集内容が変わ/u)
+  assert.match(appSource, /error=\{instructionExportError\}/u)
+  assert.match(dialogSource, /role="alert"/u)
 })
 
 function read(relativePath: string) {

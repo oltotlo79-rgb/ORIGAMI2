@@ -21,6 +21,16 @@ test('the desktop CSP permits only the fixed GitHub API update authority', async
     'http://ipc.localhost',
     'https://api.github.com',
   ])
+  assert.deepEqual(directives.get('default-src'), ["'self'"])
+  assert.deepEqual(directives.get('script-src'), ["'self'"])
+  assert.deepEqual(directives.get('object-src'), ["'none'"])
+  assert.deepEqual(directives.get('base-uri'), ["'none'"])
+  assert.deepEqual(directives.get('frame-ancestors'), ["'none'"])
+  assert.equal(config.app.security.csp.includes("'unsafe-eval'"), false)
+  assert.equal(config.app.security.csp.includes('localhost'), true)
+  assert.equal(config.app.security.csp.includes('http://localhost'), false)
+  assert.equal(config.app.security.csp.includes('ws://'), false)
+  assert.equal(config.app.security.csp.includes('wss://'), false)
   assert.equal(config.app.security.csp.includes('*.github.com'), false)
   assert.equal(config.app.security.csp.includes('https://github.com'), false)
   assert.equal(config.app.security.csp.includes('http://api.github.com'), false)
@@ -56,6 +66,9 @@ test('production update authority cannot be widened by origin credentials DNS al
   assert.match(viteConfig, /strictPort: true/u)
   assert.doesNotMatch(viteConfig, /proxy\s*:/u)
   assert.doesNotMatch(viteConfig, /changeOrigin|rewrite|api\.github\.com/iu)
+  const serializedTauriConfig = JSON.stringify(tauriConfig)
+  assert.doesNotMatch(serializedTauriConfig, /"devtools"\s*:\s*true/iu)
+  assert.doesNotMatch(serializedTauriConfig, /dangerousDisableAssetCspModification/iu)
 })
 
 function parseCsp(value: string): Map<string, string[]> {

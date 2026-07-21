@@ -741,6 +741,7 @@ export type BeginnerGeneratedPlanAssessmentV1 = {
   shape_difference_reason: 'crease_preview_has_no_surface_mesh' | 'certified_flat_surface_v1' | null
   reason:
     | 'geometry_invalid'
+    | 'folded_pose_simulation_failed'
     | 'necessary_conditions_satisfied'
     | 'necessary_conditions_violated'
     | 'local_analysis_blocked'
@@ -972,14 +973,14 @@ function normalizeBeginnerCandidateResponse(
       || ((record.shape_approximation_score === null)
         !== (record.shape_difference_reason === null))
       || ![
-        'geometry_invalid', 'necessary_conditions_satisfied',
+        'geometry_invalid', 'folded_pose_simulation_failed', 'necessary_conditions_satisfied',
         'necessary_conditions_violated', 'local_analysis_blocked',
         'local_theorem_not_applicable', 'local_analysis_indeterminate',
         'global_flat_foldability_proven', 'global_flat_foldability_impossible',
         'global_resource_limit', 'global_timeout', 'global_indeterminate',
       ].includes(String(record.reason))
       || (record.apply_allowed === false
-        && !['geometry_invalid', 'necessary_conditions_violated', 'local_analysis_blocked',
+        && !['geometry_invalid', 'folded_pose_simulation_failed', 'necessary_conditions_violated', 'local_analysis_blocked',
           'global_flat_foldability_impossible']
           .includes(String(record.reason)))
       || (record.proof_scope === 'indeterminate' && record.apply_allowed !== true)
@@ -1917,7 +1918,7 @@ export async function evaluateBeginnerParameterGrid(
     || !Array.isArray(response.grid_hash)
     || response.grid_hash.length !== 32
     || response.grid_hash.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
-    || !Array.isArray(response.candidates) || response.candidates.length !== 3) {
+    || !Array.isArray(response.candidates) || response.candidates.length < 1 || response.candidates.length > 3) {
     throw new Error('invalid beginner parameter grid response')
   }
   const rawCandidates = response.candidates.map((value) => exactCoreDataRecord(

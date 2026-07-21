@@ -1740,6 +1740,19 @@ fn assess_beginner_generated_plan_with_deadline(
         .first()
         .map(|edge| edge.id)
         .unwrap_or_else(EdgeId::new);
+    if reference
+        .is_some_and(|reference| bounded_folded_pose_landmark_score_v1(plan, reference).is_none())
+    {
+        return BeginnerGeneratedPlanAssessment {
+            kind: plan.kind,
+            expected_candidate_edge_id,
+            proof_scope: "indeterminate",
+            apply_allowed: false,
+            reason: "folded_pose_simulation_failed",
+            shape_approximation_score,
+            shape_difference_reason: Some("bounded_folded_pose_landmarks_v1"),
+        };
+    }
     let mut candidate_pattern = current_pattern.clone();
     for vertex in &plan.crease_pattern.vertices {
         if let Some(current) = candidate_pattern
@@ -3086,7 +3099,7 @@ fn evaluate_beginner_parameter_grid(
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(750);
     let reference = live_reference_model_suggestion_v1(&project).ok();
-    let candidates = primary
+    let mut candidates = primary
         .into_iter()
         .map(|(primary_score, point, plan)| {
             if work.cancelled.load(Ordering::Acquire) {
@@ -3158,6 +3171,11 @@ fn evaluate_beginner_parameter_grid(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    candidates.retain(|candidate| candidate.assessment.reason != "folded_pose_simulation_failed");
+    if candidates.is_empty() {
+        work.terminal.store(3, Ordering::Release);
+        return Err("grid_folded_simulation_unavailable".to_owned());
+    }
     work.terminal.store(1, Ordering::Release);
     Ok(BeginnerGridEvaluationResponse {
         request_generation_id,

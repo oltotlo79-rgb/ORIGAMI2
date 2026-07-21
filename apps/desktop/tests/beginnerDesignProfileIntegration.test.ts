@@ -187,6 +187,15 @@ test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticit
   assert.match(app, /3D bulge targets/u)
   assert.match(app, /selectedFaceId/u)
   assert.match(app, /Elasticity is not computed/u)
+  assert.match(generation, /BeginnerReferenceSurfaceBindingV1/u)
+  assert.match(generation, /range_digest_sha256: \[u8; 32\]/u)
+  assert.match(native, /bulge_direction_milli != \[0, 0, 0\]/u)
+  assert.match(native, /reference_surface_binding: Some/u)
+  assert.match(native, /range_digest_sha256: edit\.base_digest_sha256/u)
+  assert.match(client, /reference_surface_binding/u)
+  assert.match(client, /bulge_amount_tenths_mm/u)
+  assert.match(app, /Bulge direction \$\{axis\}/u)
+  assert.match(app, /Bulge amount \(mm\)/u)
 })
 
 test('symmetric parameter estimates are bounded, stale-safe, and explicitly saved', () => {

@@ -1792,7 +1792,18 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
         .sum::<usize>();
     let contour_bonus =
         u8::try_from(body_detail.saturating_add(local_detail).min(15)).unwrap_or(15);
-    base.saturating_add(contour_bonus).min(100)
+    let surface_bulge_bonus = u8::try_from(
+        constraints
+            .bulge_targets
+            .iter()
+            .filter(|target| target.reference_surface_binding.is_some())
+            .count()
+            .min(5),
+    )
+    .unwrap_or(5);
+    base.saturating_add(contour_bonus)
+        .saturating_add(surface_bulge_bonus)
+        .min(100)
 }
 
 fn has_bilateral_protrusion_count(

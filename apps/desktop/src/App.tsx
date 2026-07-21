@@ -785,6 +785,8 @@ function App() {
     range_id: number
     base_digest_sha256: readonly number[]
     triangle_indices: number[]
+    bulge_direction_milli: [number, number, number]
+    bulge_amount_tenths_mm: number
   }>>([])
   const beginnerReferenceRequestRef = useRef(0)
   const beginnerDesignFormRef = useRef<HTMLFormElement>(null)
@@ -3821,6 +3823,7 @@ function App() {
         setBeginnerSurfaceEdits(suggestion.surface_ranges.map((range) => ({
           range_id: range.id, base_digest_sha256: range.digest_sha256,
           triangle_indices: [...range.triangle_indices],
+          bulge_direction_milli: [0, 0, 1000], bulge_amount_tenths_mm: 50,
         })))
       }
     })
@@ -8591,8 +8594,9 @@ function App() {
                             {beginnerReferenceSuggestion.surface_ranges.map((range, index) => {
                               const target = beginnerReferenceSuggestion.protrusions[index]
                               if (!target) return null
-                              return <label key={range.id}>
+                              return <div key={range.id}>
                                 <input type="checkbox"
+                                  aria-label={`Assign surface range ${range.id} to part ${target.id}`}
                                   checked={beginnerSurfaceAssignments.some(
                                     (item) => item.range_id === range.id)}
                                   onChange={(event) => setBeginnerSurfaceAssignments((current) => {
@@ -8631,7 +8635,27 @@ function App() {
                                         ? { ...edit, triangle_indices: [...new Set(indices)] }
                                         : edit))
                                   }} />
-                              </label>
+                                {(['X', 'Y', 'Z'] as const).map((axis, axisIndex) => <label key={axis}>
+                                  <span>{`Bulge direction ${axis}`}</span>
+                                  <input type="number" min="-1" max="1" step="0.001"
+                                    value={(beginnerSurfaceEdits.find(
+                                      (edit) => edit.range_id === range.id)?.bulge_direction_milli[axisIndex] ?? 0) / 1000}
+                                    onChange={(event) => setBeginnerSurfaceEdits((current) => current.map((edit) => {
+                                      if (edit.range_id !== range.id) return edit
+                                      const direction = [...edit.bulge_direction_milli] as [number, number, number]
+                                      direction[axisIndex] = Math.round(Number(event.currentTarget.value) * 1000)
+                                      return { ...edit, bulge_direction_milli: direction }
+                                    }))} />
+                                </label>)}
+                                <label><span>{text({ ja: '膨らみ量 (mm)', en: 'Bulge amount (mm)' })}</span>
+                                  <input type="number" min="0.1" max="100000" step="0.1"
+                                    value={(beginnerSurfaceEdits.find(
+                                      (edit) => edit.range_id === range.id)?.bulge_amount_tenths_mm ?? 1) / 10}
+                                    onChange={(event) => setBeginnerSurfaceEdits((current) => current.map((edit) =>
+                                      edit.range_id === range.id ? { ...edit,
+                                        bulge_amount_tenths_mm: Math.round(Number(event.currentTarget.value) * 10) } : edit))} />
+                                </label>
+                              </div>
                             })}
                             <p>{text({
                               ja: 'GLBから測定された範囲だけを表示します。重複・未確認・改ざんされた範囲はネイティブ側で拒否されます。',

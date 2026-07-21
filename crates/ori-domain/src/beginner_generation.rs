@@ -145,6 +145,18 @@ pub struct BeginnerBulgeTargetV1 {
     pub direction_milli: [i16; 3],
     pub amount_tenths_mm: u32,
     pub source_fold_model_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_surface_binding: Option<BeginnerReferenceSurfaceBindingV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerReferenceSurfaceBindingV1 {
+    pub asset_id: AssetId,
+    pub range_id: u16,
+    pub protrusion_id: u16,
+    pub triangle_indices: Vec<u32>,
+    pub range_digest_sha256: [u8; 32],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,6 +350,21 @@ pub fn validate_beginner_generation_constraints_v1(
                     .source_fold_model_fingerprint
                     .bytes()
                     .all(|byte| byte.is_ascii_hexdigit())
+                && target
+                    .reference_surface_binding
+                    .as_ref()
+                    .is_none_or(|binding| {
+                        binding.range_id > 0
+                            && binding.protrusion_id > 0
+                            && !binding.triangle_indices.is_empty()
+                            && binding.triangle_indices.len() <= 40_000
+                            && binding
+                                .triangle_indices
+                                .iter()
+                                .collect::<HashSet<_>>()
+                                .len()
+                                == binding.triangle_indices.len()
+                    })
                 && bulge_ids.insert(target.id)
         })
 }
@@ -654,6 +681,7 @@ mod tests {
             direction_milli: [0, 0, 1000],
             amount_tenths_mm: 50,
             source_fold_model_fingerprint: "a".repeat(64),
+            reference_surface_binding: None,
         };
         let mut constraints = BeginnerGenerationConstraintsV1::default();
         constraints.bulge_targets.push(target);

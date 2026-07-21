@@ -258,6 +258,13 @@ export type BeginnerGenerationConstraintsV1 = {
     direction_milli: [number, number, number]
     amount_tenths_mm: number
     source_fold_model_fingerprint: string
+    reference_surface_binding?: {
+      asset_id: string
+      range_id: number
+      protrusion_id: number
+      triangle_indices: number[]
+      range_digest_sha256: number[]
+    }
   }>
   target_asset: {
     kind: 'reference_image'
@@ -548,6 +555,7 @@ function normalizeBeginnerGenerationConstraints(
     const item = exactCoreDataRecord(value, [
       'id', 'face_ids', 'range_min_tenths_mm', 'range_max_tenths_mm',
       'direction_milli', 'amount_tenths_mm', 'source_fold_model_fingerprint',
+      'reference_surface_binding',
     ] as const)
     if (!item || !Number.isInteger(item.id) || Number(item.id) < 0 || bulgeIds.has(Number(item.id))
       || !Array.isArray(item.face_ids) || item.face_ids.length < 1 || item.face_ids.length > 32
@@ -560,6 +568,19 @@ function normalizeBeginnerGenerationConstraints(
       || Number(item.amount_tenths_mm) > 1_000_000
       || typeof item.source_fold_model_fingerprint !== 'string'
       || !/^[0-9a-f]{64}$/u.test(item.source_fold_model_fingerprint)) return null
+    const surface = item.reference_surface_binding === undefined ? null
+      : exactCoreDataRecord(item.reference_surface_binding, [
+          'asset_id', 'range_id', 'protrusion_id', 'triangle_indices', 'range_digest_sha256',
+        ] as const)
+    if (item.reference_surface_binding !== undefined && (!surface
+      || !isCanonicalNonNilUuid(surface.asset_id)
+      || !Number.isInteger(surface.range_id) || Number(surface.range_id) < 1
+      || !Number.isInteger(surface.protrusion_id) || Number(surface.protrusion_id) < 1
+      || !Array.isArray(surface.triangle_indices) || surface.triangle_indices.length < 1
+      || surface.triangle_indices.length > 40_000
+      || surface.triangle_indices.some((triangle) => !Number.isInteger(triangle) || triangle < 0)
+      || new Set(surface.triangle_indices).size !== surface.triangle_indices.length
+      || !isBoundedIntegerTuple(surface.range_digest_sha256, 32, 255))) return null
     const minimum = item.range_min_tenths_mm
     const maximum = item.range_max_tenths_mm
     const direction = item.direction_milli
@@ -567,7 +588,8 @@ function normalizeBeginnerGenerationConstraints(
       || minimum.every((value, index) => value === maximum[index])
       || direction.every((axis) => axis === 0)) return null
     bulgeIds.add(Number(item.id))
-    return { ...item } as NonNullable<BeginnerGenerationConstraintsV1['bulge_targets']>[number]
+    return { ...item, ...(surface === null ? {} : { reference_surface_binding: { ...surface } })
+    } as NonNullable<BeginnerGenerationConstraintsV1['bulge_targets']>[number]
   })
   if (bulgeTargets.some((target) => target === null)) return null
   let targetAsset: BeginnerGenerationConstraintsV1['target_asset'] = null
@@ -1993,6 +2015,7 @@ export function applyBeginnerReferenceModelFeatures(
   surfaceAssignments: readonly Readonly<{ range_id: number, protrusion_id: number }>[],
   surfaceEdits: readonly Readonly<{
     range_id: number, base_digest_sha256: readonly number[], triangle_indices: readonly number[]
+    bulge_direction_milli: readonly [number, number, number], bulge_amount_tenths_mm: number
   }>[],
 ) {
   if (surfaceAssignments.length < 2 || surfaceAssignments.length > 8
@@ -2009,7 +2032,11 @@ export function applyBeginnerReferenceModelFeatures(
       || item.base_digest_sha256.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
       || item.triangle_indices.length < 1 || item.triangle_indices.length > 40_000
       || new Set(item.triangle_indices).size !== item.triangle_indices.length
-      || item.triangle_indices.some((triangle) => !Number.isInteger(triangle) || triangle < 0))) {
+      || item.triangle_indices.some((triangle) => !Number.isInteger(triangle) || triangle < 0)
+      || !isBoundedIntegerTuple(item.bulge_direction_milli, 3, 1_000)
+      || item.bulge_direction_milli.every((axis) => axis === 0)
+      || !Number.isInteger(item.bulge_amount_tenths_mm)
+      || item.bulge_amount_tenths_mm < 1 || item.bulge_amount_tenths_mm > 1_000_000)) {
     return Promise.reject(new Error('invalid reference model surface edit'))
   }
   return invoke<ProjectSnapshot>('apply_beginner_reference_model_features', {
@@ -2017,6 +2044,7 @@ export function applyBeginnerReferenceModelFeatures(
     expectedSuggestion, surfaceAssignments: surfaceAssignments.map((item) => ({ ...item })),
     surfaceEdits: surfaceEdits.map((item) => ({ ...item,
       base_digest_sha256: [...item.base_digest_sha256], triangle_indices: [...item.triangle_indices],
+      bulge_direction_milli: [...item.bulge_direction_milli],
     })), confirmed: true,
   })
 }

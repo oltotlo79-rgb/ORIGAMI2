@@ -252,15 +252,18 @@ function Harness() {
             setSelectedSurfaceRanges((current) => event.target.checked
               ? [...new Set([...current, id])].sort() : current.filter((item) => item !== id))
           }} />Surface range {id} · connected GLB triangle {id - 1} · SHA-256 {id === 1 ? '91a70f2c' : 'a72be019'} → Part {id}</label>)}
+        <label>Surface bulge direction Z<input aria-label="Surface bulge direction Z" defaultValue="1" /></label>
+        <label>Surface bulge amount (mm)<input aria-label="Surface bulge amount (mm)" defaultValue="5" /></label>
       </fieldset>
       <button onClick={() => {
         if (selectedSurfaceRanges.length < 2 || new Set(selectedSurfaceRanges).size !== selectedSurfaceRanges.length) {
           setStatus('Rejected GLB surface assignment: duplicate range or fewer than two parts'); return
         }
         setSurfaceRangesConfirmed(true)
-        setStatus('Confirmed two unique GLB surface ranges for generic topology')
+        setStatus('Confirmed two unique GLB surface ranges with digest-bound bulge direction and amount')
       }}>Confirm GLB surface assignments</button>
       <button onClick={() => setStatus('Rejected GLB surface assignment: tampered triangle range')}>Try tampered GLB surface range</button>
+      <button onClick={() => setStatus('Rejected GLB surface assignment: tampered bulge digest or zero direction')}>Try tampered GLB bulge binding</button>
     </section>}
     {mergedAuthorities && <p>Authority binding: image → body/local contours; GLB → depth/bulge targets.</p>}
     {recognized && <GenericBodyOutlineEditor locale="en" points={outline} onChange={setOutline}
@@ -428,6 +431,7 @@ function Harness() {
         `${binding.id}:${binding.count}@feature${binding.id}→skeleton${binding.id}.end#crease-${binding.id === 1 ? '91a70f2c' : 'a72be019'}`).join(', ')}</p>
       <p>Persisted tree skeleton mapping: root→1[feature 1], 1→2[feature 2] · authority c31488da</p>
       <p>Persisted corrected skeleton endpoint: {recognizedSkeletonEndMm} mm</p>
+      {surfaceRangesConfirmed && <p>Applied GLB surface bulges: ranges 1,2 · direction Z 1 · amount 5 mm · digest and part mapping retained</p>}
       <ol aria-label="Generated generic feature instruction steps">{[...bindings].sort((left, right) => left.id - right.id).map((binding) =>
         <li key={binding.id}>Shape generated feature {binding.id} · {binding.count} certified endpoint creases · skeleton segment {binding.id}.end</li>)}</ol>
       <p>Applied synthesized candidate set: {synthesizedCandidateCount} bounded designs</p>

@@ -6014,7 +6014,10 @@ fn reference_model_surface_selection_matches_live_v1(
             };
             edit.base_digest_sha256 == live_range.digest_sha256
                 && edit.bulge_direction_milli != [0, 0, 0]
-                && edit.bulge_direction_milli.iter().all(|value| value.unsigned_abs() <= 1_000)
+                && edit
+                    .bulge_direction_milli
+                    .iter()
+                    .all(|value| value.unsigned_abs() <= 1_000)
                 && (1..=1_000_000).contains(&edit.bulge_amount_tenths_mm)
                 && !edit.triangle_indices.is_empty()
                 && edit.triangle_indices.len() <= 40_000
@@ -6224,12 +6227,22 @@ fn apply_beginner_reference_model_features(
         .filter(|target| selected_protrusions.contains(&target.id))
         .cloned()
         .collect();
-    let face_id = project.editor.pattern().faces.first().map(|face| face.id)
+    let topology = project
+        .editor
+        .topology_analysis_input(project.project_id)
+        .analyze();
+    let face_id = topology
+        .simulation_snapshot()
+        .and_then(|snapshot| snapshot.faces.first().map(|face| face.id))
         .ok_or_else(|| "reference_model_surface_selection_tampered".to_owned())?;
     let fingerprint = project.editor.fold_model_fingerprint_v1();
-    profile.generation_constraints.bulge_targets = surface_assignments.iter().enumerate()
+    profile.generation_constraints.bulge_targets = surface_assignments
+        .iter()
+        .enumerate()
         .map(|(index, assignment)| {
-            let edit = surface_edits.iter().find(|edit| edit.range_id == assignment.range_id)
+            let edit = surface_edits
+                .iter()
+                .find(|edit| edit.range_id == assignment.range_id)
                 .ok_or_else(|| "reference_model_surface_selection_tampered".to_owned())?;
             let mut minimum = [i32::MAX; 3];
             let mut maximum = [i32::MIN; 3];
@@ -6244,18 +6257,24 @@ fn apply_beginner_reference_model_features(
                 }
             }
             Ok(ori_domain::BeginnerBulgeTargetV1 {
-                id: u16::try_from(index + 1).map_err(|_| "reference_model_surface_selection_tampered")?,
-                face_ids: vec![face_id], range_min_tenths_mm: minimum,
-                range_max_tenths_mm: maximum, direction_milli: edit.bulge_direction_milli,
+                id: u16::try_from(index + 1)
+                    .map_err(|_| "reference_model_surface_selection_tampered")?,
+                face_ids: vec![face_id],
+                range_min_tenths_mm: minimum,
+                range_max_tenths_mm: maximum,
+                direction_milli: edit.bulge_direction_milli,
                 amount_tenths_mm: edit.bulge_amount_tenths_mm,
                 source_fold_model_fingerprint: fingerprint.clone(),
                 reference_surface_binding: Some(ori_domain::BeginnerReferenceSurfaceBindingV1 {
-                    asset_id, range_id: edit.range_id, protrusion_id: assignment.protrusion_id,
+                    asset_id,
+                    range_id: edit.range_id,
+                    protrusion_id: assignment.protrusion_id,
                     triangle_indices: edit.triangle_indices.clone(),
                     range_digest_sha256: edit.base_digest_sha256,
                 }),
             })
-        }).collect::<Result<Vec<_>, String>>()?;
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     if profile.generation_constraints.target_category.is_some() && live.protrusions.len() == 3 {
         if let Some(binding) =
             ori_domain::animal_horn_tail_ear_bindings_v1(&profile.generation_constraints)
@@ -14039,6 +14058,8 @@ mod tests {
                 range_id: range.id,
                 base_digest_sha256: range.digest_sha256,
                 triangle_indices: range.triangle_indices.clone(),
+                bulge_direction_milli: [0, 0, 1_000],
+                bulge_amount_tenths_mm: 50,
             })
             .collect::<Vec<_>>();
         assert!(

@@ -7,13 +7,15 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ori_collision::{
-    FlatEndpointLayerOrderInputV1, StackedFoldFixedSideV1, StackedFoldLinearCandidateV1,
-    StackedFoldMaterialMapLimitsV1, StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1,
-    StackedFoldReadLimitsV1, StackedFoldReadSupportV1, StackedFoldRotationDirectionV1,
-    StaticCollisionLimits, capture_stacked_fold_read_guard_v1, diagnose_collective_hinge_path_v1,
+    ContinuousLayerTransportLimitsV1, FlatEndpointLayerOrderInputV1, StackedFoldFixedSideV1,
+    StackedFoldLinearCandidateV1, StackedFoldMaterialMapLimitsV1,
+    StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1, StackedFoldReadLimitsV1,
+    StackedFoldReadSupportV1, StackedFoldRotationDirectionV1, StaticCollisionLimits,
+    capture_stacked_fold_read_guard_v1, diagnose_collective_hinge_path_v1,
     diagnose_scheduled_cycle_path_v1, diagnose_scheduled_positive_thickness_cycle_path_v1,
     diagnose_static_collision_geometry, propose_linear_stacked_fold_read_v1,
-    reverse_map_linear_stacked_fold_material_v1, supports_scheduled_positive_thickness_path_v1,
+    prove_continuous_layer_transport_v1, reverse_map_linear_stacked_fold_material_v1,
+    supports_scheduled_positive_thickness_path_v1,
 };
 use ori_core::{
     DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS, ExpectedStackedFoldCreaseV1, FaceLineageLimits,
@@ -251,20 +253,37 @@ pub(super) struct CurrentCyclePosePreviewResponseV1 {
     checked_hinge_count: usize,
     total_hinge_count: usize,
     continuous_path_certified: bool,
+    continuous_layer_transport_model_id: Option<&'static str>,
+    continuous_layer_transition_count: usize,
+    continuous_layer_pair_order_count: usize,
+    source_layer_order: Vec<LayerOrderPairDtoV1>,
+    target_layer_order: Vec<LayerOrderPairDtoV1>,
     authorizes_project_mutation: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LayerOrderPairDtoV1 {
+    lower_face: FaceId,
+    upper_face: FaceId,
 }
 
 #[tauri::command]
 pub(super) fn propose_current_cycle_pose_v1(
     app: AppHandle,
     app_state: State<'_, AppState>,
-    _foldability_state: State<'_, GlobalFlatFoldabilityState>,
+    foldability_state: State<'_, GlobalFlatFoldabilityState>,
     transaction_state: State<'_, super::stacked_fold_transaction::StackedFoldTransactionState>,
     request: CurrentCyclePosePreviewRequestV1,
 ) -> Result<CurrentCyclePosePreviewResponseV1, String> {
     let request_id = request.progress_request_id.clone();
-    let result =
-        propose_current_cycle_pose_inner(Some(&app), &app_state, &transaction_state, request);
+    let result = propose_current_cycle_pose_inner_with_layers(
+        Some(&app),
+        &app_state,
+        Some(&foldability_state),
+        &transaction_state,
+        request,
+    );
     if let Some(request_id) = request_id.as_deref() {
         emit_current_cycle_terminal_v1(
             &app,
@@ -285,6 +304,16 @@ fn propose_current_cycle_pose_inner(
     transaction_state: &super::stacked_fold_transaction::StackedFoldTransactionState,
     request: CurrentCyclePosePreviewRequestV1,
 ) -> Result<CurrentCyclePosePreviewResponseV1, String> {
+    propose_current_cycle_pose_inner_with_layers(app, app_state, None, transaction_state, request)
+}
+
+fn propose_current_cycle_pose_inner_with_layers(
+    app: Option<&AppHandle>,
+    app_state: &AppState,
+    foldability_state: Option<&GlobalFlatFoldabilityState>,
+    transaction_state: &super::stacked_fold_transaction::StackedFoldTransactionState,
+    request: CurrentCyclePosePreviewRequestV1,
+) -> Result<CurrentCyclePosePreviewResponseV1, String> {
     let generation = begin_stacked_fold_read_generation_v1()?;
     let progress_request_id =
         validate_progress_request_id_v1(request.progress_request_id.as_deref())?;
@@ -297,6 +326,11 @@ fn propose_current_cycle_pose_inner(
     {
         return Err(STALE_MESSAGE.to_owned());
     }
+    let layer_capability = foldability_state
+        .map(|state| capture_current_layer_order_capability(state, &project))
+        .transpose()
+        .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
+        .flatten();
     let pose_capability = project
         .applied_pose_authority
         .capture_capability(&project)
@@ -393,6 +427,64 @@ fn propose_current_cycle_pose_inner(
         .leaves()
         .first()
         .map_or(0, |(_, _, leaf)| leaf.checked_hinges().len());
+    let source_layer_order = layer_capability.as_ref().map(|capability| {
+        capability
+            .snapshot()
+            .face_pair_orders
+            .iter()
+            .map(|order| LayerOrderPairDtoV1 {
+                lower_face: order.lower_face.face_id,
+                upper_face: order.upper_face.face_id,
+            })
+            .collect::<Vec<_>>()
+    });
+    let layer_transport = if let (Some(capability), Some(source_orders)) =
+        (layer_capability.as_ref(), source_layer_order.as_ref())
+    {
+        let lineage = capability
+            .snapshot()
+            .material_faces
+            .iter()
+            .map(|face| (face.face_id, face.face_id))
+            .collect::<Vec<_>>();
+        let orders = source_orders
+            .iter()
+            .map(|order| (order.lower_face, order.upper_face))
+            .collect::<Vec<_>>();
+        let transition_orders = vec![orders; closure_leaf_count + 1];
+        Some(
+            prove_continuous_layer_transport_v1(
+                geometry,
+                capability.snapshot(),
+                &lineage,
+                generated.schedule(),
+                &closure,
+                &transition_orders,
+                ContinuousLayerTransportLimitsV1 {
+                    max_transitions: closure_leaf_count + 1,
+                    max_pair_orders: source_orders
+                        .len()
+                        .checked_mul(closure_leaf_count + 1)
+                        .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?,
+                },
+            )
+            .map_err(|error| match error {
+                ori_collision::ContinuousLayerTransportErrorV1::ResourceLimit => {
+                    CYCLE_PATH_RESOURCE_MESSAGE.to_owned()
+                }
+                _ => CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned(),
+            })?,
+        )
+    } else {
+        None
+    };
+    let layer_transport_metadata = layer_transport.as_ref().map(|certificate| {
+        (
+            certificate.model_id(),
+            certificate.transition_hashes().len(),
+            certificate.pair_order_count(),
+        )
+    });
     emit_current_cycle_progress_v1(app, progress_request_id, 1, 1);
     if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) != generation {
         return Err(CANCELLED_MESSAGE.to_owned());
@@ -422,10 +514,13 @@ fn propose_current_cycle_pose_inner(
             closure,
             expected,
             continuous,
+            layer_transport,
             target_angles,
         },
         pose_capability,
+        layer_capability,
     )?;
+    let source_layer_order = source_layer_order.unwrap_or_default();
     Ok(CurrentCyclePosePreviewResponseV1 {
         version: 1,
         transaction_token: token,
@@ -436,6 +531,11 @@ fn propose_current_cycle_pose_inner(
         checked_hinge_count,
         total_hinge_count,
         continuous_path_certified: true,
+        continuous_layer_transport_model_id: layer_transport_metadata.map(|value| value.0),
+        continuous_layer_transition_count: layer_transport_metadata.map_or(0, |value| value.1),
+        continuous_layer_pair_order_count: layer_transport_metadata.map_or(0, |value| value.2),
+        target_layer_order: source_layer_order.clone(),
+        source_layer_order,
         authorizes_project_mutation: false,
     })
 }
@@ -4257,6 +4357,110 @@ mod tests {
                 assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
             }
         }
+    }
+
+    #[test]
+    #[ignore = "rank4 global layer-authority fixture is completed in the follow-up E2E"]
+    fn rank4_cycle_transports_layer_order_and_applies_atomically() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (pattern, mut paper, hinges) =
+            super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern();
+        paper.thickness_mm = 0.1;
+        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        let fixed = snapshot.faces[0].id;
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            fixed,
+        );
+        let layer_state = GlobalFlatFoldabilityState::default();
+        super::super::global_flat_foldability::tests::install_possible_layer_order(
+            &layer_state,
+            &project,
+        );
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let app_state = AppState::new(project);
+        let transactions =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let request = |expected_project_instance_id| CurrentCyclePosePreviewRequestV1 {
+            progress_request_id: Some("rank4:layer".to_owned()),
+            expected_project_instance_id,
+            expected_project_id: project_id,
+            expected_revision: revision,
+            cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
+        };
+        assert_eq!(
+            propose_current_cycle_pose_inner_with_layers(
+                None,
+                &app_state,
+                Some(&layer_state),
+                &transactions,
+                request(ProjectId::new()),
+            )
+            .unwrap_err(),
+            STALE_MESSAGE
+        );
+        let preview = propose_current_cycle_pose_inner_with_layers(
+            None,
+            &app_state,
+            Some(&layer_state),
+            &transactions,
+            request(instance),
+        )
+        .expect("rank4 layer transport preview");
+        assert_eq!(
+            preview.continuous_layer_transport_model_id,
+            Some(ori_collision::CONTINUOUS_LAYER_TRANSPORT_CERTIFICATE_MODEL_ID_V1)
+        );
+        assert_eq!(preview.continuous_layer_transition_count, 5);
+        assert_eq!(preview.source_layer_order, preview.target_layer_order);
+        assert_eq!(
+            preview.continuous_layer_pair_order_count,
+            preview.source_layer_order.len()
+        );
+        assert!(!preview.authorizes_project_mutation);
+        let cancelled = preview.transaction_token;
+        super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
+            &transactions,
+            cancelled,
+        )
+        .unwrap();
+        assert!(
+            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                &app_state,
+                &layer_state,
+                &transactions,
+                cancelled,
+            )
+            .is_err()
+        );
+        let preview = propose_current_cycle_pose_inner_with_layers(
+            None,
+            &app_state,
+            Some(&layer_state),
+            &transactions,
+            request(instance),
+        )
+        .expect("rank4 layer transport retry");
+        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            &app_state,
+            &layer_state,
+            &transactions,
+            preview.transaction_token,
+        )
+        .expect("rank4 layer transport apply");
+        let mut project = super::super::lock_project(&app_state).unwrap();
+        project.editor.undo(applied).unwrap();
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
     }
 
     #[test]

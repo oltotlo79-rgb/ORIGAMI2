@@ -73,6 +73,7 @@ pub(super) enum PendingStackedFoldRequestedPose {
         closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
         expected: ori_collision::CertifiedPathTransitionEvidenceV1,
         continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
+        layer_transport: Option<ori_collision::ContinuousLayerTransportCertificateV1>,
         target_angles: Vec<(ori_domain::EdgeId, f64)>,
     },
 }
@@ -146,6 +147,7 @@ impl PendingStackedFoldRequestedPose {
                 expected,
                 continuous,
                 target_angles,
+                ..
             } => {
                 certified_edge_target_matches_schedule(&PendingCertifiedPathEdgeV1 {
                     generated: generated.clone(),
@@ -329,6 +331,7 @@ pub(super) struct PendingCurrentCyclePosePremisesV1 {
     pub closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
     pub expected: ori_collision::CertifiedPathTransitionEvidenceV1,
     pub continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
+    pub layer_transport: Option<ori_collision::ContinuousLayerTransportCertificateV1>,
     pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
 }
 
@@ -488,6 +491,7 @@ pub(super) fn install_pending_current_cycle_pose_v1(
     state: &StackedFoldTransactionState,
     premises: PendingCurrentCyclePosePremisesV1,
     pose_capability: CurrentAppliedPoseCapability,
+    layer_capability: Option<CurrentLayerOrderCapability>,
 ) -> Result<ProjectId, String> {
     let mut graph_hinges = premises
         .geometry
@@ -503,6 +507,22 @@ pub(super) fn install_pending_current_cycle_pose_v1(
         })
     {
         return Err("The current-cycle pose premises are inconsistent.".to_owned());
+    }
+    if premises
+        .layer_transport
+        .as_ref()
+        .is_some_and(|certificate| {
+            !layer_capability.as_ref().is_some_and(|capability| {
+                certificate.is_for(
+                    &premises.geometry,
+                    capability.snapshot(),
+                    premises.generated.schedule(),
+                    &premises.closure,
+                )
+            })
+        })
+    {
+        return Err("The current-cycle layer transport premises are inconsistent.".to_owned());
     }
     let token = ProjectId::new();
     let pending = PendingStackedFoldTransaction {
@@ -521,11 +541,12 @@ pub(super) fn install_pending_current_cycle_pose_v1(
             closure: premises.closure,
             expected: premises.expected,
             continuous: premises.continuous,
+            layer_transport: premises.layer_transport,
             target_angles: premises.target_angles,
         },
         layer_order: None,
         pose_capability,
-        layer_capability: None,
+        layer_capability,
     };
     if !pending.matches_live_binding(
         pending.expected_instance_id,
@@ -622,6 +643,31 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
                 .ok_or_else(|| "The stacked-fold transaction preview is stale.".to_owned())
         })
         .transpose()?;
+
+    if let PendingStackedFoldRequestedPose::CurrentCycle {
+        geometry,
+        generated,
+        closure,
+        layer_transport: Some(certificate),
+        ..
+    } = &pending.requested
+    {
+        let capability = pending
+            .layer_capability
+            .as_ref()
+            .ok_or_else(|| "The current-cycle layer-order authority is unavailable.".to_owned())?;
+        if layer_guard.is_none()
+            || !certificate.is_for(
+                geometry,
+                capability.snapshot(),
+                generated.schedule(),
+                closure,
+            )
+            || !certificate.matches_source_content_v1(capability.snapshot())
+        {
+            return Err("The current-cycle layer transport preview is stale.".to_owned());
+        }
+    }
 
     let requested = &pending.requested;
     let target = requested.geometry();

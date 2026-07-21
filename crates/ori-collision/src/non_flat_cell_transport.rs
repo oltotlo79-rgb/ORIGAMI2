@@ -231,6 +231,17 @@ mod tests {
             certify_non_flat_cell_transport_v1(&source, &source),
             Err(NonFlatCellTransportErrorV1::BindingMismatch)
         ));
+        assert!(matches!(
+            certify_non_flat_cell_transport_with_limits_v1(
+                &source,
+                &target,
+                NonFlatCellTransportLimitsV1 {
+                    max_faces: 1,
+                    ..NonFlatCellTransportLimitsV1::default()
+                },
+            ),
+            Err(NonFlatCellTransportErrorV1::ResourceLimit)
+        ));
         let different = revalidate_current_non_flat_layer_order_v1(
             project,
             2,

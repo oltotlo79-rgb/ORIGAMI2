@@ -455,15 +455,22 @@ fn dense_parallel_grid_graph_v1(
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
 ) -> bool {
     let face_count = geometry.face_ids().len();
-    let Some(side) = (3usize..=7).find(|side| side * side == face_count) else {
+    let Some((columns, rows)) = (3usize..=7).find_map(|columns| {
+        (3usize..=7).find_map(|rows| {
+            (columns * rows == face_count
+                && geometry.hinges().len() == 2 * columns * rows - columns - rows
+                && audit.closure_hinges().len() == (columns - 1) * (rows - 1))
+                .then_some((columns, rows))
+        })
+    }) else {
         return false;
     };
-    geometry.hinges().len() == 2 * side * (side - 1)
-        && audit.closure_hinges().len() == (side - 1) * (side - 1)
-        && schedule
-            .collective_profile_edges_v1()
-            .or_else(|| schedule.collective_half_angle_profile_edges_v1())
-            .is_some_and(|moving| moving.len() == side * (side - 1))
+    schedule
+        .collective_profile_edges_v1()
+        .or_else(|| schedule.collective_half_angle_profile_edges_v1())
+        .is_some_and(|moving| {
+            moving.len() == rows * (columns - 1) || moving.len() == columns * (rows - 1)
+        })
 }
 
 fn emit_current_cycle_status_v1(
@@ -3521,66 +3528,93 @@ mod tests {
     }
 
     #[test]
-    fn dense_rank_nine_to_thirty_six_grids_preview_and_apply_atomically() {
+    fn dense_square_and_rectangular_grids_preview_and_apply_atomically() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        for side in [4usize, 5, 6, 7] {
-            let (pattern, mut paper, moving) =
-                super::dense_grid_cycle_test_support::square_dense_cycle_pattern(side);
-            paper.thickness_mm = 0.1;
-            let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-            let topology = project
-                .editor
-                .topology_analysis_input(project.project_id)
-                .analyze();
-            let snapshot = topology.simulation_snapshot().unwrap();
-            let expected_hinges = 2 * side * (side - 1);
-            assert_eq!(
-                (snapshot.faces.len(), snapshot.hinge_adjacency.len()),
-                (side * side, expected_hinges)
-            );
-            let hinges = snapshot
-                .hinge_adjacency
-                .iter()
-                .map(|hinge| hinge.edge)
-                .collect::<Vec<_>>();
-            let fixed = snapshot.faces[0].id;
-            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-                &mut project,
-                hinges.clone(),
-                fixed,
-            );
-            let request = CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: project.instance_id,
-                expected_project_id: project.project_id,
-                expected_revision: project.editor.revision(),
-                cycle_schedule_v1: dense_grid_schedule(
-                    &hinges,
-                    &moving,
-                    if side == 4 { 4 } else { 100 },
-                ),
-            };
-            let state = AppState::new(project);
-            let transactions =
-                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-            let preview = propose_current_cycle_pose_inner(None, &state, &transactions, request)
-                .unwrap_or_else(|error| panic!("side {side} dense preview: {error}"));
-            assert_eq!(
-                (preview.closure_leaf_count, preview.checked_hinge_count),
-                (1, expected_hinges)
-            );
-            let applied =
-                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                    &state,
-                    &GlobalFlatFoldabilityState::default(),
-                    &transactions,
-                    preview.transaction_token,
-                )
-                .expect("rank-nine dense apply");
-            let mut project = super::super::lock_project(&state).unwrap();
-            project.editor.undo(applied).unwrap();
-            let undone = project.editor.revision();
-            project.editor.redo(undone).unwrap();
+        for (columns, rows) in [
+            (4usize, 4usize),
+            (5, 5),
+            (6, 6),
+            (7, 7),
+            (3, 7),
+            (5, 7),
+            (6, 7),
+        ] {
+            for thickness_mm in [0.1, 1.0, 3.0, 10_000.0] {
+                let (pattern, mut paper, moving) =
+                    super::dense_grid_cycle_test_support::rectangular_dense_cycle_pattern(
+                        columns, rows,
+                    );
+                paper.thickness_mm = thickness_mm;
+                let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+                let topology = project
+                    .editor
+                    .topology_analysis_input(project.project_id)
+                    .analyze();
+                let snapshot = topology.simulation_snapshot().unwrap();
+                let expected_hinges = 2 * columns * rows - columns - rows;
+                assert_eq!(
+                    (snapshot.faces.len(), snapshot.hinge_adjacency.len()),
+                    (columns * rows, expected_hinges)
+                );
+                let hinges = snapshot
+                    .hinge_adjacency
+                    .iter()
+                    .map(|hinge| hinge.edge)
+                    .collect::<Vec<_>>();
+                let fixed = snapshot.faces[0].id;
+                super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+                    &mut project,
+                    hinges.clone(),
+                    fixed,
+                );
+                let request = CurrentCyclePosePreviewRequestV1 {
+                    progress_request_id: None,
+                    expected_project_instance_id: project.instance_id,
+                    expected_project_id: project.project_id,
+                    expected_revision: project.editor.revision(),
+                    cycle_schedule_v1: dense_grid_schedule(
+                        &hinges,
+                        &moving,
+                        if columns == 4 && rows == 4 { 4 } else { 100 },
+                    ),
+                };
+                let state = AppState::new(project);
+                let transactions =
+                    super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+                let preview =
+                    propose_current_cycle_pose_inner(None, &state, &transactions, request);
+                if thickness_mm == 10_000.0 {
+                    assert_eq!(preview.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
+                    assert!(
+                        super::super::lock_project(&state)
+                            .unwrap()
+                            .editor
+                            .instruction_timeline()
+                            .steps
+                            .is_empty()
+                    );
+                    continue;
+                }
+                let preview = preview.unwrap_or_else(|error| {
+                    panic!("{columns}x{rows} dense preview at {thickness_mm}mm: {error}")
+                });
+                assert_eq!(
+                    (preview.closure_leaf_count, preview.checked_hinge_count),
+                    (1, expected_hinges)
+                );
+                let applied =
+                    super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                        &state,
+                        &GlobalFlatFoldabilityState::default(),
+                        &transactions,
+                        preview.transaction_token,
+                    )
+                    .expect("rank-nine dense apply");
+                let mut project = super::super::lock_project(&state).unwrap();
+                project.editor.undo(applied).unwrap();
+                let undone = project.editor.revision();
+                project.editor.redo(undone).unwrap();
+            }
         }
     }
 

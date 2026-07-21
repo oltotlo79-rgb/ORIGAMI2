@@ -2170,6 +2170,20 @@ mod tests {
                 .into_iter()
                 .all(|u| automatic.schedule().evaluate(u).is_some())
         );
+        let mut reversed_hinges = geometry.hinges().to_vec();
+        reversed_hinges.reverse();
+        let reversed = MaterialHingeGraphGeometry::new_for_test(faces.to_vec(), reversed_hinges);
+        let reordered = generate_bounded_degree_four_kawasaki_path_candidate_v1(
+            &reversed,
+            &audit,
+            audit.faces()[0],
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            automatic.schedule().certificate_binding_fingerprint_v1(),
+            reordered.schedule().certificate_binding_fingerprint_v1(),
+        );
         assert_eq!(
             generate_bounded_degree_four_kawasaki_path_candidate_v1(
                 &geometry,

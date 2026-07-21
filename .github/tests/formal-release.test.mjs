@@ -767,6 +767,24 @@ test('Windows CI executes native recovery close and diagnostics persistence cont
   assert.doesNotMatch(step, /continue-on-error|\|\| true/u)
 })
 
+test('CI requires the production C6 dyadic browser and exact native lifecycle', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const desktopPackage = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8'))
+  assert.equal(
+    desktopPackage.scripts['test:dyadic-panel-browser'],
+    'node scripts/dyadic-panel-browser-e2e.mjs',
+  )
+  assert.equal(
+    workflow.match(/npm run test:dyadic-panel-browser/gu)?.length,
+    1,
+    'the C6 production Panel browser harness must be one required frontend gate',
+  )
+  assert.match(
+    workflow,
+    /cargo test --locked -p origami2-desktop --lib\s+stacked_fold_read::tests::balloon_degree_six_exact_schedule_is_admitted_by_strict_dyadic_read\s+-- --exact --test-threads=1/u,
+  )
+})
+
 test('promotion reuses and verifies the complete prerelease asset set', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const promote = workflow.slice(workflow.indexOf('  promote:'))

@@ -147,6 +147,10 @@ jobs:
         env:
           ORIGAMI2_EVEN_CYCLE_BROWSER_ARTIFACT_DIRECTORY: ${{ runner.temp }}/even-cycle-browser
         run: npm run test:even-cycle-browser
+      - name: Verify production C6 dyadic panel lifecycle in Chromium
+        id: dyadic-panel-browser
+        working-directory: apps/desktop
+        run: npm run test:dyadic-panel-browser
       - name: Upload even-cycle browser failure evidence
         if: failure() && steps.even-cycle-browser.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -457,6 +461,12 @@ jobs:
             echo "::error title=Rust tests failed::$failure_summary"
           fi
           exit "$test_status"
+      - name: Verify strict C6 balloon dyadic native lifecycle
+        shell: bash
+        run: >-
+          cargo test --locked -p origami2-desktop --lib
+          stacked_fold_read::tests::balloon_degree_six_exact_schedule_is_admitted_by_strict_dyadic_read
+          -- --exact --test-threads=1
       - name: Summarize Rust test failure
         if: failure() && steps.rust-tests.outcome == 'failure'
         shell: bash

@@ -7,6 +7,7 @@ const transport = vi.hoisted(() => ({
   preview: vi.fn(),
   cyclePreview: vi.fn(),
   apply: vi.fn(),
+  namedApply: vi.fn(),
   cancel: vi.fn(),
   cancelRead: vi.fn(),
   registry: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => ({
   proposeCurrentStackedFoldRead: transport.preview,
   proposeCurrentCyclePoseV1: transport.cyclePreview,
   applyStackedFoldTransaction: transport.apply,
+  applyNamedBookFoldTransaction: transport.namedApply,
   cancelStackedFoldTransactionPreview: transport.cancel,
   cancelCurrentStackedFoldReadV1: transport.cancelRead,
   readLiveHingeRegistryV1: transport.registry,
@@ -463,6 +465,70 @@ describe('StackedFoldPanel', () => {
     fireEvent.click(apply)
     await waitFor(() => expect(transport.apply).toHaveBeenCalledWith(token))
     await waitFor(() => expect(onApplied).toHaveBeenCalledWith(refreshed))
+  })
+
+  it('applies a selected named book fold through the proof-bound native transaction', async () => {
+    transport.preview.mockResolvedValue(ready)
+    transport.namedApply.mockResolvedValue(4)
+    const refreshed = { ...snapshot, revision: 4 } as ProjectSnapshot
+    const document = {
+      schema: 'origami2_fold_technique_file', version: 1,
+      package_id: 'user.test.book', metadata: {}, techniques: [],
+    } as any
+    const onApplied = vi.fn()
+    render(
+      <StackedFoldPanel
+        locale="ja"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        namedBookFold={{ document, techniqueId: 'book-fold', name: '二つ折り' }}
+        refreshSnapshot={vi.fn().mockResolvedValue(refreshed)}
+        onApplied={onApplied}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '安全性を確認' }))
+    const apply = await screen.findByRole('button', { name: '名前付き二つ折りを適用' })
+    expect(screen.getByRole('note').textContent).toContain('PDF/SVG折り図')
+    expect(apply).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(apply)
+    await waitFor(() => expect(transport.namedApply).toHaveBeenCalledWith(
+      token, document, 'book-fold',
+    ))
+    expect(transport.apply).not.toHaveBeenCalled()
+    await waitFor(() => expect(onApplied).toHaveBeenCalledWith(refreshed))
+  })
+
+  it('keeps the project unchanged when named proof apply rejects stale or tampered authority', async () => {
+    transport.preview.mockResolvedValue(ready)
+    transport.namedApply.mockRejectedValue(new Error('stale or tampered'))
+    const onApplied = vi.fn()
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        namedBookFold={{
+          document: { techniques: [] } as any,
+          techniqueId: 'book-fold',
+          name: 'Book fold',
+        }}
+        refreshSnapshot={vi.fn()}
+        onApplied={onApplied}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    const apply = await screen.findByRole('button', { name: 'Apply named book fold' })
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(apply)
+    expect((await screen.findByRole('alert')).textContent).toContain(
+      'Apply failed. You can retry with the same certified preview.',
+    )
+    expect(onApplied).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Apply named book fold' }))
+      .toHaveProperty('disabled', false)
   })
 
   it('keeps apply disabled when native metadata is not fully certified', async () => {

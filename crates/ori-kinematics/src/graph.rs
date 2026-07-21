@@ -754,9 +754,14 @@ fn dense_parallel_grid_cycle_closure_premises_v1(
     schedule: &CanonicalCycleScheduleV1,
     tolerance: f64,
 ) -> bool {
-    if geometry.face_ids().len() != 9
-        || geometry.hinges().len() != 12
-        || audit.closure_hinges().len() != 4
+    let face_count = geometry.face_ids().len();
+    let Some(side) = (3usize..=7).find(|side| side * side == face_count) else {
+        return false;
+    };
+    let expected_hinges = 2 * side * (side - 1);
+    let expected_cycle_rank = (side - 1) * (side - 1);
+    if geometry.hinges().len() != expected_hinges
+        || audit.closure_hinges().len() != expected_cycle_rank
         || !tolerance.is_finite()
         || tolerance < 0.0
     {
@@ -765,7 +770,7 @@ fn dense_parallel_grid_cycle_closure_premises_v1(
     let Some(moving_edges) = schedule.collective_profile_edges_v1() else {
         return false;
     };
-    if moving_edges.len() != 6 {
+    if moving_edges.len() != side * (side - 1) {
         return false;
     }
     let moving = moving_edges.into_iter().collect::<HashSet<_>>();

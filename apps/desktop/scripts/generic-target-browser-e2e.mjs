@@ -168,6 +168,7 @@ try {
   await page.getByText('Merged authority witness: image contours + GLB depth/bulges', { exact: true }).waitFor()
   await page.getByText('3D candidate score 84/100 · bounded depth error 3 mm', { exact: true }).waitFor()
   await page.getByText('Native folded landmarks: body/local 3D · Hausdorff 4% · depth 3 mm · bulge error 2% · collision clear', { exact: true }).waitFor()
+  await page.getByText('Folded face quality: orientation error 6% · area coverage error 9% · manifold faces verified', { exact: true }).waitFor()
   await page.getByText('Landmark error vectors: 4 · maximum error point 3 · combined score 84/100', { exact: true }).waitFor()
   await assertWitnessCanvas(page.getByRole('img', { name: 'Folded target and candidate landmark overlay' }))
   await page.getByRole('button', { name: 'Select contour candidate 2' }).click()

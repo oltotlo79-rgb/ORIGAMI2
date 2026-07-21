@@ -233,6 +233,7 @@ function Harness() {
       {mergedAuthorities && <p>Merged authority witness: image contours + GLB depth/bulges</p>}
       {mergedAuthorities && <p>3D candidate score {threeDimensionalScore}/100 · bounded depth error {depthError} mm</p>}
       {mergedAuthorities && <p>Native folded landmarks: body/local 3D · Hausdorff 4% · depth {depthError} mm · bulge error 2% · collision clear</p>}
+      {mergedAuthorities && <p>Folded face quality: orientation error 6% · area coverage error 9% · manifold faces verified</p>}
       {mergedAuthorities && <p>Landmark error vectors: 4 · maximum error point 3 · combined score {threeDimensionalScore}/100</p>}
       {mergedAuthorities && <canvas width={320} height={120} role="img" aria-label="Folded target and candidate landmark overlay" ref={(canvas) => {
         const context = canvas?.getContext('2d'); if (!canvas || !context) return

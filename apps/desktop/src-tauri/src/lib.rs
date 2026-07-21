@@ -1611,6 +1611,28 @@ fn bounded_folded_pose_landmark_score_v1(
             }
         }
     }
+    let mut normal = [0_i128; 3];
+    let mut doubled_area_units = 0_u128;
+    if landmarks.len() >= 3 {
+        let origin = landmarks[0];
+        for pair in landmarks[1..].windows(2) {
+            let a = std::array::from_fn::<_, 3, _>(|axis| i128::from(pair[0][axis] - origin[axis]));
+            let b = std::array::from_fn::<_, 3, _>(|axis| i128::from(pair[1][axis] - origin[axis]));
+            let cross = [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ];
+            for axis in 0..3 {
+                normal[axis] = normal[axis].saturating_add(cross[axis]);
+            }
+            doubled_area_units = doubled_area_units
+                .saturating_add(cross.iter().map(|value| value.unsigned_abs()).sum::<u128>());
+        }
+        if doubled_area_units == 0 {
+            return None;
+        }
+    }
     let candidate =
         std::array::from_fn::<_, 3, _>(|axis| max[axis].saturating_sub(min[axis]) as u64);
     let target = std::array::from_fn::<_, 3, _>(|axis| {
@@ -1668,9 +1690,37 @@ fn bounded_folded_pose_landmark_score_v1(
         .abs_diff(target_bulge)
         .saturating_mul(100_000)
         / target_bulge.max(1);
-    let combined = hausdorff.saturating_mul(5) / 10
-        + depth_error.saturating_mul(3) / 10
-        + bulge_error.min(1_000_000).saturating_mul(2) / 10;
+    let reference_normal = reference.dominant_normal_milli.map(i128::from);
+    let dot = normal
+        .iter()
+        .zip(reference_normal)
+        .map(|(a, b)| a.saturating_mul(b))
+        .sum::<i128>();
+    let normal_l1 = normal
+        .iter()
+        .map(|value| value.unsigned_abs())
+        .sum::<u128>()
+        .max(1);
+    let reference_l1 = reference_normal
+        .iter()
+        .map(|value| value.unsigned_abs())
+        .sum::<u128>()
+        .max(1);
+    let alignment_millionths =
+        dot.max(0) as u128 * 1_000_000 / normal_l1.saturating_mul(reference_l1);
+    let orientation_error =
+        1_000_000_u64.saturating_sub(alignment_millionths.min(1_000_000) as u64);
+    let candidate_area = u64::try_from(doubled_area_units / 2).unwrap_or(u64::MAX);
+    let target_area = reference.surface_area_milli.max(1);
+    let coverage_error = candidate_area
+        .abs_diff(target_area)
+        .saturating_mul(1_000_000)
+        / candidate_area.max(target_area).max(1);
+    let combined = hausdorff.saturating_mul(35) / 100
+        + depth_error.saturating_mul(25) / 100
+        + bulge_error.min(1_000_000).saturating_mul(15) / 100
+        + orientation_error.saturating_mul(15) / 100
+        + coverage_error.min(1_000_000).saturating_mul(10) / 100;
     Some(u8::try_from(100_u64.saturating_sub(combined.min(1_000_000) / 10_000)).unwrap_or(0))
 }
 

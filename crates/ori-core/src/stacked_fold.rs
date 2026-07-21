@@ -2216,17 +2216,39 @@ pub fn prepare_stacked_fold_graph_non_flat_layer_order_v1(
     source_layer_order: &LayerOrderSnapshot,
     max_face_pairs: usize,
 ) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    prepare_stacked_fold_graph_non_flat_layer_order_from_source_v1(
+        requested,
+        source_layer_order,
+        max_face_pairs,
+    )
+}
+
+pub fn prepare_stacked_fold_graph_non_flat_layer_order_from_non_flat_v1(
+    requested: &PreparedStackedFoldRequestedGraphPoseV1,
+    source_layer_order: &StackedFoldNonFlatLayerOrderV1,
+    max_face_pairs: usize,
+) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    prepare_stacked_fold_graph_non_flat_layer_order_from_source_v1(
+        requested,
+        source_layer_order,
+        max_face_pairs,
+    )
+}
+
+fn prepare_stacked_fold_graph_non_flat_layer_order_from_source_v1(
+    requested: &PreparedStackedFoldRequestedGraphPoseV1,
+    source_layer_order: &impl NonFlatSourceLayerEvidenceV1,
+    max_face_pairs: usize,
+) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
     let angle = requested.requested_angle_degrees();
     if !angle.is_finite() || angle <= 0.0 || angle >= 180.0 {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::NotNonFlatEndpoint);
     }
     let target = requested.initial().target();
     let lineage = target.geometry.proof.lineage();
-    let provenance = &source_layer_order.provenance.source;
-    if source_layer_order.model_id != LAYER_ORDER_MODEL_ID
-        || provenance.identity_namespace != Some(lineage.identity_namespace())
-        || provenance.source_revision != lineage.source_revision()
-        || provenance.source_fingerprint != Some(lineage.source_fingerprint())
+    if source_layer_order.identity_namespace() != Some(lineage.identity_namespace())
+        || source_layer_order.revision() != lineage.source_revision()
+        || source_layer_order.fingerprint() != Some(lineage.source_fingerprint())
     {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch);
     }
@@ -2242,7 +2264,7 @@ pub fn prepare_stacked_fold_graph_non_flat_layer_order_v1(
                 .cmp(&b.face_id.canonical_bytes())
         })
     });
-    if source_layer_order.material_faces != source_faces {
+    if source_layer_order.material_faces() != source_faces {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch);
     }
     let pose = requested.pose();
@@ -2358,7 +2380,7 @@ pub fn prepare_stacked_fold_graph_non_flat_layer_order_v1(
         hinge_angles: pose.hinge_angles().as_slice().to_vec(),
         material_faces,
         tested_face_pairs,
-        source_overlap_cells_authenticated: source_layer_order.overlap_cells.len(),
+        source_overlap_cells_authenticated: source_layer_order.overlap_cell_count(),
         overlap_cells,
         face_pair_orders,
     })

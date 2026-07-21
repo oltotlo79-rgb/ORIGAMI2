@@ -119,6 +119,7 @@ pub use stacked_fold::{
     StackedFoldTopologyBuildResourceV1, StackedFoldTopologyCandidateV1,
     build_stacked_fold_topology_v1, prepare_face_lineage_v1,
     prepare_stacked_fold_geometry_candidate_v1, prepare_stacked_fold_geometry_v1,
+    prepare_stacked_fold_graph_non_flat_layer_order_from_non_flat_v1,
     prepare_stacked_fold_graph_non_flat_layer_order_v1, prepare_stacked_fold_initial_graph_pose_v1,
     prepare_stacked_fold_initial_pose_v1,
     prepare_stacked_fold_non_flat_layer_order_from_non_flat_v1,

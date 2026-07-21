@@ -244,12 +244,24 @@ fn compile_two_segment_motion(
     {
         return Err(ReverseFoldMotionError::PathSegmentMismatch);
     }
+    let certificate_references = [
+        path_certificate_reference_v1(first),
+        path_certificate_reference_v1(second),
+    ];
     let steps = [("開始", source), ("沈め", middle), ("完了", target)]
         .into_iter()
-        .map(|(suffix, hinge_angles)| InstructionStep {
+        .enumerate()
+        .map(|(index, (suffix, hinge_angles))| InstructionStep {
             id: InstructionStepId::new(),
             title: format!("{title}：{suffix}"),
-            description: "衝突・層順序証明に結合されたsink区間です。".to_owned(),
+            description: if index == 0 {
+                "認証済み二段階技法の開始姿勢です。".to_owned()
+            } else {
+                format!(
+                    "衝突・層順序証明に結合された区間{index}の終端です。経路証明 SHA-256: {}",
+                    certificate_references[index - 1]
+                )
+            },
             caution: String::new(),
             duration_ms: 1_000,
             visual: InstructionVisual::default(),
@@ -895,6 +907,52 @@ mod tests {
             CertifiedPathGraphSearchResultV1::Certified(certificate) => certificate,
             other => panic!("expected certificate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn shared_sink_and_layer_timeline_binds_each_certified_segment_only_to_its_endpoint() {
+        let face = FaceId::new();
+        let first_edge = EdgeId::new();
+        let second_edge = EdgeId::new();
+        let model = "78".repeat(32);
+        let source = Vec::new();
+        let mut middle = source.clone();
+        set_hinge_angle(&mut middle, first_edge, 45_000_000);
+        let mut target = middle.clone();
+        set_hinge_angle(&mut target, second_edge, 90_000_000);
+        let first = certificate(
+            instruction_pose_fingerprint_v1(&model, face, &source),
+            instruction_pose_fingerprint_v1(&model, face, &middle),
+        );
+        let second = certificate(
+            instruction_pose_fingerprint_v1(&model, face, &middle),
+            instruction_pose_fingerprint_v1(&model, face, &target),
+        );
+        let timeline = compile_two_segment_motion(
+            "二段階技法",
+            &model,
+            face,
+            first_edge,
+            second_edge,
+            &source,
+            45_000_000,
+            90_000_000,
+            &first,
+            &second,
+        )
+        .expect("two certified segments");
+
+        assert!(!timeline.steps[0].description.contains("経路証明 SHA-256:"));
+        assert!(
+            timeline.steps[1]
+                .description
+                .contains(&path_certificate_reference_v1(&first))
+        );
+        assert!(
+            timeline.steps[2]
+                .description
+                .contains(&path_certificate_reference_v1(&second))
+        );
     }
 
     fn reverse_fold_file(kind: ReverseFoldKindV1) -> FoldTechniqueFileV1 {

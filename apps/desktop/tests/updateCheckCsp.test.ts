@@ -114,6 +114,15 @@ test('bundle CSP verifier rejects linked and syntactically hidden authorities', 
       'location.assign("https://evil.example")',
       'window.location["replace"]("https://evil.example")',
       'navigation["navigate"]("https://evil.example")',
+      'navigator.serviceWorker.register("/sw.js")',
+      'new Worker("/worker.js")',
+      'new SharedWorker("/shared.js")',
+      'new BroadcastChannel("exfiltration")',
+      'navigator.share({ title: "release", url: "https://evil.example" })',
+      'navigator["share"]({url:"mailto:attacker@example.com"})',
+      'window.open("intent://scan/#Intent;scheme=evil;end")',
+      'location.assign("tel:+15551234567")',
+      'navigation.navigate("sms:+15551234567")',
     ]) {
       writeFileSync(jsPath, hostileJavaScript)
       assert.throws(verify)

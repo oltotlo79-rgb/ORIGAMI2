@@ -32,11 +32,15 @@ const canonicalJavaScript = foldStaticJavaScriptStrings(decodeJavaScriptEscapes(
 if (/\b(?:importScripts|WebSocket|XMLHttpRequest|WebTransport|RTCPeerConnection|webkitRTCPeerConnection)\s*\(|\bEventSource\b|\.\s*createDataChannel\s*\(|\bimport\s*\(|[#@]\s*sourceMappingURL\s*=|\bfetch\s*\(\s*["'`]https?:\/\//u.test(canonicalJavaScript)
   || /\b(?:globalThis|window|self)\s*\[\s*["'`]fetch["'`]\s*\]/u.test(canonicalJavaScript)
   || /\bnavigator\s*(?:\.\s*sendBeacon|\[\s*["'`]sendBeacon["'`]\s*\])/u.test(canonicalJavaScript)
+  || /\bnavigator\s*\.\s*serviceWorker\s*\.\s*register\s*\(/u.test(canonicalJavaScript)
+  || /\bnew\s+(?:SharedWorker|Worker|BroadcastChannel)\s*\(/u.test(canonicalJavaScript)
+  || /\bnavigator\s*(?:\.\s*share|\[\s*["'`]share["'`]\s*\])\s*\(\s*\{[^}]{0,1024}\burl\s*:\s*["'`](?:https?:\/\/|intent:|(?:mailto|tel|sms):)/u.test(canonicalJavaScript)
   || /\b(?:window|globalThis)\s*(?:\.\s*open|\[\s*["'`]open["'`]\s*\])\s*\(/u.test(canonicalJavaScript)
   || /\b(?:window\s*\.\s*)?location\s*(?:\.\s*(?:assign|replace)|\[\s*["'`](?:assign|replace)["'`]\s*\])\s*\(/u.test(canonicalJavaScript)
   // React Router contains a generic Navigation API adapter. Only an embedded
   // remote authority is an application-controlled external transition.
   || /\bnavigation\s*(?:\.\s*navigate|\[\s*["'`]navigate["'`]\s*\])\s*\(\s*["'`]https?:\/\//u.test(canonicalJavaScript)
+  || /\b(?:open|assign|replace|navigate)\s*\(\s*["'`](?:intent:|(?:mailto|tel|sms):)/u.test(canonicalJavaScript)
   || /\(\s*0\s*,\s*fetch\s*\)\s*\(\s*["'`]https?:\/\//u.test(canonicalJavaScript)) {
   throw new Error('desktop bundle JavaScript contains forbidden dynamic loading or network authority')
 }

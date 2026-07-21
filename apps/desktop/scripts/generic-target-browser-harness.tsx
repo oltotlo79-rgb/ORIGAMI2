@@ -225,6 +225,8 @@ function Harness() {
     <button onClick={() => { setPreview(false); setStatus('Apply blocked: continuous path resource limit') }}>Try path resource limit</button>
     <button onClick={() => { setPreview(false); setStatus('Apply blocked: stale continuous path certificate') }}>Try stale path certificate</button>
     <button onClick={() => { setPreview(false); setStatus('Apply blocked: tampered continuous path certificate') }}>Try tampered path certificate</button>
+    <button onClick={() => { setPreview(false); setStatus('Apply blocked: continuous path work 10000 exceeds bound') }}>Try 10000 path work</button>
+    <button onClick={() => { setPreview(false); setStatus('Apply blocked: foreign continuous path issuer') }}>Try foreign path issuer</button>
     {preview && <section aria-label="Generic target candidate preview"><p>Global flat-foldability proven</p>
       <p>Multi-start refinement: 5 starts · 6/8 iterations · 3 strict improvements · global best score 92</p>
       <p>Preset-weighted 2D+3D ranking: {metricPreset} · winner {metricPreset === 'shape' ? 1 : metricPreset === 'foldability' ? 2 : 3}</p>

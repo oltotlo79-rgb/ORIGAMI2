@@ -61,6 +61,8 @@ try {
     ['Try path resource limit', 'Apply blocked: continuous path resource limit'],
     ['Try stale path certificate', 'Apply blocked: stale continuous path certificate'],
     ['Try tampered path certificate', 'Apply blocked: tampered continuous path certificate'],
+    ['Try 10000 path work', 'Apply blocked: continuous path work 10000 exceeds bound'],
+    ['Try foreign path issuer', 'Apply blocked: foreign continuous path issuer'],
   ]) {
     await page.getByRole('button', { name: button }).click()
     await page.getByText(status, { exact: true }).waitFor()

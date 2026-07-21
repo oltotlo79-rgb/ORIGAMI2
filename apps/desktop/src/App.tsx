@@ -370,6 +370,7 @@ import { CompleteInsectBindingList } from './components/CompleteInsectBindingLis
 import { GenericTargetBindingList } from './components/GenericTargetBindingList'
 import { ProtrusionDimensionEditor } from './components/ProtrusionDimensionEditor'
 import { GenericBodyOutlineEditor } from './components/GenericBodyOutlineEditor'
+import { BeginnerShapeCanvasPreview } from './components/BeginnerShapeCanvasPreview'
 import { BeginnerGridProgressStatus } from './components/BeginnerGridProgressStatus'
 
 const SNAP_OPTIONS: ReadonlyArray<{
@@ -742,6 +743,7 @@ function App() {
   const [beginnerProtrusions, setBeginnerProtrusions] =
     useState<NonNullable<BeginnerDesignProfileV1['generation_constraints']['protrusions']>>([])
   const [beginnerBodyOutline, setBeginnerBodyOutline] = useState<Array<[number, number]>>([])
+  const [beginnerBodySize, setBeginnerBodySize] = useState<[number, number] | undefined>()
   const [beginnerBodyOutlineMode, setBeginnerBodyOutlineMode] =
     useState<'symmetric' | 'general'>('symmetric')
   const [beginnerProtrusionKinds, setBeginnerProtrusionKinds] =
@@ -791,6 +793,10 @@ function App() {
       nativeSnapshot?.beginner_design_profile.generation_constraints.generic_body_outline_tenths_mm
         ?.map((point) => [...point] as [number, number]) ?? [],
     )
+    setBeginnerBodySize(nativeSnapshot?.beginner_design_profile.generation_constraints
+      .generic_body_size_tenths_mm
+      ? [...nativeSnapshot.beginner_design_profile.generation_constraints
+          .generic_body_size_tenths_mm] as [number, number] : undefined)
     setBeginnerBodyOutlineMode(
       nativeSnapshot?.beginner_design_profile.generation_constraints.generic_body_outline_mode
         === 'general' ? 'general' : 'symmetric',
@@ -8612,18 +8618,18 @@ function App() {
                   <label className="field">
                     <span>{text({ ja: '胴体幅 (mm)', en: 'Body width (mm)' })}</span>
                     <input name="generic_body_width_mm" type="number" min={0.1} max={100000} step={0.1}
-                      defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints
-                        .generic_body_size_tenths_mm?.[0] !== undefined
-                        ? nativeSnapshot.beginner_design_profile.generation_constraints
-                            .generic_body_size_tenths_mm[0] / 10 : ''} />
+                      value={beginnerBodySize?.[0] === undefined ? '' : beginnerBodySize[0] / 10}
+                      onChange={(event) => { const value = Number(event.currentTarget.value)
+                        setBeginnerBodySize((current) => event.currentTarget.value === '' ? undefined
+                          : [Math.round(value * 10), current?.[1] ?? Math.round(value * 10)]) }} />
                   </label>
                   <label className="field">
                     <span>{text({ ja: '胴体高さ (mm)', en: 'Body height (mm)' })}</span>
                     <input name="generic_body_height_mm" type="number" min={0.1} max={100000} step={0.1}
-                      defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints
-                        .generic_body_size_tenths_mm?.[1] !== undefined
-                        ? nativeSnapshot.beginner_design_profile.generation_constraints
-                            .generic_body_size_tenths_mm[1] / 10 : ''} />
+                      value={beginnerBodySize?.[1] === undefined ? '' : beginnerBodySize[1] / 10}
+                      onChange={(event) => { const value = Number(event.currentTarget.value)
+                        setBeginnerBodySize((current) => event.currentTarget.value === '' ? undefined
+                          : [current?.[0] ?? Math.round(value * 10), Math.round(value * 10)]) }} />
                   </label>
                   <p id="beginner-body-size-help" className="muted">{text({
                     ja: '幅と高さを両方空欄にすると、胴体寸法を指定しません。片方だけの指定は保存しません。',
@@ -8635,6 +8641,8 @@ function App() {
                     setBeginnerBodyOutlineMode(mode)
                     setBeginnerBodyOutline([])
                   }} onChange={setBeginnerBodyOutline} />
+                <BeginnerShapeCanvasPreview locale={locale} bodySize={beginnerBodySize}
+                  bodyOutline={beginnerBodyOutline} protrusions={beginnerProtrusions} />
                 <output id="beginner-target-parts-total" aria-live="polite">
                   {formattedText({
                     ja: '部品合計: {total} / 32',

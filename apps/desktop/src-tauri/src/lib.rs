@@ -1864,45 +1864,132 @@ fn certify_beginner_fold_path_v1(
         .map(|edge| (edge.id.canonical_bytes(), edge.kind, edge.start, edge.end))
         .collect::<Vec<_>>();
     ordered.sort_unstable_by_key(|record| record.0);
-    let model = ori_kinematics::MaterialTreeKinematicsModel::prepare(
+    let tree_model = ori_kinematics::MaterialTreeKinematicsModel::prepare(
         candidate_pattern,
         paper,
         topology,
         ori_kinematics::TreeKinematicsLimits::default(),
-    )
-    .ok()?;
-    let initial = ori_kinematics::CanonicalHingeAngles::new(
-        model
+    );
+    let (certificate_model, requested_angle_degrees) = if let Ok(model) = tree_model {
+        let initial = ori_kinematics::CanonicalHingeAngles::new(
+            model
+                .hinges()
+                .iter()
+                .map(|hinge| ori_kinematics::HingeAngle::new(hinge.edge(), 0.0))
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?,
+        )
+        .ok()?;
+        let initial_pose = model.solve(None, &initial).ok()?;
+        let moving_hinges = model
             .hinges()
             .iter()
-            .map(|hinge| ori_kinematics::HingeAngle::new(hinge.edge(), 0.0))
-            .collect::<Result<Vec<_>, _>>()
-            .ok()?,
-    )
-    .ok()?;
-    let initial_pose = model.solve(None, &initial).ok()?;
-    let moving_hinges = model
-        .hinges()
-        .iter()
-        .map(|hinge| hinge.edge())
-        .collect::<Vec<_>>();
-    let requested_angle_degrees = if model.hinges().len() == 1 || paper.thickness_mm == 0.0 {
-        90.0
-    } else if paper.thickness_mm > 0.0 {
-        0.001
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        let requested = if model.hinges().len() == 1 || paper.thickness_mm == 0.0 {
+            90.0
+        } else {
+            0.001
+        };
+        let path = ori_collision::diagnose_collective_hinge_path_v1(
+            &model,
+            &initial_pose,
+            &moving_hinges,
+            requested,
+            paper.thickness_mm,
+            ori_collision::StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .ok()?;
+        (path.continuous_certificate_model_id()?, requested)
     } else {
-        return None;
+        let geometry = ori_kinematics::MaterialHingeGraphGeometry::prepare(
+            candidate_pattern,
+            paper,
+            topology,
+            ori_kinematics::TreeKinematicsLimits::default(),
+        )
+        .ok()?;
+        let audit = ori_kinematics::MaterialHingeGraphAudit::prepare(
+            topology,
+            ori_kinematics::TreeKinematicsLimits::default(),
+        )
+        .ok()?;
+        let fixed_face = *geometry.face_ids().first()?;
+        let requested = if paper.thickness_mm > 0.0 {
+            0.001
+        } else {
+            90.0
+        };
+        let initial = ori_kinematics::CanonicalHingeAngles::new(
+            geometry
+                .hinges()
+                .iter()
+                .map(|hinge| ori_kinematics::HingeAngle::new(hinge.edge(), 0.0))
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?,
+        )
+        .ok()?;
+        let target = ori_kinematics::CanonicalHingeAngles::new(
+            geometry
+                .hinges()
+                .iter()
+                .map(|hinge| ori_kinematics::HingeAngle::new(hinge.edge(), requested))
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?,
+        )
+        .ok()?;
+        let generated = ori_kinematics::generate_linear_multi_hinge_path_candidate_v1(
+            &geometry,
+            &audit,
+            fixed_face,
+            &initial,
+            &target,
+            ori_kinematics::MultiHingePathCandidateLimitsV1::default(),
+        )
+        .ok()?;
+        let schedule_limits = ori_kinematics::CycleScheduleLimitsV1 {
+            max_degree: 1,
+            ..ori_kinematics::CycleScheduleLimitsV1::default()
+        };
+        let closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                fixed_face,
+                generated.schedule(),
+                ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                    max_depth: 8,
+                    max_leaves: 256,
+                    max_work: schedule_limits.max_work,
+                    schedule_limits,
+                },
+            )
+            .ok()?;
+        let path = if paper.thickness_mm > 0.0
+            && ori_collision::supports_scheduled_positive_thickness_path_v1(
+                &geometry,
+                &audit,
+                fixed_face,
+                generated.schedule(),
+            ) {
+            ori_collision::diagnose_scheduled_positive_thickness_cycle_path_v1(
+                &geometry,
+                &audit,
+                fixed_face,
+                &generated,
+                &closure,
+                paper.thickness_mm,
+                8,
+            )
+        } else if paper.thickness_mm == 0.0 {
+            ori_collision::diagnose_scheduled_cycle_path_v1(
+                &geometry, &audit, fixed_face, &generated, &closure, 8,
+            )
+        } else {
+            return None;
+        };
+        (path.continuous_certificate_model_id()?, requested)
     };
-    let path = ori_collision::diagnose_collective_hinge_path_v1(
-        &model,
-        &initial_pose,
-        &moving_hinges,
-        requested_angle_degrees,
-        paper.thickness_mm,
-        ori_collision::StackedFoldPathDiagnosticLimitsV1::default(),
-    )
-    .ok()?;
-    let certificate_model = path.continuous_certificate_model_id()?;
     let bytes = serde_json::to_vec(&(
         "bounded_native_fold_path_v2",
         certificate_model,

@@ -7827,18 +7827,19 @@ fn add_edge(
     kind: EdgeKind,
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
-        Command::AddEdge {
-            id: EdgeId::new(),
-            start,
-            end,
-            kind,
-        },
-    )
+    ensure_project_instance_identity(&project, expected_project_instance_id, expected_project_id)?;
+    let authority = project.applied_pose_authority.clone();
+    let invalidation = authority
+        .begin_invalidation()
+        .map_err(|error| error.to_string())?;
+    project
+        .editor
+        .execute_add_edge_with_intersections(expected_revision, EdgeId::new(), start, end, kind)
+        .map_err(|error| error.to_string())?;
+    project.record_numeric_expression_edit();
+    project.reconcile_vertex_coordinate_expressions();
+    invalidation.commit();
+    Ok(snapshot(&project))
 }
 
 #[tauri::command]

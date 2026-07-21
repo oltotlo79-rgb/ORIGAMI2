@@ -323,6 +323,10 @@ enum CommandV1 {
         new_vertices: Vec<VertexId>,
         new_edges: Vec<EdgeId>,
     },
+    ApplyNormalizedEdgeDocument {
+        pattern: CreasePattern,
+        project_layers: ProjectLayerDocumentV1,
+    },
     ApplyStackedFoldDocument {
         pattern: CreasePattern,
         paper: Paper,
@@ -800,6 +804,13 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             new_vertices: new_vertices.clone(),
             new_edges: new_edges.clone(),
         },
+        Command::ApplyNormalizedEdgeDocument {
+            pattern,
+            project_layers,
+        } => CommandV1::ApplyNormalizedEdgeDocument {
+            pattern: pattern.clone(),
+            project_layers: project_layers.clone(),
+        },
         Command::ApplyStackedFoldDocument {
             pattern,
             paper,
@@ -1030,6 +1041,13 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
             mode,
             new_vertices,
             new_edges,
+        },
+        CommandV1::ApplyNormalizedEdgeDocument {
+            pattern,
+            project_layers,
+        } => Command::ApplyNormalizedEdgeDocument {
+            pattern,
+            project_layers,
         },
         CommandV1::ApplyStackedFoldDocument {
             pattern,
@@ -1701,6 +1719,11 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
         Command::MirrorSelection { axis, .. } => {
             if !finite_point(axis.start) || !finite_point(axis.end) {
                 return Err(EditorHistoryErrorV1::NonFiniteNumber);
+            }
+        }
+        Command::ApplyNormalizedEdgeDocument { pattern, .. } => {
+            for vertex in &pattern.vertices {
+                validate_vertex_finite(vertex)?;
             }
         }
         Command::ApplyStackedFoldDocument {

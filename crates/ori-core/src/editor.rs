@@ -286,6 +286,10 @@ pub enum Command {
         new_vertices: Vec<VertexId>,
         new_edges: Vec<EdgeId>,
     },
+    ApplyNormalizedEdgeDocument {
+        pattern: CreasePattern,
+        project_layers: ProjectLayerDocumentV1,
+    },
     ApplyStackedFoldDocument {
         pattern: CreasePattern,
         paper: Paper,
@@ -1720,6 +1724,24 @@ fn stable_convex_combination(start: f64, end: f64, fraction: f64) -> f64 {
     }
 }
 
+fn segment_fraction(start: Point2, end: Point2, point: Point2) -> f64 {
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    if dx.abs() >= dy.abs() {
+        (point.x - start.x) / dx
+    } else {
+        (point.y - start.y) / dy
+    }
+}
+
+fn point_lies_on_closed_segment(start: Point2, end: Point2, point: Point2) -> bool {
+    exact_orientation(start, end, point).is_ok_and(|side| side == Orientation::Collinear)
+        && point.x >= start.x.min(end.x)
+        && point.x <= start.x.max(end.x)
+        && point.y >= start.y.min(end.y)
+        && point.y <= start.y.max(end.y)
+}
+
 const fn orientations_are_opposite(first: Orientation, second: Orientation) -> bool {
     matches!(
         (first, second),
@@ -2351,6 +2373,176 @@ impl EditorState {
         Ok(result)
     }
 
+    /// Adds one authored edge and normalizes every non-boundary intersection
+    /// it creates as one authenticated history operation.
+    pub fn execute_add_edge_with_intersections(
+        &mut self,
+        expected_revision: Revision,
+        id: EdgeId,
+        start: VertexId,
+        end: VertexId,
+        kind: EdgeKind,
+    ) -> Result<CommandResult, CommandError> {
+        self.ensure_revision(expected_revision)?;
+        let start_position = self
+            .pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == start)
+            .ok_or(CommandError::VertexNotFound(start))?
+            .position;
+        let end_position = self
+            .pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == end)
+            .ok_or(CommandError::VertexNotFound(end))?
+            .position;
+        let mut points = Vec::<(f64, Point2)>::new();
+        for edge in self
+            .pattern
+            .edges
+            .iter()
+            .filter(|edge| edge.kind != EdgeKind::Boundary)
+        {
+            let Some(a) = self
+                .pattern
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == edge.start)
+                .map(|v| v.position)
+            else {
+                continue;
+            };
+            let Some(b) = self
+                .pattern
+                .vertices
+                .iter()
+                .find(|vertex| vertex.id == edge.end)
+                .map(|v| v.position)
+            else {
+                continue;
+            };
+            if let Ok(SegmentIntersection::Point(point)) =
+                segment_intersection(start_position, end_position, a, b)
+            {
+                let fraction = segment_fraction(start_position, end_position, point);
+                if fraction.is_finite()
+                    && fraction >= 0.0
+                    && fraction <= 1.0
+                    && !points.iter().any(|(_, candidate)| *candidate == point)
+                {
+                    points.push((fraction, point));
+                }
+            }
+        }
+        points.sort_by(|left, right| right.0.total_cmp(&left.0));
+
+        let mut staged = self.clone();
+        let mut revision = staged.revision();
+        staged.execute(
+            revision,
+            Command::AddEdge {
+                id,
+                start,
+                end,
+                kind,
+            },
+        )?;
+        revision += 1;
+        for (_, point) in points {
+            let mut targets = Vec::new();
+            let mut endpoint_ids = Vec::new();
+            for edge in staged
+                .pattern
+                .edges
+                .iter()
+                .filter(|edge| edge.kind != EdgeKind::Boundary)
+            {
+                let Some(a) = staged
+                    .pattern
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == edge.start)
+                    .map(|v| v.position)
+                else {
+                    continue;
+                };
+                let Some(b) = staged
+                    .pattern
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == edge.end)
+                    .map(|v| v.position)
+                else {
+                    continue;
+                };
+                if !point_lies_on_closed_segment(a, b, point) {
+                    continue;
+                }
+                let endpoint = if point == a {
+                    Some(edge.start)
+                } else if point == b {
+                    Some(edge.end)
+                } else {
+                    None
+                };
+                if let Some(vertex) = endpoint {
+                    endpoint_ids.push(vertex);
+                }
+                targets.push(IntersectionEdgeTarget {
+                    edge: edge.id,
+                    new_edge: endpoint.is_none().then(EdgeId::new),
+                });
+            }
+            targets.sort_unstable_by_key(|target| target.edge.canonical_bytes());
+            targets.dedup_by_key(|target| target.edge);
+            endpoint_ids.sort_unstable_by_key(|vertex| vertex.canonical_bytes());
+            endpoint_ids.dedup();
+            if targets.len() < 2 {
+                continue;
+            }
+            let command = if targets.len() == 2 {
+                match (targets[0].new_edge, targets[1].new_edge) {
+                    (Some(first_new_edge), Some(second_new_edge)) => {
+                        Command::ConnectEdgeIntersection {
+                            first_edge: targets[0].edge,
+                            second_edge: targets[1].edge,
+                            new_vertex: VertexId::new(),
+                            first_new_edge,
+                            second_new_edge,
+                        }
+                    }
+                    (Some(new_edge), None) | (None, Some(new_edge)) => Command::ConnectTJunction {
+                        first_edge: targets[0].edge,
+                        second_edge: targets[1].edge,
+                        new_edge,
+                    },
+                    (None, None) => continue,
+                }
+            } else {
+                let junction = match endpoint_ids.as_slice() {
+                    [vertex] => JunctionVertexIntent::Reuse { id: *vertex },
+                    [] => JunctionVertexIntent::Create {
+                        id: VertexId::new(),
+                    },
+                    _ => return Err(CommandError::IntersectionClusterJunctionPositionAmbiguous),
+                };
+                Command::ConnectIntersectionCluster { junction, targets }
+            };
+            staged.execute(revision, command)?;
+            revision += 1;
+        }
+
+        self.execute(
+            expected_revision,
+            Command::ApplyNormalizedEdgeDocument {
+                pattern: staged.pattern.clone(),
+                project_layers: staged.project_layers.clone(),
+            },
+        )
+    }
+
     pub fn undo(&mut self, expected_revision: Revision) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
         let next_revision = self.next_revision()?;
@@ -2425,6 +2617,30 @@ impl EditorState {
                 Ok(Inverse::RestoreMirrorSelection {
                     pattern: std::mem::replace(&mut self.pattern, pattern),
                     project_layers: std::mem::replace(&mut self.project_layers, project_layers),
+                })
+            }
+            Command::ApplyNormalizedEdgeDocument {
+                ref pattern,
+                ref project_layers,
+            } => {
+                if (validate_crease_pattern(&self.pattern).is_valid()
+                    && validate_paper(&self.paper, &self.pattern).is_valid())
+                    && (!validate_crease_pattern(pattern).is_valid()
+                        || !validate_paper(&self.paper, pattern).is_valid())
+                {
+                    return Err(CommandError::InvalidStackedFoldDocument);
+                }
+                validate_project_layer_document_against_pattern_v1(project_layers, pattern)?;
+                for record in &self.geometric_constraints.constraints {
+                    validate_geometric_constraint_record_against_pattern_v1(pattern, record)
+                        .map_err(CommandError::GeometricConstraintGeometryInvalid)?;
+                }
+                Ok(Inverse::RestoreMirrorSelection {
+                    pattern: std::mem::replace(&mut self.pattern, pattern.clone()),
+                    project_layers: std::mem::replace(
+                        &mut self.project_layers,
+                        project_layers.clone(),
+                    ),
                 })
             }
             Command::ApplyStackedFoldDocument {
@@ -3477,6 +3693,7 @@ impl EditorState {
             | Command::UpdateLayerPresentation { .. }
             | Command::MoveLayer { .. }
             | Command::MirrorSelection { .. }
+            | Command::ApplyNormalizedEdgeDocument { .. }
             | Command::ApplyStackedFoldDocument { .. } => Ok(()),
         }
     }
@@ -3847,6 +4064,7 @@ impl EditorState {
             | Command::DeleteLayer { .. }
             | Command::AssignEdgeToLayer { .. }
             | Command::MirrorSelection { .. }
+            | Command::ApplyNormalizedEdgeDocument { .. }
             | Command::ApplyStackedFoldDocument { .. } => {}
         }
         Ok(targets)
@@ -5857,7 +6075,8 @@ impl Command {
                 new_edges,
                 ..
             } => (new_vertices.len(), new_edges.len()),
-            Self::ApplyStackedFoldDocument { pattern, .. } => {
+            Self::ApplyNormalizedEdgeDocument { pattern, .. }
+            | Self::ApplyStackedFoldDocument { pattern, .. } => {
                 let added_vertices = pattern.vertices.len().saturating_sub(0);
                 let added_edges = pattern.edges.len().saturating_sub(0);
                 (added_vertices, added_edges)
@@ -5891,6 +6110,7 @@ impl Command {
             | Self::SplitBoundaryEdge { .. }
             | Self::RemoveBoundaryVertex { .. }
             | Self::MirrorSelection { .. }
+            | Self::ApplyNormalizedEdgeDocument { .. }
             | Self::ApplyStackedFoldDocument { .. } => true,
             Self::UpdateProjectMemo { .. }
             | Self::UpdateBeginnerDesignProfile { .. }
@@ -6249,6 +6469,13 @@ impl Command {
                 instructions: false,
                 constraints: false,
             },
+            Self::ApplyNormalizedEdgeDocument { ref pattern, .. } => Changes {
+                vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
+                edges: pattern.edges.iter().map(|edge| edge.id).collect(),
+                settings: true,
+                instructions: false,
+                constraints: false,
+            },
             Self::ApplyStackedFoldDocument { ref pattern, .. } => Changes {
                 vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
                 edges: pattern.edges.iter().map(|edge| edge.id).collect(),
@@ -6457,6 +6684,134 @@ mod tests {
     use ori_domain::AssetId;
 
     use super::*;
+
+    fn vertex_at(x: f64, y: f64) -> Vertex {
+        Vertex {
+            id: VertexId::new(),
+            position: Point2::new(x, y),
+        }
+    }
+
+    #[test]
+    fn add_edge_normalizes_one_proper_intersection_as_one_history_entry() {
+        let left = vertex_at(-1.0, 0.0);
+        let right = vertex_at(1.0, 0.0);
+        let bottom = vertex_at(0.0, -1.0);
+        let top = vertex_at(0.0, 1.0);
+        let source = Edge {
+            id: EdgeId::new(),
+            start: left.id,
+            end: right.id,
+            kind: EdgeKind::Mountain,
+        };
+        let original = CreasePattern {
+            vertices: vec![left.clone(), right.clone(), bottom.clone(), top.clone()],
+            edges: vec![source],
+        };
+        let mut editor = EditorState::new(original.clone());
+        editor
+            .execute_add_edge_with_intersections(
+                0,
+                EdgeId::new(),
+                bottom.id,
+                top.id,
+                EdgeKind::Valley,
+            )
+            .expect("add and normalize crossing");
+        assert_eq!(editor.revision(), 1);
+        assert_eq!(editor.pattern().vertices.len(), 5);
+        assert_eq!(editor.pattern().edges.len(), 4);
+        let normalized = editor.pattern().clone();
+        editor.undo(1).expect("undo atomic add");
+        assert_eq!(editor.pattern(), &original);
+        editor.redo(2).expect("redo atomic add");
+        assert_eq!(editor.pattern(), &normalized);
+    }
+
+    #[test]
+    fn add_third_balloon_base_line_normalizes_shared_three_edge_cluster() {
+        let a = vertex_at(-1.0, 0.0);
+        let b = vertex_at(1.0, 0.0);
+        let c = vertex_at(0.0, -1.0);
+        let d = vertex_at(0.0, 1.0);
+        let e = vertex_at(-1.0, -1.0);
+        let f = vertex_at(1.0, 1.0);
+        let first = Edge {
+            id: EdgeId::new(),
+            start: a.id,
+            end: b.id,
+            kind: EdgeKind::Mountain,
+        };
+        let second = Edge {
+            id: EdgeId::new(),
+            start: c.id,
+            end: d.id,
+            kind: EdgeKind::Valley,
+        };
+        let mut editor = EditorState::new(CreasePattern {
+            vertices: vec![a, b, c, d, e.clone(), f.clone()],
+            edges: vec![first, second],
+        });
+        editor
+            .execute_add_edge_with_intersections(0, EdgeId::new(), e.id, f.id, EdgeKind::Auxiliary)
+            .expect("normalize balloon base cluster");
+        assert_eq!(editor.revision(), 1);
+        assert_eq!(editor.pattern().vertices.len(), 7);
+        assert_eq!(editor.pattern().edges.len(), 6);
+        let center = editor
+            .pattern()
+            .vertices
+            .iter()
+            .find(|vertex| vertex.position == Point2::new(0.0, 0.0))
+            .expect("shared center");
+        assert_eq!(
+            editor
+                .pattern()
+                .edges
+                .iter()
+                .filter(|edge| edge.start == center.id || edge.end == center.id)
+                .count(),
+            6
+        );
+    }
+
+    #[test]
+    fn add_edge_normalizes_endpoint_contact_as_t_junction() {
+        let left = vertex_at(-1.0, 0.0);
+        let right = vertex_at(1.0, 0.0);
+        let junction = vertex_at(0.0, 0.0);
+        let top = vertex_at(0.0, 1.0);
+        let carrier = Edge {
+            id: EdgeId::new(),
+            start: left.id,
+            end: right.id,
+            kind: EdgeKind::Mountain,
+        };
+        let mut editor = EditorState::new(CreasePattern {
+            vertices: vec![left, right, junction.clone(), top.clone()],
+            edges: vec![carrier],
+        });
+        editor
+            .execute_add_edge_with_intersections(
+                0,
+                EdgeId::new(),
+                junction.id,
+                top.id,
+                EdgeKind::Valley,
+            )
+            .expect("normalize endpoint contact");
+        assert_eq!(editor.pattern().vertices.len(), 4);
+        assert_eq!(editor.pattern().edges.len(), 3);
+        assert_eq!(
+            editor
+                .pattern()
+                .edges
+                .iter()
+                .filter(|edge| edge.start == junction.id || edge.end == junction.id)
+                .count(),
+            3
+        );
+    }
 
     #[test]
     fn underlay_crud_undo_redo_and_layer_guards_are_atomic() {

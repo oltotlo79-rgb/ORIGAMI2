@@ -31,6 +31,7 @@ function Harness() {
   const [mergedAuthorities, setMergedAuthorities] = useState(false)
   const [authorityValid, setAuthorityValid] = useState(true)
   const [imageDecode, setImageDecode] = useState<string | null>(null)
+  const [imageMeaningsConfirmed, setImageMeaningsConfirmed] = useState(true)
   const [segmentation, setSegmentation] = useState<string | null>(null)
   const [acceptedSegments, setAcceptedSegments] = useState<number[]>([1, 2])
   const [confidence, setConfidence] = useState<{ score: number, reason: string, low: boolean } | null>(null)
@@ -89,6 +90,7 @@ function Harness() {
     setRecognized(true); setPreview(false); setCandidateShortage(false); setStatus(`${source} recognized two bounded bindings`)
     setMergedAuthorities(false)
     if (source === 'Image' || source === 'JPEG EXIF') {
+      setImageMeaningsConfirmed(false)
       setOutlineMode('general'); setOutline([[-50, -40], [50, -40], [45, 40], [-40, 40]])
       setBindings(initialBindings.map((target) => ({ ...target,
         local_outline_tenths_mm: [[-18, -8], [18, -8], [0, 28]] })))
@@ -97,7 +99,7 @@ function Harness() {
       setAcceptedSegments([1, 2])
       setConfidence({ score: 88, reason: 'dominant_component, bounded_simplification_error', low: false })
       setConfidenceOverride(false)
-    } else { setImageDecode(null); setSegmentation(null); setConfidence(null) }
+    } else { setImageDecode(null); setSegmentation(null); setConfidence(null); setImageMeaningsConfirmed(true) }
     if (source === 'GLB') {
       setOutlineMode('general'); setOutline([[-60, -40], [60, -40], [55, 40], [-50, 40]])
       setBindings(initialBindings.map((target) => ({ ...target,
@@ -226,6 +228,13 @@ function Harness() {
       setKinds((current) => [...current, 'tail'])
     }}>Add binding</button>}
     {recognized && <GenericTargetBindingList locale="en" protrusions={[...bindings]} />}
+    {imageDecode && <section aria-label="Image outline and explicit meanings">
+      <p>Outline evidence: decoded image components only. Suggested names grant no design authority.</p>
+      <button onClick={() => {
+        setImageMeaningsConfirmed(true)
+        setStatus(`Confirmed ${bindings.length} explicit part meanings for image outlines`)
+      }}>Confirm explicit image part meanings</button>
+    </section>}
     {recognized && <ul aria-label="Editable generic target dimensions">{bindings.map((target, index) =>
       <ProtrusionDimensionEditor key={target.id} locale="en" target={target}
         kind={kinds[index] ?? 'tail'} onKindChange={(kind) => setKinds((current) =>
@@ -248,7 +257,8 @@ function Harness() {
       }}>Relax contour to 12 points and regenerate</button>
     </section>}
     <button ref={evaluate} onClick={() => { if (recognized) {
-      if (segmentation && acceptedSegments.length < 2) setStatus('Rejected segmentation: at least two accepted protrusions required')
+      if (segmentation && !imageMeaningsConfirmed) setStatus('Image meanings unconfirmed: generic topology candidate blocked')
+      else if (segmentation && acceptedSegments.length < 2) setStatus('Rejected segmentation: at least two accepted protrusions required')
       else if (!authorityValid) setStatus('Merged authority invalid: candidate generation refused')
       else if (candidateShortage) setStatus('Contour candidate shortage: safe relaxation is required')
       else { setPreview(true); setStatus('Generic target grid ready') }

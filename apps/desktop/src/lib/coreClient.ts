@@ -2493,7 +2493,10 @@ export async function recognizeBeginnerPartSuggestions(
 export function applyBeginnerPartAssignments(
   outline: BeginnerOutlineCandidatesResponse,
   selectedOutline: BeginnerOutlineCandidatesResponse['candidates'][number],
-  assignments: ReadonlyArray<{ candidate_id: number; kind: 'torso' | 'head' | 'leg' | 'wing' }>,
+  assignments: ReadonlyArray<{
+    candidate_id: number
+    kind: BeginnerGenerationConstraintsV1['target_parts'][number]['kind']
+  }>,
 ) {
   return invoke<ProjectSnapshot>('apply_beginner_part_assignments', { request: {
     expectedProjectInstanceId: outline.project_instance_id, expectedProjectId: outline.project_id,

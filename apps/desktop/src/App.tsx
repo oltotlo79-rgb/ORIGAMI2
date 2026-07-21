@@ -761,7 +761,10 @@ function App() {
   const [beginnerPartSuggestions, setBeginnerPartSuggestions] =
     useState<BeginnerPartSuggestionsResponse | null>(null)
   const [beginnerPartAssignments, setBeginnerPartAssignments] =
-    useState<Array<{ candidate_id: number; kind: 'torso' | 'head' | 'leg' | 'wing' }>>([])
+    useState<Array<{
+      candidate_id: number
+      kind: BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']
+    }>>([])
   const [beginnerReferenceGeometry, setBeginnerReferenceGeometry] =
     useState<BeginnerReferenceModelGeometry | null>(null)
   const [beginnerReferenceSuggestion, setBeginnerReferenceSuggestion] =
@@ -8606,7 +8609,8 @@ function App() {
                             <label key={assignment.candidate_id}>
                               {formattedText({ ja: '候補 {id}', en: 'Candidate {id}' }, { id: assignment.candidate_id + 1 })}
                               <select value={assignment.kind} onChange={(event) => {
-                                const kind = event.currentTarget.value as 'torso' | 'head' | 'leg' | 'wing'
+                                const kind = event.currentTarget.value as
+                                  BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']
                                 setBeginnerPartAssignments((items) => items.map((item, itemIndex) =>
                                   itemIndex === index ? { ...item, kind } : item))
                               }}>
@@ -8614,9 +8618,18 @@ function App() {
                                 <option value="head">{text({ ja: '頭', en: 'Head' })}</option>
                                 <option value="leg">{text({ ja: '脚', en: 'Leg' })}</option>
                                 <option value="wing">{text({ ja: '翼', en: 'Wing' })}</option>
+                                <option value="fin">{text({ ja: 'ひれ', en: 'Fin' })}</option>
+                                <option value="ear">{text({ ja: '耳', en: 'Ear' })}</option>
+                                <option value="horn">{text({ ja: '角', en: 'Horn' })}</option>
+                                <option value="antenna">{text({ ja: '触角', en: 'Antenna' })}</option>
+                                <option value="tail">{text({ ja: '尾', en: 'Tail' })}</option>
                               </select>
                             </label>
                           ))}
+                          <p>{text({
+                            ja: '画像は各候補の輪郭だけを証明します。部位の意味は、ここで確認した割当だけを使用します。',
+                            en: 'The image proves only each candidate outline. Part meanings come only from the assignments you confirm here.',
+                          })}</p>
                           <button type="button" onClick={confirmBeginnerPartAssignments}>
                             {text({ ja: '確認して目標部位へ反映', en: 'Confirm target parts' })}
                           </button>

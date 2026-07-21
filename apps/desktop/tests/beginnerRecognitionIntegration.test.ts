@@ -91,6 +91,14 @@ test('part suggestions require explicit assignment and one confirmed history com
   assert.match(app, /Explicit part assignments/u)
   assert.match(app, /Confirm target parts/u)
   assert.match(app, /This does not start generation/u)
+  assert.match(app, /<option value="fin">/u)
+  assert.match(app, /<option value="ear">/u)
+  assert.match(app, /<option value="horn">/u)
+  assert.match(app, /<option value="antenna">/u)
+  assert.match(app, /<option value="tail">/u)
+  assert.match(app, /image proves only each candidate outline/u)
+  assert.match(native, /!specialized && \(2\.\.=8\)\.contains\(&feature_parts\.len\(\)\)/u)
+  assert.match(native, /part_assignment_generic_binding_invalid/u)
 })
 
 test('explicit animal or insect parts feed the existing read-only symmetric plan evaluation', () => {

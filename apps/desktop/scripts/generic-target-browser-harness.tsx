@@ -30,6 +30,7 @@ function Harness() {
   const [mergedAuthorities, setMergedAuthorities] = useState(false)
   const [authorityValid, setAuthorityValid] = useState(true)
   const [imageDecode, setImageDecode] = useState<string | null>(null)
+  const [segmentation, setSegmentation] = useState<string | null>(null)
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
     + bindings.reduce((sum, target) => sum + Math.max(0, (target.local_outline_tenths_mm?.length ?? 3) - 3), 0))
@@ -80,10 +81,11 @@ function Harness() {
     setMergedAuthorities(false)
     if (source === 'Image' || source === 'JPEG EXIF') {
       setOutlineMode('general'); setOutline([[-50, -40], [50, -40], [45, 40], [-40, 40]])
-      setBindings(initialBindings.map((target, index) => index === 0 ? { ...target,
-        local_outline_tenths_mm: [[-18, -8], [18, -8], [0, 28]] } : { ...target }))
+      setBindings(initialBindings.map((target) => ({ ...target,
+        local_outline_tenths_mm: [[-18, -8], [18, -8], [0, 28]] })))
       setImageDecode(source === 'JPEG EXIF' ? 'JPEG RGB · EXIF orientation 6 normalized' : 'PNG RGBA · alpha/luminance mask')
-    } else setImageDecode(null)
+      setSegmentation('2 protrusions · binding 1 asymmetric · binding 2 bilateral')
+    } else { setImageDecode(null); setSegmentation(null) }
     if (source === 'GLB') {
       setOutlineMode('general'); setOutline([[-60, -40], [60, -40], [55, 40], [-50, 40]])
       setBindings(initialBindings.map((target) => ({ ...target,
@@ -97,6 +99,8 @@ function Harness() {
     <button onClick={() => recognize('JPEG EXIF')}>Recognize EXIF JPEG silhouette</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected image: decoded pixel resource limit') }}>Try oversized decoded image</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected image: stale decoded asset') }}>Try stale decoded image</button>
+    <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected segmentation: overlapping or too-thin protrusion') }}>Try invalid protrusion segmentation</button>
+    <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected segmentation: noise exceeds bounded curvature budget') }}>Try noisy silhouette segmentation</button>
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
     <button onClick={() => {
       setRecognized(true); setPreview(false); setCandidateShortage(false); setMergedAuthorities(true)
@@ -134,6 +138,7 @@ function Harness() {
     <p role="status">{status}</p>
     {recognized && <p>Contour approximation score: {contourScore}</p>}
     {imageDecode && <p>Decoded image preview: {imageDecode} · body {outline.length} · local 1:3</p>}
+    {segmentation && <p>Deterministic silhouette segmentation: {segmentation}</p>}
     {glbWitness && <section aria-label="GLB geometry witness">
       <p>3D bounds {glbWitness.bounds} · 2D silhouette difference {glbWitness.discrepancy}% · bulge targets {glbWitness.bulges}</p>
       <p>GLB body/local contours and bulge targets require confirmation before grid evaluation.</p>
@@ -184,6 +189,7 @@ function Harness() {
       <button aria-pressed={selectedCandidate === 2} onClick={() => setSelectedCandidate(2)}>Select contour candidate 2</button>
       <p>Contour placement witness candidate {selectedCandidate}: body {outline.length || 4}, local {bindings.filter((binding) => binding.local_outline_tenths_mm).map((binding) => `${binding.id}:${binding.local_outline_tenths_mm!.length}`).join(', ') || 'none'}</p>
       {imageDecode && <p>Image silhouette grid witness: {imageDecode}</p>}
+      {segmentation && <p>Segmented local contour witness: binding 1:3, binding 2:3</p>}
       {glbWitness && <p>GLB evaluation witness: bounds {glbWitness.bounds}, silhouette difference {glbWitness.discrepancy}%, bulges {glbWitness.bulges}</p>}
       {mergedAuthorities && <p>Merged authority witness: image contours + GLB depth/bulges</p>}
       {mergedAuthorities && <p>3D candidate score {threeDimensionalScore}/100 · bounded depth error {depthError} mm</p>}

@@ -243,25 +243,22 @@ pub fn analyze_silhouette_png_rgba_v1(
     let pixels = width as usize * height as usize;
     let mut foreground = vec![false; pixels];
     for (index, pixel) in rgba.chunks_exact(4).enumerate() {
-        match [pixel[0], pixel[1], pixel[2], pixel[3]] {
-            [0, 0, 0, 255] => foreground[index] = true,
-            [_, _, _, 0] => {}
-            _ => return Err(BeginnerRecognitionErrorV1::UnsupportedSilhouette),
-        }
+        let luminance =
+            (u32::from(pixel[0]) * 2126 + u32::from(pixel[1]) * 7152 + u32::from(pixel[2]) * 722)
+                / 10_000;
+        foreground[index] = pixel[3] >= 128 && luminance <= 127;
     }
     let foreground_count = foreground.iter().filter(|value| **value).count();
     if foreground_count < 4 || foreground_count == pixels {
         return Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette);
     }
     let mut visited = vec![false; pixels];
-    let mut component = Vec::new();
+    let mut components = Vec::new();
     for start in 0..pixels {
         if !foreground[start] || visited[start] {
             continue;
         }
-        if !component.is_empty() {
-            return Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette);
-        }
+        let mut component = Vec::new();
         let mut queue = VecDeque::from([start]);
         visited[start] = true;
         while let Some(index) = queue.pop_front() {
@@ -283,7 +280,19 @@ pub fn analyze_silhouette_png_rgba_v1(
                 }
             }
         }
+        components.push(component);
     }
+    components.sort_unstable_by_key(|component| std::cmp::Reverse(component.len()));
+    if components
+        .get(1)
+        .is_some_and(|component| component.len() >= 4)
+    {
+        return Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette);
+    }
+    let component = components
+        .into_iter()
+        .next()
+        .ok_or(BeginnerRecognitionErrorV1::AmbiguousSilhouette)?;
     let min_x = component
         .iter()
         .map(|index| index % width as usize)
@@ -305,6 +314,45 @@ pub fn analyze_silhouette_png_rgba_v1(
         .max()
         .unwrap() as u32;
     if min_x == max_x || min_y == max_y {
+        return Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette);
+    }
+    let mut exterior = vec![false; pixels];
+    let mut queue = VecDeque::new();
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            if x == min_x || x == max_x || y == min_y || y == max_y {
+                let index = y as usize * width as usize + x as usize;
+                if !foreground[index] && !exterior[index] {
+                    exterior[index] = true;
+                    queue.push_back(index);
+                }
+            }
+        }
+    }
+    while let Some(index) = queue.pop_front() {
+        let x = index % width as usize;
+        let y = index / width as usize;
+        for neighbor in [
+            (x > min_x as usize).then(|| index - 1),
+            (x < max_x as usize).then(|| index + 1),
+            (y > min_y as usize).then(|| index - width as usize),
+            (y < max_y as usize).then(|| index + width as usize),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !foreground[neighbor] && !exterior[neighbor] {
+                exterior[neighbor] = true;
+                queue.push_back(neighbor);
+            }
+        }
+    }
+    if (min_y..=max_y).any(|y| {
+        (min_x..=max_x).any(|x| {
+            let index = y as usize * width as usize + x as usize;
+            !foreground[index] && !exterior[index]
+        })
+    }) {
         return Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette);
     }
     let center_x = ((min_x + max_x) / 2) as i32 * 10;
@@ -732,6 +780,25 @@ mod tests {
                 .map(Vec::len),
             Some(4)
         );
+        let mut luminance_with_noise = vec![255_u8; 6 * 6 * 4];
+        for y in 1..=3 {
+            for x in 1..=3 {
+                luminance_with_noise[(y * 6 + x) * 4..(y * 6 + x) * 4 + 4]
+                    .copy_from_slice(&[32, 48, 64, 220]);
+            }
+        }
+        luminance_with_noise[35 * 4..36 * 4].copy_from_slice(&[0, 0, 0, 255]);
+        assert!(
+            analyze_silhouette_png_rgba_v1(
+                UnderlayId::new(),
+                AssetId::new(),
+                [8; 32],
+                6,
+                6,
+                &luminance_with_noise,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -788,7 +855,26 @@ mod tests {
                 2,
                 &[255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             ),
-            Err(BeginnerRecognitionErrorV1::UnsupportedSilhouette)
+            Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette)
+        );
+        let mut holed = vec![255_u8; 5 * 5 * 4];
+        for y in 0..5 {
+            for x in 0..5 {
+                if x == 0 || x == 4 || y == 0 || y == 4 {
+                    holed[(y * 5 + x) * 4..(y * 5 + x) * 4 + 4].copy_from_slice(&[24, 24, 24, 255]);
+                }
+            }
+        }
+        assert_eq!(
+            analyze_silhouette_png_rgba_v1(
+                UnderlayId::new(),
+                AssetId::new(),
+                [0; 32],
+                5,
+                5,
+                &holed,
+            ),
+            Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette)
         );
     }
 

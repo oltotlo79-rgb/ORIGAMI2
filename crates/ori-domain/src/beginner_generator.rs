@@ -2460,6 +2460,23 @@ mod tests {
             BeginnerGeneratedPlanKindV1::SymmetricWingBase
         );
         assert_eq!(plans[0].crease_pattern.edges.len(), 4);
+        let mut asymmetric = constraints.clone();
+        asymmetric.target_category = Some(BeginnerTargetCategoryV1::Animal);
+        let mut left = bilateral_protrusion(1, 1);
+        left.symmetry = BeginnerProtrusionSymmetryV1::None;
+        left.position_tenths_mm = [-4, 0, 0];
+        left.direction_milli = [-1_000, 200, 0];
+        let mut right = bilateral_protrusion(2, 1);
+        right.symmetry = BeginnerProtrusionSymmetryV1::None;
+        right.position_tenths_mm = [5, 1, 0];
+        right.direction_milli = [1_000, -100, 0];
+        asymmetric.protrusions = vec![left, right];
+        let asymmetric_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &asymmetric).unwrap();
+        assert_eq!(
+            asymmetric_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
+        );
         let mut antenna = constraints.clone();
         antenna.target_parts[2].kind = BeginnerTargetPartKindV1::Antenna;
         let antenna_plans = generate_beginner_plans_v1(namespace, &source, &ids, &antenna).unwrap();

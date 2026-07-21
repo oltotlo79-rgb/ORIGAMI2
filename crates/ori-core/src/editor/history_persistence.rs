@@ -325,7 +325,7 @@ enum CommandV1 {
         paper: Paper,
         instruction_timeline: InstructionTimeline,
         project_layers: ProjectLayerDocumentV1,
-        beginner_design_profile: BeginnerDesignProfileV1,
+        beginner_design_profile: Box<BeginnerDesignProfileV1>,
     },
 }
 
@@ -369,7 +369,7 @@ enum InverseV1 {
         paper: Paper,
         instruction_timeline: InstructionTimeline,
         project_layers: ProjectLayerDocumentV1,
-        beginner_design_profile: BeginnerDesignProfileV1,
+        beginner_design_profile: Box<BeginnerDesignProfileV1>,
     },
     RestoreProjectMemo {
         memo: String,
@@ -3272,7 +3272,7 @@ mod tests {
                     paper: paper.clone(),
                     instruction_timeline: timeline.clone(),
                     project_layers: ProjectLayerDocumentV1::default(),
-                    beginner_design_profile: BeginnerDesignProfileV1::default(),
+                    beginner_design_profile: Box::new(BeginnerDesignProfileV1::default()),
                 },
             )
             .unwrap();
@@ -3294,7 +3294,7 @@ mod tests {
                     paper,
                     instruction_timeline: timeline,
                     project_layers: ProjectLayerDocumentV1::default(),
-                    beginner_design_profile: BeginnerDesignProfileV1::default(),
+                    beginner_design_profile: Box::new(BeginnerDesignProfileV1::default()),
                 },
             ),
             Err(CommandError::InvalidStackedFoldDocument)

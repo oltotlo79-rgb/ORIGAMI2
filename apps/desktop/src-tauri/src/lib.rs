@@ -3799,7 +3799,7 @@ fn apply_beginner_generated_plan(
             paper,
             instruction_timeline,
             project_layers,
-            beginner_design_profile,
+            beginner_design_profile: Box::new(beginner_design_profile),
         },
     )
 }
@@ -4048,7 +4048,7 @@ fn apply_grid_plan_document(
             paper,
             instruction_timeline,
             project_layers,
-            beginner_design_profile,
+            beginner_design_profile: Box::new(beginner_design_profile),
         },
     )
 }

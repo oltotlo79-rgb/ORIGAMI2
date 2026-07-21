@@ -286,7 +286,7 @@ pub enum Command {
         paper: Paper,
         instruction_timeline: InstructionTimeline,
         project_layers: ProjectLayerDocumentV1,
-        beginner_design_profile: BeginnerDesignProfileV1,
+        beginner_design_profile: Box<BeginnerDesignProfileV1>,
     },
 }
 
@@ -976,7 +976,7 @@ enum Inverse {
         paper: Paper,
         instruction_timeline: InstructionTimeline,
         project_layers: ProjectLayerDocumentV1,
-        beginner_design_profile: BeginnerDesignProfileV1,
+        beginner_design_profile: Box<BeginnerDesignProfileV1>,
     },
     RestoreProjectMemo {
         memo: String,
@@ -2288,7 +2288,7 @@ impl EditorState {
                 paper,
                 instruction_timeline,
                 project_layers,
-                beginner_design_profile: self.beginner_design_profile.clone(),
+                beginner_design_profile: Box::new(self.beginner_design_profile.clone()),
             },
         )?;
         self.current_applied_pose = Some(applied_pose.clone());
@@ -2426,8 +2426,9 @@ impl EditorState {
                     ),
                     beginner_design_profile: std::mem::replace(
                         &mut self.beginner_design_profile,
-                        beginner_design_profile.clone(),
-                    ),
+                        beginner_design_profile.as_ref().clone(),
+                    )
+                    .into(),
                 })
             }
             Command::UpdateProjectMemo { ref memo } => {
@@ -5208,7 +5209,7 @@ impl EditorState {
                 self.instruction_timeline.clone_from(instruction_timeline);
                 self.project_layers.clone_from(project_layers);
                 self.beginner_design_profile
-                    .clone_from(beginner_design_profile);
+                    .clone_from(beginner_design_profile.as_ref());
             }
             Inverse::RestoreProjectMemo { memo } => {
                 self.project_memo.clone_from(memo);
@@ -6207,8 +6208,10 @@ impl Inverse {
             },
             Self::RestoreStackedFoldDocument {
                 pattern,
+                paper: _,
                 instruction_timeline: _,
-                ..
+                project_layers: _,
+                beginner_design_profile: _,
             } => Changes {
                 vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
                 edges: pattern.edges.iter().map(|edge| edge.id).collect(),

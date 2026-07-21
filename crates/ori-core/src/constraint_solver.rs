@@ -277,10 +277,15 @@ fn rank_diagnostics(
         matrix.swap(rank, pivot);
         smallest = smallest.min(value);
         largest = largest.max(value);
-        for row in (rank + 1)..matrix.len() {
-            let factor = matrix[row][column] / matrix[rank][column];
-            for index in column..columns {
-                matrix[row][index] -= factor * matrix[rank][index];
+        let (processed, remaining) = matrix.split_at_mut(rank + 1);
+        let pivot_row = &processed[rank];
+        for row in remaining {
+            let factor = row[column] / pivot_row[column];
+            for (value, pivot) in row[column..columns]
+                .iter_mut()
+                .zip(&pivot_row[column..columns])
+            {
+                *value -= factor * pivot;
             }
         }
         rank += 1;
@@ -643,15 +648,19 @@ fn solve_dense(
             *value /= divisor;
         }
         rhs[column] /= divisor;
-        for row in 0..dimension {
-            if row == column {
+        let pivot_row = matrix[column].clone();
+        for (row_index, row) in matrix.iter_mut().enumerate() {
+            if row_index == column {
                 continue;
             }
-            let factor = matrix[row][column];
-            for index in column..dimension {
-                matrix[row][index] -= factor * matrix[column][index];
+            let factor = row[column];
+            for (value, pivot) in row[column..dimension]
+                .iter_mut()
+                .zip(&pivot_row[column..dimension])
+            {
+                *value -= factor * pivot;
             }
-            rhs[row] -= factor * rhs[column];
+            rhs[row_index] -= factor * rhs[column];
         }
     }
     if rhs.iter().all(|value| value.is_finite()) {

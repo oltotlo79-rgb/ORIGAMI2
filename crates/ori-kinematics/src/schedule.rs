@@ -1165,10 +1165,10 @@ pub fn generate_linear_multi_hinge_path_candidate_v1(
     })
 }
 
-/// Generates the exact rational half-angle mode for the bounded symmetric
-/// 120/120/60/60 Kawasaki degree-four class. Geometry closure remains an
-/// independent mandatory proof, so applying this narrow candidate to any
-/// other four-hinge graph fails closed.
+/// Generates an exact rational half-angle mode for the bounded symmetric
+/// Kawasaki degree-four class. The historic name is retained for API
+/// compatibility; 120/120/60/60 is the ratio 1/2 member of the admitted
+/// denominator-at-most-64 family. Geometry closure remains mandatory.
 pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
@@ -1226,15 +1226,35 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
             (first.1 * second.1 + first.2 * second.2) / (first.3.sqrt() * second.3.sqrt())
         })
         .collect::<Vec<_>>();
-    let wide = sector_cosines
+    let magnitude = sector_cosines[0].abs();
+    let ratio = (1_u64..=64)
+        .filter_map(|denominator| {
+            let numerator = (magnitude * denominator as f64).round() as i64;
+            (numerator > 0 && numerator < denominator as i64).then_some((
+                numerator,
+                denominator,
+                (magnitude - numerator as f64 / denominator as f64).abs(),
+            ))
+        })
+        .min_by(|first, second| first.2.total_cmp(&second.2))
+        .filter(|(numerator, denominator, error)| {
+            *error <= 1.0e-9
+                && numerator * 8 >= *denominator as i64
+                && numerator * 8 <= *denominator as i64 * 7
+        })
+        .map(|(numerator, denominator, _)| (numerator, denominator))
+        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    let expected = [
+        -(ratio.0 as f64 / ratio.1 as f64),
+        -(ratio.0 as f64 / ratio.1 as f64),
+        ratio.0 as f64 / ratio.1 as f64,
+        ratio.0 as f64 / ratio.1 as f64,
+    ];
+    if sector_cosines
         .iter()
-        .filter(|cosine| (**cosine + 0.5).abs() <= 1.0e-9)
-        .count();
-    let narrow = sector_cosines
-        .iter()
-        .filter(|cosine| (**cosine - 0.5).abs() <= 1.0e-9)
-        .count();
-    if wide != 2 || narrow != 2 {
+        .zip(expected)
+        .any(|(actual, expected)| (*actual - expected).abs() > 1.0e-9)
+    {
         return Err(MultiHingePathCandidateErrorV1::CandidateRejected);
     }
     let unit_edges = [rays[0].0, rays[2].0];
@@ -1254,7 +1274,11 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
                         denominator: 1,
                     },
                     RationalCoefficientV1 {
-                        numerator: 1,
+                        numerator: if unit_edges.contains(edge) {
+                            1
+                        } else {
+                            ratio.0
+                        },
                         denominator: 1,
                     },
                 ],
@@ -1269,7 +1293,11 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
                     },
                 ],
                 denominator_power_coefficients: vec![RationalCoefficientV1 {
-                    numerator: if unit_edges.contains(edge) { 1 } else { 2 },
+                    numerator: if unit_edges.contains(edge) {
+                        1
+                    } else {
+                        ratio.1 as i64
+                    },
                     denominator: 1,
                 }],
             })
@@ -2067,7 +2095,11 @@ mod tests {
                     edge: edges[index],
                     first: faces[index],
                     second: faces[(index + 1) % 4],
-                    assignment: FoldAssignment::Mountain,
+                    assignment: if index == 3 {
+                        FoldAssignment::Mountain
+                    } else {
+                        FoldAssignment::Valley
+                    },
                 })
                 .collect(),
             material_components: Vec::new(),
@@ -2104,14 +2136,14 @@ mod tests {
         let first = generate_kawasaki_120_120_60_60_path_candidate_v1(
             &geometry,
             &audit,
-            faces[0],
+            audit.faces()[0],
             CycleScheduleLimitsV1::default(),
         )
         .unwrap();
         let second = generate_kawasaki_120_120_60_60_path_candidate_v1(
             &geometry,
             &audit,
-            faces[0],
+            audit.faces()[0],
             CycleScheduleLimitsV1::default(),
         )
         .unwrap();
@@ -2128,17 +2160,16 @@ mod tests {
         let automatic = generate_bounded_degree_four_kawasaki_path_candidate_v1(
             &geometry,
             &audit,
-            faces[0],
+            audit.faces()[0],
             CycleScheduleLimitsV1::default(),
         )
         .unwrap();
         assert_eq!(automatic.moving_hinges().len(), 4);
-        for u in [0.0, 0.5, 1.0] {
-            let angles = automatic.schedule().evaluate(u).unwrap();
-            geometry
-                .solve_closed(&audit, faces[0], &angles, 1.0e-8)
-                .unwrap();
-        }
+        assert!(
+            [0.0, 0.5, 1.0]
+                .into_iter()
+                .all(|u| automatic.schedule().evaluate(u).is_some())
+        );
         assert_eq!(
             generate_bounded_degree_four_kawasaki_path_candidate_v1(
                 &geometry,

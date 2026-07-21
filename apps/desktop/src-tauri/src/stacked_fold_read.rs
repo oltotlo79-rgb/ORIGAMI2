@@ -191,6 +191,33 @@ pub(super) struct LiveHingeRegistryResponseV1 {
 struct LinearCandidateRequestV1 {
     version: u32,
     entries: Vec<LinearCandidateEntryRequestV1>,
+    #[serde(default)]
+    exact_dyadic_path_v1: Option<ExactDyadicPathRequestV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExactDyadicPathRequestV1 {
+    version: u32,
+    segments: Vec<ExactDyadicSegmentRequestV1>,
+    max_pair_tests: usize,
+    max_denominator_power: u32,
+    max_integer_bits: usize,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExactDyadicSegmentRequestV1 {
+    start: ExactDyadicPointRequestV1,
+    end: ExactDyadicPointRequestV1,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExactDyadicPointRequestV1 {
+    x_numerator: i128,
+    y_numerator: i128,
+    denominator_power: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -906,6 +933,47 @@ fn validate_request_resource_shape_v1(
         return Err(CYCLE_PATH_RESOURCE_MESSAGE);
     }
     Ok(())
+}
+
+fn validate_exact_dyadic_candidate_path_v1(
+    request: &ExactDyadicPathRequestV1,
+) -> Result<(), &'static str> {
+    if request.version != 1 || request.segments.is_empty() {
+        return Err(CYCLE_PATH_RESOURCE_MESSAGE);
+    }
+    let segments = request
+        .segments
+        .iter()
+        .map(|segment| {
+            let point = |value: ExactDyadicPointRequestV1| ori_collision::DyadicPointV1 {
+                x_numerator: value.x_numerator,
+                y_numerator: value.y_numerator,
+                denominator_power: value.denominator_power,
+            };
+            ori_collision::DyadicSegmentV1 {
+                start: point(segment.start),
+                end: point(segment.end),
+            }
+        })
+        .collect::<Vec<_>>();
+    match ori_collision::classify_exact_dyadic_path_self_intersection_v1(
+        &segments,
+        ori_collision::ExactDyadicIntersectionLimitsV1 {
+            max_denominator_power: request.max_denominator_power,
+            max_integer_bits: request.max_integer_bits,
+        },
+        request.max_pair_tests,
+    ) {
+        Ok(None) => Ok(()),
+        Ok(Some(_)) => Err(CYCLE_PATH_UNCERTIFIED_MESSAGE),
+        Err(ori_collision::ExactDyadicPathIntersectionErrorV1::ResourceLimit) => {
+            Err(CYCLE_PATH_RESOURCE_MESSAGE)
+        }
+        Err(ori_collision::ExactDyadicPathIntersectionErrorV1::Cancelled) => Err(CANCELLED_MESSAGE),
+        Err(ori_collision::ExactDyadicPathIntersectionErrorV1::InvalidSegment) => {
+            Err(CYCLE_PATH_UNCERTIFIED_MESSAGE)
+        }
+    }
 }
 
 fn requires_graph_schedule_boundary_v1(
@@ -1741,6 +1809,10 @@ async fn propose_current_stacked_fold_read_inner(
                         .linear_candidate_v1
                         .as_ref()
                         .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+                    if let Some(exact_path) = linear.exact_dyadic_path_v1.as_ref() {
+                        validate_exact_dyadic_candidate_path_v1(exact_path)
+                            .map_err(str::to_owned)?;
+                    }
                     let (initial_angles, requested_angles) =
                         validate_linear_candidate_angles_v1(linear, initial.pose().hinge_angles())
                             .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
@@ -3280,6 +3352,7 @@ mod tests {
         .unwrap();
         let request = LinearCandidateRequestV1 {
             version: 1,
+            exact_dyadic_path_v1: None,
             entries: vec![LinearCandidateEntryRequestV1 {
                 edge,
                 initial_angle_degrees: 20.0,
@@ -3292,6 +3365,7 @@ mod tests {
 
         let mismatch = LinearCandidateRequestV1 {
             version: 1,
+            exact_dyadic_path_v1: None,
             entries: vec![LinearCandidateEntryRequestV1 {
                 edge,
                 initial_angle_degrees: f64::from_bits(20.0f64.to_bits() + 1),
@@ -3301,9 +3375,55 @@ mod tests {
         assert!(validate_linear_candidate_angles_v1(&mismatch, &live).is_err());
         let wrong_version = LinearCandidateRequestV1 {
             version: 2,
+            exact_dyadic_path_v1: None,
             entries: request.entries,
         };
         assert!(validate_linear_candidate_angles_v1(&wrong_version, &live).is_err());
+    }
+
+    #[test]
+    fn exact_dyadic_candidate_preflight_rejects_crossing_and_allows_endpoint_touch() {
+        let point = |x, y, power| ExactDyadicPointRequestV1 {
+            x_numerator: x,
+            y_numerator: y,
+            denominator_power: power,
+        };
+        let path = |second| ExactDyadicPathRequestV1 {
+            version: 1,
+            segments: vec![
+                ExactDyadicSegmentRequestV1 {
+                    start: point(0, 0, 0),
+                    end: point(2, 0, 0),
+                },
+                second,
+            ],
+            max_pair_tests: 1,
+            max_denominator_power: 80,
+            max_integer_bits: 256,
+        };
+        assert_eq!(
+            validate_exact_dyadic_candidate_path_v1(&path(ExactDyadicSegmentRequestV1 {
+                start: point(1, -1, 80),
+                end: point(1, 1, 80),
+            })),
+            Err(CYCLE_PATH_UNCERTIFIED_MESSAGE)
+        );
+        assert_eq!(
+            validate_exact_dyadic_candidate_path_v1(&path(ExactDyadicSegmentRequestV1 {
+                start: point(2, 0, 0),
+                end: point(3, 1, 0),
+            })),
+            Ok(())
+        );
+        let mut bounded = path(ExactDyadicSegmentRequestV1 {
+            start: point(1, 1, 80),
+            end: point(1, 2, 80),
+        });
+        bounded.max_pair_tests = 0;
+        assert_eq!(
+            validate_exact_dyadic_candidate_path_v1(&bounded),
+            Err(CYCLE_PATH_RESOURCE_MESSAGE)
+        );
     }
 
     #[test]
@@ -3452,6 +3572,7 @@ mod tests {
         );
         let request = LinearCandidateRequestV1 {
             version: 1,
+            exact_dyadic_path_v1: None,
             entries: registry
                 .iter()
                 .map(|entry| LinearCandidateEntryRequestV1 {

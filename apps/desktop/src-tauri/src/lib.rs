@@ -3938,6 +3938,50 @@ fn derive_reference_model_suggestion_v1(
             }
         }
     }
+    let generic_feature_parts = target_parts
+        .iter()
+        .filter(|part| {
+            !matches!(
+                part.kind,
+                ori_domain::BeginnerTargetPartKindV1::Head
+                    | ori_domain::BeginnerTargetPartKindV1::Torso
+            )
+        })
+        .collect::<Vec<_>>();
+    if !requested_complete_animal
+        && !requested_wing_antenna
+        && (2..=8).contains(&generic_feature_parts.len())
+    {
+        protrusions = generic_feature_parts
+            .iter()
+            .enumerate()
+            .map(|(index, part)| {
+                if !matches!(part.count, 1 | 2 | 4) {
+                    return Err("reference_model_feature_range".to_owned());
+                }
+                let mut target = base.clone();
+                target.id = index as u16 + 1;
+                target.count = part.count;
+                target.symmetry = if part.count == 1 {
+                    ori_domain::BeginnerProtrusionSymmetryV1::None
+                } else {
+                    ori_domain::BeginnerProtrusionSymmetryV1::Bilateral
+                };
+                target.direction_milli = if matches!(
+                    part.kind,
+                    ori_domain::BeginnerTargetPartKindV1::Horn
+                        | ori_domain::BeginnerTargetPartKindV1::Antenna
+                        | ori_domain::BeginnerTargetPartKindV1::Leg
+                ) {
+                    [0, if part.count == 1 { -1000 } else { 1000 }, 0]
+                } else {
+                    [1000, 0, 0]
+                };
+                target.priority = 50_u8.saturating_add(index as u8 * 5);
+                Ok(target)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+    }
     let pair_bindings = protrusions
         .iter()
         .filter(|target| target.symmetry == ori_domain::BeginnerProtrusionSymmetryV1::Bilateral)
@@ -11220,6 +11264,39 @@ mod tests {
                 &asymmetric,
                 Some(ori_domain::BeginnerTargetCategoryV1::Insect),
                 &complete_parts,
+            )
+            .is_err()
+        );
+        let generic_parts = [
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Leg,
+                count: 4,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Fin,
+                count: 2,
+            },
+        ];
+        let generic = derive_reference_model_suggestion_v1(
+            AssetId::new(),
+            &geometry,
+            Some(ori_domain::BeginnerTargetCategoryV1::Animal),
+            &generic_parts,
+        )
+        .expect("bounded generic GLB suggestion");
+        assert_eq!(generic.protrusions.len(), 2);
+        assert_eq!(generic.protrusions[0].id, 1);
+        assert_eq!(generic.protrusions[0].count, 4);
+        assert_eq!(generic.protrusions[1].id, 2);
+        assert_eq!(generic.protrusions[1].count, 2);
+        let mut unsupported_generic_parts = generic_parts;
+        unsupported_generic_parts[1].count = 8;
+        assert!(
+            derive_reference_model_suggestion_v1(
+                AssetId::new(),
+                &geometry,
+                Some(ori_domain::BeginnerTargetCategoryV1::Animal),
+                &unsupported_generic_parts,
             )
             .is_err()
         );

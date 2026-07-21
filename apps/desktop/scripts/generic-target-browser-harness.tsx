@@ -32,6 +32,8 @@ function Harness() {
   const [imageDecode, setImageDecode] = useState<string | null>(null)
   const [segmentation, setSegmentation] = useState<string | null>(null)
   const [acceptedSegments, setAcceptedSegments] = useState<number[]>([1, 2])
+  const [confidence, setConfidence] = useState<{ score: number, reason: string, low: boolean } | null>(null)
+  const [confidenceOverride, setConfidenceOverride] = useState(false)
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
     + bindings.reduce((sum, target) => sum + Math.max(0, (target.local_outline_tenths_mm?.length ?? 3) - 3), 0))
@@ -87,7 +89,9 @@ function Harness() {
       setImageDecode(source === 'JPEG EXIF' ? 'JPEG RGB · EXIF orientation 6 normalized' : 'PNG RGBA · alpha/luminance mask')
       setSegmentation('2 protrusions · binding 1 asymmetric · binding 2 bilateral')
       setAcceptedSegments([1, 2])
-    } else { setImageDecode(null); setSegmentation(null) }
+      setConfidence({ score: 88, reason: 'dominant_component, bounded_simplification_error', low: false })
+      setConfidenceOverride(false)
+    } else { setImageDecode(null); setSegmentation(null); setConfidence(null) }
     if (source === 'GLB') {
       setOutlineMode('general'); setOutline([[-60, -40], [60, -40], [55, 40], [-50, 40]])
       setBindings(initialBindings.map((target) => ({ ...target,
@@ -99,6 +103,8 @@ function Harness() {
     <button onClick={() => recognize('Empty generic target')}>Create empty generic target</button>
     <button onClick={() => recognize('Image')}>Recognize mixed target image</button>
     <button onClick={() => recognize('JPEG EXIF')}>Recognize EXIF JPEG silhouette</button>
+    <button onClick={() => { recognize('JPEG EXIF'); setConfidence({ score: 42, reason: 'low_component_ratio, bounded_curvature', low: true }) }}>Recognize low confidence JPEG</button>
+    <button onClick={() => setStatus('Rejected confidence: tampered score or reason')}>Try tampered confidence</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected image: decoded pixel resource limit') }}>Try oversized decoded image</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected image: stale decoded asset') }}>Try stale decoded image</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected segmentation: overlapping or too-thin protrusion') }}>Try invalid protrusion segmentation</button>
@@ -141,6 +147,13 @@ function Harness() {
     {recognized && <p>Contour approximation score: {contourScore}</p>}
     {imageDecode && <p>Decoded image preview: {imageDecode} · body {outline.length} · local 1:3</p>}
     {segmentation && <p>Deterministic silhouette segmentation: {segmentation}</p>}
+    {confidence && <section aria-label="Recognition confidence"><p>Confidence {confidence.score}/100 · {confidence.reason}</p>
+      {confidence.low && <label><input type="checkbox" aria-label="Override low confidence" checked={confidenceOverride}
+        onChange={(event) => setConfidenceOverride(event.target.checked)} />Explicitly override low confidence</label>}
+      <button onClick={() => setStatus(confidence.low && !confidenceOverride
+        ? 'Low confidence copy blocked without override'
+        : `Confidence authority copied: ${confidence.score}/100 · ${confidence.reason}`)}>Copy recognized confidence authority</button>
+    </section>}
     {segmentation && <fieldset><legend>Confirm segmented protrusions</legend>
       {[1, 2].map((id) => <label key={id}><input type="checkbox"
         aria-label={`Accept segmented protrusion ${id}`} checked={acceptedSegments.includes(id)}
@@ -202,6 +215,7 @@ function Harness() {
       <p>Contour placement witness candidate {selectedCandidate}: body {outline.length || 4}, local {bindings.filter((binding) => binding.local_outline_tenths_mm).map((binding) => `${binding.id}:${binding.local_outline_tenths_mm!.length}`).join(', ') || 'none'}</p>
       {imageDecode && <p>Image silhouette grid witness: {imageDecode}</p>}
       {segmentation && <p>Segmented local contour witness: binding 1:3, binding 2:3</p>}
+      {confidence && <p>Confidence authority witness: {confidence.score}/100 · {confidence.reason}</p>}
       {glbWitness && <p>GLB evaluation witness: bounds {glbWitness.bounds}, silhouette difference {glbWitness.discrepancy}%, bulges {glbWitness.bulges}</p>}
       {mergedAuthorities && <p>Merged authority witness: image contours + GLB depth/bulges</p>}
       {mergedAuthorities && <p>3D candidate score {threeDimensionalScore}/100 · bounded depth error {depthError} mm</p>}

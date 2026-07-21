@@ -87,7 +87,8 @@ pub struct StaticCollisionLimits {
     /// Maximum number of zero-thickness hinge pairs submitted to the
     /// watertight exact boundary-only contact theorem.
     pub max_shared_hinge_boundary_diagnostics: usize,
-    /// Maximum number of complete two-face/one-hinge solid diagnostics.
+    /// Maximum number of positive-thickness shared-hinge and shared-vertex
+    /// corridor diagnostics in the complete unordered-pair scan.
     ///
     /// Each admitted diagnostic is additionally constrained by fixed,
     /// non-expandable phase-local exact-arithmetic limits.
@@ -123,7 +124,7 @@ impl Default for StaticCollisionLimits {
             max_rational_output_bits: 32_768,
             max_total_rational_output_bits: 1_073_741_824,
             max_shared_hinge_boundary_diagnostics: 10_000,
-            max_shared_hinge_solid_diagnostics: 64,
+            max_shared_hinge_solid_diagnostics: 120,
         }
     }
 }
@@ -842,6 +843,14 @@ pub fn prove_static_collision_geometry(
                         && hinge.right_face() == pair.first_face)
             });
             if let Some(hinge) = shared_hinge {
+                if face_count > 2
+                    && matches!(
+                        pair.disposition,
+                        PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed
+                    )
+                {
+                    continue;
+                }
                 let classified = diagnose_bound_shared_hinge_solid_for_edge_v1(
                     bound,
                     paper_thickness_mm,

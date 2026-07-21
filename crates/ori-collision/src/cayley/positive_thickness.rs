@@ -1872,15 +1872,6 @@ pub(crate) fn diagnose_bound_positive_thickness_prism_pairs_v1(
             else {
                 return Err(SharedHingeSolidDiagnosticErrorV1::InconsistentPose);
             };
-            let intersection = analyze_exact_prism_pair_v1(
-                &first_prism,
-                &second_prism,
-                ExactPrismLimits::default(),
-            )
-            .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
-            let intersection = intersection
-                .intersection
-                .ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?;
             let mut shared_vertices = [None, None, None];
             let mut shared_vertex_count = 0;
             for entry in &exact.faces[first].boundary {
@@ -1893,6 +1884,108 @@ pub(crate) fn diagnose_bound_positive_thickness_prism_pairs_v1(
                     shared_vertex_count += 1;
                 }
             }
+            let bounds = |input: &ExactTriangularPrismInput| {
+                let mut lower: [Option<BigRational>; 3] = [None, None, None];
+                let mut upper: [Option<BigRational>; 3] = [None, None, None];
+                for point in &input.mid_surface {
+                    for sign in [-1_i8, 1_i8] {
+                        for axis in 0..3 {
+                            let offset =
+                                &input.material_normal.coordinates[axis] * &input.half_thickness;
+                            let value = if sign < 0 {
+                                &point.coordinates[axis] - offset
+                            } else {
+                                &point.coordinates[axis] + offset
+                            };
+                            lower[axis] = Some(lower[axis].as_ref().map_or_else(
+                                || value.clone(),
+                                |current| current.min(&value).clone(),
+                            ));
+                            upper[axis] = Some(upper[axis].as_ref().map_or_else(
+                                || value.clone(),
+                                |current| current.max(&value).clone(),
+                            ));
+                        }
+                    }
+                }
+                (
+                    lower.map(|value| value.expect("a triangular prism has vertices")),
+                    upper.map(|value| value.expect("a triangular prism has vertices")),
+                )
+            };
+            let (first_lower, first_upper) = bounds(&first_prism);
+            let (second_lower, second_upper) = bounds(&second_prism);
+            let intersection_lower: [BigRational; 3] = std::array::from_fn(|axis| {
+                if first_lower[axis] >= second_lower[axis] {
+                    first_lower[axis].clone()
+                } else {
+                    second_lower[axis].clone()
+                }
+            });
+            let intersection_upper: [BigRational; 3] = std::array::from_fn(|axis| {
+                if first_upper[axis] <= second_upper[axis] {
+                    first_upper[axis].clone()
+                } else {
+                    second_upper[axis].clone()
+                }
+            });
+            if (0..3).any(|axis| intersection_lower[axis] > intersection_upper[axis]) {
+                result.push(PositiveThicknessPrismPairDiagnosticV1 {
+                    first_face: exact.faces[first].face,
+                    second_face: exact.faces[second].face,
+                    disposition: PositiveThicknessPrismPairDispositionV1::Separated,
+                });
+                continue;
+            }
+            let radius = &half_thickness
+                * BigRational::from_integer(
+                    SHARED_FEATURE_CORRIDOR_HALF_EXTENT_MULTIPLIER_V1.into(),
+                );
+            let aabb_corridor_disposition = if shared_vertex_count == 1 {
+                let center = &shared_vertices[0].expect("one counted shared vertex").1;
+                (0..3)
+                    .all(|axis| {
+                        intersection_lower[axis] >= center.coordinates[axis].clone() - &radius
+                            && intersection_upper[axis]
+                                <= center.coordinates[axis].clone() + &radius
+                    })
+                    .then_some(PositiveThicknessPrismPairDispositionV1::SharedVertexCorridorAllowed)
+            } else if shared_vertex_count == 2 {
+                let first_shared = shared_vertices[0].expect("two counted shared vertices");
+                let second_shared = shared_vertices[1].expect("two counted shared vertices");
+                (0..3)
+                    .all(|axis| {
+                        let first_coordinate = &first_shared.1.coordinates[axis];
+                        let second_coordinate = &second_shared.1.coordinates[axis];
+                        let (lower, upper) = if first_coordinate <= second_coordinate {
+                            (first_coordinate, second_coordinate)
+                        } else {
+                            (second_coordinate, first_coordinate)
+                        };
+                        intersection_lower[axis] >= lower - &radius
+                            && intersection_upper[axis] <= upper + &radius
+                    })
+                    .then_some(PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed)
+            } else {
+                None
+            };
+            if let Some(disposition) = aabb_corridor_disposition {
+                result.push(PositiveThicknessPrismPairDiagnosticV1 {
+                    first_face: exact.faces[first].face,
+                    second_face: exact.faces[second].face,
+                    disposition,
+                });
+                continue;
+            }
+            let intersection = analyze_exact_prism_pair_v1(
+                &first_prism,
+                &second_prism,
+                ExactPrismLimits::default(),
+            )
+            .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+            let intersection = intersection
+                .intersection
+                .ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?;
             let shared_vertex_corridor = (shared_vertex_count == 1).then(|| {
                 let center = &shared_vertices[0].expect("one counted shared vertex").1;
                 let radius = &half_thickness

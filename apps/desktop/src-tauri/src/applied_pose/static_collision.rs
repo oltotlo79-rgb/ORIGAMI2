@@ -679,10 +679,9 @@ fn prepare_static_collision_for_diagnostic(
             }));
         }
     };
-    if snapshot.expected_unordered_face_pairs() == 0 {
-        // The public proof success set is currently exactly this allocation-
-        // free single-face case. Mint through the authoritative proof entry
-        // instead of reconstructing its opaque identity from diagnostics.
+    if prove_static_collision_geometry(model, pose, paper_thickness_mm, limits).is_ok() {
+        // Mint through the authoritative proof entry instead of reconstructing
+        // opaque safe authority from the read-only pair snapshot.
         return prepare_static_collision(capability, limits);
     }
     let error = blocking_error_from_diagnostic_snapshot(&snapshot, paper_thickness_mm);
@@ -1847,6 +1846,54 @@ mod tests {
             encoded["firstProvenPenetratingPair"]["secondFaceId"],
             serde_json::to_value(expected_pair[1]).expect("serialize second face")
         );
+    }
+
+    #[test]
+    fn positive_thickness_three_face_current_pose_mints_and_reports_safe_certificate() {
+        let (project, hinges) = midpoint_mountain_400mm_project_with_thickness(1.0);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze()
+            .simulation_snapshot()
+            .expect("three-face midpoint topology")
+            .clone();
+        let mut complete_hinge_angles = hinges
+            .into_iter()
+            .map(|edge_id| NativePoseHingeAngleRequest {
+                edge_id,
+                angle_degrees: 0.0,
+            })
+            .collect::<Vec<_>>();
+        complete_hinge_angles.sort_by_key(|angle| angle.edge_id.canonical_bytes());
+        let request = NativePoseRequest {
+            expected_project_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: project.editor.revision(),
+            fixed_face_id: Some(topology.faces[0].id),
+            complete_hinge_angles,
+        };
+        let state = AppState::new(project);
+        let applied = tauri::async_runtime::block_on(
+            crate::applied_pose::apply_current_native_pose(&state, request),
+        )
+        .expect("production native-pose adoption");
+        let certificate =
+            certify_current_static_collision(&state, StaticCollisionLimits::default())
+                .expect("current proof preparation")
+                .expect("current positive-thickness certificate");
+        assert!(!certificate.authorizes_project_mutation());
+        assert!(!certificate.authorizes_sim_010());
+        let diagnosis = tauri::async_runtime::block_on(
+            inspect_current_static_collision_with_limits(&state, StaticCollisionLimits::default()),
+        )
+        .expect("current safe diagnosis");
+        assert_eq!(diagnosis.binding, Some(applied.binding));
+        assert_eq!(
+            diagnosis.status,
+            CurrentStaticCollisionDiagnosticStatus::CertifiedNonblocking
+        );
+        assert_eq!(diagnosis.expected_unordered_face_pairs, Some(3));
     }
 
     #[test]

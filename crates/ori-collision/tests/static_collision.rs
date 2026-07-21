@@ -27,6 +27,11 @@ struct TwoHingeFixture {
     hinges: [EdgeId; 2],
 }
 
+struct TriangleFanFixture {
+    model: MaterialTreeKinematicsModel,
+    hinges: Vec<EdgeId>,
+}
+
 fn vertex_id(index: u64) -> VertexId {
     serde_json::from_str(&format!("\"00000000-0000-4000-8000-{index:012x}\""))
         .expect("fixed vertex id")
@@ -175,6 +180,67 @@ fn two_hinge_fixture(
     TwoHingeFixture {
         model,
         hinges: [hinges[0].id, hinges[1].id],
+    }
+}
+
+fn triangle_fan_fixture(face_count: usize, reverse_source: bool) -> TriangleFanFixture {
+    let mut vertices = (0..face_count + 2)
+        .map(|index| {
+            let x = index as f64 * 20.0;
+            vertex(index as u64 + 100, x, x * x / 400.0)
+        })
+        .collect::<Vec<_>>();
+    let boundary = vertices.iter().map(|entry| entry.id).collect::<Vec<_>>();
+    let mut edges = (0..boundary.len())
+        .map(|index| {
+            edge(
+                index as u64 + 100,
+                boundary[index],
+                boundary[(index + 1) % boundary.len()],
+                EdgeKind::Boundary,
+            )
+        })
+        .collect::<Vec<_>>();
+    let hinges = (2..boundary.len() - 1)
+        .map(|index| {
+            edge(
+                index as u64 + 200,
+                boundary[0],
+                boundary[index],
+                EdgeKind::Mountain,
+            )
+        })
+        .collect::<Vec<_>>();
+    let hinge_ids = hinges.iter().map(|hinge| hinge.id).collect::<Vec<_>>();
+    edges.extend(hinges);
+    if reverse_source {
+        vertices.reverse();
+        edges.reverse();
+    }
+    let pattern = CreasePattern { vertices, edges };
+    let paper = Paper {
+        boundary_vertices: boundary,
+        ..Paper::default()
+    };
+    let report = analyze_faces(FaceExtractionInput {
+        identity_namespace: project_id_variant(face_count as u64 + 20),
+        source_revision: face_count as u64,
+        paper: &paper,
+        pattern: &pattern,
+    });
+    assert!(report.issues.is_empty(), "{:?}", report.issues);
+    let topology = report.snapshot.expect("fan topology");
+    let model = MaterialTreeKinematicsModel::prepare(
+        &pattern,
+        &paper,
+        &topology,
+        TreeKinematicsLimits::default(),
+    )
+    .expect("fan model");
+    assert_eq!(model.face_ids().len(), face_count);
+    TriangleFanFixture {
+        model,
+        hinges: hinge_ids,
     }
 }
 
@@ -1105,6 +1171,57 @@ fn three_face_positive_thickness_proof_admits_the_finite_vertex_corridor() {
                     thickness,
                     StaticCollisionLimits {
                         max_shared_hinge_solid_diagnostics: 2,
+                        ..StaticCollisionLimits::default()
+                    },
+                ),
+                Err(StaticCollisionError::ResourceLimitExceeded)
+            ));
+        }
+    }
+}
+
+#[test]
+fn four_to_sixteen_face_positive_thickness_fans_scan_every_pair() {
+    for (face_count, reverse_source, reverse_root, thickness) in [
+        (4, false, false, 0.1),
+        (8, true, true, 1.0),
+        (16, false, true, 3.0),
+    ] {
+        let fixture = triangle_fan_fixture(face_count, reverse_source);
+        let root = if reverse_root {
+            *fixture.model.face_ids().last().unwrap()
+        } else {
+            fixture.model.face_ids()[0]
+        };
+        let angles = CanonicalHingeAngles::new(
+            fixture
+                .hinges
+                .iter()
+                .copied()
+                .map(|hinge| HingeAngle::new(hinge, 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = fixture.model.solve(Some(root), &angles).unwrap();
+        let expected_pairs = face_count * (face_count - 1) / 2;
+        let proof = prove_static_collision_geometry(
+            &fixture.model,
+            &pose,
+            thickness,
+            StaticCollisionLimits::default(),
+        )
+        .expect("bounded fan proof");
+        assert_eq!(proof.expected_unordered_face_pairs(), expected_pairs);
+        assert_eq!(proof.analyzed_unordered_face_pairs(), expected_pairs);
+        assert!(proof.is_for_geometry(&fixture.model, &pose, thickness));
+        if face_count == 16 {
+            assert!(matches!(
+                prove_static_collision_geometry(
+                    &fixture.model,
+                    &pose,
+                    thickness,
+                    StaticCollisionLimits {
+                        max_shared_hinge_solid_diagnostics: expected_pairs - 1,
                         ..StaticCollisionLimits::default()
                     },
                 ),

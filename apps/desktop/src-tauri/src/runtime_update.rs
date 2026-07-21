@@ -175,13 +175,21 @@ impl<A: Adapter> Updater<A> {
         if self.cancelled {
             return Err("offline");
         }
-        self.adapter
-            .stage_atomic(&feed.asset_name, &response.body)
-            .map_err(|_| "disk")?;
-        self.adapter
-            .write_pending(&feed.sha256)
-            .map_err(|_| "disk")?;
-        self.adapter.flush().map_err(|_| "disk")?;
+        let staging = (|| {
+            self.adapter
+                .stage_atomic(&feed.asset_name, &response.body)
+                .map_err(|_| "disk")?;
+            self.adapter
+                .write_pending(&feed.sha256)
+                .map_err(|_| "disk")?;
+            self.adapter.flush().map_err(|_| "disk")
+        })();
+        if staging.is_err() {
+            let _ = self.adapter.rollback();
+            let _ = self.adapter.clear_pending();
+            let _ = self.adapter.flush();
+            return Err("disk");
+        }
         self.staged = true;
         Ok("verified")
     }

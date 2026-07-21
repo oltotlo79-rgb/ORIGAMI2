@@ -645,6 +645,8 @@ jobs:
           set -euo pipefail
           ulimit -c 0
           echo "::add-mask::$GH_TOKEN"
+          [[ "$GH_REPO" =~ ^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$ ]]
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           created_release_id=''
           draft_created=false
           transaction_name="ORIGAMI2 draft transaction $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -769,6 +771,7 @@ jobs:
             -F prerelease="$publish_prerelease" -F body=@"$public_notes_file" >/dev/null
           published="$RUNNER_TEMP/published-release.json"
           published_headers="$RUNNER_TEMP/published-release.headers"
+          test "$published" != "$published_headers"
           verify_release_api_headers() {
             response_headers="$1"
             response_status="$2"
@@ -812,6 +815,7 @@ jobs:
           test "$publish_verified" = true
           tagged_published="$RUNNER_TEMP/tagged-published-release.json"
           tagged_headers="$RUNNER_TEMP/tagged-published-release.headers"
+          test "$tagged_published" != "$tagged_headers"
           tagged_status="$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
             --connect-timeout 15 --max-time 60 \
             --max-redirs 0 --max-filesize 1048576 \

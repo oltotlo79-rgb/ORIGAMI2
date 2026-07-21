@@ -215,6 +215,10 @@ test('release publication uses a bounded rollback-safe draft transaction', () =>
   assert.match(publish, /Cache-Control: no-cache/u)
   assert.match(publish, /verify_release_api_headers\(\)/u)
   assert.match(publish, /verify_release_response_headers\.mjs "\$response_headers" "\$response_status"/u)
+  assert.match(publish, /\[\[ "\$GH_REPO" =~ \^\[A-Za-z0-9_.-\]\{1,100\}\/\[A-Za-z0-9_.-\]\{1,100\}\$ \]\]/u)
+  assert.match(publish, /\[\[ "\$RELEASE_TAG" =~ \^v\(0\|\[1-9\]\[0-9\]\*\)/u)
+  assert.match(publish, /test "\$published" != "\$published_headers"/u)
+  assert.match(publish, /test "\$tagged_published" != "\$tagged_headers"/u)
   assert.match(publish, /--connect-timeout 15 --max-time 60/u)
   assert.match(publish, /--write-out '%\{http_code\}'/u)
   assert.match(publish, /test "\$current_identity" = "\$asset_identity"/u)
@@ -249,6 +253,9 @@ test('release API response headers reject duplicate folded and provisional metad
       valid.replace('etag:', ' etag:'),
       valid.replace('etag: "abc123"', 'etag: "abc\u0000def"'),
       'HTTP/1.1 100 Continue\r\n\r\n' + valid,
+      'HTTP/1.1 200 Connection established\r\n\r\n' + valid,
+      '\uFEFF' + valid,
+      valid + '{"body":"header confusion"}',
     ]) assert.throws(() => verify(hostile))
     assert.throws(() => verify(valid, '304'))
   } finally {

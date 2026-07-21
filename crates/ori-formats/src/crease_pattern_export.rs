@@ -1568,6 +1568,7 @@ mod tests {
             confidence_reasons: vec!["native_topology_witness".to_owned()],
             explicit_override: false,
             source_asset_fingerprint: "asset:test".to_owned(),
+            semantic_landmark_provenance: None,
         };
         for format in [
             CreasePatternExportFormat::Fold12,
@@ -1627,6 +1628,7 @@ mod tests {
             confidence_reasons: vec!["bounded_witness".to_owned(), "image_outline".to_owned()],
             explicit_override: true,
             source_asset_fingerprint: "sha256:0123456789abcdef".to_owned(),
+            semantic_landmark_provenance: None,
         };
         for format in [
             CreasePatternExportFormat::Fold12,

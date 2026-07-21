@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::{BeginnerGenerationConstraintsV1, validate_beginner_generation_constraints_v1};
+use crate::{
+    BeginnerGenerationConstraintsV1, BeginnerSemanticLandmarkProvenanceV1,
+    validate_beginner_generation_constraints_v1,
+};
 
 pub const BEGINNER_DESIGN_PROFILE_SCHEMA_VERSION_V1: u32 = 1;
 
@@ -40,6 +44,8 @@ pub struct BeginnerGenerationProvenanceV1 {
     pub confidence_reasons: Vec<String>,
     pub explicit_override: bool,
     pub source_asset_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_landmark_provenance: Option<BeginnerSemanticLandmarkProvenanceV1>,
 }
 
 impl Default for BeginnerDesignProfileV1 {
@@ -98,4 +104,48 @@ pub fn validate_beginner_generation_provenance_v1(
             .confidence_reasons
             .iter()
             .all(|reason| !reason.is_empty() && reason.len() <= 64)
+        && provenance
+            .semantic_landmark_provenance
+            .as_ref()
+            .is_none_or(|semantic| {
+                let expected_roles = [
+                    "head",
+                    "tail",
+                    "wing_left",
+                    "wing_right",
+                    "leg_front_left",
+                    "leg_front_right",
+                    "leg_middle_left",
+                    "leg_middle_right",
+                    "leg_rear_left",
+                    "leg_rear_right",
+                ];
+                semantic.schema_version == 1
+                    && semantic.ordered_bindings.len() == 10
+                    && semantic
+                        .ordered_bindings
+                        .iter()
+                        .enumerate()
+                        .all(|(index, binding)| {
+                            usize::from(binding.ordinal) == index
+                                && binding.role == expected_roles[index]
+                                && binding.physical_ray < 4
+                        })
+                    && semantic.physical_ray_group_sha256.iter().enumerate().all(
+                        |(physical_ray, actual)| {
+                            let mut hash = Sha256::new();
+                            hash.update(b"ORIGAMI2_ASYMMETRIC_INSECT_RAY_GROUP_V1");
+                            hash.update([physical_ray as u8]);
+                            for binding in semantic
+                                .ordered_bindings
+                                .iter()
+                                .filter(|binding| usize::from(binding.physical_ray) == physical_ray)
+                            {
+                                hash.update([binding.ordinal]);
+                                hash.update(binding.role.as_bytes());
+                            }
+                            <[u8; 32]>::from(hash.finalize()) == *actual
+                        },
+                    )
+            })
 }

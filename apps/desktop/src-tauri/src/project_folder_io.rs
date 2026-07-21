@@ -1190,6 +1190,7 @@ mod tests {
                     confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
                     explicit_override: false,
                     source_asset_fingerprint: "asset:expanded-folder".to_owned(),
+                    semantic_landmark_provenance: None,
                 });
             }
             let artifact = write_project_folder_v1(&archive).expect("write folder provenance");

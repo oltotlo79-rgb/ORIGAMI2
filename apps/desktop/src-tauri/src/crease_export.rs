@@ -877,6 +877,7 @@ mod tests {
             confidence_reasons: vec!["desktop_roundtrip".to_owned()],
             explicit_override: true,
             source_asset_fingerprint: "asset:desktop-test".to_owned(),
+            semantic_landmark_provenance: None,
         };
         for format in [
             CreaseExportFormatRequest::Fold,

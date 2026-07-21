@@ -103,6 +103,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     SymmetricBirdBase,
     AsymmetricBirdLandmarkBase,
     AsymmetricFourLegLandmarkBase,
+    AsymmetricInsectLandmarkBase,
     SymmetricFishBase,
     SymmetricEarBase,
     SymmetricHornBase,
@@ -136,6 +137,24 @@ pub struct BeginnerGeneratedPlanV1 {
     pub target_parts: Vec<BeginnerTargetPartRecordV1>,
     pub skeleton_segments: Vec<BeginnerSkeletonSegmentV1>,
     pub target_asset: Option<BeginnerTargetAssetReferenceV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_landmark_provenance: Option<BeginnerSemanticLandmarkProvenanceV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerSemanticLandmarkProvenanceV1 {
+    pub schema_version: u32,
+    pub ordered_bindings: Vec<BeginnerSemanticLandmarkBindingV1>,
+    pub physical_ray_group_sha256: [[u8; 32]; 4],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerSemanticLandmarkBindingV1 {
+    pub ordinal: u8,
+    pub role: String,
+    pub physical_ray: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1236,11 +1255,37 @@ pub fn generate_beginner_plans_v1(
                 .count();
             let wing_antenna = part_count(BeginnerTargetPartKindV1::Wing) == 2
                 && part_count(BeginnerTargetPartKindV1::Antenna) == 2;
+            let asymmetric_landmark_insect = part_count(BeginnerTargetPartKindV1::Tail) == 1
+                && part_count(BeginnerTargetPartKindV1::Wing) == 2
+                && part_count(BeginnerTargetPartKindV1::Leg) == 6
+                && constraints
+                    .protrusions
+                    .iter()
+                    .filter(|target| {
+                        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                    })
+                    .count()
+                    >= 7;
             let known_composite = feature_records == 2 && wing_antenna
                 || feature_records == 3
                     && wing_antenna
                     && part_count(BeginnerTargetPartKindV1::Leg) == 6;
-            if feature_records >= 2 && !known_composite {
+            if asymmetric_landmark_insect {
+                let endpoints = [(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)];
+                symmetric_template(
+                    namespace,
+                    source,
+                    BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &endpoints,
+                    "asymmetric_insect_landmark_base",
+                    constraints,
+                )
+            } else if feature_records >= 2 && !known_composite {
                 let endpoints = bounded_generic_composite_endpoints(constraints)
                     .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
                 symmetric_template(
@@ -1487,6 +1532,7 @@ pub fn generate_beginner_plans_v1(
                     target_parts: constraints.target_parts.clone(),
                     skeleton_segments: constraints.skeleton_segments.clone(),
                     target_asset: constraints.target_asset,
+                    semantic_landmark_provenance: None,
                 }
             }),
     );
@@ -2026,6 +2072,7 @@ fn symmetric_template(
         plan_kind,
         BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
             | BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase
+            | BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase
     );
     let canonical_quad = asymmetric_landmark
         .then(|| {
@@ -2119,6 +2166,7 @@ fn symmetric_template(
                 target_parts: constraints.target_parts.clone(),
                 skeleton_segments: constraints.skeleton_segments.clone(),
                 target_asset: constraints.target_asset,
+                semantic_landmark_provenance: asymmetric_insect_semantic_provenance(plan_kind),
             };
         };
         let skeleton_span_x = f64::from(skeleton_max_x - skeleton_min_x);
@@ -2196,7 +2244,55 @@ fn symmetric_template(
         target_parts: constraints.target_parts.clone(),
         skeleton_segments: constraints.skeleton_segments.clone(),
         target_asset: constraints.target_asset,
+        semantic_landmark_provenance: asymmetric_insect_semantic_provenance(plan_kind),
     }
+}
+
+fn asymmetric_insect_semantic_provenance(
+    plan_kind: BeginnerGeneratedPlanKindV1,
+) -> Option<BeginnerSemanticLandmarkProvenanceV1> {
+    if plan_kind != BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase {
+        return None;
+    }
+    let roles = [
+        "head",
+        "tail",
+        "wing_left",
+        "wing_right",
+        "leg_front_left",
+        "leg_front_right",
+        "leg_middle_left",
+        "leg_middle_right",
+        "leg_rear_left",
+        "leg_rear_right",
+    ];
+    let ordered_bindings = roles
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, role)| BeginnerSemanticLandmarkBindingV1 {
+            ordinal: u8::try_from(ordinal).expect("ten semantic landmarks fit in u8"),
+            role: role.to_owned(),
+            physical_ray: u8::try_from(ordinal % 4).expect("four physical rays fit in u8"),
+        })
+        .collect::<Vec<_>>();
+    let physical_ray_group_sha256 = std::array::from_fn(|physical_ray| {
+        let mut hash = Sha256::new();
+        hash.update(b"ORIGAMI2_ASYMMETRIC_INSECT_RAY_GROUP_V1");
+        hash.update([physical_ray as u8]);
+        for binding in ordered_bindings
+            .iter()
+            .filter(|binding| usize::from(binding.physical_ray) == physical_ray)
+        {
+            hash.update([binding.ordinal]);
+            hash.update(binding.role.as_bytes());
+        }
+        hash.finalize().into()
+    });
+    Some(BeginnerSemanticLandmarkProvenanceV1 {
+        schema_version: 1,
+        ordered_bindings,
+        physical_ray_group_sha256,
+    })
 }
 
 #[cfg(test)]

@@ -1231,6 +1231,7 @@ mod tests {
                 confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
                 explicit_override: false,
                 source_asset_fingerprint: "asset:typed-provenance".to_owned(),
+                semantic_landmark_provenance: None,
             });
         let archive = Ori2ProjectArchive::document_only(document);
         let bytes = write_project_archive_ori2(&archive).expect("write typed provenance");

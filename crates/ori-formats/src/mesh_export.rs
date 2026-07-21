@@ -3202,6 +3202,7 @@ mod tests {
             confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
             explicit_override: false,
             source_asset_fingerprint: "asset:glb-extension".to_owned(),
+            semantic_landmark_provenance: None,
         };
         let artifact = export_static_triangle_mesh_glb_with_provenance(&mesh, &provenance)
             .expect("GLB provenance export");

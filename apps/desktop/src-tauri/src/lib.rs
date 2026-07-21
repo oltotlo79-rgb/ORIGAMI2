@@ -3941,6 +3941,7 @@ fn apply_beginner_generated_plan_document(
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase
             | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
             | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricHornBase
@@ -3989,6 +3990,7 @@ fn apply_beginner_generated_plan_document(
         .into_iter()
         .find(|plan| plan.kind == selected_kind)
         .ok_or_else(|| "the generated plan is no longer available".to_owned())?;
+    let semantic_landmark_provenance = plan.semantic_landmark_provenance.clone();
     if plan.crease_pattern.edges.first().map(|edge| edge.id) != Some(expected_candidate_edge_id) {
         return Err("the generated candidate identity changed before apply".to_owned());
     }
@@ -4074,6 +4076,11 @@ fn apply_beginner_generated_plan_document(
             "Asymmetric landmark bird base",
             "Create individually bound head, tail, left-wing, and right-wing landmark creases.",
             "The asymmetric landmark bindings and native fold-path certificate were revalidated.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase => (
+            "Asymmetric insect landmark base",
+            "Apply the certified four-ray geometry bound to ten ordered insect landmarks.",
+            "Head, tail, two wings, and six legs retain bounded semantic provenance grouped by ray digest.",
         ),
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase => (
             "Symmetric fish base",
@@ -4211,6 +4218,7 @@ fn apply_beginner_generated_plan_document(
                 .generation_constraints
                 .target_asset
                 .map_or_else(|| "none".to_owned(), |asset| format!("{asset:?}")),
+            semantic_landmark_provenance,
         });
     execute_command(
         &mut project,
@@ -4235,6 +4243,7 @@ fn apply_grid_plan_document(
     plan: ori_domain::BeginnerGeneratedPlanV1,
 ) -> Result<ProjectSnapshot, String> {
     let selected_kind = plan.kind;
+    let semantic_landmark_provenance = plan.semantic_landmark_provenance.clone();
     let topology_witness = beginner_contour_placement_witness(
         &project
             .editor
@@ -4319,6 +4328,11 @@ fn apply_grid_plan_document(
             "Asymmetric landmark bird base",
             "Create individually bound asymmetric bird landmark creases.",
             "All landmark bindings and the native fold path were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase => (
+            "Asymmetric insect landmark grid candidate",
+            "Apply certified four-ray geometry with ten ordered semantic landmark bindings.",
+            "All ray-group digests, live semantic bindings, and the native fold path were revalidated before apply.",
         ),
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase => (
             "Symmetric fish grid candidate",
@@ -4549,6 +4563,7 @@ fn apply_grid_plan_document(
             ],
             explicit_override: false,
             source_asset_fingerprint,
+            semantic_landmark_provenance,
         });
     execute_command(
         project,
@@ -13481,28 +13496,52 @@ mod tests {
     #[test]
     fn asymmetric_landmark_native_apply_undo_redo_and_archive_round_trip() {
         let _serial = serial_beginner_grid_test();
-        for (plan_kind, target_kind, target_count, archive_name) in [
+        for (plan_kind, target_kind, target_count, archive_name, insect_landmarks) in [
             (
                 ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase,
                 ori_domain::BeginnerTargetPartKindV1::Wing,
                 2,
                 "asymmetric-bird.ori2",
+                false,
             ),
             (
                 ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase,
                 ori_domain::BeginnerTargetPartKindV1::Leg,
                 4,
                 "asymmetric-four-leg.ori2",
+                false,
+            ),
+            (
+                ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase,
+                ori_domain::BeginnerTargetPartKindV1::Tail,
+                1,
+                "asymmetric-insect.ori2",
+                true,
             ),
         ] {
             let mut profile = ori_domain::BeginnerDesignProfileV1::default();
             profile.generation_constraints.target_category =
                 Some(ori_domain::BeginnerTargetCategoryV1::Animal);
-            profile.generation_constraints.target_parts = vec![
-                (ori_domain::BeginnerTargetPartKindV1::Head, 1),
-                (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
-                (target_kind, target_count),
-            ]
+            profile.generation_constraints.target_category = Some(if insect_landmarks {
+                ori_domain::BeginnerTargetCategoryV1::Insect
+            } else {
+                ori_domain::BeginnerTargetCategoryV1::Animal
+            });
+            profile.generation_constraints.target_parts = (if insect_landmarks {
+                vec![
+                    (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+                    (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+                    (ori_domain::BeginnerTargetPartKindV1::Tail, 1),
+                    (ori_domain::BeginnerTargetPartKindV1::Wing, 2),
+                    (ori_domain::BeginnerTargetPartKindV1::Leg, 6),
+                ]
+            } else {
+                vec![
+                    (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+                    (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+                    (target_kind, target_count),
+                ]
+            })
             .into_iter()
             .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
             .collect();
@@ -13516,10 +13555,13 @@ mod tests {
                 27,
                 50,
             );
-            profile
-                .generation_constraints
-                .skeleton_segments
-                .truncate(if target_count == 4 { 3 } else { 2 });
+            profile.generation_constraints.skeleton_segments.truncate(
+                if target_count == 4 || insect_landmarks {
+                    3
+                } else {
+                    2
+                },
+            );
             profile.generation_constraints.skeleton_segments[0]
                 .start
                 .x_tenths_mm = -10;
@@ -13555,7 +13597,21 @@ mod tests {
             right.id = 2;
             right.position_tenths_mm = [5, 1, 0];
             right.direction_milli = [1_000, -100, 0];
-            profile.generation_constraints.protrusions = if target_count == 4 {
+            profile.generation_constraints.protrusions = if insect_landmarks {
+                right.count = 2;
+                right.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
+                let mut targets = vec![left.clone(), right];
+                let leg_positions: [(i16, i16); 6] =
+                    [(-5, 4), (5, 4), (-6, 0), (6, 0), (-5, -4), (5, -4)];
+                for (offset, (x, y)) in leg_positions.into_iter().enumerate() {
+                    let mut leg = left.clone();
+                    leg.id = u16::try_from(offset + 3).unwrap();
+                    leg.position_tenths_mm = [i32::from(x), i32::from(y), 0];
+                    leg.direction_milli = [x.signum() * 1_000, y * 50, 0];
+                    targets.push(leg);
+                }
+                targets
+            } else if target_count == 4 {
                 let mut rear_left = left.clone();
                 rear_left.id = 3;
                 rear_left.position_tenths_mm = [-5, -4, 0];
@@ -13780,6 +13836,18 @@ mod tests {
                 .as_ref()
                 .unwrap();
             assert!(provenance.fold_path_certificate_sha256.is_some());
+            if insect_landmarks {
+                let semantic = provenance
+                    .semantic_landmark_provenance
+                    .as_ref()
+                    .expect("asymmetric insect semantic provenance");
+                assert_eq!(semantic.ordered_bindings.len(), 10);
+                assert_eq!(semantic.ordered_bindings[0].role, "head");
+                assert_eq!(semantic.ordered_bindings[9].role, "leg_rear_right");
+                assert!(ori_domain::validate_beginner_generation_provenance_v1(
+                    provenance
+                ));
+            }
             let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
             assert!(
                 project
@@ -13803,6 +13871,18 @@ mod tests {
                     .and_then(|value| value.fold_path_certificate_sha256)
                     .is_some()
             );
+            if insect_landmarks {
+                assert_eq!(
+                    reopened
+                        .editor
+                        .beginner_design_profile()
+                        .generation_provenance
+                        .as_ref()
+                        .and_then(|value| value.semantic_landmark_provenance.as_ref())
+                        .map(|semantic| semantic.ordered_bindings.len()),
+                    Some(10)
+                );
+            }
         }
     }
 
@@ -22581,6 +22661,7 @@ mod tests {
             target_parts: Vec::new(),
             skeleton_segments: Vec::new(),
             target_asset: None,
+            semantic_landmark_provenance: None,
         };
         let a = VertexId::new();
         let b = VertexId::new();

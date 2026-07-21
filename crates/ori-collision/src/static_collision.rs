@@ -10,9 +10,12 @@ use thiserror::Error;
 use crate::{
     IntersectionEvidenceV2, TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision, TopologyRelation,
     cayley::{
-        ProvenTransversalScanError, ProvenTransversalScanLimits, ProvenTransversalScanSummary,
+        PositiveThicknessPrismPairDispositionV1, ProvenTransversalScanError,
+        ProvenTransversalScanLimits, ProvenTransversalScanSummary,
         SharedHingeSolidDiagnosticDispositionV1, SharedHingeSolidDiagnosticErrorV1,
-        ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1, diagnose_bound_shared_hinge_solid_v1,
+        ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1,
+        diagnose_bound_positive_thickness_prism_pairs_v1,
+        diagnose_bound_shared_hinge_solid_for_edge_v1, diagnose_bound_shared_hinge_solid_v1,
         diagnose_bound_zero_thickness_shared_hinge_boundaries_v1,
         scan_bound_pose_for_proven_transversal_penetration,
     },
@@ -34,15 +37,11 @@ pub const NATIVE_STATIC_COLLISION_MAX_PAIR_DIAGNOSTICS_V1: usize = 50_000;
 
 /// First opaque native static-collision geometry-proof format.
 ///
-/// Version 1 admits only the complete zero-pair proof for a no-hinge,
-/// single-material-face pose. Exact multi-face diagnostics now authenticate
-/// and scan every mid-surface face and triangle pair, but every valid
-/// multi-face material tree contains a shared hinge. That pair remains
-/// blocking until canonical watertight shared-feature geometry and its finite
-/// hinge model exist. A strict mid-surface transversal may now provide a
-/// distinct positive-thickness blocking reason, but cannot issue a proof. The
-/// public success set therefore has not expanded and the proof identifier
-/// remains V1.
+/// Version 1 admits the complete zero-pair proof and positive-thickness
+/// triangular material trees for which every exact closed-prism SAT pair is
+/// nonpenetrating and every adjacent pair is independently admitted by the
+/// finite shared-hinge solid classifier. Unsupported, unresolved, coplanar
+/// non-support and resource-exhausted cases remain blocking.
 ///
 /// This proof does not claim that the pose is current for a project. A
 /// stronger authority boundary must bind the exact proof object to the exact
@@ -124,7 +123,7 @@ impl Default for StaticCollisionLimits {
             max_rational_output_bits: 32_768,
             max_total_rational_output_bits: 1_073_741_824,
             max_shared_hinge_boundary_diagnostics: 10_000,
-            max_shared_hinge_solid_diagnostics: 1,
+            max_shared_hinge_solid_diagnostics: 64,
         }
     }
 }
@@ -708,14 +707,10 @@ fn validate_pair_diagnostic_capacity(
 
 /// Proves static collision geometry for one exact native material pose.
 ///
-/// The current implementation intentionally succeeds only for the complete
-/// zero-pair case: exactly one material face and no material hinge. A
-/// multi-face pose runs authenticated whole-face mid-surface diagnostics, but
-/// returns a blocking error at penetration, indeterminate evidence or the
-/// mandatory shared-hinge pair. For finite positive thickness, the existing
-/// exact-E and direct-lift-F strict transversal is used only as a sufficient
-/// condition for a distinct blocking penetration reason. It never expands the
-/// collision-free proof set.
+/// Positive-thickness triangular poses run a complete exact closed-prism SAT
+/// scan over every unordered face pair. Shared-hinge positive-volume overlap
+/// is accepted only when the independent finite-corridor classifier admits
+/// that exact hinge; all other positive volume and unresolved evidence blocks.
 ///
 /// Static `Touching` is admissible only as evidence of zero penetration at
 /// this exact pose. Continuous fold execution must still stop at its first
@@ -750,6 +745,143 @@ pub fn prove_static_collision_geometry(
                 analyzed_unordered_face_pairs: 0,
                 expected_triangle_pairs: 0,
                 analyzed_triangle_pairs: 0,
+            }),
+        });
+    }
+    let all_faces_triangular = pose.face_ids().iter().all(|face| {
+        pose.face_boundary(*face)
+            .is_some_and(|boundary| boundary.vertices().len() == 3)
+    });
+    let prism_pair_topology_supported = pose.face_ids().iter().enumerate().all(|(index, first)| {
+        pose.face_ids()[index + 1..].iter().all(|second| {
+            let shared_hinge = pose.hinges().iter().any(|hinge| {
+                (hinge.left_face() == *first && hinge.right_face() == *second)
+                    || (hinge.left_face() == *second && hinge.right_face() == *first)
+            });
+            shared_hinge
+                || pose
+                    .face_boundary(*first)
+                    .zip(pose.face_boundary(*second))
+                    .is_some_and(|(first_boundary, second_boundary)| {
+                        !first_boundary.vertices().iter().any(|vertex| {
+                            second_boundary
+                                .vertices()
+                                .iter()
+                                .any(|other| other == vertex)
+                        })
+                    })
+        })
+    });
+    if paper_thickness_mm > 0.0 && all_faces_triangular && prism_pair_topology_supported {
+        let prism_triangle_inputs = expected_unordered_face_pairs
+            .checked_mul(2)
+            .ok_or(StaticCollisionError::ResourceLimitExceeded)?;
+        if prism_triangle_inputs > limits.max_total_triangles {
+            return Err(StaticCollisionError::ResourceLimitExceeded);
+        }
+        let prerequisite =
+            prepare_authenticated_zero_thickness_pose(pose, zero_thickness_geometry_limits(limits))
+                .map_err(|error| map_zero_thickness_error(error, expected_unordered_face_pairs))?;
+        let (prerequisite_scan, _) = scan_authenticated_zero_thickness_pairs(
+            &prerequisite,
+            pose,
+            expected_unordered_face_pairs,
+        )?;
+        validate_zero_thickness_diagnostic_scan(
+            &prerequisite_scan,
+            &prerequisite,
+            expected_unordered_face_pairs,
+        )?;
+        drop(prerequisite);
+        let prism_pairs = diagnose_bound_positive_thickness_prism_pairs_v1(
+            bound,
+            paper_thickness_mm,
+            limits.max_unordered_face_pairs,
+        )
+        .map_err(map_shared_hinge_solid_diagnostic_error)?;
+        if prism_pairs.len() != expected_unordered_face_pairs {
+            return Err(StaticCollisionError::InconsistentMaterialPose);
+        }
+        let shared_hinge_count = prism_pairs
+            .iter()
+            .filter(|pair| {
+                pose.hinges().iter().any(|hinge| {
+                    (hinge.left_face() == pair.first_face && hinge.right_face() == pair.second_face)
+                        || (hinge.left_face() == pair.second_face
+                            && hinge.right_face() == pair.first_face)
+                })
+            })
+            .count();
+        if shared_hinge_count > limits.max_shared_hinge_solid_diagnostics {
+            return Err(StaticCollisionError::ResourceLimitExceeded);
+        }
+        for pair in &prism_pairs {
+            let shared_hinge = pose.hinges().iter().find(|hinge| {
+                (hinge.left_face() == pair.first_face && hinge.right_face() == pair.second_face)
+                    || (hinge.left_face() == pair.second_face
+                        && hinge.right_face() == pair.first_face)
+            });
+            if let Some(hinge) = shared_hinge {
+                let classified = diagnose_bound_shared_hinge_solid_for_edge_v1(
+                    bound,
+                    paper_thickness_mm,
+                    Some(hinge.edge()),
+                )
+                .map_err(map_shared_hinge_solid_diagnostic_error)?;
+                match classified.map(|summary| summary.disposition) {
+                    Some(SharedHingeSolidDiagnosticDispositionV1::Allowed) => {}
+                    Some(SharedHingeSolidDiagnosticDispositionV1::Penetrating) => {
+                        return Err(StaticCollisionError::ProvenPositiveThicknessPenetration {
+                            expected_unordered_face_pairs,
+                            proven_positive_thickness_pairs: 1,
+                            first_proven_positive_thickness_pair: [
+                                pair.first_face,
+                                pair.second_face,
+                            ],
+                        });
+                    }
+                    _ => {
+                        return Err(StaticCollisionError::PairEvidenceUnavailable {
+                            expected_unordered_face_pairs,
+                        });
+                    }
+                }
+            } else {
+                match pair.disposition {
+                    PositiveThicknessPrismPairDispositionV1::Separated
+                    | PositiveThicknessPrismPairDispositionV1::Touching => {}
+                    PositiveThicknessPrismPairDispositionV1::Penetrating => {
+                        return Err(StaticCollisionError::ProvenPositiveThicknessPenetration {
+                            expected_unordered_face_pairs,
+                            proven_positive_thickness_pairs: 1,
+                            first_proven_positive_thickness_pair: [
+                                pair.first_face,
+                                pair.second_face,
+                            ],
+                        });
+                    }
+                    PositiveThicknessPrismPairDispositionV1::Indeterminate => {
+                        return Err(StaticCollisionError::PairEvidenceUnavailable {
+                            expected_unordered_face_pairs,
+                        });
+                    }
+                }
+            }
+        }
+        return Ok(NativeStaticCollisionGeometryProof {
+            proof: Arc::new(StaticCollisionProof {
+                model: model.clone(),
+                pose: pose.clone(),
+                paper_thickness_bits: paper_thickness_mm.to_bits(),
+                proof_id: NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
+                policy_id: TOPOLOGY_CONTACT_POLICY_V2,
+                kinematics_model_id: MATERIAL_TREE_KINEMATICS_MODEL_ID,
+                thickness_model_id: CENTERED_MID_SURFACE_THICKNESS_MODEL_V1,
+                face_count,
+                expected_unordered_face_pairs,
+                analyzed_unordered_face_pairs: prism_pairs.len(),
+                expected_triangle_pairs: prism_pairs.len(),
+                analyzed_triangle_pairs: prism_pairs.len(),
             }),
         });
     }

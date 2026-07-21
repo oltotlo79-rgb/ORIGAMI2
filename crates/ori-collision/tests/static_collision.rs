@@ -999,6 +999,74 @@ fn public_diagnostic_connects_shared_hinge_solid_only_for_two_triangular_faces()
 }
 
 #[test]
+fn positive_thickness_exact_prism_safe_proof_admits_shared_hinge_with_finite_bounds() {
+    let cases = [
+        (EdgeKind::Mountain, false, false, false, 0.1),
+        (EdgeKind::Mountain, true, false, true, 1.0),
+        (EdgeKind::Valley, false, true, false, 3.0),
+    ];
+    for (assignment, reverse_source, reverse_endpoints, reverse_root, thickness) in cases {
+        let (model, hinge) =
+            triangular_shared_hinge_400mm_fixture(assignment, reverse_source, reverse_endpoints);
+        let root = if reverse_root {
+            *model.face_ids().last().unwrap()
+        } else {
+            model.face_ids()[0]
+        };
+        let angles =
+            CanonicalHingeAngles::new(vec![HingeAngle::new(hinge, 10.0).unwrap()]).unwrap();
+        let pose = model.solve(Some(root), &angles).unwrap();
+        let proof = prove_static_collision_geometry(
+            &model,
+            &pose,
+            thickness,
+            StaticCollisionLimits::default(),
+        )
+        .expect("complete exact-prism shared-hinge proof");
+        assert!(proof.is_for_geometry(&model, &pose, thickness));
+        assert_eq!(proof.expected_unordered_face_pairs(), 1);
+        assert_eq!(proof.analyzed_unordered_face_pairs(), 1);
+        assert_eq!(proof.expected_triangle_pairs(), 1);
+        assert_eq!(proof.analyzed_triangle_pairs(), 1);
+    }
+    let (model, hinge) = triangular_shared_hinge_400mm_fixture(EdgeKind::Mountain, false, false);
+    let root = model.face_ids()[0];
+    let pose = model
+        .solve(
+            Some(root),
+            &CanonicalHingeAngles::new(vec![HingeAngle::new(hinge, 10.0).unwrap()]).unwrap(),
+        )
+        .unwrap();
+    assert!(matches!(
+        prove_static_collision_geometry(
+            &model,
+            &pose,
+            0.1,
+            StaticCollisionLimits {
+                max_shared_hinge_solid_diagnostics: 0,
+                ..StaticCollisionLimits::default()
+            },
+        ),
+        Err(StaticCollisionError::ResourceLimitExceeded)
+    ));
+    let boundary_pose = model
+        .solve(
+            Some(root),
+            &CanonicalHingeAngles::new(vec![HingeAngle::new(hinge, 90.0).unwrap()]).unwrap(),
+        )
+        .unwrap();
+    assert!(matches!(
+        prove_static_collision_geometry(
+            &model,
+            &boundary_pose,
+            0.1,
+            StaticCollisionLimits::default(),
+        ),
+        Err(StaticCollisionError::PairEvidenceUnavailable { .. })
+    ));
+}
+
+#[test]
 fn positive_thickness_ninety_degree_hold_is_identity_and_root_invariant() {
     for namespace_index in 1_u64..=8 {
         for first in 1_u64..=4 {

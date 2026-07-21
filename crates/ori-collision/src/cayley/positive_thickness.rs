@@ -1784,6 +1784,119 @@ pub(crate) enum SharedHingeSolidDiagnosticErrorV1 {
     InconsistentPose,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PositiveThicknessPrismPairDispositionV1 {
+    Separated,
+    Touching,
+    Penetrating,
+    Indeterminate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PositiveThicknessPrismPairDiagnosticV1 {
+    pub(crate) first_face: FaceId,
+    pub(crate) second_face: FaceId,
+    pub(crate) disposition: PositiveThicknessPrismPairDispositionV1,
+}
+
+pub(crate) fn diagnose_bound_positive_thickness_prism_pairs_v1(
+    bound: BoundMaterialTreePose<'_>,
+    paper_thickness_mm: f64,
+    max_unordered_face_pairs: usize,
+) -> Result<Vec<PositiveThicknessPrismPairDiagnosticV1>, SharedHingeSolidDiagnosticErrorV1> {
+    use exact_prism::{
+        ExactPrismIntersectionKind, ExactPrismLimits, ExactTriangularPrismInput,
+        analyze_exact_prism_pair_v1,
+    };
+
+    if !positive_finite_binary64(paper_thickness_mm)
+        || bound.model().face_ids() != bound.pose().face_ids()
+        || bound.model().hinges() != bound.pose().hinges()
+    {
+        return Err(SharedHingeSolidDiagnosticErrorV1::InconsistentPose);
+    }
+    let exact = prepare_rational_cayley_tree_pose_v1(bound, ExactTreePoseLimits::default())
+        .map_err(|error| match error {
+            CayleyError::ResourceLimitExceeded { .. } => {
+                SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded
+            }
+            _ => SharedHingeSolidDiagnosticErrorV1::InconsistentPose,
+        })?;
+    let pair_count = exact
+        .faces
+        .len()
+        .checked_mul(exact.faces.len().saturating_sub(1))
+        .and_then(|value| value.checked_div(2))
+        .ok_or(SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+    if pair_count > max_unordered_face_pairs {
+        return Err(SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded);
+    }
+    let half_thickness = BigRational::from_float(paper_thickness_mm)
+        .ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?
+        / BigRational::from_integer(2.into());
+    let prism = |face: &ExactFacePose| -> Option<ExactTriangularPrismInput> {
+        (face.boundary.len() == 3).then(|| ExactTriangularPrismInput {
+            mid_surface: [
+                face.boundary[0].1.clone(),
+                face.boundary[1].1.clone(),
+                face.boundary[2].1.clone(),
+            ],
+            material_normal: ExactVector3 {
+                coordinates: [
+                    face.transform.rotation[0][1].clone(),
+                    face.transform.rotation[1][1].clone(),
+                    face.transform.rotation[2][1].clone(),
+                ],
+            },
+            half_thickness: half_thickness.clone(),
+        })
+    };
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(pair_count)
+        .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+    for first in 0..exact.faces.len() {
+        for second in first + 1..exact.faces.len() {
+            let (Some(first_prism), Some(second_prism)) =
+                (prism(&exact.faces[first]), prism(&exact.faces[second]))
+            else {
+                return Err(SharedHingeSolidDiagnosticErrorV1::InconsistentPose);
+            };
+            let intersection = analyze_exact_prism_pair_v1(
+                &first_prism,
+                &second_prism,
+                ExactPrismLimits::default(),
+            )
+            .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
+            let intersection = intersection
+                .intersection
+                .ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?;
+            let disposition = match intersection.kind() {
+                ExactPrismIntersectionKind::Empty => {
+                    PositiveThicknessPrismPairDispositionV1::Separated
+                }
+                ExactPrismIntersectionKind::Point
+                | ExactPrismIntersectionKind::Line
+                | ExactPrismIntersectionKind::CoplanarArea => {
+                    PositiveThicknessPrismPairDispositionV1::Touching
+                }
+                ExactPrismIntersectionKind::PositiveVolume => {
+                    PositiveThicknessPrismPairDispositionV1::Penetrating
+                }
+                ExactPrismIntersectionKind::Planar => {
+                    PositiveThicknessPrismPairDispositionV1::Indeterminate
+                }
+            };
+            result.push(PositiveThicknessPrismPairDiagnosticV1 {
+                first_face: exact.faces[first].face,
+                second_face: exact.faces[second].face,
+                disposition,
+            });
+        }
+    }
+    Ok(result)
+}
+
 /// Runs the complete private solid classifier and exports only its sanitized
 /// semantic cell. The gate is structurally limited to one positive-thickness
 /// pair formed by exactly two triangular faces and their only hinge.
@@ -1798,7 +1911,7 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_v1(
     diagnose_bound_shared_hinge_solid_for_edge_v1(bound, paper_thickness_mm, None)
 }
 
-fn diagnose_bound_shared_hinge_solid_for_edge_v1(
+pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
     bound: BoundMaterialTreePose<'_>,
     paper_thickness_mm: f64,
     target_edge: Option<EdgeId>,

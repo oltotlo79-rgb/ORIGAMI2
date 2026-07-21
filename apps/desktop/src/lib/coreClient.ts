@@ -749,6 +749,10 @@ export type BeginnerGeneratedPlanAssessmentV1 = {
   reason:
     | 'geometry_invalid'
     | 'folded_pose_simulation_failed'
+    | 'manufacturability_missing_vertex'
+    | 'manufacturability_minimum_crease_spacing'
+    | 'manufacturability_minimum_face_area'
+    | 'manufacturability_paper_boundary_margin'
     | 'necessary_conditions_satisfied'
     | 'necessary_conditions_violated'
     | 'local_analysis_blocked'
@@ -980,14 +984,18 @@ function normalizeBeginnerCandidateResponse(
       || ((record.shape_approximation_score === null)
         !== (record.shape_difference_reason === null))
       || ![
-        'geometry_invalid', 'folded_pose_simulation_failed', 'necessary_conditions_satisfied',
+        'geometry_invalid', 'folded_pose_simulation_failed', 'manufacturability_missing_vertex',
+        'manufacturability_minimum_crease_spacing', 'manufacturability_minimum_face_area',
+        'manufacturability_paper_boundary_margin', 'necessary_conditions_satisfied',
         'necessary_conditions_violated', 'local_analysis_blocked',
         'local_theorem_not_applicable', 'local_analysis_indeterminate',
         'global_flat_foldability_proven', 'global_flat_foldability_impossible',
         'global_resource_limit', 'global_timeout', 'global_indeterminate',
       ].includes(String(record.reason))
       || (record.apply_allowed === false
-        && !['geometry_invalid', 'folded_pose_simulation_failed', 'necessary_conditions_violated', 'local_analysis_blocked',
+        && !['geometry_invalid', 'folded_pose_simulation_failed', 'manufacturability_missing_vertex',
+          'manufacturability_minimum_crease_spacing', 'manufacturability_minimum_face_area',
+          'manufacturability_paper_boundary_margin', 'necessary_conditions_violated', 'local_analysis_blocked',
           'global_flat_foldability_impossible']
           .includes(String(record.reason)))
       || (record.proof_scope === 'indeterminate' && record.apply_allowed !== true)

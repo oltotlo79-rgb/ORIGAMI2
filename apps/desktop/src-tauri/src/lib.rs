@@ -1879,6 +1879,17 @@ fn assess_beginner_generated_plan_with_deadline(
         .first()
         .map(|edge| edge.id)
         .unwrap_or_else(EdgeId::new);
+    if let Err(reason) = validate_beginner_manufacturability_v1(&plan.crease_pattern, paper) {
+        return BeginnerGeneratedPlanAssessment {
+            kind: plan.kind,
+            expected_candidate_edge_id,
+            proof_scope: "necessary",
+            apply_allowed: false,
+            reason,
+            shape_approximation_score,
+            shape_difference_reason,
+        };
+    }
     if reference
         .is_some_and(|reference| bounded_folded_pose_landmark_score_v1(plan, reference).is_none())
     {
@@ -3006,10 +3017,75 @@ const MAX_BEGINNER_REFINEMENT_ITERATIONS_V1: u8 = 8;
 const MAX_BEGINNER_REFINEMENT_PROPOSALS_V1: usize = 32;
 const BEGINNER_REFINEMENT_STARTS_V1: u8 = 5;
 
+fn validate_beginner_manufacturability_v1(
+    pattern: &CreasePattern,
+    paper: &Paper,
+) -> Result<(), &'static str> {
+    const MIN_CREASE_SPACING_MM: f64 = 1.0e-6;
+    const MIN_FACE_AREA_MM2: f64 = 1.0e-8;
+    let positions = pattern
+        .vertices
+        .iter()
+        .map(|vertex| (vertex.id, vertex.position))
+        .collect::<HashMap<_, _>>();
+    for edge in &pattern.edges {
+        let (Some(start), Some(end)) = (positions.get(&edge.start), positions.get(&edge.end))
+        else {
+            return Err("manufacturability_missing_vertex");
+        };
+        if (start.x - end.x).hypot(start.y - end.y) < MIN_CREASE_SPACING_MM {
+            return Err("manufacturability_minimum_crease_spacing");
+        }
+    }
+    if pattern.vertices.len() >= 3 {
+        let origin = pattern.vertices[0].position;
+        let doubled_area = pattern.vertices[1..]
+            .windows(2)
+            .map(|pair| {
+                let a = pair[0].position;
+                let b = pair[1].position;
+                (a.x - origin.x) * (b.y - origin.y) - (a.y - origin.y) * (b.x - origin.x)
+            })
+            .sum::<f64>()
+            .abs();
+        if !doubled_area.is_finite() || doubled_area * 0.5 < MIN_FACE_AREA_MM2 {
+            return Err("manufacturability_minimum_face_area");
+        }
+    }
+    let boundary = paper
+        .boundary_vertices
+        .iter()
+        .filter_map(|id| positions.get(id));
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for point in boundary {
+        min_x = min_x.min(point.x);
+        max_x = max_x.max(point.x);
+        min_y = min_y.min(point.y);
+        max_y = max_y.max(point.y);
+    }
+    if min_x.is_finite()
+        && pattern.vertices.iter().any(|vertex| {
+            vertex.position.x < min_x - MIN_CREASE_SPACING_MM
+                || vertex.position.x > max_x + MIN_CREASE_SPACING_MM
+                || vertex.position.y < min_y - MIN_CREASE_SPACING_MM
+                || vertex.position.y > max_y + MIN_CREASE_SPACING_MM
+        })
+    {
+        return Err("manufacturability_paper_boundary_margin");
+    }
+    Ok(())
+}
+
 fn refine_beginner_grid_plan_v1(
     namespace: ProjectId,
     source: &CreasePattern,
     boundary_vertices: &[VertexId],
+    paper: &Paper,
     profile: &ori_domain::BeginnerDesignProfileV1,
     expected_kind: ori_domain::BeginnerGeneratedPlanKindV1,
     reference: Option<&BeginnerReferenceModelSuggestionV1>,
@@ -3062,6 +3138,7 @@ fn refine_beginner_grid_plan_v1(
             continue;
         };
         if beginner_contour_placement_witness(&profile.generation_constraints, &seed_plan).is_none()
+            || validate_beginner_manufacturability_v1(&seed_plan.crease_pattern, paper).is_err()
         {
             continue;
         }
@@ -3118,6 +3195,8 @@ fn refine_beginner_grid_plan_v1(
             };
             if beginner_contour_placement_witness(&profile.generation_constraints, &candidate_plan)
                 .is_none()
+                || validate_beginner_manufacturability_v1(&candidate_plan.crease_pattern, paper)
+                    .is_err()
             {
                 continue;
             }
@@ -3251,6 +3330,7 @@ fn evaluate_beginner_parameter_grid(
                     project.project_id,
                     project.editor.pattern(),
                     &project.editor.paper().boundary_vertices,
+                    project.editor.paper(),
                     profile,
                     expected_kind,
                     reference.as_ref(),
@@ -21651,6 +21731,29 @@ mod tests {
         assert_eq!(
             bounded_folded_pose_landmark_score_v1(&collision, &reference),
             None
+        );
+        let tiny_end = VertexId::new();
+        let tiny = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: a,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: tiny_end,
+                    position: Point2::new(1.0e-12, 0.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: EdgeId::new(),
+                start: a,
+                end: tiny_end,
+                kind: EdgeKind::Valley,
+            }],
+        };
+        assert_eq!(
+            validate_beginner_manufacturability_v1(&tiny, &Paper::default()),
+            Err("manufacturability_minimum_crease_spacing")
         );
         let ranked = plan(
             vec![

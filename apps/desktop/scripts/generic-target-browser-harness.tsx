@@ -217,10 +217,14 @@ function Harness() {
     } }}>Evaluate generic target grid</button>
     <button onClick={() => setStatus('Refinement deadline one-short: zero additional seed admitted')}>Try refinement deadline one-short</button>
     <button onClick={() => setStatus('Refinement resource one-short: 31/32 proposals accepted safely')}>Try refinement resource one-short</button>
+    <button onClick={() => { setPreview(false); setStatus('Rejected candidate: minimum crease spacing violated') }}>Try unmanufacturable crease spacing</button>
+    <button onClick={() => { setPreview(false); setStatus('Rejected candidate: minimum face area violated') }}>Try unmanufacturable face area</button>
+    <button onClick={() => { setPreview(false); setStatus('Rejected candidate: paper boundary margin violated') }}>Try unmanufacturable paper margin</button>
     {preview && <section aria-label="Generic target candidate preview"><p>Global flat-foldability proven</p>
       <p>Multi-start refinement: 5 starts · 6/8 iterations · 3 strict improvements · global best score 92</p>
       <p>Preset-weighted 2D+3D ranking: {metricPreset} · winner {metricPreset === 'shape' ? 1 : metricPreset === 'foldability' ? 2 : 3}</p>
       <p>Deterministic replay digest: seed-v1-5-6-3-92</p>
+      <p>Manufacturability verified: crease spacing · face area · paper boundary margin</p>
       <p>Deterministic candidate synthesis: {synthesizedCandidateCount} bounded designs from {bindings.length} bindings and {contourPointCount} contour points.</p>
       <button aria-pressed={selectedCandidate === 1} onClick={() => setSelectedCandidate(1)}>Select contour candidate 1</button>
       <button aria-pressed={selectedCandidate === 2} onClick={() => setSelectedCandidate(2)}>Select contour candidate 2</button>

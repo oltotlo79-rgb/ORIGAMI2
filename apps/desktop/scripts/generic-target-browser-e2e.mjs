@@ -46,6 +46,14 @@ try {
   await page.getByText('Refinement deadline one-short: zero additional seed admitted', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Try refinement resource one-short' }).click()
   await page.getByText('Refinement resource one-short: 31/32 proposals accepted safely', { exact: true }).waitFor()
+  for (const [button, status] of [
+    ['Try unmanufacturable crease spacing', 'Rejected candidate: minimum crease spacing violated'],
+    ['Try unmanufacturable face area', 'Rejected candidate: minimum face area violated'],
+    ['Try unmanufacturable paper margin', 'Rejected candidate: paper boundary margin violated'],
+  ]) {
+    await page.getByRole('button', { name: button }).click()
+    await page.getByText(status, { exact: true }).waitFor()
+  }
   await page.getByText('Deterministic silhouette segmentation: 2 protrusions · binding 1 asymmetric · binding 2 bilateral', { exact: true }).waitFor()
   await page.getByLabel('Accept segmented protrusion 1').uncheck()
   await page.getByLabel('Accept segmented protrusion 2').uncheck()
@@ -151,6 +159,7 @@ try {
   await page.getByRole('button', { name: 'Use balanced metric' }).click()
   await page.getByText('Preset-weighted 2D+3D ranking: balanced · winner 3', { exact: true }).waitFor()
   await page.getByText('Deterministic replay digest: seed-v1-5-6-3-92', { exact: true }).waitFor()
+  await page.getByText('Manufacturability verified: crease spacing · face area · paper boundary margin', { exact: true }).waitFor()
   await assertWitnessCanvas(page.getByRole('img', { name: 'Contour placement correspondence candidate 1' }))
   await page.getByRole('button', { name: 'Select contour candidate 2' }).click()
   await page.getByText(/Contour placement witness candidate 2: body 4, local/).waitFor()

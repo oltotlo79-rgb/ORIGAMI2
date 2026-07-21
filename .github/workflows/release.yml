@@ -649,6 +649,7 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           created_release_id=''
           draft_created=false
+          release_published=false
           transaction_name="ORIGAMI2 draft transaction $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           ownership_token="$(node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('hex'))")"
           [[ "$ownership_token" =~ ^[0-9a-f]{64}$ ]]
@@ -675,7 +676,50 @@ jobs:
           cleanup_partial_draft() {
             status=$?
             trap - EXIT
-            if [ "$status" -ne 0 ] && [ "$draft_created" = true ]; then
+            if [ "$status" -ne 0 ] && [ "$release_published" = true ]; then
+              quarantine_state="$RUNNER_TEMP/quarantine-release.json"
+              quarantine_body="$RUNNER_TEMP/quarantine-release-notes.md"
+              quarantine_evidence="$RUNNER_TEMP/quarantine-evidence.json"
+              quarantine_verified=false
+              if timeout 60s gh api "repos/$GH_REPO/releases/$created_release_id" > "$quarantine_state" \
+                && test "$(jq -r .id "$quarantine_state")" = "$created_release_id" \
+                && test "$(jq -r .tag_name "$quarantine_state")" = "$RELEASE_TAG" \
+                && test "$(jq -r .target_commitish "$quarantine_state")" = "$RELEASE_COMMIT" \
+                && test "$(jq -r .draft "$quarantine_state")" = false \
+                && test "$(jq -cer '[.assets[] | {id, name, size, digest, updated_at}] | sort_by(.name)' "$quarantine_state")" = "$asset_identity"
+              then
+                {
+                  printf '## QUARANTINED RELEASE\n\n'
+                  printf 'Automated post-publication verification failed. Do not install these assets.\n\n'
+                  cat -- "$public_notes_file"
+                } > "$quarantine_body"
+                if timeout 60s gh api --method PATCH "repos/$GH_REPO/releases/$created_release_id" \
+                  -f name="QUARANTINED $RELEASE_TAG" -F draft=false -F prerelease=true \
+                  -F body=@"$quarantine_body" > "$quarantine_state" \
+                  && test "$(jq -r .id "$quarantine_state")" = "$created_release_id" \
+                  && test "$(jq -r .name "$quarantine_state")" = "QUARANTINED $RELEASE_TAG" \
+                  && test "$(jq -r .tag_name "$quarantine_state")" = "$RELEASE_TAG" \
+                  && test "$(jq -r .target_commitish "$quarantine_state")" = "$RELEASE_COMMIT" \
+                  && test "$(jq -r .draft "$quarantine_state")" = false \
+                  && test "$(jq -r .prerelease "$quarantine_state")" = true \
+                  && test "$(jq -cer '[.assets[] | {id, name, size, digest, updated_at}] | sort_by(.name)' "$quarantine_state")" = "$asset_identity" \
+                  && jq -e --rawfile body "$quarantine_body" '.body == $body' "$quarantine_state" >/dev/null
+                then
+                  quarantine_verified=true
+                fi
+              fi
+              jq -cn --arg tag "$RELEASE_TAG" --arg commit "$RELEASE_COMMIT" \
+                --arg release_id "$created_release_id" --argjson quarantined "$quarantine_verified" \
+                --arg run_id "$GITHUB_RUN_ID" --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+                '{schemaVersion:1,event:"post-publication-verification-failure",tag:$tag,
+                  commit:$commit,releaseId:$release_id,runId:$run_id,runAttempt:$run_attempt,
+                  quarantineVerified:$quarantined}' > "$quarantine_evidence"
+              printf '\n## Release quarantine\n\n- Evidence SHA-256: %s\n- Quarantine verified: %s\n' \
+                "$(sha256sum "$quarantine_evidence" | cut -d ' ' -f 1)" "$quarantine_verified" >> "$GITHUB_STEP_SUMMARY"
+              cat -- "$quarantine_evidence" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::Published release verification failed; quarantine verified=$quarantine_verified"
+              test "$quarantine_verified" = true
+            elif [ "$status" -ne 0 ] && [ "$draft_created" = true ]; then
               state="$RUNNER_TEMP/partial-release.json"
               if [ -z "$created_release_id" ]; then
                 candidate="$RUNNER_TEMP/partial-release-candidate.json"
@@ -769,6 +813,7 @@ jobs:
           timeout 60s gh api --method PATCH "repos/$GH_REPO/releases/$created_release_id" \
             -f name="ORIGAMI2 $RELEASE_TAG" -F draft=false \
             -F prerelease="$publish_prerelease" -F body=@"$public_notes_file" >/dev/null
+          release_published=true
           published="$RUNNER_TEMP/published-release.json"
           published_headers="$RUNNER_TEMP/published-release.headers"
           test "$published" != "$published_headers"
@@ -834,6 +879,7 @@ jobs:
           test "$(timeout 60s gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_COMMIT"
           created_release_id=''
           draft_created=false
+          release_published=false
 
   promote:
     if: needs.validate.outputs.mode == 'promote'

@@ -47,9 +47,10 @@ use tauri::{AppHandle, Emitter, State};
 
 use super::{
     AppState,
+    applied_pose::CurrentAppliedPoseCapability,
     global_flat_foldability::{
-        GlobalFlatFoldabilityState, capture_current_layer_order_capability,
-        revalidate_current_layer_order_capability,
+        CurrentLayerOrderCapability, GlobalFlatFoldabilityState,
+        capture_current_layer_order_capability, revalidate_current_layer_order_capability,
     },
     lock_project,
 };
@@ -260,6 +261,79 @@ struct DyadicPathPreviewRecordV1 {
     path_binding: String,
     positive_binding: String,
     layer_binding: String,
+    authority: Option<DyadicPathNativeAuthorityV1>,
+}
+
+struct DyadicPathNativeAuthorityV1 {
+    pose_capability: CurrentAppliedPoseCapability,
+    layer_capability: CurrentLayerOrderCapability,
+    path: ori_collision::CertifiedPoseGraphPathCertificateV1,
+    edges: Vec<DyadicPathEdgeAuthorityV1>,
+    paper_thickness_mm: f64,
+}
+
+struct DyadicPathEdgeAuthorityV1 {
+    source: ori_collision::PoseFingerprintV1,
+    target: ori_collision::PoseFingerprintV1,
+    schedule: ori_kinematics::CanonicalCycleScheduleV1,
+    closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+    positive: ori_collision::PositiveThicknessContinuousCertificateV1,
+    layer: ori_collision::GeneralMultiFaceCellTransportProofV1,
+}
+
+struct DyadicAuxiliaryEdgeV1 {
+    positive_binding: Option<[u8; 32]>,
+    layer_binding: Option<[u8; 32]>,
+    schedule: ori_kinematics::CanonicalCycleScheduleV1,
+    closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+    positive: Option<ori_collision::PositiveThicknessContinuousCertificateV1>,
+    layer: Option<ori_collision::GeneralMultiFaceCellTransportProofV1>,
+}
+
+impl DyadicPathNativeAuthorityV1 {
+    fn revalidates_private_proofs_v1(
+        &self,
+        record_target: [u8; 32],
+        record_path_binding: &str,
+    ) -> bool {
+        let Some((geometry, _audit, _pose)) = self.pose_capability.graph() else {
+            return false;
+        };
+        let path_binding = self
+            .path
+            .binding_fingerprint_v1()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if self.path.target() != record_target
+            || path_binding != record_path_binding
+            || self.path.edges().len() != self.edges.len()
+        {
+            return false;
+        }
+        self.path
+            .edges()
+            .iter()
+            .zip(&self.edges)
+            .all(|(path_edge, edge)| {
+                path_edge.source() == edge.source
+                    && path_edge.target() == edge.target
+                    && edge.positive.is_for(
+                        geometry,
+                        edge.closure.fixed_face(),
+                        &edge.schedule,
+                        &edge.closure,
+                        self.paper_thickness_mm,
+                    )
+                    && edge.layer.is_for(
+                        geometry,
+                        self.layer_capability.snapshot(),
+                        &edge.schedule,
+                        &edge.closure,
+                        self.paper_thickness_mm,
+                    )
+            })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -340,7 +414,7 @@ pub(super) fn read_bounded_dyadic_pose_graph_v1(
     foldability_state: State<'_, GlobalFlatFoldabilityState>,
     request: DyadicPoseGraphReadRequestV1,
 ) -> Result<DyadicPoseGraphReadResponseV1, String> {
-    read_bounded_dyadic_pose_graph_inner_v1(&app_state, Some(&foldability_state), request)
+    read_bounded_dyadic_pose_graph_inner_v1(&app_state, Some(&foldability_state), request, None)
 }
 
 #[tauri::command]
@@ -382,6 +456,7 @@ fn mint_dyadic_pose_path_preview_inner_v1(
     )
     .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
     let target_binding = pose_state_fingerprint_v1(&target);
+    let mut native_authority = None;
     let observed = read_bounded_dyadic_pose_graph_inner_v1(
         app_state,
         Some(foldability_state),
@@ -393,6 +468,7 @@ fn mint_dyadic_pose_path_preview_inner_v1(
             max_states: request.max_states,
             max_transitions: request.max_transitions,
         },
+        Some(&mut native_authority),
     )?;
     if !observed.mutation_candidate_ready
         || observed.certificate_binding_sha256.as_deref()
@@ -421,6 +497,7 @@ fn mint_dyadic_pose_path_preview_inner_v1(
         path_binding: request.expected_path_binding_sha256.clone(),
         positive_binding: request.expected_positive_thickness_binding_sha256.clone(),
         layer_binding: request.expected_layer_transport_binding_sha256.clone(),
+        authority: Some(native_authority.ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?),
     };
     *preview_state
         .0
@@ -494,6 +571,9 @@ fn apply_dyadic_pose_path_preview_inner_v1(
         || record.path_binding != request.expected_path_binding_sha256
         || record.positive_binding != request.expected_positive_thickness_binding_sha256
         || record.layer_binding != request.expected_layer_transport_binding_sha256
+        || !record.authority.as_ref().is_some_and(|authority| {
+            authority.revalidates_private_proofs_v1(record.target_binding, &record.path_binding)
+        })
     {
         return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
     }
@@ -528,6 +608,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
     app_state: &AppState,
     foldability_state: Option<&GlobalFlatFoldabilityState>,
     request: DyadicPoseGraphReadRequestV1,
+    authority_out: Option<&mut Option<DyadicPathNativeAuthorityV1>>,
 ) -> Result<DyadicPoseGraphReadResponseV1, String> {
     let generation = begin_stacked_fold_read_generation_v1()?;
     let project = lock_project(app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
@@ -689,7 +770,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 hash.update(certificate.thickness_bits().to_be_bytes());
                 <[u8; 32]>::from(hash.finalize())
             });
-            let layer_binding = positive.as_ref().and_then(|positive| {
+            let layer = positive.as_ref().and_then(|positive| {
                 let source = layer_capability.as_ref()?.snapshot();
                 let transition_count = closure.leaves().len().checked_add(1)?;
                 let layer_records = source.overlap_cells.iter().try_fold(0usize, |sum, cell| {
@@ -731,15 +812,23 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 for checkpoint in proof.transition_hashes() {
                     hash.update(checkpoint);
                 }
-                Some(<[u8; 32]>::from(hash.finalize()))
+                Some((<[u8; 32]>::from(hash.finalize()), proof))
             });
             auxiliary_certificates.insert(
                 (edge.source, edge.target),
-                (positive_binding, layer_binding),
+                DyadicAuxiliaryEdgeV1 {
+                    positive_binding,
+                    layer_binding: layer.as_ref().map(|value| value.0),
+                    schedule: generated.schedule().clone(),
+                    closure,
+                    positive,
+                    layer: layer.map(|value| value.1),
+                },
             );
             Some(evidence)
         },
     );
+    let mut authority_parts = None;
     let (
         status,
         explored,
@@ -776,9 +865,9 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 for edge in value.edges() {
                     let pair = auxiliary_certificates.get(&(edge.source(), edge.target()))?;
                     let certificate = if select_layer {
-                        pair.1.as_ref()?
+                        pair.layer_binding.as_ref()?
                     } else {
-                        pair.0.as_ref()?
+                        pair.positive_binding.as_ref()?
                     };
                     hash.update(edge.source());
                     hash.update(edge.target());
@@ -795,11 +884,37 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
             };
             let positive = aggregate(false);
             let layer = aggregate(true);
+            let explored = value.explored_state_count();
+            let evaluated = value.evaluated_transition_count();
+            let certified = value.edges().len();
+            if positive.is_some() && layer.is_some() && authority_out.is_some() {
+                let mut edges = Vec::with_capacity(certified);
+                for certified_edge in value.edges() {
+                    let mut edge = auxiliary_certificates
+                        .remove(&(certified_edge.source(), certified_edge.target()))
+                        .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+                    edges.push(DyadicPathEdgeAuthorityV1 {
+                        source: certified_edge.source(),
+                        target: certified_edge.target(),
+                        schedule: edge.schedule,
+                        closure: edge.closure,
+                        positive: edge
+                            .positive
+                            .take()
+                            .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?,
+                        layer: edge
+                            .layer
+                            .take()
+                            .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?,
+                    });
+                }
+                authority_parts = Some((value, edges));
+            }
             (
                 "certified",
-                value.explored_state_count(),
-                value.evaluated_transition_count(),
-                value.edges().len(),
+                explored,
+                evaluated,
+                certified,
                 Some(binding),
                 positive.as_ref().map_or(0, |value| value.0),
                 positive.map(|value| value.1),
@@ -831,6 +946,18 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
             None,
         ),
     };
+    if let Some(out) = authority_out {
+        *out = match (authority_parts, layer_capability) {
+            (Some((path, edges)), Some(layer_capability)) => Some(DyadicPathNativeAuthorityV1 {
+                pose_capability: capability,
+                layer_capability,
+                path,
+                edges,
+                paper_thickness_mm,
+            }),
+            _ => None,
+        };
+    }
     Ok(dyadic_graph_response(
         &project,
         status,
@@ -3685,10 +3812,11 @@ mod tests {
         let live_request = request(32);
         let state = AppState::new(project);
         let limited =
-            read_bounded_dyadic_pose_graph_inner_v1(&state, None, limited_request).unwrap();
+            read_bounded_dyadic_pose_graph_inner_v1(&state, None, limited_request, None).unwrap();
         assert_eq!(limited.status, "resource_limit");
         assert!(!limited.authorizes_project_mutation);
-        let observed = read_bounded_dyadic_pose_graph_inner_v1(&state, None, live_request).unwrap();
+        let observed =
+            read_bounded_dyadic_pose_graph_inner_v1(&state, None, live_request, None).unwrap();
         assert_eq!(observed.state_count, 9);
         assert_eq!(observed.transition_count, 24);
         assert_eq!(observed.status, "no_path");
@@ -3740,6 +3868,7 @@ mod tests {
             path_binding: "44".repeat(32),
             positive_binding: "55".repeat(32),
             layer_binding: "66".repeat(32),
+            authority: None,
         });
         let apply_request = |path: String| ApplyDyadicPathPreviewRequestV1 {
             preview_token: token,
@@ -3770,6 +3899,8 @@ mod tests {
             .unwrap_err(),
             CYCLE_PATH_UNCERTIFIED_MESSAGE,
         );
+        assert!(preview_state.0.lock().unwrap().is_some());
+        cancel_dyadic_pose_path_preview_inner_v1(&preview_state, token).unwrap();
         assert!(preview_state.0.lock().unwrap().is_none());
         assert_eq!(
             apply_dyadic_pose_path_preview_inner_v1(

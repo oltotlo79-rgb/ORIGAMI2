@@ -1768,6 +1768,48 @@ mod tests {
         );
         assert_eq!(consumed, HashSet::from([ab, bd, ac, cd, ad]));
 
+        let start = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let end = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let axis = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let hinges = [
+            TreeHinge::new_for_test(ab, FoldAssignment::Mountain, a, b, start, end, axis),
+            TreeHinge::new_for_test(bd, FoldAssignment::Mountain, b, d, start, end, axis),
+            TreeHinge::new_for_test(ac, FoldAssignment::Mountain, a, c, start, end, axis),
+            TreeHinge::new_for_test(cd, FoldAssignment::Mountain, c, d, start, end, axis),
+            TreeHinge::new_for_test(ad, FoldAssignment::Mountain, a, d, start, end, axis),
+        ];
+        let geometry =
+            MaterialHingeGraphGeometry::new_for_test(actual.faces().to_vec(), hinges.to_vec());
+        let canonical_angles = |damaged: Option<EdgeId>| {
+            let mut values = [ab, bd, ac, cd, ad]
+                .into_iter()
+                .map(|edge| {
+                    HingeAngle::new(edge, if damaged == Some(edge) { 1.0 } else { 0.0 }).unwrap()
+                })
+                .collect::<Vec<_>>();
+            values.sort_unstable_by_key(|angle| angle.edge().canonical_bytes());
+            CanonicalHingeAngles::new(values).unwrap()
+        };
+        let closed = geometry
+            .solve_closed(&actual, a, &canonical_angles(None), 0.0)
+            .expect("both theta cycles close in one complete hinge observation");
+        assert_eq!(closed.closure_certificate().checked_hinges().len(), 5);
+        assert_eq!(
+            closed
+                .closure_certificate()
+                .checked_hinges()
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>(),
+            consumed
+        );
+        assert!(
+            geometry
+                .solve_closed(&actual, a, &canonical_angles(Some(ad)), 0.0)
+                .is_err(),
+            "damaging the shared direct path must break both-cycle closure"
+        );
+
         assert_eq!(
             MaterialHingeGraphAudit::prepare(
                 &baseline,

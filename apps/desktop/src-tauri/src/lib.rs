@@ -3938,7 +3938,7 @@ fn derive_reference_model_suggestion_v1(
             }
         }
     }
-    let generic_feature_parts = target_parts
+    let mut generic_feature_parts = target_parts
         .iter()
         .filter(|part| {
             !matches!(
@@ -3948,6 +3948,18 @@ fn derive_reference_model_suggestion_v1(
             )
         })
         .collect::<Vec<_>>();
+    let feature_rank = |kind| match kind {
+        ori_domain::BeginnerTargetPartKindV1::Leg => 0,
+        ori_domain::BeginnerTargetPartKindV1::Wing => 1,
+        ori_domain::BeginnerTargetPartKindV1::Tail => 2,
+        ori_domain::BeginnerTargetPartKindV1::Horn => 3,
+        ori_domain::BeginnerTargetPartKindV1::Antenna => 4,
+        ori_domain::BeginnerTargetPartKindV1::Ear => 5,
+        ori_domain::BeginnerTargetPartKindV1::Fin => 6,
+        ori_domain::BeginnerTargetPartKindV1::Head
+        | ori_domain::BeginnerTargetPartKindV1::Torso => 7,
+    };
+    generic_feature_parts.sort_by_key(|part| feature_rank(part.kind));
     if !requested_complete_animal
         && !requested_wing_antenna
         && (2..=8).contains(&generic_feature_parts.len())

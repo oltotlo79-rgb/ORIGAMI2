@@ -960,8 +960,7 @@ mod tests {
     use ori_core::Command;
     use ori_domain::{
         EdgeId, EdgeKind, InstructionHingeAngle, InstructionPose, InstructionPoseModel,
-        InstructionStep, InstructionStepId, PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1,
-        PathCertificateReferenceV1, Point2, VertexId,
+        InstructionStep, InstructionStepId, Point2, VertexId,
     };
     use sha2::{Digest, Sha256};
 
@@ -1045,72 +1044,82 @@ mod tests {
         let fixed_face = topology.simulation_snapshot().expect("fold topology").faces[0].id;
         let source_angles = vec![InstructionHingeAngle {
             edge: fold,
-            angle_degrees: 0.0,
+            angle_degrees: 5.0,
         }];
         let target_angles = vec![InstructionHingeAngle {
             edge: fold,
             angle_degrees: 90.0,
         }];
-        let source_pose =
-            ori_instructions::instruction_pose_fingerprint_v1(&model, fixed_face, &source_angles);
-        let target_pose =
-            ori_instructions::instruction_pose_fingerprint_v1(&model, fixed_face, &target_angles);
-        let mut model_hash = Sha256::new();
-        model_hash.update(b"path_certificate_source_model_binding_v1");
-        model_hash.update(model.as_bytes());
-        let proof = PathCertificateReferenceV1 {
-            version: 1,
-            model_id: PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1.to_owned(),
-            binding_sha256: [0x7c; 32],
-            source_pose_sha256: source_pose,
-            target_pose_sha256: target_pose,
-            source_model_binding_sha256: model_hash.finalize().into(),
-            transition_count: 1,
+        let graph_hash = |angles: &[InstructionHingeAngle]| {
+            let mut hash = Sha256::new();
+            hash.update(b"stacked_fold_certified_path_graph_state_v1");
+            hash.update((angles.len() as u64).to_be_bytes());
+            for angle in angles {
+                hash.update(angle.edge.canonical_bytes());
+                hash.update(angle.angle_degrees.to_bits().to_be_bytes());
+            }
+            <[u8; 32]>::from(hash.finalize())
         };
-        for (revision, (title, description, angles, visual)) in [
-            (
-                "開始",
-                "証明区間の開始姿勢です。".to_owned(),
-                source_angles,
-                ori_domain::InstructionVisual::default(),
-            ),
-            (
-                "完了",
-                format!(
-                    "経路証明 SHA-256: {} / 元モデル SHA-256: {model}",
-                    "7c".repeat(32)
-                ),
-                target_angles,
-                ori_domain::InstructionVisual {
-                    path_certificate_reference_v1: Some(proof),
-                    ..ori_domain::InstructionVisual::default()
-                },
-            ),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        let source_pose = graph_hash(&source_angles);
+        let target_pose = graph_hash(&target_angles);
+        let candidate = ori_collision::CertifiedPathTransitionCandidateV1 {
+            source: source_pose,
+            target: target_pose,
+            candidate_key: [7; 32],
+        };
+        let certificate = match ori_collision::search_certified_pose_graph_v1(
+            &[source_pose, target_pose],
+            &[candidate],
+            source_pose,
+            target_pose,
+            |edge| {
+                Some(
+                    ori_collision::CertifiedPathTransitionEvidenceV1::from_native_oracle(
+                        edge.source,
+                        edge.target,
+                        [1; 32],
+                        [2; 32],
+                        [3; 32],
+                    ),
+                )
+            },
+        ) {
+            ori_collision::CertifiedPathGraphSearchResultV1::Certified(certificate) => certificate,
+            other => panic!("expected native certificate, got {other:?}"),
+        };
+        let original_timeline = ori_domain::InstructionTimeline::default();
+        let mut tampered_target = target_angles.clone();
+        tampered_target[0].angle_degrees = 91.0;
+        assert!(
+            ori_instructions::append_certified_dyadic_path_timeline_v1(
+                &original_timeline,
+                "atomic dyadic fold",
+                &model,
+                fixed_face,
+                &source_angles,
+                &[tampered_target],
+                &certificate,
+            )
+            .is_err()
+        );
+        assert!(
+            original_timeline.steps.is_empty(),
+            "failed atomic apply is a timeline no-op"
+        );
+        let timeline = ori_instructions::append_certified_dyadic_path_timeline_v1(
+            &original_timeline,
+            "atomic dyadic fold",
+            &model,
+            fixed_face,
+            &source_angles,
+            &[target_angles],
+            &certificate,
+        )
+        .expect("atomic proof-bearing timeline");
+        for (revision, step) in timeline.steps.into_iter().enumerate() {
             project
                 .editor
-                .execute(
-                    revision as u64 + 1,
-                    Command::AddInstructionStep {
-                        step: InstructionStep {
-                            id: InstructionStepId::new(),
-                            title: title.to_owned(),
-                            description,
-                            caution: String::new(),
-                            duration_ms: 1_000,
-                            visual,
-                            pose: InstructionPose {
-                                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
-                                source_model_fingerprint: model.clone(),
-                                fixed_face: Some(fixed_face),
-                                hinge_angles: angles,
-                            },
-                        },
-                    },
-                )
+                .execute(revision as u64 + 1, Command::AddInstructionStep { step })
                 .expect("add proof step");
         }
         project

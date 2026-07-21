@@ -75,6 +75,9 @@ export type CurrentCyclePosePreviewResponseV1 = Readonly<{
   sourceRevision: number
   targetRevision: number
   closureLeafCount: number
+  closureMaxDepth: number
+  checkedHingeCount: number
+  totalHingeCount: number
   continuousPathCertified: true
   authorizesProjectMutation: false
 }>
@@ -2335,25 +2338,40 @@ export function proposeCurrentCyclePoseV1(
     (request.progressRequestId !== undefined &&
       (!/^[\x20-\x7e]+$/.test(request.progressRequestId) || request.progressRequestId.length > 128))
   ) return Promise.reject(new Error('invalid current-cycle preview request'))
-  return invoke<unknown>('propose_current_cycle_pose_v1', { request }).then((payload) => {
+  return invoke<unknown>('propose_current_cycle_pose_v1', { request }).then((payload) =>
+    normalizeCurrentCyclePosePreviewResponseV1(payload, request.expectedRevision))
+}
+
+export function normalizeCurrentCyclePosePreviewResponseV1(
+  payload: unknown,
+  expectedRevision: number,
+): CurrentCyclePosePreviewResponseV1 {
     if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
       throw new Error('invalid current-cycle preview response')
     }
     const value = payload as Record<string, unknown>
     if (
       Object.keys(value).sort().join(',') !==
-        'authorizesProjectMutation,closureLeafCount,continuousPathCertified,sourceRevision,targetRevision,transactionToken,version' ||
+        'authorizesProjectMutation,checkedHingeCount,closureLeafCount,closureMaxDepth,continuousPathCertified,sourceRevision,targetRevision,totalHingeCount,transactionToken,version' ||
       value.version !== 1 ||
       !isCanonicalNonNilUuid(value.transactionToken) ||
-      value.sourceRevision !== request.expectedRevision ||
-      value.targetRevision !== request.expectedRevision + 1 ||
+      value.sourceRevision !== expectedRevision ||
+      value.targetRevision !== expectedRevision + 1 ||
       !Number.isSafeInteger(value.closureLeafCount) ||
       Number(value.closureLeafCount) <= 0 ||
+      Number(value.closureLeafCount) > 65_536 ||
+      !Number.isSafeInteger(value.closureMaxDepth) ||
+      Number(value.closureMaxDepth) < 0 ||
+      Number(value.closureMaxDepth) > 16 ||
+      !Number.isSafeInteger(value.checkedHingeCount) ||
+      !Number.isSafeInteger(value.totalHingeCount) ||
+      Number(value.checkedHingeCount) <= 0 ||
+      value.checkedHingeCount !== value.totalHingeCount ||
+      Number(value.totalHingeCount) > 64 ||
       value.continuousPathCertified !== true ||
       value.authorizesProjectMutation !== false
     ) throw new Error('invalid current-cycle preview response')
     return value as CurrentCyclePosePreviewResponseV1
-  })
 }
 
 export function listenCurrentCyclePoseProgressV1(

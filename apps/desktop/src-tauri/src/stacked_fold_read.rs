@@ -245,6 +245,9 @@ pub(super) struct CurrentCyclePosePreviewResponseV1 {
     source_revision: u64,
     target_revision: u64,
     closure_leaf_count: usize,
+    closure_max_depth: u32,
+    checked_hinge_count: usize,
+    total_hinge_count: usize,
     continuous_path_certified: bool,
     authorizes_project_mutation: bool,
 }
@@ -345,6 +348,17 @@ fn propose_current_cycle_pose_inner(
     )
     .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     let closure_leaf_count = closure.leaves().len();
+    let closure_max_depth = closure
+        .leaves()
+        .iter()
+        .map(|(depth, _, _)| *depth)
+        .max()
+        .unwrap_or(0);
+    let total_hinge_count = geometry.hinges().len();
+    let checked_hinge_count = closure
+        .leaves()
+        .first()
+        .map_or(0, |(_, _, leaf)| leaf.checked_hinges().len());
     emit_current_cycle_progress_v1(app, progress_request_id, 1, 1);
     if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) != generation {
         return Err(CANCELLED_MESSAGE.to_owned());
@@ -383,6 +397,9 @@ fn propose_current_cycle_pose_inner(
         source_revision: request.expected_revision,
         target_revision: request.expected_revision + 1,
         closure_leaf_count,
+        closure_max_depth,
+        checked_hinge_count,
+        total_hinge_count,
         continuous_path_certified: true,
         authorizes_project_mutation: false,
     })
@@ -3250,6 +3267,10 @@ mod tests {
             match response {
                 Ok(mut response) => {
                     authenticated += 1;
+                    assert!(response.closure_leaf_count > 0);
+                    assert!(response.closure_max_depth <= 16);
+                    assert_eq!(response.checked_hinge_count, response.total_hinge_count);
+                    assert_eq!(response.total_hinge_count, hinges.len());
                     assert!(
                         super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
                             &app_state,

@@ -673,25 +673,30 @@ describe('StackedFoldPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
     resolveSecond({
       version: 1, transactionToken: project, sourceRevision: 3, targetRevision: 4,
-      closureLeafCount: 2, continuousPathCertified: true, authorizesProjectMutation: false,
+      closureLeafCount: 4, closureMaxDepth: 2, checkedHingeCount: 16, totalHingeCount: 16,
+      continuousPathCertified: true, authorizesProjectMutation: false,
     })
     await waitFor(() => expect(
       screen.getByRole('region', { name: 'Current-pose cycle preview' }).textContent,
-    ).toContain('Closure intervals2'))
+    ).toContain('Closure intervals4'))
+    expect(screen.getByText('Maximum proof depth').nextElementSibling?.textContent).toBe('2')
+    expect(screen.getByText('All hinges covered').nextElementSibling?.textContent).toBe('16/16')
     resolveFirst({
       version: 1, transactionToken: token, sourceRevision: 3, targetRevision: 4,
-      closureLeafCount: 99, continuousPathCertified: true, authorizesProjectMutation: false,
+      closureLeafCount: 99, closureMaxDepth: 7, checkedHingeCount: 4, totalHingeCount: 4,
+      continuousPathCertified: true, authorizesProjectMutation: false,
     })
     await waitFor(() => expect(transport.cancel).toHaveBeenCalledWith(token))
     expect(screen.queryByText('99')).toBeNull()
     expect(screen.getByRole('region', { name: 'Current-pose cycle preview' }).textContent)
-      .toContain('Closure intervals2')
+      .toContain('Closure intervals4')
   })
 
   it('announces cycle cancellation and allows an immediate retry', async () => {
     transport.cyclePreview.mockReturnValueOnce(new Promise(() => undefined)).mockResolvedValueOnce({
       version: 1, transactionToken: token, sourceRevision: 3, targetRevision: 4,
-      closureLeafCount: 1, continuousPathCertified: true, authorizesProjectMutation: false,
+      closureLeafCount: 3, closureMaxDepth: 2, checkedHingeCount: 12, totalHingeCount: 12,
+      continuousPathCertified: true, authorizesProjectMutation: false,
     })
     render(
       <StackedFoldPanel
@@ -728,7 +733,8 @@ describe('StackedFoldPanel', () => {
     let resolveApply!: (value: number) => void
     transport.cyclePreview.mockResolvedValue({
       version: 1, transactionToken: token, sourceRevision: 3, targetRevision: 4,
-      closureLeafCount: 1, continuousPathCertified: true, authorizesProjectMutation: false,
+      closureLeafCount: 4, closureMaxDepth: 2, checkedHingeCount: 16, totalHingeCount: 16,
+      continuousPathCertified: true, authorizesProjectMutation: false,
     })
     transport.apply.mockReturnValue(new Promise((resolve) => { resolveApply = resolve }))
     const rendered = render(

@@ -647,6 +647,14 @@ export function StackedFoldPanel({
                   <dd>{cyclePosePreview.closureLeafCount}</dd>
                 </div>
                 <div>
+                  <dt>{t('証明の最大深さ', 'Maximum proof depth')}</dt>
+                  <dd>{cyclePosePreview.closureMaxDepth}</dd>
+                </div>
+                <div>
+                  <dt>{t('全ヒンジ検証', 'All hinges covered')}</dt>
+                  <dd>{cyclePosePreview.checkedHingeCount}/{cyclePosePreview.totalHingeCount}</dd>
+                </div>
+                <div>
                   <dt>{t('連続経路', 'Continuous path')}</dt>
                   <dd>{t('認証済み', 'Certified')}</dd>
                 </div>

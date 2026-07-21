@@ -576,8 +576,7 @@ impl CurrentAppliedPoseAuthority {
             .checked_add(1)
             .ok_or(PoseAuthorityError::GenerationExhausted)?;
         if let Some(current) = slot.current.as_ref()
-            && (!current_applied_pose_certificate_is_internally_consistent(current)
-                || !current_applied_pose_certificate_is_current(current, project))
+            && !current_applied_pose_certificate_is_internally_consistent(current)
         {
             return Err(PoseAuthorityError::InternalInconsistency);
         }

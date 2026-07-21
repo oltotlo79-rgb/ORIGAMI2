@@ -1584,10 +1584,16 @@ fn even_single_vertex_opposite_pair_cycle_closure_premises_v1(
     ) else {
         return false;
     };
-    if initial
+    let initial_moving = initial
         .as_slice()
         .iter()
-        .any(|angle| angle.angle_degrees().to_bits() != 0.0_f64.to_bits())
+        .filter(|angle| moving.contains(&angle.edge()))
+        .map(|angle| angle.angle_degrees().to_bits())
+        .collect::<HashSet<_>>();
+    if initial_moving.len() != 1
+        || initial.as_slice().iter().any(|angle| {
+            !moving.contains(&angle.edge()) && angle.angle_degrees().to_bits() != 0.0_f64.to_bits()
+        })
     {
         return false;
     }

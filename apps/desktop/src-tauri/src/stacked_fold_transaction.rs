@@ -18,6 +18,7 @@ use super::{
     AppState,
     applied_pose::{
         CurrentAppliedPoseCapability, lock_revalidated_current_applied_pose_for_commit,
+        restore_persisted_current_pose,
     },
     global_flat_foldability::{
         CurrentLayerOrderCapability, GlobalFlatFoldabilityState,
@@ -1136,6 +1137,12 @@ fn apply_stacked_fold_transaction_with_title(
             )
         },
     );
+    let editor_before = project.editor.clone();
+    let persisted_current_pose = timeline
+        .steps
+        .last()
+        .map(|step| step.pose.clone())
+        .ok_or_else(|| "The certified path timeline is inconsistent.".to_owned())?;
     let result = project
         .editor
         .execute_stacked_fold_document(
@@ -1147,6 +1154,11 @@ fn apply_stacked_fold_transaction_with_title(
             applied_pose,
         )
         .map_err(|_| "The stacked-fold transaction could not be applied atomically.".to_owned())?;
+    drop(_pose_guard);
+    if restore_persisted_current_pose(&mut project, &persisted_current_pose).is_err() {
+        project.editor = editor_before;
+        return Err("The target pose authority could not be installed atomically.".to_owned());
+    }
     match (&applied_layer_order, layer_guard) {
         (Some(PendingStackedFoldLayerProof::NonFlat(_)) | None, layer_guard) => {
             if let Some(layer_guard) = layer_guard {
@@ -1162,7 +1174,6 @@ fn apply_stacked_fold_transaction_with_title(
                 })?;
         }
     }
-    drop(_pose_guard);
     drop(project);
     transaction_slot.pending = None;
     transaction_slot.active_generation = None;

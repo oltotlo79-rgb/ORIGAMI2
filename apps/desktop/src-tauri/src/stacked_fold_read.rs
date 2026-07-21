@@ -3536,6 +3536,68 @@ mod tests {
         }
     }
 
+    fn advance_collective_schedule(
+        hinges: &[ori_domain::EdgeId],
+        moving: &[ori_domain::EdgeId],
+        denominator: i64,
+    ) -> CycleScheduleRequestV1 {
+        let moving = moving
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        let mut entries = hinges
+            .iter()
+            .copied()
+            .map(|edge| {
+                let active = moving.contains(&edge);
+                CycleScheduleEntryRequestV1 {
+                    edge,
+                    u_domain: [
+                        RationalCoefficientRequestV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientRequestV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ],
+                    numerator_power_coefficients: if active {
+                        vec![
+                            RationalCoefficientRequestV1 {
+                                numerator: 1,
+                                denominator: 1,
+                            },
+                            RationalCoefficientRequestV1 {
+                                numerator: 1,
+                                denominator: 1,
+                            },
+                        ]
+                    } else {
+                        vec![RationalCoefficientRequestV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        }]
+                    },
+                    denominator_power_coefficients: vec![RationalCoefficientRequestV1 {
+                        numerator: if active { denominator } else { 1 },
+                        denominator: 1,
+                    }],
+                    requested_angle_degrees: if active {
+                        2.0 * 2.0_f64.atan2(denominator as f64).to_degrees()
+                    } else {
+                        0.0
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        CycleScheduleRequestV1 {
+            version: 1,
+            entries,
+        }
+    }
+
     #[test]
     fn dense_rank_four_grid_previews_applies_and_round_trips_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
@@ -4349,13 +4411,54 @@ mod tests {
             preview.transaction_token,
         )
         .expect("balloon straight-line cycle apply");
+        let second_preview = propose_current_cycle_pose_inner(
+            None,
+            &state,
+            &transactions,
+            CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: applied,
+                cycle_schedule_v1: advance_collective_schedule(&hinges, &moving, 100),
+            },
+        )
+        .expect("the rebound current pose must authorize a second preview");
+        let second_applied =
+            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                &state,
+                &GlobalFlatFoldabilityState::default(),
+                &transactions,
+                second_preview.transaction_token,
+            )
+            .expect("second balloon operation applies atomically");
         let mut project = super::super::lock_project(&state).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
+        assert!(
+            project
+                .applied_pose_authority
+                .capture_capability(&project)
+                .unwrap()
+                .is_some()
+        );
+        project.editor.undo(second_applied).unwrap();
         assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        project.editor.undo(applied).unwrap();
+        assert!(
+            project
+                .applied_pose_authority
+                .capture_capability(&project)
+                .unwrap()
+                .is_none()
+        );
+        let first_undone = project.editor.revision();
+        project.editor.undo(first_undone).unwrap();
         assert!(project.editor.instruction_timeline().steps.is_empty());
         let undone = project.editor.revision();
         project.editor.redo(undone).unwrap();
         assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        let first_redone = project.editor.revision();
+        project.editor.redo(first_redone).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
         let mut nonclosing_document = project.document();
         let tampered = nonclosing_document.instruction_timeline.steps[0]
             .pose
@@ -4379,13 +4482,25 @@ mod tests {
             std::path::PathBuf::from("balloon-cycle.ori2"),
         )
         .expect("reopen applied balloon cycle");
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
+        assert!(
+            reopened
+                .applied_pose_authority
+                .capture_capability(&reopened)
+                .unwrap()
+                .is_some()
+        );
         let reopened_revision = reopened.editor.revision();
         reopened.editor.undo(reopened_revision).unwrap();
-        assert!(reopened.editor.instruction_timeline().steps.is_empty());
-        let reopened_undone = reopened.editor.revision();
-        reopened.editor.redo(reopened_undone).unwrap();
         assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+        let reopened_undone = reopened.editor.revision();
+        reopened.editor.undo(reopened_undone).unwrap();
+        assert!(reopened.editor.instruction_timeline().steps.is_empty());
+        let reopened_first_redo = reopened.editor.revision();
+        reopened.editor.redo(reopened_first_redo).unwrap();
+        let reopened_second_redo = reopened.editor.revision();
+        reopened.editor.redo(reopened_second_redo).unwrap();
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
     }
 
     #[test]

@@ -398,6 +398,11 @@ pub fn compile_certified_accordion_fold_timeline_v1(
         .or_else(|| technique.names.first())
         .map(|text| text.text.clone())
         .ok_or(AccordionFoldMotionError::UnsupportedTechnique)?;
+    let certificate_references = request
+        .ordered_path_certificates
+        .iter()
+        .map(path_certificate_reference_v1)
+        .collect::<Vec<_>>();
     let steps = poses
         .into_iter()
         .enumerate()
@@ -411,7 +416,10 @@ pub fn compile_certified_accordion_fold_timeline_v1(
             description: if index == 0 {
                 "認証済み蛇腹折りの開始姿勢です。".to_owned()
             } else {
-                format!("認証済み区間{index}の終端姿勢です。")
+                format!(
+                    "認証済み区間{index}の終端姿勢です。経路証明 SHA-256: {}",
+                    certificate_references[index - 1]
+                )
             },
             caution: "区間を入れ替えず順番どおりに折ってください。".to_owned(),
             duration_ms: 1_000,
@@ -965,6 +973,14 @@ mod tests {
         .expect("three continuous segments");
         assert_eq!(timeline.steps.len(), 4);
         assert_eq!(timeline.steps[3].pose.hinge_angles, previous);
+        assert!(!timeline.steps[0].description.contains("経路証明 SHA-256:"));
+        for (index, certificate) in certificates.iter().enumerate() {
+            assert!(
+                timeline.steps[index + 1]
+                    .description
+                    .contains(&path_certificate_reference_v1(certificate))
+            );
+        }
     }
 
     #[test]

@@ -15,6 +15,14 @@ pub fn rectangular_dense_cycle_pattern(
     columns: usize,
     rows: usize,
 ) -> (CreasePattern, Paper, Vec<EdgeId>) {
+    let (pattern, paper, _, vertical) = orthogonal_dense_cycle_pattern(columns, rows);
+    (pattern, paper, vertical)
+}
+
+pub fn orthogonal_dense_cycle_pattern(
+    columns: usize,
+    rows: usize,
+) -> (CreasePattern, Paper, Vec<EdgeId>, Vec<EdgeId>) {
     assert!((3..=7).contains(&columns));
     assert!((3..=7).contains(&rows));
     let width = columns + 1;
@@ -30,19 +38,24 @@ pub fn rectangular_dense_cycle_pattern(
         .collect::<Vec<_>>();
     let vertex = |x: usize, y: usize| vertices[y * width + x].id;
     let mut edges = Vec::new();
-    let mut moving = Vec::new();
+    let mut horizontal = Vec::new();
+    let mut vertical = Vec::new();
     for y in 0..height {
         for x in 0..columns {
             let id = EdgeId::derive_v5(namespace, &[0x72, y as u8, x as u8]);
+            let kind = if y == 0 || y == rows {
+                EdgeKind::Boundary
+            } else {
+                EdgeKind::Mountain
+            };
+            if kind != EdgeKind::Boundary {
+                horizontal.push(id);
+            }
             edges.push(Edge {
                 id,
                 start: vertex(x, y),
                 end: vertex(x + 1, y),
-                kind: if y == 0 || y == rows {
-                    EdgeKind::Boundary
-                } else {
-                    EdgeKind::Mountain
-                },
+                kind,
             });
         }
     }
@@ -55,7 +68,7 @@ pub fn rectangular_dense_cycle_pattern(
                 EdgeKind::Valley
             };
             if kind != EdgeKind::Boundary {
-                moving.push(id);
+                vertical.push(id);
             }
             edges.push(Edge {
                 id,
@@ -78,6 +91,7 @@ pub fn rectangular_dense_cycle_pattern(
             thickness_mm: 0.1,
             ..Paper::default()
         },
-        moving,
+        horizontal,
+        vertical,
     )
 }

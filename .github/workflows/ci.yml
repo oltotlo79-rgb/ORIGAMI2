@@ -548,15 +548,25 @@ jobs:
       - name: Verify Windows installer resources
         shell: pwsh
         run: |
-          $appVersion = (
-            Get-Content ./apps/desktop/src-tauri/tauri.conf.json -Raw |
-              ConvertFrom-Json
-          ).version
-          ./scripts/verify_windows_bundle.ps1 `
-            -BundleDirectory ./target/release/bundle/nsis `
-            -ExpectedVersion $appVersion `
-            -ExpectedSignatureStatus NotSigned `
-            -PortableExecutable ./target/release/origami2-desktop.exe
+          try {
+            $appVersion = (
+              Get-Content ./apps/desktop/src-tauri/tauri.conf.json -Raw |
+                ConvertFrom-Json
+            ).version
+            ./scripts/verify_windows_bundle.ps1 `
+              -BundleDirectory ./target/release/bundle/nsis `
+              -ExpectedVersion $appVersion `
+              -ExpectedSignatureStatus NotSigned `
+              -PortableExecutable ./target/release/origami2-desktop.exe
+          } catch {
+            $message = $_.Exception.Message
+            if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
+              $message = $message.Replace($env:GITHUB_WORKSPACE, '[workspace]')
+            }
+            $message = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Windows installer resource audit failed::$message"
+            throw
+          }
       - name: Verify Windows production release workflow contract
         shell: pwsh
         run: |

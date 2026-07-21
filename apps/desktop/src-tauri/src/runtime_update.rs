@@ -397,7 +397,7 @@ fn verify_platform_signature(path: &Path) -> Result<bool, ()> {
         }
     }
     let listing = Command::new("/usr/bin/tar")
-        .args(["-tzf"])
+        .arg("-tzf")
         .arg(path)
         .output()
         .map_err(|_| ())?;

@@ -78,11 +78,34 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
       - run: npm test
-      - name: Audit production CSP permissions secrets and dependency licenses
+      - name: Audit production CSP permissions secrets dependency licenses and diagnostics privacy
+        id: production-security
+        shell: bash
         run: |
-          npm run build
-          node ../../.github/scripts/verify_desktop_bundle_csp.mjs dist
-          node ../../.github/scripts/verify_production_security_contract.mjs dist
+          set -o pipefail
+          {
+            npm run build
+            node ../../.github/scripts/verify_desktop_bundle_csp.mjs dist
+            node ../../.github/scripts/verify_production_security_contract.mjs dist
+            node ../../.github/scripts/verify_diagnostics_privacy.mjs
+          } 2>&1 | tee "$RUNNER_TEMP/production-security.log"
+      - name: Annotate production security audit failure
+        if: failure() && steps.production-security.outcome == 'failure'
+        shell: bash
+        run: |
+          message="$(tail -n 40 "$RUNNER_TEMP/production-security.log" 2>/dev/null | tr '\n' ' ' | cut -c1-4000)"
+          message="${message//'%'/'%25'}"
+          message="${message//$'\r'/'%0D'}"
+          message="${message//$'\n'/'%0A'}"
+          echo "::error title=Production security audit failed::${message:-audit failed before diagnostics log creation}"
+      - name: Upload production security audit failure evidence
+        if: failure() && steps.production-security.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: production-security-failure
+          path: ${{ runner.temp }}/production-security.log
+          if-no-files-found: warn
+          retention-days: 7
       - name: Test formal release workflow and local artifact contract
         run: node --test ../../.github/tests/formal-release.test.mjs
       - name: Generate and verify credential-free release dry-run artifacts
@@ -95,9 +118,7 @@ jobs:
         id: accessibility-browser
         env:
           ORIGAMI2_A11Y_ARTIFACT_DIRECTORY: ${{ runner.temp }}/accessibility-browser
-        run: |
-          npm run build
-          npm run test:a11y-browser
+        run: npm run test:a11y-browser
       - name: Upload accessibility browser failure evidence
         if: failure() && steps.accessibility-browser.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -453,10 +474,20 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       - name: Rust Clippy
+        id: rust-clippy
         shell: bash
         run: |
           set -o pipefail
           cargo clippy --workspace --locked --all-targets --all-features -- -D warnings 2>&1 | tee cargo-clippy.log
+      - name: Summarize Rust Clippy failure
+        if: failure() && steps.rust-clippy.outcome == 'failure'
+        shell: bash
+        run: |
+          annotation="$(tail -n 80 cargo-clippy.log 2>/dev/null | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g' | cut -c1-4000)"
+          annotation="${annotation//'%'/'%25'}"
+          annotation="${annotation//$'\r'/'%0D'}"
+          annotation="${annotation//$'\n'/'%0A'}"
+          echo "::error title=Rust Clippy log tail (${RUNNER_OS})::${annotation:-Clippy failed before log creation}"
       - name: Upload Rust Clippy log
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

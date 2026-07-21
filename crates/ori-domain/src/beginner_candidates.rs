@@ -170,5 +170,24 @@ mod tests {
                 .zip(unmatched_scores)
                 .all(|(matched, missing)| matched.shape_score > missing.shape_score)
         );
+
+        let mut tied_profile = profile.clone();
+        tied_profile.shape_fidelity_weight = 0;
+        tied_profile.foldability_weight = 0;
+        tied_profile.step_count_weight = 0;
+        tied_profile.paper_efficiency_weight = 0;
+        let tied = score_beginner_candidates_v1(input, &tied_profile);
+        assert_eq!(tied.len(), MAX_BEGINNER_CANDIDATES_V1);
+        assert!(tied.iter().all(|candidate| candidate.total_score == 0));
+        assert_eq!(
+            tied.iter()
+                .map(|candidate| candidate.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                BeginnerCandidateKindV1::Recommended,
+                BeginnerCandidateKindV1::ShapeFocused,
+                BeginnerCandidateKindV1::FoldabilityFocused,
+            ]
+        );
     }
 }

@@ -1284,7 +1284,29 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
             }
         }
         Some(BeginnerTargetCategoryV1::Insect) => {
-            if constraints
+            if let Some(bindings) = insect_complete_bindings_v1(constraints) {
+                let ordered = [
+                    (bindings.wing_pair_protrusion_id, false),
+                    (bindings.antenna_pair_protrusion_id, true),
+                    (bindings.leg_pair_protrusion_ids[0], false),
+                    (bindings.leg_pair_protrusion_ids[1], false),
+                    (bindings.leg_pair_protrusion_ids[2], false),
+                ];
+                ordered
+                    .into_iter()
+                    .all(|(id, vertical)| {
+                        let mut isolated = constraints.clone();
+                        isolated.protrusions.retain(|target| target.id == id);
+                        parameterized_symmetric_endpoints(&isolated, 2, vertical).is_some()
+                    })
+                    .then(|| {
+                        constraints
+                            .protrusions
+                            .iter()
+                            .find(|target| target.id == bindings.wing_pair_protrusion_id)
+                    })
+                    .flatten()
+            } else if constraints
                 .target_parts
                 .iter()
                 .any(|part| part.kind == BeginnerTargetPartKindV1::Antenna && part.count == 1)
@@ -1866,6 +1888,10 @@ mod tests {
         assert_eq!(reordered_binding.wing_pair_protrusion_id, 1);
         assert_eq!(reordered_binding.antenna_pair_protrusion_id, 2);
         assert_eq!(reordered_binding.leg_pair_protrusion_ids, [3, 4, 5]);
+        assert_eq!(
+            beginner_target_approximation_score_v1(&reordered),
+            beginner_target_approximation_score_v1(&complete)
+        );
 
         let mut duplicate_id = complete.clone();
         duplicate_id.protrusions[4].id = duplicate_id.protrusions[3].id;

@@ -10959,6 +10959,20 @@ mod tests {
                 .all(|(index, binding)| binding.pair_index == index as u8
                     && binding.protrusion_id == complete.protrusions[index].id)
         );
+        let mut signed_zero_geometry = geometry.clone();
+        for position in &mut signed_zero_geometry.positions {
+            position[2] = -0.0;
+        }
+        assert_eq!(
+            derive_reference_model_suggestion_v1(
+                asset_id,
+                &signed_zero_geometry,
+                Some(ori_domain::BeginnerTargetCategoryV1::Insect),
+                &complete_parts,
+            )
+            .unwrap(),
+            complete
+        );
         let mut pair_order_aba = complete.clone();
         pair_order_aba.pair_bindings.swap(2, 4);
         assert_ne!(pair_order_aba, complete);
@@ -11399,6 +11413,33 @@ mod tests {
                     .generation_constraints
             )
             .is_some()
+        );
+        let score_input = ori_domain::BeginnerCandidateInputV1 {
+            vertex_count: project.editor.pattern().vertices.len(),
+            edge_count: project.editor.pattern().edges.len(),
+            crease_count: project
+                .editor
+                .pattern()
+                .edges
+                .iter()
+                .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+                .count(),
+            target_approximation_score: ori_domain::beginner_target_approximation_score_v1(
+                &project
+                    .editor
+                    .beginner_design_profile()
+                    .generation_constraints,
+            ),
+        };
+        assert_eq!(
+            ori_domain::score_beginner_candidates_v1(
+                score_input,
+                project.editor.beginner_design_profile()
+            ),
+            ori_domain::score_beginner_candidates_v1(
+                score_input,
+                reopened.editor.beginner_design_profile()
+            )
         );
         assert!(!reopened.editor.can_undo());
         assert!(!reopened.editor.can_redo());

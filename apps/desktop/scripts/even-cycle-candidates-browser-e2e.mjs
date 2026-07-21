@@ -18,7 +18,7 @@ try {
     await page.getByRole('button', { name: 'undo', exact: true }).click(); await page.getByRole('button', { name: 'redo', exact: true }).click()
     await page.getByRole('button', { name: 'reopen', exact: true }).click(); await page.getByText(`reopened-${family.toLowerCase()}-candidate-visible`, { exact: true }).waitFor()
   }
-  for (const [button, family, profile] of [['Kawasaki 1/2', 'kawasaki-1-2', '1/2'], ['Kawasaki 3/5', 'kawasaki-3-5', '3/5']]) {
+  for (const [button, family, profile] of [['Kawasaki 1/2', 'kawasaki-1-2', '1/2'], ['Kawasaki 3/5', 'kawasaki-3-5', '3/5'], ['Kawasaki 5/13', 'kawasaki-5-13', '5/13'], ['Kawasaki 7/25', 'kawasaki-7-25', '7/25']]) {
     await page.getByRole('button', { name: button, exact: true }).click()
     await page.getByTestId('even-cycle-candidate').click(); await page.getByRole('button', { name: 'Generate and prove Kawasaki linkage', exact: true }).click()
     await page.getByRole('button', { name: 'apply', exact: true }).click(); await page.getByText(`applied-profile-${profile}`, { exact: true }).waitFor()
@@ -31,7 +31,7 @@ try {
   await page.getByRole('button', { name: 'stale request', exact: true }).click(); await page.getByText('stale-rejected', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'ABA request', exact: true }).click(); await page.getByText('aba-rejected', { exact: true }).waitFor()
   const evidence = await page.evaluate(() => window.__ORIGAMI2_EVEN_CYCLE_EVIDENCE__)
-  if (JSON.stringify(evidence) !== JSON.stringify({ automaticKawasakiProofs: 4, applies: 4, undos: 2, redos: 2, reopens: 5, profileTamperRejects: 1, staleRejects: 1, abaRejects: 1 })) throw new Error(JSON.stringify(evidence))
+  if (JSON.stringify(evidence) !== JSON.stringify({ automaticKawasakiProofs: 6, applies: 6, undos: 2, redos: 2, reopens: 7, profileTamperRejects: 1, staleRejects: 1, abaRejects: 1 })) throw new Error(JSON.stringify(evidence))
   console.log('even-cycle candidates browser E2E passed')
 } catch (error) {
   const output = process.env.ORIGAMI2_EVEN_CYCLE_BROWSER_ARTIFACT_DIRECTORY

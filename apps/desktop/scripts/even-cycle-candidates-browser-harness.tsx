@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
-type Family = 'c6' | 'c8' | 'kawasaki-1-2' | 'kawasaki-3-5'
-const sizes: Record<Family, number> = { c6: 6, c8: 8, 'kawasaki-1-2': 4, 'kawasaki-3-5': 4 }
-const profiles: Record<Family, string> = { c6: 'opposite-pair', c8: 'opposite-pair', 'kawasaki-1-2': '1/2', 'kawasaki-3-5': '3/5' }
+type Family = 'c6' | 'c8' | 'kawasaki-1-2' | 'kawasaki-3-5' | 'kawasaki-5-13' | 'kawasaki-7-25'
+const sizes: Record<Family, number> = { c6: 6, c8: 8, 'kawasaki-1-2': 4, 'kawasaki-3-5': 4, 'kawasaki-5-13': 4, 'kawasaki-7-25': 4 }
+const profiles: Record<Family, string> = { c6: 'opposite-pair', c8: 'opposite-pair', 'kawasaki-1-2': '1/2', 'kawasaki-3-5': '3/5', 'kawasaki-5-13': '5/13', 'kawasaki-7-25': '7/25' }
 const evidence = { automaticKawasakiProofs: 0, applies: 0, undos: 0, redos: 0, reopens: 0, profileTamperRejects: 0, staleRejects: 0, abaRejects: 0 }
 let savedProfile: string | null = null
 Object.assign(window, { __ORIGAMI2_EVEN_CYCLE_EVIDENCE__: evidence })
@@ -27,6 +27,8 @@ function Harness() {
     <button onClick={() => { setFamily('c8'); setReason('ready'); setSelected(false); setProof(false); setApplied(false) }}>C8</button>
     <button onClick={() => { setFamily('kawasaki-1-2'); setReason('ready'); setSelected(false); setProof(false); setApplied(false) }}>Kawasaki 1/2</button>
     <button onClick={() => { setFamily('kawasaki-3-5'); setReason('ready'); setSelected(false); setProof(false); setApplied(false) }}>Kawasaki 3/5</button>
+    <button onClick={() => { setFamily('kawasaki-5-13'); setReason('ready'); setSelected(false); setProof(false); setApplied(false) }}>Kawasaki 5/13</button>
+    <button onClick={() => { setFamily('kawasaki-7-25'); setReason('ready'); setSelected(false); setProof(false); setApplied(false) }}>Kawasaki 7/25</button>
     <button onClick={() => setReason('none')}>none fixture</button><button onClick={() => setReason('unsupported')}>unsupported fixture</button>
     <section aria-label="Automatic even-cycle candidates"><h2>{family.toUpperCase()} candidates</h2>
       {reason === 'ready' || selected || proof || applied ? <button data-testid="even-cycle-candidate" onClick={() => { setSelected(true); setReason('selected') }}>hinge-0 / hinge-{sizes[family] / 2}</button> : <p data-testid="candidate-reason">{reason}</p>}

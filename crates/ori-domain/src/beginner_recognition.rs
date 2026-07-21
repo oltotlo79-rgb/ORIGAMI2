@@ -3,7 +3,8 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AssetId, BeginnerBodyOutlineModeV1, BeginnerProtrusionTargetV1, BeginnerSkeletonPointV1,
+    AssetId, BeginnerBodyOutlineModeV1, BeginnerProtrusionJointV1, BeginnerProtrusionSideV1,
+    BeginnerProtrusionSymmetryV1, BeginnerProtrusionTargetV1, BeginnerSkeletonPointV1,
     BeginnerSkeletonSegmentV1, BeginnerTargetPartKindV1, BeginnerTargetPartRecordV1, UnderlayId,
 };
 
@@ -397,6 +398,37 @@ pub fn analyze_silhouette_png_rgba_v1(
         max_x,
         max_y,
     };
+    let protrusion_length = ((max_x - min_x + 1) * 5).max(1);
+    let protrusion_thickness = u16::try_from(((max_y - min_y + 1) * 2).clamp(1, 10_000))
+        .map_err(|_| BeginnerRecognitionErrorV1::PartLimit)?;
+    let local_half_width = i32::from(protrusion_thickness / 2).max(1);
+    let local_length =
+        i32::try_from(protrusion_length).map_err(|_| BeginnerRecognitionErrorV1::PartLimit)?;
+    let protrusions = [(-1_i16, min_x), (1_i16, max_x)]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (direction, x))| BeginnerProtrusionTargetV1 {
+            id: u16::try_from(index + 1).expect("two bounded protrusions"),
+            count: 1,
+            length_tenths_mm: protrusion_length,
+            thickness_tenths_mm: protrusion_thickness,
+            root_width_tenths_mm: None,
+            tip_width_tenths_mm: None,
+            local_outline_tenths_mm: Some(vec![
+                [-local_half_width, 0],
+                [local_half_width, 0],
+                [0, local_length],
+            ]),
+            position_tenths_mm: [i32::try_from(x).unwrap_or_default() * 10, center_y, 0],
+            direction_milli: [direction * 1_000, 0, 0],
+            symmetry: BeginnerProtrusionSymmetryV1::None,
+            curvature_degrees: 0,
+            joint: BeginnerProtrusionJointV1::Fixed,
+            motion_degrees: [0, 0],
+            side: BeginnerProtrusionSideV1::Either,
+            priority: 50 + u8::try_from(index).unwrap_or_default(),
+        })
+        .collect();
     Ok(BeginnerRecognitionProposalV1 {
         schema_version: BEGINNER_RECOGNITION_SCHEMA_VERSION_V1,
         format: BeginnerRecognitionFormatV1::SilhouettePngV1,
@@ -414,7 +446,7 @@ pub fn analyze_silhouette_png_rgba_v1(
             shape_bounds,
         )),
         generic_body_outline_mode: Some(BeginnerBodyOutlineModeV1::General),
-        protrusions: Vec::new(),
+        protrusions,
     })
 }
 
@@ -769,6 +801,13 @@ mod tests {
         assert!(proposal.target_parts.is_empty());
         assert_eq!(proposal.skeleton_segments.len(), 1);
         assert_eq!(proposal.shape_bounds.min_y, 1);
+        assert_eq!(proposal.protrusions.len(), 2);
+        assert!(proposal.protrusions.iter().all(|target| {
+            target
+                .local_outline_tenths_mm
+                .as_ref()
+                .is_some_and(|outline| outline.len() == 3)
+        }));
         assert_eq!(
             proposal.generic_body_outline_mode,
             Some(BeginnerBodyOutlineModeV1::General)

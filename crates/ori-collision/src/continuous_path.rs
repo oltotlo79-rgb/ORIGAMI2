@@ -7654,57 +7654,57 @@ mod tests {
                 exact,
             )
             .unwrap();
-            if rank == 4 {
-                let mut derivation_source = source.clone();
-                if rank == 4 {
-                    derivation_source.face_pair_orders.truncate(1);
-                }
-                let positive_axis = [1.0, 0.0, 0.0];
-                let (derived, separation_axis) =
-                    match crate::derive_continuous_layer_transport_from_poses_v1(
-                        &geometry,
-                        &audit,
-                        &derivation_source,
-                        &mapping,
-                        &schedule,
-                        &closure,
-                        positive_axis,
-                        1.0e-9,
-                        exact,
-                    ) {
-                        Ok(proof) => (proof, positive_axis),
-                        Err(crate::ContinuousLayerTransportErrorV1::Crossing) if rank == 4 => {
-                            let negative_axis = [-1.0, 0.0, 0.0];
-                            (
-                                crate::derive_continuous_layer_transport_from_poses_v1(
-                                    &geometry,
-                                    &audit,
-                                    &derivation_source,
-                                    &mapping,
-                                    &schedule,
-                                    &closure,
-                                    negative_axis,
-                                    1.0e-9,
-                                    exact,
-                                )
-                                .unwrap(),
-                                negative_axis,
-                            )
+            if rank <= 16 {
+                let axes = [
+                    [1.0, 0.0, 0.0],
+                    [-1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, -1.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    [0.0, 0.0, -1.0],
+                ];
+                let mut selected = None;
+                for order in &source.face_pair_orders {
+                    let mut candidate = source.clone();
+                    candidate.face_pair_orders = vec![order.clone()];
+                    for axis in axes {
+                        if let Ok(derived) = crate::derive_continuous_layer_transport_from_poses_v1(
+                            &geometry, &audit, &candidate, &mapping, &schedule, &closure, axis,
+                            1.0e-9, exact,
+                        ) {
+                            selected = Some((derived, candidate, axis));
+                            break;
                         }
-                        result => panic!("derived target order failed: {result:?}"),
-                    };
+                    }
+                    if selected.is_some() {
+                        break;
+                    }
+                }
+                let (derived, derivation_source, separation_axis) =
+                    selected.expect("one exact pose-derived partial order");
                 assert_eq!(
                     derived.transition_hashes().len(),
                     closure.leaves().len() + 1
                 );
-                if rank == 4 {
-                    assert!(
-                        derived
-                            .transition_hashes()
-                            .windows(2)
-                            .any(|pair| pair[0] != pair[1])
-                    );
-                }
+                assert!(
+                    derived
+                        .transition_hashes()
+                        .windows(2)
+                        .any(|pair| pair[0] != pair[1])
+                );
+                let repeated = crate::derive_continuous_layer_transport_from_poses_v1(
+                    &geometry,
+                    &audit,
+                    &derivation_source,
+                    &mapping,
+                    &schedule,
+                    &closure,
+                    separation_axis,
+                    1.0e-9,
+                    exact,
+                )
+                .unwrap();
+                assert_eq!(derived.transition_hashes(), repeated.transition_hashes());
                 assert!(matches!(
                     crate::derive_continuous_layer_transport_from_poses_v1(
                         &geometry,
@@ -7752,33 +7752,38 @@ mod tests {
                     ),
                     Err(crate::ContinuousLayerTransportErrorV1::ResourceLimit)
                 ));
-                if rank == 4 {
-                    let mut cyclic = derivation_source.clone();
-                    cyclic.face_pair_orders.push(FacePairOrderSnapshot {
-                        lower_face: faces[1],
-                        upper_face: faces[0],
-                        supporting_cells: Vec::new(),
-                    });
-                    assert!(matches!(
-                        crate::derive_continuous_layer_transport_from_poses_v1(
-                            &geometry,
-                            &audit,
-                            &cyclic,
-                            &mapping,
-                            &schedule,
-                            &closure,
-                            separation_axis,
-                            1.0e-9,
-                            crate::ContinuousLayerTransportLimitsV1 {
-                                max_pair_orders: exact.max_pair_orders * 2,
-                                ..exact
-                            },
-                        ),
-                        Err(crate::ContinuousLayerTransportErrorV1::Crossing)
-                    ));
-                }
+                let selected_order = derivation_source.face_pair_orders[0].clone();
+                let mut cyclic = derivation_source.clone();
+                cyclic.face_pair_orders.push(FacePairOrderSnapshot {
+                    lower_face: selected_order.upper_face,
+                    upper_face: selected_order.lower_face,
+                    supporting_cells: Vec::new(),
+                });
+                assert!(matches!(
+                    crate::derive_continuous_layer_transport_from_poses_v1(
+                        &geometry,
+                        &audit,
+                        &cyclic,
+                        &mapping,
+                        &schedule,
+                        &closure,
+                        separation_axis,
+                        1.0e-9,
+                        crate::ContinuousLayerTransportLimitsV1 {
+                            max_pair_orders: exact.max_pair_orders * 2,
+                            ..exact
+                        },
+                    ),
+                    Err(crate::ContinuousLayerTransportErrorV1::Crossing)
+                ));
             }
             assert_eq!(proof.transition_hashes().len(), transitions.len());
+            assert!(
+                proof
+                    .transition_hashes()
+                    .windows(2)
+                    .all(|pair| pair[0] == pair[1])
+            );
             assert_eq!(geometry.face_ids().len(), 1 + rank * 3);
             assert_eq!(geometry.hinges().len(), rank * 4);
             assert!(proof.is_for(&geometry, &source, &schedule, &closure));

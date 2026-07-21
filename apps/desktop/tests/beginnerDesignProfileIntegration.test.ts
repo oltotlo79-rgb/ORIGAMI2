@@ -127,6 +127,12 @@ test('AUT-004 proposes only deterministic safe GLB geometry ranges and applies a
   assert.match(client, /surfaceAssignments/u)
   assert.match(app, /Explicitly assign measured surface ranges to 2–8 parts/u)
   assert.match(app, /Duplicate, unconfirmed, or tampered ranges are rejected natively/u)
+  assert.match(native, /struct BeginnerReferenceSurfaceEditV1/u)
+  assert.match(native, /base_digest_sha256 == live_range\.digest_sha256/u)
+  assert.match(native, /reference_model_surface_range_is_connected_v1\(&edited_range, geometry\)/u)
+  assert.match(native, /triangles\.insert\(\*triangle\)/u)
+  assert.match(client, /invalid reference model surface edit/u)
+  assert.match(app, /Triangle indices \(add\/remove adjacent faces only\)/u)
 })
 
 test('AUT-006 stores every bounded protrusion target attribute in profile history', () => {

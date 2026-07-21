@@ -1991,6 +1991,9 @@ export function applyBeginnerReferenceModelFeatures(
   expectedProjectId: string, expectedRevision: number, expectedProjectInstanceId: string,
   expectedSuggestion: BeginnerReferenceModelSuggestionV1,
   surfaceAssignments: readonly Readonly<{ range_id: number, protrusion_id: number }>[],
+  surfaceEdits: readonly Readonly<{
+    range_id: number, base_digest_sha256: readonly number[], triangle_indices: readonly number[]
+  }>[],
 ) {
   if (surfaceAssignments.length < 2 || surfaceAssignments.length > 8
     || new Set(surfaceAssignments.map((item) => item.range_id)).size !== surfaceAssignments.length
@@ -2000,9 +2003,21 @@ export function applyBeginnerReferenceModelFeatures(
       || item.protrusion_id < 1 || item.protrusion_id > 65_535)) {
     return Promise.reject(new Error('invalid reference model surface selection'))
   }
+  if (surfaceEdits.length !== surfaceAssignments.length
+    || new Set(surfaceEdits.map((item) => item.range_id)).size !== surfaceEdits.length
+    || surfaceEdits.some((item) => item.base_digest_sha256.length !== 32
+      || item.base_digest_sha256.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+      || item.triangle_indices.length < 1 || item.triangle_indices.length > 40_000
+      || new Set(item.triangle_indices).size !== item.triangle_indices.length
+      || item.triangle_indices.some((triangle) => !Number.isInteger(triangle) || triangle < 0))) {
+    return Promise.reject(new Error('invalid reference model surface edit'))
+  }
   return invoke<ProjectSnapshot>('apply_beginner_reference_model_features', {
     expectedProjectInstanceId, expectedProjectId, expectedRevision,
-    expectedSuggestion, surfaceAssignments: surfaceAssignments.map((item) => ({ ...item })), confirmed: true,
+    expectedSuggestion, surfaceAssignments: surfaceAssignments.map((item) => ({ ...item })),
+    surfaceEdits: surfaceEdits.map((item) => ({ ...item,
+      base_digest_sha256: [...item.base_digest_sha256], triangle_indices: [...item.triangle_indices],
+    })), confirmed: true,
   })
 }
 

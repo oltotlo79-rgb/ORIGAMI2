@@ -780,6 +780,11 @@ function App() {
     range_id: number
     protrusion_id: number
   }>>([])
+  const [beginnerSurfaceEdits, setBeginnerSurfaceEdits] = useState<Array<{
+    range_id: number
+    base_digest_sha256: readonly number[]
+    triangle_indices: number[]
+  }>>([])
   const beginnerReferenceRequestRef = useRef(0)
   const beginnerDesignFormRef = useRef<HTMLFormElement>(null)
   useEffect(() => {
@@ -3812,6 +3817,10 @@ function App() {
       if (latestSnapshotRef.current === current) {
         setBeginnerReferenceSuggestion(suggestion)
         setBeginnerSurfaceAssignments([])
+        setBeginnerSurfaceEdits(suggestion.surface_ranges.map((range) => ({
+          range_id: range.id, base_digest_sha256: range.digest_sha256,
+          triangle_indices: [...range.triangle_indices],
+        })))
       }
     })
   }
@@ -3828,6 +3837,9 @@ function App() {
       applyBeginnerReferenceModelFeatures(
         projectId, revision, projectInstanceId, suggestion,
         [...beginnerSurfaceAssignments].sort((left, right) => left.range_id - right.range_id),
+        beginnerSurfaceEdits.filter((edit) => beginnerSurfaceAssignments.some(
+          (assignment) => assignment.range_id === edit.range_id,
+        )).sort((left, right) => left.range_id - right.range_id),
       )).finally(() => setBeginnerReferenceSuggestion(null))
   }
 
@@ -8560,6 +8572,23 @@ function App() {
                                 <span>{formattedText({
                                   ja: ' → 部位 {id}', en: ' → Part {id}',
                                 }, { id: target.id })}</span>
+                                <span>{text({
+                                  ja: ' 三角形番号（隣接面のみ追加・除外）',
+                                  en: ' Triangle indices (add/remove adjacent faces only)',
+                                })}</span>
+                                <input type="text"
+                                  aria-label={`Surface range ${range.id} triangle indices`}
+                                  value={beginnerSurfaceEdits.find(
+                                    (edit) => edit.range_id === range.id)?.triangle_indices.join(',') ?? ''}
+                                  onChange={(event) => {
+                                    const indices = event.currentTarget.value.split(',')
+                                      .map((value) => Number(value.trim()))
+                                      .filter((value) => Number.isInteger(value) && value >= 0)
+                                    setBeginnerSurfaceEdits((current) => current.map((edit) =>
+                                      edit.range_id === range.id
+                                        ? { ...edit, triangle_indices: [...new Set(indices)] }
+                                        : edit))
+                                  }} />
                               </label>
                             })}
                             <p>{text({

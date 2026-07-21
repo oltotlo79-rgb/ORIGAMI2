@@ -10,6 +10,15 @@ use crate::{
     OutwardIntervalV1,
 };
 
+const MAX_BOUNDED_KAWASAKI_RATIO_DENOMINATOR_V1: u64 = 64;
+
+fn coprime_u64_v1(mut left: u64, mut right: u64) -> bool {
+    while right != 0 {
+        (left, right) = (right, left % right);
+    }
+    left == 1
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RationalCoefficientV1 {
     pub numerator: i64,
@@ -1227,10 +1236,13 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
         })
         .collect::<Vec<_>>();
     let magnitude = sector_cosines[0].abs();
-    let ratio = (1_u64..=64)
+    let ratio = (1_u64..=MAX_BOUNDED_KAWASAKI_RATIO_DENOMINATOR_V1)
         .filter_map(|denominator| {
             let numerator = (magnitude * denominator as f64).round() as i64;
-            (numerator > 0 && numerator < denominator as i64).then_some((
+            (numerator > 0
+                && numerator < denominator as i64
+                && coprime_u64_v1(numerator as u64, denominator))
+            .then_some((
                 numerator,
                 denominator,
                 (magnitude - numerator as f64 / denominator as f64).abs(),
@@ -1321,8 +1333,9 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
 
 /// Automatically admits the bounded degree-four Kawasaki spherical-linkage
 /// mode from material geometry and its physical mountain/valley assignment.
-/// The first production family is the exact 120/120/60/60 rational class;
-/// all four hinges move and the unique mountain must belong to the scaled
+/// Primitive rational sector-cosine profiles through denominator 64 are
+/// admitted; this includes the exact 1/2, 3/5, 5/13 and 7/25 families. All
+/// four hinges move and the unique mountain must belong to the scaled
 /// opposite pair required by the closure theorem.
 pub fn generate_bounded_degree_four_kawasaki_path_candidate_v1(
     geometry: &MaterialHingeGraphGeometry,

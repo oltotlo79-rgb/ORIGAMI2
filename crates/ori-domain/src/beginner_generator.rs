@@ -1652,7 +1652,7 @@ mod tests {
             kind: BeginnerTargetPartKindV1::Tail,
             count: 1,
         });
-        let mut tail_target = horn_tail.protrusions[0].clone();
+        let mut tail_target = horn_tail.protrusions[0];
         tail_target.id = 2;
         tail_target.direction_milli = [1_000, 0, 0];
         horn_tail.protrusions.push(tail_target);

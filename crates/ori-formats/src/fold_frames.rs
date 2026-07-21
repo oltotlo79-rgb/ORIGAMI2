@@ -728,8 +728,10 @@ mod tests {
             read_fold_3d_frames_preview_v1(malformed, FoldImportLimits::default()),
             Err(Fold3dFramesImportErrorV1::InvalidCoordinates)
         );
-        let mut limits = FoldImportLimits::default();
-        limits.max_vertices = 1;
+        let limits = FoldImportLimits {
+            max_vertices: 1,
+            ..Default::default()
+        };
         let bounded = br#"{"file_frames":[{"vertices_coords":[[0,0,0],[1,0,0]]}]}"#;
         assert_eq!(
             read_fold_3d_frames_preview_v1(bounded, limits),

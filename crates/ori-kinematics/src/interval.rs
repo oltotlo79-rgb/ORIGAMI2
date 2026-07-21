@@ -254,14 +254,17 @@ impl OutwardIntervalV1 {
         n * f64::EPSILON / (1.0 - n * f64::EPSILON)
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn add(self, rhs: Self) -> Result<Self, OutwardIntervalErrorV1> {
         binary(self, rhs, self.lower + rhs.lower, self.upper + rhs.upper)
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn sub(self, rhs: Self) -> Result<Self, OutwardIntervalErrorV1> {
         binary(self, rhs, self.lower - rhs.upper, self.upper - rhs.lower)
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn mul(self, rhs: Self) -> Result<Self, OutwardIntervalErrorV1> {
         let values = [
             self.lower * rhs.lower,
@@ -277,6 +280,7 @@ impl OutwardIntervalV1 {
         )
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn div(self, rhs: Self) -> Result<Self, OutwardIntervalErrorV1> {
         if rhs.lower <= 0.0 && rhs.upper >= 0.0 {
             return Err(OutwardIntervalErrorV1::DivisionByZeroInterval);

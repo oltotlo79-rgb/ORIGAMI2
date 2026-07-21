@@ -626,6 +626,7 @@ fn validate_project_envelope(document: &ProjectDocument) -> Result<(), FormatErr
             return Err(FormatError::InvalidProjectThumbnail);
         }
     }
+    #[allow(clippy::collapsible_if)]
     if let Some(pose) = &document.current_pose {
         if pose.model != ori_domain::InstructionPoseModel::AbsoluteHingeAnglesV1
             || pose.source_model_fingerprint.len() != 64
@@ -2204,7 +2205,7 @@ mod tests {
     #[test]
     fn reference_model_registry_round_trips_and_rejects_duplicates() {
         let mut json = br#"{"asset":{"version":"2.0"}}"#.to_vec();
-        while json.len() % 4 != 0 {
+        while !json.len().is_multiple_of(4) {
             json.push(b' ');
         }
         let length = 20 + json.len();

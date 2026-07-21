@@ -95,6 +95,7 @@ pub(super) enum ProjectFolderFilesystemError {
     TargetExists,
     StaleProject,
     RecoveryRequired,
+    #[allow(dead_code)]
     ReplacementUnsupported,
     #[cfg(test)]
     InjectedCrash,

@@ -2240,7 +2240,7 @@ fn encode_glb_root_and_binary(
         format: StaticMeshExportFormat::Glb20,
     };
     let json = serde_json::to_vec(root).map_err(|_| fail())?;
-    if json.len() > MAX_GLB_JSON_BYTES || binary.len() % 4 != 0 {
+    if json.len() > MAX_GLB_JSON_BYTES || !binary.len().is_multiple_of(4) {
         return Err(fail());
     }
     let padded = align4(json.len()).ok_or_else(fail)?;

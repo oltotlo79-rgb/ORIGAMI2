@@ -775,6 +775,7 @@ fn push_bounded_history(stack: &mut Vec<HistoryEntry>, entry: HistoryEntry, limi
     stack.push(entry);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mirror_selection_target(
     pattern: &CreasePattern,
     paper: &Paper,
@@ -2033,6 +2034,7 @@ impl EditorState {
     }
 
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn with_all_document_parts_annotations_and_memo(
         pattern: CreasePattern,
         paper: Paper,
@@ -2057,6 +2059,7 @@ impl EditorState {
     }
 
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn with_all_document_parts_annotations_underlays_and_memo(
         pattern: CreasePattern,
         paper: Paper,

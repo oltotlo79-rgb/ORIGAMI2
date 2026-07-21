@@ -2491,7 +2491,7 @@ mod tests {
             (angle.angle_degrees() - 90.0).abs() <= 1.0e-12
                 && schedule
                     .derivative_bound(angle.edge())
-                    .is_some_and(|bound| bound >= 0.0 && bound <= 1.0e-12)
+                    .is_some_and(|bound| (0.0..=1.0e-12).contains(&bound))
         }));
         let left = schedule
             .evaluate_angle_box_dyadic(1, 0, CycleScheduleLimitsV1::default())

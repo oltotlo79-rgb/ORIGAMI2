@@ -1,3 +1,15 @@
+#![allow(
+    clippy::clone_on_copy,
+    clippy::collapsible_else_if,
+    clippy::collapsible_if,
+    clippy::large_enum_variant,
+    clippy::needless_borrow,
+    clippy::needless_range_loop,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::unwrap_or_default
+)]
+
 mod applied_pose;
 mod beginner_recognition;
 mod crease_export;

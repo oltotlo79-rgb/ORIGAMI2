@@ -2487,6 +2487,7 @@ impl EditorState {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_all_document_parts_memo_and_history_v1(
         pattern: CreasePattern,
         paper: Paper,
@@ -2510,6 +2511,7 @@ impl EditorState {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_all_document_parts_annotations_memo_and_history_v1(
         pattern: CreasePattern,
         paper: Paper,
@@ -2535,6 +2537,7 @@ impl EditorState {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_all_document_parts_annotations_underlays_memo_and_history_v1(
         pattern: CreasePattern,
         paper: Paper,

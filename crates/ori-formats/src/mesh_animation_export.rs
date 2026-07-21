@@ -336,6 +336,7 @@ fn serialize(
         None,
         None,
     );
+    #[allow(clippy::drop_non_drop)]
     drop(append);
     while binary.len() % 4 != 0 {
         binary.push(0);

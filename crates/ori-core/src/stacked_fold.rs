@@ -1271,8 +1271,7 @@ pub fn build_stacked_fold_topology_v1(
     let carrier_count = source_pattern
         .edges
         .len()
-        .checked_add(expected_creases.len())
-        .unwrap_or(usize::MAX);
+        .saturating_add(expected_creases.len());
     build_limit(
         StackedFoldTopologyBuildResourceV1::Carriers,
         carrier_count,
@@ -1498,6 +1497,7 @@ pub fn build_stacked_fold_topology_v1(
 /// accidentally mixing geometry, lineage, or revisions between preparation
 /// phases. The package remains read-only and must be rebound to live
 /// pose/layer/collision authority by the eventual commit command.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_stacked_fold_geometry_candidate_v1(
     identity_namespace: ProjectId,
     source_revision: Revision,

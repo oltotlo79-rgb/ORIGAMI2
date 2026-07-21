@@ -39,7 +39,7 @@ try {
   if (!replayRejected) throw new Error('consumed preview replay succeeded')
   for (const name of ['undo', 'redo', 'reopen']) await success.getByRole('button', { name }).click()
   const successEvidence = await success.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)
-  if (JSON.stringify(successEvidence) !== JSON.stringify({ reads: 1, mints: 1, applyAttempts: 2, mutations: 1, failures: 1, cancels: 0, timelineDtos: 2, undos: 1, redos: 1, reopens: 1 })) throw new Error(JSON.stringify(successEvidence))
+  if (JSON.stringify(successEvidence) !== JSON.stringify({ reads: 1, readHinges: 6, mints: 1, mintHinges: 6, applyAttempts: 2, mutations: 1, failures: 1, cancels: 0, timelineDtos: 2, undos: 1, redos: 1, reopens: 1 })) throw new Error(JSON.stringify(successEvidence))
   await success.close()
 
   for (const scenario of ['stale', 'aba', 'tamper']) {
@@ -48,7 +48,7 @@ try {
     await page.getByRole('button', { name: 'Apply authenticated path' }).click()
     await page.getByRole('button', { name: 'Apply authenticated path' }).waitFor({ state: 'detached' })
     const evidence = await page.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)
-    if (evidence.applyAttempts !== 1 || evidence.failures !== 1 || evidence.mutations !== 0 || evidence.timelineDtos !== 0) throw new Error(`${scenario}: ${JSON.stringify(evidence)}`)
+    if (evidence.readHinges !== 6 || evidence.mintHinges !== 6 || evidence.applyAttempts !== 1 || evidence.failures !== 1 || evidence.mutations !== 0 || evidence.timelineDtos !== 0) throw new Error(`${scenario}: ${JSON.stringify(evidence)}`)
     if ((await page.locator('output').innerText()) !== 'ready') throw new Error(`${scenario} changed UI snapshot`)
     await page.close()
   }
@@ -57,7 +57,7 @@ try {
   await cancel.getByRole('button', { name: 'Search bounded dyadic paths' }).click()
   await cancel.getByRole('button', { name: 'Cancel search' }).click()
   const cancelEvidence = await cancel.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)
-  if (cancelEvidence.reads !== 1 || cancelEvidence.cancels !== 1 || cancelEvidence.mutations !== 0) throw new Error(`cancel: ${JSON.stringify(cancelEvidence)}`)
+  if (cancelEvidence.reads !== 1 || cancelEvidence.readHinges !== 6 || cancelEvidence.cancels !== 1 || cancelEvidence.mutations !== 0) throw new Error(`cancel: ${JSON.stringify(cancelEvidence)}`)
   if (await cancel.getByTestId('dyadic-pose-graph-status').count()) throw new Error('cancel published stale read')
   await cancel.close()
   console.log('dyadic production panel lifecycle browser E2E passed')

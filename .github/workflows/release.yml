@@ -135,25 +135,24 @@ jobs:
           $env:COMPlus_DbgEnableMiniDump = '0'
           $env:DOTNET_DbgEnableMiniDump = '0'
           $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
-          $thumbprintFile = Join-Path $env:RUNNER_TEMP 'windows-signing-thumbprint.txt'
+          $storeName = "ORIGAMI2-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-portable"
+          $storePath = "Cert:\CurrentUser\$storeName"
           $importedCertificate = $null
           try {
+            if (Test-Path -LiteralPath $storePath) { throw 'Windows isolated signing store collision.' }
+            New-Item -Path 'Cert:\CurrentUser' -Name $storeName -ErrorAction Stop | Out-Null
             [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
             $securePassword = ConvertTo-SecureString -String $env:CERTIFICATE_PASSWORD -AsPlainText -Force
             $pfxData = Get-PfxData -FilePath $certificate -Password $securePassword
             $pfxLeaf = @($pfxData.EndEntityCertificates)
             if ($pfxLeaf.Count -ne 1) { throw 'Windows signing PFX must contain exactly one leaf certificate.' }
             $plannedThumbprint = $pfxLeaf[0].Thumbprint
-            if (Test-Path -LiteralPath "Cert:\CurrentUser\My\$plannedThumbprint") {
-              throw 'Windows signing certificate store thumbprint collision.'
-            }
             $importedCertificate = Import-PfxCertificate -FilePath $certificate `
-              -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -Exportable:$false
+              -CertStoreLocation $storePath -Password $securePassword -Exportable:$false
             if ($importedCertificate.Thumbprint -cne $plannedThumbprint) { throw 'Windows imported certificate identity mismatch.' }
-            [IO.File]::WriteAllText($thumbprintFile, $importedCertificate.Thumbprint)
             $file = (Resolve-Path 'target/release/origami2-desktop.exe').Path
             & signtool sign /q /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
-              /sha1 $importedCertificate.Thumbprint $file
+              /s $storeName /sha1 $importedCertificate.Thumbprint $file
             if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
             $env:WINDOWS_CERTIFICATE_PASSWORD = $env:CERTIFICATE_PASSWORD
             & .\..\..\.github\scripts\verify_windows_signing_identity.ps1 `
@@ -161,12 +160,7 @@ jobs:
           } finally {
             $env:WINDOWS_CERTIFICATE_PASSWORD = $null
             $securePassword = $null
-            if ($null -ne $importedCertificate) {
-              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($importedCertificate.Thumbprint)" -Force -ErrorAction Stop
-            }
-            if (Test-Path -LiteralPath $thumbprintFile) {
-              Remove-Item -LiteralPath $thumbprintFile -Force -ErrorAction Stop
-            }
+            if (Test-Path -LiteralPath $storePath) { Remove-Item -LiteralPath $storePath -Recurse -Force -ErrorAction Stop }
             if (Test-Path -LiteralPath $certificate) {
               Remove-Item -LiteralPath $certificate -Force -ErrorAction Stop
             }
@@ -191,25 +185,24 @@ jobs:
           $env:COMPlus_DbgEnableMiniDump = '0'
           $env:DOTNET_DbgEnableMiniDump = '0'
           $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
-          $thumbprintFile = Join-Path $env:RUNNER_TEMP 'windows-signing-thumbprint.txt'
+          $storeName = "ORIGAMI2-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-installer"
+          $storePath = "Cert:\CurrentUser\$storeName"
           $importedCertificate = $null
           try {
+            if (Test-Path -LiteralPath $storePath) { throw 'Windows isolated signing store collision.' }
+            New-Item -Path 'Cert:\CurrentUser' -Name $storeName -ErrorAction Stop | Out-Null
             [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
             $securePassword = ConvertTo-SecureString -String $env:CERTIFICATE_PASSWORD -AsPlainText -Force
             $pfxData = Get-PfxData -FilePath $certificate -Password $securePassword
             $pfxLeaf = @($pfxData.EndEntityCertificates)
             if ($pfxLeaf.Count -ne 1) { throw 'Windows signing PFX must contain exactly one leaf certificate.' }
             $plannedThumbprint = $pfxLeaf[0].Thumbprint
-            if (Test-Path -LiteralPath "Cert:\CurrentUser\My\$plannedThumbprint") {
-              throw 'Windows signing certificate store thumbprint collision.'
-            }
             $importedCertificate = Import-PfxCertificate -FilePath $certificate `
-              -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -Exportable:$false
+              -CertStoreLocation $storePath -Password $securePassword -Exportable:$false
             if ($importedCertificate.Thumbprint -cne $plannedThumbprint) { throw 'Windows imported certificate identity mismatch.' }
-            [IO.File]::WriteAllText($thumbprintFile, $importedCertificate.Thumbprint)
             $file = (Get-ChildItem 'target/release/bundle/nsis' -Filter '*.exe' -File -Recurse -ErrorAction Stop).FullName
             & signtool sign /q /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
-              /sha1 $importedCertificate.Thumbprint $file
+              /s $storeName /sha1 $importedCertificate.Thumbprint $file
             if ($LASTEXITCODE -ne 0) { throw "signtool failed for $file" }
             $env:WINDOWS_CERTIFICATE_PASSWORD = $env:CERTIFICATE_PASSWORD
             & .\..\..\.github\scripts\verify_windows_signing_identity.ps1 `
@@ -217,12 +210,7 @@ jobs:
           } finally {
             $env:WINDOWS_CERTIFICATE_PASSWORD = $null
             $securePassword = $null
-            if ($null -ne $importedCertificate) {
-              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($importedCertificate.Thumbprint)" -Force -ErrorAction Stop
-            }
-            if (Test-Path -LiteralPath $thumbprintFile) {
-              Remove-Item -LiteralPath $thumbprintFile -Force -ErrorAction Stop
-            }
+            if (Test-Path -LiteralPath $storePath) { Remove-Item -LiteralPath $storePath -Recurse -Force -ErrorAction Stop }
             if (Test-Path -LiteralPath $certificate) {
               Remove-Item -LiteralPath $certificate -Force -ErrorAction Stop
             }
@@ -234,14 +222,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
           $verificationLog = Join-Path $env:RUNNER_TEMP 'windows-signature-verification.log'
-          $thumbprintFile = Join-Path $env:RUNNER_TEMP 'windows-signing-thumbprint.txt'
-          if (Test-Path -LiteralPath $thumbprintFile) {
-            $thumbprint = [IO.File]::ReadAllText($thumbprintFile).Trim()
-            if ($thumbprint -notmatch '^[0-9A-F]{40}$') { throw 'Invalid signing certificate cleanup identity.' }
-            $storePath = "Cert:\CurrentUser\My\$thumbprint"
-            if (Test-Path -LiteralPath $storePath) { Remove-Item -LiteralPath $storePath -Force -ErrorAction Stop }
+          foreach ($suffix in @('portable', 'installer')) {
+            $storeName = "ORIGAMI2-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-$suffix"
+            $storePath = "Cert:\CurrentUser\$storeName"
+            if (Test-Path -LiteralPath $storePath) { Remove-Item -LiteralPath $storePath -Recurse -Force -ErrorAction Stop }
           }
-          foreach ($path in @($certificate, $verificationLog, $thumbprintFile)) {
+          foreach ($path in @($certificate, $verificationLog)) {
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
           }
       - name: Verify Windows installer and portable executable contract

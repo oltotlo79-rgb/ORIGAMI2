@@ -2525,6 +2525,62 @@ mod tests {
         let retried =
             diagnose_scheduled_cycle_path_v1(&geometry, &audit, fixed, &candidate, &closure, 32);
         assert_eq!(retried, diagnostic);
+        for thickness in [0.1, 1.0, 3.0] {
+            let positive = diagnose_scheduled_positive_thickness_cycle_path_v1(
+                &geometry, &audit, fixed, &candidate, &closure, thickness, 32,
+            );
+            assert_eq!(
+                positive.continuous_certificate_model_id(),
+                Some(STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+            );
+            assert_eq!(
+                positive.positive_thickness_bits(),
+                Some(thickness.to_bits())
+            );
+            assert_ne!(
+                positive,
+                diagnose_scheduled_positive_thickness_cycle_path_v1(
+                    &geometry,
+                    &audit,
+                    fixed,
+                    &candidate,
+                    &closure,
+                    f64::from_bits(thickness.to_bits() + 1),
+                    32,
+                ),
+                "bit-distinct thickness must not replay the same proof"
+            );
+            for one_short_or_cancelled in [0, MAX_STACKED_FOLD_INTERVAL_LEAVES_V1 + 1] {
+                assert!(
+                    diagnose_scheduled_positive_thickness_cycle_path_v1(
+                        &geometry,
+                        &audit,
+                        fixed,
+                        &candidate,
+                        &closure,
+                        thickness,
+                        one_short_or_cancelled,
+                    )
+                    .continuous_certificate_model_id()
+                    .is_none()
+                );
+            }
+        }
+        for invalid_thickness in [0.0, -0.1, f64::NAN, f64::INFINITY] {
+            assert!(
+                diagnose_scheduled_positive_thickness_cycle_path_v1(
+                    &geometry,
+                    &audit,
+                    fixed,
+                    &candidate,
+                    &closure,
+                    invalid_thickness,
+                    32,
+                )
+                .continuous_certificate_model_id()
+                .is_none()
+            );
+        }
         let first = crate::certify_scheduled_cycle_transition_v1(
             &geometry, &audit, fixed, &candidate, &closure, 32, [0x41; 32], [0x42; 32],
         )

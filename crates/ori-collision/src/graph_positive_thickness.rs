@@ -669,6 +669,31 @@ mod tests {
             )
             .expect("exact theta opposite-pair interval theorem");
         assert_eq!(closure.leaves().len(), 1);
+        for one_short in [
+            DyadicIntervalClosureLimitsV1 {
+                max_depth: 0,
+                max_leaves: 0,
+                max_work: 1,
+                schedule_limits: CycleScheduleLimitsV1::default(),
+            },
+            DyadicIntervalClosureLimitsV1 {
+                max_depth: 0,
+                max_leaves: 1,
+                max_work: 0,
+                schedule_limits: CycleScheduleLimitsV1::default(),
+            },
+        ] {
+            assert_eq!(
+                geometry.prove_dyadic_schedule_closure_v1(
+                    &audit,
+                    geometry.face_ids()[0],
+                    &schedule,
+                    1.0e-8,
+                    one_short,
+                ),
+                Err(ori_kinematics::DyadicIntervalClosureErrorV1::InvalidInput)
+            );
+        }
         let initial = schedule.evaluate(0.0).unwrap();
         let requested = schedule.evaluate(1.0).unwrap();
         let candidate =
@@ -685,7 +710,96 @@ mod tests {
                 32,
             );
             assert!(continuous.continuous_certificate_model_id().is_some());
+            assert!(
+                crate::diagnose_scheduled_positive_thickness_cycle_path_v1(
+                    &geometry,
+                    &audit,
+                    geometry.face_ids()[0],
+                    &candidate,
+                    &closure,
+                    thickness,
+                    0,
+                )
+                .continuous_certificate_model_id()
+                .is_none()
+            );
         }
+        let collision_schedule = CanonicalCycleScheduleV1::prepare(
+            &geometry,
+            &audit,
+            geometry.face_ids()[0],
+            [0.0, 1.0],
+            geometry
+                .hinges()
+                .iter()
+                .map(|hinge| {
+                    let moves = hinge.assignment() == ori_topology::FoldAssignment::Mountain;
+                    CycleScheduleEntryInputV1 {
+                        edge: hinge.edge(),
+                        initial_angle_degrees_bits: if moves {
+                            45.0_f64.to_bits()
+                        } else {
+                            0.0_f64.to_bits()
+                        },
+                        chebyshev_coefficients: if moves {
+                            vec![
+                                RationalCoefficientV1 {
+                                    numerator: 0,
+                                    denominator: 1,
+                                },
+                                RationalCoefficientV1 {
+                                    numerator: 45,
+                                    denominator: 1,
+                                },
+                            ]
+                        } else {
+                            vec![RationalCoefficientV1 {
+                                numerator: 0,
+                                denominator: 1,
+                            }]
+                        },
+                    }
+                })
+                .collect(),
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        let collision_closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                geometry.face_ids()[0],
+                &collision_schedule,
+                1.0e-8,
+                DyadicIntervalClosureLimitsV1 {
+                    max_depth: 0,
+                    max_leaves: 1,
+                    max_work: 1,
+                    schedule_limits: CycleScheduleLimitsV1::default(),
+                },
+            )
+            .unwrap();
+        let collision_initial = collision_schedule.evaluate(0.0).unwrap();
+        let collision_target = collision_schedule.evaluate(1.0).unwrap();
+        let collision_candidate = admit_canonical_multi_hinge_path_candidate_v1(
+            collision_schedule,
+            &collision_initial,
+            &collision_target,
+        )
+        .unwrap();
+        assert!(
+            crate::diagnose_scheduled_positive_thickness_cycle_path_v1(
+                &geometry,
+                &audit,
+                geometry.face_ids()[0],
+                &collision_candidate,
+                &collision_closure,
+                0.1,
+                32,
+            )
+            .continuous_certificate_model_id()
+            .is_none(),
+            "the thickness singularity at 90 degrees must issue no swept certificate"
+        );
         for thickness in [0.1, 1.0, 3.0] {
             let proof = prove_positive_thickness_graph_geometry_v1(
                 &geometry,

@@ -1396,6 +1396,15 @@ export type InstructionPose = {
 }
 
 export type InstructionPoint3 = { x: number; y: number; z: number }
+export type PathCertificateReferenceV1 = Readonly<{
+  version: 1
+  model_id: 'bounded_certified_pose_graph_path_reference_v1'
+  binding_sha256: readonly number[]
+  source_pose_sha256: readonly number[]
+  target_pose_sha256: readonly number[]
+  source_model_binding_sha256: readonly number[]
+  transition_count: number
+}>
 export type InstructionVisual = {
   cycle_layer_order_proof_v1?: Readonly<{
     version: 1
@@ -1404,6 +1413,7 @@ export type InstructionVisual = {
     transition_count: number
     pairs: readonly Readonly<{ lower_face: string; upper_face: string }>[]
   }> | null
+  path_certificate_reference_v1?: PathCertificateReferenceV1 | null
   camera: {
     position: InstructionPoint3
     target: InstructionPoint3
@@ -4863,6 +4873,7 @@ function normalizeProjectLayerMutationBaseSnapshot(
     || typeof record.is_dirty !== 'boolean'
     || !isCoreDataRecord(record.paper)
     || !isCoreDataRecord(record.instruction_timeline)
+    || !hasStrictOptionalPathCertificateReferences(record.instruction_timeline)
     || !isCoreDataRecord(record.numeric_expressions)
     || !isCoreDataRecord(record.geometric_constraints)
     || !isCoreDataRecord(record.element_metadata)
@@ -4927,6 +4938,43 @@ function normalizeProjectLayerMutationBaseSnapshot(
     can_undo: record.can_undo,
     can_redo: record.can_redo,
     cutting_allowed: record.cutting_allowed,
+  })
+}
+
+function hasStrictOptionalPathCertificateReferences(value: Readonly<Record<string, unknown>>) {
+  if (value.steps === undefined) return true
+  if (!Array.isArray(value.steps)) return false
+  return value.steps.every((stepValue) => {
+    const step = snapshotCoreDataRecord(stepValue)
+    const visual = step && snapshotCoreDataRecord(step.visual)
+    if (!visual) return false
+    const referenceValue = visual.path_certificate_reference_v1
+    if (referenceValue === undefined || referenceValue === null) return true
+    const reference = exactCoreDataRecord(referenceValue, [
+      'version',
+      'model_id',
+      'binding_sha256',
+      'source_pose_sha256',
+      'target_pose_sha256',
+      'source_model_binding_sha256',
+      'transition_count',
+    ] as const)
+    return Boolean(
+      reference
+      && reference.version === 1
+      && reference.model_id === 'bounded_certified_pose_graph_path_reference_v1'
+      && isBoundedIntegerTuple(reference.binding_sha256, 32, 255)
+      && isBoundedIntegerTuple(reference.source_pose_sha256, 32, 255)
+      && isBoundedIntegerTuple(reference.target_pose_sha256, 32, 255)
+      && isBoundedIntegerTuple(reference.source_model_binding_sha256, 32, 255)
+      && (reference.binding_sha256 as number[]).some((byte) => byte !== 0)
+      && (reference.source_model_binding_sha256 as number[]).some((byte) => byte !== 0)
+      && JSON.stringify(reference.source_pose_sha256)
+        !== JSON.stringify(reference.target_pose_sha256)
+      && Number.isSafeInteger(reference.transition_count)
+      && Number(reference.transition_count) >= 1
+      && Number(reference.transition_count) <= 64
+    )
   })
 }
 

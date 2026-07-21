@@ -959,8 +959,11 @@ mod tests {
 
     use ori_core::Command;
     use ori_domain::{
-        InstructionPose, InstructionPoseModel, InstructionStep, InstructionStepId, Point2, VertexId,
+        EdgeId, EdgeKind, InstructionHingeAngle, InstructionPose, InstructionPoseModel,
+        InstructionStep, InstructionStepId, PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1,
+        PathCertificateReferenceV1, Point2, VertexId,
     };
+    use sha2::{Digest, Sha256};
 
     use super::*;
 
@@ -1015,6 +1018,101 @@ mod tests {
                 },
             )
             .unwrap();
+        project
+    }
+
+    fn project_with_structured_proof_instruction() -> ProjectState {
+        let mut project = super::super::initial_project_state();
+        let fold = EdgeId::new();
+        let boundary = &project.editor.paper().boundary_vertices;
+        project
+            .editor
+            .execute(
+                0,
+                Command::AddEdge {
+                    id: fold,
+                    start: boundary[0],
+                    end: boundary[2],
+                    kind: EdgeKind::Mountain,
+                },
+            )
+            .expect("add fold");
+        let model = project.editor.fold_model_fingerprint_v1();
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let fixed_face = topology.simulation_snapshot().expect("fold topology").faces[0].id;
+        let source_angles = vec![InstructionHingeAngle {
+            edge: fold,
+            angle_degrees: 0.0,
+        }];
+        let target_angles = vec![InstructionHingeAngle {
+            edge: fold,
+            angle_degrees: 90.0,
+        }];
+        let source_pose =
+            ori_instructions::instruction_pose_fingerprint_v1(&model, fixed_face, &source_angles);
+        let target_pose =
+            ori_instructions::instruction_pose_fingerprint_v1(&model, fixed_face, &target_angles);
+        let mut model_hash = Sha256::new();
+        model_hash.update(b"path_certificate_source_model_binding_v1");
+        model_hash.update(model.as_bytes());
+        let proof = PathCertificateReferenceV1 {
+            version: 1,
+            model_id: PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1.to_owned(),
+            binding_sha256: [0x7c; 32],
+            source_pose_sha256: source_pose,
+            target_pose_sha256: target_pose,
+            source_model_binding_sha256: model_hash.finalize().into(),
+            transition_count: 1,
+        };
+        for (revision, (title, description, angles, visual)) in [
+            (
+                "開始",
+                "証明区間の開始姿勢です。".to_owned(),
+                source_angles,
+                ori_domain::InstructionVisual::default(),
+            ),
+            (
+                "完了",
+                format!(
+                    "経路証明 SHA-256: {} / 元モデル SHA-256: {model}",
+                    "7c".repeat(32)
+                ),
+                target_angles,
+                ori_domain::InstructionVisual {
+                    path_certificate_reference_v1: Some(proof),
+                    ..ori_domain::InstructionVisual::default()
+                },
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            project
+                .editor
+                .execute(
+                    revision as u64 + 1,
+                    Command::AddInstructionStep {
+                        step: InstructionStep {
+                            id: InstructionStepId::new(),
+                            title: title.to_owned(),
+                            description,
+                            caution: String::new(),
+                            duration_ms: 1_000,
+                            visual,
+                            pose: InstructionPose {
+                                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                                source_model_fingerprint: model.clone(),
+                                fixed_face: Some(fixed_face),
+                                hinge_angles: angles,
+                            },
+                        },
+                    },
+                )
+                .expect("add proof step");
+        }
         project
     }
 
@@ -1323,13 +1421,8 @@ mod tests {
 
     #[test]
     fn reopened_proof_binding_reaches_native_export_and_tampering_stays_opaque() {
-        let project = project_with_instruction();
-        let mut source = source_for(&project, InstructionExportFormatRequest::Pdf);
-        let model = source.current_fold_model_fingerprint.clone();
-        source.timeline.steps[0].description = format!(
-            "経路証明 SHA-256: {} / 元モデル SHA-256: {model}",
-            "7c".repeat(32)
-        );
+        let project = project_with_structured_proof_instruction();
+        let source = source_for(&project, InstructionExportFormatRequest::Pdf);
         let archived = serde_json::to_vec(&source.timeline).expect("archive timeline");
         let reopened_timeline: ori_domain::InstructionTimeline =
             serde_json::from_slice(&archived).expect("reopen timeline");
@@ -1341,13 +1434,13 @@ mod tests {
             reopened_source.timeline = reopened_timeline.clone();
             let reopened = build_pending_export(reopened_source)
                 .expect("native export after proof-bearing reopen");
-            assert_eq!(reopened.step_count, 1);
+            assert_eq!(reopened.step_count, 2);
             assert!(reopened.bytes.starts_with(magic));
         }
 
         let mut tampered_archive: serde_json::Value =
             serde_json::from_slice(&archived).expect("inspect archived timeline");
-        tampered_archive["steps"][0]["description"] = serde_json::Value::String(format!(
+        tampered_archive["steps"][1]["description"] = serde_json::Value::String(format!(
             "経路証明 SHA-256: {} / 元モデル SHA-256: {}",
             "7c".repeat(32),
             "b".repeat(64)

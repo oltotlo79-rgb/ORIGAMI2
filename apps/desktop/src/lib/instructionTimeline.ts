@@ -767,13 +767,21 @@ function parseStep(
 export function parseInstructionVisual(value: unknown): InstructionVisual | null {
   if (
     !isRecord(value)
-    || !hasExactKeys(value, ['camera', 'arrows', 'focus_points', 'hand_guides'])
+    || !hasRequiredAndOptionalKeys(
+      value,
+      ['camera', 'arrows', 'focus_points', 'hand_guides'],
+      ['cycle_layer_order_proof_v1', 'path_certificate_reference_v1'],
+    )
     || !(value.camera === null || isCamera(value.camera))
     || !Array.isArray(value.arrows)
     || !Array.isArray(value.focus_points)
     || !Array.isArray(value.hand_guides)
     || value.arrows.length + value.focus_points.length + value.hand_guides.length > 64
   ) return null
+  const pathCertificateReference = parsePathCertificateReference(
+    value.path_certificate_reference_v1,
+  )
+  if (pathCertificateReference === false) return null
   const arrows = value.arrows.map((arrow) => {
     if (
       !isRecord(arrow)
@@ -830,6 +838,51 @@ export function parseInstructionVisual(value: unknown): InstructionVisual | null
     arrows: Object.freeze(arrows) as InstructionVisual['arrows'],
     focus_points: Object.freeze(focusPoints) as InstructionVisual['focus_points'],
     hand_guides: Object.freeze(handGuides) as InstructionVisual['hand_guides'],
+    cycle_layer_order_proof_v1:
+      value.cycle_layer_order_proof_v1 as InstructionVisual['cycle_layer_order_proof_v1'],
+    path_certificate_reference_v1: pathCertificateReference,
+  })
+}
+
+function parsePathCertificateReference(
+  value: unknown,
+): InstructionVisual['path_certificate_reference_v1'] | false {
+  if (value === undefined || value === null) return value
+  if (!isRecord(value) || !hasExactKeys(value, [
+    'version',
+    'model_id',
+    'binding_sha256',
+    'source_pose_sha256',
+    'target_pose_sha256',
+    'source_model_binding_sha256',
+    'transition_count',
+  ])) return false
+  const byteArray = (candidate: unknown) => Array.isArray(candidate)
+    && candidate.length === 32
+    && candidate.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)
+  if (
+    value.version !== 1
+    || value.model_id !== 'bounded_certified_pose_graph_path_reference_v1'
+    || !byteArray(value.binding_sha256)
+    || !byteArray(value.source_pose_sha256)
+    || !byteArray(value.target_pose_sha256)
+    || !byteArray(value.source_model_binding_sha256)
+    || !(value.binding_sha256 as number[]).some((byte) => byte !== 0)
+    || !(value.source_model_binding_sha256 as number[]).some((byte) => byte !== 0)
+    || JSON.stringify(value.source_pose_sha256) === JSON.stringify(value.target_pose_sha256)
+    || !Number.isSafeInteger(value.transition_count)
+    || Number(value.transition_count) < 1
+    || Number(value.transition_count) > 64
+  ) return false
+  return Object.freeze({
+    version: 1,
+    model_id: 'bounded_certified_pose_graph_path_reference_v1',
+    binding_sha256: Object.freeze([...(value.binding_sha256 as number[])]),
+    source_pose_sha256: Object.freeze([...(value.source_pose_sha256 as number[])]),
+    target_pose_sha256: Object.freeze([...(value.target_pose_sha256 as number[])]),
+    source_model_binding_sha256:
+      Object.freeze([...(value.source_model_binding_sha256 as number[])]),
+    transition_count: Number(value.transition_count),
   })
 }
 
@@ -1122,6 +1175,16 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
   const keys = Object.keys(value)
   return keys.length === expected.length
     && expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+}
+
+function hasRequiredAndOptionalKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[],
+) {
+  const keys = Object.keys(value)
+  return required.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+    && keys.every((key) => required.includes(key) || optional.includes(key))
 }
 
 function localized(ja: string, en: string): LocalizedText {

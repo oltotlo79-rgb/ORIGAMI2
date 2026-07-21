@@ -378,6 +378,18 @@ describe('InstructionTimelinePanel localization', () => {
         steps: [{
           ...SNAPSHOT.instruction_timeline.steps[0]!,
           description: `経路証明 SHA-256: ${proof}`,
+          visual: {
+            ...SNAPSHOT.instruction_timeline.steps[0]!.visual,
+            path_certificate_reference_v1: {
+              version: 1,
+              model_id: 'bounded_certified_pose_graph_path_reference_v1',
+              binding_sha256: Array(32).fill(0x7c),
+              source_pose_sha256: Array(32).fill(2),
+              target_pose_sha256: Array(32).fill(3),
+              source_model_binding_sha256: Array(32).fill(4),
+              transition_count: 1,
+            },
+          },
         }],
       },
     }, vi.fn(() => true), APPLIED_POSE, onExport)

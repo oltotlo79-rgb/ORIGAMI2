@@ -102,6 +102,30 @@ test('rejects malformed and hostile native layer mutation snapshots', () => {
   assert.equal(getterCalls, 0)
 })
 
+test('strictly admits the optional path-certificate DTO and rejects unknown or malformed fields', () => {
+  const valid = validSnapshot()
+  const validBase = validBaseSnapshot()
+  validBase.instruction_timeline = proofTimeline() as typeof validBase.instruction_timeline
+  assert.notEqual(
+    normalizeProjectLayerMutationSnapshot(valid, validBase),
+    null,
+  )
+
+  for (const reference of [
+    { ...proofReference(), future: true },
+    { ...proofReference(), transition_count: 0 },
+    { ...proofReference(), binding_sha256: [1] },
+    { ...proofReference(), target_pose_sha256: Array(32).fill(2) },
+  ]) {
+    const invalid = validBaseSnapshot()
+    invalid.instruction_timeline = proofTimeline(reference) as typeof invalid.instruction_timeline
+    assert.equal(
+      normalizeProjectLayerMutationSnapshot(validSnapshot(), invalid),
+      null,
+    )
+  }
+})
+
 test('distinguishes a malformed response from a stale project binding', () => {
   const base = validBaseSnapshot()
   assert.throws(
@@ -344,6 +368,26 @@ function validSnapshot() {
     can_undo: true,
     can_redo: false,
     cutting_allowed: false,
+  }
+}
+
+function proofReference() {
+  return {
+    version: 1,
+    model_id: 'bounded_certified_pose_graph_path_reference_v1',
+    binding_sha256: Array(32).fill(1),
+    source_pose_sha256: Array(32).fill(2),
+    target_pose_sha256: Array(32).fill(3),
+    source_model_binding_sha256: Array(32).fill(4),
+    transition_count: 1,
+  }
+}
+
+function proofTimeline(reference: Record<string, unknown> = proofReference()) {
+  return {
+    steps: [{
+      visual: { path_certificate_reference_v1: reference },
+    }],
   }
 }
 

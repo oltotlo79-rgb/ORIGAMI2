@@ -645,7 +645,7 @@ mod tests {
             "鶴の試作",
             "手順 1 / 2",
             "中央を山折りする",
-            "所要時間: 1.25秒 / 今回動かす折り線: 1本",
+            "所要時間: 1.25秒 / 今回動かす折り線: 1本 / 3D姿勢: 再計算済み（経路未証明）",
             "説明",
             "注意事項",
         ]
@@ -736,7 +736,7 @@ mod tests {
         assert_eq!(plan.warnings, INSTRUCTION_EXPORT_WARNINGS);
         assert_eq!(
             canonical_plan_digest(&plan),
-            "947271e7bd379bbd89e7e4b23755fb92c4bd899c62ee10468131fbb414dd42f1"
+            "f016ddaef0a4094e3713a97bfb9a3c26e6bcf7ab6949041d951baf6126dc76b8"
         );
     }
 

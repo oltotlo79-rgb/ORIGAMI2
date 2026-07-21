@@ -528,7 +528,7 @@ fn first_step_page(
     }
     cursor += DIAGRAM_HEIGHT + 10.0;
     let metadata = format!(
-        "所要時間: {} / 今回動かす折り線: {}本",
+        "所要時間: {} / 今回動かす折り線: {}本 / 3D姿勢: 再計算済み（経路未証明）",
         format_duration(step.duration_ms),
         diagram_step.changed_hinge_count
     );
@@ -1265,6 +1265,59 @@ mod tests {
         assert!(text.contains("Focus points: corner:"));
         assert!(text.contains("Authored camera: position"));
         assert!(layout.pages.iter().all(|page| page.lines.is_empty()));
+    }
+
+    #[test]
+    fn physical_pose_metadata_states_validation_scope_without_claiming_a_path_proof() {
+        let timeline = InstructionTimeline {
+            steps: vec![InstructionStep {
+                id: InstructionStepId::new(),
+                title: "検証姿勢".to_owned(),
+                description: String::new(),
+                caution: String::new(),
+                duration_ms: 1_000,
+                visual: Default::default(),
+                pose: InstructionPose {
+                    model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                    source_model_fingerprint: "f".repeat(64),
+                    fixed_face: None,
+                    hinge_angles: Vec::new(),
+                },
+            }],
+        };
+        let diagram = InstructionDiagramPlan {
+            bounds: DiagramBounds {
+                min_x: 0.0,
+                min_y: 0.0,
+                max_x: 10.0,
+                max_y: 10.0,
+            },
+            steps: vec![InstructionDiagramStep {
+                faces: Vec::new(),
+                hinges: Vec::new(),
+                changed_hinge_count: 0,
+                declarative_only: false,
+            }],
+            projected_vertex_visits: 0,
+        };
+        let font = InstructionFont::load().expect("bundled font");
+        let layout = layout_instruction_pages(
+            "検証範囲",
+            &timeline,
+            &diagram,
+            &font,
+            InstructionExportLimits::default(),
+        )
+        .expect("physical pose layout");
+        let text = layout
+            .pages
+            .iter()
+            .flat_map(|page| page.texts.iter())
+            .map(PageText::scalar_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("3D姿勢: 再計算済み（経路未証明）"));
     }
 
     #[test]

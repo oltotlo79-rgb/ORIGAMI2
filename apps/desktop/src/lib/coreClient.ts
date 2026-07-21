@@ -3129,6 +3129,58 @@ export function readBoundedDyadicPoseGraphV1(request: Readonly<{
   })
 }
 
+export type DyadicPathPreviewResponseV1 = Readonly<{
+  version: 1
+  previewToken: string
+  projectInstanceId: string
+  projectId: string
+  revision: number
+  targetBindingSha256: string
+  pathBindingSha256: string
+  positiveThicknessBindingSha256: string
+  layerTransportBindingSha256: string
+  authorizesProjectMutation: false
+}>
+
+export function mintDyadicPosePathPreviewV1(request: Readonly<{
+  expectedProjectInstanceId: string
+  expectedProjectId: string
+  expectedRevision: number
+  targetAngles: readonly Readonly<{ edge: string; angleDegrees: number }>[]
+  maxStates: number
+  maxTransitions: number
+  expectedPathBindingSha256: string
+  expectedPositiveThicknessBindingSha256: string
+  expectedLayerTransportBindingSha256: string
+}>): Promise<DyadicPathPreviewResponseV1> {
+  const hash = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+  if (!isCanonicalNonNilUuid(request.expectedProjectInstanceId)
+    || !isCanonicalNonNilUuid(request.expectedProjectId)
+    || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
+    || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1
+    || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1
+    || !Array.isArray(request.targetAngles) || request.targetAngles.length > 256
+    || request.targetAngles.some((entry) => !isCanonicalNonNilUuid(entry.edge) || !Number.isFinite(entry.angleDegrees) || entry.angleDegrees < 0 || entry.angleDegrees > 180)
+    || !hash(request.expectedPathBindingSha256)
+    || !hash(request.expectedPositiveThicknessBindingSha256)
+    || !hash(request.expectedLayerTransportBindingSha256)) return Promise.reject(new Error('invalid dyadic preview request'))
+  return invoke<unknown>('mint_dyadic_pose_path_preview_v1', { request }).then((value) => {
+    if (!isCoreDataRecord(value)
+      || Object.keys(value).sort().join(',') !== 'authorizesProjectMutation,layerTransportBindingSha256,pathBindingSha256,positiveThicknessBindingSha256,previewToken,projectId,projectInstanceId,revision,targetBindingSha256,version'
+      || value.version !== 1
+      || !isCanonicalNonNilUuid(value.previewToken)
+      || value.projectInstanceId !== request.expectedProjectInstanceId
+      || value.projectId !== request.expectedProjectId
+      || value.revision !== request.expectedRevision
+      || !hash(value.targetBindingSha256)
+      || value.pathBindingSha256 !== request.expectedPathBindingSha256
+      || value.positiveThicknessBindingSha256 !== request.expectedPositiveThicknessBindingSha256
+      || value.layerTransportBindingSha256 !== request.expectedLayerTransportBindingSha256
+      || value.authorizesProjectMutation !== false) throw new Error('invalid dyadic preview response')
+    return value as DyadicPathPreviewResponseV1
+  })
+}
+
 export function proposeCurrentCyclePoseV1(
   request: CurrentCyclePosePreviewRequestV1,
 ): Promise<CurrentCyclePosePreviewResponseV1> {

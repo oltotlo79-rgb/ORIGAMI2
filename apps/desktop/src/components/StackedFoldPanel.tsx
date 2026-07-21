@@ -14,11 +14,13 @@ import {
   proposeCurrentStackedFoldRead,
   readEvenCycleCandidatesV1,
   readBoundedDyadicPoseGraphV1,
+  mintDyadicPosePathPreviewV1,
   readLiveHingeRegistryV1,
   type ProjectSnapshot,
   type CurrentCyclePosePreviewResponseV1,
   type CurrentCyclePoseProgressV1,
   type DyadicPoseGraphReadResponseV1,
+  type DyadicPathPreviewResponseV1,
 } from '../lib/coreClient'
 import { selectLocalizedText, type Locale } from '../lib/i18n'
 import {
@@ -128,6 +130,8 @@ export function StackedFoldPanel({
   const [dyadicGraphRead, setDyadicGraphRead] =
     useState<DyadicPoseGraphReadResponseV1 | null>(null)
   const [dyadicGraphReading, setDyadicGraphReading] = useState(false)
+  const [dyadicPathPreview, setDyadicPathPreview] =
+    useState<DyadicPathPreviewResponseV1 | null>(null)
   const dyadicGraphSequenceRef = useRef(0)
   const [confirmed, setConfirmed] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -196,6 +200,7 @@ export function StackedFoldPanel({
     setCyclePosePreview(null)
     dyadicGraphSequenceRef.current += 1
     setDyadicGraphRead(null)
+    setDyadicPathPreview(null)
     setDyadicGraphReading(false)
     setCyclePoseReading(false)
     setCyclePoseError(false)
@@ -489,6 +494,7 @@ export function StackedFoldPanel({
     const authority = authorityRef.current
     setDyadicGraphReading(true)
     setDyadicGraphRead(null)
+    setDyadicPathPreview(null)
     try {
       const response = await readBoundedDyadicPoseGraphV1({
         expectedProjectInstanceId: authority.project_instance_id,
@@ -511,6 +517,36 @@ export function StackedFoldPanel({
       if (sequence === dyadicGraphSequenceRef.current) setDyadicGraphRead(null)
     } finally {
       if (sequence === dyadicGraphSequenceRef.current) setDyadicGraphReading(false)
+    }
+  }
+
+  async function mintDyadicPathPreview() {
+    const graph = dyadicGraphRead
+    if (!graph?.mutationCandidateReady || !graph.certificateBindingSha256
+      || !graph.positiveThicknessBindingSha256 || !graph.layerTransportBindingSha256
+      || disabled || applying || dyadicGraphReading) return
+    const authority = authorityRef.current
+    try {
+      const response = await mintDyadicPosePathPreviewV1({
+        expectedProjectInstanceId: authority.project_instance_id,
+        expectedProjectId: authority.project_id,
+        expectedRevision: authority.revision,
+        targetAngles: liveHinges.map((hinge) => ({
+          edge: hinge.edge,
+          angleDegrees: requestedHingeAngles[hinge.edge] ?? hinge.initialAngleDegrees,
+        })),
+        maxStates: 32,
+        maxTransitions: 64,
+        expectedPathBindingSha256: graph.certificateBindingSha256,
+        expectedPositiveThicknessBindingSha256: graph.positiveThicknessBindingSha256,
+        expectedLayerTransportBindingSha256: graph.layerTransportBindingSha256,
+      })
+      const current = authorityRef.current
+      if (current.project_instance_id === authority.project_instance_id
+        && current.project_id === authority.project_id
+        && current.revision === authority.revision) setDyadicPathPreview(response)
+    } catch {
+      setDyadicPathPreview(null)
     }
   }
 
@@ -791,6 +827,16 @@ export function StackedFoldPanel({
               <p data-testid="dyadic-pose-graph-status" role="status">
                 {dyadicGraphRead.status}; states {dyadicGraphRead.stateCount}; transitions {dyadicGraphRead.transitionCount}; explored {dyadicGraphRead.exploredStateCount}; evaluated {dyadicGraphRead.evaluatedTransitionCount}; read-only
                 ; certified transitions {dyadicGraphRead.certifiedTransitionCount}; binding {dyadicGraphRead.certificateBindingSha256 ?? 'unavailable'}; positive thickness {dyadicGraphRead.positiveThicknessCertified ? `certified ${dyadicGraphRead.positiveThicknessTransitionCount}/${dyadicGraphRead.certifiedTransitionCount}` : 'not certified'}; layer transport {dyadicGraphRead.layerTransportCertified ? `certified ${dyadicGraphRead.layerTransportTransitionCount}/${dyadicGraphRead.certifiedTransitionCount}` : 'not certified'}; mutation candidate {dyadicGraphRead.mutationCandidateReady ? 'ready' : 'not ready'}; Apply disabled
+              </p>
+            )}
+            {dyadicGraphRead?.mutationCandidateReady && (
+              <button type="button" data-testid="dyadic-path-preview" onClick={() => void mintDyadicPathPreview()}>
+                {t('読取専用プレビューを発行', 'Issue read-only preview')}
+              </button>
+            )}
+            {dyadicPathPreview && (
+              <p data-testid="dyadic-path-preview-status" role="status">
+                preview {dyadicPathPreview.previewToken}; target {dyadicPathPreview.targetBindingSha256}; read-only; Apply disabled
               </p>
             )}
           {cyclePoseReading && pathProgress && (

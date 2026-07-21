@@ -4,7 +4,10 @@
 //! analysis runs over detached immutable capabilities and is revalidated
 //! against both live native slots before its bounded observation is returned.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 
 use ori_collision::{
     FlatEndpointLayerOrderInputV1, GeneralCellTransportInputV1, GeneralCellTransportLimitsV1,
@@ -238,11 +241,54 @@ pub(super) struct DyadicPoseGraphReadRequestV1 {
     max_transitions: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DyadicPoseGraphAngleDtoV1 {
     edge: ori_domain::EdgeId,
     angle_degrees: f64,
+}
+
+#[derive(Default)]
+pub(super) struct DyadicPathPreviewState(Mutex<Option<DyadicPathPreviewRecordV1>>);
+
+struct DyadicPathPreviewRecordV1 {
+    _token: ProjectId,
+    _project_instance_id: ProjectId,
+    _project_id: ProjectId,
+    _revision: u64,
+    _target_binding: [u8; 32],
+    _path_binding: String,
+    _positive_binding: String,
+    _layer_binding: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DyadicPathPreviewRequestV1 {
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    target_angles: Vec<DyadicPoseGraphAngleDtoV1>,
+    max_states: usize,
+    max_transitions: usize,
+    expected_path_binding_sha256: String,
+    expected_positive_thickness_binding_sha256: String,
+    expected_layer_transport_binding_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DyadicPathPreviewResponseV1 {
+    version: u32,
+    preview_token: ProjectId,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    target_binding_sha256: String,
+    path_binding_sha256: String,
+    positive_thickness_binding_sha256: String,
+    layer_transport_binding_sha256: String,
+    authorizes_project_mutation: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -276,6 +322,106 @@ pub(super) fn read_bounded_dyadic_pose_graph_v1(
     request: DyadicPoseGraphReadRequestV1,
 ) -> Result<DyadicPoseGraphReadResponseV1, String> {
     read_bounded_dyadic_pose_graph_inner_v1(&app_state, Some(&foldability_state), request)
+}
+
+#[tauri::command]
+pub(super) fn mint_dyadic_pose_path_preview_v1(
+    app_state: State<'_, AppState>,
+    foldability_state: State<'_, GlobalFlatFoldabilityState>,
+    preview_state: State<'_, DyadicPathPreviewState>,
+    request: DyadicPathPreviewRequestV1,
+) -> Result<DyadicPathPreviewResponseV1, String> {
+    mint_dyadic_pose_path_preview_inner_v1(&app_state, &foldability_state, &preview_state, request)
+}
+
+fn mint_dyadic_pose_path_preview_inner_v1(
+    app_state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
+    preview_state: &DyadicPathPreviewState,
+    request: DyadicPathPreviewRequestV1,
+) -> Result<DyadicPathPreviewResponseV1, String> {
+    let valid_hash = |value: &str| {
+        value.len() == 64
+            && value
+                .as_bytes()
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+    };
+    if !valid_hash(&request.expected_path_binding_sha256)
+        || !valid_hash(&request.expected_positive_thickness_binding_sha256)
+        || !valid_hash(&request.expected_layer_transport_binding_sha256)
+    {
+        return Err(INVALID_REQUEST_MESSAGE.to_owned());
+    }
+    let target = ori_kinematics::CanonicalHingeAngles::new(
+        request
+            .target_angles
+            .iter()
+            .map(|entry| ori_kinematics::HingeAngle::new(entry.edge, entry.angle_degrees))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?,
+    )
+    .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
+    let target_binding = pose_state_fingerprint_v1(&target);
+    let observed = read_bounded_dyadic_pose_graph_inner_v1(
+        app_state,
+        Some(foldability_state),
+        DyadicPoseGraphReadRequestV1 {
+            expected_project_instance_id: request.expected_project_instance_id,
+            expected_project_id: request.expected_project_id,
+            expected_revision: request.expected_revision,
+            target_angles: request.target_angles,
+            max_states: request.max_states,
+            max_transitions: request.max_transitions,
+        },
+    )?;
+    if !observed.mutation_candidate_ready
+        || observed.certificate_binding_sha256.as_deref()
+            != Some(request.expected_path_binding_sha256.as_str())
+        || observed.positive_thickness_binding_sha256.as_deref()
+            != Some(request.expected_positive_thickness_binding_sha256.as_str())
+        || observed.layer_transport_binding_sha256.as_deref()
+            != Some(request.expected_layer_transport_binding_sha256.as_str())
+    {
+        return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+    }
+    let project = lock_project(app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+    if project.instance_id != request.expected_project_instance_id
+        || project.project_id != request.expected_project_id
+        || project.editor.revision() != request.expected_revision
+    {
+        return Err(STALE_MESSAGE.to_owned());
+    }
+    let token = ProjectId::new();
+    let record = DyadicPathPreviewRecordV1 {
+        _token: token,
+        _project_instance_id: project.instance_id,
+        _project_id: project.project_id,
+        _revision: project.editor.revision(),
+        _target_binding: target_binding,
+        _path_binding: request.expected_path_binding_sha256.clone(),
+        _positive_binding: request.expected_positive_thickness_binding_sha256.clone(),
+        _layer_binding: request.expected_layer_transport_binding_sha256.clone(),
+    };
+    *preview_state
+        .0
+        .lock()
+        .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())? = Some(record);
+    Ok(DyadicPathPreviewResponseV1 {
+        version: 1,
+        preview_token: token,
+        project_instance_id: project.instance_id,
+        project_id: project.project_id,
+        revision: project.editor.revision(),
+        target_binding_sha256: target_binding
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+        path_binding_sha256: request.expected_path_binding_sha256,
+        positive_thickness_binding_sha256: request.expected_positive_thickness_binding_sha256,
+        layer_transport_binding_sha256: request.expected_layer_transport_binding_sha256,
+        authorizes_project_mutation: false,
+    })
 }
 
 fn read_bounded_dyadic_pose_graph_inner_v1(
@@ -3456,6 +3602,33 @@ mod tests {
         assert!(observed.layer_transport_binding_sha256.is_none());
         assert!(!observed.mutation_candidate_ready);
         assert!(!observed.authorizes_project_mutation);
+        let preview_state = DyadicPathPreviewState::default();
+        let rejected = mint_dyadic_pose_path_preview_inner_v1(
+            &state,
+            &GlobalFlatFoldabilityState::default(),
+            &preview_state,
+            DyadicPathPreviewRequestV1 {
+                expected_project_instance_id: observed.project_instance_id,
+                expected_project_id: observed.project_id,
+                expected_revision: observed.revision,
+                target_angles: live_edges
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, edge)| DyadicPoseGraphAngleDtoV1 {
+                        edge,
+                        angle_degrees: if index < 2 { 30.0 } else { 0.0 },
+                    })
+                    .collect(),
+                max_states: 32,
+                max_transitions: 64,
+                expected_path_binding_sha256: "00".repeat(32),
+                expected_positive_thickness_binding_sha256: "11".repeat(32),
+                expected_layer_transport_binding_sha256: "22".repeat(32),
+            },
+        );
+        assert_eq!(rejected.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
+        assert!(preview_state.0.lock().unwrap().is_none());
         assert!(
             super::super::lock_project(&state)
                 .unwrap()

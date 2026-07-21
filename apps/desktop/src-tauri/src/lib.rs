@@ -2672,7 +2672,10 @@ fn configure_symmetric_profile(
         thickness_tenths_mm: 50,
     };
     profile.generation_constraints.skeleton_segments = if insect {
-        vec![skeleton(1, -500, 0, 0, 500), skeleton(2, 500, 0, 0, 500)]
+        vec![
+            skeleton(1, -500, -500, 0, 500),
+            skeleton(2, 500, -500, 0, 500),
+        ]
     } else {
         vec![
             skeleton(1, -500, 0, 0, 500),
@@ -2741,7 +2744,7 @@ fn configure_symmetric_profile(
         antennae.direction_milli = [0, -1000, 0];
         profile.generation_constraints.protrusions.push(antennae);
         if complete_insect {
-            for (index, center_y) in [100, 250, 400].into_iter().enumerate() {
+            for (index, center_y) in [-250, 0, 250].into_iter().enumerate() {
                 let mut legs = profile.generation_constraints.protrusions[0].clone();
                 legs.id = index as u16 + 3;
                 legs.priority = 50;

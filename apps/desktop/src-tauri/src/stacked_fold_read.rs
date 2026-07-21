@@ -1,8 +1,8 @@
 //! Read-only desktop bridge for the first authenticated SIM-010 boundary.
 //!
-//! No value returned by this module authorizes project mutation. Heavy exact
-//! analysis runs over detached immutable capabilities and is revalidated
-//! against both live native slots before its bounded observation is returned.
+//! Read responses never authorize mutation. The dyadic one-shot apply boundary
+//! retains private native capabilities and revalidates them under both live
+//! authority guards before one atomic Editor command is committed.
 
 use std::sync::{
     Mutex,
@@ -22,16 +22,20 @@ use ori_collision::{
     reverse_map_linear_stacked_fold_material_v1, supports_scheduled_positive_thickness_path_v1,
 };
 use ori_core::{
-    DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS, ExpectedStackedFoldCreaseV1, FaceLineageLimits,
-    StackedFoldGeometryLimitsV1, StackedFoldTopologyBuildLimitsV1, analyze_global_flat_foldability,
-    analyze_local_flat_foldability, prepare_stacked_fold_geometry_candidate_v1,
+    AppliedPoseLimitsV1, DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS, ExpectedStackedFoldCreaseV1,
+    FaceLineageLimits, StackedFoldGeometryLimitsV1, StackedFoldTopologyBuildLimitsV1,
+    analyze_global_flat_foldability, analyze_local_flat_foldability,
+    prepare_closed_graph_applied_pose_v1, prepare_stacked_fold_geometry_candidate_v1,
     prepare_stacked_fold_graph_non_flat_layer_order_v1, prepare_stacked_fold_initial_graph_pose_v1,
     prepare_stacked_fold_initial_pose_v1,
     prepare_stacked_fold_non_flat_layer_order_with_thickness_v1,
     prepare_stacked_fold_requested_pose_v1, prepare_stacked_fold_target_graph_audit_v1,
     prepare_stacked_fold_target_model_v1,
 };
-use ori_domain::{FaceId, ProjectId};
+use ori_domain::{
+    FaceId, InstructionHingeAngle, InstructionPose, InstructionPoseModel, InstructionStep,
+    InstructionStepId, InstructionVisual, MIN_INSTRUCTION_DURATION_MS, ProjectId,
+};
 use ori_foldability::{
     GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, GlobalFlatFoldabilityOutcome,
 };
@@ -47,10 +51,14 @@ use tauri::{AppHandle, Emitter, State};
 
 use super::{
     AppState,
-    applied_pose::CurrentAppliedPoseCapability,
+    applied_pose::{
+        CurrentAppliedPoseCapability, lock_revalidated_current_applied_pose_for_commit,
+        restore_persisted_current_pose,
+    },
     global_flat_foldability::{
         CurrentLayerOrderCapability, GlobalFlatFoldabilityState,
-        capture_current_layer_order_capability, revalidate_current_layer_order_capability,
+        capture_current_layer_order_capability, lock_revalidated_current_layer_order_for_commit,
+        revalidate_current_layer_order_capability,
     },
     lock_project,
 };
@@ -270,6 +278,7 @@ struct DyadicPathNativeAuthorityV1 {
     path: ori_collision::CertifiedPoseGraphPathCertificateV1,
     edges: Vec<DyadicPathEdgeAuthorityV1>,
     paper_thickness_mm: f64,
+    target_angles: ori_kinematics::CanonicalHingeAngles,
 }
 
 struct DyadicPathEdgeAuthorityV1 {
@@ -306,6 +315,7 @@ impl DyadicPathNativeAuthorityV1 {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         if self.path.target() != record_target
+            || pose_state_fingerprint_v1(&self.target_angles) != record_target
             || path_binding != record_path_binding
             || self.path.edges().len() != self.edges.len()
         {
@@ -520,24 +530,25 @@ fn mint_dyadic_pose_path_preview_inner_v1(
     })
 }
 
-/// Consumes a fully bound dyadic preview atomically. Until the transaction
-/// record retains native proof objects, a valid token is deliberately consumed
-/// and rejected without touching Editor history.
+/// Consumes a fully bound dyadic preview only after its private proof objects
+/// and both live authority slots have been revalidated atomically.
 #[tauri::command]
 pub(super) fn apply_dyadic_pose_path_preview_v1(
     app_state: State<'_, AppState>,
+    foldability_state: State<'_, GlobalFlatFoldabilityState>,
     preview_state: State<'_, DyadicPathPreviewState>,
     request: ApplyDyadicPathPreviewRequestV1,
-) -> Result<(), String> {
-    apply_dyadic_pose_path_preview_inner_v1(&app_state, &preview_state, request)
+) -> Result<u64, String> {
+    apply_dyadic_pose_path_preview_inner_v1(&app_state, &foldability_state, &preview_state, request)
 }
 
 fn apply_dyadic_pose_path_preview_inner_v1(
     app_state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
     preview_state: &DyadicPathPreviewState,
     request: ApplyDyadicPathPreviewRequestV1,
-) -> Result<(), String> {
-    let project = lock_project(app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+) -> Result<u64, String> {
+    let mut project = lock_project(app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
     if project.instance_id != request.expected_project_instance_id
         || project.project_id != request.expected_project_id
         || project.editor.revision() != request.expected_revision
@@ -577,8 +588,93 @@ fn apply_dyadic_pose_path_preview_inner_v1(
     {
         return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
     }
+    let authority = record
+        .authority
+        .as_ref()
+        .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    let (geometry, _audit, pose) = authority
+        .pose_capability
+        .graph()
+        .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    let pose_guard =
+        lock_revalidated_current_applied_pose_for_commit(&project, &authority.pose_capability)
+            .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
+            .ok_or_else(|| STALE_MESSAGE.to_owned())?;
+    let layer_guard = lock_revalidated_current_layer_order_for_commit(
+        // The capability retains the exact source snapshot used by every proof.
+        // Holding this guard through the document commit closes replacement races.
+        foldability_state,
+        &project,
+        &authority.layer_capability,
+    );
+    let layer_guard = layer_guard
+        .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
+        .ok_or_else(|| STALE_MESSAGE.to_owned())?;
+    let face_ids = geometry.face_ids().to_vec();
+    let hinge_ids = geometry
+        .hinges()
+        .iter()
+        .map(|hinge| hinge.edge())
+        .collect::<Vec<_>>();
+    let hinge_angles = authority
+        .target_angles
+        .as_slice()
+        .iter()
+        .map(|angle| (angle.edge(), angle.angle_degrees()))
+        .collect::<Vec<_>>();
+    let applied_pose = prepare_closed_graph_applied_pose_v1(
+        &face_ids,
+        &hinge_ids,
+        pose.fixed_face(),
+        &hinge_angles,
+        AppliedPoseLimitsV1::default(),
+    )
+    .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    let mut timeline = project.editor.instruction_timeline().clone();
+    let persisted_pose = InstructionPose {
+        model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+        source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
+        fixed_face: Some(pose.fixed_face()),
+        hinge_angles: hinge_angles
+            .iter()
+            .map(|(edge, angle_degrees)| InstructionHingeAngle {
+                edge: *edge,
+                angle_degrees: *angle_degrees,
+            })
+            .collect(),
+    };
+    timeline.steps.push(InstructionStep {
+        id: InstructionStepId::new(),
+        title: "Certified dyadic pose path".to_owned(),
+        description: String::new(),
+        caution: String::new(),
+        duration_ms: MIN_INSTRUCTION_DURATION_MS,
+        visual: InstructionVisual::default(),
+        pose: persisted_pose.clone(),
+    });
+    let editor_before = project.editor.clone();
+    let pattern = project.editor.pattern().clone();
+    let paper = project.editor.paper().clone();
+    let layers = project.editor.project_layers().clone();
+    let result = project
+        .editor
+        .execute_stacked_fold_document(
+            record.revision,
+            pattern,
+            paper,
+            timeline,
+            layers,
+            applied_pose,
+        )
+        .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    drop(pose_guard);
+    if restore_persisted_current_pose(&mut project, &persisted_pose).is_err() {
+        project.editor = editor_before;
+        return Err(UNAVAILABLE_MESSAGE.to_owned());
+    }
+    layer_guard.invalidate_after_project_mutation();
     slot.take();
-    Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())
+    Ok(result.revision)
 }
 
 #[tauri::command]
@@ -954,6 +1050,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 path,
                 edges,
                 paper_thickness_mm,
+                target_angles: target,
             }),
             _ => None,
         };
@@ -3880,9 +3977,11 @@ mod tests {
             expected_positive_thickness_binding_sha256: "55".repeat(32),
             expected_layer_transport_binding_sha256: "66".repeat(32),
         };
+        let apply_layer_state = GlobalFlatFoldabilityState::default();
         assert_eq!(
             apply_dyadic_pose_path_preview_inner_v1(
                 &state,
+                &apply_layer_state,
                 &preview_state,
                 apply_request("77".repeat(32)),
             )
@@ -3893,6 +3992,7 @@ mod tests {
         assert_eq!(
             apply_dyadic_pose_path_preview_inner_v1(
                 &state,
+                &apply_layer_state,
                 &preview_state,
                 apply_request("44".repeat(32)),
             )
@@ -3905,6 +4005,7 @@ mod tests {
         assert_eq!(
             apply_dyadic_pose_path_preview_inner_v1(
                 &state,
+                &apply_layer_state,
                 &preview_state,
                 apply_request("44".repeat(32)),
             )

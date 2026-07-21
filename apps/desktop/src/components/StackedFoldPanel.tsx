@@ -15,6 +15,7 @@ import {
   readEvenCycleCandidatesV1,
   readBoundedDyadicPoseGraphV1,
   mintDyadicPosePathPreviewV1,
+  applyDyadicPosePathPreviewV1,
   readLiveHingeRegistryV1,
   type ProjectSnapshot,
   type CurrentCyclePosePreviewResponseV1,
@@ -550,6 +551,31 @@ export function StackedFoldPanel({
     }
   }
 
+  async function applyDyadicPathPreview() {
+    const preview = dyadicPathPreview
+    if (!preview || disabled || applying) return
+    setApplying(true)
+    try {
+      await applyDyadicPosePathPreviewV1({
+        previewToken: preview.previewToken,
+        expectedProjectInstanceId: preview.projectInstanceId,
+        expectedProjectId: preview.projectId,
+        expectedRevision: preview.revision,
+        expectedTargetBindingSha256: preview.targetBindingSha256,
+        expectedPathBindingSha256: preview.pathBindingSha256,
+        expectedPositiveThicknessBindingSha256: preview.positiveThicknessBindingSha256,
+        expectedLayerTransportBindingSha256: preview.layerTransportBindingSha256,
+      })
+      setDyadicPathPreview(null)
+      setDyadicGraphRead(null)
+      onApplied(await refreshSnapshot())
+    } catch {
+      setDyadicPathPreview(null)
+    } finally {
+      setApplying(false)
+    }
+  }
+
   async function previewCurrentCyclePose(automaticKawasaki = false) {
     if ((!automaticKawasaki && !authoredCycleSchedule) || disabled || applying || cyclePoseReading) return
     const sequence = ++cyclePoseSequenceRef.current
@@ -835,9 +861,14 @@ export function StackedFoldPanel({
               </button>
             )}
             {dyadicPathPreview && (
-              <p data-testid="dyadic-path-preview-status" role="status">
-                preview {dyadicPathPreview.previewToken}; target {dyadicPathPreview.targetBindingSha256}; read-only; Apply disabled
-              </p>
+              <>
+                <p data-testid="dyadic-path-preview-status" role="status">
+                  preview {dyadicPathPreview.previewToken}; target {dyadicPathPreview.targetBindingSha256}; authenticated one-shot
+                </p>
+                <button type="button" data-testid="dyadic-path-apply" disabled={disabled || applying} onClick={() => void applyDyadicPathPreview()}>
+                  {t('認証済み経路を適用', 'Apply authenticated path')}
+                </button>
+              </>
             )}
           {cyclePoseReading && pathProgress && (
             <p role="status">

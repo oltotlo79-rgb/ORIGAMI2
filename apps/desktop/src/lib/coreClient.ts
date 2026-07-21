@@ -3190,7 +3190,7 @@ export function applyDyadicPosePathPreviewV1(request: Readonly<{
   expectedPathBindingSha256: string
   expectedPositiveThicknessBindingSha256: string
   expectedLayerTransportBindingSha256: string
-}>): Promise<never> {
+}>): Promise<number> {
   const hash = (value: unknown) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
   if (!isCanonicalNonNilUuid(request.previewToken)
     || !isCanonicalNonNilUuid(request.expectedProjectInstanceId)
@@ -3200,8 +3200,11 @@ export function applyDyadicPosePathPreviewV1(request: Readonly<{
     || !hash(request.expectedPathBindingSha256)
     || !hash(request.expectedPositiveThicknessBindingSha256)
     || !hash(request.expectedLayerTransportBindingSha256)) return Promise.reject(new Error('invalid dyadic apply request'))
-  return invoke<unknown>('apply_dyadic_pose_path_preview_v1', { request }).then(() => {
-    throw new Error('dyadic apply is not yet authorized')
+  return invoke<unknown>('apply_dyadic_pose_path_preview_v1', { request }).then((revision) => {
+    if (!Number.isSafeInteger(revision) || Number(revision) !== request.expectedRevision + 1) {
+      throw new Error('invalid dyadic apply response')
+    }
+    return Number(revision)
   })
 }
 

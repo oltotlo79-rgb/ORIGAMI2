@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const rust = readFileSync('src-tauri/src/stacked_fold_read.rs', 'utf8')
 const typescript = readFileSync('src/lib/coreClient.ts', 'utf8')
-const corpus = JSON.parse(readFileSync('tests/fixtures/tauri-event-v1-corpus.json', 'utf8')) as Record<string, Record<string, unknown>>
+const corpusBytes = readFileSync('tests/fixtures/tauri-event-v1-corpus.json')
+const corpusText = corpusBytes.toString('utf8')
+const corpus = JSON.parse(corpusText) as Record<string, Record<string, unknown>>
 
 const schemas = {
   'current-cycle-pose-progress-v1': {
@@ -16,6 +19,32 @@ const schemas = {
     keys: ['authorizesProjectMutation', 'evaluatedTransitionCount', 'exploredStateCount', 'requestId', 'stateLimit', 'transitionLimit', 'version'],
   },
 } as const
+
+test('canonical corpus has a bounded duplicate-free byte identity', () => {
+  assert.ok(corpusBytes.byteLength > 0 && corpusBytes.byteLength <= 2048)
+  assert.equal(
+    createHash('sha256').update(corpusBytes).digest('hex'),
+    '1551d586dca51d18fbfe3c413c568e7a0d3f69838565d78b4f247d70c4ffd7bb',
+  )
+  const topLevelKeys = [...corpusText.matchAll(/^  "([^"]+)": \{/gmu)].map((match) => match[1])
+  assert.equal(new Set(topLevelKeys).size, topLevelKeys.length)
+  for (const event of topLevelKeys) {
+    const start = corpusText.indexOf(`  "${event}": {`)
+    const end = corpusText.indexOf('\n  }', start)
+    assert.ok(start >= 0 && end > start)
+    const keys = [...corpusText.slice(start, end).matchAll(/^    "([^"]+)":/gmu)].map((match) => match[1])
+    assert.equal(new Set(keys).size, keys.length, `${event}: duplicate JSON key`)
+  }
+})
+
+test('the v1 corpus cannot silently become a migration or mixed-version fixture', () => {
+  for (const [event, payload] of Object.entries(corpus)) {
+    assert.match(event, /-v1$/u)
+    assert.equal(payload.version, 1)
+    assert.equal(Object.hasOwn(payload, 'versionV2'), false)
+  }
+  assert.doesNotMatch(corpusText, /(?:-v2"|"version"\s*:\s*(?:0|[2-9][0-9]*))/u)
+})
 
 test('Rust DTOs TypeScript types and canonical corpus have identical camelCase fields', () => {
   assert.deepEqual(Object.keys(corpus).sort(), Object.keys(schemas).sort())

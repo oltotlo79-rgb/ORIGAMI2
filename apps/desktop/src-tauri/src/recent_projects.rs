@@ -5,6 +5,7 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,7 @@ use sha2::{Digest, Sha256};
 const SCHEMA: u8 = 1;
 const MAX_RECENT: usize = 10;
 const MAX_DISPLAY_NAME_BYTES: usize = 160;
+const LEASE_STALE_MILLIS: u128 = 60_000;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(super) struct RecentProjectView {
@@ -97,8 +99,25 @@ impl RecentProjectStorage for FileRecentProjectStorage {
         }
         let parent = self.0.parent().ok_or(())?;
         fs::create_dir_all(parent).map_err(|_| ())?;
+        if let Ok(metadata) = fs::symlink_metadata(&self.0)
+            && (!metadata.is_file() || is_link_or_reparse(&metadata) || link_count(&metadata) != 1)
+        {
+            return Err(());
+        }
+        let lease = StorageLease::acquire(&self.0)?;
         let staged = self.0.with_extension("recent.next");
-        let _ = fs::remove_file(&staged);
+        match fs::symlink_metadata(&staged) {
+            Ok(metadata)
+                if metadata.is_file()
+                    && !is_link_or_reparse(&metadata)
+                    && link_count(&metadata) == 1 =>
+            {
+                fs::remove_file(&staged).map_err(|_| ())?
+            }
+            Ok(_) => return Err(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(()),
+        }
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -113,8 +132,70 @@ impl RecentProjectStorage for FileRecentProjectStorage {
         if result.is_err() {
             let _ = fs::remove_file(staged);
         }
+        drop(lease);
         result
     }
+}
+
+struct StorageLease(PathBuf);
+
+impl StorageLease {
+    fn acquire(destination: &Path) -> Result<Self, ()> {
+        let path = destination.with_extension("recent.lock");
+        for attempt in 0..2 {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    let now = now_millis()?;
+                    if file.write_all(now.to_string().as_bytes()).is_err()
+                        || file.sync_all().is_err()
+                    {
+                        drop(file);
+                        let _ = fs::remove_file(&path);
+                        return Err(());
+                    }
+                    return Ok(Self(path));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempt == 0 => {
+                    retire_stale_lease(&path)?;
+                }
+                Err(_) => return Err(()),
+            }
+        }
+        Err(())
+    }
+}
+
+impl Drop for StorageLease {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn retire_stale_lease(path: &Path) -> Result<(), ()> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| ())?;
+    if !metadata.is_file()
+        || is_link_or_reparse(&metadata)
+        || link_count(&metadata) != 1
+        || metadata.len() > 32
+    {
+        return Err(());
+    }
+    let bytes = fs::read(path).map_err(|_| ())?;
+    let issued = std::str::from_utf8(&bytes)
+        .map_err(|_| ())?
+        .parse::<u128>()
+        .map_err(|_| ())?;
+    if now_millis()?.saturating_sub(issued) <= LEASE_STALE_MILLIS {
+        return Err(());
+    }
+    fs::remove_file(path).map_err(|_| ())
+}
+
+fn now_millis() -> Result<u128, ()> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .map_err(|_| ())
 }
 
 #[derive(Default)]
@@ -326,6 +407,26 @@ fn publish_staged(file: &fs::File, _staged: &Path, destination: &Path) -> Result
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+    struct Directory(PathBuf);
+    impl Directory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "origami2-recent-lease-{}-{}",
+                std::process::id(),
+                NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[derive(Default)]
     struct MemoryStorage {
@@ -418,5 +519,45 @@ mod tests {
         assert!(RecentProjectRegistry::load(&storage).views().is_empty());
         assert_eq!(safe_display_name("../private.ori2"), None);
         assert_eq!(safe_display_name("bad\nname"), None);
+    }
+
+    #[test]
+    fn fresh_writer_lease_blocks_second_process_and_preserves_live_bytes() {
+        let directory = Directory::new();
+        let destination = directory.0.join("recent.json");
+        fs::write(&destination, b"live").unwrap();
+        fs::write(
+            destination.with_extension("recent.lock"),
+            now_millis().unwrap().to_string(),
+        )
+        .unwrap();
+        let mut storage = FileRecentProjectStorage::new(destination.clone());
+        assert_eq!(storage.replace_atomically(b"second"), Err(()));
+        assert_eq!(fs::read(destination).unwrap(), b"live");
+    }
+
+    #[test]
+    fn stale_lease_and_crash_stage_are_recovered_before_atomic_publish() {
+        let directory = Directory::new();
+        let destination = directory.0.join("recent.json");
+        fs::write(&destination, b"old").unwrap();
+        fs::write(destination.with_extension("recent.lock"), b"0").unwrap();
+        fs::write(destination.with_extension("recent.next"), b"crash-partial").unwrap();
+        let mut storage = FileRecentProjectStorage::new(destination.clone());
+        storage.replace_atomically(b"new").unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"new");
+        assert!(!destination.with_extension("recent.lock").exists());
+        assert!(!destination.with_extension("recent.next").exists());
+    }
+
+    #[test]
+    fn hostile_stage_or_storage_failure_keeps_live_registry_unchanged() {
+        let directory = Directory::new();
+        let destination = directory.0.join("recent.json");
+        fs::write(&destination, b"live").unwrap();
+        fs::create_dir(destination.with_extension("recent.next")).unwrap();
+        let mut storage = FileRecentProjectStorage::new(destination.clone());
+        assert_eq!(storage.replace_atomically(b"new"), Err(()));
+        assert_eq!(fs::read(destination).unwrap(), b"live");
     }
 }

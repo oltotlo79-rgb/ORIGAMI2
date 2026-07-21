@@ -339,7 +339,7 @@ pub(crate) fn apply_beginner_part_assignments(
     state: State<'_, AppState>,
     request: ApplyBeginnerPartAssignmentsRequest,
 ) -> Result<ProjectSnapshot, String> {
-    if !request.confirmed || request.assignments.is_empty() || request.assignments.len() > 8 {
+    if !request.confirmed || request.assignments.is_empty() || request.assignments.len() > 10 {
         return Err("part_assignment_confirmation_required".to_owned());
     }
     let binding = RecognizeBeginnerTargetRequest {
@@ -774,6 +774,47 @@ pub(crate) fn apply_beginner_part_assignments(
                     return Err("part_assignment_horn_tail_ear_binding_invalid".to_owned());
                 }
             }
+        }
+    }
+    if leg_candidate_ids.len() == 4
+        && horn_candidate_ids.len() == 1
+        && tail_candidate_ids.len() == 1
+        && ear_candidate_ids.len() == 2
+        && profile.generation_constraints.target_category
+            == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
+    {
+        let axis_twice = i64::from(request.selected_outline.bounds.min_x)
+            + i64::from(request.selected_outline.bounds.max_x);
+        let mut legs = leg_candidate_ids
+            .iter()
+            .filter_map(|id| candidates.iter().find(|candidate| candidate.id == *id))
+            .collect::<Vec<_>>();
+        legs.sort_by_key(|candidate| {
+            (
+                candidate.bounds.min_y + candidate.bounds.max_y,
+                candidate.bounds.min_x,
+            )
+        });
+        if legs.len() != 4
+            || legs.chunks_exact(2).any(|pair| {
+                !candidate_pair_is_symmetric(axis_twice, &pair[0].bounds, &pair[1].bounds)
+            })
+        {
+            return Err("part_assignment_complete_animal_binding_invalid".to_owned());
+        }
+        let mut leg_target = profile
+            .generation_constraints
+            .protrusions
+            .first()
+            .cloned()
+            .ok_or_else(|| "part_assignment_complete_animal_binding_invalid".to_owned())?;
+        leg_target.id = 4;
+        leg_target.count = 4;
+        leg_target.direction_milli = [0, 1000, 0];
+        leg_target.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
+        profile.generation_constraints.protrusions.push(leg_target);
+        if ori_domain::animal_complete_bindings_v1(&profile.generation_constraints).is_none() {
+            return Err("part_assignment_complete_animal_binding_invalid".to_owned());
         }
     }
     let recognized_wing_antenna = (wing_candidate_ids.len() == 2

@@ -1598,19 +1598,17 @@ pub(crate) mod tests {
         layer_selective_timeline.steps[0].title = "層選択折りの開始姿勢".to_owned();
         layer_selective_timeline.steps[1].title = "層選択折り 1".to_owned();
         layer_selective_timeline.steps[2].title = "層選択折り 2".to_owned();
-        let layer_selective_archive = serde_json::to_vec(&layer_selective_timeline)
-            .expect("archive layer-selective fold");
+        let layer_selective_archive =
+            serde_json::to_vec(&layer_selective_timeline).expect("archive layer-selective fold");
         let reopened_layer_selective: ori_domain::InstructionTimeline =
-            serde_json::from_slice(&layer_selective_archive)
-                .expect("reopen layer-selective fold");
+            serde_json::from_slice(&layer_selective_archive).expect("reopen layer-selective fold");
         for (format, magic) in [
             (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
         ] {
             let mut source = source_for(&project, format);
             source.timeline = reopened_layer_selective.clone();
-            let artifact =
-                build_pending_export(source).expect("native layer-selective export");
+            let artifact = build_pending_export(source).expect("native layer-selective export");
             assert_eq!(artifact.step_count, 3);
             assert!(artifact.bytes.starts_with(magic));
         }
@@ -1626,6 +1624,38 @@ pub(crate) mod tests {
         ] {
             let mut source = source_for(&project, format);
             source.timeline = uncertified_layer_selective.clone();
+            assert!(build_pending_export(source).is_ok());
+        }
+
+        let mut book_fold_timeline = reverse_timeline;
+        book_fold_timeline.steps[0].title = "二つ折りの開始姿勢".to_owned();
+        book_fold_timeline.steps[1].title = "二つ折り 1".to_owned();
+        book_fold_timeline.steps[2].title = "二つ折り 2".to_owned();
+        let book_fold_archive = serde_json::to_vec(&book_fold_timeline).expect("archive book fold");
+        let reopened_book_fold: ori_domain::InstructionTimeline =
+            serde_json::from_slice(&book_fold_archive).expect("reopen book fold");
+        for (format, magic) in [
+            (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+            (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = reopened_book_fold.clone();
+            let artifact = build_pending_export(source).expect("native book-fold export");
+            assert_eq!(artifact.step_count, 3);
+            assert!(artifact.bytes.starts_with(magic));
+        }
+
+        let mut uncertified_book_fold = reopened_book_fold;
+        for step in &mut uncertified_book_fold.steps[1..] {
+            step.visual.path_certificate_reference_v1 = None;
+            step.description = "手動で作成された二つ折りです。".to_owned();
+        }
+        for format in [
+            InstructionExportFormatRequest::Pdf,
+            InstructionExportFormatRequest::SvgZip,
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = uncertified_book_fold.clone();
             assert!(build_pending_export(source).is_ok());
         }
 

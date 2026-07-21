@@ -724,6 +724,7 @@ function App() {
     useState<BeginnerCandidateResponseV1 | null>(null)
   const [beginnerCandidateBusy, setBeginnerCandidateBusy] = useState(false)
   const [beginnerGrid, setBeginnerGrid] = useState<BeginnerGridEvaluationResponse | null>(null)
+  const [beginnerGridSelectedPointId, setBeginnerGridSelectedPointId] = useState<number | null>(null)
   const [beginnerGridBusy, setBeginnerGridBusy] = useState(false)
   const beginnerGridRequestRef = useRef(0)
   const beginnerGridGenerationRef = useRef<string | null>(null)
@@ -4263,6 +4264,7 @@ function App() {
         && latest?.project_instance_id === response.project_instance_id
         && latest.project_id === response.project_id && latest.revision === response.revision) {
         setBeginnerGrid(response)
+        setBeginnerGridSelectedPointId(response.candidates[0]?.point.id ?? null)
         setBeginnerGridProgress({ enumerated: 27, globalChecked: 3, refined: response.refinement_iterations })
       }
     }).catch(() => {
@@ -7968,6 +7970,42 @@ function App() {
                       en: '{count} designs evaluated · grid hash {hash}',
                     }, { count: beginnerGrid.evaluated_grid_points,
                       hash: beginnerGrid.grid_hash.slice(0, 6).map((byte) => byte.toString(16).padStart(2, '0')).join('') })}</p>
+                    <table aria-label="Strict candidate authority comparison">
+                      <thead><tr>
+                        <th>{text({ ja: '選択', en: 'Select' })}</th>
+                        <th>{text({ ja: '折り線', en: 'Creases' })}</th>
+                        <th>{text({ ja: '手順', en: 'Steps' })}</th>
+                        <th>{text({ ja: '局所証明', en: 'Local proof' })}</th>
+                        <th>{text({ ja: '大域証明', en: 'Global proof' })}</th>
+                        <th>{text({ ja: '経路証明', en: 'Path proof' })}</th>
+                        <th>{text({ ja: '3D形状', en: '3D shape' })}</th>
+                        <th>{text({ ja: '紙効率', en: 'Paper efficiency' })}</th>
+                      </tr></thead>
+                      <tbody>{beginnerGrid.candidates.map((candidate) => <tr key={candidate.point.id}>
+                        <td><input type="radio" name="beginner-grid-authority"
+                          aria-label={`Select exact candidate ${candidate.point.id + 1}`}
+                          checked={beginnerGridSelectedPointId === candidate.point.id}
+                          onChange={() => setBeginnerGridSelectedPointId(candidate.point.id)} /></td>
+                        <td>{candidate.plan.crease_pattern.edges.length}</td>
+                        <td>{candidate.plan.instruction_codes.length}</td>
+                        <td>{candidate.local_proof_scope}</td>
+                        <td>{candidate.global_proof_scope}</td>
+                        <td>{candidate.assessment.proof_scope === 'sufficient' ? 'certified on apply' : 'blocked'}</td>
+                        <td>{candidate.assessment.shape_approximation_score ?? 'not measured'}</td>
+                        <td>{candidate.paper_efficiency_score}/100</td>
+                      </tr>)}</tbody>
+                    </table>
+                    <button type="button" disabled={beginnerGridSelectedPointId === null
+                      || !beginnerGrid.candidates.some((candidate) => candidate.point.id === beginnerGridSelectedPointId
+                        && candidate.assessment.proof_scope === 'sufficient'
+                        && candidate.assessment.apply_allowed)}
+                      onClick={() => {
+                        const selected = beginnerGrid.candidates.find(
+                          (candidate) => candidate.point.id === beginnerGridSelectedPointId)
+                        if (selected) confirmAndApplyBeginnerGridCandidate(selected)
+                      }}>
+                      {text({ ja: '選択候補を再検証して適用', en: 'Revalidate and apply selected candidate' })}
+                    </button>
                     <ol>{beginnerGrid.candidates.map((candidate) => (
                       <li key={candidate.point.id}>
                         <strong>{formattedText({

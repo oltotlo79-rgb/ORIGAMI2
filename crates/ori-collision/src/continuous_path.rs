@@ -8232,6 +8232,22 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(
+            bound_cell_proof.checkpoint_hashes().len(),
+            closure.leaves().len() + 1,
+            "every certified closure checkpoint must carry all-cell transport evidence"
+        );
+        assert_eq!(
+            bound_cell_proof.pair_order_count(),
+            source.face_pair_orders.len()
+        );
+        assert!(!bound_cell_proof.is_for(
+            &geometry,
+            source,
+            &schedule,
+            &closure,
+            f64::from_bits(0.1_f64.to_bits() + 1),
+        ));
         let mut tampered_source = source.clone();
         tampered_source.provenance.source.source_revision += 1;
         assert!(!bound_cell_proof.is_for(&geometry, &tampered_source, &schedule, &closure, 0.1));

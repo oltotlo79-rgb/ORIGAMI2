@@ -11971,6 +11971,9 @@ const RUNTIME_UPDATE_ASSET_HOST: &str = "objects.githubusercontent.com";
 const RUNTIME_UPDATE_TIMEOUT_SECONDS: u64 = 10;
 const RUNTIME_UPDATE_METADATA_LIMIT: usize = 128 * 1024;
 const RUNTIME_UPDATE_PAYLOAD_LIMIT: usize = 1024 * 1024 * 1024;
+const _: () = assert!(RUNTIME_UPDATE_TIMEOUT_SECONDS <= 10);
+const _: () = assert!(RUNTIME_UPDATE_METADATA_LIMIT <= 128 * 1024);
+const _: () = assert!(RUNTIME_UPDATE_PAYLOAD_LIMIT <= 1024 * 1024 * 1024);
 
 fn valid_runtime_update_token(token: &str) -> bool {
     token.len() == 36
@@ -12033,9 +12036,6 @@ mod runtime_update_command_tests {
         );
         assert_eq!(RUNTIME_UPDATE_API_HOST, "api.github.com");
         assert_eq!(RUNTIME_UPDATE_ASSET_HOST, "objects.githubusercontent.com");
-        assert!(RUNTIME_UPDATE_TIMEOUT_SECONDS <= 10);
-        assert!(RUNTIME_UPDATE_METADATA_LIMIT <= 128 * 1024);
-        assert!(RUNTIME_UPDATE_PAYLOAD_LIMIT <= 1024 * 1024 * 1024);
     }
 
     #[test]

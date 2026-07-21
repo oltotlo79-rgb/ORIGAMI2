@@ -1267,13 +1267,14 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
         ratio.0 as f64 / ratio.1 as f64,
         ratio.0 as f64 / ratio.1 as f64,
     ];
-    if sector_cosines
-        .iter()
-        .zip(expected)
-        .any(|(actual, expected)| (*actual - expected).abs() > 1.0e-9)
-    {
-        return Err(MultiHingePathCandidateErrorV1::CandidateRejected);
-    }
+    let rotation = (0..4)
+        .find(|rotation| {
+            (0..4).all(|index| {
+                (sector_cosines[(index + rotation) % 4] - expected[index]).abs() <= 1.0e-9
+            })
+        })
+        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    rays.rotate_left(rotation);
     let unit_edges = [rays[0].0, rays[2].0];
     let mut hinges = rays.iter().map(|ray| ray.0).collect::<Vec<_>>();
     hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
@@ -2257,6 +2258,42 @@ mod tests {
             )
             .expect("the bounded 3/5 exact profile has analytic closure authority");
         assert_eq!(closure.leaves().len(), 1);
+        let mut rotated_axes = axes;
+        rotated_axes.rotate_left(1);
+        let cyclic_start_geometry = MaterialHingeGraphGeometry::new_for_test(
+            faces.to_vec(),
+            (0..4)
+                .map(|index| {
+                    TreeHinge::new_for_test(
+                        edges[index],
+                        if index == 2 {
+                            FoldAssignment::Mountain
+                        } else {
+                            FoldAssignment::Valley
+                        },
+                        faces[index],
+                        faces[(index + 1) % 4],
+                        start,
+                        rotated_axes[index],
+                        rotated_axes[index],
+                    )
+                })
+                .collect(),
+        );
+        let cyclic_start = generate_bounded_degree_four_kawasaki_path_candidate_v1(
+            &cyclic_start_geometry,
+            &audit,
+            faces[0],
+            CycleScheduleLimitsV1::default(),
+        )
+        .expect("the exact profile is invariant to its angular cycle start");
+        assert_eq!(
+            cyclic_start
+                .schedule()
+                .bounded_symmetric_kawasaki_profile_v1()
+                .map(|(_, _, numerator, denominator)| (numerator, denominator)),
+            Some((3, 5))
+        );
         for (numerator, denominator, complement) in [(5.0, 13.0, 12.0), (7.0, 25.0, 24.0)] {
             let ratio = numerator / denominator;
             let sine = complement / denominator;

@@ -115,6 +115,7 @@ function Harness() {
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected segmentation: overlapping or too-thin protrusion') }}>Try invalid protrusion segmentation</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected segmentation: noise exceeds bounded curvature budget') }}>Try noisy silhouette segmentation</button>
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
+    <button onClick={() => setStatus('Asymmetric bird landmarks bound: head · tail · left wing · right wing')}>Recognize asymmetric bird landmarks</button>
     <button onClick={() => {
       setRecognized(true); setPreview(false); setCandidateShortage(false); setMergedAuthorities(true)
       setAuthorityValid(true)

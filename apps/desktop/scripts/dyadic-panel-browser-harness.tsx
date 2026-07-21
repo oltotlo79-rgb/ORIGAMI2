@@ -6,9 +6,11 @@ import type { ProjectSnapshot } from '../src/lib/coreClient'
 const instance = '018f47a2-4b7a-7cc1-8abc-112233445566'
 const project = '018f47a2-4b7a-7cc1-8abc-665544332211'
 const token = '018f47a2-4b7a-7cc1-8abc-778899aabbcc'
-const hinges = Array.from({ length: 6 }, (_, index) => `018f47a2-4b7a-7cc1-8abc-${String(index + 1).padStart(12, '0')}`)
+const parameters = new URLSearchParams(location.search)
+const hingeCount = parameters.get('hinges') === '8' ? 8 : 6
+const hinges = Array.from({ length: hingeCount }, (_, index) => `018f47a2-4b7a-7cc1-8abc-${String(index + 1).padStart(12, '0')}`)
 const hash = 'a'.repeat(64); const positive = 'b'.repeat(64); const layer = 'c'.repeat(64)
-const scenario = new URLSearchParams(location.search).get('scenario') ?? 'success'
+const scenario = parameters.get('scenario') ?? 'success'
 const evidence = { reads: 0, readHinges: 0, readScheduleHinges: 0, mints: 0, mintHinges: 0, mintScheduleHinges: 0, applyAttempts: 0, mutations: 0, failures: 0, cancels: 0, timelineDtos: 0, undos: 0, redos: 0, reopens: 0 }
 let callback = 0
 let liveRevision = 1

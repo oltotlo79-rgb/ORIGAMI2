@@ -5,18 +5,17 @@ const origin = 'http://127.0.0.1:4184'
 const server = spawn(process.execPath, ['./node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '4184', '--strictPort'], { stdio: 'ignore' })
 let browser
 const expectedStatus = ['states 3', 'transitions 4', 'certified transitions 1', `binding ${'a'.repeat(64)}`, 'positive thickness certified 1/1', 'layer transport certified 1/1']
-const balloonHinges = Array.from({ length: 6 }, (_, index) => `018f47a2-4b7a-7cc1-8abc-${String(index + 1).padStart(12, '0')}`)
-const balloonSchedule = JSON.stringify({ version: 1, entries: balloonHinges.map(edge => ({ edge, uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }], numeratorPowerCoefficients: [{ numerator: 0, denominator: 1 }], denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }], requestedAngleDegrees: 0 })) })
+const exactSchedule = count => JSON.stringify({ version: 1, entries: Array.from({ length: count }, (_, index) => `018f47a2-4b7a-7cc1-8abc-${String(index + 1).padStart(12, '0')}`).map(edge => ({ edge, uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }], numeratorPowerCoefficients: [{ numerator: 0, denominator: 1 }], denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }], requestedAngleDegrees: 0 })) })
 
-async function openScenario(scenario) {
+async function openScenario(scenario, hinges = 6) {
   const page = await browser.newPage()
-  await page.goto(`${origin}/scripts/dyadic-panel-browser-harness.html?scenario=${scenario}`, { waitUntil: 'networkidle' })
+  await page.goto(`${origin}/scripts/dyadic-panel-browser-harness.html?scenario=${scenario}&hinges=${hinges}`, { waitUntil: 'networkidle' })
   return page
 }
 
-async function mintPreview(page) {
+async function mintPreview(page, hinges = 6) {
   if (await page.getByRole('button', { name: 'Apply authenticated path' }).count()) throw new Error('Apply exposed before preview mint')
-  await page.getByLabel(/Cycle path definition/).fill(balloonSchedule)
+  await page.getByLabel(/Cycle path definition/).fill(exactSchedule(hinges))
   await page.getByRole('button', { name: 'Search bounded dyadic paths' }).click()
   await page.getByText(/mutation candidate ready/).waitFor()
   const status = await page.getByTestId('dyadic-pose-graph-status').innerText()
@@ -45,6 +44,15 @@ try {
   if (JSON.stringify(successEvidence) !== JSON.stringify({ reads: 1, readHinges: 6, readScheduleHinges: 6, mints: 1, mintHinges: 6, mintScheduleHinges: 6, applyAttempts: 2, mutations: 1, failures: 1, cancels: 0, timelineDtos: 2, undos: 1, redos: 1, reopens: 1 })) throw new Error(JSON.stringify(successEvidence))
   await success.close()
 
+  const octagonal = await openScenario('success', 8)
+  await mintPreview(octagonal, 8)
+  await octagonal.getByRole('button', { name: 'Apply authenticated path' }).click()
+  await octagonal.getByText('applied-revision-2-timeline-dto-2').waitFor()
+  for (const name of ['undo', 'redo', 'reopen']) await octagonal.getByRole('button', { name }).click()
+  const octagonalEvidence = await octagonal.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)
+  if (JSON.stringify(octagonalEvidence) !== JSON.stringify({ reads: 1, readHinges: 8, readScheduleHinges: 8, mints: 1, mintHinges: 8, mintScheduleHinges: 8, applyAttempts: 1, mutations: 1, failures: 0, cancels: 0, timelineDtos: 2, undos: 1, redos: 1, reopens: 1 })) throw new Error(`C8: ${JSON.stringify(octagonalEvidence)}`)
+  await octagonal.close()
+
   for (const scenario of ['stale', 'aba', 'tamper']) {
     const page = await openScenario(scenario)
     await mintPreview(page)
@@ -57,7 +65,7 @@ try {
   }
 
   const cancel = await openScenario('cancel')
-  await cancel.getByLabel(/Cycle path definition/).fill(balloonSchedule)
+  await cancel.getByLabel(/Cycle path definition/).fill(exactSchedule(6))
   await cancel.getByRole('button', { name: 'Search bounded dyadic paths' }).click()
   await cancel.getByRole('button', { name: 'Cancel search' }).click()
   const cancelEvidence = await cancel.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)

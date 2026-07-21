@@ -10,7 +10,7 @@ const browserHarness = readFileSync('scripts/generic-target-browser-harness.tsx'
 
 test('generic feature bindings cross the exact frontend DTO boundary', () => {
   assert.match(client, /generic_feature_bindings: ReadonlyArray/u)
-  assert.match(client, /'skeleton_segment_id', 'skeleton_endpoint', 'mount_distance_squared_tenths_mm'/u)
+  assert.match(client, /'crease_authority_sha256', 'skeleton_segment_id', 'skeleton_endpoint'/u)
   assert.match(client, /featureBindings\.length < 2/u)
   assert.match(client, /!\[1, 2, 4\]\.includes\(Number\(binding\.endpoint_count\)\)/u)
   assert.match(client, /Number\(binding\.crease_start\) \+ Number\(binding\.endpoint_count\)/u)
@@ -51,6 +51,11 @@ test('confirmed image and 3D generic candidates retain vertical proof coverage',
   assert.match(browser, /Split image outline component/u)
   assert.match(browser, /Outline edit unconfirmed/u)
   assert.match(browser, /source digest or component IDs tampered/u)
+  assert.match(native, /crease_authority_sha256/u)
+  assert.match(native, /grid_candidate_feature_crease_authority_stale/u)
+  assert.match(native, /canonical_targets\.sort_unstable_by_key/u)
+  assert.match(client, /crease_authority_sha256: ReadonlyArray<number>/u)
+  assert.match(browser, /feature ID changed during reorder/u)
   assert.match(browser, /Applied image outline evidence \+ 2 explicitly confirmed part meanings/u)
   assert.match(browserHarness, /Global flat-foldability proven/u)
   assert.match(browserHarness, /Native foldability admission: global proof \+ bounded fold path certificate/u)

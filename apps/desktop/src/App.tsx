@@ -8007,7 +8007,9 @@ function App() {
                             ? 'none'
                             : candidate.contour_witness.generic_feature_bindings
                               .map((binding) => `${binding.protrusion_id}:${binding.endpoint_count}@feature${binding.generated_feature_id}`
-                                + `→skeleton${binding.skeleton_segment_id}.${binding.skeleton_endpoint}`)
+                                + `→skeleton${binding.skeleton_segment_id}.${binding.skeleton_endpoint}`
+                                + `#crease-${binding.crease_authority_sha256.slice(0, 4)
+                                  .map((byte) => byte.toString(16).padStart(2, '0')).join('')}`)
                               .join(', '),
                         })}</span>
                         {candidate.assessment.proof_scope === 'sufficient'

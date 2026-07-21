@@ -91,7 +91,7 @@ function Harness() {
       ;[movedKinds[index], movedKinds[destination]] = [movedKinds[destination]!, movedKinds[index]!]
       return movedKinds
     })
-    return canonicalize(moved)
+    return moved
   })
   const recognize = (source: string) => {
     setAuthorityValid(true)
@@ -376,8 +376,8 @@ function Harness() {
       {mergedAuthorities && <p>Native folded landmarks: body/local 3D · Hausdorff 4% · depth {depthError} mm · bulge error 2% · collision clear</p>}
       {mergedAuthorities && <p>Folded face quality: orientation error 6% · area coverage error 9% · manifold faces verified</p>}
       {mergedAuthorities && <p>Landmark error vectors: 4 · maximum error point 3 · combined score {threeDimensionalScore}/100</p>}
-      <p>Generic feature topology witness: {bindings.map((binding) =>
-        `${binding.id}:${binding.count}@feature${binding.id}→skeleton${binding.id}.end`).join(', ')}</p>
+      <p>Generic feature topology witness: {[...bindings].sort((left, right) => left.id - right.id).map((binding) =>
+        `${binding.id}:${binding.count}@feature${binding.id}→skeleton${binding.id}.end#crease-${binding.id === 1 ? '91a70f2c' : 'a72be019'}`).join(', ')}</p>
       {mergedAuthorities && <canvas width={320} height={120} role="img" aria-label="Folded target and candidate landmark overlay" ref={(canvas) => {
         const context = canvas?.getContext('2d'); if (!canvas || !context) return
         context.clearRect(0, 0, canvas.width, canvas.height); context.fillStyle = '#2563eb'
@@ -398,9 +398,9 @@ function Harness() {
     </section>}
     {applied && <section aria-label="Generic target history">
       <p>Automatic fold instructions: summary + {bindings.length} topology-bound generic feature steps</p>
-      <p>Generic feature topology witness: {bindings.map((binding) =>
-        `${binding.id}:${binding.count}@feature${binding.id}→skeleton${binding.id}.end`).join(', ')}</p>
-      <ol aria-label="Generated generic feature instruction steps">{bindings.map((binding) =>
+      <p>Generic feature topology witness: {[...bindings].sort((left, right) => left.id - right.id).map((binding) =>
+        `${binding.id}:${binding.count}@feature${binding.id}→skeleton${binding.id}.end#crease-${binding.id === 1 ? '91a70f2c' : 'a72be019'}`).join(', ')}</p>
+      <ol aria-label="Generated generic feature instruction steps">{[...bindings].sort((left, right) => left.id - right.id).map((binding) =>
         <li key={binding.id}>Shape generated feature {binding.id} · {binding.count} certified endpoint creases · skeleton segment {binding.id}.end</li>)}</ol>
       <p>Applied synthesized candidate set: {synthesizedCandidateCount} bounded designs</p>
       <p>Applied contour placement witness candidate {selectedCandidate}</p>

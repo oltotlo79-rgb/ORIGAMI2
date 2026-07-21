@@ -2970,6 +2970,7 @@ struct BeginnerGenericFeatureBindingWitness {
     generated_feature_id: u8,
     endpoint_count: u8,
     crease_start: u16,
+    crease_authority_sha256: [u8; 32],
     skeleton_segment_id: u16,
     skeleton_endpoint: &'static str,
     mount_distance_squared_tenths_mm: u64,
@@ -3147,7 +3148,15 @@ fn beginner_contour_placement_witness(
             .len()
             .checked_sub(witnessed)?
             .checked_sub(endpoint_count)?;
-        for (index, target) in constraints.protrusions.iter().enumerate() {
+        let mut canonical_targets = constraints.protrusions.iter().collect::<Vec<_>>();
+        canonical_targets.sort_unstable_by_key(|target| target.id);
+        if canonical_targets
+            .windows(2)
+            .any(|pair| pair[0].id >= pair[1].id)
+        {
+            return None;
+        }
+        for target in canonical_targets {
             let count = usize::from(target.count);
             let creases = plan
                 .crease_pattern
@@ -3184,14 +3193,26 @@ fn beginner_contour_placement_witness(
                 .min()?;
             generic_feature_bindings.push(BeginnerGenericFeatureBindingWitness {
                 protrusion_id: target.id,
-                generated_feature_id: u8::try_from(index.checked_add(1)?).ok()?,
+                generated_feature_id: u8::try_from(target.id).ok()?,
                 endpoint_count: target.count,
                 crease_start: u16::try_from(crease_cursor).ok()?,
+                crease_authority_sha256: sha2::Sha256::digest(
+                    serde_json::to_vec(&creases.iter().map(|edge| edge.id).collect::<Vec<_>>())
+                        .ok()?,
+                )
+                .into(),
                 skeleton_segment_id,
                 skeleton_endpoint: if endpoint_rank == 0 { "start" } else { "end" },
                 mount_distance_squared_tenths_mm: u64::try_from(mount_distance).ok()?,
             });
             crease_cursor = crease_cursor.checked_add(count)?;
+        }
+        generic_feature_bindings.sort_unstable_by_key(|binding| binding.generated_feature_id);
+        if generic_feature_bindings.windows(2).any(|pair| {
+            pair[0].generated_feature_id >= pair[1].generated_feature_id
+                || pair[0].protrusion_id >= pair[1].protrusion_id
+        }) {
+            return None;
         }
         if crease_cursor != plan.crease_pattern.edges.len().checked_sub(witnessed)? {
             return None;
@@ -4376,6 +4397,14 @@ fn apply_grid_plan_document(
             .edges
             .get(start..start + count)
             .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
+        let crease_authority_sha256: [u8; 32] = sha2::Sha256::digest(
+            serde_json::to_vec(&creases.iter().map(|edge| edge.id).collect::<Vec<_>>())
+                .map_err(|_| "grid_candidate_topology_stale".to_owned())?,
+        )
+        .into();
+        if crease_authority_sha256 != binding.crease_authority_sha256 {
+            return Err("grid_candidate_feature_crease_authority_stale".to_owned());
+        }
         let mut vertices = Vec::with_capacity(count * 2);
         for id in creases.iter().flat_map(|edge| [edge.start, edge.end]) {
             if !vertices.contains(&id) {
@@ -13976,6 +14005,30 @@ mod tests {
         .unwrap();
         let witness = beginner_contour_placement_witness(&profile.generation_constraints, &plan)
             .expect("generated contour geometry must provide a bounded witness");
+        let mut reordered_constraints = profile.generation_constraints.clone();
+        reordered_constraints.protrusions.reverse();
+        let reordered_witness = beginner_contour_placement_witness(&reordered_constraints, &plan)
+            .expect("feature ID mapping must not depend on protrusion storage order");
+        assert_eq!(
+            reordered_witness
+                .generic_feature_bindings
+                .iter()
+                .map(|binding| (
+                    binding.generated_feature_id,
+                    binding.protrusion_id,
+                    binding.crease_authority_sha256,
+                ))
+                .collect::<Vec<_>>(),
+            witness
+                .generic_feature_bindings
+                .iter()
+                .map(|binding| (
+                    binding.generated_feature_id,
+                    binding.protrusion_id,
+                    binding.crease_authority_sha256,
+                ))
+                .collect::<Vec<_>>(),
+        );
         let body_start = plan.crease_pattern.vertices.len() - 7;
         let mut cyclic_body = plan.crease_pattern.vertices[body_start..body_start + 4].to_vec();
         cyclic_body.rotate_left(2);

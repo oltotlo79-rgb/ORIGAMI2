@@ -2003,7 +2003,8 @@ export type BeginnerContourPlacementWitnessV1 = Readonly<{
   }>>
   generic_feature_bindings: ReadonlyArray<Readonly<{
     protrusion_id: number, generated_feature_id: number, endpoint_count: 1 | 2 | 4,
-    crease_start: number, skeleton_segment_id: number, skeleton_endpoint: 'start' | 'end',
+    crease_start: number, crease_authority_sha256: ReadonlyArray<number>,
+    skeleton_segment_id: number, skeleton_endpoint: 'start' | 'end',
     mount_distance_squared_tenths_mm: number,
   }>>
   witnessed_vertices: number
@@ -2108,7 +2109,8 @@ export async function evaluateBeginnerParameterGrid(
     const featureBindings = witness && Array.isArray(witness.generic_feature_bindings)
       ? witness.generic_feature_bindings.map((binding) => exactCoreDataRecord(binding, [
           'protrusion_id', 'generated_feature_id', 'endpoint_count', 'crease_start',
-          'skeleton_segment_id', 'skeleton_endpoint', 'mount_distance_squared_tenths_mm',
+          'crease_authority_sha256', 'skeleton_segment_id', 'skeleton_endpoint',
+          'mount_distance_squared_tenths_mm',
         ] as const))
       : []
     const witnessPointCount = witness && bindings.every((binding) => binding !== null)
@@ -2144,9 +2146,11 @@ export async function evaluateBeginnerParameterGrid(
       || featureBindings.some((binding, bindingIndex) => !binding
         || !Number.isInteger(binding.protrusion_id) || Number(binding.protrusion_id) < 1
         || Number(binding.protrusion_id) > 65535
-        || binding.generated_feature_id !== bindingIndex + 1
+        || binding.generated_feature_id !== binding.protrusion_id
         || ![1, 2, 4].includes(Number(binding.endpoint_count))
         || !Number.isInteger(binding.crease_start) || Number(binding.crease_start) < 0
+        || !isBoundedIntegerTuple(binding.crease_authority_sha256, 32, 255)
+        || binding.crease_authority_sha256.some((byte) => byte < 0)
         || !Number.isInteger(binding.skeleton_segment_id) || Number(binding.skeleton_segment_id) < 1
         || Number(binding.skeleton_segment_id) > 65535
         || !['start', 'end'].includes(String(binding.skeleton_endpoint))
@@ -2154,10 +2158,12 @@ export async function evaluateBeginnerParameterGrid(
         || Number(binding.mount_distance_squared_tenths_mm) < 0
         || Number(binding.crease_start) + Number(binding.endpoint_count)
           > normalizedPlans.generated_plans[index].crease_pattern.edges.length
-        || (bindingIndex > 0 && (Number(featureBindings[bindingIndex - 1]?.protrusion_id)
-          >= Number(binding.protrusion_id)
-          || Number(binding.crease_start) !== Number(featureBindings[bindingIndex - 1]?.crease_start)
-            + Number(featureBindings[bindingIndex - 1]?.endpoint_count))))
+        || (bindingIndex > 0 && Number(featureBindings[bindingIndex - 1]?.protrusion_id)
+          >= Number(binding.protrusion_id)))
+      || featureBindings.some((binding, index) => featureBindings.some((other, otherIndex) =>
+        index !== otherIndex && binding && other
+          && Number(binding.crease_start) < Number(other.crease_start) + Number(other.endpoint_count)
+          && Number(other.crease_start) < Number(binding.crease_start) + Number(binding.endpoint_count)))
       || !Number.isInteger(witness.witnessed_vertices) || Number(witness.witnessed_vertices) !== witnessPointCount
       || !Number.isInteger(witness.witnessed_creases) || Number(witness.witnessed_creases) !== witnessPointCount
       || !Array.isArray(witness.topology_authority_hash) || witness.topology_authority_hash.length !== 32
@@ -2207,6 +2213,8 @@ export async function evaluateBeginnerParameterGrid(
         generic_feature_bindings: Object.freeze(featureBindings.map((binding) => Object.freeze({
           protrusion_id: Number(binding?.protrusion_id),
           generated_feature_id: Number(binding?.generated_feature_id),
+          crease_authority_sha256: Object.freeze(
+            (binding?.crease_authority_sha256 as number[]).slice()),
           endpoint_count: Number(binding?.endpoint_count) as 1 | 2 | 4,
           crease_start: Number(binding?.crease_start),
           skeleton_segment_id: Number(binding?.skeleton_segment_id),

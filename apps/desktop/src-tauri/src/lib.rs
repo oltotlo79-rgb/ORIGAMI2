@@ -2970,6 +2970,9 @@ struct BeginnerGenericFeatureBindingWitness {
     generated_feature_id: u8,
     endpoint_count: u8,
     crease_start: u16,
+    skeleton_segment_id: u16,
+    skeleton_endpoint: &'static str,
+    mount_distance_squared_tenths_mm: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -3164,11 +3167,29 @@ fn beginner_contour_placement_witness(
             {
                 return None;
             }
+            let squared_distance = |point: ori_domain::BeginnerSkeletonPointV1| {
+                let dx = i64::from(target.position_tenths_mm[0])
+                    .checked_sub(i64::from(point.x_tenths_mm))?;
+                let dy = i64::from(target.position_tenths_mm[1])
+                    .checked_sub(i64::from(point.y_tenths_mm))?;
+                dx.checked_mul(dx)?.checked_add(dy.checked_mul(dy)?)
+            };
+            let (mount_distance, skeleton_segment_id, endpoint_rank) = constraints
+                .skeleton_segments
+                .iter()
+                .flat_map(|segment| [(segment, 0u8, segment.start), (segment, 1u8, segment.end)])
+                .filter_map(|(segment, endpoint_rank, point)| {
+                    squared_distance(point).map(|distance| (distance, segment.id, endpoint_rank))
+                })
+                .min()?;
             generic_feature_bindings.push(BeginnerGenericFeatureBindingWitness {
                 protrusion_id: target.id,
                 generated_feature_id: u8::try_from(index.checked_add(1)?).ok()?,
                 endpoint_count: target.count,
                 crease_start: u16::try_from(crease_cursor).ok()?,
+                skeleton_segment_id,
+                skeleton_endpoint: if endpoint_rank == 0 { "start" } else { "end" },
+                mount_distance_squared_tenths_mm: u64::try_from(mount_distance).ok()?,
             });
             crease_cursor = crease_cursor.checked_add(count)?;
         }
@@ -3237,6 +3258,7 @@ fn beginner_contour_placement_witness(
     let topology_authority_hash: [u8; 32] = sha2::Sha256::digest(
         serde_json::to_vec(&(
             &constraints.generic_body_outline_tenths_mm,
+            &constraints.skeleton_segments,
             &constraints.protrusions,
             &plan.crease_pattern,
         ))
@@ -4555,7 +4577,16 @@ fn apply_grid_plan_document(
         let remaining = maximum_steps.saturating_sub(instruction_timeline.steps.len());
         for (generated_face_id, vertices, creases) in topology_ids.iter().take(remaining) {
             let topology_label = if *generated_face_id >= 129 {
-                format!("feature {}", *generated_face_id - 128)
+                let feature_id = *generated_face_id - 128;
+                let binding = topology_witness
+                    .generic_feature_bindings
+                    .iter()
+                    .find(|binding| binding.generated_feature_id == feature_id)
+                    .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
+                format!(
+                    "feature {feature_id} from skeleton segment {}.{}",
+                    binding.skeleton_segment_id, binding.skeleton_endpoint
+                )
             } else {
                 format!("face {generated_face_id}")
             };
@@ -13512,8 +13543,16 @@ mod tests {
         .unwrap();
         let generated_steps = &project.editor.instruction_timeline().steps;
         assert_eq!(generated_steps.len(), 3);
-        assert_eq!(generated_steps[1].title, "Shape generated feature 1");
-        assert_eq!(generated_steps[2].title, "Shape generated feature 2");
+        assert!(
+            generated_steps[1]
+                .title
+                .starts_with("Shape generated feature 1 from skeleton segment ")
+        );
+        assert!(
+            generated_steps[2]
+                .title
+                .starts_with("Shape generated feature 2 from skeleton segment ")
+        );
         assert!(
             apply_grid_plan_document(&mut project, instance_id, project_id, revision, plan)
                 .is_err()
@@ -13705,8 +13744,23 @@ mod tests {
         assert_eq!(witness.generic_feature_bindings.len(), 2);
         assert_eq!(witness.generic_feature_bindings[0].protrusion_id, 1);
         assert_eq!(witness.generic_feature_bindings[0].endpoint_count, 1);
+        assert_eq!(witness.generic_feature_bindings[0].skeleton_segment_id, 1);
+        assert_eq!(
+            witness.generic_feature_bindings[0].skeleton_endpoint,
+            "start"
+        );
         assert_eq!(witness.generic_feature_bindings[1].protrusion_id, 2);
         assert_eq!(witness.generic_feature_bindings[1].endpoint_count, 2);
+        let mut remapped_profile = profile.clone();
+        remapped_profile.generation_constraints.skeleton_segments[0]
+            .start
+            .x_tenths_mm += 1;
+        assert_ne!(
+            beginner_contour_placement_witness(&remapped_profile.generation_constraints, &plan,)
+                .unwrap()
+                .topology_authority_hash,
+            witness.topology_authority_hash,
+        );
         assert_eq!(witness.witnessed_vertices, 7);
         assert_eq!(witness.witnessed_creases, 7);
         let mut one_short = plan.clone();

@@ -7987,7 +7987,8 @@ function App() {
                           features: candidate.contour_witness.generic_feature_bindings.length === 0
                             ? 'none'
                             : candidate.contour_witness.generic_feature_bindings
-                              .map((binding) => `${binding.protrusion_id}:${binding.endpoint_count}@feature${binding.generated_feature_id}`)
+                              .map((binding) => `${binding.protrusion_id}:${binding.endpoint_count}@feature${binding.generated_feature_id}`
+                                + `→skeleton${binding.skeleton_segment_id}.${binding.skeleton_endpoint}`)
                               .join(', '),
                         })}</span>
                         {candidate.assessment.proof_scope === 'sufficient'

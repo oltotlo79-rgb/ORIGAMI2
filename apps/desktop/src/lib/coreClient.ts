@@ -1964,7 +1964,8 @@ export type BeginnerContourPlacementWitnessV1 = Readonly<{
   }>>
   generic_feature_bindings: ReadonlyArray<Readonly<{
     protrusion_id: number, generated_feature_id: number, endpoint_count: 1 | 2 | 4,
-    crease_start: number,
+    crease_start: number, skeleton_segment_id: number, skeleton_endpoint: 'start' | 'end',
+    mount_distance_squared_tenths_mm: number,
   }>>
   witnessed_vertices: number
   witnessed_creases: number
@@ -2068,6 +2069,7 @@ export async function evaluateBeginnerParameterGrid(
     const featureBindings = witness && Array.isArray(witness.generic_feature_bindings)
       ? witness.generic_feature_bindings.map((binding) => exactCoreDataRecord(binding, [
           'protrusion_id', 'generated_feature_id', 'endpoint_count', 'crease_start',
+          'skeleton_segment_id', 'skeleton_endpoint', 'mount_distance_squared_tenths_mm',
         ] as const))
       : []
     const witnessPointCount = witness && bindings.every((binding) => binding !== null)
@@ -2106,6 +2108,11 @@ export async function evaluateBeginnerParameterGrid(
         || binding.generated_feature_id !== bindingIndex + 1
         || ![1, 2, 4].includes(Number(binding.endpoint_count))
         || !Number.isInteger(binding.crease_start) || Number(binding.crease_start) < 0
+        || !Number.isInteger(binding.skeleton_segment_id) || Number(binding.skeleton_segment_id) < 1
+        || Number(binding.skeleton_segment_id) > 65535
+        || !['start', 'end'].includes(String(binding.skeleton_endpoint))
+        || !Number.isSafeInteger(binding.mount_distance_squared_tenths_mm)
+        || Number(binding.mount_distance_squared_tenths_mm) < 0
         || Number(binding.crease_start) + Number(binding.endpoint_count)
           > normalizedPlans.generated_plans[index].crease_pattern.edges.length
         || (bindingIndex > 0 && (Number(featureBindings[bindingIndex - 1]?.protrusion_id)
@@ -2163,6 +2170,9 @@ export async function evaluateBeginnerParameterGrid(
           generated_feature_id: Number(binding?.generated_feature_id),
           endpoint_count: Number(binding?.endpoint_count) as 1 | 2 | 4,
           crease_start: Number(binding?.crease_start),
+          skeleton_segment_id: Number(binding?.skeleton_segment_id),
+          skeleton_endpoint: String(binding?.skeleton_endpoint) as 'start' | 'end',
+          mount_distance_squared_tenths_mm: Number(binding?.mount_distance_squared_tenths_mm),
         }))),
         witnessed_vertices: Number(witness.witnessed_vertices),
         witnessed_creases: Number(witness.witnessed_creases),

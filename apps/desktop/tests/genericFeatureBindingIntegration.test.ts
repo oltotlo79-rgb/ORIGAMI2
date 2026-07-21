@@ -9,7 +9,7 @@ const browser = readFileSync('scripts/generic-target-browser-e2e.mjs', 'utf8')
 
 test('generic feature bindings cross the exact frontend DTO boundary', () => {
   assert.match(client, /generic_feature_bindings: ReadonlyArray/u)
-  assert.match(client, /'protrusion_id', 'generated_feature_id', 'endpoint_count', 'crease_start'/u)
+  assert.match(client, /'skeleton_segment_id', 'skeleton_endpoint', 'mount_distance_squared_tenths_mm'/u)
   assert.match(client, /featureBindings\.length < 2/u)
   assert.match(client, /!\[1, 2, 4\]\.includes\(Number\(binding\.endpoint_count\)\)/u)
   assert.match(client, /Number\(binding\.crease_start\) \+ Number\(binding\.endpoint_count\)/u)
@@ -19,6 +19,7 @@ test('generic feature bindings cross the exact frontend DTO boundary', () => {
 test('generic feature topology is visible and browser-covered through persistence', () => {
   assert.match(app, /汎用部位topology証明/u)
   assert.match(app, /Generic feature topology witness/u)
+  assert.match(app, /→skeleton/u)
   assert.match(native, /Shape generated \{topology_label\}/u)
   assert.match(browser, /Try tampered generic feature binding/u)
   assert.match(browser, /Generated generic feature instruction steps/u)

@@ -765,6 +765,8 @@ function App() {
       candidate_id: number
       kind: BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']
     }>>([])
+  const [excludedBeginnerPartAssignments, setExcludedBeginnerPartAssignments] =
+    useState<typeof beginnerPartAssignments>([])
   const [beginnerReferenceGeometry, setBeginnerReferenceGeometry] =
     useState<BeginnerReferenceModelGeometry | null>(null)
   const [beginnerReferenceSuggestion, setBeginnerReferenceSuggestion] =
@@ -780,6 +782,7 @@ function App() {
     setBeginnerOutlineCandidates(null)
     setBeginnerPartSuggestions(null)
     setBeginnerPartAssignments([])
+    setExcludedBeginnerPartAssignments([])
     beginnerReferenceRequestRef.current += 1
     setBeginnerReferenceGeometry(null)
     setBeginnerReferenceSuggestion(null)
@@ -3955,6 +3958,7 @@ function App() {
         setBeginnerPartAssignments(proposal.suggestions.map((item) => ({
           candidate_id: item.candidate_id, kind: item.suggested_kind,
         })))
+        setExcludedBeginnerPartAssignments([])
       }
     }).catch(() => setBeginnerPartSuggestions(null))
   }
@@ -8628,13 +8632,41 @@ function App() {
                                 type="button"
                                 disabled={assignment.kind === 'torso'
                                   || beginnerPartAssignments.length <= 2}
-                                onClick={() => setBeginnerPartAssignments((items) =>
-                                  items.filter((item) => item.candidate_id !== assignment.candidate_id))}
+                                onClick={() => {
+                                  setBeginnerPartAssignments((items) =>
+                                    items.filter((item) => item.candidate_id !== assignment.candidate_id))
+                                  setExcludedBeginnerPartAssignments((items) => [
+                                    ...items.filter((item) => item.candidate_id !== assignment.candidate_id),
+                                    assignment,
+                                  ])
+                                }}
                               >
                                 {text({ ja: 'ノイズ候補として除外', en: 'Exclude as image noise' })}
                               </button>
                             </label>
                           ))}
+                          {excludedBeginnerPartAssignments.length > 0 && (
+                            <section aria-label={text({ ja: '除外した画像候補', en: 'Excluded image candidates' })}>
+                              <p>{text({
+                                ja: '復帰しても部位の意味は未確認のままです。確認するまで生成には使われません。',
+                                en: 'Restored candidates remain semantically unconfirmed and cannot generate a design until you confirm the assignments.',
+                              })}</p>
+                              {excludedBeginnerPartAssignments.map((assignment) => (
+                                <button key={assignment.candidate_id} type="button" onClick={() => {
+                                  setExcludedBeginnerPartAssignments((items) =>
+                                    items.filter((item) => item.candidate_id !== assignment.candidate_id))
+                                  setBeginnerPartAssignments((items) => [...items, assignment].sort(
+                                    (left, right) => left.candidate_id - right.candidate_id,
+                                  ))
+                                }}>
+                                  {formattedText({
+                                    ja: '候補 {id} を元の輪郭証拠付きで復帰',
+                                    en: 'Restore candidate {id} with its original outline evidence',
+                                  }, { id: assignment.candidate_id + 1 })}
+                                </button>
+                              ))}
+                            </section>
+                          )}
                           <p>{text({
                             ja: '画像は各候補の輪郭だけを証明します。部位の意味は、ここで確認した割当だけを使用します。',
                             en: 'The image proves only each candidate outline. Part meanings come only from the assignments you confirm here.',

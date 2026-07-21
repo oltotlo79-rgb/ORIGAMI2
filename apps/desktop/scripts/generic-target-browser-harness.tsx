@@ -23,6 +23,11 @@ function Harness() {
   const [status, setStatus] = useState('Waiting for image or GLB'), [applied, setApplied] = useState(false)
   const [bindings, setBindings] = useState([...initialBindings])
   const [kinds, setKinds] = useState<Array<'leg' | 'horn' | 'ear' | 'wing' | 'fin' | 'antenna' | 'tail'>>(['tail', 'fin'])
+  const [excludedImageCandidate, setExcludedImageCandidate] = useState<{
+    binding: (typeof initialBindings)[number]
+    kind: (typeof kinds)[number]
+    outlineEvidence: string
+  } | null>(null)
   const [outline, setOutline] = useState<Array<[number, number]>>([])
   const [outlineMode, setOutlineMode] = useState<'symmetric' | 'general'>('symmetric')
   const [selectedCandidate, setSelectedCandidate] = useState(1)
@@ -88,6 +93,7 @@ function Harness() {
     setAuthorityValid(true)
     setBindings(initialBindings.map((target) => ({ ...target })))
     setKinds(['tail', 'fin'])
+    setExcludedImageCandidate(null)
     setRecognized(true); setPreview(false); setCandidateShortage(false); setStatus(`${source} recognized two bounded bindings`)
     setMergedAuthorities(false)
     if (source === 'Image' || source === 'JPEG EXIF') {
@@ -250,10 +256,25 @@ function Harness() {
         setStatus(`Confirmed ${bindings.length} explicit part meanings for image outlines`)
       }}>Confirm explicit image part meanings</button>
       {bindings.length > 2 && <button onClick={() => {
+        const binding = bindings.at(-1), kind = kinds.at(-1)
+        if (!binding || !kind) return
+        setExcludedImageCandidate({ binding, kind, outlineEvidence: `decoded-component-${binding.id}` })
         setBindings((current) => current.slice(0, -1))
         setKinds((current) => current.slice(0, -1))
+        setImageMeaningsConfirmed(false)
         setStatus('Excluded unconfirmed image noise candidate; 2 explicit parts remain')
       }}>Exclude unconfirmed image noise</button>}
+      {excludedImageCandidate && <section aria-label="Excluded image candidate">
+        <p>Candidate {excludedImageCandidate.binding.id} retained unique ID and outline evidence {excludedImageCandidate.outlineEvidence}.</p>
+        <button onClick={() => {
+          setBindings((current) => [...current, excludedImageCandidate.binding])
+          setKinds((current) => [...current, excludedImageCandidate.kind])
+          setExcludedImageCandidate(null)
+          setImageMeaningsConfirmed(false)
+          setConfirmedImageFeatureCount(null)
+          setStatus('Restored candidate 3 with original outline evidence; meaning remains unconfirmed')
+        }}>Restore excluded image candidate</button>
+      </section>}
     </section>}
     {recognized && <ul aria-label="Editable generic target dimensions">{bindings.map((target, index) =>
       <ProtrusionDimensionEditor key={target.id} locale="en" target={target}

@@ -351,6 +351,27 @@ pub struct InstructionVisual {
     pub arrows: Vec<InstructionArrow>,
     pub focus_points: Vec<InstructionFocusPoint>,
     pub hand_guides: Vec<InstructionHandGuide>,
+    pub cycle_layer_order_proof_v1: Option<CycleLayerOrderProofV1>,
+}
+
+pub const CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1: &str =
+    "native_continuous_layer_transport_certificate_v1";
+pub const MAX_CYCLE_LAYER_ORDER_PAIRS_V1: usize = 50_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CycleLayerOrderPairV1 {
+    pub lower_face: FaceId,
+    pub upper_face: FaceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CycleLayerOrderProofV1 {
+    pub version: u32,
+    pub model_id: String,
+    pub target_order_sha256: [u8; 32],
+    pub transition_count: usize,
+    pub pairs: Vec<CycleLayerOrderPairV1>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -822,6 +843,31 @@ fn validate_instruction_visual(
     visual: &InstructionVisual,
     step_index: usize,
 ) -> Result<(), InstructionTimelineValidationError> {
+    if visual
+        .cycle_layer_order_proof_v1
+        .as_ref()
+        .is_some_and(|proof| {
+            proof.version != 1
+                || proof.model_id != CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1
+                || proof.transition_count == 0
+                || proof.pairs.len() > MAX_CYCLE_LAYER_ORDER_PAIRS_V1
+                || proof
+                    .pairs
+                    .iter()
+                    .any(|pair| pair.lower_face == pair.upper_face)
+                || proof.pairs.windows(2).any(|pairs| {
+                    (
+                        pairs[0].lower_face.canonical_bytes(),
+                        pairs[0].upper_face.canonical_bytes(),
+                    ) >= (
+                        pairs[1].lower_face.canonical_bytes(),
+                        pairs[1].upper_face.canonical_bytes(),
+                    )
+                })
+        })
+    {
+        return Err(InstructionTimelineValidationError::InvalidVisual { step_index });
+    }
     let marker_count = visual
         .arrows
         .len()
@@ -1106,6 +1152,13 @@ mod tests {
                 },
                 label: "pinch".to_owned(),
             }],
+            cycle_layer_order_proof_v1: Some(CycleLayerOrderProofV1 {
+                version: 1,
+                model_id: CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1.to_owned(),
+                target_order_sha256: [0x5a; 32],
+                transition_count: 5,
+                pairs: Vec::new(),
+            }),
         };
         let timeline = InstructionTimeline { steps: vec![step] };
 
@@ -1117,6 +1170,24 @@ mod tests {
 
         assert_eq!(restored, timeline);
         validate_instruction_timeline(&restored).expect("restored timeline");
+    }
+
+    #[test]
+    fn cycle_layer_order_proof_rejects_stale_model_and_malformed_hash() {
+        let mut step = valid_instruction_step();
+        step.visual.cycle_layer_order_proof_v1 = Some(CycleLayerOrderProofV1 {
+            version: 1,
+            model_id: "stale_layer_model".to_owned(),
+            target_order_sha256: [0; 32],
+            transition_count: 1,
+            pairs: Vec::new(),
+        });
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline { steps: vec![step] }),
+            Err(InstructionTimelineValidationError::InvalidVisual { .. })
+        ));
+        let malformed = r#"{"version":1,"model_id":"native_continuous_layer_transport_certificate_v1","target_order_sha256":[1],"transition_count":1,"pairs":[]}"#;
+        assert!(serde_json::from_str::<CycleLayerOrderProofV1>(malformed).is_err());
     }
 
     #[test]

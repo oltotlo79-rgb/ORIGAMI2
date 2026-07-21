@@ -74,6 +74,7 @@ pub(super) enum PendingStackedFoldRequestedPose {
         expected: ori_collision::CertifiedPathTransitionEvidenceV1,
         continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
         layer_transport: Option<ori_collision::ContinuousLayerTransportCertificateV1>,
+        layer_order_pairs: Vec<(ori_domain::FaceId, ori_domain::FaceId)>,
         target_angles: Vec<(ori_domain::EdgeId, f64)>,
     },
 }
@@ -191,6 +192,39 @@ impl PendingStackedFoldRequestedPose {
                     .is_some_and(|actual| actual == *expected)
             }
         }
+    }
+
+    fn persisted_cycle_layer_order_proof(&self) -> Option<ori_domain::CycleLayerOrderProofV1> {
+        let Self::CurrentCycle {
+            layer_transport: Some(certificate),
+            layer_order_pairs,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let mut pairs = layer_order_pairs
+            .iter()
+            .map(
+                |(lower_face, upper_face)| ori_domain::CycleLayerOrderPairV1 {
+                    lower_face: *lower_face,
+                    upper_face: *upper_face,
+                },
+            )
+            .collect::<Vec<_>>();
+        pairs.sort_unstable_by_key(|pair| {
+            (
+                pair.lower_face.canonical_bytes(),
+                pair.upper_face.canonical_bytes(),
+            )
+        });
+        Some(ori_domain::CycleLayerOrderProofV1 {
+            version: 1,
+            model_id: certificate.model_id().to_owned(),
+            target_order_sha256: certificate.target_order_hash(),
+            transition_count: certificate.transition_hashes().len(),
+            pairs,
+        })
     }
     fn pose_components(
         &self,
@@ -332,6 +366,7 @@ pub(super) struct PendingCurrentCyclePosePremisesV1 {
     pub expected: ori_collision::CertifiedPathTransitionEvidenceV1,
     pub continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
     pub layer_transport: Option<ori_collision::ContinuousLayerTransportCertificateV1>,
+    pub layer_order_pairs: Vec<(ori_domain::FaceId, ori_domain::FaceId)>,
     pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
 }
 
@@ -542,6 +577,7 @@ pub(super) fn install_pending_current_cycle_pose_v1(
             expected: premises.expected,
             continuous: premises.continuous,
             layer_transport: premises.layer_transport,
+            layer_order_pairs: premises.layer_order_pairs,
             target_angles: premises.target_angles,
         },
         layer_order: None,
@@ -709,6 +745,7 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
     .map_err(|_| "The target pose is inconsistent.".to_owned())?;
     let mut timeline = project.editor.instruction_timeline().clone();
     let ordered_timeline_angles = requested.ordered_timeline_angles();
+    let persisted_layer_proof = requested.persisted_cycle_layer_order_proof();
     if ordered_timeline_angles.is_empty() || ordered_timeline_angles.len() > 31 {
         return Err("The certified path timeline is inconsistent.".to_owned());
     }
@@ -723,7 +760,10 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
             description: String::new(),
             caution: String::new(),
             duration_ms: MIN_INSTRUCTION_DURATION_MS,
-            visual: InstructionVisual::default(),
+            visual: InstructionVisual {
+                cycle_layer_order_proof_v1: persisted_layer_proof.clone(),
+                ..InstructionVisual::default()
+            },
             pose: InstructionPose {
                 model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                 source_model_fingerprint: target.map_or_else(

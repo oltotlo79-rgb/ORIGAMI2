@@ -491,6 +491,15 @@ fn propose_current_cycle_pose_inner_with_layers(
                 .collect::<String>(),
         )
     });
+    let persisted_layer_order_pairs = source_layer_order
+        .as_ref()
+        .map(|orders| {
+            orders
+                .iter()
+                .map(|order| (order.lower_face, order.upper_face))
+                .collect()
+        })
+        .unwrap_or_default();
     emit_current_cycle_progress_v1(app, progress_request_id, 1, 1);
     if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) != generation {
         return Err(CANCELLED_MESSAGE.to_owned());
@@ -521,6 +530,7 @@ fn propose_current_cycle_pose_inner_with_layers(
             expected,
             continuous,
             layer_transport,
+            layer_order_pairs: persisted_layer_order_pairs,
             target_angles,
         },
         pose_capability,
@@ -4526,10 +4536,28 @@ mod tests {
         )
         .expect("rank4 layer transport apply");
         let mut project = super::super::lock_project(&app_state).unwrap();
+        let persisted = project.editor.instruction_timeline().steps[0]
+            .visual
+            .cycle_layer_order_proof_v1
+            .as_ref()
+            .expect("applied transport proof is persisted in timeline history");
+        assert_eq!(persisted.version, 1);
+        assert_eq!(
+            persisted.model_id,
+            ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1
+        );
+        assert_eq!(persisted.target_order_sha256.len(), 32);
         project.editor.undo(applied).unwrap();
+        assert!(project.editor.instruction_timeline().steps.is_empty());
         let undone = project.editor.revision();
         project.editor.redo(undone).unwrap();
         assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        assert!(
+            project.editor.instruction_timeline().steps[0]
+                .visual
+                .cycle_layer_order_proof_v1
+                .is_some()
+        );
     }
 
     #[test]

@@ -11883,6 +11883,15 @@ mod tests {
         assert_eq!(plan.crease_pattern.edges.len(), 14);
         let project_id = project.project_id;
         let instance_id = project.instance_id;
+        let cancel_generation = ProjectId::new();
+        let cancel_work = Arc::new(BeginnerGridWork::default());
+        beginner_grid_work()
+            .lock()
+            .unwrap()
+            .insert(cancel_generation, Arc::clone(&cancel_work));
+        cancel_beginner_parameter_grid(cancel_generation).unwrap();
+        assert!(cancel_work.cancelled.load(Ordering::Acquire));
+        beginner_grid_work().lock().unwrap().clear();
         let revision = project.editor.revision();
         let saved_profile = execute_command(
             &mut project,
@@ -11896,9 +11905,19 @@ mod tests {
             instance_id,
             project_id,
             saved_profile.revision,
-            plan,
+            plan.clone(),
         )
         .unwrap();
+        assert!(
+            apply_grid_plan_document(
+                &mut project,
+                instance_id,
+                project_id,
+                saved_profile.revision,
+                plan,
+            )
+            .is_err()
+        );
         let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
         execute_redo(&mut project, project_id, undone.revision).unwrap();
         let saved = project.document();

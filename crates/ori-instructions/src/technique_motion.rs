@@ -81,6 +81,155 @@ pub enum ReverseFoldMotionError {
     InvalidTimeline,
 }
 
+pub struct AccordionFoldMotionRequestV1<'a> {
+    pub technique_file: &'a FoldTechniqueFileV1,
+    pub technique_id: &'a str,
+    pub source_model_fingerprint: &'a str,
+    pub fixed_face: FaceId,
+    pub source_hinge_angles: &'a [InstructionHingeAngle],
+    pub ordered_edges: &'a [EdgeId],
+    pub ordered_target_angles_microdegrees: &'a [i64],
+    pub ordered_path_certificates: &'a [CertifiedPoseGraphPathCertificateV1],
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum AccordionFoldMotionError {
+    #[error("an accordion fold requires at least three ordered straight-fold operations")]
+    UnsupportedTechnique,
+    #[error(
+        "the ordered accordion segment inputs are invalid or exceed the bounded operation count"
+    )]
+    InvalidSegments,
+    #[error("the source pose is invalid")]
+    InvalidSourcePose,
+    #[error("an accordion path segment is empty, discontinuous, or endpoint-mismatched")]
+    PathSegmentMismatch,
+    #[error("the compiled accordion timeline failed validation")]
+    InvalidTimeline,
+}
+
+/// Compiles a pleat/accordion as three or more ordered certified segments.
+/// Each certificate is checked against the exact previous and next pose, so
+/// segment reordering or an ABA replacement cannot preserve authority.
+pub fn compile_certified_accordion_fold_timeline_v1(
+    request: AccordionFoldMotionRequestV1<'_>,
+) -> Result<InstructionTimeline, AccordionFoldMotionError> {
+    let technique = request
+        .technique_file
+        .document()
+        .techniques
+        .iter()
+        .find(|technique| technique.id == request.technique_id)
+        .ok_or(AccordionFoldMotionError::UnsupportedTechnique)?;
+    let straight_operations = technique
+        .operations
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation.action,
+                FoldTechniqueActionV1::StraightLineStackedFold
+            ) && operation
+                .required_capabilities
+                .contains(&FoldTechniqueCapabilityV1::StraightLineStackedFoldV1)
+        })
+        .count();
+    let count = request.ordered_edges.len();
+    if straight_operations < 3 || straight_operations != count {
+        return Err(AccordionFoldMotionError::UnsupportedTechnique);
+    }
+    if count > 31
+        || request.ordered_target_angles_microdegrees.len() != count
+        || request.ordered_path_certificates.len() != count
+        || request
+            .ordered_edges
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            != count
+        || request
+            .ordered_target_angles_microdegrees
+            .iter()
+            .any(|angle| !(0..=180_000_000).contains(angle))
+    {
+        return Err(AccordionFoldMotionError::InvalidSegments);
+    }
+    let mut pose_angles = request.source_hinge_angles.to_vec();
+    pose_angles.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
+    if pose_angles
+        .windows(2)
+        .any(|pair| pair[0].edge == pair[1].edge)
+        || !pose_angles
+            .iter()
+            .all(|hinge| hinge.angle_degrees.is_finite())
+        || request.source_model_fingerprint.len() != 64
+    {
+        return Err(AccordionFoldMotionError::InvalidSourcePose);
+    }
+    let mut poses = vec![pose_angles.clone()];
+    for ((edge, angle), certificate) in request
+        .ordered_edges
+        .iter()
+        .zip(request.ordered_target_angles_microdegrees)
+        .zip(request.ordered_path_certificates)
+    {
+        let source_hash = instruction_pose_fingerprint_v1(
+            request.source_model_fingerprint,
+            request.fixed_face,
+            &pose_angles,
+        );
+        set_hinge_angle(&mut pose_angles, *edge, *angle);
+        let target_hash = instruction_pose_fingerprint_v1(
+            request.source_model_fingerprint,
+            request.fixed_face,
+            &pose_angles,
+        );
+        if certificate.edges().is_empty()
+            || certificate.source() != source_hash
+            || certificate.target() != target_hash
+        {
+            return Err(AccordionFoldMotionError::PathSegmentMismatch);
+        }
+        poses.push(pose_angles.clone());
+    }
+    let title = technique
+        .names
+        .iter()
+        .find(|text| text.locale == "ja")
+        .or_else(|| technique.names.first())
+        .map(|text| text.text.clone())
+        .ok_or(AccordionFoldMotionError::UnsupportedTechnique)?;
+    let steps = poses
+        .into_iter()
+        .enumerate()
+        .map(|(index, hinge_angles)| InstructionStep {
+            id: InstructionStepId::new(),
+            title: if index == 0 {
+                format!("{title}：開始")
+            } else {
+                format!("{title}：折り{index}")
+            },
+            description: if index == 0 {
+                "認証済み蛇腹折りの開始姿勢です。".to_owned()
+            } else {
+                format!("認証済み区間{index}の終端姿勢です。")
+            },
+            caution: "区間を入れ替えず順番どおりに折ってください。".to_owned(),
+            duration_ms: 1_000,
+            visual: InstructionVisual::default(),
+            pose: InstructionPose {
+                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                source_model_fingerprint: request.source_model_fingerprint.to_owned(),
+                fixed_face: Some(request.fixed_face),
+                hinge_angles,
+            },
+        })
+        .collect();
+    let timeline = InstructionTimeline { steps };
+    validate_instruction_timeline(&timeline)
+        .map_err(|_| AccordionFoldMotionError::InvalidTimeline)?;
+    Ok(timeline)
+}
+
 /// Compiles an inside/outside reverse fold as two independently certified
 /// native path segments. The intermediate endpoint is hashed once and must be
 /// exactly the target of segment one and source of segment two.
@@ -503,6 +652,91 @@ mod tests {
                 operation: unsupported,
             };
         validate_fold_technique_file_v1(document).expect("valid reverse fold")
+    }
+
+    fn accordion_fold_file() -> FoldTechniqueFileV1 {
+        let mut document = book_fold_file().document().clone();
+        let technique = &mut document.techniques[0];
+        technique.names = text("蛇腹折り");
+        let physical = technique.operations[1].clone();
+        technique.operations = (0..3)
+            .map(|index| {
+                let mut operation = physical.clone();
+                operation.id = format!("pleat-{}", index + 1);
+                operation
+            })
+            .collect();
+        validate_fold_technique_file_v1(document).expect("valid accordion fold")
+    }
+
+    #[test]
+    fn accordion_fold_binds_three_ordered_pose_segments() {
+        let file = accordion_fold_file();
+        let face = FaceId::new();
+        let edges = [EdgeId::new(), EdgeId::new(), EdgeId::new()];
+        let targets = [45_000_000, 90_000_000, 135_000_000];
+        let model = "56".repeat(32);
+        let source = Vec::new();
+        let mut previous = source.clone();
+        let certificates = edges
+            .iter()
+            .zip(targets)
+            .map(|(edge, angle)| {
+                let source_hash = instruction_pose_fingerprint_v1(&model, face, &previous);
+                set_hinge_angle(&mut previous, *edge, angle);
+                let target_hash = instruction_pose_fingerprint_v1(&model, face, &previous);
+                certificate(source_hash, target_hash)
+            })
+            .collect::<Vec<_>>();
+        let timeline = compile_certified_accordion_fold_timeline_v1(AccordionFoldMotionRequestV1 {
+            technique_file: &file,
+            technique_id: "book-fold",
+            source_model_fingerprint: &model,
+            fixed_face: face,
+            source_hinge_angles: &source,
+            ordered_edges: &edges,
+            ordered_target_angles_microdegrees: &targets,
+            ordered_path_certificates: &certificates,
+        })
+        .expect("three continuous segments");
+        assert_eq!(timeline.steps.len(), 4);
+        assert_eq!(timeline.steps[3].pose.hinge_angles, previous);
+    }
+
+    #[test]
+    fn accordion_fold_rejects_reordered_certificate_segments() {
+        let file = accordion_fold_file();
+        let face = FaceId::new();
+        let edges = [EdgeId::new(), EdgeId::new(), EdgeId::new()];
+        let targets = [45_000_000, 90_000_000, 135_000_000];
+        let model = "78".repeat(32);
+        let mut previous = Vec::new();
+        let mut certificates = edges
+            .iter()
+            .zip(targets)
+            .map(|(edge, angle)| {
+                let source_hash = instruction_pose_fingerprint_v1(&model, face, &previous);
+                set_hinge_angle(&mut previous, *edge, angle);
+                certificate(
+                    source_hash,
+                    instruction_pose_fingerprint_v1(&model, face, &previous),
+                )
+            })
+            .collect::<Vec<_>>();
+        certificates.swap(0, 1);
+        assert_eq!(
+            compile_certified_accordion_fold_timeline_v1(AccordionFoldMotionRequestV1 {
+                technique_file: &file,
+                technique_id: "book-fold",
+                source_model_fingerprint: &model,
+                fixed_face: face,
+                source_hinge_angles: &[],
+                ordered_edges: &edges,
+                ordered_target_angles_microdegrees: &targets,
+                ordered_path_certificates: &certificates,
+            }),
+            Err(AccordionFoldMotionError::PathSegmentMismatch)
+        );
     }
 
     #[test]

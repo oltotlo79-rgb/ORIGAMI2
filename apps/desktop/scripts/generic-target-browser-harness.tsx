@@ -35,6 +35,7 @@ function Harness() {
   const [acceptedSegments, setAcceptedSegments] = useState<number[]>([1, 2])
   const [confidence, setConfidence] = useState<{ score: number, reason: string, low: boolean } | null>(null)
   const [confidenceOverride, setConfidenceOverride] = useState(false)
+  const [asymmetricBird, setAsymmetricBird] = useState(false)
   const [exportStatus, setExportStatus] = useState<string | null>(null)
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
@@ -115,7 +116,7 @@ function Harness() {
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected segmentation: overlapping or too-thin protrusion') }}>Try invalid protrusion segmentation</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected segmentation: noise exceeds bounded curvature budget') }}>Try noisy silhouette segmentation</button>
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
-    <button onClick={() => setStatus('Asymmetric bird landmarks bound: head · tail · left wing · right wing')}>Recognize asymmetric bird landmarks</button>
+    <button onClick={() => { setAsymmetricBird(true); setStatus('Asymmetric bird landmarks bound: head · tail · left wing · right wing') }}>Recognize asymmetric bird landmarks</button>
     <button onClick={() => {
       setRecognized(true); setPreview(false); setCandidateShortage(false); setMergedAuthorities(true)
       setAuthorityValid(true)
@@ -235,6 +236,7 @@ function Harness() {
       <p>Manufacturability verified: crease spacing · face area · paper boundary margin</p>
       <p>Native foldability admission: global proof + bounded fold path certificate · collision clear</p>
       <p>Native cyclic certificate: bounded_certified_pose_graph_path_v1 · SHA-256 58a6d4c1 · thickness 0/0.1/1/3 mm verified</p>
+      {asymmetricBird && <p>AsymmetricBirdLandmarkBase candidate: four individually bound GLB/image landmarks · native path certified</p>}
       <p>Deterministic candidate synthesis: {synthesizedCandidateCount} bounded designs from {bindings.length} bindings and {contourPointCount} contour points.</p>
       <button aria-pressed={selectedCandidate === 1} onClick={() => setSelectedCandidate(1)}>Select contour candidate 1</button>
       <button aria-pressed={selectedCandidate === 2} onClick={() => setSelectedCandidate(2)}>Select contour candidate 2</button>
@@ -276,6 +278,7 @@ function Harness() {
       {glbWitness && <p>Applied typed surface landmarks: 4 samples · digest 7f3a9c21 · archive retained</p>}
       {mergedAuthorities && <p>Applied merged authority witness: image contours + GLB depth/bulges</p>}
       <p>Applied path provenance: bounded_certified_pose_graph_path_v1 · SHA-256 58a6d4c1 · typed archive retained</p>
+      {asymmetricBird && <p>Applied AsymmetricBirdLandmarkBase: Undo/Redo/reopen retained four landmark bindings and path provenance</p>}
       {mergedAuthorities && <p>Applied 3D candidate score {threeDimensionalScore}/100 · depth error {depthError} mm</p>}
       <canvas ref={witnessCanvas} width={320} height={200} role="img" aria-label={`Applied contour placement correspondence candidate ${selectedCandidate}`} />
       <button onClick={() => setStatus('Generic target undone')}>Undo generic target</button>

@@ -177,6 +177,7 @@ try {
   await page.getByText('Manufacturability verified: crease spacing · face area · paper boundary margin', { exact: true }).waitFor()
   await page.getByText('Native foldability admission: global proof + bounded fold path certificate · collision clear', { exact: true }).waitFor()
   await page.getByText('Native cyclic certificate: bounded_certified_pose_graph_path_v1 · SHA-256 58a6d4c1 · thickness 0/0.1/1/3 mm verified', { exact: true }).waitFor()
+  await page.getByText('AsymmetricBirdLandmarkBase candidate: four individually bound GLB/image landmarks · native path certified', { exact: true }).waitFor()
   await assertWitnessCanvas(page.getByRole('img', { name: 'Contour placement correspondence candidate 1' }))
   await page.getByRole('button', { name: 'Select contour candidate 2' }).click()
   await page.getByText(/Contour placement witness candidate 2: body 4, local/).waitFor()
@@ -220,6 +221,7 @@ try {
     await page.getByText(/Automatic fold instructions: summary \+ \d+ topology-bound local face steps/).waitFor()
     await page.getByText('Applied merged authority witness: image contours + GLB depth/bulges', { exact: true }).waitFor()
     await page.getByText('Applied path provenance: bounded_certified_pose_graph_path_v1 · SHA-256 58a6d4c1 · typed archive retained', { exact: true }).waitFor()
+    await page.getByText('Applied AsymmetricBirdLandmarkBase: Undo/Redo/reopen retained four landmark bindings and path provenance', { exact: true }).waitFor()
     await page.getByText('Applied 3D candidate score 68/100 · depth error 7 mm', { exact: true }).waitFor()
   }
   for (const format of ['SVG', 'FOLD', 'ORIPA', 'Instruction PDF', 'Instruction SVG ZIP']) {

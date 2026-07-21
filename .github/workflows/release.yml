@@ -726,6 +726,28 @@ jobs:
                 then
                   quarantine_verified=true
                 fi
+                latest_after="$RUNNER_TEMP/latest-after-quarantine.json"
+                latest_after_headers="$RUNNER_TEMP/latest-after-quarantine.headers"
+                latest_after_status="$(curl --silent --show-error --proto '=https' --tlsv1.2 \
+                  --connect-timeout 15 --max-time 60 --max-redirs 0 --max-filesize 1048576 \
+                  --header "Authorization: Bearer $GH_TOKEN" \
+                  --header 'Accept: application/vnd.github+json' \
+                  --header 'X-GitHub-Api-Version: 2022-11-28' \
+                  --header 'Cache-Control: no-cache' --header 'Pragma: no-cache' \
+                  --dump-header "$latest_after_headers" --output "$latest_after" --write-out '%{http_code}' \
+                  "https://api.github.com/repos/$GH_REPO/releases/latest")"
+                if [ "$previous_latest_id" = none ]; then
+                  test "$latest_after_status" = 404
+                  jq -e '.message == "Not Found"' "$latest_after" >/dev/null
+                else
+                  test "$latest_after_status" = 200
+                  node .github/scripts/verify_release_response_headers.mjs "$latest_after_headers" "$latest_after_status"
+                  test "$(jq -r .id "$latest_after")" = "$previous_latest_id"
+                  test "$(jq -r .tag_name "$latest_after")" = "$previous_latest_tag"
+                  test "$(jq -r .draft "$latest_after")" = false
+                  test "$(jq -r .prerelease "$latest_after")" = false
+                fi
+                test "$(jq -r '.id // empty' "$latest_after")" != "$created_release_id"
               fi
               jq -cn --arg tag "$RELEASE_TAG" --arg commit "$RELEASE_COMMIT" \
                 --arg release_id "$created_release_id" --argjson quarantined "$quarantine_verified" \
@@ -828,6 +850,29 @@ jobs:
             | sort_by(.name)
             | select(([.[].id] | unique | length) == 9)
           ' "$remote_release")"
+          previous_latest="$RUNNER_TEMP/previous-latest-release.json"
+          previous_latest_headers="$RUNNER_TEMP/previous-latest-release.headers"
+          previous_latest_status="$(curl --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 15 --max-time 60 --max-redirs 0 --max-filesize 1048576 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --header 'Cache-Control: no-cache' --header 'Pragma: no-cache' \
+            --dump-header "$previous_latest_headers" --output "$previous_latest" \
+            --write-out '%{http_code}' \
+            "https://api.github.com/repos/$GH_REPO/releases/latest")"
+          previous_latest_id=none
+          previous_latest_tag=none
+          if [ "$previous_latest_status" = 200 ]; then
+            node .github/scripts/verify_release_response_headers.mjs "$previous_latest_headers" "$previous_latest_status"
+            test "$(jq -r .draft "$previous_latest")" = false
+            test "$(jq -r .prerelease "$previous_latest")" = false
+            previous_latest_id="$(jq -er '.id | numbers | select(. > 0)' "$previous_latest")"
+            previous_latest_tag="$(jq -er '.tag_name | strings | select(test("^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))' "$previous_latest")"
+          else
+            test "$previous_latest_status" = 404
+            jq -e '.message == "Not Found"' "$previous_latest" >/dev/null
+          fi
           publish_prerelease=false
           [ "$RELEASE_MODE" = stable ] || publish_prerelease=true
           timeout 60s gh api --method PATCH "repos/$GH_REPO/releases/$created_release_id" \

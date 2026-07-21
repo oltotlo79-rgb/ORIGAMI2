@@ -133,6 +133,14 @@ entity_id!(AssetId);
 entity_id!(InstructionStepId);
 entity_id!(LayerId);
 
+impl ProjectId {
+    /// Constructs a schema-owned namespace from canonical RFC UUID bytes.
+    #[must_use]
+    pub const fn schema_namespace(bytes: [u8; 16]) -> Self {
+        Self(Uuid::from_bytes(bytes))
+    }
+}
+
 impl FaceId {
     /// Derives a stable face ID from a project namespace and canonical name.
     ///

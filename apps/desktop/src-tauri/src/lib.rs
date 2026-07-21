@@ -1921,11 +1921,11 @@ fn certify_beginner_fold_path_v1(
         let certificate_model = fixed_faces.into_iter().find_map(|fixed_face| {
             let generated = if geometry.hinges().len() == 4 {
                 ori_kinematics::generate_kawasaki_120_120_60_60_path_candidate_v1(
-                &geometry,
-                &audit,
-                fixed_face,
-                ori_kinematics::CycleScheduleLimitsV1::default(),
-            )
+                    &geometry,
+                    &audit,
+                    fixed_face,
+                    ori_kinematics::CycleScheduleLimitsV1::default(),
+                )
                 .ok()?
             } else {
                 let initial = ori_kinematics::CanonicalHingeAngles::new(
@@ -1960,63 +1960,37 @@ fn certify_beginner_fold_path_v1(
                 )
                 .ok()?;
                 ori_kinematics::generate_linear_multi_hinge_path_candidate_v1(
-                &geometry,
-                &audit,
-                fixed_face,
-                &initial,
-                &target,
-                ori_kinematics::MultiHingePathCandidateLimitsV1::default(),
-            )
-            .ok()?
-        };
-        let schedule_limits = ori_kinematics::CycleScheduleLimitsV1 {
-            max_work: 1_048_576,
-            ..ori_kinematics::CycleScheduleLimitsV1::default()
-        };
-        let closure = geometry
-            .prove_dyadic_schedule_closure_v1(
-                &audit,
-                fixed_face,
-                generated.schedule(),
-                1.0e-8,
-                ori_kinematics::DyadicIntervalClosureLimitsV1 {
-                    max_depth: 16,
-                    max_leaves: 65_536,
-                    max_work: schedule_limits.max_work,
-                    schedule_limits,
-                },
-            )
-            .ok()?;
-        let model = if paper.thickness_mm > 0.0 {
-            let certificate =
-                ori_collision::certify_canonical_positive_thickness_cycle_schedule_path_v1(
                     &geometry,
                     &audit,
                     fixed_face,
-                    generated.schedule(),
-                    &closure,
-                    paper.thickness_mm,
-                    32,
+                    &initial,
+                    &target,
+                    ori_kinematics::MultiHingePathCandidateLimitsV1::default(),
+                )
+                .ok()?
+            };
+            let schedule_limits = ori_kinematics::CycleScheduleLimitsV1 {
+                max_work: 1_048_576,
+                ..ori_kinematics::CycleScheduleLimitsV1::default()
+            };
+            let closure = geometry.prove_dyadic_schedule_closure_v1(
+                &audit, fixed_face, generated.schedule(), 1.0e-8,
+                ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                    max_depth: 16, max_leaves: 65_536,
+                    max_work: schedule_limits.max_work, schedule_limits,
+                },
+            ).ok()?;
+            if paper.thickness_mm > 0.0 {
+                let certificate = ori_collision::certify_canonical_positive_thickness_cycle_schedule_path_v1(
+                    &geometry, &audit, fixed_face, generated.schedule(), &closure, paper.thickness_mm, 32,
                 )?;
-            if !certificate.is_for(
-                &geometry,
-                fixed_face,
-                generated.schedule(),
-                &closure,
-                paper.thickness_mm,
-            ) {
-                return None;
-            }
-            ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
-        } else if paper.thickness_mm == 0.0 {
-            let path = ori_collision::diagnose_scheduled_cycle_path_v1(
-                &geometry, &audit, fixed_face, &generated, &closure, 32,
-            );
-                path.continuous_certificate_model_id()?
-        } else {
-            return None;
-        };
-        Some(model)
+                certificate.is_for(&geometry, fixed_face, generated.schedule(), &closure, paper.thickness_mm)
+                    .then_some(ori_collision::STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+            } else if paper.thickness_mm == 0.0 {
+                ori_collision::diagnose_scheduled_cycle_path_v1(
+                    &geometry, &audit, fixed_face, &generated, &closure, 32,
+                ).continuous_certificate_model_id()
+            } else { None }
         })?;
         (certificate_model, requested)
     };
@@ -2060,7 +2034,7 @@ fn assess_beginner_generated_plan(
 }
 
 fn assess_beginner_generated_plan_with_deadline(
-    project_authority: ProjectId,
+    _project_authority: ProjectId,
     paper: &Paper,
     current_pattern: &CreasePattern,
     plan: &ori_domain::BeginnerGeneratedPlanV1,
@@ -2157,11 +2131,15 @@ fn assess_beginner_generated_plan_with_deadline(
         };
     }
     const MAX_CANDIDATE_GLOBAL_RECORDS: usize = 2_048;
+    let geometry_authority = ProjectId::schema_namespace([
+        0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04,
+        0x98,
+    ]);
     let candidate_snapshot = if candidate_pattern.vertices.len() + candidate_pattern.edges.len()
         <= MAX_CANDIDATE_GLOBAL_RECORDS
     {
         EditorState::with_paper(candidate_pattern.clone(), paper.clone())
-            .topology_analysis_input(project_authority)
+            .topology_analysis_input(geometry_authority)
             .analyze()
             .simulation_snapshot()
             .cloned()
@@ -2204,7 +2182,7 @@ fn assess_beginner_generated_plan_with_deadline(
             proof_scope = "indeterminate";
             reason = "global_resource_limit";
         } else {
-            let identity_namespace = project_authority;
+            let identity_namespace = geometry_authority;
             if let Some(snapshot) = candidate_snapshot.as_ref() {
                 let mut observer = BeginnerGlobalFoldabilityDeadline(deadline);
                 match analyze_global_flat_foldability_with_observer(
@@ -13561,7 +13539,10 @@ mod tests {
 
         let half_height = 86.602_540_378_443_86;
         let mut project = ProjectState::new(CreasePattern::empty());
-        let project_authority = project.project_id;
+        let geometry_namespace = ProjectId::schema_namespace([
+            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x04, 0x97,
+        ]);
         let boundary_positions = [
             Point2::new(100.0, 0.0),
             Point2::new(-50.0, half_height),
@@ -13572,13 +13553,13 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(index, position)| Vertex {
-                id: VertexId::derive_v5(project_authority, format!("vertex-{index}").as_bytes()),
+                id: VertexId::derive_v5(geometry_namespace, format!("vertex-{index}").as_bytes()),
                 position,
             })
             .collect::<Vec<_>>();
         let edges = (0..vertices.len())
             .map(|index| Edge {
-                id: EdgeId::derive_v5(project_authority, format!("boundary-{index}").as_bytes()),
+                id: EdgeId::derive_v5(geometry_namespace, format!("boundary-{index}").as_bytes()),
                 start: vertices[index].id,
                 end: vertices[(index + 1) % vertices.len()].id,
                 kind: EdgeKind::Boundary,
@@ -13616,6 +13597,46 @@ mod tests {
         })
         .unwrap();
         let candidate_edge = plan.crease_pattern.edges[0].id;
+        let canonical_edge_ids = plan
+            .crease_pattern
+            .edges
+            .iter()
+            .map(|edge| edge.id)
+            .collect::<Vec<_>>();
+        for _ in 0..32 {
+            let authority = ProjectId::new();
+            let authority_plan = ori_domain::generate_beginner_plans_v1(
+                authority,
+                project.editor.pattern(),
+                &project.editor.paper().boundary_vertices,
+                &profile.generation_constraints,
+            )
+            .unwrap()
+            .into_iter()
+            .find(|candidate| {
+                candidate.kind
+                    == ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
+            })
+            .unwrap();
+            assert_eq!(
+                authority_plan
+                    .crease_pattern
+                    .edges
+                    .iter()
+                    .map(|edge| edge.id)
+                    .collect::<Vec<_>>(),
+                canonical_edge_ids
+            );
+            let assessment = assess_beginner_generated_plan(
+                authority,
+                project.editor.paper(),
+                project.editor.pattern(),
+                &authority_plan,
+                None,
+            );
+            assert_eq!(assessment.proof_scope, "sufficient");
+            assert!(assessment.apply_allowed);
+        }
         let state = AppState::new(project);
         let before = {
             let project = lock_project(&state).unwrap();

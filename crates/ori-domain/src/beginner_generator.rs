@@ -2011,6 +2011,10 @@ fn symmetric_template(
             canonical_asymmetric_quad(&points)
         })
         .flatten();
+    let asymmetric_namespace = ProjectId::schema_namespace([
+        0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04,
+        0x97,
+    ]);
     let center = canonical_quad.as_ref().map_or_else(
         || Point2::new((min_x + max_x) / 2.0, (min_y + max_y) / 2.0),
         |(center, _)| *center,
@@ -2020,7 +2024,13 @@ fn symmetric_template(
         .iter()
         .find(|vertex| vertex.position == center)
         .map_or_else(
-            || VertexId::derive_v5(namespace, format!("{prefix}-center").as_bytes()),
+            || {
+                if canonical_quad.is_some() {
+                    VertexId::derive_v5(asymmetric_namespace, b"vertex-4")
+                } else {
+                    VertexId::derive_v5(namespace, format!("{prefix}-center").as_bytes())
+                }
+            },
             |vertex| vertex.id,
         );
     let mut vertices = vec![Vertex {
@@ -2029,7 +2039,12 @@ fn symmetric_template(
     }];
     let mut edges = Vec::with_capacity(endpoints.len());
     let mut asymmetric_edge_ids = (0..endpoints.len())
-        .map(|index| EdgeId::derive_v5(namespace, format!("{prefix}-e-{index}").as_bytes()))
+        .map(|index| {
+            if plan_kind != BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase {
+                return EdgeId::derive_v5(namespace, format!("{prefix}-e-{index}").as_bytes());
+            }
+            EdgeId::derive_v5(asymmetric_namespace, &(index as u64).to_be_bytes())
+        })
         .collect::<Vec<_>>();
     if plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase {
         asymmetric_edge_ids.sort_unstable_by_key(EdgeId::canonical_bytes);

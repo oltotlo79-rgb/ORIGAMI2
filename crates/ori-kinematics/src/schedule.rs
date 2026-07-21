@@ -1165,6 +1165,72 @@ pub fn generate_linear_multi_hinge_path_candidate_v1(
     })
 }
 
+/// Generates the exact rational half-angle mode for the bounded symmetric
+/// 120/120/60/60 Kawasaki degree-four class. Geometry closure remains an
+/// independent mandatory proof, so applying this narrow candidate to any
+/// other four-hinge graph fails closed.
+pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    limits: CycleScheduleLimitsV1,
+) -> Result<GeneratedMultiHingePathCandidateV1, MultiHingePathCandidateErrorV1> {
+    if geometry.hinges().len() != 4 || limits.max_hinges < 4 {
+        return Err(MultiHingePathCandidateErrorV1::InvalidBinding);
+    }
+    let mut hinges = geometry
+        .hinges()
+        .iter()
+        .map(|hinge| hinge.edge())
+        .collect::<Vec<_>>();
+    hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
+    let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+        geometry,
+        audit,
+        fixed_face,
+        hinges
+            .iter()
+            .enumerate()
+            .map(|(index, edge)| HalfAngleRationalEntryInputV1 {
+                edge: *edge,
+                u_domain: [
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                numerator_power_coefficients: vec![
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                denominator_power_coefficients: vec![RationalCoefficientV1 {
+                    numerator: if index % 2 == 0 { 1 } else { 2 },
+                    denominator: 1,
+                }],
+            })
+            .collect(),
+        limits,
+    )
+    .map_err(|_| MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    let initial = schedule
+        .evaluate(0.0)
+        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    let requested = schedule
+        .evaluate(1.0)
+        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    admit_canonical_multi_hinge_path_candidate_v1(schedule, &initial, &requested)
+}
+
 fn binary64_to_rational_coefficient_v1(
     value: f64,
 ) -> Result<RationalCoefficientV1, MultiHingePathCandidateErrorV1> {
@@ -1889,6 +1955,96 @@ mod tests {
             .collect::<Vec<_>>();
         entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
         entries
+    }
+
+    #[test]
+    fn kawasaki_degree_four_generator_is_deterministic_and_resource_bounded() {
+        let ns = ProjectId::new();
+        let faces = [b"a", b"b", b"c", b"d"].map(|name| FaceId::derive_v5(ns, name));
+        let edges = [b"ab", b"bc", b"cd", b"da"].map(|name| EdgeId::derive_v5(ns, name));
+        let topology = TopologySnapshot {
+            source_revision: 1,
+            faces: faces
+                .iter()
+                .map(|id| Face {
+                    id: *id,
+                    key: FaceKey(id.canonical_bytes().repeat(2).try_into().unwrap()),
+                    outer: BoundaryWalk {
+                        half_edges: Vec::new(),
+                        signed_double_area: 1.0,
+                    },
+                    holes: Vec::new(),
+                    seams: Vec::new(),
+                    area: 0.5,
+                })
+                .collect(),
+            edge_incidence: Vec::new(),
+            hinge_adjacency: (0..4)
+                .map(|index| FaceAdjacency {
+                    edge: edges[index],
+                    first: faces[index],
+                    second: faces[(index + 1) % 4],
+                    assignment: FoldAssignment::Mountain,
+                })
+                .collect(),
+            material_components: Vec::new(),
+        };
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        let start = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let end = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let geometry = MaterialHingeGraphGeometry::new_for_test(
+            faces.to_vec(),
+            (0..4)
+                .map(|index| {
+                    TreeHinge::new_for_test(
+                        edges[index],
+                        FoldAssignment::Mountain,
+                        faces[index],
+                        faces[(index + 1) % 4],
+                        start,
+                        end,
+                        end,
+                    )
+                })
+                .collect(),
+        );
+        let first = generate_kawasaki_120_120_60_60_path_candidate_v1(
+            &geometry,
+            &audit,
+            faces[0],
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        let second = generate_kawasaki_120_120_60_60_path_candidate_v1(
+            &geometry,
+            &audit,
+            faces[0],
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            first.schedule().certificate_binding_fingerprint_v1(),
+            second.schedule().certificate_binding_fingerprint_v1(),
+        );
+        assert!(
+            first
+                .schedule()
+                .kawasaki_120_120_60_60_half_angle_pairs_v1()
+                .is_some()
+        );
+        assert_eq!(
+            generate_kawasaki_120_120_60_60_path_candidate_v1(
+                &geometry,
+                &audit,
+                faces[0],
+                CycleScheduleLimitsV1 {
+                    max_hinges: 3,
+                    ..CycleScheduleLimitsV1::default()
+                },
+            ),
+            Err(MultiHingePathCandidateErrorV1::InvalidBinding),
+        );
     }
 
     #[test]

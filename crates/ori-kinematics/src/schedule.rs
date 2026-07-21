@@ -2184,6 +2184,56 @@ mod tests {
             automatic.schedule().certificate_binding_fingerprint_v1(),
             reordered.schedule().certificate_binding_fingerprint_v1(),
         );
+        let axes = [
+            Point3::new(1.0, 0.0, 0.0).unwrap(),
+            Point3::new(-3.0 / 5.0, 0.0, 4.0 / 5.0).unwrap(),
+            Point3::new(-7.0 / 25.0, 0.0, -24.0 / 25.0).unwrap(),
+            Point3::new(3.0 / 5.0, 0.0, -4.0 / 5.0).unwrap(),
+        ];
+        let bounded_unproven = MaterialHingeGraphGeometry::new_for_test(
+            faces.to_vec(),
+            (0..4)
+                .map(|index| {
+                    TreeHinge::new_for_test(
+                        edges[index],
+                        if index == 3 {
+                            FoldAssignment::Mountain
+                        } else {
+                            FoldAssignment::Valley
+                        },
+                        faces[index],
+                        faces[(index + 1) % 4],
+                        start,
+                        axes[index],
+                        axes[index],
+                    )
+                })
+                .collect(),
+        );
+        let candidate = generate_kawasaki_120_120_60_60_path_candidate_v1(
+            &bounded_unproven,
+            &audit,
+            audit.faces()[0],
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(
+            bounded_unproven
+                .prove_dyadic_schedule_closure_v1(
+                    &audit,
+                    audit.faces()[0],
+                    candidate.schedule(),
+                    1.0e-9,
+                    crate::DyadicIntervalClosureLimitsV1 {
+                        max_depth: 16,
+                        max_leaves: 65_536,
+                        max_work: 1_048_576,
+                        schedule_limits: CycleScheduleLimitsV1::default(),
+                    },
+                )
+                .is_err(),
+            "a bounded exact candidate is not closure authority without the theorem"
+        );
         assert_eq!(
             generate_bounded_degree_four_kawasaki_path_candidate_v1(
                 &geometry,

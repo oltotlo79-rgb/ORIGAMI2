@@ -7,6 +7,13 @@ try {
   for (let i = 0; i < 150; i += 1) { try { if ((await fetch(origin)).ok) break } catch {}; await new Promise((r) => setTimeout(r, 100)) }
   browser = await chromium.launch({ headless: true }); const page = await browser.newPage()
   await page.goto(`${origin}/scripts/generic-target-browser-harness.html`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Recognize image with noise candidate' }).click()
+  await page.getByText('Image outline proposal contains 2 parts + 1 possible noise candidate', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Exclude unconfirmed image noise' }).click()
+  await page.getByText('Excluded unconfirmed image noise candidate; 2 explicit parts remain', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Evaluate generic target grid' }).click()
+  await page.getByText('Image meanings unconfirmed: generic topology candidate blocked', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Create empty generic target' }).click()
   await page.getByRole('button', { name: 'Recognize asymmetric bird landmarks' }).click()
   await page.getByText('Asymmetric bird landmarks bound: head · tail · left wing · right wing', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Try invalid GLB bounds' }).click()

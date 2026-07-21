@@ -8624,6 +8624,15 @@ function App() {
                                 <option value="antenna">{text({ ja: '触角', en: 'Antenna' })}</option>
                                 <option value="tail">{text({ ja: '尾', en: 'Tail' })}</option>
                               </select>
+                              <button
+                                type="button"
+                                disabled={assignment.kind === 'torso'
+                                  || beginnerPartAssignments.length <= 2}
+                                onClick={() => setBeginnerPartAssignments((items) =>
+                                  items.filter((item) => item.candidate_id !== assignment.candidate_id))}
+                              >
+                                {text({ ja: 'ノイズ候補として除外', en: 'Exclude as image noise' })}
+                              </button>
                             </label>
                           ))}
                           <p>{text({

@@ -41,6 +41,7 @@ test('3D generalization stays bounded to confirmed semantic parts', () => {
 test('confirmed image and 3D generic candidates retain vertical proof coverage', () => {
   assert.match(browser, /Image meanings unconfirmed: generic topology candidate blocked/u)
   assert.match(browser, /Confirm explicit image part meanings/u)
+  assert.match(browser, /Exclude unconfirmed image noise/u)
   assert.match(browser, /Applied image outline evidence \+ 2 explicitly confirmed part meanings/u)
   assert.match(browserHarness, /Global flat-foldability proven/u)
   assert.match(browserHarness, /Native foldability admission: global proof \+ bounded fold path certificate/u)

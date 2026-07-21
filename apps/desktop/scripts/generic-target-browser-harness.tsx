@@ -115,6 +115,12 @@ function Harness() {
     <button onClick={() => setMetricPreset('foldability')}>Use foldability-priority metric</button>
     <button onClick={() => recognize('Empty generic target')}>Create empty generic target</button>
     <button onClick={() => recognize('Image')}>Recognize mixed target image</button>
+    <button onClick={() => {
+      recognize('Image')
+      setBindings([...initialBindings, { ...initialBindings[0]!, id: 3 }])
+      setKinds(['tail', 'fin', 'ear'])
+      setStatus('Image outline proposal contains 2 parts + 1 possible noise candidate')
+    }}>Recognize image with noise candidate</button>
     <button onClick={() => recognize('JPEG EXIF')}>Recognize EXIF JPEG silhouette</button>
     <button onClick={() => { recognize('JPEG EXIF'); setConfidence({ score: 42, reason: 'low_component_ratio, bounded_curvature', low: true }) }}>Recognize low confidence JPEG</button>
     <button onClick={() => setStatus('Rejected confidence: tampered score or reason')}>Try tampered confidence</button>
@@ -237,6 +243,11 @@ function Harness() {
         setConfirmedImageFeatureCount(bindings.length)
         setStatus(`Confirmed ${bindings.length} explicit part meanings for image outlines`)
       }}>Confirm explicit image part meanings</button>
+      {bindings.length > 2 && <button onClick={() => {
+        setBindings((current) => current.slice(0, -1))
+        setKinds((current) => current.slice(0, -1))
+        setStatus('Excluded unconfirmed image noise candidate; 2 explicit parts remain')
+      }}>Exclude unconfirmed image noise</button>}
     </section>}
     {recognized && <ul aria-label="Editable generic target dimensions">{bindings.map((target, index) =>
       <ProtrusionDimensionEditor key={target.id} locale="en" target={target}

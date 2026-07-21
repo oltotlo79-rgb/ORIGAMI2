@@ -4009,6 +4009,10 @@ function App() {
       ja: '認識候補を編集欄へコピーしますか？保存するまでprojectは変更されません。',
       en: 'Copy this recognition proposal into the editor? The project stays unchanged until saved.',
     }))) return
+    if (proposal.contour_confidence?.explicit_override_required && !window.confirm(text({
+      ja: '低信頼の輪郭提案です。理由を確認したうえで上書きしますか？',
+      en: 'This contour proposal has low confidence. Override after reviewing its reasons?',
+    }))) return
     if (proposal.target_parts.length > 0) {
       const counts = new Map(proposal.target_parts.map((part) => [part.kind, part.count]))
       form.querySelectorAll<HTMLInputElement>('input[name^="target_part_"]').forEach((input) => {
@@ -8662,6 +8666,11 @@ function App() {
                         local: beginnerRecognitionProposal.protrusions?.filter(
                           (target) => target.local_outline_tenths_mm).length ?? 0,
                       })}</p>}
+                      {beginnerRecognitionProposal.contour_confidence && <p>{formattedText({
+                        ja: '輪郭信頼度 {score}/100・理由 {reasons}',
+                        en: 'Contour confidence {score}/100 · reasons {reasons}',
+                      }, { score: beginnerRecognitionProposal.contour_confidence.body_score,
+                        reasons: beginnerRecognitionProposal.contour_confidence.body_reasons.join(', ') })}</p>}
                       {(beginnerRecognitionProposal.protrusions?.length ?? 0) > 0 && (
                         <fieldset><legend>{text({ ja: '認識部位の確認', en: 'Confirm recognized protrusions' })}</legend>
                           {(beginnerRecognitionProposal.protrusions ?? []).map((target) => (

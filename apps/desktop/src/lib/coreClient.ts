@@ -282,6 +282,11 @@ export type BeginnerRecognitionProposalV1 = {
   generic_body_outline_tenths_mm?: Array<[number, number]>
   generic_body_outline_mode?: 'symmetric' | 'general'
   protrusions?: BeginnerGenerationConstraintsV1['protrusions']
+  contour_confidence?: Readonly<{
+    body_score: number; body_reasons: ReadonlyArray<string>
+    local_scores: ReadonlyArray<Readonly<{ protrusion_id: number; score: number; reasons: ReadonlyArray<string> }>>
+    explicit_override_required: boolean
+  }>
 }
 
 const BEGINNER_TECHNIQUES = [
@@ -604,7 +609,7 @@ function normalizeBeginnerRecognitionProposal(
     'source_sha256', 'width', 'height', 'shape_bounds', 'target_parts',
     'skeleton_segments',
   ] as const
-  const optionalKeys = ['generic_body_outline_tenths_mm', 'generic_body_outline_mode', 'protrusions'] as const
+  const optionalKeys = ['generic_body_outline_tenths_mm', 'generic_body_outline_mode', 'protrusions', 'contour_confidence'] as const
   const record = snapshotCoreDataRecord(value)
   if (!record || requiredKeys.some((key) => !Object.hasOwn(record, key))
     || Object.keys(record).some((key) => ![...requiredKeys, ...optionalKeys].includes(key as never))) return null
@@ -644,6 +649,19 @@ function normalizeBeginnerRecognitionProposal(
     allowed_techniques: ['valley_fold'],
   })
   if (!constraints) return null
+  const confidence = record.contour_confidence === undefined ? null : exactCoreDataRecord(
+    record.contour_confidence, ['body_score', 'body_reasons', 'local_scores', 'explicit_override_required'] as const)
+  const localConfidence = confidence && Array.isArray(confidence.local_scores)
+    ? confidence.local_scores.map((item) => exactCoreDataRecord(item, ['protrusion_id', 'score', 'reasons'] as const)) : []
+  const validReasons = (value: unknown) => Array.isArray(value) && value.length > 0
+    && value.every((reason) => ['dominant_component', 'bounded_simplification_error', 'bounded_curvature',
+      'asymmetric_extremity', 'bilateral_symmetry', 'low_component_ratio'].includes(String(reason)))
+  if (record.contour_confidence !== undefined && (!confidence
+    || !Number.isInteger(confidence.body_score) || Number(confidence.body_score) < 0 || Number(confidence.body_score) > 100
+    || !validReasons(confidence.body_reasons) || typeof confidence.explicit_override_required !== 'boolean'
+    || localConfidence.length !== (confidence.local_scores as unknown[]).length
+    || localConfidence.some((item) => !item || !Number.isInteger(item.protrusion_id)
+      || !Number.isInteger(item.score) || Number(item.score) < 0 || Number(item.score) > 100 || !validReasons(item.reasons)))) return null
   return Object.freeze({
     schema_version: 1,
     format: expectedFormat,
@@ -665,6 +683,12 @@ function normalizeBeginnerRecognitionProposal(
       generic_body_outline_mode: constraints.generic_body_outline_mode,
     }),
     ...(record.protrusions === undefined ? {} : { protrusions: constraints.protrusions }),
+    ...(confidence === null ? {} : { contour_confidence: Object.freeze({
+      body_score: Number(confidence.body_score), body_reasons: Object.freeze((confidence.body_reasons as string[]).slice()),
+      local_scores: Object.freeze(localConfidence.map((item) => Object.freeze({ protrusion_id: Number(item?.protrusion_id),
+        score: Number(item?.score), reasons: Object.freeze((item?.reasons as string[]).slice()) }))),
+      explicit_override_required: confidence.explicit_override_required as boolean,
+    }) }),
   })
 }
 

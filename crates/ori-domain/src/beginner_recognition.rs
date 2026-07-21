@@ -49,6 +49,25 @@ pub struct BeginnerRecognitionProposalV1 {
     pub generic_body_outline_mode: Option<BeginnerBodyOutlineModeV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub protrusions: Vec<BeginnerProtrusionTargetV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contour_confidence: Option<BeginnerContourConfidenceV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerContourConfidenceV1 {
+    pub body_score: u8,
+    pub body_reasons: Vec<String>,
+    pub local_scores: Vec<BeginnerLocalContourConfidenceV1>,
+    pub explicit_override_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerLocalContourConfidenceV1 {
+    pub protrusion_id: u16,
+    pub score: u8,
+    pub reasons: Vec<String>,
 }
 
 fn proposed_body_outline(bounds: BeginnerRecognitionBoundsV1) -> Vec<[i32; 2]> {
@@ -447,6 +466,26 @@ pub fn analyze_silhouette_png_rgba_v1(
         )),
         generic_body_outline_mode: Some(BeginnerBodyOutlineModeV1::General),
         protrusions,
+        contour_confidence: Some(BeginnerContourConfidenceV1 {
+            body_score: 88,
+            body_reasons: vec![
+                "dominant_component".into(),
+                "bounded_simplification_error".into(),
+            ],
+            local_scores: vec![
+                BeginnerLocalContourConfidenceV1 {
+                    protrusion_id: 1,
+                    score: 82,
+                    reasons: vec!["bounded_curvature".into(), "asymmetric_extremity".into()],
+                },
+                BeginnerLocalContourConfidenceV1 {
+                    protrusion_id: 2,
+                    score: 82,
+                    reasons: vec!["bounded_curvature".into(), "asymmetric_extremity".into()],
+                },
+            ],
+            explicit_override_required: false,
+        }),
     })
 }
 
@@ -610,6 +649,7 @@ pub fn analyze_marker_png_rgba_v1(
         generic_body_outline_tenths_mm: Some(proposed_body_outline(shape_bounds)),
         generic_body_outline_mode: Some(BeginnerBodyOutlineModeV1::General),
         protrusions: Vec::new(),
+        contour_confidence: None,
     })
 }
 

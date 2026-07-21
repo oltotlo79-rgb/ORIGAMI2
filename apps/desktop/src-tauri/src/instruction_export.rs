@@ -1561,6 +1561,39 @@ pub(crate) mod tests {
             assert_eq!(artifact.step_count, 3);
         }
 
+        let mut accordion_timeline = reopened_sink.clone();
+        accordion_timeline.steps[0].title = "蛇腹折りの開始姿勢".to_owned();
+        accordion_timeline.steps[1].title = "蛇腹折り 1".to_owned();
+        accordion_timeline.steps[2].title = "蛇腹折り 2".to_owned();
+        let accordion_archive =
+            serde_json::to_vec(&accordion_timeline).expect("archive accordion fold");
+        let reopened_accordion: ori_domain::InstructionTimeline =
+            serde_json::from_slice(&accordion_archive).expect("reopen accordion fold");
+        for (format, magic) in [
+            (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+            (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = reopened_accordion.clone();
+            let artifact = build_pending_export(source).expect("native accordion-fold export");
+            assert_eq!(artifact.step_count, 3);
+            assert!(artifact.bytes.starts_with(magic));
+        }
+
+        let mut uncertified_accordion = reopened_accordion;
+        for step in &mut uncertified_accordion.steps[1..] {
+            step.visual.path_certificate_reference_v1 = None;
+            step.description = "手動で作成された蛇腹折りです。".to_owned();
+        }
+        for format in [
+            InstructionExportFormatRequest::Pdf,
+            InstructionExportFormatRequest::SvgZip,
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = uncertified_accordion.clone();
+            assert!(build_pending_export(source).is_ok());
+        }
+
         let mut tampered_reverse = reopened_reverse.clone();
         tampered_reverse.steps[2]
             .visual

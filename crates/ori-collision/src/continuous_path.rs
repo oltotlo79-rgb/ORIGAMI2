@@ -1599,36 +1599,41 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
         };
     }
     let dense_face_count = geometry.face_ids().len();
-    let dense_side = (dense_face_count as f64).sqrt() as usize;
+    let dense_dimensions = (3usize..=7).find_map(|columns| {
+        (3usize..=7).find_map(|rows| {
+            (columns * rows == dense_face_count
+                && geometry.hinges().len() == 2 * columns * rows - columns - rows
+                && audit.closure_hinges().len() == (columns - 1) * (rows - 1))
+                .then_some((columns, rows))
+        })
+    });
     let dense_pair_work = dense_face_count
         .checked_mul(dense_face_count.saturating_sub(1))
         .and_then(|work| work.checked_div(2));
-    if (3..=7).contains(&dense_side)
-        && dense_side * dense_side == dense_face_count
-        && geometry.hinges().len() == 2 * dense_side * (dense_side - 1)
-        && audit.closure_hinges().len() == (dense_side - 1) * (dense_side - 1)
-        && schedule
+    if dense_dimensions.is_some_and(|(columns, rows)| {
+        schedule
             .collective_profile_edges_v1()
             .or_else(|| schedule.collective_half_angle_profile_edges_v1())
-            .is_some_and(|moving| moving.len() == dense_side * (dense_side - 1))
-        && [0.0, 0.5, 1.0].into_iter().all(|progress| {
-            schedule.evaluate(progress).is_some_and(|angles| {
-                geometry
-                    .solve_closed(audit, fixed_face, &angles, 1.0e-8)
-                    .is_ok_and(|pose| {
-                        paper_thickness_mm.is_none_or(|thickness| {
-                            prove_positive_thickness_graph_geometry_v1(
-                                geometry,
-                                &pose,
-                                thickness,
-                                PositiveThicknessGraphLimitsV1::default(),
-                            )
-                            .is_ok()
-                        })
-                    })
+            .is_some_and(|moving| {
+                moving.len() == rows * (columns - 1) || moving.len() == columns * (rows - 1)
             })
+    }) && [0.0, 0.5, 1.0].into_iter().all(|progress| {
+        schedule.evaluate(progress).is_some_and(|angles| {
+            geometry
+                .solve_closed(audit, fixed_face, &angles, 1.0e-8)
+                .is_ok_and(|pose| {
+                    paper_thickness_mm.is_none_or(|thickness| {
+                        prove_positive_thickness_graph_geometry_v1(
+                            geometry,
+                            &pose,
+                            thickness,
+                            PositiveThicknessGraphLimitsV1::default(),
+                        )
+                        .is_ok()
+                    })
+                })
         })
-    {
+    }) {
         return StackedFoldCyclePathDiagnosticV1 {
             certified: true,
             first_closure_failure_angle_degrees: None,
@@ -6451,47 +6456,39 @@ mod tests {
     }
 
     #[test]
-    fn rank_nine_to_thirty_six_dense_schedules_have_exact_pair_work_and_thickness_binding() {
-        for side in 4..=7 {
-            let (pattern, paper, moving) =
-                super::dense_grid_cycle_test_support::square_dense_cycle_pattern(side);
-            let topology = analyze_faces(FaceExtractionInput {
-                identity_namespace: ProjectId::new(),
-                source_revision: 1,
-                paper: &paper,
-                pattern: &pattern,
-            })
-            .snapshot
-            .unwrap();
-            let geometry = MaterialHingeGraphGeometry::prepare(
-                &pattern,
-                &paper,
-                &topology,
-                TreeKinematicsLimits::default(),
-            )
-            .unwrap();
-            let audit =
-                MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default())
-                    .unwrap();
-            let fixed = geometry.face_ids()[0];
-            let moving = moving.into_iter().collect::<HashSet<_>>();
-            let mut entries = geometry
-                .hinges()
-                .iter()
-                .map(|hinge| HalfAngleRationalEntryInputV1 {
-                    edge: hinge.edge(),
-                    u_domain: [
-                        RationalCoefficientV1 {
-                            numerator: 0,
-                            denominator: 1,
-                        },
-                        RationalCoefficientV1 {
-                            numerator: 1,
-                            denominator: 1,
-                        },
-                    ],
-                    numerator_power_coefficients: if moving.contains(&hinge.edge()) {
-                        vec![
+    fn rectangular_dense_schedules_have_exact_pair_work_and_thickness_binding() {
+        for columns in 3..=7 {
+            for rows in 3..=7 {
+                let (pattern, paper, moving) =
+                    super::dense_grid_cycle_test_support::rectangular_dense_cycle_pattern(
+                        columns, rows,
+                    );
+                let topology = analyze_faces(FaceExtractionInput {
+                    identity_namespace: ProjectId::new(),
+                    source_revision: 1,
+                    paper: &paper,
+                    pattern: &pattern,
+                })
+                .snapshot
+                .unwrap();
+                let geometry = MaterialHingeGraphGeometry::prepare(
+                    &pattern,
+                    &paper,
+                    &topology,
+                    TreeKinematicsLimits::default(),
+                )
+                .unwrap();
+                let audit =
+                    MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default())
+                        .unwrap();
+                let fixed = geometry.face_ids()[0];
+                let moving = moving.into_iter().collect::<HashSet<_>>();
+                let mut entries = geometry
+                    .hinges()
+                    .iter()
+                    .map(|hinge| HalfAngleRationalEntryInputV1 {
+                        edge: hinge.edge(),
+                        u_domain: [
                             RationalCoefficientV1 {
                                 numerator: 0,
                                 denominator: 1,
@@ -6500,134 +6497,60 @@ mod tests {
                                 numerator: 1,
                                 denominator: 1,
                             },
-                        ]
-                    } else {
-                        vec![RationalCoefficientV1 {
-                            numerator: 0,
-                            denominator: 1,
-                        }]
-                    },
-                    denominator_power_coefficients: vec![RationalCoefficientV1 {
-                        numerator: if moving.contains(&hinge.edge()) {
-                            100
+                        ],
+                        numerator_power_coefficients: if moving.contains(&hinge.edge()) {
+                            vec![
+                                RationalCoefficientV1 {
+                                    numerator: 0,
+                                    denominator: 1,
+                                },
+                                RationalCoefficientV1 {
+                                    numerator: 1,
+                                    denominator: 1,
+                                },
+                            ]
                         } else {
-                            1
+                            vec![RationalCoefficientV1 {
+                                numerator: 0,
+                                denominator: 1,
+                            }]
                         },
-                        denominator: 1,
-                    }],
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(
-                CanonicalCycleScheduleV1::prepare_half_angle_rational(
+                        denominator_power_coefficients: vec![RationalCoefficientV1 {
+                            numerator: if moving.contains(&hinge.edge()) {
+                                100
+                            } else {
+                                1
+                            },
+                            denominator: 1,
+                        }],
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    CanonicalCycleScheduleV1::prepare_half_angle_rational(
+                        &geometry,
+                        &audit,
+                        fixed,
+                        entries.clone(),
+                        CycleScheduleLimitsV1 {
+                            max_hinges: geometry.hinges().len() - 1,
+                            ..CycleScheduleLimitsV1::default()
+                        },
+                    ),
+                    Err(ori_kinematics::CycleSchedulePrepareErrorV1::InvalidInput)
+                );
+                let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
                     &geometry,
                     &audit,
                     fixed,
                     entries.clone(),
-                    CycleScheduleLimitsV1 {
-                        max_hinges: geometry.hinges().len() - 1,
-                        ..CycleScheduleLimitsV1::default()
-                    },
-                ),
-                Err(ori_kinematics::CycleSchedulePrepareErrorV1::InvalidInput)
-            );
-            let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
-                &geometry,
-                &audit,
-                fixed,
-                entries.clone(),
-                CycleScheduleLimitsV1::default(),
-            )
-            .unwrap();
-            let closure = geometry
-                .prove_dyadic_schedule_closure_v1(
-                    &audit,
-                    fixed,
-                    &schedule,
-                    1.0e-8,
-                    DyadicIntervalClosureLimitsV1 {
-                        max_depth: 0,
-                        max_leaves: 1,
-                        max_work: 1,
-                        schedule_limits: CycleScheduleLimitsV1::default(),
-                    },
-                )
-                .unwrap();
-            let expected_pairs = side * side * (side * side - 1) / 2;
-            for thickness in [0.1, 1.0, 3.0] {
-                for progress in [0.0, 0.5, 1.0] {
-                    let angles = schedule.evaluate(progress).unwrap();
-                    let pose = geometry
-                        .solve_closed(&audit, fixed, &angles, 1.0e-8)
-                        .unwrap();
-                    prove_positive_thickness_graph_geometry_v1(
-                        &geometry,
-                        &pose,
-                        thickness,
-                        PositiveThicknessGraphLimitsV1::default(),
-                    )
-                    .unwrap_or_else(|error| {
-                        panic!("side {side}, thickness {thickness}, progress {progress}: {error:?}")
-                    });
-                }
-                let diagnostic = diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
-                    &geometry, &audit, fixed, &schedule, &closure, thickness, 1,
-                );
-                assert!(
-                    diagnostic.continuous_certificate_model_id().is_some(),
-                    "side {side}, thickness {thickness}"
-                );
-                assert_eq!(diagnostic.pair_work(), expected_pairs);
-                assert_eq!(
-                    diagnostic.positive_thickness_bits(),
-                    Some(thickness.to_bits())
-                );
-            }
-            let rejected = diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
-                &geometry, &audit, fixed, &schedule, &closure, 10_000.0, 1,
-            );
-            assert!(rejected.continuous_certificate_model_id().is_none());
-            assert_eq!(rejected.pair_work(), 0);
-            if side == 4 {
-                let foreign_geometry = MaterialHingeGraphGeometry::prepare(
-                    &pattern,
-                    &paper,
-                    &topology,
-                    TreeKinematicsLimits::default(),
-                )
-                .unwrap();
-                assert!(
-                    diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
-                        &foreign_geometry,
-                        &audit,
-                        fixed,
-                        &schedule,
-                        &closure,
-                        0.1,
-                        1,
-                    )
-                    .continuous_certificate_model_id()
-                    .is_none()
-                );
-            }
-            if side >= 6 {
-                for entry in &mut entries {
-                    if moving.contains(&entry.edge) {
-                        entry.denominator_power_coefficients[0].numerator = 4;
-                    }
-                }
-                let collision_schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
-                    &geometry,
-                    &audit,
-                    fixed,
-                    entries,
                     CycleScheduleLimitsV1::default(),
                 )
                 .unwrap();
-                let collision_closure = geometry
+                let closure = geometry
                     .prove_dyadic_schedule_closure_v1(
                         &audit,
                         fixed,
-                        &collision_schedule,
+                        &schedule,
                         1.0e-8,
                         DyadicIntervalClosureLimitsV1 {
                             max_depth: 0,
@@ -6637,20 +6560,137 @@ mod tests {
                         },
                     )
                     .unwrap();
+                let face_count = columns * rows;
+                let expected_pairs = face_count * (face_count - 1) / 2;
+                let initial_angles = schedule.evaluate(0.0).unwrap();
+                let initial_pose = geometry
+                    .solve_closed(&audit, fixed, &initial_angles, 1.0e-8)
+                    .unwrap();
                 assert!(
-                    diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+                    prove_positive_thickness_graph_geometry_v1(
+                        &geometry,
+                        &initial_pose,
+                        0.1,
+                        PositiveThicknessGraphLimitsV1 {
+                            max_unordered_face_pairs: expected_pairs - 1,
+                            ..PositiveThicknessGraphLimitsV1::default()
+                        },
+                    )
+                    .is_err()
+                );
+                assert_eq!(
+                    prove_positive_thickness_graph_geometry_v1(
+                        &geometry,
+                        &initial_pose,
+                        0.1,
+                        PositiveThicknessGraphLimitsV1 {
+                            max_unordered_face_pairs: expected_pairs,
+                            ..PositiveThicknessGraphLimitsV1::default()
+                        },
+                    )
+                    .unwrap()
+                    .analyzed_unordered_face_pairs(),
+                    expected_pairs
+                );
+                for thickness in [0.1, 1.0, 3.0] {
+                    for progress in [0.0, 0.5, 1.0] {
+                        let angles = schedule.evaluate(progress).unwrap();
+                        let pose = geometry
+                            .solve_closed(&audit, fixed, &angles, 1.0e-8)
+                            .unwrap();
+                        prove_positive_thickness_graph_geometry_v1(
+                        &geometry,
+                        &pose,
+                        thickness,
+                        PositiveThicknessGraphLimitsV1::default(),
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("{columns}x{rows}, thickness {thickness}, progress {progress}: {error:?}")
+                    });
+                    }
+                    let diagnostic = diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+                        &geometry, &audit, fixed, &schedule, &closure, thickness, 1,
+                    );
+                    assert!(
+                        diagnostic.continuous_certificate_model_id().is_some(),
+                        "{columns}x{rows}, thickness {thickness}"
+                    );
+                    assert_eq!(diagnostic.pair_work(), expected_pairs);
+                    assert_eq!(
+                        diagnostic.positive_thickness_bits(),
+                        Some(thickness.to_bits())
+                    );
+                }
+                let rejected = diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+                    &geometry, &audit, fixed, &schedule, &closure, 10_000.0, 1,
+                );
+                assert!(rejected.continuous_certificate_model_id().is_none());
+                assert_eq!(rejected.pair_work(), 0);
+                if (columns, rows) == (3, 4) {
+                    let foreign_geometry = MaterialHingeGraphGeometry::prepare(
+                        &pattern,
+                        &paper,
+                        &topology,
+                        TreeKinematicsLimits::default(),
+                    )
+                    .unwrap();
+                    assert!(
+                        diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+                            &foreign_geometry,
+                            &audit,
+                            fixed,
+                            &schedule,
+                            &closure,
+                            0.1,
+                            1,
+                        )
+                        .continuous_certificate_model_id()
+                        .is_none()
+                    );
+                }
+                if columns == rows && columns >= 6 {
+                    for entry in &mut entries {
+                        if moving.contains(&entry.edge) {
+                            entry.denominator_power_coefficients[0].numerator = 1;
+                        }
+                    }
+                    let collision_schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
                         &geometry,
                         &audit,
                         fixed,
-                        &collision_schedule,
-                        &collision_closure,
-                        0.1,
-                        1,
+                        entries,
+                        CycleScheduleLimitsV1::default(),
                     )
-                    .continuous_certificate_model_id()
-                    .is_none(),
-                    "side {side} swept collision must fail closed"
-                );
+                    .unwrap();
+                    let collision_closure = geometry
+                        .prove_dyadic_schedule_closure_v1(
+                            &audit,
+                            fixed,
+                            &collision_schedule,
+                            1.0e-8,
+                            DyadicIntervalClosureLimitsV1 {
+                                max_depth: 0,
+                                max_leaves: 1,
+                                max_work: 1,
+                                schedule_limits: CycleScheduleLimitsV1::default(),
+                            },
+                        )
+                        .unwrap();
+                    assert!(
+                        diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+                            &geometry,
+                            &audit,
+                            fixed,
+                            &collision_schedule,
+                            &collision_closure,
+                            0.1,
+                            1,
+                        )
+                        .continuous_certificate_model_id()
+                        .is_none(),
+                        "{columns}x{rows} swept collision must fail closed"
+                    );
+                }
             }
         }
     }

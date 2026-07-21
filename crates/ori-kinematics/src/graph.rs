@@ -772,22 +772,26 @@ fn dense_parallel_grid_cycle_closure_premises_v1(
     tolerance: f64,
 ) -> bool {
     let face_count = geometry.face_ids().len();
-    let Some(side) = (3usize..=7).find(|side| side * side == face_count) else {
+    let Some((columns, rows)) = (3usize..=7).find_map(|columns| {
+        (3usize..=7).find_map(|rows| {
+            (columns * rows == face_count
+                && geometry.hinges().len() == 2 * columns * rows - columns - rows
+                && audit.closure_hinges().len() == (columns - 1) * (rows - 1))
+                .then_some((columns, rows))
+        })
+    }) else {
         return false;
     };
-    let expected_hinges = 2 * side * (side - 1);
-    let expected_cycle_rank = (side - 1) * (side - 1);
-    if geometry.hinges().len() != expected_hinges
-        || audit.closure_hinges().len() != expected_cycle_rank
-        || !tolerance.is_finite()
-        || tolerance < 0.0
-    {
+    if !tolerance.is_finite() || tolerance < 0.0 {
         return false;
     }
-    let Some(moving_edges) = schedule.collective_profile_edges_v1() else {
+    let Some(moving_edges) = schedule
+        .collective_profile_edges_v1()
+        .or_else(|| schedule.collective_half_angle_profile_edges_v1())
+    else {
         return false;
     };
-    if moving_edges.len() != side * (side - 1) {
+    if moving_edges.len() != rows * (columns - 1) && moving_edges.len() != columns * (rows - 1) {
         return false;
     }
     let moving = moving_edges.into_iter().collect::<HashSet<_>>();

@@ -107,6 +107,9 @@ export function StackedFoldPanel({
   const progressSequenceRef = useRef(0)
   const cyclePoseSequenceRef = useRef(0)
   const cyclePoseActiveRef = useRef(false)
+  const cyclePoseProofRef = useRef<HTMLDivElement | null>(null)
+  const cyclePosePreviewButtonRef = useRef<HTMLButtonElement | null>(null)
+  const cyclePoseApplyInFlightRef = useRef(false)
   const [pathProgress, setPathProgress] = useState<Readonly<{
     exploredStateCount: number
     evaluatedTransitionCount: number
@@ -171,8 +174,17 @@ export function StackedFoldPanel({
 
   useEffect(() => () => {
     coordinator.dispose()
+    cyclePoseSequenceRef.current += 1
+    if (cyclePoseActiveRef.current) {
+      cyclePoseActiveRef.current = false
+      void cancelCurrentStackedFoldReadV1().catch(() => undefined)
+    }
     cancelToken(tokenRef.current)
   }, [coordinator])
+
+  useEffect(() => {
+    if (cyclePosePreview) cyclePoseProofRef.current?.focus()
+  }, [cyclePosePreview])
 
   useEffect(() => {
     let disposed = false
@@ -429,7 +441,11 @@ export function StackedFoldPanel({
 
   async function applyCurrentCyclePose() {
     const token = cyclePosePreview?.transactionToken
-    if (!token || token !== tokenRef.current || disabled || applying) return
+    if (
+      !token || token !== tokenRef.current || disabled || applying ||
+      cyclePoseApplyInFlightRef.current
+    ) return
+    cyclePoseApplyInFlightRef.current = true
     setApplying(true)
     try {
       await applyStackedFoldTransaction(token)
@@ -440,6 +456,7 @@ export function StackedFoldPanel({
     } catch {
       setCyclePoseError(true)
     } finally {
+      cyclePoseApplyInFlightRef.current = false
       setApplying(false)
     }
   }
@@ -563,6 +580,7 @@ export function StackedFoldPanel({
         <section aria-label={t('現在姿勢の循環折りプレビュー', 'Current-pose cycle preview')}>
           <h3>{t('現在姿勢の循環折り', 'Current-pose cycle')}</h3>
           <button
+            ref={cyclePosePreviewButtonRef}
             type="button"
             disabled={disabled || applying || cyclePoseReading}
             onClick={() => void previewCurrentCyclePose()}
@@ -617,7 +635,12 @@ export function StackedFoldPanel({
             </p>
           )}
           {cyclePosePreview && (
-            <div role="status" className="stacked-fold-proof">
+            <div
+              ref={cyclePoseProofRef}
+              role="status"
+              tabIndex={-1}
+              className="stacked-fold-proof"
+            >
               <dl>
                 <div>
                   <dt>{t('閉包区間数', 'Closure intervals')}</dt>
@@ -652,6 +675,7 @@ export function StackedFoldPanel({
                   cancelToken(cyclePosePreview.transactionToken)
                   tokenRef.current = null
                   setCyclePosePreview(null)
+                  queueMicrotask(() => cyclePosePreviewButtonRef.current?.focus())
                 }}
               >
                 {t('プレビューを取り消す', 'Cancel preview')}

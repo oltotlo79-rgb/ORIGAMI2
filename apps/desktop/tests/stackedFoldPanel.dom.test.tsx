@@ -623,9 +623,15 @@ describe('StackedFoldPanel', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
     expect(await screen.findByText('Closure intervals')).toBeTruthy()
+    expect(document.activeElement).toBe(
+      screen.getByText('Closure intervals').closest('[role="status"]'),
+    )
     expect(screen.getByText('This preview is read-only. The project is unchanged until you explicitly apply it.')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel preview' }))
     await waitFor(() => expect(transport.cancel).toHaveBeenCalledWith(token))
+    await waitFor(() => expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Prove from current pose' }),
+    ))
     fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
     await screen.findByText('Closure intervals')
     fireEvent.click(screen.getByRole('button', { name: 'Apply certified cycle fold' }))
@@ -716,5 +722,79 @@ describe('StackedFoldPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
     expect(await screen.findByText('Closure intervals')).toBeTruthy()
     expect(transport.cancelRead).toHaveBeenCalled()
+  })
+
+  it('blocks duplicate apply and cancels active work with listener cleanup on unmount', async () => {
+    let resolveApply!: (value: number) => void
+    transport.cyclePreview.mockResolvedValue({
+      version: 1, transactionToken: token, sourceRevision: 3, targetRevision: 4,
+      closureLeafCount: 1, continuousPathCertified: true, authorizesProjectMutation: false,
+    })
+    transport.apply.mockReturnValue(new Promise((resolve) => { resolveApply = resolve }))
+    const rendered = render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn().mockResolvedValue({ ...snapshot, revision: 4 })}
+        onApplied={vi.fn()}
+      />,
+    )
+    const schedule = {
+      version: 1,
+      entries: [{
+        edge: token,
+        uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }],
+        numeratorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+        denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+        requestedAngleDegrees: 90,
+      }],
+    }
+    fireEvent.change(screen.getByLabelText('Cycle path definition (JSON, cyclic patterns only)'), {
+      target: { value: JSON.stringify(schedule) },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
+    const apply = await screen.findByRole('button', { name: 'Apply certified cycle fold' })
+    fireEvent.click(apply)
+    fireEvent.click(apply)
+    expect(transport.apply).toHaveBeenCalledTimes(1)
+    expect(apply).toHaveProperty('disabled', true)
+    resolveApply(4)
+    await waitFor(() => expect(transport.apply).toHaveBeenCalledTimes(1))
+
+    transport.cyclePreview.mockReturnValue(new Promise(() => undefined))
+    fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
+    rendered.unmount()
+    await waitFor(() => expect(transport.cancelRead).toHaveBeenCalled())
+    expect(transport.progress).toBeNull()
+    expect(transport.cycleProgress).toBeNull()
+  })
+
+  it('disables cycle preview controls when the panel is disabled', () => {
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText('Cycle path definition (JSON, cyclic patterns only)'), {
+      target: { value: JSON.stringify({
+        version: 1,
+        entries: [{
+          edge: token,
+          uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }],
+          numeratorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+          denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+          requestedAngleDegrees: 90,
+        }],
+      }) },
+    })
+    expect(screen.getByRole('button', { name: 'Prove from current pose' }))
+      .toHaveProperty('disabled', true)
   })
 })

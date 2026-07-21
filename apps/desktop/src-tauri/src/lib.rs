@@ -3279,6 +3279,37 @@ fn apply_grid_plan_document(
     plan: ori_domain::BeginnerGeneratedPlanV1,
 ) -> Result<ProjectSnapshot, String> {
     let selected_kind = plan.kind;
+    let topology_witness = beginner_contour_placement_witness(
+        &project
+            .editor
+            .beginner_design_profile()
+            .generation_constraints,
+        &plan,
+    )
+    .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
+    let topology_ids = topology_witness
+        .local_bindings
+        .iter()
+        .map(|binding| {
+            let vertex_start = usize::from(binding.vertex_start);
+            let crease_start = usize::from(binding.crease_start);
+            let count = usize::from(binding.contour_points);
+            let vertices = plan
+                .crease_pattern
+                .vertices
+                .get(vertex_start..vertex_start + count)?;
+            let creases = plan
+                .crease_pattern
+                .edges
+                .get(crease_start..crease_start + count)?;
+            Some((
+                binding.generated_face_id,
+                vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>(),
+                creases.iter().map(|edge| edge.id).collect::<Vec<_>>(),
+            ))
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
     let mut pattern = project.editor.pattern().clone();
     for vertex in plan.crease_pattern.vertices {
         if !pattern
@@ -3294,6 +3325,21 @@ fn apply_grid_plan_document(
             return Err("grid_candidate_replayed".to_owned());
         }
         pattern.edges.push(edge);
+    }
+    let mut faces = std::collections::HashSet::new();
+    let mut witnessed_vertices = std::collections::HashSet::new();
+    let mut witnessed_creases = std::collections::HashSet::new();
+    if topology_ids.iter().any(|(face_id, vertices, creases)| {
+        !faces.insert(*face_id)
+            || vertices.iter().any(|id| {
+                !witnessed_vertices.insert(*id)
+                    || !pattern.vertices.iter().any(|vertex| vertex.id == *id)
+            })
+            || creases.iter().any(|id| {
+                !witnessed_creases.insert(*id) || !pattern.edges.iter().any(|edge| edge.id == *id)
+            })
+    }) {
+        return Err("grid_candidate_topology_stale".to_owned());
     }
     let mut instruction_timeline = project.editor.instruction_timeline().clone();
     let (title, description, caution) = match selected_kind {
@@ -12010,6 +12056,7 @@ mod tests {
             Some(vec![[-20, 0], [20, 0], [0, 60]]);
         let mut fin = profile.generation_constraints.protrusions[0].clone();
         fin.id = 2;
+        fin.local_outline_tenths_mm = None;
         fin.count = 2;
         fin.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
         fin.direction_milli = [1000, 0, 0];
@@ -12035,27 +12082,34 @@ mod tests {
         let witness = beginner_contour_placement_witness(&profile.generation_constraints, &plan)
             .expect("generated contour geometry must provide a bounded witness");
         assert_eq!(witness.body_contour_points, 4);
-        assert_eq!(witness.local_bindings.len(), 2);
+        assert_eq!(witness.local_bindings.len(), 1);
         assert_eq!(witness.local_bindings[0].protrusion_id, 1);
-        assert_eq!(witness.local_bindings[1].protrusion_id, 2);
         assert_eq!(witness.local_bindings[0].generated_face_id, 1);
-        assert_eq!(witness.local_bindings[1].generated_face_id, 2);
-        assert_eq!(
-            witness.local_bindings[1].vertex_start,
-            witness.local_bindings[0].vertex_start + 3
-        );
-        assert_eq!(
-            witness.local_bindings[1].crease_start,
-            witness.local_bindings[0].crease_start + 3
-        );
-        assert_eq!(witness.witnessed_vertices, 10);
-        assert_eq!(witness.witnessed_creases, 10);
+        assert_eq!(witness.witnessed_vertices, 7);
+        assert_eq!(witness.witnessed_creases, 7);
         let mut one_short = plan.clone();
-        one_short.crease_pattern.edges.truncate(9);
+        one_short.crease_pattern.edges.truncate(6);
         assert!(
             beginner_contour_placement_witness(&profile.generation_constraints, &one_short,)
                 .is_none()
         );
+        profile
+            .generation_constraints
+            .generic_body_outline_tenths_mm = None;
+        profile.generation_constraints.protrusions[0].local_outline_tenths_mm = None;
+        let plan = grid_template_plan(
+            project.project_id,
+            project.editor.pattern(),
+            &project.editor.paper().boundary_vertices,
+            &profile,
+            point,
+        )
+        .unwrap()
+        .into_iter()
+        .find(|candidate| {
+            candidate.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+        })
+        .unwrap();
         let project_id = project.project_id;
         let instance_id = project.instance_id;
         let revision = project.editor.revision();

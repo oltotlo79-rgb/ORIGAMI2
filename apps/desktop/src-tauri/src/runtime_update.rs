@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Mutex;
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Mutex,
+};
 
 const API_URL: &str = "https://api.github.com/repos/oltotlo79-rgb/ORIGAMI2/releases/latest";
 const ASSET_PREFIX: &str = "https://objects.githubusercontent.com/";
@@ -29,42 +35,279 @@ pub trait Adapter: Send {
     fn pending(&mut self) -> Result<bool, ()>;
 }
 
-#[derive(Default)]
-pub struct OfflineAdapter;
-impl Adapter for OfflineAdapter {
-    fn get(&mut self, _: &str, _: u64, _: usize) -> Result<Response, ()> {
-        Err(())
+pub struct ProductionAdapter {
+    root: PathBuf,
+    staged: Option<PathBuf>,
+    installer_succeeded: bool,
+}
+
+impl Default for ProductionAdapter {
+    fn default() -> Self {
+        Self {
+            root: production_staging_root(),
+            staged: None,
+            installer_succeeded: false,
+        }
     }
-    fn verify_signature(&mut self, _: &str, _: &[u8]) -> Result<bool, ()> {
-        Err(())
+}
+
+impl Adapter for ProductionAdapter {
+    fn get(&mut self, url: &str, timeout_secs: u64, limit: usize) -> Result<Response, ()> {
+        if timeout_secs != TIMEOUT_SECS
+            || !matches!(limit, METADATA_LIMIT | PAYLOAD_LIMIT)
+            || !allowed_url(url, limit)
+        {
+            return Err(());
+        }
+        fs::create_dir_all(&self.root).map_err(|_| ())?;
+        let output_path = self
+            .root
+            .join(format!(".http-response-{}", std::process::id()));
+        write_new_synced(&output_path, b"")?;
+        let limit_text = limit.to_string();
+        let output = Command::new(curl_executable())
+            .args([
+                "--silent",
+                "--show-error",
+                "--fail",
+                "--proto",
+                "=https",
+                "--tlsv1.2",
+                "--max-redirs",
+                "0",
+                "--connect-timeout",
+                "10",
+                "--max-time",
+                "10",
+                "--max-filesize",
+                &limit_text,
+                "--user-agent",
+                "ORIGAMI2-runtime-updater",
+                "--header",
+                "Accept: application/octet-stream",
+                "--output",
+            ])
+            .arg(&output_path)
+            .args(["--write-out", "%{url_effective}", url])
+            .output()
+            .map_err(|_| ())?;
+        if !output.status.success() {
+            let _ = fs::remove_file(&output_path);
+            return Err(());
+        }
+        let final_url = String::from_utf8(output.stdout).map_err(|_| ())?;
+        if final_url != url {
+            let _ = fs::remove_file(&output_path);
+            return Err(());
+        }
+        let file = File::open(&output_path).map_err(|_| ())?;
+        if file.metadata().map_err(|_| ())?.len() > limit as u64 {
+            let _ = fs::remove_file(&output_path);
+            return Err(());
+        }
+        let mut body = Vec::new();
+        file.take(limit as u64 + 1)
+            .read_to_end(&mut body)
+            .map_err(|_| ())?;
+        let _ = fs::remove_file(&output_path);
+        if body.len() > limit {
+            return Err(());
+        }
+        Ok(Response {
+            final_url,
+            redirected: false,
+            body,
+        })
     }
-    fn stage_atomic(&mut self, _: &str, _: &[u8]) -> Result<(), ()> {
-        Err(())
+
+    fn verify_signature(&mut self, name: &str, bytes: &[u8]) -> Result<bool, ()> {
+        ensure_safe_name(name)?;
+        fs::create_dir_all(&self.root).map_err(|_| ())?;
+        let path = self.root.join(format!("verify-{name}"));
+        write_new_synced(&path, bytes)?;
+        let valid = verify_platform_signature(&path);
+        let _ = fs::remove_file(path);
+        valid
     }
-    fn write_pending(&mut self, _: &str) -> Result<(), ()> {
-        Err(())
+
+    fn stage_atomic(&mut self, name: &str, bytes: &[u8]) -> Result<(), ()> {
+        ensure_safe_name(name)?;
+        fs::create_dir_all(&self.root).map_err(|_| ())?;
+        let temporary = self.root.join(format!(".{name}.partial"));
+        let destination = self.root.join(name);
+        write_new_synced(&temporary, bytes)?;
+        if destination.exists() {
+            let _ = fs::remove_file(&temporary);
+            return Err(());
+        }
+        fs::rename(&temporary, &destination).map_err(|_| ())?;
+        self.staged = Some(destination);
+        Ok(())
+    }
+
+    fn write_pending(&mut self, sha256: &str) -> Result<(), ()> {
+        if sha256.len() != 64 {
+            return Err(());
+        }
+        write_new_synced(&self.root.join("pending.sha256"), sha256.as_bytes())
     }
     fn flush(&mut self) -> Result<(), ()> {
-        Err(())
+        File::open(&self.root)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| ())
     }
-    fn handoff(&mut self, _: &str) -> Result<(), ()> {
-        Err(())
+    fn handoff(&mut self, name: &str) -> Result<(), ()> {
+        let path = self
+            .staged
+            .as_ref()
+            .filter(|path| path.file_name().and_then(|v| v.to_str()) == Some(name))
+            .ok_or(())?;
+        self.installer_succeeded = launch_platform_installer(path)?;
+        Ok(())
     }
     fn confirm(&mut self) -> Result<bool, ()> {
-        Err(())
+        Ok(self.installer_succeeded)
     }
-    fn mark_applied(&mut self, _: &str) -> Result<(), ()> {
-        Err(())
+    fn mark_applied(&mut self, sha256: &str) -> Result<(), ()> {
+        let applied = self.root.join(format!("applied-{sha256}"));
+        write_new_synced(&applied, b"applied")
     }
     fn clear_pending(&mut self) -> Result<(), ()> {
-        Err(())
+        match fs::remove_file(self.root.join("pending.sha256")) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(()),
+        }
     }
     fn rollback(&mut self) -> Result<(), ()> {
-        Err(())
+        if let Some(path) = self.staged.take() {
+            match fs::remove_file(path) {
+                Ok(()) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(_) => return Err(()),
+            }
+        }
+        self.installer_succeeded = false;
+        Ok(())
     }
     fn pending(&mut self) -> Result<bool, ()> {
-        Ok(false)
+        Ok(self.root.join("pending.sha256").is_file())
     }
+}
+
+fn allowed_url(url: &str, limit: usize) -> bool {
+    (limit == METADATA_LIMIT && (url == API_URL || allowed_api_asset_url(url)))
+        || (limit == PAYLOAD_LIMIT
+            && (allowed_api_asset_url(url)
+                || (url.starts_with(ASSET_PREFIX)
+                    && !url[ASSET_PREFIX.len()..].is_empty()
+                    && !url.contains(['?', '#', '\\']))))
+}
+fn allowed_api_asset_url(url: &str) -> bool {
+    url.strip_prefix("https://api.github.com/repos/oltotlo79-rgb/ORIGAMI2/releases/assets/")
+        .is_some_and(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+}
+#[cfg(target_os = "windows")]
+fn current_platform() -> Option<&'static str> {
+    Some("windows-x64")
+}
+#[cfg(target_os = "macos")]
+fn current_platform() -> Option<&'static str> {
+    Some("macos-arm64")
+}
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn current_platform() -> Option<&'static str> {
+    None
+}
+#[cfg(target_os = "windows")]
+fn production_staging_root() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join("ORIGAMI2")
+        .join("runtime-update-v1")
+}
+#[cfg(target_os = "macos")]
+fn production_staging_root() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join("Library/Caches/ORIGAMI2/runtime-update-v1")
+}
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn production_staging_root() -> PathBuf {
+    PathBuf::new()
+}
+#[cfg(target_os = "windows")]
+fn curl_executable() -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join("System32/curl.exe")
+}
+#[cfg(not(target_os = "windows"))]
+fn curl_executable() -> PathBuf {
+    PathBuf::from("/usr/bin/curl")
+}
+fn ensure_safe_name(name: &str) -> Result<(), ()> {
+    if name.is_empty()
+        || name.len() > 180
+        || name.contains(['/', '\\'])
+        || name == "."
+        || name == ".."
+    {
+        Err(())
+    } else {
+        Ok(())
+    }
+}
+fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), ()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|_| ())?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|_| ())
+}
+#[cfg(target_os = "windows")]
+fn verify_platform_signature(path: &Path) -> Result<bool, ()> {
+    let escaped = path.to_string_lossy().replace('\'', "''");
+    Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &format!("$s=Get-AuthenticodeSignature -LiteralPath '{escaped}'; $s.Status -eq 'Valid' -and $null -ne $s.SignerCertificate -and $null -ne $s.TimeStamperCertificate")]).output().map(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).trim().eq_ignore_ascii_case("true")).map_err(|_| ())
+}
+#[cfg(target_os = "macos")]
+fn verify_platform_signature(path: &Path) -> Result<bool, ()> {
+    Command::new("codesign")
+        .args(["--verify", "--deep", "--strict", "--verbose=2"])
+        .arg(path)
+        .status()
+        .map(|status| status.success())
+        .map_err(|_| ())
+}
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn verify_platform_signature(_: &Path) -> Result<bool, ()> {
+    Ok(false)
+}
+#[cfg(target_os = "windows")]
+fn launch_platform_installer(path: &Path) -> Result<bool, ()> {
+    Command::new(path)
+        .arg("/S")
+        .status()
+        .map(|status| status.success())
+        .map_err(|_| ())
+}
+#[cfg(target_os = "macos")]
+fn launch_platform_installer(path: &Path) -> Result<bool, ()> {
+    Command::new("open")
+        .arg(path)
+        .status()
+        .map(|status| status.success())
+        .map_err(|_| ())
+}
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn launch_platform_installer(_: &Path) -> Result<bool, ()> {
+    Ok(false)
 }
 
 #[derive(Clone, Deserialize)]
@@ -78,6 +321,34 @@ struct Feed {
     asset_name: String,
     sha256: String,
     payload_url: String,
+}
+#[derive(Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    body: String,
+    draft: bool,
+    prerelease: bool,
+    assets: Vec<GithubAsset>,
+}
+#[derive(Deserialize)]
+struct GithubAsset {
+    name: String,
+    url: String,
+    size: usize,
+}
+#[derive(Deserialize)]
+struct UpdateManifest {
+    schema: String,
+    version: String,
+    platform: String,
+    #[serde(rename = "signaturePolicy")]
+    signature_policy: String,
+    assets: Vec<ManifestAsset>,
+}
+#[derive(Deserialize)]
+struct ManifestAsset {
+    name: String,
+    sha256: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -127,7 +398,10 @@ impl<A: Adapter> Updater<A> {
         {
             return Err("malformed");
         }
-        let feed: Feed = serde_json::from_slice(&response.body).map_err(|_| "malformed")?;
+        let feed: Feed = match serde_json::from_slice(&response.body) {
+            Ok(feed) => feed,
+            Err(_) => self.feed_from_github(&response.body)?,
+        };
         validate_feed(&feed)?;
         if self.cancelled {
             return Err("offline");
@@ -140,6 +414,81 @@ impl<A: Adapter> Updater<A> {
         };
         self.feed = Some(feed);
         Ok(candidate)
+    }
+    fn feed_from_github(&mut self, body: &[u8]) -> Result<Feed, &'static str> {
+        let release: GithubRelease = serde_json::from_slice(body).map_err(|_| "malformed")?;
+        if release.draft
+            || release.prerelease
+            || release.body.len() > 100_000
+            || release.assets.len() > 32
+        {
+            return Err("malformed");
+        }
+        let version = release
+            .tag_name
+            .strip_prefix('v')
+            .ok_or("malformed")?
+            .to_owned();
+        if !stable_version(&version) {
+            return Err("malformed");
+        }
+        let platform = current_platform().ok_or("malformed")?;
+        let prefix = format!("ORIGAMI2-v{version}-{platform}");
+        let payload_name = if platform == "windows-x64" {
+            format!("{prefix}-setup.exe")
+        } else {
+            format!("{prefix}-app.tar.gz")
+        };
+        let manifest_name = format!("{prefix}.update.json");
+        let payload = release
+            .assets
+            .iter()
+            .find(|asset| asset.name == payload_name)
+            .ok_or("malformed")?;
+        let manifest_asset = release
+            .assets
+            .iter()
+            .find(|asset| asset.name == manifest_name)
+            .ok_or("malformed")?;
+        if !allowed_api_asset_url(&payload.url) || !allowed_api_asset_url(&manifest_asset.url) {
+            return Err("malformed");
+        }
+        let response = self
+            .adapter
+            .get(&manifest_asset.url, TIMEOUT_SECS, METADATA_LIMIT)
+            .map_err(|_| "offline")?;
+        if response.redirected
+            || response.final_url != manifest_asset.url
+            || response.body.len() > METADATA_LIMIT
+        {
+            return Err("malformed");
+        }
+        let manifest: UpdateManifest =
+            serde_json::from_slice(&response.body).map_err(|_| "malformed")?;
+        if manifest.schema != "origami2.update-manifest.v1"
+            || manifest.version != version
+            || manifest.platform != platform
+            || manifest.signature_policy != "platform-signed"
+        {
+            return Err("malformed");
+        }
+        let sha256 = manifest
+            .assets
+            .iter()
+            .find(|asset| asset.name == payload_name)
+            .ok_or("malformed")?
+            .sha256
+            .clone();
+        Ok(Feed {
+            version,
+            platform: platform.to_owned(),
+            release_notes: release.body,
+            byte_length: payload.size,
+            signature_policy: manifest.signature_policy,
+            asset_name: payload_name,
+            sha256,
+            payload_url: payload.url.clone(),
+        })
     }
     pub fn download(
         &mut self,
@@ -232,7 +581,7 @@ fn validate_feed(feed: &Feed) -> Result<(), &'static str> {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         || feed.asset_name.contains(['/', '\\'])
-        || !feed.payload_url.starts_with(ASSET_PREFIX)
+        || !allowed_url(&feed.payload_url, PAYLOAD_LIMIT)
     {
         return Err("malformed");
     }
@@ -251,10 +600,10 @@ fn hex_sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-pub struct State(pub Mutex<Updater<OfflineAdapter>>);
+pub struct State(pub Mutex<Updater<ProductionAdapter>>);
 impl Default for State {
     fn default() -> Self {
-        Self(Mutex::new(Updater::new(OfflineAdapter)))
+        Self(Mutex::new(Updater::new(ProductionAdapter::default())))
     }
 }
 
@@ -382,5 +731,71 @@ mod tests {
                 .events
                 .ends_with(&["rollback", "clear", "flush"])
         );
+    }
+
+    #[test]
+    fn production_network_policy_accepts_only_exact_https_authorities() {
+        assert!(allowed_url(API_URL, METADATA_LIMIT));
+        assert!(allowed_url(
+            "https://objects.githubusercontent.com/release/payload",
+            PAYLOAD_LIMIT
+        ));
+        for url in [
+            "http://api.github.com/repos/oltotlo79-rgb/ORIGAMI2/releases/latest",
+            "https://api.github.com.evil.example/release",
+            "https://objects.githubusercontent.com.evil.example/payload",
+            "https://objects.githubusercontent.com/release/payload?token=secret",
+        ] {
+            assert!(!allowed_url(url, PAYLOAD_LIMIT));
+        }
+        assert!(ensure_safe_name("ORIGAMI2-v2.0.0-windows-x64-setup.exe").is_ok());
+        assert!(ensure_safe_name("../setup.exe").is_err());
+    }
+
+    #[test]
+    fn github_release_metadata_is_bound_to_the_signed_update_manifest() {
+        let Some(platform) = current_platform() else {
+            return;
+        };
+        let payload = b"payload".to_vec();
+        let prefix = format!("ORIGAMI2-v2.0.0-{platform}");
+        let payload_name = if platform == "windows-x64" {
+            format!("{prefix}-setup.exe")
+        } else {
+            format!("{prefix}-app.tar.gz")
+        };
+        let manifest_name = format!("{prefix}.update.json");
+        let payload_url = "https://api.github.com/repos/oltotlo79-rgb/ORIGAMI2/releases/assets/41";
+        let manifest_url = "https://api.github.com/repos/oltotlo79-rgb/ORIGAMI2/releases/assets/42";
+        let release = serde_json::json!({ "tag_name":"v2.0.0", "body":"notes", "draft":false, "prerelease":false, "assets":[
+            {"name":payload_name,"url":payload_url,"size":payload.len()}, {"name":manifest_name,"url":manifest_url,"size":512}
+        ]});
+        let manifest = serde_json::json!({ "schema":"origami2.update-manifest.v1", "version":"2.0.0", "platform":platform, "signaturePolicy":"platform-signed", "assets":[{"name":payload_name,"sha256":hex_sha256(&payload)}] });
+        let adapter = Mock {
+            responses: VecDeque::from([
+                Ok(Response {
+                    final_url: API_URL.into(),
+                    redirected: false,
+                    body: serde_json::to_vec(&release).unwrap(),
+                }),
+                Ok(Response {
+                    final_url: manifest_url.into(),
+                    redirected: false,
+                    body: serde_json::to_vec(&manifest).unwrap(),
+                }),
+                Ok(Response {
+                    final_url: payload_url.into(),
+                    redirected: false,
+                    body: payload,
+                }),
+            ]),
+            events: vec![],
+            signature: true,
+            confirm: true,
+            pending: false,
+        };
+        let mut updater = Updater::new(adapter);
+        assert!(updater.check().is_ok());
+        assert_eq!(updater.download("2.0.0", platform), Ok("verified"));
     }
 }

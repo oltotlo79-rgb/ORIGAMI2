@@ -1805,7 +1805,10 @@ export type BeginnerParameterGridPointV1 = Readonly<{
 
 export type BeginnerContourPlacementWitnessV1 = Readonly<{
   body_contour_points: number
-  local_bindings: ReadonlyArray<Readonly<{ protrusion_id: number, contour_points: number }>>
+  local_bindings: ReadonlyArray<Readonly<{
+    protrusion_id: number, contour_points: number, generated_face_id: number,
+    vertex_start: number, crease_start: number,
+  }>>
   witnessed_vertices: number
   witnessed_creases: number
 }>
@@ -1891,7 +1894,9 @@ export async function evaluateBeginnerParameterGrid(
       'body_contour_points', 'local_bindings', 'witnessed_vertices', 'witnessed_creases',
     ] as const)
     const bindings = witness && Array.isArray(witness.local_bindings)
-      ? witness.local_bindings.map((binding) => exactCoreDataRecord(binding, ['protrusion_id', 'contour_points'] as const))
+      ? witness.local_bindings.map((binding) => exactCoreDataRecord(binding, [
+          'protrusion_id', 'contour_points', 'generated_face_id', 'vertex_start', 'crease_start',
+        ] as const))
       : []
     const witnessPointCount = witness && bindings.every((binding) => binding !== null)
       ? Number(witness.body_contour_points) + bindings.reduce((sum, binding) => sum + Number(binding?.contour_points), 0)
@@ -1910,11 +1915,22 @@ export async function evaluateBeginnerParameterGrid(
       || bindings.some((binding, bindingIndex) => !binding || !Number.isInteger(binding.protrusion_id)
         || Number(binding.protrusion_id) < 1 || Number(binding.protrusion_id) > 65535
         || !Number.isInteger(binding.contour_points) || Number(binding.contour_points) < 3 || Number(binding.contour_points) > 8
+        || binding.generated_face_id !== bindingIndex + 1
+        || !Number.isInteger(binding.vertex_start) || Number(binding.vertex_start) < 0
+        || !Number.isInteger(binding.crease_start) || Number(binding.crease_start) < 0
+        || (bindingIndex > 0 && (Number(binding.vertex_start) !== Number(bindings[bindingIndex - 1]?.vertex_start)
+          + Number(bindings[bindingIndex - 1]?.contour_points)
+          || Number(binding.crease_start) !== Number(bindings[bindingIndex - 1]?.crease_start)
+            + Number(bindings[bindingIndex - 1]?.contour_points)))
         || (bindingIndex > 0 && Number(bindings[bindingIndex - 1]?.protrusion_id) >= Number(binding.protrusion_id)))
       || !Number.isInteger(witness.witnessed_vertices) || Number(witness.witnessed_vertices) !== witnessPointCount
       || !Number.isInteger(witness.witnessed_creases) || Number(witness.witnessed_creases) !== witnessPointCount
       || normalizedPlans.generated_plans[index].crease_pattern.vertices.length < witnessPointCount
       || normalizedPlans.generated_plans[index].crease_pattern.edges.length < witnessPointCount
+      || bindings.some((binding) => Number(binding?.vertex_start) + Number(binding?.contour_points)
+        > normalizedPlans.generated_plans[index].crease_pattern.vertices.length
+        || Number(binding?.crease_start) + Number(binding?.contour_points)
+          > normalizedPlans.generated_plans[index].crease_pattern.edges.length)
       || !Number.isInteger(candidate.complexity_score) || Number(candidate.complexity_score) < 0 || Number(candidate.complexity_score) > 100
       || ![candidate.scale_deviation_penalty, candidate.spacing_deviation_penalty, candidate.detail_mismatch_penalty]
         .every((penalty) => Number.isInteger(penalty) && Number(penalty) >= 0 && Number(penalty) <= 1000)
@@ -1938,6 +1954,8 @@ export async function evaluateBeginnerParameterGrid(
         body_contour_points: Number(witness.body_contour_points),
         local_bindings: Object.freeze(bindings.map((binding) => Object.freeze({
           protrusion_id: Number(binding?.protrusion_id), contour_points: Number(binding?.contour_points),
+          generated_face_id: Number(binding?.generated_face_id),
+          vertex_start: Number(binding?.vertex_start), crease_start: Number(binding?.crease_start),
         }))),
         witnessed_vertices: Number(witness.witnessed_vertices),
         witnessed_creases: Number(witness.witnessed_creases),

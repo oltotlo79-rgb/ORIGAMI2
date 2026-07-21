@@ -7965,7 +7965,8 @@ function App() {
                           local: candidate.contour_witness.local_bindings.length === 0
                             ? 'none'
                             : candidate.contour_witness.local_bindings
-                              .map((binding) => `${binding.protrusion_id}:${binding.contour_points}`).join(', '),
+                              .map((binding) => `${binding.protrusion_id}:${binding.contour_points}@face${binding.generated_face_id}`)
+                              .join(', '),
                           vertices: candidate.contour_witness.witnessed_vertices,
                           creases: candidate.contour_witness.witnessed_creases,
                         })}</span>

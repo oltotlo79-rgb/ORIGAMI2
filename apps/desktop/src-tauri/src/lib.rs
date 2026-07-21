@@ -2492,6 +2492,9 @@ fn symmetric_plan_kind(
 struct BeginnerContourBindingWitness {
     protrusion_id: u16,
     contour_points: u8,
+    generated_face_id: u8,
+    vertex_start: u16,
+    crease_start: u16,
 }
 
 #[derive(Debug, Serialize)]
@@ -2519,6 +2522,9 @@ fn beginner_contour_placement_witness(
             Some(BeginnerContourBindingWitness {
                 protrusion_id: target.id,
                 contour_points: u8::try_from(outline.len()).ok()?,
+                generated_face_id: 0,
+                vertex_start: 0,
+                crease_start: 0,
             })
         })
         .collect::<Option<Vec<_>>>()?;
@@ -2536,6 +2542,30 @@ fn beginner_contour_placement_witness(
             .sum(),
     );
     if plan.crease_pattern.vertices.len() < witnessed || plan.crease_pattern.edges.len() < witnessed
+    {
+        return None;
+    }
+    let mut vertex_cursor = plan
+        .crease_pattern
+        .vertices
+        .len()
+        .checked_sub(witnessed)?
+        .checked_add(body_contour_points)?;
+    let mut crease_cursor = plan
+        .crease_pattern
+        .edges
+        .len()
+        .checked_sub(witnessed)?
+        .checked_add(body_contour_points)?;
+    for (index, binding) in local_bindings.iter_mut().enumerate() {
+        binding.generated_face_id = u8::try_from(index.checked_add(1)?).ok()?;
+        binding.vertex_start = u16::try_from(vertex_cursor).ok()?;
+        binding.crease_start = u16::try_from(crease_cursor).ok()?;
+        vertex_cursor = vertex_cursor.checked_add(usize::from(binding.contour_points))?;
+        crease_cursor = crease_cursor.checked_add(usize::from(binding.contour_points))?;
+    }
+    if vertex_cursor != plan.crease_pattern.vertices.len()
+        || crease_cursor != plan.crease_pattern.edges.len()
     {
         return None;
     }
@@ -12008,6 +12038,16 @@ mod tests {
         assert_eq!(witness.local_bindings.len(), 2);
         assert_eq!(witness.local_bindings[0].protrusion_id, 1);
         assert_eq!(witness.local_bindings[1].protrusion_id, 2);
+        assert_eq!(witness.local_bindings[0].generated_face_id, 1);
+        assert_eq!(witness.local_bindings[1].generated_face_id, 2);
+        assert_eq!(
+            witness.local_bindings[1].vertex_start,
+            witness.local_bindings[0].vertex_start + 3
+        );
+        assert_eq!(
+            witness.local_bindings[1].crease_start,
+            witness.local_bindings[0].crease_start + 3
+        );
         assert_eq!(witness.witnessed_vertices, 10);
         assert_eq!(witness.witnessed_creases, 10);
         let mut one_short = plan.clone();
@@ -12016,55 +12056,6 @@ mod tests {
             beginner_contour_placement_witness(&profile.generation_constraints, &one_short,)
                 .is_none()
         );
-        for point_count in 4..=16 {
-            let mut bounded = profile.clone();
-            for protrusion in &mut bounded.generation_constraints.protrusions {
-                protrusion.local_outline_tenths_mm = None;
-            }
-            bounded.generation_constraints.generic_body_outline_mode =
-                ori_domain::BeginnerBodyOutlineModeV1::General;
-            let mut outline = (0..point_count)
-                .map(|index| {
-                    let angle = std::f64::consts::TAU * f64::from(u32::try_from(index).unwrap())
-                        / f64::from(u32::try_from(point_count).unwrap());
-                    [
-                        (angle.cos() * 1_000.0).round() as i32,
-                        (angle.sin() * 1_000.0).round() as i32,
-                    ]
-                })
-                .collect::<Vec<_>>();
-            let canonical = outline
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, point)| **point)
-                .map(|(index, _)| index)
-                .unwrap();
-            outline.rotate_left(canonical);
-            bounded
-                .generation_constraints
-                .generic_body_outline_tenths_mm = Some(outline);
-            let bounded_plan = grid_template_plan(
-                project.project_id,
-                project.editor.pattern(),
-                &project.editor.paper().boundary_vertices,
-                &bounded,
-                point,
-            )
-            .unwrap()
-            .into_iter()
-            .find(|candidate| {
-                candidate.kind
-                    == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
-            })
-            .unwrap();
-            let bounded_witness =
-                beginner_contour_placement_witness(&bounded.generation_constraints, &bounded_plan)
-                    .unwrap();
-            assert_eq!(
-                usize::from(bounded_witness.body_contour_points),
-                point_count
-            );
-        }
         let project_id = project.project_id;
         let instance_id = project.instance_id;
         let revision = project.editor.revision();

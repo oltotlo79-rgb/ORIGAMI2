@@ -4426,6 +4426,50 @@ mod tests {
         )
         .expect("source model");
         let source_edge = source_model.hinges()[0].edge();
+        let current_non_flat = revalidate_current_non_flat_layer_order_v1(
+            identity,
+            source_revision,
+            &source_pattern,
+            &source_paper,
+            Some(source_model.face_ids()[0]),
+            &CanonicalHingeAngles::new(vec![HingeAngle::new(source_edge, 90.0).unwrap()]).unwrap(),
+            &source_layer_order,
+            1,
+        )
+        .expect("fresh current non-flat authority");
+        assert_eq!(current_non_flat.target_revision(), source_revision);
+        assert_eq!(current_non_flat.folded_faces().len(), 2);
+        assert_eq!(current_non_flat.tested_face_pairs(), 1);
+        let mut stale_flat = source_layer_order.clone();
+        stale_flat.provenance.source.source_revision += 1;
+        assert_eq!(
+            revalidate_current_non_flat_layer_order_v1(
+                identity,
+                source_revision,
+                &source_pattern,
+                &source_paper,
+                Some(source_model.face_ids()[0]),
+                &CanonicalHingeAngles::new(vec![HingeAngle::new(source_edge, 90.0).unwrap()])
+                    .unwrap(),
+                &stale_flat,
+                1,
+            ),
+            Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch)
+        );
+        assert_eq!(
+            revalidate_current_non_flat_layer_order_v1(
+                identity,
+                source_revision,
+                &source_pattern,
+                &source_paper,
+                Some(source_model.face_ids()[0]),
+                &CanonicalHingeAngles::new(vec![HingeAngle::new(source_edge, 90.0).unwrap()])
+                    .unwrap(),
+                &source_layer_order,
+                0,
+            ),
+            Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::ResourceLimit)
+        );
         let source_angles =
             CanonicalHingeAngles::new(vec![HingeAngle::new(source_edge, 180.0).unwrap()]).unwrap();
         let source_pose = source_model

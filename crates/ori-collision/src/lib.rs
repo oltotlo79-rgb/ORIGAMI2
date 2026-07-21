@@ -28,6 +28,7 @@ mod continuous_path;
 mod flat_endpoint_layer_order;
 mod general_cell_transport;
 mod graph_positive_thickness;
+mod non_flat_cell_transport;
 mod stacked_fold_read;
 mod static_collision;
 mod zero_thickness;
@@ -98,6 +99,10 @@ pub use graph_positive_thickness::{
     NativePositiveThicknessGraphGeometryProofV1, POSITIVE_THICKNESS_GRAPH_GEOMETRY_PROOF_V1,
     PositiveThicknessGraphLimitsV1, PositiveThicknessGraphProofErrorV1,
     prove_positive_thickness_graph_geometry_v1,
+};
+pub use non_flat_cell_transport::{
+    NON_FLAT_CELL_TRANSPORT_MODEL_ID_V1, NonFlatCellTransportErrorV1, NonFlatCellTransportProofV1,
+    certify_non_flat_cell_transport_v1,
 };
 pub use stacked_fold_read::{
     NativeStackedFoldMaterialMapV1, NativeStackedFoldReadGuardV1, NativeStackedFoldReadProposalV1,

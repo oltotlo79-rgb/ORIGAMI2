@@ -11,6 +11,7 @@ num-integer = "=0.1.46"
 num-rational = "=0.4.2"
 num-traits = "0.2.19"
 ori-domain = { path = "../ori-domain" }
+ori-core = { path = "../ori-core" }
 ori-foldability = { path = "../ori-foldability" }
 ori-kinematics = { path = "../ori-kinematics" }
 ori-topology = { path = "../ori-topology" }

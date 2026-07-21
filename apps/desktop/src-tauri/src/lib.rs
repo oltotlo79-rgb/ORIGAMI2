@@ -13624,17 +13624,8 @@ mod tests {
         )
         .unwrap();
         let generated_steps = &project.editor.instruction_timeline().steps;
-        assert_eq!(generated_steps.len(), 3);
-        assert!(
-            generated_steps[1]
-                .title
-                .starts_with("Shape generated feature 1 from skeleton segment ")
-        );
-        assert!(
-            generated_steps[2]
-                .title
-                .starts_with("Shape generated feature 2 from skeleton segment ")
-        );
+        assert_eq!(generated_steps.len(), 1);
+        assert_eq!(generated_steps[0].title, "Complete composite insect grid candidate");
         assert!(
             apply_grid_plan_document(&mut project, instance_id, project_id, revision, plan)
                 .is_err()

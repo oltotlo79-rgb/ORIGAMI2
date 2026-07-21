@@ -370,7 +370,7 @@ fn propose_current_cycle_pose_inner_with_layers(
                 max_depth: 16,
                 max_leaves: 65_536,
                 max_work: 1_048_576,
-                schedule_limits: CycleScheduleLimitsV1::default(),
+                schedule_limits: production_cycle_schedule_limits_v1(),
             },
         )
         .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned())?;
@@ -793,7 +793,7 @@ fn prepare_requested_cycle_schedule_v1(
             })
         })
         .collect::<Result<Vec<_>, &'static str>>()?;
-    let limits = CycleScheduleLimitsV1::default();
+    let limits = production_cycle_schedule_limits_v1();
     let schedule = ori_kinematics::CanonicalCycleScheduleV1::prepare_half_angle_rational(
         geometry, audit, fixed_face, inputs, limits,
     )
@@ -832,6 +832,15 @@ fn prepare_requested_cycle_schedule_v1(
         }
     }
     Ok(schedule)
+}
+
+fn production_cycle_schedule_limits_v1() -> CycleScheduleLimitsV1 {
+    let defaults = CycleScheduleLimitsV1::default();
+    CycleScheduleLimitsV1 {
+        max_hinges: 256,
+        max_work: 1_152,
+        ..defaults
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -4415,6 +4424,7 @@ mod tests {
             (7, 7, 0.1, 36),
             (7, 9, 0.1, 48),
             (8, 9, 0.1, 56),
+            (9, 9, 0.1, 64),
         ] {
             let (pattern, mut paper, horizontal, _) =
                 super::dense_grid_cycle_test_support::miura_authority_pattern(columns, rows);

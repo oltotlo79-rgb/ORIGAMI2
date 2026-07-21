@@ -5,7 +5,10 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
-    sync::Mutex,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 const API_URL: &str = "https://api.github.com/repos/oltotlo79-rgb/ORIGAMI2/releases/latest";
@@ -241,15 +244,18 @@ fn allowed_api_asset_url(url: &str) -> bool {
     url.strip_prefix("https://api.github.com/repos/oltotlo79-rgb/ORIGAMI2/releases/assets/")
         .is_some_and(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
 }
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 fn current_platform() -> Option<&'static str> {
     Some("windows-x64")
 }
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn current_platform() -> Option<&'static str> {
     Some("macos-arm64")
 }
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(
+    all(target_os = "windows", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+)))]
 fn current_platform() -> Option<&'static str> {
     None
 }
@@ -456,7 +462,7 @@ pub struct Updater<A: Adapter> {
     adapter: A,
     feed: Option<Feed>,
     staged: bool,
-    cancelled: bool,
+    cancelled: Arc<AtomicBool>,
 }
 impl<A: Adapter> Updater<A> {
     pub fn new(adapter: A) -> Self {
@@ -464,7 +470,7 @@ impl<A: Adapter> Updater<A> {
             adapter,
             feed: None,
             staged: false,
-            cancelled: false,
+            cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
     pub fn recover(&mut self) -> Result<&'static str, &'static str> {
@@ -475,11 +481,8 @@ impl<A: Adapter> Updater<A> {
         }
         Ok("ready")
     }
-    pub fn cancel(&mut self) {
-        self.cancelled = true;
-    }
     pub fn check(&mut self) -> Result<Candidate, &'static str> {
-        self.cancelled = false;
+        self.cancelled.store(false, Ordering::Release);
         let response = self
             .adapter
             .get(API_URL, TIMEOUT_SECS, METADATA_LIMIT)
@@ -495,7 +498,10 @@ impl<A: Adapter> Updater<A> {
             Err(_) => self.feed_from_github(&response.body)?,
         };
         validate_feed(&feed)?;
-        if self.cancelled {
+        if compare_stable_versions(&feed.version, env!("CARGO_PKG_VERSION"))? <= 0 {
+            return Err("rollback");
+        }
+        if self.cancelled.load(Ordering::Acquire) {
             return Err("offline");
         }
         let candidate = Candidate {
@@ -587,7 +593,7 @@ impl<A: Adapter> Updater<A> {
         version: &str,
         platform: &str,
     ) -> Result<&'static str, &'static str> {
-        self.cancelled = false;
+        self.cancelled.store(false, Ordering::Release);
         let feed = self.feed.clone().ok_or("malformed")?;
         if feed.version != version || feed.platform != platform {
             return Err("rollback");
@@ -613,7 +619,7 @@ impl<A: Adapter> Updater<A> {
         {
             return Err("signature");
         }
-        if self.cancelled {
+        if self.cancelled.load(Ordering::Acquire) {
             return Err("offline");
         }
         let staging = (|| {
@@ -691,14 +697,28 @@ fn stable_version(value: &str) -> bool {
                 && (p == &"0" || !p.starts_with('0'))
         })
 }
+fn compare_stable_versions(left: &str, right: &str) -> Result<i8, &'static str> {
+    if !stable_version(left) || !stable_version(right) {
+        return Err("malformed");
+    }
+    for (a, b) in left.split('.').zip(right.split('.')) {
+        let ordering = a.len().cmp(&b.len()).then_with(|| a.cmp(b));
+        if !ordering.is_eq() {
+            return Ok(if ordering.is_gt() { 1 } else { -1 });
+        }
+    }
+    Ok(0)
+}
 fn hex_sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-pub struct State(pub Mutex<Updater<ProductionAdapter>>);
+pub struct State(pub Mutex<Updater<ProductionAdapter>>, pub Arc<AtomicBool>);
 impl Default for State {
     fn default() -> Self {
-        Self(Mutex::new(Updater::new(ProductionAdapter::default())))
+        let updater = Updater::new(ProductionAdapter::default());
+        let cancel = Arc::clone(&updater.cancelled);
+        Self(Mutex::new(updater), cancel)
     }
 }
 
@@ -848,6 +868,9 @@ mod tests {
         }
         assert!(ensure_safe_name("ORIGAMI2-v2.0.0-windows-x64-setup.exe").is_ok());
         assert!(ensure_safe_name("../setup.exe").is_err());
+        assert_eq!(compare_stable_versions("2.0.0", "1.99.99"), Ok(1));
+        assert_eq!(compare_stable_versions("1.0.0", "1.0.0"), Ok(0));
+        assert_eq!(compare_stable_versions("0.9.9", "1.0.0"), Ok(-1));
     }
 
     #[test]

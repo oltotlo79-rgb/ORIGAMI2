@@ -3975,6 +3975,33 @@ fn apply_beginner_generated_plan(
             assessment.reason
         ));
     }
+    let mut certificate_pattern = project.editor.pattern().clone();
+    for vertex in &plan.crease_pattern.vertices {
+        if !certificate_pattern
+            .vertices
+            .iter()
+            .any(|current| current.id == vertex.id)
+        {
+            certificate_pattern.vertices.push(vertex.clone());
+        }
+    }
+    certificate_pattern
+        .edges
+        .extend(plan.crease_pattern.edges.iter().cloned());
+    let certificate_editor =
+        EditorState::with_paper(certificate_pattern.clone(), project.editor.paper().clone());
+    let certificate_topology = certificate_editor
+        .topology_analysis_input(project.project_id)
+        .analyze();
+    let fold_path_certificate_sha256 = certify_beginner_fold_path_v1(
+        &plan,
+        project.editor.paper(),
+        &certificate_pattern,
+        certificate_topology
+            .simulation_snapshot()
+            .ok_or_else(|| "the generated plan topology changed before apply".to_owned())?,
+    )
+    .ok_or_else(|| "the generated plan fold path changed before apply".to_owned())?;
     let mut pattern = project.editor.pattern().clone();
     for vertex in plan.crease_pattern.vertices {
         if !pattern
@@ -4442,6 +4469,7 @@ fn apply_grid_plan_document(
         Some(ori_domain::BeginnerGenerationProvenanceV1 {
             schema_version: 1,
             topology_authority_sha256: topology_witness.topology_authority_hash,
+            fold_path_certificate_sha256: Some(fold_path_certificate_sha256),
             confidence_score: ori_domain::beginner_target_approximation_score_v1(
                 &beginner_design_profile.generation_constraints,
             ),
@@ -12048,9 +12076,7 @@ fn runtime_update_apply(
 
 #[tauri::command]
 fn runtime_update_cancel(_token: String, state: tauri::State<'_, runtime_update::State>) {
-    if let Ok(mut updater) = state.0.lock() {
-        updater.cancel();
-    }
+    state.1.store(true, std::sync::atomic::Ordering::Release);
 }
 
 pub fn run() {

@@ -52,6 +52,7 @@ pub struct GeneralMultiFaceCellTransportProofV1 {
     schedule_hash: [u8; 32],
     closure_hash: [u8; 32],
     thickness_bits: u64,
+    pair_order_count: usize,
     checkpoint_hashes: Vec<[u8; 32]>,
 }
 
@@ -64,6 +65,31 @@ impl GeneralMultiFaceCellTransportProofV1 {
     #[must_use]
     pub fn checkpoint_hashes(&self) -> &[[u8; 32]] {
         &self.checkpoint_hashes
+    }
+
+    #[must_use]
+    pub fn transition_hashes(&self) -> &[[u8; 32]] {
+        &self.checkpoint_hashes
+    }
+
+    #[must_use]
+    pub const fn pair_order_count(&self) -> usize {
+        self.pair_order_count
+    }
+
+    #[must_use]
+    pub fn paper_thickness_mm(&self) -> f64 {
+        f64::from_bits(self.thickness_bits)
+    }
+
+    #[must_use]
+    pub fn matches_source_content_v1(&self, source: &LayerOrderSnapshot) -> bool {
+        self.source == *source
+    }
+
+    #[must_use]
+    pub fn target_order_hash(&self) -> [u8; 32] {
+        self.checkpoint_hashes.last().copied().unwrap_or([0; 32])
     }
 
     #[must_use]
@@ -246,6 +272,7 @@ pub fn certify_general_multi_face_cell_transport_v1(
         schedule_hash: input.schedule.certificate_binding_fingerprint_v1(),
         closure_hash: input.closure.partition_binding_fingerprint_v1(),
         thickness_bits: input.paper_thickness_mm.to_bits(),
+        pair_order_count: input.source.face_pair_orders.len(),
         checkpoint_hashes,
     })
 }

@@ -7,12 +7,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ori_collision::{
-    ContinuousLayerTransportFromPosesInputV1, ContinuousLayerTransportLimitsV1,
-    FlatEndpointLayerOrderInputV1, StackedFoldFixedSideV1, StackedFoldLinearCandidateV1,
-    StackedFoldMaterialMapLimitsV1, StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1,
-    StackedFoldReadLimitsV1, StackedFoldReadSupportV1, StackedFoldRotationDirectionV1,
-    StaticCollisionLimits, capture_stacked_fold_read_guard_v1,
-    derive_continuous_layer_transport_from_poses_v1, diagnose_collective_hinge_path_v1,
+    FlatEndpointLayerOrderInputV1, GeneralCellTransportInputV1, GeneralCellTransportLimitsV1,
+    StackedFoldFixedSideV1, StackedFoldLinearCandidateV1, StackedFoldMaterialMapLimitsV1,
+    StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1, StackedFoldReadLimitsV1,
+    StackedFoldReadSupportV1, StackedFoldRotationDirectionV1, StaticCollisionLimits,
+    capture_stacked_fold_read_guard_v1,
+    certify_canonical_positive_thickness_cycle_schedule_path_v1,
+    certify_general_multi_face_cell_transport_v1, diagnose_collective_hinge_path_v1,
     diagnose_scheduled_cycle_path_v1, diagnose_scheduled_positive_thickness_cycle_path_v1,
     diagnose_static_collision_geometry, propose_linear_stacked_fold_read_v1,
     reverse_map_linear_stacked_fold_material_v1, supports_scheduled_positive_thickness_path_v1,
@@ -440,37 +441,57 @@ fn propose_current_cycle_pose_inner_with_layers(
             })
             .collect::<Vec<_>>()
     });
-    let layer_transport = if let (Some(capability), Some(source_orders)) =
+    let layer_transport = if let (Some(capability), Some(_source_orders)) =
         (layer_capability.as_ref(), source_layer_order.as_ref())
     {
-        let lineage = capability
-            .snapshot()
-            .material_faces
+        let source = capability.snapshot();
+        let positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+            geometry,
+            audit,
+            pose.fixed_face(),
+            generated.schedule(),
+            &closure,
+            paper_thickness_mm,
+            32,
+        )
+        .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+        let layer_records = source
+            .overlap_cells
             .iter()
-            .map(|face| (face.face_id, face.face_id))
-            .collect::<Vec<_>>();
+            .try_fold(0usize, |sum, cell| {
+                sum.checked_add(cell.bottom_to_top_faces.len())
+            })
+            .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
+        let boundary_samples = source
+            .overlap_cells
+            .iter()
+            .try_fold(0usize, |sum, cell| {
+                cell.exact_boundary
+                    .len()
+                    .checked_mul(cell.bottom_to_top_faces.len())
+                    .and_then(|work| sum.checked_add(work))
+            })
+            .and_then(|work| work.checked_mul(closure_leaf_count + 1))
+            .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?;
         Some(
-            derive_continuous_layer_transport_from_poses_v1(
-                ContinuousLayerTransportFromPosesInputV1 {
-                    geometry,
-                    audit,
-                    source: capability.snapshot(),
-                    source_to_target: &lineage,
-                    schedule: generated.schedule(),
-                    closure: &closure,
-                    separation_axis: [0.0, 0.0, 1.0],
-                    tolerance: ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
-                    limits: ContinuousLayerTransportLimitsV1 {
-                        max_transitions: closure_leaf_count + 1,
-                        max_pair_orders: source_orders
-                            .len()
-                            .checked_mul(closure_leaf_count + 1)
-                            .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?,
-                    },
+            certify_general_multi_face_cell_transport_v1(GeneralCellTransportInputV1 {
+                geometry,
+                audit,
+                source,
+                schedule: generated.schedule(),
+                closure: &closure,
+                positive_continuous: &positive,
+                paper_thickness_mm,
+                tolerance: ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                limits: GeneralCellTransportLimitsV1 {
+                    max_transitions: closure_leaf_count + 1,
+                    max_cells: source.overlap_cells.len(),
+                    max_layer_records: layer_records,
+                    max_boundary_samples: boundary_samples,
                 },
-            )
+            })
             .map_err(|error| match error {
-                ori_collision::ContinuousLayerTransportErrorV1::ResourceLimit => {
+                ori_collision::GeneralCellTransportErrorV1::ResourceLimit => {
                     CYCLE_PATH_RESOURCE_MESSAGE.to_owned()
                 }
                 _ => CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned(),

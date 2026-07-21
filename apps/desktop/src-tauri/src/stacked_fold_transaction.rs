@@ -73,7 +73,7 @@ pub(super) enum PendingStackedFoldRequestedPose {
         closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
         expected: ori_collision::CertifiedPathTransitionEvidenceV1,
         continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
-        layer_transport: Option<ori_collision::ContinuousLayerTransportCertificateV1>,
+        layer_transport: Option<ori_collision::GeneralMultiFaceCellTransportProofV1>,
         layer_order_pairs: Vec<(ori_domain::FaceId, ori_domain::FaceId)>,
         target_angles: Vec<(ori_domain::EdgeId, f64)>,
     },
@@ -365,7 +365,7 @@ pub(super) struct PendingCurrentCyclePosePremisesV1 {
     pub closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
     pub expected: ori_collision::CertifiedPathTransitionEvidenceV1,
     pub continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
-    pub layer_transport: Option<ori_collision::ContinuousLayerTransportCertificateV1>,
+    pub layer_transport: Option<ori_collision::GeneralMultiFaceCellTransportProofV1>,
     pub layer_order_pairs: Vec<(ori_domain::FaceId, ori_domain::FaceId)>,
     pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
 }
@@ -553,6 +553,7 @@ pub(super) fn install_pending_current_cycle_pose_v1(
                     capability.snapshot(),
                     premises.generated.schedule(),
                     &premises.closure,
+                    certificate.paper_thickness_mm(),
                 )
             })
         })
@@ -698,6 +699,7 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
                 capability.snapshot(),
                 generated.schedule(),
                 closure,
+                certificate.paper_thickness_mm(),
             )
             || !certificate.matches_source_content_v1(capability.snapshot())
         {

@@ -116,6 +116,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     CompositeHornTailEarBase,
     CompositeCompleteAnimalBase,
     CompositeCompleteWingedAnimalBase,
+    CompositeGenericTargetBase,
     CompositeWingAntennaBase,
     CompositeCompleteInsectBase,
     VerticalBookFold,
@@ -834,7 +835,39 @@ pub fn generate_beginner_plans_v1(
     };
     let template = match target_category {
         BeginnerTargetCategoryV1::Animal => {
-            if part_count(BeginnerTargetPartKindV1::Horn) == 1
+            let feature_records = constraints
+                .target_parts
+                .iter()
+                .filter(|part| {
+                    !matches!(
+                        part.kind,
+                        BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
+                    )
+                })
+                .count();
+            let known_composite = part_count(BeginnerTargetPartKindV1::Horn) == 1
+                && part_count(BeginnerTargetPartKindV1::Tail) == 1
+                || part_count(BeginnerTargetPartKindV1::Tail) == 1
+                    && part_count(BeginnerTargetPartKindV1::Ear) == 2
+                || part_count(BeginnerTargetPartKindV1::Horn) == 1
+                    && part_count(BeginnerTargetPartKindV1::Ear) == 2;
+            if feature_records >= 2 && !known_composite {
+                let endpoints = bounded_generic_composite_endpoints(constraints)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+                symmetric_template(
+                    namespace,
+                    source,
+                    BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &endpoints,
+                    "composite_generic_target_base",
+                    constraints,
+                )
+            } else if part_count(BeginnerTargetPartKindV1::Horn) == 1
                 && part_count(BeginnerTargetPartKindV1::Tail) == 1
                 && part_count(BeginnerTargetPartKindV1::Ear) == 2
             {
@@ -1092,7 +1125,35 @@ pub fn generate_beginner_plans_v1(
             }
         }
         BeginnerTargetCategoryV1::Insect => {
-            if part_count(BeginnerTargetPartKindV1::Wing) == 2
+            let feature_records = constraints
+                .target_parts
+                .iter()
+                .filter(|part| {
+                    !matches!(
+                        part.kind,
+                        BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
+                    )
+                })
+                .count();
+            let known_composite = part_count(BeginnerTargetPartKindV1::Wing) == 2
+                && part_count(BeginnerTargetPartKindV1::Antenna) == 2;
+            if feature_records >= 2 && !known_composite {
+                let endpoints = bounded_generic_composite_endpoints(constraints)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
+                symmetric_template(
+                    namespace,
+                    source,
+                    BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &endpoints,
+                    "composite_generic_target_base",
+                    constraints,
+                )
+            } else if part_count(BeginnerTargetPartKindV1::Wing) == 2
                 && part_count(BeginnerTargetPartKindV1::Antenna) == 2
                 && part_count(BeginnerTargetPartKindV1::Leg) == 6
             {
@@ -1533,6 +1594,58 @@ fn has_bilateral_skeleton(constraints: &BeginnerGenerationConstraintsV1) -> bool
     })
 }
 
+fn bounded_generic_composite_endpoints(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<Vec<(f64, f64)>> {
+    if !(2..=8).contains(&constraints.protrusions.len())
+        || constraints
+            .protrusions
+            .windows(2)
+            .any(|pair| pair[0].id >= pair[1].id)
+    {
+        return None;
+    }
+    let feature_records = constraints
+        .target_parts
+        .iter()
+        .filter(|part| {
+            !matches!(
+                part.kind,
+                BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
+            )
+        })
+        .count();
+    if feature_records != constraints.protrusions.len() {
+        return None;
+    }
+    let mut endpoints = Vec::with_capacity(constraints.protrusions.len() * 4);
+    for target in &constraints.protrusions {
+        let mut isolated = constraints.clone();
+        isolated
+            .protrusions
+            .retain(|candidate| candidate.id == target.id);
+        match (target.count, target.symmetry) {
+            (1, BeginnerProtrusionSymmetryV1::None) => {
+                endpoints.push(parameterized_center_axis_endpoint(
+                    &isolated,
+                    target.direction_milli[1].unsigned_abs()
+                        >= target.direction_milli[0].unsigned_abs(),
+                )?)
+            }
+            (2 | 4, BeginnerProtrusionSymmetryV1::Bilateral) => {
+                endpoints.extend(parameterized_symmetric_endpoints(
+                    &isolated,
+                    target.count,
+                    target.direction_milli[1].unsigned_abs()
+                        > target.direction_milli[0].unsigned_abs(),
+                )?)
+            }
+            _ => return None,
+        }
+    }
+    Some(endpoints)
+}
+
 fn parameterized_symmetric_endpoints(
     constraints: &BeginnerGenerationConstraintsV1,
     count: u8,
@@ -1954,6 +2067,27 @@ mod tests {
                 horn_protrusion_id: 1,
                 ear_pair_protrusion_id: 2,
             })
+        );
+        let mut generic = constraints.clone();
+        generic.target_parts.push(BeginnerTargetPartRecordV1 {
+            kind: BeginnerTargetPartKindV1::Fin,
+            count: 2,
+        });
+        let mut fin = bilateral_protrusion(2, 2);
+        fin.priority = 60;
+        generic.protrusions.push(fin);
+        let generic_plans = generate_beginner_plans_v1(namespace, &source, &ids, &generic).unwrap();
+        assert_eq!(
+            generic_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+        );
+        assert_eq!(generic_plans[0].crease_pattern.vertices.len(), 9);
+        assert_eq!(generic_plans[0].crease_pattern.edges.len(), 8);
+        let mut reordered_generic = generic.clone();
+        reordered_generic.protrusions.reverse();
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &reordered_generic),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
         );
         let mut higher_priority = constraints.clone();
         higher_priority.protrusions[0].priority = 100;

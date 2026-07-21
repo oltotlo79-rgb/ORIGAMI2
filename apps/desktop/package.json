@@ -21,6 +21,7 @@
     "test:locale-browser": "node scripts/locale-browser-e2e.mjs",
     "test:complete-animal-browser": "node scripts/complete-animal-browser-e2e.mjs",
     "test:complete-insect-browser": "node scripts/complete-insect-browser-e2e.mjs",
+    "test:generic-target-browser": "node scripts/generic-target-browser-e2e.mjs",
     "test:blender": "node scripts/run-blender-acceptance.mjs",
     "test:prusaslicer": "node scripts/run-prusaslicer-acceptance.mjs",
     "preview": "vite preview",

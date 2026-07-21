@@ -2143,6 +2143,25 @@ fn temporary_symmetric_profile_for_grid(
                             .collect()
                     },
                 )
+            })
+            .or_else(|| {
+                let protrusions = &source.generation_constraints.protrusions;
+                let feature_records = source
+                    .generation_constraints
+                    .target_parts
+                    .iter()
+                    .filter(|part| {
+                        !matches!(
+                            part.kind,
+                            ori_domain::BeginnerTargetPartKindV1::Head
+                                | ori_domain::BeginnerTargetPartKindV1::Torso
+                        )
+                    })
+                    .count();
+                ((2..=8).contains(&protrusions.len())
+                    && feature_records == protrusions.len()
+                    && protrusions.windows(2).all(|pair| pair[0].id < pair[1].id))
+                .then(|| protrusions.iter().map(|target| target.id).collect())
             });
     let mut profile = source.clone();
     profile.generation_constraints.detail_level = point.detail_level;
@@ -2242,7 +2261,41 @@ fn symmetric_plan_kind(
             .iter()
             .any(|part| part.kind == kind && part.count == 2)
     };
-    if profile.generation_constraints.target_category
+    let feature_records = profile
+        .generation_constraints
+        .target_parts
+        .iter()
+        .filter(|part| {
+            !matches!(
+                part.kind,
+                ori_domain::BeginnerTargetPartKindV1::Head
+                    | ori_domain::BeginnerTargetPartKindV1::Torso
+            )
+        })
+        .count();
+    let generic_mixed_target = feature_records >= 2
+        && !(has(ori_domain::BeginnerTargetPartKindV1::Wing)
+            && has(ori_domain::BeginnerTargetPartKindV1::Antenna))
+        && !(profile.generation_constraints.target_category
+            == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
+            && profile
+                .generation_constraints
+                .target_parts
+                .iter()
+                .any(|part| {
+                    part.kind == ori_domain::BeginnerTargetPartKindV1::Horn && part.count == 1
+                })
+            && (profile
+                .generation_constraints
+                .target_parts
+                .iter()
+                .any(|part| {
+                    part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1
+                })
+                || has(ori_domain::BeginnerTargetPartKindV1::Ear)));
+    if generic_mixed_target {
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+    } else if profile.generation_constraints.target_category
         == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
         && profile
             .generation_constraints
@@ -2892,6 +2945,7 @@ fn apply_beginner_generated_plan(
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteWingedAnimalBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
     ) {
         return Err("the selected generated plan is preview-only".to_owned());
     }
@@ -3059,6 +3113,11 @@ fn apply_beginner_generated_plan(
             "Apply the bounded horn, tail, ear, four-leg, and wing-pair composite candidate.",
             "All five live bindings and candidate identity were revalidated before apply.",
         ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase => (
+            "Bounded composite target base",
+            "Apply the bounded crease candidate composed from the recognized target bindings.",
+            "Every live binding, geometry proof, and candidate identity was revalidated before apply.",
+        ),
         ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold => (
             "Diagonal fold",
             "Fold the rectangular sheet on the generated diagonal.",
@@ -3221,6 +3280,11 @@ fn apply_grid_plan_document(
             "Complete winged animal grid candidate",
             "Apply the globally proven five-binding winged animal parameter-grid candidate.",
             "All five live bindings, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase => (
+            "Bounded composite grid candidate",
+            "Apply the globally proven parameter-grid candidate for the recognized target bindings.",
+            "Every live binding, proof, and candidate identity was revalidated before apply.",
         ),
         _ => return Err("grid_candidate_kind_invalid".to_owned()),
     };
@@ -11700,6 +11764,89 @@ mod tests {
         );
         assert!(!reopened.editor.can_undo());
         assert!(!reopened.editor.can_redo());
+    }
+
+    #[test]
+    fn generic_mixed_target_grid_apply_undo_redo_and_archive_round_trip() {
+        let mut profile = ori_domain::BeginnerDesignProfileV1::default();
+        profile.generation_constraints.target_category =
+            Some(ori_domain::BeginnerTargetCategoryV1::Animal);
+        profile.generation_constraints.target_parts = vec![
+            (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+            (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+            (ori_domain::BeginnerTargetPartKindV1::Leg, 4),
+            (ori_domain::BeginnerTargetPartKindV1::Fin, 2),
+        ]
+        .into_iter()
+        .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
+        .collect();
+        configure_symmetric_profile(
+            &mut profile,
+            ori_domain::BeginnerSymmetricParameterEstimateV1 {
+                protrusion_count: 4,
+                scale_percent: 27,
+                spacing_percent: 50,
+            },
+            27,
+            50,
+        );
+        let mut fin = profile.generation_constraints.protrusions[0].clone();
+        fin.id = 2;
+        fin.count = 2;
+        fin.priority = 60;
+        profile.generation_constraints.protrusions.push(fin);
+        let point = ori_domain::beginner_parameter_grid_v1()[13];
+        let temporary = temporary_symmetric_profile_for_grid(&profile, point).unwrap();
+        assert_eq!(temporary.generation_constraints.protrusions.len(), 2);
+        let mut project = initial_project_state();
+        let plan = grid_template_plan(
+            project.project_id,
+            project.editor.pattern(),
+            &project.editor.paper().boundary_vertices,
+            &profile,
+            point,
+        )
+        .unwrap()
+        .into_iter()
+        .find(|plan| {
+            plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+        })
+        .unwrap();
+        let project_id = project.project_id;
+        let instance_id = project.instance_id;
+        let revision = project.editor.revision();
+        let saved_profile = execute_command(
+            &mut project,
+            project_id,
+            revision,
+            Command::UpdateBeginnerDesignProfile { profile },
+        )
+        .unwrap();
+        let applied = apply_grid_plan_document(
+            &mut project,
+            instance_id,
+            project_id,
+            saved_profile.revision,
+            plan.clone(),
+        )
+        .unwrap();
+        assert!(
+            apply_grid_plan_document(
+                &mut project,
+                instance_id,
+                project_id,
+                saved_profile.revision,
+                plan,
+            )
+            .is_err()
+        );
+        let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
+        execute_redo(&mut project, project_id, undone.revision).unwrap();
+        let saved = project.document();
+        let bytes = write_project_ori2(&saved).unwrap();
+        let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default()).unwrap();
+        let reopened = ProjectState::from_document(restored, PathBuf::from("generic-target.ori2"));
+        assert_eq!(reopened.document(), saved);
     }
 
     #[test]

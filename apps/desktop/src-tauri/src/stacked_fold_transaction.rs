@@ -1203,7 +1203,10 @@ fn apply_stacked_fold_transaction_with_title(
             }
         }
     }
-    project.current_layer_evidence = applied_layer_order.clone();
+    project.current_layer_evidence = target
+        .is_none()
+        .then(|| applied_layer_order.clone())
+        .flatten();
     drop(project);
     transaction_slot.pending = None;
     transaction_slot.active_generation = None;

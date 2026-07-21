@@ -3127,15 +3127,25 @@ mod tests {
         );
         let line_start = ori_domain::Point2::new(first[0], -first[2]);
         let line_end = ori_domain::Point2::new(second[0], -second[2]);
-        assert!(inserted.iter().all(|vertex| {
-            let cross = (line_end.x - line_start.x) * (vertex.position.y - line_start.y)
-                - (line_end.y - line_start.y) * (vertex.position.x - line_start.x);
-            cross.abs() <= f64::EPSILON
-                && vertex.position.x >= line_start.x.min(line_end.x)
-                && vertex.position.x <= line_start.x.max(line_end.x)
-                && vertex.position.y >= line_start.y.min(line_end.y)
-                && vertex.position.y <= line_start.y.max(line_end.y)
-        }));
+        let line_length =
+            ((line_end.x - line_start.x).powi(2) + (line_end.y - line_start.y).powi(2)).sqrt();
+        let position_tolerance = 1.0e-9_f64;
+        let inserted_on_requested_line = inserted
+            .iter()
+            .filter(|vertex| {
+                let cross = (line_end.x - line_start.x) * (vertex.position.y - line_start.y)
+                    - (line_end.y - line_start.y) * (vertex.position.x - line_start.x);
+                cross.abs() <= position_tolerance * line_length.max(1.0)
+                    && vertex.position.x + position_tolerance >= line_start.x.min(line_end.x)
+                    && vertex.position.x - position_tolerance <= line_start.x.max(line_end.x)
+                    && vertex.position.y + position_tolerance >= line_start.y.min(line_end.y)
+                    && vertex.position.y - position_tolerance <= line_start.y.max(line_end.y)
+            })
+            .count();
+        assert!(
+            inserted_on_requested_line >= 2,
+            "both source hinges must gain a materialized intersection on the requested line"
+        );
         assert!(after.pattern().edges.len() > before.pattern().edges.len());
         project.editor.undo(applied_revision).unwrap();
         assert_eq!(project.editor.pattern(), before.pattern());

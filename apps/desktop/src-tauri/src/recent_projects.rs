@@ -5,6 +5,7 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -68,44 +69,57 @@ impl RecentProjectFilesystem for LocalRecentProjectFilesystem {
     }
 }
 
-pub(super) struct FileRecentProjectStorage(PathBuf);
+pub(super) struct FileRecentProjectStorage {
+    path: PathBuf,
+    observed: Mutex<Option<Option<[u8; 32]>>>,
+}
 
 impl FileRecentProjectStorage {
     pub fn new(path: PathBuf) -> Self {
-        Self(path)
+        Self {
+            path,
+            observed: Mutex::new(None),
+        }
     }
 }
 
 impl RecentProjectStorage for FileRecentProjectStorage {
     fn read(&self) -> Result<Option<Vec<u8>>, ()> {
-        match fs::symlink_metadata(&self.0) {
+        let bytes = match fs::symlink_metadata(&self.path) {
             Ok(metadata)
                 if metadata.is_file()
                     && !is_link_or_reparse(&metadata)
                     && link_count(&metadata) == 1
                     && metadata.len() <= 64 * 1024 =>
             {
-                fs::read(&self.0).map(Some).map_err(|_| ())
+                fs::read(&self.path).map(Some).map_err(|_| ())
             }
             Ok(_) => Err(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(_) => Err(()),
-        }
+        }?;
+        *self.observed.lock().map_err(|_| ())? = Some(bytes.as_deref().map(content_digest));
+        Ok(bytes)
     }
 
     fn replace_atomically(&mut self, bytes: &[u8]) -> Result<(), ()> {
         if bytes.len() > 64 * 1024 {
             return Err(());
         }
-        let parent = self.0.parent().ok_or(())?;
+        let parent = self.path.parent().ok_or(())?;
         fs::create_dir_all(parent).map_err(|_| ())?;
-        if let Ok(metadata) = fs::symlink_metadata(&self.0)
+        if let Ok(metadata) = fs::symlink_metadata(&self.path)
             && (!metadata.is_file() || is_link_or_reparse(&metadata) || link_count(&metadata) != 1)
         {
             return Err(());
         }
-        let lease = StorageLease::acquire(&self.0)?;
-        let staged = self.0.with_extension("recent.next");
+        let lease = StorageLease::acquire(&self.path)?;
+        let expected = self.observed.lock().map_err(|_| ())?.ok_or(())?;
+        let actual = read_current_digest(&self.path)?;
+        if actual != expected {
+            return Err(());
+        }
+        let staged = self.path.with_extension("recent.next");
         match fs::symlink_metadata(&staged) {
             Ok(metadata)
                 if metadata.is_file()
@@ -126,14 +140,39 @@ impl RecentProjectStorage for FileRecentProjectStorage {
         let result = (|| {
             file.write_all(bytes).map_err(|_| ())?;
             file.sync_all().map_err(|_| ())?;
-            publish_staged(&file, &staged, &self.0)
+            publish_staged(&file, &staged, &self.path)
         })();
         drop(file);
         if result.is_err() {
             let _ = fs::remove_file(staged);
         }
         drop(lease);
+        if result.is_ok() {
+            *self.observed.lock().map_err(|_| ())? = Some(Some(content_digest(bytes)));
+        }
         result
+    }
+}
+
+fn content_digest(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+
+fn read_current_digest(path: &Path) -> Result<Option<[u8; 32]>, ()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata)
+            if metadata.is_file()
+                && !is_link_or_reparse(&metadata)
+                && link_count(&metadata) == 1
+                && metadata.len() <= 64 * 1024 =>
+        {
+            fs::read(path)
+                .map(|bytes| Some(content_digest(&bytes)))
+                .map_err(|_| ())
+        }
+        Ok(_) => Err(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
     }
 }
 
@@ -532,6 +571,7 @@ mod tests {
         )
         .unwrap();
         let mut storage = FileRecentProjectStorage::new(destination.clone());
+        assert_eq!(storage.read().unwrap(), Some(b"live".to_vec()));
         assert_eq!(storage.replace_atomically(b"second"), Err(()));
         assert_eq!(fs::read(destination).unwrap(), b"live");
     }
@@ -544,6 +584,7 @@ mod tests {
         fs::write(destination.with_extension("recent.lock"), b"0").unwrap();
         fs::write(destination.with_extension("recent.next"), b"crash-partial").unwrap();
         let mut storage = FileRecentProjectStorage::new(destination.clone());
+        assert_eq!(storage.read().unwrap(), Some(b"old".to_vec()));
         storage.replace_atomically(b"new").unwrap();
         assert_eq!(fs::read(&destination).unwrap(), b"new");
         assert!(!destination.with_extension("recent.lock").exists());
@@ -557,7 +598,22 @@ mod tests {
         fs::write(&destination, b"live").unwrap();
         fs::create_dir(destination.with_extension("recent.next")).unwrap();
         let mut storage = FileRecentProjectStorage::new(destination.clone());
+        assert_eq!(storage.read().unwrap(), Some(b"live".to_vec()));
         assert_eq!(storage.replace_atomically(b"new"), Err(()));
         assert_eq!(fs::read(destination).unwrap(), b"live");
+    }
+
+    #[test]
+    fn stale_prelease_snapshot_cannot_overwrite_a_newer_process_commit() {
+        let directory = Directory::new();
+        let destination = directory.0.join("recent.json");
+        fs::write(&destination, b"base").unwrap();
+        let mut first = FileRecentProjectStorage::new(destination.clone());
+        let mut second = FileRecentProjectStorage::new(destination.clone());
+        assert_eq!(first.read().unwrap(), Some(b"base".to_vec()));
+        assert_eq!(second.read().unwrap(), Some(b"base".to_vec()));
+        first.replace_atomically(b"first commit").unwrap();
+        assert_eq!(second.replace_atomically(b"lost update"), Err(()));
+        assert_eq!(fs::read(destination).unwrap(), b"first commit");
     }
 }

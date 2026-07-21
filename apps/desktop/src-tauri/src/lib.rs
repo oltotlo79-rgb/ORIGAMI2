@@ -6135,16 +6135,26 @@ fn remember_current_project(app: &AppHandle, state: &AppState) {
         return;
     };
     drop(project);
-    let Ok(mut storage) = recent_storage(app) else {
-        return;
-    };
-    let mut registry = recent_projects::RecentProjectRegistry::load(&storage);
-    let _ = registry.remember(
-        path,
-        &name,
-        &recent_projects::LocalRecentProjectFilesystem,
-        &mut storage,
-    );
+    // A lease serializes publication, while the storage CAS rejects a registry
+    // loaded before another process committed. Reload once so both successful
+    // normal saves remain in MRU order instead of silently losing one update.
+    for _ in 0..2 {
+        let Ok(mut storage) = recent_storage(app) else {
+            return;
+        };
+        let mut registry = recent_projects::RecentProjectRegistry::load(&storage);
+        if registry
+            .remember(
+                path.clone(),
+                &name,
+                &recent_projects::LocalRecentProjectFilesystem,
+                &mut storage,
+            )
+            .is_ok()
+        {
+            return;
+        }
+    }
 }
 
 #[tauri::command]

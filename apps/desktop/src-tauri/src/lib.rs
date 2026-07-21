@@ -1670,6 +1670,61 @@ fn bounded_folded_pose_landmark_score_v1(
     Some(u8::try_from(100_u64.saturating_sub(combined.min(1_000_000) / 10_000)).unwrap_or(0))
 }
 
+fn preset_weighted_refinement_score_v1(
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+    reference: &BeginnerReferenceModelSuggestionV1,
+    profile: &ori_domain::BeginnerDesignProfileV1,
+) -> u8 {
+    let shape_3d = bounded_folded_pose_landmark_score_v1(plan, reference).unwrap_or(0);
+    let shape_2d = {
+        let mut min = [f64::INFINITY; 2];
+        let mut max = [f64::NEG_INFINITY; 2];
+        for vertex in &plan.crease_pattern.vertices {
+            min[0] = min[0].min(vertex.position.x);
+            min[1] = min[1].min(vertex.position.y);
+            max[0] = max[0].max(vertex.position.x);
+            max[1] = max[1].max(vertex.position.y);
+        }
+        let target_x = i64::from(reference.bbox_max_tenths_mm[0])
+            .saturating_sub(i64::from(reference.bbox_min_tenths_mm[0]))
+            .unsigned_abs();
+        let target_y = i64::from(reference.bbox_max_tenths_mm[1])
+            .saturating_sub(i64::from(reference.bbox_min_tenths_mm[1]))
+            .unsigned_abs();
+        let candidate_x = ((max[0] - min[0]).max(0.0) * 10.0).round() as u64;
+        let candidate_y = ((max[1] - min[1]).max(0.0) * 10.0).round() as u64;
+        let major = target_x
+            .max(target_y)
+            .max(candidate_x)
+            .max(candidate_y)
+            .max(1);
+        u8::try_from(
+            100_u64.saturating_sub(
+                candidate_x
+                    .abs_diff(target_x)
+                    .max(candidate_y.abs_diff(target_y))
+                    * 100
+                    / major,
+            ),
+        )
+        .unwrap_or(0)
+    };
+    let shape = (u16::from(shape_2d) * 35 + u16::from(shape_3d) * 65) / 100;
+    let foldability = 100_u16.saturating_sub(
+        u16::try_from(plan.crease_pattern.edges.len().saturating_mul(2)).unwrap_or(100),
+    );
+    let step = 100_u16.saturating_sub(
+        u16::try_from(plan.instruction_codes.len().saturating_mul(5)).unwrap_or(100),
+    );
+    let paper =
+        100_u16.saturating_sub(u16::try_from(plan.crease_pattern.vertices.len()).unwrap_or(100));
+    let total = shape * u16::from(profile.shape_fidelity_weight)
+        + foldability * u16::from(profile.foldability_weight)
+        + step * u16::from(profile.step_count_weight)
+        + paper * u16::from(profile.paper_efficiency_weight);
+    u8::try_from(total / 100).unwrap_or(0)
+}
+
 fn compare_flat_surface_to_reference_model_v1(
     surface: &ori_core::CertifiedFlatSurfaceV1,
     reference: &BeginnerReferenceModelSuggestionV1,
@@ -2922,7 +2977,7 @@ fn refine_beginner_grid_plan_v1(
     };
     let mut point = initial_point;
     let mut plan = initial_plan;
-    let mut score = compare_plan_to_reference_model_v1(&plan, reference).0;
+    let mut score = preset_weighted_refinement_score_v1(&plan, reference, profile);
     let initial_score = score;
     let mut iterations = 0_u8;
     let mut improvements = 0_u8;
@@ -2955,7 +3010,7 @@ fn refine_beginner_grid_plan_v1(
         {
             continue;
         }
-        let seed_score = compare_plan_to_reference_model_v1(&seed_plan, reference).0;
+        let seed_score = preset_weighted_refinement_score_v1(&seed_plan, reference, profile);
         if seed_score > score
             || (seed_score == score
                 && (seed_point.scale_percent, seed_point.spacing_percent)
@@ -3011,7 +3066,8 @@ fn refine_beginner_grid_plan_v1(
             {
                 continue;
             }
-            let candidate_score = compare_plan_to_reference_model_v1(&candidate_plan, reference).0;
+            let candidate_score =
+                preset_weighted_refinement_score_v1(&candidate_plan, reference, profile);
             let replaces = candidate_score > score
                 && best.as_ref().is_none_or(|current| {
                     (
@@ -3975,7 +4031,10 @@ fn apply_grid_plan_document(
             confidence_score: ori_domain::beginner_target_approximation_score_v1(
                 &beginner_design_profile.generation_constraints,
             ),
-            confidence_reasons: vec!["native_topology_witness".to_owned()],
+            confidence_reasons: vec![
+                "native_topology_witness".to_owned(),
+                "preset_weighted_2d_3d_metric".to_owned(),
+            ],
             explicit_override: false,
             source_asset_fingerprint,
         });
@@ -21431,6 +21490,35 @@ mod tests {
         assert_eq!(
             bounded_folded_pose_landmark_score_v1(&collision, &reference),
             None
+        );
+        let ranked = plan(
+            vec![
+                Vertex {
+                    id: VertexId::new(),
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: VertexId::new(),
+                    position: Point2::new(10.0, 8.0),
+                },
+            ],
+            Vec::new(),
+        );
+        let mut shape_profile = ori_domain::BeginnerDesignProfileV1::default();
+        shape_profile.preset = ori_domain::BeginnerDesignPresetV1::ShapePriority;
+        shape_profile.shape_fidelity_weight = 60;
+        shape_profile.foldability_weight = 20;
+        shape_profile.step_count_weight = 10;
+        shape_profile.paper_efficiency_weight = 10;
+        let mut fold_profile = ori_domain::BeginnerDesignProfileV1::default();
+        fold_profile.preset = ori_domain::BeginnerDesignPresetV1::FoldabilityPriority;
+        fold_profile.shape_fidelity_weight = 20;
+        fold_profile.foldability_weight = 60;
+        fold_profile.step_count_weight = 10;
+        fold_profile.paper_efficiency_weight = 10;
+        assert_ne!(
+            preset_weighted_refinement_score_v1(&ranked, &reference, &shape_profile),
+            preset_weighted_refinement_score_v1(&ranked, &reference, &fold_profile),
         );
 
         let oversized = plan(

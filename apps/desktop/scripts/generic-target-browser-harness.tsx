@@ -18,6 +18,7 @@ const initialBindings: NonNullable<BeginnerGenerationConstraintsV1['protrusions'
     joint: 'fixed', motion_degrees: [0, 0], side: 'either', priority: 60 },
 ]
 function Harness() {
+  const [metricPreset, setMetricPreset] = useState<'balanced' | 'shape' | 'foldability'>('balanced')
   const [recognized, setRecognized] = useState(false), [preview, setPreview] = useState(false)
   const [status, setStatus] = useState('Waiting for image or GLB'), [applied, setApplied] = useState(false)
   const [bindings, setBindings] = useState([...initialBindings])
@@ -101,6 +102,9 @@ function Harness() {
     } else setGlbWitness(null)
   }
   return <main><h1>Bounded generic target</h1>
+    <button onClick={() => setMetricPreset('balanced')}>Use balanced metric</button>
+    <button onClick={() => setMetricPreset('shape')}>Use shape-priority metric</button>
+    <button onClick={() => setMetricPreset('foldability')}>Use foldability-priority metric</button>
     <button onClick={() => recognize('Empty generic target')}>Create empty generic target</button>
     <button onClick={() => recognize('Image')}>Recognize mixed target image</button>
     <button onClick={() => recognize('JPEG EXIF')}>Recognize EXIF JPEG silhouette</button>
@@ -215,6 +219,7 @@ function Harness() {
     <button onClick={() => setStatus('Refinement resource one-short: 31/32 proposals accepted safely')}>Try refinement resource one-short</button>
     {preview && <section aria-label="Generic target candidate preview"><p>Global flat-foldability proven</p>
       <p>Multi-start refinement: 5 starts · 6/8 iterations · 3 strict improvements · global best score 92</p>
+      <p>Preset-weighted 2D+3D ranking: {metricPreset} · winner {metricPreset === 'shape' ? 1 : metricPreset === 'foldability' ? 2 : 3}</p>
       <p>Deterministic replay digest: seed-v1-5-6-3-92</p>
       <p>Deterministic candidate synthesis: {synthesizedCandidateCount} bounded designs from {bindings.length} bindings and {contourPointCount} contour points.</p>
       <button aria-pressed={selectedCandidate === 1} onClick={() => setSelectedCandidate(1)}>Select contour candidate 1</button>

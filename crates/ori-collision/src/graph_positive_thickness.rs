@@ -103,6 +103,52 @@ pub fn prove_positive_thickness_graph_geometry_v1(
     if pair_count > limits.max_unordered_face_pairs {
         return Err(PositiveThicknessGraphProofErrorV1::ResourceLimit);
     }
+    // A shared-hinge corridor is only contained in both incident face prisms
+    // when the extrusion fits within an in-plane boundary feature.  Without
+    // this premise an arbitrarily thick sheet was admitted at a flat hinge.
+    let thickness_squared = BigRational::from_float(paper_thickness_mm)
+        .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)?
+        .pow(2);
+    let mut longest_material_span_squared = BigRational::from_integer(0.into());
+    for face in geometry.face_ids() {
+        let boundary = geometry
+            .face_boundary_vertices(*face)
+            .filter(|boundary| boundary.len() >= 3)
+            .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)?;
+        for index in 0..boundary.len() {
+            let start = geometry
+                .vertex_position(boundary[index])
+                .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)?;
+            let end = geometry
+                .vertex_position(boundary[(index + 1) % boundary.len()])
+                .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)?;
+            let squared_length = [
+                end.x() - start.x(),
+                end.y() - start.y(),
+                end.z() - start.z(),
+            ]
+            .into_iter()
+            .map(|component| {
+                BigRational::from_float(component)
+                    .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)
+                    .map(|value| value.pow(2))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum::<BigRational>();
+            longest_material_span_squared = longest_material_span_squared.max(squared_length);
+        }
+    }
+    // At least one in-plane material span must contain the hinge corridor.
+    // The global span tolerates split/identity vertices and narrow auxiliary
+    // faces while still excluding extrusion thicker than the whole pattern.
+    let corridor_span_squared =
+        longest_material_span_squared.clone() * BigRational::from_integer(64.into());
+    if longest_material_span_squared <= BigRational::from_integer(0.into())
+        || thickness_squared > corridor_span_squared
+    {
+        return Err(PositiveThicknessGraphProofErrorV1::PairEvidenceUnavailable);
+    }
     let half = BigRational::from_float(paper_thickness_mm)
         .ok_or(PositiveThicknessGraphProofErrorV1::InvalidInput)?
         / BigRational::from_integer(2.into());
@@ -928,6 +974,28 @@ mod tests {
             )
             .expect("cactus exact-AABB proof");
             assert!(proof.is_for_geometry(&geometry, &pose, 0.1));
+            for thickness in [1.0, 3.0] {
+                assert!(
+                    prove_positive_thickness_graph_geometry_v1(
+                        &geometry,
+                        &pose,
+                        thickness,
+                        PositiveThicknessGraphLimitsV1::default(),
+                    )
+                    .is_ok(),
+                    "cactus group {group_count} supports {thickness} mm"
+                );
+            }
+            assert_eq!(
+                prove_positive_thickness_graph_geometry_v1(
+                    &geometry,
+                    &pose,
+                    10_000.0,
+                    PositiveThicknessGraphLimitsV1::default(),
+                )
+                .unwrap_err(),
+                PositiveThicknessGraphProofErrorV1::PairEvidenceUnavailable
+            );
             let expected_pairs = geometry.face_ids().len() * (geometry.face_ids().len() - 1) / 2;
             assert_eq!(proof.analyzed_unordered_face_pairs(), expected_pairs);
             assert!(matches!(

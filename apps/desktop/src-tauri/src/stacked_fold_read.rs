@@ -3098,6 +3098,7 @@ mod tests {
 
     #[test]
     fn current_graph_cycle_authenticates_or_fails_closed_three_times() {
+        let mut authenticated = 0;
         for _ in 0..3 {
             let (mut project, hinges) =
                 super::super::applied_pose::tests::four_vertex_cycle_project();
@@ -3123,6 +3124,7 @@ mod tests {
             );
             match response {
                 Ok(response) => {
+                    authenticated += 1;
                     assert!(!response.authorizes_project_mutation);
                     assert!(response.continuous_path_certified);
                     let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
@@ -3151,5 +3153,6 @@ mod tests {
                 }
             }
         }
+        assert_eq!(authenticated, 3, "fixed native fixture must authenticate");
     }
 }

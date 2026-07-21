@@ -1433,6 +1433,13 @@ pub(super) mod tests {
         ProjectState::new_with_paper(CreasePattern::empty(), Paper::default())
     }
 
+    fn fixed_id<T: serde::de::DeserializeOwned>(prefix: &str, suffix: u64) -> T {
+        serde_json::from_value(serde_json::json!(format!(
+            "{prefix}0000-0000-7000-8000-{suffix:012x}"
+        )))
+        .expect("fixed test id")
+    }
+
     pub(crate) fn four_vertex_cycle_project() -> (ProjectState, Vec<EdgeId>) {
         let points = [
             (100.0, 0.0),
@@ -1443,8 +1450,9 @@ pub(super) mod tests {
         ];
         let vertices = points
             .into_iter()
-            .map(|(x, y)| Vertex {
-                id: VertexId::new(),
+            .enumerate()
+            .map(|(index, (x, y))| Vertex {
+                id: fixed_id("ae00", index as u64 + 1),
                 position: Point2::new(x, y),
             })
             .collect::<Vec<_>>();
@@ -1455,13 +1463,15 @@ pub(super) mod tests {
         let center = vertices[4].id;
         let mut edges = (0..4)
             .map(|index| Edge {
-                id: EdgeId::new(),
+                id: fixed_id("af00", index as u64 + 1),
                 start: boundary[index],
                 end: boundary[(index + 1) % 4],
                 kind: EdgeKind::Boundary,
             })
             .collect::<Vec<_>>();
-        let hinges = (0..4).map(|_| EdgeId::new()).collect::<Vec<_>>();
+        let hinges = (0..4)
+            .map(|index| fixed_id("af00", index as u64 + 10))
+            .collect::<Vec<_>>();
         edges.extend((0..4).map(|index| Edge {
             id: hinges[index],
             start: boundary[index],
@@ -1476,10 +1486,10 @@ pub(super) mod tests {
             boundary_vertices: boundary,
             ..Paper::default()
         };
-        (
-            ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper),
-            hinges,
-        )
+        let mut project = ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper);
+        project.instance_id = fixed_id("aa00", 2);
+        project.project_id = fixed_id("aa00", 1);
+        (project, hinges)
     }
 
     pub(crate) fn flat_foldable_cross_cycle_project() -> (ProjectState, Vec<EdgeId>) {

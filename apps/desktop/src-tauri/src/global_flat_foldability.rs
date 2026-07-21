@@ -2576,12 +2576,15 @@ pub(super) mod tests {
             Some(CurrentLayerEvidence::NonFlat(_))
         ));
         let revision = reopened.editor.revision();
+        let vertex = reopened.editor.pattern().vertices[0].id;
+        let position = reopened.editor.pattern().vertices[0].position;
         reopened
             .editor
             .execute(
                 revision,
-                Command::SetProjectMemo {
-                    memo: "after reopen".to_owned(),
+                Command::MoveVertex {
+                    id: vertex,
+                    position: Point2::new(position.x + 1.0, position.y),
                 },
             )
             .expect("the next operation after reopen remains available");

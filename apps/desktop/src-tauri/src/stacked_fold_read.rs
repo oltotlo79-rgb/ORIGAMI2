@@ -6126,6 +6126,146 @@ mod tests {
     }
 
     #[test]
+    fn balloon_degree_six_exact_schedule_is_admitted_by_strict_dyadic_read() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (pattern, mut paper, moving) = balloon_six_sector_cycle_pattern();
+        paper.thickness_mm = 0.1;
+        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        let hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            snapshot.faces[0].id,
+        );
+        let layer_state = GlobalFlatFoldabilityState::default();
+        super::super::global_flat_foldability::tests::install_possible_layer_order(
+            &layer_state,
+            &project,
+        );
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let state = AppState::new(project);
+        let schedule = dense_grid_schedule(&hinges, &moving, 100);
+        let target = {
+            let project = super::super::lock_project(&state).unwrap();
+            let capability = project
+                .applied_pose_authority
+                .capture_capability(&project)
+                .unwrap()
+                .unwrap();
+            let (geometry, audit, pose) = capability.graph().unwrap();
+            prepare_requested_cycle_schedule_v1(
+                &schedule,
+                geometry,
+                audit,
+                pose.fixed_face(),
+                pose.hinge_angles(),
+            )
+            .unwrap()
+            .evaluate(1.0)
+            .unwrap()
+        };
+        let target_angles = target
+            .as_slice()
+            .iter()
+            .map(|angle| DyadicPoseGraphAngleDtoV1 {
+                edge: angle.edge(),
+                angle_degrees: angle.angle_degrees(),
+            })
+            .collect::<Vec<_>>();
+        let observed = read_bounded_dyadic_pose_graph_inner_v1(
+            &state,
+            Some(&layer_state),
+            DyadicPoseGraphReadRequestV1 {
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                target_angles: target_angles
+                    .iter()
+                    .map(|angle| DyadicPoseGraphAngleDtoV1 {
+                        edge: angle.edge,
+                        angle_degrees: angle.angle_degrees,
+                    })
+                    .collect(),
+                max_states: 32,
+                max_transitions: 128,
+                cycle_schedule_v1: Some(schedule.clone()),
+            },
+            None,
+        )
+        .expect("degree-six balloon exact schedule is a supported dyadic read");
+        assert_eq!(observed.status, "certified");
+        assert!(observed.certified_transition_count > 0);
+        assert!(observed.positive_thickness_certified);
+        assert!(observed.layer_transport_certified);
+        assert!(observed.mutation_candidate_ready);
+        assert!(!observed.authorizes_project_mutation);
+
+        let expected_steps = observed.certified_transition_count + 1;
+        let preview_state = DyadicPathPreviewState::default();
+        let preview = mint_dyadic_pose_path_preview_inner_v1(
+            &state,
+            &layer_state,
+            &preview_state,
+            DyadicPathPreviewRequestV1 {
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                target_angles,
+                max_states: 32,
+                max_transitions: 128,
+                cycle_schedule_v1: Some(schedule),
+                expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
+                expected_positive_thickness_binding_sha256: observed
+                    .positive_thickness_binding_sha256
+                    .unwrap(),
+                expected_layer_transport_binding_sha256: observed
+                    .layer_transport_binding_sha256
+                    .unwrap(),
+            },
+        )
+        .expect("all three degree-six proof families mint a one-shot preview");
+        let applied = apply_dyadic_pose_path_preview_inner_v1(
+            &state,
+            &layer_state,
+            &preview_state,
+            ApplyDyadicPathPreviewRequestV1 {
+                preview_token: preview.preview_token,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                expected_target_binding_sha256: preview.target_binding_sha256,
+                expected_path_binding_sha256: preview.path_binding_sha256,
+                expected_positive_thickness_binding_sha256: preview
+                    .positive_thickness_binding_sha256,
+                expected_layer_transport_binding_sha256: preview.layer_transport_binding_sha256,
+            },
+        )
+        .expect("proof-complete degree-six balloon path applies atomically");
+        let project = super::super::lock_project(&state).unwrap();
+        assert_eq!(applied, revision + 1);
+        assert_eq!(
+            project.editor.instruction_timeline().steps.len(),
+            expected_steps
+        );
+        assert!(
+            project.editor.instruction_timeline().steps[1..]
+                .iter()
+                .all(|step| { step.visual.path_certificate_reference_v1.is_some() })
+        );
+    }
+
+    #[test]
     fn automatic_kawasaki_archive_reopens_with_native_pose_authority() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         let (mut project, hinges) = super::super::applied_pose::tests::four_vertex_cycle_project();

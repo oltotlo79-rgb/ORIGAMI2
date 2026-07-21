@@ -30,6 +30,8 @@ pub enum ContinuousLayerTransportErrorV1 {
     AmbiguousOrder,
     #[error("a face pair crosses or reverses its authenticated source order")]
     Crossing,
+    #[error("a transition contains a colliding self-order witness")]
+    Collision,
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +147,9 @@ pub fn prove_continuous_layer_transport_v1(
     }
     let mut hashes = Vec::with_capacity(expected_transitions);
     for orders in transition_orders {
+        if orders.iter().any(|(lower, upper)| lower == upper) {
+            return Err(ContinuousLayerTransportErrorV1::Collision);
+        }
         let actual = orders.iter().copied().collect::<HashSet<_>>();
         if actual.len() != orders.len() || actual.len() != expected.len() {
             return Err(ContinuousLayerTransportErrorV1::AmbiguousOrder);

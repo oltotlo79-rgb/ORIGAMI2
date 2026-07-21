@@ -196,6 +196,12 @@ try {
   const insectBindings = page.getByRole('list', { name: 'Ordered insect landmark bindings' })
   if (await insectBindings.getByRole('listitem').count() !== 10) throw new Error('ten insect semantic landmarks were not retained')
   await page.getByText('Ray-group digests: ray0 91a70f2c · ray1 a72be019 · ray2 c31488da · ray3 e90f147b', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Recognize asymmetric fish landmarks' }).click()
+  await page.getByText('Asymmetric fish semantic landmarks bound to certified four-ray groups', { exact: true }).waitFor()
+  const fishBindings = page.getByRole('list', { name: 'Ordered fish landmark bindings' })
+  if (await fishBindings.getByRole('listitem').count() !== 4) throw new Error('four fish semantic landmarks were not retained')
+  for (const role of ['head', 'tail', 'fin_left', 'fin_right']) await fishBindings.getByText(new RegExp(`: ${role} `)).waitFor()
+  await page.getByText('Fish ray-group digests: ray0 63c80a15 · ray1 15ec3972 · ray2 b2481d90 · ray3 e3714a6f', { exact: true }).waitFor()
   await page.getByText('Authority binding: image → body/local contours; GLB → depth/bulge targets.', { exact: true }).waitFor()
   await page.getByRole('region', { name: 'GLB geometry witness' }).getByText(/3D bounds 120×80×65 mm · 2D silhouette difference 7% · bulge targets 2/).waitFor()
   if ((await page.getByLabel('Body outline points').inputValue()).split('\n').length !== 4
@@ -209,6 +215,7 @@ try {
   await page.getByText('Native folded landmarks: body/local 3D · Hausdorff 4% · depth 3 mm · bulge error 2% · collision clear', { exact: true }).waitFor()
   await page.getByText('AsymmetricFourLegLandmarkBase candidate: four individually bound leg landmarks · native certified mock accepted', { exact: true }).waitFor()
   await page.getByText('AsymmetricInsectLandmarkBase candidate: ten ordered semantic landmarks · four ray-group digests · native path certified', { exact: true }).waitFor()
+  await page.getByText('AsymmetricFishLandmarkBase candidate: four ordered semantic landmarks · four ray-group digests · native path certified', { exact: true }).waitFor()
   await page.getByText('Folded face quality: orientation error 6% · area coverage error 9% · manifold faces verified', { exact: true }).waitFor()
   await page.getByText('Landmark error vectors: 4 · maximum error point 3 · combined score 84/100', { exact: true }).waitFor()
   await assertWitnessCanvas(page.getByRole('img', { name: 'Folded target and candidate landmark overlay' }))
@@ -238,6 +245,7 @@ try {
     await page.getByText('Applied AsymmetricBirdLandmarkBase: Undo/Redo/reopen retained four landmark bindings and path provenance', { exact: true }).waitFor()
     await page.getByText('Applied AsymmetricFourLegLandmarkBase: Undo/Redo/reopen retained four individual leg landmarks and native path provenance', { exact: true }).waitFor()
     await page.getByText('Applied AsymmetricInsectLandmarkBase: Undo/Redo/reopen retained ten semantic bindings, four group digests, and native path provenance', { exact: true }).waitFor()
+    await page.getByText('Applied AsymmetricFishLandmarkBase: Undo/Redo/reopen retained four semantic bindings, four group digests, and native path provenance', { exact: true }).waitFor()
     await page.getByText('Applied 3D candidate score 68/100 · depth error 7 mm', { exact: true }).waitFor()
   }
   for (const format of ['SVG', 'FOLD', 'ORIPA', 'Instruction PDF', 'Instruction SVG ZIP']) {
@@ -245,6 +253,7 @@ try {
     await page.getByText(`${format} parsed: topology authority and confidence provenance retained`, { exact: true }).waitFor()
     await page.getByText('AsymmetricFourLegLandmarkBase export retained four individual leg bindings and certified provenance', { exact: true }).waitFor()
     await page.getByText('AsymmetricInsectLandmarkBase export retained ten semantic bindings and four certified ray-group digests', { exact: true }).waitFor()
+    await page.getByText('AsymmetricFishLandmarkBase export retained four semantic bindings and four certified ray-group digests', { exact: true }).waitFor()
   }
   await page.getByRole('button', { name: 'Try tampered provenance export' }).click()
   await page.getByText('Rejected export: stale or tampered topology provenance', { exact: true }).waitFor()

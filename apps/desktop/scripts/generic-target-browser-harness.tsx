@@ -38,6 +38,7 @@ function Harness() {
   const [asymmetricBird, setAsymmetricBird] = useState(false)
   const [asymmetricFourLeg, setAsymmetricFourLeg] = useState(false)
   const [asymmetricInsect, setAsymmetricInsect] = useState(false)
+  const [asymmetricFish, setAsymmetricFish] = useState(false)
   const [exportStatus, setExportStatus] = useState<string | null>(null)
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
@@ -140,6 +141,17 @@ function Harness() {
           .map((role, ordinal) => <li key={role}>{ordinal}: {role} · physical ray {ordinal % 4}</li>)}
       </ol>
       <p>Ray-group digests: ray0 91a70f2c · ray1 a72be019 · ray2 c31488da · ray3 e90f147b</p>
+    </section>}
+    <button onClick={() => {
+      setAsymmetricFish(true)
+      setStatus('Asymmetric fish semantic landmarks bound to certified four-ray groups')
+    }}>Recognize asymmetric fish landmarks</button>
+    {asymmetricFish && <section aria-label="Asymmetric fish semantic provenance">
+      <ol aria-label="Ordered fish landmark bindings">
+        {['head', 'tail', 'fin_left', 'fin_right']
+          .map((role, ordinal) => <li key={role}>{ordinal}: {role} · physical ray {ordinal}</li>)}
+      </ol>
+      <p>Fish ray-group digests: ray0 63c80a15 · ray1 15ec3972 · ray2 b2481d90 · ray3 e3714a6f</p>
     </section>}
     <button onClick={() => {
       setRecognized(true); setPreview(false); setCandidateShortage(false); setMergedAuthorities(true)
@@ -263,6 +275,7 @@ function Harness() {
       {asymmetricBird && <p>AsymmetricBirdLandmarkBase candidate: four individually bound GLB/image landmarks · native path certified</p>}
       {asymmetricFourLeg && <p>AsymmetricFourLegLandmarkBase candidate: four individually bound leg landmarks · native certified mock accepted</p>}
       {asymmetricInsect && <p>AsymmetricInsectLandmarkBase candidate: ten ordered semantic landmarks · four ray-group digests · native path certified</p>}
+      {asymmetricFish && <p>AsymmetricFishLandmarkBase candidate: four ordered semantic landmarks · four ray-group digests · native path certified</p>}
       <p>Deterministic candidate synthesis: {synthesizedCandidateCount} bounded designs from {bindings.length} bindings and {contourPointCount} contour points.</p>
       <button aria-pressed={selectedCandidate === 1} onClick={() => setSelectedCandidate(1)}>Select contour candidate 1</button>
       <button aria-pressed={selectedCandidate === 2} onClick={() => setSelectedCandidate(2)}>Select contour candidate 2</button>
@@ -307,6 +320,7 @@ function Harness() {
       {asymmetricBird && <p>Applied AsymmetricBirdLandmarkBase: Undo/Redo/reopen retained four landmark bindings and path provenance</p>}
       {asymmetricFourLeg && <p>Applied AsymmetricFourLegLandmarkBase: Undo/Redo/reopen retained four individual leg landmarks and native path provenance</p>}
       {asymmetricInsect && <p>Applied AsymmetricInsectLandmarkBase: Undo/Redo/reopen retained ten semantic bindings, four group digests, and native path provenance</p>}
+      {asymmetricFish && <p>Applied AsymmetricFishLandmarkBase: Undo/Redo/reopen retained four semantic bindings, four group digests, and native path provenance</p>}
       {mergedAuthorities && <p>Applied 3D candidate score {threeDimensionalScore}/100 · depth error {depthError} mm</p>}
       <canvas ref={witnessCanvas} width={320} height={200} role="img" aria-label={`Applied contour placement correspondence candidate ${selectedCandidate}`} />
       <button onClick={() => setStatus('Generic target undone')}>Undo generic target</button>
@@ -321,6 +335,8 @@ function Harness() {
         && <p>AsymmetricFourLegLandmarkBase export retained four individual leg bindings and certified provenance</p>}
       {exportStatus?.includes('parsed:') && asymmetricInsect
         && <p>AsymmetricInsectLandmarkBase export retained ten semantic bindings and four certified ray-group digests</p>}
+      {exportStatus?.includes('parsed:') && asymmetricFish
+        && <p>AsymmetricFishLandmarkBase export retained four semantic bindings and four certified ray-group digests</p>}
     </section>}
   </main>
 }

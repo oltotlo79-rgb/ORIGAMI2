@@ -140,8 +140,16 @@ jobs:
           try {
             [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
             $securePassword = ConvertTo-SecureString -String $env:CERTIFICATE_PASSWORD -AsPlainText -Force
+            $pfxData = Get-PfxData -FilePath $certificate -Password $securePassword
+            $pfxLeaf = @($pfxData.EndEntityCertificates)
+            if ($pfxLeaf.Count -ne 1) { throw 'Windows signing PFX must contain exactly one leaf certificate.' }
+            $plannedThumbprint = $pfxLeaf[0].Thumbprint
+            if (Test-Path -LiteralPath "Cert:\CurrentUser\My\$plannedThumbprint") {
+              throw 'Windows signing certificate store thumbprint collision.'
+            }
             $importedCertificate = Import-PfxCertificate -FilePath $certificate `
               -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -Exportable:$false
+            if ($importedCertificate.Thumbprint -cne $plannedThumbprint) { throw 'Windows imported certificate identity mismatch.' }
             [IO.File]::WriteAllText($thumbprintFile, $importedCertificate.Thumbprint)
             $file = (Resolve-Path 'target/release/origami2-desktop.exe').Path
             & signtool sign /q /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
@@ -188,8 +196,16 @@ jobs:
           try {
             [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
             $securePassword = ConvertTo-SecureString -String $env:CERTIFICATE_PASSWORD -AsPlainText -Force
+            $pfxData = Get-PfxData -FilePath $certificate -Password $securePassword
+            $pfxLeaf = @($pfxData.EndEntityCertificates)
+            if ($pfxLeaf.Count -ne 1) { throw 'Windows signing PFX must contain exactly one leaf certificate.' }
+            $plannedThumbprint = $pfxLeaf[0].Thumbprint
+            if (Test-Path -LiteralPath "Cert:\CurrentUser\My\$plannedThumbprint") {
+              throw 'Windows signing certificate store thumbprint collision.'
+            }
             $importedCertificate = Import-PfxCertificate -FilePath $certificate `
               -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -Exportable:$false
+            if ($importedCertificate.Thumbprint -cne $plannedThumbprint) { throw 'Windows imported certificate identity mismatch.' }
             [IO.File]::WriteAllText($thumbprintFile, $importedCertificate.Thumbprint)
             $file = (Get-ChildItem 'target/release/bundle/nsis' -Filter '*.exe' -File -Recurse -ErrorAction Stop).FullName
             & signtool sign /q /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com `
@@ -260,14 +276,24 @@ jobs:
           echo "::add-mask::$CERTIFICATE_PASSWORD"
           echo "::add-mask::$SIGNING_IDENTITY"
           keychain="$RUNNER_TEMP/origami2-signing.keychain-db"
+          keychain_search_state="$RUNNER_TEMP/origami2-keychain-search-list.bin"
           certificate="$RUNNER_TEMP/apple-signing.p12"
           signing_pem="$RUNNER_TEMP/apple-signing.pem"
+          test ! -e "$keychain"
+          test ! -e "$keychain_search_state"
+          test ! -e "$certificate"
+          test ! -e "$signing_pem"
           cleanup_signing_material() {
             status="$1"
             trap - EXIT HUP INT TERM
             cleanup_status=0
+            if [ -e "$keychain_search_state" ]; then
+              original_keychains=()
+              while IFS= read -r -d '' item; do original_keychains+=("$item"); done < "$keychain_search_state"
+              security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1 || cleanup_status=$?
+            fi
             security delete-keychain "$keychain" >/dev/null 2>&1 || cleanup_status=$?
-            rm -f -- "$certificate" "$signing_pem" || cleanup_status=$?
+            rm -f -- "$certificate" "$signing_pem" "$keychain_search_state" || cleanup_status=$?
             [ "$status" -ne 0 ] && exit "$status"
             exit "$cleanup_status"
           }
@@ -279,10 +305,18 @@ jobs:
           chmod 600 "$certificate"
           openssl pkcs12 -in "$certificate" -passin env:CERTIFICATE_PASSWORD -nodes -out "$signing_pem"
           chmod 600 "$signing_pem"
+          original_keychains=()
+          while IFS= read -r item; do
+            [ -n "$item" ] && original_keychains+=("$item")
+          done < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
+          [ "${#original_keychains[@]}" -gt 0 ]
+          printf '%s\0' "${original_keychains[@]}" > "$keychain_search_state"
+          chmod 600 "$keychain_search_state"
           security create-keychain -p temporary "$keychain"
           security unlock-keychain -p temporary "$keychain"
           security import "$signing_pem" -k "$keychain" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k temporary "$keychain"
+          security list-keychains -d user -s "$keychain" "${original_keychains[@]}"
           codesign --force --deep --options runtime --timestamp --sign "$SIGNING_IDENTITY" \
             target/release/bundle/macos/ORIGAMI2.app
           APPLE_SIGNING_IDENTITY="$SIGNING_IDENTITY" \
@@ -330,14 +364,21 @@ jobs:
         run: |
           set -euo pipefail
           keychain="$RUNNER_TEMP/origami2-signing.keychain-db"
+          keychain_search_state="$RUNNER_TEMP/origami2-keychain-search-list.bin"
           certificate="$RUNNER_TEMP/apple-signing.p12"
           signing_pem="$RUNNER_TEMP/apple-signing.pem"
           archive="$RUNNER_TEMP/ORIGAMI2-notarization.zip"
+          if [ -e "$keychain_search_state" ]; then
+            original_keychains=()
+            while IFS= read -r -d '' item; do original_keychains+=("$item"); done < "$keychain_search_state"
+            security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1
+          fi
           if [ -e "$keychain" ]; then security delete-keychain "$keychain" >/dev/null 2>&1; fi
-          rm -f -- "$certificate" "$signing_pem" "$archive" "$RUNNER_TEMP"/AuthKey_*.p8
+          rm -f -- "$certificate" "$signing_pem" "$keychain_search_state" "$archive" "$RUNNER_TEMP"/AuthKey_*.p8
           test ! -e "$keychain"
           test ! -e "$certificate"
           test ! -e "$signing_pem"
+          test ! -e "$keychain_search_state"
           test ! -e "$archive"
           ! compgen -G "$RUNNER_TEMP/AuthKey_*.p8" >/dev/null
       - name: Verify macOS application bundle contract

@@ -494,6 +494,10 @@ test('signing secrets are approval-gated masked cleaned and absent from fork CI'
   assert.match(build, /ulimit -c 0/u)
   assert.doesNotMatch(release, /GITHUB_(?:ENV|OUTPUT)[^\n]*(?:TOKEN|PASSWORD|CERTIFICATE|SIGNING|NOTARY)/iu)
   assert.doesNotMatch(release, /actions\/cache@[\s\S]{0,500}(?:\.pfx|\.p12|\.p8|keychain|signature-verification)/iu)
+  assert.match(build, /certificate store thumbprint collision/u)
+  assert.match(build, /imported certificate identity mismatch/u)
+  assert.match(build, /origami2-keychain-search-list\.bin/u)
+  assert.match(build, /security list-keychains -d user -s "\$\{original_keychains\[@\]\}"/u)
   const secretReferences = build.match(/\$\{\{ secrets\.[A-Z0-9_]+ \}\}/gu) ?? []
   assert.equal(secretReferences.length, 10)
   for (const step of [

@@ -1968,7 +1968,6 @@ fn certify_beginner_fold_path_v1(
             .ok()?
         };
         let schedule_limits = ori_kinematics::CycleScheduleLimitsV1 {
-            max_degree: 1,
             max_work: 1_048_576,
             ..ori_kinematics::CycleScheduleLimitsV1::default()
         };
@@ -3908,6 +3907,7 @@ fn apply_beginner_generated_plan(
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricHornBase
@@ -4034,6 +4034,11 @@ fn apply_beginner_generated_plan(
             "Symmetric bird base",
             "Create the bounded bilateral bird-wing base creases.",
             "Confirm the saved head, torso, and two-wing target still match.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase => (
+            "Asymmetric landmark bird base",
+            "Create individually bound head, tail, left-wing, and right-wing landmark creases.",
+            "The asymmetric landmark bindings and native fold-path certificate were revalidated.",
         ),
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase => (
             "Symmetric fish base",
@@ -4273,6 +4278,11 @@ fn apply_grid_plan_document(
             "Symmetric bird grid candidate",
             "Apply the globally proven parameter-grid bird base.",
             "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase => (
+            "Asymmetric landmark bird base",
+            "Create individually bound asymmetric bird landmark creases.",
+            "All landmark bindings and the native fold path were revalidated before apply.",
         ),
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase => (
             "Symmetric fish grid candidate",
@@ -15138,6 +15148,9 @@ mod tests {
     fn beginner_cyclic_path_certificate_is_bound_across_supported_thicknesses() {
         let mut thickness_certificates = Vec::new();
         for thickness_mm in [0.0, 0.1, 1.0, 3.0] {
+            let fixture_namespace: ProjectId =
+                serde_json::from_str("\"01900000-0000-7000-8000-000000000497\"")
+                    .expect("fixed cross-platform fixture namespace");
             let points = [
                 (100.0, 0.0),
                 (-50.0, 86.602_540_378_443_86),
@@ -15147,8 +15160,12 @@ mod tests {
             ];
             let vertices = points
                 .into_iter()
-                .map(|(x, y)| Vertex {
-                    id: VertexId::new(),
+                .enumerate()
+                .map(|(index, (x, y))| Vertex {
+                    id: VertexId::derive_v5(
+                        fixture_namespace,
+                        format!("vertex-{index}").as_bytes(),
+                    ),
                     position: Point2::new(x, y),
                 })
                 .collect::<Vec<_>>();
@@ -15157,14 +15174,16 @@ mod tests {
                 .map(|vertex| vertex.id)
                 .collect::<Vec<_>>();
             let center = vertices[4].id;
-            let fold_namespace = ProjectId::new();
             let mut fold_ids = (0_u64..4)
-                .map(|index| EdgeId::derive_v5(fold_namespace, &index.to_be_bytes()))
+                .map(|index| EdgeId::derive_v5(fixture_namespace, &index.to_be_bytes()))
                 .collect::<Vec<_>>();
             fold_ids.sort_unstable_by_key(EdgeId::canonical_bytes);
             let mut edges = (0..4)
                 .map(|index| Edge {
-                    id: EdgeId::new(),
+                    id: EdgeId::derive_v5(
+                        fixture_namespace,
+                        format!("boundary-{index}").as_bytes(),
+                    ),
                     start: boundary[index],
                     end: boundary[(index + 1) % 4],
                     kind: EdgeKind::Boundary,
@@ -15188,9 +15207,19 @@ mod tests {
             };
             let candidate_editor = EditorState::with_paper(pattern.clone(), paper.clone());
             let topology = candidate_editor
-                .topology_analysis_input(ProjectId::new())
+                .topology_analysis_input(fixture_namespace)
                 .analyze();
             let topology = topology.simulation_snapshot().expect("cyclic topology");
+            assert!(
+                ori_kinematics::MaterialTreeKinematicsModel::prepare(
+                    &pattern,
+                    &paper,
+                    topology,
+                    ori_kinematics::TreeKinematicsLimits::default(),
+                )
+                .is_err(),
+                "cyclic fixture must reject tree preparation at {thickness_mm} mm"
+            );
             let geometry = ori_kinematics::MaterialHingeGraphGeometry::prepare(
                 &pattern,
                 &paper,
@@ -15256,7 +15285,7 @@ mod tests {
             let original_pattern = pattern.clone();
             let original_paper = paper.clone();
             let certificate = certify_beginner_fold_path_v1(&plan, &paper, &pattern, topology)
-                .expect("native cyclic certificate");
+                .unwrap_or_else(|| panic!("native cyclic certificate at {thickness_mm} mm"));
             assert_eq!(
                 certificate,
                 certify_beginner_fold_path_v1(&plan, &paper, &pattern, topology)

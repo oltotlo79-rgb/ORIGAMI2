@@ -11,10 +11,10 @@ use ori_collision::{
     StackedFoldLinearCandidateV1, StackedFoldMaterialMapLimitsV1,
     StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1, StackedFoldReadLimitsV1,
     StackedFoldReadSupportV1, StackedFoldRotationDirectionV1, StaticCollisionLimits,
-    capture_stacked_fold_read_guard_v1, diagnose_collective_hinge_path_v1,
-    diagnose_scheduled_cycle_path_v1, diagnose_scheduled_positive_thickness_cycle_path_v1,
-    diagnose_static_collision_geometry, propose_linear_stacked_fold_read_v1,
-    prove_continuous_layer_transport_v1, reverse_map_linear_stacked_fold_material_v1,
+    capture_stacked_fold_read_guard_v1, derive_continuous_layer_transport_from_poses_v1,
+    diagnose_collective_hinge_path_v1, diagnose_scheduled_cycle_path_v1,
+    diagnose_scheduled_positive_thickness_cycle_path_v1, diagnose_static_collision_geometry,
+    propose_linear_stacked_fold_read_v1, reverse_map_linear_stacked_fold_material_v1,
     supports_scheduled_positive_thickness_path_v1,
 };
 use ori_core::{
@@ -447,19 +447,16 @@ fn propose_current_cycle_pose_inner_with_layers(
             .iter()
             .map(|face| (face.face_id, face.face_id))
             .collect::<Vec<_>>();
-        let orders = source_orders
-            .iter()
-            .map(|order| (order.lower_face, order.upper_face))
-            .collect::<Vec<_>>();
-        let transition_orders = vec![orders; closure_leaf_count + 1];
         Some(
-            prove_continuous_layer_transport_v1(
+            derive_continuous_layer_transport_from_poses_v1(
                 geometry,
+                audit,
                 capability.snapshot(),
                 &lineage,
                 generated.schedule(),
                 &closure,
-                &transition_orders,
+                [0.0, 0.0, 1.0],
+                ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
                 ContinuousLayerTransportLimitsV1 {
                     max_transitions: closure_leaf_count + 1,
                     max_pair_orders: source_orders

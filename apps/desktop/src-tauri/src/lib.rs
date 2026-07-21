@@ -5025,10 +5025,28 @@ struct BeginnerReferenceModelSuggestionV1 {
     dominant_normal_milli: [i16; 3],
     surface_area_milli: u64,
     surface_landmarks_tenths_mm: Vec<[i32; 3]>,
+    surface_ranges: Vec<BeginnerReferenceSurfaceRangeV1>,
     protrusions: Vec<ori_domain::BeginnerProtrusionTargetV1>,
     pair_bindings: Vec<ori_domain::BeginnerBilateralPairBindingV1>,
     method: String,
     suggested_part_kind: Option<ori_domain::BeginnerTargetPartKindV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BeginnerReferenceSurfaceRangeV1 {
+    id: u16,
+    triangle_indices: Vec<u32>,
+    range_min_tenths_mm: [i32; 3],
+    range_max_tenths_mm: [i32; 3],
+    digest_sha256: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BeginnerReferenceSurfaceAssignmentV1 {
+    range_id: u16,
+    protrusion_id: u16,
 }
 
 #[derive(Debug, Serialize)]
@@ -5083,6 +5101,38 @@ fn derive_reference_model_suggestion_v1(
                 to_tenths_mm(position[1])?,
                 to_tenths_mm(position[2])?,
             ])
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let surface_ranges = geometry
+        .triangle_indices
+        .iter()
+        .take(8)
+        .enumerate()
+        .map(|(range_index, triangle)| {
+            let mut range_min = [i32::MAX; 3];
+            let mut range_max = [i32::MIN; 3];
+            let mut digest_input = Vec::with_capacity(3 * (4 + 12));
+            for vertex_index in triangle {
+                digest_input.extend_from_slice(&vertex_index.to_le_bytes());
+                let position = geometry.positions[*vertex_index as usize];
+                for axis in 0..3 {
+                    let coordinate = to_tenths_mm(position[axis])?;
+                    range_min[axis] = range_min[axis].min(coordinate);
+                    range_max[axis] = range_max[axis].max(coordinate);
+                    digest_input.extend_from_slice(&coordinate.to_le_bytes());
+                }
+            }
+            Ok(BeginnerReferenceSurfaceRangeV1 {
+                id: u16::try_from(range_index + 1)
+                    .map_err(|_| "reference_model_feature_range".to_owned())?,
+                triangle_indices: vec![
+                    u32::try_from(range_index)
+                        .map_err(|_| "reference_model_feature_range".to_owned())?,
+                ],
+                range_min_tenths_mm: range_min,
+                range_max_tenths_mm: range_max,
+                digest_sha256: sha2::Sha256::digest(&digest_input).into(),
+            })
         })
         .collect::<Result<Vec<_>, String>>()?;
     let mut normal = [0.0_f64; 3];
@@ -5424,6 +5474,7 @@ fn derive_reference_model_suggestion_v1(
         dominant_normal_milli,
         surface_area_milli: (surface_area * 1_000.0).round().clamp(0.0, u64::MAX as f64) as u64,
         surface_landmarks_tenths_mm,
+        surface_ranges,
         protrusions,
         pair_bindings,
         method: "bounded_bbox_area_normal_v1".to_owned(),
@@ -5463,22 +5514,83 @@ fn reference_model_suggestion_matches_live_v1(
 }
 
 fn reference_model_surface_selection_matches_live_v1(
-    selected_surface_range_ids: &[u16],
+    assignments: &[BeginnerReferenceSurfaceAssignmentV1],
     live: &BeginnerReferenceModelSuggestionV1,
 ) -> bool {
-    if !(2..=8).contains(&selected_surface_range_ids.len()) {
+    if !(2..=8).contains(&assignments.len()) {
         return false;
     }
-    let selected = selected_surface_range_ids
+    let selected_ranges = assignments
         .iter()
-        .copied()
+        .map(|assignment| assignment.range_id)
         .collect::<HashSet<_>>();
-    let measured = live
+    let selected_protrusions = assignments
+        .iter()
+        .map(|assignment| assignment.protrusion_id)
+        .collect::<HashSet<_>>();
+    let measured_ranges = live
+        .surface_ranges
+        .iter()
+        .map(|range| range.id)
+        .collect::<HashSet<_>>();
+    let measured_protrusions = live
         .protrusions
         .iter()
         .map(|target| target.id)
         .collect::<HashSet<_>>();
-    selected.len() == selected_surface_range_ids.len() && selected == measured
+    let mut triangles = HashSet::new();
+    assignments.len() == selected_ranges.len()
+        && assignments.len() == selected_protrusions.len()
+        && selected_ranges.is_subset(&measured_ranges)
+        && selected_protrusions.is_subset(&measured_protrusions)
+        && assignments.iter().all(|assignment| {
+            live.surface_ranges
+                .iter()
+                .find(|range| range.id == assignment.range_id)
+                .is_some_and(|range| {
+                    !range.triangle_indices.is_empty()
+                        && range
+                            .triangle_indices
+                            .iter()
+                            .all(|triangle| triangles.insert(*triangle))
+                })
+        })
+}
+
+fn reference_model_surface_range_is_connected_v1(
+    range: &BeginnerReferenceSurfaceRangeV1,
+    geometry: &ori_formats::ReferenceGlbGeometryV1,
+) -> bool {
+    let Some(first) = range.triangle_indices.first().copied() else {
+        return false;
+    };
+    if range.triangle_indices.iter().any(|index| {
+        usize::try_from(*index).map_or(true, |index| index >= geometry.triangle_indices.len())
+    }) {
+        return false;
+    }
+    let mut reached = HashSet::from([first]);
+    loop {
+        let before = reached.len();
+        for candidate in &range.triangle_indices {
+            if reached.contains(candidate) {
+                continue;
+            }
+            let candidate_triangle = geometry.triangle_indices[*candidate as usize];
+            if reached.iter().any(|known| {
+                let known_triangle = geometry.triangle_indices[*known as usize];
+                candidate_triangle
+                    .iter()
+                    .any(|vertex| known_triangle.contains(vertex))
+            }) {
+                reached.insert(*candidate);
+            }
+        }
+        if reached.len() == before {
+            break;
+        }
+    }
+    reached.len() == range.triangle_indices.len()
 }
 
 #[tauri::command]
@@ -5575,7 +5687,7 @@ fn apply_beginner_reference_model_features(
     expected_project_id: ProjectId,
     expected_revision: u64,
     expected_suggestion: BeginnerReferenceModelSuggestionV1,
-    selected_surface_range_ids: Vec<u16>,
+    surface_assignments: Vec<BeginnerReferenceSurfaceAssignmentV1>,
     confirmed: bool,
 ) -> Result<ProjectSnapshot, String> {
     if !confirmed {
@@ -5610,14 +5722,30 @@ fn apply_beginner_reference_model_features(
     if !reference_model_suggestion_matches_live_v1(&expected_suggestion, &live) {
         return Err("reference_model_suggestion_stale".to_owned());
     }
-    if selected_surface_range_ids.len() < 2 {
-        return Err("reference_model_surface_selection_confirmation_required".to_owned());
-    }
-    if !reference_model_surface_selection_matches_live_v1(&selected_surface_range_ids, &live) {
+    if live
+        .surface_ranges
+        .iter()
+        .any(|range| !reference_model_surface_range_is_connected_v1(range, &geometry))
+    {
         return Err("reference_model_surface_selection_tampered".to_owned());
     }
-    profile.generation_constraints.protrusions = live.protrusions.clone();
-    if live.protrusions.len() == 3 {
+    if surface_assignments.len() < 2 {
+        return Err("reference_model_surface_selection_confirmation_required".to_owned());
+    }
+    if !reference_model_surface_selection_matches_live_v1(&surface_assignments, &live) {
+        return Err("reference_model_surface_selection_tampered".to_owned());
+    }
+    let selected_protrusions = surface_assignments
+        .iter()
+        .map(|assignment| assignment.protrusion_id)
+        .collect::<HashSet<_>>();
+    profile.generation_constraints.protrusions = live
+        .protrusions
+        .iter()
+        .filter(|target| selected_protrusions.contains(&target.id))
+        .cloned()
+        .collect();
+    if profile.generation_constraints.target_category.is_some() && live.protrusions.len() == 3 {
         if let Some(binding) =
             ori_domain::animal_horn_tail_ear_bindings_v1(&profile.generation_constraints)
         {
@@ -5633,7 +5761,7 @@ fn apply_beginner_reference_model_features(
             return Err("reference_model_suggestion_invalid".to_owned());
         }
     }
-    if live.protrusions.len() == 2 {
+    if profile.generation_constraints.target_category.is_some() && live.protrusions.len() == 2 {
         if let Some(binding) =
             ori_domain::insect_wing_antenna_bindings_v1(&profile.generation_constraints)
         {
@@ -5668,7 +5796,7 @@ fn apply_beginner_reference_model_features(
             }
         }
     }
-    if live.protrusions.len() == 5 {
+    if profile.generation_constraints.target_category.is_some() && live.protrusions.len() == 5 {
         let expected = if profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
         {
@@ -5697,7 +5825,7 @@ fn apply_beginner_reference_model_features(
             return Err("reference_model_suggestion_invalid".to_owned());
         }
     }
-    if live.protrusions.len() == 4 {
+    if profile.generation_constraints.target_category.is_some() && live.protrusions.len() == 4 {
         let binding = ori_domain::animal_complete_bindings_v1(&profile.generation_constraints)
             .ok_or_else(|| "reference_model_suggestion_invalid".to_owned())?;
         let expected = [
@@ -13382,29 +13510,62 @@ mod tests {
             }],
         )
         .expect("three measured GLB ranges");
-        let ids = live
-            .protrusions
-            .iter()
-            .map(|target| target.id)
-            .collect::<Vec<_>>();
+        let assignments = vec![
+            BeginnerReferenceSurfaceAssignmentV1 {
+                range_id: live.surface_ranges[0].id,
+                protrusion_id: live.protrusions[0].id,
+            },
+            BeginnerReferenceSurfaceAssignmentV1 {
+                range_id: live.surface_ranges[1].id,
+                protrusion_id: live.protrusions[1].id,
+            },
+        ];
+        assert!(
+            live.surface_ranges
+                .iter()
+                .all(|range| reference_model_surface_range_is_connected_v1(range, &geometry))
+        );
         assert!(reference_model_surface_selection_matches_live_v1(
-            &ids, &live
-        ));
-        assert!(!reference_model_surface_selection_matches_live_v1(
-            &ids[..1],
+            &assignments,
             &live
         ));
         assert!(!reference_model_surface_selection_matches_live_v1(
-            &[ids[0], ids[0], ids[2]],
+            &assignments[..1],
             &live
         ));
+        let mut duplicate = assignments.clone();
+        duplicate[1].range_id = duplicate[0].range_id;
         assert!(!reference_model_surface_selection_matches_live_v1(
-            &[ids[0], ids[1]],
+            &duplicate, &live
+        ));
+        let mut duplicate_part = assignments.clone();
+        duplicate_part[1].protrusion_id = duplicate_part[0].protrusion_id;
+        assert!(!reference_model_surface_selection_matches_live_v1(
+            &duplicate_part,
             &live
         ));
+        let mut forged = assignments;
+        forged[1].range_id = u16::MAX;
         assert!(!reference_model_surface_selection_matches_live_v1(
-            &[ids[0], ids[1], u16::MAX],
-            &live
+            &forged, &live
+        ));
+        let disconnected_geometry = ori_formats::ReferenceGlbGeometryV1 {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [11.0, 0.0, 0.0],
+                [10.0, 1.0, 0.0],
+            ],
+            triangle_indices: vec![[0, 1, 2], [3, 4, 5]],
+            material_color: [255, 255, 255, 255],
+        };
+        let mut disconnected = live.surface_ranges[0].clone();
+        disconnected.triangle_indices = vec![0, 1];
+        assert!(!reference_model_surface_range_is_connected_v1(
+            &disconnected,
+            &disconnected_geometry,
         ));
     }
 
@@ -23194,6 +23355,7 @@ mod tests {
             dominant_normal_milli: [0, 0, 1000],
             surface_area_milli: 8_000,
             surface_landmarks_tenths_mm: vec![[0, 0, 0], [100, 80, 40]],
+            surface_ranges: Vec::new(),
             protrusions: Vec::new(),
             pair_bindings: Vec::new(),
             method: "test".to_owned(),

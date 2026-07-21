@@ -1833,6 +1833,13 @@ export type BeginnerReferenceModelSuggestionV1 = Readonly<{
   dominant_normal_milli: readonly [number, number, number]
   surface_area_milli: number
   surface_landmarks_tenths_mm: readonly (readonly [number, number, number])[]
+  surface_ranges: readonly Readonly<{
+    id: number
+    triangle_indices: readonly number[]
+    range_min_tenths_mm: readonly [number, number, number]
+    range_max_tenths_mm: readonly [number, number, number]
+    digest_sha256: readonly number[]
+  }>[]
   protrusions: readonly NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number][]
   generic_body_outline_tenths_mm?: readonly (readonly [number, number])[]
   generic_body_outline_mode?: 'symmetric' | 'general'
@@ -1852,7 +1859,7 @@ export async function suggestBeginnerReferenceModelFeatures(
   ] as const)
   const suggestionKeys = [
     'asset_id', 'bbox_min_tenths_mm', 'bbox_max_tenths_mm', 'dominant_normal_milli',
-    'surface_area_milli', 'surface_landmarks_tenths_mm', 'protrusions', 'pair_bindings', 'method', 'suggested_part_kind',
+    'surface_area_milli', 'surface_landmarks_tenths_mm', 'surface_ranges', 'protrusions', 'pair_bindings', 'method', 'suggested_part_kind',
   ] as const
   const suggestion = snapshotCoreDataRecord(response?.suggestion)
   if (!suggestion || suggestionKeys.some((key) => !Object.hasOwn(suggestion, key))
@@ -1876,6 +1883,24 @@ export async function suggestBeginnerReferenceModelFeatures(
     || suggestion.surface_landmarks_tenths_mm.some((point) => !isBoundedIntegerTuple(point, 3, 2_147_483_648))) {
     throw new Error('invalid reference model suggestion')
   }
+  if (!Array.isArray(suggestion.surface_ranges) || suggestion.surface_ranges.length < 1
+    || suggestion.surface_ranges.length > 8) throw new Error('invalid reference model suggestion')
+  const surfaceRanges = suggestion.surface_ranges.map((value, index) => {
+    const range = exactCoreDataRecord(value, [
+      'id', 'triangle_indices', 'range_min_tenths_mm', 'range_max_tenths_mm', 'digest_sha256',
+    ] as const)
+    if (!range || range.id !== index + 1 || !Array.isArray(range.triangle_indices)
+      || range.triangle_indices.length < 1 || range.triangle_indices.length > 40_000
+      || range.triangle_indices.some((triangle) => !Number.isInteger(triangle) || triangle < 0)
+      || !isBoundedIntegerTuple(range.range_min_tenths_mm, 3, 2_147_483_648)
+      || !isBoundedIntegerTuple(range.range_max_tenths_mm, 3, 2_147_483_647)
+      || !isBoundedIntegerTuple(range.digest_sha256, 32, 255)
+      || range.digest_sha256.some((byte) => byte < 0)) throw new Error('invalid reference model suggestion')
+    return Object.freeze({ ...range,
+      triangle_indices: Object.freeze(range.triangle_indices.slice()),
+      digest_sha256: Object.freeze(range.digest_sha256.slice()),
+    })
+  })
   const constraints = normalizeBeginnerGenerationConstraints({
     schema_version: 1, maximum_steps: 1, detail_level: 'simple', target_category: 'animal',
     target_parts: [], skeleton_segments: [], protrusions: suggestion.protrusions,
@@ -1905,6 +1930,7 @@ export async function suggestBeginnerReferenceModelFeatures(
     throw new Error('invalid reference model suggestion')
   }
   return Object.freeze({ ...suggestion,
+    surface_ranges: Object.freeze(surfaceRanges),
     surface_landmarks_tenths_mm: Object.freeze(suggestion.surface_landmarks_tenths_mm.map(
       (point) => Object.freeze((point as number[]).slice()) as unknown as readonly [number, number, number],
     )),
@@ -1918,16 +1944,19 @@ export async function suggestBeginnerReferenceModelFeatures(
 export function applyBeginnerReferenceModelFeatures(
   expectedProjectId: string, expectedRevision: number, expectedProjectInstanceId: string,
   expectedSuggestion: BeginnerReferenceModelSuggestionV1,
-  selectedSurfaceRangeIds: readonly number[],
+  surfaceAssignments: readonly Readonly<{ range_id: number, protrusion_id: number }>[],
 ) {
-  if (selectedSurfaceRangeIds.length < 2 || selectedSurfaceRangeIds.length > 8
-    || new Set(selectedSurfaceRangeIds).size !== selectedSurfaceRangeIds.length
-    || selectedSurfaceRangeIds.some((id) => !Number.isInteger(id) || id < 1 || id > 8)) {
+  if (surfaceAssignments.length < 2 || surfaceAssignments.length > 8
+    || new Set(surfaceAssignments.map((item) => item.range_id)).size !== surfaceAssignments.length
+    || new Set(surfaceAssignments.map((item) => item.protrusion_id)).size !== surfaceAssignments.length
+    || surfaceAssignments.some((item) => !Number.isInteger(item.range_id)
+      || item.range_id < 1 || item.range_id > 8 || !Number.isInteger(item.protrusion_id)
+      || item.protrusion_id < 1 || item.protrusion_id > 65_535)) {
     return Promise.reject(new Error('invalid reference model surface selection'))
   }
   return invoke<ProjectSnapshot>('apply_beginner_reference_model_features', {
     expectedProjectInstanceId, expectedProjectId, expectedRevision,
-    expectedSuggestion, selectedSurfaceRangeIds: [...selectedSurfaceRangeIds], confirmed: true,
+    expectedSuggestion, surfaceAssignments: surfaceAssignments.map((item) => ({ ...item })), confirmed: true,
   })
 }
 

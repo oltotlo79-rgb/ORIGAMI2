@@ -771,8 +771,10 @@ function App() {
     useState<BeginnerReferenceModelGeometry | null>(null)
   const [beginnerReferenceSuggestion, setBeginnerReferenceSuggestion] =
     useState<BeginnerReferenceModelSuggestionV1 | null>(null)
-  const [selectedBeginnerSurfaceRangeIds, setSelectedBeginnerSurfaceRangeIds] =
-    useState<ReadonlySet<number>>(() => new Set())
+  const [beginnerSurfaceAssignments, setBeginnerSurfaceAssignments] = useState<Array<{
+    range_id: number
+    protrusion_id: number
+  }>>([])
   const beginnerReferenceRequestRef = useRef(0)
   const beginnerDesignFormRef = useRef<HTMLFormElement>(null)
   useEffect(() => {
@@ -788,7 +790,7 @@ function App() {
     beginnerReferenceRequestRef.current += 1
     setBeginnerReferenceGeometry(null)
     setBeginnerReferenceSuggestion(null)
-    setSelectedBeginnerSurfaceRangeIds(new Set())
+    setBeginnerSurfaceAssignments([])
     setBeginnerPartTotal(
       nativeSnapshot?.beginner_design_profile.generation_constraints.target_parts
         .reduce((sum, part) => sum + part.count, 0) ?? 0,
@@ -3804,7 +3806,7 @@ function App() {
     ).then((suggestion) => {
       if (latestSnapshotRef.current === current) {
         setBeginnerReferenceSuggestion(suggestion)
-        setSelectedBeginnerSurfaceRangeIds(new Set())
+        setBeginnerSurfaceAssignments([])
       }
     })
   }
@@ -3812,7 +3814,7 @@ function App() {
   function confirmBeginnerReferenceSuggestion() {
     const current = latestSnapshotRef.current
     const suggestion = beginnerReferenceSuggestion
-    if (!current || !suggestion || selectedBeginnerSurfaceRangeIds.size < 2
+    if (!current || !suggestion || beginnerSurfaceAssignments.length < 2
       || !window.confirm(text({
       ja: '境界箱・面積・法線だけから算出した範囲候補を適用しますか？',
       en: 'Apply this measured candidate? Bounding box, area, and normals provide geometry evidence only; part meanings come from the parts you confirmed.',
@@ -3820,7 +3822,7 @@ function App() {
     void runNativeEdit((projectId, revision, projectInstanceId) =>
       applyBeginnerReferenceModelFeatures(
         projectId, revision, projectInstanceId, suggestion,
-        [...selectedBeginnerSurfaceRangeIds].sort((left, right) => left - right),
+        [...beginnerSurfaceAssignments].sort((left, right) => left.range_id - right.range_id),
       )).finally(() => setBeginnerReferenceSuggestion(null))
   }
 
@@ -8502,37 +8504,41 @@ function App() {
                               ja: '測定済みsurface範囲を2〜8部位へ明示割当',
                               en: 'Explicitly assign measured surface ranges to 2–8 parts',
                             })}</legend>
-                            {beginnerReferenceSuggestion.protrusions.map((target) => (
-                              <label key={target.id}>
+                            {beginnerReferenceSuggestion.surface_ranges.map((range, index) => {
+                              const target = beginnerReferenceSuggestion.protrusions[index]
+                              if (!target) return null
+                              return <label key={range.id}>
                                 <input type="checkbox"
-                                  checked={selectedBeginnerSurfaceRangeIds.has(target.id)}
-                                  onChange={(event) => setSelectedBeginnerSurfaceRangeIds((current) => {
-                                    const next = new Set(current)
-                                    if (event.currentTarget.checked) next.add(target.id)
-                                    else next.delete(target.id)
-                                    return next
+                                  checked={beginnerSurfaceAssignments.some(
+                                    (item) => item.range_id === range.id)}
+                                  onChange={(event) => setBeginnerSurfaceAssignments((current) => {
+                                    if (event.currentTarget.checked) return [...current, {
+                                      range_id: range.id, protrusion_id: target.id,
+                                    }]
+                                    return current.filter((item) => item.range_id !== range.id)
                                   })} />
                                 {formattedText({
                                   ja: 'surface範囲 {id}: 中心 ({x},{y},{z})・長さ {length} mm',
                                   en: 'Surface range {id}: center ({x},{y},{z}), length {length} mm',
                                 }, {
-                                  id: target.id,
+                                  id: range.id,
                                   x: target.position_tenths_mm[0] / 10,
                                   y: target.position_tenths_mm[1] / 10,
                                   z: target.position_tenths_mm[2] / 10,
                                   length: target.length_tenths_mm / 10,
                                 })}
+                                <span>{formattedText({
+                                  ja: ' → 部位 {id}', en: ' → Part {id}',
+                                }, { id: target.id })}</span>
                               </label>
-                            ))}
+                            })}
                             <p>{text({
                               ja: 'GLBから測定された範囲だけを表示します。重複・未確認・改ざんされた範囲はネイティブ側で拒否されます。',
                               en: 'Only GLB-measured ranges are shown. Duplicate, unconfirmed, or tampered ranges are rejected natively.',
                             })}</p>
                           </fieldset>
                           <button type="button" onClick={confirmBeginnerReferenceSuggestion}
-                            disabled={selectedBeginnerSurfaceRangeIds.size < 2
-                              || selectedBeginnerSurfaceRangeIds.size
-                                !== beginnerReferenceSuggestion.protrusions.length}>
+                            disabled={beginnerSurfaceAssignments.length < 2}>
                             {text({ ja: '確認して範囲候補を適用', en: 'Confirm and apply suggested ranges' })}
                           </button>
                           {(beginnerReferenceSuggestion.generic_body_outline_tenths_mm

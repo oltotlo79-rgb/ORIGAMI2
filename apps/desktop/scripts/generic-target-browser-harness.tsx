@@ -245,7 +245,7 @@ function Harness() {
             setSurfaceRangesConfirmed(false)
             setSelectedSurfaceRanges((current) => event.target.checked
               ? [...new Set([...current, id])].sort() : current.filter((item) => item !== id))
-          }} />Surface range {id} · GLB triangle interval {id * 4 - 4}–{id * 4 - 1}</label>)}
+          }} />Surface range {id} · connected GLB triangle {id - 1} · SHA-256 {id === 1 ? '91a70f2c' : 'a72be019'} → Part {id}</label>)}
       </fieldset>
       <button onClick={() => {
         if (selectedSurfaceRanges.length < 2 || new Set(selectedSurfaceRanges).size !== selectedSurfaceRanges.length) {

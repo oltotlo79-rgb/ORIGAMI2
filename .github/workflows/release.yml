@@ -649,8 +649,13 @@ jobs:
           draft_created=false
           transaction_name="ORIGAMI2 draft transaction $GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           ownership_token="$(node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('hex'))")"
-          test "${#ownership_token}" -eq 64
-          ownership_marker="<!-- origami2-release-owner:$ownership_token -->"
+          [[ "$ownership_token" =~ ^[0-9a-f]{64}$ ]]
+          echo "::add-mask::$ownership_token"
+          ownership_commitment="$(printf '%s' "$ownership_token" | sha256sum | cut -d ' ' -f 1)"
+          [[ "$ownership_commitment" =~ ^[0-9a-f]{64}$ ]]
+          echo "::add-mask::$ownership_commitment"
+          unset ownership_token
+          ownership_marker="<!-- origami2-release-owner-sha256:$ownership_commitment -->"
           verify_owned_draft() {
             owned_id="$1"
             owned_state="$2"
@@ -709,14 +714,17 @@ jobs:
           test "$remote_commit" = "$RELEASE_COMMIT"
           notes_json="$RUNNER_TEMP/release-notes.json"
           notes_file="$RUNNER_TEMP/release-notes.md"
+          public_notes_file="$RUNNER_TEMP/public-release-notes.md"
           timeout 60s gh api --method POST "repos/$GH_REPO/releases/generate-notes" \
             -f tag_name="$RELEASE_TAG" -f target_commitish="$RELEASE_COMMIT" \
             > "$notes_json"
           test "$(stat -c '%s' "$notes_json")" -le 1048576
           test "$(jq -r .name "$notes_json")" = "$RELEASE_TAG"
-          jq -er '.body | strings | select(length > 0 and length <= 1000000)' "$notes_json" > "$notes_file"
+          jq -er '.body | strings | select(length > 0 and length <= 100000)' "$notes_json" > "$notes_file"
           test -s "$notes_file"
+          cp -- "$notes_file" "$public_notes_file"
           printf '\n\n%s\n' "$ownership_marker" >> "$notes_file"
+          test "$(stat -c '%s' "$notes_file")" -le 100128
           created="$RUNNER_TEMP/created-draft-release.json"
           draft_created=true
           timeout 60s gh api --method POST "repos/$GH_REPO/releases" \
@@ -752,7 +760,7 @@ jobs:
           [ "$RELEASE_MODE" = stable ] || publish_prerelease=true
           timeout 60s gh api --method PATCH "repos/$GH_REPO/releases/$created_release_id" \
             -f name="ORIGAMI2 $RELEASE_TAG" -F draft=false \
-            -F prerelease="$publish_prerelease" >/dev/null
+            -F prerelease="$publish_prerelease" -F body=@"$public_notes_file" >/dev/null
           published="$RUNNER_TEMP/published-release.json"
           publish_verified=false
           for attempt in 1 2 3; do
@@ -763,6 +771,7 @@ jobs:
               && test "$(jq -r .target_commitish "$published")" = "$RELEASE_COMMIT" \
               && test "$(jq -r .draft "$published")" = false \
               && test "$(jq -r .prerelease "$published")" = "$publish_prerelease" \
+              && jq -e --rawfile body "$public_notes_file" '.body == $body' "$published" >/dev/null \
               && node .github/scripts/verify_remote_release_assets.mjs release "$published"
             then
               publish_verified=true

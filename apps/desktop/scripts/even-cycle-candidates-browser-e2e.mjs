@@ -33,8 +33,16 @@ try {
   await page.getByRole('button', { name: 'stale request', exact: true }).click(); await page.getByText('stale-rejected', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'ABA request', exact: true }).click(); await page.getByText('aba-rejected', { exact: true }).waitFor()
   for (const status of ['certified', 'no_path', 'resource_limit', 'cancelled']) { await page.getByRole('button', { name: `dyadic ${status}`, exact: true }).click(); await page.getByText(`${status}; states 9; transitions 24; explored 3; evaluated 8; read-only; certified transitions ${status === 'certified' ? 4 : 0}; binding ${status === 'certified' ? 'a'.repeat(64) : 'unavailable'}; positive thickness not certified; layer transport not certified; Apply disabled`, { exact: true }).waitFor() }
+  await page.getByRole('button', { name: 'Miura strict dyadic read', exact: true }).click(); await page.getByText('miura-candidate-ready', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Mint Miura preview', exact: true }).click(); await page.getByText('miura-preview-minted', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Tamper Miura binding', exact: true }).click(); await page.getByText('miura-tamper-rejected-noop', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Apply authenticated Miura path', exact: true }).click(); await page.getByText('miura-applied-revision-2-timeline-dto-2', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Replay Miura token', exact: true }).click(); await page.getByText('miura-replay-rejected-noop', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Undo Miura', exact: true }).click(); await page.getByText('miura-undone', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Redo Miura', exact: true }).click(); await page.getByText('miura-redone', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Reopen Miura archive', exact: true }).click(); await page.getByText('miura-reopened-timeline-dto-2', { exact: true }).waitFor()
   const evidence = await page.evaluate(() => window.__ORIGAMI2_EVEN_CYCLE_EVIDENCE__)
-  if (JSON.stringify(evidence) !== JSON.stringify({ automaticKawasakiProofs: 6, applies: 6, undos: 2, redos: 2, reopens: 7, profileTamperRejects: 1, staleRejects: 1, abaRejects: 1, dyadicReads: 4, dyadicCancels: 1 })) throw new Error(JSON.stringify(evidence))
+  if (JSON.stringify(evidence) !== JSON.stringify({ automaticKawasakiProofs: 6, applies: 6, undos: 2, redos: 2, reopens: 7, profileTamperRejects: 1, staleRejects: 1, abaRejects: 1, dyadicReads: 5, dyadicCancels: 1, dyadicMints: 1, dyadicApplies: 1, dyadicReplays: 1, dyadicTamperRejects: 1 })) throw new Error(JSON.stringify(evidence))
   console.log('even-cycle candidates browser E2E passed')
 } catch (error) {
   const output = process.env.ORIGAMI2_EVEN_CYCLE_BROWSER_ARTIFACT_DIRECTORY

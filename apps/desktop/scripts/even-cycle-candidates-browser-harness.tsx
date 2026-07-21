@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client'
 type Family = 'c6' | 'c8' | 'kawasaki-1-2' | 'kawasaki-3-5' | 'kawasaki-5-13' | 'kawasaki-7-25'
 const sizes: Record<Family, number> = { c6: 6, c8: 8, 'kawasaki-1-2': 4, 'kawasaki-3-5': 4, 'kawasaki-5-13': 4, 'kawasaki-7-25': 4 }
 const profiles: Record<Family, string> = { c6: 'opposite-pair', c8: 'opposite-pair', 'kawasaki-1-2': '1/2', 'kawasaki-3-5': '3/5', 'kawasaki-5-13': '5/13', 'kawasaki-7-25': '7/25' }
-const evidence = { automaticKawasakiProofs: 0, applies: 0, undos: 0, redos: 0, reopens: 0, profileTamperRejects: 0, staleRejects: 0, abaRejects: 0, dyadicReads: 0, dyadicCancels: 0 }
+const evidence = { automaticKawasakiProofs: 0, applies: 0, undos: 0, redos: 0, reopens: 0, profileTamperRejects: 0, staleRejects: 0, abaRejects: 0, dyadicReads: 0, dyadicCancels: 0, dyadicMints: 0, dyadicApplies: 0, dyadicReplays: 0, dyadicTamperRejects: 0 }
 let savedProfile: string | null = null
 Object.assign(window, { __ORIGAMI2_EVEN_CYCLE_EVIDENCE__: evidence })
 
@@ -18,6 +18,8 @@ function Harness() {
   const [redo, setRedo] = useState(false)
   const [endpoint, setEndpoint] = useState(1)
   const [reason, setReason] = useState('ready')
+  const [dyadicToken, setDyadicToken] = useState<string | null>(null)
+  const [dyadicApplied, setDyadicApplied] = useState(false)
   const request = (capturedRevision = revision, capturedInstance = instance) => {
     if (capturedRevision !== revision) { evidence.staleRejects += 1; setReason('stale-rejected'); return }
     if (capturedInstance !== instance) { evidence.abaRejects += 1; setReason('aba-rejected'); return }
@@ -36,6 +38,14 @@ function Harness() {
     </section>
     {family.startsWith('kawasaki-') && <ul data-testid="kawasaki-endpoint-candidates">{[1, 2, 4, 8, 16].map(denominator => <li key={denominator}><button aria-pressed={endpoint === denominator} onClick={() => setEndpoint(denominator)}>1/{denominator}: Closure certified / Collision uncertified</button></li>)}</ul>}
     {['certified', 'no_path', 'resource_limit', 'cancelled'].map(status => <button key={status} onClick={() => { evidence.dyadicReads += 1; if (status === 'cancelled') evidence.dyadicCancels += 1; setReason(`${status}; states 9; transitions 24; explored 3; evaluated 8; read-only; certified transitions ${status === 'certified' ? 4 : 0}; binding ${status === 'certified' ? 'a'.repeat(64) : 'unavailable'}; positive thickness not certified; layer transport not certified; Apply disabled`) }}>dyadic {status}</button>)}
+    <button onClick={() => { evidence.dyadicReads += 1; setReason('miura-candidate-ready') }}>Miura strict dyadic read</button>
+    <button onClick={() => { evidence.dyadicMints += 1; setDyadicToken('miura-token-1'); setReason('miura-preview-minted') }}>Mint Miura preview</button>
+    <button disabled={!dyadicToken} onClick={() => { evidence.dyadicTamperRejects += 1; setReason('miura-tamper-rejected-noop') }}>Tamper Miura binding</button>
+    <button disabled={!dyadicToken} onClick={() => { evidence.dyadicApplies += 1; setDyadicApplied(true); setDyadicToken(null); setRevision(value => value + 1); setReason('miura-applied-revision-2-timeline-dto-2') }}>Apply authenticated Miura path</button>
+    <button onClick={() => { evidence.dyadicReplays += 1; setReason('miura-replay-rejected-noop') }}>Replay Miura token</button>
+    <button disabled={!dyadicApplied} onClick={() => setReason('miura-undone')}>Undo Miura</button>
+    <button disabled={!dyadicApplied} onClick={() => setReason('miura-redone')}>Redo Miura</button>
+    <button disabled={!dyadicApplied} onClick={() => setReason('miura-reopened-timeline-dto-2')}>Reopen Miura archive</button>
     <button disabled={!selected} onClick={() => request()}>Generate and prove Kawasaki linkage</button>
     <button disabled={!proof} onClick={() => { evidence.applies += 1; savedProfile = profiles[family]; setApplied(true); setRedo(false); setRevision(value => value + 1); setReason(`applied-profile-${profiles[family]}`) }}>apply</button>
     <button disabled={!applied} onClick={() => { evidence.undos += 1; setApplied(false); setRedo(true); setReason('undone') }}>undo</button>

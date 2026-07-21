@@ -338,7 +338,14 @@ fn propose_current_cycle_pose_inner(
     let source = pose_state_fingerprint_v1(pose.hinge_angles());
     let target = pose_state_fingerprint_v1(&requested);
     let paper_thickness_mm = project.editor.paper().thickness_mm;
-    let continuous = if paper_thickness_mm > 0.0 {
+    let positive_graph_supported = geometry.face_ids().len() == 6
+        && geometry.hinges().len() == 7
+        && audit.closure_hinges().len() == 2
+        && generated
+            .schedule()
+            .collective_profile_edges_v1()
+            .is_some_and(|moving| moving.len() == 3);
+    let continuous = if paper_thickness_mm > 0.0 && positive_graph_supported {
         diagnose_scheduled_positive_thickness_cycle_path_v1(
             geometry,
             audit,
@@ -1644,7 +1651,17 @@ async fn propose_current_stacked_fold_read_inner(
                         CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned()
                     }
                 })?;
-            let continuous = if paper_thickness_mm > 0.0 {
+            let graph_geometry = initial.target().hinge_geometry();
+            let graph_audit = initial.target().audit();
+            let positive_graph_supported = graph_geometry.face_ids().len() == 6
+                && graph_geometry.hinges().len() == 7
+                && graph_audit.closure_hinges().len() == 2
+                && generated
+                    .schedule()
+                    .collective_profile_edges_v1()
+                    .is_some_and(|moving| moving.len() == 3);
+            let continuous = if paper_thickness_mm > 0.0 && positive_graph_supported
+            {
                 diagnose_scheduled_positive_thickness_cycle_path_v1(
                     initial.target().hinge_geometry(),
                     initial.target().audit(),

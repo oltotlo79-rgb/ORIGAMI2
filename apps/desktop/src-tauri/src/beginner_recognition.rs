@@ -444,7 +444,20 @@ pub(crate) fn apply_beginner_part_assignments(
     .into_iter()
     .zip(counts)
     .filter(|(_, count)| *count > 0)
-    .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
+    .flat_map(|(kind, count)| {
+        // Nonstandard repeated semantics remain individually addressable.
+        // This lets exact image candidate IDs map one-to-one to generic
+        // topology features instead of inventing bilateral authority.
+        let records = if matches!(count, 3 | 5 | 7 | 8) {
+            usize::from(count)
+        } else {
+            1
+        };
+        (0..records).map(move |_| ori_domain::BeginnerTargetPartRecordV1 {
+            kind,
+            count: if records == 1 { count } else { 1 },
+        })
+    })
     .collect();
     let mut project = lock_project(&state)?;
     ensure_recognition_binding(&project, binding)?;
@@ -1011,6 +1024,17 @@ pub(crate) fn apply_beginner_part_assignments(
             members.sort_by_key(|candidate| {
                 (candidate.bounds.min_y, candidate.bounds.min_x, candidate.id)
             });
+            let repeated_single_rank = feature_parts[..index]
+                .iter()
+                .filter(|previous| previous.kind == part.kind && previous.count == 1)
+                .count();
+            if part.count == 1 && members.len() > 1 {
+                members = members
+                    .get(repeated_single_rank)
+                    .copied()
+                    .into_iter()
+                    .collect();
+            }
             if members.len() != usize::from(part.count)
                 || part.count > 1
                     && members.chunks_exact(2).any(|pair| {

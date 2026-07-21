@@ -121,6 +121,12 @@ function Harness() {
       setKinds(['tail', 'fin', 'ear'])
       setStatus('Image outline proposal contains 2 parts + 1 possible noise candidate')
     }}>Recognize image with noise candidate</button>
+    <button onClick={() => {
+      recognize('Image')
+      setBindings([1, 2, 3].map((id) => ({ ...initialBindings[0]!, id, count: 1, symmetry: 'none' as const })))
+      setKinds(['tail', 'tail', 'tail'])
+      setStatus('Three exact image candidate IDs assigned explicitly to the same tail meaning')
+    }}>Assign three candidates the same explicit meaning</button>
     <button onClick={() => recognize('JPEG EXIF')}>Recognize EXIF JPEG silhouette</button>
     <button onClick={() => { recognize('JPEG EXIF'); setConfidence({ score: 42, reason: 'low_component_ratio, bounded_curvature', low: true }) }}>Recognize low confidence JPEG</button>
     <button onClick={() => setStatus('Rejected confidence: tampered score or reason')}>Try tampered confidence</button>
@@ -359,6 +365,7 @@ function Harness() {
       <button onClick={() => setStatus('Generic target undone')}>Undo generic target</button>
       <button onClick={() => setStatus('Generic target redone')}>Redo generic target</button>
       <button onClick={() => setStatus('Generic target saved and reopened')}>Save and reopen generic target</button>
+      <button onClick={() => { setApplied(false); setStatus('Applied checkpoint reset') }}>Reset applied checkpoint</button>
       {['SVG', 'FOLD', 'ORIPA', 'Instruction PDF', 'Instruction SVG ZIP'].map((format) => <button key={format}
         onClick={() => setExportStatus(`${format} parsed: topology authority and confidence provenance retained`)}>
         Export {format}</button>)}

@@ -103,6 +103,9 @@ test('part suggestions require explicit assignment and one confirmed history com
   assert.match(app, /items\.filter\(\(item\) => item\.candidate_id !== assignment\.candidate_id\)/u)
   assert.match(native, /!specialized && \(2\.\.=8\)\.contains\(&feature_parts\.len\(\)\)/u)
   assert.match(native, /part_assignment_generic_binding_invalid/u)
+  assert.match(native, /matches!\(count, 3 \| 5 \| 7 \| 8\)/u)
+  assert.match(native, /repeated_single_rank/u)
+  assert.match(native, /candidate\.bounds\.min_y, candidate\.bounds\.min_x, candidate\.id/u)
 })
 
 test('explicit animal or insect parts feed the existing read-only symmetric plan evaluation', () => {

@@ -6071,6 +6071,7 @@ async fn open_project(
     )?;
     drop(project);
     let _ = recovery.clear_after_normal_completion(&state, &response.project);
+    remember_current_project(&app, &state);
     Ok(response)
 }
 
@@ -6090,11 +6091,13 @@ async fn save_project(
     };
     if let Some(response) = saved_to_current_path {
         let _ = recovery.clear_after_normal_completion(&state, &response.project);
+        remember_current_project(&app, &state);
         return Ok(response);
     }
     let response = save_project_with_dialog(&app, &state)?;
     if !response.canceled {
         let _ = recovery.clear_after_normal_completion(&state, &response.project);
+        remember_current_project(&app, &state);
     }
     Ok(response)
 }
@@ -6108,8 +6111,62 @@ async fn save_project_as(
     let response = save_project_with_dialog(&app, &state)?;
     if !response.canceled {
         let _ = recovery.clear_after_normal_completion(&state, &response.project);
+        remember_current_project(&app, &state);
     }
     Ok(response)
+}
+
+fn recent_storage(app: &AppHandle) -> Result<recent_projects::FileRecentProjectStorage, String> {
+    let root = app.path().app_data_dir().map_err(|_| "recent_projects_unavailable".to_owned())?;
+    Ok(recent_projects::FileRecentProjectStorage::new(root.join("recent-projects-v1.json")))
+}
+
+fn remember_current_project(app: &AppHandle, state: &AppState) {
+    let Ok(project) = lock_project(state) else { return };
+    let (Some(path), name) = (project.current_path.clone(), project.name.clone()) else { return };
+    drop(project);
+    let Ok(mut storage) = recent_storage(app) else { return };
+    let mut registry = recent_projects::RecentProjectRegistry::load(&storage);
+    let _ = registry.remember(path, &name, &recent_projects::LocalRecentProjectFilesystem, &mut storage);
+}
+
+#[tauri::command]
+fn list_recent_projects(app: AppHandle) -> Result<Vec<recent_projects::RecentProjectView>, String> {
+    let storage = recent_storage(&app)?;
+    Ok(recent_projects::RecentProjectRegistry::load(&storage).views())
+}
+
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum OpenRecentProjectResponse {
+    Opened { file: ProjectFileResponse },
+    Invalidated,
+}
+
+#[tauri::command]
+async fn open_recent_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    recovery: State<'_, RecoveryRuntime>,
+    opaque_id: String,
+) -> Result<OpenRecentProjectResponse, String> {
+    let (expected_instance_id, expected_project_id, expected_revision) = {
+        let project = lock_project(&state)?;
+        (project.instance_id, project.project_id, project.editor.revision())
+    };
+    let mut storage = recent_storage(&app)?;
+    let mut registry = recent_projects::RecentProjectRegistry::load(&storage);
+    let Some(path) = registry.select(&opaque_id, &recent_projects::LocalRecentProjectFilesystem, &mut storage).map_err(|_| "recent_projects_unavailable".to_owned())? else {
+        return Ok(OpenRecentProjectResponse::Invalidated);
+    };
+    let loaded = tauri::async_runtime::spawn_blocking(move || load_project_file(path)).await
+        .map_err(|_| PROJECT_OPEN_TASK_FAILED_MESSAGE.to_owned())??;
+    let mut project = lock_project(&state)?;
+    let file = apply_loaded_project_file(&mut project, expected_instance_id, expected_project_id, expected_revision, loaded)?;
+    drop(project);
+    let _ = recovery.clear_after_normal_completion(&state, &file.project);
+    remember_current_project(&app, &state);
+    Ok(OpenRecentProjectResponse::Opened { file })
 }
 
 #[tauri::command]
@@ -12311,6 +12368,8 @@ pub fn run() {
             open_project,
             save_project,
             save_project_as,
+            list_recent_projects,
+            open_recent_project,
             open_project_folder,
             save_project_folder_as,
             open_fold_technique_file,

@@ -772,15 +772,7 @@ jobs:
           verify_release_api_headers() {
             response_headers="$1"
             response_status="$2"
-            test "$response_status" = 200
-            test "$(grep -Eic '^HTTP/[0-9.]+ [0-9]{3}\r?$' "$response_headers")" -eq 1
-            grep -Eiq '^content-type: application/(json|vnd\.github\+json)(;|\r?$)' "$response_headers"
-            grep -Eiq '^etag: "[A-Za-z0-9+/=_:.-]{1,256}"\r?$' "$response_headers"
-            grep -Eiq '^cache-control: .*(private|no-store)' "$response_headers"
-            grep -Eiq '^x-ratelimit-remaining: [1-9][0-9]*\r?$' "$response_headers"
-            ! grep -Eiq '^(link|retry-after):' "$response_headers"
-            ! grep -Eiq '^age: [1-9][0-9]*\r?$' "$response_headers"
-            ! grep -Eiq '^cache-control: .*(public|s-maxage=[1-9])' "$response_headers"
+            node .github/scripts/verify_release_response_headers.mjs "$response_headers" "$response_status"
           }
           publish_verified=false
           consecutive_verified=0

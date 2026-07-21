@@ -214,12 +214,7 @@ test('release publication uses a bounded rollback-safe draft transaction', () =>
   assert.match(publish, /\(\[\.\[\]\.id\] \| unique \| length\) == 9/u)
   assert.match(publish, /Cache-Control: no-cache/u)
   assert.match(publish, /verify_release_api_headers\(\)/u)
-  assert.match(publish, /test "\$response_status" = 200/u)
-  assert.match(publish, /\^etag: "\[A-Za-z0-9\+\/=_:.-\]\{1,256\}"/u)
-  assert.doesNotMatch(publish, /\^etag: \(W\/\)\?/u)
-  assert.match(publish, /\^\(link\|retry-after\):/u)
-  assert.match(publish, /\^x-ratelimit-remaining: \[1-9\]\[0-9\]\*/u)
-  assert.match(publish, /\^cache-control: \.\*\(private\|no-store\)/u)
+  assert.match(publish, /verify_release_response_headers\.mjs "\$response_headers" "\$response_status"/u)
   assert.match(publish, /--connect-timeout 15 --max-time 60/u)
   assert.match(publish, /--write-out '%\{http_code\}'/u)
   assert.match(publish, /test "\$current_identity" = "\$asset_identity"/u)
@@ -230,6 +225,35 @@ test('release publication uses a bounded rollback-safe draft transaction', () =>
   assert.match(publish, /test "\$publish_verified" = true/u)
   assert.ok(publish.lastIndexOf("created_release_id=''") > publish.indexOf('test "$publish_verified" = true'))
   assert.ok(publish.lastIndexOf('draft_created=false') > publish.indexOf('test "$publish_verified" = true'))
+})
+
+test('release API response headers reject duplicate folded and provisional metadata', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'origami2-release-headers-'))
+  const fixture = join(directory, 'headers.txt')
+  const verifier = join(root, '.github/scripts/verify_release_response_headers.mjs')
+  const valid = [
+    'HTTP/2 200', 'content-type: application/vnd.github+json; charset=utf-8',
+    'etag: "abc123"', 'cache-control: private, max-age=0, s-maxage=0',
+    'x-ratelimit-remaining: 42', '', '',
+  ].join('\r\n')
+  const verify = (value, status = '200') => {
+    writeFileSync(fixture, value)
+    execFileSync(process.execPath, [verifier, fixture, status])
+  }
+  try {
+    verify(valid)
+    for (const hostile of [
+      valid.replace('etag: "abc123"', 'etag: "abc123"\r\netag: "def456"'),
+      valid.replace('content-type:', 'content-type: application/json\r\ncontent-type:'),
+      valid.replace('cache-control:', 'cache-control: private\r\ncache-control:'),
+      valid.replace('etag:', ' etag:'),
+      valid.replace('etag: "abc123"', 'etag: "abc\u0000def"'),
+      'HTTP/1.1 100 Continue\r\n\r\n' + valid,
+    ]) assert.throws(() => verify(hostile))
+    assert.throws(() => verify(valid, '304'))
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('all workflow actions are immutable SHA-pinned with bounded release jobs', () => {

@@ -190,6 +190,19 @@ fn hash_source(source: &LayerOrderSnapshot) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"ORIGAMI2_SOURCE_LAYER_ORDER_V1");
     hash.update(b"facewise_layer_order_v1");
+    if let Some(namespace) = source.provenance.source.identity_namespace {
+        hash.update([1]);
+        hash.update(namespace.canonical_bytes());
+    } else {
+        hash.update([0]);
+    }
+    hash.update(source.provenance.source.source_revision.to_be_bytes());
+    if let Some(fingerprint) = source.provenance.source.source_fingerprint {
+        hash.update([1]);
+        hash.update(fingerprint.0);
+    } else {
+        hash.update([0]);
+    }
     hash.update((source.material_faces.len() as u64).to_be_bytes());
     for face in &source.material_faces {
         hash.update(face.face_id.canonical_bytes());

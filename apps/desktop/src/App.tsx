@@ -7957,6 +7957,18 @@ function App() {
                           en: 'Outcome {reason} · shape difference {shape}',
                         }, { reason: candidate.outcome_reason,
                           shape: candidate.assessment.shape_difference_reason ?? 'none' })}</span>
+                        <span className="muted">{formattedText({
+                          ja: '輪郭配置証明: 胴体 {body}点・局所 {local}・頂点 {vertices}・折線 {creases}',
+                          en: 'Contour placement witness: body {body} points · local {local} · vertices {vertices} · creases {creases}',
+                        }, {
+                          body: candidate.contour_witness.body_contour_points,
+                          local: candidate.contour_witness.local_bindings.length === 0
+                            ? 'none'
+                            : candidate.contour_witness.local_bindings
+                              .map((binding) => `${binding.protrusion_id}:${binding.contour_points}`).join(', '),
+                          vertices: candidate.contour_witness.witnessed_vertices,
+                          creases: candidate.contour_witness.witnessed_creases,
+                        })}</span>
                         {candidate.assessment.proof_scope === 'sufficient'
                           && candidate.assessment.reason === 'global_flat_foldability_proven'
                           && candidate.assessment.apply_allowed && (

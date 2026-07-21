@@ -1803,6 +1803,13 @@ export type BeginnerParameterGridPointV1 = Readonly<{
   detail_level: 'simple' | 'standard' | 'detailed'
 }>
 
+export type BeginnerContourPlacementWitnessV1 = Readonly<{
+  body_contour_points: number
+  local_bindings: ReadonlyArray<Readonly<{ protrusion_id: number, contour_points: number }>>
+  witnessed_vertices: number
+  witnessed_creases: number
+}>
+
 export type BeginnerGridEvaluationResponse = Readonly<{
   request_generation_id: string
   project_instance_id: string
@@ -1823,6 +1830,7 @@ export type BeginnerGridEvaluationResponse = Readonly<{
     spacing_deviation_penalty: number
     detail_mismatch_penalty: number
     outcome_reason: BeginnerGeneratedPlanAssessmentV1['reason']
+    contour_witness: BeginnerContourPlacementWitnessV1
   }>>
 }>
 
@@ -1850,7 +1858,7 @@ export async function evaluateBeginnerParameterGrid(
   const rawCandidates = response.candidates.map((value) => exactCoreDataRecord(
     value, ['point', 'primary_score', 'plan', 'assessment', 'local_proof_scope',
       'global_proof_scope', 'complexity_score', 'scale_deviation_penalty',
-      'spacing_deviation_penalty', 'detail_mismatch_penalty', 'outcome_reason'] as const,
+      'spacing_deviation_penalty', 'detail_mismatch_penalty', 'outcome_reason', 'contour_witness'] as const,
   ))
   if (rawCandidates.some((candidate) => candidate === null)) {
     throw new Error('invalid beginner parameter grid response')
@@ -1879,7 +1887,16 @@ export async function evaluateBeginnerParameterGrid(
     const point = exactCoreDataRecord(candidate.point, [
       'id', 'scale_percent', 'spacing_percent', 'detail_level',
     ] as const)
-    if (!point || !Number.isInteger(point.id) || Number(point.id) < 0 || Number(point.id) > 26
+    const witness = exactCoreDataRecord(candidate.contour_witness, [
+      'body_contour_points', 'local_bindings', 'witnessed_vertices', 'witnessed_creases',
+    ] as const)
+    const bindings = witness && Array.isArray(witness.local_bindings)
+      ? witness.local_bindings.map((binding) => exactCoreDataRecord(binding, ['protrusion_id', 'contour_points'] as const))
+      : []
+    const witnessPointCount = witness && bindings.every((binding) => binding !== null)
+      ? Number(witness.body_contour_points) + bindings.reduce((sum, binding) => sum + Number(binding?.contour_points), 0)
+      : -1
+    if (!point || !witness || !Number.isInteger(point.id) || Number(point.id) < 0 || Number(point.id) > 26
       || !Number.isInteger(point.scale_percent) || Number(point.scale_percent) < 10 || Number(point.scale_percent) > 45
       || !Number.isInteger(point.spacing_percent) || Number(point.spacing_percent) < 20 || Number(point.spacing_percent) > 80
       || !['simple', 'standard', 'detailed'].includes(String(point.detail_level))
@@ -1888,6 +1905,16 @@ export async function evaluateBeginnerParameterGrid(
       || candidate.local_proof_scope !== 'necessary'
       || candidate.global_proof_scope !== normalizedPlans.plan_assessments[index].proof_scope
       || candidate.outcome_reason !== normalizedPlans.plan_assessments[index].reason
+      || !Number.isInteger(witness.body_contour_points) || Number(witness.body_contour_points) < 0 || Number(witness.body_contour_points) > 16
+      || bindings.length !== (witness.local_bindings as unknown[]).length || bindings.length > 8
+      || bindings.some((binding, bindingIndex) => !binding || !Number.isInteger(binding.protrusion_id)
+        || Number(binding.protrusion_id) < 1 || Number(binding.protrusion_id) > 65535
+        || !Number.isInteger(binding.contour_points) || Number(binding.contour_points) < 3 || Number(binding.contour_points) > 8
+        || (bindingIndex > 0 && Number(bindings[bindingIndex - 1]?.protrusion_id) >= Number(binding.protrusion_id)))
+      || !Number.isInteger(witness.witnessed_vertices) || Number(witness.witnessed_vertices) !== witnessPointCount
+      || !Number.isInteger(witness.witnessed_creases) || Number(witness.witnessed_creases) !== witnessPointCount
+      || normalizedPlans.generated_plans[index].crease_pattern.vertices.length < witnessPointCount
+      || normalizedPlans.generated_plans[index].crease_pattern.edges.length < witnessPointCount
       || !Number.isInteger(candidate.complexity_score) || Number(candidate.complexity_score) < 0 || Number(candidate.complexity_score) > 100
       || ![candidate.scale_deviation_penalty, candidate.spacing_deviation_penalty, candidate.detail_mismatch_penalty]
         .every((penalty) => Number.isInteger(penalty) && Number(penalty) >= 0 && Number(penalty) <= 1000)
@@ -1906,7 +1933,15 @@ export async function evaluateBeginnerParameterGrid(
       scale_deviation_penalty: Number(candidate.scale_deviation_penalty),
       spacing_deviation_penalty: Number(candidate.spacing_deviation_penalty),
       detail_mismatch_penalty: Number(candidate.detail_mismatch_penalty),
-      outcome_reason: candidate.outcome_reason as BeginnerGeneratedPlanAssessmentV1['reason'] })
+      outcome_reason: candidate.outcome_reason as BeginnerGeneratedPlanAssessmentV1['reason'],
+      contour_witness: Object.freeze({
+        body_contour_points: Number(witness.body_contour_points),
+        local_bindings: Object.freeze(bindings.map((binding) => Object.freeze({
+          protrusion_id: Number(binding?.protrusion_id), contour_points: Number(binding?.contour_points),
+        }))),
+        witnessed_vertices: Number(witness.witnessed_vertices),
+        witnessed_creases: Number(witness.witnessed_creases),
+      }) })
   })
   if (new Set(candidates.map((candidate) => candidate.point.id)).size !== candidates.length) {
     throw new Error('invalid beginner parameter grid response')

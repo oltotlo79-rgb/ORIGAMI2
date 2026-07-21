@@ -2489,6 +2489,65 @@ fn symmetric_plan_kind(
 }
 
 #[derive(Debug, Serialize)]
+struct BeginnerContourBindingWitness {
+    protrusion_id: u16,
+    contour_points: u8,
+}
+
+#[derive(Debug, Serialize)]
+struct BeginnerContourPlacementWitness {
+    body_contour_points: u8,
+    local_bindings: Vec<BeginnerContourBindingWitness>,
+    witnessed_vertices: u16,
+    witnessed_creases: u16,
+}
+
+fn beginner_contour_placement_witness(
+    constraints: &ori_domain::BeginnerGenerationConstraintsV1,
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+) -> Option<BeginnerContourPlacementWitness> {
+    let body_contour_points = constraints
+        .generic_body_outline_tenths_mm
+        .as_ref()
+        .map_or(0, Vec::len);
+    let mut local_bindings = constraints
+        .protrusions
+        .iter()
+        .filter(|target| target.local_outline_tenths_mm.is_some())
+        .map(|target| {
+            let outline = target.local_outline_tenths_mm.as_ref()?;
+            Some(BeginnerContourBindingWitness {
+                protrusion_id: target.id,
+                contour_points: u8::try_from(outline.len()).ok()?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    local_bindings.sort_unstable_by_key(|binding| binding.protrusion_id);
+    if local_bindings
+        .windows(2)
+        .any(|pair| pair[0].protrusion_id >= pair[1].protrusion_id)
+    {
+        return None;
+    }
+    let witnessed = body_contour_points.saturating_add(
+        local_bindings
+            .iter()
+            .map(|binding| usize::from(binding.contour_points))
+            .sum(),
+    );
+    if plan.crease_pattern.vertices.len() < witnessed || plan.crease_pattern.edges.len() < witnessed
+    {
+        return None;
+    }
+    Some(BeginnerContourPlacementWitness {
+        body_contour_points: u8::try_from(body_contour_points).ok()?,
+        local_bindings,
+        witnessed_vertices: u16::try_from(witnessed).ok()?,
+        witnessed_creases: u16::try_from(witnessed).ok()?,
+    })
+}
+
+#[derive(Debug, Serialize)]
 struct BeginnerGridCandidateResponse {
     point: ori_domain::BeginnerParameterGridPointV1,
     primary_score: u16,
@@ -2501,6 +2560,7 @@ struct BeginnerGridCandidateResponse {
     spacing_deviation_penalty: u16,
     detail_mismatch_penalty: u16,
     outcome_reason: &'static str,
+    contour_witness: BeginnerContourPlacementWitness,
 }
 
 #[derive(Debug, Serialize)]
@@ -2620,6 +2680,9 @@ fn evaluate_beginner_parameter_grid(
             )
             .unwrap_or(100)
             .min(100);
+            let contour_witness =
+                beginner_contour_placement_witness(&profile.generation_constraints, &plan)
+                    .ok_or_else(|| "grid_contour_witness_invalid".to_owned())?;
             work.global_checked.fetch_add(1, Ordering::Release);
             Ok(BeginnerGridCandidateResponse {
                 point,
@@ -2637,6 +2700,7 @@ fn evaluate_beginner_parameter_grid(
                 ) * 5,
                 detail_mismatch_penalty: detail_penalty,
                 outcome_reason,
+                contour_witness,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -11901,6 +11965,12 @@ mod tests {
             27,
             50,
         );
+        profile
+            .generation_constraints
+            .generic_body_outline_tenths_mm =
+            Some(vec![[-120, -80], [-120, 80], [120, 80], [120, -80]]);
+        profile.generation_constraints.protrusions[0].local_outline_tenths_mm =
+            Some(vec![[-20, 0], [20, 0], [0, 60]]);
         let mut fin = profile.generation_constraints.protrusions[0].clone();
         fin.id = 2;
         fin.count = 2;
@@ -11925,6 +11995,20 @@ mod tests {
             plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
         })
         .unwrap();
+        let witness = beginner_contour_placement_witness(&profile.generation_constraints, &plan)
+            .expect("generated contour geometry must provide a bounded witness");
+        assert_eq!(witness.body_contour_points, 4);
+        assert_eq!(witness.local_bindings.len(), 2);
+        assert_eq!(witness.local_bindings[0].protrusion_id, 1);
+        assert_eq!(witness.local_bindings[1].protrusion_id, 2);
+        assert_eq!(witness.witnessed_vertices, 10);
+        assert_eq!(witness.witnessed_creases, 10);
+        let mut one_short = plan.clone();
+        one_short.crease_pattern.edges.truncate(9);
+        assert!(
+            beginner_contour_placement_witness(&profile.generation_constraints, &one_short,)
+                .is_none()
+        );
         let project_id = project.project_id;
         let instance_id = project.instance_id;
         let revision = project.editor.revision();

@@ -11243,14 +11243,9 @@ mod tests {
         }
 
         let mut generatable = source.clone();
-        let wing = generatable
-            .generation_constraints
-            .protrusions
-            .iter_mut()
-            .find(|target| target.id == 1)
-            .unwrap();
-        wing.length_tenths_mm = 270;
-        wing.thickness_tenths_mm = 50;
+        for target in &mut generatable.generation_constraints.protrusions {
+            target.length_tenths_mm = 270;
+        }
         let mut project = initial_project_state();
         let plan = grid_template_plan(
             project.project_id,

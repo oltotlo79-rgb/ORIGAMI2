@@ -11242,12 +11242,21 @@ mod tests {
             );
         }
 
+        let mut generatable = source.clone();
+        let wing = generatable
+            .generation_constraints
+            .protrusions
+            .iter_mut()
+            .find(|target| target.id == 1)
+            .unwrap();
+        wing.length_tenths_mm = 270;
+        wing.thickness_tenths_mm = 50;
         let mut project = initial_project_state();
         let plan = grid_template_plan(
             project.project_id,
             project.editor.pattern(),
             &project.editor.paper().boundary_vertices,
-            &source,
+            &generatable,
             point,
         )
         .unwrap()
@@ -11268,7 +11277,8 @@ mod tests {
         )
         .unwrap();
         assert!(
-            apply_grid_plan_document(&mut project, instance_id, project_id, revision, plan).is_err()
+            apply_grid_plan_document(&mut project, instance_id, project_id, revision, plan)
+                .is_err()
         );
         let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
         let redone = execute_redo(&mut project, project_id, undone.revision).unwrap();

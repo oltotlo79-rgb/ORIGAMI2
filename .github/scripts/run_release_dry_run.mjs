@@ -41,6 +41,15 @@ process.stdout.write(runtimeCompatibility.stdout ?? '')
 process.stderr.write(runtimeCompatibility.stderr ?? '')
 if (runtimeCompatibility.status !== 0) process.exit(runtimeCompatibility.status ?? 1)
 
+const signedCandidate = spawnSync(
+  process.execPath,
+  [join(root, '.github/scripts/rehearse_release_candidate.mjs')],
+  { cwd: root, env: process.env, encoding: 'utf8' },
+)
+process.stdout.write(signedCandidate.stdout ?? '')
+process.stderr.write(signedCandidate.stderr ?? '')
+if (signedCandidate.status !== 0) process.exit(signedCandidate.status ?? 1)
+
 const smokeRoot = mkdtempSync(join(tmpdir(), 'origami2-release-smoke-'))
 try {
   for (const directory of [

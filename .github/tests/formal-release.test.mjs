@@ -1225,6 +1225,19 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
   }
 })
 
+test('CI dry-run rehearses ephemeral signed candidate through runtime staging', () => {
+  const dryRun = readFileSync(join(root, '.github/scripts/run_release_dry_run.mjs'), 'utf8')
+  const rehearsal = readFileSync(join(root, '.github/scripts/rehearse_release_candidate.mjs'), 'utf8')
+  assert.match(dryRun, /rehearse_release_candidate\.mjs/u)
+  for (const boundary of [
+    'quick-generate-key', "git', ['tag', '-s'", 'extendedKeyUsage=codeSigning',
+    "openssl', ['cms', '-sign'", 'CycloneDX', 'SHA256SUMS.txt',
+    'slsa.dev/provenance/v1', 'write_update_manifest.mjs',
+    'parseRuntimeUpdateManifest', 'stageAuthorizedRuntimePayload',
+  ]) assert.ok(rehearsal.includes(boundary), boundary)
+  assert.doesNotMatch(rehearsal, /https?:\/\/(?!in-toto\.io|slsa\.dev|origami2\.invalid)/u)
+})
+
 test('CycloneDX binding records exact locks commit version platform and toolchains', () => {
   const directory = mkdtempSync(join(tmpdir(), 'origami2-sbom-binding-'))
   try {

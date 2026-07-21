@@ -2965,9 +2965,18 @@ struct BeginnerContourBindingWitness {
 }
 
 #[derive(Debug, Serialize)]
+struct BeginnerGenericFeatureBindingWitness {
+    protrusion_id: u16,
+    generated_feature_id: u8,
+    endpoint_count: u8,
+    crease_start: u16,
+}
+
+#[derive(Debug, Serialize)]
 struct BeginnerContourPlacementWitness {
     body_contour_points: u8,
     local_bindings: Vec<BeginnerContourBindingWitness>,
+    generic_feature_bindings: Vec<BeginnerGenericFeatureBindingWitness>,
     witnessed_vertices: u16,
     witnessed_creases: u16,
     topology_authority_hash: [u8; 32],
@@ -3117,6 +3126,56 @@ fn beginner_contour_placement_witness(
             .map(|binding| usize::from(binding.contour_points))
             .sum(),
     );
+    let mut generic_feature_bindings = Vec::new();
+    if plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
+        let endpoint_count = constraints
+            .protrusions
+            .iter()
+            .try_fold(0usize, |total, target| {
+                if matches!(target.count, 1 | 2 | 4) {
+                    total.checked_add(usize::from(target.count))
+                } else {
+                    None
+                }
+            })?;
+        let mut crease_cursor = plan
+            .crease_pattern
+            .edges
+            .len()
+            .checked_sub(witnessed)?
+            .checked_sub(endpoint_count)?;
+        for (index, target) in constraints.protrusions.iter().enumerate() {
+            let count = usize::from(target.count);
+            let creases = plan
+                .crease_pattern
+                .edges
+                .get(crease_cursor..crease_cursor.checked_add(count)?)?;
+            if creases.iter().any(|edge| edge.start == edge.end)
+                || creases
+                    .iter()
+                    .flat_map(|edge| [edge.start, edge.end])
+                    .any(|id| {
+                        !plan
+                            .crease_pattern
+                            .vertices
+                            .iter()
+                            .any(|vertex| vertex.id == id)
+                    })
+            {
+                return None;
+            }
+            generic_feature_bindings.push(BeginnerGenericFeatureBindingWitness {
+                protrusion_id: target.id,
+                generated_feature_id: u8::try_from(index.checked_add(1)?).ok()?,
+                endpoint_count: target.count,
+                crease_start: u16::try_from(crease_cursor).ok()?,
+            });
+            crease_cursor = crease_cursor.checked_add(count)?;
+        }
+        if crease_cursor != plan.crease_pattern.edges.len().checked_sub(witnessed)? {
+            return None;
+        }
+    }
     if plan.crease_pattern.vertices.len() < witnessed || plan.crease_pattern.edges.len() < witnessed
     {
         return None;
@@ -3187,6 +3246,7 @@ fn beginner_contour_placement_witness(
     Some(BeginnerContourPlacementWitness {
         body_contour_points: u8::try_from(body_contour_points).ok()?,
         local_bindings,
+        generic_feature_bindings,
         witnessed_vertices: u16::try_from(witnessed).ok()?,
         witnessed_creases: u16::try_from(witnessed).ok()?,
         topology_authority_hash,
@@ -4263,7 +4323,7 @@ fn apply_grid_plan_document(
         &plan,
     )
     .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
-    let topology_ids = topology_witness
+    let mut topology_ids = topology_witness
         .local_bindings
         .iter()
         .map(|binding| {
@@ -4286,6 +4346,29 @@ fn apply_grid_plan_document(
         })
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
+    for binding in &topology_witness.generic_feature_bindings {
+        let start = usize::from(binding.crease_start);
+        let count = usize::from(binding.endpoint_count);
+        let creases = plan
+            .crease_pattern
+            .edges
+            .get(start..start + count)
+            .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
+        let mut vertices = Vec::with_capacity(count * 2);
+        for id in creases.iter().flat_map(|edge| [edge.start, edge.end]) {
+            if !vertices.contains(&id) {
+                vertices.push(id);
+            }
+        }
+        topology_ids.push((
+            binding
+                .generated_feature_id
+                .checked_add(128)
+                .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?,
+            vertices,
+            creases.iter().map(|edge| edge.id).collect(),
+        ));
+    }
     let mut pattern = project.editor.pattern().clone();
     for vertex in plan.crease_pattern.vertices {
         if !pattern
@@ -4308,8 +4391,8 @@ fn apply_grid_plan_document(
     if topology_ids.iter().any(|(face_id, vertices, creases)| {
         !faces.insert(*face_id)
             || vertices.iter().any(|id| {
-                !witnessed_vertices.insert(*id)
-                    || !pattern.vertices.iter().any(|vertex| vertex.id == *id)
+                witnessed_vertices.insert(*id);
+                !pattern.vertices.iter().any(|vertex| vertex.id == *id)
             })
             || creases.iter().any(|id| {
                 !witnessed_creases.insert(*id) || !pattern.edges.iter().any(|edge| edge.id == *id)
@@ -4471,6 +4554,11 @@ fn apply_grid_plan_document(
         );
         let remaining = maximum_steps.saturating_sub(instruction_timeline.steps.len());
         for (generated_face_id, vertices, creases) in topology_ids.iter().take(remaining) {
+            let topology_label = if *generated_face_id >= 129 {
+                format!("feature {}", *generated_face_id - 128)
+            } else {
+                format!("face {generated_face_id}")
+            };
             let crease = creases
                 .first()
                 .and_then(|id| pattern.edges.iter().find(|edge| edge.id == *id));
@@ -4514,12 +4602,12 @@ fn apply_grid_plan_document(
                             z: 0.0,
                         },
                         radius: 4.0,
-                        label: format!("Face {generated_face_id}"),
+                        label: topology_label.clone(),
                     })
             });
             instruction_timeline.steps.push(InstructionStep {
                 id: InstructionStepId::new(),
-                title: format!("Shape generated face {generated_face_id}"),
+                title: format!("Shape generated {topology_label}"),
                 description: format!(
                     "Fold the {} generated creases around the {}-vertex local contour in canonical order.",
                     creases.len(), vertices.len(),
@@ -13422,6 +13510,10 @@ mod tests {
             plan.clone(),
         )
         .unwrap();
+        let generated_steps = &project.editor.instruction_timeline().steps;
+        assert_eq!(generated_steps.len(), 3);
+        assert_eq!(generated_steps[1].title, "Shape generated feature 1");
+        assert_eq!(generated_steps[2].title, "Shape generated feature 2");
         assert!(
             apply_grid_plan_document(&mut project, instance_id, project_id, revision, plan)
                 .is_err()
@@ -13610,6 +13702,11 @@ mod tests {
         assert_eq!(witness.local_bindings.len(), 1);
         assert_eq!(witness.local_bindings[0].protrusion_id, 1);
         assert_eq!(witness.local_bindings[0].generated_face_id, 1);
+        assert_eq!(witness.generic_feature_bindings.len(), 2);
+        assert_eq!(witness.generic_feature_bindings[0].protrusion_id, 1);
+        assert_eq!(witness.generic_feature_bindings[0].endpoint_count, 1);
+        assert_eq!(witness.generic_feature_bindings[1].protrusion_id, 2);
+        assert_eq!(witness.generic_feature_bindings[1].endpoint_count, 2);
         assert_eq!(witness.witnessed_vertices, 7);
         assert_eq!(witness.witnessed_creases, 7);
         let mut one_short = plan.clone();
@@ -13635,6 +13732,10 @@ mod tests {
             candidate.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
         })
         .unwrap();
+        let outline_free_witness =
+            beginner_contour_placement_witness(&profile.generation_constraints, &plan).unwrap();
+        assert!(outline_free_witness.local_bindings.is_empty());
+        assert_eq!(outline_free_witness.generic_feature_bindings.len(), 2);
         let project_id = project.project_id;
         let instance_id = project.instance_id;
         let revision = project.editor.revision();
@@ -13701,7 +13802,7 @@ mod tests {
                 .instruction_timeline()
                 .steps
                 .last()
-                .is_some_and(|step| step.caution.contains("Topology authority SHA-256:"))
+                .is_some_and(|step| step.caution.contains("topology authority SHA-256:"))
         );
     }
 

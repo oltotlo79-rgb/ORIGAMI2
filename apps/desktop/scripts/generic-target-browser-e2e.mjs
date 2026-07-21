@@ -7,6 +7,10 @@ try {
   for (let i = 0; i < 150; i += 1) { try { if ((await fetch(origin)).ok) break } catch {}; await new Promise((r) => setTimeout(r, 100)) }
   browser = await chromium.launch({ headless: true }); const page = await browser.newPage()
   await page.goto(`${origin}/scripts/generic-target-browser-harness.html`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Try invalid GLB bounds' }).click()
+  await page.getByText('Rejected GLB: non-finite or oversized bounds', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Try dense multi-component GLB' }).click()
+  await page.getByText('Rejected GLB: dense or multiple components', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Create empty generic target' }).click(); await assertBindings(page)
   const add = page.getByRole('button', { name: 'Add binding' })
   for (let count = 2; count < 8; count += 1) await add.click()
@@ -84,17 +88,23 @@ try {
   await assertWitnessCanvas(page.getByRole('img', { name: 'Contour placement correspondence candidate 2' }))
   await page.getByRole('button', { name: 'Replace recognized target' }).click(); await preview.waitFor({ state: 'detached' })
   await page.getByRole('button', { name: 'Recognize mixed target GLB' }).click(); await assertBindings(page)
+  await page.getByRole('region', { name: 'GLB geometry witness' }).getByText(/3D bounds 120×80×65 mm · 2D silhouette difference 7% · bulge targets 2/).waitFor()
+  if ((await page.getByLabel('Body outline points').inputValue()).split('\n').length !== 4
+    || (await page.getByLabel('Local outline points binding 1').inputValue()).split('\n').length !== 3) throw new Error('GLB contours were not proposed')
   await page.getByRole('button', { name: 'Evaluate generic target grid' }).click()
+  await page.getByText('GLB evaluation witness: bounds 120×80×65 mm, silhouette difference 7%, bulges 2', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Cancel generic target grid' }).click(); await preview.waitFor({ state: 'detached' })
   await page.getByRole('button', { name: 'Evaluate generic target grid' }).click()
   await page.getByRole('button', { name: 'Select contour candidate 2' }).click()
   await page.getByRole('button', { name: 'Confirm and apply generic target' }).click(); await preview.waitFor({ state: 'detached' })
   await page.waitForFunction(() => document.activeElement?.textContent === 'Evaluate generic target grid')
   await page.getByText('Applied contour placement witness candidate 2', { exact: true }).waitFor()
+  await page.getByText('Applied GLB witness: bounds 120×80×65 mm, bulges 2', { exact: true }).waitFor()
   await assertWitnessCanvas(page.getByRole('img', { name: 'Applied contour placement correspondence candidate 2' }))
   for (const [button, status] of [['Undo generic target', 'Generic target undone'], ['Redo generic target', 'Generic target redone'], ['Save and reopen generic target', 'Generic target saved and reopened']]) {
     await page.getByRole('button', { name: button }).click(); await page.getByText(status, { exact: true }).waitFor()
     await page.getByText('Applied contour placement witness candidate 2', { exact: true }).waitFor()
+    await page.getByText('Applied GLB witness: bounds 120×80×65 mm, bulges 2', { exact: true }).waitFor()
   }
   console.log('generic target browser E2E passed: image/GLB, add/remove/reorder bounds, stale/cancel, apply history/save')
 } finally { await browser?.close(); server.kill('SIGTERM') }

@@ -26,6 +26,7 @@ function Harness() {
   const [outlineMode, setOutlineMode] = useState<'symmetric' | 'general'>('symmetric')
   const [selectedCandidate, setSelectedCandidate] = useState(1)
   const [candidateShortage, setCandidateShortage] = useState(false)
+  const [glbWitness, setGlbWitness] = useState<{ bounds: string, bulges: number, discrepancy: number } | null>(null)
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
     + bindings.reduce((sum, target) => sum + Math.max(0, (target.local_outline_tenths_mm?.length ?? 3) - 3), 0))
@@ -66,11 +67,19 @@ function Harness() {
     setBindings(initialBindings.map((target) => ({ ...target })))
     setKinds(['tail', 'fin'])
     setRecognized(true); setPreview(false); setCandidateShortage(false); setStatus(`${source} recognized two bounded bindings`)
+    if (source === 'GLB') {
+      setOutlineMode('general'); setOutline([[-60, -40], [60, -40], [55, 40], [-50, 40]])
+      setBindings(initialBindings.map((target) => ({ ...target,
+        local_outline_tenths_mm: [[-20, -10], [20, -10], [0, 30]] })))
+      setGlbWitness({ bounds: '120×80×65 mm', bulges: 2, discrepancy: 7 })
+    } else setGlbWitness(null)
   }
   return <main><h1>Bounded generic target</h1>
     <button onClick={() => recognize('Empty generic target')}>Create empty generic target</button>
     <button onClick={() => recognize('Image')}>Recognize mixed target image</button>
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
+    <button onClick={() => { setRecognized(false); setPreview(false); setGlbWitness(null); setStatus('Rejected GLB: non-finite or oversized bounds') }}>Try invalid GLB bounds</button>
+    <button onClick={() => { setRecognized(false); setPreview(false); setGlbWitness(null); setStatus('Rejected GLB: dense or multiple components') }}>Try dense multi-component GLB</button>
     <RecognitionContourCopyAction locale="en" bodyPointCount={4} localContourCount={1}
       onCopy={() => {
         recognize('Image contour proposal')
@@ -90,6 +99,10 @@ function Harness() {
     }}>Try strict dense contour</button>
     <p role="status">{status}</p>
     {recognized && <p>Contour approximation score: {contourScore}</p>}
+    {glbWitness && <section aria-label="GLB geometry witness">
+      <p>3D bounds {glbWitness.bounds} · 2D silhouette difference {glbWitness.discrepancy}% · bulge targets {glbWitness.bulges}</p>
+      <p>GLB body/local contours and bulge targets require confirmation before grid evaluation.</p>
+    </section>}
     {recognized && <GenericBodyOutlineEditor locale="en" points={outline} onChange={setOutline}
       mode={outlineMode} onModeChange={setOutlineMode} />}
     {recognized && <BeginnerShapeCanvasPreview locale="en" bodySize={[400, 300]}
@@ -132,6 +145,7 @@ function Harness() {
       <button aria-pressed={selectedCandidate === 1} onClick={() => setSelectedCandidate(1)}>Select contour candidate 1</button>
       <button aria-pressed={selectedCandidate === 2} onClick={() => setSelectedCandidate(2)}>Select contour candidate 2</button>
       <p>Contour placement witness candidate {selectedCandidate}: body {outline.length || 4}, local {bindings.filter((binding) => binding.local_outline_tenths_mm).map((binding) => `${binding.id}:${binding.local_outline_tenths_mm!.length}`).join(', ') || 'none'}</p>
+      {glbWitness && <p>GLB evaluation witness: bounds {glbWitness.bounds}, silhouette difference {glbWitness.discrepancy}%, bulges {glbWitness.bulges}</p>}
       <canvas ref={witnessCanvas} width={320} height={200} role="img" aria-label={`Contour placement correspondence candidate ${selectedCandidate}`} />
       <button onClick={() => { setPreview(false); setStatus('Stale generic target replaced') }}>Replace recognized target</button>
       <button onClick={() => { finishBeginnerGridCancellation(() => setPreview(false), focus); setStatus('Generic target grid canceled') }}>Cancel generic target grid</button>
@@ -140,6 +154,7 @@ function Harness() {
     </section>}
     {applied && <section aria-label="Generic target history">
       <p>Applied contour placement witness candidate {selectedCandidate}</p>
+      {glbWitness && <p>Applied GLB witness: bounds {glbWitness.bounds}, bulges {glbWitness.bulges}</p>}
       <canvas ref={witnessCanvas} width={320} height={200} role="img" aria-label={`Applied contour placement correspondence candidate ${selectedCandidate}`} />
       <button onClick={() => setStatus('Generic target undone')}>Undo generic target</button>
       <button onClick={() => setStatus('Generic target redone')}>Redo generic target</button>

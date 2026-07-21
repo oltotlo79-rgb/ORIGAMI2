@@ -24,6 +24,11 @@ pub fn sixteen_bay_rational_cycle_pattern() -> (CreasePattern, Paper, Vec<EdgeId
     rational_cycle_bay_pattern(16)
 }
 
+#[allow(dead_code)]
+pub fn thirty_two_bay_rational_cycle_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
+    rational_cycle_bay_pattern(32)
+}
+
 fn rational_cycle_bay_pattern(group_count: usize) -> (CreasePattern, Paper, Vec<EdgeId>) {
     let namespace: ProjectId =
         serde_json::from_str("\"00000000-0000-4000-b000-000000000002\"").unwrap();
@@ -50,7 +55,7 @@ fn rational_cycle_bay_pattern(group_count: usize) -> (CreasePattern, Paper, Vec<
     let mut hinge_endpoints = Vec::new();
     let mut centers = Vec::new();
     let first_center_y = -(group_count.saturating_sub(1) as f64) * 20.0;
-    for (group, (p, q, leg)) in triples.into_iter().take(group_count).enumerate() {
+    for (group, (p, q, leg)) in triples.into_iter().cycle().take(group_count).enumerate() {
         let center_y = first_center_y + group as f64 * 40.0;
         let center = Vertex {
             id: VertexId::derive_v5(namespace, &[0x10, group as u8]),

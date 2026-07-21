@@ -1569,7 +1569,7 @@ fn composed_symmetric_rational_cycles_premises_v1(
     tolerance: f64,
 ) -> Option<usize> {
     let group_count = audit.closure_hinges().len();
-    if !(2..=16).contains(&group_count)
+    if !(2..=32).contains(&group_count)
         || geometry.hinges().len() != group_count * 4
         || geometry.face_ids().len() != 1 + group_count * 3
     {
@@ -3183,5 +3183,99 @@ mod tests {
             )
             .unwrap();
         assert_eq!(dyadic.leaves().len(), 1);
+    }
+
+    #[test]
+    fn rank_sixty_four_basis_fits_the_128_hinge_ceiling_and_cancels_one_short() {
+        let namespace = ProjectId::new();
+        let faces = (0..65)
+            .map(|index| FaceId::derive_v5(namespace, &[0x60, index as u8]))
+            .collect::<Vec<_>>();
+        let mut carrier = Vec::new();
+        for index in 1..65 {
+            carrier.push((
+                EdgeId::derive_v5(namespace, &[0x10, index as u8]),
+                faces[0],
+                faces[index],
+            ));
+        }
+        for index in 1..65 {
+            carrier.push((
+                EdgeId::derive_v5(namespace, &[0x20, index as u8]),
+                faces[index],
+                faces[if index == 64 { 1 } else { index + 1 }],
+            ));
+        }
+        let source = topology(&faces, &carrier);
+        let audit = MaterialHingeGraphAudit::prepare(
+            &source,
+            TreeKinematicsLimits {
+                max_hinges: 128,
+                max_adjacency_entries: 256,
+                ..TreeKinematicsLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (audit.spanning_hinges().len(), audit.closure_hinges().len()),
+            (64, 64)
+        );
+        let start = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let end = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let hinges = carrier
+            .iter()
+            .map(|(edge, left, right)| {
+                TreeHinge::new_for_test(
+                    *edge,
+                    FoldAssignment::Mountain,
+                    *left,
+                    *right,
+                    start,
+                    end,
+                    end,
+                )
+            })
+            .collect::<Vec<_>>();
+        let geometry = MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), hinges);
+        let basis = geometry
+            .extract_canonical_cycle_basis_v1(
+                &audit,
+                CycleBasisLimitsV1 {
+                    max_cycles: 64,
+                    max_edges_per_cycle: 65,
+                    max_total_cycle_edges: 4_160,
+                },
+            )
+            .unwrap();
+        assert_eq!(basis.cycles().len(), 64);
+        let total = basis.cycles().iter().map(Vec::len).sum::<usize>();
+        assert!(total <= 4_160);
+        assert!(matches!(
+            geometry.extract_canonical_cycle_basis_v1(
+                &audit,
+                CycleBasisLimitsV1 {
+                    max_cycles: 0,
+                    max_edges_per_cycle: 65,
+                    max_total_cycle_edges: 4_160,
+                },
+            ),
+            Err(DyadicIntervalClosureErrorV1::ResourceLimit)
+        ));
+        assert!(matches!(
+            geometry.extract_canonical_cycle_basis_v1(
+                &audit,
+                CycleBasisLimitsV1 {
+                    max_cycles: 64,
+                    max_edges_per_cycle: 65,
+                    max_total_cycle_edges: total - 1,
+                },
+            ),
+            Err(DyadicIntervalClosureErrorV1::ResourceLimit)
+        ));
+        let foreign = MaterialHingeGraphGeometry::new_for_test(
+            audit.faces().to_vec(),
+            geometry.hinges().to_vec(),
+        );
+        assert!(!basis.is_for_geometry(&foreign));
     }
 }

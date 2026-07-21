@@ -15,8 +15,8 @@ pub struct PositiveThicknessGraphLimitsV1 {
 impl Default for PositiveThicknessGraphLimitsV1 {
     fn default() -> Self {
         Self {
-            max_unordered_face_pairs: 1_176,
-            max_shared_feature_pairs: 1_176,
+            max_unordered_face_pairs: 4_656,
+            max_shared_feature_pairs: 4_656,
         }
     }
 }
@@ -80,7 +80,7 @@ pub fn prove_positive_thickness_graph_geometry_v1(
     let face_count = geometry.face_ids().len();
     let checked_hinges = pose.closure_certificate().checked_hinges();
     let checked_hinge_set = checked_hinges.iter().copied().collect::<HashSet<_>>();
-    if !(3..=49).contains(&face_count)
+    if !(3..=97).contains(&face_count)
         || !paper_thickness_mm.is_finite()
         || paper_thickness_mm <= 0.0
         || checked_hinges.len() != geometry.hinges().len()

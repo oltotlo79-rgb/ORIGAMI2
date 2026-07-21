@@ -1845,7 +1845,7 @@ fn composed_symmetric_rational_local_groups_v1(
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
 ) -> Option<HashMap<FaceId, usize>> {
     let count = audit.closure_hinges().len();
-    if !(2..=16).contains(&count)
+    if !(2..=32).contains(&count)
         || geometry.hinges().len() != count * 4
         || geometry.face_ids().len() != 1 + count * 3
     {
@@ -1901,7 +1901,7 @@ fn rational_cactus_star_local_groups_v1(
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
 ) -> Option<HashMap<FaceId, usize>> {
     let count = audit.closure_hinges().len();
-    if !(2..=16).contains(&count)
+    if !(2..=32).contains(&count)
         || geometry.hinges().len() != count * 4
         || geometry.face_ids().len() != 1 + count * 3
     {
@@ -2546,6 +2546,8 @@ mod tests {
         } else if reverse_hinges {
             super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern_with_reversed_hinges(
             )
+        } else if group_count == 32 {
+            super::four_bay_cycle_test_support::thirty_two_bay_rational_cycle_pattern()
         } else if group_count == 16 {
             super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern()
         } else if group_count == 8 {
@@ -2587,7 +2589,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(index, edge)| {
-                let (p, q, _) = triples[index / 4];
+                let (p, q, _) = triples[(index / 4) % triples.len()];
                 ori_kinematics::HalfAngleRationalEntryInputV1 {
                     edge,
                     u_domain: [
@@ -7337,8 +7339,8 @@ mod tests {
     }
 
     #[test]
-    fn non_grid_rank_eight_and_sixteen_basis_scale_to_exact_all_pair_limits() {
-        for rank in [8usize, 16] {
+    fn non_grid_rank_eight_to_thirty_two_basis_scale_to_exact_all_pair_limits() {
+        for rank in [8usize, 16, 32] {
             let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(rank, false);
             assert_eq!(audit.closure_hinges().len(), rank);
             let basis_limits = ori_kinematics::CycleBasisLimitsV1::default();
@@ -7399,7 +7401,7 @@ mod tests {
                     1.0e-9,
                     basis_limits,
                     DyadicIntervalClosureLimitsV1 {
-                        max_work: rank - 1,
+                        max_work: closure_limits.max_work - 1,
                         ..closure_limits
                     },
                 ),

@@ -1696,11 +1696,10 @@ fn validate_stacked_fold_document(
     layers: &ProjectLayerDocumentV1,
     error: EditorHistoryErrorV1,
 ) -> Result<(), EditorHistoryErrorV1> {
-    if paper.thickness_mm.to_bits() != 0.0_f64.to_bits()
-        || pattern
-            .vertices
-            .iter()
-            .any(|vertex| !finite_point(vertex.position))
+    if pattern
+        .vertices
+        .iter()
+        .any(|vertex| !finite_point(vertex.position))
         || !validate_crease_pattern(pattern).is_valid()
         || !validate_paper(paper, pattern).is_valid()
         || validate_instruction_timeline(timeline).is_err()
@@ -3269,7 +3268,7 @@ mod tests {
     fn stacked_fold_document_history_round_trips_and_rejects_malformed_target() {
         let sheet = crate::create_rectangular_sheet(80.0, 60.0, false).unwrap();
         let (source_pattern, mut paper) = sheet.into_parts();
-        paper.thickness_mm = 0.0;
+        paper.thickness_mm = 0.1;
         let mut target_pattern = source_pattern.clone();
         let hinge = EdgeId::new();
         target_pattern.edges.push(Edge {

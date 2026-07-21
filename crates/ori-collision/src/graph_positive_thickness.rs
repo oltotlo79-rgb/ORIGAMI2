@@ -317,8 +317,9 @@ mod four_bay_cycle_test_support;
 mod tests {
     use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, ProjectId, Vertex, VertexId};
     use ori_kinematics::{
-        CanonicalHingeAngles, HingeAngle, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
-        TreeKinematicsLimits,
+        CanonicalCycleScheduleV1, CanonicalHingeAngles, CycleScheduleEntryInputV1,
+        CycleScheduleLimitsV1, HingeAngle, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
+        RationalCoefficientV1, TreeKinematicsLimits,
     };
     use ori_topology::{FaceExtractionInput, analyze_faces};
 
@@ -364,7 +365,7 @@ mod tests {
                 id: ori_domain::EdgeId::derive_v5(namespace, &[0x20, index as u8]),
                 start: vertices[start].id,
                 end: vertices[end].id,
-                kind: if index == 3 {
+                kind: if matches!(index, 0 | 3 | 5) {
                     EdgeKind::Mountain
                 } else {
                     EdgeKind::Valley
@@ -415,6 +416,55 @@ mod tests {
         let pose = geometry
             .solve_closed(&audit, geometry.face_ids()[0], &angles, 0.0)
             .unwrap();
+        let schedule = CanonicalCycleScheduleV1::prepare(
+            &geometry,
+            &audit,
+            geometry.face_ids()[0],
+            [0.0, 1.0],
+            geometry
+                .hinges()
+                .iter()
+                .map(|hinge| CycleScheduleEntryInputV1 {
+                    edge: hinge.edge(),
+                    initial_angle_degrees_bits: if hinge.assignment()
+                        == ori_topology::FoldAssignment::Mountain
+                    {
+                        15.0_f64.to_bits()
+                    } else {
+                        0.0_f64.to_bits()
+                    },
+                    chebyshev_coefficients: if hinge.assignment()
+                        == ori_topology::FoldAssignment::Mountain
+                    {
+                        vec![
+                            RationalCoefficientV1 {
+                                numerator: 0,
+                                denominator: 1,
+                            },
+                            RationalCoefficientV1 {
+                                numerator: 15,
+                                denominator: 1,
+                            },
+                        ]
+                    } else {
+                        vec![RationalCoefficientV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        }]
+                    },
+                })
+                .collect(),
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        for progress in [0.25, 0.5, 1.0] {
+            let scheduled = schedule.evaluate(progress).unwrap();
+            geometry
+                .solve_closed(&audit, geometry.face_ids()[0], &scheduled, 1.0e-8)
+                .unwrap_or_else(|error| {
+                    panic!("theta schedule must close at {progress}: {error:?}")
+                });
+        }
         for thickness in [0.1, 1.0, 3.0] {
             let proof = prove_positive_thickness_graph_geometry_v1(
                 &geometry,

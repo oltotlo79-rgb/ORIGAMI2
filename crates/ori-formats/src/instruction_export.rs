@@ -950,6 +950,7 @@ mod tests {
                 .collect::<String>()
         };
         assert!(proof_step_text.contains("v1 / transitions=1"));
+        assert!(proof_step_text.contains("3D姿勢: 再計算済み（構造化経路証明を再検証済み）"));
         assert!(proof_step_text.contains(&format!("cert={}", short(&reference.binding_sha256))));
         assert!(
             proof_step_text.contains(&format!("source={}", short(&reference.source_pose_sha256)))
@@ -959,7 +960,7 @@ mod tests {
         );
         assert_eq!(
             canonical_plan_digest(&plan),
-            "a2af684997f5f35baf9270f7faf8d03a858860b29a0d3d7a294643886a4871b7"
+            "ab3287d02d9e7fb343c9586f362e7189932ca52985d9d15ced0683c7392706c7"
         );
         let mut glyph_limited = InstructionExportLimits::default();
         glyph_limited.max_glyphs = plan.glyph_count - 1;
@@ -1052,7 +1053,7 @@ mod tests {
             .flat_map(|page| page.texts.iter())
             .map(layout::PageText::scalar_text)
             .collect::<String>();
-        assert_eq!(multiple_text.matches("構造化経路証明").count(), 2);
+        assert_eq!(multiple_text.matches("v1 / transitions=").count(), 2);
         assert!(multiple_text.contains("v1 / transitions=2 / cert=6d6d6d6d6d6d"));
         let exact_multiple_limits = InstructionExportLimits {
             max_pages: multiple_plan.pages.len(),

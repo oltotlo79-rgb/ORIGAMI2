@@ -538,8 +538,13 @@ fn first_step_page(
         )?;
     }
     cursor += DIAGRAM_HEIGHT + 10.0;
+    let path_status = if step.visual.path_certificate_reference_v1.is_some() {
+        "構造化経路証明を再検証済み"
+    } else {
+        "経路未証明"
+    };
     let metadata = format!(
-        "所要時間: {} / 今回動かす折り線: {}本 / 3D姿勢: 再計算済み（経路未証明）",
+        "所要時間: {} / 今回動かす折り線: {}本 / 3D姿勢: 再計算済み（{path_status}）",
         format_duration(step.duration_ms),
         diagram_step.changed_hinge_count
     );

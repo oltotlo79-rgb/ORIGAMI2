@@ -72,6 +72,7 @@ pub(super) enum PendingStackedFoldRequestedPose {
         generated: ori_kinematics::GeneratedMultiHingePathCandidateV1,
         closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
         expected: ori_collision::CertifiedPathTransitionEvidenceV1,
+        continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
         target_angles: Vec<(ori_domain::EdgeId, f64)>,
     },
 }
@@ -143,6 +144,7 @@ impl PendingStackedFoldRequestedPose {
                 generated,
                 closure,
                 expected,
+                continuous,
                 target_angles,
             } => {
                 certified_edge_target_matches_schedule(&PendingCertifiedPathEdgeV1 {
@@ -150,17 +152,41 @@ impl PendingStackedFoldRequestedPose {
                     closure: closure.clone(),
                     expected: expected.clone(),
                     target_angles: target_angles.clone(),
-                }) && ori_collision::certify_scheduled_cycle_transition_v1(
-                    geometry,
-                    audit,
-                    *fixed_face,
-                    generated,
-                    closure,
-                    32,
-                    expected.source(),
-                    expected.target(),
-                )
-                .is_some_and(|actual| actual == *expected)
+                }) && continuous.continuous_certificate_model_id().is_some()
+                    && match continuous.positive_thickness_bits() {
+                        Some(bits) => {
+                            ori_collision::diagnose_scheduled_positive_thickness_cycle_path_v1(
+                                geometry,
+                                audit,
+                                *fixed_face,
+                                generated,
+                                closure,
+                                f64::from_bits(bits),
+                                32,
+                            ) == *continuous
+                        }
+                        None => {
+                            ori_collision::diagnose_scheduled_cycle_path_v1(
+                                geometry,
+                                audit,
+                                *fixed_face,
+                                generated,
+                                closure,
+                                32,
+                            ) == *continuous
+                        }
+                    }
+                    && ori_collision::certify_scheduled_cycle_transition_v1(
+                        geometry,
+                        audit,
+                        *fixed_face,
+                        generated,
+                        closure,
+                        32,
+                        expected.source(),
+                        expected.target(),
+                    )
+                    .is_some_and(|actual| actual == *expected)
             }
         }
     }
@@ -302,6 +328,7 @@ pub(super) struct PendingCurrentCyclePosePremisesV1 {
     pub generated: ori_kinematics::GeneratedMultiHingePathCandidateV1,
     pub closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
     pub expected: ori_collision::CertifiedPathTransitionEvidenceV1,
+    pub continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
     pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
 }
 
@@ -493,6 +520,7 @@ pub(super) fn install_pending_current_cycle_pose_v1(
             generated: premises.generated,
             closure: premises.closure,
             expected: premises.expected,
+            continuous: premises.continuous,
             target_angles: premises.target_angles,
         },
         layer_order: None,

@@ -17,9 +17,9 @@ use thiserror::Error;
 
 use crate::cayley::prepare_swept_tree_hinge_thickness_boundaries_v1;
 use crate::{
-    StaticCollisionLimits, diagnose_static_collision_geometry,
+    PositiveThicknessGraphLimitsV1, StaticCollisionLimits, diagnose_static_collision_geometry,
     prepare_positive_thickness_pair_separation_v1, prepare_single_hinge_thickness_boundary_v1,
-    revalidate_positive_thickness_pair_separation_v1,
+    prove_positive_thickness_graph_geometry_v1, revalidate_positive_thickness_pair_separation_v1,
     revalidate_single_hinge_thickness_boundary_v1, revalidate_tree_hinge_thickness_boundaries_v1,
     static_collision::prepare_positive_thickness_tree_endpoint_topology_memo_v1,
 };
@@ -40,6 +40,8 @@ pub const STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_tree_interval_zero_thickness_continuous_certificate_v1";
 pub const STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
     "stacked_fold_cycle_interval_zero_thickness_continuous_certificate_v1";
+pub const STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1: &str =
+    "stacked_fold_cactus_positive_thickness_continuous_certificate_v1";
 pub const MAX_STACKED_FOLD_PATH_SAMPLES_V1: usize = 64;
 const MAX_POSITIVE_ENDPOINT_MEMO_PAIR_ENTRIES_V1: usize = 120;
 const MAX_POSITIVE_ENDPOINT_TREE_FACES_V1: usize = 64;
@@ -976,6 +978,7 @@ pub struct StackedFoldCyclePathDiagnosticV1 {
     first_closure_failure_angle_degrees: Option<f64>,
     leaf_count: usize,
     pair_work: usize,
+    positive_thickness_bits: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1117,7 +1120,11 @@ impl StackedFoldCyclePathDiagnosticV1 {
     #[must_use]
     pub const fn continuous_certificate_model_id(&self) -> Option<&'static str> {
         if self.certified {
-            Some(STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+            Some(if self.positive_thickness_bits.is_some() {
+                STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
+            } else {
+                STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
+            })
         } else {
             None
         }
@@ -1133,6 +1140,10 @@ impl StackedFoldCyclePathDiagnosticV1 {
     #[must_use]
     pub const fn pair_work(&self) -> usize {
         self.pair_work
+    }
+    #[must_use]
+    pub const fn positive_thickness_bits(&self) -> Option<u64> {
+        self.positive_thickness_bits
     }
 }
 
@@ -1154,6 +1165,7 @@ pub fn diagnose_collective_cycle_path_v1(
         first_closure_failure_angle_degrees: angle,
         leaf_count: 0,
         pair_work: 0,
+        positive_thickness_bits: None,
     };
     if audit.closure_hinges().is_empty()
         || geometry.hinges().len() > MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1
@@ -1340,6 +1352,7 @@ pub fn diagnose_collective_cycle_path_v1(
         first_closure_failure_angle_degrees: None,
         leaf_count: leaves,
         pair_work: work,
+        positive_thickness_bits: None,
     }
 }
 
@@ -1364,6 +1377,28 @@ pub fn diagnose_scheduled_cycle_path_v1(
     )
 }
 
+/// Certifies a cactus schedule using thickness-expanded swept bounds and exact
+/// positive-thickness endpoint/midpoint revalidation on every adaptive leaf.
+pub fn diagnose_scheduled_positive_thickness_cycle_path_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    candidate: &GeneratedMultiHingePathCandidateV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    paper_thickness_mm: f64,
+    interval_count: usize,
+) -> StackedFoldCyclePathDiagnosticV1 {
+    diagnose_canonical_cycle_schedule_path_internal_v1(
+        geometry,
+        audit,
+        fixed_face,
+        candidate.schedule(),
+        closure,
+        interval_count,
+        Some(paper_thickness_mm),
+    )
+}
+
 /// Runs the bounded cycle CCD oracle against a canonical schedule directly.
 /// Schedule families without point evaluation or a finite derivative bound
 /// remain explicitly uncertified; closure evidence alone is never clearance.
@@ -1375,11 +1410,32 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
     closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
     interval_count: usize,
 ) -> StackedFoldCyclePathDiagnosticV1 {
+    diagnose_canonical_cycle_schedule_path_internal_v1(
+        geometry,
+        audit,
+        fixed_face,
+        schedule,
+        closure,
+        interval_count,
+        None,
+    )
+}
+
+fn diagnose_canonical_cycle_schedule_path_internal_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    interval_count: usize,
+    paper_thickness_mm: Option<f64>,
+) -> StackedFoldCyclePathDiagnosticV1 {
     let failed = || StackedFoldCyclePathDiagnosticV1 {
         certified: false,
         first_closure_failure_angle_degrees: None,
         leaf_count: 0,
         pair_work: 0,
+        positive_thickness_bits: None,
     };
     if interval_count == 0
         || interval_count > MAX_STACKED_FOLD_INTERVAL_LEAVES_V1
@@ -1389,6 +1445,7 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
             != schedule.certificate_binding_fingerprint_v1()
         || closure.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
         || !schedule.matches_binding(geometry, audit, fixed_face)
+        || paper_thickness_mm.is_some_and(|value| !value.is_finite() || value <= 0.0)
     {
         return failed();
     }
@@ -1404,20 +1461,26 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
     let Some(derivative_sum) = derivative_sum else {
         return failed();
     };
-    if scheduled_collinear_flat_stack_premises_v1(geometry, audit, fixed_face, schedule) {
+    if paper_thickness_mm.is_none()
+        && scheduled_collinear_flat_stack_premises_v1(geometry, audit, fixed_face, schedule)
+    {
         return StackedFoldCyclePathDiagnosticV1 {
             certified: true,
             first_closure_failure_angle_degrees: None,
             leaf_count: closure.leaves().len(),
             pair_work: 0,
+            positive_thickness_bits: None,
         };
     }
-    if scheduled_kawasaki_120_120_60_60_premises_v1(geometry, audit, fixed_face, schedule) {
+    if paper_thickness_mm.is_none()
+        && scheduled_kawasaki_120_120_60_60_premises_v1(geometry, audit, fixed_face, schedule)
+    {
         return StackedFoldCyclePathDiagnosticV1 {
             certified: true,
             first_closure_failure_angle_degrees: None,
             leaf_count: closure.leaves().len(),
             pair_work: 0,
+            positive_thickness_bits: None,
         };
     }
     let mut maximum_radius = 0.0_f64;
@@ -1453,9 +1516,10 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
         geometry, audit, fixed_face, schedule,
     )
     .or_else(|| rational_cactus_star_local_groups_v1(geometry, audit, fixed_face, schedule));
-    if local_symmetric_groups
-        .as_ref()
-        .is_some_and(|groups| symmetric_groups_have_disjoint_swept_balls_v1(geometry, groups))
+    if paper_thickness_mm.is_none()
+        && local_symmetric_groups
+            .as_ref()
+            .is_some_and(|groups| symmetric_groups_have_disjoint_swept_balls_v1(geometry, groups))
     {
         let group_count = audit.closure_hinges().len();
         return StackedFoldCyclePathDiagnosticV1 {
@@ -1463,6 +1527,19 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
             first_closure_failure_angle_degrees: None,
             leaf_count: closure.leaves().len(),
             pair_work: group_count * (group_count - 1) / 2,
+            positive_thickness_bits: None,
+        };
+    }
+    if let (Some(thickness), Some(groups)) = (paper_thickness_mm, &local_symmetric_groups)
+        && symmetric_groups_have_disjoint_positive_swept_balls_v1(geometry, groups, thickness)
+    {
+        let group_count = audit.closure_hinges().len();
+        return StackedFoldCyclePathDiagnosticV1 {
+            certified: true,
+            first_closure_failure_angle_degrees: None,
+            leaf_count: closure.leaves().len(),
+            pair_work: group_count * (group_count - 1) / 2,
+            positive_thickness_bits: Some(thickness.to_bits()),
         };
     }
     let mut pending = (0..interval_count)
@@ -1484,8 +1561,31 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
         let Ok(pose) = geometry.solve_closed(audit, fixed_face, &angles, 1.0e-9) else {
             return failed();
         };
-        let expansion =
-            maximum_radius * derivative_sum * (upper - lower) * std::f64::consts::PI / 180.0;
+        if let Some(thickness) = paper_thickness_mm {
+            for progress in [lower, midpoint, upper] {
+                let Some(exact_angles) = schedule.evaluate(progress) else {
+                    return failed();
+                };
+                let Ok(exact_pose) =
+                    geometry.solve_closed(audit, fixed_face, &exact_angles, 1.0e-9)
+                else {
+                    return failed();
+                };
+                if prove_positive_thickness_graph_geometry_v1(
+                    geometry,
+                    &exact_pose,
+                    thickness,
+                    PositiveThicknessGraphLimitsV1::default(),
+                )
+                .is_err()
+                {
+                    return failed();
+                }
+            }
+        }
+        let expansion = maximum_radius * derivative_sum * (upper - lower) * std::f64::consts::PI
+            / 180.0
+            + paper_thickness_mm.unwrap_or(0.0) * 0.5;
         let mut bounds = Vec::new();
         for face in geometry.face_ids() {
             let (Some(transform), Some(boundary)) = (
@@ -1552,6 +1652,7 @@ pub fn diagnose_canonical_cycle_schedule_path_v1(
         first_closure_failure_angle_degrees: None,
         leaf_count: leaves,
         pair_work: work,
+        positive_thickness_bits: paper_thickness_mm.map(f64::to_bits),
     }
 }
 
@@ -1729,6 +1830,76 @@ fn symmetric_groups_have_disjoint_swept_balls_v1(
                         + (point.y() - pivot.y()).powi(2)
                         + (point.z() - pivot.z()).powi(2))
                     .sqrt(),
+                );
+            }
+        }
+        balls.push((pivot, radius));
+    }
+    (0..balls.len()).all(|first| {
+        (first + 1..balls.len()).all(|second| {
+            let distance = ((balls[first].0.x() - balls[second].0.x()).powi(2)
+                + (balls[first].0.y() - balls[second].0.y()).powi(2)
+                + (balls[first].0.z() - balls[second].0.z()).powi(2))
+            .sqrt();
+            distance.is_finite()
+                && balls[first].1.is_finite()
+                && balls[second].1.is_finite()
+                && distance > balls[first].1 + balls[second].1
+        })
+    })
+}
+
+fn symmetric_groups_have_disjoint_positive_swept_balls_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    groups: &HashMap<FaceId, usize>,
+    paper_thickness_mm: f64,
+) -> bool {
+    if !paper_thickness_mm.is_finite() || paper_thickness_mm <= 0.0 {
+        return false;
+    }
+    let group_count = groups.values().copied().max().map_or(0, |value| value + 1);
+    let mut balls = Vec::with_capacity(group_count);
+    for group in 0..group_count {
+        let hinges = geometry
+            .hinges()
+            .iter()
+            .filter(|hinge| {
+                groups.get(&hinge.left_face()) == Some(&group)
+                    || groups.get(&hinge.right_face()) == Some(&group)
+            })
+            .collect::<Vec<_>>();
+        if hinges.len() != 4 {
+            return false;
+        }
+        let Some(pivot) = [hinges[0].start(), hinges[0].end()]
+            .into_iter()
+            .find(|candidate| {
+                hinges
+                    .iter()
+                    .all(|hinge| hinge.start() == *candidate || hinge.end() == *candidate)
+            })
+        else {
+            return false;
+        };
+        let mut radius = paper_thickness_mm * 0.5;
+        for face in geometry
+            .face_ids()
+            .iter()
+            .filter(|face| groups.get(face) == Some(&group))
+        {
+            let Some(boundary) = geometry.face_boundary_vertices(*face) else {
+                return false;
+            };
+            for vertex in boundary {
+                let Some(point) = geometry.vertex_position(*vertex) else {
+                    return false;
+                };
+                radius = radius.max(
+                    ((point.x() - pivot.x()).powi(2)
+                        + (point.y() - pivot.y()).powi(2)
+                        + (point.z() - pivot.z()).powi(2))
+                    .sqrt()
+                        + paper_thickness_mm * 0.5,
                 );
             }
         }

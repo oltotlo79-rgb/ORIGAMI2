@@ -11,8 +11,9 @@ use ori_collision::{
     StackedFoldMaterialMapLimitsV1, StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1,
     StackedFoldReadLimitsV1, StackedFoldReadSupportV1, StackedFoldRotationDirectionV1,
     StaticCollisionLimits, capture_stacked_fold_read_guard_v1, diagnose_collective_hinge_path_v1,
-    diagnose_scheduled_cycle_path_v1, diagnose_static_collision_geometry,
-    propose_linear_stacked_fold_read_v1, reverse_map_linear_stacked_fold_material_v1,
+    diagnose_scheduled_cycle_path_v1, diagnose_scheduled_positive_thickness_cycle_path_v1,
+    diagnose_static_collision_geometry, propose_linear_stacked_fold_read_v1,
+    reverse_map_linear_stacked_fold_material_v1,
 };
 use ori_core::{
     DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS, ExpectedStackedFoldCreaseV1, FaceLineageLimits,
@@ -336,6 +337,30 @@ fn propose_current_cycle_pose_inner(
         .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned())?;
     let source = pose_state_fingerprint_v1(pose.hinge_angles());
     let target = pose_state_fingerprint_v1(&requested);
+    let paper_thickness_mm = project.editor.paper().thickness_mm;
+    let continuous = if paper_thickness_mm > 0.0 {
+        diagnose_scheduled_positive_thickness_cycle_path_v1(
+            geometry,
+            audit,
+            pose.fixed_face(),
+            &generated,
+            &closure,
+            paper_thickness_mm,
+            32,
+        )
+    } else {
+        diagnose_scheduled_cycle_path_v1(
+            geometry,
+            audit,
+            pose.fixed_face(),
+            &generated,
+            &closure,
+            32,
+        )
+    };
+    if continuous.continuous_certificate_model_id().is_none() {
+        return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+    }
     let expected = ori_collision::certify_scheduled_cycle_transition_v1(
         geometry,
         audit,
@@ -387,6 +412,7 @@ fn propose_current_cycle_pose_inner(
             generated,
             closure,
             expected,
+            continuous,
             target_angles,
         },
         pose_capability,
@@ -1618,14 +1644,26 @@ async fn propose_current_stacked_fold_read_inner(
                         CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned()
                     }
                 })?;
-            let continuous = diagnose_scheduled_cycle_path_v1(
-                initial.target().hinge_geometry(),
-                initial.target().audit(),
-                initial.pose().fixed_face(),
-                &generated,
-                &interval_closure,
-                StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
-            );
+            let continuous = if paper_thickness_mm > 0.0 {
+                diagnose_scheduled_positive_thickness_cycle_path_v1(
+                    initial.target().hinge_geometry(),
+                    initial.target().audit(),
+                    initial.pose().fixed_face(),
+                    &generated,
+                    &interval_closure,
+                    paper_thickness_mm,
+                    StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
+                )
+            } else {
+                diagnose_scheduled_cycle_path_v1(
+                    initial.target().hinge_geometry(),
+                    initial.target().audit(),
+                    initial.pose().fixed_face(),
+                    &generated,
+                    &interval_closure,
+                    StackedFoldPathDiagnosticLimitsV1::default().sample_intervals,
+                )
+            };
             if continuous.continuous_certificate_model_id().is_none() {
                 // The bounded CCD diagnostic intentionally does not distinguish
                 // an actual collision from an enclosure that stayed unresolved
@@ -3426,109 +3464,111 @@ mod tests {
     fn coupled_cactus_previews_apply_and_round_trip_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         for cycle_count in [2, 3, 16] {
-            let (pattern, mut paper, hinges) = if cycle_count == 2 {
-                super::four_bay_cycle_test_support::two_bay_rational_cycle_pattern()
-            } else if cycle_count == 3 {
-                super::four_bay_cycle_test_support::three_bay_rational_cycle_pattern()
-            } else {
-                super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern()
-            };
-            paper.thickness_mm = 0.1;
-            let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-            let topology = project
-                .editor
-                .topology_analysis_input(project.project_id)
-                .analyze();
-            let snapshot = topology.simulation_snapshot().unwrap();
-            let fixed = snapshot
-                .faces
-                .iter()
-                .find(|face| {
-                    snapshot
-                        .hinge_adjacency
-                        .iter()
-                        .filter(|adjacency| {
-                            adjacency.first == face.id || adjacency.second == face.id
-                        })
-                        .count()
-                        == 2
-                })
-                .unwrap()
-                .id;
-            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-                &mut project,
-                hinges.clone(),
-                fixed,
-            );
-            let instance = project.instance_id;
-            let project_id = project.project_id;
-            let revision = project.editor.revision();
-            let app_state = AppState::new(project);
-            let transactions =
-                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-            assert!(
-                crate::applied_pose::certify_current_static_collision(
+            for thickness_mm in [0.1, 1.0, 3.0] {
+                let (pattern, mut paper, hinges) = if cycle_count == 2 {
+                    super::four_bay_cycle_test_support::two_bay_rational_cycle_pattern()
+                } else if cycle_count == 3 {
+                    super::four_bay_cycle_test_support::three_bay_rational_cycle_pattern()
+                } else {
+                    super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern()
+                };
+                paper.thickness_mm = thickness_mm;
+                let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+                let topology = project
+                    .editor
+                    .topology_analysis_input(project.project_id)
+                    .analyze();
+                let snapshot = topology.simulation_snapshot().unwrap();
+                let fixed = snapshot
+                    .faces
+                    .iter()
+                    .find(|face| {
+                        snapshot
+                            .hinge_adjacency
+                            .iter()
+                            .filter(|adjacency| {
+                                adjacency.first == face.id || adjacency.second == face.id
+                            })
+                            .count()
+                            == 2
+                    })
+                    .unwrap()
+                    .id;
+                super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+                    &mut project,
+                    hinges.clone(),
+                    fixed,
+                );
+                let instance = project.instance_id;
+                let project_id = project.project_id;
+                let revision = project.editor.revision();
+                let app_state = AppState::new(project);
+                let transactions =
+                    super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+                assert!(
+                    crate::applied_pose::certify_current_static_collision(
+                        &app_state,
+                        ori_collision::StaticCollisionLimits::default(),
+                    )
+                    .expect("flat cactus current collision diagnosis")
+                    .is_some()
+                );
+                let response = propose_current_cycle_pose_inner(
+                    None,
                     &app_state,
-                    ori_collision::StaticCollisionLimits::default(),
-                )
-                .expect("flat cactus current collision diagnosis")
-                .is_some()
-            );
-            let response = propose_current_cycle_pose_inner(
-                None,
-                &app_state,
-                &transactions,
-                CurrentCyclePosePreviewRequestV1 {
-                    progress_request_id: None,
-                    expected_project_instance_id: instance,
-                    expected_project_id: project_id,
-                    expected_revision: revision,
-                    cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
-                },
-            )
-            .expect("coupled cactus preview");
-            assert_eq!(response.closure_leaf_count, cycle_count);
-            assert_eq!(response.checked_hinge_count, cycle_count * 4);
-            super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
-                &transactions,
-                response.transaction_token,
-            )
-            .unwrap();
-            assert!(
-                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                    &app_state,
-                    &GlobalFlatFoldabilityState::default(),
                     &transactions,
-                    response.transaction_token,
+                    CurrentCyclePosePreviewRequestV1 {
+                        progress_request_id: None,
+                        expected_project_instance_id: instance,
+                        expected_project_id: project_id,
+                        expected_revision: revision,
+                        cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
+                    },
                 )
-                .is_err()
-            );
-            let response = propose_current_cycle_pose_inner(
-                None,
-                &app_state,
-                &transactions,
-                CurrentCyclePosePreviewRequestV1 {
-                    progress_request_id: None,
-                    expected_project_instance_id: instance,
-                    expected_project_id: project_id,
-                    expected_revision: revision,
-                    cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
-                },
-            )
-            .expect("coupled cactus retry");
-            let applied =
-                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                    &app_state,
-                    &GlobalFlatFoldabilityState::default(),
+                .expect("coupled cactus preview");
+                assert_eq!(response.closure_leaf_count, cycle_count);
+                assert_eq!(response.checked_hinge_count, cycle_count * 4);
+                super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
                     &transactions,
                     response.transaction_token,
                 )
                 .unwrap();
-            let mut project = super::super::lock_project(&app_state).unwrap();
-            project.editor.undo(applied).unwrap();
-            let undone = project.editor.revision();
-            project.editor.redo(undone).unwrap();
-            assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+                assert!(
+                    super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                        &app_state,
+                        &GlobalFlatFoldabilityState::default(),
+                        &transactions,
+                        response.transaction_token,
+                    )
+                    .is_err()
+                );
+                let response = propose_current_cycle_pose_inner(
+                    None,
+                    &app_state,
+                    &transactions,
+                    CurrentCyclePosePreviewRequestV1 {
+                        progress_request_id: None,
+                        expected_project_instance_id: instance,
+                        expected_project_id: project_id,
+                        expected_revision: revision,
+                        cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
+                    },
+                )
+                .expect("coupled cactus retry");
+                let applied =
+                    super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                        &app_state,
+                        &GlobalFlatFoldabilityState::default(),
+                        &transactions,
+                        response.transaction_token,
+                    )
+                    .unwrap();
+                let mut project = super::super::lock_project(&app_state).unwrap();
+                project.editor.undo(applied).unwrap();
+                let undone = project.editor.revision();
+                project.editor.redo(undone).unwrap();
+                assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+            }
         }
     }
 

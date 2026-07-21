@@ -56,6 +56,7 @@ pub use certified_path_graph::{
 pub use continuous_path::{
     MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1, MAX_STACKED_FOLD_PATH_SAMPLES_V1,
     STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1,
+    STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_COLLINEAR_TREE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_SINGLE_HINGE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
@@ -67,7 +68,8 @@ pub use continuous_path::{
     StackedFoldPathDiagnosticErrorV1, StackedFoldPathDiagnosticLimitsV1,
     UniformCycleClosureRootsV1, diagnose_canonical_cycle_schedule_path_v1,
     diagnose_collective_cycle_path_v1, diagnose_collective_hinge_path_v1,
-    diagnose_scheduled_cycle_path_v1, enumerate_uniform_cycle_closure_roots_v1,
+    diagnose_scheduled_cycle_path_v1, diagnose_scheduled_positive_thickness_cycle_path_v1,
+    enumerate_uniform_cycle_closure_roots_v1,
 };
 pub use flat_endpoint_layer_order::{
     FLAT_ENDPOINT_LAYER_ORDER_ANCHOR_MODEL_ID_V1, FlatEndpointCellKeyV1, FlatEndpointLayerCellV1,

@@ -245,6 +245,7 @@ impl GlyphBudget {
 enum FlowSection {
     Description,
     Caution,
+    PathCertificate,
 }
 
 impl FlowSection {
@@ -252,6 +253,7 @@ impl FlowSection {
         match self {
             Self::Description => "説明",
             Self::Caution => "注意事項",
+            Self::PathCertificate => "構造化経路証明",
         }
     }
 }
@@ -862,7 +864,31 @@ fn body_flow(
         PageColor::MOUNTAIN,
         font,
     )?;
+    if let Some(reference) = &step.visual.path_certificate_reference_v1 {
+        append_section(
+            &mut flow,
+            FlowSection::PathCertificate,
+            &format!(
+                "v1 / transitions={} / cert={} / source={} / target={}",
+                reference.transition_count,
+                short_hash(&reference.binding_sha256),
+                short_hash(&reference.source_pose_sha256),
+                short_hash(&reference.target_pose_sha256),
+            ),
+            PageColor::MUTED,
+            font,
+        )?;
+    }
     Ok(flow)
+}
+
+fn short_hash(hash: &[u8; 32]) -> String {
+    let mut value = String::with_capacity(12);
+    for byte in &hash[..6] {
+        use std::fmt::Write as _;
+        write!(&mut value, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    value
 }
 
 fn append_section(

@@ -914,6 +914,39 @@ mod tests {
             .map(layout::PageText::scalar_text)
             .collect::<String>();
         assert!(proof_step_text.contains(&certificate_reference));
+        let reference = timeline.steps[1]
+            .visual
+            .path_certificate_reference_v1
+            .as_ref()
+            .expect("structured proof reference");
+        let short = |hash: &[u8; 32]| {
+            hash[..6]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        assert!(proof_step_text.contains("v1 / transitions=1"));
+        assert!(proof_step_text.contains(&format!("cert={}", short(&reference.binding_sha256))));
+        assert!(
+            proof_step_text.contains(&format!("source={}", short(&reference.source_pose_sha256)))
+        );
+        assert!(
+            proof_step_text.contains(&format!("target={}", short(&reference.target_pose_sha256)))
+        );
+        let mut glyph_limited = InstructionExportLimits::default();
+        glyph_limited.max_glyphs = plan.glyph_count - 1;
+        assert!(matches!(
+            build_canonical_instruction_plan(
+                "証明付き手順",
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &timeline,
+                &fixture.topology,
+                glyph_limited,
+            ),
+            Err(InstructionExportError::LayoutLimitExceeded)
+        ));
         let archived = serde_json::to_vec(&timeline).expect("archive proof-bearing timeline");
         let reopened: InstructionTimeline =
             serde_json::from_slice(&archived).expect("reopen proof-bearing timeline");
@@ -991,6 +1024,31 @@ mod tests {
             ),
             Err(InstructionExportError::InvalidPathCertificateReference { step_index: 1 })
         ));
+
+        let mut tampered_endpoint = timeline;
+        tampered_endpoint.steps[1]
+            .visual
+            .path_certificate_reference_v1
+            .as_mut()
+            .expect("structured proof reference")
+            .target_pose_sha256[0] ^= 1;
+        for format in [
+            InstructionExportFormat::Pdf17,
+            InstructionExportFormat::SvgPageZip,
+        ] {
+            assert!(matches!(
+                export_instruction_document(
+                    format,
+                    "証明付き手順",
+                    FINGERPRINT,
+                    &fixture.pattern,
+                    &fixture.paper,
+                    &tampered_endpoint,
+                    &fixture.topology,
+                ),
+                Err(InstructionExportError::InvalidPathCertificateReference { step_index: 1 })
+            ));
+        }
     }
 
     #[test]

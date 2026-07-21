@@ -2343,7 +2343,7 @@ fn asymmetric_insect_semantic_provenance(
         _ => return None,
     };
     let ordered_bindings = roles
-        .into_iter()
+        .iter()
         .enumerate()
         .map(|(ordinal, role)| BeginnerSemanticLandmarkBindingV1 {
             ordinal: u8::try_from(ordinal).expect("ten semantic landmarks fit in u8"),

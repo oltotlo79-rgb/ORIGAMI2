@@ -4404,186 +4404,189 @@ mod tests {
     #[test]
     fn rank4_cycle_transports_layer_order_and_applies_atomically() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, mut paper, horizontal, _) =
-            super::dense_grid_cycle_test_support::three_by_three_miura_authority_pattern();
-        let moving = horizontal.into_iter().take(3).collect::<Vec<_>>();
-        paper.thickness_mm = 0.1;
-        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        let hinges = snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        let fixed = snapshot.faces[0].id;
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            fixed,
-        );
-        let layer_state = GlobalFlatFoldabilityState::default();
-        super::super::global_flat_foldability::tests::install_possible_layer_order(
-            &layer_state,
-            &project,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let app_state = AppState::new(project);
-        let transactions =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let schedule_for = |mask: usize| {
-            let mut schedule = dense_grid_schedule(&hinges, &moving, 4);
-            for (index, entry) in schedule
-                .entries
-                .iter_mut()
-                .filter(|entry| moving.contains(&entry.edge))
-                .enumerate()
-            {
-                if mask & (1 << index) != 0 {
-                    entry.numerator_power_coefficients[1].numerator *= -1;
-                    entry.requested_angle_degrees *= -1.0;
+        for thickness_mm in [0.1, 1.0, 3.0] {
+            let (pattern, mut paper, horizontal, _) =
+                super::dense_grid_cycle_test_support::three_by_three_miura_authority_pattern();
+            let moving = horizontal.into_iter().take(3).collect::<Vec<_>>();
+            paper.thickness_mm = thickness_mm;
+            let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+            let topology = project
+                .editor
+                .topology_analysis_input(project.project_id)
+                .analyze();
+            let snapshot = topology.simulation_snapshot().unwrap();
+            let hinges = snapshot
+                .hinge_adjacency
+                .iter()
+                .map(|hinge| hinge.edge)
+                .collect::<Vec<_>>();
+            let fixed = snapshot.faces[0].id;
+            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+                &mut project,
+                hinges.clone(),
+                fixed,
+            );
+            let layer_state = GlobalFlatFoldabilityState::default();
+            super::super::global_flat_foldability::tests::install_possible_layer_order(
+                &layer_state,
+                &project,
+            );
+            let instance = project.instance_id;
+            let project_id = project.project_id;
+            let revision = project.editor.revision();
+            let app_state = AppState::new(project);
+            let transactions =
+                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+            let schedule_for = |mask: usize| {
+                let mut schedule = dense_grid_schedule(&hinges, &moving, 4);
+                for (index, entry) in schedule
+                    .entries
+                    .iter_mut()
+                    .filter(|entry| moving.contains(&entry.edge))
+                    .enumerate()
+                {
+                    if mask & (1 << index) != 0 {
+                        entry.numerator_power_coefficients[1].numerator *= -1;
+                        entry.requested_angle_degrees *= -1.0;
+                    }
                 }
-            }
-            schedule
-        };
-        let request = |expected_project_instance_id, mask| CurrentCyclePosePreviewRequestV1 {
-            progress_request_id: Some("rank4:layer".to_owned()),
-            expected_project_instance_id,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            cycle_schedule_v1: schedule_for(mask),
-        };
-        assert_eq!(
-            propose_current_cycle_pose_inner_with_layers(
-                None,
-                &app_state,
-                Some(&layer_state),
-                &transactions,
-                request(ProjectId::new(), 0),
-            )
-            .unwrap_err(),
-            STALE_MESSAGE
-        );
-        let (closing_mask, preview) = (0..(1usize << moving.len()))
-            .find_map(|mask| {
+                schedule
+            };
+            let request = |expected_project_instance_id, mask| CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: Some("rank4:layer".to_owned()),
+                expected_project_instance_id,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                cycle_schedule_v1: schedule_for(mask),
+            };
+            assert_eq!(
                 propose_current_cycle_pose_inner_with_layers(
                     None,
                     &app_state,
                     Some(&layer_state),
                     &transactions,
-                    request(instance, mask),
+                    request(ProjectId::new(), 0),
                 )
-                .ok()
-                .map(|preview| (mask, preview))
-            })
-            .expect("one Kawasaki rank4 orientation must close");
-        assert_eq!(
-            preview.continuous_layer_transport_model_id,
-            Some(ori_collision::GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1)
-        );
-        assert_eq!(preview.continuous_layer_transition_count, 2);
-        assert_eq!(preview.source_layer_order, preview.target_layer_order);
-        assert_eq!(
-            preview.continuous_layer_pair_order_count,
-            preview.source_layer_order.len()
-        );
-        assert!(!preview.authorizes_project_mutation);
-        let cancelled = preview.transaction_token;
-        super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
-            &transactions,
-            cancelled,
-        )
-        .unwrap();
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &app_state,
-                &layer_state,
+                .unwrap_err(),
+                STALE_MESSAGE
+            );
+            let (closing_mask, preview) = (0..(1usize << moving.len()))
+                .find_map(|mask| {
+                    propose_current_cycle_pose_inner_with_layers(
+                        None,
+                        &app_state,
+                        Some(&layer_state),
+                        &transactions,
+                        request(instance, mask),
+                    )
+                    .ok()
+                    .map(|preview| (mask, preview))
+                })
+                .expect("one Kawasaki rank4 orientation must close");
+            assert_eq!(
+                preview.continuous_layer_transport_model_id,
+                Some(ori_collision::GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1)
+            );
+            assert_eq!(preview.continuous_layer_transition_count, 2);
+            assert_eq!(preview.source_layer_order, preview.target_layer_order);
+            assert_eq!(
+                preview.continuous_layer_pair_order_count,
+                preview.source_layer_order.len()
+            );
+            assert!(!preview.authorizes_project_mutation);
+            let cancelled = preview.transaction_token;
+            super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
                 &transactions,
                 cancelled,
             )
-            .is_err()
-        );
-        let stale_authority_preview = propose_current_cycle_pose_inner_with_layers(
-            None,
-            &app_state,
-            Some(&layer_state),
-            &transactions,
-            request(instance, closing_mask),
-        )
-        .expect("rank4 layer authority ABA preview");
-        {
-            let project = super::super::lock_project(&app_state).unwrap();
-            super::super::global_flat_foldability::tests::install_possible_layer_order(
-                &layer_state,
-                &project,
+            .unwrap();
+            assert!(
+                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                    &app_state,
+                    &layer_state,
+                    &transactions,
+                    cancelled,
+                )
+                .is_err()
             );
-        }
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            let stale_authority_preview = propose_current_cycle_pose_inner_with_layers(
+                None,
                 &app_state,
-                &layer_state,
+                Some(&layer_state),
                 &transactions,
-                stale_authority_preview.transaction_token,
+                request(instance, closing_mask),
             )
-            .is_err()
-        );
-        let preview = propose_current_cycle_pose_inner_with_layers(
-            None,
-            &app_state,
-            Some(&layer_state),
-            &transactions,
-            request(instance, closing_mask),
-        )
-        .expect("rank4 layer transport retry");
-        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-            &app_state,
-            &layer_state,
-            &transactions,
-            preview.transaction_token,
-        )
-        .expect("rank4 layer transport apply");
-        let mut project = super::super::lock_project(&app_state).unwrap();
-        let persisted = project.editor.instruction_timeline().steps[0]
-            .visual
-            .cycle_layer_order_proof_v1
-            .as_ref()
-            .expect("applied transport proof is persisted in timeline history");
-        assert_eq!(persisted.version, 1);
-        assert_eq!(
-            persisted.model_id,
-            ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1
-        );
-        assert_eq!(persisted.target_order_sha256.len(), 32);
-        project.editor.undo(applied).unwrap();
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        assert!(
-            project.editor.instruction_timeline().steps[0]
+            .expect("rank4 layer authority ABA preview");
+            {
+                let project = super::super::lock_project(&app_state).unwrap();
+                super::super::global_flat_foldability::tests::install_possible_layer_order(
+                    &layer_state,
+                    &project,
+                );
+            }
+            assert!(
+                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                    &app_state,
+                    &layer_state,
+                    &transactions,
+                    stale_authority_preview.transaction_token,
+                )
+                .is_err()
+            );
+            let preview = propose_current_cycle_pose_inner_with_layers(
+                None,
+                &app_state,
+                Some(&layer_state),
+                &transactions,
+                request(instance, closing_mask),
+            )
+            .expect("rank4 layer transport retry");
+            let applied =
+                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                    &app_state,
+                    &layer_state,
+                    &transactions,
+                    preview.transaction_token,
+                )
+                .expect("rank4 layer transport apply");
+            let mut project = super::super::lock_project(&app_state).unwrap();
+            let persisted = project.editor.instruction_timeline().steps[0]
                 .visual
                 .cycle_layer_order_proof_v1
-                .is_some()
-        );
-        let reopened = super::super::ProjectState::from_document(
-            project.document(),
-            std::path::PathBuf::from("miura-cell-transport-reopened.ori2"),
-        );
-        let reopened_proof = reopened.editor.instruction_timeline().steps[0]
-            .visual
-            .cycle_layer_order_proof_v1
-            .as_ref()
-            .expect("persisted Miura cell proof survives reopen");
-        assert_eq!(
-            reopened_proof.model_id,
-            ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1
-        );
-        assert_eq!(reopened_proof.target_order_sha256.len(), 32);
+                .as_ref()
+                .expect("applied transport proof is persisted in timeline history");
+            assert_eq!(persisted.version, 1);
+            assert_eq!(
+                persisted.model_id,
+                ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1
+            );
+            assert_eq!(persisted.target_order_sha256.len(), 32);
+            project.editor.undo(applied).unwrap();
+            assert!(project.editor.instruction_timeline().steps.is_empty());
+            let undone = project.editor.revision();
+            project.editor.redo(undone).unwrap();
+            assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+            assert!(
+                project.editor.instruction_timeline().steps[0]
+                    .visual
+                    .cycle_layer_order_proof_v1
+                    .is_some()
+            );
+            let reopened = super::super::ProjectState::from_document(
+                project.document(),
+                std::path::PathBuf::from("miura-cell-transport-reopened.ori2"),
+            );
+            let reopened_proof = reopened.editor.instruction_timeline().steps[0]
+                .visual
+                .cycle_layer_order_proof_v1
+                .as_ref()
+                .expect("persisted Miura cell proof survives reopen");
+            assert_eq!(
+                reopened_proof.model_id,
+                ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1
+            );
+            assert_eq!(reopened_proof.target_order_sha256.len(), 32);
+        }
     }
 
     #[test]

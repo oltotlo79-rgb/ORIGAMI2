@@ -675,7 +675,7 @@ describe('StackedFoldPanel', () => {
       version: 1, transactionToken: project, sourceRevision: 3, targetRevision: 4,
       closureLeafCount: 4, closureMaxDepth: 2, checkedHingeCount: 16, totalHingeCount: 16,
       continuousPathCertified: true, authorizesProjectMutation: false,
-      continuousLayerTransportModelId: 'native_continuous_layer_transport_certificate_v1',
+      continuousLayerTransportModelId: 'general_multi_face_positive_thickness_cell_transport_v1',
       continuousLayerTransitionCount: 5, continuousLayerPairOrderCount: 1,
       continuousLayerTargetOrderSha256: 'ab'.repeat(32),
       sourceLayerOrder: [{ lowerFace: project, upperFace: token }],

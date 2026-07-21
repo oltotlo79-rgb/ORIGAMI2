@@ -79,7 +79,7 @@ export type CurrentCyclePosePreviewResponseV1 = Readonly<{
   checkedHingeCount: number
   totalHingeCount: number
   continuousPathCertified: true
-  continuousLayerTransportModelId: 'native_continuous_layer_transport_certificate_v1' | null
+  continuousLayerTransportModelId: 'general_multi_face_positive_thickness_cell_transport_v1' | null
   continuousLayerTransitionCount: number
   continuousLayerPairOrderCount: number
   continuousLayerTargetOrderSha256: string | null
@@ -2703,7 +2703,7 @@ export function normalizeCurrentCyclePosePreviewResponseV1(
       Number(value.totalHingeCount) > 128 ||
       value.continuousPathCertified !== true ||
       (value.continuousLayerTransportModelId !== null &&
-        value.continuousLayerTransportModelId !== 'native_continuous_layer_transport_certificate_v1') ||
+        value.continuousLayerTransportModelId !== 'general_multi_face_positive_thickness_cell_transport_v1') ||
       typeof continuousLayerTransitionCount !== 'number' ||
       !Number.isSafeInteger(continuousLayerTransitionCount) ||
       continuousLayerTransitionCount < 0 ||

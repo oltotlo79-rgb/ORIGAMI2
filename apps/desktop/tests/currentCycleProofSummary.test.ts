@@ -12,7 +12,7 @@ const valid = {
   checkedHingeCount: 16,
   totalHingeCount: 16,
   continuousPathCertified: true,
-  continuousLayerTransportModelId: 'native_continuous_layer_transport_certificate_v1',
+  continuousLayerTransportModelId: 'general_multi_face_positive_thickness_cell_transport_v1',
   continuousLayerTransitionCount: 5,
   continuousLayerPairOrderCount: 1,
   continuousLayerTargetOrderSha256: 'ab'.repeat(32),

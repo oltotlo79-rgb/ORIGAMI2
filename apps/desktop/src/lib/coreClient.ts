@@ -197,6 +197,10 @@ export type BeginnerDesignProfileV1 = {
   step_count_weight: number
   paper_efficiency_weight: number
   generation_constraints: BeginnerGenerationConstraintsV1
+  generation_provenance?: Readonly<{
+    schema_version: 1; topology_authority_sha256: ReadonlyArray<number>; confidence_score: number
+    confidence_reasons: ReadonlyArray<string>; explicit_override: boolean; source_asset_fingerprint: string
+  }>
 }
 
 export type BeginnerGenerationConstraintsV1 = {
@@ -1019,7 +1023,7 @@ function normalizeBeginnerCandidateResponse(
 export function normalizeBeginnerDesignProfile(
   value: unknown,
 ): BeginnerDesignProfileV1 | null {
-  const record = exactCoreDataRecord(value, [
+  const requiredKeys = [
     'schema_version',
     'preset',
     'shape_fidelity_weight',
@@ -1027,7 +1031,10 @@ export function normalizeBeginnerDesignProfile(
     'step_count_weight',
     'paper_efficiency_weight',
     'generation_constraints',
-  ] as const)
+  ] as const
+  const record = snapshotCoreDataRecord(value)
+  if (!record || requiredKeys.some((key) => !Object.hasOwn(record, key))
+    || Object.keys(record).some((key) => ![...requiredKeys, 'generation_provenance'].includes(key as never))) return null
   if (!record || record.schema_version !== 1 || (
     record.preset !== 'balanced'
     && record.preset !== 'shape_priority'
@@ -1046,6 +1053,17 @@ export function normalizeBeginnerDesignProfile(
   ) return null
   const generationConstraints = normalizeBeginnerGenerationConstraints(record.generation_constraints)
   if (!generationConstraints) return null
+  const provenance = record.generation_provenance === undefined ? null : exactCoreDataRecord(
+    record.generation_provenance, ['schema_version', 'topology_authority_sha256', 'confidence_score',
+      'confidence_reasons', 'explicit_override', 'source_asset_fingerprint'] as const)
+  if (record.generation_provenance !== undefined && (!provenance || provenance.schema_version !== 1
+    || !Array.isArray(provenance.topology_authority_sha256) || provenance.topology_authority_sha256.length !== 32
+    || provenance.topology_authority_sha256.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
+    || !Number.isInteger(provenance.confidence_score) || Number(provenance.confidence_score) < 0 || Number(provenance.confidence_score) > 100
+    || !Array.isArray(provenance.confidence_reasons) || provenance.confidence_reasons.length > 8
+    || provenance.confidence_reasons.some((reason) => typeof reason !== 'string' || reason.length < 1 || reason.length > 64)
+    || typeof provenance.explicit_override !== 'boolean' || typeof provenance.source_asset_fingerprint !== 'string'
+    || provenance.source_asset_fingerprint.length < 1 || provenance.source_asset_fingerprint.length > 128)) return null
   return Object.freeze({
     schema_version: 1,
     preset: record.preset,
@@ -1054,6 +1072,16 @@ export function normalizeBeginnerDesignProfile(
     step_count_weight: weights[2],
     paper_efficiency_weight: weights[3],
     generation_constraints: generationConstraints,
+    ...(provenance === null ? {} : { generation_provenance: Object.freeze({
+      schema_version: 1 as const,
+      topology_authority_sha256: Object.freeze(
+        (provenance.topology_authority_sha256 as unknown[]).map(Number),
+      ) as ReadonlyArray<number>,
+      confidence_score: Number(provenance.confidence_score),
+      confidence_reasons: Object.freeze((provenance.confidence_reasons as string[]).slice()),
+      explicit_override: provenance.explicit_override as boolean,
+      source_asset_fingerprint: provenance.source_asset_fingerprint as string,
+    }) }),
   }) as BeginnerDesignProfileV1
 }
 
@@ -1069,6 +1097,7 @@ function sameBeginnerDesignProfile(
     && profile.step_count_weight === expected.step_count_weight
     && profile.paper_efficiency_weight === expected.paper_efficiency_weight
     && JSON.stringify(profile.generation_constraints) === JSON.stringify(expected.generation_constraints)
+    && JSON.stringify(profile.generation_provenance) === JSON.stringify(expected.generation_provenance)
 }
 
 export type AnnotationAnchorV1 =

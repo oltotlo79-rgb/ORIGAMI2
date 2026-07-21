@@ -118,6 +118,7 @@ test('AUT-004 proposes only deterministic safe GLB geometry ranges and applies a
   assert.match(app, /window\.confirm/u)
   assert.match(native, /reference_model_surface_selection_confirmation_required/u)
   assert.match(native, /reference_model_surface_selection_tampered/u)
+  assert.match(native, /reference_model_surface_selection_matches_live_v1/u)
   assert.match(client, /selectedSurfaceRangeIds/u)
   assert.match(app, /Explicitly assign measured surface ranges to 2–8 parts/u)
   assert.match(app, /Duplicate, unconfirmed, or tampered ranges are rejected natively/u)

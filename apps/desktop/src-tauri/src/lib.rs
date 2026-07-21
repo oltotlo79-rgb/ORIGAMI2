@@ -5462,6 +5462,25 @@ fn reference_model_suggestion_matches_live_v1(
     expected == live
 }
 
+fn reference_model_surface_selection_matches_live_v1(
+    selected_surface_range_ids: &[u16],
+    live: &BeginnerReferenceModelSuggestionV1,
+) -> bool {
+    if !(2..=8).contains(&selected_surface_range_ids.len()) {
+        return false;
+    }
+    let selected = selected_surface_range_ids
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let measured = live
+        .protrusions
+        .iter()
+        .map(|target| target.id)
+        .collect::<HashSet<_>>();
+    selected.len() == selected_surface_range_ids.len() && selected == measured
+}
+
 #[tauri::command]
 fn get_beginner_reference_model_geometry(
     state: State<'_, AppState>,
@@ -5591,19 +5610,10 @@ fn apply_beginner_reference_model_features(
     if !reference_model_suggestion_matches_live_v1(&expected_suggestion, &live) {
         return Err("reference_model_suggestion_stale".to_owned());
     }
-    if !(2..=8).contains(&selected_surface_range_ids.len()) {
+    if selected_surface_range_ids.len() < 2 {
         return Err("reference_model_surface_selection_confirmation_required".to_owned());
     }
-    let selected = selected_surface_range_ids
-        .iter()
-        .copied()
-        .collect::<HashSet<_>>();
-    let measured = live
-        .protrusions
-        .iter()
-        .map(|target| target.id)
-        .collect::<HashSet<_>>();
-    if selected.len() != selected_surface_range_ids.len() || selected != measured {
+    if !reference_model_surface_selection_matches_live_v1(&selected_surface_range_ids, &live) {
         return Err("reference_model_surface_selection_tampered".to_owned());
     }
     profile.generation_constraints.protrusions = live.protrusions.clone();
@@ -13348,6 +13358,54 @@ mod tests {
         );
         assert_eq!(antenna.protrusions[0].direction_milli, [0, -1000, 0]);
         assert!(antenna.pair_bindings.is_empty());
+    }
+
+    #[test]
+    fn reference_model_surface_selection_rejects_missing_duplicate_and_forged_ranges() {
+        let geometry = ori_formats::ReferenceGlbGeometryV1 {
+            positions: vec![
+                [-0.02, -0.03, 0.0],
+                [0.02, -0.03, 0.0],
+                [-0.02, 0.03, 0.0],
+                [0.02, 0.03, 0.0],
+            ],
+            triangle_indices: vec![[0, 1, 2], [1, 3, 2]],
+            material_color: [255, 255, 255, 255],
+        };
+        let live = derive_reference_model_suggestion_v1(
+            AssetId::new(),
+            &geometry,
+            Some(ori_domain::BeginnerTargetCategoryV1::Insect),
+            &[ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Leg,
+                count: 6,
+            }],
+        )
+        .expect("three measured GLB ranges");
+        let ids = live
+            .protrusions
+            .iter()
+            .map(|target| target.id)
+            .collect::<Vec<_>>();
+        assert!(reference_model_surface_selection_matches_live_v1(
+            &ids, &live
+        ));
+        assert!(!reference_model_surface_selection_matches_live_v1(
+            &ids[..1],
+            &live
+        ));
+        assert!(!reference_model_surface_selection_matches_live_v1(
+            &[ids[0], ids[0], ids[2]],
+            &live
+        ));
+        assert!(!reference_model_surface_selection_matches_live_v1(
+            &[ids[0], ids[1]],
+            &live
+        ));
+        assert!(!reference_model_surface_selection_matches_live_v1(
+            &[ids[0], ids[1], u16::MAX],
+            &live
+        ));
     }
 
     #[test]

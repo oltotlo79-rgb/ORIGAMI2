@@ -754,6 +754,8 @@ function App() {
   const beginnerCandidateRequestRef = useRef(0)
   const [beginnerRecognitionProposal, setBeginnerRecognitionProposal] =
     useState<BeginnerRecognitionProposalV1 | null>(null)
+  const [acceptedRecognitionProtrusionIds, setAcceptedRecognitionProtrusionIds] =
+    useState<ReadonlySet<number>>(() => new Set())
   const [beginnerRecognitionBusy, setBeginnerRecognitionBusy] = useState(false)
   const beginnerRecognitionRequestRef = useRef(0)
   const [beginnerOutlineCandidates, setBeginnerOutlineCandidates] =
@@ -3868,6 +3870,7 @@ function App() {
         || latest.project_id !== binding.projectId
         || latest.revision !== binding.revision) return
       setBeginnerRecognitionProposal(proposal)
+      setAcceptedRecognitionProtrusionIds(new Set(proposal.protrusions?.map((target) => target.id) ?? []))
       setCoreStatus(appMessage({
         ja: mode === 'silhouette'
           ? '輪郭画像の認識案を作成しました。まだ保存されていません。'
@@ -4025,7 +4028,9 @@ function App() {
       setBeginnerBodyOutlineMode(proposal.generic_body_outline_mode === 'general' ? 'general' : 'symmetric')
     }
     if (proposal.protrusions) {
-      setBeginnerProtrusions(proposal.protrusions.map((target) => ({
+      setBeginnerProtrusions(proposal.protrusions
+        .filter((target) => acceptedRecognitionProtrusionIds.has(target.id))
+        .map((target) => ({
         ...target,
         ...(target.local_outline_tenths_mm ? {
           local_outline_tenths_mm: target.local_outline_tenths_mm.map(
@@ -8657,6 +8662,23 @@ function App() {
                         local: beginnerRecognitionProposal.protrusions?.filter(
                           (target) => target.local_outline_tenths_mm).length ?? 0,
                       })}</p>}
+                      {(beginnerRecognitionProposal.protrusions?.length ?? 0) > 0 && (
+                        <fieldset><legend>{text({ ja: '認識部位の確認', en: 'Confirm recognized protrusions' })}</legend>
+                          {(beginnerRecognitionProposal.protrusions ?? []).map((target) => (
+                            <label key={target.id}>
+                              <input type="checkbox" checked={acceptedRecognitionProtrusionIds.has(target.id)}
+                                onChange={(event) => setAcceptedRecognitionProtrusionIds((current) => {
+                                  const next = new Set(current)
+                                  if (event.target.checked) next.add(target.id); else next.delete(target.id)
+                                  return next
+                                })} />
+                              {formattedText({ ja: '部位 {id}・局所輪郭 {points}点', en: 'Protrusion {id} · local contour {points} points' }, {
+                                id: target.id, points: target.local_outline_tenths_mm?.length ?? 0,
+                              })}
+                            </label>
+                          ))}
+                        </fieldset>
+                      )}
                     </section>
                   )}
                 </div>

@@ -1495,6 +1495,55 @@ pub(crate) mod tests {
             assert!(reopened.bytes.starts_with(magic));
         }
 
+        // The same real, two-transition certificate must survive an archive round-trip
+        // when it is authored as a general reverse-fold technique, not only as Miura.
+        let mut reverse_timeline = reopened_timeline.clone();
+        reverse_timeline.steps[0].title = "中割り折りの開始姿勢".to_owned();
+        reverse_timeline.steps[1].title = "中割り折り 1".to_owned();
+        reverse_timeline.steps[2].title = "中割り折り 2".to_owned();
+        let reverse_archive = serde_json::to_vec(&reverse_timeline).expect("archive reverse fold");
+        let reopened_reverse: ori_domain::InstructionTimeline =
+            serde_json::from_slice(&reverse_archive).expect("reopen reverse fold");
+        for step in &reopened_reverse.steps[1..] {
+            let reference = step
+                .visual
+                .path_certificate_reference_v1
+                .as_ref()
+                .expect("reverse fold path reference");
+            assert_eq!(reference.transition_count, 2);
+            assert_eq!(reference.binding_sha256, first_reference.binding_sha256);
+        }
+        for (format, magic) in [
+            (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+            (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+        ] {
+            let mut reverse_source = source_for(&project, format);
+            reverse_source.timeline = reopened_reverse.clone();
+            let artifact =
+                build_pending_export(reverse_source).expect("native reverse-fold export");
+            assert_eq!(artifact.step_count, 3);
+            assert!(artifact.bytes.starts_with(magic));
+        }
+
+        let mut tampered_reverse = reopened_reverse.clone();
+        tampered_reverse.steps[2]
+            .visual
+            .path_certificate_reference_v1
+            .as_mut()
+            .expect("tamper reverse fold path reference")
+            .source_model_binding_sha256[0] ^= 1;
+        for format in [
+            InstructionExportFormatRequest::Pdf,
+            InstructionExportFormatRequest::SvgZip,
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = tampered_reverse.clone();
+            assert_eq!(
+                build_pending_export(source).map(|_| ()),
+                Err(InstructionExportErrorCategory::DocumentInputInvalid)
+            );
+        }
+
         let mut tampered_archive: serde_json::Value =
             serde_json::from_slice(&archived).expect("inspect archived timeline");
         tampered_archive["steps"][2]["description"] = serde_json::Value::String(format!(

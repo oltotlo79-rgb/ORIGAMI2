@@ -9472,6 +9472,7 @@ fn execute_undo(
             .undo(expected_revision)
             .map_err(|error| error.to_string())?;
         project.undo_numeric_expression_edit();
+        project.current_layer_evidence = None;
         return Ok(snapshot(project));
     }
     let authority = project.applied_pose_authority.clone();
@@ -9483,6 +9484,7 @@ fn execute_undo(
         .undo(expected_revision)
         .map_err(|error| error.to_string())?;
     project.undo_numeric_expression_edit();
+    project.current_layer_evidence = None;
     invalidation.commit();
     Ok(snapshot(project))
 }
@@ -9503,6 +9505,7 @@ fn execute_redo(
             .redo(expected_revision)
             .map_err(|error| error.to_string())?;
         project.redo_numeric_expression_edit();
+        project.current_layer_evidence = None;
         return Ok(snapshot(project));
     }
     let authority = project.applied_pose_authority.clone();
@@ -9514,6 +9517,7 @@ fn execute_redo(
         .redo(expected_revision)
         .map_err(|error| error.to_string())?;
     project.redo_numeric_expression_edit();
+    project.current_layer_evidence = None;
     invalidation.commit();
     Ok(snapshot(project))
 }
@@ -10912,6 +10916,7 @@ fn execute_command(
             .map_err(|error| error.to_string())?;
         project.record_numeric_expression_edit();
         project.reconcile_vertex_coordinate_expressions();
+        project.current_layer_evidence = None;
         return Ok(snapshot(project));
     }
     let authority = project.applied_pose_authority.clone();
@@ -10924,6 +10929,7 @@ fn execute_command(
         .map_err(|error| error.to_string())?;
     project.record_numeric_expression_edit();
     project.reconcile_vertex_coordinate_expressions();
+    project.current_layer_evidence = None;
     invalidation.commit();
     Ok(snapshot(project))
 }

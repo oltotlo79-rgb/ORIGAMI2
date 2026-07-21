@@ -3,8 +3,8 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AssetId, BeginnerSkeletonPointV1, BeginnerSkeletonSegmentV1, BeginnerTargetPartKindV1,
-    BeginnerTargetPartRecordV1, UnderlayId,
+    AssetId, BeginnerBodyOutlineModeV1, BeginnerProtrusionTargetV1, BeginnerSkeletonPointV1,
+    BeginnerSkeletonSegmentV1, BeginnerTargetPartKindV1, BeginnerTargetPartRecordV1, UnderlayId,
 };
 
 pub const BEGINNER_RECOGNITION_SCHEMA_VERSION_V1: u32 = 1;
@@ -42,6 +42,23 @@ pub struct BeginnerRecognitionProposalV1 {
     pub shape_bounds: BeginnerRecognitionBoundsV1,
     pub target_parts: Vec<BeginnerTargetPartRecordV1>,
     pub skeleton_segments: Vec<BeginnerSkeletonSegmentV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generic_body_outline_tenths_mm: Option<Vec<[i32; 2]>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generic_body_outline_mode: Option<BeginnerBodyOutlineModeV1>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protrusions: Vec<BeginnerProtrusionTargetV1>,
+}
+
+fn proposed_body_outline(bounds: BeginnerRecognitionBoundsV1) -> Vec<[i32; 2]> {
+    let half_width = i32::try_from(bounds.max_x - bounds.min_x + 1).unwrap_or_default() * 5;
+    let half_height = i32::try_from(bounds.max_y - bounds.min_y + 1).unwrap_or_default() * 5;
+    vec![
+        [-half_width, -half_height],
+        [half_width, -half_height],
+        [half_width, half_height],
+        [-half_width, half_height],
+    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,6 +288,12 @@ pub fn analyze_silhouette_png_rgba_v1(
         }) * 10)
             .min(10_000) as u16,
     }];
+    let shape_bounds = BeginnerRecognitionBoundsV1 {
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+    };
     Ok(BeginnerRecognitionProposalV1 {
         schema_version: BEGINNER_RECOGNITION_SCHEMA_VERSION_V1,
         format: BeginnerRecognitionFormatV1::SilhouettePngV1,
@@ -279,14 +302,12 @@ pub fn analyze_silhouette_png_rgba_v1(
         source_sha256,
         width,
         height,
-        shape_bounds: BeginnerRecognitionBoundsV1 {
-            min_x,
-            min_y,
-            max_x,
-            max_y,
-        },
+        shape_bounds,
         target_parts: Vec::new(),
         skeleton_segments,
+        generic_body_outline_tenths_mm: Some(proposed_body_outline(shape_bounds)),
+        generic_body_outline_mode: Some(BeginnerBodyOutlineModeV1::General),
+        protrusions: Vec::new(),
     })
 }
 
@@ -447,6 +468,9 @@ pub fn analyze_marker_png_rgba_v1(
         shape_bounds,
         target_parts,
         skeleton_segments,
+        generic_body_outline_tenths_mm: Some(proposed_body_outline(shape_bounds)),
+        generic_body_outline_mode: Some(BeginnerBodyOutlineModeV1::General),
+        protrusions: Vec::new(),
     })
 }
 
@@ -560,6 +584,18 @@ mod tests {
         );
         assert_eq!(proposal.skeleton_segments.len(), 1);
         assert_eq!(proposal.source_sha256, [7; 32]);
+        assert_eq!(
+            proposal.generic_body_outline_mode,
+            Some(BeginnerBodyOutlineModeV1::General)
+        );
+        assert_eq!(
+            proposal
+                .generic_body_outline_tenths_mm
+                .as_ref()
+                .map(Vec::len),
+            Some(4)
+        );
+        assert!(proposal.protrusions.is_empty());
     }
 
     #[test]
@@ -626,6 +662,17 @@ mod tests {
         assert!(proposal.target_parts.is_empty());
         assert_eq!(proposal.skeleton_segments.len(), 1);
         assert_eq!(proposal.shape_bounds.min_y, 1);
+        assert_eq!(
+            proposal.generic_body_outline_mode,
+            Some(BeginnerBodyOutlineModeV1::General)
+        );
+        assert_eq!(
+            proposal
+                .generic_body_outline_tenths_mm
+                .as_ref()
+                .map(Vec::len),
+            Some(4)
+        );
     }
 
     #[test]

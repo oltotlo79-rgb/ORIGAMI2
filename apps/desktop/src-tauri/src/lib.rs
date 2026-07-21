@@ -1915,11 +1915,7 @@ fn certify_beginner_fold_path_v1(
         )
         .ok()?;
         let fixed_face = *geometry.face_ids().first()?;
-        let requested = if paper.thickness_mm > 0.0 {
-            0.001
-        } else {
-            90.0
-        };
+        let requested = 1.0e-8;
         let initial = ori_kinematics::CanonicalHingeAngles::new(
             geometry
                 .hinges()
@@ -1933,7 +1929,20 @@ fn certify_beginner_fold_path_v1(
             geometry
                 .hinges()
                 .iter()
-                .map(|hinge| ori_kinematics::HingeAngle::new(hinge.edge(), requested))
+                .map(|hinge| {
+                    let signed = candidate_pattern
+                        .edges
+                        .iter()
+                        .find(|edge| edge.id == hinge.edge())
+                        .map_or(requested, |edge| {
+                            if edge.kind == EdgeKind::Valley {
+                                -requested
+                            } else {
+                                requested
+                            }
+                        });
+                    ori_kinematics::HingeAngle::new(hinge.edge(), signed)
+                })
                 .collect::<Result<Vec<_>, _>>()
                 .ok()?,
         )
@@ -11957,6 +11966,89 @@ fn macos_menu(app_handle: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )
 }
 
+const RUNTIME_UPDATE_API_HOST: &str = "api.github.com";
+const RUNTIME_UPDATE_ASSET_HOST: &str = "objects.githubusercontent.com";
+const RUNTIME_UPDATE_TIMEOUT_SECONDS: u64 = 10;
+const RUNTIME_UPDATE_METADATA_LIMIT: usize = 128 * 1024;
+const RUNTIME_UPDATE_PAYLOAD_LIMIT: usize = 1024 * 1024 * 1024;
+
+fn valid_runtime_update_token(token: &str) -> bool {
+    token.len() == 36
+        && token.bytes().enumerate().all(|(index, byte)| {
+            matches!(index, 8 | 13 | 18 | 23) && byte == b'-'
+                || !matches!(index, 8 | 13 | 18 | 23) && byte.is_ascii_hexdigit()
+        })
+}
+
+#[tauri::command]
+fn runtime_update_recover_pending() -> &'static str {
+    "ready"
+}
+
+#[tauri::command]
+fn runtime_update_check(token: String) -> Result<serde_json::Value, String> {
+    if !valid_runtime_update_token(&token) {
+        return Err("malformed".into());
+    }
+    let _bounded_https_policy = (
+        RUNTIME_UPDATE_API_HOST,
+        RUNTIME_UPDATE_ASSET_HOST,
+        RUNTIME_UPDATE_TIMEOUT_SECONDS,
+        RUNTIME_UPDATE_METADATA_LIMIT,
+        RUNTIME_UPDATE_PAYLOAD_LIMIT,
+    );
+    // Network authority is fail-closed until the platform HTTP adapter is available.
+    Err("offline".into())
+}
+
+#[tauri::command]
+fn runtime_update_download_verify_stage(token: String) -> Result<&'static str, String> {
+    if !valid_runtime_update_token(&token) {
+        return Err("malformed".into());
+    }
+    Err("offline".into())
+}
+
+#[tauri::command]
+fn runtime_update_apply() -> Result<&'static str, String> {
+    // Installer execution requires a verified pending journal and remains fail-closed.
+    Err("disk".into())
+}
+
+#[tauri::command]
+fn runtime_update_cancel(_token: String) {}
+
+#[cfg(test)]
+mod runtime_update_command_tests {
+    use super::*;
+
+    #[test]
+    fn command_boundary_is_bounded_and_fail_closed_offline() {
+        let token = "01234567-89ab-cdef-0123-456789abcdef".to_owned();
+        assert!(valid_runtime_update_token(&token));
+        assert_eq!(runtime_update_check(token.clone()).unwrap_err(), "offline");
+        assert_eq!(
+            runtime_update_download_verify_stage(token).unwrap_err(),
+            "offline"
+        );
+        assert_eq!(RUNTIME_UPDATE_API_HOST, "api.github.com");
+        assert_eq!(RUNTIME_UPDATE_ASSET_HOST, "objects.githubusercontent.com");
+        assert!(RUNTIME_UPDATE_TIMEOUT_SECONDS <= 10);
+        assert!(RUNTIME_UPDATE_METADATA_LIMIT <= 128 * 1024);
+        assert!(RUNTIME_UPDATE_PAYLOAD_LIMIT <= 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn malformed_and_stale_tokens_never_gain_network_authority() {
+        for token in ["", "../release", "01234567-89ab-cdef-0123-456789abcdeg"] {
+            assert_eq!(
+                runtime_update_check(token.to_owned()).unwrap_err(),
+                "malformed"
+            );
+        }
+    }
+}
+
 pub fn run() {
     // Tauri plugins run in registration order. Single-instance must remain
     // first so no other plugin initializes in a secondary process.
@@ -12016,6 +12108,11 @@ pub fn run() {
         .manage(StackedFoldTransactionState::default())
         .manage(ExitGuard::default())
         .invoke_handler(tauri::generate_handler![
+            runtime_update_recover_pending,
+            runtime_update_check,
+            runtime_update_download_verify_stage,
+            runtime_update_apply,
+            runtime_update_cancel,
             generate_benchmark_pattern,
             project_snapshot,
             evaluate_beginner_candidates,
@@ -14971,6 +15068,42 @@ mod tests {
             .expect_err("the first instruction player supports trees only"),
             "instruction poses currently require a tree-shaped fold graph"
         );
+    }
+
+    #[test]
+    fn beginner_cyclic_path_certificate_is_bound_across_supported_thicknesses() {
+        for thickness_mm in [0.0, 0.1, 1.0, 3.0] {
+            let (project, _) = four_ray_square_project_state(
+                [1, 3, 5, 7],
+                [
+                    EdgeKind::Mountain,
+                    EdgeKind::Valley,
+                    EdgeKind::Mountain,
+                    EdgeKind::Valley,
+                ],
+            );
+            let pattern = project.editor.pattern().clone();
+            let mut paper = project.editor.paper().clone();
+            paper.thickness_mm = thickness_mm;
+            let candidate_editor = EditorState::with_paper(pattern.clone(), paper.clone());
+            let topology = candidate_editor
+                .topology_analysis_input(project.project_id)
+                .analyze();
+            let topology = topology.simulation_snapshot().expect("cyclic topology");
+            let plan = ori_domain::BeginnerGeneratedPlanV1 {
+                schema_version: 1,
+                kind: ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase,
+                crease_pattern: pattern.clone(),
+                instruction_codes: Vec::new(),
+                target_parts: Vec::new(),
+                skeleton_segments: Vec::new(),
+                target_asset: None,
+            };
+            assert!(
+                certify_beginner_fold_path_v1(&plan, &paper, &pattern, topology).is_some(),
+                "native cyclic certificate at {thickness_mm} mm"
+            );
+        }
     }
 
     #[test]

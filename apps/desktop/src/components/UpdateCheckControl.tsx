@@ -13,6 +13,7 @@ import {
   RuntimeUpdaterControl,
   type RuntimeUpdaterUiController,
 } from './RuntimeUpdaterControl.tsx'
+import { tauriRuntimeUpdaterController } from '../lib/tauriRuntimeUpdaterController.ts'
 import {
   compareSemanticVersions,
   createGitHubReleasesFetchTransport,
@@ -56,8 +57,9 @@ export function UpdateCheckPopover(
         {selectLocalizedText(locale, UPDATE_CHECK_TEXT.popoverSummary)}
       </summary>
       <UpdateCheckControl {...props} />
-      {props.runtimeUpdaterController &&
-        <RuntimeUpdaterControl controller={props.runtimeUpdaterController} />}
+      <RuntimeUpdaterControl controller={
+        props.runtimeUpdaterController ?? tauriRuntimeUpdaterController
+      } />
     </details>
   )
 }

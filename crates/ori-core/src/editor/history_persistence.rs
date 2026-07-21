@@ -287,6 +287,9 @@ enum CommandV1 {
         step_id: InstructionStepId,
         target_index: u32,
     },
+    RewriteInstructionTimelineSplitMerge {
+        timeline: InstructionTimeline,
+    },
     CreateLayer {
         layer: LayerRecordV1,
         target_index: u32,
@@ -743,6 +746,11 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             step_id: *step_id,
             target_index: index_to_wire(*target_index)?,
         },
+        Command::RewriteInstructionTimelineSplitMerge { timeline } => {
+            CommandV1::RewriteInstructionTimelineSplitMerge {
+                timeline: timeline.clone(),
+            }
+        }
         Command::CreateLayer {
             layer,
             target_index,
@@ -977,6 +985,9 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
             step_id,
             target_index: index_from_wire(target_index)?,
         },
+        CommandV1::RewriteInstructionTimelineSplitMerge { timeline } => {
+            Command::RewriteInstructionTimelineSplitMerge { timeline }
+        }
         CommandV1::CreateLayer {
             layer,
             target_index,
@@ -1783,6 +1794,10 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
         }
         Command::ReplaceInstructionStepPose { pose, .. } => {
             validate_instruction_pose_finite(pose)?;
+        }
+        Command::RewriteInstructionTimelineSplitMerge { timeline } => {
+            ori_domain::validate_instruction_timeline(timeline)
+                .map_err(|_| EditorHistoryErrorV1::InvalidCommand)?;
         }
         Command::UpdateLayerPresentation { opacity, .. } => {
             if !opacity.is_finite() {

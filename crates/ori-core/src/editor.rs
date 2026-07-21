@@ -248,6 +248,11 @@ pub enum Command {
         step_id: InstructionStepId,
         target_index: usize,
     },
+    /// Atomically replaces a timeline only when the change is exactly one
+    /// adjacent split or merge. The inverse uses the same symmetric guard.
+    RewriteInstructionTimelineSplitMerge {
+        timeline: InstructionTimeline,
+    },
     CreateLayer {
         layer: LayerRecordV1,
         target_index: usize,
@@ -1111,6 +1116,44 @@ enum Inverse {
 }
 
 const MAX_INTERSECTION_CLUSTER_TARGETS: usize = 64;
+
+fn is_one_instruction_split_or_merge(
+    source: &InstructionTimeline,
+    target: &InstructionTimeline,
+) -> bool {
+    fn split(source: &[InstructionStep], target: &[InstructionStep]) -> bool {
+        if target.len() != source.len().saturating_add(1) {
+            return false;
+        }
+        let Some(index) = source.iter().zip(target).position(|(a, b)| a != b) else {
+            return false;
+        };
+        if source[..index] != target[..index] || source[index + 1..] != target[index + 2..] {
+            return false;
+        }
+        let original = &source[index];
+        let first = &target[index];
+        let second = &target[index + 1];
+        if first.id != original.id
+            || second.id == original.id
+            || target
+                .iter()
+                .enumerate()
+                .any(|(position, step)| position != index + 1 && step.id == second.id)
+        {
+            return false;
+        }
+        let mut expected_first = original.clone();
+        let mut expected_second = original.clone();
+        expected_first.duration_ms = first.duration_ms;
+        expected_second.id = second.id;
+        expected_second.duration_ms = second.duration_ms;
+        first == &expected_first
+            && second == &expected_second
+            && first.duration_ms.checked_add(second.duration_ms) == Some(original.duration_ms)
+    }
+    split(&source.steps, &target.steps) || split(&target.steps, &source.steps)
+}
 const INTERSECTION_CLUSTER_ROUNDOFF_FACTOR: f64 = 16.0;
 
 #[derive(Debug, Clone, Copy)]
@@ -3022,6 +3065,16 @@ impl EditorState {
                     previous_index: index,
                 })
             }
+            Command::RewriteInstructionTimelineSplitMerge { ref timeline } => {
+                if !is_one_instruction_split_or_merge(&self.instruction_timeline, timeline) {
+                    return Err(CommandError::InstructionStepAppendHistoryMismatch);
+                }
+                let previous = self.instruction_timeline.clone();
+                self.commit_instruction_timeline(timeline.clone())?;
+                Ok(Inverse::Command(
+                    Command::RewriteInstructionTimelineSplitMerge { timeline: previous },
+                ))
+            }
             Command::CreateLayer {
                 ref layer,
                 target_index,
@@ -3418,6 +3471,7 @@ impl EditorState {
             | Command::ReplaceInstructionStepPose { .. }
             | Command::RemoveInstructionStep { .. }
             | Command::MoveInstructionStep { .. }
+            | Command::RewriteInstructionTimelineSplitMerge { .. }
             | Command::CreateLayer { .. }
             | Command::RenameLayer { .. }
             | Command::UpdateLayerPresentation { .. }
@@ -3785,6 +3839,7 @@ impl EditorState {
             | Command::ReplaceInstructionStepPose { .. }
             | Command::RemoveInstructionStep { .. }
             | Command::MoveInstructionStep { .. }
+            | Command::RewriteInstructionTimelineSplitMerge { .. }
             | Command::CreateLayer { .. }
             | Command::RenameLayer { .. }
             | Command::UpdateLayerPresentation { .. }
@@ -5790,6 +5845,7 @@ impl Command {
             | Self::ReplaceInstructionStepPose { .. }
             | Self::RemoveInstructionStep { .. }
             | Self::MoveInstructionStep { .. }
+            | Self::RewriteInstructionTimelineSplitMerge { .. }
             | Self::CreateLayer { .. }
             | Self::RenameLayer { .. }
             | Self::UpdateLayerPresentation { .. }
@@ -5856,6 +5912,7 @@ impl Command {
             | Self::ReplaceInstructionStepPose { .. }
             | Self::RemoveInstructionStep { .. }
             | Self::MoveInstructionStep { .. }
+            | Self::RewriteInstructionTimelineSplitMerge { .. }
             | Self::CreateLayer { .. }
             | Self::RenameLayer { .. }
             | Self::UpdateLayerPresentation { .. }
@@ -6153,6 +6210,13 @@ impl Command {
             | Self::ReplaceInstructionStepPose { .. }
             | Self::RemoveInstructionStep { .. }
             | Self::MoveInstructionStep { .. } => Changes {
+                vertices: Vec::new(),
+                edges: Vec::new(),
+                settings: false,
+                instructions: true,
+                constraints: false,
+            },
+            Self::RewriteInstructionTimelineSplitMerge { .. } => Changes {
                 vertices: Vec::new(),
                 edges: Vec::new(),
                 settings: false,
@@ -18050,6 +18114,52 @@ mod tests {
             ),
             Err(CommandError::LayerLocked(locked_layer.id))
         );
+    }
+
+    #[test]
+    fn instruction_split_merge_is_atomic_undoable_and_symmetric() {
+        let mut editor = EditorState::new(CreasePattern::empty());
+        let fingerprint = editor.fold_model_fingerprint_v1();
+        let original = instruction_step(InstructionStepId::new(), "長い手順", fingerprint);
+        editor
+            .execute(
+                0,
+                Command::AddInstructionStep {
+                    step: original.clone(),
+                },
+            )
+            .unwrap();
+        let mut first = original.clone();
+        first.duration_ms = 700;
+        let mut second = original.clone();
+        second.id = InstructionStepId::new();
+        second.duration_ms = 800;
+        let split = InstructionTimeline {
+            steps: vec![first, second],
+        };
+        editor
+            .execute(
+                1,
+                Command::RewriteInstructionTimelineSplitMerge {
+                    timeline: split.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(editor.instruction_timeline(), &split);
+        editor.undo(2).unwrap();
+        assert_eq!(editor.instruction_timeline().steps, vec![original.clone()]);
+        editor.redo(3).unwrap();
+        editor
+            .execute(
+                4,
+                Command::RewriteInstructionTimelineSplitMerge {
+                    timeline: InstructionTimeline {
+                        steps: vec![original.clone()],
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(editor.instruction_timeline().steps, vec![original]);
     }
 
     #[test]

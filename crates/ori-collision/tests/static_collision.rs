@@ -1291,13 +1291,13 @@ fn positive_thickness_ninety_degree_hold_is_identity_and_root_invariant() {
 }
 
 #[test]
-fn zero_thickness_shared_hinge_boundary_contact_is_allowed_until_area_overlap() {
+fn zero_thickness_shared_hinge_full_fold_is_flat_stack_without_layer_order() {
     const CASES: [(f64, StaticCollisionPairDisposition); 5] = [
         (0.0, StaticCollisionPairDisposition::Allowed),
         (10.0, StaticCollisionPairDisposition::Allowed),
         (90.0, StaticCollisionPairDisposition::Allowed),
         (179.0, StaticCollisionPairDisposition::Allowed),
-        (180.0, StaticCollisionPairDisposition::Penetrating),
+        (180.0, StaticCollisionPairDisposition::Indeterminate),
     ];
 
     for assignment in [EdgeKind::Mountain, EdgeKind::Valley] {
@@ -1352,13 +1352,19 @@ fn zero_thickness_shared_hinge_boundary_contact_is_allowed_until_area_overlap() 
                             assert_eq!(snapshot.indeterminate_pairs(), 0);
                         } else {
                             assert!(!pair.shared_hinge_boundary_contact_proven());
-                            assert!(
-                                pair.whole_face_overlap_proven()
-                                    || pair.strict_transversal_dual_gate_proven(),
-                                "a full-fold area overlap must carry an exact penetration proof"
+                            assert_eq!(
+                                pair.evidence(),
+                                IntersectionEvidenceV2::SharedFeatureFlatStack
                             );
+                            assert_eq!(
+                                pair.policy_decision(),
+                                TopologyContactDecision::RequiresHingeModel
+                            );
+                            assert!(!pair.whole_face_overlap_proven());
+                            assert!(!pair.strict_transversal_dual_gate_proven());
                             assert_eq!(snapshot.allowed_pairs(), 0);
-                            assert_eq!(snapshot.penetrating_pairs(), 1);
+                            assert_eq!(snapshot.penetrating_pairs(), 0);
+                            assert_eq!(snapshot.indeterminate_pairs(), 1);
                         }
                     }
                 }

@@ -1137,7 +1137,12 @@ pub fn diagnose_static_collision_geometry(
             shared_hinge_boundary.as_ref().is_some_and(|summary| {
                 summary.proves_area_overlap_pair(pair.first_face, pair.second_face)
             });
+        let shared_hinge_flat_stack_proven = is_positive_zero
+            && !strict_transversal_dual_gate_proven
+            && matches!(pair.topology, TopologyRelation::SharedHingeEdge)
+            && watertight_shared_hinge_area_overlap_proven;
         let whole_face_overlap_proven = is_positive_zero
+            && !shared_hinge_flat_stack_proven
             && (pair.proves_zero_thickness_penetration
                 || watertight_shared_hinge_area_overlap_proven);
         if strict_transversal_dual_gate_proven && whole_face_overlap_proven {
@@ -1148,11 +1153,21 @@ pub fn diagnose_static_collision_geometry(
         if strict_transversal_dual_gate_proven {
             evidence = IntersectionEvidenceV2::TransversalCrossing;
             policy_decision = TopologyContactDecision::Penetrating;
+        } else if shared_hinge_flat_stack_proven {
+            // A watertight, exact positive-area overlap across the complete
+            // authenticated shared hinge at zero thickness is the expected
+            // geometry of a flat fold.  It is not collision-free authority:
+            // without a matching layer-order/hinge admission certificate the
+            // diagnostic remains indeterminate, never proven penetrating.
+            evidence = IntersectionEvidenceV2::SharedFeatureFlatStack;
+            policy_decision = TopologyContactDecision::RequiresHingeModel;
         } else if whole_face_overlap_proven {
             evidence = IntersectionEvidenceV2::CoplanarAreaOverlap;
             policy_decision = TopologyContactDecision::Penetrating;
         }
-        let mut disposition = if strict_transversal_dual_gate_proven || whole_face_overlap_proven {
+        let mut disposition = if shared_hinge_flat_stack_proven {
+            StaticCollisionPairDisposition::Indeterminate
+        } else if strict_transversal_dual_gate_proven || whole_face_overlap_proven {
             StaticCollisionPairDisposition::Penetrating
         } else {
             let policy = classify_static_collision_pair_disposition(pair.topology, pair.decision);
@@ -1325,6 +1340,22 @@ fn build_static_collision_diagnostic_snapshot(
                         || pair.strict_transversal_dual_gate_proven
                         || pair.shared_hinge_boundary_contact_proven
                         || pair.shared_hinge_solid_classified))
+                || (matches!(
+                    pair.evidence,
+                    IntersectionEvidenceV2::SharedFeatureFlatStack
+                ) && (!matches!(pair.topology, TopologyRelation::SharedHingeEdge)
+                    || !matches!(
+                        pair.policy_decision,
+                        TopologyContactDecision::RequiresHingeModel
+                    )
+                    || !matches!(
+                        pair.disposition,
+                        StaticCollisionPairDisposition::Indeterminate
+                    )
+                    || pair.strict_transversal_dual_gate_proven
+                    || pair.whole_face_overlap_proven
+                    || pair.shared_hinge_boundary_contact_proven
+                    || pair.shared_hinge_solid_classified))
         })
         || !pairs.windows(2).all(|pair| {
             pair[0].first_face.canonical_bytes() < pair[1].first_face.canonical_bytes()

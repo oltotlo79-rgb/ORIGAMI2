@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const client = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8')
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const completeAnimalBindingList = readFileSync(new URL('../src/components/CompleteAnimalBindingList.tsx', import.meta.url), 'utf8')
 const native = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8')
 
 test('AUT-106 candidate reads bind instance, project, and revision without mutation', () => {
@@ -78,11 +79,11 @@ test('AUT-101 admits only explicit symmetric animal and insect templates', () =>
   assert.match(app, /Complete composite insect base/)
   assert.match(app, /角・尾・耳・四脚の完全複合動物ベース/)
   assert.match(app, /Complete composite animal base/)
-  assert.match(app, /完全動物の四部位binding寸法/)
-  assert.match(app, /Four complete-animal binding dimensions/)
+  assert.match(completeAnimalBindingList, /完全動物の四部位binding寸法/)
+  assert.match(completeAnimalBindingList, /Four complete-animal binding dimensions/)
   assert.match(client, /completeAnimal && \(protrusions\.length !== 4/)
   assert.match(client, /protrusions\[3\]\?\.count !== 4/)
-  assert.match(app, /length \{length\} · thickness \{thickness\}/)
+  assert.match(completeAnimalBindingList, /length \$\{target\.length_tenths_mm\} · thickness \$\{target\.thickness_tenths_mm\}/)
 })
 
 test('AUT-106 presents one recommendation first and adds bounded candidates on demand', () => {

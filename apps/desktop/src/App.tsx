@@ -361,6 +361,7 @@ import {
   saveFoldTechniqueFileAsV1,
 } from './lib/foldTechniqueFileClient'
 import './App.css'
+import { CompleteAnimalBindingList } from './components/CompleteAnimalBindingList'
 
 const SNAP_OPTIONS: ReadonlyArray<{
   kind: keyof SnapSettings
@@ -8021,18 +8022,8 @@ function App() {
                               }).join(' · ')}
                             </p>
                             {plan.kind === 'composite_complete_animal_base' && (
-                              <ol aria-label={text({ ja: '完全動物の四部位binding寸法', en: 'Four complete-animal binding dimensions' })}>
-                                {[...(nativeSnapshot.beginner_design_profile.generation_constraints.protrusions ?? [])]
-                                  .map((target) => (
-                                    <li key={target.id}>
-                                      {formattedText({
-                                        ja: 'binding {id}・数 {count}・長さ {length}・厚さ {thickness}',
-                                        en: 'Binding {id} · count {count} · length {length} · thickness {thickness}',
-                                      }, { id: target.id, count: target.count, length: target.length_tenths_mm,
-                                        thickness: target.thickness_tenths_mm })}
-                                    </li>
-                                  ))}
-                              </ol>
+                              <CompleteAnimalBindingList locale={locale}
+                                protrusions={nativeSnapshot.beginner_design_profile.generation_constraints.protrusions ?? []} />
                             )}
                             {plan.skeleton_segments.length > 0 && (
                               <svg viewBox="-110 -110 220 220" role="img"

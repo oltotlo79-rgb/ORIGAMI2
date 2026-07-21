@@ -543,12 +543,17 @@ test('Windows signing binds each asset to the configured PFX chain and RFC 3161 
     2,
   )
   assert.match(verifier, /Get-PfxData -FilePath \$Certificate -Password \$password/u)
-  assert.match(verifier, /SignerCertificate\.Thumbprint -cne \$leafCertificates\[0\]\.Thumbprint/u)
+  assert.match(verifier, /SignerCertificate\.Thumbprint -cne \$leaf\.Thumbprint/u)
   assert.match(verifier, /1\.3\.6\.1\.5\.5\.7\.3\.3/u)
   assert.match(verifier, /1\.3\.6\.1\.5\.5\.7\.3\.8/u)
   assert.match(verifier, /signtool verify \/q \/pa \/all \/tw/u)
   assert.doesNotMatch(verifier, /signtool verify[^\n]*\/v/u)
   assert.match(verifier, /windows-signature-verification\.log/u)
+  assert.match(verifier, /X509RevocationMode\]::Online/u)
+  assert.match(verifier, /X509RevocationFlag\]::EntireChain/u)
+  assert.match(verifier, /UrlRetrievalTimeout = \[TimeSpan\]::FromSeconds\(30\)/u)
+  assert.match(verifier, /SignatureAlgorithm\.Value/u)
+  assert.match(verifier, /KeySize -lt 2048/u)
   assert.doesNotMatch(verifier, /Write-Output[^\n]*(?:Thumbprint|Subject|passwordText)/u)
 })
 

@@ -184,6 +184,19 @@ jobs:
           path: ${{ runner.temp }}/large-project-io-browser
           if-no-files-found: error
           retention-days: 7
+      - name: Verify runtime updater cancel retry and explicit apply in Chromium
+        id: runtime-updater-browser
+        env:
+          ORIGAMI2_RUNTIME_UPDATER_BROWSER_ARTIFACT_DIRECTORY: ${{ runner.temp }}/runtime-updater-browser
+        run: npm run test:runtime-updater-browser
+      - name: Upload runtime updater browser failure evidence
+        if: failure() && steps.runtime-updater-browser.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-updater-browser-failure
+          path: ${{ runner.temp }}/runtime-updater-browser
+          if-no-files-found: error
+          retention-days: 7
       - name: Load generated GLB in pinned Khronos Sample Viewer
         id: sample-viewer
         shell: bash

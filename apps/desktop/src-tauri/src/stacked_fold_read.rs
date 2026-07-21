@@ -3305,6 +3305,38 @@ mod tests {
         let app_state = AppState::new(project);
         let transaction_state =
             super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let mut corrupted = four_bay_cycle_schedule(&hinges);
+        corrupted
+            .entries
+            .iter_mut()
+            .find(|entry| entry.edge == hinges[12])
+            .unwrap()
+            .numerator_power_coefficients[1]
+            .numerator += 1;
+        assert!(
+            propose_current_cycle_pose_inner(
+                None,
+                &app_state,
+                &transaction_state,
+                CurrentCyclePosePreviewRequestV1 {
+                    progress_request_id: None,
+                    expected_project_instance_id: instance,
+                    expected_project_id: project_id,
+                    expected_revision: revision,
+                    cycle_schedule_v1: corrupted,
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                &app_state,
+                &GlobalFlatFoldabilityState::default(),
+                &transaction_state,
+                ProjectId::new(),
+            )
+            .is_err()
+        );
         let response = propose_current_cycle_pose_inner(
             None,
             &app_state,
@@ -3322,6 +3354,33 @@ mod tests {
         assert_eq!(response.closure_max_depth, 2);
         assert_eq!(response.checked_hinge_count, 16);
         assert_eq!(response.total_hinge_count, 16);
+        super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
+            &transaction_state,
+            response.transaction_token,
+        )
+        .unwrap();
+        assert!(
+            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                &app_state,
+                &GlobalFlatFoldabilityState::default(),
+                &transaction_state,
+                response.transaction_token,
+            )
+            .is_err()
+        );
+        let response = propose_current_cycle_pose_inner(
+            None,
+            &app_state,
+            &transaction_state,
+            CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
+            },
+        )
+        .expect("four-leaf retry preview");
         let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
             &app_state,
             &GlobalFlatFoldabilityState::default(),

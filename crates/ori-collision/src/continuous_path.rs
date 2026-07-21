@@ -2060,6 +2060,10 @@ fn collective_pose_is_one_moving_body(
 }
 
 #[cfg(test)]
+#[path = "../../../test-support/four_bay_cycle.rs"]
+mod four_bay_cycle_test_support;
+
+#[cfg(test)]
 mod tests {
     use crate::prepare_tree_hinge_thickness_boundaries_v1;
     use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, ProjectId, Vertex};
@@ -2072,7 +2076,9 @@ mod tests {
         serde_json::from_str(&format!("\"00000000-0000-4000-{prefix}-{index:012x}\"")).unwrap()
     }
 
-    fn four_bay_rational_cycle_geometry() -> (
+    fn four_bay_rational_cycle_geometry(
+        reverse_hinges: bool,
+    ) -> (
         MaterialHingeGraphGeometry,
         MaterialHingeGraphAudit,
         ori_kinematics::CanonicalCycleScheduleV1,
@@ -2084,74 +2090,11 @@ mod tests {
             (8.0, 17.0, 15.0),
             (7.0, 25.0, 24.0),
         ];
-        let mut vertices = Vec::new();
-        let mut boundary = Vec::new();
-        let mut hinge_endpoints = Vec::new();
-        let mut centers = Vec::new();
-        for (group, (p, q, leg)) in triples.into_iter().enumerate() {
-            let center_y = -60.0 + group as f64 * 40.0;
-            let center = Vertex {
-                id: fixed_id("b100", 100 + group as u64),
-                position: Point2::new(0.0, center_y),
-            };
-            centers.push(center.id);
-            vertices.push(center);
-            let directions = [
-                (1.0, 0.0),
-                (-p / q, leg / q),
-                ((2.0 * p * p - q * q) / (q * q), -2.0 * p * leg / (q * q)),
-                (p / q, -leg / q),
-            ];
-            for (local, (x, y)) in directions.into_iter().enumerate() {
-                let vertex = Vertex {
-                    id: fixed_id("b200", 1 + (group * 4 + local) as u64),
-                    position: Point2::new(x, center_y - y),
-                };
-                boundary.push(vertex.id);
-                hinge_endpoints.push(vertex.id);
-                vertices.push(vertex);
-            }
-            let gateway = Vertex {
-                id: fixed_id("b250", group as u64 + 1),
-                position: Point2::new(4.0, center_y + 4.0),
-            };
-            boundary.push(gateway.id);
-            vertices.push(gateway);
-        }
-        for (index, (x, y)) in [(10.0, 96.0), (10.0, -96.0)].into_iter().enumerate() {
-            let vertex = Vertex {
-                id: fixed_id("b300", index as u64 + 1),
-                position: Point2::new(x, y),
-            };
-            boundary.push(vertex.id);
-            vertices.push(vertex);
-        }
-        boundary.reverse();
-        let mut edges = (0..boundary.len())
-            .map(|index| Edge {
-                id: fixed_id("b400", index as u64 + 1),
-                start: boundary[index],
-                end: boundary[(index + 1) % boundary.len()],
-                kind: EdgeKind::Boundary,
-            })
-            .collect::<Vec<_>>();
-        let hinges = (0..16)
-            .map(|index| fixed_id("b500", index as u64 + 1))
-            .collect::<Vec<EdgeId>>();
-        edges.extend((0..16).map(|index| Edge {
-            id: hinges[index],
-            start: centers[index / 4],
-            end: hinge_endpoints[index],
-            kind: if index % 4 == 3 {
-                EdgeKind::Mountain
-            } else {
-                EdgeKind::Valley
-            },
-        }));
-        let pattern = CreasePattern { vertices, edges };
-        let paper = Paper {
-            boundary_vertices: boundary,
-            ..Paper::default()
+        let (pattern, paper, hinges) = if reverse_hinges {
+            super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern_with_reversed_hinges(
+            )
+        } else {
+            super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern()
         };
         let analysis = analyze_faces(FaceExtractionInput {
             identity_namespace: fixed_id("b600", 1),
@@ -2231,7 +2174,7 @@ mod tests {
 
     #[test]
     fn four_non_crossing_rational_bays_admit_real_geometry_and_four_leaf_closure() {
-        let (geometry, audit, schedule, fixed) = four_bay_rational_cycle_geometry();
+        let (geometry, audit, schedule, fixed) = four_bay_rational_cycle_geometry(false);
         assert_eq!(geometry.hinges().len(), 16);
         assert_eq!(geometry.face_ids().len(), 13);
         assert!(geometry.face_ids().iter().all(|face| {
@@ -2327,6 +2270,50 @@ mod tests {
         assert_eq!(
             first.collision_certificate(),
             second.collision_certificate()
+        );
+        let (reversed_geometry, reversed_audit, reversed_schedule, reversed_fixed) =
+            four_bay_rational_cycle_geometry(true);
+        let reversed_closure = reversed_geometry
+            .prove_dyadic_schedule_closure_v1(
+                &reversed_audit,
+                reversed_fixed,
+                &reversed_schedule,
+                1.0e-8,
+                ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                    max_depth: 2,
+                    max_leaves: 4,
+                    max_work: 4,
+                    schedule_limits: ori_kinematics::CycleScheduleLimitsV1::default(),
+                },
+            )
+            .unwrap();
+        let reversed_initial = reversed_schedule.evaluate(0.0).unwrap();
+        let reversed_requested = reversed_schedule.evaluate(1.0).unwrap();
+        let reversed_candidate = ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(
+            reversed_schedule,
+            &reversed_initial,
+            &reversed_requested,
+        )
+        .unwrap();
+        let reversed = crate::certify_scheduled_cycle_transition_v1(
+            &reversed_geometry,
+            &reversed_audit,
+            reversed_fixed,
+            &reversed_candidate,
+            &reversed_closure,
+            32,
+            [0x41; 32],
+            [0x42; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            first.schedule_certificate(),
+            reversed.schedule_certificate()
+        );
+        assert_eq!(first.closure_certificate(), reversed.closure_certificate());
+        assert_eq!(
+            first.collision_certificate(),
+            reversed.collision_certificate()
         );
     }
 

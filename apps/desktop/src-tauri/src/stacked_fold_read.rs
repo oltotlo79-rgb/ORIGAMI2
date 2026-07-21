@@ -4404,7 +4404,7 @@ mod tests {
     #[test]
     fn rank4_cycle_transports_layer_order_and_applies_atomically() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        for thickness_mm in [0.1, 1.0, 3.0] {
+        for thickness_mm in [0.1, 1.0, 3.0, 10_000.0] {
             let (pattern, mut paper, horizontal, _) =
                 super::dense_grid_cycle_test_support::three_by_three_miura_authority_pattern();
             let moving = horizontal.into_iter().take(3).collect::<Vec<_>>();
@@ -4469,6 +4469,42 @@ mod tests {
                 )
                 .unwrap_err(),
                 STALE_MESSAGE
+            );
+            if thickness_mm == 10_000.0 {
+                assert!((0..(1usize << moving.len())).all(|mask| {
+                    propose_current_cycle_pose_inner_with_layers(
+                        None,
+                        &app_state,
+                        Some(&layer_state),
+                        &transactions,
+                        request(instance, mask),
+                    )
+                    .is_err()
+                }));
+                let project = super::super::lock_project(&app_state).unwrap();
+                assert_eq!(project.editor.revision(), revision);
+                assert!(project.editor.instruction_timeline().steps.is_empty());
+                continue;
+            }
+            let mut malformed = request(instance, 0);
+            malformed.cycle_schedule_v1.entries[0].denominator_power_coefficients[0].numerator = 0;
+            assert!(
+                propose_current_cycle_pose_inner_with_layers(
+                    None,
+                    &app_state,
+                    Some(&layer_state),
+                    &transactions,
+                    malformed,
+                )
+                .is_err()
+            );
+            assert!(
+                super::super::lock_project(&app_state)
+                    .unwrap()
+                    .editor
+                    .instruction_timeline()
+                    .steps
+                    .is_empty()
             );
             let (closing_mask, preview) = (0..(1usize << moving.len()))
                 .find_map(|mask| {

@@ -177,6 +177,7 @@ use recovery::{
     get_recovery_candidate, prepare_window_close, restore_recovery, start_recovery_autosave_timer,
 };
 use serde::{Deserialize, Serialize};
+use sha2::Digest as _;
 use stacked_fold_read::{
     cancel_current_stacked_fold_read_v1, propose_current_cycle_pose_v1,
     propose_current_stacked_fold_read, read_live_hinge_registry_v1,
@@ -2503,6 +2504,7 @@ struct BeginnerContourPlacementWitness {
     local_bindings: Vec<BeginnerContourBindingWitness>,
     witnessed_vertices: u16,
     witnessed_creases: u16,
+    topology_authority_hash: [u8; 32],
 }
 
 fn beginner_contour_placement_witness(
@@ -2569,11 +2571,21 @@ fn beginner_contour_placement_witness(
     {
         return None;
     }
+    let topology_authority_hash: [u8; 32] = sha2::Sha256::digest(
+        serde_json::to_vec(&(
+            &constraints.generic_body_outline_tenths_mm,
+            &constraints.protrusions,
+            &plan.crease_pattern,
+        ))
+        .ok()?,
+    )
+    .into();
     Some(BeginnerContourPlacementWitness {
         body_contour_points: u8::try_from(body_contour_points).ok()?,
         local_bindings,
         witnessed_vertices: u16::try_from(witnessed).ok()?,
         witnessed_creases: u16::try_from(witnessed).ok()?,
+        topology_authority_hash,
     })
 }
 
@@ -3491,6 +3503,7 @@ fn apply_beginner_parameter_grid_candidate(
     expected_grid_hash: ori_domain::BeginnerParameterGridHashV1,
     selected_point: ori_domain::BeginnerParameterGridPointV1,
     expected_candidate_edge_id: EdgeId,
+    expected_topology_authority_hash: [u8; 32],
     confirmed: bool,
 ) -> Result<ProjectSnapshot, String> {
     if !confirmed {
@@ -3543,6 +3556,11 @@ fn apply_beginner_parameter_grid_candidate(
     .ok_or_else(|| "grid_candidate_generation_stale".to_owned())?;
     if plan.crease_pattern.edges.first().map(|edge| edge.id) != Some(expected_candidate_edge_id) {
         return Err("grid_candidate_identity_stale".to_owned());
+    }
+    if beginner_contour_placement_witness(&expected_profile.generation_constraints, &plan)
+        .is_none_or(|witness| witness.topology_authority_hash != expected_topology_authority_hash)
+    {
+        return Err("grid_candidate_topology_stale".to_owned());
     }
     let reference = live_reference_model_suggestion_v1(&project).ok();
     let assessment = assess_beginner_generated_plan_with_deadline(

@@ -1811,6 +1811,7 @@ export type BeginnerContourPlacementWitnessV1 = Readonly<{
   }>>
   witnessed_vertices: number
   witnessed_creases: number
+  topology_authority_hash: ReadonlyArray<number>
 }>
 
 export type BeginnerGridEvaluationResponse = Readonly<{
@@ -1891,7 +1892,7 @@ export async function evaluateBeginnerParameterGrid(
       'id', 'scale_percent', 'spacing_percent', 'detail_level',
     ] as const)
     const witness = exactCoreDataRecord(candidate.contour_witness, [
-      'body_contour_points', 'local_bindings', 'witnessed_vertices', 'witnessed_creases',
+      'body_contour_points', 'local_bindings', 'witnessed_vertices', 'witnessed_creases', 'topology_authority_hash',
     ] as const)
     const bindings = witness && Array.isArray(witness.local_bindings)
       ? witness.local_bindings.map((binding) => exactCoreDataRecord(binding, [
@@ -1925,6 +1926,8 @@ export async function evaluateBeginnerParameterGrid(
         || (bindingIndex > 0 && Number(bindings[bindingIndex - 1]?.protrusion_id) >= Number(binding.protrusion_id)))
       || !Number.isInteger(witness.witnessed_vertices) || Number(witness.witnessed_vertices) !== witnessPointCount
       || !Number.isInteger(witness.witnessed_creases) || Number(witness.witnessed_creases) !== witnessPointCount
+      || !Array.isArray(witness.topology_authority_hash) || witness.topology_authority_hash.length !== 32
+      || witness.topology_authority_hash.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
       || normalizedPlans.generated_plans[index].crease_pattern.vertices.length < witnessPointCount
       || normalizedPlans.generated_plans[index].crease_pattern.edges.length < witnessPointCount
       || bindings.some((binding) => Number(binding?.vertex_start) + Number(binding?.contour_points)
@@ -1959,6 +1962,7 @@ export async function evaluateBeginnerParameterGrid(
         }))),
         witnessed_vertices: Number(witness.witnessed_vertices),
         witnessed_creases: Number(witness.witnessed_creases),
+        topology_authority_hash: Object.freeze(witness.topology_authority_hash.slice()) as ReadonlyArray<number>,
       }) })
   })
   if (new Set(candidates.map((candidate) => candidate.point.id)).size !== candidates.length) {
@@ -2010,6 +2014,7 @@ export function applyBeginnerParameterGridCandidate(
     expectedGridHash: grid.grid_hash,
     selectedPoint: candidate.point,
     expectedCandidateEdgeId: candidate.assessment.expected_candidate_edge_id,
+    expectedTopologyAuthorityHash: candidate.contour_witness.topology_authority_hash,
     confirmed: true,
   })
 }

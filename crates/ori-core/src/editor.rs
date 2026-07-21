@@ -2548,13 +2548,8 @@ impl EditorState {
         end: VertexId,
         kind: EdgeKind,
     ) -> Result<CommandResult, CommandError> {
-        let command = self.plan_add_edge_with_intersections(
-            expected_revision,
-            id,
-            start,
-            end,
-            kind,
-        )?;
+        let command =
+            self.plan_add_edge_with_intersections(expected_revision, id, start, end, kind)?;
         self.execute(expected_revision, command)
     }
 

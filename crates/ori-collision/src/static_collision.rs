@@ -9,7 +9,6 @@ use thiserror::Error;
 
 use crate::{
     IntersectionEvidenceV2, TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision, TopologyRelation,
-    classify_runtime_topology_contact_v2,
     cayley::{
         PositiveThicknessPrismPairDispositionV1, ProvenTransversalScanError,
         ProvenTransversalScanLimits, ProvenTransversalScanSummary,
@@ -20,6 +19,7 @@ use crate::{
         diagnose_bound_zero_thickness_shared_hinge_boundaries_v1,
         scan_bound_pose_for_proven_transversal_penetration,
     },
+    classify_runtime_topology_contact_v2,
     zero_thickness::{
         AuthenticatedZeroThicknessPose, ZeroThicknessAnalysisError, ZeroThicknessAnalysisWork,
         ZeroThicknessGeometryLimits, prepare_authenticated_zero_thickness_pose,

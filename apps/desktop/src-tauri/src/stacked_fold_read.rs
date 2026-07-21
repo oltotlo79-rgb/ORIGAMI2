@@ -1986,9 +1986,7 @@ async fn propose_current_stacked_fold_read_inner(
                 added_edge_count,
                 mountain_crease_count,
                 valley_crease_count,
-                timeline_step_count: certified_path_certificate
-                    .as_ref()
-                    .map_or(1, |path| path.edges().len()),
+                timeline_step_count: 1,
                 timeline_complete_hinge_angle_count: closed_endpoint
                     .pose()
                     .hinge_angles()
@@ -2889,14 +2887,8 @@ mod tests {
             .expect("atomic apply");
         let mut project = super::super::lock_project(&app_state).unwrap();
         assert_eq!(project.editor.revision(), applied_revision);
-        assert_eq!(
-            project.editor.instruction_timeline().steps.len(),
-            if certified_path {
-                certified_path_steps
-            } else {
-                1
-            }
-        );
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        assert_eq!(response.transaction_proposal.timeline_step_count, 1);
         let after = project.editor.clone();
         project.editor.undo(applied_revision).unwrap();
         assert_eq!(project.editor.pattern(), before.pattern());

@@ -1067,11 +1067,25 @@ fn apply_stacked_fold_transaction_with_title(
     }
     .map_err(|_| "The target pose is inconsistent.".to_owned())?;
     let mut timeline = project.editor.instruction_timeline().clone();
-    let ordered_timeline_angles = requested.ordered_timeline_angles();
+    let certified_path_angles = requested.ordered_timeline_angles();
     let persisted_layer_proof = requested.persisted_cycle_layer_order_proof();
-    if ordered_timeline_angles.is_empty() || ordered_timeline_angles.len() > 31 {
+    if certified_path_angles.is_empty()
+        || (named_title.is_some() && certified_path_angles.len() > 31)
+    {
         return Err("The certified path timeline is inconsistent.".to_owned());
     }
+    // SIM-010 is one user operation and therefore exactly one timeline step.
+    // Named multi-stage techniques retain their separately validated segments.
+    let ordered_timeline_angles = if named_title.is_none() {
+        vec![
+            certified_path_angles
+                .last()
+                .expect("non-empty certified path")
+                .clone(),
+        ]
+    } else {
+        certified_path_angles
+    };
     for (index, step_angles) in ordered_timeline_angles.into_iter().enumerate() {
         timeline.steps.push(InstructionStep {
             id: InstructionStepId::new(),

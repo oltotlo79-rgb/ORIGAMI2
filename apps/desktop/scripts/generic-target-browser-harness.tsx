@@ -31,6 +31,7 @@ function Harness() {
   const [authorityValid, setAuthorityValid] = useState(true)
   const [imageDecode, setImageDecode] = useState<string | null>(null)
   const [segmentation, setSegmentation] = useState<string | null>(null)
+  const [acceptedSegments, setAcceptedSegments] = useState<number[]>([1, 2])
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
     + bindings.reduce((sum, target) => sum + Math.max(0, (target.local_outline_tenths_mm?.length ?? 3) - 3), 0))
@@ -85,6 +86,7 @@ function Harness() {
         local_outline_tenths_mm: [[-18, -8], [18, -8], [0, 28]] })))
       setImageDecode(source === 'JPEG EXIF' ? 'JPEG RGB · EXIF orientation 6 normalized' : 'PNG RGBA · alpha/luminance mask')
       setSegmentation('2 protrusions · binding 1 asymmetric · binding 2 bilateral')
+      setAcceptedSegments([1, 2])
     } else { setImageDecode(null); setSegmentation(null) }
     if (source === 'GLB') {
       setOutlineMode('general'); setOutline([[-60, -40], [60, -40], [55, 40], [-50, 40]])
@@ -139,6 +141,15 @@ function Harness() {
     {recognized && <p>Contour approximation score: {contourScore}</p>}
     {imageDecode && <p>Decoded image preview: {imageDecode} · body {outline.length} · local 1:3</p>}
     {segmentation && <p>Deterministic silhouette segmentation: {segmentation}</p>}
+    {segmentation && <fieldset><legend>Confirm segmented protrusions</legend>
+      {[1, 2].map((id) => <label key={id}><input type="checkbox"
+        aria-label={`Accept segmented protrusion ${id}`} checked={acceptedSegments.includes(id)}
+        onChange={(event) => setAcceptedSegments((current) => event.target.checked
+          ? [...new Set([...current, id])].sort() : current.filter((item) => item !== id))} />Protrusion {id}</label>)}
+      <button onClick={() => { setAcceptedSegments([2]); setBindings((current) => current.map((target) =>
+        target.id === 2 ? { ...target, count: 1, symmetry: 'none' } : target)); setStatus('Bilateral half rejection canonicalized to asymmetric binding 2') }}>
+        Reject one side of bilateral binding 2</button>
+    </fieldset>}
     {glbWitness && <section aria-label="GLB geometry witness">
       <p>3D bounds {glbWitness.bounds} · 2D silhouette difference {glbWitness.discrepancy}% · bulge targets {glbWitness.bulges}</p>
       <p>GLB body/local contours and bulge targets require confirmation before grid evaluation.</p>
@@ -179,7 +190,8 @@ function Harness() {
       }}>Relax contour to 12 points and regenerate</button>
     </section>}
     <button ref={evaluate} onClick={() => { if (recognized) {
-      if (!authorityValid) setStatus('Merged authority invalid: candidate generation refused')
+      if (segmentation && acceptedSegments.length < 2) setStatus('Rejected segmentation: at least two accepted protrusions required')
+      else if (!authorityValid) setStatus('Merged authority invalid: candidate generation refused')
       else if (candidateShortage) setStatus('Contour candidate shortage: safe relaxation is required')
       else { setPreview(true); setStatus('Generic target grid ready') }
     } }}>Evaluate generic target grid</button>

@@ -303,6 +303,7 @@ fn fixed_plan_metric(value: f64) -> Result<f64, InstructionExportError> {
 
 pub(super) fn layout_instruction_pages(
     title: &str,
+    source_model_fingerprint: &str,
     timeline: &InstructionTimeline,
     diagram: &InstructionDiagramPlan,
     font: &InstructionFont<'_>,
@@ -315,9 +316,15 @@ pub(super) fn layout_instruction_pages(
         return Err(InstructionExportError::StructureNotRepresentable);
     }
 
-    if title.is_empty() {
+    if title.is_empty()
+        || source_model_fingerprint.len() != 64
+        || !source_model_fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return Err(InstructionExportError::StructureNotRepresentable);
     }
+    let model_reference = &source_model_fingerprint[..12];
     let step_count = timeline.steps.len();
     let mut glyphs = GlyphBudget {
         used: 0,
@@ -400,7 +407,9 @@ pub(super) fn layout_instruction_pages(
             FOOTER_BASELINE,
             7.5,
             PageColor::MUTED,
-            "固定等角投影 / 折り順・干渉・層順は作家が確認してください".to_owned(),
+            format!(
+                "折りモデル: {model_reference}… / 固定等角投影 / 折り順・干渉・層順は作家が確認してください"
+            ),
             font,
             &mut glyphs,
         )?;
@@ -1242,6 +1251,7 @@ mod tests {
         let font = InstructionFont::load().expect("bundled font");
         let layout = layout_instruction_pages(
             "説明書",
+            &"f".repeat(64),
             &timeline,
             &diagram,
             &font,
@@ -1303,6 +1313,7 @@ mod tests {
         let font = InstructionFont::load().expect("bundled font");
         let layout = layout_instruction_pages(
             "検証範囲",
+            &"f".repeat(64),
             &timeline,
             &diagram,
             &font,
@@ -1318,6 +1329,7 @@ mod tests {
             .join("\n");
 
         assert!(text.contains("3D姿勢: 再計算済み（経路未証明）"));
+        assert!(text.contains("折りモデル: ffffffffffff…"));
     }
 
     #[test]

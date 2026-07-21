@@ -329,7 +329,14 @@ fn build_canonical_instruction_plan(
         limits.diagram,
     )?;
     let font = font::InstructionFont::load()?;
-    let layout = layout::layout_instruction_pages(title, timeline, &diagram, &font, limits)?;
+    let layout = layout::layout_instruction_pages(
+        title,
+        current_fold_model_fingerprint,
+        timeline,
+        &diagram,
+        &font,
+        limits,
+    )?;
     let plan = CanonicalInstructionPlanV1 {
         profile: INSTRUCTION_EXPORT_PROFILE,
         projection_profile: INSTRUCTION_PROJECTION_PROFILE,
@@ -627,6 +634,7 @@ mod tests {
         let font = font::InstructionFont::load().expect("font");
         let layout = layout::layout_instruction_pages(
             "鶴の試作",
+            FINGERPRINT,
             &timeline,
             &diagram,
             &font,
@@ -736,7 +744,7 @@ mod tests {
         assert_eq!(plan.warnings, INSTRUCTION_EXPORT_WARNINGS);
         assert_eq!(
             canonical_plan_digest(&plan),
-            "f016ddaef0a4094e3713a97bfb9a3c26e6bcf7ab6949041d951baf6126dc76b8"
+            "cca573674692aa7f9017d943376186c3bc89c321033ee8fc64b5f9ce2dac0f84"
         );
     }
 

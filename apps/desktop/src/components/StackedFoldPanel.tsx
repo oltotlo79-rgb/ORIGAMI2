@@ -617,7 +617,7 @@ export function StackedFoldPanel({
             </button>
           ))}
           {evenCycleCandidates.length === 0 && (
-            <p role="status" data-even-cycle-status={evenCycleStatus}>
+            <p data-even-cycle-status={evenCycleStatus}>
               {evenCycleStatus === 'resource_limit'
                 ? t('候補探索の上限を超えました。', 'Candidate search exceeded its resource bound.')
                 : evenCycleStatus === 'none'

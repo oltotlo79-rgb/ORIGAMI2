@@ -1744,6 +1744,7 @@ export type BeginnerReferenceModelSuggestionV1 = Readonly<{
   bbox_max_tenths_mm: readonly [number, number, number]
   dominant_normal_milli: readonly [number, number, number]
   surface_area_milli: number
+  surface_landmarks_tenths_mm: readonly (readonly [number, number, number])[]
   protrusions: readonly NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number][]
   generic_body_outline_tenths_mm?: readonly (readonly [number, number])[]
   generic_body_outline_mode?: 'symmetric' | 'general'
@@ -1763,7 +1764,7 @@ export async function suggestBeginnerReferenceModelFeatures(
   ] as const)
   const suggestionKeys = [
     'asset_id', 'bbox_min_tenths_mm', 'bbox_max_tenths_mm', 'dominant_normal_milli',
-    'surface_area_milli', 'protrusions', 'pair_bindings', 'method', 'suggested_part_kind',
+    'surface_area_milli', 'surface_landmarks_tenths_mm', 'protrusions', 'pair_bindings', 'method', 'suggested_part_kind',
   ] as const
   const suggestion = snapshotCoreDataRecord(response?.suggestion)
   if (!suggestion || suggestionKeys.some((key) => !Object.hasOwn(suggestion, key))
@@ -1780,7 +1781,13 @@ export async function suggestBeginnerReferenceModelFeatures(
     || !isBoundedIntegerTuple(suggestion.bbox_max_tenths_mm, 3, 2_147_483_647)
     || !isBoundedIntegerTuple(suggestion.dominant_normal_milli, 3, 1000)
     || !Number.isSafeInteger(suggestion.surface_area_milli)
-    || Number(suggestion.surface_area_milli) < 0) throw new Error('invalid reference model suggestion')
+    || Number(suggestion.surface_area_milli) < 0
+    || !Array.isArray(suggestion.surface_landmarks_tenths_mm)
+    || suggestion.surface_landmarks_tenths_mm.length < 1
+    || suggestion.surface_landmarks_tenths_mm.length > 256
+    || suggestion.surface_landmarks_tenths_mm.some((point) => !isBoundedIntegerTuple(point, 3, 2_147_483_648))) {
+    throw new Error('invalid reference model suggestion')
+  }
   const constraints = normalizeBeginnerGenerationConstraints({
     schema_version: 1, maximum_steps: 1, detail_level: 'simple', target_category: 'animal',
     target_parts: [], skeleton_segments: [], protrusions: suggestion.protrusions,
@@ -1806,6 +1813,9 @@ export async function suggestBeginnerReferenceModelFeatures(
     throw new Error('invalid reference model suggestion')
   }
   return Object.freeze({ ...suggestion,
+    surface_landmarks_tenths_mm: Object.freeze(suggestion.surface_landmarks_tenths_mm.map(
+      (point) => Object.freeze((point as number[]).slice()) as unknown as readonly [number, number, number],
+    )),
     ...(constraints.generic_body_outline_tenths_mm === undefined ? {} : {
       generic_body_outline_tenths_mm: constraints.generic_body_outline_tenths_mm,
       generic_body_outline_mode: constraints.generic_body_outline_mode,

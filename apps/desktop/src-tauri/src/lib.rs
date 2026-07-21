@@ -1624,10 +1624,39 @@ fn bounded_folded_pose_landmark_score_v1(
         .unwrap_or(&1)
         .max(&1);
     let normalized = |extent: u64| extent.saturating_mul(1_000_000) / major;
-    let hausdorff = (0..3)
+    let bbox_hausdorff = (0..3)
         .map(|axis| normalized(candidate[axis]).abs_diff(normalized(target[axis])))
         .max()
         .unwrap_or(1_000_000);
+    let landmark_hausdorff = if reference.surface_landmarks_tenths_mm.is_empty() {
+        bbox_hausdorff
+    } else {
+        let squared = |left: [i64; 3], right: [i64; 3]| {
+            (0..3)
+                .map(|axis| left[axis].abs_diff(right[axis]).saturating_pow(2))
+                .sum::<u64>()
+        };
+        let target_landmarks = reference
+            .surface_landmarks_tenths_mm
+            .iter()
+            .map(|point| std::array::from_fn(|axis| i64::from(point[axis])))
+            .collect::<Vec<_>>();
+        let directed = |from: &[[i64; 3]], to: &[[i64; 3]]| {
+            from.iter()
+                .map(|point| {
+                    to.iter()
+                        .map(|target| squared(*point, *target))
+                        .min()
+                        .unwrap_or(u64::MAX)
+                })
+                .max()
+                .unwrap_or(u64::MAX)
+        };
+        let squared_error =
+            directed(&landmarks, &target_landmarks).max(directed(&target_landmarks, &landmarks));
+        ((squared_error as f64).sqrt().round() as u64).saturating_mul(1_000_000) / major
+    };
+    let hausdorff = bbox_hausdorff.max(landmark_hausdorff.min(1_000_000));
     let depth_error = normalized(candidate[2]).abs_diff(normalized(target[2]));
     let candidate_bulge = landmarks.iter().filter(|point| point[2] != 0).count() as u64;
     let target_bulge = reference.protrusions.len() as u64;
@@ -3920,10 +3949,25 @@ fn apply_grid_plan_document(
     let paper = project.editor.paper().clone();
     let project_layers = project.editor.project_layers().clone();
     let mut beginner_design_profile = project.editor.beginner_design_profile().clone();
-    let source_asset_fingerprint = beginner_design_profile
-        .generation_constraints
-        .target_asset
-        .map_or_else(|| "none".to_owned(), |asset| format!("{asset:?}"));
+    let source_asset_fingerprint = live_reference_model_suggestion_v1(project)
+        .ok()
+        .and_then(|reference| serde_json::to_vec(&reference.surface_landmarks_tenths_mm).ok())
+        .map(|bytes| {
+            let digest: [u8; 32] = sha2::Sha256::digest(bytes).into();
+            format!(
+                "glb-landmarks-sha256:{}",
+                digest
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            )
+        })
+        .unwrap_or_else(|| {
+            beginner_design_profile
+                .generation_constraints
+                .target_asset
+                .map_or_else(|| "none".to_owned(), |asset| format!("{asset:?}"))
+        });
     beginner_design_profile.generation_provenance =
         Some(ori_domain::BeginnerGenerationProvenanceV1 {
             schema_version: 1,
@@ -4258,6 +4302,7 @@ struct BeginnerReferenceModelSuggestionV1 {
     bbox_max_tenths_mm: [i32; 3],
     dominant_normal_milli: [i16; 3],
     surface_area_milli: u64,
+    surface_landmarks_tenths_mm: Vec<[i32; 3]>,
     protrusions: Vec<ori_domain::BeginnerProtrusionTargetV1>,
     pair_bindings: Vec<ori_domain::BeginnerBilateralPairBindingV1>,
     method: String,
@@ -4303,6 +4348,21 @@ fn derive_reference_model_suggestion_v1(
         to_tenths_mm(max[1])?,
         to_tenths_mm(max[2])?,
     ];
+    let landmark_count = geometry
+        .positions
+        .len()
+        .min(MAX_BEGINNER_FOLDED_LANDMARKS_V1);
+    let surface_landmarks_tenths_mm = (0..landmark_count)
+        .map(|sample| {
+            let index = sample.saturating_mul(geometry.positions.len()) / landmark_count.max(1);
+            let position = geometry.positions[index];
+            Ok([
+                to_tenths_mm(position[0])?,
+                to_tenths_mm(position[1])?,
+                to_tenths_mm(position[2])?,
+            ])
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let mut normal = [0.0_f64; 3];
     let mut surface_area = 0.0_f64;
     for triangle in &geometry.triangle_indices {
@@ -4641,6 +4701,7 @@ fn derive_reference_model_suggestion_v1(
         bbox_max_tenths_mm,
         dominant_normal_milli,
         surface_area_milli: (surface_area * 1_000.0).round().clamp(0.0, u64::MAX as f64) as u64,
+        surface_landmarks_tenths_mm,
         protrusions,
         pair_bindings,
         method: "bounded_bbox_area_normal_v1".to_owned(),
@@ -21326,6 +21387,7 @@ mod tests {
             bbox_max_tenths_mm: [100, 80, 40],
             dominant_normal_milli: [0, 0, 1000],
             surface_area_milli: 8_000,
+            surface_landmarks_tenths_mm: vec![[0, 0, 0], [100, 80, 40]],
             protrusions: Vec::new(),
             pair_bindings: Vec::new(),
             method: "test".to_owned(),

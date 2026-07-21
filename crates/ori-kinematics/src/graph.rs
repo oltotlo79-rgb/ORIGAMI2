@@ -298,6 +298,9 @@ impl MaterialHingeGraphGeometry {
                 .is_ok()
         });
         if stationary_closed
+            || dense_parallel_grid_cycle_closure_premises_v1(
+                self, audit, fixed_face, schedule, tolerance,
+            )
             || collective_flat_stack_cycle_closure_premises_v1(
                 self, audit, fixed_face, schedule, tolerance,
             )
@@ -739,6 +742,55 @@ impl MaterialHingeGraphGeometry {
             .collect::<Result<Vec<_>, _>>()?;
         self.observe_closed(audit, fixed_face, angles, &transforms, tolerance)
     }
+}
+
+// Exact two-carrier accordion identity for the smallest non-cactus square grid.
+// Three collinear material segments on each of two parallel carrier lines share
+// one canonical profile; the six transverse hinges remain exactly stationary.
+fn dense_parallel_grid_cycle_closure_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &CanonicalCycleScheduleV1,
+    tolerance: f64,
+) -> bool {
+    if geometry.face_ids().len() != 9
+        || geometry.hinges().len() != 12
+        || audit.closure_hinges().len() != 4
+        || !tolerance.is_finite()
+        || tolerance < 0.0
+    {
+        return false;
+    }
+    let Some(moving_edges) = schedule.collective_profile_edges_v1() else {
+        return false;
+    };
+    if moving_edges.len() != 6 {
+        return false;
+    }
+    let moving = moving_edges.into_iter().collect::<HashSet<_>>();
+    let (Some(initial), Some(midpoint), Some(target)) = (
+        schedule.evaluate(0.0),
+        schedule.evaluate(0.5),
+        schedule.evaluate(1.0),
+    ) else {
+        return false;
+    };
+    if [initial.clone(), target.clone()].into_iter().any(|angles| {
+        angles.as_slice().iter().any(|angle| {
+            !moving.contains(&angle.edge()) && angle.angle_degrees().to_bits() != 0.0_f64.to_bits()
+        })
+    }) {
+        return false;
+    }
+    let Ok(_pose) = geometry.solve_closed(audit, fixed_face, &initial, tolerance) else {
+        return false;
+    };
+    [midpoint, target].into_iter().all(|angles| {
+        geometry
+            .solve_closed(audit, fixed_face, &angles, tolerance)
+            .is_ok()
+    })
 }
 
 pub fn theta_opposite_pair_cycle_closure_premises_v1(

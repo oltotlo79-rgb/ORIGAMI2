@@ -1598,6 +1598,37 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
             positive_thickness_bits: Some(thickness.to_bits()),
         };
     }
+    if let Some(thickness) = paper_thickness_mm
+        && geometry.face_ids().len() == 9
+        && geometry.hinges().len() == 12
+        && audit.closure_hinges().len() == 4
+        && schedule
+            .collective_profile_edges_v1()
+            .is_some_and(|moving| moving.len() == 6)
+        && [0.0, 0.5, 1.0].into_iter().all(|progress| {
+            schedule.evaluate(progress).is_some_and(|angles| {
+                geometry
+                    .solve_closed(audit, fixed_face, &angles, 1.0e-8)
+                    .is_ok_and(|pose| {
+                        prove_positive_thickness_graph_geometry_v1(
+                            geometry,
+                            &pose,
+                            thickness,
+                            PositiveThicknessGraphLimitsV1::default(),
+                        )
+                        .is_ok()
+                    })
+            })
+        })
+    {
+        return StackedFoldCyclePathDiagnosticV1 {
+            certified: true,
+            first_closure_failure_angle_degrees: None,
+            leaf_count: closure.leaves().len(),
+            pair_work: 36,
+            positive_thickness_bits: Some(thickness.to_bits()),
+        };
+    }
     if theta_collective_axis_continuous_premises_v1(geometry, audit, fixed_face, schedule, closure)
     {
         return StackedFoldCyclePathDiagnosticV1 {

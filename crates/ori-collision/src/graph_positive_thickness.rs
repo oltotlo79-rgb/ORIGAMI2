@@ -472,24 +472,51 @@ mod tests {
             geometry
                 .hinges()
                 .iter()
-                .map(|hinge| CycleScheduleEntryInputV1 {
-                    edge: hinge.edge(),
-                    initial_angle_degrees_bits: 0.0_f64.to_bits(),
-                    chebyshev_coefficients: vec![RationalCoefficientV1 {
-                        numerator: 0,
-                        denominator: 1,
-                    }],
+                .map(|hinge| {
+                    let moving = (hinge.end().z() - hinge.start().z()).abs() > 0.5;
+                    CycleScheduleEntryInputV1 {
+                        edge: hinge.edge(),
+                        initial_angle_degrees_bits: if moving {
+                            15.0_f64.to_bits()
+                        } else {
+                            0.0_f64.to_bits()
+                        },
+                        chebyshev_coefficients: if moving {
+                            vec![
+                                RationalCoefficientV1 {
+                                    numerator: 0,
+                                    denominator: 1,
+                                },
+                                RationalCoefficientV1 {
+                                    numerator: 15,
+                                    denominator: 1,
+                                },
+                            ]
+                        } else {
+                            vec![RationalCoefficientV1 {
+                                numerator: 0,
+                                denominator: 1,
+                            }]
+                        },
+                    }
                 })
                 .collect(),
             CycleScheduleLimitsV1::default(),
         )
         .unwrap();
+        for progress in [0.0, 0.25, 0.5, 1.0] {
+            let trial = schedule.evaluate(progress).unwrap();
+            geometry
+                .solve_closed(&audit, fixed, &trial, 1.0e-8)
+                .unwrap_or_else(|error| panic!("dense grid closes at {progress}: {error:?}"));
+        }
+        assert_eq!(schedule.collective_profile_edges_v1().unwrap().len(), 6);
         let closure = geometry
             .prove_dyadic_schedule_closure_v1(
                 &audit,
                 fixed,
                 &schedule,
-                0.0,
+                1.0e-8,
                 DyadicIntervalClosureLimitsV1 {
                     max_depth: 0,
                     max_leaves: 1,

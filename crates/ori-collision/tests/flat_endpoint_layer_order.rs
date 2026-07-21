@@ -2,6 +2,8 @@ use ori_collision::{
     FLAT_ENDPOINT_LAYER_ORDER_ANCHOR_MODEL_ID_V1, FlatEndpointLayerOrderAnchorErrorV1,
     FlatEndpointLayerOrderInputV1, FlatEndpointLayerOrderLimitsV1,
     FlatEndpointLayerOrderResourceV1, anchor_flat_endpoint_layer_order_v1,
+    StaticCollisionLimits, StaticCollisionPairDisposition,
+    diagnose_static_collision_geometry_with_flat_layer_order_v1,
     revalidate_flat_endpoint_layer_order_anchor_v1,
 };
 use ori_domain::{
@@ -19,6 +21,33 @@ use ori_topology::{FaceExtractionInput, analyze_faces, analyze_local_flat_foldab
 use serde::de::DeserializeOwned;
 
 const REVISION: u64 = 41;
+
+#[test]
+fn exact_layer_order_admits_the_shared_hinge_flat_stack() {
+    let fixture = fixture(false);
+    let pose = endpoint_pose(&fixture);
+    let anchor = anchor_flat_endpoint_layer_order_v1(
+        input(&fixture, &pose, &fixture.layer_order),
+        FlatEndpointLayerOrderLimitsV1::default(),
+    )
+    .expect("flat endpoint layer-order anchor");
+    let diagnostic = diagnose_static_collision_geometry_with_flat_layer_order_v1(
+        &fixture.model,
+        &pose,
+        0.0,
+        StaticCollisionLimits::default(),
+        &anchor,
+    )
+    .expect("layer-bound collision diagnostic");
+    assert_eq!(diagnostic.expected_unordered_face_pairs(), 1);
+    assert_eq!(diagnostic.allowed_pairs(), 1);
+    assert_eq!(diagnostic.penetrating_pairs(), 0);
+    assert_eq!(diagnostic.indeterminate_pairs(), 0);
+    assert_eq!(
+        diagnostic.pairs()[0].disposition(),
+        StaticCollisionPairDisposition::Allowed
+    );
+}
 
 struct Fixture {
     project: ProjectId,

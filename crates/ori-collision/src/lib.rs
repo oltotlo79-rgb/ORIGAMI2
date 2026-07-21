@@ -117,6 +117,7 @@ pub use static_collision::{
     NativeStaticCollisionGeometryProof, StaticCollisionDiagnosticSnapshot, StaticCollisionError,
     StaticCollisionLimits, StaticCollisionPairDiagnostic, StaticCollisionPairDisposition,
     classify_static_collision_pair_disposition, diagnose_static_collision_geometry,
+    diagnose_static_collision_geometry_with_flat_layer_order_v1,
     prepare_positive_thickness_pair_separation_v1, prove_static_collision_geometry,
     revalidate_positive_thickness_pair_separation_v1,
 };

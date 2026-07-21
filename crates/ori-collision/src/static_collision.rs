@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::{
     IntersectionEvidenceV2, TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision, TopologyRelation,
+    classify_runtime_topology_contact_v2,
     cayley::{
         PositiveThicknessPrismPairDispositionV1, ProvenTransversalScanError,
         ProvenTransversalScanLimits, ProvenTransversalScanSummary,
@@ -1137,12 +1138,16 @@ pub fn diagnose_static_collision_geometry(
             shared_hinge_boundary.as_ref().is_some_and(|summary| {
                 summary.proves_area_overlap_pair(pair.first_face, pair.second_face)
             });
-        let shared_hinge_flat_stack_proven = is_positive_zero
+        let shared_feature_flat_stack_proven = is_positive_zero
             && !strict_transversal_dual_gate_proven
-            && matches!(pair.topology, TopologyRelation::SharedHingeEdge)
-            && watertight_shared_hinge_area_overlap_proven;
+            && matches!(
+                pair.topology,
+                TopologyRelation::SharedHingeEdge | TopologyRelation::SharedVertex
+            )
+            && (watertight_shared_hinge_area_overlap_proven
+                || pair.proves_zero_thickness_penetration);
         let whole_face_overlap_proven = is_positive_zero
-            && !shared_hinge_flat_stack_proven
+            && !shared_feature_flat_stack_proven
             && (pair.proves_zero_thickness_penetration
                 || watertight_shared_hinge_area_overlap_proven);
         if strict_transversal_dual_gate_proven && whole_face_overlap_proven {
@@ -1153,19 +1158,19 @@ pub fn diagnose_static_collision_geometry(
         if strict_transversal_dual_gate_proven {
             evidence = IntersectionEvidenceV2::TransversalCrossing;
             policy_decision = TopologyContactDecision::Penetrating;
-        } else if shared_hinge_flat_stack_proven {
+        } else if shared_feature_flat_stack_proven {
             // A watertight, exact positive-area overlap across the complete
             // authenticated shared hinge at zero thickness is the expected
             // geometry of a flat fold.  It is not collision-free authority:
             // without a matching layer-order/hinge admission certificate the
             // diagnostic remains indeterminate, never proven penetrating.
             evidence = IntersectionEvidenceV2::SharedFeatureFlatStack;
-            policy_decision = TopologyContactDecision::RequiresHingeModel;
+            policy_decision = classify_runtime_topology_contact_v2(pair.topology, evidence);
         } else if whole_face_overlap_proven {
             evidence = IntersectionEvidenceV2::CoplanarAreaOverlap;
             policy_decision = TopologyContactDecision::Penetrating;
         }
-        let mut disposition = if shared_hinge_flat_stack_proven {
+        let mut disposition = if shared_feature_flat_stack_proven {
             StaticCollisionPairDisposition::Indeterminate
         } else if strict_transversal_dual_gate_proven || whole_face_overlap_proven {
             StaticCollisionPairDisposition::Penetrating
@@ -1256,6 +1261,62 @@ pub fn diagnose_static_collision_geometry(
     build_static_collision_diagnostic_snapshot(face_count, expected_unordered_face_pairs, pairs)
 }
 
+/// Produces the static diagnostic while admitting only flat-stack pairs that
+/// are covered by one exact, pose-bound layer-order anchor.
+pub fn diagnose_static_collision_geometry_with_flat_layer_order_v1(
+    model: &MaterialTreeKinematicsModel,
+    pose: &MaterialTreePose,
+    paper_thickness_mm: f64,
+    limits: StaticCollisionLimits,
+    layer_order: &crate::NativeFlatEndpointLayerOrderAnchorV1<'_>,
+) -> Result<StaticCollisionDiagnosticSnapshot, StaticCollisionError> {
+    let mut snapshot = diagnose_static_collision_geometry(model, pose, paper_thickness_mm, limits)?;
+    if paper_thickness_mm.to_bits() != 0.0_f64.to_bits()
+        || !layer_order.is_for_pose_authority(model, pose)
+    {
+        return Err(StaticCollisionError::InconsistentMaterialPose);
+    }
+    for pair in &mut snapshot.pairs {
+        if !matches!(
+            pair.evidence,
+            IntersectionEvidenceV2::SharedFeatureFlatStack
+        ) || !matches!(
+            pair.disposition,
+            StaticCollisionPairDisposition::Indeterminate
+        ) {
+            continue;
+        }
+        let mut covered = false;
+        let mut ordered = true;
+        for cell in layer_order.cells().iter().filter(|cell| {
+            cell.covering_faces().contains(&pair.first_face)
+                && cell.covering_faces().contains(&pair.second_face)
+        }) {
+            covered = true;
+            let first = cell
+                .bottom_to_top_faces()
+                .iter()
+                .position(|face| *face == pair.first_face);
+            let second = cell
+                .bottom_to_top_faces()
+                .iter()
+                .position(|face| *face == pair.second_face);
+            if first.is_none() || second.is_none() || first == second {
+                ordered = false;
+                break;
+            }
+        }
+        if covered && ordered {
+            pair.disposition = StaticCollisionPairDisposition::Allowed;
+        }
+    }
+    build_static_collision_diagnostic_snapshot(
+        snapshot.face_count,
+        snapshot.expected_unordered_face_pairs,
+        snapshot.pairs,
+    )
+}
+
 fn validate_zero_thickness_diagnostic_scan(
     scan: &ZeroThicknessDiagnosticScan,
     analysis: &AuthenticatedZeroThicknessPose<'_>,
@@ -1343,14 +1404,18 @@ fn build_static_collision_diagnostic_snapshot(
                 || (matches!(
                     pair.evidence,
                     IntersectionEvidenceV2::SharedFeatureFlatStack
-                ) && (!matches!(pair.topology, TopologyRelation::SharedHingeEdge)
-                    || !matches!(
-                        pair.policy_decision,
-                        TopologyContactDecision::RequiresHingeModel
+                ) && (!matches!(
+                    pair.topology,
+                    TopologyRelation::SharedHingeEdge | TopologyRelation::SharedVertex
+                ) || pair.policy_decision
+                    != classify_runtime_topology_contact_v2(
+                        pair.topology,
+                        IntersectionEvidenceV2::SharedFeatureFlatStack,
                     )
                     || !matches!(
                         pair.disposition,
                         StaticCollisionPairDisposition::Indeterminate
+                            | StaticCollisionPairDisposition::Allowed
                     )
                     || pair.strict_transversal_dual_gate_proven
                     || pair.whole_face_overlap_proven

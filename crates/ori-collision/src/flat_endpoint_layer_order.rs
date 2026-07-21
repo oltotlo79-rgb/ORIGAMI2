@@ -321,6 +321,14 @@ impl<'snapshot> NativeFlatEndpointLayerOrderAnchorV1<'snapshot> {
             && self.proof.pose.same_instance(pose)
             && std::ptr::eq(self.snapshot, snapshot)
     }
+
+    pub(crate) fn is_for_pose_authority(
+        &self,
+        model: &MaterialTreeKinematicsModel,
+        pose: &MaterialTreePose,
+    ) -> bool {
+        self.proof.model == *model && self.proof.pose.same_instance(pose)
+    }
 }
 
 struct Analysis {

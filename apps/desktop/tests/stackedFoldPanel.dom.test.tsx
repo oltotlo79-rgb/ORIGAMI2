@@ -11,6 +11,7 @@ const transport = vi.hoisted(() => ({
   reverseApply: vi.fn(),
   accordionApply: vi.fn(),
   sinkApply: vi.fn(),
+  layerApply: vi.fn(),
   cancel: vi.fn(),
   cancelRead: vi.fn(),
   registry: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => ({
   applyNamedReverseFoldTransaction: transport.reverseApply,
   applyNamedAccordionFoldTransaction: transport.accordionApply,
   applyNamedSinkFoldTransaction: transport.sinkApply,
+  applyNamedLayerSelectiveTransaction: transport.layerApply,
   cancelStackedFoldTransactionPreview: transport.cancel,
   cancelCurrentStackedFoldReadV1: transport.cancelRead,
   readLiveHingeRegistryV1: transport.registry,
@@ -596,6 +598,20 @@ describe('StackedFoldPanel', () => {
     await waitFor(() => expect(transport.sinkApply).toHaveBeenCalledWith(token, document, 'open-sink'))
     expect(transport.apply).not.toHaveBeenCalled()
     expect(transport.namedApply).not.toHaveBeenCalled()
+  })
+
+  it('routes a layer-selective technique through its proof-bound transaction', async () => {
+    transport.preview.mockResolvedValue(ready); transport.layerApply.mockResolvedValue(4)
+    const document = { techniques: [] } as any
+    render(<StackedFoldPanel locale="en" snapshot={snapshot}
+      selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }} disabled={false}
+      namedBookFold={{ document, techniqueId: 'layer-select', name: 'Layer select', kind: 'layer' }}
+      refreshSnapshot={vi.fn().mockResolvedValue({ ...snapshot, revision: 4 })} onApplied={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    const apply = await screen.findByRole('button', { name: 'Apply named layer technique' })
+    fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(apply)
+    await waitFor(() => expect(transport.layerApply).toHaveBeenCalledWith(token, document, 'layer-select'))
+    expect(transport.apply).not.toHaveBeenCalled()
   })
 
   it('keeps apply disabled when native metadata is not fully certified', async () => {

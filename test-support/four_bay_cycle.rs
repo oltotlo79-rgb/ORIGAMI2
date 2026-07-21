@@ -11,6 +11,11 @@ pub fn two_bay_rational_cycle_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
     rational_cycle_bay_pattern(2)
 }
 
+#[allow(dead_code)]
+pub fn three_bay_rational_cycle_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
+    rational_cycle_bay_pattern(3)
+}
+
 pub fn eight_bay_rational_cycle_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
     rational_cycle_bay_pattern(8)
 }

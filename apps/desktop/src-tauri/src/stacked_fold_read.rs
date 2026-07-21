@@ -3423,94 +3423,102 @@ mod tests {
     }
 
     #[test]
-    fn coupled_figure_eight_preview_applies_and_round_trips_history() {
+    fn coupled_cactus_previews_apply_and_round_trip_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, paper, hinges) =
-            super::four_bay_cycle_test_support::two_bay_rational_cycle_pattern();
-        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        let fixed = snapshot
-            .faces
-            .iter()
-            .find(|face| {
-                snapshot
-                    .hinge_adjacency
-                    .iter()
-                    .filter(|adjacency| adjacency.first == face.id || adjacency.second == face.id)
-                    .count()
-                    == 2
-            })
-            .unwrap()
-            .id;
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            fixed,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let app_state = AppState::new(project);
-        let transactions =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let response = propose_current_cycle_pose_inner(
-            None,
-            &app_state,
-            &transactions,
-            CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
-            },
-        )
-        .expect("coupled figure-eight preview");
-        assert_eq!(response.closure_leaf_count, 2);
-        assert_eq!(response.checked_hinge_count, 8);
-        super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
-            &transactions,
-            response.transaction_token,
-        )
-        .unwrap();
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+        for cycle_count in [2, 3] {
+            let (pattern, paper, hinges) = if cycle_count == 2 {
+                super::four_bay_cycle_test_support::two_bay_rational_cycle_pattern()
+            } else {
+                super::four_bay_cycle_test_support::three_bay_rational_cycle_pattern()
+            };
+            let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+            let topology = project
+                .editor
+                .topology_analysis_input(project.project_id)
+                .analyze();
+            let snapshot = topology.simulation_snapshot().unwrap();
+            let fixed = snapshot
+                .faces
+                .iter()
+                .find(|face| {
+                    snapshot
+                        .hinge_adjacency
+                        .iter()
+                        .filter(|adjacency| {
+                            adjacency.first == face.id || adjacency.second == face.id
+                        })
+                        .count()
+                        == 2
+                })
+                .unwrap()
+                .id;
+            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+                &mut project,
+                hinges.clone(),
+                fixed,
+            );
+            let instance = project.instance_id;
+            let project_id = project.project_id;
+            let revision = project.editor.revision();
+            let app_state = AppState::new(project);
+            let transactions =
+                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+            let response = propose_current_cycle_pose_inner(
+                None,
                 &app_state,
-                &GlobalFlatFoldabilityState::default(),
+                &transactions,
+                CurrentCyclePosePreviewRequestV1 {
+                    progress_request_id: None,
+                    expected_project_instance_id: instance,
+                    expected_project_id: project_id,
+                    expected_revision: revision,
+                    cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
+                },
+            )
+            .expect("coupled cactus preview");
+            assert_eq!(response.closure_leaf_count, cycle_count);
+            assert_eq!(response.checked_hinge_count, cycle_count * 4);
+            super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
                 &transactions,
                 response.transaction_token,
             )
-            .is_err()
-        );
-        let response = propose_current_cycle_pose_inner(
-            None,
-            &app_state,
-            &transactions,
-            CurrentCyclePosePreviewRequestV1 {
-                progress_request_id: None,
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
-            },
-        )
-        .expect("coupled figure-eight retry");
-        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-            &app_state,
-            &GlobalFlatFoldabilityState::default(),
-            &transactions,
-            response.transaction_token,
-        )
-        .unwrap();
-        let mut project = super::super::lock_project(&app_state).unwrap();
-        project.editor.undo(applied).unwrap();
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+            .unwrap();
+            assert!(
+                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                    &app_state,
+                    &GlobalFlatFoldabilityState::default(),
+                    &transactions,
+                    response.transaction_token,
+                )
+                .is_err()
+            );
+            let response = propose_current_cycle_pose_inner(
+                None,
+                &app_state,
+                &transactions,
+                CurrentCyclePosePreviewRequestV1 {
+                    progress_request_id: None,
+                    expected_project_instance_id: instance,
+                    expected_project_id: project_id,
+                    expected_revision: revision,
+                    cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
+                },
+            )
+            .expect("coupled cactus retry");
+            let applied =
+                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                    &app_state,
+                    &GlobalFlatFoldabilityState::default(),
+                    &transactions,
+                    response.transaction_token,
+                )
+                .unwrap();
+            let mut project = super::super::lock_project(&app_state).unwrap();
+            project.editor.undo(applied).unwrap();
+            let undone = project.editor.revision();
+            project.editor.redo(undone).unwrap();
+            assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        }
     }
 
     #[test]

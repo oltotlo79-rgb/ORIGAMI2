@@ -53,6 +53,7 @@ struct BeginnerGridWork {
     cancelled: AtomicBool,
     enumerated: AtomicU64,
     global_checked: AtomicU64,
+    refinement_iterations: AtomicU64,
     terminal: AtomicU64,
 }
 
@@ -2742,6 +2743,8 @@ struct BeginnerGridCandidateResponse {
     detail_mismatch_penalty: u16,
     outcome_reason: &'static str,
     contour_witness: BeginnerContourPlacementWitness,
+    refinement_iterations: u8,
+    strict_improvements: u8,
 }
 
 #[derive(Debug, Serialize)]
@@ -2753,7 +2756,113 @@ struct BeginnerGridEvaluationResponse {
     grid_hash: ori_domain::BeginnerParameterGridHashV1,
     evaluated_grid_points: u8,
     global_checked_candidates: u8,
+    refinement_iterations: u8,
     candidates: Vec<BeginnerGridCandidateResponse>,
+}
+
+const MAX_BEGINNER_REFINEMENT_ITERATIONS_V1: u8 = 8;
+const MAX_BEGINNER_REFINEMENT_PROPOSALS_V1: usize = 32;
+
+fn refine_beginner_grid_plan_v1(
+    namespace: ProjectId,
+    source: &CreasePattern,
+    boundary_vertices: &[VertexId],
+    profile: &ori_domain::BeginnerDesignProfileV1,
+    expected_kind: ori_domain::BeginnerGeneratedPlanKindV1,
+    reference: Option<&BeginnerReferenceModelSuggestionV1>,
+    work: &BeginnerGridWork,
+    deadline: std::time::Instant,
+    initial_point: ori_domain::BeginnerParameterGridPointV1,
+    initial_plan: ori_domain::BeginnerGeneratedPlanV1,
+) -> Result<
+    (
+        ori_domain::BeginnerParameterGridPointV1,
+        ori_domain::BeginnerGeneratedPlanV1,
+        u8,
+        u8,
+    ),
+    String,
+> {
+    let Some(reference) = reference else {
+        return Ok((initial_point, initial_plan, 0, 0));
+    };
+    let mut point = initial_point;
+    let mut plan = initial_plan;
+    let mut score = compare_plan_to_reference_model_v1(&plan, reference).0;
+    let mut iterations = 0_u8;
+    let mut improvements = 0_u8;
+    let mut proposals = 0_usize;
+    for _ in 0..MAX_BEGINNER_REFINEMENT_ITERATIONS_V1 {
+        if work.cancelled.load(Ordering::Acquire) {
+            return Err("grid_evaluation_cancelled".to_owned());
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        let mut best: Option<(
+            u8,
+            ori_domain::BeginnerParameterGridPointV1,
+            ori_domain::BeginnerGeneratedPlanV1,
+        )> = None;
+        for (scale_delta, spacing_delta) in [(-2_i16, 0_i16), (2, 0), (0, -3), (0, 3)] {
+            if proposals >= MAX_BEGINNER_REFINEMENT_PROPOSALS_V1 {
+                break;
+            }
+            proposals += 1;
+            let mut candidate_point = point;
+            candidate_point.scale_percent =
+                (i16::from(point.scale_percent) + scale_delta).clamp(10, 45) as u8;
+            candidate_point.spacing_percent =
+                (i16::from(point.spacing_percent) + spacing_delta).clamp(20, 80) as u8;
+            if candidate_point == point {
+                continue;
+            }
+            let Some(candidate_plan) = grid_template_plan(
+                namespace,
+                source,
+                boundary_vertices,
+                profile,
+                candidate_point,
+            )
+            .map_err(|_| "grid_refinement_generation_failed".to_owned())?
+            .into_iter()
+            .find(|candidate| candidate.kind == expected_kind) else {
+                continue;
+            };
+            if beginner_contour_placement_witness(&profile.generation_constraints, &candidate_plan)
+                .is_none()
+            {
+                continue;
+            }
+            let candidate_score = compare_plan_to_reference_model_v1(&candidate_plan, reference).0;
+            let replaces = candidate_score > score
+                && best.as_ref().is_none_or(|current| {
+                    (
+                        candidate_score,
+                        std::cmp::Reverse(candidate_point.scale_percent),
+                        std::cmp::Reverse(candidate_point.spacing_percent),
+                    ) > (
+                        current.0,
+                        std::cmp::Reverse(current.1.scale_percent),
+                        std::cmp::Reverse(current.1.spacing_percent),
+                    )
+                });
+            if replaces {
+                best = Some((candidate_score, candidate_point, candidate_plan));
+            }
+        }
+        iterations = iterations.saturating_add(1);
+        work.refinement_iterations.fetch_add(1, Ordering::Release);
+        let Some((next_score, next_point, next_plan)) = best else {
+            break;
+        };
+        debug_assert!(next_score > score);
+        score = next_score;
+        point = next_point;
+        plan = next_plan;
+        improvements = improvements.saturating_add(1);
+    }
+    Ok((point, plan, iterations, improvements))
 }
 
 #[tauri::command]
@@ -2843,6 +2952,19 @@ fn evaluate_beginner_parameter_grid(
                 work.terminal.store(2, Ordering::Release);
                 return Err("grid_evaluation_cancelled".to_owned());
             }
+            let (point, plan, refinement_iterations, strict_improvements) =
+                refine_beginner_grid_plan_v1(
+                    project.project_id,
+                    project.editor.pattern(),
+                    &project.editor.paper().boundary_vertices,
+                    profile,
+                    expected_kind,
+                    reference.as_ref(),
+                    &work,
+                    deadline,
+                    point,
+                    plan,
+                )?;
             let detail_penalty =
                 if point.detail_level == profile.generation_constraints.detail_level {
                     0
@@ -2889,6 +3011,8 @@ fn evaluate_beginner_parameter_grid(
                 detail_mismatch_penalty: detail_penalty,
                 outcome_reason,
                 contour_witness,
+                refinement_iterations,
+                strict_improvements,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -2901,6 +3025,11 @@ fn evaluate_beginner_parameter_grid(
         grid_hash: ori_domain::beginner_parameter_grid_hash_v1(&grid),
         evaluated_grid_points: ori_domain::BEGINNER_PARAMETER_GRID_SIZE_V1 as u8,
         global_checked_candidates: 3,
+        refinement_iterations: work
+            .refinement_iterations
+            .load(Ordering::Acquire)
+            .min(u64::from(MAX_BEGINNER_REFINEMENT_ITERATIONS_V1) * 3)
+            as u8,
         candidates,
     })
 }
@@ -2910,6 +3039,7 @@ struct BeginnerGridProgressResponse {
     request_generation_id: ProjectId,
     enumerated_grid_points: u8,
     global_checked_candidates: u8,
+    refinement_iterations: u8,
     terminal_state: &'static str,
 }
 
@@ -2933,6 +3063,11 @@ fn get_beginner_parameter_grid_progress(
         request_generation_id,
         enumerated_grid_points: work.enumerated.load(Ordering::Acquire).min(27) as u8,
         global_checked_candidates: work.global_checked.load(Ordering::Acquire).min(3) as u8,
+        refinement_iterations: work
+            .refinement_iterations
+            .load(Ordering::Acquire)
+            .min(u64::from(MAX_BEGINNER_REFINEMENT_ITERATIONS_V1) * 3)
+            as u8,
         terminal_state,
     })
 }
@@ -11870,6 +12005,7 @@ mod tests {
         let work = Arc::new(BeginnerGridWork::default());
         work.enumerated.store(99, Ordering::Release);
         work.global_checked.store(99, Ordering::Release);
+        work.refinement_iterations.store(99, Ordering::Release);
         beginner_grid_work()
             .lock()
             .unwrap()
@@ -11877,6 +12013,7 @@ mod tests {
         let progress = get_beginner_parameter_grid_progress(generation).unwrap();
         assert_eq!(progress.enumerated_grid_points, 27);
         assert_eq!(progress.global_checked_candidates, 3);
+        assert_eq!(progress.refinement_iterations, 24);
         cancel_beginner_parameter_grid(generation).unwrap();
         cancel_beginner_parameter_grid(generation).unwrap();
         assert!(work.cancelled.load(Ordering::Acquire));

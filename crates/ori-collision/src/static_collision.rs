@@ -1279,13 +1279,21 @@ pub fn diagnose_static_collision_geometry_with_flat_layer_order_v1(
         return Err(StaticCollisionError::InconsistentMaterialPose);
     }
     for pair in &mut snapshot.pairs {
-        if !matches!(
-            pair.evidence,
-            IntersectionEvidenceV2::SharedFeatureFlatStack
-        ) || !matches!(
-            pair.disposition,
-            StaticCollisionPairDisposition::Indeterminate
-        ) {
+        let unauthenticated_flat_hinge = matches!(
+            (pair.evidence, pair.disposition),
+            (
+                IntersectionEvidenceV2::SharedFeatureFlatStack,
+                StaticCollisionPairDisposition::Indeterminate
+            )
+        );
+        let authenticated_shared_vertex_candidate = matches!(
+            (pair.topology, pair.disposition),
+            (
+                TopologyRelation::SharedVertex,
+                StaticCollisionPairDisposition::Penetrating
+            )
+        ) && pair.whole_face_overlap_proven;
+        if !unauthenticated_flat_hinge && !authenticated_shared_vertex_candidate {
             continue;
         }
         let mut covered = false;
@@ -1309,6 +1317,19 @@ pub fn diagnose_static_collision_geometry_with_flat_layer_order_v1(
             }
         }
         if covered && ordered {
+            if authenticated_shared_vertex_candidate {
+                // A shared vertex alone cannot authorize positive-area
+                // coincidence. The pose-bound layer certificate can: once it
+                // orders both faces in an actual overlap cell, expose that
+                // pair as the same admitted flat-stack evidence used by a
+                // certified flat hinge.
+                pair.evidence = IntersectionEvidenceV2::SharedFeatureFlatStack;
+                pair.policy_decision = classify_runtime_topology_contact_v2(
+                    pair.topology,
+                    pair.evidence,
+                );
+                pair.whole_face_overlap_proven = false;
+            }
             pair.disposition = StaticCollisionPairDisposition::Allowed;
         }
     }

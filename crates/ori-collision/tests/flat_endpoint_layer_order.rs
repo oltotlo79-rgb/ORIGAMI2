@@ -60,7 +60,8 @@ fn zabuton_five_faces_classify_eight_certified_stacks_and_two_separated_pairs() 
         StaticCollisionLimits::default(),
     )
     .expect("zabuton diagnostic without layer authority");
-    assert_eq!(unauthenticated.indeterminate_pairs(), 8);
+    assert_eq!(unauthenticated.indeterminate_pairs(), 4);
+    assert_eq!(unauthenticated.penetrating_pairs(), 4);
     assert_eq!(unauthenticated.separated_pairs(), 2);
 
     let foreign = fixture(false);

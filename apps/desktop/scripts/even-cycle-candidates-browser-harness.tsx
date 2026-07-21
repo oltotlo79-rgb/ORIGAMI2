@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client'
 type Family = 'c6' | 'c8' | 'kawasaki-1-2' | 'kawasaki-3-5' | 'kawasaki-5-13' | 'kawasaki-7-25'
 const sizes: Record<Family, number> = { c6: 6, c8: 8, 'kawasaki-1-2': 4, 'kawasaki-3-5': 4, 'kawasaki-5-13': 4, 'kawasaki-7-25': 4 }
 const profiles: Record<Family, string> = { c6: 'opposite-pair', c8: 'opposite-pair', 'kawasaki-1-2': '1/2', 'kawasaki-3-5': '3/5', 'kawasaki-5-13': '5/13', 'kawasaki-7-25': '7/25' }
-const evidence = { automaticKawasakiProofs: 0, applies: 0, undos: 0, redos: 0, reopens: 0, profileTamperRejects: 0, staleRejects: 0, abaRejects: 0 }
+const evidence = { automaticKawasakiProofs: 0, applies: 0, undos: 0, redos: 0, reopens: 0, profileTamperRejects: 0, staleRejects: 0, abaRejects: 0, dyadicReads: 0, dyadicCancels: 0 }
 let savedProfile: string | null = null
 Object.assign(window, { __ORIGAMI2_EVEN_CYCLE_EVIDENCE__: evidence })
 
@@ -35,6 +35,7 @@ function Harness() {
       {reason === 'ready' || selected || proof || applied ? <button data-testid="even-cycle-candidate" onClick={() => { setSelected(true); setReason('selected') }}>hinge-0 / hinge-{sizes[family] / 2}</button> : <p data-testid="candidate-reason">{reason}</p>}
     </section>
     {family.startsWith('kawasaki-') && <ul data-testid="kawasaki-endpoint-candidates">{[1, 2, 4, 8, 16].map(denominator => <li key={denominator}><button aria-pressed={endpoint === denominator} onClick={() => setEndpoint(denominator)}>1/{denominator}: Closure certified / Collision uncertified</button></li>)}</ul>}
+    {['certified', 'no_path', 'resource_limit', 'cancelled'].map(status => <button key={status} onClick={() => { evidence.dyadicReads += 1; if (status === 'cancelled') evidence.dyadicCancels += 1; setReason(`${status}; states 9; transitions 24; explored 3; evaluated 8; read-only`) }}>dyadic {status}</button>)}
     <button disabled={!selected} onClick={() => request()}>Generate and prove Kawasaki linkage</button>
     <button disabled={!proof} onClick={() => { evidence.applies += 1; savedProfile = profiles[family]; setApplied(true); setRedo(false); setRevision(value => value + 1); setReason(`applied-profile-${profiles[family]}`) }}>apply</button>
     <button disabled={!applied} onClick={() => { evidence.undos += 1; setApplied(false); setRedo(true); setReason('undone') }}>undo</button>

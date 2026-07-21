@@ -3066,6 +3066,52 @@ export function readEvenCycleCandidatesV1(
   })
 }
 
+export type DyadicPoseGraphReadResponseV1 = Readonly<{
+  version: 1
+  projectInstanceId: string
+  projectId: string
+  revision: number
+  status: 'certified' | 'no_path' | 'resource_limit' | 'cancelled'
+  stateCount: number
+  transitionCount: number
+  exploredStateCount: number
+  evaluatedTransitionCount: number
+  authorizesProjectMutation: false
+}>
+
+export function readBoundedDyadicPoseGraphV1(request: Readonly<{
+  expectedProjectInstanceId: string
+  expectedProjectId: string
+  expectedRevision: number
+  targetAngles: readonly Readonly<{ edge: string; angleDegrees: number }>[]
+  maxStates: number
+  maxTransitions: number
+}>): Promise<DyadicPoseGraphReadResponseV1> {
+  if (!isCanonicalNonNilUuid(request.expectedProjectInstanceId)
+    || !isCanonicalNonNilUuid(request.expectedProjectId)
+    || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
+    || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1
+    || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1
+    || !Array.isArray(request.targetAngles) || request.targetAngles.length > 256
+    || request.targetAngles.some((entry) => !isCanonicalNonNilUuid(entry.edge)
+      || !Number.isFinite(entry.angleDegrees) || entry.angleDegrees < 0 || entry.angleDegrees > 180)) {
+    return Promise.reject(new Error('invalid dyadic pose graph request'))
+  }
+  return invoke<unknown>('read_bounded_dyadic_pose_graph_v1', { request }).then((value) => {
+    if (!isCoreDataRecord(value)
+      || Object.keys(value).sort().join(',') !== 'authorizesProjectMutation,evaluatedTransitionCount,exploredStateCount,projectId,projectInstanceId,revision,stateCount,status,transitionCount,version'
+      || value.version !== 1
+      || value.projectInstanceId !== request.expectedProjectInstanceId
+      || value.projectId !== request.expectedProjectId
+      || value.revision !== request.expectedRevision
+      || !['certified', 'no_path', 'resource_limit', 'cancelled'].includes(String(value.status))
+      || ![value.stateCount, value.transitionCount, value.exploredStateCount, value.evaluatedTransitionCount]
+        .every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
+      || value.authorizesProjectMutation !== false) throw new Error('invalid dyadic pose graph response')
+    return value as DyadicPoseGraphReadResponseV1
+  })
+}
+
 export function proposeCurrentCyclePoseV1(
   request: CurrentCyclePosePreviewRequestV1,
 ): Promise<CurrentCyclePosePreviewResponseV1> {

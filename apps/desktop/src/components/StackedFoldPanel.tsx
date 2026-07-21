@@ -13,10 +13,12 @@ import {
   proposeCurrentCyclePoseV1,
   proposeCurrentStackedFoldRead,
   readEvenCycleCandidatesV1,
+  readBoundedDyadicPoseGraphV1,
   readLiveHingeRegistryV1,
   type ProjectSnapshot,
   type CurrentCyclePosePreviewResponseV1,
   type CurrentCyclePoseProgressV1,
+  type DyadicPoseGraphReadResponseV1,
 } from '../lib/coreClient'
 import { selectLocalizedText, type Locale } from '../lib/i18n'
 import {
@@ -123,6 +125,10 @@ export function StackedFoldPanel({
   }>[]>([])
   const [selectedKawasakiEndpoint, setSelectedKawasakiEndpoint] =
     useState<1 | 2 | 4 | 8 | 16>(1)
+  const [dyadicGraphRead, setDyadicGraphRead] =
+    useState<DyadicPoseGraphReadResponseV1 | null>(null)
+  const [dyadicGraphReading, setDyadicGraphReading] = useState(false)
+  const dyadicGraphSequenceRef = useRef(0)
   const [confirmed, setConfirmed] = useState(false)
   const [applying, setApplying] = useState(false)
   const [view, setView] = useState<View>({ kind: 'idle' })
@@ -188,6 +194,9 @@ export function StackedFoldPanel({
     progressRequestRef.current = null
     setPathProgress(null)
     setCyclePosePreview(null)
+    dyadicGraphSequenceRef.current += 1
+    setDyadicGraphRead(null)
+    setDyadicGraphReading(false)
     setCyclePoseReading(false)
     setCyclePoseError(false)
     setCyclePoseProgress(null)
@@ -474,6 +483,37 @@ export function StackedFoldPanel({
         : applyStackedFoldTransaction(token)
   }
 
+  async function readDyadicPoseGraph() {
+    if (disabled || applying || dyadicGraphReading || liveHinges.length === 0) return
+    const sequence = ++dyadicGraphSequenceRef.current
+    const authority = authorityRef.current
+    setDyadicGraphReading(true)
+    setDyadicGraphRead(null)
+    try {
+      const response = await readBoundedDyadicPoseGraphV1({
+        expectedProjectInstanceId: authority.project_instance_id,
+        expectedProjectId: authority.project_id,
+        expectedRevision: authority.revision,
+        targetAngles: liveHinges.map((hinge) => ({
+          edge: hinge.edge,
+          angleDegrees: requestedHingeAngles[hinge.edge] ?? hinge.initialAngleDegrees,
+        })),
+        maxStates: 32,
+        maxTransitions: 64,
+      })
+      const current = authorityRef.current
+      if (sequence !== dyadicGraphSequenceRef.current
+        || current.project_instance_id !== authority.project_instance_id
+        || current.project_id !== authority.project_id
+        || current.revision !== authority.revision) return
+      setDyadicGraphRead(response)
+    } catch {
+      if (sequence === dyadicGraphSequenceRef.current) setDyadicGraphRead(null)
+    } finally {
+      if (sequence === dyadicGraphSequenceRef.current) setDyadicGraphReading(false)
+    }
+  }
+
   async function previewCurrentCyclePose(automaticKawasaki = false) {
     if ((!automaticKawasaki && !authoredCycleSchedule) || disabled || applying || cyclePoseReading) return
     const sequence = ++cyclePoseSequenceRef.current
@@ -731,6 +771,26 @@ export function StackedFoldPanel({
                   </li>
                 ))}
               </ul>
+            )}
+            <button
+              type="button"
+              data-testid="dyadic-pose-graph-read"
+              disabled={disabled || applying || dyadicGraphReading || liveHinges.length === 0}
+              onClick={() => void readDyadicPoseGraph()}
+            >
+              {dyadicGraphReading ? t('経路探索中…', 'Searching paths…') : t('有界dyadic経路を探索', 'Search bounded dyadic paths')}
+            </button>
+            {dyadicGraphReading && (
+              <button type="button" onClick={() => {
+                dyadicGraphSequenceRef.current += 1
+                setDyadicGraphReading(false)
+                void cancelCurrentStackedFoldReadV1().catch(() => undefined)
+              }}>{t('探索を中止', 'Cancel search')}</button>
+            )}
+            {dyadicGraphRead && (
+              <p data-testid="dyadic-pose-graph-status" role="status">
+                {dyadicGraphRead.status}; states {dyadicGraphRead.stateCount}; transitions {dyadicGraphRead.transitionCount}; explored {dyadicGraphRead.exploredStateCount}; evaluated {dyadicGraphRead.evaluatedTransitionCount}; read-only
+              </p>
             )}
           {cyclePoseReading && pathProgress && (
             <p role="status">

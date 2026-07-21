@@ -239,6 +239,9 @@ impl MaterialHingeGraphGeometry {
                 self, audit, fixed_face, schedule, tolerance,
             )
             .then_some(2)
+        })
+        .or_else(|| {
+            rational_cactus_cycles_premises_v1(self, audit, fixed_face, schedule, tolerance)
         }) {
             let required_depth = usize::BITS - (group_count - 1).leading_zeros();
             if limits.max_leaves < group_count
@@ -1371,6 +1374,142 @@ fn coupled_figure_eight_rational_cycles_premises_v1(
         })
 }
 
+fn rational_cactus_cycles_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &CanonicalCycleScheduleV1,
+    tolerance: f64,
+) -> Option<usize> {
+    let cycle_count = audit.closure_hinges().len();
+    if !(3..=16).contains(&cycle_count)
+        || geometry.hinges().len() != cycle_count * 4
+        || geometry.face_ids().len() != 1 + cycle_count * 3
+    {
+        return None;
+    }
+    let mut cycles = HashSet::<Vec<EdgeId>>::new();
+    for start in geometry.face_ids() {
+        let mut stack = vec![(*start, Vec::<FaceId>::new(), Vec::<EdgeId>::new())];
+        while let Some((face, mut visited_faces, mut edges)) = stack.pop() {
+            if edges.len() == 4 {
+                if face == *start && visited_faces.len() == 4 {
+                    edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+                    edges.dedup();
+                    if edges.len() == 4 {
+                        cycles.insert(edges);
+                    }
+                }
+                continue;
+            }
+            if visited_faces.contains(&face) {
+                continue;
+            }
+            visited_faces.push(face);
+            for hinge in geometry.hinges() {
+                let next = if hinge.left_face() == face {
+                    Some(hinge.right_face())
+                } else if hinge.right_face() == face {
+                    Some(hinge.left_face())
+                } else {
+                    None
+                };
+                if let Some(next) = next {
+                    let mut next_edges = edges.clone();
+                    next_edges.push(hinge.edge());
+                    stack.push((next, visited_faces.clone(), next_edges));
+                }
+            }
+        }
+    }
+    if cycles.len() != cycle_count {
+        return None;
+    }
+    let cycles = cycles.into_iter().collect::<Vec<_>>();
+    let mut all_edges = HashSet::new();
+    if !cycles
+        .iter()
+        .flat_map(|cycle| cycle.iter())
+        .all(|edge| all_edges.insert(*edge))
+        || all_edges.len() != geometry.hinges().len()
+    {
+        return None;
+    }
+    let cycle_faces = cycles
+        .iter()
+        .map(|cycle| {
+            geometry
+                .hinges()
+                .iter()
+                .filter(|hinge| cycle.contains(&hinge.edge()))
+                .flat_map(|hinge| [hinge.left_face(), hinge.right_face()])
+                .collect::<HashSet<_>>()
+        })
+        .collect::<Vec<_>>();
+    if cycle_faces.iter().any(|faces| faces.len() != 4) {
+        return None;
+    }
+    let mut face_incidence = HashMap::<FaceId, Vec<usize>>::new();
+    for (block, faces) in cycle_faces.iter().enumerate() {
+        for face in faces {
+            face_incidence.entry(*face).or_default().push(block);
+        }
+    }
+    for first in 0..cycle_count {
+        for second in first + 1..cycle_count {
+            let overlap = cycle_faces[first]
+                .intersection(&cycle_faces[second])
+                .count();
+            if overlap > 1 {
+                return None;
+            }
+        }
+    }
+    let articulation_faces = face_incidence
+        .values()
+        .filter(|blocks| blocks.len() > 1)
+        .collect::<Vec<_>>();
+    let incidence_edge_count = articulation_faces
+        .iter()
+        .map(|blocks| blocks.len())
+        .sum::<usize>();
+    let mut seen_blocks = HashSet::from([0_usize]);
+    let mut seen_articulations = HashSet::new();
+    let mut queue = VecDeque::from([0_usize]);
+    while let Some(block) = queue.pop_front() {
+        for (articulation, blocks) in articulation_faces.iter().enumerate() {
+            if blocks.contains(&block) && seen_articulations.insert(articulation) {
+                for next in *blocks {
+                    if seen_blocks.insert(*next) {
+                        queue.push_back(*next);
+                    }
+                }
+            }
+        }
+    }
+    let incidence_node_count = cycle_count + articulation_faces.len();
+    if incidence_edge_count + 1 != incidence_node_count || seen_blocks.len() != cycle_count {
+        return None;
+    }
+    let valid = cycles.iter().zip(&cycle_faces).all(|(edges, faces)| {
+        let start = faces
+            .iter()
+            .copied()
+            .min_by_key(FaceId::canonical_bytes)
+            .expect("a four-cycle has faces");
+        symmetric_rational_cycle_group_premises_v1(geometry, start, schedule, edges, tolerance)
+    });
+    (valid
+        && [0.0, 0.5, 1.0].into_iter().all(|u| {
+            schedule.evaluate(u).is_some_and(|angles| {
+                geometry
+                    .solve_closed(audit, fixed_face, &angles, tolerance)
+                    .is_ok()
+            })
+        }))
+    .then_some(cycle_count)
+}
+
 fn symmetric_rational_kawasaki_cycle_closure_premises_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
@@ -2397,6 +2536,65 @@ mod tests {
         }
         let (corrupt, corrupt_audit, corrupt_schedule, corrupt_fixed) =
             composed_rational_cycles_fixture_with_fixed(2, Some(1), false, 1);
+        assert!(
+            corrupt
+                .prove_dyadic_schedule_closure_v1(
+                    &corrupt_audit,
+                    corrupt_fixed,
+                    &corrupt_schedule,
+                    1.0e-9,
+                    limits,
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn three_cycle_cactus_accepts_shared_articulation_face_with_exact_limits() {
+        let limits = DyadicIntervalClosureLimitsV1 {
+            max_depth: 2,
+            max_leaves: 3,
+            max_work: 3,
+            schedule_limits: CycleScheduleLimitsV1::default(),
+        };
+        for reverse in [false, true] {
+            let (geometry, audit, schedule, fixed) =
+                composed_rational_cycles_fixture_with_fixed(3, None, reverse, 1);
+            let closure = geometry
+                .prove_dyadic_schedule_closure_v1(&audit, fixed, &schedule, 1.0e-9, limits)
+                .expect("three-cycle cactus closure");
+            assert_eq!(
+                closure
+                    .leaves()
+                    .iter()
+                    .map(|leaf| (leaf.0, leaf.1))
+                    .collect::<Vec<_>>(),
+                vec![(1, 0), (2, 2), (2, 3)]
+            );
+        }
+        let (geometry, audit, schedule, fixed) =
+            composed_rational_cycles_fixture_with_fixed(3, None, false, 1);
+        for short in [
+            DyadicIntervalClosureLimitsV1 {
+                max_depth: 1,
+                ..limits
+            },
+            DyadicIntervalClosureLimitsV1 {
+                max_leaves: 2,
+                ..limits
+            },
+            DyadicIntervalClosureLimitsV1 {
+                max_work: 2,
+                ..limits
+            },
+        ] {
+            assert_eq!(
+                geometry.prove_dyadic_schedule_closure_v1(&audit, fixed, &schedule, 1.0e-9, short),
+                Err(DyadicIntervalClosureErrorV1::ResourceLimit)
+            );
+        }
+        let (corrupt, corrupt_audit, corrupt_schedule, corrupt_fixed) =
+            composed_rational_cycles_fixture_with_fixed(3, Some(2), false, 1);
         assert!(
             corrupt
                 .prove_dyadic_schedule_closure_v1(

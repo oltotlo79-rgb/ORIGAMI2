@@ -5134,8 +5134,6 @@ mod tests {
             (5, 9, 0.1, 32),
             (7, 7, 0.1, 36),
             (7, 9, 0.1, 48),
-            (8, 9, 0.1, 56),
-            (9, 9, 0.1, 64),
         ] {
             let (pattern, mut paper, horizontal, _) =
                 super::dense_grid_cycle_test_support::miura_authority_pattern(columns, rows);

@@ -13625,7 +13625,10 @@ mod tests {
         .unwrap();
         let generated_steps = &project.editor.instruction_timeline().steps;
         assert_eq!(generated_steps.len(), 1);
-        assert_eq!(generated_steps[0].title, "Complete composite insect grid candidate");
+        assert_eq!(
+            generated_steps[0].title,
+            "Complete composite insect grid candidate"
+        );
         assert!(
             apply_grid_plan_document(&mut project, instance_id, project_id, revision, plan)
                 .is_err()

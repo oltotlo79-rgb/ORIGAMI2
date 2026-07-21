@@ -4219,6 +4219,36 @@ mod tests {
         let undone = project.editor.revision();
         project.editor.redo(undone).unwrap();
         assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        let mut nonclosing_document = project.document();
+        let tampered = nonclosing_document.instruction_timeline.steps[0]
+            .pose
+            .hinge_angles
+            .iter_mut()
+            .find(|hinge| hinge.edge == moving[0])
+            .expect("moving balloon hinge is persisted");
+        tampered.angle_degrees += 0.01;
+        assert!(
+            super::super::validate_document_instruction_poses(&nonclosing_document)
+                .expect_err("a nonclosing cyclic persisted pose must fail closed")
+                .contains("is not cycle-closing")
+        );
+        let archive = project
+            .project_archive()
+            .expect("serialize applied balloon cycle with history");
+        super::super::restore_archive_editor(&archive)
+            .expect("restore applied balloon editor history");
+        let mut reopened = super::super::ProjectState::from_project_archive(
+            archive,
+            std::path::PathBuf::from("balloon-cycle.ori2"),
+        )
+        .expect("reopen applied balloon cycle");
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+        let reopened_revision = reopened.editor.revision();
+        reopened.editor.undo(reopened_revision).unwrap();
+        assert!(reopened.editor.instruction_timeline().steps.is_empty());
+        let reopened_undone = reopened.editor.revision();
+        reopened.editor.redo(reopened_undone).unwrap();
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
     }
 
     #[test]

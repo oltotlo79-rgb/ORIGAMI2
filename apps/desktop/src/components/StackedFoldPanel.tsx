@@ -784,7 +784,7 @@ export function StackedFoldPanel({
               : view.reason === 'cycle_path_uncertified'
                 ? t('循環hingeの終端は閉じますが、連続経路を証明できないため適用できません。', 'The cyclic endpoint closes, but its continuous path is uncertified, so apply is disabled.')
                 : view.reason === 'cycle_path_unsupported'
-                  ? t('この入力は、対応している限定的な線形ヒンジ経路クラスの対象外です。適用は無効です。', 'This input is outside the supported limited linear hinge-path class, so apply is disabled.')
+                  ? t('静的理由: ヒンジグラフとスケジュールが、証明済みの格子・対称セクタ・対向軸直線折りクラスのいずれにも一致しません。適用は無効です。', 'Static reason: the hinge graph and schedule do not match a certified grid, symmetric-sector, or opposite-axis straight-fold class. Apply is disabled.')
                   : view.reason === 'cycle_path_resource_limit'
                     ? t('有界証明の資源上限に達しました。安全または不可能とは判定せず、適用を無効にします。', 'The bounded proof reached its resource limit. This does not claim safety or impossibility, so apply is disabled.')
                     : view.reason === 'cycle_path_no_certified_path'

@@ -711,7 +711,7 @@ describe('StackedFoldPanel', () => {
   it.each([
     ['cycle_nonclosing', 'The cyclic hinge endpoint does not close, so apply is disabled.'],
     ['cycle_path_uncertified', 'The cyclic endpoint closes, but its continuous path is uncertified, so apply is disabled.'],
-    ['cycle_path_unsupported', 'This input is outside the supported limited linear hinge-path class, so apply is disabled.'],
+    ['cycle_path_unsupported', 'Static reason: the hinge graph and schedule do not match a certified grid, symmetric-sector, or opposite-axis straight-fold class. Apply is disabled.'],
     ['cycle_path_resource_limit', 'The bounded proof reached its resource limit. This does not claim safety or impossibility, so apply is disabled.'],
     ['cycle_path_no_certified_path', 'No path to the target was found using certified transitions only. This does not claim impossibility.'],
     ['cycle_path_collision', 'The scheduled continuous path could not receive a collision-clearance certificate, so apply is disabled.'],
@@ -786,6 +786,59 @@ describe('StackedFoldPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Apply certified cycle fold' }))
     await waitFor(() => expect(onApplied).toHaveBeenCalledWith(refreshed))
     expect(transport.apply).toHaveBeenCalledWith(token)
+  })
+
+  it('authors and applies a six-hinge balloon straight-fold schedule from the UI', async () => {
+    const hingeIds = Array.from({ length: 6 }, (_, index) =>
+      `018f47a2-4b7a-7cc1-8abc-00000000000${index}`)
+    transport.cyclePreview.mockResolvedValue({
+      version: 1,
+      transactionToken: token,
+      sourceRevision: 3,
+      targetRevision: 4,
+      closureLeafCount: 1,
+      closureMaxDepth: 0,
+      checkedHingeCount: 6,
+      totalHingeCount: 6,
+      continuousPathCertified: true,
+      authorizesProjectMutation: false,
+    })
+    transport.apply.mockResolvedValue(4)
+    const refreshed = { ...snapshot, revision: 4 } as ProjectSnapshot
+    const onApplied = vi.fn()
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: hingeIds[0], start: { x: -100, y: 0 }, end: { x: 100, y: 0 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn().mockResolvedValue(refreshed)}
+        onApplied={onApplied}
+      />,
+    )
+    const schedule = {
+      version: 1,
+      entries: hingeIds.map((edge, index) => ({
+        edge,
+        uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }],
+        numeratorPowerCoefficients: index === 0 || index === 3
+          ? [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 100 }]
+          : [{ numerator: 0, denominator: 1 }],
+        denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+        requestedAngleDegrees: index === 0 || index === 3 ? 2 * Math.atan(0.01) * 180 / Math.PI : 0,
+      })),
+    }
+    fireEvent.change(screen.getByLabelText('Cycle path definition (JSON, cyclic patterns only)'), {
+      target: { value: JSON.stringify(schedule) },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
+    const preview = await screen.findByRole('region', { name: 'Current-pose cycle preview' })
+    expect(preview.textContent).toContain('All hinges covered6/6')
+    expect(preview.textContent).toContain('Continuous pathCertified')
+    fireEvent.click(screen.getByRole('button', { name: 'Apply certified cycle fold' }))
+    await waitFor(() => expect(transport.apply).toHaveBeenCalledWith(token))
+    await waitFor(() => expect(onApplied).toHaveBeenCalledWith(refreshed))
+    expect(transport.cyclePreview.mock.calls.at(-1)?.[0].cycleScheduleV1.entries).toHaveLength(6)
   })
 
   it('does not publish a late cycle preview after rapid replacement', async () => {

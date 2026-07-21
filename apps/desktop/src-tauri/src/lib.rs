@@ -10427,6 +10427,13 @@ struct InstructionTopologyContext {
 fn prepare_instruction_topology(
     topology: &TopologySnapshot,
 ) -> Result<InstructionTopologyContext, String> {
+    prepare_instruction_topology_with_cycle_policy(topology, false)
+}
+
+fn prepare_instruction_topology_with_cycle_policy(
+    topology: &TopologySnapshot,
+    allow_cycles: bool,
+) -> Result<InstructionTopologyContext, String> {
     if topology.faces.is_empty() {
         return Err("an instruction pose requires at least one material face".to_owned());
     }
@@ -10453,7 +10460,7 @@ fn prepare_instruction_topology(
             );
         }
     } else {
-        if topology.hinge_adjacency.len() + 1 != topology.faces.len() {
+        if !allow_cycles && topology.hinge_adjacency.len() + 1 != topology.faces.len() {
             return Err("instruction poses currently require a tree-shaped fold graph".to_owned());
         }
         let mut adjacency = face_ids
@@ -11921,20 +11928,60 @@ fn validate_document_instruction_poses(document: &ProjectDocument) -> Result<(),
         "a current instruction pose refers to a crease pattern that is not simulation-ready"
             .to_owned()
     })?;
-    let topology = prepare_instruction_topology(snapshot)?;
+    let has_cycles = snapshot.hinge_adjacency.len() + 1 != snapshot.faces.len();
+    let topology = prepare_instruction_topology_with_cycle_policy(snapshot, true)?;
+    let cyclic_geometry = has_cycles
+        .then(|| {
+            let geometry = ori_kinematics::MaterialHingeGraphGeometry::prepare(
+                &document.crease_pattern,
+                &document.paper,
+                snapshot,
+                ori_kinematics::TreeKinematicsLimits::default(),
+            )
+            .map_err(|_| "the cyclic instruction fold graph is unsupported".to_owned())?;
+            let audit = ori_kinematics::MaterialHingeGraphAudit::prepare(
+                snapshot,
+                ori_kinematics::TreeKinematicsLimits::default(),
+            )
+            .map_err(|_| "the cyclic instruction fold graph is unsupported".to_owned())?;
+            Ok::<_, String>((geometry, audit))
+        })
+        .transpose()?;
     for (index, step) in document.instruction_timeline.steps.iter().enumerate() {
         if step.pose.model == InstructionPoseModel::DeclarativeOnlyV1
             || step.pose.source_model_fingerprint != current_fingerprint
         {
             continue;
         }
-        instruction_pose_from_context(
+        let validated = instruction_pose_from_context(
             &topology,
             current_fingerprint.clone(),
             step.pose.fixed_face,
             step.pose.hinge_angles.clone(),
         )
         .map_err(|error| format!("instruction step {} is invalid: {error}", index + 1))?;
+        if let Some((geometry, audit)) = &cyclic_geometry {
+            let fixed_face = validated.fixed_face.ok_or_else(|| {
+                format!("instruction step {} has no cyclic fixed face", index + 1)
+            })?;
+            let angles = ori_kinematics::CanonicalHingeAngles::new(
+                validated
+                    .hinge_angles
+                    .iter()
+                    .map(|hinge| ori_kinematics::HingeAngle::new(hinge.edge, hinge.angle_degrees))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| format!("instruction step {} has invalid angles", index + 1))?,
+            )
+            .map_err(|_| format!("instruction step {} has invalid angles", index + 1))?;
+            geometry
+                .solve_closed(
+                    audit,
+                    fixed_face,
+                    &angles,
+                    ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                )
+                .map_err(|_| format!("instruction step {} is not cycle-closing", index + 1))?;
+        }
     }
     Ok(())
 }

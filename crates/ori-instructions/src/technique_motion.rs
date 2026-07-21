@@ -67,6 +67,126 @@ pub struct ReverseFoldMotionRequestV1<'a> {
     pub second_path_certificate: &'a CertifiedPoseGraphPathCertificateV1,
 }
 
+pub struct SinkFoldMotionRequestV1<'a> {
+    pub technique_file: &'a FoldTechniqueFileV1,
+    pub technique_id: &'a str,
+    pub source_model_fingerprint: &'a str,
+    pub fixed_face: FaceId,
+    pub first_edge: EdgeId,
+    pub second_edge: EdgeId,
+    pub source_hinge_angles: &'a [InstructionHingeAngle],
+    pub intermediate_angle_microdegrees: i64,
+    pub target_angle_microdegrees: i64,
+    pub first_path_certificate: &'a CertifiedPoseGraphPathCertificateV1,
+    pub second_path_certificate: &'a CertifiedPoseGraphPathCertificateV1,
+}
+
+/// Compiles the closest validated V1 equivalent to a squash/petal motion: an
+/// open or closed sink fold. Both native segments remain exact proof premises.
+pub fn compile_certified_sink_fold_timeline_v1(
+    request: SinkFoldMotionRequestV1<'_>,
+) -> Result<InstructionTimeline, ReverseFoldMotionError> {
+    let technique = request
+        .technique_file
+        .document()
+        .techniques
+        .iter()
+        .find(|technique| technique.id == request.technique_id)
+        .ok_or(ReverseFoldMotionError::UnsupportedTechnique)?;
+    let operation = technique
+        .operations
+        .iter()
+        .find(|operation| matches!(operation.action, FoldTechniqueActionV1::SinkFold { .. }))
+        .ok_or(ReverseFoldMotionError::UnsupportedTechnique)?;
+    if !operation
+        .required_capabilities
+        .contains(&FoldTechniqueCapabilityV1::SinkFoldMotionV1)
+    {
+        return Err(ReverseFoldMotionError::UnsupportedTechnique);
+    }
+    compile_two_segment_motion(
+        technique
+            .names
+            .iter()
+            .find(|text| text.locale == "ja")
+            .or_else(|| technique.names.first())
+            .map(|text| text.text.as_str())
+            .ok_or(ReverseFoldMotionError::UnsupportedTechnique)?,
+        request.source_model_fingerprint,
+        request.fixed_face,
+        request.first_edge,
+        request.second_edge,
+        request.source_hinge_angles,
+        request.intermediate_angle_microdegrees,
+        request.target_angle_microdegrees,
+        request.first_path_certificate,
+        request.second_path_certificate,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_two_segment_motion(
+    title: &str,
+    model: &str,
+    fixed_face: FaceId,
+    first_edge: EdgeId,
+    second_edge: EdgeId,
+    source_angles: &[InstructionHingeAngle],
+    intermediate_angle: i64,
+    target_angle: i64,
+    first: &CertifiedPoseGraphPathCertificateV1,
+    second: &CertifiedPoseGraphPathCertificateV1,
+) -> Result<InstructionTimeline, ReverseFoldMotionError> {
+    if first_edge == second_edge
+        || !(0..=180_000_000).contains(&intermediate_angle)
+        || !(0..=180_000_000).contains(&target_angle)
+    {
+        return Err(ReverseFoldMotionError::InvalidAngle);
+    }
+    let mut source = source_angles.to_vec();
+    source.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
+    if source.windows(2).any(|pair| pair[0].edge == pair[1].edge) || model.len() != 64 {
+        return Err(ReverseFoldMotionError::InvalidSourcePose);
+    }
+    let mut middle = source.clone();
+    set_hinge_angle(&mut middle, first_edge, intermediate_angle);
+    let mut target = middle.clone();
+    set_hinge_angle(&mut target, second_edge, target_angle);
+    let hash = |angles: &[InstructionHingeAngle]| {
+        instruction_pose_fingerprint_v1(model, fixed_face, angles)
+    };
+    if first.edges().is_empty()
+        || second.edges().is_empty()
+        || first.source() != hash(&source)
+        || first.target() != hash(&middle)
+        || second.source() != hash(&middle)
+        || second.target() != hash(&target)
+    {
+        return Err(ReverseFoldMotionError::PathSegmentMismatch);
+    }
+    let steps = [("開始", source), ("沈め", middle), ("完了", target)]
+        .into_iter()
+        .map(|(suffix, hinge_angles)| InstructionStep {
+            id: InstructionStepId::new(),
+            title: format!("{title}：{suffix}"),
+            description: "衝突・層順序証明に結合されたsink区間です。".to_owned(),
+            caution: String::new(),
+            duration_ms: 1_000,
+            visual: InstructionVisual::default(),
+            pose: InstructionPose {
+                model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+                source_model_fingerprint: model.to_owned(),
+                fixed_face: Some(fixed_face),
+                hinge_angles,
+            },
+        })
+        .collect();
+    let timeline = InstructionTimeline { steps };
+    validate_instruction_timeline(&timeline)
+        .map_err(|_| ReverseFoldMotionError::InvalidTimeline)?;
+    Ok(timeline)
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ReverseFoldMotionError {
     #[error("the requested named technique is not the selected reverse-fold kind")]

@@ -4186,7 +4186,7 @@ mod tests {
             id: hinges[index],
             start: center.id,
             end: boundary[index].id,
-            kind: if matches!(index, 0 | 1 | 3 | 4 | 6) {
+            kind: if matches!(index, 0 | 1 | 2 | 4 | 6) {
                 EdgeKind::Mountain
             } else {
                 EdgeKind::Valley
@@ -4201,7 +4201,7 @@ mod tests {
                 thickness_mm: 0.0,
                 ..Paper::default()
             },
-            vec![hinges[0], hinges[4]],
+            vec![hinges[0], hinges[2], hinges[4], hinges[6]],
         )
     }
 
@@ -4433,6 +4433,23 @@ mod tests {
         let state = AppState::new(project);
         let transactions =
             super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let opposite_pair = vec![moving[0], moving[2]];
+        assert_eq!(
+            propose_current_cycle_pose_inner(
+                None,
+                &state,
+                &transactions,
+                CurrentCyclePosePreviewRequestV1 {
+                    progress_request_id: None,
+                    expected_project_instance_id: instance,
+                    expected_project_id: project_id,
+                    expected_revision: revision,
+                    cycle_schedule_v1: dense_grid_schedule(&hinges, &moving, 100),
+                },
+            )
+            .unwrap_err(),
+            CYCLE_NONCLOSING_MESSAGE
+        );
         let preview = propose_current_cycle_pose_inner(
             None,
             &state,
@@ -4442,7 +4459,7 @@ mod tests {
                 expected_project_instance_id: instance,
                 expected_project_id: project_id,
                 expected_revision: revision,
-                cycle_schedule_v1: dense_grid_schedule(&hinges, &moving, 100),
+                cycle_schedule_v1: dense_grid_schedule(&hinges, &opposite_pair, 100),
             },
         )
         .expect("octagonal straight-line cycle must certify");

@@ -11328,7 +11328,9 @@ function selectedNamedBookFold(
   )
   const isReverse = physical[0]?.action.kind === 'inside_reverse_fold'
     || physical[0]?.action.kind === 'outside_reverse_fold'
-  if (physical.length !== 1 || (!isReverse && technique.operations.some(
+  const isAccordion = physical.length >= 3
+    && physical.every((operation) => operation.action.kind === 'straight_line_stacked_fold')
+  if ((!isAccordion && physical.length !== 1) || (!isReverse && !isAccordion && technique.operations.some(
       (operation) => operation.execution_support.status
         === 'unsupported_physical_operation',
     ))) return null
@@ -11339,7 +11341,7 @@ function selectedNamedBookFold(
       ?? technique.names.find((entry) => entry.locale === 'ja')?.text
       ?? technique.names[0]?.text
       ?? technique.id,
-    kind: isReverse ? 'reverse' as const : 'book' as const,
+    kind: isAccordion ? 'accordion' as const : isReverse ? 'reverse' as const : 'book' as const,
   })
 }
 

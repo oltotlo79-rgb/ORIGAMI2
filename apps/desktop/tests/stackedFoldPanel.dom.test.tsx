@@ -9,6 +9,7 @@ const transport = vi.hoisted(() => ({
   apply: vi.fn(),
   namedApply: vi.fn(),
   reverseApply: vi.fn(),
+  accordionApply: vi.fn(),
   cancel: vi.fn(),
   cancelRead: vi.fn(),
   registry: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => ({
   applyStackedFoldTransaction: transport.apply,
   applyNamedBookFoldTransaction: transport.namedApply,
   applyNamedReverseFoldTransaction: transport.reverseApply,
+  applyNamedAccordionFoldTransaction: transport.accordionApply,
   cancelStackedFoldTransactionPreview: transport.cancel,
   cancelCurrentStackedFoldReadV1: transport.cancelRead,
   readLiveHingeRegistryV1: transport.registry,
@@ -554,6 +556,28 @@ describe('StackedFoldPanel', () => {
     ))
     expect(transport.namedApply).not.toHaveBeenCalled()
     expect(transport.apply).not.toHaveBeenCalled()
+  })
+
+  it('routes a named accordion only through the ordered multi-segment transaction', async () => {
+    transport.preview.mockResolvedValue(ready)
+    transport.accordionApply.mockResolvedValue(4)
+    const document = { techniques: [] } as any
+    render(<StackedFoldPanel locale="ja" snapshot={snapshot}
+      selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+      disabled={false}
+      namedBookFold={{ document, techniqueId: 'accordion', name: '蛇腹折り', kind: 'accordion' }}
+      refreshSnapshot={vi.fn().mockResolvedValue({ ...snapshot, revision: 4 })}
+      onApplied={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: '安全性を確認' }))
+    const apply = await screen.findByRole('button', { name: '名前付き蛇腹折りを適用' })
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(apply)
+    await waitFor(() => expect(transport.accordionApply).toHaveBeenCalledWith(
+      token, document, 'accordion',
+    ))
+    expect(transport.apply).not.toHaveBeenCalled()
+    expect(transport.namedApply).not.toHaveBeenCalled()
+    expect(transport.reverseApply).not.toHaveBeenCalled()
   })
 
   it('keeps apply disabled when native metadata is not fully certified', async () => {

@@ -2953,6 +2953,27 @@ export function applyNamedReverseFoldTransaction(
   })
 }
 
+export function applyNamedAccordionFoldTransaction(
+  token: string, techniqueDocument: unknown, techniqueId: string,
+): Promise<number> {
+  if (!isCanonicalNonNilUuid(token) || typeof techniqueId !== 'string') {
+    return Promise.reject(new Error('invalid accordion-fold request'))
+  }
+  let techniqueDocumentJson: string
+  try { techniqueDocumentJson = JSON.stringify(techniqueDocument) } catch {
+    return Promise.reject(new Error('invalid accordion-fold document'))
+  }
+  if (new TextEncoder().encode(techniqueDocumentJson).length > 2 * 1024 * 1024) {
+    return Promise.reject(new Error('accordion-fold document is too large'))
+  }
+  return invoke<unknown>('apply_named_accordion_fold_transaction', {
+    token, techniqueDocumentJson, techniqueId,
+  }).then((value) => {
+    if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error('invalid accordion apply response')
+    return value as number
+  })
+}
+
 export function previewInstructionMeshAnimation(
   request: MeshAnimationPreviewRequest,
 ): Promise<MeshAnimationPreviewResponse> {

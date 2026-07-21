@@ -176,7 +176,7 @@ impl MaterialHingeGraphGeometry {
             self, audit, fixed_face, schedule, tolerance,
         ) || orthogonal_inverse_pair_cycle_closure_premises_v1(
             self, audit, fixed_face, schedule, tolerance,
-        ) || kawasaki_120_120_60_60_cycle_closure_premises_v1(
+        ) || symmetric_rational_kawasaki_cycle_closure_premises_v1(
             self, audit, fixed_face, schedule, tolerance,
         ) {
             let mut checked_hinges = self
@@ -1106,7 +1106,7 @@ fn orthogonal_inverse_pair_cycle_closure_premises_v1(
     })
 }
 
-fn kawasaki_120_120_60_60_cycle_closure_premises_v1(
+fn symmetric_rational_kawasaki_cycle_closure_premises_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
     fixed_face: FaceId,
@@ -1116,12 +1116,18 @@ fn kawasaki_120_120_60_60_cycle_closure_premises_v1(
     if geometry.hinges().len() != 4 || audit.closure_hinges().len() != 1 {
         return false;
     }
-    let Some((unit_edges, half_edges)) = schedule.kawasaki_120_120_60_60_half_angle_pairs_v1()
+    let Some((unit_edges, scaled_edges, sector_cosine)) = [(1, 2, 0.5), (3, 5, 0.6)]
+        .into_iter()
+        .find_map(|(numerator, denominator, cosine)| {
+            schedule
+                .symmetric_kawasaki_half_angle_pairs_v1(numerator, denominator)
+                .map(|(unit, scaled)| (unit, scaled, cosine))
+        })
     else {
         return false;
     };
     let unit = unit_edges.into_iter().collect::<HashSet<_>>();
-    let half = half_edges.into_iter().collect::<HashSet<_>>();
+    let scaled = scaled_edges.into_iter().collect::<HashSet<_>>();
     let mut ordered = Vec::with_capacity(4);
     let mut face = fixed_face;
     let mut used = HashSet::new();
@@ -1152,7 +1158,7 @@ fn kawasaki_120_120_60_60_cycle_closure_premises_v1(
         || ordered
             .iter()
             .find(|hinge| hinge.assignment() == ori_topology::FoldAssignment::Mountain)
-            .is_none_or(|hinge| !half.contains(&hinge.edge()))
+            .is_none_or(|hinge| !scaled.contains(&hinge.edge()))
     {
         return false;
     }
@@ -1162,11 +1168,11 @@ fn kawasaki_120_120_60_60_cycle_closure_premises_v1(
         .collect::<Vec<_>>();
     let negative = adjacent_cosines
         .iter()
-        .filter(|value| (**value + 0.5).abs() <= tolerance)
+        .filter(|value| (**value + sector_cosine).abs() <= tolerance)
         .count();
     let positive = adjacent_cosines
         .iter()
-        .filter(|value| (**value - 0.5).abs() <= tolerance)
+        .filter(|value| (**value - sector_cosine).abs() <= tolerance)
         .count();
     if negative != 2 || positive != 2 {
         return false;
@@ -1218,7 +1224,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{HingeAngle, Point3};
+    use crate::{HalfAngleRationalEntryInputV1, HingeAngle, Point3, RationalCoefficientV1};
 
     fn face(id: FaceId) -> Face {
         Face {
@@ -1503,6 +1509,149 @@ mod tests {
         assert_eq!(
             geometry.prove_interval_closure_v1(&audit, a, &boxes, 1.0e-12, 1),
             Err(KinematicsError::ResourceLimitExceeded)
+        );
+    }
+
+    fn rational_symmetric_cycle_fixture(
+        axis_perturbation: f64,
+        sign: i64,
+    ) -> Result<
+        (
+            MaterialHingeGraphGeometry,
+            MaterialHingeGraphAudit,
+            CanonicalCycleScheduleV1,
+        ),
+        crate::CycleSchedulePrepareErrorV1,
+    > {
+        let namespace = ProjectId::new();
+        let faces = [b"a", b"b", b"c", b"d"].map(|name| FaceId::derive_v5(namespace, name));
+        let edges = [b"ab", b"bc", b"cd", b"da"].map(|name| EdgeId::derive_v5(namespace, name));
+        let mut source = topology(
+            &faces,
+            &[
+                (edges[0], faces[0], faces[1]),
+                (edges[1], faces[1], faces[2]),
+                (edges[2], faces[2], faces[3]),
+                (edges[3], faces[3], faces[0]),
+            ],
+        );
+        for adjacency in &mut source.hinge_adjacency[..3] {
+            adjacency.assignment = FoldAssignment::Valley;
+        }
+        let audit =
+            MaterialHingeGraphAudit::prepare(&source, TreeKinematicsLimits::default()).unwrap();
+        let origin = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let axes = [
+            Point3::new(1.0, 0.0, 0.0).unwrap(),
+            Point3::new(-0.6, 0.8, 0.0).unwrap(),
+            Point3::new(-0.28, -0.96 + axis_perturbation, 0.0).unwrap(),
+            Point3::new(0.6, -0.8, 0.0).unwrap(),
+        ];
+        let hinges = (0..4)
+            .map(|index| {
+                TreeHinge::new_for_test(
+                    edges[index],
+                    source.hinge_adjacency[index].assignment,
+                    faces[index],
+                    faces[(index + 1) % 4],
+                    origin,
+                    axes[index],
+                    axes[index],
+                )
+            })
+            .collect();
+        let geometry = MaterialHingeGraphGeometry::new_for_test(audit.faces().to_vec(), hinges);
+        let mut inputs = edges
+            .into_iter()
+            .enumerate()
+            .map(|(index, edge)| HalfAngleRationalEntryInputV1 {
+                edge,
+                u_domain: [
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                numerator_power_coefficients: vec![
+                    RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientV1 {
+                        numerator: if index % 2 == 0 { sign } else { 3 * sign },
+                        denominator: 1,
+                    },
+                ],
+                denominator_power_coefficients: vec![RationalCoefficientV1 {
+                    numerator: if index % 2 == 0 { 1 } else { 5 },
+                    denominator: 1,
+                }],
+            })
+            .collect::<Vec<_>>();
+        inputs.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            audit.faces()[0],
+            inputs,
+            CycleScheduleLimitsV1::default(),
+        )?;
+        Ok((geometry, audit, schedule))
+    }
+
+    #[test]
+    fn rational_three_fifths_sector_closes_exactly() {
+        let (geometry, audit, schedule) = rational_symmetric_cycle_fixture(0.0, 1).unwrap();
+        let closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                audit.faces()[0],
+                &schedule,
+                1.0e-9,
+                DyadicIntervalClosureLimitsV1 {
+                    max_depth: 16,
+                    max_leaves: 65_536,
+                    max_work: 1_048_576,
+                    schedule_limits: CycleScheduleLimitsV1::default(),
+                },
+            )
+            .expect("exact 3/5 symmetric sector closure");
+        assert_eq!(closure.leaves().len(), 1);
+    }
+
+    #[test]
+    fn rational_sector_rejects_near_degenerate_and_mixed_sign_profiles() {
+        let (geometry, audit, schedule) = rational_symmetric_cycle_fixture(1.0e-5, 1).unwrap();
+        assert!(
+            geometry
+                .prove_dyadic_schedule_closure_v1(
+                    &audit,
+                    audit.faces()[0],
+                    &schedule,
+                    1.0e-9,
+                    DyadicIntervalClosureLimitsV1 {
+                        max_depth: 16,
+                        max_leaves: 65_536,
+                        max_work: 1_048_576,
+                        schedule_limits: CycleScheduleLimitsV1::default(),
+                    },
+                )
+                .is_err()
+        );
+        assert!(rational_symmetric_cycle_fixture(0.0, -1).is_err());
+        assert!(
+            schedule
+                .symmetric_kawasaki_half_angle_pairs_v1(3, 4)
+                .is_none()
+        );
+        assert!(
+            schedule
+                .symmetric_kawasaki_half_angle_pairs_v1(3, 3)
+                .is_none()
         );
     }
 

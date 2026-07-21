@@ -1538,6 +1538,19 @@ impl CanonicalCycleScheduleV1 {
     /// opposite pair carries tan(rho/2)=u/2 over the canonical unit domain.
     #[must_use]
     pub fn kawasaki_120_120_60_60_half_angle_pairs_v1(&self) -> Option<(Vec<EdgeId>, Vec<EdgeId>)> {
+        self.symmetric_kawasaki_half_angle_pairs_v1(1, 2)
+    }
+
+    /// Recognizes a bounded exact rational symmetric degree-4 mode. Exactly
+    /// two opposite hinges use `tan(rho/2)=u` and the other pair uses
+    /// `tan(rho/2)=numerator*u/denominator`. Sign reversal is rejected by the
+    /// physical schedule boundary before it can reach this proof.
+    #[must_use]
+    pub fn symmetric_kawasaki_half_angle_pairs_v1(
+        &self,
+        numerator: i64,
+        denominator: i64,
+    ) -> Option<(Vec<EdgeId>, Vec<EdgeId>)> {
         if self.half_angle_entries.len() != 4 {
             return None;
         }
@@ -1545,20 +1558,30 @@ impl CanonicalCycleScheduleV1 {
             BigRational::new(numerator.into(), denominator.into())
         };
         let unit_domain = [rational(0, 1), rational(1, 1)];
-        let numerator = [rational(0, 1), rational(1, 1)];
+        if numerator <= 0 || denominator <= numerator {
+            return None;
+        }
+        let unit_numerator = [rational(0, 1), rational(1, 1)];
+        let scaled_numerator = [rational(0, 1), rational(numerator, 1)];
         let mut unit = Vec::new();
-        let mut half = Vec::new();
+        let mut scaled = Vec::new();
         for entry in &self.half_angle_entries {
-            if entry.u_domain != unit_domain || entry.numerator_power_coefficients != numerator {
+            if entry.u_domain != unit_domain {
                 return None;
             }
-            match entry.denominator_power_coefficients.as_slice() {
-                [value] if *value == rational(1, 1) => unit.push(entry.edge),
-                [value] if *value == rational(2, 1) => half.push(entry.edge),
-                _ => return None,
+            if entry.numerator_power_coefficients == unit_numerator
+                && entry.denominator_power_coefficients == [rational(1, 1)]
+            {
+                unit.push(entry.edge);
+            } else if entry.numerator_power_coefficients == scaled_numerator
+                && entry.denominator_power_coefficients == [rational(denominator, 1)]
+            {
+                scaled.push(entry.edge);
+            } else {
+                return None;
             }
         }
-        (unit.len() == 2 && half.len() == 2).then_some((unit, half))
+        (unit.len() == 2 && scaled.len() == 2).then_some((unit, scaled))
     }
 
     #[must_use]

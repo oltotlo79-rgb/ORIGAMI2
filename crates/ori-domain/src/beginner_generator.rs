@@ -2430,6 +2430,8 @@ mod tests {
             count,
             length_tenths_mm: 5,
             thickness_tenths_mm: 2,
+            root_width_tenths_mm: None,
+            tip_width_tenths_mm: None,
             position_tenths_mm: [0, if count == 2 { 5 } else { 0 }, 0],
             direction_milli: if count == 2 {
                 [1_000, 0, 0]

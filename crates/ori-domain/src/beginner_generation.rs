@@ -7,7 +7,7 @@ pub const BEGINNER_GENERATION_CONSTRAINTS_SCHEMA_VERSION_V1: u32 = 1;
 pub const MIN_BEGINNER_GENERATION_STEPS_V1: u16 = 1;
 pub const MAX_BEGINNER_GENERATION_STEPS_V1: u16 = 500;
 pub const MAX_BEGINNER_ALLOWED_TECHNIQUES_V1: usize = 8;
-pub const MAX_BEGINNER_TARGET_PART_RECORDS_V1: usize = 7;
+pub const MAX_BEGINNER_TARGET_PART_RECORDS_V1: usize = 8;
 pub const MAX_BEGINNER_TARGET_PART_COUNT_V1: u8 = 8;
 pub const MAX_BEGINNER_TARGET_PARTS_TOTAL_V1: u16 = 32;
 pub const MAX_BEGINNER_SKELETON_SEGMENTS_V1: usize = 64;
@@ -111,6 +111,10 @@ pub struct BeginnerProtrusionTargetV1 {
     pub count: u8,
     pub length_tenths_mm: u32,
     pub thickness_tenths_mm: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_width_tenths_mm: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip_width_tenths_mm: Option<u32>,
     pub position_tenths_mm: [i32; 3],
     pub direction_milli: [i16; 3],
     pub symmetry: BeginnerProtrusionSymmetryV1,
@@ -150,6 +154,8 @@ pub struct BeginnerGenerationConstraintsV1 {
     pub schema_version: u32,
     pub maximum_steps: u16,
     pub detail_level: BeginnerDetailLevelV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generic_body_size_tenths_mm: Option<[u32; 2]>,
     #[serde(default)]
     pub target_category: Option<BeginnerTargetCategoryV1>,
     #[serde(default)]
@@ -171,6 +177,7 @@ impl Default for BeginnerGenerationConstraintsV1 {
             schema_version: BEGINNER_GENERATION_CONSTRAINTS_SCHEMA_VERSION_V1,
             maximum_steps: 60,
             detail_level: BeginnerDetailLevelV1::Standard,
+            generic_body_size_tenths_mm: None,
             target_category: None,
             target_parts: Vec::new(),
             skeleton_segments: Vec::new(),
@@ -222,13 +229,11 @@ pub fn validate_beginner_generation_constraints_v1(
     {
         return false;
     }
-    let mut part_kinds = HashSet::with_capacity(constraints.target_parts.len());
     let mut total = 0_u16;
     if !constraints.target_parts.iter().all(|part| {
         total = total.saturating_add(u16::from(part.count));
         (1..=MAX_BEGINNER_TARGET_PART_COUNT_V1).contains(&part.count)
             && total <= MAX_BEGINNER_TARGET_PARTS_TOTAL_V1
-            && part_kinds.insert(part.kind)
     }) {
         return false;
     }
@@ -248,11 +253,21 @@ pub fn validate_beginner_generation_constraints_v1(
             && segment_ids.insert(segment.id)
     });
     let mut protrusion_ids = HashSet::with_capacity(constraints.protrusions.len());
+    let body_size_valid = constraints
+        .generic_body_size_tenths_mm
+        .is_none_or(|size| size.into_iter().all(|axis| (1..=1_000_000).contains(&axis)));
     let protrusions_valid = skeletons_valid
+        && body_size_valid
         && constraints.protrusions.iter().all(|target| {
             (1..=8).contains(&target.count)
                 && (1..=1_000_000).contains(&target.length_tenths_mm)
                 && (1..=10_000).contains(&target.thickness_tenths_mm)
+                && target
+                    .root_width_tenths_mm
+                    .is_none_or(|width| (1..=10_000).contains(&width))
+                && target
+                    .tip_width_tenths_mm
+                    .is_none_or(|width| (1..=10_000).contains(&width))
                 && target
                     .position_tenths_mm
                     .iter()
@@ -336,8 +351,12 @@ mod tests {
         assert!(validate_beginner_generation_constraints_v1(&parts));
         parts.target_parts.push(BeginnerTargetPartRecordV1 {
             kind: BeginnerTargetPartKindV1::Head,
-            count: 1,
+            count: 2,
         });
+        assert!(validate_beginner_generation_constraints_v1(&parts));
+        parts.target_parts[2].count = 8;
+        assert!(validate_beginner_generation_constraints_v1(&parts));
+        parts.target_parts[2].count = 9;
         assert!(!validate_beginner_generation_constraints_v1(&parts));
     }
 
@@ -348,6 +367,8 @@ mod tests {
             count: 2,
             length_tenths_mm: 100,
             thickness_tenths_mm: 20,
+            root_width_tenths_mm: None,
+            tip_width_tenths_mm: None,
             position_tenths_mm: [0, 0, 0],
             direction_milli: [1000, 0, 0],
             symmetry: BeginnerProtrusionSymmetryV1::Bilateral,
@@ -364,6 +385,42 @@ mod tests {
         assert!(!validate_beginner_generation_constraints_v1(&constraints));
         constraints.protrusions.pop();
         constraints.protrusions[0].direction_milli = [0, 0, 0];
+        assert!(!validate_beginner_generation_constraints_v1(&constraints));
+    }
+
+    #[test]
+    fn optional_body_and_taper_geometry_are_bounded_and_old_json_remains_compatible() {
+        let old = serde_json::json!({
+            "schema_version": 1, "maximum_steps": 60, "detail_level": "standard",
+            "target_category": null, "target_parts": [], "skeleton_segments": [],
+            "protrusions": [], "bulge_targets": [], "target_asset": null,
+            "allowed_techniques": ["valley_fold"]
+        });
+        let restored: BeginnerGenerationConstraintsV1 = serde_json::from_value(old).unwrap();
+        assert_eq!(restored.generic_body_size_tenths_mm, None);
+
+        let mut constraints = BeginnerGenerationConstraintsV1::default();
+        constraints.generic_body_size_tenths_mm = Some([1_200, 800]);
+        let mut target = BeginnerProtrusionTargetV1 {
+            id: 1,
+            count: 1,
+            length_tenths_mm: 100,
+            thickness_tenths_mm: 20,
+            root_width_tenths_mm: Some(30),
+            tip_width_tenths_mm: Some(10),
+            position_tenths_mm: [0, 0, 0],
+            direction_milli: [1_000, 0, 0],
+            symmetry: BeginnerProtrusionSymmetryV1::None,
+            curvature_degrees: 0,
+            joint: BeginnerProtrusionJointV1::Fixed,
+            motion_degrees: [0, 0],
+            side: BeginnerProtrusionSideV1::Either,
+            priority: 50,
+        };
+        constraints.protrusions.push(target);
+        assert!(validate_beginner_generation_constraints_v1(&constraints));
+        target.tip_width_tenths_mm = Some(0);
+        constraints.protrusions[0] = target;
         assert!(!validate_beginner_generation_constraints_v1(&constraints));
     }
 

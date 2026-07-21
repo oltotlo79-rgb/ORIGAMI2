@@ -62,7 +62,8 @@ test('AUT-001 admits only animal and insect target categories and connects them 
 test('AUT-002 composes a bounded explicit target from supported parts', () => {
   assert.match(generation, /Head[\s\S]*Torso[\s\S]*Leg[\s\S]*Horn[\s\S]*Ear[\s\S]*Wing[\s\S]*Tail/u)
   assert.match(generation, /MAX_BEGINNER_TARGET_PARTS_TOTAL_V1: u16 = 32/u)
-  assert.match(client, /record\.target_parts\.length > 7/u)
+  assert.match(client, /record\.target_parts\.length > 8/u)
+  assert.doesNotMatch(client, /partKinds\.has/u)
   assert.match(client, /partTotal > 32/u)
   assert.match(app, /name=\{`target_part_\$\{kind\}`\}/u)
   assert.match(app, /One head and one torso are required/u)
@@ -121,6 +122,7 @@ test('AUT-006 stores every bounded protrusion target attribute in profile histor
   assert.match(generation, /struct BeginnerProtrusionTargetV1/u)
   for (const field of [
     'count', 'length_tenths_mm', 'thickness_tenths_mm', 'position_tenths_mm',
+    'root_width_tenths_mm', 'tip_width_tenths_mm',
     'direction_milli', 'symmetry', 'curvature_degrees', 'joint',
     'motion_degrees', 'side', 'priority',
   ]) assert.match(generation, new RegExp(`pub ${field}:`, 'u'))
@@ -133,6 +135,8 @@ test('AUT-006 stores every bounded protrusion target attribute in profile histor
   assert.match(app, /onSubmit=\{submitBeginnerDesignProfile\}/u)
   assert.match(editor, /Command::UpdateBeginnerDesignProfile/u)
   assert.match(formats, /beginner_design_profile/u)
+  assert.match(generation, /pub generic_body_size_tenths_mm: Option<\[u32; 2\]>/u)
+  assert.match(client, /generic_body_size_tenths_mm\?: \[number, number\]/u)
 })
 
 test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticity', () => {

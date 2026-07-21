@@ -203,6 +203,7 @@ export type BeginnerGenerationConstraintsV1 = {
   schema_version: 1
   maximum_steps: number
   detail_level: 'simple' | 'standard' | 'detailed'
+  generic_body_size_tenths_mm?: [number, number]
   target_category: 'animal' | 'insect' | null
   target_parts: Array<{
     kind: 'head' | 'torso' | 'leg' | 'horn' | 'ear' | 'wing' | 'fin' | 'antenna' | 'tail'
@@ -213,6 +214,8 @@ export type BeginnerGenerationConstraintsV1 = {
     start: { x_tenths_mm: number; y_tenths_mm: number }
     end: { x_tenths_mm: number; y_tenths_mm: number }
     thickness_tenths_mm: number
+    root_width_tenths_mm?: number
+    tip_width_tenths_mm?: number
   }>
   protrusions?: Array<{
     id: number
@@ -302,6 +305,7 @@ function normalizeBeginnerGenerationConstraints(
     'schema_version',
     'maximum_steps',
     'detail_level',
+    'generic_body_size_tenths_mm',
     'target_category',
     'target_parts',
     'skeleton_segments',
@@ -310,18 +314,16 @@ function normalizeBeginnerGenerationConstraints(
     'target_asset',
     'allowed_techniques',
   ] as const
-  const legacyKeys = currentKeys.filter(
-    (key) => key !== 'protrusions' && key !== 'bulge_targets',
+  const requiredKeys = currentKeys.filter(
+    (key) => key !== 'generic_body_size_tenths_mm' && key !== 'protrusions' && key !== 'bulge_targets',
   )
-  const protrusionKeys = currentKeys.filter((key) => key !== 'bulge_targets')
   const snapshot = snapshotCoreDataRecord(value)
   if (!snapshot) return null
   const hadProtrusions = Object.hasOwn(snapshot, 'protrusions')
   const hadBulgeTargets = Object.hasOwn(snapshot, 'bulge_targets')
   const actualKeys = Object.keys(snapshot)
-  const hasExactKeys = (keys: readonly string[]) =>
-    actualKeys.length === keys.length && keys.every((key) => Object.hasOwn(snapshot, key))
-  if (!hasExactKeys(currentKeys) && !hasExactKeys(protrusionKeys) && !hasExactKeys(legacyKeys)) {
+  if (actualKeys.some((key) => !currentKeys.includes(key as typeof currentKeys[number]))
+    || requiredKeys.some((key) => !Object.hasOwn(snapshot, key))) {
     return null
   }
   const record: Record<string, unknown> = {
@@ -344,7 +346,10 @@ function normalizeBeginnerGenerationConstraints(
       && record.target_category !== 'animal'
       && record.target_category !== 'insect')
     || !Array.isArray(record.target_parts)
-    || record.target_parts.length > 7
+    || record.target_parts.length > 8
+    || (record.generic_body_size_tenths_mm !== undefined
+      && (!isBoundedIntegerTuple(record.generic_body_size_tenths_mm, 2, 1_000_000)
+        || record.generic_body_size_tenths_mm.some((axis) => axis < 1)))
     || !Array.isArray(record.skeleton_segments)
     || record.skeleton_segments.length > 64
     || !Array.isArray(record.protrusions)
@@ -356,7 +361,6 @@ function normalizeBeginnerGenerationConstraints(
     || record.allowed_techniques.some((technique) => !BEGINNER_TECHNIQUES.includes(technique))
     || new Set(record.allowed_techniques).size !== record.allowed_techniques.length
   ) return null
-  const partKinds = new Set<string>()
   let partTotal = 0
   const targetParts = record.target_parts.map((part) => {
     const item = exactCoreDataRecord(part, ['kind', 'count'] as const)
@@ -366,9 +370,7 @@ function normalizeBeginnerGenerationConstraints(
       || !Number.isInteger(item.count)
       || Number(item.count) < 1
       || Number(item.count) > 8
-      || partKinds.has(String(item.kind))
     ) return null
-    partKinds.add(String(item.kind))
     partTotal += Number(item.count)
     return { kind: item.kind, count: Number(item.count) }
   })
@@ -404,11 +406,15 @@ function normalizeBeginnerGenerationConstraints(
   if (skeletonSegments.some((segment) => segment === null)) return null
   const protrusionIds = new Set<number>()
   const protrusions = record.protrusions.map((value) => {
-    const item = exactCoreDataRecord(value, [
+    const oldKeys = [
       'id', 'count', 'length_tenths_mm', 'thickness_tenths_mm',
       'position_tenths_mm', 'direction_milli', 'symmetry', 'curvature_degrees',
       'joint', 'motion_degrees', 'side', 'priority',
-    ] as const)
+    ] as const
+    const newKeys = [...oldKeys, 'root_width_tenths_mm', 'tip_width_tenths_mm'] as const
+    const snapshot = snapshotCoreDataRecord(value)
+    const item = snapshot && Object.keys(snapshot).every((key) => newKeys.includes(key as typeof newKeys[number]))
+      && oldKeys.every((key) => Object.hasOwn(snapshot, key)) ? snapshot : null
     if (!item || !Number.isInteger(item.id) || Number(item.id) < 0
       || protrusionIds.has(Number(item.id))
       || !Number.isInteger(item.count) || Number(item.count) < 1 || Number(item.count) > 8
@@ -416,6 +422,12 @@ function normalizeBeginnerGenerationConstraints(
       || Number(item.length_tenths_mm) > 1_000_000
       || !Number.isInteger(item.thickness_tenths_mm) || Number(item.thickness_tenths_mm) < 1
       || Number(item.thickness_tenths_mm) > 10_000
+      || (item.root_width_tenths_mm !== undefined
+        && (!Number.isInteger(item.root_width_tenths_mm)
+          || Number(item.root_width_tenths_mm) < 1 || Number(item.root_width_tenths_mm) > 10_000))
+      || (item.tip_width_tenths_mm !== undefined
+        && (!Number.isInteger(item.tip_width_tenths_mm)
+          || Number(item.tip_width_tenths_mm) < 1 || Number(item.tip_width_tenths_mm) > 10_000))
       || !isBoundedIntegerTuple(item.position_tenths_mm, 3, 100_000)
       || !isBoundedIntegerTuple(item.direction_milli, 3, 1_000)
       || item.direction_milli.every((axis) => axis === 0)
@@ -502,6 +514,9 @@ function normalizeBeginnerGenerationConstraints(
     schema_version: 1,
     maximum_steps: Number(record.maximum_steps),
     detail_level: record.detail_level,
+    ...(record.generic_body_size_tenths_mm === undefined ? {} : {
+      generic_body_size_tenths_mm: record.generic_body_size_tenths_mm as [number, number],
+    }),
     target_category: record.target_category,
     target_parts: targetParts,
     skeleton_segments: skeletonSegments,

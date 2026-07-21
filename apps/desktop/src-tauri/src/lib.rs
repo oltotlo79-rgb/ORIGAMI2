@@ -2803,6 +2803,8 @@ fn configure_symmetric_profile(
         count: estimate.protrusion_count,
         length_tenths_mm: u32::from(scale_percent) * 10,
         thickness_tenths_mm: u16::from(spacing_percent) * 2,
+        root_width_tenths_mm: None,
+        tip_width_tenths_mm: None,
         position_tenths_mm: [0, 0, 0],
         direction_milli: if single_horn || single_antenna {
             [0, -1000, 0]
@@ -3848,6 +3850,8 @@ fn derive_reference_model_suggestion_v1(
         },
         length_tenths_mm,
         thickness_tenths_mm,
+        root_width_tenths_mm: None,
+        tip_width_tenths_mm: None,
         position_tenths_mm: std::array::from_fn(|axis| {
             bbox_min_tenths_mm[axis].saturating_add(bbox_max_tenths_mm[axis]) / 2
         }),

@@ -3908,6 +3908,29 @@ mod tests {
             hinges.clone(),
             fixed,
         );
+        {
+            let capability = project
+                .applied_pose_authority
+                .capture_capability(&project)
+                .unwrap()
+                .unwrap();
+            let (geometry, audit, _) = capability.graph().unwrap();
+            let basis = geometry
+                .extract_canonical_cycle_basis_v1(audit, CycleBasisLimitsV1::default())
+                .expect("four-cycle canonical basis");
+            assert_eq!(basis.cycles().len(), 4);
+            assert!(
+                geometry
+                    .extract_canonical_cycle_basis_v1(
+                        audit,
+                        CycleBasisLimitsV1 {
+                            max_cycles: 3,
+                            ..CycleBasisLimitsV1::default()
+                        },
+                    )
+                    .is_err()
+            );
+        }
         let instance = project.instance_id;
         let project_id = project.project_id;
         let revision = project.editor.revision();

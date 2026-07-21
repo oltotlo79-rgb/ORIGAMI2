@@ -339,7 +339,7 @@ fn propose_current_cycle_pose_inner(
     let target = pose_state_fingerprint_v1(&requested);
     let paper_thickness_mm = project.editor.paper().thickness_mm;
     let positive_graph_supported =
-        positive_collective_axis_graph_v1(geometry, audit, generated.schedule());
+        positive_collective_axis_graph_v1(geometry, audit, pose.fixed_face(), generated.schedule());
     let continuous = if paper_thickness_mm > 0.0 && positive_graph_supported {
         diagnose_scheduled_positive_thickness_cycle_path_v1(
             geometry,
@@ -436,40 +436,16 @@ fn propose_current_cycle_pose_inner(
 fn positive_collective_axis_graph_v1(
     geometry: &ori_kinematics::MaterialHingeGraphGeometry,
     audit: &ori_kinematics::MaterialHingeGraphAudit,
+    fixed_face: FaceId,
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
 ) -> bool {
-    let Some(moving) = schedule.collective_profile_edges_v1() else {
-        return false;
-    };
-    if moving.is_empty() || audit.closure_hinges().is_empty() {
-        return false;
-    }
-    let hinges = geometry
-        .hinges()
-        .iter()
-        .filter(|hinge| moving.contains(&hinge.edge()))
-        .collect::<Vec<_>>();
-    let Some(reference) = hinges.first() else {
-        return false;
-    };
-    let origin = reference.start();
-    let axis = reference.axis();
-    let on_line = |point: ori_kinematics::Point3| {
-        let delta = [
-            point.x() - origin.x(),
-            point.y() - origin.y(),
-            point.z() - origin.z(),
-        ];
-        let cross = [
-            delta[1] * axis.z() - delta[2] * axis.y(),
-            delta[2] * axis.x() - delta[0] * axis.z(),
-            delta[0] * axis.y() - delta[1] * axis.x(),
-        ];
-        cross.into_iter().all(|value| value.abs() <= 1.0e-12)
-    };
-    hinges
-        .iter()
-        .all(|hinge| on_line(hinge.start()) && on_line(hinge.end()))
+    ori_kinematics::theta_opposite_pair_cycle_closure_premises_v1(
+        geometry,
+        audit,
+        fixed_face,
+        schedule,
+        ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+    )
 }
 
 fn emit_current_cycle_status_v1(
@@ -1690,6 +1666,7 @@ async fn propose_current_stacked_fold_read_inner(
             let positive_graph_supported = positive_collective_axis_graph_v1(
                 graph_geometry,
                 graph_audit,
+                initial.pose().fixed_face(),
                 generated.schedule(),
             );
             let continuous = if paper_thickness_mm > 0.0 && positive_graph_supported

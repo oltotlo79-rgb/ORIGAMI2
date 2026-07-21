@@ -741,7 +741,7 @@ impl MaterialHingeGraphGeometry {
     }
 }
 
-fn theta_opposite_pair_cycle_closure_premises_v1(
+pub fn theta_opposite_pair_cycle_closure_premises_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
     fixed_face: FaceId,

@@ -83,7 +83,7 @@ pub use graph::{
     DyadicIntervalClosureLimitsV1, DyadicMaterialHingeIntervalClosureCertificateV1,
     MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1, MaterialHingeClosureCertificate,
     MaterialHingeClosureResidual, MaterialHingeGraphAudit,
-    MaterialHingeIntervalClosureCertificateV1,
+    MaterialHingeIntervalClosureCertificateV1, theta_opposite_pair_cycle_closure_premises_v1,
 };
 pub use interval::{
     IntervalRigidTransformV1, IntervalRotationMatrixV1, OutwardIntervalErrorV1, OutwardIntervalV1,

@@ -528,7 +528,7 @@ test('macOS signing binds the bundle to the configured leaf identity and hardene
   assert.match(verifier, /grep -Fqx "Authority=\$expected_identity"/u)
   assert.match(verifier, /TeamIdentifier=\[A-Z0-9\]\{10\}/u)
   assert.match(verifier, /flags=\.\*runtime/u)
-  assert.match(verifier, /timestamp_epoch <= now_epoch \+ 300/u)
+  assert.match(verifier, /timestamp_epoch >= run_started_epoch - 300/u)
   assert.match(workflow, /notarytool submit[\s\S]*--output-format json[\s\S]*jq -r \.status/u)
   assert.match(verifier, /codesign --verify --deep --strict/u)
   assert.doesNotMatch(verifier, /echo[^\n]*expected_identity/u)
@@ -555,7 +555,8 @@ test('Windows signing binds each asset to the configured PFX chain and RFC 3161 
   assert.match(verifier, /UrlRetrievalTimeout = \[TimeSpan\]::FromSeconds\(30\)/u)
   assert.match(verifier, /SignatureAlgorithm\.Value/u)
   assert.match(verifier, /KeySize -lt 2048/u)
-  assert.match(verifier, /timestamp -lt \$verificationTime\.AddHours\(-1\)/u)
+  assert.match(verifier, /timestamp -lt \$runStartedAt\.AddMinutes\(-5\)/u)
+  assert.match(workflow, /actions\/runs\/\$GITHUB_RUN_ID[\s\S]*run_started_at/u)
   assert.doesNotMatch(verifier, /Write-Output[^\n]*(?:Thumbprint|Subject|passwordText)/u)
 })
 
@@ -988,6 +989,7 @@ test('release helpers reject hostile shell inputs without reflecting secret valu
           BUILD_MODE: 'unsigned-dry-run',
           TARGET_TRIPLE: 'x86_64-pc-windows-msvc',
           RELEASE_RUN_ID: '12345',
+          RELEASE_RUN_STARTED_AT: '2026-07-21T00:00:00Z',
           EXECUTED_TEST_COUNT: '33',
           CI_CHECK_EVIDENCE_JSON: JSON.stringify({
             schema: 'origami2.ci-check-evidence.v1',
@@ -1047,6 +1049,7 @@ test('credential-free dry-run fixture proves the complete nine-asset handoff', (
               ? 'x86_64-pc-windows-msvc'
               : 'aarch64-apple-darwin',
             RELEASE_RUN_ID: '12345',
+            RELEASE_RUN_STARTED_AT: '2026-07-21T00:00:00Z',
             EXECUTED_TEST_COUNT: '28',
             CI_CHECK_EVIDENCE_JSON: JSON.stringify({
               schema: 'origami2.ci-check-evidence.v1',
@@ -1140,6 +1143,7 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
         BUILD_MODE: 'unsigned-dry-run',
         TARGET_TRIPLE: 'x86_64-pc-windows-msvc',
         RELEASE_RUN_ID: '12345',
+        RELEASE_RUN_STARTED_AT: '2026-07-21T00:00:00Z',
         EXECUTED_TEST_COUNT: '28',
         CI_CHECK_EVIDENCE_JSON: JSON.stringify({
           schema: 'origami2.ci-check-evidence.v1',
@@ -1193,6 +1197,7 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
       schema: 'origami2.release-evidence.v1',
       sourceCommit: 'a'.repeat(40),
       ciRunId: '12345',
+      runStartedAt: '2026-07-21T00:00:00Z',
       executedTestCount: 28,
       executedSuites: ['formal-release-contract'],
       ciChecks: {
@@ -1222,6 +1227,7 @@ test('CycloneDX binding records exact locks commit version platform and toolchai
         BUILD_MODE: 'unsigned-dry-run',
         TARGET_TRIPLE: 'x86_64-pc-windows-msvc',
         RELEASE_RUN_ID: '12345',
+        RELEASE_RUN_STARTED_AT: '2026-07-21T00:00:00Z',
         EXECUTED_TEST_COUNT: '28',
         CI_CHECK_EVIDENCE_JSON: JSON.stringify({
           schema: 'origami2.ci-check-evidence.v1',

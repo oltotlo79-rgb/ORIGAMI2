@@ -18,8 +18,14 @@ if ($leafCertificates.Count -ne 1) {
     throw 'Windows signing PFX must contain exactly one leaf certificate.'
 }
 $leaf = $leafCertificates[0]
-$now = [DateTime]::UtcNow
-if ($leaf.NotBefore.ToUniversalTime() -gt $now -or $leaf.NotAfter.ToUniversalTime() -lt $now) {
+$runStartedAt = [DateTimeOffset]::ParseExact(
+    $env:RELEASE_RUN_STARTED_AT,
+    'yyyy-MM-ddTHH:mm:ssZ',
+    [Globalization.CultureInfo]::InvariantCulture,
+    [Globalization.DateTimeStyles]::AssumeUniversal
+).ToUniversalTime()
+if ($leaf.NotBefore.ToUniversalTime() -gt $runStartedAt.UtcDateTime -or
+    $leaf.NotAfter.ToUniversalTime() -lt $runStartedAt.UtcDateTime) {
     throw 'Windows signing certificate is not currently valid.'
 }
 $strongSignatureAlgorithms = @(
@@ -50,6 +56,7 @@ try {
     $chain.ChainPolicy.RevocationFlag = [Security.Cryptography.X509Certificates.X509RevocationFlag]::EntireChain
     $chain.ChainPolicy.VerificationFlags = [Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag
     $chain.ChainPolicy.UrlRetrievalTimeout = [TimeSpan]::FromSeconds(30)
+    $chain.ChainPolicy.VerificationTime = $runStartedAt.UtcDateTime
     foreach ($certificateInPfx in @($pfx.OtherCertificates)) {
         [void] $chain.ChainPolicy.ExtraStore.Add($certificateInPfx)
     }
@@ -99,9 +106,8 @@ try {
         [Globalization.CultureInfo]::CurrentCulture,
         [Globalization.DateTimeStyles]::AssumeLocal
     ).ToUniversalTime()
-    $verificationTime = [DateTimeOffset]::UtcNow
-    if ($timestamp -gt $verificationTime.AddMinutes(5) -or
-        $timestamp -lt $verificationTime.AddHours(-1)) {
+    if ($timestamp -lt $runStartedAt.AddMinutes(-5) -or
+        $timestamp -gt $runStartedAt.AddMinutes(65)) {
         throw 'Windows Authenticode timestamp is outside the release build window.'
     }
 } finally {

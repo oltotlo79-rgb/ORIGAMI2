@@ -140,6 +140,7 @@ if (
   || releaseEvidence.schema !== 'origami2.release-evidence.v1'
   || releaseEvidence.sourceCommit !== process.env.RELEASE_COMMIT
   || !/^[1-9][0-9]*$/u.test(releaseEvidence.ciRunId ?? '')
+  || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseEvidence.runStartedAt ?? '')
   || !Number.isSafeInteger(releaseEvidence.executedTestCount)
   || releaseEvidence.executedTestCount < 1
   || releaseEvidence.executedTestCount > 100000

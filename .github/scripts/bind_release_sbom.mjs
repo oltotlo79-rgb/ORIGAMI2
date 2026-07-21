@@ -21,6 +21,7 @@ const node = process.env.NODE_VERSION
 const buildMode = process.env.BUILD_MODE
 const targetTriple = process.env.TARGET_TRIPLE
 const releaseRunId = process.env.RELEASE_RUN_ID
+const releaseRunStartedAt = process.env.RELEASE_RUN_STARTED_AT
 const executedTestCount = Number(process.env.EXECUTED_TEST_COUNT)
 let ciChecks
 try {
@@ -46,6 +47,7 @@ const expectedTarget = platform === 'windows-x64'
   : 'aarch64-apple-darwin'
 if (targetTriple !== expectedTarget) throw new Error('invalid build target triple')
 if (!/^[1-9][0-9]*$/u.test(releaseRunId ?? '')) throw new Error('invalid release CI run ID')
+if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseRunStartedAt ?? '')) throw new Error('invalid release CI run start time')
 if (!Number.isSafeInteger(executedTestCount) || executedTestCount < 1 || executedTestCount > 100000) {
   throw new Error('invalid executed test count')
 }
@@ -124,6 +126,7 @@ properties['origami2.release.evidence-json'] = JSON.stringify({
   schema: 'origami2.release-evidence.v1',
   sourceCommit: commit,
   ciRunId: releaseRunId,
+  runStartedAt: releaseRunStartedAt,
   executedTestCount,
   executedSuites: ['formal-release-contract'],
   ciChecks,

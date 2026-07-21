@@ -168,6 +168,19 @@ jobs:
           path: ${{ runner.temp }}/project-lifecycle-browser
           if-no-files-found: error
           retention-days: 7
+      - name: Verify cross-session recent projects privacy and invalidation in Chromium
+        id: recent-projects-browser
+        env:
+          ORIGAMI2_RECENT_PROJECTS_ARTIFACT_DIRECTORY: ${{ runner.temp }}/recent-projects-browser
+        run: npm run test:recent-projects-browser
+      - name: Upload recent projects browser failure evidence
+        if: failure() && steps.recent-projects-browser.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: recent-projects-browser-failure
+          path: ${{ runner.temp }}/recent-projects-browser
+          if-no-files-found: error
+          retention-days: 7
       - name: Run production 3D keyboard selection and fold pointer browser E2E
         id: fold-preview-browser
         working-directory: apps/desktop

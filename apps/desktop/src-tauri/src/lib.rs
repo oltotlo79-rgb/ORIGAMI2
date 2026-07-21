@@ -25,6 +25,8 @@ mod numeric_expression;
 mod project_folder_io;
 mod project_persistence;
 #[allow(dead_code)]
+mod recent_projects;
+#[allow(dead_code)]
 mod recovery;
 mod runtime_update;
 mod save_path;

@@ -933,6 +933,10 @@ mod tests {
         assert!(
             proof_step_text.contains(&format!("target={}", short(&reference.target_pose_sha256)))
         );
+        assert_eq!(
+            canonical_plan_digest(&plan),
+            "a2af684997f5f35baf9270f7faf8d03a858860b29a0d3d7a294643886a4871b7"
+        );
         let mut glyph_limited = InstructionExportLimits::default();
         glyph_limited.max_glyphs = plan.glyph_count - 1;
         assert!(matches!(
@@ -951,6 +955,111 @@ mod tests {
         let reopened: InstructionTimeline =
             serde_json::from_slice(&archived).expect("reopen proof-bearing timeline");
         assert_eq!(reopened, timeline);
+        let (reopened_plan, reopened_font) = build_canonical_instruction_plan(
+            "証明付き手順",
+            FINGERPRINT,
+            &fixture.pattern,
+            &fixture.paper,
+            &reopened,
+            &fixture.topology,
+            InstructionExportLimits::default(),
+        )
+        .expect("reopened proof-bearing canonical plan");
+        reopened_plan
+            .validate(&reopened_font)
+            .expect("valid reopened proof-bearing plan");
+        assert_eq!(
+            canonical_plan_digest(&reopened_plan),
+            canonical_plan_digest(&plan)
+        );
+        let reopened_proof_step_text = reopened_plan
+            .pages
+            .iter()
+            .filter(|page| page.step_number == 2)
+            .flat_map(|page| page.texts.iter())
+            .map(layout::PageText::scalar_text)
+            .collect::<String>();
+        assert_eq!(reopened_proof_step_text, proof_step_text);
+
+        let mut multiple = reopened.clone();
+        let mut third = multiple.steps[1].clone();
+        third.id = InstructionStepId::new();
+        third.title = "証明付きの追加区間".to_owned();
+        third.description = format!(
+            "経路証明 SHA-256: {} / 元モデル SHA-256: {FINGERPRINT}",
+            "6d".repeat(32)
+        );
+        third.pose.hinge_angles[0].angle_degrees = 45.0;
+        let fixed_face = third.pose.fixed_face.expect("fixed face");
+        let mut model_hash = Sha256::new();
+        model_hash.update(b"path_certificate_source_model_binding_v1");
+        model_hash.update(FINGERPRINT.as_bytes());
+        third.visual.path_certificate_reference_v1 = Some(ori_domain::PathCertificateReferenceV1 {
+            version: 1,
+            model_id: ori_domain::PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1.to_owned(),
+            binding_sha256: [0x6d; 32],
+            source_pose_sha256: instruction_pose_fingerprint_v1(
+                FINGERPRINT,
+                fixed_face,
+                &multiple.steps[1].pose.hinge_angles,
+            ),
+            target_pose_sha256: instruction_pose_fingerprint_v1(
+                FINGERPRINT,
+                fixed_face,
+                &third.pose.hinge_angles,
+            ),
+            source_model_binding_sha256: model_hash.finalize().into(),
+            transition_count: 2,
+        });
+        multiple.steps.push(third);
+        let (multiple_plan, _) = build_canonical_instruction_plan(
+            "複数証明手順",
+            FINGERPRINT,
+            &fixture.pattern,
+            &fixture.paper,
+            &multiple,
+            &fixture.topology,
+            InstructionExportLimits::default(),
+        )
+        .expect("multiple proof layout");
+        let multiple_text = multiple_plan
+            .pages
+            .iter()
+            .flat_map(|page| page.texts.iter())
+            .map(layout::PageText::scalar_text)
+            .collect::<String>();
+        assert_eq!(multiple_text.matches("構造化経路証明").count(), 2);
+        assert!(multiple_text.contains("v1 / transitions=2 / cert=6d6d6d6d6d6d"));
+        let exact_multiple_limits = InstructionExportLimits {
+            max_pages: multiple_plan.pages.len(),
+            max_glyphs: multiple_plan.glyph_count,
+            ..InstructionExportLimits::default()
+        };
+        build_canonical_instruction_plan(
+            "複数証明手順",
+            FINGERPRINT,
+            &fixture.pattern,
+            &fixture.paper,
+            &multiple,
+            &fixture.topology,
+            exact_multiple_limits,
+        )
+        .expect("exact multiple proof limits");
+        assert!(matches!(
+            build_canonical_instruction_plan(
+                "複数証明手順",
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &multiple,
+                &fixture.topology,
+                InstructionExportLimits {
+                    max_pages: multiple_plan.pages.len() - 1,
+                    ..exact_multiple_limits
+                },
+            ),
+            Err(InstructionExportError::LayoutLimitExceeded)
+        ));
 
         for format in [
             InstructionExportFormat::Pdf17,

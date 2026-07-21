@@ -201,6 +201,7 @@ export type BeginnerDesignProfileV1 = {
     schema_version: 1; topology_authority_sha256: ReadonlyArray<number>; confidence_score: number
     confidence_reasons: ReadonlyArray<string>; explicit_override: boolean; source_asset_fingerprint: string
   }>
+  reference_surface_landmarks_tenths_mm?: ReadonlyArray<readonly [number, number, number]>
 }
 
 export type BeginnerGenerationConstraintsV1 = {
@@ -1036,7 +1037,8 @@ export function normalizeBeginnerDesignProfile(
   ] as const
   const record = snapshotCoreDataRecord(value)
   if (!record || requiredKeys.some((key) => !Object.hasOwn(record, key))
-    || Object.keys(record).some((key) => ![...requiredKeys, 'generation_provenance'].includes(key as never))) return null
+    || Object.keys(record).some((key) => ![...requiredKeys, 'generation_provenance',
+      'reference_surface_landmarks_tenths_mm'].includes(key as never))) return null
   if (!record || record.schema_version !== 1 || (
     record.preset !== 'balanced'
     && record.preset !== 'shape_priority'
@@ -1066,6 +1068,9 @@ export function normalizeBeginnerDesignProfile(
     || provenance.confidence_reasons.some((reason) => typeof reason !== 'string' || reason.length < 1 || reason.length > 64)
     || typeof provenance.explicit_override !== 'boolean' || typeof provenance.source_asset_fingerprint !== 'string'
     || provenance.source_asset_fingerprint.length < 1 || provenance.source_asset_fingerprint.length > 128)) return null
+  const landmarks = record.reference_surface_landmarks_tenths_mm
+  if (landmarks !== undefined && (!Array.isArray(landmarks) || landmarks.length < 1 || landmarks.length > 256
+    || landmarks.some((point) => !isBoundedIntegerTuple(point, 3, 2_147_483_648)))) return null
   return Object.freeze({
     schema_version: 1,
     preset: record.preset,
@@ -1074,6 +1079,9 @@ export function normalizeBeginnerDesignProfile(
     step_count_weight: weights[2],
     paper_efficiency_weight: weights[3],
     generation_constraints: generationConstraints,
+    ...(landmarks === undefined ? {} : { reference_surface_landmarks_tenths_mm: Object.freeze(
+      landmarks.map((point) => Object.freeze((point as number[]).slice()) as readonly [number, number, number]),
+    ) }),
     ...(provenance === null ? {} : { generation_provenance: Object.freeze({
       schema_version: 1 as const,
       topology_authority_sha256: Object.freeze(
@@ -1100,6 +1108,8 @@ function sameBeginnerDesignProfile(
     && profile.paper_efficiency_weight === expected.paper_efficiency_weight
     && JSON.stringify(profile.generation_constraints) === JSON.stringify(expected.generation_constraints)
     && JSON.stringify(profile.generation_provenance) === JSON.stringify(expected.generation_provenance)
+    && JSON.stringify(profile.reference_surface_landmarks_tenths_mm)
+      === JSON.stringify(expected.reference_surface_landmarks_tenths_mm)
 }
 
 export type AnnotationAnchorV1 =

@@ -4962,6 +4962,7 @@ fn apply_beginner_reference_model_features(
             return Err("reference_model_suggestion_invalid".to_owned());
         }
     }
+    profile.reference_surface_landmarks_tenths_mm = Some(live.surface_landmarks_tenths_mm.clone());
     if !ori_domain::validate_beginner_design_profile_v1(&profile) {
         return Err("reference_model_suggestion_invalid".to_owned());
     }

@@ -2005,6 +2005,7 @@ impl EditorState {
                 paper_efficiency_weight: 15,
                 generation_constraints: ori_domain::BeginnerGenerationConstraintsV1::default(),
                 generation_provenance: None,
+                reference_surface_landmarks_tenths_mm: None,
             },
             current_applied_pose: None,
             revision: 0,

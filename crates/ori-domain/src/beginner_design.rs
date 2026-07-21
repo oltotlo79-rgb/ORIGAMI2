@@ -25,6 +25,8 @@ pub struct BeginnerDesignProfileV1 {
     pub generation_constraints: BeginnerGenerationConstraintsV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_provenance: Option<BeginnerGenerationProvenanceV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_surface_landmarks_tenths_mm: Option<Vec<[i32; 3]>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +51,7 @@ impl Default for BeginnerDesignProfileV1 {
             paper_efficiency_weight: 15,
             generation_constraints: BeginnerGenerationConstraintsV1::default(),
             generation_provenance: None,
+            reference_surface_landmarks_tenths_mm: None,
         }
     }
 }
@@ -73,6 +76,10 @@ pub fn validate_beginner_design_profile_v1(profile: &BeginnerDesignProfileV1) ->
             .generation_provenance
             .as_ref()
             .is_none_or(validate_beginner_generation_provenance_v1)
+        && profile
+            .reference_surface_landmarks_tenths_mm
+            .as_ref()
+            .is_none_or(|landmarks| !landmarks.is_empty() && landmarks.len() <= 256)
 }
 
 /// Validates the bounded, versioned provenance independently of its profile.

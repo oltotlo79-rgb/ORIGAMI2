@@ -36,6 +36,7 @@ function Harness() {
   const [confidence, setConfidence] = useState<{ score: number, reason: string, low: boolean } | null>(null)
   const [confidenceOverride, setConfidenceOverride] = useState(false)
   const [asymmetricBird, setAsymmetricBird] = useState(false)
+  const [asymmetricFourLeg, setAsymmetricFourLeg] = useState(false)
   const [exportStatus, setExportStatus] = useState<string | null>(null)
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
@@ -117,6 +118,16 @@ function Harness() {
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected segmentation: noise exceeds bounded curvature budget') }}>Try noisy silhouette segmentation</button>
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
     <button onClick={() => { setAsymmetricBird(true); setStatus('Asymmetric bird landmarks bound: head · tail · left wing · right wing') }}>Recognize asymmetric bird landmarks</button>
+    <button onClick={() => {
+      setAsymmetricFourLeg(true)
+      setStatus('Asymmetric four-leg landmarks bound individually')
+    }}>Recognize asymmetric four-leg landmarks</button>
+    {asymmetricFourLeg && <ul aria-label="Asymmetric four-leg landmark bindings">
+      <li>front-left leg · landmark leg-front-left</li>
+      <li>front-right leg · landmark leg-front-right</li>
+      <li>rear-left leg · landmark leg-rear-left</li>
+      <li>rear-right leg · landmark leg-rear-right</li>
+    </ul>}
     <button onClick={() => {
       setRecognized(true); setPreview(false); setCandidateShortage(false); setMergedAuthorities(true)
       setAuthorityValid(true)
@@ -237,6 +248,7 @@ function Harness() {
       <p>Native foldability admission: global proof + bounded fold path certificate · collision clear</p>
       <p>Native cyclic certificate: bounded_certified_pose_graph_path_v1 · SHA-256 58a6d4c1 · thickness 0/0.1/1/3 mm verified</p>
       {asymmetricBird && <p>AsymmetricBirdLandmarkBase candidate: four individually bound GLB/image landmarks · native path certified</p>}
+      {asymmetricFourLeg && <p>AsymmetricFourLegLandmarkBase candidate: four individually bound leg landmarks · native certified mock accepted</p>}
       <p>Deterministic candidate synthesis: {synthesizedCandidateCount} bounded designs from {bindings.length} bindings and {contourPointCount} contour points.</p>
       <button aria-pressed={selectedCandidate === 1} onClick={() => setSelectedCandidate(1)}>Select contour candidate 1</button>
       <button aria-pressed={selectedCandidate === 2} onClick={() => setSelectedCandidate(2)}>Select contour candidate 2</button>
@@ -279,6 +291,7 @@ function Harness() {
       {mergedAuthorities && <p>Applied merged authority witness: image contours + GLB depth/bulges</p>}
       <p>Applied path provenance: bounded_certified_pose_graph_path_v1 · SHA-256 58a6d4c1 · typed archive retained</p>
       {asymmetricBird && <p>Applied AsymmetricBirdLandmarkBase: Undo/Redo/reopen retained four landmark bindings and path provenance</p>}
+      {asymmetricFourLeg && <p>Applied AsymmetricFourLegLandmarkBase: Undo/Redo/reopen retained four individual leg landmarks and native path provenance</p>}
       {mergedAuthorities && <p>Applied 3D candidate score {threeDimensionalScore}/100 · depth error {depthError} mm</p>}
       <canvas ref={witnessCanvas} width={320} height={200} role="img" aria-label={`Applied contour placement correspondence candidate ${selectedCandidate}`} />
       <button onClick={() => setStatus('Generic target undone')}>Undo generic target</button>
@@ -289,6 +302,8 @@ function Harness() {
         Export {format}</button>)}
       <button onClick={() => setExportStatus('Rejected export: stale or tampered topology provenance')}>Try tampered provenance export</button>
       {exportStatus && <p role="status">{exportStatus}</p>}
+      {exportStatus?.includes('parsed:') && asymmetricFourLeg
+        && <p>AsymmetricFourLegLandmarkBase export retained four individual leg bindings and certified provenance</p>}
     </section>}
   </main>
 }

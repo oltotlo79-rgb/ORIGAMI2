@@ -867,6 +867,47 @@ mod tests {
     }
 
     #[test]
+    fn desktop_export_preserves_typed_generation_provenance() {
+        let project = super::super::initial_project_state();
+        let provenance = ori_domain::BeginnerGenerationProvenanceV1 {
+            schema_version: 1,
+            topology_authority_sha256: [0x5a; 32],
+            confidence_score: 73,
+            confidence_reasons: vec!["desktop_roundtrip".to_owned()],
+            explicit_override: true,
+            source_asset_fingerprint: "asset:desktop-test".to_owned(),
+        };
+        for format in [
+            CreaseExportFormatRequest::Fold,
+            CreaseExportFormatRequest::Svg,
+            CreaseExportFormatRequest::Pdf,
+            CreaseExportFormatRequest::Dxf,
+        ] {
+            let pending = build_pending_export(CreaseExportSource {
+                export_id: ProjectId::new(),
+                expected_instance_id: project.instance_id,
+                expected_project_id: project.project_id,
+                expected_revision: project.editor.revision(),
+                format,
+                name: project.name.clone(),
+                pattern: project.editor.pattern().clone(),
+                paper: project.editor.paper().clone(),
+                instruction_step_count: 0,
+                generation_provenance: Some(provenance.clone()),
+            })
+            .expect("build desktop export with provenance");
+            assert_eq!(
+                ori_formats::read_crease_pattern_generation_provenance(
+                    format.exporter_format(),
+                    &pending.bytes,
+                )
+                .unwrap(),
+                Some(provenance.clone())
+            );
+        }
+    }
+
+    #[test]
     fn assignment_counts_and_cut_flag_match_the_source() {
         let sheet = create_rectangular_sheet(100.0, 80.0, true).unwrap();
         let (mut pattern, paper) = sheet.into_parts();

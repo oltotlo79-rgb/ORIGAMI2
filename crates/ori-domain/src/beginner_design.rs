@@ -72,15 +72,21 @@ pub fn validate_beginner_design_profile_v1(profile: &BeginnerDesignProfileV1) ->
         && profile
             .generation_provenance
             .as_ref()
-            .is_none_or(|provenance| {
-                provenance.schema_version == 1
-                    && provenance.confidence_score <= 100
-                    && !provenance.source_asset_fingerprint.is_empty()
-                    && provenance.source_asset_fingerprint.len() <= 128
-                    && provenance.confidence_reasons.len() <= 8
-                    && provenance
-                        .confidence_reasons
-                        .iter()
-                        .all(|reason| !reason.is_empty() && reason.len() <= 64)
-            })
+            .is_none_or(validate_beginner_generation_provenance_v1)
+}
+
+/// Validates the bounded, versioned provenance independently of its profile.
+#[must_use]
+pub fn validate_beginner_generation_provenance_v1(
+    provenance: &BeginnerGenerationProvenanceV1,
+) -> bool {
+    provenance.schema_version == 1
+        && provenance.confidence_score <= 100
+        && !provenance.source_asset_fingerprint.is_empty()
+        && provenance.source_asset_fingerprint.len() <= 128
+        && provenance.confidence_reasons.len() <= 8
+        && provenance
+            .confidence_reasons
+            .iter()
+            .all(|reason| !reason.is_empty() && reason.len() <= 64)
 }

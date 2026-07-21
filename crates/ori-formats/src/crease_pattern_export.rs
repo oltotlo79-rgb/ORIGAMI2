@@ -10,6 +10,7 @@ use std::{collections::HashMap, fmt::Write as _};
 
 use ori_domain::{
     BeginnerGenerationProvenanceV1, CreasePattern, EdgeKind, Paper, Point2, VertexId,
+    validate_beginner_generation_provenance_v1,
 };
 use ori_geometry::{
     PaperValidationIssue, ValidationIssue, validate_crease_pattern, validate_paper,
@@ -200,6 +201,148 @@ pub enum CreasePatternExportError {
     FoldSerialization(#[source] serde_json::Error),
     #[error("export is {actual} bytes; the limit is {maximum} bytes")]
     OutputTooLarge { actual: usize, maximum: usize },
+    #[error("generation provenance metadata occurs more than once")]
+    DuplicateGenerationProvenance,
+    #[error("generation provenance metadata is malformed")]
+    MalformedGenerationProvenance,
+    #[error("generation provenance metadata violates the V1 contract")]
+    InvalidGenerationProvenance,
+}
+
+/// Reads the optional typed provenance from a bounded crease-pattern export.
+///
+/// Legacy files without the metadata return `None`; ambiguous, malformed, or
+/// contract-invalid metadata is rejected instead of being silently ignored.
+pub fn read_crease_pattern_generation_provenance(
+    format: CreasePatternExportFormat,
+    bytes: &[u8],
+) -> Result<Option<BeginnerGenerationProvenanceV1>, CreasePatternExportError> {
+    if bytes.len() > MAX_CREASE_PATTERN_EXPORT_BYTES {
+        return Err(CreasePatternExportError::OutputTooLarge {
+            actual: bytes.len(),
+            maximum: MAX_CREASE_PATTERN_EXPORT_BYTES,
+        });
+    }
+    let encoded = match format {
+        CreasePatternExportFormat::Fold12 => {
+            const KEY: &str = "\"origami2_generation_provenance\"";
+            let text = std::str::from_utf8(bytes)
+                .map_err(|_| CreasePatternExportError::MalformedGenerationProvenance)?;
+            match text.match_indices(KEY).count() {
+                0 => return Ok(None),
+                1 => {}
+                _ => return Err(CreasePatternExportError::DuplicateGenerationProvenance),
+            }
+            let value: serde_json::Value = serde_json::from_slice(bytes)
+                .map_err(|_| CreasePatternExportError::MalformedGenerationProvenance)?;
+            let metadata = value
+                .as_object()
+                .and_then(|object| object.get("origami2_generation_provenance"))
+                .ok_or(CreasePatternExportError::MalformedGenerationProvenance)?;
+            let provenance = serde_json::from_value(metadata.clone())
+                .map_err(|_| CreasePatternExportError::MalformedGenerationProvenance)?;
+            return validate_read_provenance(provenance).map(Some);
+        }
+        CreasePatternExportFormat::Svg => extract_single_marker(
+            bytes,
+            b"<metadata id=\"origami2-generation-provenance\">",
+            b"</metadata>",
+        )?,
+        CreasePatternExportFormat::Pdf17 => {
+            extract_single_line_value(bytes, b"% ORIGAMI2_GENERATION_PROVENANCE ")?
+        }
+        CreasePatternExportFormat::Dxf2007Ascii => {
+            extract_single_line_value(bytes, b"ORIGAMI2_GENERATION_PROVENANCE ")?
+        }
+    };
+    let Some(encoded) = encoded else {
+        return Ok(None);
+    };
+    let json = decode_lower_hex(encoded)?;
+    let provenance = serde_json::from_slice(&json)
+        .map_err(|_| CreasePatternExportError::MalformedGenerationProvenance)?;
+    validate_read_provenance(provenance).map(Some)
+}
+
+fn validate_read_provenance(
+    provenance: BeginnerGenerationProvenanceV1,
+) -> Result<BeginnerGenerationProvenanceV1, CreasePatternExportError> {
+    validate_beginner_generation_provenance_v1(&provenance)
+        .then_some(provenance)
+        .ok_or(CreasePatternExportError::InvalidGenerationProvenance)
+}
+
+fn extract_single_marker<'a>(
+    bytes: &'a [u8],
+    prefix: &[u8],
+    suffix: &[u8],
+) -> Result<Option<&'a [u8]>, CreasePatternExportError> {
+    let starts = bytes
+        .windows(prefix.len())
+        .filter(|window| *window == prefix)
+        .count();
+    if starts == 0 {
+        return Ok(None);
+    }
+    if starts != 1 {
+        return Err(CreasePatternExportError::DuplicateGenerationProvenance);
+    }
+    let start = bytes
+        .windows(prefix.len())
+        .position(|window| window == prefix)
+        .unwrap()
+        + prefix.len();
+    let rest = &bytes[start..];
+    let end = rest
+        .windows(suffix.len())
+        .position(|window| window == suffix)
+        .ok_or(CreasePatternExportError::MalformedGenerationProvenance)?;
+    Ok(Some(&rest[..end]))
+}
+
+fn extract_single_line_value<'a>(
+    bytes: &'a [u8],
+    prefix: &[u8],
+) -> Result<Option<&'a [u8]>, CreasePatternExportError> {
+    let starts: Vec<_> = bytes
+        .windows(prefix.len())
+        .enumerate()
+        .filter_map(|(index, window)| (window == prefix).then_some(index))
+        .collect();
+    match starts.as_slice() {
+        [] => Ok(None),
+        [start] => {
+            let value = &bytes[start + prefix.len()..];
+            let end = value
+                .iter()
+                .position(|byte| *byte == b'\r' || *byte == b'\n')
+                .unwrap_or(value.len());
+            Ok(Some(&value[..end]))
+        }
+        _ => Err(CreasePatternExportError::DuplicateGenerationProvenance),
+    }
+}
+
+fn decode_lower_hex(encoded: &[u8]) -> Result<Vec<u8>, CreasePatternExportError> {
+    if encoded.is_empty() || encoded.len() % 2 != 0 {
+        return Err(CreasePatternExportError::MalformedGenerationProvenance);
+    }
+    encoded
+        .chunks_exact(2)
+        .map(|pair| {
+            let nibble = |byte| match byte {
+                b'0'..=b'9' => Some(byte - b'0'),
+                b'a'..=b'f' => Some(byte - b'a' + 10),
+                _ => None,
+            };
+            Ok(
+                (nibble(pair[0]).ok_or(CreasePatternExportError::MalformedGenerationProvenance)?
+                    << 4)
+                    | nibble(pair[1])
+                        .ok_or(CreasePatternExportError::MalformedGenerationProvenance)?,
+            )
+        })
+        .collect()
 }
 
 /// Exports a crease pattern using conservative desktop resource limits.
@@ -230,6 +373,9 @@ pub fn export_crease_pattern_with_provenance(
     let Some(provenance) = provenance else {
         return Ok(artifact);
     };
+    if !validate_beginner_generation_provenance_v1(provenance) {
+        return Err(CreasePatternExportError::InvalidGenerationProvenance);
+    }
     let json =
         serde_json::to_vec(provenance).map_err(CreasePatternExportError::FoldSerialization)?;
     let hex = json
@@ -1443,6 +1589,10 @@ mod tests {
                 Some(&provenance),
             )
             .unwrap();
+            assert_eq!(
+                read_crease_pattern_generation_provenance(format, &artifact.bytes).unwrap(),
+                Some(provenance.clone())
+            );
             if format == CreasePatternExportFormat::Fold12 {
                 let value: serde_json::Value = serde_json::from_slice(&artifact.bytes).unwrap();
                 assert_eq!(
@@ -1457,5 +1607,90 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn generation_provenance_reader_rejects_ambiguous_or_tampered_metadata() {
+        let (pattern, paper) = sample_pattern();
+        let provenance = BeginnerGenerationProvenanceV1 {
+            schema_version: 1,
+            topology_authority_sha256: [7; 32],
+            confidence_score: 91,
+            confidence_reasons: vec!["bounded_witness".to_owned(), "image_outline".to_owned()],
+            explicit_override: true,
+            source_asset_fingerprint: "sha256:0123456789abcdef".to_owned(),
+        };
+        for format in [
+            CreasePatternExportFormat::Fold12,
+            CreasePatternExportFormat::Svg,
+            CreasePatternExportFormat::Pdf17,
+            CreasePatternExportFormat::Dxf2007Ascii,
+        ] {
+            let plain = export_crease_pattern(format, "legacy", &pattern, &paper).unwrap();
+            assert_eq!(
+                read_crease_pattern_generation_provenance(format, &plain.bytes).unwrap(),
+                None
+            );
+            let mut artifact = export_crease_pattern_with_provenance(
+                format,
+                "strict",
+                &pattern,
+                &paper,
+                Some(&provenance),
+            )
+            .unwrap();
+            let marker = match format {
+                CreasePatternExportFormat::Fold12 => {
+                    b"\"origami2_generation_provenance\"".as_slice()
+                }
+                CreasePatternExportFormat::Svg => {
+                    b"<metadata id=\"origami2-generation-provenance\">".as_slice()
+                }
+                CreasePatternExportFormat::Pdf17 => b"% ORIGAMI2_GENERATION_PROVENANCE ".as_slice(),
+                CreasePatternExportFormat::Dxf2007Ascii => {
+                    b"ORIGAMI2_GENERATION_PROVENANCE ".as_slice()
+                }
+            };
+            artifact.bytes.extend_from_slice(marker);
+            assert!(matches!(
+                read_crease_pattern_generation_provenance(format, &artifact.bytes),
+                Err(CreasePatternExportError::DuplicateGenerationProvenance)
+            ));
+        }
+
+        let fold = export_crease_pattern_with_provenance(
+            CreasePatternExportFormat::Fold12,
+            "unknown",
+            &pattern,
+            &paper,
+            Some(&provenance),
+        )
+        .unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&fold.bytes).unwrap();
+        value["origami2_generation_provenance"]["unknown"] = serde_json::json!(true);
+        assert!(matches!(
+            read_crease_pattern_generation_provenance(
+                CreasePatternExportFormat::Fold12,
+                &serde_json::to_vec(&value).unwrap(),
+            ),
+            Err(CreasePatternExportError::MalformedGenerationProvenance)
+        ));
+
+        let malformed = b"<metadata id=\"origami2-generation-provenance\">0G</metadata>";
+        assert!(matches!(
+            read_crease_pattern_generation_provenance(CreasePatternExportFormat::Svg, malformed),
+            Err(CreasePatternExportError::MalformedGenerationProvenance)
+        ));
+        let one_short = vec![b'x'; MAX_CREASE_PATTERN_EXPORT_BYTES - 1];
+        assert_eq!(
+            read_crease_pattern_generation_provenance(CreasePatternExportFormat::Pdf17, &one_short)
+                .unwrap(),
+            None
+        );
+        let oversized = vec![b'x'; MAX_CREASE_PATTERN_EXPORT_BYTES + 1];
+        assert!(matches!(
+            read_crease_pattern_generation_provenance(CreasePatternExportFormat::Pdf17, &oversized),
+            Err(CreasePatternExportError::OutputTooLarge { .. })
+        ));
     }
 }

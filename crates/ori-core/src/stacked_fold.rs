@@ -1,13 +1,14 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use num_bigint::BigInt;
+use num_bigint::{BigInt, Sign};
 use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, Vertex, VertexId,
 };
 use ori_foldability::{
-    FoldModelFingerprintV1, GlobalFlatFoldabilityProvenance, LAYER_ORDER_MODEL_ID, LayerFace,
-    LayerOrderSnapshot, fold_model_fingerprint_v1,
+    ExactPointValue, ExactRationalValue, ExactSign, FoldModelFingerprintV1,
+    GlobalFlatFoldabilityProvenance, LAYER_ORDER_MODEL_ID, LayerFace, LayerOrderSnapshot,
+    fold_model_fingerprint_v1,
 };
 use ori_geometry::{
     GeometryError, Orientation, PointPolygonRelation, PointSegmentRelation, SegmentIntersection,
@@ -286,6 +287,7 @@ pub struct StackedFoldNonFlatLayerOrderV1 {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StackedFoldNonFlatOverlapCellV1 {
     boundary: Vec<Point2>,
+    exact_boundary: Vec<ExactPointValue>,
     lower_face: FaceId,
     upper_face: FaceId,
 }
@@ -300,6 +302,10 @@ impl StackedFoldNonFlatOverlapCellV1 {
     #[must_use]
     pub fn boundary(&self) -> &[Point2] {
         &self.boundary
+    }
+    #[must_use]
+    pub fn exact_boundary(&self) -> &[ExactPointValue] {
+        &self.exact_boundary
     }
     #[must_use]
     pub const fn lower_face(&self) -> FaceId {
@@ -2184,6 +2190,7 @@ fn prepare_stacked_fold_non_flat_layer_order_from_source_v1(
                 )?
             };
             overlap_cells.push(StackedFoldNonFlatOverlapCellV1 {
+                exact_boundary: overlap.iter().copied().map(exact_point_from_f64).collect(),
                 boundary: overlap,
                 lower_face,
                 upper_face,
@@ -2362,6 +2369,7 @@ fn prepare_stacked_fold_graph_non_flat_layer_order_from_source_v1(
                 )?
             };
             overlap_cells.push(StackedFoldNonFlatOverlapCellV1 {
+                exact_boundary: overlap.iter().copied().map(exact_point_from_f64).collect(),
                 boundary: overlap,
                 lower_face,
                 upper_face,
@@ -2585,6 +2593,60 @@ fn projected_convex_overlap(
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap);
     }
     Ok(output)
+}
+
+fn exact_point_from_f64(point: Point2) -> ExactPointValue {
+    ExactPointValue {
+        x: exact_rational_from_f64(point.x),
+        y: exact_rational_from_f64(point.y),
+    }
+}
+
+/// Canonical exact rational for one already-validated finite binary64 value.
+/// This does not claim that floating kinematics became symbolic; it prevents
+/// archive/transport boundaries from rounding the certified cell a second time.
+fn exact_rational_from_f64(value: f64) -> ExactRationalValue {
+    let bits = value.to_bits();
+    let negative = bits >> 63 != 0;
+    let exponent = ((bits >> 52) & 0x7ff) as i32;
+    let fraction = bits & ((1_u64 << 52) - 1);
+    if exponent == 0 && fraction == 0 {
+        return ExactRationalValue {
+            sign: ExactSign::Zero,
+            numerator_magnitude_be: Vec::new(),
+            denominator_be: vec![1],
+        };
+    }
+    let mut numerator = if exponent == 0 {
+        fraction
+    } else {
+        fraction | (1_u64 << 52)
+    };
+    let power = if exponent == 0 {
+        -1074
+    } else {
+        exponent - 1023 - 52
+    };
+    let mut denominator = BigInt::from(1_u8);
+    if power < 0 {
+        let removable = numerator.trailing_zeros().min((-power) as u32);
+        numerator >>= removable;
+        denominator <<= (-power) as usize - removable as usize;
+    } else {
+        numerator <<= power as u32;
+    }
+    let (_, numerator_magnitude_be) = BigInt::from(numerator).to_bytes_be();
+    let (denominator_sign, denominator_be) = denominator.to_bytes_be();
+    debug_assert_eq!(denominator_sign, Sign::Plus);
+    ExactRationalValue {
+        sign: if negative {
+            ExactSign::Negative
+        } else {
+            ExactSign::Positive
+        },
+        numerator_magnitude_be,
+        denominator_be,
+    }
 }
 
 fn convex_ccw(polygon: &[Point2]) -> bool {
@@ -4352,6 +4414,16 @@ mod tests {
         assert_eq!(overlap.len(), 4);
         assert!((polygon_double_area(&overlap).abs() - 2.0).abs() <= 1.0e-12);
         assert_eq!(point_dot(point_delta(offset.0, first.0), first.1), 3.0);
+        for point in overlap {
+            let exact = exact_point_from_f64(point);
+            assert_eq!(exact.x.to_f64().unwrap().to_bits(), point.x.to_bits());
+            assert_eq!(exact.y.to_f64().unwrap().to_bits(), point.y.to_bits());
+        }
+        for value in [0.0, -0.0, 0.1, -3.0, f64::MIN_POSITIVE, f64::from_bits(1)] {
+            let exact = exact_rational_from_f64(value);
+            let expected = if value == 0.0 { 0.0 } else { value };
+            assert_eq!(exact.to_f64().unwrap().to_bits(), expected.to_bits());
+        }
     }
 
     #[test]

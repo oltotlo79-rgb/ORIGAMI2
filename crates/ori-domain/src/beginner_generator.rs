@@ -1482,7 +1482,7 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
     if !crate::validate_beginner_generation_constraints_v1(constraints) {
         return 0;
     }
-    let feature_records = constraints
+    let feature_records: usize = constraints
         .target_parts
         .iter()
         .filter(|part| {
@@ -1491,7 +1491,8 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
                 BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
             )
         })
-        .count();
+        .map(|part| usize::from(part.count))
+        .sum();
     if feature_records >= 2
         && feature_records == constraints.protrusions.len()
         && bounded_generic_composite_endpoints(constraints).is_none()
@@ -1669,7 +1670,7 @@ fn bounded_generic_composite_endpoints(
     {
         return None;
     }
-    let feature_records = constraints
+    let feature_records: usize = constraints
         .target_parts
         .iter()
         .filter(|part| {
@@ -1678,7 +1679,8 @@ fn bounded_generic_composite_endpoints(
                 BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
             )
         })
-        .count();
+        .map(|part| usize::from(part.count))
+        .sum();
     if feature_records != constraints.protrusions.len() {
         return None;
     }

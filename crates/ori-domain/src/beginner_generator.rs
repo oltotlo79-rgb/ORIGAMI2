@@ -1668,6 +1668,23 @@ fn bounded_generic_composite_endpoints(
         if tip_width == 0 || tip_width > root_width || root_width > body[0].min(body[1]) {
             return None;
         }
+        if target
+            .local_outline_tenths_mm
+            .as_ref()
+            .is_some_and(|outline| {
+                outline.iter().any(|point| {
+                    let Some(x) = target.position_tenths_mm[0].checked_add(point[0]) else {
+                        return true;
+                    };
+                    let Some(y) = target.position_tenths_mm[1].checked_add(point[1]) else {
+                        return true;
+                    };
+                    !(minimum_x..=maximum_x).contains(&x) || !(minimum_y..=maximum_y).contains(&y)
+                })
+            })
+        {
+            return None;
+        }
         let mut isolated = constraints.clone();
         isolated
             .protrusions
@@ -1881,6 +1898,46 @@ fn symmetric_template(
                 end: outline_ids[(index + 1) % outline_ids.len()],
                 kind: edge_kind,
             });
+        }
+    }
+    if let Some((skeleton_min_x, skeleton_max_x, skeleton_min_y, skeleton_max_y)) =
+        skeleton_bounds(&constraints.skeleton_segments)
+    {
+        let skeleton_span_x = f64::from(skeleton_max_x - skeleton_min_x);
+        let skeleton_span_y = f64::from(skeleton_max_y - skeleton_min_y);
+        for target in &constraints.protrusions {
+            let Some(outline) = &target.local_outline_tenths_mm else {
+                continue;
+            };
+            let outline_ids = outline
+                .iter()
+                .enumerate()
+                .map(|(index, point)| {
+                    let x = target.position_tenths_mm[0] + point[0];
+                    let y = target.position_tenths_mm[1] + point[1];
+                    let position = Point2::new(
+                        min_x + (max_x - min_x) * f64::from(x - skeleton_min_x) / skeleton_span_x,
+                        min_y + (max_y - min_y) * f64::from(y - skeleton_min_y) / skeleton_span_y,
+                    );
+                    let id = VertexId::derive_v5(
+                        namespace,
+                        format!("{prefix}-local-{}-v-{index}", target.id).as_bytes(),
+                    );
+                    vertices.push(Vertex { id, position });
+                    id
+                })
+                .collect::<Vec<_>>();
+            for index in 0..outline_ids.len() {
+                edges.push(Edge {
+                    id: EdgeId::derive_v5(
+                        namespace,
+                        format!("{prefix}-local-{}-e-{index}", target.id).as_bytes(),
+                    ),
+                    start: outline_ids[index],
+                    end: outline_ids[(index + 1) % outline_ids.len()],
+                    kind: edge_kind,
+                });
+            }
         }
     }
     BeginnerGeneratedPlanV1 {
@@ -2184,6 +2241,19 @@ mod tests {
         );
         assert_eq!(generic_plans[0].crease_pattern.vertices.len(), 9);
         assert_eq!(generic_plans[0].crease_pattern.edges.len(), 8);
+        let mut locally_outlined = generic.clone();
+        locally_outlined.protrusions[0].local_outline_tenths_mm =
+            Some(vec![[-2, -1], [2, -1], [0, 2]]);
+        let local_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &locally_outlined).unwrap();
+        assert_eq!(local_plans[0].crease_pattern.vertices.len(), 12);
+        assert_eq!(local_plans[0].crease_pattern.edges.len(), 11);
+        locally_outlined.protrusions[0].local_outline_tenths_mm =
+            Some(vec![[-20, -1], [20, -1], [0, 2]]);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &locally_outlined),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         let mut outlined_generic = generic.clone();
         outlined_generic.generic_body_outline_tenths_mm =
             Some(vec![[-5, -5], [-5, 5], [5, 5], [5, -5]]);

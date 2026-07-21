@@ -6,6 +6,7 @@ const app = source('../src/App.tsx')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/beginner_recognition.rs')
 const domain = source('../../../crates/ori-domain/src/beginner_recognition.rs')
+const designDomain = source('../../../crates/ori-domain/src/beginner_design.rs')
 
 test('AUT-005 recognizes only bounded CRC-checked RGBA marker PNG data', () => {
   assert.match(native, /png::Decoder/u)
@@ -120,6 +121,18 @@ test('part suggestions require explicit assignment and one confirmed history com
   assert.match(native, /matches!\(count, 3 \| 5 \| 7 \| 8\)/u)
   assert.match(native, /repeated_single_rank/u)
   assert.match(native, /candidate\.bounds\.min_y, candidate\.bounds\.min_x, candidate\.id/u)
+})
+
+test('confirmed outline split and merge provenance persists with the editable profile', () => {
+  assert.match(designDomain, /BeginnerOutlineEditAuthorityV1/u)
+  assert.match(designDomain, /SplitVertical[\s\S]*source_candidate_id[\s\S]*split_x[\s\S]*fragment_kinds/u)
+  assert.match(designDomain, /Merge[\s\S]*source_candidate_ids[\s\S]*merged_kind/u)
+  assert.match(native, /profile\.outline_edit_authority/u)
+  assert.match(native, /source_asset_id: request\.asset_id/u)
+  assert.match(native, /source_sha256: request\.source_sha256/u)
+  assert.match(client, /'reference_surface_landmarks_tenths_mm', 'outline_edit_authority'/u)
+  assert.match(client, /JSON\.stringify\(profile\.outline_edit_authority\)/u)
+  assert.match(app, /Saved outline edit authority/u)
 })
 
 test('explicit animal or insect parts feed the existing read-only symmetric plan evaluation', () => {

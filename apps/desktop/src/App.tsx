@@ -8389,6 +8389,16 @@ function App() {
                 ].join(':')}
                 onSubmit={submitBeginnerDesignProfile}
               >
+                {nativeSnapshot.beginner_design_profile.outline_edit_authority && (
+                  <p role="status">{formattedText({
+                    ja: '保存済み輪郭編集権限: {count}件・画像digest {digest}',
+                    en: 'Saved outline edit authority: {count} edits; image digest {digest}',
+                  }, {
+                    count: nativeSnapshot.beginner_design_profile.outline_edit_authority.edits.length,
+                    digest: nativeSnapshot.beginner_design_profile.outline_edit_authority.source_sha256
+                      .slice(0, 4).map((byte) => byte.toString(16).padStart(2, '0')).join(''),
+                  })}</p>
+                )}
                 <label className="field">
                   <span>{text({ ja: '評価プリセット', en: 'Evaluation preset' })}</span>
                   <select

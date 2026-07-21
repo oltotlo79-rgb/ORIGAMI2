@@ -2071,6 +2071,7 @@ impl EditorState {
                 generation_constraints: ori_domain::BeginnerGenerationConstraintsV1::default(),
                 generation_provenance: None,
                 reference_surface_landmarks_tenths_mm: None,
+                outline_edit_authority: None,
             },
             current_applied_pose: None,
             revision: 0,
@@ -18598,6 +18599,7 @@ mod tests {
             generation_constraints: ori_domain::BeginnerGenerationConstraintsV1::default(),
             generation_provenance: None,
             reference_surface_landmarks_tenths_mm: Some(vec![[10, 20, 30], [40, 50, 60]]),
+            outline_edit_authority: None,
         };
         editor
             .execute(

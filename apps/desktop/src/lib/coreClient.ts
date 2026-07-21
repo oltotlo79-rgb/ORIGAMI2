@@ -209,6 +209,10 @@ export type BeginnerDesignProfileV1 = {
     confidence_reasons: ReadonlyArray<string>; explicit_override: boolean; source_asset_fingerprint: string
   }>
   reference_surface_landmarks_tenths_mm?: ReadonlyArray<readonly [number, number, number]>
+  outline_edit_authority?: Readonly<{
+    schema_version: 1; source_asset_id: string; source_sha256: ReadonlyArray<number>
+    edits: ReadonlyArray<Readonly<Record<string, unknown>>>
+  }>
 }
 
 export type BeginnerGenerationConstraintsV1 = {
@@ -1101,7 +1105,7 @@ export function normalizeBeginnerDesignProfile(
   const record = snapshotCoreDataRecord(value)
   if (!record || requiredKeys.some((key) => !Object.hasOwn(record, key))
     || Object.keys(record).some((key) => ![...requiredKeys, 'generation_provenance',
-      'reference_surface_landmarks_tenths_mm'].includes(key as never))) return null
+      'reference_surface_landmarks_tenths_mm', 'outline_edit_authority'].includes(key as never))) return null
   if (!record || record.schema_version !== 1 || (
     record.preset !== 'balanced'
     && record.preset !== 'shape_priority'
@@ -1137,6 +1141,40 @@ export function normalizeBeginnerDesignProfile(
   const landmarks = record.reference_surface_landmarks_tenths_mm
   if (landmarks !== undefined && (!Array.isArray(landmarks) || landmarks.length < 1 || landmarks.length > 256
     || landmarks.some((point) => !isBoundedIntegerTuple(point, 3, 2_147_483_648)))) return null
+  const outlineAuthority = record.outline_edit_authority === undefined ? null
+    : exactCoreDataRecord(record.outline_edit_authority, [
+        'schema_version', 'source_asset_id', 'source_sha256', 'edits',
+      ] as const)
+  if (record.outline_edit_authority !== undefined && (!outlineAuthority
+    || outlineAuthority.schema_version !== 1 || !isCanonicalNonNilUuid(outlineAuthority.source_asset_id)
+    || !isBoundedIntegerTuple(outlineAuthority.source_sha256, 32, 255)
+    || !Array.isArray(outlineAuthority.edits) || outlineAuthority.edits.length < 1
+    || outlineAuthority.edits.length > 8)) return null
+  const outlineEdits = outlineAuthority === null ? [] : (outlineAuthority.edits as unknown[]).map((edit) => {
+    const kind = snapshotCoreDataRecord(edit)?.kind
+    const record = kind === 'split_vertical'
+      ? exactCoreDataRecord(edit, ['kind', 'source_candidate_id', 'split_x', 'fragment_kinds'] as const)
+      : kind === 'merge'
+        ? exactCoreDataRecord(edit, ['kind', 'source_candidate_ids', 'merged_kind'] as const) : null
+    const data = record as Readonly<Record<string, unknown>> | null
+    const validPartKind = (value: unknown) => typeof value === 'string'
+      && ['head', 'torso', 'leg', 'horn', 'ear', 'wing', 'fin', 'antenna', 'tail'].includes(value)
+    const validCandidateId = (value: unknown) => Number.isInteger(value)
+      && Number(value) >= 0 && Number(value) <= 255
+    if (!data || (kind === 'split_vertical' && (!validCandidateId(data.source_candidate_id)
+      || !Number.isSafeInteger(data.split_x) || Number(data.split_x) < 0
+      || Number(data.split_x) > 4_294_967_295 || !Array.isArray(data.fragment_kinds)
+      || data.fragment_kinds.length !== 2 || !data.fragment_kinds.every(validPartKind)
+      || data.fragment_kinds[0] === data.fragment_kinds[1]))
+      || (kind === 'merge' && (!Array.isArray(data.source_candidate_ids)
+        || data.source_candidate_ids.length !== 2
+        || !validCandidateId(data.source_candidate_ids[0])
+        || !validCandidateId(data.source_candidate_ids[1])
+        || Number(data.source_candidate_ids[0]) >= Number(data.source_candidate_ids[1])
+        || !validPartKind(data.merged_kind)))) return null
+    return Object.freeze({ ...record })
+  })
+  if (outlineEdits.some((edit) => edit === null)) return null
   return Object.freeze({
     schema_version: 1,
     preset: record.preset,
@@ -1148,6 +1186,12 @@ export function normalizeBeginnerDesignProfile(
     ...(landmarks === undefined ? {} : { reference_surface_landmarks_tenths_mm: Object.freeze(
       landmarks.map((point) => Object.freeze((point as number[]).slice()) as readonly [number, number, number]),
     ) }),
+    ...(outlineAuthority === null ? {} : { outline_edit_authority: Object.freeze({
+      schema_version: 1 as const,
+      source_asset_id: String(outlineAuthority.source_asset_id),
+      source_sha256: Object.freeze((outlineAuthority.source_sha256 as number[]).slice()),
+      edits: Object.freeze(outlineEdits as ReadonlyArray<Readonly<Record<string, unknown>>>),
+    }) }),
     ...(provenance === null ? {} : { generation_provenance: Object.freeze({
       schema_version: 1 as const,
       topology_authority_sha256: Object.freeze(
@@ -1181,6 +1225,8 @@ function sameBeginnerDesignProfile(
     && JSON.stringify(profile.generation_provenance) === JSON.stringify(expected.generation_provenance)
     && JSON.stringify(profile.reference_surface_landmarks_tenths_mm)
       === JSON.stringify(expected.reference_surface_landmarks_tenths_mm)
+    && JSON.stringify(profile.outline_edit_authority)
+      === JSON.stringify(expected.outline_edit_authority)
 }
 
 export type AnnotationAnchorV1 =

@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    BeginnerGenerationConstraintsV1, BeginnerSemanticLandmarkProvenanceV1,
-    validate_beginner_generation_constraints_v1,
+    AssetId, BeginnerGenerationConstraintsV1, BeginnerSemanticLandmarkProvenanceV1,
+    BeginnerTargetPartKindV1, validate_beginner_generation_constraints_v1,
 };
 
 pub const BEGINNER_DESIGN_PROFILE_SCHEMA_VERSION_V1: u32 = 1;
@@ -31,6 +31,31 @@ pub struct BeginnerDesignProfileV1 {
     pub generation_provenance: Option<BeginnerGenerationProvenanceV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference_surface_landmarks_tenths_mm: Option<Vec<[i32; 3]>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline_edit_authority: Option<BeginnerOutlineEditAuthorityV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerOutlineEditAuthorityV1 {
+    pub schema_version: u32,
+    pub source_asset_id: AssetId,
+    pub source_sha256: [u8; 32],
+    pub edits: Vec<BeginnerOutlineEditRecordV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BeginnerOutlineEditRecordV1 {
+    SplitVertical {
+        source_candidate_id: u8,
+        split_x: u32,
+        fragment_kinds: [BeginnerTargetPartKindV1; 2],
+    },
+    Merge {
+        source_candidate_ids: [u8; 2],
+        merged_kind: BeginnerTargetPartKindV1,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +85,7 @@ impl Default for BeginnerDesignProfileV1 {
             generation_constraints: BeginnerGenerationConstraintsV1::default(),
             generation_provenance: None,
             reference_surface_landmarks_tenths_mm: None,
+            outline_edit_authority: None,
         }
     }
 }
@@ -88,6 +114,23 @@ pub fn validate_beginner_design_profile_v1(profile: &BeginnerDesignProfileV1) ->
             .reference_surface_landmarks_tenths_mm
             .as_ref()
             .is_none_or(|landmarks| !landmarks.is_empty() && landmarks.len() <= 256)
+        && profile
+            .outline_edit_authority
+            .as_ref()
+            .is_none_or(|authority| {
+                authority.schema_version == 1
+                    && !authority.edits.is_empty()
+                    && authority.edits.len() <= 8
+                    && authority.edits.iter().all(|edit| match edit {
+                        BeginnerOutlineEditRecordV1::SplitVertical { fragment_kinds, .. } => {
+                            fragment_kinds[0] != fragment_kinds[1]
+                        }
+                        BeginnerOutlineEditRecordV1::Merge {
+                            source_candidate_ids,
+                            ..
+                        } => source_candidate_ids[0] < source_candidate_ids[1],
+                    })
+            })
 }
 
 /// Validates the bounded, versioned provenance independently of its profile.
@@ -158,4 +201,58 @@ pub fn validate_beginner_generation_provenance_v1(
                         },
                     )
             })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile_with_edit(edit: BeginnerOutlineEditRecordV1) -> BeginnerDesignProfileV1 {
+        BeginnerDesignProfileV1 {
+            outline_edit_authority: Some(BeginnerOutlineEditAuthorityV1 {
+                schema_version: 1,
+                source_asset_id: AssetId::new(),
+                source_sha256: [7; 32],
+                edits: vec![edit],
+            }),
+            ..BeginnerDesignProfileV1::default()
+        }
+    }
+
+    #[test]
+    fn outline_edit_authority_round_trips_with_profile() {
+        let profile = profile_with_edit(BeginnerOutlineEditRecordV1::SplitVertical {
+            source_candidate_id: 2,
+            split_x: 41,
+            fragment_kinds: [
+                BeginnerTargetPartKindV1::Head,
+                BeginnerTargetPartKindV1::Torso,
+            ],
+        });
+        assert!(validate_beginner_design_profile_v1(&profile));
+
+        let json = serde_json::to_string(&profile).expect("serialize profile");
+        let decoded: BeginnerDesignProfileV1 =
+            serde_json::from_str(&json).expect("deserialize profile");
+        assert_eq!(decoded, profile);
+    }
+
+    #[test]
+    fn outline_edit_authority_rejects_ambiguous_split_and_unordered_merge() {
+        let ambiguous = profile_with_edit(BeginnerOutlineEditRecordV1::SplitVertical {
+            source_candidate_id: 2,
+            split_x: 41,
+            fragment_kinds: [
+                BeginnerTargetPartKindV1::Head,
+                BeginnerTargetPartKindV1::Head,
+            ],
+        });
+        assert!(!validate_beginner_design_profile_v1(&ambiguous));
+
+        let unordered = profile_with_edit(BeginnerOutlineEditRecordV1::Merge {
+            source_candidate_ids: [4, 1],
+            merged_kind: BeginnerTargetPartKindV1::Wing,
+        });
+        assert!(!validate_beginner_design_profile_v1(&unordered));
+    }
 }

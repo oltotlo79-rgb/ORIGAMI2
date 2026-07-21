@@ -1223,6 +1223,39 @@ pub(crate) fn apply_beginner_part_assignments(
         }
         profile.generation_constraints.protrusions = generic;
     }
+    let mut edit_records = Vec::new();
+    let mut recorded_splits = std::collections::BTreeSet::new();
+    for assignment in &request.assignments {
+        match assignment.source_candidate_ids.as_slice() {
+            [source] if recorded_splits.insert(*source) => {
+                let mut fragments = request
+                    .assignments
+                    .iter()
+                    .filter(|candidate| candidate.source_candidate_ids.as_slice() == [*source])
+                    .collect::<Vec<_>>();
+                fragments.sort_by_key(|candidate| candidate.split_fragment);
+                edit_records.push(ori_domain::BeginnerOutlineEditRecordV1::SplitVertical {
+                    source_candidate_id: *source,
+                    split_x: assignment
+                        .split_x
+                        .ok_or_else(|| "part_assignment_split_boundary_tampered".to_owned())?,
+                    fragment_kinds: [fragments[0].kind, fragments[1].kind],
+                });
+            }
+            [first, second] => edit_records.push(ori_domain::BeginnerOutlineEditRecordV1::Merge {
+                source_candidate_ids: [*first, *second],
+                merged_kind: assignment.kind,
+            }),
+            _ => {}
+        }
+    }
+    profile.outline_edit_authority =
+        (!edit_records.is_empty()).then_some(ori_domain::BeginnerOutlineEditAuthorityV1 {
+            schema_version: 1,
+            source_asset_id: request.asset_id,
+            source_sha256: request.source_sha256,
+            edits: edit_records,
+        });
     execute_command(
         &mut project,
         request.expected_project_instance_id,

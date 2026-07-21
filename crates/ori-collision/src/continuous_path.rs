@@ -7248,4 +7248,91 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn non_grid_rank_four_cycle_basis_is_simultaneous_bounded_and_issuer_bound() {
+        let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(4, false);
+        assert_eq!(audit.closure_hinges().len(), 4);
+        assert_ne!(
+            (geometry.face_ids().len(), geometry.hinges().len()),
+            (9, 12)
+        );
+        let basis = geometry
+            .extract_canonical_cycle_basis_v1(&audit, ori_kinematics::CycleBasisLimitsV1::default())
+            .unwrap();
+        assert_eq!(basis.cycles().len(), 4);
+        assert!(basis.is_for_geometry(&geometry));
+        for (cycle, closure_edge) in basis.cycles().iter().zip(audit.closure_hinges()) {
+            assert_eq!(cycle.last(), Some(closure_edge));
+        }
+        let total_edges = basis.cycles().iter().map(Vec::len).sum::<usize>();
+        assert!(matches!(
+            geometry.extract_canonical_cycle_basis_v1(
+                &audit,
+                ori_kinematics::CycleBasisLimitsV1 {
+                    max_cycles: 3,
+                    ..ori_kinematics::CycleBasisLimitsV1::default()
+                },
+            ),
+            Err(ori_kinematics::DyadicIntervalClosureErrorV1::ResourceLimit)
+        ));
+        assert!(matches!(
+            geometry.extract_canonical_cycle_basis_v1(
+                &audit,
+                ori_kinematics::CycleBasisLimitsV1 {
+                    max_total_cycle_edges: total_edges - 1,
+                    ..ori_kinematics::CycleBasisLimitsV1::default()
+                },
+            ),
+            Err(ori_kinematics::DyadicIntervalClosureErrorV1::ResourceLimit)
+        ));
+        let simultaneous = geometry
+            .prove_simultaneous_cycle_basis_schedule_closure_v1(
+                &audit,
+                fixed,
+                &schedule,
+                1.0e-9,
+                ori_kinematics::CycleBasisLimitsV1 {
+                    max_cycles: 4,
+                    max_edges_per_cycle: basis.cycles().iter().map(Vec::len).max().unwrap(),
+                    max_total_cycle_edges: total_edges,
+                },
+                DyadicIntervalClosureLimitsV1 {
+                    max_depth: 2,
+                    max_leaves: 4,
+                    max_work: 4,
+                    schedule_limits: CycleScheduleLimitsV1::default(),
+                },
+            )
+            .unwrap();
+        assert_eq!(simultaneous.basis().cycles(), basis.cycles());
+        assert!(simultaneous.closure().every_leaf_covers_graph_v1(&geometry));
+        for thickness in [0.1, 1.0, 3.0] {
+            let diagnostic = diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+                &geometry,
+                &audit,
+                fixed,
+                &schedule,
+                simultaneous.closure(),
+                thickness,
+                32,
+            );
+            assert!(diagnostic.continuous_certificate_model_id().is_some());
+        }
+        assert!(
+            diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+                &geometry,
+                &audit,
+                fixed,
+                &schedule,
+                simultaneous.closure(),
+                10_000.0,
+                32,
+            )
+            .continuous_certificate_model_id()
+            .is_none()
+        );
+        let (foreign, _, _, _) = rational_cycle_bay_geometry(4, false);
+        assert!(!basis.is_for_geometry(&foreign));
+    }
 }

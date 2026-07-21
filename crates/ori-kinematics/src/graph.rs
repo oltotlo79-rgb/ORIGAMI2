@@ -159,6 +159,59 @@ pub enum DyadicIntervalClosureErrorV1 {
     UnprovenClosure { depth: u32, index: u64 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CycleBasisLimitsV1 {
+    pub max_cycles: usize,
+    pub max_edges_per_cycle: usize,
+    pub max_total_cycle_edges: usize,
+}
+
+impl Default for CycleBasisLimitsV1 {
+    fn default() -> Self {
+        Self {
+            max_cycles: 64,
+            max_edges_per_cycle: 128,
+            max_total_cycle_edges: 8_192,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CanonicalCycleBasisV1 {
+    issuer_geometry: MaterialHingeGraphGeometry,
+    cycles: Vec<Vec<EdgeId>>,
+}
+
+impl CanonicalCycleBasisV1 {
+    #[must_use]
+    pub fn cycles(&self) -> &[Vec<EdgeId>] {
+        &self.cycles
+    }
+
+    #[must_use]
+    pub fn is_for_geometry(&self, geometry: &MaterialHingeGraphGeometry) -> bool {
+        self.issuer_geometry.same_instance(geometry)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SimultaneousCycleBasisClosureCertificateV1 {
+    basis: CanonicalCycleBasisV1,
+    closure: DyadicMaterialHingeIntervalClosureCertificateV1,
+}
+
+impl SimultaneousCycleBasisClosureCertificateV1 {
+    #[must_use]
+    pub const fn basis(&self) -> &CanonicalCycleBasisV1 {
+        &self.basis
+    }
+
+    #[must_use]
+    pub const fn closure(&self) -> &DyadicMaterialHingeIntervalClosureCertificateV1 {
+        &self.closure
+    }
+}
+
 /// One caller-supplied face transform used only as closure evidence.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CandidateFaceTransform {
@@ -233,6 +286,114 @@ impl ClosedMaterialHingeGraphPose {
 }
 
 impl MaterialHingeGraphGeometry {
+    pub fn extract_canonical_cycle_basis_v1(
+        &self,
+        audit: &MaterialHingeGraphAudit,
+        limits: CycleBasisLimitsV1,
+    ) -> Result<CanonicalCycleBasisV1, DyadicIntervalClosureErrorV1> {
+        if audit.faces() != self.face_ids()
+            || audit.closure_hinges().is_empty()
+            || limits.max_edges_per_cycle < 2
+        {
+            return Err(DyadicIntervalClosureErrorV1::InvalidInput);
+        }
+        if audit.closure_hinges().len() > limits.max_cycles {
+            return Err(DyadicIntervalClosureErrorV1::ResourceLimit);
+        }
+        let spanning = audit
+            .spanning_hinges()
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let mut adjacency = HashMap::<FaceId, Vec<(FaceId, EdgeId)>>::new();
+        for hinge in self
+            .hinges()
+            .iter()
+            .filter(|hinge| spanning.contains(&hinge.edge()))
+        {
+            adjacency
+                .entry(hinge.left_face())
+                .or_default()
+                .push((hinge.right_face(), hinge.edge()));
+            adjacency
+                .entry(hinge.right_face())
+                .or_default()
+                .push((hinge.left_face(), hinge.edge()));
+        }
+        for neighbors in adjacency.values_mut() {
+            neighbors.sort_unstable_by_key(|(_, edge)| edge.canonical_bytes());
+        }
+        let mut total = 0usize;
+        let mut cycles = Vec::with_capacity(audit.closure_hinges().len());
+        for closure_edge in audit.closure_hinges() {
+            let hinge = self
+                .hinges()
+                .iter()
+                .find(|hinge| hinge.edge() == *closure_edge)
+                .ok_or(DyadicIntervalClosureErrorV1::InvalidInput)?;
+            let start = hinge.left_face();
+            let target = hinge.right_face();
+            let mut queue = VecDeque::from([start]);
+            let mut parent = HashMap::<FaceId, (FaceId, EdgeId)>::new();
+            parent.insert(start, (start, *closure_edge));
+            while let Some(face) = queue.pop_front() {
+                if face == target {
+                    break;
+                }
+                for (next, edge) in adjacency.get(&face).into_iter().flatten() {
+                    if !parent.contains_key(next) {
+                        parent.insert(*next, (face, *edge));
+                        queue.push_back(*next);
+                    }
+                }
+            }
+            if !parent.contains_key(&target) {
+                return Err(DyadicIntervalClosureErrorV1::InvalidInput);
+            }
+            let mut path = Vec::new();
+            let mut cursor = target;
+            while cursor != start {
+                let (previous, edge) = parent[&cursor];
+                path.push(edge);
+                cursor = previous;
+            }
+            path.reverse();
+            path.push(*closure_edge);
+            if path.len() > limits.max_edges_per_cycle {
+                return Err(DyadicIntervalClosureErrorV1::ResourceLimit);
+            }
+            total = total
+                .checked_add(path.len())
+                .filter(|total| *total <= limits.max_total_cycle_edges)
+                .ok_or(DyadicIntervalClosureErrorV1::ResourceLimit)?;
+            cycles.push(path);
+        }
+        Ok(CanonicalCycleBasisV1 {
+            issuer_geometry: self.clone(),
+            cycles,
+        })
+    }
+
+    pub fn prove_simultaneous_cycle_basis_schedule_closure_v1(
+        &self,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        schedule: &CanonicalCycleScheduleV1,
+        tolerance: f64,
+        basis_limits: CycleBasisLimitsV1,
+        closure_limits: DyadicIntervalClosureLimitsV1,
+    ) -> Result<SimultaneousCycleBasisClosureCertificateV1, DyadicIntervalClosureErrorV1> {
+        let basis = self.extract_canonical_cycle_basis_v1(audit, basis_limits)?;
+        let closure = self.prove_dyadic_schedule_closure_v1(
+            audit,
+            fixed_face,
+            schedule,
+            tolerance,
+            closure_limits,
+        )?;
+        Ok(SimultaneousCycleBasisClosureCertificateV1 { basis, closure })
+    }
+
     /// Covers the complete schedule domain with deterministic left-first
     /// dyadic leaves and proves every leaf. A rejected leaf is subdivided;
     /// exhausting depth is reported separately from malformed input or work.

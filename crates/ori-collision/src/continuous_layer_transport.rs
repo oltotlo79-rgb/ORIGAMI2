@@ -261,19 +261,15 @@ pub fn derive_continuous_layer_transport_from_poses_v1(
             let upper = *mapping
                 .get(&expected.upper_face.face_id)
                 .ok_or(ContinuousLayerTransportErrorV1::BindingMismatch)?;
-            let lower_projection = face_centroid_projection(geometry, &pose, lower, axis)?;
-            let upper_projection = face_centroid_projection(geometry, &pose, upper, axis)?;
-            let separation = upper_projection - lower_projection;
-            if separation.abs() <= tolerance {
-                return Err(ContinuousLayerTransportErrorV1::AmbiguousOrder);
-            }
-            if separation < 0.0 {
-                return Err(ContinuousLayerTransportErrorV1::Crossing);
-            }
+            let lower_projection = face_projection_interval(geometry, &pose, lower, axis)?;
+            let upper_projection = face_projection_interval(geometry, &pose, upper, axis)?;
+            classify_projection_intervals(lower_projection, upper_projection, tolerance)?;
             pose_hash.update(lower.canonical_bytes());
             pose_hash.update(upper.canonical_bytes());
-            pose_hash.update(lower_projection.to_bits().to_be_bytes());
-            pose_hash.update(upper_projection.to_bits().to_be_bytes());
+            pose_hash.update(lower_projection.0.to_bits().to_be_bytes());
+            pose_hash.update(lower_projection.1.to_bits().to_be_bytes());
+            pose_hash.update(upper_projection.0.to_bits().to_be_bytes());
+            pose_hash.update(upper_projection.1.to_bits().to_be_bytes());
             orders.push((lower, upper));
         }
         transition_orders.push(orders);
@@ -295,12 +291,26 @@ pub fn derive_continuous_layer_transport_from_poses_v1(
     Ok(certificate)
 }
 
-fn face_centroid_projection(
+fn classify_projection_intervals(
+    lower: (f64, f64),
+    upper: (f64, f64),
+    tolerance: f64,
+) -> Result<(), ContinuousLayerTransportErrorV1> {
+    if upper.1 + tolerance < lower.0 - tolerance {
+        Err(ContinuousLayerTransportErrorV1::Crossing)
+    } else if lower.1 + tolerance < upper.0 - tolerance {
+        Ok(())
+    } else {
+        Err(ContinuousLayerTransportErrorV1::AmbiguousOrder)
+    }
+}
+
+fn face_projection_interval(
     geometry: &MaterialHingeGraphGeometry,
     pose: &ori_kinematics::ClosedMaterialHingeGraphPose,
     face: FaceId,
     axis: [f64; 3],
-) -> Result<f64, ContinuousLayerTransportErrorV1> {
+) -> Result<(f64, f64), ContinuousLayerTransportErrorV1> {
     let boundary = geometry
         .face_boundary_vertices(face)
         .ok_or(ContinuousLayerTransportErrorV1::BindingMismatch)?;
@@ -310,7 +320,8 @@ fn face_centroid_projection(
     let transform = pose
         .face_transform(face)
         .ok_or(ContinuousLayerTransportErrorV1::BindingMismatch)?;
-    let mut sum = [0.0; 3];
+    let mut minimum = f64::INFINITY;
+    let mut maximum = f64::NEG_INFINITY;
     for vertex in boundary {
         let point = geometry
             .vertex_position(*vertex)
@@ -318,15 +329,19 @@ fn face_centroid_projection(
         let world = transform
             .apply_point(point)
             .map_err(|_| ContinuousLayerTransportErrorV1::BindingMismatch)?;
-        sum[0] += world.x();
-        sum[1] += world.y();
-        sum[2] += world.z();
+        let terms = [
+            world.x() * axis[0],
+            world.y() * axis[1],
+            world.z() * axis[2],
+        ];
+        let projection = terms[0] + terms[1] + terms[2];
+        let rounding_envelope =
+            16.0 * f64::EPSILON * (terms[0].abs() + terms[1].abs() + terms[2].abs() + 1.0);
+        minimum = minimum.min(projection - rounding_envelope);
+        maximum = maximum.max(projection + rounding_envelope);
     }
-    let divisor = boundary.len() as f64;
-    let projection = (sum[0] * axis[0] + sum[1] * axis[1] + sum[2] * axis[2]) / divisor;
-    projection
-        .is_finite()
-        .then_some(projection)
+    (minimum.is_finite() && maximum.is_finite() && minimum <= maximum)
+        .then_some((minimum, maximum))
         .ok_or(ContinuousLayerTransportErrorV1::BindingMismatch)
 }
 
@@ -369,4 +384,39 @@ fn hash_source(source: &LayerOrderSnapshot) -> [u8; 32] {
         hash.update(order.upper_face.face_id.canonical_bytes());
     }
     hash.finalize().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_extent_intervals_reject_centroid_only_order_contact_and_crossing() {
+        // The centroids are ordered (0 < 11), but the broad face extents
+        // overlap on [1, 10], so no target partial order may be emitted.
+        assert_eq!(
+            classify_projection_intervals((-10.0, 10.0), (1.0, 21.0), 0.0),
+            Err(ContinuousLayerTransportErrorV1::AmbiguousOrder)
+        );
+        assert_eq!(
+            classify_projection_intervals((0.0, 1.0), (1.0, 2.0), 0.0),
+            Err(ContinuousLayerTransportErrorV1::AmbiguousOrder)
+        );
+        assert_eq!(
+            classify_projection_intervals((2.0, 3.0), (0.0, 1.0), 0.0),
+            Err(ContinuousLayerTransportErrorV1::Crossing)
+        );
+        assert_eq!(
+            classify_projection_intervals((0.0, 1.0), (1.0 + 32.0 * f64::EPSILON, 2.0), 0.0),
+            Ok(())
+        );
+        assert_eq!(
+            classify_projection_intervals(
+                (0.0, 1.0),
+                (1.0 + 32.0 * f64::EPSILON, 2.0),
+                64.0 * f64::EPSILON,
+            ),
+            Err(ContinuousLayerTransportErrorV1::AmbiguousOrder)
+        );
+    }
 }

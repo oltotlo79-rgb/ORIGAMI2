@@ -11328,6 +11328,7 @@ function selectedNamedBookFold(
     (operation) => [
       'straight_line_stacked_fold', 'inside_reverse_fold', 'outside_reverse_fold',
       'sink_fold',
+      'layer_selective_manipulation',
     ].includes(operation.action.kind),
   )
   const isReverse = physical[0]?.action.kind === 'inside_reverse_fold'
@@ -11335,7 +11336,8 @@ function selectedNamedBookFold(
   const isAccordion = physical.length >= 3
     && physical.every((operation) => operation.action.kind === 'straight_line_stacked_fold')
   const isSink = physical[0]?.action.kind === 'sink_fold'
-  if ((!isAccordion && physical.length !== 1) || (!isReverse && !isAccordion && !isSink && technique.operations.some(
+  const isLayer = physical[0]?.action.kind === 'layer_selective_manipulation'
+  if ((!isAccordion && physical.length !== 1) || (!isReverse && !isAccordion && !isSink && !isLayer && technique.operations.some(
       (operation) => operation.execution_support.status
         === 'unsupported_physical_operation',
     ))) return null
@@ -11347,7 +11349,7 @@ function selectedNamedBookFold(
       ?? technique.names[0]?.text
       ?? technique.id,
     kind: isAccordion ? 'accordion' as const : isReverse ? 'reverse' as const
-      : isSink ? 'sink' as const : 'book' as const,
+      : isSink ? 'sink' as const : isLayer ? 'layer' as const : 'book' as const,
   })
 }
 

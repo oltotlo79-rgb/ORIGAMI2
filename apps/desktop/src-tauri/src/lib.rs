@@ -186,7 +186,8 @@ use stacked_fold_read::{
     propose_current_stacked_fold_read, read_live_hinge_registry_v1,
 };
 use stacked_fold_transaction::{
-    apply_stacked_fold_transaction, cancel_stacked_fold_transaction_preview,
+    apply_named_book_fold_transaction, apply_stacked_fold_transaction,
+    cancel_stacked_fold_transaction_preview,
 };
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -12290,6 +12291,7 @@ pub fn run() {
             read_live_hinge_registry_v1,
             cancel_stacked_fold_transaction_preview,
             apply_stacked_fold_transaction,
+            apply_named_book_fold_transaction,
             open_project,
             save_project,
             save_project_as,

@@ -642,11 +642,82 @@ pub(super) fn apply_stacked_fold_transaction(
     apply_stacked_fold_transaction_inner(&app_state, &foldability_state, &transaction_state, token)
 }
 
+#[tauri::command]
+pub(super) fn apply_named_book_fold_transaction(
+    app_state: State<'_, AppState>,
+    foldability_state: State<'_, GlobalFlatFoldabilityState>,
+    transaction_state: State<'_, StackedFoldTransactionState>,
+    token: ProjectId,
+    technique_document_json: String,
+    technique_id: String,
+) -> Result<u64, String> {
+    if technique_document_json.len() > ori_instructions::MAX_FOLD_TECHNIQUE_FILE_BYTES {
+        return Err("The named book-fold document exceeds the resource limit.".to_owned());
+    }
+    let document =
+        ori_instructions::read_fold_technique_file_v1(technique_document_json.as_bytes())
+            .map_err(|_| "The named book-fold document is invalid.".to_owned())?;
+    let technique = document
+        .document()
+        .techniques
+        .iter()
+        .find(|candidate| candidate.id == technique_id)
+        .ok_or_else(|| "The named book-fold technique is unavailable.".to_owned())?;
+    let physical = technique
+        .operations
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation.action,
+                ori_instructions::FoldTechniqueActionV1::StraightLineStackedFold
+            )
+        })
+        .collect::<Vec<_>>();
+    if physical.len() != 1 || technique.operations.iter().any(|operation| {
+        matches!(
+            operation.execution_support,
+            ori_instructions::FoldTechniqueExecutionSupportV1::UnsupportedPhysicalOperation { .. }
+        )
+    }) {
+        return Err("Only one proven straight-line book fold can be applied.".to_owned());
+    }
+    let title = technique
+        .names
+        .iter()
+        .find(|text| text.locale == "ja")
+        .or_else(|| technique.names.first())
+        .map(|text| text.text.clone())
+        .ok_or_else(|| "The named book-fold title is unavailable.".to_owned())?;
+    apply_stacked_fold_transaction_with_title(
+        &app_state,
+        &foldability_state,
+        &transaction_state,
+        token,
+        Some(&title),
+    )
+}
+
 pub(crate) fn apply_stacked_fold_transaction_inner(
     app_state: &AppState,
     foldability_state: &GlobalFlatFoldabilityState,
     transaction_state: &StackedFoldTransactionState,
     token: ProjectId,
+) -> Result<u64, String> {
+    apply_stacked_fold_transaction_with_title(
+        app_state,
+        foldability_state,
+        transaction_state,
+        token,
+        None,
+    )
+}
+
+fn apply_stacked_fold_transaction_with_title(
+    app_state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
+    transaction_state: &StackedFoldTransactionState,
+    token: ProjectId,
+    named_title: Option<&str>,
 ) -> Result<u64, String> {
     let mut transaction_slot = lock_slot(transaction_state)?;
     let pending = transaction_slot
@@ -755,11 +826,13 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
         timeline.steps.push(InstructionStep {
             id: InstructionStepId::new(),
             title: if index == 0 {
-                "Stacked fold".to_owned()
+                named_title.unwrap_or("Stacked fold").to_owned()
             } else {
-                format!("Stacked fold {}", index + 1)
+                format!("{} {}", named_title.unwrap_or("Stacked fold"), index + 1)
             },
-            description: String::new(),
+            description: named_title.map_or_else(String::new, |title| {
+                format!("認証済みの連続折り経路で名前付き技法「{title}」を適用します。")
+            }),
             caution: String::new(),
             duration_ms: MIN_INSTRUCTION_DURATION_MS,
             visual: InstructionVisual {

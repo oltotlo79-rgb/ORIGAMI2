@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import {
   applyStackedFoldTransaction,
+  applyNamedBookFoldTransaction,
   cancelCurrentStackedFoldReadV1,
   cancelStackedFoldTransactionPreview,
   listenStackedFoldReadProgressV1,
@@ -27,6 +28,7 @@ import type {
 } from '../lib/stackedFoldRead'
 import { isCycleScheduleRequestV1 } from '../lib/stackedFoldRead'
 import type { LayerOrderViewerCell } from '../lib/currentLayerOrderView'
+import type { FoldTechniqueFileDocumentV1 } from '../lib/foldTechniqueEditor'
 
 type SelectedLine = Readonly<{
   id: string
@@ -41,6 +43,11 @@ type Props = Readonly<{
   disabled: boolean
   onApplied(snapshot: ProjectSnapshot): void
   refreshSnapshot(): Promise<ProjectSnapshot>
+  namedBookFold?: Readonly<{
+    document: FoldTechniqueFileDocumentV1
+    techniqueId: string
+    name: string
+  }> | null
 }>
 
 const MAX_CYCLE_SCHEDULE_JSON_BYTES = 65_536
@@ -73,6 +80,7 @@ export function StackedFoldPanel({
   disabled,
   onApplied,
   refreshSnapshot,
+  namedBookFold = null,
 }: Props) {
   const t = (ja: string, en: string) => selectLocalizedText(locale, { ja, en })
   const authorityRef = useRef(snapshot)
@@ -388,7 +396,7 @@ export function StackedFoldPanel({
     setApplying(true)
     let committed = false
     try {
-      await applyStackedFoldTransaction(token)
+      await applyTransaction(token)
       committed = true
       tokenRef.current = null
       const next = await refreshSnapshot()
@@ -402,6 +410,16 @@ export function StackedFoldPanel({
     } finally {
       setApplying(false)
     }
+  }
+
+  function applyTransaction(token: string) {
+    return namedBookFold
+      ? applyNamedBookFoldTransaction(
+          token,
+          namedBookFold.document,
+          namedBookFold.techniqueId,
+        )
+      : applyStackedFoldTransaction(token)
   }
 
   async function previewCurrentCyclePose() {
@@ -459,7 +477,7 @@ export function StackedFoldPanel({
     cyclePoseApplyInFlightRef.current = true
     setApplying(true)
     try {
-      await applyStackedFoldTransaction(token)
+      await applyTransaction(token)
       tokenRef.current = null
       setCyclePosePreview(null)
       const next = await refreshSnapshot()
@@ -910,12 +928,24 @@ export function StackedFoldPanel({
           {view.applyFailed && (
             <p role="alert">{t('適用できませんでした。同じ証明済みpreviewで再試行できます。', 'Apply failed. You can retry with the same certified preview.')}</p>
           )}
+          {namedBookFold && (
+            <p role="note">
+              {t(
+                `名前付き技法「${namedBookFold.name}」として認証済み姿勢を手順へ保存します。PDF/SVG折り図にも同じ手順が使われます。`,
+                `The certified pose will be saved as the named technique “${namedBookFold.name}”. The same step is used by PDF/SVG instruction exports.`,
+              )}
+            </p>
+          )}
           <label>
             <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={!ready || applying} />
             {t('証明済みの変更内容を確認しました。', 'I reviewed the certified changes.')}
           </label>
           <button type="button" onClick={() => void apply()} disabled={!ready || !confirmed || applying}>
-            {applying ? t('適用中…', 'Applying…') : t('折り重ねを適用', 'Apply stacked fold')}
+            {applying
+              ? t('適用中…', 'Applying…')
+              : namedBookFold
+                ? t('名前付き二つ折りを適用', 'Apply named book fold')
+                : t('折り重ねを適用', 'Apply stacked fold')}
           </button>
           {!ready && <p className="muted">{t('未証明のため適用は無効です。', 'Apply is disabled because the case is not fully certified.')}</p>}
         </div>

@@ -9081,6 +9081,11 @@ function App() {
                 end: { x: selectedLine.x2, y: selectedLine.y2 },
               } : null}
               disabled={coreBusy || recoveryBlocking}
+              namedBookFold={selectedNamedBookFold(
+                foldTechniqueWorkspace?.document ?? null,
+                foldTechniqueSelectedIndex,
+                locale,
+              )}
               refreshSnapshot={requestProjectSnapshot}
               onApplied={(snapshot) => {
                 applySnapshot(snapshot)
@@ -11304,6 +11309,33 @@ function nextFoldTechniqueRequestId(reference: { current: number }): number {
     : reference.current + 1
   reference.current = next
   return next
+}
+
+function selectedNamedBookFold(
+  document: FoldTechniqueFileDocumentV1 | null,
+  techniqueIndex: number,
+  locale: Locale,
+) {
+  const technique = document?.techniques[techniqueIndex]
+  if (!technique) return null
+  const physical = technique.operations.filter(
+    (operation) => operation.action.kind === 'straight_line_stacked_fold',
+  )
+  if (
+    physical.length !== 1
+    || technique.operations.some(
+      (operation) => operation.execution_support.status
+        === 'unsupported_physical_operation',
+    )
+  ) return null
+  return Object.freeze({
+    document,
+    techniqueId: technique.id,
+    name: technique.names.find((entry) => entry.locale === locale)?.text
+      ?? technique.names.find((entry) => entry.locale === 'ja')?.text
+      ?? technique.names[0]?.text
+      ?? technique.id,
+  })
 }
 
 export default App

@@ -2681,6 +2681,7 @@ export function normalizeCurrentCyclePosePreviewResponseV1(
           !/^[0-9a-f]{64}$/.test(value.continuousLayerTargetOrderSha256))) ||
       !isLayerOrderPairsV1(value.sourceLayerOrder) ||
       !isLayerOrderPairsV1(value.targetLayerOrder) ||
+      JSON.stringify(value.sourceLayerOrder) !== JSON.stringify(value.targetLayerOrder) ||
       (value.continuousLayerTransportModelId === null
         ? value.continuousLayerTransitionCount !== 0 ||
           value.continuousLayerPairOrderCount !== 0 ||
@@ -2694,11 +2695,18 @@ export function normalizeCurrentCyclePosePreviewResponseV1(
 }
 
 function isLayerOrderPairsV1(value: unknown): boolean {
-  return Array.isArray(value) && value.every((pair) => {
+  if (!Array.isArray(value)) return false
+  const identities = new Set<string>()
+  return value.every((pair) => {
     if (typeof pair !== 'object' || pair === null || Array.isArray(pair)) return false
     const record = pair as Record<string, unknown>
-    return Object.keys(record).sort().join(',') === 'lowerFace,upperFace' &&
-      isCanonicalNonNilUuid(record.lowerFace) && isCanonicalNonNilUuid(record.upperFace)
+    if (Object.keys(record).sort().join(',') !== 'lowerFace,upperFace' ||
+      !isCanonicalNonNilUuid(record.lowerFace) || !isCanonicalNonNilUuid(record.upperFace) ||
+      record.lowerFace === record.upperFace) return false
+    const identity = `${record.lowerFace}:${record.upperFace}`
+    if (identities.has(identity)) return false
+    identities.add(identity)
+    return true
   })
 }
 

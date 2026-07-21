@@ -39,7 +39,11 @@ test('current-cycle proof summary rejects tampering, bounds, and partial coverag
     { ...valid, checkedHingeCount: 15 },
     { ...valid, totalHingeCount: 129, checkedHingeCount: 129 },
     { ...valid, continuousLayerTargetOrderSha256: '00' },
+    { ...valid, continuousLayerTargetOrderSha256: 'AB'.repeat(32) },
     { ...valid, continuousLayerPairOrderCount: 2 },
+    { ...valid, sourceLayerOrder: [{ ...valid.sourceLayerOrder[0], lowerFace: valid.sourceLayerOrder[0].upperFace }] },
+    { ...valid, targetLayerOrder: [{ lowerFace: 'stale', upperFace: valid.targetLayerOrder[0].upperFace }] },
+    { ...valid, continuousLayerTransportModelId: null },
     { ...valid, targetRevision: 5 },
   ]
   for (const value of invalid) {

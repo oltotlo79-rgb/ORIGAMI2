@@ -33,6 +33,12 @@ try {
   await page.getByLabel('Local outline points binding 1').fill('-2,-1\n2,-1\n0,2')
   await editor.getByRole('button', { name: 'Apply local outline' }).first().click()
   if ((await page.getByLabel('Local outline points binding 1').inputValue()).split('\n').length !== 3) throw new Error('local outline was not accepted')
+  await page.getByLabel('Outline to preview').selectOption('1')
+  await page.getByRole('img', { name: 'Binding 1 outline preview' }).waitFor()
+  const painted = await page.getByRole('img', { name: 'Binding 1 outline preview' }).evaluate((canvas) => {
+    const context = canvas.getContext('2d'); return context.getImageData(0, 0, canvas.width, canvas.height).data.some((value) => value !== 0)
+  })
+  if (!painted) throw new Error('selected local outline was not painted')
   await editor.getByRole('button', { name: 'Move down' }).first().click()
   if (await page.getByLabel('Length binding 1 (mm)').inputValue() !== '22') throw new Error('reorder was not canonicalized')
   if (await page.getByLabel('Part kind binding 1').inputValue() !== 'fin') throw new Error('part kind was detached during reorder')

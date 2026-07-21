@@ -3,6 +3,7 @@ import { useRef, useState } from 'react'
 import { GenericTargetBindingList } from '../src/components/GenericTargetBindingList.tsx'
 import { ProtrusionDimensionEditor } from '../src/components/ProtrusionDimensionEditor.tsx'
 import { GenericBodyOutlineEditor } from '../src/components/GenericBodyOutlineEditor.tsx'
+import { BeginnerShapeCanvasPreview } from '../src/components/BeginnerShapeCanvasPreview.tsx'
 import { finishBeginnerGridCancellation, runBeginnerGridApplyWorkflow } from '../src/lib/beginnerGridWorkflow.ts'
 import type { BeginnerGenerationConstraintsV1 } from '../src/lib/coreClient.ts'
 import '../src/App.css'
@@ -52,6 +53,8 @@ function Harness() {
     <p role="status">{status}</p>
     {recognized && <GenericBodyOutlineEditor locale="en" points={outline} onChange={setOutline}
       mode={outlineMode} onModeChange={setOutlineMode} />}
+    {recognized && <BeginnerShapeCanvasPreview locale="en" bodySize={[400, 300]}
+      bodyOutline={outline} protrusions={bindings} />}
     {recognized && <button disabled={bindings.length >= 8} onClick={() => {
       setBindings((current) => canonicalize([...current, { ...initialBindings[0]!, id: current.length + 1 }]))
       setKinds((current) => [...current, 'tail'])

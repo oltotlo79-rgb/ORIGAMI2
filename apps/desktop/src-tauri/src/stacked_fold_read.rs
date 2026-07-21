@@ -214,6 +214,141 @@ struct CertifiedPathGraphTransitionRequestV1 {
     target_state: usize,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct CurrentCyclePosePreviewRequestV1 {
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    cycle_schedule_v1: CycleScheduleRequestV1,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CurrentCyclePosePreviewResponseV1 {
+    version: u32,
+    transaction_token: ProjectId,
+    source_revision: u64,
+    target_revision: u64,
+    closure_leaf_count: usize,
+    continuous_path_certified: bool,
+    authorizes_project_mutation: bool,
+}
+
+#[tauri::command]
+pub(super) fn propose_current_cycle_pose_v1(
+    app_state: State<'_, AppState>,
+    _foldability_state: State<'_, GlobalFlatFoldabilityState>,
+    transaction_state: State<'_, super::stacked_fold_transaction::StackedFoldTransactionState>,
+    request: CurrentCyclePosePreviewRequestV1,
+) -> Result<CurrentCyclePosePreviewResponseV1, String> {
+    propose_current_cycle_pose_inner(&app_state, &transaction_state, request)
+}
+
+fn propose_current_cycle_pose_inner(
+    app_state: &AppState,
+    transaction_state: &super::stacked_fold_transaction::StackedFoldTransactionState,
+    request: CurrentCyclePosePreviewRequestV1,
+) -> Result<CurrentCyclePosePreviewResponseV1, String> {
+    let project = lock_project(&app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+    if project.instance_id != request.expected_project_instance_id
+        || project.project_id != request.expected_project_id
+        || project.editor.revision() != request.expected_revision
+    {
+        return Err(STALE_MESSAGE.to_owned());
+    }
+    let pose_capability = project
+        .applied_pose_authority
+        .capture_capability(&project)
+        .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
+        .ok_or_else(|| UNAVAILABLE_MESSAGE.to_owned())?;
+    let (geometry, audit, pose) = pose_capability
+        .graph()
+        .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+    let schedule = prepare_requested_cycle_schedule_v1(
+        &request.cycle_schedule_v1,
+        geometry,
+        audit,
+        pose.fixed_face(),
+        pose.hinge_angles(),
+    )
+    .map_err(str::to_owned)?;
+    let requested = schedule
+        .evaluate(1.0)
+        .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+    let generated = ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(
+        schedule,
+        pose.hinge_angles(),
+        &requested,
+    )
+    .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+    let closure = geometry
+        .prove_dyadic_schedule_closure_v1(
+            audit,
+            pose.fixed_face(),
+            generated.schedule(),
+            ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+            DyadicIntervalClosureLimitsV1 {
+                max_depth: 16,
+                max_leaves: 65_536,
+                max_work: 1_048_576,
+                schedule_limits: CycleScheduleLimitsV1::default(),
+            },
+        )
+        .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned())?;
+    let source = pose_state_fingerprint_v1(pose.hinge_angles());
+    let target = pose_state_fingerprint_v1(&requested);
+    let expected = ori_collision::certify_scheduled_cycle_transition_v1(
+        geometry,
+        audit,
+        pose.fixed_face(),
+        &generated,
+        &closure,
+        32,
+        source,
+        target,
+    )
+    .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    let closure_leaf_count = closure.leaves().len();
+    let target_angles = requested
+        .as_slice()
+        .iter()
+        .map(|angle| (angle.edge(), angle.angle_degrees()))
+        .collect();
+    let token = super::stacked_fold_transaction::install_pending_current_cycle_pose_v1(
+        &transaction_state,
+        super::stacked_fold_transaction::PendingCurrentCyclePosePremisesV1 {
+            expected_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: project.editor.revision(),
+            expected_source_fingerprint: ori_foldability::fold_model_fingerprint_v1(
+                project.editor.pattern(),
+                project.editor.paper(),
+            )
+            .0,
+            expected_pose_generation: pose_capability.generation(),
+            expected_layer_generation: 0,
+            geometry: geometry.clone(),
+            audit: audit.clone(),
+            fixed_face: pose.fixed_face(),
+            generated,
+            closure,
+            expected,
+            target_angles,
+        },
+        pose_capability,
+    )?;
+    Ok(CurrentCyclePosePreviewResponseV1 {
+        version: 1,
+        transaction_token: token,
+        source_revision: request.expected_revision,
+        target_revision: request.expected_revision + 1,
+        closure_leaf_count,
+        continuous_path_certified: true,
+        authorizes_project_mutation: false,
+    })
+}
+
 fn validate_certified_path_graph_v1(
     request: &CertifiedPathGraphRequestV1,
     live: &ori_kinematics::CanonicalHingeAngles,
@@ -2913,5 +3048,108 @@ mod tests {
                         && next.angle_degrees() == initial.angle_degrees() + 5.0
                 })
         );
+    }
+
+    fn physical_four_vertex_cycle_schedule(
+        hinges: &[ori_domain::EdgeId],
+    ) -> CycleScheduleRequestV1 {
+        let mut entries = hinges
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, edge)| {
+                let denominator = if index % 2 == 0 { 1 } else { 2 };
+                CycleScheduleEntryRequestV1 {
+                    edge,
+                    u_domain: [
+                        RationalCoefficientRequestV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientRequestV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ],
+                    numerator_power_coefficients: vec![
+                        RationalCoefficientRequestV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientRequestV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ],
+                    denominator_power_coefficients: vec![RationalCoefficientRequestV1 {
+                        numerator: denominator,
+                        denominator: 1,
+                    }],
+                    requested_angle_degrees: 2.0 * 1.0_f64.atan2(denominator as f64).to_degrees(),
+                }
+            })
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        CycleScheduleRequestV1 {
+            version: 1,
+            entries,
+        }
+    }
+
+    #[test]
+    fn current_graph_cycle_authenticates_or_fails_closed_three_times() {
+        for _ in 0..3 {
+            let (mut project, hinges) =
+                super::super::applied_pose::tests::four_vertex_cycle_project();
+            super::super::applied_pose::tests::install_flat_graph_pose_authority(
+                &mut project,
+                hinges.clone(),
+            );
+            let instance = project.instance_id;
+            let project_id = project.project_id;
+            let revision = project.editor.revision();
+            let app_state = AppState::new(project);
+            let transaction_state =
+                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+            let response = propose_current_cycle_pose_inner(
+                &app_state,
+                &transaction_state,
+                CurrentCyclePosePreviewRequestV1 {
+                    expected_project_instance_id: instance,
+                    expected_project_id: project_id,
+                    expected_revision: revision,
+                    cycle_schedule_v1: physical_four_vertex_cycle_schedule(&hinges),
+                },
+            );
+            match response {
+                Ok(response) => {
+                    assert!(!response.authorizes_project_mutation);
+                    assert!(response.continuous_path_certified);
+                    let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                        &app_state,
+                        &GlobalFlatFoldabilityState::default(),
+                        &transaction_state,
+                        response.transaction_token,
+                    )
+                    .expect("authenticated atomic apply");
+                    let mut project = super::super::lock_project(&app_state).unwrap();
+                    assert_eq!(applied, revision + 1);
+                    assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+                    project.editor.undo(applied).unwrap();
+                    let undo_revision = project.editor.revision();
+                    project.editor.redo(undo_revision).unwrap();
+                }
+                Err(error) => {
+                    assert!(
+                        error == CYCLE_NONCLOSING_MESSAGE
+                            || error == CYCLE_PATH_UNCERTIFIED_MESSAGE,
+                        "unexpected fail-closed category: {error}"
+                    );
+                    let project = super::super::lock_project(&app_state).unwrap();
+                    assert_eq!(project.editor.revision(), revision);
+                    assert!(project.editor.instruction_timeline().steps.is_empty());
+                }
+            }
+        }
     }
 }

@@ -1433,12 +1433,12 @@ pub(super) mod tests {
         ProjectState::new_with_paper(CreasePattern::empty(), Paper::default())
     }
 
-    fn four_vertex_cycle_project() -> (ProjectState, Vec<EdgeId>) {
+    pub(crate) fn four_vertex_cycle_project() -> (ProjectState, Vec<EdgeId>) {
         let points = [
             (100.0, 0.0),
-            (-50.0, 86.0),
-            (-50.0, -86.0),
-            (50.0, -86.0),
+            (-50.0, 86.602_540_378_443_86),
+            (-50.0, -86.602_540_378_443_86),
+            (50.0, -86.602_540_378_443_86),
             (0.0, 0.0),
         ];
         let vertices = points
@@ -1480,6 +1480,87 @@ pub(super) mod tests {
             ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper),
             hinges,
         )
+    }
+
+    pub(crate) fn flat_foldable_cross_cycle_project() -> (ProjectState, Vec<EdgeId>) {
+        let points = [
+            (100.0, 0.0),
+            (0.0, 100.0),
+            (-100.0, 0.0),
+            (0.0, -100.0),
+            (0.0, 0.0),
+        ];
+        let vertices = points
+            .into_iter()
+            .map(|(x, y)| Vertex {
+                id: VertexId::new(),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices[..4]
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect::<Vec<_>>();
+        let center = vertices[4].id;
+        let mut edges = (0..4)
+            .map(|index| Edge {
+                id: EdgeId::new(),
+                start: boundary[index],
+                end: boundary[(index + 1) % 4],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let hinges = (0..4).map(|_| EdgeId::new()).collect::<Vec<_>>();
+        edges.extend((0..4).map(|index| Edge {
+            id: hinges[index],
+            start: boundary[index],
+            end: center,
+            kind: if index == 3 {
+                EdgeKind::Mountain
+            } else {
+                EdgeKind::Valley
+            },
+        }));
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        (
+            ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper),
+            hinges,
+        )
+    }
+
+    pub(crate) fn install_flat_graph_pose_authority(
+        project: &mut ProjectState,
+        mut hinges: Vec<EdgeId>,
+    ) {
+        hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let fixed_face = topology.simulation_snapshot().unwrap().faces[0].id;
+        let request = NativePoseRequest {
+            expected_project_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: project.editor.revision(),
+            fixed_face_id: Some(fixed_face),
+            complete_hinge_angles: hinges
+                .into_iter()
+                .map(|edge_id| NativePoseHingeAngleRequest {
+                    edge_id,
+                    angle_degrees: 0.0,
+                })
+                .collect(),
+        };
+        let authority = project.applied_pose_authority.clone();
+        let prepared = authority
+            .capture_request(project, request)
+            .unwrap()
+            .prepare()
+            .unwrap();
+        authority.commit_prepared(project, prepared).unwrap();
     }
 
     #[test]

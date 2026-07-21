@@ -50,7 +50,7 @@ pub(super) struct PendingStackedFoldTransaction {
     requested: PendingStackedFoldRequestedPose,
     layer_order: Option<PendingStackedFoldLayerProof>,
     pose_capability: CurrentAppliedPoseCapability,
-    layer_capability: CurrentLayerOrderCapability,
+    layer_capability: Option<CurrentLayerOrderCapability>,
 }
 
 pub(super) enum PendingStackedFoldRequestedPose {
@@ -156,7 +156,7 @@ impl PendingStackedFoldRequestedPose {
                     *fixed_face,
                     generated,
                     closure,
-                    8,
+                    32,
                     expected.source(),
                     expected.target(),
                 )
@@ -397,7 +397,7 @@ pub(super) fn install_pending_stacked_fold(
         },
         layer_order: Some(PendingStackedFoldLayerProof::NonFlat(premises.layer_order)),
         pose_capability,
-        layer_capability,
+        layer_capability: Some(layer_capability),
     };
     if !pending.matches_live_binding(
         premises.expected_instance_id,
@@ -439,7 +439,7 @@ pub(super) fn install_pending_stacked_fold_graph(
         },
         layer_order: Some(premises.layer_order),
         pose_capability,
-        layer_capability,
+        layer_capability: Some(layer_capability),
     };
     if !pending.matches_live_binding(
         pending.expected_instance_id,
@@ -461,7 +461,6 @@ pub(super) fn install_pending_current_cycle_pose_v1(
     state: &StackedFoldTransactionState,
     premises: PendingCurrentCyclePosePremisesV1,
     pose_capability: CurrentAppliedPoseCapability,
-    layer_capability: CurrentLayerOrderCapability,
 ) -> Result<ProjectId, String> {
     let token = ProjectId::new();
     let pending = PendingStackedFoldTransaction {
@@ -483,7 +482,7 @@ pub(super) fn install_pending_current_cycle_pose_v1(
         },
         layer_order: None,
         pose_capability,
-        layer_capability,
+        layer_capability: None,
     };
     if !pending.matches_live_binding(
         pending.expected_instance_id,
@@ -571,13 +570,15 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
         lock_revalidated_current_applied_pose_for_commit(&project, &pending.pose_capability)
             .map_err(|_| "The current pose authority is unavailable.".to_owned())?
             .ok_or_else(|| "The stacked-fold transaction preview is stale.".to_owned())?;
-    let layer_guard = lock_revalidated_current_layer_order_for_commit(
-        foldability_state,
-        &project,
-        &pending.layer_capability,
-    )
-    .map_err(|_| "The current layer-order authority is unavailable.".to_owned())?
-    .ok_or_else(|| "The stacked-fold transaction preview is stale.".to_owned())?;
+    let layer_guard = pending
+        .layer_capability
+        .as_ref()
+        .map(|capability| {
+            lock_revalidated_current_layer_order_for_commit(foldability_state, &project, capability)
+                .map_err(|_| "The current layer-order authority is unavailable.".to_owned())?
+                .ok_or_else(|| "The stacked-fold transaction preview is stale.".to_owned())
+        })
+        .transpose()?;
 
     let requested = &pending.requested;
     let target = requested.geometry();
@@ -585,12 +586,14 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
         (target, &pending.layer_order)
     {
         let lineage = target.proof().lineage();
-        if !layer_guard.preflight_certified_target(
-            pending.expected_project_id,
-            lineage.target_revision(),
-            lineage.target_fingerprint().0,
-            snapshot,
-        ) {
+        if !layer_guard.as_ref().is_some_and(|guard| {
+            guard.preflight_certified_target(
+                pending.expected_project_id,
+                lineage.target_revision(),
+                lineage.target_fingerprint().0,
+                snapshot,
+            )
+        }) {
             return Err(
                 "The certified target layer order could not be prepared atomically.".to_owned(),
             );
@@ -676,12 +679,15 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
             applied_pose,
         )
         .map_err(|_| "The stacked-fold transaction could not be applied atomically.".to_owned())?;
-    match &applied_layer_order {
-        Some(PendingStackedFoldLayerProof::NonFlat(_)) | None => {
-            layer_guard.invalidate_after_project_mutation();
+    match (&applied_layer_order, layer_guard) {
+        (Some(PendingStackedFoldLayerProof::NonFlat(_)) | None, layer_guard) => {
+            if let Some(layer_guard) = layer_guard {
+                layer_guard.invalidate_after_project_mutation();
+            }
         }
-        Some(PendingStackedFoldLayerProof::CertifiedFlat(snapshot)) => {
+        (Some(PendingStackedFoldLayerProof::CertifiedFlat(snapshot)), layer_guard) => {
             layer_guard
+                .ok_or_else(|| "The certified target layer order is unavailable.".to_owned())?
                 .install_certified_target_after_project_mutation(&project, snapshot.clone())
                 .map_err(|_| {
                     "The certified target layer order could not be installed atomically.".to_owned()

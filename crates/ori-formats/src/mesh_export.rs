@@ -9,6 +9,7 @@
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 /// Version of the only indexed triangle mesh input schema accepted here.
@@ -1390,6 +1391,10 @@ enum GlbAccessorBounds {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CheckedGlbRoot {
+    #[serde(rename = "extensionsUsed", default)]
+    _extensions_used: Vec<String>,
+    #[serde(rename = "extensions", default)]
+    _extensions: serde_json::Map<String, serde_json::Value>,
     asset: CheckedGlbAsset,
     scene: u32,
     scenes: Vec<CheckedGlbScene>,
@@ -2272,6 +2277,139 @@ fn encode_glb_root_and_binary(
     Ok(output)
 }
 
+const ORIGAMI2_GENERATION_PROVENANCE_GLB_EXTENSION_V1: &str = "ORIGAMI2_generation_provenance_v1";
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GlbGenerationProvenanceExtensionV1 {
+    version: u32,
+    provenance: ori_domain::BeginnerGenerationProvenanceV1,
+    provenance_sha256: [u8; 32],
+}
+
+/// Exports GLB 2.0 with one optional, non-required ORIGAMI2 provenance extension.
+pub fn export_static_triangle_mesh_glb_with_provenance(
+    mesh: &ValidatedIndexedTriangleMesh,
+    provenance: &ori_domain::BeginnerGenerationProvenanceV1,
+) -> Result<StaticMeshExportArtifact, StaticMeshExportError> {
+    if !ori_domain::validate_beginner_generation_provenance_v1(provenance) {
+        return Err(StaticMeshExportError::StructureNotRepresentable {
+            format: StaticMeshExportFormat::Glb20,
+        });
+    }
+    let plain = export_static_triangle_mesh(StaticMeshExportFormat::Glb20, mesh)?;
+    let json_length = read_u32_le_at(&plain.bytes, 12)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(StaticMeshExportError::InternalVerificationFailed {
+            format: StaticMeshExportFormat::Glb20,
+        })?;
+    let json_end = 20usize.checked_add(json_length).ok_or(
+        StaticMeshExportError::InternalVerificationFailed {
+            format: StaticMeshExportFormat::Glb20,
+        },
+    )?;
+    let binary_header = json_end;
+    let binary_length = read_u32_le_at(&plain.bytes, binary_header)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(StaticMeshExportError::InternalVerificationFailed {
+            format: StaticMeshExportFormat::Glb20,
+        })?;
+    let binary_start = binary_header + 8;
+    let binary_end = binary_start + binary_length;
+    let mut root: serde_json::Value =
+        serde_json::from_slice(&plain.bytes[20..json_end]).map_err(|_| {
+            StaticMeshExportError::InternalVerificationFailed {
+                format: StaticMeshExportFormat::Glb20,
+            }
+        })?;
+    let provenance_bytes = serde_json::to_vec(provenance).map_err(|_| {
+        StaticMeshExportError::StructureNotRepresentable {
+            format: StaticMeshExportFormat::Glb20,
+        }
+    })?;
+    root["extensionsUsed"] = serde_json::json!([ORIGAMI2_GENERATION_PROVENANCE_GLB_EXTENSION_V1]);
+    root["extensions"][ORIGAMI2_GENERATION_PROVENANCE_GLB_EXTENSION_V1] =
+        serde_json::to_value(GlbGenerationProvenanceExtensionV1 {
+            version: 1,
+            provenance: provenance.clone(),
+            provenance_sha256: Sha256::digest(provenance_bytes).into(),
+        })
+        .map_err(|_| StaticMeshExportError::StructureNotRepresentable {
+            format: StaticMeshExportFormat::Glb20,
+        })?;
+    let bytes = encode_glb_root_and_binary(
+        &root,
+        plain.bytes.get(binary_start..binary_end).ok_or(
+            StaticMeshExportError::InternalVerificationFailed {
+                format: StaticMeshExportFormat::Glb20,
+            },
+        )?,
+        MAX_STATIC_MESH_EXPORT_BYTES,
+    )?;
+    if !verify_glb(&bytes, mesh, MAX_STATIC_MESH_EXPORT_BYTES) {
+        return Err(StaticMeshExportError::InternalVerificationFailed {
+            format: StaticMeshExportFormat::Glb20,
+        });
+    }
+    Ok(StaticMeshExportArtifact { bytes, ..plain })
+}
+
+/// Reads and independently authenticates the optional ORIGAMI2 GLB extension.
+pub fn read_glb_generation_provenance(
+    bytes: &[u8],
+) -> Result<Option<ori_domain::BeginnerGenerationProvenanceV1>, StaticMeshExportError> {
+    let fail = || StaticMeshExportError::StructureNotRepresentable {
+        format: StaticMeshExportFormat::Glb20,
+    };
+    if bytes.len() < 28 || bytes.get(..4) != Some(b"glTF") || read_u32_le_at(bytes, 4) != Some(2) {
+        return Err(fail());
+    }
+    let json_length = read_u32_le_at(bytes, 12)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|length| *length <= MAX_GLB_JSON_BYTES)
+        .ok_or_else(fail)?;
+    let json_end = 20usize.checked_add(json_length).ok_or_else(fail)?;
+    let root: serde_json::Value =
+        serde_json::from_slice(bytes.get(20..json_end).ok_or_else(fail)?).map_err(|_| fail())?;
+    let used = root
+        .get("extensionsUsed")
+        .and_then(serde_json::Value::as_array);
+    let value = root
+        .get("extensions")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|extensions| extensions.get(ORIGAMI2_GENERATION_PROVENANCE_GLB_EXTENSION_V1));
+    if value.is_none() {
+        return if used.is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.as_str() == Some(ORIGAMI2_GENERATION_PROVENANCE_GLB_EXTENSION_V1))
+        }) {
+            Err(fail())
+        } else {
+            Ok(None)
+        };
+    }
+    if used.is_none_or(|items| {
+        items
+            .iter()
+            .filter(|item| item.as_str() == Some(ORIGAMI2_GENERATION_PROVENANCE_GLB_EXTENSION_V1))
+            .count()
+            != 1
+    }) {
+        return Err(fail());
+    }
+    let extension: GlbGenerationProvenanceExtensionV1 =
+        serde_json::from_value(value.cloned().ok_or_else(fail)?).map_err(|_| fail())?;
+    let encoded = serde_json::to_vec(&extension.provenance).map_err(|_| fail())?;
+    if extension.version != 1
+        || extension.provenance_sha256 != <[u8; 32]>::from(Sha256::digest(encoded))
+        || !ori_domain::validate_beginner_generation_provenance_v1(&extension.provenance)
+    {
+        return Err(fail());
+    }
+    Ok(Some(extension.provenance))
+}
+
 fn verify_glb(bytes: &[u8], mesh: &ValidatedIndexedTriangleMesh, maximum: usize) -> bool {
     if bytes.len() > maximum || bytes.len() < 28 || bytes.get(..4) != Some(b"glTF") {
         return false;
@@ -3051,6 +3189,43 @@ mod tests {
 
     fn sample_mesh() -> ValidatedIndexedTriangleMesh {
         validate_indexed_triangle_mesh(&sample_document()).expect("sample mesh")
+    }
+
+    #[test]
+    fn glb_generation_provenance_extension_round_trips_and_legacy_is_absent() {
+        let mesh = sample_mesh();
+        let provenance = ori_domain::BeginnerGenerationProvenanceV1 {
+            schema_version: 1,
+            topology_authority_sha256: [0x17; 32],
+            fold_path_certificate_sha256: Some([0x71; 32]),
+            confidence_score: 90,
+            confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
+            explicit_override: false,
+            source_asset_fingerprint: "asset:glb-extension".to_owned(),
+        };
+        let artifact = export_static_triangle_mesh_glb_with_provenance(&mesh, &provenance)
+            .expect("GLB provenance export");
+        assert_eq!(
+            read_glb_generation_provenance(&artifact.bytes).expect("GLB provenance read"),
+            Some(provenance)
+        );
+        let json_length = read_u32_le_at(&artifact.bytes, 12).unwrap() as usize;
+        let json_end = 20 + json_length;
+        let binary_length = read_u32_le_at(&artifact.bytes, json_end).unwrap() as usize;
+        let mut root: serde_json::Value =
+            serde_json::from_slice(&artifact.bytes[20..json_end]).unwrap();
+        root["extensions"][ORIGAMI2_GENERATION_PROVENANCE_GLB_EXTENSION_V1]["provenance"]["confidence_score"] =
+            serde_json::json!(89);
+        let tampered = encode_glb_root_and_binary(
+            &root,
+            &artifact.bytes[json_end + 8..json_end + 8 + binary_length],
+            MAX_STATIC_MESH_EXPORT_BYTES,
+        )
+        .unwrap();
+        assert!(read_glb_generation_provenance(&tampered).is_err());
+        let legacy =
+            export_static_triangle_mesh(StaticMeshExportFormat::Glb20, &mesh).expect("legacy GLB");
+        assert_eq!(read_glb_generation_provenance(&legacy.bytes).unwrap(), None);
     }
 
     fn limits() -> StaticMeshExportLimits {

@@ -73,7 +73,8 @@ pub use mesh_export::{
     export_dual_sided_triangle_mesh_glb_with_limits,
     export_regioned_closed_solid_triangle_mesh_glb,
     export_regioned_closed_solid_triangle_mesh_glb_with_limits, export_static_triangle_mesh,
-    export_static_triangle_mesh_with_limits, validate_indexed_triangle_mesh,
+    export_static_triangle_mesh_glb_with_provenance, export_static_triangle_mesh_with_limits,
+    read_glb_generation_provenance, validate_indexed_triangle_mesh,
     validate_indexed_triangle_mesh_with_limits,
 };
 pub use ori_domain::{

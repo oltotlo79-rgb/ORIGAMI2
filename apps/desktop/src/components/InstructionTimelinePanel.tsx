@@ -176,6 +176,38 @@ export function InstructionTimelinePanel({
     })
     return () => { active = false }
   }, [selectedStep, selectedProofDisplay?.kind, steps])
+  const hasStructuredCertificates = steps.some(
+    (step) => step.visual.path_certificate_reference_v1 != null,
+  )
+  const [certificateExportValidation, setCertificateExportValidation] = useState<Readonly<{
+    steps: readonly InstructionStepPresentation[]
+    status: 'checking' | 'valid' | 'invalid'
+  }> | null>(null)
+  useEffect(() => {
+    let active = true
+    if (!hasStructuredCertificates) {
+      setCertificateExportValidation({ steps, status: 'valid' })
+      return () => { active = false }
+    }
+    setCertificateExportValidation({ steps, status: 'checking' })
+    const checks = steps.map(async (step, index) => {
+      if (step.visual.path_certificate_reference_v1 == null) return true
+      if (createPathCertificateDisplay(step)?.kind !== 'verified') return false
+      return pathCertificateEndpointsMatch(steps[index - 1], step)
+    })
+    void Promise.all(checks).then((results) => {
+      if (active) setCertificateExportValidation({
+        steps,
+        status: results.every(Boolean) ? 'valid' : 'invalid',
+      })
+    }, () => {
+      if (active) setCertificateExportValidation({ steps, status: 'invalid' })
+    })
+    return () => { active = false }
+  }, [hasStructuredCertificates, steps])
+  const certificateExportBlocked = hasStructuredCertificates
+    && (certificateExportValidation?.steps !== steps
+      || certificateExportValidation.status !== 'valid')
   const captureDraft = useMemo(() => {
     if (
       !snapshot
@@ -793,11 +825,16 @@ export function InstructionTimelinePanel({
             || !exportAvailable
             || steps.length === 0
             || steps.some((step) => step.stale)
+            || certificateExportBlocked
           }
           title={
             steps.some((step) => step.stale)
               ? selectLocalizedText(locale, TEXT.exportStaleTitle)
-              : selectLocalizedText(locale, TEXT.exportTitle)
+              : certificateExportBlocked
+                ? (locale === 'ja'
+                    ? '構造化経路証明の再検証が完了していないため書き出せません。'
+                    : 'Export is unavailable until structured path certificates are revalidated.')
+                : selectLocalizedText(locale, TEXT.exportTitle)
           }
           onClick={onExport}
         >

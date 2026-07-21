@@ -370,7 +370,7 @@ describe('InstructionTimelinePanel localization', () => {
       .toBeGreaterThan(0)
   })
 
-  it('keeps the reopened proof binding visible when browser UI starts diagram export', () => {
+  it('keeps the reopened proof binding visible but fails closed before endpoint verification', () => {
     const onExport = vi.fn()
     const proof = `${'7c'.repeat(32)} / 元モデル SHA-256: ${FINGERPRINT}`
     renderPanel({
@@ -400,8 +400,10 @@ describe('InstructionTimelinePanel localization', () => {
       'value',
       `経路証明 SHA-256: ${proof}`,
     )
-    fireEvent.click(screen.getByRole('button', { name: '折り図を書き出す' }))
-    expect(onExport).toHaveBeenCalledTimes(1)
+    const exportButton = screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement
+    expect(exportButton.disabled).toBe(true)
+    fireEvent.click(exportButton)
+    expect(onExport).toHaveBeenCalledTimes(0)
   })
 
   it('warns instead of trusting mismatched or text-only certificate descriptions', () => {
@@ -458,6 +460,8 @@ describe('InstructionTimelinePanel localization', () => {
     expect(screen.getByRole('alert').textContent).toContain(
       '構造化証明データがないため、この説明文は証明として扱いません',
     )
+    expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
+      .toBe(false)
   })
 
   it('reopens a valid archive certificate and warns on model or endpoint tampering', async () => {
@@ -500,23 +504,36 @@ describe('InstructionTimelinePanel localization', () => {
       ...SNAPSHOT,
       instruction_timeline: { steps: [previous, proofStep] },
     })) as ProjectSnapshot
-    const view = renderPanel(reopened)
+    const onExport = vi.fn()
+    const view = renderPanel(reopened, vi.fn(() => true), APPLIED_POSE, onExport)
     fireEvent.click(screen.getByText('2. Fold crane · 完成形サムネイル').closest('button')!)
     const proofDetails = await screen.findByLabelText('構造化経路証明')
     expect(proofDetails.textContent).toContain('証明指紋: 7c7c7c7c7c7c…')
     expect(proofDetails.textContent).toContain('検証区間: 1')
+    const exportButton = screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement
+    expect(exportButton.disabled).toBe(false)
+    fireEvent.click(exportButton)
+    expect(onExport).toHaveBeenCalledTimes(1)
 
     const tamperedModel = JSON.parse(JSON.stringify(reopened)) as ProjectSnapshot
     tamperedModel.instruction_timeline.steps[1]!.visual.path_certificate_reference_v1!
       .source_model_binding_sha256[0] ^= 1
     view.rerender(panelFor(tamperedModel))
+    expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
+      .toBe(true)
     expect((await screen.findByRole('alert')).textContent).toContain('元モデルまたは姿勢端点')
+    expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
+      .toBe(true)
 
     const tamperedEndpoint = JSON.parse(JSON.stringify(reopened)) as ProjectSnapshot
     tamperedEndpoint.instruction_timeline.steps[1]!.visual.path_certificate_reference_v1!
       .target_pose_sha256[0] ^= 1
     view.rerender(panelFor(tamperedEndpoint))
+    expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
+      .toBe(true)
     expect((await screen.findByRole('alert')).textContent).toContain('元モデルまたは姿勢端点')
+    expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
+      .toBe(true)
   })
 })
 

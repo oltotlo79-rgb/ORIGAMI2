@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import {
   applyStackedFoldTransaction,
   applyNamedBookFoldTransaction,
+  applyNamedReverseFoldTransaction,
   cancelCurrentStackedFoldReadV1,
   cancelStackedFoldTransactionPreview,
   listenStackedFoldReadProgressV1,
@@ -47,6 +48,7 @@ type Props = Readonly<{
     document: FoldTechniqueFileDocumentV1
     techniqueId: string
     name: string
+    kind?: 'book' | 'reverse'
   }> | null
 }>
 
@@ -413,13 +415,19 @@ export function StackedFoldPanel({
   }
 
   function applyTransaction(token: string) {
-    return namedBookFold
-      ? applyNamedBookFoldTransaction(
+    return namedBookFold?.kind === 'reverse'
+      ? applyNamedReverseFoldTransaction(
           token,
           namedBookFold.document,
           namedBookFold.techniqueId,
         )
-      : applyStackedFoldTransaction(token)
+      : namedBookFold
+        ? applyNamedBookFoldTransaction(
+          token,
+          namedBookFold.document,
+          namedBookFold.techniqueId,
+        )
+        : applyStackedFoldTransaction(token)
   }
 
   async function previewCurrentCyclePose() {
@@ -944,7 +952,9 @@ export function StackedFoldPanel({
             {applying
               ? t('適用中…', 'Applying…')
               : namedBookFold
-                ? t('名前付き二つ折りを適用', 'Apply named book fold')
+                ? namedBookFold.kind === 'reverse'
+                  ? t('名前付き逆折りを適用', 'Apply named reverse fold')
+                  : t('名前付き二つ折りを適用', 'Apply named book fold')
                 : t('折り重ねを適用', 'Apply stacked fold')}
           </button>
           {!ready && <p className="muted">{t('未証明のため適用は無効です。', 'Apply is disabled because the case is not fully certified.')}</p>}

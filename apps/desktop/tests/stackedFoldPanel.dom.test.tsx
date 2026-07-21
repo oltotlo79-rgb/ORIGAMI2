@@ -8,6 +8,7 @@ const transport = vi.hoisted(() => ({
   cyclePreview: vi.fn(),
   apply: vi.fn(),
   namedApply: vi.fn(),
+  reverseApply: vi.fn(),
   cancel: vi.fn(),
   cancelRead: vi.fn(),
   registry: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => ({
   proposeCurrentCyclePoseV1: transport.cyclePreview,
   applyStackedFoldTransaction: transport.apply,
   applyNamedBookFoldTransaction: transport.namedApply,
+  applyNamedReverseFoldTransaction: transport.reverseApply,
   cancelStackedFoldTransactionPreview: transport.cancel,
   cancelCurrentStackedFoldReadV1: transport.cancelRead,
   readLiveHingeRegistryV1: transport.registry,
@@ -529,6 +531,29 @@ describe('StackedFoldPanel', () => {
     expect(onApplied).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Apply named book fold' }))
       .toHaveProperty('disabled', false)
+  })
+
+  it('routes a named reverse fold only through the two-segment native transaction', async () => {
+    transport.preview.mockResolvedValue(ready)
+    transport.reverseApply.mockResolvedValue(4)
+    const document = { techniques: [] } as any
+    render(<StackedFoldPanel
+      locale="en" snapshot={snapshot}
+      selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+      disabled={false}
+      namedBookFold={{ document, techniqueId: 'inside-reverse', name: 'Inside reverse', kind: 'reverse' }}
+      refreshSnapshot={vi.fn().mockResolvedValue({ ...snapshot, revision: 4 })}
+      onApplied={vi.fn()}
+    />)
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    const apply = await screen.findByRole('button', { name: 'Apply named reverse fold' })
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(apply)
+    await waitFor(() => expect(transport.reverseApply).toHaveBeenCalledWith(
+      token, document, 'inside-reverse',
+    ))
+    expect(transport.namedApply).not.toHaveBeenCalled()
+    expect(transport.apply).not.toHaveBeenCalled()
   })
 
   it('keeps apply disabled when native metadata is not fully certified', async () => {

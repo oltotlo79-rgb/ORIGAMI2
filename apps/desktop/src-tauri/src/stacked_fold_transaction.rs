@@ -697,6 +697,70 @@ pub(super) fn apply_named_book_fold_transaction(
     )
 }
 
+#[tauri::command]
+pub(super) fn apply_named_reverse_fold_transaction(
+    app_state: State<'_, AppState>,
+    foldability_state: State<'_, GlobalFlatFoldabilityState>,
+    transaction_state: State<'_, StackedFoldTransactionState>,
+    token: ProjectId,
+    technique_document_json: String,
+    technique_id: String,
+) -> Result<u64, String> {
+    if technique_document_json.len() > ori_instructions::MAX_FOLD_TECHNIQUE_FILE_BYTES {
+        return Err("The named reverse-fold document exceeds the resource limit.".to_owned());
+    }
+    let document =
+        ori_instructions::read_fold_technique_file_v1(technique_document_json.as_bytes())
+            .map_err(|_| "The named reverse-fold document is invalid.".to_owned())?;
+    let technique = document
+        .document()
+        .techniques
+        .iter()
+        .find(|candidate| candidate.id == technique_id)
+        .ok_or_else(|| "The named reverse-fold technique is unavailable.".to_owned())?;
+    let reverse_count = technique
+        .operations
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation.action,
+                ori_instructions::FoldTechniqueActionV1::InsideReverseFold
+                    | ori_instructions::FoldTechniqueActionV1::OutsideReverseFold
+            )
+        })
+        .count();
+    if reverse_count != 1 {
+        return Err("Exactly one reverse-fold operation is required.".to_owned());
+    }
+    {
+        let slot = lock_slot(&transaction_state)?;
+        let pending = slot
+            .pending
+            .as_ref()
+            .filter(|pending| pending.token() == token)
+            .ok_or_else(|| "The reverse-fold transaction preview is stale.".to_owned())?;
+        if pending.requested.ordered_timeline_angles().len() < 2
+            || !pending.requested.continuous_certified()
+        {
+            return Err("Two continuous certified reverse-fold segments are required.".to_owned());
+        }
+    }
+    let title = technique
+        .names
+        .iter()
+        .find(|text| text.locale == "ja")
+        .or_else(|| technique.names.first())
+        .map(|text| text.text.clone())
+        .ok_or_else(|| "The named reverse-fold title is unavailable.".to_owned())?;
+    apply_stacked_fold_transaction_with_title(
+        &app_state,
+        &foldability_state,
+        &transaction_state,
+        token,
+        Some(&title),
+    )
+}
+
 pub(crate) fn apply_stacked_fold_transaction_inner(
     app_state: &AppState,
     foldability_state: &GlobalFlatFoldabilityState,

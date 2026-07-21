@@ -266,7 +266,7 @@ function Harness() {
       <button onClick={() => setStatus('Generic target undone')}>Undo generic target</button>
       <button onClick={() => setStatus('Generic target redone')}>Redo generic target</button>
       <button onClick={() => setStatus('Generic target saved and reopened')}>Save and reopen generic target</button>
-      {['SVG', 'FOLD', 'ORIPA', 'Instruction PDF'].map((format) => <button key={format}
+      {['SVG', 'FOLD', 'ORIPA', 'Instruction PDF', 'Instruction SVG ZIP'].map((format) => <button key={format}
         onClick={() => setExportStatus(`${format} parsed: topology authority and confidence provenance retained`)}>
         Export {format}</button>)}
       <button onClick={() => setExportStatus('Rejected export: stale or tampered topology provenance')}>Try tampered provenance export</button>

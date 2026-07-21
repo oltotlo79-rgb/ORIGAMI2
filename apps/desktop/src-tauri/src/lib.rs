@@ -138,7 +138,8 @@ use ori_core::{
 };
 use ori_domain::{
     AssetId, ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
-    GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionHingeAngle, InstructionPose,
+    GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionArrow,
+    InstructionFocusPoint, InstructionHingeAngle, InstructionPoint3, InstructionPose,
     InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline,
     InstructionVisual, LayerContentKindV1, LayerId, LayerRecordV1, LengthDisplayUnit,
     MAX_INSTRUCTION_HINGES_PER_STEP, MAX_INSTRUCTION_STEPS, Paper, Point2, ProjectId,
@@ -4066,6 +4067,52 @@ fn apply_grid_plan_document(
         );
         let remaining = maximum_steps.saturating_sub(instruction_timeline.steps.len());
         for (generated_face_id, vertices, creases) in topology_ids.iter().take(remaining) {
+            let crease = creases
+                .first()
+                .and_then(|id| pattern.edges.iter().find(|edge| edge.id == *id));
+            let arrow = crease.and_then(|edge| {
+                let start = pattern
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == edge.start)?;
+                let end = pattern
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == edge.end)?;
+                Some(InstructionArrow {
+                    start: InstructionPoint3 {
+                        x: start.position.x,
+                        y: start.position.y,
+                        z: 0.0,
+                    },
+                    end: InstructionPoint3 {
+                        x: end.position.x,
+                        y: end.position.y,
+                        z: 0.0,
+                    },
+                    label: match edge.kind {
+                        EdgeKind::Mountain => "M",
+                        EdgeKind::Valley => "V",
+                        _ => "F",
+                    }
+                    .to_owned(),
+                })
+            });
+            let focus = vertices.first().and_then(|id| {
+                pattern
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == *id)
+                    .map(|vertex| InstructionFocusPoint {
+                        position: InstructionPoint3 {
+                            x: vertex.position.x,
+                            y: vertex.position.y,
+                            z: 0.0,
+                        },
+                        radius: 4.0,
+                        label: format!("Face {generated_face_id}"),
+                    })
+            });
             instruction_timeline.steps.push(InstructionStep {
                 id: InstructionStepId::new(),
                 title: format!("Shape generated face {generated_face_id}"),
@@ -4077,7 +4124,11 @@ fn apply_grid_plan_document(
                     "This declarative step is bound to topology authority SHA-256: {authority_hex}. Revalidate the live folded preview before performing it."
                 ),
                 duration_ms: 1_500,
-                visual: InstructionVisual::default(),
+                visual: InstructionVisual {
+                    arrows: arrow.into_iter().collect(),
+                    focus_points: focus.into_iter().collect(),
+                    ..InstructionVisual::default()
+                },
                 pose: InstructionPose {
                     model: InstructionPoseModel::DeclarativeOnlyV1,
                     source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),

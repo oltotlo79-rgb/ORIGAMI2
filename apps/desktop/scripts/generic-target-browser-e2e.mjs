@@ -195,7 +195,7 @@ try {
     await page.getByText('Applied merged authority witness: image contours + GLB depth/bulges', { exact: true }).waitFor()
     await page.getByText('Applied 3D candidate score 68/100 · depth error 7 mm', { exact: true }).waitFor()
   }
-  for (const format of ['SVG', 'FOLD', 'ORIPA', 'Instruction PDF']) {
+  for (const format of ['SVG', 'FOLD', 'ORIPA', 'Instruction PDF', 'Instruction SVG ZIP']) {
     await page.getByRole('button', { name: `Export ${format}` }).click()
     await page.getByText(`${format} parsed: topology authority and confidence provenance retained`, { exact: true }).waitFor()
   }

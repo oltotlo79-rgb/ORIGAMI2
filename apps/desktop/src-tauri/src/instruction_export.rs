@@ -1659,6 +1659,46 @@ pub(crate) mod tests {
             assert!(build_pending_export(source).is_ok());
         }
 
+        let mut outside_reverse_timeline = reopened_reverse.clone();
+        outside_reverse_timeline.steps[0].title = "外割り折りの開始姿勢".to_owned();
+        outside_reverse_timeline.steps[1].title = "外割り折り 1".to_owned();
+        outside_reverse_timeline.steps[2].title = "外割り折り 2".to_owned();
+        let outside_reverse_archive = serde_json::to_vec(&outside_reverse_timeline)
+            .expect("archive outside reverse fold");
+        let reopened_outside_reverse: ori_domain::InstructionTimeline =
+            serde_json::from_slice(&outside_reverse_archive)
+                .expect("reopen outside reverse fold");
+        assert_ne!(
+            reopened_outside_reverse.steps[2].title,
+            reopened_reverse.steps[2].title,
+            "outside and inside reverse folds remain explicitly distinguishable"
+        );
+        for (format, magic) in [
+            (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+            (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = reopened_outside_reverse.clone();
+            let artifact =
+                build_pending_export(source).expect("native outside-reverse export");
+            assert_eq!(artifact.step_count, 3);
+            assert!(artifact.bytes.starts_with(magic));
+        }
+
+        let mut uncertified_outside_reverse = reopened_outside_reverse;
+        for step in &mut uncertified_outside_reverse.steps[1..] {
+            step.visual.path_certificate_reference_v1 = None;
+            step.description = "手動で作成された外割り折りです。".to_owned();
+        }
+        for format in [
+            InstructionExportFormatRequest::Pdf,
+            InstructionExportFormatRequest::SvgZip,
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = uncertified_outside_reverse.clone();
+            assert!(build_pending_export(source).is_ok());
+        }
+
         let mut tampered_reverse = reopened_reverse.clone();
         tampered_reverse.steps[2]
             .visual

@@ -219,6 +219,20 @@ pub fn insect_complete_bindings_v1(
         || count(BeginnerTargetPartKindV1::Leg) != 6
         || count(BeginnerTargetPartKindV1::Wing) != 2
         || count(BeginnerTargetPartKindV1::Antenna) != 2
+        || [
+            BeginnerTargetPartKindV1::Leg,
+            BeginnerTargetPartKindV1::Wing,
+            BeginnerTargetPartKindV1::Antenna,
+        ]
+        .into_iter()
+        .any(|kind| {
+            constraints
+                .target_parts
+                .iter()
+                .filter(|part| part.kind == kind)
+                .count()
+                != 1
+        })
     {
         return None;
     }
@@ -1869,6 +1883,14 @@ mod tests {
         let mut ambiguous_priority = complete.clone();
         ambiguous_priority.protrusions[2].priority = 60;
         assert_eq!(insect_complete_bindings_v1(&ambiguous_priority), None);
+        let mut duplicate_part = complete.clone();
+        duplicate_part
+            .target_parts
+            .push(BeginnerTargetPartRecordV1 {
+                kind: BeginnerTargetPartKindV1::Wing,
+                count: 2,
+            });
+        assert_eq!(insect_complete_bindings_v1(&duplicate_part), None);
         let mut single_antenna = antenna.clone();
         single_antenna.target_parts[2].count = 1;
         single_antenna.protrusions[0].count = 1;

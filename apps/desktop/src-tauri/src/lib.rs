@@ -3583,6 +3583,18 @@ fn derive_reference_model_suggestion_v1(
         && target_parts
             .iter()
             .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6);
+    if requested_complete_insect
+        && (!bilateral
+            || [
+                ori_domain::BeginnerTargetPartKindV1::Wing,
+                ori_domain::BeginnerTargetPartKindV1::Antenna,
+                ori_domain::BeginnerTargetPartKindV1::Leg,
+            ]
+            .into_iter()
+            .any(|kind| target_parts.iter().filter(|part| part.kind == kind).count() != 1))
+    {
+        return Err("reference_model_feature_range".to_owned());
+    }
     let requested_pair = target_parts.iter().find(|part| {
         part.count == 2
             && matches!(
@@ -10951,7 +10963,42 @@ mod tests {
         pair_order_aba.pair_bindings.swap(2, 4);
         assert_ne!(pair_order_aba, complete);
 
+        let mut asymmetric = geometry.clone();
+        asymmetric.positions[3][0] = 0.03;
+        assert!(
+            derive_reference_model_suggestion_v1(
+                asset_id,
+                &asymmetric,
+                Some(ori_domain::BeginnerTargetCategoryV1::Insect),
+                &complete_parts,
+            )
+            .is_err()
+        );
+        let mut duplicate_parts = complete_parts.to_vec();
+        duplicate_parts.push(complete_parts[0].clone());
+        assert!(
+            derive_reference_model_suggestion_v1(
+                asset_id,
+                &geometry,
+                Some(ori_domain::BeginnerTargetCategoryV1::Insect),
+                &duplicate_parts,
+            )
+            .is_err()
+        );
+        let mut extreme = geometry.clone();
+        extreme.positions[0][0] = f32::INFINITY;
+        assert!(
+            derive_reference_model_suggestion_v1(
+                asset_id,
+                &extreme,
+                Some(ori_domain::BeginnerTargetCategoryV1::Insect),
+                &complete_parts,
+            )
+            .is_err()
+        );
+
         let mut replacement_geometry = geometry.clone();
+        replacement_geometry.positions[2][1] = 0.04;
         replacement_geometry.positions[3][1] = 0.04;
         let replacement = derive_reference_model_suggestion_v1(
             asset_id,

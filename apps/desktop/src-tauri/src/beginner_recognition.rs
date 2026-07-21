@@ -319,6 +319,21 @@ pub(crate) struct ApplyBeginnerPartAssignmentsRequest {
     confirmed: bool,
 }
 
+fn candidate_pair_is_symmetric(
+    axis_twice: i64,
+    left: &ori_domain::BeginnerRecognitionBoundsV1,
+    right: &ori_domain::BeginnerRecognitionBoundsV1,
+) -> bool {
+    let left_x = i64::from(left.min_x) + i64::from(left.max_x);
+    let right_x = i64::from(right.min_x) + i64::from(right.max_x);
+    let left_y = i64::from(left.min_y) + i64::from(left.max_y);
+    let right_y = i64::from(right.min_y) + i64::from(right.max_y);
+    left_x + right_x == axis_twice * 2
+        && left_y == right_y
+        && left.max_x - left.min_x == right.max_x - right.min_x
+        && left.max_y - left.min_y == right.max_y - right.min_y
+}
+
 #[tauri::command]
 pub(crate) fn apply_beginner_part_assignments(
     state: State<'_, AppState>,
@@ -465,13 +480,13 @@ pub(crate) fn apply_beginner_part_assignments(
             if pair.len() != 2 {
                 return Err("part_assignment_wing_antenna_binding_invalid".to_owned());
             }
+            if !candidate_pair_is_symmetric(axis_twice, &pair[0].bounds, &pair[1].bounds) {
+                return Err("part_assignment_wing_antenna_binding_invalid".to_owned());
+            }
             let left_x = i64::from(pair[0].bounds.min_x) + i64::from(pair[0].bounds.max_x);
             let right_x = i64::from(pair[1].bounds.min_x) + i64::from(pair[1].bounds.max_x);
             let left_y = i64::from(pair[0].bounds.min_y) + i64::from(pair[0].bounds.max_y);
             let right_y = i64::from(pair[1].bounds.min_y) + i64::from(pair[1].bounds.max_y);
-            if (left_x + right_x - axis_twice * 2).abs() > 2 || (left_y - right_y).abs() > 2 {
-                return Err("part_assignment_wing_antenna_binding_invalid".to_owned());
-            }
             Ok(ori_domain::BeginnerProtrusionTargetV1 {
                 id,
                 count: 2,
@@ -788,9 +803,7 @@ pub(crate) fn apply_beginner_part_assignments(
                 i64::from(pair[1].bounds.min_x) + i64::from(pair[1].bounds.max_x);
             let left_y_twice = i64::from(pair[0].bounds.min_y) + i64::from(pair[0].bounds.max_y);
             let right_y_twice = i64::from(pair[1].bounds.min_y) + i64::from(pair[1].bounds.max_y);
-            if (left_center_twice + right_center_twice - axis_twice * 2).abs() > 2
-                || (left_y_twice - right_y_twice).abs() > 2
-            {
+            if !candidate_pair_is_symmetric(axis_twice, &pair[0].bounds, &pair[1].bounds) {
                 return Err("part_assignment_six_leg_binding_invalid".to_owned());
             }
             let length_tenths_mm = u32::try_from(
@@ -1163,7 +1176,36 @@ fn decode_general_jpeg(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_general_image, decode_general_png, decode_marker_png};
+    use super::{
+        candidate_pair_is_symmetric, decode_general_image, decode_general_png, decode_marker_png,
+    };
+
+    #[test]
+    fn complete_insect_image_pairs_require_both_equal_mirrored_sides() {
+        let left = ori_domain::BeginnerRecognitionBoundsV1 {
+            min_x: 1,
+            min_y: 4,
+            max_x: 3,
+            max_y: 8,
+        };
+        let right = ori_domain::BeginnerRecognitionBoundsV1 {
+            min_x: 7,
+            min_y: 4,
+            max_x: 9,
+            max_y: 8,
+        };
+        assert!(candidate_pair_is_symmetric(10, &left, &right));
+        let mut asymmetric_width = right.clone();
+        asymmetric_width.max_x = 10;
+        assert!(!candidate_pair_is_symmetric(10, &left, &asymmetric_width));
+        let mut asymmetric_height = right.clone();
+        asymmetric_height.max_y = 9;
+        assert!(!candidate_pair_is_symmetric(10, &left, &asymmetric_height));
+        let mut missing_mirror = right;
+        missing_mirror.min_x = 6;
+        missing_mirror.max_x = 8;
+        assert!(!candidate_pair_is_symmetric(10, &left, &missing_mirror));
+    }
 
     fn encode(color: png::ColorType, pixels: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::new();

@@ -3464,7 +3464,7 @@ mod tests {
     fn coupled_cactus_previews_apply_and_round_trip_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         for cycle_count in [2, 3, 16] {
-            for thickness_mm in [0.1, 1.0, 3.0] {
+            for thickness_mm in [10_000.0, 0.1, 1.0, 3.0] {
                 let (pattern, mut paper, hinges) = if cycle_count == 2 {
                     super::four_bay_cycle_test_support::two_bay_rational_cycle_pattern()
                 } else if cycle_count == 3 {
@@ -3505,14 +3505,16 @@ mod tests {
                 let app_state = AppState::new(project);
                 let transactions =
                     super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-                assert!(
-                    crate::applied_pose::certify_current_static_collision(
-                        &app_state,
-                        ori_collision::StaticCollisionLimits::default(),
-                    )
-                    .expect("flat cactus current collision diagnosis")
-                    .is_some()
-                );
+                if thickness_mm < 10_000.0 {
+                    assert!(
+                        crate::applied_pose::certify_current_static_collision(
+                            &app_state,
+                            ori_collision::StaticCollisionLimits::default(),
+                        )
+                        .expect("flat cactus current collision diagnosis")
+                        .is_some()
+                    );
+                }
                 let response = propose_current_cycle_pose_inner(
                     None,
                     &app_state,
@@ -3524,8 +3526,24 @@ mod tests {
                         expected_revision: revision,
                         cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
                     },
-                )
-                .expect("coupled cactus preview");
+                );
+                if thickness_mm == 10_000.0 {
+                    assert_eq!(response.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
+                    let project = super::super::lock_project(&app_state).unwrap();
+                    assert!(project.editor.instruction_timeline().steps.is_empty());
+                    assert_eq!(project.editor.revision(), revision);
+                    assert!(
+                        super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                            &app_state,
+                            &GlobalFlatFoldabilityState::default(),
+                            &transactions,
+                            ProjectId::new(),
+                        )
+                        .is_err()
+                    );
+                    continue;
+                }
+                let response = response.expect("coupled cactus preview");
                 assert_eq!(response.closure_leaf_count, cycle_count);
                 assert_eq!(response.checked_hinge_count, cycle_count * 4);
                 super::super::stacked_fold_transaction::cancel_pending_stacked_fold(

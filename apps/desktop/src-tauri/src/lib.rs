@@ -4563,6 +4563,7 @@ fn apply_grid_plan_document(
     plan: ori_domain::BeginnerGeneratedPlanV1,
 ) -> Result<ProjectSnapshot, String> {
     let selected_kind = plan.kind;
+    let selected_instruction_codes = plan.instruction_codes.clone();
     let semantic_landmark_provenance = plan.semantic_landmark_provenance.clone();
     let topology_witness = beginner_contour_placement_witness(
         &project
@@ -4922,7 +4923,16 @@ fn apply_grid_plan_document(
         Some(ori_domain::BeginnerGenerationProvenanceV1 {
             schema_version: 1,
             topology_authority_sha256: topology_witness.topology_authority_hash,
-            fold_path_certificate_sha256: None,
+            fold_path_certificate_sha256: Some(
+                sha2::Sha256::digest(
+                    serde_json::to_vec(&(
+                        topology_witness.topology_authority_hash,
+                        selected_instruction_codes,
+                    ))
+                    .map_err(|_| "grid_candidate_path_certificate_invalid")?,
+                )
+                .into(),
+            ),
             confidence_score: ori_domain::beginner_target_approximation_score_v1(
                 &beginner_design_profile.generation_constraints,
             ),

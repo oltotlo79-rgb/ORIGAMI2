@@ -51,8 +51,8 @@ mod parameter_grid_tests {
 pub struct BeginnerParameterGridHashV1(pub [u8; 32]);
 
 #[must_use]
-pub fn beginner_parameter_grid_v1()
--> [BeginnerParameterGridPointV1; BEGINNER_PARAMETER_GRID_SIZE_V1] {
+pub fn beginner_parameter_grid_v1(
+) -> [BeginnerParameterGridPointV1; BEGINNER_PARAMETER_GRID_SIZE_V1] {
     let scales = [10, 27, 45];
     let spacings = [20, 50, 80];
     let details = [
@@ -1556,11 +1556,9 @@ mod tests {
             BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
         );
         assert_eq!(first[0].crease_pattern.edges.len(), 4);
-        assert!(
-            first[1..]
-                .iter()
-                .all(|plan| plan.crease_pattern.edges.len() == 1)
-        );
+        assert!(first[1..]
+            .iter()
+            .all(|plan| plan.crease_pattern.edges.len() == 1));
         for (part_kind, expected_kind) in [
             (
                 BeginnerTargetPartKindV1::Wing,
@@ -1846,6 +1844,29 @@ mod tests {
                 .leg_pair_protrusion_ids,
             [3, 4, 5]
         );
+        let mut reordered = complete.clone();
+        reordered.protrusions.reverse();
+        let reordered_binding = insect_complete_bindings_v1(&reordered).unwrap();
+        assert_eq!(reordered_binding.wing_pair_protrusion_id, 1);
+        assert_eq!(reordered_binding.antenna_pair_protrusion_id, 2);
+        assert_eq!(reordered_binding.leg_pair_protrusion_ids, [3, 4, 5]);
+
+        let mut duplicate_id = complete.clone();
+        duplicate_id.protrusions[4].id = duplicate_id.protrusions[3].id;
+        assert_eq!(insect_complete_bindings_v1(&duplicate_id), None);
+        let mut duplicate_position = complete.clone();
+        duplicate_position.protrusions[4].position_tenths_mm[1] =
+            duplicate_position.protrusions[3].position_tenths_mm[1];
+        assert_eq!(insect_complete_bindings_v1(&duplicate_position), None);
+        let mut oversized = complete.clone();
+        let mut extra_leg = bilateral_protrusion(6, 2);
+        extra_leg.priority = 50;
+        extra_leg.position_tenths_mm[1] = 9;
+        oversized.protrusions.push(extra_leg);
+        assert_eq!(insect_complete_bindings_v1(&oversized), None);
+        let mut ambiguous_priority = complete.clone();
+        ambiguous_priority.protrusions[2].priority = 60;
+        assert_eq!(insect_complete_bindings_v1(&ambiguous_priority), None);
         let mut single_antenna = antenna.clone();
         single_antenna.target_parts[2].count = 1;
         single_antenna.protrusions[0].count = 1;

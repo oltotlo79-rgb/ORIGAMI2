@@ -20,6 +20,37 @@ use crate::{
 
 const TARGET_ANGLE_ROLE: &str = "target_angle";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhysicalTechniqueCompilerV1 {
+    BookFold,
+    InsideReverseFold,
+    OutsideReverseFold,
+    SinkFold,
+    LayerSelective,
+}
+
+#[must_use]
+pub const fn physical_technique_compiler_v1(
+    action: &FoldTechniqueActionV1,
+) -> Option<PhysicalTechniqueCompilerV1> {
+    match action {
+        FoldTechniqueActionV1::InstructionCue { .. } => None,
+        FoldTechniqueActionV1::StraightLineStackedFold => {
+            Some(PhysicalTechniqueCompilerV1::BookFold)
+        }
+        FoldTechniqueActionV1::InsideReverseFold => {
+            Some(PhysicalTechniqueCompilerV1::InsideReverseFold)
+        }
+        FoldTechniqueActionV1::OutsideReverseFold => {
+            Some(PhysicalTechniqueCompilerV1::OutsideReverseFold)
+        }
+        FoldTechniqueActionV1::SinkFold { .. } => Some(PhysicalTechniqueCompilerV1::SinkFold),
+        FoldTechniqueActionV1::LayerSelectiveManipulation { .. } => {
+            Some(PhysicalTechniqueCompilerV1::LayerSelective)
+        }
+    }
+}
+
 /// Host-owned inputs for compiling one certified book fold.
 pub struct BookFoldMotionRequestV1<'a> {
     pub technique_file: &'a FoldTechniqueFileV1,
@@ -706,6 +737,49 @@ mod tests {
             locale: "ja".to_owned(),
             text: value.to_owned(),
         }]
+    }
+
+    #[test]
+    fn every_physical_v1_action_has_one_proof_bearing_compiler_family() {
+        let cue = FoldTechniqueActionV1::InstructionCue {
+            instructions: text("説明"),
+        };
+        assert_eq!(physical_technique_compiler_v1(&cue), None);
+        let cases = [
+            (
+                FoldTechniqueActionV1::StraightLineStackedFold,
+                PhysicalTechniqueCompilerV1::BookFold,
+            ),
+            (
+                FoldTechniqueActionV1::InsideReverseFold,
+                PhysicalTechniqueCompilerV1::InsideReverseFold,
+            ),
+            (
+                FoldTechniqueActionV1::OutsideReverseFold,
+                PhysicalTechniqueCompilerV1::OutsideReverseFold,
+            ),
+            (
+                FoldTechniqueActionV1::SinkFold {
+                    sink_kind: crate::FoldTechniqueSinkKindV1::Open,
+                },
+                PhysicalTechniqueCompilerV1::SinkFold,
+            ),
+            (
+                FoldTechniqueActionV1::SinkFold {
+                    sink_kind: crate::FoldTechniqueSinkKindV1::Closed,
+                },
+                PhysicalTechniqueCompilerV1::SinkFold,
+            ),
+            (
+                FoldTechniqueActionV1::LayerSelectiveManipulation {
+                    instructions: text("層を選ぶ"),
+                },
+                PhysicalTechniqueCompilerV1::LayerSelective,
+            ),
+        ];
+        for (action, expected) in cases {
+            assert_eq!(physical_technique_compiler_v1(&action), Some(expected));
+        }
     }
 
     fn book_fold_file() -> FoldTechniqueFileV1 {

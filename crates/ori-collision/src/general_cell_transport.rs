@@ -169,6 +169,8 @@ pub fn certify_general_multi_face_cell_transport_v1(
     if folded.len() != input.source.material_faces.len() {
         return Err(GeneralCellTransportErrorV1::BindingMismatch);
     }
+    let mut cells = input.source.overlap_cells.iter().collect::<Vec<_>>();
+    cells.sort_unstable_by_key(|cell| cell.cell_key.0);
     let mut parameters = input
         .closure
         .leaves()
@@ -194,7 +196,7 @@ pub fn certify_general_multi_face_cell_transport_v1(
         let mut hash = Sha256::new();
         hash.update(GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1.as_bytes());
         hash.update(parameter.to_bits().to_be_bytes());
-        for cell in &input.source.overlap_cells {
+        for cell in &cells {
             if cell.bottom_to_top_faces.is_empty()
                 || cell.exact_boundary.len() < 3
                 || cell.covering_faces.len() != cell.bottom_to_top_faces.len()

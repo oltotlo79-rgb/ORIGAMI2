@@ -933,8 +933,8 @@ fn dense_parallel_grid_cycle_closure_premises_v1(
     tolerance: f64,
 ) -> bool {
     let face_count = geometry.face_ids().len();
-    let Some((columns, rows)) = (3usize..=7).find_map(|columns| {
-        (3usize..=7).find_map(|rows| {
+    let Some((columns, rows)) = (3usize..=9).find_map(|columns| {
+        (3usize..=9).find_map(|rows| {
             (columns * rows == face_count
                 && geometry.hinges().len() == 2 * columns * rows - columns - rows
                 && audit.closure_hinges().len() == (columns - 1) * (rows - 1))

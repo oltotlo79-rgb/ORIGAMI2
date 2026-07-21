@@ -1689,8 +1689,8 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
         };
     }
     let dense_face_count = geometry.face_ids().len();
-    let dense_dimensions = (3usize..=7).find_map(|columns| {
-        (3usize..=7).find_map(|rows| {
+    let dense_dimensions = (3usize..=9).find_map(|columns| {
+        (3usize..=9).find_map(|rows| {
             (columns * rows == dense_face_count
                 && geometry.hinges().len() == 2 * columns * rows - columns - rows
                 && audit.closure_hinges().len() == (columns - 1) * (rows - 1))
@@ -1999,8 +1999,8 @@ pub fn supports_scheduled_positive_thickness_path_v1(
         return true;
     }
     let face_count = geometry.face_ids().len();
-    (3usize..=7).any(|columns| {
-        (3usize..=7).any(|rows| {
+    (3usize..=9).any(|columns| {
+        (3usize..=9).any(|rows| {
             columns * rows == face_count
                 && geometry.hinges().len() == 2 * columns * rows - columns - rows
                 && audit.closure_hinges().len() == (columns - 1) * (rows - 1)
@@ -8288,5 +8288,183 @@ mod tests {
             .continuous_certificate_model_id()
             .is_none()
         );
+    }
+
+    #[test]
+    fn miura_rank_eight_to_thirty_two_cell_proofs_are_bounded_and_deterministic() {
+        for (columns, rows, rank) in [(3, 5, 8usize), (5, 5, 16), (5, 9, 32)] {
+            let (pattern, paper, horizontal, _) =
+                super::dense_grid_cycle_test_support::miura_authority_pattern(columns, rows);
+            let project = ProjectId::new();
+            let topology = analyze_faces(FaceExtractionInput {
+                identity_namespace: project,
+                source_revision: 1,
+                paper: &paper,
+                pattern: &pattern,
+            })
+            .snapshot
+            .unwrap();
+            let local = ori_topology::analyze_local_flat_foldability(&paper, &pattern);
+            let global = ori_foldability::analyze_global_flat_foldability(
+                ori_foldability::GlobalFlatFoldabilityInput::current_with_geometry(
+                    project, &paper, &pattern, &topology, &local,
+                ),
+                ori_foldability::GlobalFlatFoldabilityLimits::default(),
+            )
+            .unwrap();
+            let source = global.layer_order().expect("Miura global authority");
+            let geometry = MaterialHingeGraphGeometry::prepare(
+                &pattern,
+                &paper,
+                &topology,
+                TreeKinematicsLimits::default(),
+            )
+            .unwrap();
+            let audit =
+                MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default())
+                    .unwrap();
+            assert_eq!(audit.closure_hinges().len(), rank);
+            let fixed = geometry.face_ids()[0];
+            let active = horizontal.into_iter().take(columns).collect::<HashSet<_>>();
+            let mut entries = geometry
+                .hinges()
+                .iter()
+                .map(|hinge| HalfAngleRationalEntryInputV1 {
+                    edge: hinge.edge(),
+                    u_domain: [
+                        RationalCoefficientV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ],
+                    numerator_power_coefficients: vec![
+                        RationalCoefficientV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientV1 {
+                            numerator: i64::from(active.contains(&hinge.edge())),
+                            denominator: 1,
+                        },
+                    ],
+                    denominator_power_coefficients: vec![RationalCoefficientV1 {
+                        numerator: if active.contains(&hinge.edge()) {
+                            100
+                        } else {
+                            1
+                        },
+                        denominator: 1,
+                    }],
+                })
+                .collect::<Vec<_>>();
+            entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+            let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+                &geometry,
+                &audit,
+                fixed,
+                entries,
+                CycleScheduleLimitsV1::default(),
+            )
+            .unwrap();
+            let closure = geometry
+                .prove_dyadic_schedule_closure_v1(
+                    &audit,
+                    fixed,
+                    &schedule,
+                    1.0e-9,
+                    DyadicIntervalClosureLimitsV1 {
+                        max_depth: 8,
+                        max_leaves: 256,
+                        max_work: 1_000_000,
+                        schedule_limits: CycleScheduleLimitsV1::default(),
+                    },
+                )
+                .unwrap();
+            let positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+                &geometry, &audit, fixed, &schedule, &closure, 0.1, 1,
+            )
+            .unwrap();
+            let transitions = closure.leaves().len() + 1;
+            let layer_records = source
+                .overlap_cells
+                .iter()
+                .map(|cell| cell.bottom_to_top_faces.len())
+                .sum::<usize>();
+            let boundary_samples = source
+                .overlap_cells
+                .iter()
+                .map(|cell| cell.exact_boundary.len() * cell.bottom_to_top_faces.len())
+                .sum::<usize>()
+                * transitions;
+            let limits = crate::GeneralCellTransportLimitsV1 {
+                max_transitions: transitions,
+                max_cells: source.overlap_cells.len(),
+                max_layer_records: layer_records,
+                max_boundary_samples: boundary_samples,
+            };
+            let certify = || {
+                crate::certify_general_multi_face_cell_transport_v1(
+                    crate::GeneralCellTransportInputV1 {
+                        geometry: &geometry,
+                        audit: &audit,
+                        source,
+                        schedule: &schedule,
+                        closure: &closure,
+                        positive_continuous: &positive,
+                        paper_thickness_mm: 0.1,
+                        tolerance: 1.0e-9,
+                        limits,
+                    },
+                )
+            };
+            let first = certify().unwrap();
+            let second = certify().unwrap();
+            assert_eq!(first.checkpoint_hashes(), second.checkpoint_hashes());
+            assert_eq!(first.checkpoint_hashes().len(), transitions);
+            let mut reordered = source.clone();
+            reordered.overlap_cells.reverse();
+            reordered.folded_faces.reverse();
+            let reordered_proof = crate::certify_general_multi_face_cell_transport_v1(
+                crate::GeneralCellTransportInputV1 {
+                    geometry: &geometry,
+                    audit: &audit,
+                    source: &reordered,
+                    schedule: &schedule,
+                    closure: &closure,
+                    positive_continuous: &positive,
+                    paper_thickness_mm: 0.1,
+                    tolerance: 1.0e-9,
+                    limits,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                first.checkpoint_hashes(),
+                reordered_proof.checkpoint_hashes()
+            );
+            assert!(matches!(
+                crate::certify_general_multi_face_cell_transport_v1(
+                    crate::GeneralCellTransportInputV1 {
+                        limits: crate::GeneralCellTransportLimitsV1 {
+                            max_boundary_samples: boundary_samples - 1,
+                            ..limits
+                        },
+                        geometry: &geometry,
+                        audit: &audit,
+                        source,
+                        schedule: &schedule,
+                        closure: &closure,
+                        positive_continuous: &positive,
+                        paper_thickness_mm: 0.1,
+                        tolerance: 1.0e-9,
+                    },
+                ),
+                Err(crate::GeneralCellTransportErrorV1::ResourceLimit)
+            ));
+        }
     }
 }

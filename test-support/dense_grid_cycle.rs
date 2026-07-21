@@ -23,8 +23,8 @@ pub fn orthogonal_dense_cycle_pattern(
     columns: usize,
     rows: usize,
 ) -> (CreasePattern, Paper, Vec<EdgeId>, Vec<EdgeId>) {
-    assert!((3..=7).contains(&columns));
-    assert!((3..=7).contains(&rows));
+    assert!((3..=9).contains(&columns));
+    assert!((3..=9).contains(&rows));
     let width = columns + 1;
     let height = rows + 1;
     let namespace = ProjectId::new();
@@ -123,7 +123,15 @@ pub fn angled_dense_cycle_pattern(
 #[allow(dead_code)]
 pub fn three_by_three_miura_authority_pattern() -> (CreasePattern, Paper, Vec<EdgeId>, Vec<EdgeId>)
 {
-    let (mut pattern, paper, horizontal, vertical) = orthogonal_dense_cycle_pattern(3, 3);
+    miura_authority_pattern(3, 3)
+}
+
+#[allow(dead_code)]
+pub fn miura_authority_pattern(
+    columns: usize,
+    rows: usize,
+) -> (CreasePattern, Paper, Vec<EdgeId>, Vec<EdgeId>) {
+    let (mut pattern, paper, horizontal, vertical) = orthogonal_dense_cycle_pattern(columns, rows);
     let vertical_set = vertical
         .iter()
         .copied()
@@ -134,8 +142,8 @@ pub fn three_by_three_miura_authority_pattern() -> (CreasePattern, Paper, Vec<Ed
                 .iter()
                 .position(|candidate| *candidate == edge.id)
                 .expect("vertical carrier")
-                % 3;
-            edge.kind = if segment == 1 {
+                % rows;
+            edge.kind = if segment % 2 == 1 {
                 EdgeKind::Mountain
             } else {
                 EdgeKind::Valley

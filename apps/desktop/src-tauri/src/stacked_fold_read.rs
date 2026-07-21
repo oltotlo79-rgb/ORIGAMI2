@@ -3712,9 +3712,33 @@ mod tests {
                 expected_revision: revision,
                 cycle_schedule_v1: theta_cycle_schedule(&hinges, &moving),
             };
-            let cancelled =
+            let mut broken = request();
+            broken.cycle_schedule_v1.entries[0].requested_angle_degrees += 1.0;
+            assert!(
+                propose_current_cycle_pose_inner(None, &app_state, &transactions, broken).is_err()
+            );
+            assert_eq!(
+                super::super::lock_project(&app_state)
+                    .unwrap()
+                    .editor
+                    .revision(),
+                revision
+            );
+            let replaced =
                 propose_current_cycle_pose_inner(None, &app_state, &transactions, request())
                     .expect("theta preview");
+            let cancelled =
+                propose_current_cycle_pose_inner(None, &app_state, &transactions, request())
+                    .expect("theta replacement preview");
+            assert!(
+                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                    &app_state,
+                    &GlobalFlatFoldabilityState::default(),
+                    &transactions,
+                    replaced.transaction_token,
+                )
+                .is_err()
+            );
             super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
                 &transactions,
                 cancelled.transaction_token,

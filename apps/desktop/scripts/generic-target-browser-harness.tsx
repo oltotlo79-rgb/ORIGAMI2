@@ -54,7 +54,11 @@ function Harness() {
     {recognized && <GenericBodyOutlineEditor locale="en" points={outline} onChange={setOutline}
       mode={outlineMode} onModeChange={setOutlineMode} />}
     {recognized && <BeginnerShapeCanvasPreview locale="en" bodySize={[400, 300]}
-      bodyOutline={outline} protrusions={bindings} />}
+      bodyOutline={outline} bodyMode={outlineMode} protrusions={bindings}
+      onBodyOutlineChange={setOutline}
+      onProtrusionChange={(changed) => setBindings((current) => current.map(
+        (target) => target.id === changed.id ? changed : target,
+      ))} />}
     {recognized && <button disabled={bindings.length >= 8} onClick={() => {
       setBindings((current) => canonicalize([...current, { ...initialBindings[0]!, id: current.length + 1 }]))
       setKinds((current) => [...current, 'tail'])

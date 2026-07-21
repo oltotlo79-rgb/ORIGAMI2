@@ -18,6 +18,11 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
   await context.addInitScript(() => localStorage.setItem('origami2.locale', 'en'))
   page = await context.newPage()
+  const browserErrors = []
+  page.on('console', (message) => {
+    if (message.type() === 'error') browserErrors.push(message.text())
+  })
+  page.on('pageerror', (error) => browserErrors.push(error.message))
   await page.goto(`${origin}/scripts/locale-browser-harness.html`, { waitUntil: 'networkidle' })
 
   let language = page.getByLabel('Display language')
@@ -33,11 +38,19 @@ try {
   }
   const checkNow = page.getByRole('button', { name: 'Check now' })
   await checkNow.evaluate((button) => { button.click(); button.click() })
+  const updateToggle = page.getByRole('switch', { name: 'Enable update checks' })
+  await updateToggle.uncheck()
+  await page.waitForTimeout(150)
+  if (await page.getByRole('link', { name: /Open release/u }).count() !== 0) {
+    throw new Error('late aborted update response became visible')
+  }
+  await updateToggle.check()
+  await checkNow.click()
   await page.getByText(
     'An update is available. Installed 1.0.0; latest release 1.1.0.',
     { exact: true },
   ).waitFor()
-  if (await page.evaluate(() => window.__ORIGAMI2_UPDATE_CHECK_CALLS__) !== 1) {
+  if (await page.evaluate(() => window.__ORIGAMI2_UPDATE_CHECK_CALLS__) !== 2) {
     throw new Error('duplicate update checks were not suppressed')
   }
   const releaseLink = page.getByRole('link', { name: 'Open release 1.1.0 on GitHub' })
@@ -59,6 +72,9 @@ try {
     throw new Error('English candidate copy remained after Japanese locale change')
   }
   await assertNoInternalText()
+  if (browserErrors.length !== 0) {
+    throw new Error(`browser console leaked update failures: ${browserErrors.join(' | ')}`)
+  }
 
   await page.goto(`${origin}/scripts/diagnostics-browser-harness.html`, {
     waitUntil: 'networkidle',

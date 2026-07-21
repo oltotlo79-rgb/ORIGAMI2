@@ -559,6 +559,38 @@ test('the fixed timeout aborts a stalled request without exposing its failure', 
   assert.doesNotMatch(JSON.stringify(result), /alice|private-project/iu)
 })
 
+test('manual abort detaches the old request and a retry publishes only the new response', async () => {
+  let calls = 0
+  const fetch: UpdateCheckFetch = (_input, init) => {
+    calls += 1
+    if (calls === 1) return new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new Error(
+        'C:\\Users\\private\\old-response.json',
+      )), { once: true })
+    })
+    return Promise.resolve(responseAtApi(validBody(), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+  }
+  const client = createUpdateCheckClient(createGitHubReleasesFetchTransport({
+    fetch,
+    clock: clock().value,
+  }))
+  const controller = new AbortController()
+  const old = client.checkNow('1.0.0', DEFAULT_UPDATE_CHECK_SETTINGS, controller.signal)
+  await Promise.resolve()
+  controller.abort()
+  assert.deepEqual(await old, { kind: 'unavailable', reason: 'network_unavailable' })
+  assert.deepEqual(await client.checkNow('1.0.0', DEFAULT_UPDATE_CHECK_SETTINGS), {
+    kind: 'update_available',
+    currentVersion: '1.0.0',
+    latestVersion: '1.2.3',
+    releasePageUrl: ORIGAMI2_GITHUB_RELEASE_PAGE_PREFIX + 'v1.2.3',
+  })
+  assert.equal(calls, 2)
+})
+
 function release(
   overrides: Readonly<Record<PropertyKey, unknown>> = {},
 ): Record<PropertyKey, unknown> {

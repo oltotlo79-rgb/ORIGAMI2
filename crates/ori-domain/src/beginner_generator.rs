@@ -757,6 +757,29 @@ pub enum BeginnerGeneratorErrorV1 {
     UnsupportedInsectTemplate,
 }
 
+fn canonical_asymmetric_quad(points: &[Point2]) -> Option<(Point2, Vec<Point2>)> {
+    if points.len() != 4 {
+        return None;
+    }
+    let center = Point2::new(
+        points[0].x + points[2].x - points[3].x,
+        points[0].y + points[2].y - points[3].y,
+    );
+    let scale = points[0].x - center.x;
+    let height = 3.0_f64.sqrt() * scale / 2.0;
+    let expected = [
+        (scale, 0.0),
+        (-scale / 2.0, height),
+        (-scale / 2.0, -height),
+        (scale / 2.0, -height),
+    ];
+    (scale > 0.0
+        && points.iter().zip(expected).all(|(point, (x, y))| {
+            (point.x - center.x - x).abs() <= 1.0e-12 && (point.y - center.y - y).abs() <= 1.0e-12
+        }))
+    .then(|| (center, points.to_vec()))
+}
+
 pub fn generate_beginner_plans_v1(
     namespace: ProjectId,
     source: &CreasePattern,
@@ -800,21 +823,24 @@ pub fn generate_beginner_plans_v1(
         .iter()
         .map(|point| point.y)
         .fold(f64::NEG_INFINITY, f64::max);
+    let canonical_asymmetric = canonical_asymmetric_quad(&points).is_some();
     if ![min_x, max_x, min_y, max_y].into_iter().all(f64::is_finite)
         || min_x >= max_x
         || min_y >= max_y
-        || !points.iter().all(|point| {
-            (point.x == min_x || point.x == max_x) && (min_y..=max_y).contains(&point.y)
-                || (point.y == min_y || point.y == max_y) && (min_x..=max_x).contains(&point.x)
-        })
-        || ![
-            (min_x, min_y),
-            (max_x, min_y),
-            (max_x, max_y),
-            (min_x, max_y),
-        ]
-        .into_iter()
-        .all(|corner| points.iter().any(|point| (point.x, point.y) == corner))
+        || !canonical_asymmetric
+            && !points.iter().all(|point| {
+                (point.x == min_x || point.x == max_x) && (min_y..=max_y).contains(&point.y)
+                    || (point.y == min_y || point.y == max_y) && (min_x..=max_x).contains(&point.x)
+            })
+        || !canonical_asymmetric
+            && ![
+                (min_x, min_y),
+                (max_x, min_y),
+                (max_x, max_y),
+                (min_x, max_y),
+            ]
+            .into_iter()
+            .all(|corner| points.iter().any(|point| (point.x, point.y) == corner))
         || boundary_vertices.len() > 4
             && points
                 .iter()
@@ -1975,7 +2001,20 @@ fn symmetric_template(
     constraints: &BeginnerGenerationConstraintsV1,
 ) -> BeginnerGeneratedPlanV1 {
     let prefix = format!("beginner-plan-{plan_kind:?}");
-    let center = Point2::new((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
+    let canonical_quad = (plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase)
+        .then(|| {
+            let points = source
+                .vertices
+                .iter()
+                .map(|vertex| vertex.position)
+                .collect::<Vec<_>>();
+            canonical_asymmetric_quad(&points)
+        })
+        .flatten();
+    let center = canonical_quad.as_ref().map_or_else(
+        || Point2::new((min_x + max_x) / 2.0, (min_y + max_y) / 2.0),
+        |(center, _)| *center,
+    );
     let center_id = source
         .vertices
         .iter()
@@ -1989,10 +2028,21 @@ fn symmetric_template(
         position: center,
     }];
     let mut edges = Vec::with_capacity(endpoints.len());
+    let mut asymmetric_edge_ids = (0..endpoints.len())
+        .map(|index| EdgeId::derive_v5(namespace, format!("{prefix}-e-{index}").as_bytes()))
+        .collect::<Vec<_>>();
+    if plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase {
+        asymmetric_edge_ids.sort_unstable_by_key(EdgeId::canonical_bytes);
+    }
     for (index, (x_ratio, y_ratio)) in endpoints.iter().copied().enumerate() {
-        let position = Point2::new(
-            min_x + (max_x - min_x) * x_ratio,
-            min_y + (max_y - min_y) * y_ratio,
+        let position = canonical_quad.as_ref().map_or_else(
+            || {
+                Point2::new(
+                    min_x + (max_x - min_x) * x_ratio,
+                    min_y + (max_y - min_y) * y_ratio,
+                )
+            },
+            |(_, points)| points[index],
         );
         let id = source
             .vertices
@@ -2006,7 +2056,7 @@ fn symmetric_template(
             vertices.push(Vertex { id, position });
         }
         edges.push(Edge {
-            id: EdgeId::derive_v5(namespace, format!("{prefix}-e-{index}").as_bytes()),
+            id: asymmetric_edge_ids[index],
             start: if plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase {
                 id
             } else {

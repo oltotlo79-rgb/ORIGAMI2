@@ -318,8 +318,9 @@ mod tests {
     use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, ProjectId, Vertex, VertexId};
     use ori_kinematics::{
         CanonicalCycleScheduleV1, CanonicalHingeAngles, CycleScheduleEntryInputV1,
-        CycleScheduleLimitsV1, HingeAngle, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
-        RationalCoefficientV1, TreeKinematicsLimits,
+        CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1, HingeAngle, MaterialHingeGraphAudit,
+        MaterialHingeGraphGeometry, RationalCoefficientV1, TreeKinematicsLimits,
+        admit_canonical_multi_hinge_path_candidate_v1,
     };
     use ori_topology::{FaceExtractionInput, analyze_faces};
 
@@ -464,6 +465,38 @@ mod tests {
                 .unwrap_or_else(|error| {
                     panic!("theta schedule must close at {progress}: {error:?}")
                 });
+        }
+        let closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                geometry.face_ids()[0],
+                &schedule,
+                1.0e-8,
+                DyadicIntervalClosureLimitsV1 {
+                    max_depth: 0,
+                    max_leaves: 1,
+                    max_work: 1,
+                    schedule_limits: CycleScheduleLimitsV1::default(),
+                },
+            )
+            .expect("exact theta opposite-pair interval theorem");
+        assert_eq!(closure.leaves().len(), 1);
+        let initial = schedule.evaluate(0.0).unwrap();
+        let requested = schedule.evaluate(1.0).unwrap();
+        let candidate =
+            admit_canonical_multi_hinge_path_candidate_v1(schedule.clone(), &initial, &requested)
+                .unwrap();
+        for thickness in [0.1, 1.0, 3.0] {
+            let continuous = crate::diagnose_scheduled_positive_thickness_cycle_path_v1(
+                &geometry,
+                &audit,
+                geometry.face_ids()[0],
+                &candidate,
+                &closure,
+                thickness,
+                32,
+            );
+            assert!(continuous.continuous_certificate_model_id().is_some());
         }
         for thickness in [0.1, 1.0, 3.0] {
             let proof = prove_positive_thickness_graph_geometry_v1(

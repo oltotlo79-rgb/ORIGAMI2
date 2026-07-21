@@ -293,6 +293,8 @@ impl MaterialHingeGraphGeometry {
             self, audit, fixed_face, schedule, tolerance,
         ) || orthogonal_inverse_pair_cycle_closure_premises_v1(
             self, audit, fixed_face, schedule, tolerance,
+        ) || theta_opposite_pair_cycle_closure_premises_v1(
+            self, audit, fixed_face, schedule, tolerance,
         ) || symmetric_rational_kawasaki_cycle_closure_premises_v1(
             self, audit, fixed_face, schedule, tolerance,
         ) {
@@ -724,6 +726,89 @@ impl MaterialHingeGraphGeometry {
             .collect::<Result<Vec<_>, _>>()?;
         self.observe_closed(audit, fixed_face, angles, &transforms, tolerance)
     }
+}
+
+fn theta_opposite_pair_cycle_closure_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &CanonicalCycleScheduleV1,
+    tolerance: f64,
+) -> bool {
+    if geometry.face_ids().len() != 6
+        || geometry.hinges().len() != 7
+        || audit.closure_hinges().len() != 2
+        || !schedule.matches_binding(geometry, audit, fixed_face)
+        || !tolerance.is_finite()
+        || tolerance < 0.0
+    {
+        return false;
+    }
+    let Some(moving) = schedule.collective_profile_edges_v1() else {
+        return false;
+    };
+    if moving.len() != 3 {
+        return false;
+    }
+    let Some(initial) = schedule.evaluate(0.0) else {
+        return false;
+    };
+    if initial
+        .as_slice()
+        .iter()
+        .any(|angle| angle.angle_degrees().to_bits() != 0.0_f64.to_bits())
+    {
+        return false;
+    }
+    let mut endpoints = geometry
+        .hinges()
+        .iter()
+        .flat_map(|hinge| [hinge.start(), hinge.end()])
+        .collect::<Vec<_>>();
+    endpoints.sort_by(|a, b| {
+        (a.x().to_bits(), a.y().to_bits(), a.z().to_bits()).cmp(&(
+            b.x().to_bits(),
+            b.y().to_bits(),
+            b.z().to_bits(),
+        ))
+    });
+    endpoints.dedup();
+    let pivots = endpoints
+        .into_iter()
+        .filter(|point| {
+            geometry
+                .hinges()
+                .iter()
+                .filter(|hinge| hinge.start() == *point || hinge.end() == *point)
+                .count()
+                == 4
+        })
+        .collect::<Vec<_>>();
+    if pivots.len() != 2 {
+        return false;
+    }
+    pivots.into_iter().all(|pivot| {
+        let incident = geometry
+            .hinges()
+            .iter()
+            .filter(|hinge| {
+                moving.contains(&hinge.edge()) && (hinge.start() == pivot || hinge.end() == pivot)
+            })
+            .collect::<Vec<_>>();
+        incident.len() == 2 && {
+            let outward = |hinge: &TreeHinge| {
+                if hinge.start() == pivot {
+                    Some(hinge.axis())
+                } else {
+                    crate::Point3::new(-hinge.axis().x(), -hinge.axis().y(), -hinge.axis().z()).ok()
+                }
+            };
+            let (Some(first), Some(second)) = (outward(incident[0]), outward(incident[1])) else {
+                return false;
+            };
+            first.x() == -second.x() && first.y() == -second.y() && first.z() == -second.z()
+        }
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

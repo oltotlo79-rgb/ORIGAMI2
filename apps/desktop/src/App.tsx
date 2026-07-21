@@ -7992,6 +7992,8 @@ function App() {
                                                   ? (locale === 'ja' ? '左右一組の翅と触角の複合ベース' : 'Composite wing and antenna base')
                                                 : code === 'composite_complete_insect_base'
                                                   ? (locale === 'ja' ? '翅・触角・六脚の完全複合昆虫ベース' : 'Complete composite insect base')
+                                                : code === 'composite_complete_animal_base'
+                                                  ? (locale === 'ja' ? '角・尾・耳・四脚の完全複合動物ベース' : 'Complete composite animal base')
                                                 : code === 'symmetric_insect_leg_pair_base'
                                                   ? text({ ja: '昆虫の左右対称な脚1組のベースを作ります。', en: 'Create one bilateral insect leg-pair base.' })
                                           : code === 'book_fold_vertical'
@@ -8018,6 +8020,21 @@ function App() {
                                 return `${text(label)} × ${part.count}`
                               }).join(' · ')}
                             </p>
+                            {plan.kind === 'composite_complete_animal_base' && (
+                              <ol aria-label={text({ ja: '完全動物の四部位binding寸法', en: 'Four complete-animal binding dimensions' })}>
+                                {[...(nativeSnapshot.beginner_design_profile.generation_constraints.protrusions ?? [])]
+                                  .sort((left, right) => left.id - right.id)
+                                  .map((target) => (
+                                    <li key={target.id}>
+                                      {formattedText({
+                                        ja: 'binding {id}・数 {count}・長さ {length}・厚さ {thickness}',
+                                        en: 'Binding {id} · count {count} · length {length} · thickness {thickness}',
+                                      }, { id: target.id, count: target.count, length: target.length_tenths_mm,
+                                        thickness: target.thickness_tenths_mm })}
+                                    </li>
+                                  ))}
+                              </ol>
+                            )}
                             {plan.skeleton_segments.length > 0 && (
                               <svg viewBox="-110 -110 220 220" role="img"
                                 aria-label={text({ ja: '候補に使用した棒状骨格', en: 'Stick skeleton used by this candidate' })}>

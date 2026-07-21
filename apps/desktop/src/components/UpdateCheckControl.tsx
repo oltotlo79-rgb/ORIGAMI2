@@ -50,7 +50,10 @@ export type UpdateCheckControlProps = Readonly<{
 export function UpdateCheckPopover(
   props: UpdateCheckControlProps,
 ) {
-  const locale = useLocale(props.localeStore ?? localeStore)
+  const localeStore_ = props.localeStore ?? localeStore
+  const locale = useLocale(localeStore_)
+  const settingsStore_ = props.settingsStore ?? updateCheckSettingsStore
+  const settings = useSyncExternalStore(settingsStore_.subscribe, settingsStore_.getSnapshot, settingsStore_.getServerSnapshot)
   return (
     <details className="update-check-popover">
       <summary>
@@ -59,7 +62,7 @@ export function UpdateCheckPopover(
       <UpdateCheckControl {...props} />
       <RuntimeUpdaterControl controller={
         props.runtimeUpdaterController ?? tauriRuntimeUpdaterController
-      } />
+      } enabled={settings.enabled} localeStore={localeStore_} />
     </details>
   )
 }

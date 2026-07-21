@@ -368,6 +368,7 @@ import './App.css'
 import { CompleteAnimalBindingList } from './components/CompleteAnimalBindingList'
 import { CompleteInsectBindingList } from './components/CompleteInsectBindingList'
 import { GenericTargetBindingList } from './components/GenericTargetBindingList'
+import { ProtrusionDimensionEditor } from './components/ProtrusionDimensionEditor'
 import { BeginnerGridProgressStatus } from './components/BeginnerGridProgressStatus'
 
 const SNAP_OPTIONS: ReadonlyArray<{
@@ -8666,18 +8667,13 @@ function App() {
                   </button>
                   <ul aria-label={text({ ja: '突起目標一覧', en: 'Protrusion target list' })}>
                     {beginnerProtrusions.map((target) => (
-                      <li key={target.id}>
-                        {formattedText({
-                          ja: '{count}本・長さ{length} mm・太さ{thickness} mm・優先度{priority}',
-                          en: '{count} × length {length} mm · thickness {thickness} mm · priority {priority}',
-                        }, {
-                          count: target.count, length: target.length_tenths_mm / 10,
-                          thickness: target.thickness_tenths_mm / 10, priority: target.priority,
-                        })}
-                        <button type="button" onClick={() => setBeginnerProtrusions(
+                      <ProtrusionDimensionEditor key={target.id} locale={locale} target={target}
+                        onChange={(changed) => setBeginnerProtrusions((targets) => targets.map(
+                          (item) => item.id === changed.id ? changed : item,
+                        ))}
+                        onRemove={() => setBeginnerProtrusions(
                           (targets) => targets.filter((item) => item.id !== target.id),
-                        )}>{text({ ja: '削除', en: 'Remove' })}</button>
-                      </li>
+                        )} />
                     ))}
                   </ul>
                 </fieldset>

@@ -17,7 +17,7 @@ describe('GenericTargetBindingList', () => {
     const { rerender } = render(<GenericTargetBindingList locale="ja" protrusions={valid} />)
     expect(screen.getByRole('list', { name: '上限付き汎用対象binding寸法' }).children).toHaveLength(2)
     rerender(<GenericTargetBindingList locale="en" protrusions={valid} />)
-    expect(screen.getByText('Binding 2 · count 2 · length 200 · thickness 20')).toBeTruthy()
+    expect(screen.getByText('Binding 2 · bilateral · count 2 · length 200 · thickness 20')).toBeTruthy()
   })
   it('rejects singleton, overflow, noncanonical, and unsupported radial input', () => {
     for (const forged of [valid.slice(0, 1), Array.from({ length: 9 }, (_, i) => target(i + 1, 2, 'bilateral')),

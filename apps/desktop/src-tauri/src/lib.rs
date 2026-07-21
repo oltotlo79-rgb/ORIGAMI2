@@ -11875,7 +11875,7 @@ mod tests {
         profile.generation_constraints.target_parts = vec![
             (ori_domain::BeginnerTargetPartKindV1::Head, 1),
             (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
-            (ori_domain::BeginnerTargetPartKindV1::Leg, 4),
+            (ori_domain::BeginnerTargetPartKindV1::Tail, 1),
             (ori_domain::BeginnerTargetPartKindV1::Fin, 2),
         ]
         .into_iter()
@@ -11884,7 +11884,7 @@ mod tests {
         configure_symmetric_profile(
             &mut profile,
             ori_domain::BeginnerSymmetricParameterEstimateV1 {
-                protrusion_count: 4,
+                protrusion_count: 1,
                 scale_percent: 27,
                 spacing_percent: 50,
             },
@@ -11894,6 +11894,8 @@ mod tests {
         let mut fin = profile.generation_constraints.protrusions[0].clone();
         fin.id = 2;
         fin.count = 2;
+        fin.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
+        fin.direction_milli = [1000, 0, 0];
         fin.priority = 60;
         profile.generation_constraints.protrusions.push(fin);
         let point = ori_domain::beginner_parameter_grid_v1()[13];

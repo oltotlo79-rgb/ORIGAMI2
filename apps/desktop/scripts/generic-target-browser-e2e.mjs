@@ -10,6 +10,8 @@ try {
   await page.getByRole('button', { name: 'Try oversized target' }).click()
   if (await page.getByRole('list').count()) throw new Error('oversized target reached UI')
   await page.getByRole('button', { name: 'Recognize mixed target image' }).click(); await assertBindings(page)
+  await page.getByLabel('Length binding 1 (mm)').fill('31.5')
+  await page.getByText('Binding 1 · asymmetric single · count 1 · length 315 · thickness 50', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Evaluate generic target grid' }).click()
   const preview = page.getByRole('region', { name: 'Generic target candidate preview' }); await preview.waitFor()
   await page.getByRole('button', { name: 'Replace recognized target' }).click(); await preview.waitFor({ state: 'detached' })

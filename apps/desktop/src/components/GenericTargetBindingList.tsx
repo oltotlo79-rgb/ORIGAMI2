@@ -16,8 +16,8 @@ export function GenericTargetBindingList({ locale, protrusions }: {
     : 'Bounded generic target binding dimensions'}>
     {protrusions.map((target) => <li key={target.id}>
       {locale === 'ja'
-        ? `binding ${target.id}・数 ${target.count}・長さ ${target.length_tenths_mm}・厚さ ${target.thickness_tenths_mm}`
-        : `Binding ${target.id} · count ${target.count} · length ${target.length_tenths_mm} · thickness ${target.thickness_tenths_mm}`}
+        ? `binding ${target.id}・${target.symmetry === 'none' ? '非対称単独' : '左右対称'}・数 ${target.count}・長さ ${target.length_tenths_mm}・厚さ ${target.thickness_tenths_mm}`
+        : `Binding ${target.id} · ${target.symmetry === 'none' ? 'asymmetric single' : 'bilateral'} · count ${target.count} · length ${target.length_tenths_mm} · thickness ${target.thickness_tenths_mm}`}
     </li>)}
   </ol>
 }

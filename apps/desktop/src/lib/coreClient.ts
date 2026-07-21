@@ -775,6 +775,7 @@ export type BeginnerGeneratedPlanV1 = {
     | 'symmetric_bird_base'
     | 'asymmetric_bird_landmark_base'
     | 'asymmetric_four_leg_landmark_base'
+    | 'asymmetric_insect_landmark_base'
     | 'symmetric_fish_base'
     | 'symmetric_ear_base'
     | 'symmetric_horn_base'
@@ -804,6 +805,11 @@ export type BeginnerGeneratedPlanV1 = {
   target_parts: BeginnerGenerationConstraintsV1['target_parts']
   skeleton_segments: BeginnerGenerationConstraintsV1['skeleton_segments']
   target_asset: BeginnerGenerationConstraintsV1['target_asset']
+  semantic_landmark_provenance?: {
+    schema_version: 1
+    ordered_bindings: Array<{ ordinal: number; role: string; physical_ray: number }>
+    physical_ray_group_sha256: number[][]
+  }
 }
 
 function normalizeBeginnerCandidateResponse(
@@ -896,12 +902,13 @@ function normalizeBeginnerCandidateResponse(
       'schema_version', 'kind', 'crease_pattern', 'instruction_codes', 'target_parts',
       'skeleton_segments',
       'target_asset',
+      'semantic_landmark_provenance',
     ] as const)
     const pattern = record && exactCoreDataRecord(record.crease_pattern, ['vertices', 'edges'] as const)
     if (
       !record
       || record.schema_version !== 1
-      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'asymmetric_bird_landmark_base', 'asymmetric_four_leg_landmark_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'composite_generic_target_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
+      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'asymmetric_bird_landmark_base', 'asymmetric_four_leg_landmark_base', 'asymmetric_insect_landmark_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'composite_generic_target_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
       || !pattern
       || !Array.isArray(pattern.vertices)
       || pattern.vertices.length < 2
@@ -912,19 +919,44 @@ function normalizeBeginnerCandidateResponse(
       || !Array.isArray(record.instruction_codes)
       || record.instruction_codes.length !== 1
       || !record.instruction_codes.every((code) =>
-        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'asymmetric_bird_landmark_base', 'asymmetric_four_leg_landmark_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'composite_generic_target_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
+        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'asymmetric_bird_landmark_base', 'asymmetric_four_leg_landmark_base', 'asymmetric_insect_landmark_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'composite_generic_target_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
     ) return null
     const normalizedPlanInputs = normalizeBeginnerGenerationConstraints({
       schema_version: 1,
       maximum_steps: 1,
       detail_level: 'simple',
-      target_category: 'animal',
+      target_category: record.kind === 'asymmetric_insect_landmark_base' ? 'insect' : 'animal',
       target_parts: record.target_parts,
       skeleton_segments: record.skeleton_segments,
       target_asset: record.target_asset,
       allowed_techniques: ['valley_fold'],
     })
     if (!normalizedPlanInputs) return null
+    const semantic = record.semantic_landmark_provenance === undefined ? null
+      : exactCoreDataRecord(record.semantic_landmark_provenance, [
+        'schema_version', 'ordered_bindings', 'physical_ray_group_sha256',
+      ] as const)
+    const semanticRoles = [
+      'head', 'tail', 'wing_left', 'wing_right', 'leg_front_left', 'leg_front_right',
+      'leg_middle_left', 'leg_middle_right', 'leg_rear_left', 'leg_rear_right',
+    ]
+    const semanticBindings = semantic && Array.isArray(semantic.ordered_bindings)
+      ? semantic.ordered_bindings.map((value, index) => {
+        const binding = exactCoreDataRecord(value, ['ordinal', 'role', 'physical_ray'] as const)
+        return binding && binding.ordinal === index && binding.role === semanticRoles[index]
+          && Number.isInteger(binding.physical_ray) && Number(binding.physical_ray) >= 0
+          && Number(binding.physical_ray) < 4
+          ? { ordinal: index, role: String(binding.role), physical_ray: Number(binding.physical_ray) }
+          : null
+      }) : null
+    const rayDigests = semantic && Array.isArray(semantic.physical_ray_group_sha256)
+      ? semantic.physical_ray_group_sha256 : null
+    if ((record.kind === 'asymmetric_insect_landmark_base') !== (semantic !== null)
+      || (semantic && (semantic.schema_version !== 1 || semanticBindings?.length !== 10
+        || semanticBindings.some((binding) => binding === null)
+        || rayDigests?.length !== 4
+        || rayDigests.some((digest) => !Array.isArray(digest) || digest.length !== 32
+          || digest.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255))))) return null
     const vertices = pattern.vertices.map((vertex) => {
       const item = exactCoreDataRecord(vertex, ['id', 'position'] as const)
       const position = item && exactCoreDataRecord(item.position, ['x', 'y'] as const)
@@ -961,6 +993,11 @@ function normalizeBeginnerCandidateResponse(
       target_parts: normalizedPlanInputs.target_parts,
       skeleton_segments: normalizedPlanInputs.skeleton_segments,
       target_asset: normalizedPlanInputs.target_asset,
+      ...(semantic && semanticBindings && rayDigests ? { semantic_landmark_provenance: {
+        schema_version: 1 as const,
+        ordered_bindings: semanticBindings as Array<{ ordinal: number; role: string; physical_ray: number }>,
+        physical_ray_group_sha256: rayDigests as number[][],
+      } } : {}),
     } as BeginnerGeneratedPlanV1
   })
   if (generatedPlans.some((plan) => plan === null)
@@ -2428,6 +2465,7 @@ export function applyBeginnerGeneratedPlan(
     'symmetric_bird_base',
     'asymmetric_bird_landmark_base',
     'asymmetric_four_leg_landmark_base',
+    'asymmetric_insect_landmark_base',
     'symmetric_fish_base',
     'symmetric_ear_base',
     'symmetric_horn_base',

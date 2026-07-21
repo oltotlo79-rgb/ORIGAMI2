@@ -37,6 +37,7 @@ function Harness() {
   const [confidenceOverride, setConfidenceOverride] = useState(false)
   const [asymmetricBird, setAsymmetricBird] = useState(false)
   const [asymmetricFourLeg, setAsymmetricFourLeg] = useState(false)
+  const [asymmetricInsect, setAsymmetricInsect] = useState(false)
   const [exportStatus, setExportStatus] = useState<string | null>(null)
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
@@ -128,6 +129,18 @@ function Harness() {
       <li>rear-left leg · landmark leg-rear-left</li>
       <li>rear-right leg · landmark leg-rear-right</li>
     </ul>}
+    <button onClick={() => {
+      setAsymmetricInsect(true)
+      setStatus('Asymmetric insect semantic landmarks bound to certified four-ray groups')
+    }}>Recognize asymmetric insect landmarks</button>
+    {asymmetricInsect && <section aria-label="Asymmetric insect semantic provenance">
+      <ol aria-label="Ordered insect landmark bindings">
+        {['head', 'tail', 'wing_left', 'wing_right', 'leg_front_left', 'leg_front_right',
+          'leg_middle_left', 'leg_middle_right', 'leg_rear_left', 'leg_rear_right']
+          .map((role, ordinal) => <li key={role}>{ordinal}: {role} · physical ray {ordinal % 4}</li>)}
+      </ol>
+      <p>Ray-group digests: ray0 91a70f2c · ray1 a72be019 · ray2 c31488da · ray3 e90f147b</p>
+    </section>}
     <button onClick={() => {
       setRecognized(true); setPreview(false); setCandidateShortage(false); setMergedAuthorities(true)
       setAuthorityValid(true)
@@ -249,6 +262,7 @@ function Harness() {
       <p>Native cyclic certificate: bounded_certified_pose_graph_path_v1 · SHA-256 58a6d4c1 · thickness 0/0.1/1/3 mm verified</p>
       {asymmetricBird && <p>AsymmetricBirdLandmarkBase candidate: four individually bound GLB/image landmarks · native path certified</p>}
       {asymmetricFourLeg && <p>AsymmetricFourLegLandmarkBase candidate: four individually bound leg landmarks · native certified mock accepted</p>}
+      {asymmetricInsect && <p>AsymmetricInsectLandmarkBase candidate: ten ordered semantic landmarks · four ray-group digests · native path certified</p>}
       <p>Deterministic candidate synthesis: {synthesizedCandidateCount} bounded designs from {bindings.length} bindings and {contourPointCount} contour points.</p>
       <button aria-pressed={selectedCandidate === 1} onClick={() => setSelectedCandidate(1)}>Select contour candidate 1</button>
       <button aria-pressed={selectedCandidate === 2} onClick={() => setSelectedCandidate(2)}>Select contour candidate 2</button>
@@ -292,6 +306,7 @@ function Harness() {
       <p>Applied path provenance: bounded_certified_pose_graph_path_v1 · SHA-256 58a6d4c1 · typed archive retained</p>
       {asymmetricBird && <p>Applied AsymmetricBirdLandmarkBase: Undo/Redo/reopen retained four landmark bindings and path provenance</p>}
       {asymmetricFourLeg && <p>Applied AsymmetricFourLegLandmarkBase: Undo/Redo/reopen retained four individual leg landmarks and native path provenance</p>}
+      {asymmetricInsect && <p>Applied AsymmetricInsectLandmarkBase: Undo/Redo/reopen retained ten semantic bindings, four group digests, and native path provenance</p>}
       {mergedAuthorities && <p>Applied 3D candidate score {threeDimensionalScore}/100 · depth error {depthError} mm</p>}
       <canvas ref={witnessCanvas} width={320} height={200} role="img" aria-label={`Applied contour placement correspondence candidate ${selectedCandidate}`} />
       <button onClick={() => setStatus('Generic target undone')}>Undo generic target</button>
@@ -304,6 +319,8 @@ function Harness() {
       {exportStatus && <p role="status">{exportStatus}</p>}
       {exportStatus?.includes('parsed:') && asymmetricFourLeg
         && <p>AsymmetricFourLegLandmarkBase export retained four individual leg bindings and certified provenance</p>}
+      {exportStatus?.includes('parsed:') && asymmetricInsect
+        && <p>AsymmetricInsectLandmarkBase export retained ten semantic bindings and four certified ray-group digests</p>}
     </section>}
   </main>
 }

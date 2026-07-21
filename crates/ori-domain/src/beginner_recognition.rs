@@ -61,6 +61,61 @@ fn proposed_body_outline(bounds: BeginnerRecognitionBoundsV1) -> Vec<[i32; 2]> {
     ]
 }
 
+fn simplified_component_outline(
+    component: &[usize],
+    width: usize,
+    bounds: BeginnerRecognitionBoundsV1,
+) -> Vec<[i32; 2]> {
+    let mut points = component
+        .iter()
+        .map(|index| [(index % width) as i32, (index / width) as i32])
+        .collect::<Vec<_>>();
+    points.sort_unstable();
+    points.dedup();
+    fn cross(origin: [i32; 2], first: [i32; 2], second: [i32; 2]) -> i64 {
+        i64::from(first[0] - origin[0]) * i64::from(second[1] - origin[1])
+            - i64::from(first[1] - origin[1]) * i64::from(second[0] - origin[0])
+    }
+    let mut lower = Vec::new();
+    for point in points.iter().copied() {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], point) <= 0
+        {
+            lower.pop();
+        }
+        lower.push(point);
+    }
+    let mut upper = Vec::new();
+    for point in points.iter().rev().copied() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], point) <= 0
+        {
+            upper.pop();
+        }
+        upper.push(point);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    if lower.len() < 4 {
+        return proposed_body_outline(bounds);
+    }
+    if lower.len() > 16 {
+        lower = (0..16)
+            .map(|index| lower[index * lower.len() / 16])
+            .collect();
+    }
+    let center_twice_x = i32::try_from(bounds.min_x + bounds.max_x).unwrap_or_default();
+    let center_twice_y = i32::try_from(bounds.min_y + bounds.max_y).unwrap_or_default();
+    lower
+        .into_iter()
+        .map(|point| {
+            [
+                (point[0] * 2 - center_twice_x) * 5,
+                (point[1] * 2 - center_twice_y) * 5,
+            ]
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BeginnerOutlineCandidateV1 {
@@ -305,7 +360,11 @@ pub fn analyze_silhouette_png_rgba_v1(
         shape_bounds,
         target_parts: Vec::new(),
         skeleton_segments,
-        generic_body_outline_tenths_mm: Some(proposed_body_outline(shape_bounds)),
+        generic_body_outline_tenths_mm: Some(simplified_component_outline(
+            &component,
+            width as usize,
+            shape_bounds,
+        )),
         generic_body_outline_mode: Some(BeginnerBodyOutlineModeV1::General),
         protrusions: Vec::new(),
     })
@@ -672,6 +731,34 @@ mod tests {
                 .as_ref()
                 .map(Vec::len),
             Some(4)
+        );
+    }
+
+    #[test]
+    fn simplifies_dense_silhouette_to_bounded_canonical_contour() {
+        let mut rgba = vec![0_u8; 7 * 7 * 4];
+        for (y, minimum, maximum) in [
+            (0, 2, 4),
+            (1, 1, 5),
+            (2, 0, 6),
+            (3, 0, 6),
+            (4, 0, 6),
+            (5, 1, 5),
+            (6, 2, 4),
+        ] {
+            for x in minimum..=maximum {
+                rgba[(y * 7 + x) * 4..(y * 7 + x) * 4 + 4].copy_from_slice(&[0, 0, 0, 255]);
+            }
+        }
+        let proposal =
+            analyze_silhouette_png_rgba_v1(UnderlayId::new(), AssetId::new(), [3; 32], 7, 7, &rgba)
+                .unwrap();
+        let outline = proposal.generic_body_outline_tenths_mm.unwrap();
+        assert!((4..=16).contains(&outline.len()));
+        assert_eq!(outline.first(), outline.iter().min());
+        assert_eq!(
+            proposal.generic_body_outline_mode,
+            Some(BeginnerBodyOutlineModeV1::General)
         );
     }
 

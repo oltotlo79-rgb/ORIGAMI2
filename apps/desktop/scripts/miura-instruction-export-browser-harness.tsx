@@ -1,6 +1,6 @@
 import { createRoot } from 'react-dom/client'
 import { InstructionTimelinePanel } from '../src/components/InstructionTimelinePanel'
-import { beginInstructionExportGeneration, previewInstructionExport, type ProjectSnapshot } from '../src/lib/coreClient'
+import { beginInstructionExportGeneration, cancelInstructionExport, previewInstructionExport, type ProjectSnapshot } from '../src/lib/coreClient'
 
 const model = 'ab'.repeat(32)
 const face = '11111111-1111-1111-1111-111111111111'
@@ -18,7 +18,17 @@ const steps = poses.map((pose, index) => ({ id: `miura-${index}`, title: index ?
 const snapshot = { project_instance_id: 'instance-miura', project_id: 'project-miura', name: 'Miura', current_path: null, revision: 2, saved_revision: 2, is_dirty: false, crease_pattern: { vertices: [], edges: [] }, paper: { boundary_vertices: [], thickness_mm: 0.1, length_display_unit: 'mm', cutting_allowed: false, front: { color: { red: 255, green: 255, blue: 255, alpha: 255 }, texture_asset: null }, back: { color: { red: 240, green: 240, blue: 240, alpha: 255 }, texture_asset: null } }, can_undo: false, can_redo: false, cutting_allowed: false, instruction_timeline: { steps }, fold_model_fingerprint: model } as ProjectSnapshot
 let exports = 0
 const ipc: string[] = []
-Object.assign(window, { __TAURI_INTERNALS__: { invoke: async (command: string) => { ipc.push(command); if (command === 'begin_instruction_export') return { export_id: 'miura-export', profile: 'instruction_export_v1' }; if (command === 'preview_instruction_export') return { preview: { export_id: 'miura-export' } }; throw new Error(`unexpected ${command}`) } } })
-async function exportThroughProductionIpc() { const generation = await beginInstructionExportGeneration(); await previewInstructionExport(generation.export_id, snapshot.project_id, snapshot.revision, 'pdf'); exports += 1; document.querySelector('[data-testid=exports]')!.textContent = `exports=${exports}; ipc=${ipc.join(',')}` }
-function Harness() { return <><output data-testid="exports">exports={exports}</output><InstructionTimelinePanel snapshot={snapshot} appliedPose={null} poseModelKey="miura" manualPoseChangeSequence={0} coreBusy={false} benchmarkActive={false} fileOperationActive={false} exportAvailable exportButtonRef={{ current: null }} animationExportButtonRef={{ current: null }} runNativeEdit={async () => true} applyStepPose={() => true} onExport={() => { void exportThroughProductionIpc() }} onAnimationExport={() => {}} /></> }
+let format: 'pdf' | 'svg_zip' = 'pdf'; let scenario: 'valid' | 'stale' | 'tamper' = 'valid'
+Object.assign(window, { __TAURI_INTERNALS__: { invoke: async (command: string, args?: { format?: string }) => {
+  ipc.push(command === 'preview_instruction_export' ? `${command}:${args?.format}` : command)
+  if (command === 'begin_instruction_export') return { export_id: 'miura-export', profile: 'instruction_export_v1' }
+  if (command === 'preview_instruction_export') {
+    if (scenario !== 'valid') throw new Error(scenario)
+    return { preview: { export_id: 'miura-export' } }
+  }
+  if (command === 'cancel_instruction_export') return
+  throw new Error(`unexpected ${command}`)
+} } })
+async function exportThroughProductionIpc() { ipc.length = 0; const generation = await beginInstructionExportGeneration(); let result = 'ready'; try { await previewInstructionExport(generation.export_id, snapshot.project_id, scenario === 'stale' ? snapshot.revision + 1 : snapshot.revision, format); exports += 1 } catch { result = `${scenario}-rejected`; await cancelInstructionExport(generation.export_id) } document.querySelector('[data-testid=exports]')!.textContent = `exports=${exports}; format=${format}; result=${result}; ipc=${ipc.join(',')}` }
+function Harness() { return <><output data-testid="exports">exports={exports}</output><button onClick={() => { format = 'pdf'; scenario = 'valid' }}>PDF mode</button><button onClick={() => { format = 'svg_zip'; scenario = 'valid' }}>SVG mode</button><button onClick={() => { scenario = 'stale' }}>Stale revision</button><button onClick={() => { scenario = 'tamper' }}>Tamper DTO hash</button><InstructionTimelinePanel snapshot={snapshot} appliedPose={null} poseModelKey="miura" manualPoseChangeSequence={0} coreBusy={false} benchmarkActive={false} fileOperationActive={false} exportAvailable exportButtonRef={{ current: null }} animationExportButtonRef={{ current: null }} runNativeEdit={async () => true} applyStepPose={() => true} onExport={() => { void exportThroughProductionIpc() }} onAnimationExport={() => {}} /></> }
 createRoot(document.getElementById('root')!).render(<Harness />)

@@ -19,6 +19,7 @@ pub const CURRENT_ORI2_CONTAINER_VERSION: u32 = 1;
 pub const ORI2_MANIFEST_PATH: &str = "manifest.json";
 pub const ORI2_PROJECT_PATH: &str = "project.json";
 pub const ORI2_EDITOR_HISTORY_PATH: &str = "editor-history.json";
+pub const ORI2_LAYER_EVIDENCE_PATH: &str = "layer-evidence.json";
 pub const ORI2_FEATURE_INSTRUCTION_TIMELINE_V1: &str = "instruction_timeline_v1";
 pub const ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1: &str = "declarative_instruction_steps_v1";
 pub const ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1: &str = "numeric_expressions_v1";
@@ -26,8 +27,10 @@ pub const ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1: &str = "geometric_constraints_v
 pub const ORI2_FEATURE_LAYERS_V1: &str = "layers_v1";
 pub const ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1: &str = "reference_model_assets_v1";
 pub const ORI2_FEATURE_EDITOR_HISTORY_V1: &str = "editor_history_v1";
+pub const ORI2_FEATURE_LAYER_EVIDENCE_V1: &str = "layer_evidence_v1";
 pub const MAX_EDITOR_HISTORY_JSON_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_LAYER_EVIDENCE_JSON_BYTES_V1: usize = 16 * 1024 * 1024;
+pub const LAYER_EVIDENCE_SCHEMA_VERSION_V1: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,7 +121,7 @@ fn validate_layer_evidence_archive_v1(
     value: &LayerEvidenceArchiveV1,
 ) -> Result<(), LayerEvidenceArchiveErrorV1> {
     const MAX_RECORDS: usize = 2_000_000;
-    if value.version != 1
+    if value.version != LAYER_EVIDENCE_SCHEMA_VERSION_V1
         || value.project_instance_id.is_empty()
         || value.project_id.is_empty()
         || !is_sha256_hex(&value.fold_model_fingerprint_sha256)
@@ -161,6 +164,7 @@ fn validate_layer_evidence_archive_v1(
 
 const DOCUMENT_ONLY_ENTRY_COUNT: usize = 2;
 const PROJECT_WITH_HISTORY_ENTRY_COUNT: usize = 3;
+const PROJECT_WITH_HISTORY_AND_EVIDENCE_ENTRY_COUNT: usize = 4;
 const ORI2_DEFLATE_LEVEL: i64 = 6;
 const END_OF_CENTRAL_DIRECTORY_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
 const END_OF_CENTRAL_DIRECTORY_SIZE: usize = 22;
@@ -180,6 +184,7 @@ pub struct Ori2Limits {
     pub max_manifest_size: u64,
     pub max_project_size: u64,
     pub max_editor_history_size: u64,
+    pub max_layer_evidence_size: u64,
 }
 
 impl Default for Ori2Limits {
@@ -193,6 +198,7 @@ impl Default for Ori2Limits {
             max_manifest_size: 1024 * 1024,
             max_project_size: MAX_PROJECT_JSON_BYTES as u64,
             max_editor_history_size: MAX_EDITOR_HISTORY_JSON_BYTES,
+            max_layer_evidence_size: MAX_LAYER_EVIDENCE_JSON_BYTES_V1 as u64,
         }
     }
 }
@@ -207,8 +213,8 @@ impl Default for Ori2Limits {
 pub struct Ori2ProjectArchive {
     pub document: ProjectDocument,
     pub editor_history: Option<EditorHistoryV1>,
-    /// Ephemeral solver evidence validated with the archive but deliberately
-    /// excluded from the current canonical `.ori2` byte representation.
+    /// Untrusted, versioned solver evidence carried without conversion into a
+    /// trusted domain model.
     pub layer_evidence: Option<LayerEvidenceArchiveV1>,
 }
 
@@ -238,6 +244,8 @@ pub struct Ori2Manifest {
     pub project: Ori2ProjectEntry,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editor_history: Option<Ori2EditorHistoryEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_evidence: Option<Ori2LayerEvidenceEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +260,15 @@ pub struct Ori2ProjectEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ori2EditorHistoryEntry {
+    pub path: String,
+    pub schema_version: u32,
+    pub uncompressed_size: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ori2LayerEvidenceEntry {
     pub path: String,
     pub schema_version: u32,
     pub uncompressed_size: u64,
@@ -282,6 +299,7 @@ impl Ori2Manifest {
                 sha256: sha256_hex(project_bytes),
             },
             editor_history: None,
+            layer_evidence: None,
         }
     }
 }
@@ -296,7 +314,7 @@ pub fn write_project_ori2_with_limits(
     document: &ProjectDocument,
     limits: Ori2Limits,
 ) -> Result<Vec<u8>, FormatError> {
-    write_project_archive_parts(document, None, limits)
+    write_project_archive_parts(document, None, None, limits)
 }
 
 /// Serializes a complete project archive, including authenticated Undo/Redo
@@ -324,12 +342,18 @@ pub fn write_project_archive_ori2_with_limits(
         .editor_history
         .as_ref()
         .filter(|history| !history.is_default_empty());
-    write_project_archive_parts(&project.document, history, limits)
+    write_project_archive_parts(
+        &project.document,
+        history,
+        project.layer_evidence.as_ref(),
+        limits,
+    )
 }
 
 fn write_project_archive_parts(
     document: &ProjectDocument,
     editor_history: Option<&EditorHistoryV1>,
+    layer_evidence: Option<&LayerEvidenceArchiveV1>,
     limits: Ori2Limits,
 ) -> Result<Vec<u8>, FormatError> {
     if document.format_version != crate::CURRENT_FORMAT_VERSION {
@@ -338,16 +362,19 @@ fn write_project_archive_parts(
             latest: crate::CURRENT_FORMAT_VERSION,
         });
     }
-    let entry_count = if editor_history.is_some() {
-        PROJECT_WITH_HISTORY_ENTRY_COUNT
-    } else {
-        DOCUMENT_ONLY_ENTRY_COUNT
+    let entry_count = match (editor_history.is_some(), layer_evidence.is_some()) {
+        (true, true) => PROJECT_WITH_HISTORY_AND_EVIDENCE_ENTRY_COUNT,
+        (true, false) | (false, true) => PROJECT_WITH_HISTORY_ENTRY_COUNT,
+        (false, false) => DOCUMENT_ONLY_ENTRY_COUNT,
     };
     ensure_entry_count(entry_count, limits)?;
     ensure_path_length(ORI2_MANIFEST_PATH, limits)?;
     ensure_path_length(ORI2_PROJECT_PATH, limits)?;
     if editor_history.is_some() {
         ensure_path_length(ORI2_EDITOR_HISTORY_PATH, limits)?;
+    }
+    if layer_evidence.is_some() {
+        ensure_path_length(ORI2_LAYER_EVIDENCE_PATH, limits)?;
     }
 
     let project_bytes = write_project_json(document)?;
@@ -370,6 +397,13 @@ fn write_project_archive_parts(
     } else {
         None
     };
+    let layer_evidence_bytes = layer_evidence
+        .map(write_layer_evidence_archive_v1)
+        .transpose()
+        .map_err(FormatError::InvalidLayerEvidence)?;
+    if let Some(bytes) = &layer_evidence_bytes {
+        ensure_layer_evidence_entry_size(bytes.len() as u64, limits)?;
+    }
 
     let mut required_features = Vec::new();
     if !document.instruction_timeline.steps.is_empty() {
@@ -398,12 +432,23 @@ fn write_project_archive_parts(
     if history_bytes.is_some() {
         required_features.push(ORI2_FEATURE_EDITOR_HISTORY_V1.to_owned());
     }
+    if layer_evidence_bytes.is_some() {
+        required_features.push(ORI2_FEATURE_LAYER_EVIDENCE_V1.to_owned());
+    }
     let mut manifest =
         Ori2Manifest::new(&project_bytes, document.format_version, required_features);
     if let Some(bytes) = &history_bytes {
         manifest.editor_history = Some(Ori2EditorHistoryEntry {
             path: ORI2_EDITOR_HISTORY_PATH.to_owned(),
             schema_version: EDITOR_HISTORY_SCHEMA_VERSION_V1,
+            uncompressed_size: bytes.len() as u64,
+            sha256: sha256_hex(bytes),
+        });
+    }
+    if let Some(bytes) = &layer_evidence_bytes {
+        manifest.layer_evidence = Some(Ori2LayerEvidenceEntry {
+            path: ORI2_LAYER_EVIDENCE_PATH.to_owned(),
+            schema_version: LAYER_EVIDENCE_SCHEMA_VERSION_V1,
             uncompressed_size: bytes.len() as u64,
             sha256: sha256_hex(bytes),
         });
@@ -423,6 +468,13 @@ fn write_project_archive_parts(
                 history_bytes
                     .as_ref()
                     .map_or(0, |history| history.len() as u64),
+            )
+        })
+        .and_then(|size| {
+            size.checked_add(
+                layer_evidence_bytes
+                    .as_ref()
+                    .map_or(0, |evidence| evidence.len() as u64),
             )
         })
         .ok_or(FormatError::ExpandedArchiveTooLarge {
@@ -447,6 +499,10 @@ fn write_project_archive_parts(
         archive.start_file(ORI2_EDITOR_HISTORY_PATH, options)?;
         archive.write_all(history_bytes)?;
     }
+    if let Some(layer_evidence_bytes) = &layer_evidence_bytes {
+        archive.start_file(ORI2_LAYER_EVIDENCE_PATH, options)?;
+        archive.write_all(layer_evidence_bytes)?;
+    }
 
     let bytes = archive.finish()?.into_inner();
     ensure_archive_size(bytes.len() as u64, limits)?;
@@ -470,6 +526,9 @@ pub fn read_project_ori2_with_limits(
     let project = read_project_archive_ori2_with_limits(bytes, limits)?;
     if project.editor_history.is_some() {
         return Err(FormatError::EditorHistoryRequiresArchiveApi);
+    }
+    if project.layer_evidence.is_some() {
+        return Err(FormatError::LayerEvidenceRequiresArchiveApi);
     }
     Ok(project.document)
 }
@@ -520,6 +579,18 @@ pub fn read_project_archive_ori2_with_limits(
         (Some(_), false) => {
             return Err(FormatError::MissingEntry {
                 path: ORI2_EDITOR_HISTORY_PATH,
+            });
+        }
+        _ => {}
+    }
+    let has_layer_evidence_entry = archive
+        .file_names()
+        .any(|path| path == ORI2_LAYER_EVIDENCE_PATH);
+    match (&manifest.layer_evidence, has_layer_evidence_entry) {
+        (None, true) => return Err(FormatError::UnexpectedLayerEvidenceEntry),
+        (Some(_), false) => {
+            return Err(FormatError::MissingEntry {
+                path: ORI2_LAYER_EVIDENCE_PATH,
             });
         }
         _ => {}
@@ -635,11 +706,49 @@ pub fn read_project_archive_ori2_with_limits(
         )?),
         None => None,
     };
+    let layer_evidence = match &manifest.layer_evidence {
+        Some(descriptor) => Some(read_layer_evidence_entry(&mut archive, descriptor, limits)?),
+        None => None,
+    };
     Ok(Ori2ProjectArchive {
         document: project,
         editor_history,
-        layer_evidence: None,
+        layer_evidence,
     })
+}
+
+fn read_layer_evidence_entry(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    descriptor: &Ori2LayerEvidenceEntry,
+    limits: Ori2Limits,
+) -> Result<LayerEvidenceArchiveV1, FormatError> {
+    ensure_layer_evidence_entry_size(descriptor.uncompressed_size, limits)?;
+    let archived_size = archive.by_name(ORI2_LAYER_EVIDENCE_PATH)?.size();
+    if descriptor.uncompressed_size != archived_size {
+        return Err(FormatError::LayerEvidenceSizeMismatch {
+            declared: descriptor.uncompressed_size,
+            actual: archived_size,
+        });
+    }
+    let bytes = read_bounded_entry(
+        archive,
+        ORI2_LAYER_EVIDENCE_PATH,
+        effective_layer_evidence_entry_size_limit(limits),
+    )?;
+    if descriptor.uncompressed_size != bytes.len() as u64 {
+        return Err(FormatError::LayerEvidenceSizeMismatch {
+            declared: descriptor.uncompressed_size,
+            actual: bytes.len() as u64,
+        });
+    }
+    let actual_hash = sha256_hex(&bytes);
+    if !is_lowercase_sha256_hex(&descriptor.sha256) || descriptor.sha256 != actual_hash {
+        return Err(FormatError::LayerEvidenceHashMismatch {
+            expected: descriptor.sha256.clone(),
+            actual: actual_hash,
+        });
+    }
+    read_layer_evidence_archive_v1(&bytes).map_err(FormatError::InvalidLayerEvidence)
 }
 
 fn read_editor_history_entry(
@@ -874,6 +983,7 @@ fn validate_manifest(manifest: &Ori2Manifest) -> Result<(), FormatError> {
                     | ORI2_FEATURE_LAYERS_V1
                     | ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1
                     | ORI2_FEATURE_EDITOR_HISTORY_V1
+                    | ORI2_FEATURE_LAYER_EVIDENCE_V1
             )
         })
         .cloned()
@@ -907,6 +1017,26 @@ fn validate_manifest(manifest: &Ori2Manifest) -> Result<(), FormatError> {
             return Err(FormatError::UnsupportedEditorHistorySchemaVersion {
                 found: editor_history.schema_version,
                 latest: EDITOR_HISTORY_SCHEMA_VERSION_V1,
+            });
+        }
+    }
+    let declares_layer_evidence_feature = manifest
+        .required_features
+        .iter()
+        .any(|feature| feature == ORI2_FEATURE_LAYER_EVIDENCE_V1);
+    if declares_layer_evidence_feature != manifest.layer_evidence.is_some() {
+        return Err(FormatError::LayerEvidenceFeatureDescriptorMismatch);
+    }
+    if let Some(layer_evidence) = &manifest.layer_evidence {
+        if layer_evidence.path != ORI2_LAYER_EVIDENCE_PATH {
+            return Err(FormatError::InvalidManifestLayerEvidencePath {
+                found: layer_evidence.path.clone(),
+            });
+        }
+        if layer_evidence.schema_version != LAYER_EVIDENCE_SCHEMA_VERSION_V1 {
+            return Err(FormatError::UnsupportedLayerEvidenceSchemaVersion {
+                found: layer_evidence.schema_version,
+                latest: LAYER_EVIDENCE_SCHEMA_VERSION_V1,
             });
         }
     }
@@ -1002,6 +1132,21 @@ fn ensure_editor_history_entry_size(actual: u64, limits: Ori2Limits) -> Result<(
         ORI2_EDITOR_HISTORY_PATH,
         actual,
         effective_editor_history_entry_size_limit(limits),
+    )
+}
+
+fn effective_layer_evidence_entry_size_limit(limits: Ori2Limits) -> u64 {
+    limits
+        .max_layer_evidence_size
+        .min(limits.max_entry_uncompressed_size)
+        .min(MAX_LAYER_EVIDENCE_JSON_BYTES_V1 as u64)
+}
+
+fn ensure_layer_evidence_entry_size(actual: u64, limits: Ori2Limits) -> Result<(), FormatError> {
+    ensure_specific_size(
+        ORI2_LAYER_EVIDENCE_PATH,
+        actual,
+        effective_layer_evidence_entry_size_limit(limits),
     )
 }
 
@@ -1314,6 +1459,16 @@ mod tests {
         (document, bytes)
     }
 
+    fn layer_evidence_archive_fixture(with_history: bool) -> Vec<u8> {
+        let document = sample_document();
+        let archive = Ori2ProjectArchive {
+            editor_history: with_history.then(|| empty_editor_history(document.project_id, 17)),
+            layer_evidence: Some(layer_evidence_fixture()),
+            document,
+        };
+        write_project_archive_ori2(&archive).expect("write layer-evidence fixture")
+    }
+
     fn manifest_for(project_bytes: &[u8]) -> Vec<u8> {
         manifest_for_features(project_bytes, Vec::new())
     }
@@ -1482,25 +1637,71 @@ mod tests {
     }
 
     #[test]
-    fn valid_in_memory_layer_evidence_preserves_canonical_archive_bytes() {
+    fn layer_evidence_round_trips_as_an_authenticated_third_entry() {
         let document = sample_document();
-        let legacy =
-            write_project_archive_ori2(&Ori2ProjectArchive::document_only(document.clone()))
-                .expect("write document-only archive");
+        let evidence = layer_evidence_fixture();
         let project = Ori2ProjectArchive {
             document: document.clone(),
             editor_history: None,
-            layer_evidence: Some(layer_evidence_fixture()),
+            layer_evidence: Some(evidence.clone()),
         };
 
-        let with_evidence =
-            write_project_archive_ori2(&project).expect("validate in-memory layer evidence");
-        assert_eq!(with_evidence, legacy);
+        let bytes = write_project_archive_ori2(&project).expect("write layer evidence");
+        let manifest = manifest_from_archive(&bytes);
+        assert_eq!(
+            manifest.required_features.last().map(String::as_str),
+            Some(ORI2_FEATURE_LAYER_EVIDENCE_V1)
+        );
+        assert!(manifest.layer_evidence.is_some());
+        let archive = ZipArchive::new(Cursor::new(&bytes)).expect("open generated ZIP");
+        assert_eq!(archive.len(), PROJECT_WITH_HISTORY_ENTRY_COUNT);
 
-        let restored = read_project_archive_ori2(&with_evidence).expect("read canonical archive");
+        let restored = read_project_archive_ori2(&bytes).expect("read canonical archive");
         assert_eq!(restored.document, document);
         assert_eq!(restored.editor_history, None);
-        assert_eq!(restored.layer_evidence, None);
+        assert_eq!(restored.layer_evidence, Some(evidence));
+        assert!(matches!(
+            read_project_ori2(&bytes),
+            Err(FormatError::LayerEvidenceRequiresArchiveApi)
+        ));
+    }
+
+    #[test]
+    fn history_and_layer_evidence_use_the_authenticated_fourth_entry() {
+        let bytes = layer_evidence_archive_fixture(true);
+        let archive = read_project_archive_ori2(&bytes).expect("read complete archive");
+        assert!(archive.editor_history.is_some());
+        assert_eq!(archive.layer_evidence, Some(layer_evidence_fixture()));
+        assert_eq!(
+            archive_entries(&bytes).len(),
+            PROJECT_WITH_HISTORY_AND_EVIDENCE_ENTRY_COUNT
+        );
+    }
+
+    #[test]
+    fn layer_evidence_obeys_its_dedicated_entry_size_limit() {
+        let document = sample_document();
+        let project = Ori2ProjectArchive {
+            document,
+            editor_history: None,
+            layer_evidence: Some(layer_evidence_fixture()),
+        };
+        let limits = Ori2Limits {
+            max_layer_evidence_size: 1,
+            ..Ori2Limits::default()
+        };
+        assert!(matches!(
+            write_project_archive_ori2_with_limits(&project, limits),
+            Err(FormatError::EntryTooLarge { path, .. })
+                if path == ORI2_LAYER_EVIDENCE_PATH
+        ));
+
+        let bytes = write_project_archive_ori2(&project).expect("write evidence fixture");
+        assert!(matches!(
+            read_project_archive_ori2_with_limits(&bytes, limits),
+            Err(FormatError::EntryTooLarge { path, .. })
+                if path == ORI2_LAYER_EVIDENCE_PATH
+        ));
     }
 
     #[test]
@@ -1715,6 +1916,129 @@ mod tests {
             read_project_archive_ori2(&raw_zip_owned(&orphan)),
             Err(FormatError::UnexpectedEditorHistoryEntry)
         ));
+    }
+
+    #[test]
+    fn layer_evidence_feature_descriptor_and_entry_presence_are_coherent() {
+        let bytes = layer_evidence_archive_fixture(false);
+
+        let mut missing_feature = archive_entries(&bytes);
+        let manifest_bytes = &mut missing_feature
+            .iter_mut()
+            .find(|(path, _)| path == ORI2_MANIFEST_PATH)
+            .expect("manifest")
+            .1;
+        let mut manifest: Ori2Manifest = serde_json::from_slice(manifest_bytes).unwrap();
+        manifest
+            .required_features
+            .retain(|feature| feature != ORI2_FEATURE_LAYER_EVIDENCE_V1);
+        *manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&missing_feature)),
+            Err(FormatError::LayerEvidenceFeatureDescriptorMismatch)
+        ));
+
+        let mut missing_descriptor = archive_entries(&bytes);
+        let manifest_bytes = &mut missing_descriptor
+            .iter_mut()
+            .find(|(path, _)| path == ORI2_MANIFEST_PATH)
+            .unwrap()
+            .1;
+        let mut manifest: Ori2Manifest = serde_json::from_slice(manifest_bytes).unwrap();
+        manifest.layer_evidence = None;
+        *manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&missing_descriptor)),
+            Err(FormatError::LayerEvidenceFeatureDescriptorMismatch)
+        ));
+
+        let mut missing_entry = archive_entries(&bytes);
+        missing_entry.retain(|(path, _)| path != ORI2_LAYER_EVIDENCE_PATH);
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&missing_entry)),
+            Err(FormatError::MissingEntry {
+                path: ORI2_LAYER_EVIDENCE_PATH
+            })
+        ));
+
+        let document_only = write_project_ori2(&sample_document()).unwrap();
+        let mut surplus = archive_entries(&document_only);
+        surplus.push((ORI2_LAYER_EVIDENCE_PATH.to_owned(), b"{}".to_vec()));
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&surplus)),
+            Err(FormatError::UnexpectedLayerEvidenceEntry)
+        ));
+    }
+
+    #[test]
+    fn layer_evidence_descriptor_size_hash_and_payload_are_authenticated() {
+        let bytes = layer_evidence_archive_fixture(false);
+
+        for (mutation, expected) in [
+            ("path", "path"),
+            ("schema", "schema"),
+            ("size", "size"),
+            ("hash", "hash"),
+        ] {
+            let mut entries = archive_entries(&bytes);
+            let manifest_bytes = &mut entries
+                .iter_mut()
+                .find(|(path, _)| path == ORI2_MANIFEST_PATH)
+                .unwrap()
+                .1;
+            let mut manifest: Ori2Manifest = serde_json::from_slice(manifest_bytes).unwrap();
+            let descriptor = manifest.layer_evidence.as_mut().unwrap();
+            match mutation {
+                "path" => descriptor.path = "../layer-evidence.json".to_owned(),
+                "schema" => descriptor.schema_version += 1,
+                "size" => descriptor.uncompressed_size += 1,
+                "hash" => descriptor.sha256 = "0".repeat(64),
+                _ => unreachable!(),
+            }
+            *manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+            let error = read_project_archive_ori2(&raw_zip_owned(&entries)).unwrap_err();
+            assert!(
+                matches!(
+                    (expected, error),
+                    ("path", FormatError::InvalidManifestLayerEvidencePath { .. })
+                        | (
+                            "schema",
+                            FormatError::UnsupportedLayerEvidenceSchemaVersion { .. }
+                        )
+                        | ("size", FormatError::LayerEvidenceSizeMismatch { .. })
+                        | ("hash", FormatError::LayerEvidenceHashMismatch { .. })
+                ),
+                "unexpected {expected} error"
+            );
+        }
+
+        let mut tampered = archive_entries(&bytes);
+        tampered
+            .iter_mut()
+            .find(|(path, _)| path == ORI2_LAYER_EVIDENCE_PATH)
+            .unwrap()
+            .1[0] ^= 1;
+        assert!(matches!(
+            read_project_archive_ori2(&raw_zip_owned(&tampered)),
+            Err(FormatError::LayerEvidenceHashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn expanded_folder_format_remains_layer_evidence_agnostic() {
+        let document = sample_document();
+        let without =
+            crate::write_project_folder_v1(&Ori2ProjectArchive::document_only(document.clone()))
+                .expect("write folder without evidence");
+        let with = crate::write_project_folder_v1(&Ori2ProjectArchive {
+            document,
+            editor_history: None,
+            layer_evidence: Some(layer_evidence_fixture()),
+        })
+        .expect("write folder with evidence");
+
+        assert_eq!(with.entries(), without.entries());
+        assert_eq!(with.archive().layer_evidence, None);
     }
 
     #[test]

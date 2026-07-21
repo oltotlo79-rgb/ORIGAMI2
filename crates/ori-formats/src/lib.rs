@@ -82,18 +82,18 @@ pub use ori_domain::{
     DEFAULT_MAX_CONSTRAINT_VERTICES as MAX_PROJECT_CONSTRAINT_INDEX_VERTICES,
 };
 pub use ori2::{
-    CURRENT_ORI2_CONTAINER_VERSION, LayerEvidenceArchiveErrorV1, LayerEvidenceArchiveKindV1,
-    LayerEvidenceArchiveV1, LayerEvidenceCellV1, LayerEvidenceFaceV1, LayerEvidenceHingeAngleV1,
-    LayerEvidencePairOrderV1, MAX_EDITOR_HISTORY_JSON_BYTES, MAX_LAYER_EVIDENCE_JSON_BYTES_V1,
-    ORI2_CONTAINER_IDENTIFIER, ORI2_EDITOR_HISTORY_PATH,
+    CURRENT_ORI2_CONTAINER_VERSION, LAYER_EVIDENCE_SCHEMA_VERSION_V1, LayerEvidenceArchiveErrorV1,
+    LayerEvidenceArchiveKindV1, LayerEvidenceArchiveV1, LayerEvidenceCellV1, LayerEvidenceFaceV1,
+    LayerEvidenceHingeAngleV1, LayerEvidencePairOrderV1, MAX_EDITOR_HISTORY_JSON_BYTES,
+    MAX_LAYER_EVIDENCE_JSON_BYTES_V1, ORI2_CONTAINER_IDENTIFIER, ORI2_EDITOR_HISTORY_PATH,
     ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1, ORI2_FEATURE_EDITOR_HISTORY_V1,
     ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1, ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
-    ORI2_FEATURE_LAYERS_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
-    ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1, ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH,
-    Ori2EditorHistoryEntry, Ori2Limits, Ori2Manifest, Ori2ProjectArchive, Ori2ProjectEntry,
-    read_layer_evidence_archive_v1, read_project_archive_ori2,
-    read_project_archive_ori2_with_limits, read_project_ori2, read_project_ori2_with_limits,
-    write_layer_evidence_archive_v1, write_project_archive_ori2,
+    ORI2_FEATURE_LAYER_EVIDENCE_V1, ORI2_FEATURE_LAYERS_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
+    ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1, ORI2_LAYER_EVIDENCE_PATH, ORI2_MANIFEST_PATH,
+    ORI2_PROJECT_PATH, Ori2EditorHistoryEntry, Ori2LayerEvidenceEntry, Ori2Limits, Ori2Manifest,
+    Ori2ProjectArchive, Ori2ProjectEntry, read_layer_evidence_archive_v1,
+    read_project_archive_ori2, read_project_archive_ori2_with_limits, read_project_ori2,
+    read_project_ori2_with_limits, write_layer_evidence_archive_v1, write_project_archive_ori2,
     write_project_archive_ori2_with_limits, write_project_ori2, write_project_ori2_with_limits,
 };
 pub use project_folder::{
@@ -458,22 +458,40 @@ pub enum FormatError {
     InvalidManifestProjectPath { found: String },
     #[error(".ori2 manifest references an invalid editor-history path: {found:?}")]
     InvalidManifestEditorHistoryPath { found: String },
+    #[error(".ori2 manifest references an invalid layer-evidence path: {found:?}")]
+    InvalidManifestLayerEvidencePath { found: String },
     #[error(
         ".ori2 editor-history schema version {found} is not supported; latest supported version is {latest}"
     )]
     UnsupportedEditorHistorySchemaVersion { found: u32, latest: u32 },
     #[error(
+        ".ori2 layer-evidence schema version {found} is not supported; latest supported version is {latest}"
+    )]
+    UnsupportedLayerEvidenceSchemaVersion { found: u32, latest: u32 },
+    #[error(
         ".ori2 editor-history feature and manifest descriptor must either both be present or both be absent"
     )]
     EditorHistoryFeatureDescriptorMismatch,
+    #[error(
+        ".ori2 layer-evidence feature and manifest descriptor must either both be present or both be absent"
+    )]
+    LayerEvidenceFeatureDescriptorMismatch,
     #[error(".ori2 contains editor-history data without a manifest descriptor")]
     UnexpectedEditorHistoryEntry,
+    #[error(".ori2 contains layer-evidence data without a manifest descriptor")]
+    UnexpectedLayerEvidenceEntry,
     #[error(
         ".ori2 manifest declares editor-history size {declared} bytes, but editor-history.json is {actual} bytes"
     )]
     EditorHistorySizeMismatch { declared: u64, actual: u64 },
     #[error(".ori2 editor-history checksum differs (expected {expected}, actual {actual})")]
     EditorHistoryHashMismatch { expected: String, actual: String },
+    #[error(
+        ".ori2 manifest declares layer-evidence size {declared} bytes, but layer-evidence.json is {actual} bytes"
+    )]
+    LayerEvidenceSizeMismatch { declared: u64, actual: u64 },
+    #[error(".ori2 layer-evidence checksum differs (expected {expected}, actual {actual})")]
+    LayerEvidenceHashMismatch { expected: String, actual: String },
     #[error(".ori2 editor-history is bound to a different project checksum")]
     EditorHistoryProjectHashMismatch,
     #[error(".ori2 editor-history is bound to a different project ID")]
@@ -482,6 +500,10 @@ pub enum FormatError {
         "the document-only .ori2 API cannot discard persisted editor history; use the project-archive API"
     )]
     EditorHistoryRequiresArchiveApi,
+    #[error(
+        "the document-only .ori2 API cannot discard persisted layer evidence; use the project-archive API"
+    )]
+    LayerEvidenceRequiresArchiveApi,
     #[error(
         ".ori2 manifest declares project size {declared} bytes, but project.json is {actual} bytes"
     )]

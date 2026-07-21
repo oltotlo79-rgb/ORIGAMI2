@@ -12,7 +12,7 @@ for (const directory of roots) {
     const path = join(directory, relative)
     let source = readFileSync(path, 'utf8')
     if (extname(relative) === '.rs') {
-      const tests = source.lastIndexOf('\n#[cfg(test)]\nmod tests')
+      const tests = source.search(/\r?\n#\[cfg\(test\)\]\r?\nmod tests/u)
       if (tests >= 0) source = source.slice(0, tests)
     }
     if (/\bconsole\s*\.|\b(?:println|eprintln|dbg)!|\b(?:tracing|log)::/u.test(source)) {

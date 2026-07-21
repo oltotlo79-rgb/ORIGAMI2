@@ -21,6 +21,11 @@ if (capability.identifier !== 'main-window' || JSON.stringify(capability.windows
   throw new Error('production Tauri capability allowlist changed')
 }
 let files = 0
+const secretPattern = /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[opusr]_[A-Za-z0-9]{32,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|(?:secret|token|password)\s*[:=]\s*["'][A-Za-z0-9+/_=-]{24,}["']/u
+if (!secretPattern.test('token="abcdefghijklmnopqrstuvwxyz012345"')
+  || secretPattern.test('releaseNotes="token validation failed"')) {
+  throw new Error('secret scanner positive/negative fixtures diverged')
+}
 for (const name of readdirSync(dist, { recursive: true })) {
   const path = join(dist, name)
   const stat = lstatSync(path)
@@ -29,7 +34,7 @@ for (const name of readdirSync(dist, { recursive: true })) {
   files += 1
   if (files > 4096 || stat.size > 16_777_216) throw new Error('production bundle scan bound exceeded')
   const bytes = readFileSync(path, 'utf8')
-  if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[opusr]_[A-Za-z0-9]{32,}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|(?:secret|token|password)\s*[:=]\s*["'][A-Za-z0-9+/_=-]{24,}["']/u.test(bytes)) {
+  if (secretPattern.test(bytes)) {
     throw new Error(`production bundle contains a secret-like credential: ${name}`)
   }
 }

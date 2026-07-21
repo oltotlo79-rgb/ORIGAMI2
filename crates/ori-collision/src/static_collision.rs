@@ -1140,10 +1140,12 @@ pub fn diagnose_static_collision_geometry(
             });
         let shared_feature_flat_stack_proven = is_positive_zero
             && !strict_transversal_dual_gate_proven
-            && matches!(
-                pair.topology,
-                TopologyRelation::SharedHingeEdge | TopologyRelation::SharedVertex
-            )
+            // Only an authenticated hinge can turn coincident positive area
+            // into the expected two-sided geometry of a flat fold. Faces
+            // that merely share one vertex have no such folding relation;
+            // positive-area overlap away from that vertex remains a genuine
+            // whole-face penetration.
+            && matches!(pair.topology, TopologyRelation::SharedHingeEdge)
             && (watertight_shared_hinge_area_overlap_proven
                 || pair.proves_zero_thickness_penetration);
         let whole_face_overlap_proven = is_positive_zero

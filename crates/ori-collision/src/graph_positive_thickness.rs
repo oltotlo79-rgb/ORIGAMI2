@@ -415,16 +415,71 @@ mod tests {
         let pose = geometry
             .solve_closed(&audit, geometry.face_ids()[0], &angles, 0.0)
             .unwrap();
-        let proof = prove_positive_thickness_graph_geometry_v1(
-            &geometry,
-            &pose,
-            paper.thickness_mm,
-            PositiveThicknessGraphLimitsV1::default(),
-        )
-        .expect("flat real theta positive-thickness proof");
-        assert_eq!(proof.face_count(), 6);
-        assert_eq!(proof.analyzed_unordered_face_pairs(), 15);
+        for thickness in [0.1, 1.0, 3.0] {
+            let proof = prove_positive_thickness_graph_geometry_v1(
+                &geometry,
+                &pose,
+                thickness,
+                PositiveThicknessGraphLimitsV1::default(),
+            )
+            .expect("flat real theta positive-thickness proof");
+            assert_eq!(proof.face_count(), 6);
+            assert_eq!(proof.analyzed_unordered_face_pairs(), 15);
+            assert_eq!(proof.paper_thickness_bits(), thickness.to_bits());
+            assert!(!proof.is_for_geometry(
+                &geometry,
+                &pose,
+                f64::from_bits(thickness.to_bits() + 1),
+            ));
+        }
         assert_eq!(pose.closure_certificate().checked_hinges().len(), 7);
+        let shared_hinge = geometry
+            .hinges()
+            .iter()
+            .find(|hinge| {
+                geometry
+                    .hinges()
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.start() == hinge.start() || candidate.end() == hinge.start()
+                    })
+                    .count()
+                    >= 4
+                    && geometry
+                        .hinges()
+                        .iter()
+                        .filter(|candidate| {
+                            candidate.start() == hinge.end() || candidate.end() == hinge.end()
+                        })
+                        .count()
+                        >= 4
+            })
+            .expect("unique hinge joining both degree-four physical vertices")
+            .edge();
+        let damaged_angles = CanonicalHingeAngles::new(
+            geometry
+                .hinges()
+                .iter()
+                .map(|hinge| {
+                    HingeAngle::new(
+                        hinge.edge(),
+                        if hinge.edge() == shared_hinge {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                    )
+                    .unwrap()
+                })
+                .collect(),
+        )
+        .unwrap();
+        assert!(
+            geometry
+                .solve_closed(&audit, geometry.face_ids()[0], &damaged_angles, 0.0)
+                .is_err(),
+            "damaged shared theta hinge must issue neither closed pose nor thickness proof"
+        );
         assert!(matches!(
             prove_positive_thickness_graph_geometry_v1(
                 &geometry,

@@ -1220,6 +1220,46 @@ mod tests {
     }
 
     #[test]
+    fn ori2_round_trip_preserves_typed_fold_path_provenance() {
+        let mut document = sample_document();
+        document.beginner_design_profile.generation_provenance =
+            Some(ori_domain::BeginnerGenerationProvenanceV1 {
+                schema_version: 1,
+                topology_authority_sha256: [0x21; 32],
+                fold_path_certificate_sha256: Some([0x42; 32]),
+                confidence_score: 88,
+                confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
+                explicit_override: false,
+                source_asset_fingerprint: "asset:typed-provenance".to_owned(),
+            });
+        let archive = Ori2ProjectArchive::document_only(document);
+        let bytes = write_project_archive_ori2(&archive).expect("write typed provenance");
+        let reopened = read_project_archive_ori2(&bytes).expect("read typed provenance");
+        assert_eq!(reopened, archive);
+        assert_eq!(
+            reopened
+                .document
+                .beginner_design_profile
+                .generation_provenance
+                .as_ref()
+                .and_then(|value| value.fold_path_certificate_sha256),
+            Some([0x42; 32])
+        );
+        let legacy = Ori2ProjectArchive::document_only(sample_document());
+        let legacy = read_project_archive_ori2(
+            &write_project_archive_ori2(&legacy).expect("write legacy archive"),
+        )
+        .expect("read legacy archive");
+        assert!(
+            legacy
+                .document
+                .beginner_design_profile
+                .generation_provenance
+                .is_none()
+        );
+    }
+
+    #[test]
     fn default_empty_editor_history_preserves_the_legacy_two_entry_archive() {
         let document = sample_document();
         let legacy = write_project_ori2(&document).expect("write legacy document-only archive");

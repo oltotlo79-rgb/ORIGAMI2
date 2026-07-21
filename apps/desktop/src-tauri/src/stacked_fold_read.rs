@@ -3382,92 +3382,116 @@ mod tests {
     #[test]
     fn dense_rank_four_grid_previews_applies_and_round_trips_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, paper, moving) =
-            super::dense_grid_cycle_test_support::three_by_three_dense_cycle_pattern();
-        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        assert_eq!(
-            (snapshot.faces.len(), snapshot.hinge_adjacency.len()),
-            (9, 12)
-        );
-        let hinges = snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        let fixed = snapshot.faces[0].id;
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            fixed,
-        );
-        let instance = project.instance_id;
-        let project_id = project.project_id;
-        let revision = project.editor.revision();
-        let app_state = AppState::new(project);
-        let transactions =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let request = |expected_instance_id| CurrentCyclePosePreviewRequestV1 {
-            progress_request_id: None,
-            expected_project_instance_id: expected_instance_id,
-            expected_project_id: project_id,
-            expected_revision: revision,
-            cycle_schedule_v1: dense_grid_schedule(&hinges, &moving),
-        };
-        assert_eq!(
-            propose_current_cycle_pose_inner(
+        for thickness_mm in [0.1, 1.0, 3.0, 10_000.0] {
+            let (pattern, mut paper, moving) =
+                super::dense_grid_cycle_test_support::three_by_three_dense_cycle_pattern();
+            paper.thickness_mm = thickness_mm;
+            let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+            let topology = project
+                .editor
+                .topology_analysis_input(project.project_id)
+                .analyze();
+            let snapshot = topology.simulation_snapshot().unwrap();
+            assert_eq!(
+                (snapshot.faces.len(), snapshot.hinge_adjacency.len()),
+                (9, 12)
+            );
+            let hinges = snapshot
+                .hinge_adjacency
+                .iter()
+                .map(|hinge| hinge.edge)
+                .collect::<Vec<_>>();
+            let fixed = snapshot.faces[0].id;
+            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+                &mut project,
+                hinges.clone(),
+                fixed,
+            );
+            let instance = project.instance_id;
+            let project_id = project.project_id;
+            let revision = project.editor.revision();
+            let app_state = AppState::new(project);
+            let transactions =
+                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+            let request = |expected_instance_id| CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: expected_instance_id,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                cycle_schedule_v1: dense_grid_schedule(&hinges, &moving),
+            };
+            assert_eq!(
+                propose_current_cycle_pose_inner(
+                    None,
+                    &app_state,
+                    &transactions,
+                    request(ProjectId::new())
+                )
+                .unwrap_err(),
+                STALE_MESSAGE
+            );
+            let preview = propose_current_cycle_pose_inner(
                 None,
                 &app_state,
                 &transactions,
-                request(ProjectId::new())
-            )
-            .unwrap_err(),
-            STALE_MESSAGE
-        );
-        let preview =
-            propose_current_cycle_pose_inner(None, &app_state, &transactions, request(instance))
-                .expect("dense rank-four preview");
-        assert_eq!(
-            (
-                preview.closure_leaf_count,
-                preview.checked_hinge_count,
-                preview.total_hinge_count
-            ),
-            (1, 12, 12)
-        );
-        super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
-            &transactions,
-            preview.transaction_token,
-        )
-        .unwrap();
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &app_state,
-                &GlobalFlatFoldabilityState::default(),
+                request(instance),
+            );
+            if thickness_mm == 10_000.0 {
+                assert_eq!(preview.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
+                assert!(
+                    super::super::lock_project(&app_state)
+                        .unwrap()
+                        .editor
+                        .instruction_timeline()
+                        .steps
+                        .is_empty()
+                );
+                continue;
+            }
+            let preview = preview.expect("dense rank-four preview");
+            assert_eq!(
+                (
+                    preview.closure_leaf_count,
+                    preview.checked_hinge_count,
+                    preview.total_hinge_count
+                ),
+                (1, 12, 12)
+            );
+            super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
                 &transactions,
                 preview.transaction_token,
             )
-            .is_err()
-        );
-        let preview =
-            propose_current_cycle_pose_inner(None, &app_state, &transactions, request(instance))
-                .expect("dense retry");
-        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-            &app_state,
-            &GlobalFlatFoldabilityState::default(),
-            &transactions,
-            preview.transaction_token,
-        )
-        .expect("dense atomic apply");
-        let mut project = super::super::lock_project(&app_state).unwrap();
-        project.editor.undo(applied).unwrap();
-        let undone = project.editor.revision();
-        project.editor.redo(undone).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+            .unwrap();
+            assert!(
+                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                    &app_state,
+                    &GlobalFlatFoldabilityState::default(),
+                    &transactions,
+                    preview.transaction_token,
+                )
+                .is_err()
+            );
+            let preview = propose_current_cycle_pose_inner(
+                None,
+                &app_state,
+                &transactions,
+                request(instance),
+            )
+            .expect("dense retry");
+            let applied =
+                super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                    &app_state,
+                    &GlobalFlatFoldabilityState::default(),
+                    &transactions,
+                    preview.transaction_token,
+                )
+                .expect("dense atomic apply");
+            let mut project = super::super::lock_project(&app_state).unwrap();
+            project.editor.undo(applied).unwrap();
+            let undone = project.editor.revision();
+            project.editor.redo(undone).unwrap();
+            assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        }
     }
 
     fn four_bay_cycle_schedule(hinges: &[ori_domain::EdgeId]) -> CycleScheduleRequestV1 {

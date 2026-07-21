@@ -19,6 +19,7 @@ pub const MAX_INSTRUCTION_EXPORT_TITLE_CHARS: usize = 120;
 pub const INSTRUCTION_EXPORT_PROFILE: &str = "instruction_export_v1";
 pub const INSTRUCTION_PROJECTION_PROFILE: &str = "orthographic_isometric_v1";
 const UNTITLED_INSTRUCTION_TITLE: &str = "無題";
+const PATH_CERTIFICATE_REFERENCE_LABEL: &str = "経路証明 SHA-256: ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InstructionExportWarning {
@@ -201,6 +202,8 @@ pub enum InstructionExportError {
     TitleTooLong { actual: usize, maximum: usize },
     #[error("the project title contains an unsupported control character")]
     InvalidTitle,
+    #[error("instruction step {step_index} contains a malformed path-certificate reference")]
+    InvalidPathCertificateReference { step_index: usize },
     #[error(transparent)]
     Diagram(#[from] InstructionDiagramError),
     #[error("the bundled instruction font is invalid")]
@@ -320,6 +323,7 @@ fn build_canonical_instruction_plan(
     topology: &TopologySnapshot,
     limits: InstructionExportLimits,
 ) -> Result<(CanonicalInstructionPlanV1, font::InstructionFont<'static>), InstructionExportError> {
+    validate_path_certificate_references(timeline)?;
     let diagram = build_instruction_diagram_plan_with_limits(
         current_fold_model_fingerprint,
         pattern,
@@ -349,6 +353,34 @@ fn build_canonical_instruction_plan(
     };
     plan.validate(&font)?;
     Ok((plan, font))
+}
+
+fn validate_path_certificate_references(
+    timeline: &InstructionTimeline,
+) -> Result<(), InstructionExportError> {
+    for (step_index, step) in timeline.steps.iter().enumerate() {
+        for text in [&step.title, &step.description, &step.caution] {
+            let mut remainder = text.as_str();
+            while let Some(offset) = remainder.find(PATH_CERTIFICATE_REFERENCE_LABEL) {
+                let value = &remainder[offset + PATH_CERTIFICATE_REFERENCE_LABEL.len()..];
+                if value.len() < 64
+                    || !value.as_bytes()[..64]
+                        .iter()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+                    || value
+                        .as_bytes()
+                        .get(64)
+                        .is_some_and(|byte| !byte.is_ascii_whitespace())
+                {
+                    return Err(InstructionExportError::InvalidPathCertificateReference {
+                        step_index,
+                    });
+                }
+                remainder = &value[64..];
+            }
+        }
+    }
+    Ok(())
 }
 
 fn canonical_instruction_title(title: &str) -> &str {
@@ -795,6 +827,41 @@ mod tests {
             assert_eq!(artifact.step_count, timeline.steps.len());
             assert_eq!(artifact.page_count, plan.pages.len());
         }
+
+        let mut malformed_reference = timeline.clone();
+        malformed_reference.steps[0].description = format!(
+            "経路証明 SHA-256: {}G",
+            &certificate_reference[..certificate_reference.len() - 1]
+        );
+        assert!(matches!(
+            export_instruction_document(
+                InstructionExportFormat::Pdf17,
+                "証明付き手順",
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &malformed_reference,
+                &fixture.topology,
+            ),
+            Err(InstructionExportError::InvalidPathCertificateReference { step_index: 0 })
+        ));
+
+        let mut foreign_model = timeline;
+        foreign_model.steps[0].pose.source_model_fingerprint = "b".repeat(64);
+        assert!(matches!(
+            export_instruction_document(
+                InstructionExportFormat::SvgPageZip,
+                "証明付き手順",
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &foreign_model,
+                &fixture.topology,
+            ),
+            Err(InstructionExportError::Diagram(
+                InstructionDiagramError::StaleStep { step_index: 0 }
+            ))
+        ));
     }
 
     #[test]

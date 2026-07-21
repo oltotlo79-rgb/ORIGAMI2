@@ -103,6 +103,8 @@ export function StackedFoldPanel({
   const tokenRef = useRef<string | null>(null)
   const progressRequestRef = useRef<string | null>(null)
   const progressSequenceRef = useRef(0)
+  const cyclePoseSequenceRef = useRef(0)
+  const cyclePoseActiveRef = useRef(false)
   const [pathProgress, setPathProgress] = useState<Readonly<{
     exploredStateCount: number
     evaluatedTransitionCount: number
@@ -133,9 +135,15 @@ export function StackedFoldPanel({
 
   useEffect(() => {
     coordinator.invalidate()
+    cyclePoseSequenceRef.current += 1
+    if (cyclePoseActiveRef.current) {
+      cyclePoseActiveRef.current = false
+      void cancelCurrentStackedFoldReadV1().catch(() => undefined)
+    }
     progressRequestRef.current = null
     setPathProgress(null)
     setCyclePosePreview(null)
+    setCyclePoseReading(false)
     setCyclePoseError(false)
     cancelToken(tokenRef.current)
     tokenRef.current = null
@@ -354,24 +362,46 @@ export function StackedFoldPanel({
 
   async function previewCurrentCyclePose() {
     if (!authoredCycleSchedule || disabled || applying || cyclePoseReading) return
+    const sequence = ++cyclePoseSequenceRef.current
+    void cancelCurrentStackedFoldReadV1().catch(() => undefined)
     cancelToken(tokenRef.current)
     tokenRef.current = null
     setCyclePoseReading(true)
+    cyclePoseActiveRef.current = true
     setCyclePoseError(false)
+    const progressRequestId =
+      `current-cycle:${snapshot.project_instance_id}:${snapshot.revision}:${sequence}`
+    progressRequestRef.current = progressRequestId
+    setPathProgress(null)
     try {
       const response = await proposeCurrentCyclePoseV1({
+        progressRequestId,
         expectedProjectInstanceId: snapshot.project_instance_id,
         expectedProjectId: snapshot.project_id,
         expectedRevision: snapshot.revision,
         cycleScheduleV1: authoredCycleSchedule,
       })
+      const current = authorityRef.current
+      if (
+        sequence !== cyclePoseSequenceRef.current ||
+        current.project_instance_id !== snapshot.project_instance_id ||
+        current.project_id !== snapshot.project_id ||
+        current.revision !== snapshot.revision
+      ) {
+        cancelToken(response.transactionToken)
+        return
+      }
       tokenRef.current = response.transactionToken
       setCyclePosePreview(response)
     } catch {
       setCyclePosePreview(null)
       setCyclePoseError(true)
     } finally {
-      setCyclePoseReading(false)
+      if (sequence === cyclePoseSequenceRef.current) {
+        cyclePoseActiveRef.current = false
+        progressRequestRef.current = null
+        setCyclePoseReading(false)
+      }
     }
   }
 
@@ -519,6 +549,14 @@ export function StackedFoldPanel({
               ? t('経路を証明中…', 'Proving path…')
               : t('現在姿勢から証明', 'Prove from current pose')}
           </button>
+          {cyclePoseReading && pathProgress && (
+            <p role="status">
+              {t(
+                `循環経路の状態 ${pathProgress.exploredStateCount}/${pathProgress.stateLimit}、遷移 ${pathProgress.evaluatedTransitionCount}/${pathProgress.transitionLimit}`,
+                `Cycle states ${pathProgress.exploredStateCount}/${pathProgress.stateLimit}; transitions ${pathProgress.evaluatedTransitionCount}/${pathProgress.transitionLimit}`,
+              )}
+            </p>
+          )}
           {cyclePoseError && (
             <p role="alert">
               {t(

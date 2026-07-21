@@ -624,4 +624,53 @@ describe('StackedFoldPanel', () => {
     await waitFor(() => expect(onApplied).toHaveBeenCalledWith(refreshed))
     expect(transport.apply).toHaveBeenCalledWith(token)
   })
+
+  it('does not publish a late cycle preview after rapid replacement', async () => {
+    let resolveFirst!: (value: any) => void
+    let resolveSecond!: (value: any) => void
+    transport.cyclePreview
+      .mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve }))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveSecond = resolve }))
+    transport.cancel.mockResolvedValue(undefined)
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    const schedule = (angle: number) => ({
+      version: 1,
+      entries: [{
+        edge: token,
+        uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }],
+        numeratorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+        denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+        requestedAngleDegrees: angle,
+      }],
+    })
+    const textarea = screen.getByLabelText('Cycle path definition (JSON, cyclic patterns only)')
+    fireEvent.change(textarea, { target: { value: JSON.stringify(schedule(90)) } })
+    fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
+    fireEvent.change(textarea, { target: { value: JSON.stringify(schedule(80)) } })
+    fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
+    resolveSecond({
+      version: 1, transactionToken: project, sourceRevision: 3, targetRevision: 4,
+      closureLeafCount: 2, continuousPathCertified: true, authorizesProjectMutation: false,
+    })
+    await waitFor(() => expect(
+      screen.getByRole('region', { name: 'Current-pose cycle preview' }).textContent,
+    ).toContain('Closure intervals2'))
+    resolveFirst({
+      version: 1, transactionToken: token, sourceRevision: 3, targetRevision: 4,
+      closureLeafCount: 99, continuousPathCertified: true, authorizesProjectMutation: false,
+    })
+    await waitFor(() => expect(transport.cancel).toHaveBeenCalledWith(token))
+    expect(screen.queryByText('99')).toBeNull()
+    expect(screen.getByRole('region', { name: 'Current-pose cycle preview' }).textContent)
+      .toContain('Closure intervals2')
+  })
 })

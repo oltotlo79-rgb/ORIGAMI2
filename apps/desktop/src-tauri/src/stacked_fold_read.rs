@@ -217,6 +217,8 @@ struct CertifiedPathGraphTransitionRequestV1 {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct CurrentCyclePosePreviewRequestV1 {
+    #[serde(default)]
+    progress_request_id: Option<String>,
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
@@ -237,19 +239,25 @@ pub(super) struct CurrentCyclePosePreviewResponseV1 {
 
 #[tauri::command]
 pub(super) fn propose_current_cycle_pose_v1(
+    app: AppHandle,
     app_state: State<'_, AppState>,
     _foldability_state: State<'_, GlobalFlatFoldabilityState>,
     transaction_state: State<'_, super::stacked_fold_transaction::StackedFoldTransactionState>,
     request: CurrentCyclePosePreviewRequestV1,
 ) -> Result<CurrentCyclePosePreviewResponseV1, String> {
-    propose_current_cycle_pose_inner(&app_state, &transaction_state, request)
+    propose_current_cycle_pose_inner(Some(&app), &app_state, &transaction_state, request)
 }
 
 fn propose_current_cycle_pose_inner(
+    app: Option<&AppHandle>,
     app_state: &AppState,
     transaction_state: &super::stacked_fold_transaction::StackedFoldTransactionState,
     request: CurrentCyclePosePreviewRequestV1,
 ) -> Result<CurrentCyclePosePreviewResponseV1, String> {
+    let generation = begin_stacked_fold_read_generation_v1()?;
+    let progress_request_id =
+        validate_progress_request_id_v1(request.progress_request_id.as_deref())?;
+    emit_current_cycle_progress_v1(app, progress_request_id, 0, 0);
     let project = lock_project(&app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
     if project.instance_id != request.expected_project_instance_id
         || project.project_id != request.expected_project_id
@@ -310,6 +318,10 @@ fn propose_current_cycle_pose_inner(
     )
     .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     let closure_leaf_count = closure.leaves().len();
+    emit_current_cycle_progress_v1(app, progress_request_id, 1, 1);
+    if STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) != generation {
+        return Err(CANCELLED_MESSAGE.to_owned());
+    }
     let target_angles = requested
         .as_slice()
         .iter()
@@ -347,6 +359,48 @@ fn propose_current_cycle_pose_inner(
         continuous_path_certified: true,
         authorizes_project_mutation: false,
     })
+}
+
+fn begin_stacked_fold_read_generation_v1() -> Result<u64, String> {
+    STACKED_FOLD_READ_GENERATION
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            value.checked_add(1)
+        })
+        .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?
+        .checked_add(1)
+        .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
+}
+
+fn validate_progress_request_id_v1(value: Option<&str>) -> Result<Option<&str>, String> {
+    match value {
+        Some(value) if value.is_empty() || value.len() > 128 || !value.is_ascii() => {
+            Err(INVALID_REQUEST_MESSAGE.to_owned())
+        }
+        value => Ok(value),
+    }
+}
+
+fn emit_current_cycle_progress_v1(
+    app: Option<&AppHandle>,
+    request_id: Option<&str>,
+    explored_state_count: usize,
+    evaluated_transition_count: usize,
+) {
+    let (Some(app), Some(request_id)) = (app, request_id) else {
+        return;
+    };
+    let _ = app.emit(
+        STACKED_FOLD_READ_PROGRESS_EVENT_V1,
+        StackedFoldReadProgressDtoV1 {
+            version: 1,
+            request_id: request_id.to_owned(),
+            explored_state_count,
+            evaluated_transition_count,
+            state_limit: 32,
+            transition_limit: 64,
+            authorizes_project_mutation: false,
+        },
+    );
 }
 
 fn validate_certified_path_graph_v1(
@@ -3114,9 +3168,11 @@ mod tests {
                 super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
             assert_eq!(
                 propose_current_cycle_pose_inner(
+                    None,
                     &app_state,
                     &transaction_state,
                     CurrentCyclePosePreviewRequestV1 {
+                        progress_request_id: None,
                         expected_project_instance_id: instance,
                         expected_project_id: project_id,
                         expected_revision: revision + 1,
@@ -3127,9 +3183,11 @@ mod tests {
                 STALE_MESSAGE
             );
             let response = propose_current_cycle_pose_inner(
+                None,
                 &app_state,
                 &transaction_state,
                 CurrentCyclePosePreviewRequestV1 {
+                    progress_request_id: None,
                     expected_project_instance_id: instance,
                     expected_project_id: project_id,
                     expected_revision: revision,
@@ -3165,9 +3223,11 @@ mod tests {
                             .is_err()
                         );
                         response = propose_current_cycle_pose_inner(
+                            None,
                             &app_state,
                             &transaction_state,
                             CurrentCyclePosePreviewRequestV1 {
+                                progress_request_id: None,
                                 expected_project_instance_id: instance,
                                 expected_project_id: project_id,
                                 expected_revision: revision,
@@ -3219,5 +3279,37 @@ mod tests {
             "unexpected": true
         });
         assert!(serde_json::from_value::<CurrentCyclePosePreviewRequestV1>(value).is_err());
+    }
+
+    #[test]
+    fn current_cycle_generation_replacement_and_cancel_are_monotonic() {
+        let _guard = STACKED_FOLD_READ_GENERATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let first = begin_stacked_fold_read_generation_v1().unwrap();
+        let replacement = begin_stacked_fold_read_generation_v1().unwrap();
+        assert!(replacement > first);
+        assert_ne!(STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire), first);
+        assert_eq!(
+            STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
+            replacement
+        );
+        cancel_current_stacked_fold_read_v1().unwrap();
+        assert_ne!(
+            STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
+            replacement
+        );
+    }
+
+    #[test]
+    fn current_cycle_progress_id_is_strict_and_bounded() {
+        assert_eq!(validate_progress_request_id_v1(None).unwrap(), None);
+        assert_eq!(
+            validate_progress_request_id_v1(Some("cycle:1")).unwrap(),
+            Some("cycle:1")
+        );
+        assert!(validate_progress_request_id_v1(Some("")).is_err());
+        assert!(validate_progress_request_id_v1(Some(&"x".repeat(129))).is_err());
+        assert!(validate_progress_request_id_v1(Some("循環")).is_err());
     }
 }

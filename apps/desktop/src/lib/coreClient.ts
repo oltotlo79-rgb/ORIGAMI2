@@ -62,6 +62,7 @@ import {
 } from './stackedFoldRead.ts'
 
 export type CurrentCyclePosePreviewRequestV1 = Readonly<{
+  progressRequestId?: string
   expectedProjectInstanceId: string
   expectedProjectId: string
   expectedRevision: number
@@ -2309,12 +2310,19 @@ export function proposeCurrentStackedFoldRead(
 export function proposeCurrentCyclePoseV1(
   request: CurrentCyclePosePreviewRequestV1,
 ): Promise<CurrentCyclePosePreviewResponseV1> {
+  const keys = Object.keys(request).sort().join(',')
+  if (
+    keys !== 'cycleScheduleV1,expectedProjectId,expectedProjectInstanceId,expectedRevision' &&
+    keys !== 'cycleScheduleV1,expectedProjectId,expectedProjectInstanceId,expectedRevision,progressRequestId'
+  ) return Promise.reject(new Error('invalid current-cycle preview request'))
   if (
     !isCanonicalNonNilUuid(request.expectedProjectInstanceId) ||
     !isCanonicalNonNilUuid(request.expectedProjectId) ||
     !Number.isSafeInteger(request.expectedRevision) ||
     request.expectedRevision < 0 ||
-    !isCycleScheduleRequestV1(request.cycleScheduleV1)
+    !isCycleScheduleRequestV1(request.cycleScheduleV1) ||
+    (request.progressRequestId !== undefined &&
+      (!/^[\x20-\x7e]+$/.test(request.progressRequestId) || request.progressRequestId.length > 128))
   ) return Promise.reject(new Error('invalid current-cycle preview request'))
   return invoke<unknown>('propose_current_cycle_pose_v1', { request }).then((payload) => {
     if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {

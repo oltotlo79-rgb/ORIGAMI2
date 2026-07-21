@@ -228,11 +228,18 @@ function Harness() {
       {mergedAuthorities && <p>Merged authority witness: image contours + GLB depth/bulges</p>}
       {mergedAuthorities && <p>3D candidate score {threeDimensionalScore}/100 · bounded depth error {depthError} mm</p>}
       {mergedAuthorities && <p>Native folded landmarks: body/local 3D · Hausdorff 4% · depth {depthError} mm · bulge error 2% · collision clear</p>}
-      {mergedAuthorities && <canvas width={320} height={120} role="img" aria-label="Folded target depth preview" ref={(canvas) => {
+      {mergedAuthorities && <p>Landmark error vectors: 4 · maximum error point 3 · combined score {threeDimensionalScore}/100</p>}
+      {mergedAuthorities && <canvas width={320} height={120} role="img" aria-label="Folded target and candidate landmark overlay" ref={(canvas) => {
         const context = canvas?.getContext('2d'); if (!canvas || !context) return
         context.clearRect(0, 0, canvas.width, canvas.height); context.fillStyle = '#2563eb'
         context.fillRect(40, 60 - (selectedCandidate === 1 ? 31 : 29), 240, selectedCandidate === 1 ? 62 : 58)
         context.strokeStyle = '#dc2626'; context.strokeRect(36, 27, 248, 65)
+        const candidateDepth = selectedCandidate === 1 ? 31 : 29
+        for (const [index, x] of [64, 128, 192, 256].entries()) {
+          context.beginPath(); context.strokeStyle = index === 2 ? '#f59e0b' : '#64748b'
+          context.moveTo(x, 60 - candidateDepth); context.lineTo(x - 4, 27); context.stroke()
+          context.fillStyle = index === 2 ? '#f59e0b' : '#2563eb'; context.fillRect(x - 2, 58 - candidateDepth, 4, 4)
+        }
       }} />}
       <canvas ref={witnessCanvas} width={320} height={200} role="img" aria-label={`Contour placement correspondence candidate ${selectedCandidate}`} />
       <button onClick={() => { setPreview(false); setStatus('Stale generic target replaced') }}>Replace recognized target</button>

@@ -32,6 +32,24 @@ pub enum GeneralCellTransportErrorV1 {
     Crossing,
 }
 
+pub fn preflight_general_cell_transport_work_v1(
+    transitions: usize,
+    cells: usize,
+    layer_records: usize,
+    boundary_samples: usize,
+    limits: GeneralCellTransportLimitsV1,
+) -> Result<(), GeneralCellTransportErrorV1> {
+    if transitions == 0
+        || transitions > limits.max_transitions
+        || cells > limits.max_cells
+        || layer_records > limits.max_layer_records
+        || boundary_samples > limits.max_boundary_samples
+    {
+        return Err(GeneralCellTransportErrorV1::ResourceLimit);
+    }
+    Ok(())
+}
+
 pub struct GeneralCellTransportInputV1<'a> {
     pub geometry: &'a MaterialHingeGraphGeometry,
     pub audit: &'a MaterialHingeGraphAudit,
@@ -153,13 +171,13 @@ pub fn certify_general_multi_face_cell_transport_v1(
         })
         .and_then(|work| work.checked_mul(transition_count))
         .ok_or(GeneralCellTransportErrorV1::ResourceLimit)?;
-    if transition_count > input.limits.max_transitions
-        || input.source.overlap_cells.len() > input.limits.max_cells
-        || layer_records > input.limits.max_layer_records
-        || boundary_samples > input.limits.max_boundary_samples
-    {
-        return Err(GeneralCellTransportErrorV1::ResourceLimit);
-    }
+    preflight_general_cell_transport_work_v1(
+        transition_count,
+        input.source.overlap_cells.len(),
+        layer_records,
+        boundary_samples,
+        input.limits,
+    )?;
     let folded = input
         .source
         .folded_faces
@@ -171,6 +189,10 @@ pub fn certify_general_multi_face_cell_transport_v1(
     }
     let mut cells = input.source.overlap_cells.iter().collect::<Vec<_>>();
     cells.sort_unstable_by_key(|cell| cell.cell_key.0);
+    let inverse_transforms = folded
+        .iter()
+        .map(|(face, folded)| prepare_inverse_flat_transform(folded).map(|value| (*face, value)))
+        .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
     let mut parameters = input
         .closure
         .leaves()
@@ -235,7 +257,12 @@ pub fn certify_general_multi_face_cell_transport_v1(
                             .to_f64()
                             .ok_or(GeneralCellTransportErrorV1::GeometryUnavailable)?,
                     );
-                    let material = inverse_flat_point(folded_face, flat)?;
+                    let material = inverse_flat_point(
+                        inverse_transforms
+                            .get(&face)
+                            .ok_or(GeneralCellTransportErrorV1::BindingMismatch)?,
+                        flat,
+                    )?;
                     let world = transform
                         .apply_point(material)
                         .map_err(|_| GeneralCellTransportErrorV1::GeometryUnavailable)?;
@@ -279,10 +306,20 @@ pub fn certify_general_multi_face_cell_transport_v1(
     })
 }
 
-fn inverse_flat_point(
+#[derive(Clone, Copy)]
+struct InverseFlatTransform {
+    m00: f64,
+    m01: f64,
+    m10: f64,
+    m11: f64,
+    tx: f64,
+    ty: f64,
+    determinant: f64,
+}
+
+fn prepare_inverse_flat_transform(
     folded: &ori_foldability::FoldedFaceSnapshot,
-    flat: Point2,
-) -> Result<Point3, GeneralCellTransportErrorV1> {
+) -> Result<InverseFlatTransform, GeneralCellTransportErrorV1> {
     let value = &folded.source_to_flat;
     let values = [
         value.m00.to_f64(),
@@ -307,12 +344,59 @@ fn inverse_flat_point(
     if !determinant.is_finite() || determinant == 0.0 {
         return Err(GeneralCellTransportErrorV1::GeometryUnavailable);
     }
-    let dx = flat.x - tx;
-    let dy = flat.y - ty;
+    Ok(InverseFlatTransform {
+        m00,
+        m01,
+        m10,
+        m11,
+        tx,
+        ty,
+        determinant,
+    })
+}
+
+fn inverse_flat_point(
+    transform: &InverseFlatTransform,
+    flat: Point2,
+) -> Result<Point3, GeneralCellTransportErrorV1> {
+    let dx = flat.x - transform.tx;
+    let dy = flat.y - transform.ty;
     Point3::new(
-        (m11 * dx - m01 * dy) / determinant,
-        (-m10 * dx + m00 * dy) / determinant,
+        (transform.m11 * dx - transform.m01 * dy) / transform.determinant,
+        (-transform.m10 * dx + transform.m00 * dy) / transform.determinant,
         0.0,
     )
     .map_err(|_| GeneralCellTransportErrorV1::GeometryUnavailable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rank_one_twenty_eight_work_is_admitted_only_at_exact_limits() {
+        let limits = GeneralCellTransportLimitsV1 {
+            max_transitions: 2,
+            max_cells: 128,
+            max_layer_records: 512,
+            max_boundary_samples: 4_096,
+        };
+        assert_eq!(
+            preflight_general_cell_transport_work_v1(2, 128, 512, 4_096, limits),
+            Ok(())
+        );
+        assert_eq!(
+            preflight_general_cell_transport_work_v1(
+                2,
+                128,
+                512,
+                4_096,
+                GeneralCellTransportLimitsV1 {
+                    max_boundary_samples: 4_095,
+                    ..limits
+                },
+            ),
+            Err(GeneralCellTransportErrorV1::ResourceLimit)
+        );
+    }
 }

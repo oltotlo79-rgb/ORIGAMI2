@@ -101,11 +101,21 @@ pub fn oblique_dense_cycle_pattern(
     columns: usize,
     rows: usize,
 ) -> (CreasePattern, Paper, Vec<EdgeId>, Vec<EdgeId>) {
+    angled_dense_cycle_pattern(columns, rows, 60.0)
+}
+
+pub fn angled_dense_cycle_pattern(
+    columns: usize,
+    rows: usize,
+    angle_degrees: f64,
+) -> (CreasePattern, Paper, Vec<EdgeId>, Vec<EdgeId>) {
+    assert!(angle_degrees.is_finite() && (0.0..180.0).contains(&angle_degrees));
     let (mut pattern, paper, horizontal, vertical) = orthogonal_dense_cycle_pattern(columns, rows);
+    let angle = angle_degrees.to_radians();
     for vertex in &mut pattern.vertices {
         let x = vertex.position.x;
         let y = vertex.position.y;
-        vertex.position = Point2::new(x + y * 0.5, y * 3.0_f64.sqrt() * 0.5);
+        vertex.position = Point2::new(x + y * angle.cos(), y * angle.sin());
     }
     (pattern, paper, horizontal, vertical)
 }

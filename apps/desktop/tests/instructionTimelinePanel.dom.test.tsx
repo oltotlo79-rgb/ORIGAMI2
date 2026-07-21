@@ -460,6 +460,7 @@ describe('InstructionTimelinePanel localization', () => {
     expect(screen.getByRole('alert').textContent).toContain(
       '構造化証明データがないため、この説明文は証明として扱いません',
     )
+    expect(screen.queryByLabelText('構造化経路証明')).toBeNull()
     expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
       .toBe(false)
   })
@@ -510,6 +511,13 @@ describe('InstructionTimelinePanel localization', () => {
     const proofDetails = await screen.findByLabelText('構造化経路証明')
     expect(proofDetails.textContent).toContain('証明指紋: 7c7c7c7c7c7c…')
     expect(proofDetails.textContent).toContain('検証区間: 1')
+    expect(proofDetails.textContent).toContain('出力前確認（読み取り専用）')
+    expect(proofDetails.textContent).toContain(`始点姿勢: ${shortBytes(reference.source_pose_sha256)}`)
+    expect(proofDetails.textContent).toContain(`終点姿勢: ${shortBytes(reference.target_pose_sha256)}`)
+    expect(proofDetails.textContent).toContain(
+      `元モデル束縛: ${shortBytes(reference.source_model_binding_sha256)}`,
+    )
+    expect(proofDetails.querySelector('input, textarea, button')).toBeNull()
     const exportButton = screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement
     expect(exportButton.disabled).toBe(false)
     fireEvent.click(exportButton)
@@ -522,6 +530,7 @@ describe('InstructionTimelinePanel localization', () => {
     expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
       .toBe(true)
     expect((await screen.findByRole('alert')).textContent).toContain('元モデルまたは姿勢端点')
+    expect(screen.queryByLabelText('構造化経路証明')).toBeNull()
     expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
       .toBe(true)
 
@@ -532,6 +541,7 @@ describe('InstructionTimelinePanel localization', () => {
     expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
       .toBe(true)
     expect((await screen.findByRole('alert')).textContent).toContain('元モデルまたは姿勢端点')
+    expect(screen.queryByLabelText('構造化経路証明')).toBeNull()
     expect((screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement).disabled)
       .toBe(true)
   })
@@ -563,6 +573,10 @@ function sha256Bytes(fields: readonly Buffer[]) {
   const hash = createHash('sha256')
   for (const field of fields) hash.update(field)
   return [...hash.digest()]
+}
+
+function shortBytes(bytes: readonly number[]) {
+  return `${bytes.slice(0, 6).map((byte) => byte.toString(16).padStart(2, '0')).join('')}…`
 }
 
 function uuidBuffer(value: string) {

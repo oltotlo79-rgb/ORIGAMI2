@@ -89,11 +89,22 @@ type InstructionTimelinePanelProps = {
 }
 
 type PathCertificateDisplay =
-  | Readonly<{ kind: 'verified'; shortBinding: string; transitionCount: number }>
+  | Readonly<{
+      kind: 'verified'
+      shortBinding: string
+      shortSource: string
+      shortTarget: string
+      shortModelBinding: string
+      transitionCount: number
+    }>
   | Readonly<{ kind: 'mismatch' | 'text-only' }>
 
 const PATH_CERTIFICATE_MARKER = '経路証明 SHA-256:'
 const EMPTY_INSTRUCTION_STEPS: readonly InstructionStepPresentation[] = Object.freeze([])
+
+function shortHash(bytes: readonly number[]): string {
+  return `${bytes.slice(0, 6).map((byte) => byte.toString(16).padStart(2, '0')).join('')}…`
+}
 
 function createPathCertificateDisplay(
   step: InstructionStepPresentation,
@@ -110,7 +121,10 @@ function createPathCertificateDisplay(
 
   return {
     kind: 'verified',
-    shortBinding: `${binding.slice(0, 12)}…`,
+    shortBinding: shortHash(reference.binding_sha256),
+    shortSource: shortHash(reference.source_pose_sha256),
+    shortTarget: shortHash(reference.target_pose_sha256),
+    shortModelBinding: shortHash(reference.source_model_binding_sha256),
     transitionCount: reference.transition_count,
   }
 }
@@ -959,8 +973,12 @@ export function InstructionTimelinePanel({
                       ? '構造化経路証明'
                       : 'Structured path certificate'}>
                       <strong>{locale === 'ja' ? '構造化経路証明' : 'Structured path certificate'}</strong>
+                      <div>{locale === 'ja' ? '出力前確認（読み取り専用）' : 'Pre-export review (read-only)'}</div>
                       <div>{locale === 'ja' ? '証明指紋' : 'Certificate fingerprint'}: {selectedProofDisplay.shortBinding}</div>
                       <div>{locale === 'ja' ? '検証区間' : 'Verified transitions'}: {selectedProofDisplay.transitionCount}</div>
+                      <div>{locale === 'ja' ? '始点姿勢' : 'Source pose'}: {selectedProofDisplay.shortSource}</div>
+                      <div>{locale === 'ja' ? '終点姿勢' : 'Target pose'}: {selectedProofDisplay.shortTarget}</div>
+                      <div>{locale === 'ja' ? '元モデル束縛' : 'Source-model binding'}: {selectedProofDisplay.shortModelBinding}</div>
                       <small>{locale === 'ja'
                         ? '保存済みDTOの識別情報です。折り図出力時に直前姿勢・現在姿勢・元モデルへ再照合します。'
                         : 'Saved DTO identity; diagram export rechecks the previous pose, current pose, and source model.'}</small>

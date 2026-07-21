@@ -1551,6 +1551,15 @@ pub(super) mod tests {
             .topology_analysis_input(project.project_id)
             .analyze();
         let fixed_face = topology.simulation_snapshot().unwrap().faces[0].id;
+        install_flat_graph_pose_authority_on_face(project, hinges, fixed_face);
+    }
+
+    pub(crate) fn install_flat_graph_pose_authority_on_face(
+        project: &mut ProjectState,
+        mut hinges: Vec<EdgeId>,
+        fixed_face: FaceId,
+    ) {
+        hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
         let request = NativePoseRequest {
             expected_project_instance_id: project.instance_id,
             expected_project_id: project.project_id,

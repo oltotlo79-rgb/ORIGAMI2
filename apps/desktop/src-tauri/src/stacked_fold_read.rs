@@ -2371,6 +2371,10 @@ fn transaction_failure_classes(
 }
 
 #[cfg(test)]
+#[path = "../../../../test-support/four_bay_cycle.rs"]
+mod four_bay_cycle_test_support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -3218,6 +3222,121 @@ mod tests {
             version: 1,
             entries,
         }
+    }
+
+    fn four_bay_cycle_schedule(hinges: &[ori_domain::EdgeId]) -> CycleScheduleRequestV1 {
+        let triples = [(3, 5), (5, 13), (8, 17), (7, 25)];
+        let mut entries = hinges
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, edge)| {
+                let (p, q) = triples[index / 4];
+                CycleScheduleEntryRequestV1 {
+                    edge,
+                    u_domain: [
+                        RationalCoefficientRequestV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientRequestV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ],
+                    numerator_power_coefficients: vec![
+                        RationalCoefficientRequestV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientRequestV1 {
+                            numerator: if index % 2 == 0 { 1 } else { p },
+                            denominator: 1,
+                        },
+                    ],
+                    denominator_power_coefficients: vec![RationalCoefficientRequestV1 {
+                        numerator: if index % 2 == 0 { 1 } else { q },
+                        denominator: 1,
+                    }],
+                    requested_angle_degrees: 2.0
+                        * (if index % 2 == 0 { 1.0 } else { p as f64 })
+                            .atan2(if index % 2 == 0 { 1.0 } else { q as f64 })
+                            .to_degrees(),
+                }
+            })
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        CycleScheduleRequestV1 {
+            version: 1,
+            entries,
+        }
+    }
+
+    #[test]
+    fn four_leaf_cycle_preview_applies_atomically_and_round_trips_history() {
+        let (pattern, paper, hinges) =
+            super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern();
+        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        let fixed = snapshot
+            .faces
+            .iter()
+            .max_by_key(|face| {
+                snapshot
+                    .hinge_adjacency
+                    .iter()
+                    .filter(|adjacency| adjacency.first == face.id || adjacency.second == face.id)
+                    .count()
+            })
+            .unwrap()
+            .id;
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            fixed,
+        );
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let app_state = AppState::new(project);
+        let transaction_state =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let response = propose_current_cycle_pose_inner(
+            None,
+            &app_state,
+            &transaction_state,
+            CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
+            },
+        )
+        .expect("four-leaf authenticated preview");
+        assert_eq!(response.closure_leaf_count, 4);
+        assert_eq!(response.closure_max_depth, 2);
+        assert_eq!(response.checked_hinge_count, 16);
+        assert_eq!(response.total_hinge_count, 16);
+        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            &app_state,
+            &GlobalFlatFoldabilityState::default(),
+            &transaction_state,
+            response.transaction_token,
+        )
+        .expect("four-leaf atomic apply");
+        let mut project = super::super::lock_project(&app_state).unwrap();
+        assert_eq!(applied, revision + 1);
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        project.editor.undo(applied).unwrap();
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
     }
 
     #[test]

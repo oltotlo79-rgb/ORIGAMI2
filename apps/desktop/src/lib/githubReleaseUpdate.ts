@@ -41,7 +41,7 @@ export type UpdateCheckTransportResponse = Readonly<{
 }>
 
 export type UpdateCheckTransport = Readonly<{
-  requestLatestRelease: () => unknown
+  requestLatestRelease: (signal?: AbortSignal) => unknown
 }>
 
 export type UpdateCheckUnavailableReason =
@@ -79,6 +79,7 @@ export type UpdateCheckClient = Readonly<{
   checkNow: (
     currentVersion: unknown,
     settings: unknown,
+    signal?: AbortSignal,
   ) => Promise<UpdateCheckResult>
 }>
 
@@ -120,15 +121,21 @@ export function createGitHubReleasesFetchTransport(
   const clock = options.clock ?? defaultTimeoutClock
 
   return Object.freeze({
-    async requestLatestRelease() {
+    async requestLatestRelease(externalSignal?: AbortSignal) {
       const controller = new AbortController()
+      const abortFromCaller = () => controller.abort()
       let timeoutHandle: unknown
       try {
+        if (externalSignal?.aborted) {
+          throw new BoundedUpdateCheckTransportError('network_unavailable')
+        }
+        externalSignal?.addEventListener('abort', abortFromCaller, { once: true })
         timeoutHandle = clock.setTimeout(
           () => controller.abort(),
           UPDATE_CHECK_TIMEOUT_MS,
         )
       } catch {
+        externalSignal?.removeEventListener('abort', abortFromCaller)
         throw new BoundedUpdateCheckTransportError('network_unavailable')
       }
 
@@ -165,6 +172,7 @@ export function createGitHubReleasesFetchTransport(
         if (isBoundedTransportError(error)) throw error
         throw new BoundedUpdateCheckTransportError('network_unavailable')
       } finally {
+        externalSignal?.removeEventListener('abort', abortFromCaller)
         try {
           clock.clearTimeout(timeoutHandle)
         } catch {
@@ -187,6 +195,7 @@ export function createUpdateCheckClient(
     async checkNow(
       currentVersionValue: unknown,
       settingsValue: unknown,
+      signal?: AbortSignal,
     ): Promise<UpdateCheckResult> {
       if (!isUpdateCheckSettingsSnapshot(settingsValue)) {
         return unavailable('invalid_settings')
@@ -199,7 +208,9 @@ export function createUpdateCheckClient(
 
       let rawResponse: unknown
       try {
-        rawResponse = await transport.requestLatestRelease()
+        rawResponse = await (signal === undefined
+          ? transport.requestLatestRelease()
+          : transport.requestLatestRelease(signal))
       } catch (error) {
         return unavailable(
           isBoundedTransportError(error)

@@ -128,7 +128,11 @@ describe('UpdateCheckControl', () => {
     await waitFor(() => {
       expect(control().dataset.updateState).toBe('up_to_date')
     })
-    expect(checkNow).toHaveBeenCalledWith('1.0.0', { enabled: true })
+    expect(checkNow).toHaveBeenCalledWith(
+      '1.0.0',
+      { enabled: true },
+      expect.any(AbortSignal),
+    )
     expect(screen.getByRole('status').textContent).toBe(
       'Up to date. Installed 1.0.0; latest release 1.0.0.',
     )
@@ -451,6 +455,53 @@ describe('UpdateCheckControl', () => {
     })
 
     expect(checkNow).not.toHaveBeenCalled()
+  })
+
+  it('aborts an active client request on unmount', async () => {
+    let observedSignal: AbortSignal | undefined
+    const checkNow = vi.fn((
+      _version: unknown,
+      _settings: unknown,
+      signal?: AbortSignal,
+    ) => {
+      observedSignal = signal
+      return new Promise<UpdateCheckResult>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+          once: true,
+        })
+      })
+    })
+    const rendered = renderControl({ client: client(checkNow) })
+    fireEvent.click(screen.getByRole('button', { name: 'Check now' }))
+    await waitFor(() => expect(checkNow).toHaveBeenCalledTimes(1))
+
+    rendered.unmount()
+
+    expect(observedSignal?.aborted).toBe(true)
+  })
+
+  it('renders a late failure in the current locale without losing retry focus', async () => {
+    const localeStore = localeFixture('en')
+    const result = promiseWithResolvers<UpdateCheckResult>()
+    const checkNow = vi.fn(() => result.promise)
+    renderControl({ localeStore, client: client(checkNow) })
+    const button = screen.getByRole('button', { name: 'Check now' })
+    button.focus()
+    fireEvent.click(button)
+    await waitFor(() => expect(checkNow).toHaveBeenCalledTimes(1))
+    act(() => localeStore.setLocale('ja'))
+    result.resolve({ kind: 'unavailable', reason: 'invalid_response' })
+
+    await waitFor(() => expect(control().dataset.updateState).toBe('unavailable'))
+    expect(screen.getByRole('status').getAttribute('aria-live')).toBe('polite')
+    expect(screen.getByRole('status').getAttribute('aria-atomic')).toBe('true')
+    expect(screen.getByRole('status').textContent).toBe(
+      '更新情報を確認できませんでした。時間をおいてもう一度お試しください。',
+    )
+    expect(document.activeElement).toBe(screen.getByRole('button', {
+      name: '今すぐ確認',
+    }))
+    expect(checkNow).toHaveBeenCalledTimes(1)
   })
 
   it('ignores an old result after disable re-enable and a newer check', async () => {

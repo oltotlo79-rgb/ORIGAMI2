@@ -110,6 +110,7 @@ export function UpdateCheckControl({
   const mountedRef = useRef(false)
   const checkingRef = useRef(false)
   const operationRef = useRef(0)
+  const abortRef = useRef<AbortController | null>(null)
   const enabledRef = useRef(settings.enabled)
   const authorityRef = useRef({ client, versionProvider, settingsStore })
   const titleId = useId()
@@ -131,6 +132,8 @@ export function UpdateCheckControl({
     mountedRef.current = true
     return () => {
       mountedRef.current = false
+      abortRef.current?.abort()
+      abortRef.current = null
       checkingRef.current = false
       operationRef.current += 1
     }
@@ -138,6 +141,8 @@ export function UpdateCheckControl({
 
   useEffect(() => {
     checkingRef.current = false
+    abortRef.current?.abort()
+    abortRef.current = null
     operationRef.current += 1
     setViewState(IDLE_STATE)
   }, [client, settings.enabled, settingsStore, versionProvider])
@@ -145,6 +150,8 @@ export function UpdateCheckControl({
   const changeEnabled = (event: ChangeEvent<HTMLInputElement>) => {
     const enabled = event.currentTarget.checked
     checkingRef.current = false
+    abortRef.current?.abort()
+    abortRef.current = null
     operationRef.current += 1
     setViewState(IDLE_STATE)
 
@@ -160,6 +167,9 @@ export function UpdateCheckControl({
     if (checkingRef.current || !enabledRef.current) return
 
     checkingRef.current = true
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
     const operation = ++operationRef.current
     const requestClient = client
     const requestVersionProvider = versionProvider
@@ -181,12 +191,14 @@ export function UpdateCheckControl({
       const result = await requestClient.checkNow(
         installedVersion,
         requestSettings,
+        controller.signal,
       )
       if (!isCurrent()) return
       setViewState(toViewState(result, installedVersion))
     } catch {
       if (isCurrent()) setViewState(UNAVAILABLE_STATE)
     } finally {
+      if (abortRef.current === controller) abortRef.current = null
       if (isCurrent()) checkingRef.current = false
     }
   }

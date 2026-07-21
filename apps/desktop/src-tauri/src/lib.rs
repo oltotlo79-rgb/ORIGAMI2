@@ -3861,6 +3861,13 @@ fn live_reference_model_suggestion_v1(
     )
 }
 
+fn reference_model_suggestion_matches_live_v1(
+    expected: &BeginnerReferenceModelSuggestionV1,
+    live: &BeginnerReferenceModelSuggestionV1,
+) -> bool {
+    expected == live
+}
+
 #[tauri::command]
 fn get_beginner_reference_model_geometry(
     state: State<'_, AppState>,
@@ -3986,7 +3993,7 @@ fn apply_beginner_reference_model_features(
         profile.generation_constraints.target_category,
         &profile.generation_constraints.target_parts,
     )?;
-    if live != expected_suggestion {
+    if !reference_model_suggestion_matches_live_v1(&expected_suggestion, &live) {
         return Err("reference_model_suggestion_stale".to_owned());
     }
     profile.generation_constraints.protrusions = live.protrusions.clone();
@@ -11133,31 +11140,69 @@ mod tests {
         assert_eq!(tail.protrusions[0].length_tenths_mm, 200);
         assert_eq!(tail.protrusions[0].position_tenths_mm[1], 0);
         assert!(tail.pair_bindings.is_empty());
+        let complete_animal_asset = AssetId::new();
+        let complete_animal_parts = [
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Horn,
+                count: 1,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Tail,
+                count: 1,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Ear,
+                count: 2,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Leg,
+                count: 4,
+            },
+        ];
         let complete_animal = derive_reference_model_suggestion_v1(
-            AssetId::new(),
+            complete_animal_asset,
             &geometry,
             Some(ori_domain::BeginnerTargetCategoryV1::Animal),
-            &[
-                ori_domain::BeginnerTargetPartRecordV1 {
-                    kind: ori_domain::BeginnerTargetPartKindV1::Horn,
-                    count: 1,
-                },
-                ori_domain::BeginnerTargetPartRecordV1 {
-                    kind: ori_domain::BeginnerTargetPartKindV1::Tail,
-                    count: 1,
-                },
-                ori_domain::BeginnerTargetPartRecordV1 {
-                    kind: ori_domain::BeginnerTargetPartKindV1::Ear,
-                    count: 2,
-                },
-                ori_domain::BeginnerTargetPartRecordV1 {
-                    kind: ori_domain::BeginnerTargetPartKindV1::Leg,
-                    count: 4,
-                },
-            ],
+            &complete_animal_parts,
         )
         .expect("complete animal GLB suggestion");
         assert_eq!(complete_animal.protrusions.len(), 4);
+        assert!(reference_model_suggestion_matches_live_v1(
+            &complete_animal,
+            &complete_animal
+        ));
+        let mut forged_id = complete_animal.clone();
+        forged_id.protrusions[3].id = 99;
+        assert!(!reference_model_suggestion_matches_live_v1(
+            &forged_id,
+            &complete_animal
+        ));
+        let mut forged_count = complete_animal.clone();
+        forged_count.protrusions[3].count = 2;
+        assert!(!reference_model_suggestion_matches_live_v1(
+            &forged_count,
+            &complete_animal
+        ));
+        let mut pair_order_aba = complete_animal.clone();
+        pair_order_aba.pair_bindings.reverse();
+        assert!(!reference_model_suggestion_matches_live_v1(
+            &pair_order_aba,
+            &complete_animal
+        ));
+        let mut replacement_geometry = geometry.clone();
+        replacement_geometry.positions[2][1] = 0.04;
+        replacement_geometry.positions[3][1] = 0.04;
+        let replacement = derive_reference_model_suggestion_v1(
+            complete_animal_asset,
+            &replacement_geometry,
+            Some(ori_domain::BeginnerTargetCategoryV1::Animal),
+            &complete_animal_parts,
+        )
+        .unwrap();
+        assert!(!reference_model_suggestion_matches_live_v1(
+            &complete_animal,
+            &replacement
+        ));
         let composite = derive_reference_model_suggestion_v1(
             AssetId::new(),
             &geometry,

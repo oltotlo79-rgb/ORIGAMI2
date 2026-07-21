@@ -12,15 +12,18 @@ use std::{
 };
 
 use ori_collision::{
-    CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
+    CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, FlatEndpointLayerOrderInputV1,
+    FlatEndpointLayerOrderLimitsV1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
     NativePositiveThicknessGraphGeometryProofV1, NativeStaticCollisionGeometryProof,
     POSITIVE_THICKNESS_GRAPH_GEOMETRY_PROOF_V1, PositiveThicknessGraphLimitsV1,
     PositiveThicknessGraphProofErrorV1, StaticCollisionDiagnosticSnapshot, StaticCollisionError,
     StaticCollisionLimits, StaticCollisionPairDiagnostic, StaticCollisionPairDisposition,
-    TOPOLOGY_CONTACT_POLICY_V2, diagnose_static_collision_geometry,
+    TOPOLOGY_CONTACT_POLICY_V2, anchor_flat_endpoint_layer_order_v1,
+    diagnose_static_collision_geometry,
+    diagnose_static_collision_geometry_with_flat_layer_order_v1,
     prove_positive_thickness_graph_geometry_v1, prove_static_collision_geometry,
 };
-use ori_domain::{FaceId, ProjectId};
+use ori_domain::{CreasePattern, FaceId, Paper, ProjectId};
 use ori_kinematics::{
     MATERIAL_TREE_KINEMATICS_MODEL_ID, MaterialTreeKinematicsModel, MaterialTreePose,
 };
@@ -31,7 +34,14 @@ use super::{
     current_applied_pose_capability_matches_locked_slot,
     current_applied_pose_certificate_is_internally_consistent, current_applied_pose_claims_match,
 };
-use crate::{AppState, ProjectState, lock_project};
+use crate::{
+    AppState, ProjectState,
+    global_flat_foldability::{
+        CurrentLayerOrderCapability, GlobalFlatFoldabilityState,
+        capture_current_layer_order_capability, revalidate_current_layer_order_capability,
+    },
+    lock_project,
+};
 
 /// Fixed-category failure at the current static-collision boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,8 +230,17 @@ struct PreparedCurrentStaticCollision {
 /// its binding to a response.
 struct FailedCurrentStaticCollisionPreparation {
     pose_capability: CurrentAppliedPoseCapability,
+    layer_order_capability: Option<CurrentLayerOrderCapability>,
     error: CurrentStaticCollisionError,
     diagnostic_snapshot: Option<StaticCollisionDiagnosticSnapshot>,
+}
+
+struct DetachedLayerOrderDiagnosticSource {
+    capability: CurrentLayerOrderCapability,
+    identity_namespace: ProjectId,
+    source_revision: u64,
+    paper: Paper,
+    pattern: CreasePattern,
 }
 
 impl fmt::Debug for FailedCurrentStaticCollisionPreparation {
@@ -361,31 +380,39 @@ pub(crate) fn certify_current_static_collision(
 /// coordinator's responsibility because that transaction spans two IPC calls.
 pub(crate) async fn inspect_current_static_collision(
     app_state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
 ) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
-    inspect_current_static_collision_with_limits(app_state, StaticCollisionLimits::default()).await
+    inspect_current_static_collision_with_limits_and_layer_order(
+        app_state,
+        foldability_state,
+        StaticCollisionLimits::default(),
+    )
+    .await
 }
 
-async fn inspect_current_static_collision_with_limits(
+async fn inspect_current_static_collision_with_limits_and_layer_order(
     app_state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
     limits: StaticCollisionLimits,
 ) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
     let permit = app_state
         .try_acquire_native_pose_worker()
         .ok_or_else(|| CURRENT_STATIC_COLLISION_DIAGNOSTIC_FAILED_MESSAGE.to_owned())?;
-    let capability = match capture_current_pose_capability(app_state) {
-        Ok(Some(capability)) => capability,
-        Ok(None) => {
-            return Ok(CurrentStaticCollisionDiagnosticResponse::pose_unavailable(
-                None,
-            ));
-        }
-        Err(error) => return diagnostic_response_from_error(error, None),
-    };
+    let (capability, layer_order) =
+        match capture_current_diagnostic_capabilities(app_state, foldability_state) {
+            Ok(Some(capabilities)) => capabilities,
+            Ok(None) => {
+                return Ok(CurrentStaticCollisionDiagnosticResponse::pose_unavailable(
+                    None,
+                ));
+            }
+            Err(error) => return diagnostic_response_from_error(error, None),
+        };
     let binding = CurrentAppliedPoseBindingResponse::from_claims(&capability.claims);
     let (permit, prepared) = tauri::async_runtime::spawn_blocking(move || {
         (
             permit,
-            prepare_static_collision_for_diagnostic(capability, limits),
+            prepare_static_collision_for_diagnostic(capability, layer_order, limits),
         )
     })
     .await
@@ -394,7 +421,11 @@ async fn inspect_current_static_collision_with_limits(
     let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(failure) => {
-            return diagnostic_response_from_revalidated_failure(app_state, *failure);
+            return diagnostic_response_from_revalidated_failure_with_layer_order(
+                app_state,
+                foldability_state,
+                *failure,
+            );
         }
     };
     let response = match mint_current_static_collision(app_state, prepared) {
@@ -411,6 +442,20 @@ async fn inspect_current_static_collision_with_limits(
     };
     drop(permit);
     response
+}
+
+#[cfg(test)]
+async fn inspect_current_static_collision_with_limits(
+    app_state: &AppState,
+    limits: StaticCollisionLimits,
+) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
+    let foldability_state = GlobalFlatFoldabilityState::default();
+    inspect_current_static_collision_with_limits_and_layer_order(
+        app_state,
+        &foldability_state,
+        limits,
+    )
+    .await
 }
 
 impl CurrentStaticCollisionDiagnosticResponse {
@@ -579,12 +624,14 @@ fn diagnostic_response_from_error_with_snapshot(
     Ok(response)
 }
 
-fn diagnostic_response_from_revalidated_failure(
+fn diagnostic_response_from_revalidated_failure_with_layer_order(
     app_state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
     failure: FailedCurrentStaticCollisionPreparation,
 ) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
     let FailedCurrentStaticCollisionPreparation {
         pose_capability,
+        layer_order_capability,
         error,
         diagnostic_snapshot,
     } = failure;
@@ -596,7 +643,21 @@ fn diagnostic_response_from_revalidated_failure(
     let revalidated = super::with_revalidated_current_applied_pose_capability(
         app_state,
         &pose_capability,
-        move |_, _| {
+        move |project, _| {
+            if let Some(layer_order_capability) = layer_order_capability.as_ref() {
+                match revalidate_current_layer_order_capability(
+                    foldability_state,
+                    project,
+                    layer_order_capability,
+                ) {
+                    Ok(Some(_)) => {}
+                    Ok(None) | Err(_) => {
+                        return Ok(CurrentStaticCollisionDiagnosticResponse::pose_unavailable(
+                            None,
+                        ));
+                    }
+                }
+            }
             diagnostic_response_from_error_with_snapshot(
                 error,
                 Some(binding),
@@ -611,6 +672,19 @@ fn diagnostic_response_from_revalidated_failure(
             None,
         )),
     }
+}
+
+#[cfg(test)]
+fn diagnostic_response_from_revalidated_failure(
+    app_state: &AppState,
+    failure: FailedCurrentStaticCollisionPreparation,
+) -> Result<CurrentStaticCollisionDiagnosticResponse, String> {
+    let foldability_state = GlobalFlatFoldabilityState::default();
+    diagnostic_response_from_revalidated_failure_with_layer_order(
+        app_state,
+        &foldability_state,
+        failure,
+    )
 }
 
 /// Revalidates the embedded B capability and runs an observation-only action
@@ -671,13 +745,48 @@ fn capture_current_pose_capability(
         .map_err(map_pose_authority_error)
 }
 
+fn capture_current_diagnostic_capabilities(
+    app_state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
+) -> Result<
+    Option<(
+        CurrentAppliedPoseCapability,
+        Option<DetachedLayerOrderDiagnosticSource>,
+    )>,
+    CurrentStaticCollisionError,
+> {
+    // Preserve the global project -> pose -> layer-order lock order while the
+    // two immutable capabilities are captured for detached geometry work.
+    let project =
+        lock_project(app_state).map_err(|_| CurrentStaticCollisionError::LockUnavailable)?;
+    let Some(pose_capability) = project
+        .applied_pose_authority
+        .capture_capability(&project)
+        .map_err(map_pose_authority_error)?
+    else {
+        return Ok(None);
+    };
+    let layer_order = capture_current_layer_order_capability(foldability_state, &project)
+        .map_err(|_| CurrentStaticCollisionError::LockUnavailable)?
+        .map(|capability| DetachedLayerOrderDiagnosticSource {
+            capability,
+            identity_namespace: project.project_id,
+            source_revision: project.editor.revision(),
+            paper: project.editor.paper().clone(),
+            pattern: project.editor.pattern().clone(),
+        });
+    Ok(Some((pose_capability, layer_order)))
+}
+
 fn prepare_static_collision_for_diagnostic(
     capability: CurrentAppliedPoseCapability,
+    layer_order: Option<DetachedLayerOrderDiagnosticSource>,
     limits: StaticCollisionLimits,
 ) -> Result<PreparedCurrentStaticCollision, Box<FailedCurrentStaticCollisionPreparation>> {
     if !detached_pose_capability_is_internally_consistent(&capability) {
         return Err(Box::new(FailedCurrentStaticCollisionPreparation {
             pose_capability: capability,
+            layer_order_capability: layer_order.map(|source| source.capability),
             error: CurrentStaticCollisionError::InternalInconsistency,
             diagnostic_snapshot: None,
         }));
@@ -689,16 +798,41 @@ fn prepare_static_collision_for_diagnostic(
     let Some((model, pose)) = capability.claims.native_pose.tree() else {
         return Err(Box::new(FailedCurrentStaticCollisionPreparation {
             pose_capability: capability,
+            layer_order_capability: layer_order.map(|source| source.capability),
             error: CurrentStaticCollisionError::InternalInconsistency,
             diagnostic_snapshot: None,
         }));
     };
-    let snapshot = match diagnose_static_collision_geometry(model, pose, paper_thickness_mm, limits)
-    {
+    let diagnosed = layer_order.as_ref().and_then(|source| {
+        let anchor = anchor_flat_endpoint_layer_order_v1(
+            FlatEndpointLayerOrderInputV1 {
+                identity_namespace: source.identity_namespace,
+                source_revision: source.source_revision,
+                paper: &source.paper,
+                pattern: &source.pattern,
+                model,
+                pose,
+                layer_order: source.capability.snapshot(),
+            },
+            FlatEndpointLayerOrderLimitsV1::default(),
+        )
+        .ok()?;
+        Some(diagnose_static_collision_geometry_with_flat_layer_order_v1(
+            model,
+            pose,
+            paper_thickness_mm,
+            limits,
+            &anchor,
+        ))
+    });
+    let snapshot = match diagnosed.unwrap_or_else(|| {
+        diagnose_static_collision_geometry(model, pose, paper_thickness_mm, limits)
+    }) {
         Ok(snapshot) => snapshot,
         Err(error) => {
             return Err(Box::new(FailedCurrentStaticCollisionPreparation {
                 pose_capability: capability,
+                layer_order_capability: layer_order.map(|source| source.capability),
                 error: map_static_collision_error(error),
                 diagnostic_snapshot: None,
             }));
@@ -712,6 +846,7 @@ fn prepare_static_collision_for_diagnostic(
     let error = blocking_error_from_diagnostic_snapshot(&snapshot, paper_thickness_mm);
     Err(Box::new(FailedCurrentStaticCollisionPreparation {
         pose_capability: capability,
+        layer_order_capability: layer_order.map(|source| source.capability),
         error: CurrentStaticCollisionError::GeometryBlocking(error),
         diagnostic_snapshot: Some(snapshot),
     }))
@@ -760,6 +895,7 @@ fn prepare_static_collision(
     if !detached_pose_capability_is_internally_consistent(&capability) {
         return Err(Box::new(FailedCurrentStaticCollisionPreparation {
             pose_capability: capability,
+            layer_order_capability: None,
             error: CurrentStaticCollisionError::InternalInconsistency,
             diagnostic_snapshot: None,
         }));
@@ -774,6 +910,7 @@ fn prepare_static_collision(
             Err(error) => {
                 return Err(Box::new(FailedCurrentStaticCollisionPreparation {
                     pose_capability: capability,
+                    layer_order_capability: None,
                     error: map_static_collision_error(error),
                     diagnostic_snapshot: None,
                 }));
@@ -793,6 +930,7 @@ fn prepare_static_collision(
             Err(PositiveThicknessGraphProofErrorV1::ResourceLimit) => {
                 return Err(Box::new(FailedCurrentStaticCollisionPreparation {
                     pose_capability: capability,
+                    layer_order_capability: None,
                     error: map_static_collision_error(StaticCollisionError::ResourceLimitExceeded),
                     diagnostic_snapshot: None,
                 }));
@@ -802,6 +940,7 @@ fn prepare_static_collision(
                 let expected_unordered_face_pairs = face_count * face_count.saturating_sub(1) / 2;
                 return Err(Box::new(FailedCurrentStaticCollisionPreparation {
                     pose_capability: capability,
+                    layer_order_capability: None,
                     error: map_static_collision_error(
                         StaticCollisionError::PairEvidenceUnavailable {
                             expected_unordered_face_pairs,
@@ -814,6 +953,7 @@ fn prepare_static_collision(
     } else {
         return Err(Box::new(FailedCurrentStaticCollisionPreparation {
             pose_capability: capability,
+            layer_order_capability: None,
             error: CurrentStaticCollisionError::InternalInconsistency,
             diagnostic_snapshot: None,
         }));
@@ -848,6 +988,7 @@ fn prepare_static_collision(
         } = prepared;
         return Err(Box::new(FailedCurrentStaticCollisionPreparation {
             pose_capability,
+            layer_order_capability: None,
             error: CurrentStaticCollisionError::InternalInconsistency,
             diagnostic_snapshot: None,
         }));

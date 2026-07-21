@@ -492,7 +492,7 @@ mod tests {
         }
     }
     fn path(index: u64) -> PathBuf {
-        PathBuf::from(format!(r"C:\work\p{index}.ori2"))
+        std::env::temp_dir().join(format!("origami2-recent-fixture-p{index}.ori2"))
     }
     fn identity(index: u64) -> CanonicalFileIdentity {
         CanonicalFileIdentity {

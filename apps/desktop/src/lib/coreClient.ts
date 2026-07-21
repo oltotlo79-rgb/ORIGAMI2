@@ -1876,6 +1876,7 @@ export type BeginnerGridEvaluationResponse = Readonly<{
   grid_hash: ReadonlyArray<number>
   evaluated_grid_points: 27
   global_checked_candidates: 3
+  refinement_iterations: number
   candidates: ReadonlyArray<Readonly<{
     point: BeginnerParameterGridPointV1
     primary_score: number
@@ -1889,6 +1890,8 @@ export type BeginnerGridEvaluationResponse = Readonly<{
     detail_mismatch_penalty: number
     outcome_reason: BeginnerGeneratedPlanAssessmentV1['reason']
     contour_witness: BeginnerContourPlacementWitnessV1
+    refinement_iterations: number
+    strict_improvements: number
   }>>
 }>
 
@@ -1901,12 +1904,14 @@ export async function evaluateBeginnerParameterGrid(
   })
   const response = exactCoreDataRecord(value, [
     'request_generation_id', 'project_instance_id', 'project_id', 'revision', 'grid_hash',
-    'evaluated_grid_points', 'global_checked_candidates', 'candidates',
+    'evaluated_grid_points', 'global_checked_candidates', 'refinement_iterations', 'candidates',
   ] as const)
   if (!response || response.request_generation_id !== requestGenerationId
     || response.project_instance_id !== expectedProjectInstanceId
     || response.project_id !== expectedProjectId || response.revision !== expectedRevision
     || response.evaluated_grid_points !== 27 || response.global_checked_candidates !== 3
+    || !Number.isInteger(response.refinement_iterations) || Number(response.refinement_iterations) < 0
+    || Number(response.refinement_iterations) > 24
     || !Array.isArray(response.grid_hash)
     || response.grid_hash.length !== 32
     || response.grid_hash.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
@@ -1916,7 +1921,8 @@ export async function evaluateBeginnerParameterGrid(
   const rawCandidates = response.candidates.map((value) => exactCoreDataRecord(
     value, ['point', 'primary_score', 'plan', 'assessment', 'local_proof_scope',
       'global_proof_scope', 'complexity_score', 'scale_deviation_penalty',
-      'spacing_deviation_penalty', 'detail_mismatch_penalty', 'outcome_reason', 'contour_witness'] as const,
+      'spacing_deviation_penalty', 'detail_mismatch_penalty', 'outcome_reason', 'contour_witness',
+      'refinement_iterations', 'strict_improvements'] as const,
   ))
   if (rawCandidates.some((candidate) => candidate === null)) {
     throw new Error('invalid beginner parameter grid response')
@@ -1992,6 +1998,9 @@ export async function evaluateBeginnerParameterGrid(
         || Number(binding?.crease_start) + Number(binding?.contour_points)
           > normalizedPlans.generated_plans[index].crease_pattern.edges.length)
       || !Number.isInteger(candidate.complexity_score) || Number(candidate.complexity_score) < 0 || Number(candidate.complexity_score) > 100
+      || !Number.isInteger(candidate.refinement_iterations) || Number(candidate.refinement_iterations) < 0 || Number(candidate.refinement_iterations) > 8
+      || !Number.isInteger(candidate.strict_improvements) || Number(candidate.strict_improvements) < 0
+      || Number(candidate.strict_improvements) > Number(candidate.refinement_iterations)
       || ![candidate.scale_deviation_penalty, candidate.spacing_deviation_penalty, candidate.detail_mismatch_penalty]
         .every((penalty) => Number.isInteger(penalty) && Number(penalty) >= 0 && Number(penalty) <= 1000)
       || Number(candidate.primary_score) !== 1000 - Number(candidate.scale_deviation_penalty)
@@ -2010,6 +2019,8 @@ export async function evaluateBeginnerParameterGrid(
       spacing_deviation_penalty: Number(candidate.spacing_deviation_penalty),
       detail_mismatch_penalty: Number(candidate.detail_mismatch_penalty),
       outcome_reason: candidate.outcome_reason as BeginnerGeneratedPlanAssessmentV1['reason'],
+      refinement_iterations: Number(candidate.refinement_iterations),
+      strict_improvements: Number(candidate.strict_improvements),
       contour_witness: Object.freeze({
         body_contour_points: Number(witness.body_contour_points),
         local_bindings: Object.freeze(bindings.map((binding) => Object.freeze({
@@ -2029,21 +2040,24 @@ export async function evaluateBeginnerParameterGrid(
   return Object.freeze({ request_generation_id: requestGenerationId,
     project_instance_id: expectedProjectInstanceId, project_id: expectedProjectId,
     revision: expectedRevision, grid_hash: Object.freeze(response.grid_hash.slice()) as ReadonlyArray<number>,
-    evaluated_grid_points: 27, global_checked_candidates: 3, candidates: Object.freeze(candidates) })
+    evaluated_grid_points: 27, global_checked_candidates: 3,
+    refinement_iterations: Number(response.refinement_iterations), candidates: Object.freeze(candidates) })
 }
 
 export async function getBeginnerParameterGridProgress(requestGenerationId: string) {
   const value = await invoke<unknown>('get_beginner_parameter_grid_progress', { requestGenerationId })
-  const record = exactCoreDataRecord(value, ['request_generation_id', 'enumerated_grid_points', 'global_checked_candidates', 'terminal_state'] as const)
+  const record = exactCoreDataRecord(value, ['request_generation_id', 'enumerated_grid_points', 'global_checked_candidates', 'refinement_iterations', 'terminal_state'] as const)
   if (!record || record.request_generation_id !== requestGenerationId
     || !Number.isInteger(record.enumerated_grid_points) || Number(record.enumerated_grid_points) < 0 || Number(record.enumerated_grid_points) > 27
     || !Number.isInteger(record.global_checked_candidates) || Number(record.global_checked_candidates) < 0 || Number(record.global_checked_candidates) > 3
+    || !Number.isInteger(record.refinement_iterations) || Number(record.refinement_iterations) < 0 || Number(record.refinement_iterations) > 24
     || !['running', 'completed', 'cancelled', 'failed'].includes(String(record.terminal_state))) {
     throw new Error('invalid beginner grid progress')
   }
   return Object.freeze({ request_generation_id: requestGenerationId,
     enumerated_grid_points: Number(record.enumerated_grid_points),
     global_checked_candidates: Number(record.global_checked_candidates),
+    refinement_iterations: Number(record.refinement_iterations),
     terminal_state: record.terminal_state as 'running' | 'completed' | 'cancelled' | 'failed' })
 }
 

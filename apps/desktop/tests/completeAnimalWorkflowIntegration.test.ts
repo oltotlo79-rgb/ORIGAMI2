@@ -14,7 +14,7 @@ test('complete animal recognition reaches the bounded grid through one native co
   assert.match(native, /fn evaluate_beginner_parameter_grid/)
   assert.match(client, /getBeginnerParameterGridProgress/)
   assert.match(app, /evaluateBeginnerParameterGrid/)
-  assert.match(app, /setBeginnerGridProgress\(\{ enumerated: 27, globalChecked: 3 \}\)/)
+  assert.match(app, /setBeginnerGridProgress\(\{ enumerated: 27, globalChecked: 3, refined: response\.refinement_iterations \}\)/)
 })
 
 test('optional wing pair stays the strict fifth binding across image, GLB, and wire', () => {

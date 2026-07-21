@@ -728,7 +728,7 @@ function App() {
   const [beginnerGridBusy, setBeginnerGridBusy] = useState(false)
   const beginnerGridRequestRef = useRef(0)
   const beginnerGridGenerationRef = useRef<string | null>(null)
-  const [beginnerGridProgress, setBeginnerGridProgress] = useState({ enumerated: 0, globalChecked: 0 })
+  const [beginnerGridProgress, setBeginnerGridProgress] = useState({ enumerated: 0, globalChecked: 0, refined: 0 })
   useEffect(() => () => {
     const generationId = beginnerGridGenerationRef.current
     beginnerGridRequestRef.current += 1
@@ -4210,7 +4210,7 @@ function App() {
     const requestId = ++beginnerGridRequestRef.current
     const generationId = crypto.randomUUID()
     beginnerGridGenerationRef.current = generationId
-    setBeginnerGridProgress({ enumerated: 0, globalChecked: 0 })
+    setBeginnerGridProgress({ enumerated: 0, globalChecked: 0, refined: 0 })
     setBeginnerGridBusy(true)
     const poll = window.setInterval(() => {
       void getBeginnerParameterGridProgress(generationId).then((progress) => {
@@ -4218,6 +4218,7 @@ function App() {
         setBeginnerGridProgress((currentProgress) => ({
           enumerated: Math.max(currentProgress.enumerated, progress.enumerated_grid_points),
           globalChecked: Math.max(currentProgress.globalChecked, progress.global_checked_candidates),
+          refined: Math.max(currentProgress.refined, progress.refinement_iterations),
         }))
       }).catch(() => undefined)
     }, 50)
@@ -4230,7 +4231,7 @@ function App() {
         && latest?.project_instance_id === response.project_instance_id
         && latest.project_id === response.project_id && latest.revision === response.revision) {
         setBeginnerGrid(response)
-        setBeginnerGridProgress({ enumerated: 27, globalChecked: 3 })
+        setBeginnerGridProgress({ enumerated: 27, globalChecked: 3, refined: response.refinement_iterations })
       }
     }).catch(() => {
       if (requestId === beginnerGridRequestRef.current) setBeginnerGrid(null)
@@ -7931,7 +7932,8 @@ function App() {
                 </button>
                 <BeginnerGridProgressStatus locale={locale} busy={beginnerGridBusy}
                   enumerated={beginnerGridProgress.enumerated}
-                  checked={beginnerGridProgress.globalChecked} onCancel={cancelBeginnerGrid} />
+                  checked={beginnerGridProgress.globalChecked} refined={beginnerGridProgress.refined}
+                  onCancel={cancelBeginnerGrid} />
                 {beginnerGrid && (
                   <section aria-label={text({ ja: '27案探索の上位3案', en: 'Top 3 from the 27-design search' })}>
                     <p className="muted">{formattedText({
@@ -7945,6 +7947,11 @@ function App() {
                           ja: '案 {id}・一次評価 {score}/1000',
                           en: 'Design {id} · primary score {score}/1000',
                         }, { id: candidate.point.id + 1, score: candidate.primary_score })}</strong>
+                        <span className="muted">{formattedText({
+                          ja: '局所改善 {improvements}/{iterations}',
+                          en: 'Strict local improvements {improvements}/{iterations}',
+                        }, { improvements: candidate.strict_improvements,
+                          iterations: candidate.refinement_iterations })}</span>
                         <span className="muted">{formattedText({
                           ja: '尺度 {scale}%・間隔 {spacing}%・詳細度 {detail}',
                           en: 'Scale {scale}% · spacing {spacing}% · detail {detail}',

@@ -369,6 +369,7 @@ import { CompleteAnimalBindingList } from './components/CompleteAnimalBindingLis
 import { CompleteInsectBindingList } from './components/CompleteInsectBindingList'
 import { GenericTargetBindingList } from './components/GenericTargetBindingList'
 import { ProtrusionDimensionEditor } from './components/ProtrusionDimensionEditor'
+import { GenericBodyOutlineEditor } from './components/GenericBodyOutlineEditor'
 import { BeginnerGridProgressStatus } from './components/BeginnerGridProgressStatus'
 
 const SNAP_OPTIONS: ReadonlyArray<{
@@ -740,6 +741,7 @@ function App() {
     useState<BeginnerDesignProfileV1['generation_constraints']['skeleton_segments']>([])
   const [beginnerProtrusions, setBeginnerProtrusions] =
     useState<NonNullable<BeginnerDesignProfileV1['generation_constraints']['protrusions']>>([])
+  const [beginnerBodyOutline, setBeginnerBodyOutline] = useState<Array<[number, number]>>([])
   const [beginnerProtrusionKinds, setBeginnerProtrusionKinds] =
     useState<Array<BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']>>([])
   const [beginnerBulgeTargets, setBeginnerBulgeTargets] =
@@ -782,6 +784,10 @@ function App() {
     )
     setBeginnerProtrusions(
       nativeSnapshot?.beginner_design_profile.generation_constraints.protrusions ?? [],
+    )
+    setBeginnerBodyOutline(
+      nativeSnapshot?.beginner_design_profile.generation_constraints.generic_body_outline_tenths_mm
+        ?.map((point) => [...point] as [number, number]) ?? [],
     )
     setBeginnerProtrusionKinds(
       nativeSnapshot?.beginner_design_profile.generation_constraints.target_parts
@@ -3658,6 +3664,9 @@ function App() {
       maximum_steps: maximumSteps,
       detail_level: detailLevel as 'simple' | 'standard' | 'detailed',
       ...(bodySize === undefined ? {} : { generic_body_size_tenths_mm: bodySize }),
+      ...(beginnerBodyOutline.length === 0 ? {} : {
+        generic_body_outline_tenths_mm: beginnerBodyOutline,
+      }),
       target_category: targetCategory as 'animal' | 'insect',
       target_parts: targetParts,
       skeleton_segments: beginnerSkeletonSegments,
@@ -3683,6 +3692,8 @@ function App() {
       || !['animal', 'insect'].includes(targetCategory)
       || (bodySize !== undefined && bodySize.some((axis) =>
         !Number.isInteger(axis) || axis < 1 || axis > 1_000_000))
+      || (beginnerBodyOutline.length !== 0
+        && (beginnerBodyOutline.length < 4 || beginnerBodyOutline.length > 16))
       || (targetUnderlayId !== '' && !targetUnderlay)
       || targetParts.some((part) => !Number.isInteger(part.count) || part.count > 8)
       || targetParts.reduce((sum, part) => sum + part.count, 0) > 32
@@ -8232,6 +8243,7 @@ function App() {
                   nativeSnapshot.beginner_design_profile.generation_constraints.maximum_steps,
                   nativeSnapshot.beginner_design_profile.generation_constraints.detail_level,
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.generic_body_size_tenths_mm),
+                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.generic_body_outline_tenths_mm),
                   nativeSnapshot.beginner_design_profile.generation_constraints.target_category ?? 'unset',
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.target_parts),
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.skeleton_segments),
@@ -8610,6 +8622,8 @@ function App() {
                     en: 'Leave both fields blank for no body-size target. A partial size is not saved.',
                   })}</p>
                 </fieldset>
+                <GenericBodyOutlineEditor locale={locale} points={beginnerBodyOutline}
+                  onChange={setBeginnerBodyOutline} />
                 <output id="beginner-target-parts-total" aria-live="polite">
                   {formattedText({
                     ja: '部品合計: {total} / 32',

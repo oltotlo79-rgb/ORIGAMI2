@@ -156,6 +156,8 @@ pub struct BeginnerGenerationConstraintsV1 {
     pub detail_level: BeginnerDetailLevelV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generic_body_size_tenths_mm: Option<[u32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generic_body_outline_tenths_mm: Option<Vec<[i32; 2]>>,
     #[serde(default)]
     pub target_category: Option<BeginnerTargetCategoryV1>,
     #[serde(default)]
@@ -178,6 +180,7 @@ impl Default for BeginnerGenerationConstraintsV1 {
             maximum_steps: 60,
             detail_level: BeginnerDetailLevelV1::Standard,
             generic_body_size_tenths_mm: None,
+            generic_body_outline_tenths_mm: None,
             target_category: None,
             target_parts: Vec::new(),
             skeleton_segments: Vec::new(),
@@ -256,8 +259,13 @@ pub fn validate_beginner_generation_constraints_v1(
     let body_size_valid = constraints
         .generic_body_size_tenths_mm
         .is_none_or(|size| size.into_iter().all(|axis| (1..=1_000_000).contains(&axis)));
+    let body_outline_valid = constraints
+        .generic_body_outline_tenths_mm
+        .as_deref()
+        .is_none_or(valid_generic_body_outline_v1);
     let protrusions_valid = skeletons_valid
         && body_size_valid
+        && body_outline_valid
         && constraints.protrusions.iter().all(|target| {
             (1..=8).contains(&target.count)
                 && (1..=1_000_000).contains(&target.length_tenths_mm)
@@ -313,6 +321,66 @@ pub fn validate_beginner_generation_constraints_v1(
                     .all(|byte| byte.is_ascii_hexdigit())
                 && bulge_ids.insert(target.id)
         })
+}
+
+fn valid_generic_body_outline_v1(points: &[[i32; 2]]) -> bool {
+    if !(4..=16).contains(&points.len())
+        || points
+            .iter()
+            .any(|point| point.iter().any(|axis| axis.unsigned_abs() > 100_000))
+        || points.iter().collect::<HashSet<_>>().len() != points.len()
+        || points[0] != *points.iter().min().expect("non-empty bounded outline")
+    {
+        return false;
+    }
+    let twice_area = points
+        .iter()
+        .enumerate()
+        .fold(0_i128, |sum, (index, point)| {
+            let next = points[(index + 1) % points.len()];
+            sum + i128::from(point[0]) * i128::from(next[1])
+                - i128::from(next[0]) * i128::from(point[1])
+        });
+    if twice_area >= 0
+        || points
+            .iter()
+            .any(|point| !points.contains(&[-point[0], point[1]]))
+    {
+        return false;
+    }
+    for first in 0..points.len() {
+        let first_end = (first + 1) % points.len();
+        for second in (first + 1)..points.len() {
+            let second_end = (second + 1) % points.len();
+            if first == second_end || first_end == second {
+                continue;
+            }
+            if segments_intersect_v1(
+                points[first],
+                points[first_end],
+                points[second],
+                points[second_end],
+            ) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn segments_intersect_v1(a: [i32; 2], b: [i32; 2], c: [i32; 2], d: [i32; 2]) -> bool {
+    fn orient(a: [i32; 2], b: [i32; 2], c: [i32; 2]) -> i128 {
+        (i128::from(b[0]) - i128::from(a[0])) * (i128::from(c[1]) - i128::from(a[1]))
+            - (i128::from(b[1]) - i128::from(a[1])) * (i128::from(c[0]) - i128::from(a[0]))
+    }
+    let values = [
+        orient(a, b, c),
+        orient(a, b, d),
+        orient(c, d, a),
+        orient(c, d, b),
+    ];
+    values.iter().any(|value| *value == 0)
+        || (values[0].signum() != values[1].signum() && values[2].signum() != values[3].signum())
 }
 
 #[cfg(test)]
@@ -398,6 +466,7 @@ mod tests {
         });
         let restored: BeginnerGenerationConstraintsV1 = serde_json::from_value(old).unwrap();
         assert_eq!(restored.generic_body_size_tenths_mm, None);
+        assert_eq!(restored.generic_body_outline_tenths_mm, None);
 
         let mut constraints = BeginnerGenerationConstraintsV1::default();
         constraints.generic_body_size_tenths_mm = Some([1_200, 800]);
@@ -421,6 +490,23 @@ mod tests {
         assert!(validate_beginner_generation_constraints_v1(&constraints));
         target.tip_width_tenths_mm = Some(0);
         constraints.protrusions[0] = target;
+        assert!(!validate_beginner_generation_constraints_v1(&constraints));
+    }
+
+    #[test]
+    fn generic_body_outline_requires_canonical_symmetric_simple_polygon() {
+        let mut constraints = BeginnerGenerationConstraintsV1::default();
+        constraints.generic_body_outline_tenths_mm =
+            Some(vec![[-100, -50], [-100, 50], [100, 50], [100, -50]]);
+        assert!(validate_beginner_generation_constraints_v1(&constraints));
+        constraints.generic_body_outline_tenths_mm =
+            Some(vec![[100, -50], [-100, -50], [-100, 50], [100, 50]]);
+        assert!(!validate_beginner_generation_constraints_v1(&constraints));
+        constraints.generic_body_outline_tenths_mm =
+            Some(vec![[-100, -50], [-100, 50], [90, 50], [100, -50]]);
+        assert!(!validate_beginner_generation_constraints_v1(&constraints));
+        constraints.generic_body_outline_tenths_mm =
+            Some(vec![[-100, -50], [100, 50], [-100, 50], [100, -50]]);
         assert!(!validate_beginner_generation_constraints_v1(&constraints));
     }
 

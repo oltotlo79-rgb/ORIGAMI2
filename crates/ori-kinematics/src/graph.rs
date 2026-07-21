@@ -234,7 +234,7 @@ impl MaterialHingeGraphGeometry {
         if let Some(group_count) = composed_symmetric_rational_cycles_premises_v1(
             self, audit, fixed_face, schedule, tolerance,
         ) {
-            let required_depth = if group_count <= 2 { 1 } else { 2 };
+            let required_depth = usize::BITS - (group_count - 1).leading_zeros();
             if limits.max_leaves < group_count
                 || limits.max_work < group_count
                 || limits.max_depth < required_depth
@@ -252,12 +252,18 @@ impl MaterialHingeGraphGeometry {
                 fixed_face,
                 checked_hinges,
             };
-            let partitions = match group_count {
-                2 => vec![(1, 0), (1, 1)],
-                3 => vec![(1, 0), (2, 2), (2, 3)],
-                4 => vec![(2, 0), (2, 1), (2, 2), (2, 3)],
-                _ => unreachable!("composite premise bounds cycle groups"),
-            };
+            let base_depth = usize::BITS - 1 - group_count.leading_zeros();
+            let base_count = 1_usize << base_depth;
+            let split_from = base_count - (group_count - base_count);
+            let mut partitions = Vec::with_capacity(group_count);
+            for index in 0..base_count {
+                if index < split_from {
+                    partitions.push((base_depth, index as u64));
+                } else {
+                    partitions.push((base_depth + 1, (index * 2) as u64));
+                    partitions.push((base_depth + 1, (index * 2 + 1) as u64));
+                }
+            }
             return Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
                 fixed_face,
                 schedule_binding_fingerprint: schedule.certificate_binding_fingerprint_v1(),
@@ -1210,7 +1216,7 @@ fn composed_symmetric_rational_cycles_premises_v1(
     tolerance: f64,
 ) -> Option<usize> {
     let group_count = audit.closure_hinges().len();
-    if !(2..=4).contains(&group_count)
+    if !(2..=8).contains(&group_count)
         || geometry.hinges().len() != group_count * 4
         || geometry.face_ids().len() != 1 + group_count * 3
     {
@@ -1930,6 +1936,10 @@ mod tests {
             (5.0, 13.0, 12.0),
             (8.0, 17.0, 15.0),
             (7.0, 25.0, 24.0),
+            (3.0, 5.0, 4.0),
+            (5.0, 13.0, 12.0),
+            (8.0, 17.0, 15.0),
+            (7.0, 25.0, 24.0),
         ];
         let mut hinges = Vec::new();
         for (group, (p, q, leg)) in triples.into_iter().take(group_count).enumerate() {
@@ -2016,11 +2026,19 @@ mod tests {
     }
 
     #[test]
-    fn two_to_four_independent_rational_cycles_use_canonical_balanced_leaves() {
+    fn two_to_eight_independent_rational_cycles_use_canonical_balanced_leaves() {
         let cases = [
             (2, 1, vec![(1, 0), (1, 1)]),
             (3, 2, vec![(1, 0), (2, 2), (2, 3)]),
             (4, 2, vec![(2, 0), (2, 1), (2, 2), (2, 3)]),
+            (5, 3, vec![(2, 0), (2, 1), (2, 2), (3, 6), (3, 7)]),
+            (6, 3, vec![(2, 0), (2, 1), (3, 4), (3, 5), (3, 6), (3, 7)]),
+            (
+                7,
+                3,
+                vec![(2, 0), (3, 2), (3, 3), (3, 4), (3, 5), (3, 6), (3, 7)],
+            ),
+            (8, 3, (0..8).map(|index| (3, index)).collect()),
         ];
         for (group_count, max_depth, expected) in cases {
             for reverse_hinges in [false, true] {
@@ -2051,6 +2069,45 @@ mod tests {
                 );
             }
         }
+        let (geometry, audit, schedule, fixed) = composed_rational_cycles_fixture(8, None, false);
+        let exact = DyadicIntervalClosureLimitsV1 {
+            max_depth: 3,
+            max_leaves: 8,
+            max_work: 8,
+            schedule_limits: CycleScheduleLimitsV1::default(),
+        };
+        for short in [
+            DyadicIntervalClosureLimitsV1 {
+                max_depth: 2,
+                ..exact
+            },
+            DyadicIntervalClosureLimitsV1 {
+                max_leaves: 7,
+                ..exact
+            },
+            DyadicIntervalClosureLimitsV1 {
+                max_work: 7,
+                ..exact
+            },
+        ] {
+            assert_eq!(
+                geometry.prove_dyadic_schedule_closure_v1(&audit, fixed, &schedule, 1.0e-9, short,),
+                Err(DyadicIntervalClosureErrorV1::ResourceLimit)
+            );
+        }
+        let (corrupt, corrupt_audit, corrupt_schedule, corrupt_fixed) =
+            composed_rational_cycles_fixture(8, Some(7), false);
+        assert!(
+            corrupt
+                .prove_dyadic_schedule_closure_v1(
+                    &corrupt_audit,
+                    corrupt_fixed,
+                    &corrupt_schedule,
+                    1.0e-9,
+                    exact,
+                )
+                .is_err()
+        );
     }
 
     #[test]

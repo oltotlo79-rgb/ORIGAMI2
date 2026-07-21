@@ -1560,7 +1560,7 @@ fn composed_symmetric_rational_local_groups_v1(
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
 ) -> Option<HashMap<FaceId, usize>> {
     let count = audit.closure_hinges().len();
-    if !(2..=4).contains(&count)
+    if !(2..=8).contains(&count)
         || geometry.hinges().len() != count * 4
         || geometry.face_ids().len() != 1 + count * 3
     {
@@ -2076,7 +2076,8 @@ mod tests {
         serde_json::from_str(&format!("\"00000000-0000-4000-{prefix}-{index:012x}\"")).unwrap()
     }
 
-    fn four_bay_rational_cycle_geometry(
+    fn rational_cycle_bay_geometry(
+        group_count: usize,
         reverse_hinges: bool,
     ) -> (
         MaterialHingeGraphGeometry,
@@ -2089,10 +2090,16 @@ mod tests {
             (5.0, 13.0, 12.0),
             (8.0, 17.0, 15.0),
             (7.0, 25.0, 24.0),
+            (3.0, 5.0, 4.0),
+            (5.0, 13.0, 12.0),
+            (8.0, 17.0, 15.0),
+            (7.0, 25.0, 24.0),
         ];
         let (pattern, paper, hinges) = if reverse_hinges {
             super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern_with_reversed_hinges(
             )
+        } else if group_count == 8 {
+            super::four_bay_cycle_test_support::eight_bay_rational_cycle_pattern()
         } else {
             super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern()
         };
@@ -2174,7 +2181,7 @@ mod tests {
 
     #[test]
     fn four_non_crossing_rational_bays_admit_real_geometry_and_four_leaf_closure() {
-        let (geometry, audit, schedule, fixed) = four_bay_rational_cycle_geometry(false);
+        let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(4, false);
         assert_eq!(geometry.hinges().len(), 16);
         assert_eq!(geometry.face_ids().len(), 13);
         assert!(geometry.face_ids().iter().all(|face| {
@@ -2272,7 +2279,7 @@ mod tests {
             second.collision_certificate()
         );
         let (reversed_geometry, reversed_audit, reversed_schedule, reversed_fixed) =
-            four_bay_rational_cycle_geometry(true);
+            rational_cycle_bay_geometry(4, true);
         let reversed_closure = reversed_geometry
             .prove_dyadic_schedule_closure_v1(
                 &reversed_audit,

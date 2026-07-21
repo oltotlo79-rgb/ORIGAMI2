@@ -10,10 +10,22 @@ pub fn eight_bay_rational_cycle_pattern() -> (CreasePattern, Paper, Vec<EdgeId>)
     rational_cycle_bay_pattern(8)
 }
 
+pub fn sixteen_bay_rational_cycle_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
+    rational_cycle_bay_pattern(16)
+}
+
 fn rational_cycle_bay_pattern(group_count: usize) -> (CreasePattern, Paper, Vec<EdgeId>) {
     let namespace: ProjectId =
         serde_json::from_str("\"00000000-0000-4000-b000-000000000002\"").unwrap();
     let triples = [
+        (3.0, 5.0, 4.0),
+        (5.0, 13.0, 12.0),
+        (8.0, 17.0, 15.0),
+        (7.0, 25.0, 24.0),
+        (3.0, 5.0, 4.0),
+        (5.0, 13.0, 12.0),
+        (8.0, 17.0, 15.0),
+        (7.0, 25.0, 24.0),
         (3.0, 5.0, 4.0),
         (5.0, 13.0, 12.0),
         (8.0, 17.0, 15.0),
@@ -109,6 +121,15 @@ pub fn four_bay_rational_cycle_pattern_with_reversed_hinges() -> (CreasePattern,
 pub fn eight_bay_rational_cycle_pattern_with_reversed_hinges() -> (CreasePattern, Paper, Vec<EdgeId>)
 {
     let (mut pattern, paper, hinges) = eight_bay_rational_cycle_pattern();
+    let boundary_edge_count = paper.boundary_vertices.len();
+    pattern.edges[boundary_edge_count..].reverse();
+    (pattern, paper, hinges)
+}
+
+#[allow(dead_code)]
+pub fn sixteen_bay_rational_cycle_pattern_with_reversed_hinges()
+-> (CreasePattern, Paper, Vec<EdgeId>) {
+    let (mut pattern, paper, hinges) = sixteen_bay_rational_cycle_pattern();
     let boundary_edge_count = paper.boundary_vertices.len();
     pattern.edges[boundary_edge_count..].reverse();
     (pattern, paper, hinges)

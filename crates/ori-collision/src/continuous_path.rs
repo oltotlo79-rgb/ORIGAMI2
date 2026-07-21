@@ -1560,7 +1560,7 @@ fn composed_symmetric_rational_local_groups_v1(
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
 ) -> Option<HashMap<FaceId, usize>> {
     let count = audit.closure_hinges().len();
-    if !(2..=8).contains(&count)
+    if !(2..=16).contains(&count)
         || geometry.hinges().len() != count * 4
         || geometry.face_ids().len() != 1 + count * 3
     {
@@ -2094,12 +2094,24 @@ mod tests {
             (5.0, 13.0, 12.0),
             (8.0, 17.0, 15.0),
             (7.0, 25.0, 24.0),
+            (3.0, 5.0, 4.0),
+            (5.0, 13.0, 12.0),
+            (8.0, 17.0, 15.0),
+            (7.0, 25.0, 24.0),
+            (3.0, 5.0, 4.0),
+            (5.0, 13.0, 12.0),
+            (8.0, 17.0, 15.0),
+            (7.0, 25.0, 24.0),
         ];
-        let (pattern, paper, hinges) = if reverse_hinges && group_count == 8 {
+        let (pattern, paper, hinges) = if reverse_hinges && group_count == 16 {
+            super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern_with_reversed_hinges()
+        } else if reverse_hinges && group_count == 8 {
             super::four_bay_cycle_test_support::eight_bay_rational_cycle_pattern_with_reversed_hinges()
         } else if reverse_hinges {
             super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern_with_reversed_hinges(
             )
+        } else if group_count == 16 {
+            super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern()
         } else if group_count == 8 {
             super::four_bay_cycle_test_support::eight_bay_rational_cycle_pattern()
         } else {
@@ -2409,6 +2421,109 @@ mod tests {
             ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(rs, &ri, &rr).unwrap();
         let reversed = crate::certify_scheduled_cycle_transition_v1(
             &rg, &ra, rf, &candidate, &rc, 32, [0x51; 32], [0x52; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            first.schedule_certificate(),
+            reversed.schedule_certificate()
+        );
+        assert_eq!(first.closure_certificate(), reversed.closure_certificate());
+        assert_eq!(
+            first.collision_certificate(),
+            reversed.collision_certificate()
+        );
+    }
+
+    #[test]
+    fn sixteen_bay_geometry_certifies_all_cross_leaf_pairs_at_exact_caps() {
+        let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(16, false);
+        let limits = ori_kinematics::DyadicIntervalClosureLimitsV1 {
+            max_depth: 4,
+            max_leaves: 16,
+            max_work: 16,
+            schedule_limits: ori_kinematics::CycleScheduleLimitsV1::default(),
+        };
+        let closure = geometry
+            .prove_dyadic_schedule_closure_v1(&audit, fixed, &schedule, 1.0e-8, limits)
+            .unwrap();
+        assert_eq!(geometry.hinges().len(), 64);
+        assert_eq!(closure.leaves().len(), 16);
+        assert!(closure.leaves().iter().all(|leaf| leaf.0 == 4));
+        for short in [
+            ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                max_depth: 3,
+                ..limits
+            },
+            ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                max_leaves: 15,
+                ..limits
+            },
+            ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                max_work: 15,
+                ..limits
+            },
+        ] {
+            assert_eq!(
+                geometry.prove_dyadic_schedule_closure_v1(&audit, fixed, &schedule, 1.0e-8, short,),
+                Err(ori_kinematics::DyadicIntervalClosureErrorV1::ResourceLimit)
+            );
+        }
+        let initial = schedule.evaluate(0.0).unwrap();
+        let requested = schedule.evaluate(1.0).unwrap();
+        let candidate = ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(
+            schedule, &initial, &requested,
+        )
+        .unwrap();
+        let groups = composed_symmetric_rational_local_groups_v1(
+            &geometry,
+            &audit,
+            fixed,
+            candidate.schedule(),
+        )
+        .unwrap();
+        assert!(symmetric_groups_have_disjoint_swept_balls_v1(
+            &geometry, &groups
+        ));
+        let mut collision = groups.clone();
+        let foreign = *groups.iter().find(|(_, group)| **group == 15).unwrap().0;
+        collision.insert(foreign, 14);
+        assert!(!symmetric_groups_have_disjoint_swept_balls_v1(
+            &geometry, &collision
+        ));
+        let diagnostic =
+            diagnose_scheduled_cycle_path_v1(&geometry, &audit, fixed, &candidate, &closure, 32);
+        assert!(diagnostic.continuous_certificate_model_id().is_some());
+        assert_eq!(diagnostic.pair_work(), 120);
+        for denied in [0, MAX_STACKED_FOLD_INTERVAL_LEAVES_V1 + 1] {
+            assert!(
+                diagnose_scheduled_cycle_path_v1(
+                    &geometry, &audit, fixed, &candidate, &closure, denied,
+                )
+                .continuous_certificate_model_id()
+                .is_none()
+            );
+        }
+        let first = crate::certify_scheduled_cycle_transition_v1(
+            &geometry, &audit, fixed, &candidate, &closure, 32, [0x61; 32], [0x62; 32],
+        )
+        .unwrap();
+        let (rg, ra, rs, rf) = rational_cycle_bay_geometry(16, true);
+        let rc = rg
+            .prove_dyadic_schedule_closure_v1(&ra, rf, &rs, 1.0e-8, limits)
+            .unwrap();
+        let ri = rs.evaluate(0.0).unwrap();
+        let rr = rs.evaluate(1.0).unwrap();
+        let reversed_candidate =
+            ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(rs, &ri, &rr).unwrap();
+        let reversed = crate::certify_scheduled_cycle_transition_v1(
+            &rg,
+            &ra,
+            rf,
+            &reversed_candidate,
+            &rc,
+            32,
+            [0x61; 32],
+            [0x62; 32],
         )
         .unwrap();
         assert_eq!(

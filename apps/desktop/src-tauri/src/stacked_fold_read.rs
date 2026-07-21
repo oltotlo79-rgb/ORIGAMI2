@@ -3234,6 +3234,14 @@ mod tests {
             (5, 13),
             (8, 17),
             (7, 25),
+            (3, 5),
+            (5, 13),
+            (8, 17),
+            (7, 25),
+            (3, 5),
+            (5, 13),
+            (8, 17),
+            (7, 25),
         ];
         let mut entries = hinges
             .iter()
@@ -3456,6 +3464,69 @@ mod tests {
         assert_eq!(response.closure_leaf_count, 8);
         assert_eq!(response.closure_max_depth, 3);
         assert_eq!(response.checked_hinge_count, 32);
+        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            &app_state,
+            &GlobalFlatFoldabilityState::default(),
+            &transactions,
+            response.transaction_token,
+        )
+        .unwrap();
+        let mut project = super::super::lock_project(&app_state).unwrap();
+        project.editor.undo(applied).unwrap();
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+    }
+
+    #[test]
+    fn sixteen_leaf_cycle_preview_applies_and_round_trips_history() {
+        let (pattern, paper, hinges) =
+            super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern();
+        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        let fixed = snapshot
+            .faces
+            .iter()
+            .max_by_key(|face| {
+                snapshot
+                    .hinge_adjacency
+                    .iter()
+                    .filter(|adjacency| adjacency.first == face.id || adjacency.second == face.id)
+                    .count()
+            })
+            .unwrap()
+            .id;
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            fixed,
+        );
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let app_state = AppState::new(project);
+        let transactions =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let response = propose_current_cycle_pose_inner(
+            None,
+            &app_state,
+            &transactions,
+            CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
+            },
+        )
+        .expect("sixteen-leaf preview");
+        assert_eq!(response.closure_leaf_count, 16);
+        assert_eq!(response.closure_max_depth, 4);
+        assert_eq!(response.checked_hinge_count, 64);
         let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
             &app_state,
             &GlobalFlatFoldabilityState::default(),

@@ -1331,21 +1331,42 @@ mod tests {
             "7c".repeat(32)
         );
         let archived = serde_json::to_vec(&source.timeline).expect("archive timeline");
-        source.timeline = serde_json::from_slice(&archived).expect("reopen timeline");
-        let reopened = build_pending_export(source).expect("native PDF export after reopen");
-        assert_eq!(reopened.step_count, 1);
-        assert!(reopened.bytes.starts_with(b"%PDF-1.7"));
+        let reopened_timeline: ori_domain::InstructionTimeline =
+            serde_json::from_slice(&archived).expect("reopen timeline");
+        for (format, magic) in [
+            (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+            (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+        ] {
+            let mut reopened_source = source_for(&project, format);
+            reopened_source.timeline = reopened_timeline.clone();
+            let reopened = build_pending_export(reopened_source)
+                .expect("native export after proof-bearing reopen");
+            assert_eq!(reopened.step_count, 1);
+            assert!(reopened.bytes.starts_with(magic));
+        }
 
-        let mut tampered = source_for(&project, InstructionExportFormatRequest::SvgZip);
-        tampered.timeline.steps[0].description = format!(
+        let mut tampered_archive: serde_json::Value =
+            serde_json::from_slice(&archived).expect("inspect archived timeline");
+        tampered_archive["steps"][0]["description"] = serde_json::Value::String(format!(
             "経路証明 SHA-256: {} / 元モデル SHA-256: {}",
             "7c".repeat(32),
             "b".repeat(64)
-        );
+        ));
+        let mut tampered = source_for(&project, InstructionExportFormatRequest::SvgZip);
+        tampered.timeline =
+            serde_json::from_value(tampered_archive).expect("reopen tampered archive");
         assert_eq!(
             build_pending_export(tampered).map(|_| ()),
             Err(InstructionExportErrorCategory::DocumentInputInvalid),
             "strict IPC exposes only the closed error category"
+        );
+
+        let mut stale_revision = source_for(&project, InstructionExportFormatRequest::Pdf);
+        stale_revision.timeline = reopened_timeline;
+        stale_revision.expected_revision += 1;
+        assert_eq!(
+            build_pending_export(stale_revision).map(|_| ()),
+            Err(InstructionExportErrorCategory::DocumentContractInvalid)
         );
     }
 

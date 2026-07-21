@@ -1302,8 +1302,12 @@ test('release chronology rejects missing offset future and replayed evidence at 
   }
   try {
     assert.throws(() => run({ RELEASE_RUN_STARTED_AT: '' }), /run start time/u)
+    assert.throws(() => run({ RELEASE_RUN_STARTED_AT: '2026-07-21T00:00:00.001Z' }), /run start time/u)
+    assert.throws(() => run({ RELEASE_RUN_STARTED_AT: '2026-07-21T00:00:60Z' }), /run start time/u)
+    assert.throws(() => run({ RELEASE_RUN_STARTED_AT: '2199-07-21T00:00:00Z' }), /run start time/u)
     assert.throws(() => run({ SOURCE_COMMIT_AUTHORED_AT: '2026-07-18T00:00:00+00:00' }), /author time/u)
     assert.throws(() => run({ SOURCE_COMMIT_COMMITTED_AT: '2026-07-21T00:06:00Z' }), /chronology/u)
+    assert.throws(() => run({ SOURCE_COMMIT_COMMITTED_AT: '2026-06-20T23:59:59Z' }), /chronology/u)
     assert.throws(() => run({
       SOURCE_COMMIT_COMMITTED_AT: '2026-07-20T00:10:00Z',
       CI_CHECK_EVIDENCE_JSON: JSON.stringify(ciEvidence('2026-07-20T00:04:59.000Z')),
@@ -1315,6 +1319,9 @@ test('release chronology rejects missing offset future and replayed evidence at 
     }))
     const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
     assert.match(workflow, /git cat-file -t "refs\/tags\/\$RELEASE_TAG"\)" = tag/u)
+    const verifier = readFileSync(join(root, '.github/scripts/verify_formal_release.mjs'), 'utf8')
+    assert.match(verifier, /Object\.keys\(releaseEvidence\)\.sort\(\)/u)
+    assert.match(verifier, /canonicalEvidenceTime/u)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

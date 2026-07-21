@@ -131,21 +131,37 @@ try {
 } catch {
   throw new Error('CycloneDX SBOM release evidence JSON is invalid')
 }
+const canonicalEvidenceTime = (value) => (
+  /^20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\dZ$/u.test(value ?? '')
+  && Number.isFinite(Date.parse(value))
+  && new Date(Date.parse(value)).toISOString().replace('.000Z', 'Z') === value
+)
+const canonicalArtifactTime = (value) => {
+  if (!/^20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{3})?Z$/u.test(value ?? '')) return false
+  const date = new Date(value)
+  return Number.isFinite(date.valueOf()) && (value.includes('.') ? date.toISOString() : date.toISOString().replace('.000Z', 'Z')) === value
+}
 if (
   JSON.stringify(releaseEvidence.rustsecWarningReview)
   !== JSON.stringify(buildDependencyPolicy().vulnerabilityAssessment.rustsecReviewReport)
 ) throw new Error('CycloneDX SBOM RustSec review evidence mismatch')
 if (
   evidenceJson !== JSON.stringify(releaseEvidence)
+  || Object.keys(releaseEvidence).sort().join('\n') !== [
+    'ciChecks', 'ciRunId', 'executedSuites', 'executedTestCount', 'releaseTagCreatedAt',
+    'runStartedAt', 'rustsecWarningReview', 'schema', 'sourceCommit',
+    'sourceCommitAuthoredAt', 'sourceCommitCommittedAt',
+  ].sort().join('\n')
   || releaseEvidence.schema !== 'origami2.release-evidence.v1'
   || releaseEvidence.sourceCommit !== process.env.RELEASE_COMMIT
   || !/^[1-9][0-9]*$/u.test(releaseEvidence.ciRunId ?? '')
-  || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseEvidence.runStartedAt ?? '')
-  || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseEvidence.sourceCommitAuthoredAt ?? '')
-  || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseEvidence.sourceCommitCommittedAt ?? '')
-  || !(releaseEvidence.releaseTagCreatedAt === null || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseEvidence.releaseTagCreatedAt))
+  || !canonicalEvidenceTime(releaseEvidence.runStartedAt)
+  || !canonicalEvidenceTime(releaseEvidence.sourceCommitAuthoredAt)
+  || !canonicalEvidenceTime(releaseEvidence.sourceCommitCommittedAt)
+  || !(releaseEvidence.releaseTagCreatedAt === null || canonicalEvidenceTime(releaseEvidence.releaseTagCreatedAt))
   || Date.parse(releaseEvidence.sourceCommitAuthoredAt) > Date.parse(releaseEvidence.runStartedAt) + 300_000
   || Date.parse(releaseEvidence.sourceCommitCommittedAt) > Date.parse(releaseEvidence.runStartedAt) + 300_000
+  || Date.parse(releaseEvidence.runStartedAt) - Date.parse(releaseEvidence.sourceCommitCommittedAt) > 30 * 86_400_000
   || (releaseEvidence.releaseTagCreatedAt !== null && (
     Date.parse(releaseEvidence.releaseTagCreatedAt) < Date.parse(releaseEvidence.sourceCommitCommittedAt)
     || Date.parse(releaseEvidence.releaseTagCreatedAt) > Date.parse(releaseEvidence.runStartedAt) + 300_000
@@ -173,6 +189,8 @@ if (
     !/^[1-9][0-9]*$/u.test(artifact?.artifactId ?? '')
     || !/^sha256:[0-9a-f]{64}$/u.test(artifact?.digest ?? '')
     || !Number.isSafeInteger(artifact?.size) || artifact.size < 1 || artifact.size > 2_147_483_648
+    || !canonicalArtifactTime(artifact.createdAt)
+    || !canonicalArtifactTime(artifact.expiresAt)
     || Date.parse(artifact.createdAt) < Date.parse(releaseEvidence.sourceCommitCommittedAt) - 300_000
     || Date.parse(artifact.createdAt) > Date.parse(releaseEvidence.runStartedAt) + 300_000
   ))

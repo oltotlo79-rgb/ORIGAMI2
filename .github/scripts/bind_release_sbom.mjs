@@ -49,19 +49,30 @@ const expectedTarget = platform === 'windows-x64'
   ? 'x86_64-pc-windows-msvc'
   : 'aarch64-apple-darwin'
 if (targetTriple !== expectedTarget) throw new Error('invalid build target triple')
-if (!/^[1-9][0-9]*$/u.test(releaseRunId ?? '')) throw new Error('invalid release CI run ID')
-if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseRunStartedAt ?? '')) throw new Error('invalid release CI run start time')
-for (const [name, value] of [['author', sourceCommitAuthoredAt], ['committer', sourceCommitCommittedAt]]) {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value ?? '')) throw new Error(`invalid source commit ${name} time`)
+const canonicalUtcMillis = (value, name) => {
+  if (!/^20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\dZ$/u.test(value ?? '')) {
+    throw new Error(`invalid ${name}`)
+  }
+  const millis = Date.parse(value)
+  if (!Number.isFinite(millis) || new Date(millis).toISOString().replace('.000Z', 'Z') !== value) throw new Error(`non-canonical ${name}`)
+  return millis
 }
-if ((buildMode === 'signed-release') !== (releaseTagCreatedAt !== null) || (releaseTagCreatedAt !== null && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(releaseTagCreatedAt))) throw new Error('invalid release tag time')
-const runStartMillis = Date.parse(releaseRunStartedAt)
-const authoredMillis = Date.parse(sourceCommitAuthoredAt)
-const committedMillis = Date.parse(sourceCommitCommittedAt)
-const tagMillis = releaseTagCreatedAt === null ? null : Date.parse(releaseTagCreatedAt)
+const canonicalGitHubMillis = (value) => {
+  if (!/^20\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{3})?Z$/u.test(value ?? '')) return null
+  const millis = Date.parse(value)
+  const canonical = value.includes('.') ? new Date(millis).toISOString() : new Date(millis).toISOString().replace('.000Z', 'Z')
+  return Number.isFinite(millis) && canonical === value ? millis : null
+}
+if (!/^[1-9][0-9]*$/u.test(releaseRunId ?? '')) throw new Error('invalid release CI run ID')
+const runStartMillis = canonicalUtcMillis(releaseRunStartedAt, 'release CI run start time')
+const authoredMillis = canonicalUtcMillis(sourceCommitAuthoredAt, 'source commit author time')
+const committedMillis = canonicalUtcMillis(sourceCommitCommittedAt, 'source commit committer time')
+if ((buildMode === 'signed-release') !== (releaseTagCreatedAt !== null)) throw new Error('invalid release tag time')
+const tagMillis = releaseTagCreatedAt === null ? null : canonicalUtcMillis(releaseTagCreatedAt, 'release tag time')
 if (
   authoredMillis > runStartMillis + 300_000
   || committedMillis > runStartMillis + 300_000
+  || runStartMillis - committedMillis > 30 * 86_400_000
   || (tagMillis !== null && (tagMillis < committedMillis || tagMillis > runStartMillis + 300_000))
   || ciChecks.artifacts.some(({ createdAt }) => {
     const artifactMillis = Date.parse(createdAt)
@@ -91,9 +102,10 @@ if (
     !/^[1-9][0-9]*$/u.test(artifact?.artifactId ?? '')
     || !/^sha256:[0-9a-f]{64}$/u.test(artifact?.digest ?? '')
     || !Number.isSafeInteger(artifact?.size) || artifact.size < 1 || artifact.size > 2_147_483_648
-    || !Number.isFinite(Date.parse(artifact?.createdAt))
-    || Date.parse(artifact.expiresAt) - Date.parse(artifact.createdAt) < 6 * 86_400_000
-    || Date.parse(artifact.expiresAt) - Date.parse(artifact.createdAt) > 8 * 86_400_000
+    || canonicalGitHubMillis(artifact?.createdAt) === null
+    || canonicalGitHubMillis(artifact?.expiresAt) === null
+    || canonicalGitHubMillis(artifact.expiresAt) - canonicalGitHubMillis(artifact.createdAt) < 6 * 86_400_000
+    || canonicalGitHubMillis(artifact.expiresAt) - canonicalGitHubMillis(artifact.createdAt) > 8 * 86_400_000
   ))
 ) throw new Error('CI artifact inventory evidence is invalid')
 const inventoryReview = ciChecks.artifacts.find(({ name }) => name === 'rustsec-warning-review')

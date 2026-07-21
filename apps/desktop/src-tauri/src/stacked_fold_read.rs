@@ -4034,6 +4034,7 @@ mod tests {
                     .collect(),
                 max_states: 32,
                 max_transitions: 64,
+                cycle_schedule_v1: None,
                 expected_path_binding_sha256: "00".repeat(32),
                 expected_positive_thickness_binding_sha256: "11".repeat(32),
                 expected_layer_transport_binding_sha256: "22".repeat(32),

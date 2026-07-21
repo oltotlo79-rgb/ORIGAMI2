@@ -1056,12 +1056,11 @@ pub(crate) fn apply_beginner_part_assignments(
             generic.push(ori_domain::BeginnerProtrusionTargetV1 {
                 id: index as u16 + 1,
                 count: part.count,
-                length_tenths_mm: u32::try_from(if vertical {
+                length_tenths_mm: (if vertical {
                     max_y.saturating_sub(min_y).saturating_add(1)
                 } else {
                     max_x.saturating_sub(min_x).saturating_add(1)
                 })
-                .unwrap_or(1)
                 .saturating_mul(10)
                 .clamp(1, 1_000_000),
                 thickness_tenths_mm: u16::try_from(

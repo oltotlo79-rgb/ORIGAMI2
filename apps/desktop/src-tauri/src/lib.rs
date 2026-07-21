@@ -11933,6 +11933,31 @@ mod tests {
     use super::*;
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+    static BEGINNER_GRID_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct BeginnerGridTestGuard {
+        _serial: std::sync::MutexGuard<'static, ()>,
+    }
+
+    fn serial_beginner_grid_test() -> BeginnerGridTestGuard {
+        let serial = BEGINNER_GRID_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        beginner_grid_work()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        BeginnerGridTestGuard { _serial: serial }
+    }
+
+    impl Drop for BeginnerGridTestGuard {
+        fn drop(&mut self) {
+            beginner_grid_work()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
+    }
 
     #[test]
     fn reference_model_six_legs_are_three_individually_bound_pairs() {
@@ -21508,18 +21533,22 @@ mod tests {
             ],
             Vec::new(),
         );
-        let mut shape_profile = ori_domain::BeginnerDesignProfileV1::default();
-        shape_profile.preset = ori_domain::BeginnerDesignPresetV1::ShapePriority;
-        shape_profile.shape_fidelity_weight = 60;
-        shape_profile.foldability_weight = 20;
-        shape_profile.step_count_weight = 10;
-        shape_profile.paper_efficiency_weight = 10;
-        let mut fold_profile = ori_domain::BeginnerDesignProfileV1::default();
-        fold_profile.preset = ori_domain::BeginnerDesignPresetV1::FoldabilityPriority;
-        fold_profile.shape_fidelity_weight = 20;
-        fold_profile.foldability_weight = 60;
-        fold_profile.step_count_weight = 10;
-        fold_profile.paper_efficiency_weight = 10;
+        let shape_profile = ori_domain::BeginnerDesignProfileV1 {
+            preset: ori_domain::BeginnerDesignPresetV1::ShapePriority,
+            shape_fidelity_weight: 60,
+            foldability_weight: 20,
+            step_count_weight: 10,
+            paper_efficiency_weight: 10,
+            ..ori_domain::BeginnerDesignProfileV1::default()
+        };
+        let fold_profile = ori_domain::BeginnerDesignProfileV1 {
+            preset: ori_domain::BeginnerDesignPresetV1::FoldabilityPriority,
+            shape_fidelity_weight: 20,
+            foldability_weight: 60,
+            step_count_weight: 10,
+            paper_efficiency_weight: 10,
+            ..ori_domain::BeginnerDesignProfileV1::default()
+        };
         assert_ne!(
             preset_weighted_refinement_score_v1(&ranked, &reference, &shape_profile),
             preset_weighted_refinement_score_v1(&ranked, &reference, &fold_profile),
@@ -21542,33 +21571,5 @@ mod tests {
         let before = project.document();
         let _ = bounded_folded_pose_landmark_score_v1(&oversized, &reference);
         assert_eq!(project.document(), before);
-    }
-}
-static BEGINNER_GRID_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-#[cfg(test)]
-struct BeginnerGridTestGuard {
-    _serial: std::sync::MutexGuard<'static, ()>,
-}
-
-#[cfg(test)]
-fn serial_beginner_grid_test() -> BeginnerGridTestGuard {
-    let serial = BEGINNER_GRID_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    beginner_grid_work()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
-    BeginnerGridTestGuard { _serial: serial }
-}
-
-#[cfg(test)]
-impl Drop for BeginnerGridTestGuard {
-    fn drop(&mut self) {
-        beginner_grid_work()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
     }
 }

@@ -104,3 +104,12 @@ pub fn four_bay_rational_cycle_pattern_with_reversed_hinges() -> (CreasePattern,
     pattern.edges[boundary_edge_count..].reverse();
     (pattern, paper, hinges)
 }
+
+#[allow(dead_code)]
+pub fn eight_bay_rational_cycle_pattern_with_reversed_hinges() -> (CreasePattern, Paper, Vec<EdgeId>)
+{
+    let (mut pattern, paper, hinges) = eight_bay_rational_cycle_pattern();
+    let boundary_edge_count = paper.boundary_vertices.len();
+    pattern.edges[boundary_edge_count..].reverse();
+    (pattern, paper, hinges)
+}

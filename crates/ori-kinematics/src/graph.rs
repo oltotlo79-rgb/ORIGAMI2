@@ -1357,9 +1357,28 @@ fn symmetric_rational_cycle_group_premises_v1(
     {
         return false;
     }
+    let candidates = [ordered[0].start(), ordered[0].end()];
+    let Some(pivot) = candidates.into_iter().find(|candidate| {
+        ordered
+            .iter()
+            .all(|hinge| hinge.start() == *candidate || hinge.end() == *candidate)
+    }) else {
+        return false;
+    };
+    let outward_axes = ordered
+        .iter()
+        .map(|hinge| {
+            if hinge.start() == pivot {
+                hinge.axis()
+            } else {
+                crate::Point3::new(-hinge.axis().x(), -hinge.axis().y(), -hinge.axis().z())
+                    .expect("negating a finite unit axis remains representable")
+            }
+        })
+        .collect::<Vec<_>>();
     let cosine = |a: crate::Point3, b: crate::Point3| a.x() * b.x() + a.y() * b.y() + a.z() * b.z();
     let adjacent_cosines = (0..4)
-        .map(|index| cosine(ordered[index].axis(), ordered[(index + 1) % 4].axis()))
+        .map(|index| cosine(outward_axes[index], outward_axes[(index + 1) % 4]))
         .collect::<Vec<_>>();
     let negative = adjacent_cosines
         .iter()

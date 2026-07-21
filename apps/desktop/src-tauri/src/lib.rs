@@ -12018,8 +12018,9 @@ mod tests {
         );
         for point_count in 4..=16 {
             let mut bounded = profile.clone();
-            bounded.generation_constraints.target_category = None;
-            bounded.generation_constraints.target_parts.clear();
+            for protrusion in &mut bounded.generation_constraints.protrusions {
+                protrusion.local_outline_tenths_mm = None;
+            }
             bounded.generation_constraints.generic_body_outline_mode =
                 ori_domain::BeginnerBodyOutlineModeV1::General;
             let mut outline = (0..point_count)

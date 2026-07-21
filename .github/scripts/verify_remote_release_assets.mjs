@@ -5,6 +5,16 @@ import { join, resolve } from 'node:path'
 const directory = resolve(process.argv[2])
 const responsePath = process.argv[3]
 const allowSubset = process.argv[4] === '--allow-subset'
+const version = process.env.RELEASE_VERSION
+if (!/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(version ?? '')) throw new Error('release asset version is invalid')
+const prefix = `ORIGAMI2-v${version}`
+const expectedNames = [
+  `${prefix}-macos-arm64-app.tar.gz`, `${prefix}-macos-arm64.cdx.json`,
+  `${prefix}-macos-arm64.update.json`, `${prefix}-windows-x64-portable.zip`,
+  `${prefix}-windows-x64-setup.exe`, `${prefix}-windows-x64.cdx.json`,
+  `${prefix}-windows-x64.update.json`, 'SHA256SUMS-macos-arm64.txt',
+  'SHA256SUMS-windows-x64.txt',
+].sort()
 if (statSync(responsePath).size > 1_048_576) throw new Error('release response is oversized')
 const response = JSON.parse(readFileSync(responsePath, 'utf8'))
 if (
@@ -23,6 +33,7 @@ const local = readdirSync(directory).sort().map((name) => {
   }
 })
 if (local.length !== 9) throw new Error('local release asset count mismatch')
+if (local.map(({ name }) => name).join('\n') !== expectedNames.join('\n')) throw new Error('local release asset names are non-canonical')
 const remote = response.assets.map(({ name, size, digest }) => ({ name, size, digest }))
   .sort((left, right) => left.name.localeCompare(right.name))
 const expected = allowSubset

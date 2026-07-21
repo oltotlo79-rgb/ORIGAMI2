@@ -170,6 +170,8 @@ test('release publication uses a bounded rollback-safe draft transaction', () =>
   assert.match(publish, /transaction_name="ORIGAMI2 draft transaction \$GITHUB_RUN_ID-\$GITHUB_RUN_ATTEMPT"/u)
   assert.match(publish, /--hostname uploads\.github\.com/u)
   assert.match(publish, /verify_remote_release_assets\.mjs/u)
+  assert.match(publish, /jq '\.assets \| length' "\$created"\)" -eq 0/u)
+  assert.match(publish, /verified-release\.sha256[\s\S]*sha256sum --check --strict "\$RUNNER_TEMP\/verified-release\.sha256"/u)
   assert.match(publish, /-F draft=false/u)
   assert.match(publish, /gh api --method DELETE "repos\/\$GH_REPO\/releases\/\$created_release_id"/u)
   assert.match(publish, /\.target_commitish.*= "\$RELEASE_COMMIT"/u)
@@ -184,6 +186,9 @@ test('release publication uses a bounded rollback-safe draft transaction', () =>
   assert.match(publish, /exec \{asset_fd\}<"\$asset"/u)
   assert.match(publish, /--input "\/proc\/\$\$\/fd\/\$asset_fd"/u)
   assert.ok(publish.lastIndexOf('release-staging.sha256') > publish.indexOf('verify_remote_release_assets.mjs'))
+  const remoteVerifier = readFileSync(join(root, '.github/scripts/verify_remote_release_assets.mjs'), 'utf8')
+  assert.match(remoteVerifier, /local release asset names are non-canonical/u)
+  assert.match(remoteVerifier, /SHA256SUMS-windows-x64\.txt/u)
   assert.match(publish, /publish_verified=false/u)
   assert.match(publish, /for attempt in 1 2 3/u)
   assert.match(publish, /test "\$publish_verified" = true/u)
@@ -724,7 +729,7 @@ test('publication and promotion share the exact merged release verifier', () => 
     join(root, '.github/scripts/verify_merged_release_set.mjs'),
     'utf8',
   )
-  assert.equal(workflow.match(/verify_merged_release_set\.mjs release/gu)?.length, 2)
+  assert.equal(workflow.match(/verify_merged_release_set\.mjs release/gu)?.length, 3)
   assert.match(mergedVerifier, /merged release asset set mismatch/u)
   assert.match(mergedVerifier, /verify_formal_release\.mjs/u)
   assert.match(mergedVerifier, /REQUIRE_SIGNATURE: 'false'/u)

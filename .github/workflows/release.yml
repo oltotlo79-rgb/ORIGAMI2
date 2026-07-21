@@ -582,7 +582,14 @@ jobs:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
           EXPECTED_SIGNATURE_POLICY: platform-signed
-        run: node .github/scripts/verify_merged_release_set.mjs release
+        run: |
+          set -euo pipefail
+          node .github/scripts/verify_merged_release_set.mjs release
+          LC_ALL=C find release -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort |
+            while IFS= read -r name; do sha256sum "release/$name"; done > "$RUNNER_TEMP/verified-release.sha256"
+          test "$(wc -l < "$RUNNER_TEMP/verified-release.sha256")" -eq 9
+          node .github/scripts/verify_merged_release_set.mjs release
+          sha256sum --check --strict "$RUNNER_TEMP/verified-release.sha256"
       - name: Remove temporary artifact transport files
         if: always()
         run: |
@@ -621,9 +628,10 @@ jobs:
         run: |
           set -euo pipefail
           test "$(find release -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 9
+          sha256sum --check --strict "$RUNNER_TEMP/verified-release.sha256"
           find release -mindepth 1 -maxdepth 1 -type f -exec chmod 0444 {} +
           chmod 0555 release
-          sha256sum release/* > "$RUNNER_TEMP/release-staging.sha256"
+          cp -- "$RUNNER_TEMP/verified-release.sha256" "$RUNNER_TEMP/release-staging.sha256"
           sha256sum --check --strict "$RUNNER_TEMP/release-staging.sha256"
       - name: Publish immutable tagged release
         env:
@@ -632,6 +640,7 @@ jobs:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           RELEASE_MODE: ${{ needs.validate.outputs.mode }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
           ulimit -c 0
@@ -695,6 +704,7 @@ jobs:
           test "$(jq -r .draft "$created")" = true
           test "$(jq -r .tag_name "$created")" = "$RELEASE_TAG"
           test "$(jq -r .target_commitish "$created")" = "$RELEASE_COMMIT"
+          test "$(jq '.assets | length' "$created")" -eq 0
           for asset in release/*
           do
             sha256sum --check --strict "$RUNNER_TEMP/release-staging.sha256"

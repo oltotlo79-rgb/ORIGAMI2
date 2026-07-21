@@ -1184,6 +1184,52 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
     fixed_face: FaceId,
     limits: CycleScheduleLimitsV1,
 ) -> Result<GeneratedMultiHingePathCandidateV1, MultiHingePathCandidateErrorV1> {
+    generate_kawasaki_path_candidate_at_scale_v1(geometry, audit, fixed_face, 1, limits)
+}
+
+/// Generates the same exact Kawasaki mode over a shorter dyadic endpoint.
+/// `endpoint_denominator` must be one of 1, 2, 4, 8 or 16. The returned
+/// candidate is mathematical closure evidence only; collision certification
+/// remains mandatory before a caller exposes an Apply operation.
+pub fn generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    endpoint_denominator: u64,
+    limits: CycleScheduleLimitsV1,
+) -> Result<GeneratedMultiHingePathCandidateV1, MultiHingePathCandidateErrorV1> {
+    if !matches!(endpoint_denominator, 1 | 2 | 4 | 8 | 16) {
+        return Err(MultiHingePathCandidateErrorV1::CandidateRejected);
+    }
+    let generated = generate_kawasaki_path_candidate_at_scale_v1(
+        geometry,
+        audit,
+        fixed_face,
+        endpoint_denominator,
+        limits,
+    )?;
+    let (_, scaled, _, _) = generated
+        .schedule()
+        .bounded_symmetric_kawasaki_profile_v1()
+        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    let mountains = geometry
+        .hinges()
+        .iter()
+        .filter(|hinge| hinge.assignment() == ori_topology::FoldAssignment::Mountain)
+        .collect::<Vec<_>>();
+    if mountains.len() != 1 || !scaled.contains(&mountains[0].edge()) {
+        return Err(MultiHingePathCandidateErrorV1::CandidateRejected);
+    }
+    Ok(generated)
+}
+
+fn generate_kawasaki_path_candidate_at_scale_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    endpoint_denominator: u64,
+    limits: CycleScheduleLimitsV1,
+) -> Result<GeneratedMultiHingePathCandidateV1, MultiHingePathCandidateErrorV1> {
     if geometry.hinges().len() != 4 || limits.max_hinges < 4 {
         return Err(MultiHingePathCandidateErrorV1::InvalidBinding);
     }
@@ -1312,9 +1358,9 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
                 ],
                 denominator_power_coefficients: vec![RationalCoefficientV1 {
                     numerator: if unit_edges.contains(edge) {
-                        1
+                        endpoint_denominator as i64
                     } else {
-                        ratio.1 as i64
+                        (ratio.1 * endpoint_denominator) as i64
                     },
                     denominator: 1,
                 }],
@@ -1837,10 +1883,7 @@ impl CanonicalCycleScheduleV1 {
             BigRational::new(numerator.into(), denominator.into())
         };
         let domain = [rational(0, 1), rational(1, 1)];
-        let unit_numerator = [rational(0, 1), rational(1, 1)];
-        let mut unit = Vec::new();
-        let mut scaled = Vec::new();
-        let mut ratio = None;
+        let mut effective_slopes = Vec::new();
         for entry in self
             .half_angle_entries
             .iter()
@@ -1848,12 +1891,6 @@ impl CanonicalCycleScheduleV1 {
         {
             if entry.u_domain != domain || entry.denominator_power_coefficients.len() != 1 {
                 return None;
-            }
-            if entry.numerator_power_coefficients == unit_numerator
-                && entry.denominator_power_coefficients == [rational(1, 1)]
-            {
-                unit.push(entry.edge);
-                continue;
             }
             let [zero, slope] = entry.numerator_power_coefficients.as_slice() else {
                 return None;
@@ -1865,15 +1902,30 @@ impl CanonicalCycleScheduleV1 {
                 return None;
             }
             let candidate = slope / &entry.denominator_power_coefficients[0];
-            if candidate <= BigRational::zero() || candidate >= BigRational::from_integer(1.into())
-            {
+            if candidate <= BigRational::zero() || candidate > BigRational::from_integer(1.into()) {
                 return None;
             }
-            if ratio.as_ref().is_some_and(|current| current != &candidate) {
-                return None;
+            effective_slopes.push((entry.edge, candidate));
+        }
+        let unit_slope = effective_slopes
+            .iter()
+            .map(|(_, slope)| slope)
+            .max()?
+            .clone();
+        let mut unit = Vec::new();
+        let mut scaled = Vec::new();
+        let mut ratio = None;
+        for (edge, slope) in effective_slopes {
+            if slope == unit_slope {
+                unit.push(edge);
+            } else {
+                let candidate = slope / &unit_slope;
+                if ratio.as_ref().is_some_and(|current| current != &candidate) {
+                    return None;
+                }
+                ratio = Some(candidate);
+                scaled.push(edge);
             }
-            ratio = Some(candidate);
-            scaled.push(entry.edge);
         }
         let ratio = ratio?;
         let numerator = ratio.numer().to_i64()?;
@@ -2343,6 +2395,40 @@ mod tests {
                     .all(|parameter| exact.schedule().evaluate(parameter).is_some()),
                 "the generated exact family remains defined over its full bounded domain"
             );
+            let mut previous_endpoint = f64::INFINITY;
+            for endpoint_denominator in [1, 2, 4, 8, 16] {
+                let bounded =
+                    generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v1(
+                        &exact_geometry,
+                        &audit,
+                        faces[0],
+                        endpoint_denominator,
+                        CycleScheduleLimitsV1::default(),
+                    )
+                    .expect("each bounded dyadic endpoint remains an exact candidate");
+                let endpoint = bounded.schedule().evaluate(1.0).unwrap();
+                let maximum = endpoint
+                    .as_slice()
+                    .iter()
+                    .map(|angle| angle.angle_degrees())
+                    .fold(0.0_f64, f64::max);
+                assert!(maximum < previous_endpoint || endpoint_denominator == 1);
+                previous_endpoint = maximum;
+                exact_geometry
+                    .prove_dyadic_schedule_closure_v1(
+                        &audit,
+                        faces[0],
+                        bounded.schedule(),
+                        1.0e-9,
+                        crate::DyadicIntervalClosureLimitsV1 {
+                            max_depth: 16,
+                            max_leaves: 65_536,
+                            max_work: 1_048_576,
+                            schedule_limits: CycleScheduleLimitsV1::default(),
+                        },
+                    )
+                    .expect("bounded endpoint retains analytic closure authority");
+            }
         }
         assert_eq!(
             generate_bounded_degree_four_kawasaki_path_candidate_v1(

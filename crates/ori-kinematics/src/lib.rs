@@ -100,6 +100,7 @@ pub use schedule::{
     evaluate_half_angle_rational_degrees_interval_v1,
     evaluate_half_angle_rational_derivative_interval_v1, evaluate_pole_free_atan2_interval_v1,
     evaluate_pole_free_rational_dyadic_v1, evaluate_pole_free_rational_interval_v1,
+    generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v1,
     generate_bounded_degree_four_kawasaki_path_candidate_v1,
     generate_kawasaki_120_120_60_60_path_candidate_v1,
     generate_linear_multi_hinge_path_candidate_v1, prepare_pole_free_bernstein_certificate_v1,

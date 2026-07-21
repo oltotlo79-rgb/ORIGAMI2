@@ -108,20 +108,30 @@ pub fn validate_beginner_generation_provenance_v1(
             .semantic_landmark_provenance
             .as_ref()
             .is_none_or(|semantic| {
-                let expected_roles = [
-                    "head",
-                    "tail",
-                    "wing_left",
-                    "wing_right",
-                    "leg_front_left",
-                    "leg_front_right",
-                    "leg_middle_left",
-                    "leg_middle_right",
-                    "leg_rear_left",
-                    "leg_rear_right",
-                ];
+                let (expected_roles, hash_domain): (&[&str], &[u8]) =
+                    match semantic.ordered_bindings.len() {
+                        10 => (
+                            &[
+                                "head",
+                                "tail",
+                                "wing_left",
+                                "wing_right",
+                                "leg_front_left",
+                                "leg_front_right",
+                                "leg_middle_left",
+                                "leg_middle_right",
+                                "leg_rear_left",
+                                "leg_rear_right",
+                            ],
+                            b"ORIGAMI2_ASYMMETRIC_INSECT_RAY_GROUP_V1",
+                        ),
+                        4 => (
+                            &["head", "tail", "fin_left", "fin_right"],
+                            b"ORIGAMI2_ASYMMETRIC_FISH_RAY_GROUP_V1",
+                        ),
+                        _ => return false,
+                    };
                 semantic.schema_version == 1
-                    && semantic.ordered_bindings.len() == 10
                     && semantic
                         .ordered_bindings
                         .iter()
@@ -134,7 +144,7 @@ pub fn validate_beginner_generation_provenance_v1(
                     && semantic.physical_ray_group_sha256.iter().enumerate().all(
                         |(physical_ray, actual)| {
                             let mut hash = Sha256::new();
-                            hash.update(b"ORIGAMI2_ASYMMETRIC_INSECT_RAY_GROUP_V1");
+                            hash.update(hash_domain);
                             hash.update([physical_ray as u8]);
                             for binding in semantic
                                 .ordered_bindings

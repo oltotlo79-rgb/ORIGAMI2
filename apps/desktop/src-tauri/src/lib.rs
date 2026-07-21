@@ -188,7 +188,8 @@ use stacked_fold_read::{
     propose_current_stacked_fold_read, read_live_hinge_registry_v1,
 };
 use stacked_fold_transaction::{
-    apply_named_book_fold_transaction, apply_stacked_fold_transaction,
+    apply_named_book_fold_transaction, apply_named_reverse_fold_transaction,
+    apply_stacked_fold_transaction,
     cancel_stacked_fold_transaction_preview,
 };
 use tauri::{AppHandle, Manager, State};
@@ -3945,6 +3946,7 @@ fn apply_beginner_generated_plan_document(
             | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
             | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase
             | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricHornBase
@@ -4084,6 +4086,11 @@ fn apply_beginner_generated_plan_document(
             "Asymmetric insect landmark base",
             "Apply the certified four-ray geometry bound to ten ordered insect landmarks.",
             "Head, tail, two wings, and six legs retain bounded semantic provenance grouped by ray digest.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase => (
+            "Asymmetric fish landmark base",
+            "Apply certified four-ray geometry bound to head, tail, and two ordered fin landmarks.",
+            "All semantic bindings, ray-group digests, and the native fold path were revalidated.",
         ),
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase => (
             "Symmetric fish base",
@@ -4336,6 +4343,11 @@ fn apply_grid_plan_document(
             "Asymmetric insect landmark grid candidate",
             "Apply certified four-ray geometry with ten ordered semantic landmark bindings.",
             "All ray-group digests, live semantic bindings, and the native fold path were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase => (
+            "Asymmetric fish landmark grid candidate",
+            "Apply certified four-ray geometry with four ordered fish landmark bindings.",
+            "All semantic bindings, ray-group digests, and the native fold path were revalidated before apply.",
         ),
         ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase => (
             "Symmetric fish grid candidate",
@@ -12294,6 +12306,7 @@ pub fn run() {
             cancel_stacked_fold_transaction_preview,
             apply_stacked_fold_transaction,
             apply_named_book_fold_transaction,
+            apply_named_reverse_fold_transaction,
             open_project,
             save_project,
             save_project_as,

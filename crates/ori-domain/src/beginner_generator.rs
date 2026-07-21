@@ -44,6 +44,49 @@ mod parameter_grid_tests {
         changed[0].scale_percent += 1;
         assert_ne!(hash, beginner_parameter_grid_hash_v1(&changed));
     }
+
+    #[test]
+    fn asymmetric_fish_semantic_provenance_is_ordered_hashed_and_serde_stable() {
+        let semantic = asymmetric_insect_semantic_provenance(
+            BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase,
+        )
+        .expect("fish semantic provenance");
+        assert_eq!(
+            semantic
+                .ordered_bindings
+                .iter()
+                .map(|binding| binding.role.as_str())
+                .collect::<Vec<_>>(),
+            ["head", "tail", "fin_left", "fin_right"]
+        );
+        let bytes = serde_json::to_vec(&semantic).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<BeginnerSemanticLandmarkProvenanceV1>(&bytes).unwrap(),
+            semantic
+        );
+        let provenance = crate::BeginnerGenerationProvenanceV1 {
+            schema_version: 1,
+            topology_authority_sha256: [1; 32],
+            fold_path_certificate_sha256: Some([2; 32]),
+            confidence_score: 100,
+            confidence_reasons: vec!["native_topology_witness".to_owned()],
+            explicit_override: false,
+            source_asset_fingerprint: "none".to_owned(),
+            semantic_landmark_provenance: Some(semantic.clone()),
+        };
+        assert!(crate::validate_beginner_generation_provenance_v1(
+            &provenance
+        ));
+        let mut tampered = provenance;
+        tampered
+            .semantic_landmark_provenance
+            .as_mut()
+            .unwrap()
+            .physical_ray_group_sha256[0][0] ^= 1;
+        assert!(!crate::validate_beginner_generation_provenance_v1(
+            &tampered
+        ));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -104,6 +147,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     AsymmetricBirdLandmarkBase,
     AsymmetricFourLegLandmarkBase,
     AsymmetricInsectLandmarkBase,
+    AsymmetricFishLandmarkBase,
     SymmetricFishBase,
     SymmetricEarBase,
     SymmetricHornBase,
@@ -920,11 +964,35 @@ pub fn generate_beginner_plans_v1(
             let ears = part_count(BeginnerTargetPartKindV1::Ear) == 2;
             let legs = part_count(BeginnerTargetPartKindV1::Leg) == 4;
             let wings = part_count(BeginnerTargetPartKindV1::Wing) == 2;
+            let asymmetric_landmark_fish = tail
+                && part_count(BeginnerTargetPartKindV1::Fin) == 2
+                && constraints
+                    .protrusions
+                    .iter()
+                    .filter(|target| {
+                        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                    })
+                    .count()
+                    >= 3;
             let known_composite = feature_records == 2 && (horn && (tail || ears) || tail && ears)
                 || feature_records == 3 && horn && tail && ears
                 || feature_records == 4 && horn && tail && ears && legs
                 || feature_records == 5 && horn && tail && ears && legs && wings;
-            if feature_records >= 2 && !known_composite {
+            if asymmetric_landmark_fish {
+                symmetric_template(
+                    namespace,
+                    source,
+                    BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &[(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)],
+                    "asymmetric_fish_landmark_base",
+                    constraints,
+                )
+            } else if feature_records >= 2 && !known_composite {
                 let endpoints = bounded_generic_composite_endpoints(constraints)
                     .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
                 symmetric_template(
@@ -2073,6 +2141,7 @@ fn symmetric_template(
         BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
             | BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase
             | BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase
+            | BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase
     );
     let canonical_quad = asymmetric_landmark
         .then(|| {
@@ -2251,33 +2320,40 @@ fn symmetric_template(
 fn asymmetric_insect_semantic_provenance(
     plan_kind: BeginnerGeneratedPlanKindV1,
 ) -> Option<BeginnerSemanticLandmarkProvenanceV1> {
-    if plan_kind != BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase {
-        return None;
-    }
-    let roles = [
-        "head",
-        "tail",
-        "wing_left",
-        "wing_right",
-        "leg_front_left",
-        "leg_front_right",
-        "leg_middle_left",
-        "leg_middle_right",
-        "leg_rear_left",
-        "leg_rear_right",
-    ];
+    let (roles, hash_domain): (&[&str], &[u8]) = match plan_kind {
+        BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase => (
+            &[
+                "head",
+                "tail",
+                "wing_left",
+                "wing_right",
+                "leg_front_left",
+                "leg_front_right",
+                "leg_middle_left",
+                "leg_middle_right",
+                "leg_rear_left",
+                "leg_rear_right",
+            ],
+            b"ORIGAMI2_ASYMMETRIC_INSECT_RAY_GROUP_V1",
+        ),
+        BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase => (
+            &["head", "tail", "fin_left", "fin_right"],
+            b"ORIGAMI2_ASYMMETRIC_FISH_RAY_GROUP_V1",
+        ),
+        _ => return None,
+    };
     let ordered_bindings = roles
         .into_iter()
         .enumerate()
         .map(|(ordinal, role)| BeginnerSemanticLandmarkBindingV1 {
             ordinal: u8::try_from(ordinal).expect("ten semantic landmarks fit in u8"),
-            role: role.to_owned(),
+            role: (*role).to_owned(),
             physical_ray: u8::try_from(ordinal % 4).expect("four physical rays fit in u8"),
         })
         .collect::<Vec<_>>();
     let physical_ray_group_sha256 = std::array::from_fn(|physical_ray| {
         let mut hash = Sha256::new();
-        hash.update(b"ORIGAMI2_ASYMMETRIC_INSECT_RAY_GROUP_V1");
+        hash.update(hash_domain);
         hash.update([physical_ray as u8]);
         for binding in ordered_bindings
             .iter()

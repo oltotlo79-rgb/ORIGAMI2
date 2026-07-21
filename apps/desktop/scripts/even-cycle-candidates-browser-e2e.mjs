@@ -32,7 +32,7 @@ try {
   await page.getByRole('button', { name: 'unsupported fixture', exact: true }).click(); await page.getByText('unsupported', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'stale request', exact: true }).click(); await page.getByText('stale-rejected', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'ABA request', exact: true }).click(); await page.getByText('aba-rejected', { exact: true }).waitFor()
-  for (const status of ['certified', 'no_path', 'resource_limit', 'cancelled']) { await page.getByRole('button', { name: `dyadic ${status}`, exact: true }).click(); await page.getByText(`${status}; states 9; transitions 24; explored 3; evaluated 8; read-only`, { exact: true }).waitFor() }
+  for (const status of ['certified', 'no_path', 'resource_limit', 'cancelled']) { await page.getByRole('button', { name: `dyadic ${status}`, exact: true }).click(); await page.getByText(`${status}; states 9; transitions 24; explored 3; evaluated 8; read-only; certified transitions ${status === 'certified' ? 4 : 0}; binding ${status === 'certified' ? 'a'.repeat(64) : 'unavailable'}; positive thickness not certified; layer transport not certified; Apply disabled`, { exact: true }).waitFor() }
   const evidence = await page.evaluate(() => window.__ORIGAMI2_EVEN_CYCLE_EVIDENCE__)
   if (JSON.stringify(evidence) !== JSON.stringify({ automaticKawasakiProofs: 6, applies: 6, undos: 2, redos: 2, reopens: 7, profileTamperRejects: 1, staleRejects: 1, abaRejects: 1, dyadicReads: 4, dyadicCancels: 1 })) throw new Error(JSON.stringify(evidence))
   console.log('even-cycle candidates browser E2E passed')

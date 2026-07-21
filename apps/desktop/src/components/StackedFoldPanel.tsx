@@ -790,6 +790,7 @@ export function StackedFoldPanel({
             {dyadicGraphRead && (
               <p data-testid="dyadic-pose-graph-status" role="status">
                 {dyadicGraphRead.status}; states {dyadicGraphRead.stateCount}; transitions {dyadicGraphRead.transitionCount}; explored {dyadicGraphRead.exploredStateCount}; evaluated {dyadicGraphRead.evaluatedTransitionCount}; read-only
+                ; certified transitions {dyadicGraphRead.certifiedTransitionCount}; binding {dyadicGraphRead.certificateBindingSha256 ?? 'unavailable'}; positive thickness not certified; layer transport not certified; Apply disabled
               </p>
             )}
           {cyclePoseReading && pathProgress && (

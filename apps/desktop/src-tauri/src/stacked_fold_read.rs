@@ -257,6 +257,10 @@ pub(super) struct DyadicPoseGraphReadResponseV1 {
     transition_count: usize,
     explored_state_count: usize,
     evaluated_transition_count: usize,
+    certified_transition_count: usize,
+    certificate_binding_sha256: Option<String>,
+    positive_thickness_certified: bool,
+    layer_transport_certified: bool,
     authorizes_project_mutation: bool,
 }
 
@@ -315,10 +319,21 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 0,
                 0,
                 0,
+                0,
+                None,
             ));
         }
         Err(ori_kinematics::DyadicPoseGraphGenerationErrorV1::Cancelled) => {
-            return Ok(dyadic_graph_response(&project, "cancelled", 0, 0, 0, 0));
+            return Ok(dyadic_graph_response(
+                &project,
+                "cancelled",
+                0,
+                0,
+                0,
+                0,
+                0,
+                None,
+            ));
         }
         Err(_) => return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned()),
     };
@@ -389,12 +404,29 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
             )
         },
     );
-    let (status, explored, evaluated) = match searched {
-        ori_collision::CertifiedPathGraphSearchResultV1::Certified(value) => (
-            "certified",
-            value.explored_state_count(),
-            value.evaluated_transition_count(),
-        ),
+    let (status, explored, evaluated, certified, binding) = match searched {
+        ori_collision::CertifiedPathGraphSearchResultV1::Certified(value) => {
+            if !value.edges().iter().all(|edge| {
+                edge.source() != edge.target()
+                    && edge.schedule_certificate() != [0; 32]
+                    && edge.collision_certificate() != [0; 32]
+                    && edge.closure_certificate() != [0; 32]
+            }) {
+                return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+            }
+            let binding = value
+                .binding_fingerprint_v1()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            (
+                "certified",
+                value.explored_state_count(),
+                value.evaluated_transition_count(),
+                value.edges().len(),
+                Some(binding),
+            )
+        }
         ori_collision::CertifiedPathGraphSearchResultV1::Indeterminate {
             reason,
             explored_state_count,
@@ -411,6 +443,8 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
             },
             explored_state_count,
             evaluated_transition_count,
+            0,
+            None,
         ),
     };
     Ok(dyadic_graph_response(
@@ -420,6 +454,8 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
         graph.transitions().len(),
         explored,
         evaluated,
+        certified,
+        binding,
     ))
 }
 
@@ -430,6 +466,8 @@ fn dyadic_graph_response(
     transition_count: usize,
     explored_state_count: usize,
     evaluated_transition_count: usize,
+    certified_transition_count: usize,
+    certificate_binding_sha256: Option<String>,
 ) -> DyadicPoseGraphReadResponseV1 {
     DyadicPoseGraphReadResponseV1 {
         version: 1,
@@ -441,6 +479,10 @@ fn dyadic_graph_response(
         transition_count,
         explored_state_count,
         evaluated_transition_count,
+        certified_transition_count,
+        certificate_binding_sha256,
+        positive_thickness_certified: false,
+        layer_transport_certified: false,
         authorizes_project_mutation: false,
     }
 }
@@ -3246,6 +3288,10 @@ mod tests {
         assert_eq!(observed.state_count, 9);
         assert_eq!(observed.transition_count, 24);
         assert_eq!(observed.status, "no_path");
+        assert_eq!(observed.certified_transition_count, 0);
+        assert!(observed.certificate_binding_sha256.is_none());
+        assert!(!observed.positive_thickness_certified);
+        assert!(!observed.layer_transport_certified);
         assert!(!observed.authorizes_project_mutation);
         assert!(
             super::super::lock_project(&state)

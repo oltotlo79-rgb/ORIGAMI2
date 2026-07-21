@@ -463,8 +463,8 @@ export function StackedFoldPanel({
         : applyStackedFoldTransaction(token)
   }
 
-  async function previewCurrentCyclePose() {
-    if (!authoredCycleSchedule || disabled || applying || cyclePoseReading) return
+  async function previewCurrentCyclePose(automaticKawasaki = false) {
+    if ((!automaticKawasaki && !authoredCycleSchedule) || disabled || applying || cyclePoseReading) return
     const sequence = ++cyclePoseSequenceRef.current
     void cancelCurrentStackedFoldReadV1().catch(() => undefined)
     cancelToken(tokenRef.current)
@@ -483,7 +483,9 @@ export function StackedFoldPanel({
         expectedProjectInstanceId: snapshot.project_instance_id,
         expectedProjectId: snapshot.project_id,
         expectedRevision: snapshot.revision,
-        cycleScheduleV1: authoredCycleSchedule,
+        cycleScheduleV1: automaticKawasaki
+          ? { version: 2, entries: [] }
+          : authoredCycleSchedule!,
       })
       const current = authorityRef.current
       if (
@@ -678,19 +680,29 @@ export function StackedFoldPanel({
           {view.kind === 'reading' ? t('証明中…', 'Proving…') : t('安全性を確認', 'Verify safety')}
         </button>
       </form>
-      {authoredCycleSchedule && (
+      {(authoredCycleSchedule || evenCycleCandidates.length > 0) && (
         <section aria-label={t('現在姿勢の循環折りプレビュー', 'Current-pose cycle preview')}>
           <h3>{t('現在姿勢の循環折り', 'Current-pose cycle')}</h3>
           <button
             ref={cyclePosePreviewButtonRef}
             type="button"
             disabled={disabled || applying || cyclePoseReading}
-            onClick={() => void previewCurrentCyclePose()}
+            onClick={() => void previewCurrentCyclePose(false)}
           >
             {cyclePoseReading
               ? t('経路を証明中…', 'Proving path…')
               : t('現在姿勢から証明', 'Prove from current pose')}
           </button>
+          {evenCycleCandidates.length > 0 && (
+            <button
+              type="button"
+              data-testid="automatic-kawasaki-proof"
+              disabled={disabled || applying || cyclePoseReading}
+              onClick={() => void previewCurrentCyclePose(true)}
+            >
+              {t('川崎リンクを自動生成して証明', 'Generate and prove Kawasaki linkage')}
+            </button>
+          )}
           {cyclePoseReading && pathProgress && (
             <p role="status">
               {t(

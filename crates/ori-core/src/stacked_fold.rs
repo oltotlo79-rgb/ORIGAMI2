@@ -2118,17 +2118,32 @@ pub fn revalidate_current_non_flat_layer_order_v1(
 
 /// Re-solves a current cyclic graph pose and admits archived evidence only
 /// when its complete canonical native representation is reproduced.
+pub struct RevalidateCurrentGraphNonFlatLayerOrderRequestV1<'a> {
+    pub identity_namespace: ProjectId,
+    pub revision: Revision,
+    pub pattern: &'a CreasePattern,
+    pub paper: &'a Paper,
+    pub fixed_face: FaceId,
+    pub hinge_angles: &'a CanonicalHingeAngles,
+    pub current_flat: &'a LayerOrderSnapshot,
+    pub expected_archive: Option<&'a StackedFoldNonFlatLayerOrderV1>,
+    pub max_face_pairs: usize,
+}
+
 pub fn revalidate_current_graph_non_flat_layer_order_v1(
-    identity_namespace: ProjectId,
-    revision: Revision,
-    pattern: &CreasePattern,
-    paper: &Paper,
-    fixed_face: FaceId,
-    hinge_angles: &CanonicalHingeAngles,
-    current_flat: &LayerOrderSnapshot,
-    expected_archive: Option<&StackedFoldNonFlatLayerOrderV1>,
-    max_face_pairs: usize,
+    request: RevalidateCurrentGraphNonFlatLayerOrderRequestV1<'_>,
 ) -> Result<StackedFoldNonFlatLayerOrderV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let RevalidateCurrentGraphNonFlatLayerOrderRequestV1 {
+        identity_namespace,
+        revision,
+        pattern,
+        paper,
+        fixed_face,
+        hinge_angles,
+        current_flat,
+        expected_archive,
+        max_face_pairs,
+    } = request;
     let fingerprint = fold_model_fingerprint_v1(pattern, paper);
     let provenance = current_flat.provenance.source;
     if current_flat.model_id != LAYER_ORDER_MODEL_ID
@@ -4645,15 +4660,17 @@ mod tests {
             &candidate.paper,
         );
         let admitted = revalidate_current_graph_non_flat_layer_order_v1(
-            identity,
-            source_revision + 1,
-            &candidate.pattern,
-            &candidate.paper,
-            requested.pose().fixed_face(),
-            requested.pose().hinge_angles(),
-            &target_flat,
-            None,
-            6,
+            RevalidateCurrentGraphNonFlatLayerOrderRequestV1 {
+                identity_namespace: identity,
+                revision: source_revision + 1,
+                pattern: &candidate.pattern,
+                paper: &candidate.paper,
+                fixed_face: requested.pose().fixed_face(),
+                hinge_angles: requested.pose().hinge_angles(),
+                current_flat: &target_flat,
+                expected_archive: None,
+                max_face_pairs: 6,
+            },
         );
         assert_eq!(
             admitted,

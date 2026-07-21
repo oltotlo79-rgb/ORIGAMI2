@@ -5699,15 +5699,17 @@ mod tests {
                     )
                     .unwrap();
                 let proof = ori_core::revalidate_current_graph_non_flat_layer_order_v1(
-                    project.project_id,
-                    project.editor.revision(),
-                    project.editor.pattern(),
-                    project.editor.paper(),
-                    fixed_face,
-                    &angles,
-                    &flat,
-                    None,
-                    ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+                    ori_core::RevalidateCurrentGraphNonFlatLayerOrderRequestV1 {
+                        identity_namespace: project.project_id,
+                        revision: project.editor.revision(),
+                        pattern: project.editor.pattern(),
+                        paper: project.editor.paper(),
+                        fixed_face,
+                        hinge_angles: &angles,
+                        current_flat: &flat,
+                        expected_archive: None,
+                        max_face_pairs: ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+                    },
                 )
                 .unwrap();
                 project.current_layer_evidence = Some(

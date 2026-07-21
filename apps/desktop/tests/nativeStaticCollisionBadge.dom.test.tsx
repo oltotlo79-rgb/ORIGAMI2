@@ -408,6 +408,68 @@ describe('NativeStaticCollisionBadge', () => {
       assert.match(badge.textContent ?? '', new RegExp(visibleReason, 'u'))
     })
   }
+
+  it('renders the certified five-face zabuton as eight allowed stacks and two separated pairs', () => {
+    const pairDiagnostics: CurrentStaticCollisionPairDiagnostic[] = Array.from(
+      { length: 10 },
+      (_, index) => {
+        const allowed = index < 8
+        return {
+          firstFaceId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+          secondFaceId: `00000000-0000-4000-8000-${String(index + 11).padStart(12, '0')}`,
+          topology: allowed ? 'shared_vertex' : 'no_shared_feature',
+          evidence: allowed ? 'shared_feature_flat_stack' : 'separated',
+          policyDecision: allowed ? 'requires_hinge_model' : 'separated',
+          disposition: allowed ? 'allowed' : 'separated',
+          strictTransversalDualGateProven: false,
+          wholeFaceOverlapProven: allowed,
+          sharedHingeBoundaryContactProven: false,
+          sharedHingeSolidClassified: false,
+        }
+      },
+    )
+    render(
+      <NativeStaticCollisionBadge
+        localeStore={localeFixture('en')}
+        state={{
+          kind: 'ready',
+          diagnostic: {
+            status: 'blocking',
+            reason: 'evidence_unavailable',
+            expectedUnorderedFacePairs: 10,
+            provenPenetratingPairs: null,
+            firstProvenPenetratingPair: null,
+            pairClassificationCounts: {
+              separated: 2,
+              touching: 0,
+              allowed: 8,
+              penetrating: 0,
+              indeterminate: 0,
+              candidateExcluded: 0,
+            },
+            pairDiagnostics,
+          },
+        }}
+      />,
+    )
+
+    const details = screen.getByRole('region', {
+      name: 'Collision classification for each face pair',
+    })
+    assert.match(
+      details.textContent ?? '',
+      /Face pairs 10: separated 2 \/ touching 0 \/ allowed 8 \/ penetrating 0 \/ indeterminate 0/u,
+    )
+    assert.equal(
+      details.querySelectorAll('[data-native-collision-pair-disposition="allowed"]').length,
+      8,
+    )
+    assert.equal(
+      details.querySelectorAll('[data-native-collision-pair-disposition="separated"]').length,
+      2,
+    )
+    assert.match(details.textContent ?? '', /shared-feature flat stack \(allowed only with certified layer order\)/u)
+  })
 })
 
 function certified() {

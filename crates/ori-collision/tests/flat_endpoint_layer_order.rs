@@ -1,8 +1,8 @@
 use ori_collision::{
     FLAT_ENDPOINT_LAYER_ORDER_ANCHOR_MODEL_ID_V1, FlatEndpointLayerOrderAnchorErrorV1,
     FlatEndpointLayerOrderInputV1, FlatEndpointLayerOrderLimitsV1,
-    FlatEndpointLayerOrderResourceV1, anchor_flat_endpoint_layer_order_v1,
-    StaticCollisionLimits, StaticCollisionPairDisposition,
+    FlatEndpointLayerOrderResourceV1, StaticCollisionLimits, StaticCollisionPairDisposition,
+    anchor_flat_endpoint_layer_order_v1, diagnose_static_collision_geometry,
     diagnose_static_collision_geometry_with_flat_layer_order_v1,
     revalidate_flat_endpoint_layer_order_anchor_v1,
 };
@@ -47,6 +47,66 @@ fn exact_layer_order_admits_the_shared_hinge_flat_stack() {
         diagnostic.pairs()[0].disposition(),
         StaticCollisionPairDisposition::Allowed
     );
+}
+
+#[test]
+fn zabuton_five_faces_classify_eight_certified_stacks_and_two_separated_pairs() {
+    let zabuton = zabuton_fixture();
+    let pose = facewise_endpoint_pose(&zabuton);
+    let unauthenticated = diagnose_static_collision_geometry(
+        &zabuton.model,
+        &pose,
+        0.0,
+        StaticCollisionLimits::default(),
+    )
+    .expect("zabuton diagnostic without layer authority");
+    assert_eq!(unauthenticated.indeterminate_pairs(), 8);
+    assert_eq!(unauthenticated.separated_pairs(), 2);
+
+    let foreign = fixture(false);
+    assert!(matches!(
+        anchor_flat_endpoint_layer_order_v1(
+            input(&zabuton, &pose, &foreign.layer_order),
+            FlatEndpointLayerOrderLimitsV1::default(),
+        ),
+        Err(FlatEndpointLayerOrderAnchorErrorV1::SourceIdentityMismatch)
+    ));
+
+    let mut tampered = zabuton.layer_order.clone();
+    tampered
+        .overlap_cells
+        .iter_mut()
+        .find(|cell| cell.bottom_to_top_faces.len() > 1)
+        .expect("zabuton overlap cell")
+        .bottom_to_top_faces
+        .reverse();
+    assert!(
+        anchor_flat_endpoint_layer_order_v1(
+            input(&zabuton, &pose, &tampered),
+            FlatEndpointLayerOrderLimitsV1::default(),
+        )
+        .is_err()
+    );
+
+    let anchor = anchor_flat_endpoint_layer_order_v1(
+        input(&zabuton, &pose, &zabuton.layer_order),
+        FlatEndpointLayerOrderLimitsV1::default(),
+    )
+    .expect("zabuton flat endpoint layer-order anchor");
+    let diagnostic = diagnose_static_collision_geometry_with_flat_layer_order_v1(
+        &zabuton.model,
+        &pose,
+        0.0,
+        StaticCollisionLimits::default(),
+        &anchor,
+    )
+    .expect("zabuton layer-bound collision diagnostic");
+
+    assert_eq!(diagnostic.expected_unordered_face_pairs(), 10);
+    assert_eq!(diagnostic.allowed_pairs(), 8);
+    assert_eq!(diagnostic.separated_pairs(), 2);
+    assert_eq!(diagnostic.indeterminate_pairs(), 0);
+    assert_eq!(diagnostic.penetrating_pairs(), 0);
 }
 
 struct Fixture {
@@ -219,6 +279,76 @@ fn three_panel_fixture(reverse_source_collections: bool) -> Fixture {
     .expect("three-face material model");
     assert_eq!(model.face_ids().len(), 3);
     assert_eq!(model.hinges().len(), 2);
+    Fixture {
+        project,
+        paper,
+        pattern,
+        layer_order,
+        model,
+    }
+}
+
+fn zabuton_fixture() -> Fixture {
+    let project = fixed_id(3);
+    let positions = [
+        Point2::new(-100.0, -100.0),
+        Point2::new(50.0, -200.0),
+        Point2::new(100.0, -100.0),
+        Point2::new(200.0, 50.0),
+        Point2::new(100.0, 100.0),
+        Point2::new(-50.0, 200.0),
+        Point2::new(-100.0, 100.0),
+        Point2::new(-200.0, -50.0),
+    ];
+    let vertices = positions
+        .into_iter()
+        .enumerate()
+        .map(|(index, position)| Vertex {
+            id: fixed_id::<VertexId>(0x700 + index as u64),
+            position,
+        })
+        .collect::<Vec<_>>();
+    let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+    let mut edges = (0..boundary.len())
+        .map(|index| Edge {
+            id: fixed_id::<EdgeId>(0x800 + index as u64),
+            start: boundary[index],
+            end: boundary[(index + 1) % boundary.len()],
+            kind: EdgeKind::Boundary,
+        })
+        .collect::<Vec<_>>();
+    edges.extend(
+        [(0, 2, 0x900), (2, 4, 0x901), (4, 6, 0x902), (6, 0, 0x903)].map(|(start, end, id)| Edge {
+            id: fixed_id::<EdgeId>(id),
+            start: boundary[start],
+            end: boundary[end],
+            kind: EdgeKind::Mountain,
+        }),
+    );
+    let paper = Paper {
+        boundary_vertices: boundary,
+        thickness_mm: 0.1,
+        ..Paper::default()
+    };
+    let pattern = CreasePattern { vertices, edges };
+    let layer_order = derive_layer_order(project, &paper, &pattern);
+    let topology = analyze_faces(FaceExtractionInput {
+        identity_namespace: project,
+        source_revision: REVISION,
+        paper: &paper,
+        pattern: &pattern,
+    })
+    .snapshot
+    .expect("zabuton topology");
+    assert_eq!(topology.faces.len(), 5);
+    assert_eq!(topology.hinge_adjacency.len(), 4);
+    let model = MaterialTreeKinematicsModel::prepare(
+        &pattern,
+        &paper,
+        &topology,
+        TreeKinematicsLimits::default(),
+    )
+    .expect("zabuton material tree");
     Fixture {
         project,
         paper,

@@ -4,6 +4,7 @@ import { GenericTargetBindingList } from '../src/components/GenericTargetBinding
 import { ProtrusionDimensionEditor } from '../src/components/ProtrusionDimensionEditor.tsx'
 import { GenericBodyOutlineEditor } from '../src/components/GenericBodyOutlineEditor.tsx'
 import { BeginnerShapeCanvasPreview } from '../src/components/BeginnerShapeCanvasPreview.tsx'
+import { RecognitionContourCopyAction } from '../src/components/RecognitionContourCopyAction.tsx'
 import { finishBeginnerGridCancellation, runBeginnerGridApplyWorkflow } from '../src/lib/beginnerGridWorkflow.ts'
 import type { BeginnerGenerationConstraintsV1 } from '../src/lib/coreClient.ts'
 import '../src/App.css'
@@ -49,6 +50,8 @@ function Harness() {
     <button onClick={() => recognize('Empty generic target')}>Create empty generic target</button>
     <button onClick={() => recognize('Image')}>Recognize mixed target image</button>
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
+    <RecognitionContourCopyAction locale="en" bodyPointCount={4} localContourCount={1}
+      onCopy={() => recognize('Image contour proposal')} />
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected: target exceeds eight bindings') }}>Try oversized target</button>
     <p role="status">{status}</p>
     {recognized && <GenericBodyOutlineEditor locale="en" points={outline} onChange={setOutline}

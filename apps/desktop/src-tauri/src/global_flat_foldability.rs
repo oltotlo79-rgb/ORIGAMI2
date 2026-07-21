@@ -2529,6 +2529,116 @@ pub(super) mod tests {
         ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper)
     }
 
+    #[test]
+    fn archived_non_flat_evidence_is_freshly_solved_and_tamper_rejected() {
+        let mut project = centered_single_hinge_project();
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let simulation = topology.simulation_snapshot().unwrap();
+        let fixed = simulation.faces[0].id;
+        let hinge = simulation.hinge_adjacency[0].edge;
+        let angles = ori_kinematics::CanonicalHingeAngles::new(vec![
+            ori_kinematics::HingeAngle::new(hinge, 90.0).unwrap(),
+        ])
+        .unwrap();
+        let flat = reanalyze_current_flat_layer_order(&project).unwrap();
+        let proof = ori_core::revalidate_current_non_flat_layer_order_v1(
+            project.project_id,
+            project.editor.revision(),
+            project.editor.pattern(),
+            project.editor.paper(),
+            Some(fixed),
+            &angles,
+            &flat,
+            ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+        )
+        .unwrap();
+        project.current_layer_evidence = Some(CurrentLayerEvidence::NonFlat(proof));
+        let archived = project
+            .archived_layer_evidence()
+            .unwrap()
+            .expect("non-flat DTO");
+
+        assert!(matches!(
+            crate::revalidate_archived_layer_evidence(&project, &archived),
+            Ok(CurrentLayerEvidence::NonFlat(_))
+        ));
+        let archive = project.project_archive().unwrap();
+        let mut reopened = ProjectState::from_project_archive(
+            archive,
+            PathBuf::from("non-flat-layer-evidence-reopened.ori2"),
+        )
+        .unwrap();
+        assert!(matches!(
+            reopened.current_layer_evidence,
+            Some(CurrentLayerEvidence::NonFlat(_))
+        ));
+        let revision = reopened.editor.revision();
+        reopened
+            .editor
+            .execute(
+                revision,
+                Command::SetProjectMemo {
+                    memo: "after reopen".to_owned(),
+                },
+            )
+            .expect("the next operation after reopen remains available");
+        assert_eq!(reopened.editor.revision(), revision + 1);
+
+        let mut stale = archived.clone();
+        stale.revision += 1;
+        assert!(crate::revalidate_archived_layer_evidence(&project, &stale).is_err());
+
+        let mut material_tamper = archived.clone();
+        let ori_formats::LayerEvidenceArchiveKindV1::NonFlat { material_faces, .. } =
+            &mut material_tamper.evidence
+        else {
+            unreachable!()
+        };
+        material_faces[0].face_key_sha256 = "0".repeat(64);
+        assert!(crate::revalidate_archived_layer_evidence(&project, &material_tamper).is_err());
+
+        let mut cell_tamper = archived.clone();
+        let ori_formats::LayerEvidenceArchiveKindV1::NonFlat {
+            cells, pair_orders, ..
+        } = &mut cell_tamper.evidence
+        else {
+            unreachable!()
+        };
+        let face = serde_json::to_value(fixed)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned();
+        cells.push(ori_formats::LayerEvidenceCellV1 {
+            boundary_xy: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            lower_face: face.clone(),
+            upper_face: face.clone(),
+        });
+        pair_orders.push(ori_formats::LayerEvidencePairOrderV1 {
+            lower_face: face.clone(),
+            upper_face: face,
+        });
+        assert!(crate::revalidate_archived_layer_evidence(&project, &cell_tamper).is_err());
+
+        let signature = (
+            project.instance_id,
+            project.project_id,
+            project.editor.revision(),
+        );
+        assert_eq!(
+            signature,
+            (
+                project.instance_id,
+                project.project_id,
+                project.editor.revision()
+            ),
+            "failed admission must leave the existing project untouched"
+        );
+    }
+
     fn four_ray_local_violation_project() -> (ProjectState, VertexId) {
         let boundary_positions = [
             Point2::new(0.0, 0.0),

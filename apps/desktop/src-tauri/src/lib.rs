@@ -12099,6 +12099,50 @@ mod tests {
         .unwrap();
         let witness = beginner_contour_placement_witness(&profile.generation_constraints, &plan)
             .expect("generated contour geometry must provide a bounded witness");
+        let archived_profile: ori_domain::BeginnerDesignProfileV1 =
+            serde_json::from_slice(&serde_json::to_vec(&profile).unwrap()).unwrap();
+        let archived_plan: ori_domain::BeginnerGeneratedPlanV1 =
+            serde_json::from_slice(&serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert_eq!(
+            beginner_contour_placement_witness(
+                &archived_profile.generation_constraints,
+                &archived_plan,
+            )
+            .unwrap()
+            .topology_authority_hash,
+            witness.topology_authority_hash,
+        );
+        let mut tampered_plan = archived_plan.clone();
+        tampered_plan.crease_pattern.vertices[0].position.x += 0.001;
+        assert_ne!(
+            beginner_contour_placement_witness(
+                &archived_profile.generation_constraints,
+                &tampered_plan,
+            )
+            .unwrap()
+            .topology_authority_hash,
+            witness.topology_authority_hash,
+        );
+        let alternate_point = ori_domain::beginner_parameter_grid_v1()[14];
+        let alternate_plan = grid_template_plan(
+            project.project_id,
+            project.editor.pattern(),
+            &project.editor.paper().boundary_vertices,
+            &profile,
+            alternate_point,
+        )
+        .unwrap()
+        .into_iter()
+        .find(|candidate| {
+            candidate.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+        })
+        .unwrap();
+        assert_eq!(
+            beginner_contour_placement_witness(&profile.generation_constraints, &alternate_plan,)
+                .unwrap()
+                .topology_authority_hash,
+            witness.topology_authority_hash,
+        );
         assert_eq!(witness.body_contour_points, 4);
         assert_eq!(witness.local_bindings.len(), 1);
         assert_eq!(witness.local_bindings[0].protrusion_id, 1);

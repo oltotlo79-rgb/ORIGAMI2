@@ -93,6 +93,7 @@ type PathCertificateDisplay =
   | Readonly<{ kind: 'mismatch' | 'text-only' }>
 
 const PATH_CERTIFICATE_MARKER = '経路証明 SHA-256:'
+const EMPTY_INSTRUCTION_STEPS: readonly InstructionStepPresentation[] = Object.freeze([])
 
 function createPathCertificateDisplay(
   step: InstructionStepPresentation,
@@ -154,7 +155,9 @@ export function InstructionTimelinePanel({
   const animationActiveRef = useRef(false)
   const animationWasUsedRef = useRef(false)
 
-  const steps = presentation.kind === 'ready' ? presentation.steps : []
+  const steps = presentation.kind === 'ready'
+    ? presentation.steps
+    : EMPTY_INSTRUCTION_STEPS
   const finalPhysicalStepId = steps.findLast((step) => !step.declarativeOnly)?.id ?? null
   const firstPhysicalStep = steps.find((step) => !step.declarativeOnly)
   const selectedStep = presentation.kind === 'ready' && selectedStepId

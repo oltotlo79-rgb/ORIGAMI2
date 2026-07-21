@@ -3078,8 +3078,13 @@ export type DyadicPoseGraphReadResponseV1 = Readonly<{
   evaluatedTransitionCount: number
   certifiedTransitionCount: number
   certificateBindingSha256: string | null
-  positiveThicknessCertified: false
-  layerTransportCertified: false
+  positiveThicknessTransitionCount: number
+  positiveThicknessCertified: boolean
+  positiveThicknessBindingSha256: string | null
+  layerTransportTransitionCount: number
+  layerTransportCertified: boolean
+  layerTransportBindingSha256: string | null
+  mutationCandidateReady: boolean
   authorizesProjectMutation: false
 }>
 
@@ -3103,17 +3108,22 @@ export function readBoundedDyadicPoseGraphV1(request: Readonly<{
   }
   return invoke<unknown>('read_bounded_dyadic_pose_graph_v1', { request }).then((value) => {
     if (!isCoreDataRecord(value)
-      || Object.keys(value).sort().join(',') !== 'authorizesProjectMutation,certificateBindingSha256,certifiedTransitionCount,evaluatedTransitionCount,exploredStateCount,layerTransportCertified,positiveThicknessCertified,projectId,projectInstanceId,revision,stateCount,status,transitionCount,version'
+      || Object.keys(value).sort().join(',') !== 'authorizesProjectMutation,certificateBindingSha256,certifiedTransitionCount,evaluatedTransitionCount,exploredStateCount,layerTransportBindingSha256,layerTransportCertified,layerTransportTransitionCount,mutationCandidateReady,positiveThicknessBindingSha256,positiveThicknessCertified,positiveThicknessTransitionCount,projectId,projectInstanceId,revision,stateCount,status,transitionCount,version'
       || value.version !== 1
       || value.projectInstanceId !== request.expectedProjectInstanceId
       || value.projectId !== request.expectedProjectId
       || value.revision !== request.expectedRevision
       || !['certified', 'no_path', 'resource_limit', 'cancelled'].includes(String(value.status))
-      || ![value.stateCount, value.transitionCount, value.exploredStateCount, value.evaluatedTransitionCount, value.certifiedTransitionCount]
+      || ![value.stateCount, value.transitionCount, value.exploredStateCount, value.evaluatedTransitionCount, value.certifiedTransitionCount, value.positiveThicknessTransitionCount, value.layerTransportTransitionCount]
         .every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
       || (value.status === 'certified') !== (typeof value.certificateBindingSha256 === 'string' && /^[0-9a-f]{64}$/.test(value.certificateBindingSha256))
-      || value.positiveThicknessCertified !== false
-      || value.layerTransportCertified !== false
+      || Number(value.positiveThicknessTransitionCount) > Number(value.certifiedTransitionCount)
+      || Number(value.layerTransportTransitionCount) > Number(value.certifiedTransitionCount)
+      || value.positiveThicknessCertified !== (Number(value.certifiedTransitionCount) > 0 && Number(value.positiveThicknessTransitionCount) === Number(value.certifiedTransitionCount) && typeof value.positiveThicknessBindingSha256 === 'string' && /^[0-9a-f]{64}$/.test(value.positiveThicknessBindingSha256))
+      || value.layerTransportCertified !== (Number(value.certifiedTransitionCount) > 0 && Number(value.layerTransportTransitionCount) === Number(value.certifiedTransitionCount) && typeof value.layerTransportBindingSha256 === 'string' && /^[0-9a-f]{64}$/.test(value.layerTransportBindingSha256))
+      || (value.positiveThicknessCertified === false && value.positiveThicknessBindingSha256 !== null)
+      || (value.layerTransportCertified === false && value.layerTransportBindingSha256 !== null)
+      || value.mutationCandidateReady !== (value.positiveThicknessCertified === true && value.layerTransportCertified === true)
       || value.authorizesProjectMutation !== false) throw new Error('invalid dyadic pose graph response')
     return value as DyadicPoseGraphReadResponseV1
   })

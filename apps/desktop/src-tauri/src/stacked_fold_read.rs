@@ -259,21 +259,28 @@ pub(super) struct DyadicPoseGraphReadResponseV1 {
     evaluated_transition_count: usize,
     certified_transition_count: usize,
     certificate_binding_sha256: Option<String>,
+    positive_thickness_transition_count: usize,
     positive_thickness_certified: bool,
+    positive_thickness_binding_sha256: Option<String>,
+    layer_transport_transition_count: usize,
     layer_transport_certified: bool,
+    layer_transport_binding_sha256: Option<String>,
+    mutation_candidate_ready: bool,
     authorizes_project_mutation: bool,
 }
 
 #[tauri::command]
 pub(super) fn read_bounded_dyadic_pose_graph_v1(
     app_state: State<'_, AppState>,
+    foldability_state: State<'_, GlobalFlatFoldabilityState>,
     request: DyadicPoseGraphReadRequestV1,
 ) -> Result<DyadicPoseGraphReadResponseV1, String> {
-    read_bounded_dyadic_pose_graph_inner_v1(&app_state, request)
+    read_bounded_dyadic_pose_graph_inner_v1(&app_state, Some(&foldability_state), request)
 }
 
 fn read_bounded_dyadic_pose_graph_inner_v1(
     app_state: &AppState,
+    foldability_state: Option<&GlobalFlatFoldabilityState>,
     request: DyadicPoseGraphReadRequestV1,
 ) -> Result<DyadicPoseGraphReadResponseV1, String> {
     let generation = begin_stacked_fold_read_generation_v1()?;
@@ -284,6 +291,12 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
     {
         return Err(STALE_MESSAGE.to_owned());
     }
+    let layer_capability = foldability_state
+        .map(|state| capture_current_layer_order_capability(state, &project))
+        .transpose()
+        .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
+        .flatten();
+    let paper_thickness_mm = project.editor.paper().thickness_mm;
     let capability = project
         .applied_pose_authority
         .capture_capability(&project)
@@ -321,6 +334,10 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 0,
                 0,
                 None,
+                0,
+                None,
+                0,
+                None,
             ));
         }
         Err(ori_kinematics::DyadicPoseGraphGenerationErrorV1::Cancelled) => {
@@ -331,6 +348,10 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 0,
                 0,
                 0,
+                0,
+                None,
+                0,
+                None,
                 0,
                 None,
             ));
@@ -356,6 +377,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
             }
         })
         .collect::<Vec<_>>();
+    let mut auxiliary_certificates = std::collections::HashMap::new();
     let searched = ori_collision::search_certified_pose_graph_with_checkpoint_v1(
         &fingerprints,
         &candidates,
@@ -392,7 +414,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                     },
                 )
                 .ok()?;
-            ori_collision::certify_scheduled_cycle_transition_v1(
+            let evidence = ori_collision::certify_scheduled_cycle_transition_v1(
                 geometry,
                 audit,
                 pose.fixed_face(),
@@ -401,10 +423,88 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 32,
                 edge.source,
                 edge.target,
-            )
+            )?;
+            let positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+                geometry,
+                audit,
+                pose.fixed_face(),
+                generated.schedule(),
+                &closure,
+                paper_thickness_mm,
+                32,
+            );
+            let positive_binding = positive.as_ref().map(|certificate| {
+                let mut hash = Sha256::new();
+                hash.update(b"dyadic_positive_thickness_transition_v1");
+                hash.update(edge.source);
+                hash.update(edge.target);
+                hash.update(evidence.schedule_certificate());
+                hash.update(evidence.closure_certificate());
+                hash.update(certificate.thickness_bits().to_be_bytes());
+                <[u8; 32]>::from(hash.finalize())
+            });
+            let layer_binding = positive.as_ref().and_then(|positive| {
+                let source = layer_capability.as_ref()?.snapshot();
+                let transition_count = closure.leaves().len().checked_add(1)?;
+                let layer_records = source.overlap_cells.iter().try_fold(0usize, |sum, cell| {
+                    sum.checked_add(cell.bottom_to_top_faces.len())
+                })?;
+                let boundary_samples = source
+                    .overlap_cells
+                    .iter()
+                    .try_fold(0usize, |sum, cell| {
+                        cell.exact_boundary
+                            .len()
+                            .checked_mul(cell.bottom_to_top_faces.len())
+                            .and_then(|work| sum.checked_add(work))
+                    })?
+                    .checked_mul(transition_count)?;
+                let proof =
+                    certify_general_multi_face_cell_transport_v1(GeneralCellTransportInputV1 {
+                        geometry,
+                        audit,
+                        source,
+                        schedule: generated.schedule(),
+                        closure: &closure,
+                        positive_continuous: positive,
+                        paper_thickness_mm,
+                        tolerance: ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                        limits: GeneralCellTransportLimitsV1 {
+                            max_transitions: transition_count,
+                            max_cells: source.overlap_cells.len(),
+                            max_layer_records: layer_records,
+                            max_boundary_samples: boundary_samples,
+                        },
+                    })
+                    .ok()?;
+                let mut hash = Sha256::new();
+                hash.update(b"dyadic_layer_transport_transition_v1");
+                hash.update(edge.source);
+                hash.update(edge.target);
+                hash.update(proof.target_order_hash());
+                for checkpoint in proof.transition_hashes() {
+                    hash.update(checkpoint);
+                }
+                Some(<[u8; 32]>::from(hash.finalize()))
+            });
+            auxiliary_certificates.insert(
+                (edge.source, edge.target),
+                (positive_binding, layer_binding),
+            );
+            Some(evidence)
         },
     );
-    let (status, explored, evaluated, certified, binding) = match searched {
+    let (
+        status,
+        explored,
+        evaluated,
+        certified,
+        binding,
+        positive_count,
+        positive_binding,
+        layer_count,
+        layer_binding,
+    ) = match searched {
         ori_collision::CertifiedPathGraphSearchResultV1::Certified(value) => {
             if !value.edges().iter().all(|edge| {
                 edge.source() != edge.target()
@@ -419,12 +519,46 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect();
+            let aggregate = |select_layer: bool| {
+                let mut count = 0usize;
+                let mut hash = Sha256::new();
+                hash.update(if select_layer {
+                    b"dyadic_layer_transport_path_v1".as_slice()
+                } else {
+                    b"dyadic_positive_thickness_path_v1".as_slice()
+                });
+                for edge in value.edges() {
+                    let pair = auxiliary_certificates.get(&(edge.source(), edge.target()))?;
+                    let certificate = if select_layer {
+                        pair.1.as_ref()?
+                    } else {
+                        pair.0.as_ref()?
+                    };
+                    hash.update(edge.source());
+                    hash.update(edge.target());
+                    hash.update(certificate);
+                    count += 1;
+                }
+                Some((
+                    count,
+                    hash.finalize()
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>(),
+                ))
+            };
+            let positive = aggregate(false);
+            let layer = aggregate(true);
             (
                 "certified",
                 value.explored_state_count(),
                 value.evaluated_transition_count(),
                 value.edges().len(),
                 Some(binding),
+                positive.as_ref().map_or(0, |value| value.0),
+                positive.map(|value| value.1),
+                layer.as_ref().map_or(0, |value| value.0),
+                layer.map(|value| value.1),
             )
         }
         ori_collision::CertifiedPathGraphSearchResultV1::Indeterminate {
@@ -445,6 +579,10 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
             evaluated_transition_count,
             0,
             None,
+            0,
+            None,
+            0,
+            None,
         ),
     };
     Ok(dyadic_graph_response(
@@ -456,6 +594,10 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
         evaluated,
         certified,
         binding,
+        positive_count,
+        positive_binding,
+        layer_count,
+        layer_binding,
     ))
 }
 
@@ -468,7 +610,17 @@ fn dyadic_graph_response(
     evaluated_transition_count: usize,
     certified_transition_count: usize,
     certificate_binding_sha256: Option<String>,
+    positive_thickness_transition_count: usize,
+    positive_thickness_binding_sha256: Option<String>,
+    layer_transport_transition_count: usize,
+    layer_transport_binding_sha256: Option<String>,
 ) -> DyadicPoseGraphReadResponseV1 {
+    let positive_thickness_certified = certified_transition_count > 0
+        && positive_thickness_transition_count == certified_transition_count
+        && positive_thickness_binding_sha256.is_some();
+    let layer_transport_certified = certified_transition_count > 0
+        && layer_transport_transition_count == certified_transition_count
+        && layer_transport_binding_sha256.is_some();
     DyadicPoseGraphReadResponseV1 {
         version: 1,
         project_instance_id: project.instance_id,
@@ -481,8 +633,13 @@ fn dyadic_graph_response(
         evaluated_transition_count,
         certified_transition_count,
         certificate_binding_sha256,
-        positive_thickness_certified: false,
-        layer_transport_certified: false,
+        positive_thickness_transition_count,
+        positive_thickness_certified,
+        positive_thickness_binding_sha256,
+        layer_transport_transition_count,
+        layer_transport_certified,
+        layer_transport_binding_sha256,
+        mutation_candidate_ready: positive_thickness_certified && layer_transport_certified,
         authorizes_project_mutation: false,
     }
 }
@@ -3281,17 +3438,23 @@ mod tests {
         let limited_request = request(8);
         let live_request = request(32);
         let state = AppState::new(project);
-        let limited = read_bounded_dyadic_pose_graph_inner_v1(&state, limited_request).unwrap();
+        let limited =
+            read_bounded_dyadic_pose_graph_inner_v1(&state, None, limited_request).unwrap();
         assert_eq!(limited.status, "resource_limit");
         assert!(!limited.authorizes_project_mutation);
-        let observed = read_bounded_dyadic_pose_graph_inner_v1(&state, live_request).unwrap();
+        let observed = read_bounded_dyadic_pose_graph_inner_v1(&state, None, live_request).unwrap();
         assert_eq!(observed.state_count, 9);
         assert_eq!(observed.transition_count, 24);
         assert_eq!(observed.status, "no_path");
         assert_eq!(observed.certified_transition_count, 0);
         assert!(observed.certificate_binding_sha256.is_none());
+        assert_eq!(observed.positive_thickness_transition_count, 0);
         assert!(!observed.positive_thickness_certified);
+        assert!(observed.positive_thickness_binding_sha256.is_none());
+        assert_eq!(observed.layer_transport_transition_count, 0);
         assert!(!observed.layer_transport_certified);
+        assert!(observed.layer_transport_binding_sha256.is_none());
+        assert!(!observed.mutation_candidate_ready);
         assert!(!observed.authorizes_project_mutation);
         assert!(
             super::super::lock_project(&state)

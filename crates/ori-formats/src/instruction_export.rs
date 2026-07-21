@@ -1238,11 +1238,12 @@ mod tests {
         }
 
         unproven_named_technique.steps[1].description =
-            "証明参照のない名前付き技法「中割り折り」の姿勢です。連続折り経路は未証明です。".to_owned();
+            "証明参照のない名前付き技法「中割り折り」の姿勢です。連続折り経路は未証明です。"
+                .to_owned();
         let downgraded_archive =
             serde_json::to_vec(&unproven_named_technique).expect("archive downgraded technique");
-        let reopened_downgraded: InstructionTimeline = serde_json::from_slice(&downgraded_archive)
-            .expect("reopen downgraded technique");
+        let reopened_downgraded: InstructionTimeline =
+            serde_json::from_slice(&downgraded_archive).expect("reopen downgraded technique");
         for format in [
             InstructionExportFormat::Pdf17,
             InstructionExportFormat::SvgPageZip,

@@ -3,6 +3,7 @@ import type { ReleasePlatform } from './releaseArtifactCompatibility.ts'
 
 const MAX_MANIFEST_BYTES = 16 * 1024
 const SHA256 = /^[0-9a-f]{64}$/u
+const ISSUED_AUTHORIZATIONS = new WeakSet<object>()
 
 export type RuntimeUpdateAsset = Readonly<{ name: string; sha256: string }>
 export type RuntimeUpdateAuthorization = Readonly<{
@@ -74,12 +75,21 @@ export function parseRuntimeUpdateManifest(
   assets.sort((left, right) => left.name.localeCompare(right.name, 'en'))
   expectedNames.sort()
   if (assets.some((asset, index) => asset.name !== expectedNames[index])) return null
-  return Object.freeze({
+  const authorization = Object.freeze({
     version: value.version,
     platform: expectedPlatform,
     signaturePolicy: 'platform-signed',
     assets: Object.freeze(assets),
   })
+  ISSUED_AUTHORIZATIONS.add(authorization)
+  return authorization
+}
+
+export function isIssuedRuntimeUpdateAuthorization(
+  value: unknown,
+): value is RuntimeUpdateAuthorization {
+  return value !== null && typeof value === 'object'
+    && ISSUED_AUTHORIZATIONS.has(value)
 }
 
 function isExactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {

@@ -23,6 +23,15 @@ if (process.env.GITHUB_REF?.startsWith('refs/tags/')) {
   throw new Error('release dry-run refuses tag refs')
 }
 
+const compatibility = spawnSync(
+  process.execPath,
+  [join(root, '.github/scripts/verify_update_compatibility_fixture.mjs')],
+  { cwd: root, env: process.env, encoding: 'utf8' },
+)
+process.stdout.write(compatibility.stdout ?? '')
+process.stderr.write(compatibility.stderr ?? '')
+if (compatibility.status !== 0) process.exit(compatibility.status ?? 1)
+
 const smokeRoot = mkdtempSync(join(tmpdir(), 'origami2-release-smoke-'))
 try {
   for (const directory of [

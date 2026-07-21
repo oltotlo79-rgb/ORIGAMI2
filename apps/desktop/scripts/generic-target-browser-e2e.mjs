@@ -49,6 +49,8 @@ try {
   await page.getByRole('button', { name: 'Recognize mixed target GLB' }).click()
   await page.getByRole('button', { name: 'Evaluate generic target grid' }).click()
   await page.getByText('GLB surface meanings unconfirmed: generic topology candidate blocked', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Activate GLB reference 2' }).click()
+  await page.getByText('Activated exact GLB reference 2', { exact: true }).waitFor()
   await page.getByLabel('Assign measured surface range 1').check()
   await page.getByLabel('Assign measured surface range 2').check()
   await page.getByRole('button', { name: 'Try tampered GLB surface range' }).click()
@@ -68,6 +70,7 @@ try {
     await page.getByText(status, { exact: true }).waitFor()
     if (await surfaceSteps.getByRole('listitem').count() !== 2) throw new Error(`${button} lost surface range assignments`)
     await page.getByText('Applied GLB surface bulges: ranges 1,2 · direction Z 1 · amount 5 mm · digest and part mapping retained', { exact: true }).waitFor()
+    await page.getByText('Persisted active GLB reference 2 with exact asset digest', { exact: true }).waitFor()
   }
   await page.getByRole('button', { name: 'Reset applied checkpoint' }).click()
   await page.getByRole('button', { name: 'Create empty generic target' }).click()

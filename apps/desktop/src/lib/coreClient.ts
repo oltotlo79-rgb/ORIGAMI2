@@ -193,6 +193,7 @@ export type ProjectSnapshot = {
     vertex_redo_stack?: Array<VertexCoordinateExpressionTransition | null>
   }
   fold_model_fingerprint: string
+  reference_model_assets?: Array<{ asset_id: string; sha256: number[] }>
 }
 
 export type BeginnerDesignProfileV1 = {
@@ -1826,6 +1827,16 @@ export function importBeginnerReferenceModel(
     expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
+  })
+}
+
+export function activateBeginnerReferenceModelAsset(
+  expectedProjectId: string, expectedRevision: number, expectedProjectInstanceId: string,
+  assetId: string,
+) {
+  if (!isCanonicalNonNilUuid(assetId)) return Promise.reject(new Error('invalid reference model asset'))
+  return invoke<ProjectSnapshot>('activate_beginner_reference_model_asset', {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision, assetId,
   })
 }
 
@@ -4710,6 +4721,7 @@ const PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS = [
   'project_layers',
   'element_metadata',
   'fold_model_fingerprint',
+  'reference_model_assets',
   'can_undo',
   'can_redo',
   'cutting_allowed',
@@ -4745,6 +4757,8 @@ function normalizeProjectLayerMutationBaseSnapshot(
     || !isCoreDataRecord(record.element_metadata)
     || typeof record.fold_model_fingerprint !== 'string'
     || !/^[0-9a-f]{64}$/u.test(record.fold_model_fingerprint)
+    || !Array.isArray(record.reference_model_assets)
+    || record.reference_model_assets.length > 8
     || typeof record.can_undo !== 'boolean'
     || typeof record.can_redo !== 'boolean'
     || typeof record.cutting_allowed !== 'boolean'
@@ -4763,6 +4777,10 @@ function normalizeProjectLayerMutationBaseSnapshot(
     || !Array.isArray(creasePattern.vertices)
     || !Array.isArray(creasePattern.edges)
   ) return null
+  const referenceModelAssets = (record.reference_model_assets as unknown[]).map((value) =>
+    exactCoreDataRecord(value, ['asset_id', 'sha256'] as const))
+  if (referenceModelAssets.some((asset) => !asset || !isCanonicalNonNilUuid(asset.asset_id)
+    || !isBoundedIntegerTuple(asset.sha256, 32, 255))) return null
   const projectLayers = normalizeProjectLayerDocument(
     record.project_layers,
     creasePattern.edges as readonly Readonly<{ id: string }>[],
@@ -4792,6 +4810,9 @@ function normalizeProjectLayerMutationBaseSnapshot(
     element_metadata:
       record.element_metadata as ProjectSnapshot['element_metadata'],
     fold_model_fingerprint: record.fold_model_fingerprint,
+    reference_model_assets: referenceModelAssets.map((asset) => ({
+      asset_id: String(asset?.asset_id), sha256: [...(asset?.sha256 as number[])],
+    })),
     can_undo: record.can_undo,
     can_redo: record.can_redo,
     cutting_allowed: record.cutting_allowed,

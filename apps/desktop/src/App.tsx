@@ -136,6 +136,7 @@ import {
   updateProjectMemo,
   updateBeginnerDesignProfile,
   importBeginnerReferenceModel,
+  activateBeginnerReferenceModelAsset,
   recognizeBeginnerOutlineCandidates,
   applyBeginnerOutlineCandidate,
   recognizeBeginnerPartSuggestions,
@@ -3783,6 +3784,11 @@ function App() {
   function requestBeginnerReferenceModelImport() {
     void runNativeEdit((projectId, revision, projectInstanceId) =>
       importBeginnerReferenceModel(projectId, revision, projectInstanceId))
+  }
+
+  function activateBeginnerReferenceAsset(assetId: string) {
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      activateBeginnerReferenceModelAsset(projectId, revision, projectInstanceId, assetId))
   }
 
   function toggleBeginnerReferenceModelPreview() {
@@ -8554,6 +8560,21 @@ function App() {
                       en: 'A GLB 2.0 model is a read-only visual reference. It grants no automatic recognition or fold-generation authority.',
                     })}
                   </p>
+                  {(nativeSnapshot.reference_model_assets ?? []).length > 0 && <ul aria-label="Project 3D reference assets">
+                    {(nativeSnapshot.reference_model_assets ?? []).map((asset, index) => {
+                      const active = nativeSnapshot.beginner_design_profile.generation_constraints.target_asset
+                        ?.kind === 'reference_model'
+                        && nativeSnapshot.beginner_design_profile.generation_constraints.target_asset.asset_id === asset.asset_id
+                      return <li key={asset.asset_id}>
+                        {`GLB ${index + 1} · SHA-256 ${asset.sha256.slice(0, 4)
+                          .map((byte) => byte.toString(16).padStart(2, '0')).join('')}`}
+                        {active ? <span> · Active reference</span> : <button type="button"
+                          onClick={() => activateBeginnerReferenceAsset(asset.asset_id)}>
+                          Activate this reference
+                        </button>}
+                      </li>
+                    })}
+                  </ul>}
                   {nativeSnapshot.beginner_design_profile.generation_constraints.target_asset?.kind
                     === 'reference_model' && (
                     <>

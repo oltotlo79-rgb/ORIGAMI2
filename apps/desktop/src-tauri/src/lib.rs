@@ -1382,6 +1382,13 @@ struct ProjectSnapshot {
     can_undo: bool,
     can_redo: bool,
     cutting_allowed: bool,
+    reference_model_assets: Vec<ReferenceModelAssetSummaryV1>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReferenceModelAssetSummaryV1 {
+    asset_id: AssetId,
+    sha256: [u8; 32],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -5433,6 +5440,40 @@ fn import_beginner_reference_model(
             .retain(|asset| asset.id != asset_id);
     }
     result
+}
+
+#[tauri::command]
+fn activate_beginner_reference_model_asset(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    asset_id: AssetId,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    if !project
+        .reference_model_assets
+        .iter()
+        .any(|asset| asset.id == asset_id)
+    {
+        return Err("reference_model_asset_stale".to_owned());
+    }
+    let mut profile = project.editor.beginner_design_profile().clone();
+    profile.generation_constraints.target_asset =
+        Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id });
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::UpdateBeginnerDesignProfile { profile },
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -11342,6 +11383,14 @@ fn snapshot(project: &ProjectState) -> ProjectSnapshot {
         can_undo: project.editor.can_undo(),
         can_redo: project.editor.can_redo(),
         cutting_allowed: project.editor.cutting_allowed(),
+        reference_model_assets: project
+            .reference_model_assets
+            .iter()
+            .map(|asset| ReferenceModelAssetSummaryV1 {
+                asset_id: asset.id,
+                sha256: sha2::Sha256::digest(&asset.bytes).into(),
+            })
+            .collect(),
     }
 }
 
@@ -13312,6 +13361,7 @@ pub fn run() {
             update_project_memo,
             update_beginner_design_profile,
             import_beginner_reference_model,
+            activate_beginner_reference_model_asset,
             get_beginner_reference_model_geometry,
             suggest_beginner_reference_model_features,
             apply_beginner_reference_model_features,

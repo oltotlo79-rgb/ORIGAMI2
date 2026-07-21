@@ -37,6 +37,7 @@ function Harness() {
   const [surfaceRangesConfirmed, setSurfaceRangesConfirmed] = useState(false)
   const [skeletonTreeConfirmed, setSkeletonTreeConfirmed] = useState(true)
   const [recognizedSkeletonEndMm, setRecognizedSkeletonEndMm] = useState(10)
+  const [activeReferenceAsset, setActiveReferenceAsset] = useState(1)
   const [mergedAuthorities, setMergedAuthorities] = useState(false)
   const [authorityValid, setAuthorityValid] = useState(true)
   const [imageDecode, setImageDecode] = useState<string | null>(null)
@@ -241,6 +242,12 @@ function Harness() {
         Reject one side of bilateral binding 2</button>
     </fieldset>}
     {glbWitness && <section aria-label="GLB geometry witness">
+      <ul aria-label="Project 3D reference assets">{[1, 2].map((asset) => <li key={asset}>
+        GLB {asset} · SHA-256 {asset === 1 ? '91a70f2c' : 'a72be019'}
+        {activeReferenceAsset === asset ? ' · Active reference' : <button onClick={() => {
+          setActiveReferenceAsset(asset); setStatus(`Activated exact GLB reference ${asset}`)
+        }}>Activate GLB reference {asset}</button>}
+      </li>)}</ul>
       <p>3D bounds {glbWitness.bounds} · 2D silhouette difference {glbWitness.discrepancy}% · bulge targets {glbWitness.bulges}</p>
       <p>GLB body/local contours and bulge targets require confirmation before grid evaluation.</p>
       <fieldset><legend>Explicitly assign GLB-measured surface ranges</legend>
@@ -432,6 +439,7 @@ function Harness() {
       <p>Persisted tree skeleton mapping: root→1[feature 1], 1→2[feature 2] · authority c31488da</p>
       <p>Persisted corrected skeleton endpoint: {recognizedSkeletonEndMm} mm</p>
       {surfaceRangesConfirmed && <p>Applied GLB surface bulges: ranges 1,2 · direction Z 1 · amount 5 mm · digest and part mapping retained</p>}
+      <p>Persisted active GLB reference {activeReferenceAsset} with exact asset digest</p>
       <ol aria-label="Generated generic feature instruction steps">{[...bindings].sort((left, right) => left.id - right.id).map((binding) =>
         <li key={binding.id}>Shape generated feature {binding.id} · {binding.count} certified endpoint creases · skeleton segment {binding.id}.end</li>)}</ol>
       <p>Applied synthesized candidate set: {synthesizedCandidateCount} bounded designs</p>

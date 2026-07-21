@@ -105,6 +105,19 @@ test('AUT-004 preview is bounded, project-bound, and stale-safe', () => {
   assert.match(app, /Read-only 3D reference model/u)
 })
 
+test('AUT-004 retains multiple GLB references and switches exact active asset authority', () => {
+  assert.match(native, /struct ReferenceModelAssetSummaryV1/u)
+  assert.match(native, /sha256: sha2::Sha256::digest\(&asset\.bytes\)/u)
+  assert.match(native, /fn activate_beginner_reference_model_asset/u)
+  assert.match(native, /reference_model_asset_stale/u)
+  assert.match(native, /Command::UpdateBeginnerDesignProfile \{ profile \}/u)
+  assert.match(client, /activate_beginner_reference_model_asset/u)
+  assert.match(client, /reference_model_assets/u)
+  assert.match(app, /Project 3D reference assets/u)
+  assert.match(app, /Activate this reference/u)
+  assert.match(app, /Active reference/u)
+})
+
 test('AUT-004 proposes only deterministic safe GLB geometry ranges and applies atomically', () => {
   assert.match(native, /derive_reference_model_suggestion_v1/u)
   assert.match(native, /bounded_bbox_area_normal_v1/u)

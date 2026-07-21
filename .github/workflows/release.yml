@@ -55,7 +55,10 @@ jobs:
           RELEASE_SIGNING_PUBLIC_KEY: ${{ secrets.RELEASE_SIGNING_PUBLIC_KEY }}
         run: |
           set -euo pipefail
-          test -n "$RELEASE_SIGNING_PUBLIC_KEY"
+          if test -z "$RELEASE_SIGNING_PUBLIC_KEY"; then
+            echo "::error::Required release secret RELEASE_SIGNING_PUBLIC_KEY is missing for tagged publication."
+            exit 1
+          fi
           printf '%s' "$RELEASE_SIGNING_PUBLIC_KEY" | gpg --batch --import
       - id: contract
         env:

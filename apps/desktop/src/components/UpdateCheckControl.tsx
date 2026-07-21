@@ -10,6 +10,10 @@ import {
 
 import './UpdateCheckControl.css'
 import {
+  RuntimeUpdaterControl,
+  type RuntimeUpdaterUiController,
+} from './RuntimeUpdaterControl.tsx'
+import {
   compareSemanticVersions,
   createGitHubReleasesFetchTransport,
   createUpdateCheckClient,
@@ -39,6 +43,7 @@ export type UpdateCheckControlProps = Readonly<{
   versionProvider?: InstalledVersionProvider
   settingsStore?: UpdateCheckSettingsStore
   localeStore?: LocaleStore
+  runtimeUpdaterController?: RuntimeUpdaterUiController
 }>
 
 export function UpdateCheckPopover(
@@ -51,6 +56,8 @@ export function UpdateCheckPopover(
         {selectLocalizedText(locale, UPDATE_CHECK_TEXT.popoverSummary)}
       </summary>
       <UpdateCheckControl {...props} />
+      {props.runtimeUpdaterController &&
+        <RuntimeUpdaterControl controller={props.runtimeUpdaterController} />}
     </details>
   )
 }

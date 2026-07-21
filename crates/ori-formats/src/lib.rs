@@ -82,16 +82,19 @@ pub use ori_domain::{
     DEFAULT_MAX_CONSTRAINT_VERTICES as MAX_PROJECT_CONSTRAINT_INDEX_VERTICES,
 };
 pub use ori2::{
-    CURRENT_ORI2_CONTAINER_VERSION, MAX_EDITOR_HISTORY_JSON_BYTES, ORI2_CONTAINER_IDENTIFIER,
-    ORI2_EDITOR_HISTORY_PATH, ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1,
-    ORI2_FEATURE_EDITOR_HISTORY_V1, ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1,
-    ORI2_FEATURE_INSTRUCTION_TIMELINE_V1, ORI2_FEATURE_LAYERS_V1,
-    ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1, ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1,
-    ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH, Ori2EditorHistoryEntry, Ori2Limits, Ori2Manifest,
-    Ori2ProjectArchive, Ori2ProjectEntry, read_project_archive_ori2,
+    CURRENT_ORI2_CONTAINER_VERSION, LayerEvidenceArchiveErrorV1, LayerEvidenceArchiveKindV1,
+    LayerEvidenceArchiveV1, LayerEvidenceCellV1, LayerEvidenceFaceV1, LayerEvidenceHingeAngleV1,
+    LayerEvidencePairOrderV1, MAX_EDITOR_HISTORY_JSON_BYTES, MAX_LAYER_EVIDENCE_JSON_BYTES_V1,
+    ORI2_CONTAINER_IDENTIFIER, ORI2_EDITOR_HISTORY_PATH,
+    ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1, ORI2_FEATURE_EDITOR_HISTORY_V1,
+    ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1, ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
+    ORI2_FEATURE_LAYERS_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
+    ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1, ORI2_MANIFEST_PATH, ORI2_PROJECT_PATH,
+    Ori2EditorHistoryEntry, Ori2Limits, Ori2Manifest, Ori2ProjectArchive, Ori2ProjectEntry,
+    read_layer_evidence_archive_v1, read_project_archive_ori2,
     read_project_archive_ori2_with_limits, read_project_ori2, read_project_ori2_with_limits,
-    write_project_archive_ori2, write_project_archive_ori2_with_limits, write_project_ori2,
-    write_project_ori2_with_limits,
+    write_layer_evidence_archive_v1, write_project_archive_ori2,
+    write_project_archive_ori2_with_limits, write_project_ori2, write_project_ori2_with_limits,
 };
 pub use project_folder::{
     CURRENT_PROJECT_FOLDER_VERSION, MAX_PROJECT_FOLDER_ENTRY_COUNT,

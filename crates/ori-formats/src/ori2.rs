@@ -27,6 +27,137 @@ pub const ORI2_FEATURE_LAYERS_V1: &str = "layers_v1";
 pub const ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1: &str = "reference_model_assets_v1";
 pub const ORI2_FEATURE_EDITOR_HISTORY_V1: &str = "editor_history_v1";
 pub const MAX_EDITOR_HISTORY_JSON_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_LAYER_EVIDENCE_JSON_BYTES_V1: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerEvidenceArchiveV1 {
+    pub version: u32,
+    pub project_instance_id: String,
+    pub project_id: String,
+    pub revision: u64,
+    pub fold_model_fingerprint_sha256: String,
+    pub evidence: LayerEvidenceArchiveKindV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LayerEvidenceArchiveKindV1 {
+    Flat {
+        canonical_snapshot_json: String,
+    },
+    NonFlat {
+        fixed_face: Option<String>,
+        hinge_angles: Vec<LayerEvidenceHingeAngleV1>,
+        material_faces: Vec<LayerEvidenceFaceV1>,
+        cells: Vec<LayerEvidenceCellV1>,
+        pair_orders: Vec<LayerEvidencePairOrderV1>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerEvidenceHingeAngleV1 {
+    pub edge: String,
+    pub angle_degrees: f64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerEvidenceFaceV1 {
+    pub face_id: String,
+    pub face_key_sha256: String,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerEvidenceCellV1 {
+    pub boundary_xy: Vec<[f64; 2]>,
+    pub lower_face: String,
+    pub upper_face: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerEvidencePairOrderV1 {
+    pub lower_face: String,
+    pub upper_face: String,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum LayerEvidenceArchiveErrorV1 {
+    #[error("layer evidence exceeds its byte limit")]
+    Oversize,
+    #[error("layer evidence JSON is invalid")]
+    InvalidJson,
+    #[error("layer evidence binding or bounded collection is invalid")]
+    InvalidEvidence,
+}
+
+pub fn write_layer_evidence_archive_v1(
+    value: &LayerEvidenceArchiveV1,
+) -> Result<Vec<u8>, LayerEvidenceArchiveErrorV1> {
+    validate_layer_evidence_archive_v1(value)?;
+    let bytes = serde_json::to_vec(value).map_err(|_| LayerEvidenceArchiveErrorV1::InvalidJson)?;
+    if bytes.len() > MAX_LAYER_EVIDENCE_JSON_BYTES_V1 {
+        return Err(LayerEvidenceArchiveErrorV1::Oversize);
+    }
+    Ok(bytes)
+}
+
+pub fn read_layer_evidence_archive_v1(
+    bytes: &[u8],
+) -> Result<LayerEvidenceArchiveV1, LayerEvidenceArchiveErrorV1> {
+    if bytes.len() > MAX_LAYER_EVIDENCE_JSON_BYTES_V1 {
+        return Err(LayerEvidenceArchiveErrorV1::Oversize);
+    }
+    let value =
+        serde_json::from_slice(bytes).map_err(|_| LayerEvidenceArchiveErrorV1::InvalidJson)?;
+    validate_layer_evidence_archive_v1(&value)?;
+    Ok(value)
+}
+
+fn validate_layer_evidence_archive_v1(
+    value: &LayerEvidenceArchiveV1,
+) -> Result<(), LayerEvidenceArchiveErrorV1> {
+    const MAX_RECORDS: usize = 2_000_000;
+    if value.version != 1
+        || value.project_instance_id.is_empty()
+        || value.project_id.is_empty()
+        || !is_sha256_hex(&value.fold_model_fingerprint_sha256)
+    {
+        return Err(LayerEvidenceArchiveErrorV1::InvalidEvidence);
+    }
+    match &value.evidence {
+        LayerEvidenceArchiveKindV1::Flat {
+            canonical_snapshot_json,
+        } => {
+            if canonical_snapshot_json.len() > MAX_LAYER_EVIDENCE_JSON_BYTES_V1 {
+                return Err(LayerEvidenceArchiveErrorV1::Oversize);
+            }
+        }
+        LayerEvidenceArchiveKindV1::NonFlat {
+            hinge_angles,
+            material_faces,
+            cells,
+            pair_orders,
+            ..
+        } => {
+            if material_faces.is_empty()
+                || hinge_angles.len() > MAX_RECORDS
+                || material_faces.len() > MAX_RECORDS
+                || cells.len() > MAX_RECORDS
+                || pair_orders.len() > MAX_RECORDS
+                || hinge_angles.iter().any(|a| !a.angle_degrees.is_finite())
+                || cells.iter().any(|c| {
+                    c.boundary_xy.len() < 3
+                        || c.boundary_xy.len() > MAX_RECORDS
+                        || c.boundary_xy.iter().flatten().any(|v| !v.is_finite())
+                })
+            {
+                return Err(LayerEvidenceArchiveErrorV1::InvalidEvidence);
+            }
+        }
+    }
+    Ok(())
+}
 
 const DOCUMENT_ONLY_ENTRY_COUNT: usize = 2;
 const PROJECT_WITH_HISTORY_ENTRY_COUNT: usize = 3;
@@ -911,6 +1042,56 @@ fn is_lowercase_sha256_hex(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn layer_evidence_fixture() -> LayerEvidenceArchiveV1 {
+        LayerEvidenceArchiveV1 {
+            version: 1,
+            project_instance_id: "instance".into(),
+            project_id: "project".into(),
+            revision: 7,
+            fold_model_fingerprint_sha256: "ab".repeat(32),
+            evidence: LayerEvidenceArchiveKindV1::NonFlat {
+                fixed_face: None,
+                hinge_angles: vec![],
+                material_faces: vec![LayerEvidenceFaceV1 {
+                    face_id: "face".into(),
+                    face_key_sha256: "cd".repeat(32),
+                }],
+                cells: vec![],
+                pair_orders: vec![],
+            },
+        }
+    }
+
+    #[test]
+    fn strict_layer_evidence_codec_is_canonical_and_fail_closed() {
+        let value = layer_evidence_fixture();
+        let first = write_layer_evidence_archive_v1(&value).unwrap();
+        let restored = read_layer_evidence_archive_v1(&first).unwrap();
+        assert_eq!(restored, value);
+        assert_eq!(write_layer_evidence_archive_v1(&restored).unwrap(), first);
+
+        let mut unknown = serde_json::to_value(&value).unwrap();
+        unknown
+            .as_object_mut()
+            .unwrap()
+            .insert("forged".into(), serde_json::json!(true));
+        assert_eq!(
+            read_layer_evidence_archive_v1(&serde_json::to_vec(&unknown).unwrap()),
+            Err(LayerEvidenceArchiveErrorV1::InvalidJson)
+        );
+
+        let mut stale = value.clone();
+        stale.fold_model_fingerprint_sha256 = "not-a-hash".into();
+        assert_eq!(
+            write_layer_evidence_archive_v1(&stale),
+            Err(LayerEvidenceArchiveErrorV1::InvalidEvidence)
+        );
+        assert_eq!(
+            read_layer_evidence_archive_v1(&vec![b' '; MAX_LAYER_EVIDENCE_JSON_BYTES_V1 + 1]),
+            Err(LayerEvidenceArchiveErrorV1::Oversize)
+        );
+    }
     use ori_core::{Command, EditorState};
     use ori_domain::{
         AssetId, ConstraintId, CreasePattern, Edge, EdgeId, EdgeKind, EdgeLayerAssignmentV1,

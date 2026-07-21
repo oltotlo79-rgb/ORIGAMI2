@@ -284,6 +284,7 @@ pub struct MaterialTreeKinematicsModel {
 /// cycles. This observation-only model does not solve poses.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaterialHingeGraphGeometry {
+    issuer: Arc<()>,
     face_ids: Vec<FaceId>,
     hinges: Vec<TreeHinge>,
     positions: HashMap<VertexId, Point3>,
@@ -294,6 +295,7 @@ impl MaterialHingeGraphGeometry {
     #[cfg(test)]
     pub(crate) fn new_for_test(face_ids: Vec<FaceId>, hinges: Vec<TreeHinge>) -> Self {
         Self {
+            issuer: Arc::new(()),
             face_ids,
             hinges,
             positions: HashMap::new(),
@@ -321,6 +323,7 @@ impl MaterialHingeGraphGeometry {
             .collect::<Result<Vec<_>, KinematicsError>>()?;
         let prepared = prepare_material_graph(pattern, paper, topology, &positions, limits)?;
         Ok(Self {
+            issuer: Arc::new(()),
             face_ids: prepared.face_ids,
             hinges: prepared.hinges,
             positions: prepared.positions,
@@ -331,6 +334,11 @@ impl MaterialHingeGraphGeometry {
     #[must_use]
     pub fn face_ids(&self) -> &[FaceId] {
         &self.face_ids
+    }
+
+    #[must_use]
+    pub fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.issuer, &other.issuer)
     }
 
     #[must_use]

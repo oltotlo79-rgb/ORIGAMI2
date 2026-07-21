@@ -25,6 +25,7 @@ mod cell_order_transport;
 mod certified_path_graph;
 mod continuous_path;
 mod flat_endpoint_layer_order;
+mod graph_positive_thickness;
 mod stacked_fold_read;
 mod static_collision;
 mod zero_thickness;
@@ -74,6 +75,11 @@ pub use flat_endpoint_layer_order::{
     FlatEndpointLayerOrderLimitsV1, FlatEndpointLayerOrderResourceV1, FlatEndpointLayerOrderWorkV1,
     NativeFlatEndpointLayerOrderAnchorV1, anchor_flat_endpoint_layer_order_v1,
     revalidate_flat_endpoint_layer_order_anchor_v1,
+};
+pub use graph_positive_thickness::{
+    NativePositiveThicknessGraphGeometryProofV1, POSITIVE_THICKNESS_GRAPH_GEOMETRY_PROOF_V1,
+    PositiveThicknessGraphLimitsV1, PositiveThicknessGraphProofErrorV1,
+    prove_positive_thickness_graph_geometry_v1,
 };
 pub use stacked_fold_read::{
     NativeStackedFoldMaterialMapV1, NativeStackedFoldReadGuardV1, NativeStackedFoldReadProposalV1,

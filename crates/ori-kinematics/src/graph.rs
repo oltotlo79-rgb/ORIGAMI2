@@ -176,6 +176,7 @@ impl CandidateFaceTransform {
 /// authority.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClosedMaterialHingeGraphPose {
+    instance: std::sync::Arc<()>,
     fixed_face: FaceId,
     angles: CanonicalHingeAngles,
     transforms: Vec<CandidateFaceTransform>,
@@ -186,6 +187,11 @@ impl ClosedMaterialHingeGraphPose {
     #[must_use]
     pub const fn fixed_face(&self) -> FaceId {
         self.fixed_face
+    }
+
+    #[must_use]
+    pub fn same_instance(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.instance, &other.instance)
     }
 
     #[must_use]
@@ -592,6 +598,7 @@ impl MaterialHingeGraphGeometry {
             tolerance,
         )?;
         Ok(ClosedMaterialHingeGraphPose {
+            instance: std::sync::Arc::new(()),
             fixed_face,
             angles: angles.clone(),
             transforms,

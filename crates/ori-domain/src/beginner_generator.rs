@@ -51,8 +51,8 @@ mod parameter_grid_tests {
 pub struct BeginnerParameterGridHashV1(pub [u8; 32]);
 
 #[must_use]
-pub fn beginner_parameter_grid_v1(
-) -> [BeginnerParameterGridPointV1; BEGINNER_PARAMETER_GRID_SIZE_V1] {
+pub fn beginner_parameter_grid_v1()
+-> [BeginnerParameterGridPointV1; BEGINNER_PARAMETER_GRID_SIZE_V1] {
     let scales = [10, 27, 45];
     let spacings = [20, 50, 80];
     let details = [
@@ -1556,9 +1556,11 @@ mod tests {
             BeginnerGeneratedPlanKindV1::SymmetricFourLegBase
         );
         assert_eq!(first[0].crease_pattern.edges.len(), 4);
-        assert!(first[1..]
-            .iter()
-            .all(|plan| plan.crease_pattern.edges.len() == 1));
+        assert!(
+            first[1..]
+                .iter()
+                .all(|plan| plan.crease_pattern.edges.len() == 1)
+        );
         for (part_kind, expected_kind) in [
             (
                 BeginnerTargetPartKindV1::Wing,

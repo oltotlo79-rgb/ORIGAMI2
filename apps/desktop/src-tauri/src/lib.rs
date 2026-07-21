@@ -13694,11 +13694,51 @@ mod tests {
             instance_id,
             project_id,
             saved.revision,
-            profile,
+            profile.clone(),
             ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase,
             candidate_edge,
         )
         .unwrap();
+        let after_apply = {
+            let project = lock_project(&state).unwrap();
+            project_state_signature(&project)
+        };
+        for (rejected_instance, rejected_project, rejected_revision, rejected_edge) in [
+            (instance_id, project_id, saved.revision, candidate_edge),
+            (
+                ProjectId::new(),
+                project_id,
+                applied.revision,
+                candidate_edge,
+            ),
+            (
+                instance_id,
+                ProjectId::new(),
+                applied.revision,
+                candidate_edge,
+            ),
+            (instance_id, project_id, applied.revision, EdgeId::new()),
+        ] {
+            assert!(
+                apply_beginner_generated_plan_document(
+                    &state,
+                    rejected_instance,
+                    rejected_project,
+                    rejected_revision,
+                    profile.clone(),
+                    ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase,
+                    rejected_edge,
+                )
+                .is_err()
+            );
+            assert_eq!(
+                {
+                    let project = lock_project(&state).unwrap();
+                    project_state_signature(&project)
+                },
+                after_apply
+            );
+        }
         let mut project = lock_project(&state).unwrap();
         let provenance = project
             .editor

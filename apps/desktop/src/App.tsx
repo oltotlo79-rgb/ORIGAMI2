@@ -768,6 +768,7 @@ function App() {
       kind: BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']
       source_candidate_ids?: number[]
       split_fragment?: number
+      split_x?: number
     }>>([])
   const [excludedBeginnerPartAssignments, setExcludedBeginnerPartAssignments] =
     useState<typeof beginnerPartAssignments>([])
@@ -8696,6 +8697,23 @@ function App() {
                                 <option value="antenna">{text({ ja: '触角', en: 'Antenna' })}</option>
                                 <option value="tail">{text({ ja: '尾', en: 'Tail' })}</option>
                               </select>
+                              {assignment.split_fragment === 0 && assignment.split_x !== undefined && (
+                                <span>
+                                  {text({ ja: '縦分割位置 X (px)', en: 'Vertical split position X (px)' })}
+                                  <input type="number" value={assignment.split_x}
+                                    min={beginnerOutlineCandidates?.candidates.find(
+                                      (candidate) => candidate.id === assignment.candidate_id)?.bounds.min_x ?? 0}
+                                    max={beginnerOutlineCandidates?.candidates.find(
+                                      (candidate) => candidate.id === assignment.candidate_id)?.bounds.max_x ?? 0}
+                                    onChange={(event) => {
+                                      const splitX = Number(event.currentTarget.value)
+                                      setBeginnerPartAssignments((items) => items.map((item) =>
+                                        item.candidate_id === assignment.candidate_id
+                                          && item.source_candidate_ids?.length === 1
+                                          ? { ...item, split_x: splitX } : item))
+                                    }} />
+                                </span>
+                              )}
                               <button
                                 type="button"
                                 disabled={assignment.kind === 'torso'
@@ -8747,10 +8765,16 @@ function App() {
                                 && item.split_fragment === undefined)
                               if (index < 0 || items.length >= 10) return items
                               const source = items[index]
+                              const outline = beginnerOutlineCandidates?.candidates.find(
+                                (candidate) => candidate.id === source.candidate_id)
+                              if (!outline || outline.bounds.min_x >= outline.bounds.max_x) return items
+                              const splitX = Math.floor((outline.bounds.min_x + outline.bounds.max_x + 1) / 2)
                               const split = [
-                                { ...source, source_candidate_ids: [source.candidate_id], split_fragment: 0 },
+                                { ...source, source_candidate_ids: [source.candidate_id],
+                                  split_fragment: 0, split_x: splitX },
                                 { ...source, kind: 'tail' as const,
-                                  source_candidate_ids: [source.candidate_id], split_fragment: 1 },
+                                  source_candidate_ids: [source.candidate_id],
+                                  split_fragment: 1, split_x: splitX },
                               ]
                               return [...items.slice(0, index), ...split, ...items.slice(index + 1)]
                             })}>

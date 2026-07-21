@@ -310,6 +310,8 @@ pub(crate) struct BeginnerPartAssignmentV1 {
     source_candidate_ids: Vec<u8>,
     #[serde(default)]
     split_fragment: Option<u8>,
+    #[serde(default)]
+    split_x: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -380,17 +382,19 @@ pub(crate) fn apply_beginner_part_assignments(
     let mut edited_sources = std::collections::BTreeSet::new();
     if request.assignments.iter().any(|assignment| {
         let sources_valid = match assignment.source_candidate_ids.as_slice() {
-            [] => assignment.split_fragment.is_none(),
+            [] => assignment.split_fragment.is_none() && assignment.split_x.is_none(),
             [source] => {
                 *source == assignment.candidate_id
                     && assignment
                         .split_fragment
                         .is_some_and(|fragment| fragment < 2)
+                    && assignment.split_x.is_some()
             }
             [first, second] => {
                 first < second
                     && *first == assignment.candidate_id
                     && assignment.split_fragment.is_none()
+                    && assignment.split_x.is_none()
             }
             _ => false,
         };
@@ -427,6 +431,50 @@ pub(crate) fn apply_beginner_part_assignments(
             .collect::<Vec<_>>();
         if fragments.len() != 2 || fragments[0].kind == fragments[1].kind {
             return Err("part_assignment_split_semantics_unconfirmed".to_owned());
+        }
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.id == source)
+            .ok_or_else(|| "part_assignment_split_boundary_tampered".to_owned())?;
+        let split_x = fragments[0]
+            .split_x
+            .filter(|split_x| fragments[1].split_x == Some(*split_x))
+            .filter(|split_x| {
+                *split_x > candidate.bounds.min_x && *split_x <= candidate.bounds.max_x
+            })
+            .ok_or_else(|| "part_assignment_split_boundary_tampered".to_owned())?;
+        let is_foreground = |x: u32, y: u32| {
+            let index = (y as usize * width as usize + x as usize) * 4;
+            let pixel = rgba.get(index..index + 4)?;
+            Some(
+                pixel[3] >= 128
+                    && (u32::from(pixel[0]) * 299
+                        + u32::from(pixel[1]) * 587
+                        + u32::from(pixel[2]) * 114)
+                        / 1000
+                        < 128,
+            )
+        };
+        let mut left = 0_u32;
+        let mut right = 0_u32;
+        let mut crosses_outline = false;
+        for y in candidate.bounds.min_y..=candidate.bounds.max_y {
+            for x in candidate.bounds.min_x..=candidate.bounds.max_x {
+                if is_foreground(x, y) != Some(true) {
+                    continue;
+                }
+                if x < split_x {
+                    left = left.saturating_add(1);
+                } else {
+                    right = right.saturating_add(1);
+                }
+                if x == split_x || x + 1 == split_x {
+                    crosses_outline = true;
+                }
+            }
+        }
+        if left < 2 || right < 2 || !crosses_outline {
+            return Err("part_assignment_split_boundary_tampered".to_owned());
         }
     }
     let leg_candidate_ids = request

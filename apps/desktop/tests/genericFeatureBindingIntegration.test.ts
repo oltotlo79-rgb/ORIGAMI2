@@ -51,6 +51,7 @@ test('confirmed image and 3D generic candidates retain vertical proof coverage',
   assert.match(browser, /Split image outline component/u)
   assert.match(browser, /Outline edit unconfirmed/u)
   assert.match(browser, /source digest or component IDs tampered/u)
+  assert.match(browser, /split line misses foreground contour/u)
   assert.match(native, /crease_authority_sha256/u)
   assert.match(native, /grid_candidate_feature_crease_authority_stale/u)
   assert.match(native, /canonical_targets\.sort_unstable_by_key/u)

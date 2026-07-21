@@ -42,6 +42,7 @@ function Harness() {
   const [imageMeaningsConfirmed, setImageMeaningsConfirmed] = useState(true)
   const [outlineEditConfirmed, setOutlineEditConfirmed] = useState(true)
   const [outlineEdit, setOutlineEdit] = useState<'split' | 'merge' | null>(null)
+  const [outlineSplitX, setOutlineSplitX] = useState(50)
   const [confirmedImageFeatureCount, setConfirmedImageFeatureCount] = useState<number | null>(null)
   const [segmentation, setSegmentation] = useState<string | null>(null)
   const [acceptedSegments, setAcceptedSegments] = useState<number[]>([1, 2])
@@ -286,7 +287,12 @@ function Harness() {
       <button onClick={() => { setOutlineEdit('merge'); setOutlineEditConfirmed(false)
         setStatus('Non-authoritative merge proposal bound to source image SHA-256') }}>Merge image outline components</button>
       {outlineEdit && <button onClick={() => { setOutlineEditConfirmed(true)
-        setStatus(`Native exact image digest revalidated; ${outlineEdit} edit confirmed`) }}>Confirm outline component edit</button>}
+        setStatus(outlineEdit === 'split' && (outlineSplitX <= 0 || outlineSplitX >= 100)
+          ? 'Rejected outline edit: split line misses foreground contour'
+          : `Native exact image digest and foreground pixels revalidated; ${outlineEdit} edit confirmed`) }}>Confirm outline component edit</button>}
+      {outlineEdit === 'split' && <label>Vertical split position X (px)<input type="number"
+        value={outlineSplitX} onChange={(event) => { setOutlineEditConfirmed(false)
+          setOutlineSplitX(Number(event.target.value)) }} /></label>}
       <button onClick={() => setStatus('Rejected outline edit: source digest or component IDs tampered')}>Try tampered outline edit</button>
       {bindings.length > 2 && <button onClick={() => {
         const binding = bindings.at(-1), kind = kinds.at(-1)

@@ -2584,6 +2584,7 @@ export function applyBeginnerPartAssignments(
     kind: BeginnerGenerationConstraintsV1['target_parts'][number]['kind']
     source_candidate_ids?: number[]
     split_fragment?: number
+    split_x?: number
   }>,
 ) {
   if (assignments.some((assignment) => assignment.source_candidate_ids
@@ -2591,7 +2592,9 @@ export function applyBeginnerPartAssignments(
       || new Set(assignment.source_candidate_ids).size !== assignment.source_candidate_ids.length
       || assignment.source_candidate_ids.some((id) => !Number.isInteger(id) || id < 0 || id > 15)))
     || assignments.some((assignment) => assignment.split_fragment !== undefined
-      && assignment.split_fragment !== 0 && assignment.split_fragment !== 1)) {
+      && assignment.split_fragment !== 0 && assignment.split_fragment !== 1)
+    || assignments.some((assignment) => assignment.split_x !== undefined
+      && (!Number.isSafeInteger(assignment.split_x) || assignment.split_x < 0))) {
     return Promise.reject(new BeginnerRecognitionError('native_failure'))
   }
   return invoke<ProjectSnapshot>('apply_beginner_part_assignments', { request: {

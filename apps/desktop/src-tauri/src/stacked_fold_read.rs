@@ -6128,10 +6128,17 @@ mod tests {
     #[test]
     fn balloon_degree_six_exact_schedule_is_admitted_by_strict_dyadic_read() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        for (fixture_name, (pattern, mut paper, moving)) in [
-            ("balloon-c6", balloon_six_sector_cycle_pattern()),
-            ("octagonal-c8", octagonal_eight_sector_cycle_pattern()),
-            ("radial-c16", sixteen_sector_cycle_pattern(8)),
+        let (c32_pattern, c32_paper, c32_hinges) =
+            super::four_bay_cycle_test_support::eight_bay_rational_cycle_pattern();
+        for (fixture_name, (pattern, mut paper, moving), cactus) in [
+            ("balloon-c6", balloon_six_sector_cycle_pattern(), false),
+            (
+                "octagonal-c8",
+                octagonal_eight_sector_cycle_pattern(),
+                false,
+            ),
+            ("radial-c16", sixteen_sector_cycle_pattern(8), false),
+            ("cactus-c32", (c32_pattern, c32_paper, c32_hinges), true),
         ] {
             paper.thickness_mm = 0.1;
             let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
@@ -6145,10 +6152,27 @@ mod tests {
                 .iter()
                 .map(|hinge| hinge.edge)
                 .collect::<Vec<_>>();
+            let fixed = if cactus {
+                snapshot
+                    .faces
+                    .iter()
+                    .find(|face| {
+                        snapshot
+                            .hinge_adjacency
+                            .iter()
+                            .filter(|hinge| hinge.first == face.id || hinge.second == face.id)
+                            .count()
+                            == 2
+                    })
+                    .unwrap()
+                    .id
+            } else {
+                snapshot.faces[0].id
+            };
             super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
                 &mut project,
                 hinges.clone(),
-                snapshot.faces[0].id,
+                fixed,
             );
             let layer_state = GlobalFlatFoldabilityState::default();
             super::super::global_flat_foldability::tests::install_possible_layer_order(
@@ -6159,7 +6183,11 @@ mod tests {
             let project_id = project.project_id;
             let revision = project.editor.revision();
             let state = AppState::new(project);
-            let schedule = dense_grid_schedule(&hinges, &moving, 100);
+            let schedule = if cactus {
+                four_bay_cycle_schedule(&hinges)
+            } else {
+                dense_grid_schedule(&hinges, &moving, 100)
+            };
             let target = {
                 let project = super::super::lock_project(&state).unwrap();
                 let capability = project

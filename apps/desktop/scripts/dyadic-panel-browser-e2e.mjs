@@ -58,6 +58,7 @@ try {
 
   await verifyHigherDegreeLifecycle(8, 'C8')
   await verifyHigherDegreeLifecycle(16, 'C16')
+  await verifyHigherDegreeLifecycle(32, 'C32')
 
   for (const scenario of ['stale', 'aba', 'tamper']) {
     const page = await openScenario(scenario)

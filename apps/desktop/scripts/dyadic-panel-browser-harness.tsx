@@ -8,7 +8,7 @@ const project = '018f47a2-4b7a-7cc1-8abc-665544332211'
 const token = '018f47a2-4b7a-7cc1-8abc-778899aabbcc'
 const parameters = new URLSearchParams(location.search)
 const requestedHingeCount = Number(parameters.get('hinges'))
-const hingeCount = [6, 8, 16].includes(requestedHingeCount) ? requestedHingeCount : 6
+const hingeCount = [6, 8, 16, 32].includes(requestedHingeCount) ? requestedHingeCount : 6
 const hinges = Array.from({ length: hingeCount }, (_, index) => `018f47a2-4b7a-7cc1-8abc-${String(index + 1).padStart(12, '0')}`)
 const hash = 'a'.repeat(64); const positive = 'b'.repeat(64); const layer = 'c'.repeat(64)
 const scenario = parameters.get('scenario') ?? 'success'

@@ -2231,6 +2231,26 @@ fn symmetric_plan_kind(
             .any(|part| part.kind == kind && part.count == 2)
     };
     if profile.generation_constraints.target_category
+        == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 4)
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Horn && part.count == 1)
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1)
+        && has(ori_domain::BeginnerTargetPartKindV1::Ear)
+    {
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase
+    } else if profile.generation_constraints.target_category
         == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
         && profile
             .generation_constraints
@@ -2640,6 +2660,14 @@ fn configure_symmetric_profile(
             .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Ear && part.count == 2);
     let horn_tail = single_horn && single_tail;
     let horn_tail_ear = horn_tail && tail_ear && horn_ear;
+    let complete_animal = horn_tail_ear
+        && profile.generation_constraints.target_category
+            == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 4);
     let wing_antenna = insect
         && profile
             .generation_constraints
@@ -2733,6 +2761,14 @@ fn configure_symmetric_profile(
             ears.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
             ears.direction_milli = [1000, 0, 0];
             profile.generation_constraints.protrusions.push(ears);
+            if complete_animal {
+                let mut legs = profile.generation_constraints.protrusions[0].clone();
+                legs.id = 4;
+                legs.count = 4;
+                legs.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
+                legs.direction_milli = [0, 1000, 0];
+                profile.generation_constraints.protrusions.push(legs);
+            }
         }
     }
     if wing_antenna {
@@ -2823,6 +2859,7 @@ fn apply_beginner_generated_plan(
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailEarBase
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeWingAntennaBase
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase
     ) {
         return Err("the selected generated plan is preview-only".to_owned());
     }
@@ -2980,6 +3017,11 @@ fn apply_beginner_generated_plan(
             "Create five individually bound bilateral wing, antenna, and leg pairs.",
             "All five pair bindings and the global proof were revalidated before apply.",
         ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase => (
+            "Complete composite animal base",
+            "Apply the bounded horn, tail, ear, and four-leg composite candidate.",
+            "All live bindings and candidate identity were revalidated before apply.",
+        ),
         ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold => (
             "Diagonal fold",
             "Fold the rectangular sheet on the generated diagonal.",
@@ -3131,6 +3173,11 @@ fn apply_grid_plan_document(
         ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase => (
             "Complete composite insect grid candidate",
             "Apply the globally proven five-pair insect parameter-grid candidate.",
+            "All live bindings, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase => (
+            "Complete composite animal grid candidate",
+            "Apply the globally proven complete animal parameter-grid candidate.",
             "All live bindings, proof, and candidate identity were revalidated before apply.",
         ),
         _ => return Err("grid_candidate_kind_invalid".to_owned()),

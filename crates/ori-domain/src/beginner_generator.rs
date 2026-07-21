@@ -624,6 +624,14 @@ pub fn estimate_symmetric_parameters_v1(
         return None;
     }
     let protrusion_count = match constraints.target_category? {
+        BeginnerTargetCategoryV1::Animal
+            if count(BeginnerTargetPartKindV1::Leg) == 4
+                && count(BeginnerTargetPartKindV1::Horn) == 1
+                && count(BeginnerTargetPartKindV1::Tail) == 1
+                && count(BeginnerTargetPartKindV1::Ear) == 2 =>
+        {
+            8
+        }
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Leg) == 4 => 4,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Wing) == 2 => 2,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Fin) == 2 => 2,

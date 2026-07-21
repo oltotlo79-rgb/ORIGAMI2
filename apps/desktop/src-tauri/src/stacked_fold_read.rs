@@ -304,6 +304,12 @@ pub(super) struct ApplyDyadicPathPreviewRequestV1 {
     expected_layer_transport_binding_sha256: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct CancelDyadicPathPreviewRequestV1 {
+    preview_token: ProjectId,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct DyadicPoseGraphReadResponseV1 {
@@ -493,6 +499,29 @@ fn apply_dyadic_pose_path_preview_inner_v1(
     }
     slot.take();
     Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())
+}
+
+#[tauri::command]
+pub(super) fn cancel_dyadic_pose_path_preview_v1(
+    preview_state: State<'_, DyadicPathPreviewState>,
+    request: CancelDyadicPathPreviewRequestV1,
+) -> Result<(), String> {
+    cancel_dyadic_pose_path_preview_inner_v1(&preview_state, request.preview_token)
+}
+
+fn cancel_dyadic_pose_path_preview_inner_v1(
+    preview_state: &DyadicPathPreviewState,
+    token: ProjectId,
+) -> Result<(), String> {
+    let mut slot = preview_state
+        .0
+        .lock()
+        .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+    if slot.as_ref().is_none_or(|record| record.token != token) {
+        return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+    }
+    slot.take();
+    Ok(())
 }
 
 fn read_bounded_dyadic_pose_graph_inner_v1(

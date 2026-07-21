@@ -3205,6 +3205,11 @@ export function applyDyadicPosePathPreviewV1(request: Readonly<{
   })
 }
 
+export function cancelDyadicPosePathPreviewV1(previewToken: string): Promise<void> {
+  if (!isCanonicalNonNilUuid(previewToken)) return Promise.reject(new Error('invalid dyadic preview token'))
+  return invoke<void>('cancel_dyadic_pose_path_preview_v1', { request: { previewToken } })
+}
+
 export function proposeCurrentCyclePoseV1(
   request: CurrentCyclePosePreviewRequestV1,
 ): Promise<CurrentCyclePosePreviewResponseV1> {

@@ -1525,6 +1525,42 @@ pub(crate) mod tests {
             assert!(artifact.bytes.starts_with(magic));
         }
 
+        let mut sink_timeline = reopened_reverse.clone();
+        sink_timeline.steps[0].title = "沈め折りの開始姿勢".to_owned();
+        sink_timeline.steps[1].title = "沈め折り 1".to_owned();
+        sink_timeline.steps[2].title = "沈め折り 2".to_owned();
+        let sink_archive = serde_json::to_vec(&sink_timeline).expect("archive sink fold");
+        let reopened_sink: ori_domain::InstructionTimeline =
+            serde_json::from_slice(&sink_archive).expect("reopen sink fold");
+        for (format, magic) in [
+            (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+            (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+        ] {
+            let mut sink_source = source_for(&project, format);
+            sink_source.timeline = reopened_sink.clone();
+            let artifact = build_pending_export(sink_source).expect("native sink-fold export");
+            assert_eq!(artifact.step_count, 3);
+            assert!(artifact.bytes.starts_with(magic));
+        }
+
+        // A manually authored sink remains exportable without being presented as
+        // certificate-backed: removing the DTO also removes its proof summary.
+        let mut uncertified_sink = reopened_sink.clone();
+        for step in &mut uncertified_sink.steps[1..] {
+            step.visual.path_certificate_reference_v1 = None;
+            step.description = "手動で作成された沈め折りです。".to_owned();
+        }
+        for format in [
+            InstructionExportFormatRequest::Pdf,
+            InstructionExportFormatRequest::SvgZip,
+        ] {
+            let mut sink_source = source_for(&project, format);
+            sink_source.timeline = uncertified_sink.clone();
+            let artifact = build_pending_export(sink_source)
+                .expect("uncertified sink keeps the non-proof export boundary");
+            assert_eq!(artifact.step_count, 3);
+        }
+
         let mut tampered_reverse = reopened_reverse.clone();
         tampered_reverse.steps[2]
             .visual

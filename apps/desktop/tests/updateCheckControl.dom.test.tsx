@@ -16,8 +16,10 @@ import {
   type UpdateCheckControlProps,
 } from '../src/components/UpdateCheckControl.tsx'
 import {
+  createUpdateCheckClient,
   type UpdateCheckClient,
   type UpdateCheckResult,
+  type UpdateCheckTransportResponse,
 } from '../src/lib/githubReleaseUpdate.ts'
 import {
   createUpdateCheckSettingsStore,
@@ -363,6 +365,73 @@ describe('UpdateCheckControl', () => {
       expect(control().dataset.updateState).toBe('up_to_date')
     })
     expect(checkNow).toHaveBeenCalledTimes(2)
+  })
+
+  it('hides hostile latest responses with localized errors and permits a safe retry', async () => {
+    const localeStore = localeFixture('en')
+    const stable = {
+      tag_name: 'v1.2.3',
+      html_url: OFFICIAL_RELEASE_URL,
+      name: 'ORIGAMI2 v1.2.3',
+      body: 'Canonical generated release notes.',
+      draft: false,
+      prerelease: false,
+      assets: Array.from({ length: 9 }, (_, id) => ({ id: id + 1 })),
+    }
+    const bodies = [
+      JSON.stringify({
+        ...stable,
+        name: 'QUARANTINED v1.2.3',
+        body: '## QUARANTINED RELEASE\n\nDo not install.',
+      }),
+      `${'['.repeat(33)}null${']'.repeat(33)}`,
+      'x'.repeat(128 * 1024 + 1),
+      JSON.stringify(stable),
+    ]
+    const requestLatestRelease = vi.fn(async () => ({
+      status: 200,
+      contentType: 'application/vnd.github+json; charset=utf-8',
+      body: bodies.shift() ?? '',
+      finalUrl:
+        'https://api.github.com/repos/oltotlo79-rgb/ORIGAMI2/releases/latest',
+      redirected: false,
+    } satisfies UpdateCheckTransportResponse))
+    renderControl({
+      localeStore,
+      client: createUpdateCheckClient({ requestLatestRelease }),
+    })
+    const check = () => fireEvent.click(screen.getByRole('button', {
+      name: /^(Check now|今すぐ確認)$/u,
+    }))
+
+    check()
+    await waitFor(() => expect(control().dataset.updateState).toBe('unavailable'))
+    expect(screen.getByRole('status').textContent).toBe(
+      'Update information could not be checked. Please try again later.',
+    )
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(document.body.textContent).not.toMatch(/QUARANTINED|Do not install/iu)
+
+    act(() => localeStore.setLocale('ja'))
+    check()
+    await waitFor(() => expect(requestLatestRelease).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('status').textContent).toBe(
+      '更新情報を確認できませんでした。時間をおいてもう一度お試しください。',
+    )
+    expect(screen.queryByRole('link')).toBeNull()
+
+    check()
+    await waitFor(() => expect(requestLatestRelease).toHaveBeenCalledTimes(3))
+    expect(control().dataset.updateState).toBe('unavailable')
+    expect(screen.queryByRole('link')).toBeNull()
+
+    act(() => localeStore.setLocale('en'))
+    check()
+    await waitFor(() => expect(control().dataset.updateState).toBe('update_available'))
+    expect(requestLatestRelease).toHaveBeenCalledTimes(4)
+    expect(screen.getByRole('link', {
+      name: 'Open release 1.2.3 on GitHub',
+    }).getAttribute('href')).toBe(OFFICIAL_RELEASE_URL)
   })
 
   it('does not start a request after unmount while version lookup is pending', async () => {

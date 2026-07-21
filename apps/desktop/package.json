@@ -15,6 +15,7 @@
     "test:a11y-browser": "node scripts/accessibility-browser-smoke.mjs",
     "test:diagnostics-browser": "node scripts/diagnostics-browser-e2e.mjs",
     "test:project-lifecycle-browser": "node scripts/project-lifecycle-browser-e2e.mjs",
+    "test:automatic-intersection-browser": "node scripts/automatic-intersection-browser-e2e.mjs",
     "test:recent-projects-browser": "node scripts/recent-projects-browser-e2e.mjs",
     "test:fold-preview-browser": "node scripts/fold-preview-browser-e2e.mjs",
     "test:render-performance-browser": "node scripts/render-performance-browser-e2e.mjs",

@@ -11196,8 +11196,16 @@ mod tests {
             .iter_mut()
             .enumerate()
         {
-            target.length_tenths_mm = if index == 0 { 1 } else { 270 + index as u32 * 27 };
-            target.thickness_tenths_mm = if index == 0 { 1 } else { 50 + index as u16 * 10 };
+            target.length_tenths_mm = if index == 0 {
+                1
+            } else {
+                270 + index as u32 * 27
+            };
+            target.thickness_tenths_mm = if index == 0 {
+                1
+            } else {
+                50 + index as u16 * 10
+            };
             target.direction_milli[0] = -target.direction_milli[0];
             target.direction_milli[1] = -target.direction_milli[1];
         }
@@ -11216,14 +11224,54 @@ mod tests {
             .enumerate()
         {
             assert_eq!(target.id, index as u16 + 1);
-            let source_length = if index == 0 { 1 } else { 270 + index as u32 * 27 };
-            let source_thickness = if index == 0 { 1 } else { 50 + index as u16 * 10 };
+            let source_length = if index == 0 {
+                1
+            } else {
+                270 + index as u32 * 27
+            };
+            let source_thickness = if index == 0 {
+                1
+            } else {
+                50 + index as u16 * 10
+            };
             assert_eq!(target.length_tenths_mm, (source_length * 45 / 27).max(1));
             assert_eq!(
                 target.thickness_tenths_mm,
                 (source_thickness * 80 / 50).max(1)
             );
         }
+
+        let mut project = initial_project_state();
+        let plan = grid_template_plan(
+            project.project_id,
+            project.editor.pattern(),
+            &project.editor.paper().boundary_vertices,
+            &source,
+            point,
+        )
+        .unwrap()
+        .into_iter()
+        .find(|plan| {
+            plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase
+        })
+        .unwrap();
+        let project_id = project.project_id;
+        let instance_id = project.instance_id;
+        let revision = project.editor.revision();
+        let applied = apply_grid_plan_document(
+            &mut project,
+            instance_id,
+            project_id,
+            revision,
+            plan.clone(),
+        )
+        .unwrap();
+        assert!(
+            apply_grid_plan_document(&mut project, instance_id, project_id, revision, plan).is_err()
+        );
+        let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
+        let redone = execute_redo(&mut project, project_id, undone.revision).unwrap();
+        assert_eq!(redone.revision, undone.revision + 1);
     }
 
     #[test]

@@ -399,8 +399,68 @@ describe('InstructionTimelinePanel localization', () => {
       'value',
       `経路証明 SHA-256: ${proof}`,
     )
+    expect(screen.getByLabelText('構造化経路証明').textContent).toContain(
+      '証明指紋: 7c7c7c7c7c7c…',
+    )
+    expect(screen.getByLabelText('構造化経路証明').textContent).toContain('検証区間: 1')
     fireEvent.click(screen.getByRole('button', { name: '折り図を書き出す' }))
     expect(onExport).toHaveBeenCalledTimes(1)
+  })
+
+  it('warns instead of trusting mismatched or text-only certificate descriptions', () => {
+    const baseStep = SNAPSHOT.instruction_timeline.steps[0]!
+    const certificate = {
+      version: 1 as const,
+      model_id: 'bounded_certified_pose_graph_path_reference_v1' as const,
+      binding_sha256: Array(32).fill(0x7c),
+      source_pose_sha256: Array(32).fill(2),
+      target_pose_sha256: Array(32).fill(3),
+      source_model_binding_sha256: Array(32).fill(4),
+      transition_count: 1,
+    }
+    const { rerender } = renderPanel({
+      ...SNAPSHOT,
+      instruction_timeline: {
+        steps: [{
+          ...baseStep,
+          description: `経路証明 SHA-256: ${'8d'.repeat(32)} / 元モデル SHA-256: ${FINGERPRINT}`,
+          visual: { ...baseStep.visual, path_certificate_reference_v1: certificate },
+        }],
+      },
+    })
+    fireEvent.click(screen.getByText('1. Fold crane · 完成形サムネイル').closest('button')!)
+    expect(screen.getByRole('alert').textContent).toContain(
+      '証明説明が構造化データと一致しません',
+    )
+    expect(screen.queryByLabelText('構造化経路証明')).toBeNull()
+
+    rerender(<InstructionTimelinePanel
+      snapshot={{
+        ...SNAPSHOT,
+        instruction_timeline: {
+          steps: [{
+            ...baseStep,
+            description: `経路証明 SHA-256: ${'7c'.repeat(32)} / 元モデル SHA-256: ${FINGERPRINT}`,
+          }],
+        },
+      }}
+      appliedPose={APPLIED_POSE}
+      poseModelKey="model-1"
+      manualPoseChangeSequence={0}
+      coreBusy={false}
+      benchmarkActive={false}
+      fileOperationActive={false}
+      exportAvailable
+      exportButtonRef={{ current: null }}
+      animationExportButtonRef={{ current: null }}
+      runNativeEdit={vi.fn(async () => SNAPSHOT)}
+      applyStepPose={vi.fn(() => true)}
+      onExport={vi.fn()}
+      onAnimationExport={vi.fn()}
+    />)
+    expect(screen.getByRole('alert').textContent).toContain(
+      '構造化証明データがないため、この説明文は証明として扱いません',
+    )
   })
 })
 

@@ -87,6 +87,32 @@ type InstructionTimelinePanelProps = {
   onAnimationExport(): void
 }
 
+type PathCertificateDisplay =
+  | Readonly<{ kind: 'verified'; shortBinding: string; transitionCount: number }>
+  | Readonly<{ kind: 'mismatch' | 'text-only' }>
+
+const PATH_CERTIFICATE_MARKER = '経路証明 SHA-256:'
+
+function createPathCertificateDisplay(
+  step: InstructionStepPresentation,
+): PathCertificateDisplay | null {
+  const reference = step.visual.path_certificate_reference_v1
+  const hasCertificateText = step.description.includes(PATH_CERTIFICATE_MARKER)
+  if (!reference) return hasCertificateText ? { kind: 'text-only' } : null
+
+  const binding = reference.binding_sha256
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+  const expectedText = `${PATH_CERTIFICATE_MARKER} ${binding} / 元モデル SHA-256: ${step.pose.source_model_fingerprint}`
+  if (!step.description.includes(expectedText)) return { kind: 'mismatch' }
+
+  return {
+    kind: 'verified',
+    shortBinding: `${binding.slice(0, 12)}…`,
+    transitionCount: reference.transition_count,
+  }
+}
+
 export function InstructionTimelinePanel({
   snapshot,
   appliedPose,
@@ -132,6 +158,9 @@ export function InstructionTimelinePanel({
   const firstPhysicalStep = steps.find((step) => !step.declarativeOnly)
   const selectedStep = presentation.kind === 'ready' && selectedStepId
     ? presentation.stepsById.get(selectedStepId) ?? null
+    : null
+  const selectedProofDisplay = selectedStep
+    ? createPathCertificateDisplay(selectedStep)
     : null
   const captureDraft = useMemo(() => {
     if (
@@ -871,6 +900,32 @@ export function InstructionTimelinePanel({
                       })}
                     />
                   </label>
+                  {selectedProofDisplay?.kind === 'verified' && (
+                    <aside className="instruction-notice" aria-label={locale === 'ja'
+                      ? '構造化経路証明'
+                      : 'Structured path certificate'}>
+                      <strong>{locale === 'ja' ? '構造化経路証明' : 'Structured path certificate'}</strong>
+                      <div>{locale === 'ja' ? '証明指紋' : 'Certificate fingerprint'}: {selectedProofDisplay.shortBinding}</div>
+                      <div>{locale === 'ja' ? '検証区間' : 'Verified transitions'}: {selectedProofDisplay.transitionCount}</div>
+                      <small>{locale === 'ja'
+                        ? '保存済みDTOの識別情報です。折り図出力時に直前姿勢・現在姿勢・元モデルへ再照合します。'
+                        : 'Saved DTO identity; diagram export rechecks the previous pose, current pose, and source model.'}</small>
+                    </aside>
+                  )}
+                  {selectedProofDisplay?.kind === 'mismatch' && (
+                    <p className="instruction-timeline-error" role="alert">
+                      {locale === 'ja'
+                        ? '証明説明が構造化データと一致しません。書き出しは拒否されます。'
+                        : 'The certificate description does not match the structured data. Export will be rejected.'}
+                    </p>
+                  )}
+                  {selectedProofDisplay?.kind === 'text-only' && (
+                    <p className="instruction-timeline-error" role="alert">
+                      {locale === 'ja'
+                        ? '構造化証明データがないため、この説明文は証明として扱いません。'
+                        : 'This description is not treated as proof because structured certificate data is absent.'}
+                    </p>
+                  )}
                   <label>
                     <span>{selectLocalizedText(locale, TEXT.cautionLabel)}</span>
                     <textarea

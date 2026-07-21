@@ -18,6 +18,7 @@ import {
   type ProjectSnapshot,
 } from '../lib/coreClient'
 import type { FoldPreviewAppliedPoseSnapshot } from '../lib/foldPreviewAppliedPose'
+import { pathCertificateEndpointsMatch } from '../lib/pathCertificateIntegrity'
 import {
   DEFAULT_INSTRUCTION_DURATION_MS,
   INSTRUCTION_APPLICATION_TIMEOUT_MS,
@@ -162,6 +163,19 @@ export function InstructionTimelinePanel({
   const selectedProofDisplay = selectedStep
     ? createPathCertificateDisplay(selectedStep)
     : null
+  const [proofEndpointStatus, setProofEndpointStatus] = useState<'checking' | 'valid' | 'invalid'>('checking')
+  useEffect(() => {
+    let active = true
+    setProofEndpointStatus('checking')
+    if (!selectedStep || selectedProofDisplay?.kind !== 'verified') return () => { active = false }
+    const index = steps.findIndex((step) => step.id === selectedStep.id)
+    void pathCertificateEndpointsMatch(steps[index - 1], selectedStep).then((matches) => {
+      if (active) setProofEndpointStatus(matches ? 'valid' : 'invalid')
+    }, () => {
+      if (active) setProofEndpointStatus('invalid')
+    })
+    return () => { active = false }
+  }, [selectedStep, selectedProofDisplay?.kind, steps])
   const captureDraft = useMemo(() => {
     if (
       !snapshot
@@ -900,7 +914,7 @@ export function InstructionTimelinePanel({
                       })}
                     />
                   </label>
-                  {selectedProofDisplay?.kind === 'verified' && (
+                  {selectedProofDisplay?.kind === 'verified' && proofEndpointStatus === 'valid' && (
                     <aside className="instruction-notice" aria-label={locale === 'ja'
                       ? '構造化経路証明'
                       : 'Structured path certificate'}>
@@ -911,6 +925,13 @@ export function InstructionTimelinePanel({
                         ? '保存済みDTOの識別情報です。折り図出力時に直前姿勢・現在姿勢・元モデルへ再照合します。'
                         : 'Saved DTO identity; diagram export rechecks the previous pose, current pose, and source model.'}</small>
                     </aside>
+                  )}
+                  {selectedProofDisplay?.kind === 'verified' && proofEndpointStatus === 'invalid' && (
+                    <p className="instruction-timeline-error" role="alert">
+                      {locale === 'ja'
+                        ? '証明の元モデルまたは姿勢端点が構造化データと一致しません。書き出しは拒否されます。'
+                        : 'The source model or pose endpoints do not match the structured certificate. Export will be rejected.'}
+                    </p>
                   )}
                   {selectedProofDisplay?.kind === 'mismatch' && (
                     <p className="instruction-timeline-error" role="alert">

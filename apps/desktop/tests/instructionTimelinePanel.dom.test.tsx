@@ -6,6 +6,7 @@ import {
   screen,
 } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 
 import { InstructionTimelinePanel } from '../src/components/InstructionTimelinePanel.tsx'
 import type { ProjectSnapshot } from '../src/lib/coreClient.ts'
@@ -399,10 +400,6 @@ describe('InstructionTimelinePanel localization', () => {
       'value',
       `経路証明 SHA-256: ${proof}`,
     )
-    expect(screen.getByLabelText('構造化経路証明').textContent).toContain(
-      '証明指紋: 7c7c7c7c7c7c…',
-    )
-    expect(screen.getByLabelText('構造化経路証明').textContent).toContain('検証区間: 1')
     fireEvent.click(screen.getByRole('button', { name: '折り図を書き出す' }))
     expect(onExport).toHaveBeenCalledTimes(1)
   })
@@ -462,7 +459,98 @@ describe('InstructionTimelinePanel localization', () => {
       '構造化証明データがないため、この説明文は証明として扱いません',
     )
   })
+
+  it('reopens a valid archive certificate and warns on model or endpoint tampering', async () => {
+    const face = '11111111-1111-1111-1111-111111111111'
+    const edge = '22222222-2222-2222-2222-222222222222'
+    const previous = {
+      ...SNAPSHOT.instruction_timeline.steps[0]!,
+      id: 'proof-start',
+      pose: {
+        ...SNAPSHOT.instruction_timeline.steps[0]!.pose,
+        fixed_face: face,
+        hinge_angles: [{ edge, angle_degrees: 5 }],
+      },
+    }
+    const targetPose = {
+      ...previous.pose,
+      hinge_angles: [{ edge, angle_degrees: 10 }],
+    }
+    const binding = Array(32).fill(0x7c)
+    const reference = {
+      version: 1 as const,
+      model_id: 'bounded_certified_pose_graph_path_reference_v1' as const,
+      binding_sha256: binding,
+      source_pose_sha256: poseFingerprint(FINGERPRINT, face, previous.pose.hinge_angles),
+      target_pose_sha256: poseFingerprint(FINGERPRINT, face, targetPose.hinge_angles),
+      source_model_binding_sha256: sha256Bytes([
+        Buffer.from('path_certificate_source_model_binding_v1'),
+        Buffer.from(FINGERPRINT),
+      ]),
+      transition_count: 1,
+    }
+    const proofStep = {
+      ...previous,
+      id: 'proof-target',
+      description: `経路証明 SHA-256: ${'7c'.repeat(32)} / 元モデル SHA-256: ${FINGERPRINT}`,
+      pose: targetPose,
+      visual: { ...previous.visual, path_certificate_reference_v1: reference },
+    }
+    const reopened = JSON.parse(JSON.stringify({
+      ...SNAPSHOT,
+      instruction_timeline: { steps: [previous, proofStep] },
+    })) as ProjectSnapshot
+    const view = renderPanel(reopened)
+    fireEvent.click(screen.getByText('2. Fold crane · 完成形サムネイル').closest('button')!)
+    const proofDetails = await screen.findByLabelText('構造化経路証明')
+    expect(proofDetails.textContent).toContain('証明指紋: 7c7c7c7c7c7c…')
+    expect(proofDetails.textContent).toContain('検証区間: 1')
+
+    const tamperedModel = JSON.parse(JSON.stringify(reopened)) as ProjectSnapshot
+    tamperedModel.instruction_timeline.steps[1]!.visual.path_certificate_reference_v1!
+      .source_model_binding_sha256[0] ^= 1
+    view.rerender(panelFor(tamperedModel))
+    expect((await screen.findByRole('alert')).textContent).toContain('元モデルまたは姿勢端点')
+
+    const tamperedEndpoint = JSON.parse(JSON.stringify(reopened)) as ProjectSnapshot
+    tamperedEndpoint.instruction_timeline.steps[1]!.visual.path_certificate_reference_v1!
+      .target_pose_sha256[0] ^= 1
+    view.rerender(panelFor(tamperedEndpoint))
+    expect((await screen.findByRole('alert')).textContent).toContain('元モデルまたは姿勢端点')
+  })
 })
+
+function panelFor(snapshot: ProjectSnapshot) {
+  return <InstructionTimelinePanel
+    snapshot={snapshot} appliedPose={APPLIED_POSE} poseModelKey="model-1"
+    manualPoseChangeSequence={0} coreBusy={false} benchmarkActive={false}
+    fileOperationActive={false} exportAvailable exportButtonRef={{ current: null }}
+    animationExportButtonRef={{ current: null }} runNativeEdit={vi.fn(async () => snapshot)}
+    applyStepPose={vi.fn(() => true)} onExport={vi.fn()} onAnimationExport={vi.fn()}
+  />
+}
+
+function poseFingerprint(model: string, face: string, hinges: readonly { edge: string; angle_degrees: number }[]) {
+  const fields: Buffer[] = [
+    Buffer.from('origami2_instruction_pose_fingerprint_v1'), Buffer.from(model), uuidBuffer(face),
+  ]
+  for (const hinge of [...hinges].sort((a, b) => a.edge.localeCompare(b.edge))) {
+    const angle = Buffer.alloc(8)
+    angle.writeDoubleBE(hinge.angle_degrees)
+    fields.push(uuidBuffer(hinge.edge), angle)
+  }
+  return sha256Bytes(fields)
+}
+
+function sha256Bytes(fields: readonly Buffer[]) {
+  const hash = createHash('sha256')
+  for (const field of fields) hash.update(field)
+  return [...hash.digest()]
+}
+
+function uuidBuffer(value: string) {
+  return Buffer.from(value.replaceAll('-', ''), 'hex')
+}
 
 function renderPanel(
   snapshot = SNAPSHOT,

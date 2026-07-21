@@ -1088,6 +1088,7 @@ function validSnapshot(overrides: Record<string, unknown> = {}) {
         schema_version: 1,
         maximum_steps: 60,
         detail_level: 'standard',
+        generic_body_outline_mode: 'symmetric',
         target_category: null,
         target_parts: [],
         skeleton_segments: [],

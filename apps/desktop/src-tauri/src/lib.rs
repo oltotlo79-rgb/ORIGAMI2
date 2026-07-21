@@ -188,7 +188,8 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use stacked_fold_read::{
     cancel_current_stacked_fold_read_v1, propose_current_cycle_pose_v1,
-    propose_current_stacked_fold_read, read_even_cycle_candidates_v1, read_live_hinge_registry_v1,
+    propose_current_stacked_fold_read, read_bounded_dyadic_pose_graph_v1,
+    read_even_cycle_candidates_v1, read_live_hinge_registry_v1,
 };
 use stacked_fold_transaction::{
     apply_named_accordion_fold_transaction, apply_named_book_fold_transaction,
@@ -13479,6 +13480,7 @@ pub fn run() {
             propose_current_cycle_pose_v1,
             cancel_current_stacked_fold_read_v1,
             read_even_cycle_candidates_v1,
+            read_bounded_dyadic_pose_graph_v1,
             read_live_hinge_registry_v1,
             cancel_stacked_fold_transaction_preview,
             apply_stacked_fold_transaction,

@@ -84,7 +84,16 @@ pub fn generate_bounded_dyadic_pose_graph_v1(
     {
         return Err(DyadicPoseGraphGenerationErrorV1::BindingMismatch);
     }
-    let hinge_count = source.as_slice().len();
+    let moving = source
+        .as_slice()
+        .iter()
+        .zip(target.as_slice())
+        .enumerate()
+        .filter_map(|(index, (source, target))| {
+            (source.angle_degrees().to_bits() != target.angle_degrees().to_bits()).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let hinge_count = moving.len();
     let state_count = 3usize
         .checked_pow(hinge_count as u32)
         .ok_or(DyadicPoseGraphGenerationErrorV1::ResourceLimit)?;
@@ -106,9 +115,15 @@ pub fn generate_bounded_dyadic_pose_graph_v1(
             .as_slice()
             .iter()
             .zip(target.as_slice())
-            .map(|(source, target)| {
-                let level = digits % 3;
-                digits /= 3;
+            .enumerate()
+            .map(|(index, (source, target))| {
+                let level = if moving.contains(&index) {
+                    let level = digits % 3;
+                    digits /= 3;
+                    level
+                } else {
+                    0
+                };
                 let angle = match level {
                     0 => source.angle_degrees(),
                     1 => (source.angle_degrees() + target.angle_degrees()) * 0.5,
@@ -122,11 +137,11 @@ pub fn generate_bounded_dyadic_pose_graph_v1(
     }
     let mut transitions = Vec::with_capacity(transition_count);
     for source_state in 0..state_count {
-        for hinge_index in 0..hinge_count {
+        for (moving_index, hinge_index) in moving.iter().copied().enumerate() {
             if !checkpoint() {
                 return Err(DyadicPoseGraphGenerationErrorV1::Cancelled);
             }
-            let stride = 3usize.pow(hinge_index as u32);
+            let stride = 3usize.pow(moving_index as u32);
             let level = (source_state / stride) % 3;
             for target_level in [level.checked_sub(1), (level < 2).then_some(level + 1)]
                 .into_iter()

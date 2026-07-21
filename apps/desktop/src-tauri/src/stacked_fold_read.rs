@@ -227,6 +227,224 @@ struct EvenCycleCandidateDtoV1 {
     reason: &'static str,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DyadicPoseGraphReadRequestV1 {
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    target_angles: Vec<DyadicPoseGraphAngleDtoV1>,
+    max_states: usize,
+    max_transitions: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DyadicPoseGraphAngleDtoV1 {
+    edge: ori_domain::EdgeId,
+    angle_degrees: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct DyadicPoseGraphReadResponseV1 {
+    version: u32,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    status: &'static str,
+    state_count: usize,
+    transition_count: usize,
+    explored_state_count: usize,
+    evaluated_transition_count: usize,
+    authorizes_project_mutation: bool,
+}
+
+#[tauri::command]
+pub(super) fn read_bounded_dyadic_pose_graph_v1(
+    app_state: State<'_, AppState>,
+    request: DyadicPoseGraphReadRequestV1,
+) -> Result<DyadicPoseGraphReadResponseV1, String> {
+    read_bounded_dyadic_pose_graph_inner_v1(&app_state, request)
+}
+
+fn read_bounded_dyadic_pose_graph_inner_v1(
+    app_state: &AppState,
+    request: DyadicPoseGraphReadRequestV1,
+) -> Result<DyadicPoseGraphReadResponseV1, String> {
+    let generation = begin_stacked_fold_read_generation_v1()?;
+    let project = lock_project(app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+    if project.instance_id != request.expected_project_instance_id
+        || project.project_id != request.expected_project_id
+        || project.editor.revision() != request.expected_revision
+    {
+        return Err(STALE_MESSAGE.to_owned());
+    }
+    let capability = project
+        .applied_pose_authority
+        .capture_capability(&project)
+        .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
+        .ok_or_else(|| UNAVAILABLE_MESSAGE.to_owned())?;
+    let (geometry, audit, pose) = capability
+        .graph()
+        .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+    let target = ori_kinematics::CanonicalHingeAngles::new(
+        request
+            .target_angles
+            .iter()
+            .map(|entry| ori_kinematics::HingeAngle::new(entry.edge, entry.angle_degrees))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?,
+    )
+    .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+    let graph = match ori_kinematics::generate_bounded_dyadic_pose_graph_v1(
+        pose.hinge_angles(),
+        &target,
+        ori_kinematics::DyadicPoseGraphLimitsV1 {
+            max_states: request.max_states,
+            max_transitions: request.max_transitions,
+        },
+        || STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) == generation,
+    ) {
+        Ok(value) => value,
+        Err(ori_kinematics::DyadicPoseGraphGenerationErrorV1::ResourceLimit) => {
+            return Ok(dyadic_graph_response(
+                &project,
+                "resource_limit",
+                0,
+                0,
+                0,
+                0,
+            ));
+        }
+        Err(ori_kinematics::DyadicPoseGraphGenerationErrorV1::Cancelled) => {
+            return Ok(dyadic_graph_response(&project, "cancelled", 0, 0, 0, 0));
+        }
+        Err(_) => return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned()),
+    };
+    let fingerprints = graph
+        .states()
+        .iter()
+        .map(pose_state_fingerprint_v1)
+        .collect::<Vec<_>>();
+    let candidates = graph
+        .transitions()
+        .iter()
+        .enumerate()
+        .map(|(index, edge)| {
+            let mut key = [0; 32];
+            key[24..].copy_from_slice(&(index as u64).to_be_bytes());
+            ori_collision::CertifiedPathTransitionCandidateV1 {
+                source: fingerprints[edge.source_state],
+                target: fingerprints[edge.target_state],
+                candidate_key: key,
+            }
+        })
+        .collect::<Vec<_>>();
+    let searched = ori_collision::search_certified_pose_graph_with_checkpoint_v1(
+        &fingerprints,
+        &candidates,
+        fingerprints[graph.source_state()],
+        fingerprints[graph.target_state()],
+        || STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) == generation,
+        |edge| {
+            let source = fingerprints
+                .iter()
+                .position(|value| value == &edge.source)?;
+            let target = fingerprints
+                .iter()
+                .position(|value| value == &edge.target)?;
+            let generated = generate_linear_multi_hinge_path_candidate_v1(
+                geometry,
+                audit,
+                pose.fixed_face(),
+                &graph.states()[source],
+                &graph.states()[target],
+                MultiHingePathCandidateLimitsV1::default(),
+            )
+            .ok()?;
+            let closure = geometry
+                .prove_dyadic_schedule_closure_v1(
+                    audit,
+                    pose.fixed_face(),
+                    generated.schedule(),
+                    ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                    DyadicIntervalClosureLimitsV1 {
+                        max_depth: 8,
+                        max_leaves: 256,
+                        max_work: 1_152,
+                        schedule_limits: CycleScheduleLimitsV1::default(),
+                    },
+                )
+                .ok()?;
+            ori_collision::certify_scheduled_cycle_transition_v1(
+                geometry,
+                audit,
+                pose.fixed_face(),
+                &generated,
+                &closure,
+                32,
+                edge.source,
+                edge.target,
+            )
+        },
+    );
+    let (status, explored, evaluated) = match searched {
+        ori_collision::CertifiedPathGraphSearchResultV1::Certified(value) => (
+            "certified",
+            value.explored_state_count(),
+            value.evaluated_transition_count(),
+        ),
+        ori_collision::CertifiedPathGraphSearchResultV1::Indeterminate {
+            reason,
+            explored_state_count,
+            evaluated_transition_count,
+        } => (
+            match reason {
+                ori_collision::CertifiedPathGraphIndeterminateReasonV1::NoCertifiedPath => {
+                    "no_path"
+                }
+                ori_collision::CertifiedPathGraphIndeterminateReasonV1::ResourceLimit => {
+                    "resource_limit"
+                }
+                ori_collision::CertifiedPathGraphIndeterminateReasonV1::Cancelled => "cancelled",
+            },
+            explored_state_count,
+            evaluated_transition_count,
+        ),
+    };
+    Ok(dyadic_graph_response(
+        &project,
+        status,
+        graph.states().len(),
+        graph.transitions().len(),
+        explored,
+        evaluated,
+    ))
+}
+
+fn dyadic_graph_response(
+    project: &super::ProjectState,
+    status: &'static str,
+    state_count: usize,
+    transition_count: usize,
+    explored_state_count: usize,
+    evaluated_transition_count: usize,
+) -> DyadicPoseGraphReadResponseV1 {
+    DyadicPoseGraphReadResponseV1 {
+        version: 1,
+        project_instance_id: project.instance_id,
+        project_id: project.project_id,
+        revision: project.editor.revision(),
+        status,
+        state_count,
+        transition_count,
+        explored_state_count,
+        evaluated_transition_count,
+        authorizes_project_mutation: false,
+    }
+}
+
 #[tauri::command]
 pub(super) fn read_even_cycle_candidates_v1(
     app_state: State<'_, AppState>,
@@ -2980,6 +3198,63 @@ mod tests {
         project.instance_id = fixed_id("7300", 1);
         project.project_id = fixed_id("7300", 2);
         project
+    }
+
+    #[test]
+    fn dyadic_pose_graph_read_is_strict_bounded_and_observation_only() {
+        let (mut project, hinges) = super::super::applied_pose::tests::four_vertex_cycle_project();
+        super::super::applied_pose::tests::install_flat_graph_pose_authority(
+            &mut project,
+            hinges.clone(),
+        );
+        let live_edges = project
+            .applied_pose_authority
+            .capture_capability(&project)
+            .unwrap()
+            .unwrap()
+            .graph()
+            .unwrap()
+            .2
+            .hinge_angles()
+            .as_slice()
+            .iter()
+            .map(|angle| angle.edge())
+            .collect::<Vec<_>>();
+        let request = |max_states| DyadicPoseGraphReadRequestV1 {
+            expected_project_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: project.editor.revision(),
+            target_angles: live_edges
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(index, edge)| DyadicPoseGraphAngleDtoV1 {
+                    edge,
+                    angle_degrees: if index < 2 { 30.0 } else { 0.0 },
+                })
+                .collect(),
+            max_states,
+            max_transitions: 64,
+        };
+        let limited_request = request(8);
+        let live_request = request(32);
+        let state = AppState::new(project);
+        let limited = read_bounded_dyadic_pose_graph_inner_v1(&state, limited_request).unwrap();
+        assert_eq!(limited.status, "resource_limit");
+        assert!(!limited.authorizes_project_mutation);
+        let observed = read_bounded_dyadic_pose_graph_inner_v1(&state, live_request).unwrap();
+        assert_eq!(observed.state_count, 9);
+        assert_eq!(observed.transition_count, 24);
+        assert!(matches!(observed.status, "certified" | "no_path"));
+        assert!(!observed.authorizes_project_mutation);
+        assert!(
+            super::super::lock_project(&state)
+                .unwrap()
+                .editor
+                .instruction_timeline()
+                .steps
+                .is_empty()
+        );
     }
 
     #[test]

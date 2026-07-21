@@ -2890,6 +2890,12 @@ mod tests {
         assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
         assert_eq!(response.transaction_proposal.timeline_step_count, 1);
         let after = project.editor.clone();
+        assert_eq!(
+            after.pattern().vertices.len(),
+            before.pattern().vertices.len() + 2,
+            "the new straight line must atomically create both source-hinge intersections"
+        );
+        assert!(after.pattern().edges.len() > before.pattern().edges.len());
         project.editor.undo(applied_revision).unwrap();
         assert_eq!(project.editor.pattern(), before.pattern());
         assert_eq!(
@@ -2901,6 +2907,26 @@ mod tests {
         assert_eq!(project.editor.pattern(), after.pattern());
         assert_eq!(
             project.editor.current_applied_pose(),
+            after.current_applied_pose()
+        );
+        let archive = project
+            .project_archive()
+            .expect("serialize split-hinge cycle operation");
+        let mut reopened = super::super::ProjectState::from_project_archive(
+            archive,
+            std::path::PathBuf::from("split-hinge-cycle.ori2"),
+        )
+        .expect("reopen split-hinge cycle operation");
+        assert_eq!(reopened.editor.pattern(), after.pattern());
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+        let reopened_revision = reopened.editor.revision();
+        reopened.editor.undo(reopened_revision).unwrap();
+        assert_eq!(reopened.editor.pattern(), before.pattern());
+        let reopened_redo_revision = reopened.editor.revision();
+        reopened.editor.redo(reopened_redo_revision).unwrap();
+        assert_eq!(reopened.editor.pattern(), after.pattern());
+        assert_eq!(
+            reopened.editor.current_applied_pose(),
             after.current_applied_pose()
         );
         certificate_hashes

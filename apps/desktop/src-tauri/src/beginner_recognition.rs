@@ -498,6 +498,7 @@ pub(crate) fn apply_beginner_part_assignments(
                 thickness_tenths_mm: 10,
                 root_width_tenths_mm: None,
                 tip_width_tenths_mm: None,
+                local_outline_tenths_mm: None,
                 position_tenths_mm: [
                     i32::try_from(axis_twice.saturating_mul(5))
                         .map_err(|_| "part_assignment_wing_antenna_binding_invalid")?,
@@ -588,6 +589,7 @@ pub(crate) fn apply_beginner_part_assignments(
             .map_err(|_| "part_assignment_horn_binding_invalid")?,
             root_width_tenths_mm: None,
             tip_width_tenths_mm: None,
+            local_outline_tenths_mm: None,
             position_tenths_mm: [
                 i32::try_from(axis_twice.saturating_mul(5))
                     .map_err(|_| "part_assignment_horn_binding_invalid")?,
@@ -708,6 +710,7 @@ pub(crate) fn apply_beginner_part_assignments(
             .map_err(|_| "part_assignment_tail_binding_invalid")?,
             root_width_tenths_mm: None,
             tip_width_tenths_mm: None,
+            local_outline_tenths_mm: None,
             position_tenths_mm: [
                 i32::try_from(axis_twice.saturating_mul(5))
                     .map_err(|_| "part_assignment_tail_binding_invalid")?,
@@ -928,6 +931,7 @@ pub(crate) fn apply_beginner_part_assignments(
                     .map_err(|_| "part_assignment_six_leg_binding_invalid")?,
                 root_width_tenths_mm: None,
                 tip_width_tenths_mm: None,
+                local_outline_tenths_mm: None,
                 position_tenths_mm: [
                     i32::try_from(axis_twice.saturating_mul(5))
                         .map_err(|_| "part_assignment_six_leg_binding_invalid")?,
@@ -1062,6 +1066,7 @@ pub(crate) fn apply_beginner_part_assignments(
                 .clamp(1, 10_000),
                 root_width_tenths_mm: None,
                 tip_width_tenths_mm: None,
+                local_outline_tenths_mm: None,
                 position_tenths_mm: [
                     i32::try_from(axis_twice.saturating_mul(5))
                         .map_err(|_| "part_assignment_generic_binding_invalid")?,

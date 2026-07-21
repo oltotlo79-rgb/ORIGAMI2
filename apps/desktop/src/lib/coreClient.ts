@@ -224,6 +224,7 @@ export type BeginnerGenerationConstraintsV1 = {
     thickness_tenths_mm: number
     root_width_tenths_mm?: number
     tip_width_tenths_mm?: number
+    local_outline_tenths_mm?: Array<[number, number]>
     position_tenths_mm: [number, number, number]
     direction_milli: [number, number, number]
     symmetry: 'none' | 'bilateral' | 'radial'
@@ -301,10 +302,11 @@ function isBoundedIntegerTuple(
 }
 
 function isCanonicalGenericBodyOutline(
-  value: unknown, mode: 'symmetric' | 'general',
+  value: unknown, mode: 'symmetric' | 'symmetric_ccw' | 'general', minimum = 4, maximum = 16,
+  coordinateMaximum = 100_000,
 ): value is Array<[number, number]> {
-  if (!Array.isArray(value) || value.length < 4 || value.length > 16
-    || value.some((point) => !isBoundedIntegerTuple(point, 2, 100_000))) return false
+  if (!Array.isArray(value) || value.length < minimum || value.length > maximum
+    || value.some((point) => !isBoundedIntegerTuple(point, 2, coordinateMaximum))) return false
   const points = value as Array<[number, number]>
   const keys = points.map(([x, y]) => `${x},${y}`)
   if (new Set(keys).size !== points.length
@@ -313,7 +315,7 @@ function isCanonicalGenericBodyOutline(
       const [rx, ry] = right.split(',').map(Number)
       return lx - rx || ly - ry
     })[0]
-    || (mode === 'symmetric' && points.some(([x, y]) => !keys.includes(`${-x},${y}`)))) return false
+    || (mode !== 'general' && points.some(([x, y]) => !keys.includes(`${-x},${y}`)))) return false
   const area = points.reduce((sum, [x, y], index) => {
     const next = points[(index + 1) % points.length]!
     return sum + x * next[1] - next[0] * y
@@ -463,7 +465,8 @@ function normalizeBeginnerGenerationConstraints(
       'position_tenths_mm', 'direction_milli', 'symmetry', 'curvature_degrees',
       'joint', 'motion_degrees', 'side', 'priority',
     ] as const
-    const newKeys = [...oldKeys, 'root_width_tenths_mm', 'tip_width_tenths_mm'] as const
+    const newKeys = [...oldKeys, 'root_width_tenths_mm', 'tip_width_tenths_mm',
+      'local_outline_tenths_mm'] as const
     const snapshot = snapshotCoreDataRecord(value)
     const item = snapshot && Object.keys(snapshot).every((key) => newKeys.includes(key as typeof newKeys[number]))
       && oldKeys.every((key) => Object.hasOwn(snapshot, key)) ? snapshot : null
@@ -480,6 +483,9 @@ function normalizeBeginnerGenerationConstraints(
       || (item.tip_width_tenths_mm !== undefined
         && (!Number.isInteger(item.tip_width_tenths_mm)
           || Number(item.tip_width_tenths_mm) < 1 || Number(item.tip_width_tenths_mm) > 10_000))
+      || (item.local_outline_tenths_mm !== undefined
+        && !isCanonicalGenericBodyOutline(item.local_outline_tenths_mm,
+          item.symmetry === 'bilateral' ? 'symmetric_ccw' : 'general', 3, 8, 10_000))
       || !isBoundedIntegerTuple(item.position_tenths_mm, 3, 100_000)
       || !isBoundedIntegerTuple(item.direction_milli, 3, 1_000)
       || item.direction_milli.every((axis) => axis === 0)

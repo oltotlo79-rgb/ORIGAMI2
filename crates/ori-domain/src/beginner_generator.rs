@@ -2045,7 +2045,7 @@ mod tests {
             kind: BeginnerTargetPartKindV1::Tail,
             count: 1,
         });
-        let mut tail_target = horn_tail.protrusions[0];
+        let mut tail_target = horn_tail.protrusions[0].clone();
         tail_target.id = 2;
         tail_target.direction_milli = [1_000, 0, 0];
         horn_tail.protrusions.push(tail_target);
@@ -2093,7 +2093,7 @@ mod tests {
             });
         let mut legs = bilateral_protrusion(4, 4);
         legs.direction_milli = [0, 1_000, 0];
-        complete_animal.protrusions.push(legs);
+        complete_animal.protrusions.push(legs.clone());
         let complete_animal_plans =
             generate_beginner_plans_v1(namespace, &source, &ids, &complete_animal).unwrap();
         assert_eq!(
@@ -2220,7 +2220,7 @@ mod tests {
             Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
         );
         let mut intersecting_generic = generic.clone();
-        let mut overlapping = intersecting_generic.protrusions[0];
+        let mut overlapping = intersecting_generic.protrusions[0].clone();
         overlapping.id = 2;
         intersecting_generic.protrusions[1] = overlapping;
         intersecting_generic.target_parts.last_mut().unwrap().count = 1;
@@ -2553,6 +2553,7 @@ mod tests {
             thickness_tenths_mm: 2,
             root_width_tenths_mm: None,
             tip_width_tenths_mm: None,
+            local_outline_tenths_mm: None,
             position_tenths_mm: [0, if count == 2 { 5 } else { 0 }, 0],
             direction_milli: if count == 2 {
                 [1_000, 0, 0]

@@ -1,4 +1,5 @@
 import type { BeginnerGenerationConstraintsV1 } from '../lib/coreClient'
+import { ProtrusionLocalOutlineEditor } from './ProtrusionLocalOutlineEditor'
 
 type Protrusion = NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
 type PartKind = BeginnerGenerationConstraintsV1['target_parts'][number]['kind']
@@ -127,6 +128,14 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
         value={target.direction_milli[1] / 1_000}
         onChange={(event) => updateDirection(1, Number(event.currentTarget.value))} />
     </label>
+    <ProtrusionLocalOutlineEditor locale={locale} bindingId={target.id}
+      symmetry={target.symmetry} points={target.local_outline_tenths_mm ?? []}
+      onChange={(points) => {
+        const next = { ...target }
+        if (points === undefined) delete next.local_outline_tenths_mm
+        else next.local_outline_tenths_mm = points
+        onChange(next)
+      }} />
     <button type="button" disabled={!canRemove} onClick={onRemove}>{locale === 'ja' ? '削除' : 'Remove'}</button>
     <button type="button" disabled={!canMoveUp} onClick={onMoveUp}>
       {locale === 'ja' ? '上へ' : 'Move up'}

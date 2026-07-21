@@ -112,7 +112,7 @@ pub enum BeginnerProtrusionSideV1 {
     Either,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BeginnerProtrusionTargetV1 {
     pub id: u16,
@@ -123,6 +123,8 @@ pub struct BeginnerProtrusionTargetV1 {
     pub root_width_tenths_mm: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tip_width_tenths_mm: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_outline_tenths_mm: Option<Vec<[i32; 2]>>,
     pub position_tenths_mm: [i32; 3],
     pub direction_milli: [i16; 3],
     pub symmetry: BeginnerProtrusionSymmetryV1,
@@ -290,6 +292,10 @@ pub fn validate_beginner_generation_constraints_v1(
                     .tip_width_tenths_mm
                     .is_none_or(|width| (1..=10_000).contains(&width))
                 && target
+                    .local_outline_tenths_mm
+                    .as_deref()
+                    .is_none_or(|points| valid_protrusion_local_outline_v1(points, target.symmetry))
+                && target
                     .position_tenths_mm
                     .iter()
                     .all(|value| value.unsigned_abs() <= 100_000)
@@ -400,6 +406,58 @@ fn segments_intersect_v1(a: [i32; 2], b: [i32; 2], c: [i32; 2], d: [i32; 2]) -> 
         || (values[0].signum() != values[1].signum() && values[2].signum() != values[3].signum())
 }
 
+fn valid_protrusion_local_outline_v1(
+    points: &[[i32; 2]],
+    symmetry: BeginnerProtrusionSymmetryV1,
+) -> bool {
+    if !(3..=8).contains(&points.len())
+        || points
+            .iter()
+            .any(|point| point.iter().any(|axis| axis.unsigned_abs() > 10_000))
+        || points.iter().collect::<HashSet<_>>().len() != points.len()
+        || points[0]
+            != *points
+                .iter()
+                .min()
+                .expect("non-empty bounded local outline")
+        || (symmetry == BeginnerProtrusionSymmetryV1::Bilateral
+            && points
+                .iter()
+                .any(|point| !points.contains(&[-point[0], point[1]])))
+    {
+        return false;
+    }
+    let twice_area = points
+        .iter()
+        .enumerate()
+        .fold(0_i128, |sum, (index, point)| {
+            let next = points[(index + 1) % points.len()];
+            sum + i128::from(point[0]) * i128::from(next[1])
+                - i128::from(next[0]) * i128::from(point[1])
+        });
+    if twice_area <= 0 {
+        return false;
+    }
+    for first in 0..points.len() {
+        let first_end = (first + 1) % points.len();
+        for second in (first + 1)..points.len() {
+            let second_end = (second + 1) % points.len();
+            if first == second_end || first_end == second {
+                continue;
+            }
+            if segments_intersect_v1(
+                points[first],
+                points[first_end],
+                points[second],
+                points[second_end],
+            ) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,6 +512,7 @@ mod tests {
             thickness_tenths_mm: 20,
             root_width_tenths_mm: None,
             tip_width_tenths_mm: None,
+            local_outline_tenths_mm: None,
             position_tenths_mm: [0, 0, 0],
             direction_milli: [1000, 0, 0],
             symmetry: BeginnerProtrusionSymmetryV1::Bilateral,
@@ -464,9 +523,9 @@ mod tests {
             priority: 80,
         };
         let mut constraints = BeginnerGenerationConstraintsV1::default();
-        constraints.protrusions.push(target);
+        constraints.protrusions.push(target.clone());
         assert!(validate_beginner_generation_constraints_v1(&constraints));
-        constraints.protrusions.push(target);
+        constraints.protrusions.push(target.clone());
         assert!(!validate_beginner_generation_constraints_v1(&constraints));
         constraints.protrusions.pop();
         constraints.protrusions[0].direction_milli = [0, 0, 0];
@@ -500,6 +559,7 @@ mod tests {
             thickness_tenths_mm: 20,
             root_width_tenths_mm: Some(30),
             tip_width_tenths_mm: Some(10),
+            local_outline_tenths_mm: None,
             position_tenths_mm: [0, 0, 0],
             direction_milli: [1_000, 0, 0],
             symmetry: BeginnerProtrusionSymmetryV1::None,
@@ -509,7 +569,7 @@ mod tests {
             side: BeginnerProtrusionSideV1::Either,
             priority: 50,
         };
-        constraints.protrusions.push(target);
+        constraints.protrusions.push(target.clone());
         assert!(validate_beginner_generation_constraints_v1(&constraints));
         target.tip_width_tenths_mm = Some(0);
         constraints.protrusions[0] = target;
@@ -536,6 +596,33 @@ mod tests {
         assert!(!validate_beginner_generation_constraints_v1(&constraints));
         constraints.generic_body_outline_tenths_mm =
             Some(vec![[-100, -50], [100, 50], [-100, 50], [100, -50]]);
+        assert!(!validate_beginner_generation_constraints_v1(&constraints));
+    }
+
+    #[test]
+    fn protrusion_local_outline_is_optional_canonical_and_bilateral_safe() {
+        let target = BeginnerProtrusionTargetV1 {
+            id: 1,
+            count: 2,
+            length_tenths_mm: 100,
+            thickness_tenths_mm: 20,
+            root_width_tenths_mm: None,
+            tip_width_tenths_mm: None,
+            local_outline_tenths_mm: Some(vec![[-50, -40], [50, -40], [50, 40], [-50, 40]]),
+            position_tenths_mm: [0, 0, 0],
+            direction_milli: [1_000, 0, 0],
+            symmetry: BeginnerProtrusionSymmetryV1::Bilateral,
+            curvature_degrees: 0,
+            joint: BeginnerProtrusionJointV1::Fixed,
+            motion_degrees: [0, 0],
+            side: BeginnerProtrusionSideV1::Either,
+            priority: 50,
+        };
+        let mut constraints = BeginnerGenerationConstraintsV1::default();
+        constraints.protrusions.push(target.clone());
+        assert!(validate_beginner_generation_constraints_v1(&constraints));
+        constraints.protrusions[0].local_outline_tenths_mm =
+            Some(vec![[-50, -40], [40, -40], [50, 40], [-50, 40]]);
         assert!(!validate_beginner_generation_constraints_v1(&constraints));
     }
 

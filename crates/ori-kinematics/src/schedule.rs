@@ -1178,11 +1178,65 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
     if geometry.hinges().len() != 4 || limits.max_hinges < 4 {
         return Err(MultiHingePathCandidateErrorV1::InvalidBinding);
     }
-    let mut hinges = geometry
-        .hinges()
+    let source = geometry.hinges();
+    let center = [source[0].start(), source[0].end()]
+        .into_iter()
+        .find(|point| {
+            source
+                .iter()
+                .all(|hinge| hinge.start() == *point || hinge.end() == *point)
+        })
+        .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)?;
+    let mut rays = source
         .iter()
-        .map(|hinge| hinge.edge())
+        .map(|hinge| {
+            let endpoint = if hinge.start() == center {
+                hinge.end()
+            } else {
+                hinge.start()
+            };
+            let x = endpoint.x() - center.x();
+            let y = endpoint.y() - center.y();
+            let length_squared = x.mul_add(x, y * y);
+            (length_squared > 0.0)
+                .then_some((hinge.edge(), x, y, length_squared))
+                .ok_or(MultiHingePathCandidateErrorV1::CandidateRejected)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    rays.sort_by(|first, second| {
+        let first_half = first.2 > 0.0 || (first.2 == 0.0 && first.1 >= 0.0);
+        let second_half = second.2 > 0.0 || (second.2 == 0.0 && second.1 >= 0.0);
+        first_half.cmp(&second_half).reverse().then_with(|| {
+            let cross = first.1 * second.2 - first.2 * second.1;
+            if cross > 0.0 {
+                std::cmp::Ordering::Less
+            } else if cross < 0.0 {
+                std::cmp::Ordering::Greater
+            } else {
+                first.0.canonical_bytes().cmp(&second.0.canonical_bytes())
+            }
+        })
+    });
+    let sector_cosines = (0..4)
+        .map(|index| {
+            let first = rays[index];
+            let second = rays[(index + 1) % 4];
+            (first.1 * second.1 + first.2 * second.2) / (first.3.sqrt() * second.3.sqrt())
+        })
         .collect::<Vec<_>>();
+    let wide = sector_cosines
+        .iter()
+        .filter(|cosine| (**cosine + 0.5).abs() <= 1.0e-9)
+        .count();
+    let narrow = sector_cosines
+        .iter()
+        .filter(|cosine| (**cosine - 0.5).abs() <= 1.0e-9)
+        .count();
+    if wide != 2 || narrow != 2 {
+        return Err(MultiHingePathCandidateErrorV1::CandidateRejected);
+    }
+    let unit_edges = [rays[0].0, rays[2].0];
+    let mut hinges = rays.iter().map(|ray| ray.0).collect::<Vec<_>>();
     hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
     let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
         geometry,
@@ -1190,8 +1244,7 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
         fixed_face,
         hinges
             .iter()
-            .enumerate()
-            .map(|(index, edge)| HalfAngleRationalEntryInputV1 {
+            .map(|edge| HalfAngleRationalEntryInputV1 {
                 edge: *edge,
                 u_domain: [
                     RationalCoefficientV1 {
@@ -1214,7 +1267,7 @@ pub fn generate_kawasaki_120_120_60_60_path_candidate_v1(
                     },
                 ],
                 denominator_power_coefficients: vec![RationalCoefficientV1 {
-                    numerator: if index % 2 == 0 { 1 } else { 2 },
+                    numerator: if unit_edges.contains(edge) { 1 } else { 2 },
                     denominator: 1,
                 }],
             })
@@ -1992,7 +2045,12 @@ mod tests {
         let audit =
             MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
         let start = Point3::new(0.0, 0.0, 0.0).unwrap();
-        let end = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let ends = [
+            Point3::new(1.0, 0.0, 0.0).unwrap(),
+            Point3::new(-0.5, 0.866_025_403_784_438_6, 0.0).unwrap(),
+            Point3::new(-0.5, -0.866_025_403_784_438_6, 0.0).unwrap(),
+            Point3::new(0.5, -0.866_025_403_784_438_6, 0.0).unwrap(),
+        ];
         let geometry = MaterialHingeGraphGeometry::new_for_test(
             faces.to_vec(),
             (0..4)
@@ -2003,8 +2061,8 @@ mod tests {
                         faces[index],
                         faces[(index + 1) % 4],
                         start,
-                        end,
-                        end,
+                        ends[index],
+                        ends[index],
                     )
                 })
                 .collect(),

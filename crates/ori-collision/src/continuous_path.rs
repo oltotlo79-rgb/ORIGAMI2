@@ -1932,6 +1932,197 @@ mod tests {
         serde_json::from_str(&format!("\"00000000-0000-4000-{prefix}-{index:012x}\"")).unwrap()
     }
 
+    fn four_bay_rational_cycle_geometry() -> (
+        MaterialHingeGraphGeometry,
+        MaterialHingeGraphAudit,
+        ori_kinematics::CanonicalCycleScheduleV1,
+        FaceId,
+    ) {
+        let triples = [
+            (3.0, 5.0, 4.0),
+            (5.0, 13.0, 12.0),
+            (8.0, 17.0, 15.0),
+            (7.0, 25.0, 24.0),
+        ];
+        let mut vertices = Vec::new();
+        let mut boundary = Vec::new();
+        let mut hinge_endpoints = Vec::new();
+        let mut centers = Vec::new();
+        for (group, (p, q, leg)) in triples.into_iter().enumerate() {
+            let center_y = -60.0 + group as f64 * 40.0;
+            let center = Vertex {
+                id: fixed_id("b100", 100 + group as u64),
+                position: Point2::new(0.0, center_y),
+            };
+            centers.push(center.id);
+            vertices.push(center);
+            let directions = [
+                (1.0, 0.0),
+                (-p / q, leg / q),
+                ((2.0 * p * p - q * q) / (q * q), -2.0 * p * leg / (q * q)),
+                (p / q, -leg / q),
+            ];
+            for (local, (x, y)) in directions.into_iter().enumerate() {
+                let vertex = Vertex {
+                    id: fixed_id("b200", 1 + (group * 4 + local) as u64),
+                    position: Point2::new(x * 12.0, center_y - y * 12.0),
+                };
+                boundary.push(vertex.id);
+                hinge_endpoints.push(vertex.id);
+                vertices.push(vertex);
+            }
+            let gateway = Vertex {
+                id: fixed_id("b250", group as u64 + 1),
+                position: Point2::new(24.0, center_y + 20.0),
+            };
+            boundary.push(gateway.id);
+            vertices.push(gateway);
+        }
+        for (index, (x, y)) in [(50.0, 96.0), (50.0, -96.0)].into_iter().enumerate() {
+            let vertex = Vertex {
+                id: fixed_id("b300", index as u64 + 1),
+                position: Point2::new(x, y),
+            };
+            boundary.push(vertex.id);
+            vertices.push(vertex);
+        }
+        boundary.reverse();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: fixed_id("b400", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let hinges = (0..16)
+            .map(|index| fixed_id("b500", index as u64 + 1))
+            .collect::<Vec<EdgeId>>();
+        edges.extend((0..16).map(|index| Edge {
+            id: hinges[index],
+            start: centers[index / 4],
+            end: hinge_endpoints[index],
+            kind: if index % 4 == 3 {
+                EdgeKind::Mountain
+            } else {
+                EdgeKind::Valley
+            },
+        }));
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let analysis = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("b600", 1),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        });
+        let topology = analysis
+            .snapshot
+            .unwrap_or_else(|| panic!("four non-crossing rational bays: {:?}", analysis.issues));
+        let geometry = MaterialHingeGraphGeometry::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        let fixed = topology
+            .faces
+            .iter()
+            .max_by_key(|face| {
+                topology
+                    .hinge_adjacency
+                    .iter()
+                    .filter(|adjacency| adjacency.first == face.id || adjacency.second == face.id)
+                    .count()
+            })
+            .unwrap()
+            .id;
+        let mut inputs = hinges
+            .into_iter()
+            .enumerate()
+            .map(|(index, edge)| {
+                let (p, q, _) = triples[index / 4];
+                ori_kinematics::HalfAngleRationalEntryInputV1 {
+                    edge,
+                    u_domain: [
+                        ori_kinematics::RationalCoefficientV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        ori_kinematics::RationalCoefficientV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ],
+                    numerator_power_coefficients: vec![
+                        ori_kinematics::RationalCoefficientV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        ori_kinematics::RationalCoefficientV1 {
+                            numerator: if index % 2 == 0 { 1 } else { p as i64 },
+                            denominator: 1,
+                        },
+                    ],
+                    denominator_power_coefficients: vec![ori_kinematics::RationalCoefficientV1 {
+                        numerator: if index % 2 == 0 { 1 } else { q as i64 },
+                        denominator: 1,
+                    }],
+                }
+            })
+            .collect::<Vec<_>>();
+        inputs.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        let schedule = ori_kinematics::CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            inputs,
+            ori_kinematics::CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        (geometry, audit, schedule, fixed)
+    }
+
+    #[test]
+    fn four_non_crossing_rational_bays_admit_real_geometry_and_four_leaf_closure() {
+        let (geometry, audit, schedule, fixed) = four_bay_rational_cycle_geometry();
+        assert_eq!(geometry.hinges().len(), 16);
+        assert_eq!(geometry.face_ids().len(), 13);
+        assert!(geometry.face_ids().iter().all(|face| {
+            geometry
+                .face_boundary_vertices(*face)
+                .is_some_and(|boundary| boundary.len() >= 3)
+        }));
+        for u in [0.0, 0.5, 1.0] {
+            let angles = schedule.evaluate(u).unwrap();
+            geometry
+                .solve_closed(&audit, fixed, &angles, 1.0e-8)
+                .unwrap();
+        }
+        let closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                fixed,
+                &schedule,
+                1.0e-8,
+                ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                    max_depth: 2,
+                    max_leaves: 4,
+                    max_work: 4,
+                    schedule_limits: ori_kinematics::CycleScheduleLimitsV1::default(),
+                },
+            )
+            .expect("four-leaf real-geometry closure");
+        assert_eq!(closure.leaves().len(), 4);
+        assert!(closure.every_leaf_covers_graph_v1(&geometry));
+    }
+
     #[test]
     fn genuine_two_hinge_tree_half_angle_schedule_has_closure_and_bounded_ccd() {
         let points = [

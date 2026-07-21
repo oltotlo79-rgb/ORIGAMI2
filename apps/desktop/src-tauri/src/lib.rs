@@ -21317,6 +21317,77 @@ mod tests {
         assert_eq!(project.editor.revision(), 1);
         assert_eq!(solver_vertex_position(&project, start), original);
     }
+
+    #[test]
+    fn folded_landmark_ranking_rejects_collision_and_resource_one_over_without_mutation() {
+        let reference = BeginnerReferenceModelSuggestionV1 {
+            asset_id: AssetId::new(),
+            bbox_min_tenths_mm: [0, 0, 0],
+            bbox_max_tenths_mm: [100, 80, 40],
+            dominant_normal_milli: [0, 0, 1000],
+            surface_area_milli: 8_000,
+            protrusions: Vec::new(),
+            pair_bindings: Vec::new(),
+            method: "test".to_owned(),
+            suggested_part_kind: None,
+        };
+        let plan = |vertices: Vec<Vertex>, edges: Vec<Edge>| ori_domain::BeginnerGeneratedPlanV1 {
+            schema_version: 1,
+            kind: ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase,
+            crease_pattern: CreasePattern { vertices, edges },
+            instruction_codes: Vec::new(),
+            target_parts: Vec::new(),
+            skeleton_segments: Vec::new(),
+            target_asset: None,
+        };
+        let a = VertexId::new();
+        let b = VertexId::new();
+        let c = VertexId::new();
+        let collision = plan(
+            vec![
+                Vertex {
+                    id: a,
+                    position: Point2::new(1.0, 1.0),
+                },
+                Vertex {
+                    id: b,
+                    position: Point2::new(1.0, 1.0),
+                },
+                Vertex {
+                    id: c,
+                    position: Point2::new(2.0, 1.0),
+                },
+            ],
+            vec![Edge {
+                id: EdgeId::new(),
+                start: a,
+                end: c,
+                kind: EdgeKind::Mountain,
+            }],
+        );
+        assert_eq!(
+            bounded_folded_pose_landmark_score_v1(&collision, &reference),
+            None
+        );
+
+        let oversized = plan(
+            (0..=MAX_BEGINNER_FOLDED_LANDMARKS_V1)
+                .map(|index| Vertex {
+                    id: VertexId::new(),
+                    position: Point2::new(index as f64, 0.0),
+                })
+                .collect(),
+            Vec::new(),
+        );
+        assert_eq!(
+            bounded_folded_pose_landmark_score_v1(&oversized, &reference),
+            None
+        );
+        let project = initial_project_state();
+        let before = project.document();
+        let _ = bounded_folded_pose_landmark_score_v1(&oversized, &reference);
+        assert_eq!(project.document(), before);
+    }
 }
 static BEGINNER_GRID_TEST_LOCK: Mutex<()> = Mutex::new(());
 

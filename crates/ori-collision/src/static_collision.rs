@@ -1324,10 +1324,8 @@ pub fn diagnose_static_collision_geometry_with_flat_layer_order_v1(
                 // pair as the same admitted flat-stack evidence used by a
                 // certified flat hinge.
                 pair.evidence = IntersectionEvidenceV2::SharedFeatureFlatStack;
-                pair.policy_decision = classify_runtime_topology_contact_v2(
-                    pair.topology,
-                    pair.evidence,
-                );
+                pair.policy_decision =
+                    classify_runtime_topology_contact_v2(pair.topology, pair.evidence);
                 pair.whole_face_overlap_proven = false;
             }
             pair.disposition = StaticCollisionPairDisposition::Allowed;

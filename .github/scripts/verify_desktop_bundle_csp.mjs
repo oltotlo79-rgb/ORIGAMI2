@@ -28,7 +28,11 @@ const canonicalCss = decodeCssEscapes(css.replace(/\/\*[\s\S]*?\*\//gu, ''))
 if (/url\(\s*["']?(?:data|blob|https?):/iu.test(canonicalCss) || /@import\b/iu.test(canonicalCss)) {
   throw new Error('desktop bundle CSS contains remote, blob, data, or imported content')
 }
-if (/\b(?:importScripts|WebSocket|EventSource)\s*\(|\bimport\s*\(|[#@]\s*sourceMappingURL\s*=|\bfetch\s*\(\s*["'`]https?:\/\//u.test(javascript)) {
+const canonicalJavaScript = foldStaticJavaScriptStrings(decodeJavaScriptEscapes(javascript))
+if (/\b(?:importScripts|WebSocket|EventSource|XMLHttpRequest)\s*\(|\bimport\s*\(|[#@]\s*sourceMappingURL\s*=|\bfetch\s*\(\s*["'`]https?:\/\//u.test(canonicalJavaScript)
+  || /\b(?:globalThis|window|self)\s*\[\s*["'`]fetch["'`]\s*\]/u.test(canonicalJavaScript)
+  || /\bnavigator\s*(?:\.\s*sendBeacon|\[\s*["'`]sendBeacon["'`]\s*\])/u.test(canonicalJavaScript)
+  || /\(\s*0\s*,\s*fetch\s*\)\s*\(\s*["'`]https?:\/\//u.test(canonicalJavaScript)) {
   throw new Error('desktop bundle JavaScript contains forbidden dynamic loading or network authority')
 }
 for (const link of html.matchAll(/<link\b[^>]*\brel="(modulepreload|preload)"[^>]*\bhref="([^"]+)"[^>]*>/gu)) {
@@ -60,4 +64,23 @@ function readPinnedFile(path, limit) {
 function decodeCssEscapes(value) {
   return value.replace(/\\([0-9a-fA-F]{1,6})[\t\n\r\f ]?|\\([^\n\r\f0-9a-fA-F])/gu, (_match, hexadecimal, escaped) =>
     hexadecimal === undefined ? escaped : String.fromCodePoint(Number.parseInt(hexadecimal, 16)))
+}
+
+function decodeJavaScriptEscapes(value) {
+  return value
+    .replace(/\\u\{([0-9a-fA-F]{1,6})\}/gu, (_match, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})/gu, (_match, unicode, hexadecimal) =>
+      String.fromCodePoint(Number.parseInt(unicode ?? hexadecimal, 16)))
+}
+
+function foldStaticJavaScriptStrings(value) {
+  let folded = value
+  const adjacent = /(["'`])([A-Za-z0-9_:.\/-]*)\1\s*\+\s*(["'`])([A-Za-z0-9_:.\/-]*)\3/gu
+  for (let pass = 0; pass < 16; pass += 1) {
+    const next = folded.replace(adjacent, (_match, _leftQuote, left, _rightQuote, right) =>
+      JSON.stringify(left + right))
+    if (next === folded) return folded
+    folded = next
+  }
+  return folded
 }

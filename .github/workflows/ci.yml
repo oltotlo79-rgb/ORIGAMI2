@@ -80,6 +80,8 @@ jobs:
       - run: npm test
       - name: Test formal release workflow and local artifact contract
         run: node --test ../../.github/tests/formal-release.test.mjs
+      - name: Generate and verify credential-free release dry-run artifacts
+        run: node ../../.github/scripts/run_release_dry_run.mjs
       - name: Validate generated static, textured, and animated GLB
         run: npm run test:gltf-validator
       - name: Install headless Chromium for Khronos Sample Viewer

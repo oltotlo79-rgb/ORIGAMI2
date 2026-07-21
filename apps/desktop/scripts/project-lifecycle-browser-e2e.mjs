@@ -18,13 +18,15 @@ try {
   await save.evaluate((n) => { n.click(); n.click() }); await page.getByText('save-canceled', { exact: true }).waitFor()
   await save.click(); await page.getByText('save-failed', { exact: true }).waitFor()
   await save.click(); await page.getByText('saved', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Test invalid responses' }).click(); await page.getByText('strict-rejected', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Reopen project' }).click(); await page.getByText('reopened', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Discard recovery' }).click(); await page.getByText('recovery-discarded', { exact: true }).waitFor()
   await close.click(); await page.getByRole('button', { name: 'Discard and close' }).click(); await page.waitForTimeout(300)
   await close.click(); await page.getByRole('button', { name: 'Discard and close' }).click()
   await page.getByRole('button', { name: 'Start stale close' }).click(); await page.waitForTimeout(300)
   const evidence = await page.evaluate(() => window.__ORIGAMI2_PROJECT_LIFECYCLE__)
-  if (evidence.saveCalls !== 3 || evidence.maximumActiveSaves !== 1 || evidence.recoveryCalls !== 1 || evidence.prepareCalls !== 2 || evidence.closeRequests !== 1) throw new Error(`lifecycle evidence mismatch: ${JSON.stringify(evidence)}`)
-  console.log('project lifecycle browser E2E passed: dirty close, save retry/single-flight, keyboard focus, close handshake')
+  if (evidence.saveCalls !== 3 || evidence.maximumActiveSaves !== 1 || evidence.recoveryCalls !== 1 || evidence.prepareCalls !== 2 || evidence.closeRequests !== 1 || evidence.strictRejects !== 2 || evidence.concurrentRejects !== 1 || evidence.reopenedExpressionBits !== '4609047870845172685' || evidence.reopenedCanUndo !== true) throw new Error(`lifecycle evidence mismatch: ${JSON.stringify(evidence)}`)
+  console.log('project lifecycle browser E2E passed: strict open/save, history/provenance reopen, retry/single-flight, dirty close')
 } catch (error) {
   const output = process.env.ORIGAMI2_PROJECT_LIFECYCLE_ARTIFACT_DIRECTORY
   if (output) { await mkdir(resolve(output), { recursive: true }); await writeFile(join(resolve(output), 'project-lifecycle-failure.json'), JSON.stringify({ message: String(error), serverOutput: serverOutput.slice(-16000) })); try { await page?.screenshot({ path: join(resolve(output), 'project-lifecycle-failure.png'), fullPage: true }) } catch {} }

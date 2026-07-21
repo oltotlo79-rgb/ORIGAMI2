@@ -1484,6 +1484,25 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
     let Some(derivative_sum) = derivative_sum else {
         return failed();
     };
+    if let Some(thickness) = paper_thickness_mm {
+        let Some(initial_angles) = schedule.evaluate(0.0) else {
+            return failed();
+        };
+        let Ok(initial_pose) = geometry.solve_closed(audit, fixed_face, &initial_angles, 1.0e-9)
+        else {
+            return failed();
+        };
+        if prove_positive_thickness_graph_geometry_v1(
+            geometry,
+            &initial_pose,
+            thickness,
+            PositiveThicknessGraphLimitsV1::default(),
+        )
+        .is_err()
+        {
+            return failed();
+        }
+    }
     if paper_thickness_mm.is_none()
         && scheduled_collinear_flat_stack_premises_v1(geometry, audit, fixed_face, schedule)
     {

@@ -769,20 +769,33 @@ jobs:
             -F prerelease="$publish_prerelease" -F body=@"$public_notes_file" >/dev/null
           published="$RUNNER_TEMP/published-release.json"
           published_headers="$RUNNER_TEMP/published-release.headers"
+          verify_release_api_headers() {
+            response_headers="$1"
+            response_status="$2"
+            test "$response_status" = 200
+            test "$(grep -Eic '^HTTP/[0-9.]+ [0-9]{3}\r?$' "$response_headers")" -eq 1
+            grep -Eiq '^content-type: application/(json|vnd\.github\+json)(;|\r?$)' "$response_headers"
+            grep -Eiq '^etag: "[A-Za-z0-9+/=_:.-]{1,256}"\r?$' "$response_headers"
+            grep -Eiq '^cache-control: .*(private|no-store)' "$response_headers"
+            grep -Eiq '^x-ratelimit-remaining: [1-9][0-9]*\r?$' "$response_headers"
+            ! grep -Eiq '^(link|retry-after):' "$response_headers"
+            ! grep -Eiq '^age: [1-9][0-9]*\r?$' "$response_headers"
+            ! grep -Eiq '^cache-control: .*(public|s-maxage=[1-9])' "$response_headers"
+          }
           publish_verified=false
           consecutive_verified=0
           for attempt in 1 2 3; do
-            if curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+            if published_status="$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+              --connect-timeout 15 --max-time 60 \
               --max-redirs 0 --max-filesize 1048576 \
               --header "Authorization: Bearer $GH_TOKEN" \
               --header 'Accept: application/vnd.github+json' \
               --header 'X-GitHub-Api-Version: 2022-11-28' \
               --header 'Cache-Control: no-cache' --header 'Pragma: no-cache' \
               --dump-header "$published_headers" --output "$published" \
-              "https://api.github.com/repos/$GH_REPO/releases/$created_release_id" \
-              && grep -Eiq '^content-type: application/(json|vnd\.github\+json)(;|\r?$)' "$published_headers" \
-              && ! grep -Eiq '^link:' "$published_headers" \
-              && grep -Eiq '^etag: (W/)?"[A-Za-z0-9+/=_:.-]{1,256}"\r?$' "$published_headers" \
+              --write-out '%{http_code}' \
+              "https://api.github.com/repos/$GH_REPO/releases/$created_release_id")" \
+              && verify_release_api_headers "$published_headers" "$published_status" \
               && test "$(jq -r .id "$published")" = "$created_release_id" \
               && test "$(jq -r .name "$published")" = "ORIGAMI2 $RELEASE_TAG" \
               && test "$(jq -r .tag_name "$published")" = "$RELEASE_TAG" \
@@ -807,16 +820,17 @@ jobs:
           test "$publish_verified" = true
           tagged_published="$RUNNER_TEMP/tagged-published-release.json"
           tagged_headers="$RUNNER_TEMP/tagged-published-release.headers"
-          curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+          tagged_status="$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+            --connect-timeout 15 --max-time 60 \
             --max-redirs 0 --max-filesize 1048576 \
             --header "Authorization: Bearer $GH_TOKEN" \
             --header 'Accept: application/vnd.github+json' \
             --header 'X-GitHub-Api-Version: 2022-11-28' \
             --header 'Cache-Control: no-cache' --header 'Pragma: no-cache' \
             --dump-header "$tagged_headers" --output "$tagged_published" \
-            "https://api.github.com/repos/$GH_REPO/releases/tags/$RELEASE_TAG"
-          grep -Eiq '^content-type: application/(json|vnd\.github\+json)(;|\r?$)' "$tagged_headers"
-          ! grep -Eiq '^link:' "$tagged_headers"
+            --write-out '%{http_code}' \
+            "https://api.github.com/repos/$GH_REPO/releases/tags/$RELEASE_TAG")"
+          verify_release_api_headers "$tagged_headers" "$tagged_status"
           test "$(jq -r .id "$tagged_published")" = "$created_release_id"
           tagged_identity="$(jq -cer '[.assets[] | {id, name, size, digest, updated_at}] | sort_by(.name)' "$tagged_published")"
           test "$tagged_identity" = "$asset_identity"

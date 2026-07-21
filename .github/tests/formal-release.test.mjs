@@ -1248,7 +1248,11 @@ test('SBOM completeness gate covers every locked npm and Cargo identity', () => 
   try {
     const policy = buildDependencyPolicy()
     const components = [
-      ...policy.thirdPartyNotices.map(({ package: name, version }) => ({ name, version })),
+      ...policy.thirdPartyNotices.map(({ package: name, version }) => {
+        if (!name.startsWith('@')) return { name, version }
+        const separator = name.indexOf('/')
+        return { group: name.slice(0, separator), name: name.slice(separator + 1), version }
+      }),
       ...policy.cargoLicenseDatabase.packages.map(({ package: identity }) => {
         const separator = identity.lastIndexOf('@')
         return { name: identity.slice(0, separator), version: identity.slice(separator + 1) }

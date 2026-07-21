@@ -5,7 +5,12 @@ import { buildDependencyPolicy } from './dependency_policy.mjs'
 const path = resolve(process.argv[2] ?? '')
 const sbom = JSON.parse(readFileSync(path, 'utf8'))
 if (sbom.bomFormat !== 'CycloneDX' || !Array.isArray(sbom.components)) throw new Error('invalid CycloneDX SBOM')
-const actual = new Set(sbom.components.map((component) => `${component?.name}@${component?.version}`))
+const actual = new Set(sbom.components.map((component) => {
+  const name = typeof component?.group === 'string' && component.group.length > 0
+    ? `${component.group}/${component.name}`
+    : component?.name
+  return `${name}@${component?.version}`
+}))
 const policy = buildDependencyPolicy()
 const required = [
   ...policy.thirdPartyNotices.map(({ package: name, version }) => `${name}@${version}`),

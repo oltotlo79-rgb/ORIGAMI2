@@ -1138,6 +1138,11 @@ fn apply_stacked_fold_transaction_with_title(
         },
     );
     let editor_before = project.editor.clone();
+    // Keep an independent rollback image until both target authorities have
+    // been installed. Pose reissue can succeed while layer-order reissue
+    // still fails (for example on generation exhaustion or tampered target
+    // provenance), and the document commit must remain all-or-nothing.
+    let editor_before_layer_install = editor_before.clone();
     let persisted_current_pose = timeline
         .steps
         .last()
@@ -1163,12 +1168,18 @@ fn apply_stacked_fold_transaction_with_title(
             }
         }
         (Some(PendingStackedFoldLayerProof::CertifiedFlat(snapshot)), layer_guard) => {
-            layer_guard
-                .ok_or_else(|| "The certified target layer order is unavailable.".to_owned())?
-                .install_certified_target_after_project_mutation(&project, snapshot.clone())
-                .map_err(|_| {
-                    "The certified target layer order could not be installed atomically.".to_owned()
-                })?;
+            let layer_install_succeeded = layer_guard.is_some_and(|guard| {
+                guard
+                    .install_certified_target_after_project_mutation(&project, snapshot.clone())
+                    .is_ok()
+            });
+            if !layer_install_succeeded {
+                project.editor = editor_before_layer_install;
+                return Err(
+                    "The certified target layer order could not be installed atomically."
+                        .to_owned(),
+                );
+            }
         }
     }
     drop(project);

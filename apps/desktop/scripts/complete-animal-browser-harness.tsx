@@ -51,7 +51,7 @@ function Harness() {
     <p role="status">{status}</p>
     {recognized && <CompleteAnimalBindingList locale="en" protrusions={[...protrusions]} />}
     <button ref={evaluateRef} onClick={reset}>Evaluate complete animal grid</button>
-    <BeginnerGridProgressStatus locale="en" busy={busy} enumerated={27} checked={3}
+    <BeginnerGridProgressStatus locale="en" busy={busy} enumerated={27} checked={3} refined={18}
       onCancel={() => {
         setBusy(false)
         setStatus('Winged animal grid evaluation canceled')

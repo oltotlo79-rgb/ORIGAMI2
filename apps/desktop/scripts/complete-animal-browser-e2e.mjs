@@ -54,7 +54,7 @@ try {
 
   await page.getByRole('button', { name: 'Recognize winged animal image' }).click()
   await page.getByRole('button', { name: 'Evaluate complete animal grid' }).click()
-  await page.getByRole('button', { name: 'Cancel 27-design evaluation' }).click()
+  await page.getByRole('button', { name: 'Cancel candidate generation' }).click()
   await preview.waitFor({ state: 'detached' })
   await assertEvaluateFocus(page)
   if (errors.length) throw new Error(`browser errors: ${errors.join(' | ')}`)

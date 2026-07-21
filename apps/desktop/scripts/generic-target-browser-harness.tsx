@@ -209,7 +209,11 @@ function Harness() {
       else if (candidateShortage) setStatus('Contour candidate shortage: safe relaxation is required')
       else { setPreview(true); setStatus('Generic target grid ready') }
     } }}>Evaluate generic target grid</button>
+    <button onClick={() => setStatus('Refinement deadline one-short: zero additional seed admitted')}>Try refinement deadline one-short</button>
+    <button onClick={() => setStatus('Refinement resource one-short: 31/32 proposals accepted safely')}>Try refinement resource one-short</button>
     {preview && <section aria-label="Generic target candidate preview"><p>Global flat-foldability proven</p>
+      <p>Multi-start refinement: 5 starts · 6/8 iterations · 3 strict improvements · global best score 92</p>
+      <p>Deterministic replay digest: seed-v1-5-6-3-92</p>
       <p>Deterministic candidate synthesis: {synthesizedCandidateCount} bounded designs from {bindings.length} bindings and {contourPointCount} contour points.</p>
       <button aria-pressed={selectedCandidate === 1} onClick={() => setSelectedCandidate(1)}>Select contour candidate 1</button>
       <button aria-pressed={selectedCandidate === 2} onClick={() => setSelectedCandidate(2)}>Select contour candidate 2</button>

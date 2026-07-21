@@ -10915,6 +10915,52 @@ mod tests {
                 suggestion.protrusions[index].position_tenths_mm[1]
             );
         }
+        let complete_parts = [
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Wing,
+                count: 2,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Antenna,
+                count: 2,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Leg,
+                count: 6,
+            },
+        ];
+        let asset_id = AssetId::new();
+        let complete = derive_reference_model_suggestion_v1(
+            asset_id,
+            &geometry,
+            Some(ori_domain::BeginnerTargetCategoryV1::Insect),
+            &complete_parts,
+        )
+        .expect("bounded complete insect GLB suggestion");
+        assert_eq!(complete.protrusions.len(), 5);
+        assert_eq!(complete.pair_bindings.len(), 5);
+        assert!(
+            complete
+                .pair_bindings
+                .iter()
+                .enumerate()
+                .all(|(index, binding)| binding.pair_index == index as u8
+                    && binding.protrusion_id == complete.protrusions[index].id)
+        );
+        let mut pair_order_aba = complete.clone();
+        pair_order_aba.pair_bindings.swap(2, 4);
+        assert_ne!(pair_order_aba, complete);
+
+        let mut replacement_geometry = geometry.clone();
+        replacement_geometry.positions[3][1] = 0.04;
+        let replacement = derive_reference_model_suggestion_v1(
+            asset_id,
+            &replacement_geometry,
+            Some(ori_domain::BeginnerTargetCategoryV1::Insect),
+            &complete_parts,
+        )
+        .expect("replacement GLB suggestion");
+        assert_ne!(replacement, complete);
         let tail = derive_reference_model_suggestion_v1(
             AssetId::new(),
             &geometry,

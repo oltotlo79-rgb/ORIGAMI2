@@ -195,6 +195,26 @@ impl CertifiedPoseGraphPathCertificateV1 {
     pub const fn authorizes_project_mutation(&self) -> bool {
         false
     }
+
+    /// Canonical digest binding every endpoint, transition proof and search count.
+    #[must_use]
+    pub fn binding_fingerprint_v1(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(b"certified_pose_graph_path_certificate_binding_v1");
+        hash.update(self.source);
+        hash.update(self.target);
+        hash.update((self.edges.len() as u64).to_be_bytes());
+        for edge in &self.edges {
+            hash.update(edge.source());
+            hash.update(edge.target());
+            hash.update(edge.schedule_certificate());
+            hash.update(edge.collision_certificate());
+            hash.update(edge.closure_certificate());
+        }
+        hash.update((self.explored_state_count as u64).to_be_bytes());
+        hash.update((self.evaluated_transition_count as u64).to_be_bytes());
+        hash.finalize().into()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -496,6 +516,8 @@ mod tests {
                 && edge.collision_certificate() == fingerprint(11)
                 && edge.closure_certificate() == fingerprint(12)
         }));
+        let binding = certificate.binding_fingerprint_v1();
+        assert_ne!(binding, [0; 32]);
 
         let mut reversed = transitions;
         reversed.reverse();
@@ -511,6 +533,10 @@ mod tests {
             CertifiedPathGraphSearchResultV1::Certified(certificate),
             "candidate enumeration order must not change the certificate"
         );
+        let CertifiedPathGraphSearchResultV1::Certified(repeated_certificate) = repeated else {
+            unreachable!();
+        };
+        assert_eq!(repeated_certificate.binding_fingerprint_v1(), binding);
     }
 
     #[test]

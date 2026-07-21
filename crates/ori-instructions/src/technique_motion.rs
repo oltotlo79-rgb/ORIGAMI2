@@ -670,6 +670,12 @@ pub fn compile_certified_book_fold_timeline_v1(
         fixed_face: Some(request.fixed_face),
         hinge_angles,
     };
+    let certificate_reference = request
+        .path_certificate
+        .binding_fingerprint_v1()
+        .into_iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let timeline = InstructionTimeline {
         steps: vec![
             InstructionStep {
@@ -684,7 +690,9 @@ pub fn compile_certified_book_fold_timeline_v1(
             InstructionStep {
                 id: InstructionStepId::new(),
                 title: format!("{title}：完了"),
-                description: "衝突・閉包証明に結合された経路で折ります。".to_owned(),
+                description: format!(
+                    "衝突・閉包証明に結合された経路で折ります。経路証明 SHA-256: {certificate_reference}"
+                ),
                 caution: "証明対象外の紙や姿勢には適用しないでください。".to_owned(),
                 duration_ms: 1_500,
                 visual: InstructionVisual::default(),
@@ -1088,6 +1096,12 @@ mod tests {
         .expect("certified fold timeline");
         assert_eq!(timeline.steps.len(), 2);
         assert_eq!(timeline.steps[1].pose.hinge_angles[0].angle_degrees, 90.0);
+        let reference = proof
+            .binding_fingerprint_v1()
+            .into_iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert!(timeline.steps[1].description.contains(&reference));
     }
 
     #[test]

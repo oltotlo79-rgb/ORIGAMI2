@@ -773,6 +773,7 @@ export type BeginnerGeneratedPlanV1 = {
     | 'symmetric_four_leg_base'
     | 'symmetric_wing_base'
     | 'symmetric_bird_base'
+    | 'asymmetric_bird_landmark_base'
     | 'symmetric_fish_base'
     | 'symmetric_ear_base'
     | 'symmetric_horn_base'

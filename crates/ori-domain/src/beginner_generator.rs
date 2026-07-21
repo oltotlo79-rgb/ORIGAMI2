@@ -101,6 +101,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     SymmetricFourLegBase,
     SymmetricWingBase,
     SymmetricBirdBase,
+    AsymmetricBirdLandmarkBase,
     SymmetricFishBase,
     SymmetricEarBase,
     SymmetricHornBase,
@@ -1072,6 +1073,23 @@ pub fn generate_beginner_plans_v1(
                             BeginnerGeneratedPlanKindV1::SymmetricFourLegBase,
                             "symmetric_four_leg_base",
                         )
+                    } else if part_count(BeginnerTargetPartKindV1::Wing) == 2
+                        && constraints
+                            .protrusions
+                            .iter()
+                            .filter(|target| {
+                                target.count == 1
+                                    && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                            })
+                            .count()
+                            == 2
+                    {
+                        (
+                            2,
+                            false,
+                            BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase,
+                            "asymmetric_bird_landmark_base",
+                        )
                     } else if part_count(BeginnerTargetPartKindV1::Wing) == 2 {
                         (
                             2,
@@ -1103,15 +1121,22 @@ pub fn generate_beginner_plans_v1(
                     } else {
                         return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
                     };
+                let asymmetric =
+                    plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase;
                 if constraints.skeleton_segments.len() < if vertical { 3 } else { 2 }
-                    || !has_bilateral_skeleton(constraints)
-                    || !has_bilateral_protrusion_count(constraints, required_count)
+                    || (!asymmetric && !has_bilateral_skeleton(constraints))
+                    || (!asymmetric && !has_bilateral_protrusion_count(constraints, required_count))
                 {
                     return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
                 }
-                let endpoints =
+                let endpoints = if asymmetric {
+                    bounded_generic_composite_endpoints(constraints)
+                        .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?
+                } else {
                     parameterized_symmetric_endpoints(constraints, required_count, vertical)
-                        .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+                        .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?
+                        .to_vec()
+                };
                 symmetric_template(
                     namespace,
                     source,

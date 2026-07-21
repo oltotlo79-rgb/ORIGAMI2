@@ -65,6 +65,7 @@ try {
     ['Try tampered path certificate', 'Apply blocked: tampered continuous path certificate'],
     ['Try 10000 path work', 'Apply blocked: continuous path work 10000 exceeds bound'],
     ['Try foreign path issuer', 'Apply blocked: foreign continuous path issuer'],
+    ['Try tampered generic feature binding', 'Apply blocked: tampered generic feature binding'],
   ]) {
     await page.getByRole('button', { name: button }).click()
     await page.getByText(status, { exact: true }).waitFor()
@@ -228,6 +229,11 @@ try {
   await page.getByRole('button', { name: 'Confirm and apply generic target' }).click(); await preview.waitFor({ state: 'detached' })
   await page.waitForFunction(() => document.activeElement?.textContent === 'Evaluate generic target grid')
   await page.getByText('Applied contour placement witness candidate 2', { exact: true }).waitFor()
+  await page.getByText(/Generic feature topology witness: 1:\d@feature1, 2:\d@feature2/).waitFor()
+  const genericSteps = page.getByRole('list', { name: 'Generated generic feature instruction steps' })
+  if (await genericSteps.getByRole('listitem').count() !== 2) throw new Error('generic feature instruction count changed')
+  await genericSteps.getByText(/Shape generated feature 1 · \d certified endpoint creases/).waitFor()
+  await genericSteps.getByText(/Shape generated feature 2 · \d certified endpoint creases/).waitFor()
   await page.getByText(/Applied synthesized candidate set: [3-8] bounded designs/).waitFor()
   await page.getByText('Applied GLB witness: bounds 120×80×65 mm, bulges 2', { exact: true }).waitFor()
   await page.getByText('Applied merged authority witness: image contours + GLB depth/bulges', { exact: true }).waitFor()
@@ -239,7 +245,8 @@ try {
     await page.getByText(/Applied synthesized candidate set: [3-8] bounded designs/).waitFor()
     await page.getByText('Applied GLB witness: bounds 120×80×65 mm, bulges 2', { exact: true }).waitFor()
     await page.getByText('Applied typed surface landmarks: 4 samples · digest 7f3a9c21 · archive retained', { exact: true }).waitFor()
-    await page.getByText(/Automatic fold instructions: summary \+ \d+ topology-bound local face steps/).waitFor()
+    await page.getByText(/Automatic fold instructions: summary \+ \d+ topology-bound generic feature steps/).waitFor()
+    if (await genericSteps.getByRole('listitem').count() !== 2) throw new Error('generic feature instructions were not retained')
     await page.getByText('Applied merged authority witness: image contours + GLB depth/bulges', { exact: true }).waitFor()
     await page.getByText('Applied path provenance: bounded_certified_pose_graph_path_v1 · SHA-256 58a6d4c1 · typed archive retained', { exact: true }).waitFor()
     await page.getByText('Applied AsymmetricBirdLandmarkBase: Undo/Redo/reopen retained four landmark bindings and path provenance', { exact: true }).waitFor()

@@ -7980,6 +7980,16 @@ function App() {
                           creases: candidate.contour_witness.witnessed_creases,
                           error: candidate.contour_witness.max_contour_error_millionths,
                         })}</span>
+                        <span className="muted">{formattedText({
+                          ja: '汎用部位topology証明: {features}',
+                          en: 'Generic feature topology witness: {features}',
+                        }, {
+                          features: candidate.contour_witness.generic_feature_bindings.length === 0
+                            ? 'none'
+                            : candidate.contour_witness.generic_feature_bindings
+                              .map((binding) => `${binding.protrusion_id}:${binding.endpoint_count}@feature${binding.generated_feature_id}`)
+                              .join(', '),
+                        })}</span>
                         {candidate.assessment.proof_scope === 'sufficient'
                           && candidate.assessment.reason === 'global_flat_foldability_proven'
                           && candidate.assessment.apply_allowed && (

@@ -1962,6 +1962,10 @@ export type BeginnerContourPlacementWitnessV1 = Readonly<{
     protrusion_id: number, contour_points: number, generated_face_id: number,
     vertex_start: number, crease_start: number,
   }>>
+  generic_feature_bindings: ReadonlyArray<Readonly<{
+    protrusion_id: number, generated_feature_id: number, endpoint_count: 1 | 2 | 4,
+    crease_start: number,
+  }>>
   witnessed_vertices: number
   witnessed_creases: number
   topology_authority_hash: ReadonlyArray<number>
@@ -2053,12 +2057,17 @@ export async function evaluateBeginnerParameterGrid(
       'id', 'scale_percent', 'spacing_percent', 'detail_level',
     ] as const)
     const witness = exactCoreDataRecord(candidate.contour_witness, [
-      'body_contour_points', 'local_bindings', 'witnessed_vertices', 'witnessed_creases', 'topology_authority_hash',
+      'body_contour_points', 'local_bindings', 'generic_feature_bindings', 'witnessed_vertices', 'witnessed_creases', 'topology_authority_hash',
       'max_contour_error_millionths',
     ] as const)
     const bindings = witness && Array.isArray(witness.local_bindings)
       ? witness.local_bindings.map((binding) => exactCoreDataRecord(binding, [
           'protrusion_id', 'contour_points', 'generated_face_id', 'vertex_start', 'crease_start',
+        ] as const))
+      : []
+    const featureBindings = witness && Array.isArray(witness.generic_feature_bindings)
+      ? witness.generic_feature_bindings.map((binding) => exactCoreDataRecord(binding, [
+          'protrusion_id', 'generated_feature_id', 'endpoint_count', 'crease_start',
         ] as const))
       : []
     const witnessPointCount = witness && bindings.every((binding) => binding !== null)
@@ -2075,6 +2084,11 @@ export async function evaluateBeginnerParameterGrid(
       || candidate.outcome_reason !== normalizedPlans.plan_assessments[index].reason
       || !Number.isInteger(witness.body_contour_points) || Number(witness.body_contour_points) < 0 || Number(witness.body_contour_points) > 16
       || bindings.length !== (witness.local_bindings as unknown[]).length || bindings.length > 8
+      || featureBindings.length !== (witness.generic_feature_bindings as unknown[]).length
+      || featureBindings.length > 8
+      || (normalizedPlans.generated_plans[index].kind === 'composite_generic_target_base'
+        ? featureBindings.length < 2
+        : featureBindings.length !== 0)
       || bindings.some((binding, bindingIndex) => !binding || !Number.isInteger(binding.protrusion_id)
         || Number(binding.protrusion_id) < 1 || Number(binding.protrusion_id) > 65535
         || !Number.isInteger(binding.contour_points) || Number(binding.contour_points) < 3 || Number(binding.contour_points) > 8
@@ -2086,6 +2100,18 @@ export async function evaluateBeginnerParameterGrid(
           || Number(binding.crease_start) !== Number(bindings[bindingIndex - 1]?.crease_start)
             + Number(bindings[bindingIndex - 1]?.contour_points)))
         || (bindingIndex > 0 && Number(bindings[bindingIndex - 1]?.protrusion_id) >= Number(binding.protrusion_id)))
+      || featureBindings.some((binding, bindingIndex) => !binding
+        || !Number.isInteger(binding.protrusion_id) || Number(binding.protrusion_id) < 1
+        || Number(binding.protrusion_id) > 65535
+        || binding.generated_feature_id !== bindingIndex + 1
+        || ![1, 2, 4].includes(Number(binding.endpoint_count))
+        || !Number.isInteger(binding.crease_start) || Number(binding.crease_start) < 0
+        || Number(binding.crease_start) + Number(binding.endpoint_count)
+          > normalizedPlans.generated_plans[index].crease_pattern.edges.length
+        || (bindingIndex > 0 && (Number(featureBindings[bindingIndex - 1]?.protrusion_id)
+          >= Number(binding.protrusion_id)
+          || Number(binding.crease_start) !== Number(featureBindings[bindingIndex - 1]?.crease_start)
+            + Number(featureBindings[bindingIndex - 1]?.endpoint_count))))
       || !Number.isInteger(witness.witnessed_vertices) || Number(witness.witnessed_vertices) !== witnessPointCount
       || !Number.isInteger(witness.witnessed_creases) || Number(witness.witnessed_creases) !== witnessPointCount
       || !Array.isArray(witness.topology_authority_hash) || witness.topology_authority_hash.length !== 32
@@ -2131,6 +2157,12 @@ export async function evaluateBeginnerParameterGrid(
           protrusion_id: Number(binding?.protrusion_id), contour_points: Number(binding?.contour_points),
           generated_face_id: Number(binding?.generated_face_id),
           vertex_start: Number(binding?.vertex_start), crease_start: Number(binding?.crease_start),
+        }))),
+        generic_feature_bindings: Object.freeze(featureBindings.map((binding) => Object.freeze({
+          protrusion_id: Number(binding?.protrusion_id),
+          generated_feature_id: Number(binding?.generated_feature_id),
+          endpoint_count: Number(binding?.endpoint_count) as 1 | 2 | 4,
+          crease_start: Number(binding?.crease_start),
         }))),
         witnessed_vertices: Number(witness.witnessed_vertices),
         witnessed_creases: Number(witness.witnessed_creases),

@@ -265,6 +265,7 @@ function Harness() {
     <button onClick={() => { setPreview(false); setStatus('Apply blocked: tampered continuous path certificate') }}>Try tampered path certificate</button>
     <button onClick={() => { setPreview(false); setStatus('Apply blocked: continuous path work 10000 exceeds bound') }}>Try 10000 path work</button>
     <button onClick={() => { setPreview(false); setStatus('Apply blocked: foreign continuous path issuer') }}>Try foreign path issuer</button>
+    <button onClick={() => { setPreview(false); setStatus('Apply blocked: tampered generic feature binding') }}>Try tampered generic feature binding</button>
     {preview && <section aria-label="Generic target candidate preview"><p>Global flat-foldability proven</p>
       <p>Multi-start refinement: 5 starts · 6/8 iterations · 3 strict improvements · global best score 92</p>
       <p>Preset-weighted 2D+3D ranking: {metricPreset} · winner {metricPreset === 'shape' ? 1 : metricPreset === 'foldability' ? 2 : 3}</p>
@@ -290,6 +291,8 @@ function Harness() {
       {mergedAuthorities && <p>Native folded landmarks: body/local 3D · Hausdorff 4% · depth {depthError} mm · bulge error 2% · collision clear</p>}
       {mergedAuthorities && <p>Folded face quality: orientation error 6% · area coverage error 9% · manifold faces verified</p>}
       {mergedAuthorities && <p>Landmark error vectors: 4 · maximum error point 3 · combined score {threeDimensionalScore}/100</p>}
+      <p>Generic feature topology witness: {bindings.map((binding) =>
+        `${binding.id}:${binding.count}@feature${binding.id}`).join(', ')}</p>
       {mergedAuthorities && <canvas width={320} height={120} role="img" aria-label="Folded target and candidate landmark overlay" ref={(canvas) => {
         const context = canvas?.getContext('2d'); if (!canvas || !context) return
         context.clearRect(0, 0, canvas.width, canvas.height); context.fillStyle = '#2563eb'
@@ -309,7 +312,11 @@ function Harness() {
         clearPreview: () => setPreview(false), restoreFocus: focus }).then((ok) => { if (ok) { setApplied(true); setStatus('Generic target applied') } })}>Confirm and apply generic target</button>
     </section>}
     {applied && <section aria-label="Generic target history">
-      <p>Automatic fold instructions: summary + {bindings.length} topology-bound local face steps</p>
+      <p>Automatic fold instructions: summary + {bindings.length} topology-bound generic feature steps</p>
+      <p>Generic feature topology witness: {bindings.map((binding) =>
+        `${binding.id}:${binding.count}@feature${binding.id}`).join(', ')}</p>
+      <ol aria-label="Generated generic feature instruction steps">{bindings.map((binding) =>
+        <li key={binding.id}>Shape generated feature {binding.id} · {binding.count} certified endpoint creases</li>)}</ol>
       <p>Applied synthesized candidate set: {synthesizedCandidateCount} bounded designs</p>
       <p>Applied contour placement witness candidate {selectedCandidate}</p>
       {imageDecode && <p>Applied image silhouette authority: {imageDecode}</p>}

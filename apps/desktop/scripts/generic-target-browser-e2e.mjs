@@ -16,6 +16,7 @@ try {
   if (await page.getByRole('list').count()) throw new Error('oversized target reached UI')
   page.once('dialog', (dialog) => dialog.accept())
   await page.getByRole('button', { name: 'Review and copy contours to editor' }).click(); await assertBindings(page)
+  if ((await page.getByLabel('Local outline points binding 1').inputValue()).split('\n').length !== 3) throw new Error('recognized local contour was not copied')
   const editor = page.getByRole('list', { name: 'Editable generic target dimensions' })
   await page.getByLabel('Body outline points').fill('-5,-5\n5,-5\n5,5\n-5,5')
   await page.getByRole('button', { name: 'Apply outline' }).click()

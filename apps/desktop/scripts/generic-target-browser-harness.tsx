@@ -51,7 +51,13 @@ function Harness() {
     <button onClick={() => recognize('Image')}>Recognize mixed target image</button>
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
     <RecognitionContourCopyAction locale="en" bodyPointCount={4} localContourCount={1}
-      onCopy={() => recognize('Image contour proposal')} />
+      onCopy={() => {
+        recognize('Image contour proposal')
+        setBindings(initialBindings.map((target, index) => index === 0
+          ? { ...target, local_outline_tenths_mm: [[-20, -10], [20, -10], [0, 20]] }
+          : { ...target }))
+        setOutlineMode('general'); setOutline([[-50, -50], [50, -50], [40, 50], [-30, 50]])
+      }} />
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected: target exceeds eight bindings') }}>Try oversized target</button>
     <p role="status">{status}</p>
     {recognized && <GenericBodyOutlineEditor locale="en" points={outline} onChange={setOutline}

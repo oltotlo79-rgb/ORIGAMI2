@@ -29,8 +29,9 @@ use std::{
 
 use ori_collision::{CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, TOPOLOGY_CONTACT_POLICY_V2};
 use ori_core::{
-    APPLIED_POSE_MODEL_ID_V1, AppliedPoseLimitsV1, AppliedPoseV1, TopologyAnalysisInput,
-    TopologySnapshot, prepare_applied_pose_v1,
+    APPLIED_POSE_MODEL_ID_V1, AppliedPoseLimitsV1, AppliedPoseV1,
+    CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1, TopologyAnalysisInput, TopologySnapshot,
+    prepare_applied_pose_v1, prepare_closed_graph_applied_pose_v1,
 };
 use ori_domain::{EdgeId, FaceId, InstructionPose, InstructionPoseModel, ProjectId};
 use ori_kinematics::{
@@ -211,8 +212,7 @@ pub(super) struct PreparedNativePose {
     pending_cleanup: PendingPreparationCleanup,
     topology: Arc<TopologySnapshot>,
     semantic_pose: Arc<AppliedPoseV1>,
-    model: Arc<MaterialTreeKinematicsModel>,
-    pose: Arc<MaterialTreePose>,
+    native_pose: CurrentNativeMaterialPose,
 }
 
 #[derive(Clone)]
@@ -648,17 +648,40 @@ impl CurrentAppliedPoseAuthority {
             .checked_add(1)
             .ok_or(PoseAuthorityError::GenerationExhausted)?;
 
+        let (face_ids, hinge_ids, kinematics_model_id, semantic_model_id) =
+            match &prepared.native_pose {
+                CurrentNativeMaterialPose::Tree { model, .. } => (
+                    model.face_ids().to_vec(),
+                    model
+                        .hinges()
+                        .iter()
+                        .map(|hinge| hinge.edge())
+                        .collect::<Vec<_>>(),
+                    MATERIAL_TREE_KINEMATICS_MODEL_ID,
+                    APPLIED_POSE_MODEL_ID_V1,
+                ),
+                CurrentNativeMaterialPose::Graph { geometry, .. } => (
+                    geometry.face_ids().to_vec(),
+                    geometry
+                        .hinges()
+                        .iter()
+                        .map(|hinge| hinge.edge())
+                        .collect::<Vec<_>>(),
+                    "material_hinge_graph_pose_v1",
+                    CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1,
+                ),
+            };
         let mut material_faces = Vec::new();
         material_faces
-            .try_reserve_exact(prepared.model.face_ids().len())
+            .try_reserve_exact(face_ids.len())
             .map_err(|_| PoseAuthorityError::SemanticPoseUnavailable)?;
-        material_faces.extend_from_slice(prepared.model.face_ids());
+        material_faces.extend_from_slice(&face_ids);
         let material_faces: Arc<[FaceId]> = Arc::from(material_faces.into_boxed_slice());
         let mut material_hinges = Vec::new();
         material_hinges
-            .try_reserve_exact(prepared.model.hinges().len())
+            .try_reserve_exact(hinge_ids.len())
             .map_err(|_| PoseAuthorityError::SemanticPoseUnavailable)?;
-        material_hinges.extend(prepared.model.hinges().iter().map(|hinge| hinge.edge()));
+        material_hinges.extend(hinge_ids);
         let material_hinges: Arc<[EdgeId]> = Arc::from(material_hinges.into_boxed_slice());
         let claims = CurrentAppliedPoseClaims {
             request_id: prepared.binding.request_id,
@@ -669,15 +692,12 @@ impl CurrentAppliedPoseAuthority {
             topology: Arc::clone(&prepared.topology),
             fold_model_fingerprint: Arc::clone(&prepared.binding.fold_model_fingerprint),
             semantic_pose: Arc::clone(&prepared.semantic_pose),
-            native_pose: CurrentNativeMaterialPose::Tree {
-                model: Arc::clone(&prepared.model),
-                pose: Arc::clone(&prepared.pose),
-            },
+            native_pose: prepared.native_pose.clone(),
             material_faces,
             material_hinges,
             paper_thickness_bits: prepared.binding.paper_thickness_bits,
-            kinematics_model_id: MATERIAL_TREE_KINEMATICS_MODEL_ID,
-            semantic_model_id: APPLIED_POSE_MODEL_ID_V1,
+            kinematics_model_id,
+            semantic_model_id,
             thickness_model_id: CENTERED_MID_SURFACE_THICKNESS_MODEL_V1,
             contact_policy_id: TOPOLOGY_CONTACT_POLICY_V2,
             generation,
@@ -815,14 +835,11 @@ impl CapturedNativePoseRequest {
             .cloned()
             .ok_or(PoseAuthorityError::TopologyUnavailable)?;
         let topology = Arc::new(topology);
-        let model = Arc::new(
-            MaterialTreeKinematicsModel::prepare(
-                self.binding.topology_input.pattern(),
-                self.binding.topology_input.paper(),
-                &topology,
-                TreeKinematicsLimits::default(),
-            )
-            .map_err(|_| PoseAuthorityError::KinematicsUnavailable)?,
+        let tree_model = MaterialTreeKinematicsModel::prepare(
+            self.binding.topology_input.pattern(),
+            self.binding.topology_input.paper(),
+            &topology,
+            TreeKinematicsLimits::default(),
         );
 
         let mut native_angles = Vec::new();
@@ -837,28 +854,87 @@ impl CapturedNativePoseRequest {
         }
         let canonical_angles = CanonicalHingeAngles::new(native_angles)
             .map_err(|_| PoseAuthorityError::InvalidRequest)?;
-        let pose = Arc::new(
-            model
-                .solve(self.fixed_face, &canonical_angles)
-                .map_err(|_| PoseAuthorityError::KinematicsUnavailable)?,
-        );
-        model
-            .bind_pose(&pose)
-            .map_err(|_| PoseAuthorityError::InternalInconsistency)?;
-
-        let mut expected_hinges = Vec::new();
-        expected_hinges
-            .try_reserve_exact(model.hinges().len())
-            .map_err(|_| PoseAuthorityError::SemanticPoseUnavailable)?;
-        expected_hinges.extend(model.hinges().iter().map(|hinge| hinge.edge()));
+        let (native_pose, face_ids, expected_hinges, semantic_fixed_face) =
+            if let Ok(model) = tree_model {
+                let model = Arc::new(model);
+                let pose = Arc::new(
+                    model
+                        .solve(self.fixed_face, &canonical_angles)
+                        .map_err(|_| PoseAuthorityError::KinematicsUnavailable)?,
+                );
+                model
+                    .bind_pose(&pose)
+                    .map_err(|_| PoseAuthorityError::InternalInconsistency)?;
+                let hinges = model
+                    .hinges()
+                    .iter()
+                    .map(|hinge| hinge.edge())
+                    .collect::<Vec<_>>();
+                (
+                    CurrentNativeMaterialPose::Tree {
+                        model: Arc::clone(&model),
+                        pose,
+                    },
+                    model.face_ids().to_vec(),
+                    hinges,
+                    self.fixed_face,
+                )
+            } else {
+                let fixed_face = self.fixed_face.ok_or(PoseAuthorityError::InvalidRequest)?;
+                let geometry = Arc::new(
+                    ori_kinematics::MaterialHingeGraphGeometry::prepare(
+                        self.binding.topology_input.pattern(),
+                        self.binding.topology_input.paper(),
+                        &topology,
+                        TreeKinematicsLimits::default(),
+                    )
+                    .map_err(|_| PoseAuthorityError::KinematicsUnavailable)?,
+                );
+                let audit = Arc::new(
+                    ori_kinematics::MaterialHingeGraphAudit::prepare(
+                        &topology,
+                        TreeKinematicsLimits::default(),
+                    )
+                    .map_err(|_| PoseAuthorityError::KinematicsUnavailable)?,
+                );
+                let pose = Arc::new(
+                    geometry
+                        .solve_closed(&audit, fixed_face, &canonical_angles, 1.0e-9)
+                        .map_err(|_| PoseAuthorityError::KinematicsUnavailable)?,
+                );
+                let hinges = geometry
+                    .hinges()
+                    .iter()
+                    .map(|hinge| hinge.edge())
+                    .collect::<Vec<_>>();
+                (
+                    CurrentNativeMaterialPose::Graph {
+                        geometry: Arc::clone(&geometry),
+                        audit,
+                        pose,
+                    },
+                    geometry.face_ids().to_vec(),
+                    hinges,
+                    Some(fixed_face),
+                )
+            };
         let semantic_pose = Arc::new(
-            prepare_applied_pose_v1(
-                model.face_ids(),
-                &expected_hinges,
-                self.fixed_face,
-                &self.complete_hinge_angles,
-                AppliedPoseLimitsV1::default(),
-            )
+            match &native_pose {
+                CurrentNativeMaterialPose::Tree { .. } => prepare_applied_pose_v1(
+                    &face_ids,
+                    &expected_hinges,
+                    semantic_fixed_face,
+                    &self.complete_hinge_angles,
+                    AppliedPoseLimitsV1::default(),
+                ),
+                CurrentNativeMaterialPose::Graph { .. } => prepare_closed_graph_applied_pose_v1(
+                    &face_ids,
+                    &expected_hinges,
+                    semantic_fixed_face.ok_or(PoseAuthorityError::InvalidRequest)?,
+                    &self.complete_hinge_angles,
+                    AppliedPoseLimitsV1::default(),
+                ),
+            }
             .map_err(|_| PoseAuthorityError::SemanticPoseUnavailable)?,
         );
 
@@ -868,8 +944,7 @@ impl CapturedNativePoseRequest {
             pending_cleanup,
             topology,
             semantic_pose,
-            model,
-            pose,
+            native_pose,
         };
         if !prepared_native_pose_is_internally_consistent(&prepared) {
             return Err(PoseAuthorityError::InternalInconsistency);
@@ -1033,11 +1108,40 @@ fn prepared_native_pose_is_internally_consistent(prepared: &PreparedNativePose) 
                 .paper()
                 .thickness_mm
                 .to_bits()
-        && prepared.model.model_id() == MATERIAL_TREE_KINEMATICS_MODEL_ID
-        && prepared.model.owns_pose(&prepared.pose)
-        && prepared.model.bind_pose(&prepared.pose).is_ok()
-        && material_pose_matches_semantic(&prepared.pose, &prepared.semantic_pose)
-        && model_and_pose_registries_match(prepared.model.as_ref(), prepared.pose.as_ref())
+        && match &prepared.native_pose {
+            CurrentNativeMaterialPose::Tree { model, pose } => {
+                model.model_id() == MATERIAL_TREE_KINEMATICS_MODEL_ID
+                    && model.owns_pose(pose)
+                    && model.bind_pose(pose).is_ok()
+                    && material_pose_matches_semantic(pose, &prepared.semantic_pose)
+                    && model_and_pose_registries_match(model, pose)
+            }
+            CurrentNativeMaterialPose::Graph {
+                geometry,
+                audit,
+                pose,
+            } => {
+                !audit.closure_hinges().is_empty()
+                    && !geometry.face_ids().is_empty()
+                    && pose.fixed_face()
+                        == prepared
+                            .semantic_pose
+                            .fixed_face()
+                            .unwrap_or(pose.fixed_face())
+                    && pose.hinge_angles().as_slice().len()
+                        == prepared.semantic_pose.hinge_angles().len()
+                    && pose
+                        .hinge_angles()
+                        .as_slice()
+                        .iter()
+                        .zip(prepared.semantic_pose.hinge_angles())
+                        .all(|(native, semantic)| {
+                            native.edge() == semantic.edge()
+                                && native.angle_degrees().to_bits()
+                                    == semantic.angle_degrees().to_bits()
+                        })
+            }
+        }
 }
 
 fn current_applied_pose_certificate_is_internally_consistent(
@@ -1061,23 +1165,53 @@ fn current_applied_pose_certificate_is_internally_consistent(
         && claims.fold_model_fingerprint.as_ref() == binding.fold_model_fingerprint.as_ref()
         && claims.paper_thickness_bits == binding.paper_thickness_bits
         && claims.paper_thickness_bits == claims.topology_input.paper().thickness_mm.to_bits()
-        && claims.kinematics_model_id == MATERIAL_TREE_KINEMATICS_MODEL_ID
-        && claims.semantic_model_id == APPLIED_POSE_MODEL_ID_V1
         && claims.semantic_pose.model_id() == claims.semantic_model_id
         && claims.thickness_model_id == CENTERED_MID_SURFACE_THICKNESS_MODEL_V1
         && claims.contact_policy_id == TOPOLOGY_CONTACT_POLICY_V2
-        && claims.native_pose.tree().is_some_and(|(model, pose)| {
-            model.model_id() == claims.kinematics_model_id
-                && model.owns_pose(pose)
-                && model.bind_pose(pose).is_ok()
-                && material_pose_matches_semantic(pose, &claims.semantic_pose)
-                && registries_match_model_and_pose(
-                    model,
-                    pose,
-                    &claims.material_faces,
-                    &claims.material_hinges,
-                )
-        })
+        && match &claims.native_pose {
+            CurrentNativeMaterialPose::Tree { model, pose } => {
+                claims.kinematics_model_id == MATERIAL_TREE_KINEMATICS_MODEL_ID
+                    && model.model_id() == claims.kinematics_model_id
+                    && model.owns_pose(pose)
+                    && model.bind_pose(pose).is_ok()
+                    && material_pose_matches_semantic(pose, &claims.semantic_pose)
+                    && registries_match_model_and_pose(
+                        model,
+                        pose,
+                        &claims.material_faces,
+                        &claims.material_hinges,
+                    )
+            }
+            CurrentNativeMaterialPose::Graph {
+                geometry,
+                audit,
+                pose,
+            } => {
+                claims.kinematics_model_id == "material_hinge_graph_pose_v1"
+                    && !audit.closure_hinges().is_empty()
+                    && geometry.face_ids() == claims.material_faces.as_ref()
+                    && geometry
+                        .hinges()
+                        .iter()
+                        .map(|hinge| hinge.edge())
+                        .eq(claims.material_hinges.iter().copied())
+                    && pose.fixed_face()
+                        == claims
+                            .semantic_pose
+                            .fixed_face()
+                            .unwrap_or(pose.fixed_face())
+                    && pose
+                        .hinge_angles()
+                        .as_slice()
+                        .iter()
+                        .zip(claims.semantic_pose.hinge_angles())
+                        .all(|(native, semantic)| {
+                            native.edge() == semantic.edge()
+                                && native.angle_degrees().to_bits()
+                                    == semantic.angle_degrees().to_bits()
+                        })
+            }
+        }
 }
 
 fn current_applied_pose_certificate_is_current(
@@ -1239,7 +1373,7 @@ pub(super) struct CurrentAppliedPoseAuthoritySnapshot {
 #[cfg(test)]
 pub(super) mod tests {
     use ori_core::{Command, create_rectangular_sheet};
-    use ori_domain::{CreasePattern, Paper, Point2, VertexId};
+    use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex, VertexId};
     use serde_json::json;
 
     use super::*;
@@ -1297,6 +1431,103 @@ pub(super) mod tests {
 
     fn invalid_topology_project() -> ProjectState {
         ProjectState::new_with_paper(CreasePattern::empty(), Paper::default())
+    }
+
+    fn four_vertex_cycle_project() -> (ProjectState, Vec<EdgeId>) {
+        let points = [
+            (100.0, 0.0),
+            (-50.0, 86.0),
+            (-50.0, -86.0),
+            (50.0, -86.0),
+            (0.0, 0.0),
+        ];
+        let vertices = points
+            .into_iter()
+            .map(|(x, y)| Vertex {
+                id: VertexId::new(),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices[..4]
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect::<Vec<_>>();
+        let center = vertices[4].id;
+        let mut edges = (0..4)
+            .map(|index| Edge {
+                id: EdgeId::new(),
+                start: boundary[index],
+                end: boundary[(index + 1) % 4],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let hinges = (0..4).map(|_| EdgeId::new()).collect::<Vec<_>>();
+        edges.extend((0..4).map(|index| Edge {
+            id: hinges[index],
+            start: boundary[index],
+            end: center,
+            kind: if index == 3 {
+                EdgeKind::Mountain
+            } else {
+                EdgeKind::Valley
+            },
+        }));
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        (
+            ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper),
+            hinges,
+        )
+    }
+
+    #[test]
+    fn graph_pose_capture_commit_and_revalidation_are_native_bound() {
+        let (mut project, mut hinges) = four_vertex_cycle_project();
+        hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let fixed_face = topology.simulation_snapshot().unwrap().faces[0].id;
+        let request = NativePoseRequest {
+            expected_project_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: project.editor.revision(),
+            fixed_face_id: Some(fixed_face),
+            complete_hinge_angles: hinges
+                .into_iter()
+                .map(|edge_id| NativePoseHingeAngleRequest {
+                    edge_id,
+                    angle_degrees: 0.0,
+                })
+                .collect(),
+        };
+        let authority = project.applied_pose_authority.clone();
+        let prepared = authority
+            .capture_request(&project, request)
+            .unwrap()
+            .prepare()
+            .unwrap();
+        assert!(prepared.native_pose.graph().is_some());
+        let capability = authority.commit_prepared(&mut project, prepared).unwrap();
+        assert!(capability.graph().is_some());
+        assert!(
+            authority
+                .revalidate_capability(&project, &capability)
+                .unwrap()
+                .is_some()
+        );
+        let mut foreign = no_hinge_project();
+        foreign.applied_pose_authority = authority;
+        assert!(
+            foreign
+                .applied_pose_authority
+                .revalidate_capability(&foreign, &capability)
+                .unwrap()
+                .is_none()
+        );
     }
 
     pub(super) fn request_for(project: &ProjectState) -> NativePoseRequest {

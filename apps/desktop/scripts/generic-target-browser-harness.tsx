@@ -36,6 +36,7 @@ function Harness() {
   const [selectedSurfaceRanges, setSelectedSurfaceRanges] = useState<number[]>([])
   const [surfaceRangesConfirmed, setSurfaceRangesConfirmed] = useState(false)
   const [skeletonTreeConfirmed, setSkeletonTreeConfirmed] = useState(true)
+  const [recognizedSkeletonEndMm, setRecognizedSkeletonEndMm] = useState(10)
   const [mergedAuthorities, setMergedAuthorities] = useState(false)
   const [authorityValid, setAuthorityValid] = useState(true)
   const [imageDecode, setImageDecode] = useState<string | null>(null)
@@ -359,6 +360,9 @@ function Harness() {
     <button onClick={() => { setPreview(false); setStatus('Apply blocked: continuous path work 10000 exceeds bound') }}>Try 10000 path work</button>
     <button onClick={() => { setPreview(false); setStatus('Apply blocked: foreign continuous path issuer') }}>Try foreign path issuer</button>
     <button onClick={() => { setPreview(false); setStatus('Apply blocked: tampered generic feature binding') }}>Try tampered generic feature binding</button>
+    <button onClick={() => { setRecognizedSkeletonEndMm(14)
+      setStatus('Recognized skeleton endpoint corrected to 14 mm before candidate synthesis')
+    }}>Correct recognized skeleton endpoint</button>
     {preview && <section aria-label="Generic target candidate preview"><p>Global flat-foldability proven</p>
       <p>Multi-start refinement: 5 starts · 6/8 iterations · 3 strict improvements · global best score 92</p>
       <p>Preset-weighted 2D+3D ranking: {metricPreset} · winner {metricPreset === 'shape' ? 1 : metricPreset === 'foldability' ? 2 : 3}</p>
@@ -395,6 +399,7 @@ function Harness() {
       <p>Generic feature topology witness: {[...bindings].sort((left, right) => left.id - right.id).map((binding) =>
         `${binding.id}:${binding.count}@feature${binding.id}→skeleton${binding.id}.end#crease-${binding.id === 1 ? '91a70f2c' : 'a72be019'}`).join(', ')}</p>
       <p>Confirmed tree skeleton: root→1[feature 1], 1→2[feature 2] · authority c31488da</p>
+      <p>Corrected recognized skeleton endpoint: {recognizedSkeletonEndMm} mm</p>
       <button onClick={() => { setSkeletonTreeConfirmed(false)
         setStatus('Rejected skeleton graph: cycle, duplicate edge, or branch authority tampered') }}>Try tampered skeleton branch graph</button>
       {!skeletonTreeConfirmed && <button onClick={() => { setSkeletonTreeConfirmed(true)
@@ -422,6 +427,7 @@ function Harness() {
       <p>Generic feature topology witness: {[...bindings].sort((left, right) => left.id - right.id).map((binding) =>
         `${binding.id}:${binding.count}@feature${binding.id}→skeleton${binding.id}.end#crease-${binding.id === 1 ? '91a70f2c' : 'a72be019'}`).join(', ')}</p>
       <p>Persisted tree skeleton mapping: root→1[feature 1], 1→2[feature 2] · authority c31488da</p>
+      <p>Persisted corrected skeleton endpoint: {recognizedSkeletonEndMm} mm</p>
       <ol aria-label="Generated generic feature instruction steps">{[...bindings].sort((left, right) => left.id - right.id).map((binding) =>
         <li key={binding.id}>Shape generated feature {binding.id} · {binding.count} certified endpoint creases · skeleton segment {binding.id}.end</li>)}</ol>
       <p>Applied synthesized candidate set: {synthesizedCandidateCount} bounded designs</p>

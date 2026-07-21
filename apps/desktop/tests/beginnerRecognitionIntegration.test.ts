@@ -135,6 +135,14 @@ test('confirmed outline split and merge provenance persists with the editable pr
   assert.match(app, /Saved outline edit authority/u)
 })
 
+test('recognized skeleton bars remain directly correctable before save and synthesis', () => {
+  assert.match(app, /Skeleton bar \$\{segment\.id\} \$\{label\} \(mm\)/u)
+  assert.match(app, /setBeginnerSkeletonSegments\(\(segments\) => segments\.map/u)
+  assert.match(app, /changed\.start\.x_tenths_mm === changed\.end\.x_tenths_mm/u)
+  assert.match(app, /field === 'thickness_tenths_mm'/u)
+  assert.match(app, /onSubmit=\{submitBeginnerDesignProfile\}/u)
+})
+
 test('explicit animal or insect parts feed the existing read-only symmetric plan evaluation', () => {
   assert.match(native, /BeginnerTargetCategoryV1::Insect/u)
   assert.match(native, /BeginnerTargetPartKindV1::Wing/u)

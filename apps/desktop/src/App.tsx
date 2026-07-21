@@ -9114,6 +9114,33 @@ function App() {
                           ja: '太さ {thickness} mm',
                           en: 'thickness {thickness} mm',
                         }, { thickness: segment.thickness_tenths_mm / 10 })}
+                        {([
+                          ['start.x_tenths_mm', 'Start X', segment.start.x_tenths_mm],
+                          ['start.y_tenths_mm', 'Start Y', segment.start.y_tenths_mm],
+                          ['end.x_tenths_mm', 'End X', segment.end.x_tenths_mm],
+                          ['end.y_tenths_mm', 'End Y', segment.end.y_tenths_mm],
+                          ['thickness_tenths_mm', 'Thickness', segment.thickness_tenths_mm],
+                        ] as const).map(([field, label, tenths]) => <label key={field}>
+                          <span>{label} (mm)</span>
+                          <input type="number" step="0.1" defaultValue={tenths / 10}
+                            min={field === 'thickness_tenths_mm' ? 0.1 : -10000}
+                            max={field === 'thickness_tenths_mm' ? 1000 : 10000}
+                            aria-label={`Skeleton bar ${segment.id} ${label} (mm)`}
+                            onBlur={(event) => {
+                              const next = Math.round(Number(event.currentTarget.value) * 10)
+                              const valid = Number.isSafeInteger(next) && (field === 'thickness_tenths_mm'
+                                ? next >= 1 && next <= 10_000 : Math.abs(next) <= 100_000)
+                              if (!valid) { event.currentTarget.value = String(tenths / 10); return }
+                              setBeginnerSkeletonSegments((segments) => segments.map((item) => {
+                                if (item.id !== segment.id) return item
+                                if (field === 'thickness_tenths_mm') return { ...item, thickness_tenths_mm: next }
+                                const [endpoint, axis] = field.split('.') as ['start' | 'end', 'x_tenths_mm' | 'y_tenths_mm']
+                                const changed = { ...item, [endpoint]: { ...item[endpoint], [axis]: next } }
+                                return changed.start.x_tenths_mm === changed.end.x_tenths_mm
+                                  && changed.start.y_tenths_mm === changed.end.y_tenths_mm ? item : changed
+                              }))
+                            }} />
+                        </label>)}
                         <button type="button" onClick={() => setBeginnerSkeletonSegments(
                           (segments) => segments.filter((item) => item.id !== segment.id),
                         )}>

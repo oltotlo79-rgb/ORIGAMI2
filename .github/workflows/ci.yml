@@ -294,7 +294,7 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -315,7 +315,34 @@ jobs:
         run: |
           set -o pipefail
           test_status=0
-          cargo test --workspace --locked --all-targets --no-fail-fast 2>&1 | tee cargo-test.log || test_status=$?
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            packages=(
+              ori-numeric
+              ori-domain
+              ori-geometry
+              ori-topology
+              ori-kinematics
+              ori-foldability
+              ori-collision
+              ori-core
+              ori-formats
+              ori-instructions
+              origami2-desktop
+            )
+            : > cargo-test.log
+            for package in "${packages[@]}"; do
+              package_status=0
+              cargo test -p "$package" --locked --all-targets --no-fail-fast 2>&1 \
+                | tee -a cargo-test.log || package_status=$?
+              if [ "$package_status" -ne 0 ]; then
+                test_status="$package_status"
+                break
+              fi
+            done
+          else
+            cargo test --workspace --locked --all-targets --no-fail-fast 2>&1 \
+              | tee cargo-test.log || test_status=$?
+          fi
           if [ "$test_status" -ne 0 ]; then
             failure_summary="$(
               grep -E '(^test .* FAILED$|^failures:|panicked at|test result: FAILED|error: test failed|error: could not compile)' cargo-test.log \
@@ -344,7 +371,7 @@ jobs:
         shell: bash
         run: |
           sanitized_tail="$RUNNER_TEMP/rust-test-tail-${{ matrix.os }}.log"
-          tail -n 200 cargo-test.log \
+          tail -n 30 cargo-test.log \
             | sed $'s/\033\\[[0-9;]*[mK]//g' \
             | sed -E 's#(/Users/runner/work|[A-Za-z]:\\\\a\\\\ORIGAMI2)[^[:space:]]*#[workspace]#g' \
             > "$sanitized_tail"

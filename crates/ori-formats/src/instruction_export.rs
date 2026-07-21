@@ -749,6 +749,55 @@ mod tests {
     }
 
     #[test]
+    fn certified_path_reference_survives_step_layout_and_both_final_formats() {
+        let fixture = fixture();
+        let certificate_reference = "7c".repeat(32);
+        let timeline = timeline(
+            &fixture,
+            format!(
+                "衝突・閉包証明に結合された区間です。経路証明 SHA-256: {certificate_reference}"
+            ),
+        );
+        let (plan, font) = build_canonical_instruction_plan(
+            "証明付き手順",
+            FINGERPRINT,
+            &fixture.pattern,
+            &fixture.paper,
+            &timeline,
+            &fixture.topology,
+            InstructionExportLimits::default(),
+        )
+        .expect("proof-bearing canonical plan");
+        plan.validate(&font).expect("valid proof-bearing plan");
+        let first_step_text = plan
+            .pages
+            .iter()
+            .filter(|page| page.step_number == 1)
+            .flat_map(|page| page.texts.iter())
+            .map(layout::PageText::scalar_text)
+            .collect::<String>();
+        assert!(first_step_text.contains(&certificate_reference));
+
+        for format in [
+            InstructionExportFormat::Pdf17,
+            InstructionExportFormat::SvgPageZip,
+        ] {
+            let artifact = export_instruction_document(
+                format,
+                "証明付き手順",
+                FINGERPRINT,
+                &fixture.pattern,
+                &fixture.paper,
+                &timeline,
+                &fixture.topology,
+            )
+            .expect("proof-bearing export");
+            assert_eq!(artifact.step_count, timeline.steps.len());
+            assert_eq!(artifact.page_count, plan.pages.len());
+        }
+    }
+
+    #[test]
     fn page_glyph_title_and_output_limits_accept_the_boundary_and_reject_one_more() {
         let fixture = fixture();
         let timeline = timeline(&fixture, "境界値を確認します。".to_owned());

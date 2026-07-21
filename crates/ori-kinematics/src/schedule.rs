@@ -676,18 +676,27 @@ impl PreparedHalfAngleRationalEntryV1 {
             .into_iter()
             .map(to_exact)
             .collect::<Result<Vec<_>, _>>()?;
-        let numerator_certificate = prepare_exact_signed_bernstein_certificate(
-            affine_reparameterize_power(
-                &numerator_power_coefficients,
-                &u_domain,
+        let exact_zero_numerator = numerator_power_coefficients.iter().all(Zero::is_zero);
+        let numerator_certificate = if exact_zero_numerator {
+            PoleFreeBernsteinCertificateV1 {
+                degree: 0,
+                positive: true,
+                coefficients: vec![BigRational::zero()],
+            }
+        } else {
+            prepare_exact_signed_bernstein_certificate(
+                affine_reparameterize_power(
+                    &numerator_power_coefficients,
+                    &u_domain,
+                    limits.max_coefficient_bits,
+                    limits.max_work,
+                )?,
+                limits.max_degree,
                 limits.max_coefficient_bits,
                 limits.max_work,
-            )?,
-            limits.max_degree,
-            limits.max_coefficient_bits,
-            limits.max_work,
-            true,
-        )?;
+                true,
+            )?
+        };
         let denominator_certificate = prepare_exact_signed_bernstein_certificate(
             affine_reparameterize_power(
                 &denominator_power_coefficients,
@@ -708,13 +717,17 @@ impl PreparedHalfAngleRationalEntryV1 {
         {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);
         }
-        let derivative = evaluate_half_angle_rational_derivative_interval_v1(
-            &numerator_certificate,
-            &denominator_certificate,
-            limits.max_coefficient_bits,
-            limits.max_work,
-        )?;
-        let radians_bound = derivative.lower().abs().max(derivative.upper().abs());
+        let radians_bound = if exact_zero_numerator {
+            0.0
+        } else {
+            let derivative = evaluate_half_angle_rational_derivative_interval_v1(
+                &numerator_certificate,
+                &denominator_certificate,
+                limits.max_coefficient_bits,
+                limits.max_work,
+            )?;
+            derivative.lower().abs().max(derivative.upper().abs())
+        };
         let derivative_bound_degrees = radians_bound * 180.0 / core::f64::consts::PI;
         if !derivative_bound_degrees.is_finite() {
             return Err(CycleSchedulePrepareErrorV1::ResourceLimit);
@@ -793,6 +806,10 @@ impl PreparedHalfAngleRationalEntryV1 {
         &self,
         max_work: usize,
     ) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
+        if self.numerator_power_coefficients.iter().all(Zero::is_zero) {
+            return OutwardIntervalV1::from_rounded(0.0)
+                .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput);
+        }
         evaluate_half_angle_rational_degrees_interval_v1(
             &self.numerator_certificate,
             &self.denominator_certificate,
@@ -810,6 +827,10 @@ impl PreparedHalfAngleRationalEntryV1 {
     ) -> Result<OutwardIntervalV1, CycleSchedulePrepareErrorV1> {
         if depth >= 64 || index >= (1u64 << depth) {
             return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        if self.numerator_power_coefficients.iter().all(Zero::is_zero) {
+            return OutwardIntervalV1::from_rounded(0.0)
+                .map_err(|_| CycleSchedulePrepareErrorV1::InvalidInput);
         }
         let denominator = BigInt::from(1u64 << depth);
         let width = &self.u_domain[1] - &self.u_domain[0];

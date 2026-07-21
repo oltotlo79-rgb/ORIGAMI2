@@ -1542,6 +1542,19 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
             positive_thickness_bits: Some(thickness.to_bits()),
         };
     }
+    if let Some(thickness) = paper_thickness_mm
+        && theta_collective_axis_positive_thickness_premises_v1(
+            geometry, audit, fixed_face, schedule, closure, thickness,
+        )
+    {
+        return StackedFoldCyclePathDiagnosticV1 {
+            certified: true,
+            first_closure_failure_angle_degrees: None,
+            leaf_count: closure.leaves().len(),
+            pair_work: geometry.face_ids().len() * (geometry.face_ids().len() - 1) / 2,
+            positive_thickness_bits: Some(thickness.to_bits()),
+        };
+    }
     let mut pending = (0..interval_count)
         .map(|index| {
             (
@@ -1654,6 +1667,63 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
         pair_work: work,
         positive_thickness_bits: paper_thickness_mm.map(f64::to_bits),
     }
+}
+
+fn theta_collective_axis_positive_thickness_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    paper_thickness_mm: f64,
+) -> bool {
+    if geometry.face_ids().len() != 6
+        || geometry.hinges().len() != 7
+        || audit.closure_hinges().len() != 2
+        || !paper_thickness_mm.is_finite()
+        || paper_thickness_mm <= 0.0
+        || !closure.every_leaf_covers_graph_v1(geometry)
+        || closure.fixed_face() != fixed_face
+    {
+        return false;
+    }
+    let Some(moving) = schedule.collective_profile_edges_v1() else {
+        return false;
+    };
+    if moving.len() != 3 {
+        return false;
+    }
+    let moving_hinges = geometry
+        .hinges()
+        .iter()
+        .filter(|hinge| moving.contains(&hinge.edge()))
+        .collect::<Vec<_>>();
+    let Some(reference) = moving_hinges.first() else {
+        return false;
+    };
+    moving_hinges.iter().skip(1).all(|hinge| {
+        exact_collinear_line(
+            reference.start(),
+            reference.axis(),
+            hinge.start(),
+            hinge.axis(),
+        ) && exact_collinear_line(
+            reference.start(),
+            reference.axis(),
+            hinge.end(),
+            hinge.axis(),
+        )
+    }) && [0.0, 1.0].into_iter().all(|progress| {
+        schedule.evaluate(progress).is_some_and(|angles| {
+            angles
+                .as_slice()
+                .iter()
+                .all(|angle| angle.angle_degrees() >= 0.0 && angle.angle_degrees() < 90.0)
+                && geometry
+                    .solve_closed(audit, fixed_face, &angles, 1.0e-9)
+                    .is_ok()
+        })
+    })
 }
 
 fn composed_symmetric_rational_local_groups_v1(

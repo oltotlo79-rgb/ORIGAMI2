@@ -2002,6 +2002,7 @@ impl EditorState {
                 step_count_weight: 15,
                 paper_efficiency_weight: 15,
                 generation_constraints: ori_domain::BeginnerGenerationConstraintsV1::default(),
+                generation_provenance: None,
             },
             current_applied_pose: None,
             revision: 0,
@@ -18047,6 +18048,7 @@ mod tests {
             step_count_weight: 10,
             paper_efficiency_weight: 10,
             generation_constraints: ori_domain::BeginnerGenerationConstraintsV1::default(),
+            generation_provenance: None,
         };
         editor
             .execute(

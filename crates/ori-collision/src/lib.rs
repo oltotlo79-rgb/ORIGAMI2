@@ -23,6 +23,7 @@
 mod cayley;
 mod cell_order_transport;
 mod certified_path_graph;
+mod continuous_layer_transport;
 mod continuous_path;
 mod flat_endpoint_layer_order;
 mod graph_positive_thickness;
@@ -52,6 +53,11 @@ pub use certified_path_graph::{
     MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1, PoseFingerprintV1,
     certify_scheduled_cycle_transition_v1, search_certified_pose_graph_v1,
     search_certified_pose_graph_with_checkpoint_v1, search_certified_pose_graph_with_progress_v1,
+};
+pub use continuous_layer_transport::{
+    CONTINUOUS_LAYER_TRANSPORT_CERTIFICATE_MODEL_ID_V1, ContinuousLayerTransportCertificateV1,
+    ContinuousLayerTransportErrorV1, ContinuousLayerTransportLimitsV1,
+    prove_continuous_layer_transport_v1,
 };
 pub use continuous_path::{
     MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1, MAX_STACKED_FOLD_PATH_SAMPLES_V1,

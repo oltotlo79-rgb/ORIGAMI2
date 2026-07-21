@@ -7471,4 +7471,120 @@ mod tests {
             assert!(!basis.is_for_geometry(&foreign));
         }
     }
+
+    #[test]
+    fn continuous_layer_transport_binds_every_dyadic_transition_and_fails_closed() {
+        use ori_foldability::{
+            FacePairOrderSnapshot, FacewiseProofSummary, GlobalFlatFoldabilityModelId,
+            GlobalFlatFoldabilityProvenance, LAYER_ORDER_MODEL_ID, LayerFace, LayerOrderDerivation,
+            LayerOrderProvenance, LayerOrderSnapshot,
+        };
+        use ori_topology::FaceKey;
+
+        let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(4, false);
+        let closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                fixed,
+                &schedule,
+                1.0e-9,
+                DyadicIntervalClosureLimitsV1 {
+                    max_depth: 2,
+                    max_leaves: 4,
+                    max_work: 4,
+                    schedule_limits: CycleScheduleLimitsV1::default(),
+                },
+            )
+            .unwrap();
+        let faces = geometry
+            .face_ids()
+            .iter()
+            .enumerate()
+            .map(|(index, face_id)| LayerFace {
+                face_id: *face_id,
+                face_key: FaceKey([index as u8; 32]),
+            })
+            .collect::<Vec<_>>();
+        let source = LayerOrderSnapshot {
+            model_id: LAYER_ORDER_MODEL_ID,
+            material_faces: faces.clone(),
+            global_bottom_to_top: None,
+            provenance: LayerOrderProvenance {
+                source: GlobalFlatFoldabilityProvenance {
+                    identity_namespace: Some(fixed_id("b601", 1)),
+                    source_revision: 1,
+                    source_fingerprint: Some(ori_foldability::FoldModelFingerprintV1([7; 32])),
+                    model_id: GlobalFlatFoldabilityModelId::ConvexFacesFacewiseV1,
+                },
+                derivation: LayerOrderDerivation::FacewiseCertificate {
+                    reference_face: faces[0],
+                    overlap_cell_count: 0,
+                    constraint_count: 1,
+                },
+            },
+            reference_face: Some(faces[0]),
+            folded_faces: Vec::new(),
+            overlap_cells: Vec::new(),
+            face_pair_orders: vec![FacePairOrderSnapshot {
+                lower_face: faces[0],
+                upper_face: faces[1],
+                supporting_cells: Vec::new(),
+            }],
+            proof_summary: Some(FacewiseProofSummary {
+                material_faces: faces.len(),
+                overlap_face_pairs: 1,
+                overlap_cells: 0,
+                constraints: 1,
+                search_nodes: 1,
+                maximum_ply: 2,
+                certificate_bytes: 1,
+            }),
+        };
+        let mapping = faces
+            .iter()
+            .map(|face| (face.face_id, face.face_id))
+            .collect::<Vec<_>>();
+        let order = vec![(faces[0].face_id, faces[1].face_id)];
+        let transitions = vec![order.clone(); closure.leaves().len() + 1];
+        let exact = crate::ContinuousLayerTransportLimitsV1 {
+            max_transitions: transitions.len(),
+            max_pair_orders: transitions.len(),
+        };
+        let proof = crate::prove_continuous_layer_transport_v1(
+            &geometry,
+            &source,
+            &mapping,
+            &schedule,
+            &closure,
+            &transitions,
+            exact,
+        )
+        .unwrap();
+        assert_eq!(proof.transition_hashes().len(), transitions.len());
+        assert!(proof.is_for(&geometry, &source, &schedule, &closure));
+        assert!(!proof.is_for(&geometry, &source.clone(), &schedule, &closure));
+        let mut reversed = transitions.clone();
+        reversed[2] = vec![(faces[1].face_id, faces[0].face_id)];
+        assert!(matches!(
+            crate::prove_continuous_layer_transport_v1(
+                &geometry, &source, &mapping, &schedule, &closure, &reversed, exact,
+            ),
+            Err(crate::ContinuousLayerTransportErrorV1::Crossing)
+        ));
+        assert!(matches!(
+            crate::prove_continuous_layer_transport_v1(
+                &geometry,
+                &source,
+                &mapping,
+                &schedule,
+                &closure,
+                &transitions,
+                crate::ContinuousLayerTransportLimitsV1 {
+                    max_pair_orders: transitions.len() - 1,
+                    ..exact
+                },
+            ),
+            Err(crate::ContinuousLayerTransportErrorV1::ResourceLimit)
+        ));
+    }
 }

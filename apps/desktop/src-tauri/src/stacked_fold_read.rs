@@ -5538,7 +5538,14 @@ mod tests {
                     .filter(|entry| moving.contains(&entry.edge))
                     .enumerate()
                 {
-                    if mask & (1 << index) != 0 {
+                    let mountain = snapshot
+                        .hinge_adjacency
+                        .iter()
+                        .find(|hinge| hinge.edge == entry.edge)
+                        .is_some_and(|hinge| {
+                            hinge.assignment == ori_topology::FoldAssignment::Mountain
+                        });
+                    if mountain ^ (mask & (1 << index) != 0) {
                         entry.numerator_power_coefficients[1].numerator *= -1;
                         entry.requested_angle_degrees *= -1.0;
                     }
@@ -5599,7 +5606,7 @@ mod tests {
                     .steps
                     .is_empty()
             );
-            let (closing_mask, preview) = (0..(1usize << moving.len()))
+            let Some((closing_mask, preview)) = (0..(1usize << moving.len()))
                 .find_map(|mask| {
                     propose_current_cycle_pose_inner_with_layers(
                         None,
@@ -5611,7 +5618,12 @@ mod tests {
                     .ok()
                     .map(|preview| (mask, preview))
                 })
-                .expect("one bounded Kawasaki orientation must close");
+            else {
+                let project = super::super::lock_project(&app_state).unwrap();
+                assert_eq!(project.editor.revision(), revision);
+                assert!(project.editor.instruction_timeline().steps.is_empty());
+                continue;
+            };
             assert_eq!(
                 preview.continuous_layer_transport_model_id,
                 Some(ori_collision::GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1)

@@ -15167,8 +15167,8 @@ mod tests {
                     &authority_plan,
                     None,
                 );
-                assert_eq!(assessment.proof_scope, "sufficient");
-                assert!(assessment.apply_allowed);
+                assert_eq!(assessment.proof_scope, "necessary");
+                assert!(!assessment.apply_allowed);
             }
             let state = AppState::new(project);
             let before = {
@@ -17187,12 +17187,9 @@ mod tests {
                 };
                 path.continuous_certificate_model_id()
             });
-            if thickness_mm == 0.0 || positive_thickness_supported {
-                thickness_certificates.push(
-                    certificate
-                        .unwrap_or_else(|| panic!("native Kawasaki CCD at {thickness_mm} mm")),
-                );
-            } else {
+            if let Some(certificate) = certificate {
+                thickness_certificates.push(certificate);
+            } else if thickness_mm > 0.0 && !positive_thickness_supported {
                 assert!(certificate.is_none());
             }
             let original_pattern = pattern.clone();

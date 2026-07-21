@@ -2772,14 +2772,8 @@ mod tests {
     #[test]
     fn rational_sector_rejects_near_degenerate_and_mixed_sign_profiles() {
         for (numerator, denominator, leg) in [(3, 5, 4), (5, 13, 12), (7, 25, 24)] {
-            let (geometry, audit, schedule) = rational_symmetric_cycle_fixture(
-                numerator,
-                denominator,
-                leg,
-                1.0e-5,
-                1,
-            )
-            .unwrap();
+            let (geometry, audit, schedule) =
+                rational_symmetric_cycle_fixture(numerator, denominator, leg, 1.0e-5, 1).unwrap();
             assert!(
                 geometry
                     .prove_dyadic_schedule_closure_v1(
@@ -2825,6 +2819,7 @@ mod tests {
                 )
                 .is_err()
         );
+        let (_, _, schedule) = rational_symmetric_cycle_fixture(3, 5, 4, 0.0, 1).unwrap();
         assert!(
             schedule
                 .symmetric_kawasaki_half_angle_pairs_v1(3, 4)

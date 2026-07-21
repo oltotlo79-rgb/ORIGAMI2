@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client'
 import { useRef, useState } from 'react'
 import { GenericTargetBindingList } from '../src/components/GenericTargetBindingList.tsx'
 import { ProtrusionDimensionEditor } from '../src/components/ProtrusionDimensionEditor.tsx'
+import { GenericBodyOutlineEditor } from '../src/components/GenericBodyOutlineEditor.tsx'
 import { finishBeginnerGridCancellation, runBeginnerGridApplyWorkflow } from '../src/lib/beginnerGridWorkflow.ts'
 import type { BeginnerGenerationConstraintsV1 } from '../src/lib/coreClient.ts'
 import '../src/App.css'
@@ -19,6 +20,7 @@ function Harness() {
   const [status, setStatus] = useState('Waiting for image or GLB'), [applied, setApplied] = useState(false)
   const [bindings, setBindings] = useState([...initialBindings])
   const [kinds, setKinds] = useState<Array<'leg' | 'horn' | 'ear' | 'wing' | 'fin' | 'antenna' | 'tail'>>(['tail', 'fin'])
+  const [outline, setOutline] = useState<Array<[number, number]>>([])
   const evaluate = useRef<HTMLButtonElement>(null)
   const focus = () => requestAnimationFrame(() => evaluate.current?.focus())
   const canonicalize = (targets: typeof bindings) => targets.map(
@@ -47,6 +49,7 @@ function Harness() {
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected: target exceeds eight bindings') }}>Try oversized target</button>
     <p role="status">{status}</p>
+    {recognized && <GenericBodyOutlineEditor locale="en" points={outline} onChange={setOutline} />}
     {recognized && <button disabled={bindings.length >= 8} onClick={() => {
       setBindings((current) => canonicalize([...current, { ...initialBindings[0]!, id: current.length + 1 }]))
       setKinds((current) => [...current, 'tail'])

@@ -4404,8 +4404,9 @@ mod tests {
     #[test]
     fn rank4_cycle_transports_layer_order_and_applies_atomically() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, mut paper, moving) =
-            super::dense_grid_cycle_test_support::three_by_three_dense_cycle_pattern();
+        let (pattern, mut paper, horizontal, _) =
+            super::dense_grid_cycle_test_support::three_by_three_miura_authority_pattern();
+        let moving = horizontal.into_iter().take(3).collect::<Vec<_>>();
         paper.thickness_mm = 0.1;
         let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
         let topology = project
@@ -4425,18 +4426,9 @@ mod tests {
             fixed,
         );
         let layer_state = GlobalFlatFoldabilityState::default();
-        let material_faces: Vec<_> = snapshot
-            .faces
-            .iter()
-            .map(|face| ori_foldability::LayerFace {
-                face_id: face.id,
-                face_key: face.key,
-            })
-            .collect();
-        super::super::global_flat_foldability::tests::install_bound_empty_layer_order_for_graph(
+        super::super::global_flat_foldability::tests::install_possible_layer_order(
             &layer_state,
             &project,
-            material_faces.clone(),
         );
         let instance = project.instance_id;
         let project_id = project.project_id;
@@ -4492,7 +4484,7 @@ mod tests {
             .expect("one Kawasaki rank4 orientation must close");
         assert_eq!(
             preview.continuous_layer_transport_model_id,
-            Some(ori_collision::CONTINUOUS_LAYER_TRANSPORT_CERTIFICATE_MODEL_ID_V1)
+            Some(ori_collision::GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1)
         );
         assert_eq!(preview.continuous_layer_transition_count, 2);
         assert_eq!(preview.source_layer_order, preview.target_layer_order);
@@ -4526,10 +4518,9 @@ mod tests {
         .expect("rank4 layer authority ABA preview");
         {
             let project = super::super::lock_project(&app_state).unwrap();
-            super::super::global_flat_foldability::tests::install_bound_empty_layer_order_for_graph(
+            super::super::global_flat_foldability::tests::install_possible_layer_order(
                 &layer_state,
                 &project,
-                material_faces,
             );
         }
         assert!(
@@ -4579,6 +4570,20 @@ mod tests {
                 .cycle_layer_order_proof_v1
                 .is_some()
         );
+        let reopened = super::super::ProjectState::from_document(
+            project.document(),
+            std::path::PathBuf::from("miura-cell-transport-reopened.ori2"),
+        );
+        let reopened_proof = reopened.editor.instruction_timeline().steps[0]
+            .visual
+            .cycle_layer_order_proof_v1
+            .as_ref()
+            .expect("persisted Miura cell proof survives reopen");
+        assert_eq!(
+            reopened_proof.model_id,
+            ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1
+        );
+        assert_eq!(reopened_proof.target_order_sha256.len(), 32);
     }
 
     #[test]

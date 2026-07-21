@@ -220,7 +220,7 @@ impl PendingStackedFoldRequestedPose {
         });
         Some(ori_domain::CycleLayerOrderProofV1 {
             version: 1,
-            model_id: certificate.model_id().to_owned(),
+            model_id: ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1.to_owned(),
             target_order_sha256: certificate.target_order_hash(),
             transition_count: certificate.transition_hashes().len(),
             pairs,

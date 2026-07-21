@@ -75,10 +75,20 @@ pub fn score_beginner_candidates_v1(
             let step_count_score = simplicity;
             let paper_efficiency_score =
                 100_u8.saturating_sub((input.vertex_count.min(100) / 2) as u8);
-            let weighted = u32::from(shape_score) * u32::from(profile.shape_fidelity_weight)
-                + u32::from(foldability_score) * u32::from(profile.foldability_weight)
-                + u32::from(step_count_score) * u32::from(profile.step_count_weight)
-                + u32::from(paper_efficiency_score) * u32::from(profile.paper_efficiency_weight);
+            let weighted = u32::from(shape_score)
+                .saturating_mul(u32::from(profile.shape_fidelity_weight))
+                .saturating_add(
+                    u32::from(foldability_score)
+                        .saturating_mul(u32::from(profile.foldability_weight)),
+                )
+                .saturating_add(
+                    u32::from(step_count_score)
+                        .saturating_mul(u32::from(profile.step_count_weight)),
+                )
+                .saturating_add(
+                    u32::from(paper_efficiency_score)
+                        .saturating_mul(u32::from(profile.paper_efficiency_weight)),
+                );
             BeginnerCandidateScoreV1 {
                 schema_version: BEGINNER_CANDIDATE_SCHEMA_VERSION_V1,
                 kind,
@@ -188,6 +198,35 @@ mod tests {
                 BeginnerCandidateKindV1::ShapeFocused,
                 BeginnerCandidateKindV1::FoldabilityFocused,
             ]
+        );
+
+        let wire = serde_json::to_vec(&first).expect("serialize candidate scores");
+        let restored: Vec<BeginnerCandidateScoreV1> =
+            serde_json::from_slice(&wire).expect("deserialize candidate scores");
+        assert_eq!(restored, first);
+        let mut hostile = serde_json::to_value(&first[0]).unwrap();
+        hostile["total_score"] = serde_json::json!(f64::NAN);
+        assert!(serde_json::from_value::<BeginnerCandidateScoreV1>(hostile).is_err());
+        let mut unknown = serde_json::to_value(&first[0]).unwrap();
+        unknown["extra"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<BeginnerCandidateScoreV1>(unknown).is_err());
+
+        let mut maximum_weights = profile.clone();
+        maximum_weights.shape_fidelity_weight = u8::MAX;
+        maximum_weights.foldability_weight = u8::MAX;
+        maximum_weights.step_count_weight = u8::MAX;
+        maximum_weights.paper_efficiency_weight = u8::MAX;
+        let maximum = score_beginner_candidates_v1(input, &maximum_weights);
+        assert_eq!(maximum.len(), MAX_BEGINNER_CANDIDATES_V1);
+        assert!(maximum.iter().all(|candidate| candidate.total_score <= 100));
+
+        let mut quantized_weight = tied_profile;
+        quantized_weight.shape_fidelity_weight = 1;
+        let quantized = score_beginner_candidates_v1(input, &quantized_weight);
+        assert!(quantized.iter().all(|candidate| candidate.total_score <= 1));
+        assert_eq!(
+            quantized,
+            score_beginner_candidates_v1(input, &quantized_weight)
         );
     }
 }

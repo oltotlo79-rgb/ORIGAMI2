@@ -472,8 +472,8 @@ fn propose_current_cycle_pose_inner_with_layers(
     let (geometry, audit, pose) = pose_capability
         .graph()
         .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
-    let automatic_kawasaki = request.cycle_schedule_v1.version == 2
-        && request.cycle_schedule_v1.entries.is_empty();
+    let automatic_kawasaki =
+        request.cycle_schedule_v1.version == 2 && request.cycle_schedule_v1.entries.is_empty();
     let schedule = if automatic_kawasaki {
         ori_kinematics::generate_bounded_degree_four_kawasaki_path_candidate_v1(
             geometry,

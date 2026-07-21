@@ -11546,6 +11546,107 @@ mod tests {
     }
 
     #[test]
+    fn complete_animal_grid_apply_replay_undo_redo_and_archive_round_trip() {
+        let mut profile = ori_domain::BeginnerDesignProfileV1::default();
+        profile.generation_constraints.target_category =
+            Some(ori_domain::BeginnerTargetCategoryV1::Animal);
+        profile.generation_constraints.target_parts = vec![
+            (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+            (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+            (ori_domain::BeginnerTargetPartKindV1::Horn, 1),
+            (ori_domain::BeginnerTargetPartKindV1::Tail, 1),
+            (ori_domain::BeginnerTargetPartKindV1::Ear, 2),
+            (ori_domain::BeginnerTargetPartKindV1::Leg, 4),
+        ]
+        .into_iter()
+        .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
+        .collect();
+        configure_symmetric_profile(
+            &mut profile,
+            ori_domain::BeginnerSymmetricParameterEstimateV1 {
+                protrusion_count: 8,
+                scale_percent: 25,
+                spacing_percent: 50,
+            },
+            25,
+            50,
+        );
+        assert!(ori_domain::animal_complete_bindings_v1(&profile.generation_constraints).is_some());
+
+        let point = ori_domain::beginner_parameter_grid_v1()[13];
+        let mut project = initial_project_state();
+        let plan = grid_template_plan(
+            project.project_id,
+            project.editor.pattern(),
+            &project.editor.paper().boundary_vertices,
+            &profile,
+            point,
+        )
+        .unwrap()
+        .into_iter()
+        .find(|plan| {
+            plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase
+        })
+        .unwrap();
+        let project_id = project.project_id;
+        let instance_id = project.instance_id;
+        let revision = project.editor.revision();
+        let saved_profile = execute_command(
+            &mut project,
+            project_id,
+            revision,
+            Command::UpdateBeginnerDesignProfile { profile },
+        )
+        .unwrap();
+        assert!(
+            apply_grid_plan_document(
+                &mut project,
+                instance_id,
+                project_id,
+                revision,
+                plan.clone(),
+            )
+            .is_err()
+        );
+        let applied = apply_grid_plan_document(
+            &mut project,
+            instance_id,
+            project_id,
+            saved_profile.revision,
+            plan.clone(),
+        )
+        .unwrap();
+        assert!(
+            apply_grid_plan_document(
+                &mut project,
+                instance_id,
+                project_id,
+                saved_profile.revision,
+                plan,
+            )
+            .is_err()
+        );
+        let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
+        let _redone = execute_redo(&mut project, project_id, undone.revision).unwrap();
+        let saved = project.document();
+        let bytes = write_project_ori2(&saved).unwrap();
+        let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default()).unwrap();
+        let reopened = ProjectState::from_document(restored, PathBuf::from("complete-animal.ori2"));
+        assert_eq!(reopened.document(), saved);
+        assert!(
+            ori_domain::animal_complete_bindings_v1(
+                &reopened
+                    .editor
+                    .beginner_design_profile()
+                    .generation_constraints
+            )
+            .is_some()
+        );
+        assert!(!reopened.editor.can_undo());
+        assert!(!reopened.editor.can_redo());
+    }
+
+    #[test]
     fn symmetry_transforms_are_exact_at_cardinal_angles() {
         assert_eq!(
             mirror_point_left_right(Point2::new(3.0, 4.0), 1.0),

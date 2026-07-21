@@ -454,12 +454,15 @@ fn dense_parallel_grid_graph_v1(
     audit: &ori_kinematics::MaterialHingeGraphAudit,
     schedule: &ori_kinematics::CanonicalCycleScheduleV1,
 ) -> bool {
-    geometry.face_ids().len() == 9
-        && geometry.hinges().len() == 12
-        && audit.closure_hinges().len() == 4
+    let face_count = geometry.face_ids().len();
+    let Some(side) = (3usize..=7).find(|side| side * side == face_count) else {
+        return false;
+    };
+    geometry.hinges().len() == 2 * side * (side - 1)
+        && audit.closure_hinges().len() == (side - 1) * (side - 1)
         && schedule
             .collective_profile_edges_v1()
-            .is_some_and(|moving| moving.len() == 6)
+            .is_some_and(|moving| moving.len() == side * (side - 1))
 }
 
 fn emit_current_cycle_status_v1(
@@ -3513,6 +3516,62 @@ mod tests {
             project.editor.redo(undone).unwrap();
             assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
         }
+    }
+
+    #[test]
+    fn dense_rank_nine_grid_previews_and_applies_atomically() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (pattern, mut paper, moving) =
+            super::dense_grid_cycle_test_support::square_dense_cycle_pattern(4);
+        paper.thickness_mm = 0.1;
+        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        assert_eq!(
+            (snapshot.faces.len(), snapshot.hinge_adjacency.len()),
+            (16, 24)
+        );
+        let hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        let fixed = snapshot.faces[0].id;
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            fixed,
+        );
+        let request = CurrentCyclePosePreviewRequestV1 {
+            progress_request_id: None,
+            expected_project_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: project.editor.revision(),
+            cycle_schedule_v1: dense_grid_schedule(&hinges, &moving),
+        };
+        let state = AppState::new(project);
+        let transactions =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let preview = propose_current_cycle_pose_inner(None, &state, &transactions, request)
+            .expect("rank-nine dense preview");
+        assert_eq!(
+            (preview.closure_leaf_count, preview.checked_hinge_count),
+            (1, 24)
+        );
+        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            &state,
+            &GlobalFlatFoldabilityState::default(),
+            &transactions,
+            preview.transaction_token,
+        )
+        .expect("rank-nine dense apply");
+        let mut project = super::super::lock_project(&state).unwrap();
+        project.editor.undo(applied).unwrap();
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
     }
 
     fn four_bay_cycle_schedule(hinges: &[ori_domain::EdgeId]) -> CycleScheduleRequestV1 {

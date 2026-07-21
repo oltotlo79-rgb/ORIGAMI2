@@ -3676,47 +3676,66 @@ mod tests {
     #[test]
     fn oblique_dense_rank_four_collision_fails_closed_before_preview() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, paper, horizontal, _) =
-            super::dense_grid_cycle_test_support::oblique_dense_cycle_pattern(3, 3);
-        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology.simulation_snapshot().unwrap();
-        let hinges = snapshot
-            .hinge_adjacency
-            .iter()
-            .map(|hinge| hinge.edge)
-            .collect::<Vec<_>>();
-        let fixed = snapshot.faces[0].id;
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            fixed,
-        );
-        let request = CurrentCyclePosePreviewRequestV1 {
-            progress_request_id: None,
-            expected_project_instance_id: project.instance_id,
-            expected_project_id: project.project_id,
-            expected_revision: project.editor.revision(),
-            cycle_schedule_v1: dense_grid_schedule(&hinges, &horizontal, 100),
-        };
-        let state = AppState::new(project);
-        let transactions =
-            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        assert_eq!(
-            propose_current_cycle_pose_inner(None, &state, &transactions, request).unwrap_err(),
-            CYCLE_PATH_UNCERTIFIED_MESSAGE
-        );
-        assert!(
-            super::super::lock_project(&state)
-                .unwrap()
+        for thickness_mm in [0.1, 1.0, 3.0, 10_000.0] {
+            let (pattern, mut paper, horizontal, _) =
+                super::dense_grid_cycle_test_support::oblique_dense_cycle_pattern(3, 3);
+            paper.thickness_mm = thickness_mm;
+            let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+            let topology = project
                 .editor
-                .instruction_timeline()
-                .steps
-                .is_empty()
-        );
+                .topology_analysis_input(project.project_id)
+                .analyze();
+            let snapshot = topology.simulation_snapshot().unwrap();
+            let hinges = snapshot
+                .hinge_adjacency
+                .iter()
+                .map(|hinge| hinge.edge)
+                .collect::<Vec<_>>();
+            let fixed = snapshot.faces[0].id;
+            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+                &mut project,
+                hinges.clone(),
+                fixed,
+            );
+            let request = CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: project.instance_id,
+                expected_project_id: project.project_id,
+                expected_revision: project.editor.revision(),
+                cycle_schedule_v1: dense_grid_schedule(&hinges, &horizontal, 100),
+            };
+            let state = AppState::new(project);
+            let transactions =
+                super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+            let preview = propose_current_cycle_pose_inner(None, &state, &transactions, request);
+            if thickness_mm == 10_000.0 {
+                assert_eq!(preview.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
+            } else {
+                let preview =
+                    preview.unwrap_or_else(|error| panic!("oblique {thickness_mm}mm: {error}"));
+                let applied =
+                    super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                        &state,
+                        &GlobalFlatFoldabilityState::default(),
+                        &transactions,
+                        preview.transaction_token,
+                    )
+                    .expect("oblique dense apply");
+                let mut project = super::super::lock_project(&state).unwrap();
+                project.editor.undo(applied).unwrap();
+                let undone = project.editor.revision();
+                project.editor.redo(undone).unwrap();
+            }
+            assert!(
+                super::super::lock_project(&state)
+                    .unwrap()
+                    .editor
+                    .instruction_timeline()
+                    .steps
+                    .len()
+                    <= 1
+            );
+        }
     }
 
     fn four_bay_cycle_schedule(hinges: &[ori_domain::EdgeId]) -> CycleScheduleRequestV1 {

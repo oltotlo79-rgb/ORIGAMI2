@@ -7893,7 +7893,7 @@ mod tests {
 
     #[test]
     fn miura_rank_four_fixture_issues_global_layer_authority() {
-        let (pattern, paper, _, _) =
+        let (pattern, paper, horizontal, _) =
             super::dense_grid_cycle_test_support::three_by_three_miura_authority_pattern();
         let project = fixed_id("b602", 1);
         let report = analyze_faces(FaceExtractionInput {
@@ -7912,5 +7912,92 @@ mod tests {
         )
         .unwrap();
         assert!(global.layer_order().is_some(), "{:?}", global.outcome);
+
+        let geometry = MaterialHingeGraphGeometry::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        let fixed = topology.faces[0].id;
+        let hinge_edges = geometry
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        // The square 3M1V tangent-half-angle equations degenerate to one
+        // active collinear carrier and its orthogonal zero pair. Propagating
+        // that constraint through the shared grid selects the first complete
+        // horizontal row: three segments, all with p/q = 1, and nine zeros.
+        let active = horizontal.into_iter().take(3).collect::<HashSet<_>>();
+        let endpoint = CanonicalHingeAngles::new(
+            hinge_edges
+                .iter()
+                .map(|edge| {
+                    HingeAngle::new(*edge, if active.contains(edge) { 90.0 } else { 0.0 }).unwrap()
+                })
+                .collect(),
+        )
+        .unwrap();
+        geometry
+            .solve_closed(&audit, fixed, &endpoint, 1.0e-9)
+            .unwrap();
+        let mut entries = hinge_edges
+            .iter()
+            .map(|edge| ori_kinematics::HalfAngleRationalEntryInputV1 {
+                edge: *edge,
+                u_domain: [
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                numerator_power_coefficients: vec![
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: i64::from(active.contains(edge)),
+                        denominator: 1,
+                    },
+                ],
+                denominator_power_coefficients: vec![ori_kinematics::RationalCoefficientV1 {
+                    numerator: 1,
+                    denominator: 1,
+                }],
+            })
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            entries,
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        let closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                fixed,
+                &schedule,
+                1.0e-9,
+                DyadicIntervalClosureLimitsV1 {
+                    max_depth: 8,
+                    max_leaves: 256,
+                    max_work: 1_000_000,
+                    schedule_limits: CycleScheduleLimitsV1::default(),
+                },
+            )
+            .unwrap();
+        assert!(closure.every_leaf_covers_graph_v1(&geometry));
     }
 }

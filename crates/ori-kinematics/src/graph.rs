@@ -949,10 +949,79 @@ fn dense_parallel_grid_cycle_closure_premises_v1(
     let Some(moving_edges) = schedule
         .collective_profile_edges_v1()
         .or_else(|| schedule.collective_half_angle_profile_edges_v1())
+        .or_else(|| {
+            let initial = schedule.evaluate(0.0)?;
+            let target = schedule.evaluate(1.0)?;
+            let initial_by_edge = initial
+                .as_slice()
+                .iter()
+                .map(|angle| (angle.edge(), angle.angle_degrees().to_bits()))
+                .collect::<HashMap<_, _>>();
+            let moving = target
+                .as_slice()
+                .iter()
+                .filter(|angle| {
+                    initial_by_edge.get(&angle.edge()).copied()
+                        != Some(angle.angle_degrees().to_bits())
+                })
+                .map(|angle| angle.edge())
+                .collect::<Vec<_>>();
+            let first = target
+                .as_slice()
+                .iter()
+                .find(|angle| moving.contains(&angle.edge()))?
+                .angle_degrees()
+                .to_bits();
+            (!moving.is_empty()
+                && target.as_slice().iter().all(|angle| {
+                    !moving.contains(&angle.edge()) || angle.angle_degrees().to_bits() == first
+                }))
+            .then_some(moving)
+        })
     else {
         return false;
     };
-    if moving_edges.len() != rows * (columns - 1) && moving_edges.len() != columns * (rows - 1) {
+    let complete_parallel_family =
+        moving_edges.len() == rows * (columns - 1) || moving_edges.len() == columns * (rows - 1);
+    let moving_hinges = geometry
+        .hinges()
+        .iter()
+        .filter(|hinge| moving_edges.contains(&hinge.edge()))
+        .collect::<Vec<_>>();
+    let single_complete_carrier = (moving_edges.len() == columns || moving_edges.len() == rows)
+        && moving_hinges.first().is_some_and(|reference| {
+            let origin = reference.start();
+            let axis = reference.axis();
+            moving_hinges.iter().all(|hinge| {
+                let exact_zero_cross = |a: crate::Point3, b: crate::Point3| {
+                    a.y() * b.z() - a.z() * b.y() == 0.0
+                        && a.z() * b.x() - a.x() * b.z() == 0.0
+                        && a.x() * b.y() - a.y() * b.x() == 0.0
+                };
+                let start = hinge.start();
+                let end = hinge.end();
+                exact_zero_cross(axis, hinge.axis())
+                    && exact_zero_cross(
+                        axis,
+                        crate::Point3::new(
+                            start.x() - origin.x(),
+                            start.y() - origin.y(),
+                            start.z() - origin.z(),
+                        )
+                        .expect("finite hinge start delta"),
+                    )
+                    && exact_zero_cross(
+                        axis,
+                        crate::Point3::new(
+                            end.x() - origin.x(),
+                            end.y() - origin.y(),
+                            end.z() - origin.z(),
+                        )
+                        .expect("finite hinge end delta"),
+                    )
+            })
+        });
+    if !complete_parallel_family && !single_complete_carrier {
         return false;
     }
     let moving = moving_edges.into_iter().collect::<HashSet<_>>();

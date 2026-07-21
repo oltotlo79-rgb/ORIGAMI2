@@ -360,6 +360,24 @@ pub struct InstructionVisual {
     pub focus_points: Vec<InstructionFocusPoint>,
     pub hand_guides: Vec<InstructionHandGuide>,
     pub cycle_layer_order_proof_v1: Option<CycleLayerOrderProofV1>,
+    pub path_certificate_reference_v1: Option<PathCertificateReferenceV1>,
+}
+
+pub const PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1: &str =
+    "bounded_certified_pose_graph_path_reference_v1";
+pub const MAX_PATH_CERTIFICATE_REFERENCE_TRANSITIONS_V1: usize = 64;
+
+/// Persisted, bounded reference to a native graph-path certificate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathCertificateReferenceV1 {
+    pub version: u32,
+    pub model_id: String,
+    pub binding_sha256: [u8; 32],
+    pub source_pose_sha256: [u8; 32],
+    pub target_pose_sha256: [u8; 32],
+    pub source_model_binding_sha256: [u8; 32],
+    pub transition_count: usize,
 }
 
 pub const CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1: &str =
@@ -852,6 +870,21 @@ fn validate_instruction_visual(
     step_index: usize,
 ) -> Result<(), InstructionTimelineValidationError> {
     if visual
+        .path_certificate_reference_v1
+        .as_ref()
+        .is_some_and(|proof| {
+            proof.version != 1
+                || proof.model_id != PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1
+                || proof.binding_sha256 == [0; 32]
+                || proof.source_pose_sha256 == proof.target_pose_sha256
+                || proof.source_model_binding_sha256 == [0; 32]
+                || proof.transition_count == 0
+                || proof.transition_count > MAX_PATH_CERTIFICATE_REFERENCE_TRANSITIONS_V1
+        })
+    {
+        return Err(InstructionTimelineValidationError::InvalidVisual { step_index });
+    }
+    if visual
         .cycle_layer_order_proof_v1
         .as_ref()
         .is_some_and(|proof| {
@@ -1167,6 +1200,15 @@ mod tests {
                 transition_count: 5,
                 pairs: Vec::new(),
             }),
+            path_certificate_reference_v1: Some(PathCertificateReferenceV1 {
+                version: 1,
+                model_id: PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1.to_owned(),
+                binding_sha256: [0x31; 32],
+                source_pose_sha256: [0x32; 32],
+                target_pose_sha256: [0x33; 32],
+                source_model_binding_sha256: [0x34; 32],
+                transition_count: 2,
+            }),
         };
         let timeline = InstructionTimeline { steps: vec![step] };
 
@@ -1196,6 +1238,30 @@ mod tests {
         ));
         let malformed = r#"{"version":1,"model_id":"native_continuous_layer_transport_certificate_v1","target_order_sha256":[1],"transition_count":1,"pairs":[]}"#;
         assert!(serde_json::from_str::<CycleLayerOrderProofV1>(malformed).is_err());
+    }
+
+    #[test]
+    fn path_certificate_reference_defaults_for_legacy_json_and_rejects_malformed_authority() {
+        let legacy: InstructionVisual = serde_json::from_str(
+            r#"{"camera":null,"arrows":[],"focus_points":[],"hand_guides":[],"cycle_layer_order_proof_v1":null}"#,
+        )
+        .expect("legacy visual");
+        assert!(legacy.path_certificate_reference_v1.is_none());
+
+        let mut step = valid_instruction_step();
+        step.visual.path_certificate_reference_v1 = Some(PathCertificateReferenceV1 {
+            version: 1,
+            model_id: PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1.to_owned(),
+            binding_sha256: [1; 32],
+            source_pose_sha256: [2; 32],
+            target_pose_sha256: [2; 32],
+            source_model_binding_sha256: [3; 32],
+            transition_count: 1,
+        });
+        assert!(matches!(
+            validate_instruction_timeline(&InstructionTimeline { steps: vec![step] }),
+            Err(InstructionTimelineValidationError::InvalidVisual { .. })
+        ));
     }
 
     #[test]

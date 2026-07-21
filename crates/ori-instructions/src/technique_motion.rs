@@ -8,7 +8,9 @@
 use ori_collision::CertifiedPoseGraphPathCertificateV1;
 use ori_domain::{
     EdgeId, FaceId, InstructionHingeAngle, InstructionPose, InstructionPoseModel, InstructionStep,
-    InstructionStepId, InstructionTimeline, InstructionVisual, validate_instruction_timeline,
+    InstructionStepId, InstructionTimeline, InstructionVisual,
+    PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1, PathCertificateReferenceV1,
+    validate_instruction_timeline,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -248,6 +250,10 @@ fn compile_two_segment_motion(
         path_certificate_reference_v1(first, model),
         path_certificate_reference_v1(second, model),
     ];
+    let certificate_visuals = [
+        path_certificate_visual_v1(first, model),
+        path_certificate_visual_v1(second, model),
+    ];
     let steps = [("開始", source), ("沈め", middle), ("完了", target)]
         .into_iter()
         .enumerate()
@@ -264,7 +270,11 @@ fn compile_two_segment_motion(
             },
             caution: String::new(),
             duration_ms: 1_000,
-            visual: InstructionVisual::default(),
+            visual: if index == 0 {
+                InstructionVisual::default()
+            } else {
+                certificate_visuals[index - 1].clone()
+            },
             pose: InstructionPose {
                 model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                 source_model_fingerprint: model.to_owned(),
@@ -417,6 +427,13 @@ pub fn compile_certified_accordion_fold_timeline_v1(
             path_certificate_reference_v1(certificate, request.source_model_fingerprint)
         })
         .collect::<Vec<_>>();
+    let certificate_visuals = request
+        .ordered_path_certificates
+        .iter()
+        .map(|certificate| {
+            path_certificate_visual_v1(certificate, request.source_model_fingerprint)
+        })
+        .collect::<Vec<_>>();
     let steps = poses
         .into_iter()
         .enumerate()
@@ -437,7 +454,11 @@ pub fn compile_certified_accordion_fold_timeline_v1(
             },
             caution: "区間を入れ替えず順番どおりに折ってください。".to_owned(),
             duration_ms: 1_000,
-            visual: InstructionVisual::default(),
+            visual: if index == 0 {
+                InstructionVisual::default()
+            } else {
+                certificate_visuals[index - 1].clone()
+            },
             pose: InstructionPose {
                 model: InstructionPoseModel::AbsoluteHingeAnglesV1,
                 source_model_fingerprint: request.source_model_fingerprint.to_owned(),
@@ -548,23 +569,29 @@ pub fn compile_certified_reverse_fold_timeline_v1(
     };
     let first_reference = path_certificate_reference_v1(first, request.source_model_fingerprint);
     let second_reference = path_certificate_reference_v1(second, request.source_model_fingerprint);
-    let step = |suffix: &str, description: &str, angles| InstructionStep {
+    let step = |suffix: &str, description: &str, visual, angles| InstructionStep {
         id: InstructionStepId::new(),
         title: format!("{title}：{suffix}"),
         description: description.to_owned(),
         caution: "認証済みの2区間を順番どおりに操作してください。".to_owned(),
         duration_ms: 1_000,
-        visual: InstructionVisual::default(),
+        visual,
         pose: pose(angles),
     };
     let timeline = InstructionTimeline {
         steps: vec![
-            step("開始", "逆折りの開始姿勢です。", source),
+            step(
+                "開始",
+                "逆折りの開始姿勢です。",
+                InstructionVisual::default(),
+                source,
+            ),
             step(
                 "反転",
                 &format!(
                     "第1の衝突・層順序証明区間の終端です。経路証明 SHA-256: {first_reference}"
                 ),
+                path_certificate_visual_v1(first, request.source_model_fingerprint),
                 intermediate,
             ),
             step(
@@ -572,6 +599,7 @@ pub fn compile_certified_reverse_fold_timeline_v1(
                 &format!(
                     "第2の衝突・層順序証明区間の終端です。経路証明 SHA-256: {second_reference}"
                 ),
+                path_certificate_visual_v1(second, request.source_model_fingerprint),
                 target,
             ),
         ],
@@ -604,6 +632,27 @@ fn path_certificate_reference_v1(
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     format!("{certificate} / 元モデル SHA-256: {source_model_fingerprint}")
+}
+
+fn path_certificate_visual_v1(
+    certificate: &CertifiedPoseGraphPathCertificateV1,
+    source_model_fingerprint: &str,
+) -> InstructionVisual {
+    let mut model_hash = Sha256::new();
+    model_hash.update(b"path_certificate_source_model_binding_v1");
+    model_hash.update(source_model_fingerprint.as_bytes());
+    InstructionVisual {
+        path_certificate_reference_v1: Some(PathCertificateReferenceV1 {
+            version: 1,
+            model_id: PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1.to_owned(),
+            binding_sha256: certificate.binding_fingerprint_v1(),
+            source_pose_sha256: certificate.source(),
+            target_pose_sha256: certificate.target(),
+            source_model_binding_sha256: model_hash.finalize().into(),
+            transition_count: certificate.edges().len(),
+        }),
+        ..InstructionVisual::default()
+    }
 }
 
 /// Compiles a validated named straight-line fold into a two-pose timeline.
@@ -735,7 +784,10 @@ pub fn compile_certified_book_fold_timeline_v1(
                 ),
                 caution: "証明対象外の紙や姿勢には適用しないでください。".to_owned(),
                 duration_ms: 1_500,
-                visual: InstructionVisual::default(),
+                visual: path_certificate_visual_v1(
+                    request.path_certificate,
+                    request.source_model_fingerprint,
+                ),
                 pose: pose(target),
             },
         ],
@@ -955,6 +1007,14 @@ mod tests {
                 .description
                 .contains(&path_certificate_reference_v1(&first, &model))
         );
+        assert_eq!(
+            timeline.steps[1]
+                .visual
+                .path_certificate_reference_v1
+                .as_ref()
+                .map(|reference| reference.binding_sha256),
+            Some(first.binding_fingerprint_v1())
+        );
         assert!(
             timeline.steps[2]
                 .description
@@ -1045,6 +1105,14 @@ mod tests {
                     .description
                     .contains(&path_certificate_reference_v1(certificate, &model))
             );
+            assert_eq!(
+                timeline.steps[index + 1]
+                    .visual
+                    .path_certificate_reference_v1
+                    .as_ref()
+                    .map(|reference| reference.binding_sha256),
+                Some(certificate.binding_fingerprint_v1())
+            );
         }
     }
 
@@ -1129,6 +1197,14 @@ mod tests {
                     .description
                     .contains(&path_certificate_reference_v1(&first, &model))
             );
+            assert_eq!(
+                timeline.steps[1]
+                    .visual
+                    .path_certificate_reference_v1
+                    .as_ref()
+                    .map(|reference| reference.binding_sha256),
+                Some(first.binding_fingerprint_v1())
+            );
             assert!(
                 timeline.steps[2]
                     .description
@@ -1207,6 +1283,14 @@ mod tests {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         assert!(timeline.steps[1].description.contains(&reference));
+        assert_eq!(
+            timeline.steps[1]
+                .visual
+                .path_certificate_reference_v1
+                .as_ref()
+                .map(|value| value.binding_sha256),
+            Some(proof.binding_fingerprint_v1())
+        );
     }
 
     #[test]

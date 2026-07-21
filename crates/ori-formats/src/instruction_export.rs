@@ -6,9 +6,12 @@ mod pdf;
 mod svg_zip;
 
 use ori_domain::{CreasePattern, InstructionTimeline, Paper};
-use ori_instructions::build_instruction_diagram_plan_with_limits;
 pub use ori_instructions::{InstructionDiagramError, InstructionDiagramLimits};
+use ori_instructions::{
+    build_instruction_diagram_plan_with_limits, instruction_pose_fingerprint_v1,
+};
 use ori_topology::TopologySnapshot;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub const MAX_INSTRUCTION_EXPORT_BYTES: usize = 128 * 1024 * 1024;
@@ -360,9 +363,12 @@ fn validate_path_certificate_references(
     timeline: &InstructionTimeline,
 ) -> Result<(), InstructionExportError> {
     for (step_index, step) in timeline.steps.iter().enumerate() {
+        let mut described_binding = None;
+        let mut reference_count = 0_usize;
         for text in [&step.title, &step.description, &step.caution] {
             let mut remainder = text.as_str();
             while let Some(offset) = remainder.find(PATH_CERTIFICATE_REFERENCE_LABEL) {
+                reference_count += 1;
                 let value = &remainder[offset + PATH_CERTIFICATE_REFERENCE_LABEL.len()..];
                 if value.len() < 64
                     || !value.as_bytes()[..64]
@@ -373,6 +379,7 @@ fn validate_path_certificate_references(
                         step_index,
                     });
                 }
+                described_binding = decode_lower_hex_32(&value[..64]);
                 let model_value = value[64..]
                     .strip_prefix(SOURCE_MODEL_REFERENCE_LABEL)
                     .ok_or(InstructionExportError::InvalidPathCertificateReference {
@@ -395,8 +402,70 @@ fn validate_path_certificate_references(
                 remainder = &model_value[64..];
             }
         }
+        match &step.visual.path_certificate_reference_v1 {
+            None if reference_count == 0 => {}
+            Some(reference) if reference_count == 1 => {
+                let fixed_face = step.pose.fixed_face.ok_or(
+                    InstructionExportError::InvalidPathCertificateReference { step_index },
+                )?;
+                let previous = step_index
+                    .checked_sub(1)
+                    .and_then(|index| timeline.steps.get(index))
+                    .filter(|previous| {
+                        previous.pose.model
+                            == ori_domain::InstructionPoseModel::AbsoluteHingeAnglesV1
+                            && previous.pose.source_model_fingerprint
+                                == step.pose.source_model_fingerprint
+                    })
+                    .ok_or(InstructionExportError::InvalidPathCertificateReference {
+                        step_index,
+                    })?;
+                let mut model_hash = Sha256::new();
+                model_hash.update(b"path_certificate_source_model_binding_v1");
+                model_hash.update(step.pose.source_model_fingerprint.as_bytes());
+                if described_binding != Some(reference.binding_sha256)
+                    || reference.source_model_binding_sha256
+                        != <[u8; 32]>::from(model_hash.finalize())
+                    || reference.source_pose_sha256
+                        != instruction_pose_fingerprint_v1(
+                            &step.pose.source_model_fingerprint,
+                            fixed_face,
+                            &previous.pose.hinge_angles,
+                        )
+                    || reference.target_pose_sha256
+                        != instruction_pose_fingerprint_v1(
+                            &step.pose.source_model_fingerprint,
+                            fixed_face,
+                            &step.pose.hinge_angles,
+                        )
+                {
+                    return Err(InstructionExportError::InvalidPathCertificateReference {
+                        step_index,
+                    });
+                }
+            }
+            _ => {
+                return Err(InstructionExportError::InvalidPathCertificateReference { step_index });
+            }
+        }
     }
     Ok(())
+}
+
+fn decode_lower_hex_32(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64 {
+        return None;
+    }
+    let mut decoded = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let digit = |byte| match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            _ => None,
+        };
+        decoded[index] = digit(pair[0])? * 16 + digit(pair[1])?;
+    }
+    Some(decoded)
 }
 
 fn canonical_instruction_title(title: &str) -> &str {
@@ -800,12 +869,32 @@ mod tests {
     fn certified_path_reference_survives_step_layout_and_both_final_formats() {
         let fixture = fixture();
         let certificate_reference = "7c".repeat(32);
-        let timeline = timeline(
-            &fixture,
-            format!(
-                "衝突・閉包証明に結合された区間です。経路証明 SHA-256: {certificate_reference} / 元モデル SHA-256: {FINGERPRINT}"
-            ),
+        let mut timeline = timeline(&fixture, "開始姿勢です。".to_owned());
+        timeline.steps[1].description = format!(
+            "衝突・閉包証明に結合された区間です。経路証明 SHA-256: {certificate_reference} / 元モデル SHA-256: {FINGERPRINT}"
         );
+        let fixed_face = timeline.steps[1].pose.fixed_face.expect("fixed face");
+        let mut model_hash = Sha256::new();
+        model_hash.update(b"path_certificate_source_model_binding_v1");
+        model_hash.update(FINGERPRINT.as_bytes());
+        timeline.steps[1].visual.path_certificate_reference_v1 =
+            Some(ori_domain::PathCertificateReferenceV1 {
+                version: 1,
+                model_id: ori_domain::PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1.to_owned(),
+                binding_sha256: [0x7c; 32],
+                source_pose_sha256: instruction_pose_fingerprint_v1(
+                    FINGERPRINT,
+                    fixed_face,
+                    &timeline.steps[0].pose.hinge_angles,
+                ),
+                target_pose_sha256: instruction_pose_fingerprint_v1(
+                    FINGERPRINT,
+                    fixed_face,
+                    &timeline.steps[1].pose.hinge_angles,
+                ),
+                source_model_binding_sha256: model_hash.finalize().into(),
+                transition_count: 1,
+            });
         let (plan, font) = build_canonical_instruction_plan(
             "証明付き手順",
             FINGERPRINT,
@@ -817,14 +906,14 @@ mod tests {
         )
         .expect("proof-bearing canonical plan");
         plan.validate(&font).expect("valid proof-bearing plan");
-        let first_step_text = plan
+        let proof_step_text = plan
             .pages
             .iter()
-            .filter(|page| page.step_number == 1)
+            .filter(|page| page.step_number == 2)
             .flat_map(|page| page.texts.iter())
             .map(layout::PageText::scalar_text)
             .collect::<String>();
-        assert!(first_step_text.contains(&certificate_reference));
+        assert!(proof_step_text.contains(&certificate_reference));
         let archived = serde_json::to_vec(&timeline).expect("archive proof-bearing timeline");
         let reopened: InstructionTimeline =
             serde_json::from_slice(&archived).expect("reopen proof-bearing timeline");
@@ -849,7 +938,7 @@ mod tests {
         }
 
         let mut malformed_reference = reopened.clone();
-        malformed_reference.steps[0].description = format!(
+        malformed_reference.steps[1].description = format!(
             "経路証明 SHA-256: {}G",
             &certificate_reference[..certificate_reference.len() - 1]
         );
@@ -863,11 +952,11 @@ mod tests {
                 &malformed_reference,
                 &fixture.topology,
             ),
-            Err(InstructionExportError::InvalidPathCertificateReference { step_index: 0 })
+            Err(InstructionExportError::InvalidPathCertificateReference { step_index: 1 })
         ));
 
         let mut mismatched_model_reference = reopened.clone();
-        mismatched_model_reference.steps[0].description = format!(
+        mismatched_model_reference.steps[1].description = format!(
             "経路証明 SHA-256: {certificate_reference} / 元モデル SHA-256: {}",
             "b".repeat(64)
         );
@@ -881,12 +970,12 @@ mod tests {
                 &mismatched_model_reference,
                 &fixture.topology,
             ),
-            Err(InstructionExportError::InvalidPathCertificateReference { step_index: 0 })
+            Err(InstructionExportError::InvalidPathCertificateReference { step_index: 1 })
         ));
 
         let mut foreign_model = reopened;
-        foreign_model.steps[0].pose.source_model_fingerprint = "b".repeat(64);
-        foreign_model.steps[0].description = format!(
+        foreign_model.steps[1].pose.source_model_fingerprint = "b".repeat(64);
+        foreign_model.steps[1].description = format!(
             "経路証明 SHA-256: {certificate_reference} / 元モデル SHA-256: {}",
             "b".repeat(64)
         );
@@ -900,9 +989,7 @@ mod tests {
                 &foreign_model,
                 &fixture.topology,
             ),
-            Err(InstructionExportError::Diagram(
-                InstructionDiagramError::StaleStep { step_index: 0 }
-            ))
+            Err(InstructionExportError::InvalidPathCertificateReference { step_index: 1 })
         ));
     }
 

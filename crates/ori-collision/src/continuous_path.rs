@@ -7335,4 +7335,138 @@ mod tests {
         let (foreign, _, _, _) = rational_cycle_bay_geometry(4, false);
         assert!(!basis.is_for_geometry(&foreign));
     }
+
+    #[test]
+    fn non_grid_rank_eight_and_sixteen_basis_scale_to_exact_all_pair_limits() {
+        for rank in [8usize, 16] {
+            let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(rank, false);
+            assert_eq!(audit.closure_hinges().len(), rank);
+            let basis_limits = ori_kinematics::CycleBasisLimitsV1::default();
+            let basis = geometry
+                .extract_canonical_cycle_basis_v1(&audit, basis_limits)
+                .unwrap();
+            let repeated = geometry
+                .extract_canonical_cycle_basis_v1(&audit, basis_limits)
+                .unwrap();
+            assert_eq!(basis.cycles(), repeated.cycles());
+            let total_edges = basis.cycles().iter().map(Vec::len).sum::<usize>();
+            let max_cycle_edges = basis.cycles().iter().map(Vec::len).max().unwrap();
+            for limits in [
+                ori_kinematics::CycleBasisLimitsV1 {
+                    max_cycles: rank - 1,
+                    ..basis_limits
+                },
+                ori_kinematics::CycleBasisLimitsV1 {
+                    max_edges_per_cycle: max_cycle_edges - 1,
+                    ..basis_limits
+                },
+                ori_kinematics::CycleBasisLimitsV1 {
+                    max_total_cycle_edges: total_edges - 1,
+                    ..basis_limits
+                },
+            ] {
+                assert!(matches!(
+                    geometry.extract_canonical_cycle_basis_v1(&audit, limits),
+                    Err(ori_kinematics::DyadicIntervalClosureErrorV1::ResourceLimit)
+                ));
+            }
+            let closure_limits = DyadicIntervalClosureLimitsV1 {
+                max_depth: rank.ilog2(),
+                max_leaves: rank,
+                max_work: rank,
+                schedule_limits: CycleScheduleLimitsV1::default(),
+            };
+            let simultaneous = geometry
+                .prove_simultaneous_cycle_basis_schedule_closure_v1(
+                    &audit,
+                    fixed,
+                    &schedule,
+                    1.0e-9,
+                    ori_kinematics::CycleBasisLimitsV1 {
+                        max_cycles: rank,
+                        max_edges_per_cycle: max_cycle_edges,
+                        max_total_cycle_edges: total_edges,
+                    },
+                    closure_limits,
+                )
+                .unwrap();
+            assert_eq!(simultaneous.closure().leaves().len(), rank);
+            assert!(matches!(
+                geometry.prove_simultaneous_cycle_basis_schedule_closure_v1(
+                    &audit,
+                    fixed,
+                    &schedule,
+                    1.0e-9,
+                    basis_limits,
+                    DyadicIntervalClosureLimitsV1 {
+                        max_work: rank - 1,
+                        ..closure_limits
+                    },
+                ),
+                Err(ori_kinematics::DyadicIntervalClosureErrorV1::ResourceLimit)
+            ));
+            let initial = schedule.evaluate(0.0).unwrap();
+            let pose = geometry
+                .solve_closed(&audit, fixed, &initial, 1.0e-9)
+                .unwrap();
+            let face_count = geometry.face_ids().len();
+            let expected_pairs = face_count * (face_count - 1) / 2;
+            assert!(matches!(
+                prove_positive_thickness_graph_geometry_v1(
+                    &geometry,
+                    &pose,
+                    0.1,
+                    PositiveThicknessGraphLimitsV1 {
+                        max_unordered_face_pairs: expected_pairs - 1,
+                        ..PositiveThicknessGraphLimitsV1::default()
+                    },
+                ),
+                Err(crate::PositiveThicknessGraphProofErrorV1::ResourceLimit)
+            ));
+            assert_eq!(
+                prove_positive_thickness_graph_geometry_v1(
+                    &geometry,
+                    &pose,
+                    0.1,
+                    PositiveThicknessGraphLimitsV1 {
+                        max_unordered_face_pairs: expected_pairs,
+                        ..PositiveThicknessGraphLimitsV1::default()
+                    },
+                )
+                .unwrap()
+                .analyzed_unordered_face_pairs(),
+                expected_pairs
+            );
+            for thickness in [0.1, 1.0, 3.0] {
+                assert!(
+                    diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+                        &geometry,
+                        &audit,
+                        fixed,
+                        &schedule,
+                        simultaneous.closure(),
+                        thickness,
+                        32,
+                    )
+                    .continuous_certificate_model_id()
+                    .is_some()
+                );
+            }
+            assert!(
+                diagnose_canonical_positive_thickness_cycle_schedule_path_v1(
+                    &geometry,
+                    &audit,
+                    fixed,
+                    &schedule,
+                    simultaneous.closure(),
+                    10_000.0,
+                    32,
+                )
+                .continuous_certificate_model_id()
+                .is_none()
+            );
+            let (foreign, _, _, _) = rational_cycle_bay_geometry(rank, false);
+            assert!(!basis.is_for_geometry(&foreign));
+        }
+    }
 }

@@ -18062,6 +18062,7 @@ mod tests {
             paper_efficiency_weight: 10,
             generation_constraints: ori_domain::BeginnerGenerationConstraintsV1::default(),
             generation_provenance: None,
+            reference_surface_landmarks_tenths_mm: Some(vec![[10, 20, 30], [40, 50, 60]]),
         };
         editor
             .execute(

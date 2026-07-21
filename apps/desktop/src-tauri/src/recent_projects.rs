@@ -616,4 +616,74 @@ mod tests {
         assert_eq!(second.replace_atomically(b"lost update"), Err(()));
         assert_eq!(fs::read(destination).unwrap(), b"first commit");
     }
+
+    #[test]
+    fn concurrent_recent_transactions_reload_and_preserve_both_mru_entries() {
+        let directory = Directory::new();
+        let destination = directory.0.join("recent.json");
+        let first_path = path(1);
+        let second_path = path(2);
+        let mut filesystem = Filesystem::default();
+        filesystem.0.insert(first_path.clone(), Ok(identity(1)));
+        filesystem.0.insert(second_path.clone(), Ok(identity(2)));
+
+        let mut first_storage = FileRecentProjectStorage::new(destination.clone());
+        let mut second_storage = FileRecentProjectStorage::new(destination.clone());
+        let mut first = RecentProjectRegistry::load(&first_storage);
+        let mut stale_second = RecentProjectRegistry::load(&second_storage);
+        first
+            .remember(first_path, "First", &filesystem, &mut first_storage)
+            .unwrap();
+        assert_eq!(
+            stale_second.remember(
+                second_path.clone(),
+                "Second",
+                &filesystem,
+                &mut second_storage
+            ),
+            Err(())
+        );
+
+        let mut retry_storage = FileRecentProjectStorage::new(destination.clone());
+        let mut retry = RecentProjectRegistry::load(&retry_storage);
+        retry
+            .remember(second_path, "Second", &filesystem, &mut retry_storage)
+            .unwrap();
+        let final_storage = FileRecentProjectStorage::new(destination);
+        let names = RecentProjectRegistry::load(&final_storage)
+            .views()
+            .into_iter()
+            .map(|item| item.display_name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["Second", "First"]);
+    }
+
+    #[test]
+    fn exhausted_retry_under_live_foreign_lease_keeps_terminal_file_unchanged() {
+        let directory = Directory::new();
+        let destination = directory.0.join("recent.json");
+        let mut filesystem = Filesystem::default();
+        filesystem.0.insert(path(1), Ok(identity(1)));
+        let mut initial_storage = FileRecentProjectStorage::new(destination.clone());
+        let mut initial = RecentProjectRegistry::load(&initial_storage);
+        initial
+            .remember(path(1), "Original", &filesystem, &mut initial_storage)
+            .unwrap();
+        let original = fs::read(&destination).unwrap();
+        fs::write(
+            destination.with_extension("recent.lock"),
+            now_millis().unwrap().to_string(),
+        )
+        .unwrap();
+
+        for _ in 0..2 {
+            let mut storage = FileRecentProjectStorage::new(destination.clone());
+            let mut registry = RecentProjectRegistry::load(&storage);
+            assert_eq!(
+                registry.remember(path(1), "Replacement", &filesystem, &mut storage),
+                Err(())
+            );
+        }
+        assert_eq!(fs::read(destination).unwrap(), original);
+    }
 }

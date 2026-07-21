@@ -114,7 +114,7 @@ jobs:
       - name: Set up Python for independent instruction export audit
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.12.12"
+          python-version: "3.12.10"
 
       - name: Generate instruction PDF and SVG ZIP with outbound network blocked
         shell: pwsh

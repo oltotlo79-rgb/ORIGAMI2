@@ -119,7 +119,7 @@ Assert-Contains $workflow 'audit_instruction_exports.py' (
 Assert-Contains $workflow '--require-hashes --no-deps -r .github/release-audit-requirements.txt' (
     'Formal release must install only hash-pinned external instruction parsers.'
 )
-Assert-Contains $workflow 'python-version: "3.12.12"' 'Release Python must be patch-version pinned.'
+Assert-Contains $workflow 'python-version: "3.12.10"' 'Release Python must be patch-version pinned.'
 Assert-Contains $workflow 'ref: ${{ needs.validate-test-build.outputs.commit_sha }}' (
     'Publication checkout must use the already validated immutable commit.'
 )

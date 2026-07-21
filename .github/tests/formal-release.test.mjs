@@ -325,7 +325,7 @@ test('release build toolchains are exact versions rather than moving channels', 
 test('legacy Windows release audit dependencies are hash pinned and cache free', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release-windows.yml'), 'utf8')
   const requirements = readFileSync(join(root, '.github/release-audit-requirements.txt'), 'utf8')
-  assert.match(workflow, /python-version: "3\.12\.12"/u)
+  assert.match(workflow, /python-version: "3\.12\.10"/u)
   assert.match(workflow, /--require-hashes --no-deps -r \.github\/release-audit-requirements\.txt/u)
   assert.match(workflow, /ref: \$\{\{ needs\.validate-test-build\.outputs\.commit_sha \}\}/u)
   assert.equal(requirements.match(/--hash=sha256:[0-9a-f]{64}/gu)?.length ?? 0, 3)
@@ -337,7 +337,7 @@ test('release-gating CI uses exact toolchains and digest-verified external tools
   assert.doesNotMatch(workflow, /toolchain: stable|node-version: 24\s*$|python-version: "3\.12"\s*$/mu)
   assert.equal(workflow.match(/toolchain: 1\.90\.0/gu)?.length ?? 0, 5)
   assert.equal(workflow.match(/node-version: 24\.11\.1/gu)?.length ?? 0, 4)
-  assert.match(workflow, /python-version: "3\.12\.12"/u)
+  assert.match(workflow, /python-version: "3\.12\.10"/u)
   assert.match(workflow, /blender-4\.5\.11-linux-x64\.tar\.xz[\s\S]*sha256sum --check --strict/u)
   assert.match(workflow, /PrusaSlicer-2\.9\.6\.zip[\s\S]*Get-FileHash[\s\S]*checksum mismatch/u)
   assert.match(workflow, /--require-hashes --no-deps -r \.github\/release-audit-requirements\.txt/u)

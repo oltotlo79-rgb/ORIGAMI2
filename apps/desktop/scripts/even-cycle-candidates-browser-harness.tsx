@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 
 type Family = 'c6' | 'c8'
 const sizes: Record<Family, number> = { c6: 6, c8: 8 }
-const evidence = { proofs: 0, applies: 0, undos: 0, redos: 0, reopens: 0, staleRejects: 0, abaRejects: 0 }
+const evidence = { automaticKawasakiProofs: 0, applies: 0, undos: 0, redos: 0, reopens: 0, staleRejects: 0, abaRejects: 0 }
 Object.assign(window, { __ORIGAMI2_EVEN_CYCLE_EVIDENCE__: evidence })
 
 function Harness() {
@@ -18,7 +18,7 @@ function Harness() {
   const request = (capturedRevision = revision, capturedInstance = instance) => {
     if (capturedRevision !== revision) { evidence.staleRejects += 1; setReason('stale-rejected'); return }
     if (capturedInstance !== instance) { evidence.abaRejects += 1; setReason('aba-rejected'); return }
-    evidence.proofs += 1; setProof(true); setReason('proof-certified')
+    evidence.automaticKawasakiProofs += 1; setProof(true); setReason('proof-certified')
   }
   return <main><h1>Even-cycle automatic candidates</h1>
     <button onClick={() => { setFamily('c6'); setReason('ready'); setSelected(false); setProof(false); setApplied(false) }}>C6</button>
@@ -27,7 +27,7 @@ function Harness() {
     <section aria-label="Automatic even-cycle candidates"><h2>{family.toUpperCase()} candidates</h2>
       {reason === 'ready' || selected || proof || applied ? <button data-testid="even-cycle-candidate" onClick={() => { setSelected(true); setReason('selected') }}>hinge-0 / hinge-{sizes[family] / 2}</button> : <p data-testid="candidate-reason">{reason}</p>}
     </section>
-    <button disabled={!selected} onClick={() => request()}>proof</button>
+    <button disabled={!selected} onClick={() => request()}>Generate and prove Kawasaki linkage</button>
     <button disabled={!proof} onClick={() => { evidence.applies += 1; setApplied(true); setRedo(false); setRevision(value => value + 1); setReason('applied') }}>apply</button>
     <button disabled={!applied} onClick={() => { evidence.undos += 1; setApplied(false); setRedo(true); setReason('undone') }}>undo</button>
     <button disabled={!redo} onClick={() => { evidence.redos += 1; setApplied(true); setRedo(false); setReason('redone') }}>redo</button>

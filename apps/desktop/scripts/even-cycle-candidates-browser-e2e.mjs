@@ -13,7 +13,7 @@ try {
   await page.goto(`${origin}/scripts/even-cycle-candidates-browser-harness.html`, { waitUntil: 'networkidle' })
   for (const family of ['C6', 'C8']) {
     await page.getByRole('button', { name: family, exact: true }).click()
-    await page.getByTestId('even-cycle-candidate').click(); await page.getByRole('button', { name: 'proof', exact: true }).click()
+    await page.getByTestId('even-cycle-candidate').click(); await page.getByRole('button', { name: 'Generate and prove Kawasaki linkage', exact: true }).click()
     await page.getByText('proof-certified', { exact: true }).waitFor(); await page.getByRole('button', { name: 'apply', exact: true }).click()
     await page.getByRole('button', { name: 'undo', exact: true }).click(); await page.getByRole('button', { name: 'redo', exact: true }).click()
     await page.getByRole('button', { name: 'reopen', exact: true }).click(); await page.getByText(`reopened-${family.toLowerCase()}-candidate-visible`, { exact: true }).waitFor()
@@ -23,7 +23,7 @@ try {
   await page.getByRole('button', { name: 'stale request', exact: true }).click(); await page.getByText('stale-rejected', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'ABA request', exact: true }).click(); await page.getByText('aba-rejected', { exact: true }).waitFor()
   const evidence = await page.evaluate(() => window.__ORIGAMI2_EVEN_CYCLE_EVIDENCE__)
-  if (JSON.stringify(evidence) !== JSON.stringify({ proofs: 2, applies: 2, undos: 2, redos: 2, reopens: 2, staleRejects: 1, abaRejects: 1 })) throw new Error(JSON.stringify(evidence))
+  if (JSON.stringify(evidence) !== JSON.stringify({ automaticKawasakiProofs: 2, applies: 2, undos: 2, redos: 2, reopens: 2, staleRejects: 1, abaRejects: 1 })) throw new Error(JSON.stringify(evidence))
   console.log('even-cycle candidates browser E2E passed')
 } catch (error) {
   const output = process.env.ORIGAMI2_EVEN_CYCLE_BROWSER_ARTIFACT_DIRECTORY

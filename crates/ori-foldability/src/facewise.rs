@@ -3361,39 +3361,88 @@ fn verify_facewise_certificate<O: GlobalFlatFoldabilityObserver + ?Sized>(
     {
         return Err(certificate_failure());
     }
+    runtime.add_verification_storage(
+        runtime.allocation_bytes(
+            embedding
+                .faces
+                .len()
+                .checked_mul(2)
+                .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+            std::mem::size_of::<usize>(),
+        )?,
+    )?;
+    let mut polygon_representatives = Vec::<usize>::new();
+    polygon_representatives
+        .try_reserve_exact(embedding.faces.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    let mut polygon_classes = Vec::new();
+    polygon_classes
+        .try_reserve_exact(embedding.faces.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    for (index, face) in embedding.faces.iter().enumerate() {
+        let class = polygon_representatives
+            .iter()
+            .position(|representative| embedding.faces[*representative].polygon == face.polygon)
+            .unwrap_or_else(|| {
+                polygon_representatives.push(index);
+                polygon_representatives.len() - 1
+            });
+        polygon_classes.push(class);
+    }
+    let mut triple_overlap = HashMap::<(usize, usize, usize), bool>::new();
     for first in 0..embedding.faces.len() {
         runtime.checkpoint(None)?;
         for second in (first + 1)..embedding.faces.len() {
             for third in (second + 1)..embedding.faces.len() {
-                let first_second = convex_polygon_intersection(
-                    &embedding.faces[first].polygon,
-                    &embedding.faces[second].polygon,
-                    runtime,
-                )?;
-                if first_second.len() < 3
-                    || !signed_double_area(&first_second, runtime)?.is_positive()
-                {
-                    continue;
-                }
-                let triple_scope_base = runtime.verification_storage_bytes();
-                let first_second_bytes =
-                    exact_storage_bytes_points(&first_second)?
-                        .checked_add(runtime.allocation_bytes(
-                            first_second.capacity(),
-                            std::mem::size_of::<Point>(),
-                        )?)
-                        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
-                runtime.add_verification_storage(first_second_bytes)?;
-                let common = convex_polygon_intersection(
-                    &first_second,
-                    &embedding.faces[third].polygon,
-                    runtime,
-                )?;
-                let common_is_positive =
-                    common.len() >= 3 && signed_double_area(&common, runtime)?.is_positive();
-                drop(common);
-                drop(first_second);
-                runtime.restore_verification_storage(triple_scope_base);
+                let mut classes = [
+                    polygon_classes[first],
+                    polygon_classes[second],
+                    polygon_classes[third],
+                ];
+                classes.sort_unstable();
+                let predicate_key = (classes[0], classes[1], classes[2]);
+                let common_is_positive = if let Some(value) = triple_overlap.get(&predicate_key) {
+                    *value
+                } else {
+                    let first_second = convex_polygon_intersection(
+                        &embedding.faces[first].polygon,
+                        &embedding.faces[second].polygon,
+                        runtime,
+                    )?;
+                    let value = if first_second.len() < 3
+                        || !signed_double_area(&first_second, runtime)?.is_positive()
+                    {
+                        false
+                    } else {
+                        let triple_scope_base = runtime.verification_storage_bytes();
+                        let first_second_bytes = exact_storage_bytes_points(&first_second)?
+                            .checked_add(runtime.allocation_bytes(
+                                first_second.capacity(),
+                                std::mem::size_of::<Point>(),
+                            )?)
+                            .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+                        runtime.add_verification_storage(first_second_bytes)?;
+                        let common = convex_polygon_intersection(
+                            &first_second,
+                            &embedding.faces[third].polygon,
+                            runtime,
+                        )?;
+                        let value = common.len() >= 3
+                            && signed_double_area(&common, runtime)?.is_positive();
+                        drop(common);
+                        runtime.restore_verification_storage(triple_scope_base);
+                        value
+                    };
+                    runtime.add_verification_storage(runtime.allocation_bytes(
+                        1,
+                        3 * std::mem::size_of::<((usize, usize, usize), bool)>(),
+                    )?)?;
+                    triple_overlap.try_reserve(1).map_err(|_| {
+                        runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
+                    })?;
+                    triple_overlap.insert(predicate_key, value);
+                    value
+                };
                 if !common_is_positive {
                     continue;
                 }
@@ -3823,6 +3872,69 @@ fn verify_geometric_constraints_direct<O: GlobalFlatFoldabilityObserver + ?Sized
         return Err(certificate_failure());
     }
     let mut expected_constraint_count = pair_values.len();
+    runtime.add_verification_storage(
+        runtime.allocation_bytes(
+            embedding
+                .faces
+                .len()
+                .checked_mul(2)
+                .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+            std::mem::size_of::<usize>(),
+        )?,
+    )?;
+    let mut polygon_representatives = Vec::<usize>::new();
+    polygon_representatives
+        .try_reserve_exact(embedding.faces.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    let mut polygon_classes = Vec::new();
+    polygon_classes
+        .try_reserve_exact(embedding.faces.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    for (index, face) in embedding.faces.iter().enumerate() {
+        let class = polygon_representatives
+            .iter()
+            .position(|representative| embedding.faces[*representative].polygon == face.polygon)
+            .unwrap_or_else(|| {
+                polygon_representatives.push(index);
+                polygon_representatives.len() - 1
+            });
+        polygon_classes.push(class);
+    }
+    let same_segment = |first: &FoldedHinge, second: &FoldedHinge| {
+        (first.first_point == second.first_point && first.second_point == second.second_point)
+            || (first.first_point == second.second_point
+                && first.second_point == second.first_point)
+    };
+    runtime.add_verification_storage(
+        runtime.allocation_bytes(
+            embedding
+                .hinges
+                .len()
+                .checked_mul(2)
+                .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?,
+            std::mem::size_of::<usize>(),
+        )?,
+    )?;
+    let mut segment_representatives = Vec::<usize>::new();
+    segment_representatives
+        .try_reserve_exact(embedding.hinges.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    let mut segment_classes = Vec::new();
+    segment_classes
+        .try_reserve_exact(embedding.hinges.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    for (index, hinge) in embedding.hinges.iter().enumerate() {
+        let class = segment_representatives
+            .iter()
+            .position(|representative| same_segment(&embedding.hinges[*representative], hinge))
+            .unwrap_or_else(|| {
+                segment_representatives.push(index);
+                segment_representatives.len() - 1
+            });
+        segment_classes.push(class);
+    }
+    let mut segment_face_overlap = HashMap::<(usize, usize), bool>::new();
+    let mut segment_pair_overlap = HashMap::<(usize, usize), bool>::new();
 
     for hinge in &embedding.hinges {
         runtime.checkpoint(None)?;
@@ -3865,18 +3977,33 @@ fn verify_geometric_constraints_direct<O: GlobalFlatFoldabilityObserver + ?Sized
         }
     }
 
-    for hinge in &embedding.hinges {
+    for (hinge_index, hinge) in embedding.hinges.iter().enumerate() {
         runtime.checkpoint(None)?;
-        for face in 0..embedding.faces.len() {
+        for (face, &polygon_class) in polygon_classes.iter().enumerate() {
             if face == hinge.first_face || face == hinge.second_face {
                 continue;
             }
-            if !segment_overlaps_face_interior(
-                &hinge.first_point,
-                &hinge.second_point,
-                &embedding.faces[face].polygon,
-                runtime,
-            )? {
+            let predicate_key = (segment_classes[hinge_index], polygon_class);
+            let overlaps = if let Some(value) = segment_face_overlap.get(&predicate_key) {
+                *value
+            } else {
+                let value = segment_overlaps_face_interior(
+                    &hinge.first_point,
+                    &hinge.second_point,
+                    &embedding.faces[face].polygon,
+                    runtime,
+                )?;
+                runtime.add_verification_storage(
+                    runtime
+                        .allocation_bytes(1, 3 * std::mem::size_of::<((usize, usize), bool)>())?,
+                )?;
+                segment_face_overlap.try_reserve(1).map_err(|_| {
+                    runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
+                })?;
+                segment_face_overlap.insert(predicate_key, value);
+                value
+            };
+            if !overlaps {
                 continue;
             }
             let mut evidence_faces = vec![hinge.first_face, hinge.second_face, face];
@@ -3896,13 +4023,34 @@ fn verify_geometric_constraints_direct<O: GlobalFlatFoldabilityObserver + ?Sized
         for second_hinge_index in (first_hinge_index + 1)..embedding.hinges.len() {
             let first_hinge = &embedding.hinges[first_hinge_index];
             let second_hinge = &embedding.hinges[second_hinge_index];
-            if !segments_overlap_in_positive_length(
-                &first_hinge.first_point,
-                &first_hinge.second_point,
-                &second_hinge.first_point,
-                &second_hinge.second_point,
-                runtime,
-            )? {
+            let first_class = segment_classes[first_hinge_index];
+            let second_class = segment_classes[second_hinge_index];
+            let predicate_key = if first_class <= second_class {
+                (first_class, second_class)
+            } else {
+                (second_class, first_class)
+            };
+            let overlaps = if let Some(value) = segment_pair_overlap.get(&predicate_key) {
+                *value
+            } else {
+                let value = segments_overlap_in_positive_length(
+                    &first_hinge.first_point,
+                    &first_hinge.second_point,
+                    &second_hinge.first_point,
+                    &second_hinge.second_point,
+                    runtime,
+                )?;
+                runtime.add_verification_storage(
+                    runtime
+                        .allocation_bytes(1, 3 * std::mem::size_of::<((usize, usize), bool)>())?,
+                )?;
+                segment_pair_overlap.try_reserve(1).map_err(|_| {
+                    runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes)
+                })?;
+                segment_pair_overlap.insert(predicate_key, value);
+                value
+            };
+            if !overlaps {
                 continue;
             }
             let mut evidence_faces = vec![

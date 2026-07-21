@@ -311,6 +311,7 @@ jobs:
         env:
           RUST_BACKTRACE: "1"
           CARGO_TERM_COLOR: always
+          RUST_TEST_THREADS: "2"
         run: |
           set -o pipefail
           test_status=0

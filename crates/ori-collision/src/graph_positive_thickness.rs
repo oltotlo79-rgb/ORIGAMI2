@@ -56,6 +56,16 @@ impl NativePositiveThicknessGraphGeometryProofV1 {
     }
 
     #[must_use]
+    pub fn paper_thickness_bits(&self) -> u64 {
+        self.paper_thickness_bits
+    }
+
+    #[must_use]
+    pub fn face_count(&self) -> usize {
+        self.geometry.face_ids().len()
+    }
+
+    #[must_use]
     pub fn same_proof(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.identity, &other.identity)
     }

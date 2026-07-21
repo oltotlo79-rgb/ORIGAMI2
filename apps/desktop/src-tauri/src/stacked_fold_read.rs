@@ -3425,12 +3425,15 @@ mod tests {
     #[test]
     fn coupled_cactus_previews_apply_and_round_trip_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        for cycle_count in [2, 3] {
-            let (pattern, paper, hinges) = if cycle_count == 2 {
+        for cycle_count in [2, 3, 16] {
+            let (pattern, mut paper, hinges) = if cycle_count == 2 {
                 super::four_bay_cycle_test_support::two_bay_rational_cycle_pattern()
-            } else {
+            } else if cycle_count == 3 {
                 super::four_bay_cycle_test_support::three_bay_rational_cycle_pattern()
+            } else {
+                super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern()
             };
+            paper.thickness_mm = 0.1;
             let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
             let topology = project
                 .editor
@@ -3463,6 +3466,14 @@ mod tests {
             let app_state = AppState::new(project);
             let transactions =
                 super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+            assert!(
+                crate::applied_pose::certify_current_static_collision(
+                    &app_state,
+                    ori_collision::StaticCollisionLimits::default(),
+                )
+                .expect("flat cactus current collision diagnosis")
+                .is_some()
+            );
             let response = propose_current_cycle_pose_inner(
                 None,
                 &app_state,

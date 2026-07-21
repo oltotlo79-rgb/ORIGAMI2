@@ -13,10 +13,12 @@ use std::{
 
 use ori_collision::{
     CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
-    NativeStaticCollisionGeometryProof, StaticCollisionDiagnosticSnapshot, StaticCollisionError,
+    NativePositiveThicknessGraphGeometryProofV1, NativeStaticCollisionGeometryProof,
+    POSITIVE_THICKNESS_GRAPH_GEOMETRY_PROOF_V1, PositiveThicknessGraphLimitsV1,
+    PositiveThicknessGraphProofErrorV1, StaticCollisionDiagnosticSnapshot, StaticCollisionError,
     StaticCollisionLimits, StaticCollisionPairDiagnostic, StaticCollisionPairDisposition,
     TOPOLOGY_CONTACT_POLICY_V2, diagnose_static_collision_geometry,
-    prove_static_collision_geometry,
+    prove_positive_thickness_graph_geometry_v1, prove_static_collision_geometry,
 };
 use ori_domain::{FaceId, ProjectId};
 use ori_kinematics::{
@@ -188,13 +190,28 @@ struct CurrentStaticCollisionClaims {
     kinematics_model_id: &'static str,
     thickness_model_id: &'static str,
     proof_id: &'static str,
-    proof_identity: NativeStaticCollisionGeometryProof,
+    proof_identity: CurrentNativeStaticGeometryProof,
+}
+
+#[derive(Clone)]
+enum CurrentNativeStaticGeometryProof {
+    Tree(NativeStaticCollisionGeometryProof),
+    Graph(NativePositiveThicknessGraphGeometryProofV1),
+}
+
+impl CurrentNativeStaticGeometryProof {
+    fn expected_unordered_face_pairs(&self) -> usize {
+        match self {
+            Self::Tree(proof) => proof.expected_unordered_face_pairs(),
+            Self::Graph(proof) => proof.analyzed_unordered_face_pairs(),
+        }
+    }
 }
 
 /// Lock-free worker output. Possession does not prove that B is still current.
 struct PreparedCurrentStaticCollision {
     pose_capability: CurrentAppliedPoseCapability,
-    geometry_proof: NativeStaticCollisionGeometryProof,
+    geometry_proof: CurrentNativeStaticGeometryProof,
     claims: CurrentStaticCollisionClaims,
 }
 
@@ -220,7 +237,7 @@ impl fmt::Debug for FailedCurrentStaticCollisionPreparation {
 struct CurrentStaticCollisionCertificateData {
     /// Moving B into C prevents a caller from reconstructing C from IDs.
     pose_capability: CurrentAppliedPoseCapability,
-    geometry_proof: NativeStaticCollisionGeometryProof,
+    geometry_proof: CurrentNativeStaticGeometryProof,
     claims: CurrentStaticCollisionClaims,
 }
 
@@ -283,7 +300,12 @@ impl CurrentStaticCollisionView<'_> {
 
     #[must_use]
     pub(super) fn geometry_proof(&self) -> &NativeStaticCollisionGeometryProof {
-        &self.certificate.geometry_proof
+        match &self.certificate.geometry_proof {
+            CurrentNativeStaticGeometryProof::Tree(proof) => proof,
+            CurrentNativeStaticGeometryProof::Graph(_) => {
+                panic!("tree geometry proof requested for graph certificate")
+            }
+        }
     }
 
     #[must_use]
@@ -661,6 +683,9 @@ fn prepare_static_collision_for_diagnostic(
         }));
     }
     let paper_thickness_mm = f64::from_bits(capability.claims.paper_thickness_bits);
+    if capability.claims.native_pose.graph().is_some() {
+        return prepare_static_collision(capability, limits);
+    }
     let Some((model, pose)) = capability.claims.native_pose.tree() else {
         return Err(Box::new(FailedCurrentStaticCollisionPreparation {
             pose_capability: capability,
@@ -743,16 +768,9 @@ fn prepare_static_collision(
     // Every native geometry error remains blocking here. In particular, a
     // proven transversal penetration exits before Prepared B or certificate C
     // can be constructed.
-    let Some((model, pose)) = capability.claims.native_pose.tree() else {
-        return Err(Box::new(FailedCurrentStaticCollisionPreparation {
-            pose_capability: capability,
-            error: CurrentStaticCollisionError::InternalInconsistency,
-            diagnostic_snapshot: None,
-        }));
-    };
-    let geometry_proof =
+    let geometry_proof = if let Some((model, pose)) = capability.claims.native_pose.tree() {
         match prove_static_collision_geometry(model, pose, paper_thickness_mm, limits) {
-            Ok(proof) => proof,
+            Ok(proof) => CurrentNativeStaticGeometryProof::Tree(proof),
             Err(error) => {
                 return Err(Box::new(FailedCurrentStaticCollisionPreparation {
                     pose_capability: capability,
@@ -760,7 +778,46 @@ fn prepare_static_collision(
                     diagnostic_snapshot: None,
                 }));
             }
-        };
+        }
+    } else if let Some((geometry, _audit, pose)) = capability.claims.native_pose.graph() {
+        match prove_positive_thickness_graph_geometry_v1(
+            geometry,
+            pose,
+            paper_thickness_mm,
+            PositiveThicknessGraphLimitsV1 {
+                max_unordered_face_pairs: limits.max_unordered_face_pairs,
+                max_shared_feature_pairs: limits.max_shared_hinge_solid_diagnostics,
+            },
+        ) {
+            Ok(proof) => CurrentNativeStaticGeometryProof::Graph(proof),
+            Err(PositiveThicknessGraphProofErrorV1::ResourceLimit) => {
+                return Err(Box::new(FailedCurrentStaticCollisionPreparation {
+                    pose_capability: capability,
+                    error: map_static_collision_error(StaticCollisionError::ResourceLimitExceeded),
+                    diagnostic_snapshot: None,
+                }));
+            }
+            Err(_) => {
+                let face_count = capability.claims.material_faces.len();
+                let expected_unordered_face_pairs = face_count * face_count.saturating_sub(1) / 2;
+                return Err(Box::new(FailedCurrentStaticCollisionPreparation {
+                    pose_capability: capability,
+                    error: map_static_collision_error(
+                        StaticCollisionError::PairEvidenceUnavailable {
+                            expected_unordered_face_pairs,
+                        },
+                    ),
+                    diagnostic_snapshot: None,
+                }));
+            }
+        }
+    } else {
+        return Err(Box::new(FailedCurrentStaticCollisionPreparation {
+            pose_capability: capability,
+            error: CurrentStaticCollisionError::InternalInconsistency,
+            diagnostic_snapshot: None,
+        }));
+    };
     let pose_claims = &capability.claims;
     let claims = CurrentStaticCollisionClaims {
         project_instance_id: pose_claims.project_instance_id,
@@ -772,7 +829,12 @@ fn prepare_static_collision(
         policy_id: pose_claims.contact_policy_id,
         kinematics_model_id: pose_claims.kinematics_model_id,
         thickness_model_id: pose_claims.thickness_model_id,
-        proof_id: geometry_proof.proof_id(),
+        proof_id: match &geometry_proof {
+            CurrentNativeStaticGeometryProof::Tree(proof) => proof.proof_id(),
+            CurrentNativeStaticGeometryProof::Graph(_) => {
+                POSITIVE_THICKNESS_GRAPH_GEOMETRY_PROOF_V1
+            }
+        },
         proof_identity: geometry_proof.clone(),
     };
     let prepared = PreparedCurrentStaticCollision {
@@ -874,7 +936,7 @@ fn current_static_collision_certificate_is_internally_consistent(
 fn static_collision_claims_match_pose(
     claims: &CurrentStaticCollisionClaims,
     capability: &CurrentAppliedPoseCapability,
-    geometry_proof: &NativeStaticCollisionGeometryProof,
+    geometry_proof: &CurrentNativeStaticGeometryProof,
 ) -> bool {
     let pose_claims = &capability.claims;
     claims.project_instance_id == pose_claims.project_instance_id
@@ -889,28 +951,57 @@ fn static_collision_claims_match_pose(
         && claims.paper_thickness_bits == pose_claims.paper_thickness_bits
         && claims.policy_id == TOPOLOGY_CONTACT_POLICY_V2
         && claims.policy_id == pose_claims.contact_policy_id
-        && claims.kinematics_model_id == MATERIAL_TREE_KINEMATICS_MODEL_ID
         && claims.kinematics_model_id == pose_claims.kinematics_model_id
         && claims.thickness_model_id == CENTERED_MID_SURFACE_THICKNESS_MODEL_V1
         && claims.thickness_model_id == pose_claims.thickness_model_id
-        && claims.proof_id == NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1
-        && claims.proof_id == geometry_proof.proof_id()
-        && claims.proof_identity.same_proof(geometry_proof)
-        && geometry_proof.policy_id() == claims.policy_id
-        && geometry_proof.kinematics_model_id() == claims.kinematics_model_id
-        && geometry_proof.thickness_model_id() == claims.thickness_model_id
-        && geometry_proof.paper_thickness_bits() == claims.paper_thickness_bits
-        && pose_claims.native_pose.tree().is_some_and(|(model, pose)| {
-            model.bind_pose(pose).is_ok()
-                && geometry_proof.is_for_geometry(
-                    model,
-                    pose,
-                    f64::from_bits(claims.paper_thickness_bits),
-                )
-        })
-        && geometry_proof.face_count() == pose_claims.material_faces.len()
-        && geometry_proof.expected_unordered_face_pairs()
-            == geometry_proof.analyzed_unordered_face_pairs()
+        && match (&claims.proof_identity, geometry_proof) {
+            (
+                CurrentNativeStaticGeometryProof::Tree(identity),
+                CurrentNativeStaticGeometryProof::Tree(proof),
+            ) => {
+                claims.kinematics_model_id == MATERIAL_TREE_KINEMATICS_MODEL_ID
+                    && claims.proof_id == NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1
+                    && identity.same_proof(proof)
+                    && proof.policy_id() == claims.policy_id
+                    && proof.kinematics_model_id() == claims.kinematics_model_id
+                    && proof.thickness_model_id() == claims.thickness_model_id
+                    && proof.paper_thickness_bits() == claims.paper_thickness_bits
+                    && pose_claims.native_pose.tree().is_some_and(|(model, pose)| {
+                        model.bind_pose(pose).is_ok()
+                            && proof.is_for_geometry(
+                                model,
+                                pose,
+                                f64::from_bits(claims.paper_thickness_bits),
+                            )
+                    })
+                    && proof.face_count() == pose_claims.material_faces.len()
+                    && proof.expected_unordered_face_pairs()
+                        == proof.analyzed_unordered_face_pairs()
+            }
+            (
+                CurrentNativeStaticGeometryProof::Graph(identity),
+                CurrentNativeStaticGeometryProof::Graph(proof),
+            ) => {
+                claims.kinematics_model_id == "material_hinge_graph_pose_v1"
+                    && claims.proof_id == POSITIVE_THICKNESS_GRAPH_GEOMETRY_PROOF_V1
+                    && identity.same_proof(proof)
+                    && proof.paper_thickness_bits() == claims.paper_thickness_bits
+                    && pose_claims
+                        .native_pose
+                        .graph()
+                        .is_some_and(|(geometry, _audit, pose)| {
+                            proof.is_for_geometry(
+                                geometry,
+                                pose,
+                                f64::from_bits(claims.paper_thickness_bits),
+                            )
+                        })
+                    && proof.face_count() == pose_claims.material_faces.len()
+                    && proof.analyzed_unordered_face_pairs()
+                        == proof.face_count() * proof.face_count().saturating_sub(1) / 2
+            }
+            _ => false,
+        }
 }
 
 fn current_static_collision_claims_are_current(
@@ -1495,9 +1586,10 @@ mod tests {
         let mut proof_identity_mismatch = prepared_from_current(&state);
         let pose_claims = &proof_identity_mismatch.pose_capability.claims;
         let (model, pose) = pose_claims.native_pose.tree().unwrap();
-        proof_identity_mismatch.geometry_proof =
+        proof_identity_mismatch.geometry_proof = CurrentNativeStaticGeometryProof::Tree(
             prove_static_collision_geometry(model, pose, -0.0, StaticCollisionLimits::default())
-                .expect("second exact proof");
+                .expect("second exact proof"),
+        );
         assert!(matches!(
             mint_current_static_collision(&state, proof_identity_mismatch),
             Err(CurrentStaticCollisionError::InternalInconsistency)
@@ -1523,8 +1615,9 @@ mod tests {
             StaticCollisionLimits::default(),
         )
         .expect("same-angle proof");
-        pose_mismatch.claims.proof_identity = second_pose_proof.clone();
-        pose_mismatch.geometry_proof = second_pose_proof;
+        pose_mismatch.claims.proof_identity =
+            CurrentNativeStaticGeometryProof::Tree(second_pose_proof.clone());
+        pose_mismatch.geometry_proof = CurrentNativeStaticGeometryProof::Tree(second_pose_proof);
         assert!(matches!(
             mint_current_static_collision(&state, pose_mismatch),
             Err(CurrentStaticCollisionError::InternalInconsistency)
@@ -1552,8 +1645,9 @@ mod tests {
             StaticCollisionLimits::default(),
         )
         .expect("foreign proof");
-        issuer_mismatch.claims.proof_identity = foreign_proof.clone();
-        issuer_mismatch.geometry_proof = foreign_proof;
+        issuer_mismatch.claims.proof_identity =
+            CurrentNativeStaticGeometryProof::Tree(foreign_proof.clone());
+        issuer_mismatch.geometry_proof = CurrentNativeStaticGeometryProof::Tree(foreign_proof);
         assert!(matches!(
             mint_current_static_collision(&state, issuer_mismatch),
             Err(CurrentStaticCollisionError::InternalInconsistency)
@@ -1566,8 +1660,10 @@ mod tests {
         let positive_zero_proof =
             prove_static_collision_geometry(model, pose, 0.0, StaticCollisionLimits::default())
                 .expect("positive-zero proof");
-        zero_sign_mismatch.claims.proof_identity = positive_zero_proof.clone();
-        zero_sign_mismatch.geometry_proof = positive_zero_proof;
+        zero_sign_mismatch.claims.proof_identity =
+            CurrentNativeStaticGeometryProof::Tree(positive_zero_proof.clone());
+        zero_sign_mismatch.geometry_proof =
+            CurrentNativeStaticGeometryProof::Tree(positive_zero_proof);
         assert!(matches!(
             mint_current_static_collision(&state, zero_sign_mismatch),
             Err(CurrentStaticCollisionError::InternalInconsistency)

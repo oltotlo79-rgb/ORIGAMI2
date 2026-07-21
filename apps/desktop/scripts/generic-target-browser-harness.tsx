@@ -25,6 +25,7 @@ function Harness() {
   const [outline, setOutline] = useState<Array<[number, number]>>([])
   const [outlineMode, setOutlineMode] = useState<'symmetric' | 'general'>('symmetric')
   const [selectedCandidate, setSelectedCandidate] = useState(1)
+  const [candidateShortage, setCandidateShortage] = useState(false)
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
     + bindings.reduce((sum, target) => sum + Math.max(0, (target.local_outline_tenths_mm?.length ?? 3) - 3), 0))
@@ -64,7 +65,7 @@ function Harness() {
   const recognize = (source: string) => {
     setBindings(initialBindings.map((target) => ({ ...target })))
     setKinds(['tail', 'fin'])
-    setRecognized(true); setPreview(false); setStatus(`${source} recognized two bounded bindings`)
+    setRecognized(true); setPreview(false); setCandidateShortage(false); setStatus(`${source} recognized two bounded bindings`)
   }
   return <main><h1>Bounded generic target</h1>
     <button onClick={() => recognize('Empty generic target')}>Create empty generic target</button>
@@ -79,6 +80,14 @@ function Harness() {
         setOutlineMode('general'); setOutline([[-50, -50], [50, -50], [40, 50], [-30, 50]])
       }} />
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected: target exceeds eight bindings') }}>Try oversized target</button>
+    <button onClick={() => {
+      setRecognized(true); setPreview(false); setCandidateShortage(true); setOutlineMode('general')
+      setOutline(Array.from({ length: 16 }, (_, index) => {
+        const angle = Math.PI * 2 * index / 16
+        return [Math.round(Math.cos(angle) * 50), Math.round(Math.sin(angle) * 50)] as [number, number]
+      }))
+      setStatus('Contour candidate shortage: no three witnessed designs at the strict 16-point threshold')
+    }}>Try strict dense contour</button>
     <p role="status">{status}</p>
     {recognized && <p>Contour approximation score: {contourScore}</p>}
     {recognized && <GenericBodyOutlineEditor locale="en" points={outline} onChange={setOutline}
@@ -108,7 +117,17 @@ function Harness() {
         canMoveUp={index > 0} canMoveDown={index + 1 < bindings.length}
         onMoveUp={() => move(index, -1)} onMoveDown={() => move(index, 1)} />
     )}</ul>}
-    <button ref={evaluate} onClick={() => { if (recognized) { setPreview(true); setStatus('Generic target grid ready') } }}>Evaluate generic target grid</button>
+    {candidateShortage && <section aria-label="Contour candidate recovery">
+      <p>Candidate shortage: strict contour placement produced fewer than three safe designs.</p>
+      <button onClick={() => {
+        setOutline((current) => Array.from({ length: 12 }, (_, index) => current[Math.floor(index * current.length / 12)]!))
+        setCandidateShortage(false); setPreview(true); setStatus('Contour relaxed safely to 12 points; alternative grid ready')
+      }}>Relax contour to 12 points and regenerate</button>
+    </section>}
+    <button ref={evaluate} onClick={() => { if (recognized) {
+      if (candidateShortage) setStatus('Contour candidate shortage: safe relaxation is required')
+      else { setPreview(true); setStatus('Generic target grid ready') }
+    } }}>Evaluate generic target grid</button>
     {preview && <section aria-label="Generic target candidate preview"><p>Global flat-foldability proven</p>
       <button aria-pressed={selectedCandidate === 1} onClick={() => setSelectedCandidate(1)}>Select contour candidate 1</button>
       <button aria-pressed={selectedCandidate === 2} onClick={() => setSelectedCandidate(2)}>Select contour candidate 2</button>

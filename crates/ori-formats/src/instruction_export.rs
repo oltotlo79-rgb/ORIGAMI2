@@ -958,10 +958,18 @@ mod tests {
         assert!(
             proof_step_text.contains(&format!("target={}", short(&reference.target_pose_sha256)))
         );
-        assert_eq!(
-            canonical_plan_digest(&plan),
-            "ab3287d02d9e7fb343c9586f362e7189932ca52985d9d15ced0683c7392706c7"
+        assert!(proof_step_text.contains(&format!(
+            "model={}",
+            short(&reference.source_model_binding_sha256)
+        )));
+        let expected_structured_summary = format!(
+            "v1 / transitions=1 / cert={} / source={} / target={} / model={}",
+            short(&reference.binding_sha256),
+            short(&reference.source_pose_sha256),
+            short(&reference.target_pose_sha256),
+            short(&reference.source_model_binding_sha256),
         );
+        assert!(proof_step_text.contains(&expected_structured_summary));
         let mut glyph_limited = InstructionExportLimits::default();
         glyph_limited.max_glyphs = plan.glyph_count - 1;
         assert!(matches!(
@@ -1208,6 +1216,32 @@ mod tests {
                     &fixture.pattern,
                     &fixture.paper,
                     &tampered_endpoint,
+                    &fixture.topology,
+                ),
+                Err(InstructionExportError::InvalidPathCertificateReference { step_index: 1 })
+            ));
+        }
+
+        let mut tampered_model_binding = tampered_endpoint.clone();
+        let tampered_reference = tampered_model_binding.steps[1]
+            .visual
+            .path_certificate_reference_v1
+            .as_mut()
+            .expect("structured proof reference");
+        tampered_reference.target_pose_sha256[0] ^= 1;
+        tampered_reference.source_model_binding_sha256[0] ^= 1;
+        for format in [
+            InstructionExportFormat::Pdf17,
+            InstructionExportFormat::SvgPageZip,
+        ] {
+            assert!(matches!(
+                export_instruction_document(
+                    format,
+                    "元モデル束縛改ざん",
+                    FINGERPRINT,
+                    &fixture.pattern,
+                    &fixture.paper,
+                    &tampered_model_binding,
                     &fixture.topology,
                 ),
                 Err(InstructionExportError::InvalidPathCertificateReference { step_index: 1 })

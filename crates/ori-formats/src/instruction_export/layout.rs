@@ -874,11 +874,12 @@ fn body_flow(
             &mut flow,
             FlowSection::PathCertificate,
             &format!(
-                "v1 / transitions={} / cert={} / source={} / target={}",
+                "v1 / transitions={} / cert={} / source={} / target={} / model={}",
                 reference.transition_count,
                 short_hash(&reference.binding_sha256),
                 short_hash(&reference.source_pose_sha256),
                 short_hash(&reference.target_pose_sha256),
+                short_hash(&reference.source_model_binding_sha256),
             ),
             PageColor::MUTED,
             font,

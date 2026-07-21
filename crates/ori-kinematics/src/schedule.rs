@@ -2257,6 +2257,65 @@ mod tests {
             )
             .expect("the bounded 3/5 exact profile has analytic closure authority");
         assert_eq!(closure.leaves().len(), 1);
+        for (numerator, denominator, complement) in [(5.0, 13.0, 12.0), (7.0, 25.0, 24.0)] {
+            let ratio = numerator / denominator;
+            let sine = complement / denominator;
+            let axes = [
+                Point3::new(1.0, 0.0, 0.0).unwrap(),
+                Point3::new(-ratio, 0.0, sine).unwrap(),
+                Point3::new(2.0 * ratio * ratio - 1.0, 0.0, -2.0 * ratio * sine).unwrap(),
+                Point3::new(ratio, 0.0, -sine).unwrap(),
+            ];
+            let exact_geometry = MaterialHingeGraphGeometry::new_for_test(
+                faces.to_vec(),
+                (0..4)
+                    .map(|index| {
+                        TreeHinge::new_for_test(
+                            edges[index],
+                            if index == 3 {
+                                FoldAssignment::Mountain
+                            } else {
+                                FoldAssignment::Valley
+                            },
+                            faces[index],
+                            faces[(index + 1) % 4],
+                            start,
+                            axes[index],
+                            axes[index],
+                        )
+                    })
+                    .collect(),
+            );
+            let exact = generate_bounded_degree_four_kawasaki_path_candidate_v1(
+                &exact_geometry,
+                &audit,
+                faces[0],
+                CycleScheduleLimitsV1::default(),
+            )
+            .expect("the bounded Pythagorean Kawasaki family must be admitted");
+            assert_eq!(
+                exact
+                    .schedule()
+                    .bounded_symmetric_kawasaki_profile_v1()
+                    .map(|(_, _, numerator, denominator)| (numerator, denominator)),
+                Some((numerator as i64, denominator as u64))
+            );
+            let closure = exact_geometry
+                .prove_dyadic_schedule_closure_v1(
+                    &audit,
+                    faces[0],
+                    exact.schedule(),
+                    1.0e-9,
+                    crate::DyadicIntervalClosureLimitsV1 {
+                        max_depth: 16,
+                        max_leaves: 65_536,
+                        max_work: 1_048_576,
+                        schedule_limits: CycleScheduleLimitsV1::default(),
+                    },
+                )
+                .expect("the bounded exact family has analytic closure authority");
+            assert_eq!(closure.leaves().len(), 1);
+        }
         assert_eq!(
             generate_bounded_degree_four_kawasaki_path_candidate_v1(
                 &geometry,

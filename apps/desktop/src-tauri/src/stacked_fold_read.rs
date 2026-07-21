@@ -205,7 +205,18 @@ pub(super) struct EvenCycleCandidatesResponseV1 {
     status: &'static str,
     reason: &'static str,
     candidates: Vec<EvenCycleCandidateDtoV1>,
+    kawasaki_endpoints: Vec<KawasakiEndpointCandidateDtoV1>,
     authorizes_project_mutation: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KawasakiEndpointCandidateDtoV1 {
+    version: u32,
+    endpoint_denominator: u64,
+    closure_status: &'static str,
+    collision_status: &'static str,
+    authorizes_apply: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -270,6 +281,37 @@ fn read_even_cycle_candidates_inner_v1(
             }
         }
     };
+    let kawasaki_endpoints = graph.map_or_else(Vec::new, |(geometry, audit, pose)| {
+        [1_u64, 2, 4, 8, 16]
+            .into_iter()
+            .filter_map(|endpoint_denominator| {
+                let generated = ori_kinematics::generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v1(
+                    geometry, audit, pose.fixed_face(), endpoint_denominator,
+                    production_cycle_schedule_limits_v1(),
+                ).ok()?;
+                let closure = geometry.prove_simultaneous_cycle_basis_schedule_closure_v1(
+                    audit, pose.fixed_face(), generated.schedule(),
+                    ori_core::STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                    CycleBasisLimitsV1::default(),
+                    DyadicIntervalClosureLimitsV1 {
+                        max_depth: 16, max_leaves: 65_536, max_work: 1_048_576,
+                        schedule_limits: production_cycle_schedule_limits_v1(),
+                    },
+                ).ok()?;
+                let continuous = diagnose_scheduled_cycle_path_v1(
+                    geometry, audit, pose.fixed_face(), &generated, closure.closure(), 32,
+                );
+                let certified = continuous.continuous_certificate_model_id().is_some();
+                Some(KawasakiEndpointCandidateDtoV1 {
+                    version: 1,
+                    endpoint_denominator,
+                    closure_status: "certified",
+                    collision_status: if certified { "certified" } else { "uncertified" },
+                    authorizes_apply: false,
+                })
+            })
+            .collect()
+    });
     Ok(EvenCycleCandidatesResponseV1 {
         version: 1,
         project_instance_id: project.instance_id,
@@ -285,6 +327,7 @@ fn read_even_cycle_candidates_inner_v1(
                 reason: "same_assignment_geometrically_opposite",
             })
             .collect(),
+        kawasaki_endpoints,
         authorizes_project_mutation: false,
     })
 }
@@ -4985,6 +5028,22 @@ mod tests {
             let state = AppState::new(project);
             let transactions =
                 super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+            let endpoint_read = read_even_cycle_candidates_inner_v1(
+                &state,
+                EvenCycleCandidatesRequestV1 {
+                    expected_project_instance_id: instance,
+                    expected_project_id: project_id,
+                    expected_revision: revision,
+                    max_pair_tests: 6,
+                },
+            )
+            .unwrap();
+            assert_eq!(endpoint_read.kawasaki_endpoints.len(), 5);
+            assert!(endpoint_read.kawasaki_endpoints.iter().all(|candidate| {
+                candidate.closure_status == "certified"
+                    && candidate.collision_status == "uncertified"
+                    && !candidate.authorizes_apply
+            }));
             let result = propose_current_cycle_pose_inner(
                 None,
                 &state,

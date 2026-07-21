@@ -33,6 +33,7 @@ function Harness() {
     <section aria-label="Automatic even-cycle candidates"><h2>{family.toUpperCase()} candidates</h2>
       {reason === 'ready' || selected || proof || applied ? <button data-testid="even-cycle-candidate" onClick={() => { setSelected(true); setReason('selected') }}>hinge-0 / hinge-{sizes[family] / 2}</button> : <p data-testid="candidate-reason">{reason}</p>}
     </section>
+    {family.startsWith('kawasaki-') && <ul data-testid="kawasaki-endpoint-candidates">{[1, 2, 4, 8, 16].map(denominator => <li key={denominator}>1/{denominator}: Closure certified / Collision uncertified</li>)}</ul>}
     <button disabled={!selected} onClick={() => request()}>Generate and prove Kawasaki linkage</button>
     <button disabled={!proof} onClick={() => { evidence.applies += 1; savedProfile = profiles[family]; setApplied(true); setRedo(false); setRevision(value => value + 1); setReason(`applied-profile-${profiles[family]}`) }}>apply</button>
     <button disabled={!applied} onClick={() => { evidence.undos += 1; setApplied(false); setRedo(true); setReason('undone') }}>undo</button>

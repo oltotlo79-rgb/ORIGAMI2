@@ -2992,6 +2992,13 @@ export type EvenCycleCandidatesResponseV1 = Readonly<{
     edges: readonly [string, string]
     reason: 'same_assignment_geometrically_opposite'
   }>[]
+  kawasakiEndpoints: readonly Readonly<{
+    version: 1
+    endpointDenominator: 1 | 2 | 4 | 8 | 16
+    closureStatus: 'certified'
+    collisionStatus: 'certified' | 'uncertified'
+    authorizesApply: false
+  }>[]
   authorizesProjectMutation: false
 }>
 
@@ -3006,7 +3013,7 @@ export function readEvenCycleCandidatesV1(
   }
   return invoke<unknown>('read_even_cycle_candidates_v1', { request }).then((value) => {
     if (!isCoreDataRecord(value)
-      || Object.keys(value).sort().join(',') !== 'authorizesProjectMutation,candidates,projectId,projectInstanceId,reason,revision,status,version'
+      || Object.keys(value).sort().join(',') !== 'authorizesProjectMutation,candidates,kawasakiEndpoints,projectId,projectInstanceId,reason,revision,status,version'
       || value.version !== 1
       || value.projectInstanceId !== request.expectedProjectInstanceId
       || value.projectId !== request.expectedProjectId
@@ -3014,7 +3021,8 @@ export function readEvenCycleCandidatesV1(
       || !['ready', 'none', 'resource_limit', 'unsupported'].includes(String(value.status))
       || typeof value.reason !== 'string'
       || value.authorizesProjectMutation !== false
-      || !Array.isArray(value.candidates) || value.candidates.length > 8) throw new Error('invalid even-cycle candidate response')
+      || !Array.isArray(value.candidates) || value.candidates.length > 8
+      || !Array.isArray(value.kawasakiEndpoints) || value.kawasakiEndpoints.length > 5) throw new Error('invalid even-cycle candidate response')
     const seen = new Set<string>()
     for (const candidate of value.candidates) {
       if (!isCoreDataRecord(candidate) || candidate.version !== 1
@@ -3027,6 +3035,15 @@ export function readEvenCycleCandidatesV1(
         throw new Error('invalid even-cycle candidate response')
       }
       seen.add(candidate.edges.join(':'))
+    }
+    for (const endpoint of value.kawasakiEndpoints) {
+      if (!isCoreDataRecord(endpoint)
+        || Object.keys(endpoint).sort().join(',') !== 'authorizesApply,closureStatus,collisionStatus,endpointDenominator,version'
+        || endpoint.version !== 1
+        || ![1, 2, 4, 8, 16].includes(Number(endpoint.endpointDenominator))
+        || endpoint.closureStatus !== 'certified'
+        || !['certified', 'uncertified'].includes(String(endpoint.collisionStatus))
+        || endpoint.authorizesApply !== false) throw new Error('invalid Kawasaki endpoint response')
     }
     if ((value.status === 'ready') !== (value.candidates.length > 0)) {
       throw new Error('invalid even-cycle candidate response')

@@ -115,6 +115,12 @@ export function StackedFoldPanel({
     reason: 'same_assignment_geometrically_opposite'
   }>[]>([])
   const [evenCycleStatus, setEvenCycleStatus] = useState<string>('unsupported')
+  const [kawasakiEndpoints, setKawasakiEndpoints] = useState<readonly Readonly<{
+    endpointDenominator: number
+    closureStatus: 'certified'
+    collisionStatus: 'certified' | 'uncertified'
+    authorizesApply: false
+  }>[]>([])
   const [confirmed, setConfirmed] = useState(false)
   const [applying, setApplying] = useState(false)
   const [view, setView] = useState<View>({ kind: 'idle' })
@@ -261,6 +267,7 @@ export function StackedFoldPanel({
       setLiveHinges([])
       setRequestedHingeAngles({})
       setEvenCycleCandidates([])
+      setKawasakiEndpoints([])
       return () => {
         current = false
       }
@@ -294,10 +301,12 @@ export function StackedFoldPanel({
     }).then((automatic) => {
       if (!current) return
       setEvenCycleCandidates(automatic.candidates)
+      setKawasakiEndpoints(automatic.kawasakiEndpoints)
       setEvenCycleStatus(automatic.status)
     }).catch(() => {
       if (current) {
         setEvenCycleCandidates([])
+        setKawasakiEndpoints([])
         setEvenCycleStatus('unsupported')
       }
     })
@@ -693,7 +702,7 @@ export function StackedFoldPanel({
               ? t('経路を証明中…', 'Proving path…')
               : t('現在姿勢から証明', 'Prove from current pose')}
           </button>
-          {evenCycleCandidates.length > 0 && (
+            {evenCycleCandidates.length > 0 && (
             <button
               type="button"
               data-testid="automatic-kawasaki-proof"
@@ -701,8 +710,20 @@ export function StackedFoldPanel({
               onClick={() => void previewCurrentCyclePose(true)}
             >
               {t('川崎リンクを自動生成して証明', 'Generate and prove Kawasaki linkage')}
-            </button>
-          )}
+              </button>
+            )}
+            {kawasakiEndpoints.length > 0 && (
+              <ul data-testid="kawasaki-endpoint-candidates">
+                {kawasakiEndpoints.map((candidate) => (
+                  <li key={candidate.endpointDenominator}>
+                    1/{candidate.endpointDenominator}: {t('閉路証明済み', 'Closure certified')} /{' '}
+                    {candidate.collisionStatus === 'certified'
+                      ? t('衝突証明済み', 'Collision certified')
+                      : t('衝突未認証', 'Collision uncertified')}
+                  </li>
+                ))}
+              </ul>
+            )}
           {cyclePoseReading && pathProgress && (
             <p role="status">
               {t(

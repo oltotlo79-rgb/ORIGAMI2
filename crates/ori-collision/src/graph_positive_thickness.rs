@@ -1,7 +1,7 @@
 use num_rational::BigRational;
 use num_traits::Signed;
 use ori_kinematics::{ClosedMaterialHingeGraphPose, MaterialHingeGraphGeometry, Point3};
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 pub const POSITIVE_THICKNESS_GRAPH_GEOMETRY_PROOF_V1: &str =
     "positive_thickness_graph_geometry_proof_v1";
@@ -78,13 +78,14 @@ pub fn prove_positive_thickness_graph_geometry_v1(
     limits: PositiveThicknessGraphLimitsV1,
 ) -> Result<NativePositiveThicknessGraphGeometryProofV1, PositiveThicknessGraphProofErrorV1> {
     let face_count = geometry.face_ids().len();
-    if !(7..=49).contains(&face_count)
+    let checked_hinges = pose.closure_certificate().checked_hinges();
+    let checked_hinge_set = checked_hinges.iter().copied().collect::<HashSet<_>>();
+    if !(4..=49).contains(&face_count)
         || !paper_thickness_mm.is_finite()
         || paper_thickness_mm <= 0.0
-        || pose.closure_certificate().checked_hinges().is_empty()
-        || !pose
-            .closure_certificate()
-            .checked_hinges()
+        || checked_hinges.len() != geometry.hinges().len()
+        || checked_hinge_set.len() != geometry.hinges().len()
+        || !checked_hinges
             .iter()
             .all(|edge| geometry.hinges().iter().any(|hinge| hinge.edge() == *edge))
         || pose

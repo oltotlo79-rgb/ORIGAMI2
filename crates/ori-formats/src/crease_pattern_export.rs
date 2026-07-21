@@ -1561,7 +1561,7 @@ mod tests {
     fn typed_generation_provenance_is_embedded_in_every_export() {
         let (pattern, paper) = sample_pattern();
         let provenance = BeginnerGenerationProvenanceV1 {
-            fold_path_certificate_sha256: None,
+            fold_path_certificate_sha256: Some([0x5au8; 32]),
             schema_version: 1,
             topology_authority_sha256: [0xabu8; 32],
             confidence_score: 87,
@@ -1600,6 +1600,12 @@ mod tests {
                     value["origami2_generation_provenance"]["confidence_score"],
                     87
                 );
+                assert_eq!(
+                    value["origami2_generation_provenance"]["fold_path_certificate_sha256"]
+                        .as_array()
+                        .map(Vec::len),
+                    Some(32)
+                );
             } else {
                 let text = String::from_utf8_lossy(&artifact.bytes);
                 assert!(
@@ -1614,7 +1620,7 @@ mod tests {
     fn generation_provenance_reader_rejects_ambiguous_or_tampered_metadata() {
         let (pattern, paper) = sample_pattern();
         let provenance = BeginnerGenerationProvenanceV1 {
-            fold_path_certificate_sha256: None,
+            fold_path_certificate_sha256: Some([0x3cu8; 32]),
             schema_version: 1,
             topology_authority_sha256: [7; 32],
             confidence_score: 91,

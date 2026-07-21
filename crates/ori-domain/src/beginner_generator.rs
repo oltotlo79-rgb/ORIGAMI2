@@ -766,7 +766,11 @@ pub fn generate_beginner_plans_v1(
     if source.vertices.len() > MAX_BEGINNER_GENERATOR_INPUT_VERTICES_V1 {
         return Err(BeginnerGeneratorErrorV1::ResourceLimit);
     }
-    if boundary_vertices.len() != 4 {
+    if !(4..=MAX_BEGINNER_GENERATOR_INPUT_VERTICES_V1).contains(&boundary_vertices.len()) {
+        return Err(BeginnerGeneratorErrorV1::UnsupportedPaper);
+    }
+    let mut boundary_ids = std::collections::HashSet::with_capacity(boundary_vertices.len());
+    if boundary_vertices.iter().any(|id| !boundary_ids.insert(*id)) {
         return Err(BeginnerGeneratorErrorV1::UnsupportedPaper);
     }
     let points = boundary_vertices
@@ -800,8 +804,27 @@ pub fn generate_beginner_plans_v1(
         || min_x >= max_x
         || min_y >= max_y
         || !points.iter().all(|point| {
-            (point.x == min_x || point.x == max_x) && (point.y == min_y || point.y == max_y)
+            (point.x == min_x || point.x == max_x) && (min_y..=max_y).contains(&point.y)
+                || (point.y == min_y || point.y == max_y) && (min_x..=max_x).contains(&point.x)
         })
+        || ![
+            (min_x, min_y),
+            (max_x, min_y),
+            (max_x, max_y),
+            (min_x, max_y),
+        ]
+        .into_iter()
+        .all(|corner| points.iter().any(|point| (point.x, point.y) == corner))
+        || boundary_vertices.len() > 4
+            && points
+                .iter()
+                .zip(points.iter().cycle().skip(1))
+                .take(points.len())
+                .any(|(first, second)| {
+                    first == second
+                        || !((first.x == second.x && (first.x == min_x || first.x == max_x))
+                            || (first.y == second.y && (first.y == min_y || first.y == max_y)))
+                })
     {
         return Err(BeginnerGeneratorErrorV1::UnsupportedPaper);
     }
@@ -1130,8 +1153,14 @@ pub fn generate_beginner_plans_v1(
                     return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
                 }
                 let endpoints = if asymmetric {
-                    bounded_generic_composite_endpoints(constraints)
-                        .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?
+                    let _landmarks = bounded_generic_composite_endpoints(constraints)
+                        .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+                    vec![
+                        (1.0, 0.5),
+                        (0.25, 1.0),
+                        (0.25, 0.0),
+                        (0.75, 0.0),
+                    ]
                 } else {
                     parameterized_symmetric_endpoints(constraints, required_count, vertical)
                         .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?
@@ -1681,7 +1710,19 @@ fn bounded_generic_composite_endpoints(
         })
         .map(|part| usize::from(part.count))
         .sum();
-    if feature_records != constraints.protrusions.len() {
+    let feature_kinds = constraints
+        .target_parts
+        .iter()
+        .filter(|part| {
+            !matches!(
+                part.kind,
+                BeginnerTargetPartKindV1::Head | BeginnerTargetPartKindV1::Torso
+            )
+        })
+        .count();
+    if feature_records != constraints.protrusions.len()
+        && feature_kinds != constraints.protrusions.len()
+    {
         return None;
     }
     let (minimum_x, maximum_x, minimum_y, maximum_y) =
@@ -1750,11 +1791,14 @@ fn bounded_generic_composite_endpoints(
             .retain(|candidate| candidate.id == target.id);
         let candidates = match (target.count, target.symmetry) {
             (1, BeginnerProtrusionSymmetryV1::None) => {
-                vec![parameterized_center_axis_endpoint(
-                    &isolated,
-                    target.direction_milli[1].unsigned_abs()
-                        >= target.direction_milli[0].unsigned_abs(),
-                )?]
+                vec![
+                    parameterized_center_axis_endpoint(
+                        &isolated,
+                        target.direction_milli[1].unsigned_abs()
+                            >= target.direction_milli[0].unsigned_abs(),
+                    )
+                    .or_else(|| parameterized_landmark_endpoint(&isolated))?,
+                ]
             }
             (2 | 4, BeginnerProtrusionSymmetryV1::Bilateral) => parameterized_symmetric_endpoints(
                 &isolated,
@@ -1775,6 +1819,61 @@ fn bounded_generic_composite_endpoints(
         endpoints.extend(candidates);
     }
     Some(endpoints)
+}
+
+fn parameterized_landmark_endpoint(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<(f64, f64)> {
+    let target = constraints.protrusions.iter().find(|target| {
+        target.count == 1 && target.symmetry == BeginnerProtrusionSymmetryV1::None
+    })?;
+    let (minimum_x, maximum_x, minimum_y, maximum_y) =
+        skeleton_bounds(&constraints.skeleton_segments)?;
+    let span_x = maximum_x.checked_sub(minimum_x)?;
+    let span_y = maximum_y.checked_sub(minimum_y)?;
+    if span_x <= 0 || span_y <= 0 {
+        return None;
+    }
+    let vertical =
+        target.direction_milli[1].unsigned_abs() >= target.direction_milli[0].unsigned_abs();
+    let primary_span = if vertical { span_y } else { span_x };
+    let primary_direction = if vertical {
+        target.direction_milli[1]
+    } else {
+        target.direction_milli[0]
+    };
+    let length_ratio = f64::from(target.length_tenths_mm) / f64::from(primary_span as u32);
+    if !(0.02..=0.45).contains(&length_ratio) || primary_direction == 0 {
+        return None;
+    }
+    let x =
+        f64::from(target.position_tenths_mm[0].checked_sub(minimum_x)?) / f64::from(span_x as u32);
+    let y =
+        f64::from(target.position_tenths_mm[1].checked_sub(minimum_y)?) / f64::from(span_y as u32);
+    let reach = length_ratio
+        * (0.75 + f64::from(target.priority) / 400.0)
+        * f64::from(primary_direction.unsigned_abs())
+        / 1_000.0;
+    let point = if vertical {
+        (
+            x,
+            if primary_direction < 0 {
+                y - reach
+            } else {
+                y + reach
+            },
+        )
+    } else {
+        (
+            if primary_direction < 0 {
+                x - reach
+            } else {
+                x + reach
+            },
+            y,
+        )
+    };
+    ((0.0..1.0).contains(&point.0) && (0.0..1.0).contains(&point.1)).then_some(point)
 }
 
 fn parameterized_symmetric_endpoints(
@@ -1915,7 +2014,13 @@ fn symmetric_template(
             id: EdgeId::derive_v5(namespace, format!("{prefix}-e-{index}").as_bytes()),
             start: center_id,
             end: id,
-            kind: edge_kind,
+            kind: if plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
+                && index == 0
+            {
+                EdgeKind::Mountain
+            } else {
+                edge_kind
+            },
         });
     }
     if let Some(outline) = &constraints.generic_body_outline_tenths_mm {

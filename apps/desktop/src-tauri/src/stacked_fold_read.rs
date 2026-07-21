@@ -3024,6 +3024,47 @@ mod tests {
     }
 
     #[test]
+    fn rank64_cycle_request_rejects_resource_before_work_and_keeps_progress_cancel_dtos_bounded() {
+        let entry = || {
+            serde_json::json!({
+                "edge": ori_domain::EdgeId::new(),
+                "uDomain": [{"numerator": 0, "denominator": 1}, {"numerator": 1, "denominator": 1}],
+                "numeratorPowerCoefficients": [{"numerator": 1, "denominator": 1}],
+                "denominatorPowerCoefficients": [{"numerator": 1, "denominator": 1}],
+                "requestedAngleDegrees": 90.0
+            })
+        };
+        let request = serde_json::from_value::<StackedFoldReadRequest>(serde_json::json!({
+            "progressRequestId": "rank64:resource",
+            "expectedProjectInstanceId": ori_domain::ProjectId::new(),
+            "expectedProjectId": ori_domain::ProjectId::new(),
+            "expectedRevision": 0,
+            "first": [0.0, 0.0, 0.0],
+            "second": [1.0, 0.0, 0.0],
+            "fixedSide": "left",
+            "rotationDirection": "positive",
+            "requestedAngleDegrees": 90.0,
+            "cycleScheduleV1": {"version": 1, "entries": (0..256).map(|_| entry()).collect::<Vec<_>>()}
+        })).unwrap();
+        assert_eq!(
+            validate_progress_request_id_v1(request.progress_request_id.as_deref()),
+            Ok(Some("rank64:resource"))
+        );
+        assert_eq!(
+            validate_request_resource_shape_v1(&request),
+            Err(CYCLE_PATH_RESOURCE_MESSAGE)
+        );
+
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let before = STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire);
+        cancel_current_stacked_fold_read_v1().expect("rank64 cancel dto remains available");
+        assert_eq!(
+            STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
+            before + 1
+        );
+    }
+
+    #[test]
     fn linear_candidate_requires_bit_exact_live_initial_angles() {
         let edge = serde_json::from_value::<ori_domain::EdgeId>(serde_json::json!(
             "018f47a2-4b7a-7cc1-8abc-778899aabbcc"
@@ -3778,7 +3819,7 @@ mod tests {
             .copied()
             .enumerate()
             .map(|(index, edge)| {
-                let (p, q) = triples[index / 4];
+                let (p, q) = triples[(index / 4) % triples.len()];
                 CycleScheduleEntryRequestV1 {
                     edge,
                     u_domain: [
@@ -4033,7 +4074,7 @@ mod tests {
     #[test]
     fn coupled_cactus_previews_apply_and_round_trip_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        for cycle_count in [2, 3, 4, 8, 16] {
+        for cycle_count in [2, 3, 4, 8, 16, 32] {
             for thickness_mm in [10_000.0, 0.1, 1.0, 3.0] {
                 let (pattern, mut paper, hinges) = if cycle_count == 2 {
                     super::four_bay_cycle_test_support::two_bay_rational_cycle_pattern()
@@ -4043,6 +4084,8 @@ mod tests {
                     super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern()
                 } else if cycle_count == 8 {
                     super::four_bay_cycle_test_support::eight_bay_rational_cycle_pattern()
+                } else if cycle_count == 32 {
+                    super::four_bay_cycle_test_support::thirty_two_bay_rational_cycle_pattern()
                 } else {
                     super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern()
                 };
@@ -4089,6 +4132,24 @@ mod tests {
                         .is_some()
                     );
                 }
+                if cycle_count == 32 {
+                    assert_eq!(
+                        propose_current_cycle_pose_inner(
+                            None,
+                            &app_state,
+                            &transactions,
+                            CurrentCyclePosePreviewRequestV1 {
+                                progress_request_id: Some("rank32:stale".to_owned()),
+                                expected_project_instance_id: ProjectId::new(),
+                                expected_project_id: project_id,
+                                expected_revision: revision,
+                                cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
+                            },
+                        )
+                        .unwrap_err(),
+                        STALE_MESSAGE
+                    );
+                }
                 let response = propose_current_cycle_pose_inner(
                     None,
                     &app_state,
@@ -4120,6 +4181,27 @@ mod tests {
                 let response = response.expect("coupled cactus preview");
                 assert_eq!(response.closure_leaf_count, cycle_count);
                 assert_eq!(response.checked_hinge_count, cycle_count * 4);
+                if cycle_count == 32 && thickness_mm == 1.0 {
+                    super::super::lock_project(&app_state).unwrap().instance_id = ProjectId::new();
+                    assert!(
+                        super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                            &app_state,
+                            &GlobalFlatFoldabilityState::default(),
+                            &transactions,
+                            response.transaction_token,
+                        )
+                        .is_err()
+                    );
+                    assert!(
+                        super::super::lock_project(&app_state)
+                            .unwrap()
+                            .editor
+                            .instruction_timeline()
+                            .steps
+                            .is_empty()
+                    );
+                    continue;
+                }
                 super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
                     &transactions,
                     response.transaction_token,

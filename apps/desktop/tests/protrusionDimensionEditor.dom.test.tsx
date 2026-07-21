@@ -26,4 +26,19 @@ describe('ProtrusionDimensionEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: '削除' }))
     expect(remove).toHaveBeenCalledOnce()
   })
+  it('exposes bounded reorder controls', () => {
+    const moveUp = vi.fn()
+    const moveDown = vi.fn()
+    render(<ul><ProtrusionDimensionEditor locale="en" target={target} onChange={() => {}}
+      onRemove={() => {}} onMoveUp={moveUp} onMoveDown={moveDown}
+      canMoveUp={false} canMoveDown /></ul>)
+    const up = screen.getByRole('button', { name: 'Move up' })
+    const down = screen.getByRole('button', { name: 'Move down' })
+    expect((up as HTMLButtonElement).disabled).toBe(true)
+    expect((down as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(up)
+    fireEvent.click(down)
+    expect(moveUp).not.toHaveBeenCalled()
+    expect(moveDown).toHaveBeenCalledOnce()
+  })
 })

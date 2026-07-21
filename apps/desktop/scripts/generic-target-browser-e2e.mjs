@@ -10,8 +10,16 @@ try {
   await page.getByRole('button', { name: 'Try oversized target' }).click()
   if (await page.getByRole('list').count()) throw new Error('oversized target reached UI')
   await page.getByRole('button', { name: 'Recognize mixed target image' }).click(); await assertBindings(page)
+  const editor = page.getByRole('list', { name: 'Editable generic target dimensions' })
+  await editor.getByRole('button', { name: 'Move down' }).first().click()
+  if (await page.getByLabel('Length binding 1 (mm)').inputValue() !== '22') throw new Error('reorder was not canonicalized')
+  await page.getByRole('button', { name: 'Add binding' }).click()
+  if (await editor.getByRole('listitem').count() !== 3) throw new Error('binding was not added')
+  await editor.getByRole('button', { name: 'Remove' }).last().click()
+  if (await editor.getByRole('listitem').count() !== 2) throw new Error('binding was not removed')
+  if (await editor.getByRole('button', { name: 'Remove' }).first().isEnabled()) throw new Error('two-binding lower bound was not enforced')
   await page.getByLabel('Length binding 1 (mm)').fill('31.5')
-  await page.getByText('Binding 1 · asymmetric single · count 1 · length 315 · thickness 50', { exact: true }).waitFor()
+  await page.getByRole('list', { name: 'Bounded generic target binding dimensions' }).getByText(/length 315/).waitFor()
   await page.getByRole('button', { name: 'Evaluate generic target grid' }).click()
   const preview = page.getByRole('region', { name: 'Generic target candidate preview' }); await preview.waitFor()
   await page.getByRole('button', { name: 'Replace recognized target' }).click(); await preview.waitFor({ state: 'detached' })
@@ -24,7 +32,7 @@ try {
   for (const [button, status] of [['Undo generic target', 'Generic target undone'], ['Redo generic target', 'Generic target redone'], ['Save and reopen generic target', 'Generic target saved and reopened']]) {
     await page.getByRole('button', { name: button }).click(); await page.getByText(status, { exact: true }).waitFor()
   }
-  console.log('generic target browser E2E passed: image/GLB, bounds, stale/cancel, apply history/save')
+  console.log('generic target browser E2E passed: image/GLB, add/remove/reorder bounds, stale/cancel, apply history/save')
 } finally { await browser?.close(); server.kill('SIGTERM') }
 async function assertBindings(page) {
   const list = page.getByRole('list', { name: 'Bounded generic target binding dimensions' }); await list.waitFor()

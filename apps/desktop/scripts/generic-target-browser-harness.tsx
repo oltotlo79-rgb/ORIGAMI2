@@ -20,6 +20,16 @@ function Harness() {
   const [bindings, setBindings] = useState([...initialBindings])
   const evaluate = useRef<HTMLButtonElement>(null)
   const focus = () => requestAnimationFrame(() => evaluate.current?.focus())
+  const canonicalize = (targets: typeof bindings) => targets.map(
+    (target, index) => ({ ...target, id: index + 1 }),
+  )
+  const move = (index: number, offset: -1 | 1) => setBindings((current) => {
+    const destination = index + offset
+    if (destination < 0 || destination >= current.length) return current
+    const moved = [...current]
+    ;[moved[index], moved[destination]] = [moved[destination]!, moved[index]!]
+    return canonicalize(moved)
+  })
   const recognize = (source: string) => {
     setBindings(initialBindings.map((target) => ({ ...target })))
     setRecognized(true); setPreview(false); setStatus(`${source} recognized two bounded bindings`)
@@ -29,11 +39,17 @@ function Harness() {
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected: target exceeds eight bindings') }}>Try oversized target</button>
     <p role="status">{status}</p>
+    {recognized && <button disabled={bindings.length >= 8} onClick={() => setBindings((current) =>
+      canonicalize([...current, { ...initialBindings[0]!, id: current.length + 1 }]))}>Add binding</button>}
     {recognized && <GenericTargetBindingList locale="en" protrusions={[...bindings]} />}
-    {recognized && <ul aria-label="Editable generic target dimensions">{bindings.map((target) =>
+    {recognized && <ul aria-label="Editable generic target dimensions">{bindings.map((target, index) =>
       <ProtrusionDimensionEditor key={target.id} locale="en" target={target}
         onChange={(changed) => setBindings((current) => current.map((item) => item.id === changed.id ? changed : item))}
-        onRemove={() => setBindings((current) => current.filter((item) => item.id !== target.id))} />
+        onRemove={() => setBindings((current) => current.length <= 2 ? current
+          : canonicalize(current.filter((item) => item.id !== target.id)))}
+        canRemove={bindings.length > 2}
+        canMoveUp={index > 0} canMoveDown={index + 1 < bindings.length}
+        onMoveUp={() => move(index, -1)} onMoveDown={() => move(index, 1)} />
     )}</ul>}
     <button ref={evaluate} onClick={() => { if (recognized) { setPreview(true); setStatus('Generic target grid ready') } }}>Evaluate generic target grid</button>
     {preview && <section aria-label="Generic target candidate preview"><p>Global flat-foldability proven</p>

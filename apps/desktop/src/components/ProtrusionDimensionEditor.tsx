@@ -2,11 +2,17 @@ import type { BeginnerGenerationConstraintsV1 } from '../lib/coreClient'
 
 type Protrusion = NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
 
-export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove }: {
+export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
+  onMoveUp, onMoveDown, canRemove = true, canMoveUp = false, canMoveDown = false }: {
   locale: 'ja' | 'en'
   target: Protrusion
   onChange: (target: Protrusion) => void
   onRemove: () => void
+  onMoveUp?: () => void
+  onMoveDown?: () => void
+  canRemove?: boolean
+  canMoveUp?: boolean
+  canMoveDown?: boolean
 }) {
   const update = (field: 'length_tenths_mm' | 'thickness_tenths_mm', value: number) => {
     if (!Number.isFinite(value) || value <= 0) return
@@ -33,6 +39,12 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove }
         value={target.thickness_tenths_mm / 10}
         onChange={(event) => update('thickness_tenths_mm', Number(event.currentTarget.value))} />
     </label>
-    <button type="button" onClick={onRemove}>{locale === 'ja' ? '削除' : 'Remove'}</button>
+    <button type="button" disabled={!canRemove} onClick={onRemove}>{locale === 'ja' ? '削除' : 'Remove'}</button>
+    <button type="button" disabled={!canMoveUp} onClick={onMoveUp}>
+      {locale === 'ja' ? '上へ' : 'Move up'}
+    </button>
+    <button type="button" disabled={!canMoveDown} onClick={onMoveDown}>
+      {locale === 'ja' ? '下へ' : 'Move down'}
+    </button>
   </li>
 }

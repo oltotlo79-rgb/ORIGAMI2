@@ -3985,7 +3985,7 @@ function App() {
   }
 
   function addBeginnerProtrusion(form: HTMLFormElement) {
-    if (beginnerProtrusions.length >= 32) return
+    if (beginnerProtrusions.length >= 8) return
     const data = new FormData(form)
     const number = (name: string) => Number(data.get(name))
     const count = number('protrusion_count')
@@ -4005,7 +4005,7 @@ function App() {
       || Math.abs(curvature) > 360 || motion.some((value) => Math.abs(value) > 360)
       || motion[0] > motion[1] || !Number.isInteger(priority) || priority < 1 || priority > 100) return
     const used = new Set(beginnerProtrusions.map((target) => target.id))
-    let id = 0
+    let id = 1
     while (used.has(id) && id < 65_535) id += 1
     setBeginnerProtrusions((targets) => [...targets, {
       id, count, length_tenths_mm: Math.round(length * 10),
@@ -8660,20 +8660,34 @@ function App() {
                       <option value="either">{text({ ja: 'どちらでも', en: 'Either' })}</option>
                     </select>
                   </label>
-                  <button type="button" disabled={beginnerProtrusions.length >= 32 || coreBusy}
+                  <button type="button" disabled={beginnerProtrusions.length >= 8 || coreBusy}
                     onClick={(event) => event.currentTarget.form
                       && addBeginnerProtrusion(event.currentTarget.form)}>
                     {text({ ja: '突起目標を追加', en: 'Add protrusion target' })}
                   </button>
                   <ul aria-label={text({ ja: '突起目標一覧', en: 'Protrusion target list' })}>
-                    {beginnerProtrusions.map((target) => (
+                    {beginnerProtrusions.map((target, index) => (
                       <ProtrusionDimensionEditor key={target.id} locale={locale} target={target}
                         onChange={(changed) => setBeginnerProtrusions((targets) => targets.map(
                           (item) => item.id === changed.id ? changed : item,
                         ))}
                         onRemove={() => setBeginnerProtrusions(
-                          (targets) => targets.filter((item) => item.id !== target.id),
-                        )} />
+                          (targets) => targets.filter((item) => item.id !== target.id)
+                            .map((item, canonicalIndex) => ({ ...item, id: canonicalIndex + 1 })),
+                        )}
+                        canMoveUp={index > 0} canMoveDown={index + 1 < beginnerProtrusions.length}
+                        onMoveUp={() => setBeginnerProtrusions((targets) => {
+                          if (index === 0) return targets
+                          const moved = [...targets]
+                          ;[moved[index - 1], moved[index]] = [moved[index]!, moved[index - 1]!]
+                          return moved.map((item, canonicalIndex) => ({ ...item, id: canonicalIndex + 1 }))
+                        })}
+                        onMoveDown={() => setBeginnerProtrusions((targets) => {
+                          if (index + 1 >= targets.length) return targets
+                          const moved = [...targets]
+                          ;[moved[index], moved[index + 1]] = [moved[index + 1]!, moved[index]!]
+                          return moved.map((item, canonicalIndex) => ({ ...item, id: canonicalIndex + 1 }))
+                        })} />
                     ))}
                   </ul>
                 </fieldset>

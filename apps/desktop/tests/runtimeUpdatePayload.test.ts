@@ -45,7 +45,10 @@ function fixture(overrides: Record<string, unknown> = {}) {
 test('streams an authorized payload then verifies hash and signature before atomic commit', async () => {
   const target = fixture()
   const result = await stageAuthorizedRuntimePayload(authorization, name, target.dependencies)
-  assert.deepEqual(result, { kind: 'staged', assetName: name, byteLength: payload.byteLength })
+  assert.deepEqual(result, {
+    kind: 'staged', version: '2.0.0', platform: 'windows-x64', assetName: name,
+    payloadSha256: hash, byteLength: payload.byteLength,
+  })
   assert.deepEqual(target.events, ['begin', 'write', 'write', 'signature', 'commit'])
 })
 

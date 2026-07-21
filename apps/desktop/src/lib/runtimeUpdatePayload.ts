@@ -5,6 +5,7 @@ import {
 
 const DEFAULT_MAX_PAYLOAD_BYTES = 512 * 1024 * 1024
 const ABSOLUTE_MAX_PAYLOAD_BYTES = 1024 * 1024 * 1024
+const ISSUED_STAGED_PAYLOADS = new WeakSet<object>()
 
 export type RuntimePayloadTransport = Readonly<{
   requestPayload: (assetName: string, signal?: AbortSignal) =>
@@ -22,8 +23,16 @@ export type RuntimePayloadStaging = Readonly<{
   }>>
 }>
 export type RuntimePayloadResult =
-  | Readonly<{ kind: 'staged'; assetName: string; byteLength: number }>
+  | RuntimeStagedPayload
   | Readonly<{ kind: 'rejected'; reason: 'unauthorized' | 'network' | 'oversize' | 'hash_mismatch' | 'signature_mismatch' | 'storage' }>
+export type RuntimeStagedPayload = Readonly<{
+  kind: 'staged'
+  version: string
+  platform: RuntimeUpdateAuthorization['platform']
+  assetName: string
+  payloadSha256: string
+  byteLength: number
+}>
 
 /** Downloads only a parser-issued asset, verifies it, then atomically commits it. */
 export async function stageAuthorizedRuntimePayload(
@@ -73,12 +82,25 @@ export async function stageAuthorizedRuntimePayload(
     if (!signatureValid) return rejected('signature_mismatch')
     try { await transaction.commit() } catch { return rejected('storage') }
     settled = true
-    return Object.freeze({ kind: 'staged', assetName, byteLength })
+    const receipt = Object.freeze({
+      kind: 'staged' as const,
+      version: authorization.version,
+      platform: authorization.platform,
+      assetName,
+      payloadSha256: asset.sha256,
+      byteLength,
+    })
+    ISSUED_STAGED_PAYLOADS.add(receipt)
+    return receipt
   } finally {
     if (!settled) {
       try { await transaction.rollback() } catch { /* fail closed; never expose staging authority */ }
     }
   }
+}
+
+export function isIssuedRuntimeStagedPayload(value: unknown): value is RuntimeStagedPayload {
+  return value !== null && typeof value === 'object' && ISSUED_STAGED_PAYLOADS.has(value)
 }
 
 function concatenate(chunks: readonly Uint8Array[], length: number): Uint8Array {

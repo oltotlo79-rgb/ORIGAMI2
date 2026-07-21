@@ -4851,6 +4851,65 @@ mod tests {
     }
 
     #[test]
+    fn automatic_kawasaki_archive_reopens_with_native_pose_authority() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (mut project, hinges) = super::super::applied_pose::tests::four_vertex_cycle_project();
+        super::super::applied_pose::tests::install_flat_graph_pose_authority(&mut project, hinges);
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let state = AppState::new(project);
+        let transactions =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let preview = propose_current_cycle_pose_inner(
+            None,
+            &state,
+            &transactions,
+            CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                cycle_schedule_v1: CycleScheduleRequestV1 {
+                    version: 2,
+                    entries: Vec::new(),
+                },
+            },
+        )
+        .expect("automatic exact Kawasaki preview");
+        super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            &state,
+            &GlobalFlatFoldabilityState::default(),
+            &transactions,
+            preview.transaction_token,
+        )
+        .expect("apply automatic exact Kawasaki pose");
+        let project = super::super::lock_project(&state).unwrap();
+        let original_pose = project.editor.instruction_timeline().steps[0].pose.clone();
+        let archive = project.project_archive().unwrap();
+        let mut tampered = project.document();
+        tampered.instruction_timeline.steps[0].pose.hinge_angles[0].angle_degrees += 0.01;
+        assert!(super::super::validate_document_instruction_poses(&tampered).is_err());
+        drop(project);
+        let reopened = super::super::ProjectState::from_project_archive(
+            archive,
+            std::path::PathBuf::from("automatic-kawasaki.ori2"),
+        )
+        .expect("reopen automatic exact Kawasaki archive");
+        assert_eq!(
+            reopened.editor.instruction_timeline().steps[0].pose,
+            original_pose
+        );
+        assert!(
+            reopened
+                .applied_pose_authority
+                .capture_capability(&reopened)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn octagonal_eight_sector_cycle_previews_applies_and_reopens_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         let (pattern, paper, moving) = octagonal_eight_sector_cycle_pattern();

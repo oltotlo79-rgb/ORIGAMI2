@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { ORIGAMI2_GITHUB_RELEASES_API_URL } from '../src/lib/githubReleaseUpdate.ts'
 
@@ -42,6 +46,57 @@ test('the desktop CSP permits only the fixed GitHub API update authority', async
   assert.equal(config.app.security.csp.includes('*.github.com'), false)
   assert.equal(config.app.security.csp.includes('https://github.com'), false)
   assert.equal(config.app.security.csp.includes('http://api.github.com'), false)
+})
+
+test('bundle CSP verifier rejects linked and syntactically hidden authorities', () => {
+  const verifier = resolve(import.meta.dirname, '..', '..', '..', '.github', 'scripts', 'verify_desktop_bundle_csp.mjs')
+  const root = mkdtempSync(join(tmpdir(), 'origami2-bundle-csp-'))
+  const assets = join(root, 'assets')
+  mkdirSync(assets)
+  const htmlPath = join(root, 'index.html')
+  const jsPath = join(assets, 'app.js')
+  const cssPath = join(assets, 'app.css')
+  const validHtml = '<!doctype html><html><head><script type="module" crossorigin src="/assets/app.js"></script><link rel="stylesheet" crossorigin href="/assets/app.css"></head><body><div id="root"></div></body></html>'
+  const verify = () => execFileSync(process.execPath, [verifier, root])
+  try {
+    writeFileSync(htmlPath, validHtml)
+    writeFileSync(jsPath, 'export {}\n')
+    writeFileSync(cssPath, '.root{color:#000}\n')
+    verify()
+    for (const hostile of [
+      '<base href="https://evil.example/">',
+      '<meta http-equiv="refresh" content="0;url=https://evil.example/">',
+      '<img srcset="https://evil.example/a.png 1x">',
+    ]) {
+      writeFileSync(htmlPath, validHtml.replace('</head>', `${hostile}</head>`))
+      assert.throws(verify)
+    }
+    writeFileSync(htmlPath, validHtml)
+    for (const hostileCss of [
+      '@\\69mport "https://evil.example/a.css";',
+      '.x{background:u\\72l("data:image/png;base64,AA==")}',
+      '@/* hidden */import url(https://evil.example/a.css);',
+    ]) {
+      writeFileSync(cssPath, hostileCss)
+      assert.throws(verify)
+    }
+    writeFileSync(cssPath, '.root{color:#000}\n')
+    const hardlink = join(assets, 'hardlink.js')
+    linkSync(jsPath, hardlink)
+    assert.throws(verify)
+    rmSync(hardlink)
+    rmSync(jsPath)
+    try {
+      symlinkSync(cssPath, jsPath)
+      assert.throws(verify)
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'EPERM')) throw error
+      const verifierSource = readFileSync(verifier, 'utf8')
+      assert.match(verifierSource, /link\.isSymbolicLink\(\)/u)
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('production update authority cannot be widened by origin credentials DNS aliases or dev proxy', async () => {

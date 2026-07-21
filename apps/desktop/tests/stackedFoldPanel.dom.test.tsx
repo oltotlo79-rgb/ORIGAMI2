@@ -5,6 +5,7 @@ import type { ProjectSnapshot } from '../src/lib/coreClient'
 
 const transport = vi.hoisted(() => ({
   preview: vi.fn(),
+  cyclePreview: vi.fn(),
   apply: vi.fn(),
   cancel: vi.fn(),
   cancelRead: vi.fn(),
@@ -15,6 +16,7 @@ const transport = vi.hoisted(() => ({
 vi.mock('../src/lib/coreClient', async (importOriginal) => ({
   ...await importOriginal<typeof import('../src/lib/coreClient')>(),
   proposeCurrentStackedFoldRead: transport.preview,
+  proposeCurrentCyclePoseV1: transport.cyclePreview,
   applyStackedFoldTransaction: transport.apply,
   cancelStackedFoldTransactionPreview: transport.cancel,
   cancelCurrentStackedFoldReadV1: transport.cancelRead,
@@ -572,5 +574,54 @@ describe('StackedFoldPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
     expect(await screen.findByText(copy)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Apply stacked fold' })).toBeNull()
+  })
+
+  it('previews, summarizes, explicitly applies, and cancels a current-pose cycle', async () => {
+    transport.cyclePreview.mockResolvedValue({
+      version: 1,
+      transactionToken: token,
+      sourceRevision: 3,
+      targetRevision: 4,
+      closureLeafCount: 1,
+      continuousPathCertified: true,
+      authorizesProjectMutation: false,
+    })
+    transport.apply.mockResolvedValue(4)
+    transport.cancel.mockResolvedValue(undefined)
+    const refreshed = { ...snapshot, revision: 4 } as ProjectSnapshot
+    const onApplied = vi.fn()
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn().mockResolvedValue(refreshed)}
+        onApplied={onApplied}
+      />,
+    )
+    const schedule = {
+      version: 1,
+      entries: [{
+        edge: token,
+        uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }],
+        numeratorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+        denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+        requestedAngleDegrees: 90,
+      }],
+    }
+    fireEvent.change(screen.getByLabelText('Cycle path definition (JSON, cyclic patterns only)'), {
+      target: { value: JSON.stringify(schedule) },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
+    expect(await screen.findByText('Closure intervals')).toBeTruthy()
+    expect(screen.getByText('This preview is read-only. The project is unchanged until you explicitly apply it.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel preview' }))
+    await waitFor(() => expect(transport.cancel).toHaveBeenCalledWith(token))
+    fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
+    await screen.findByText('Closure intervals')
+    fireEvent.click(screen.getByRole('button', { name: 'Apply certified cycle fold' }))
+    await waitFor(() => expect(onApplied).toHaveBeenCalledWith(refreshed))
+    expect(transport.apply).toHaveBeenCalledWith(token)
   })
 })

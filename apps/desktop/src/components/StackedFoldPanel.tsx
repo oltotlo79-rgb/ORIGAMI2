@@ -4,9 +4,11 @@ import {
   cancelCurrentStackedFoldReadV1,
   cancelStackedFoldTransactionPreview,
   listenStackedFoldReadProgressV1,
+  proposeCurrentCyclePoseV1,
   proposeCurrentStackedFoldRead,
   readLiveHingeRegistryV1,
   type ProjectSnapshot,
+  type CurrentCyclePosePreviewResponseV1,
 } from '../lib/coreClient'
 import { selectLocalizedText, type Locale } from '../lib/i18n'
 import {
@@ -107,6 +109,10 @@ export function StackedFoldPanel({
     stateLimit: number
     transitionLimit: number
   }> | null>(null)
+  const [cyclePosePreview, setCyclePosePreview] =
+    useState<CurrentCyclePosePreviewResponseV1 | null>(null)
+  const [cyclePoseReading, setCyclePoseReading] = useState(false)
+  const [cyclePoseError, setCyclePoseError] = useState(false)
   const coordinator = useMemo<StackedFoldReadCoordinator>(() =>
     createStackedFoldReadCoordinator({
       transport: proposeCurrentStackedFoldRead,
@@ -129,6 +135,8 @@ export function StackedFoldPanel({
     coordinator.invalidate()
     progressRequestRef.current = null
     setPathProgress(null)
+    setCyclePosePreview(null)
+    setCyclePoseError(false)
     cancelToken(tokenRef.current)
     tokenRef.current = null
     setConfirmed(false)
@@ -344,6 +352,46 @@ export function StackedFoldPanel({
     }
   }
 
+  async function previewCurrentCyclePose() {
+    if (!authoredCycleSchedule || disabled || applying || cyclePoseReading) return
+    cancelToken(tokenRef.current)
+    tokenRef.current = null
+    setCyclePoseReading(true)
+    setCyclePoseError(false)
+    try {
+      const response = await proposeCurrentCyclePoseV1({
+        expectedProjectInstanceId: snapshot.project_instance_id,
+        expectedProjectId: snapshot.project_id,
+        expectedRevision: snapshot.revision,
+        cycleScheduleV1: authoredCycleSchedule,
+      })
+      tokenRef.current = response.transactionToken
+      setCyclePosePreview(response)
+    } catch {
+      setCyclePosePreview(null)
+      setCyclePoseError(true)
+    } finally {
+      setCyclePoseReading(false)
+    }
+  }
+
+  async function applyCurrentCyclePose() {
+    const token = cyclePosePreview?.transactionToken
+    if (!token || token !== tokenRef.current || disabled || applying) return
+    setApplying(true)
+    try {
+      await applyStackedFoldTransaction(token)
+      tokenRef.current = null
+      setCyclePosePreview(null)
+      const next = await refreshSnapshot()
+      onApplied(next)
+    } catch {
+      setCyclePoseError(true)
+    } finally {
+      setApplying(false)
+    }
+  }
+
   async function retryRefresh() {
     setApplying(true)
     try {
@@ -459,6 +507,70 @@ export function StackedFoldPanel({
           {view.kind === 'reading' ? t('証明中…', 'Proving…') : t('安全性を確認', 'Verify safety')}
         </button>
       </form>
+      {authoredCycleSchedule && (
+        <section aria-label={t('現在姿勢の循環折りプレビュー', 'Current-pose cycle preview')}>
+          <h3>{t('現在姿勢の循環折り', 'Current-pose cycle')}</h3>
+          <button
+            type="button"
+            disabled={disabled || applying || cyclePoseReading}
+            onClick={() => void previewCurrentCyclePose()}
+          >
+            {cyclePoseReading
+              ? t('経路を証明中…', 'Proving path…')
+              : t('現在姿勢から証明', 'Prove from current pose')}
+          </button>
+          {cyclePoseError && (
+            <p role="alert">
+              {t(
+                '循環経路を認証できませんでした。プロジェクトは変更されていません。',
+                'The cycle path could not be authenticated. The project was not changed.',
+              )}
+            </p>
+          )}
+          {cyclePosePreview && (
+            <div role="status" className="stacked-fold-proof">
+              <dl>
+                <div>
+                  <dt>{t('閉包区間数', 'Closure intervals')}</dt>
+                  <dd>{cyclePosePreview.closureLeafCount}</dd>
+                </div>
+                <div>
+                  <dt>{t('連続経路', 'Continuous path')}</dt>
+                  <dd>{t('認証済み', 'Certified')}</dd>
+                </div>
+                <div>
+                  <dt>{t('適用後リビジョン', 'Target revision')}</dt>
+                  <dd>{cyclePosePreview.targetRevision}</dd>
+                </div>
+              </dl>
+              <p>
+                {t(
+                  'この表示は読み取り専用です。下の適用操作まで作品は変更されません。',
+                  'This preview is read-only. The project is unchanged until you explicitly apply it.',
+                )}
+              </p>
+              <button
+                type="button"
+                disabled={disabled || applying}
+                onClick={() => void applyCurrentCyclePose()}
+              >
+                {t('認証済み循環折りを適用', 'Apply certified cycle fold')}
+              </button>
+              <button
+                type="button"
+                disabled={applying}
+                onClick={() => {
+                  cancelToken(cyclePosePreview.transactionToken)
+                  tokenRef.current = null
+                  setCyclePosePreview(null)
+                }}
+              >
+                {t('プレビューを取り消す', 'Cancel preview')}
+              </button>
+            </div>
+          )}
+        </section>
+      )}
       {view.kind === 'failed' && (
         <p role="alert">
           {view.reason === 'stale'

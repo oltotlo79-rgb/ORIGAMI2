@@ -51,13 +51,32 @@ import {
 } from './projectLayers.ts'
 import {
   isStackedFoldReadRequest,
+  isCycleScheduleRequestV1,
   normalizeLiveHingeRegistryV1,
   normalizeStackedFoldReadResponse,
   type LiveHingeRegistryRequestV1,
   type LiveHingeRegistryResponseV1,
+  type CycleScheduleRequestV1,
   type StackedFoldReadRequest,
   type StackedFoldReadResponse,
 } from './stackedFoldRead.ts'
+
+export type CurrentCyclePosePreviewRequestV1 = Readonly<{
+  expectedProjectInstanceId: string
+  expectedProjectId: string
+  expectedRevision: number
+  cycleScheduleV1: CycleScheduleRequestV1
+}>
+
+export type CurrentCyclePosePreviewResponseV1 = Readonly<{
+  version: 1
+  transactionToken: string
+  sourceRevision: number
+  targetRevision: number
+  closureLeafCount: number
+  continuousPathCertified: true
+  authorizesProjectMutation: false
+}>
 import {
   isMeshAnimationPreviewRequest,
   isMeshAnimationSaveRequest,
@@ -2284,6 +2303,37 @@ export function proposeCurrentStackedFoldRead(
       throw new StackedFoldReadNativeError('cycle_path_collision')
     }
     throw new StackedFoldReadNativeError('native_failure')
+  })
+}
+
+export function proposeCurrentCyclePoseV1(
+  request: CurrentCyclePosePreviewRequestV1,
+): Promise<CurrentCyclePosePreviewResponseV1> {
+  if (
+    !isCanonicalNonNilUuid(request.expectedProjectInstanceId) ||
+    !isCanonicalNonNilUuid(request.expectedProjectId) ||
+    !Number.isSafeInteger(request.expectedRevision) ||
+    request.expectedRevision < 0 ||
+    !isCycleScheduleRequestV1(request.cycleScheduleV1)
+  ) return Promise.reject(new Error('invalid current-cycle preview request'))
+  return invoke<unknown>('propose_current_cycle_pose_v1', { request }).then((payload) => {
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+      throw new Error('invalid current-cycle preview response')
+    }
+    const value = payload as Record<string, unknown>
+    if (
+      Object.keys(value).sort().join(',') !==
+        'authorizesProjectMutation,closureLeafCount,continuousPathCertified,sourceRevision,targetRevision,transactionToken,version' ||
+      value.version !== 1 ||
+      !isCanonicalNonNilUuid(value.transactionToken) ||
+      value.sourceRevision !== request.expectedRevision ||
+      value.targetRevision !== request.expectedRevision + 1 ||
+      !Number.isSafeInteger(value.closureLeafCount) ||
+      Number(value.closureLeafCount) <= 0 ||
+      value.continuousPathCertified !== true ||
+      value.authorizesProjectMutation !== false
+    ) throw new Error('invalid current-cycle preview response')
+    return value as CurrentCyclePosePreviewResponseV1
   })
 }
 

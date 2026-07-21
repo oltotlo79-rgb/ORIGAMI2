@@ -1729,6 +1729,73 @@ mod tests {
     }
 
     #[test]
+    fn theta_graph_partition_consumes_each_shared_path_hinge_once() {
+        let namespace = ProjectId::new();
+        let a = FaceId::derive_v5(namespace, b"theta-a");
+        let b = FaceId::derive_v5(namespace, b"theta-b");
+        let c = FaceId::derive_v5(namespace, b"theta-c");
+        let d = FaceId::derive_v5(namespace, b"theta-d");
+        let ab = EdgeId::derive_v5(namespace, b"theta-ab");
+        let bd = EdgeId::derive_v5(namespace, b"theta-bd");
+        let ac = EdgeId::derive_v5(namespace, b"theta-ac");
+        let cd = EdgeId::derive_v5(namespace, b"theta-cd");
+        let ad = EdgeId::derive_v5(namespace, b"theta-ad");
+        let baseline = topology(
+            &[a, b, c, d],
+            &[(ab, a, b), (bd, b, d), (ac, a, c), (cd, c, d), (ad, a, d)],
+        );
+        let reordered = topology(
+            &[d, c, b, a],
+            &[(ad, d, a), (cd, d, c), (ac, c, a), (bd, d, b), (ab, b, a)],
+        );
+        let expected =
+            MaterialHingeGraphAudit::prepare(&baseline, TreeKinematicsLimits::default()).unwrap();
+        let actual =
+            MaterialHingeGraphAudit::prepare(&reordered, TreeKinematicsLimits::default()).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.spanning_hinges().len(), 3);
+        assert_eq!(actual.closure_hinges().len(), 2);
+        let consumed = actual
+            .spanning_hinges()
+            .iter()
+            .chain(actual.closure_hinges())
+            .copied()
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            consumed.len(),
+            5,
+            "shared theta path must not be consumed twice"
+        );
+        assert_eq!(consumed, HashSet::from([ab, bd, ac, cd, ad]));
+
+        assert_eq!(
+            MaterialHingeGraphAudit::prepare(
+                &baseline,
+                TreeKinematicsLimits {
+                    max_hinges: 4,
+                    ..TreeKinematicsLimits::default()
+                },
+            ),
+            Err(KinematicsError::ResourceLimitExceeded)
+        );
+        let duplicate_shared = topology(
+            &[a, b, c, d],
+            &[
+                (ab, a, b),
+                (bd, b, d),
+                (ac, a, c),
+                (cd, c, d),
+                (ad, a, d),
+                (ad, a, d),
+            ],
+        );
+        assert_eq!(
+            MaterialHingeGraphAudit::prepare(&duplicate_shared, TreeKinematicsLimits::default()),
+            Err(KinematicsError::UnsupportedTopology)
+        );
+    }
+
+    #[test]
     fn disconnected_duplicate_and_bounded_inputs_fail_closed() {
         let namespace = ProjectId::new();
         let a = FaceId::derive_v5(namespace, b"a");

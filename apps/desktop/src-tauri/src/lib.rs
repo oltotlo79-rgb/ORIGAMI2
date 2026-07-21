@@ -11531,6 +11531,7 @@ mod tests {
 
     #[test]
     fn beginner_grid_progress_is_bounded_and_cancel_is_generation_scoped() {
+        let _serial = BEGINNER_GRID_TEST_LOCK.lock().unwrap();
         let generation = ProjectId::new();
         let work = Arc::new(BeginnerGridWork::default());
         work.enumerated.store(99, Ordering::Release);
@@ -11567,6 +11568,7 @@ mod tests {
 
     #[test]
     fn grid_profile_is_temporary_canonical_and_does_not_change_free_parameters() {
+        let _serial = BEGINNER_GRID_TEST_LOCK.lock().unwrap();
         let mut source = ori_domain::BeginnerDesignProfileV1::default();
         source.generation_constraints.target_category =
             Some(ori_domain::BeginnerTargetCategoryV1::Animal);
@@ -11688,6 +11690,7 @@ mod tests {
 
     #[test]
     fn complete_insect_grid_preserves_all_five_pair_dimensions_and_bindings() {
+        let _serial = BEGINNER_GRID_TEST_LOCK.lock().unwrap();
         let mut source = ori_domain::BeginnerDesignProfileV1::default();
         source.generation_constraints.target_category =
             Some(ori_domain::BeginnerTargetCategoryV1::Insect);
@@ -11869,6 +11872,7 @@ mod tests {
 
     #[test]
     fn generic_mixed_target_grid_apply_undo_redo_and_archive_round_trip() {
+        let _serial = BEGINNER_GRID_TEST_LOCK.lock().unwrap();
         let mut profile = ori_domain::BeginnerDesignProfileV1::default();
         profile.generation_constraints.target_category =
             Some(ori_domain::BeginnerTargetCategoryV1::Animal);
@@ -11954,6 +11958,7 @@ mod tests {
 
     #[test]
     fn complete_animal_grid_apply_replay_undo_redo_and_archive_round_trip() {
+        let _serial = BEGINNER_GRID_TEST_LOCK.lock().unwrap();
         let mut profile = ori_domain::BeginnerDesignProfileV1::default();
         profile.generation_constraints.target_category =
             Some(ori_domain::BeginnerTargetCategoryV1::Animal);
@@ -12085,6 +12090,7 @@ mod tests {
 
     #[test]
     fn complete_winged_animal_grid_apply_and_archive_round_trip() {
+        let _serial = BEGINNER_GRID_TEST_LOCK.lock().unwrap();
         let mut profile = ori_domain::BeginnerDesignProfileV1::default();
         profile.generation_constraints.target_category =
             Some(ori_domain::BeginnerTargetCategoryV1::Animal);
@@ -20534,3 +20540,4 @@ mod tests {
         assert_eq!(solver_vertex_position(&project, start), original);
     }
 }
+static BEGINNER_GRID_TEST_LOCK: Mutex<()> = Mutex::new(());

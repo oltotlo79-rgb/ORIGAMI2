@@ -168,6 +168,20 @@ jobs:
           path: ${{ runner.temp }}/project-lifecycle-browser
           if-no-files-found: error
           retention-days: 7
+      - name: Verify automatic edge intersection normalization in Chromium
+        id: automatic-intersection-browser
+        working-directory: apps/desktop
+        env:
+          ORIGAMI2_AUTOMATIC_INTERSECTION_ARTIFACT_DIRECTORY: ${{ runner.temp }}/automatic-intersection-browser
+        run: npm run test:automatic-intersection-browser
+      - name: Upload automatic intersection browser failure evidence
+        if: failure() && steps.automatic-intersection-browser.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: automatic-intersection-browser-failure
+          path: ${{ runner.temp }}/automatic-intersection-browser
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify cross-session recent projects privacy and invalidation in Chromium
         id: recent-projects-browser
         env:

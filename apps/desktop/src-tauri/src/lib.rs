@@ -1654,7 +1654,11 @@ fn bounded_folded_pose_landmark_score_v1(
         };
         let squared_error =
             directed(&landmarks, &target_landmarks).max(directed(&target_landmarks, &landmarks));
-        ((squared_error as f64).sqrt().round() as u64).saturating_mul(1_000_000) / major
+        squared_error
+            .isqrt()
+            .saturating_mul(1_000_000)
+            .checked_div(major)
+            .unwrap_or(1_000_000)
     };
     let hausdorff = bbox_hausdorff.max(landmark_hausdorff.min(1_000_000));
     let depth_error = normalized(candidate[2]).abs_diff(normalized(target[2]));

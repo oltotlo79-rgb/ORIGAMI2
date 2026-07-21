@@ -1243,6 +1243,30 @@ test('CI dry-run rehearses ephemeral signed candidate through runtime staging', 
   assert.doesNotMatch(rehearsal, /https?:\/\/(?!in-toto\.io|slsa\.dev|origami2\.invalid)/u)
 })
 
+test('SBOM completeness gate covers every locked npm and Cargo identity', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'origami2-sbom-completeness-'))
+  try {
+    const policy = buildDependencyPolicy()
+    const components = [
+      ...policy.thirdPartyNotices.map(({ package: name, version }) => ({ name, version })),
+      ...policy.cargoLicenseDatabase.packages.map(({ package: identity }) => {
+        const separator = identity.lastIndexOf('@')
+        return { name: identity.slice(0, separator), version: identity.slice(separator + 1) }
+      }),
+    ].map((component, index) => ({ ...component, 'bom-ref': `dependency-${index}` }))
+    const path = join(directory, 'complete.cdx.json')
+    writeFileSync(path, JSON.stringify({ bomFormat: 'CycloneDX', components }))
+    execFileSync(process.execPath, [join(root, '.github/scripts/verify_sbom_completeness.mjs'), path])
+    writeFileSync(path, JSON.stringify({ bomFormat: 'CycloneDX', components: components.slice(1) }))
+    assert.throws(
+      () => execFileSync(process.execPath, [join(root, '.github/scripts/verify_sbom_completeness.mjs'), path]),
+      /CycloneDX SBOM omits locked dependencies/u,
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('CycloneDX binding records exact locks commit version platform and toolchains', () => {
   const directory = mkdtempSync(join(tmpdir(), 'origami2-sbom-binding-'))
   try {

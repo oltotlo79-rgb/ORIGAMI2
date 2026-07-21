@@ -78,6 +78,11 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
       - run: npm test
+      - name: Audit production CSP permissions secrets and dependency licenses
+        run: |
+          npm run build
+          node ../../.github/scripts/verify_desktop_bundle_csp.mjs dist
+          node ../../.github/scripts/verify_production_security_contract.mjs dist
       - name: Test formal release workflow and local artifact contract
         run: node --test ../../.github/tests/formal-release.test.mjs
       - name: Generate and verify credential-free release dry-run artifacts

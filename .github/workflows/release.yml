@@ -448,6 +448,7 @@ jobs:
           RELEASE_TAG_CREATED_AT: ${{ needs.validate.outputs.tag_created_at }}
           CI_CHECK_EVIDENCE_JSON: ${{ needs.validate.outputs.ci_evidence }}
         run: |
+          node .github/scripts/verify_sbom_completeness.mjs "target/formal-release/ORIGAMI2-v${VERSION}-${PLATFORM}.cdx.json"
           RUSTC_VERSION="$(rustc --version)" \
           NODE_VERSION="$(node --version)" \
             node .github/scripts/bind_release_sbom.mjs \

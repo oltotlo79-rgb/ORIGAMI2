@@ -1305,6 +1305,12 @@ test('release chronology rejects missing offset future and replayed evidence at 
     assert.throws(() => run({ RELEASE_RUN_STARTED_AT: '2026-07-21T00:00:00.001Z' }), /run start time/u)
     assert.throws(() => run({ RELEASE_RUN_STARTED_AT: '2026-07-21T00:00:60Z' }), /run start time/u)
     assert.throws(() => run({ RELEASE_RUN_STARTED_AT: '2199-07-21T00:00:00Z' }), /run start time/u)
+    assert.throws(() => run({ EXECUTED_TEST_COUNT: '9007199254740992' }), /test count/u)
+    const duplicateKeyEvidence = JSON.stringify(ciEvidence()).replace(
+      '{',
+      '{"schema":"attacker-controlled",',
+    )
+    assert.throws(() => run({ CI_CHECK_EVIDENCE_JSON: duplicateKeyEvidence }), /CI check evidence is non-canonical/u)
     assert.throws(() => run({ SOURCE_COMMIT_AUTHORED_AT: '2026-07-18T00:00:00+00:00' }), /author time/u)
     assert.throws(() => run({ SOURCE_COMMIT_COMMITTED_AT: '2026-07-21T00:06:00Z' }), /chronology/u)
     assert.throws(() => run({ SOURCE_COMMIT_COMMITTED_AT: '2026-06-20T23:59:59Z' }), /chronology/u)
@@ -1322,6 +1328,11 @@ test('release chronology rejects missing offset future and replayed evidence at 
     const verifier = readFileSync(join(root, '.github/scripts/verify_formal_release.mjs'), 'utf8')
     assert.match(verifier, /Object\.keys\(releaseEvidence\)\.sort\(\)/u)
     assert.match(verifier, /canonicalEvidenceTime/u)
+    const binder = readFileSync(join(root, '.github/scripts/bind_release_sbom.mjs'), 'utf8')
+    assert.match(binder, /isSymbolicLink\(\)/u)
+    assert.match(binder, /file changed during binding/u)
+    assert.match(binder, /bytes changed during binding/u)
+    assert.match(binder, /writeSync\(sbomFd, output, 0, output\.length, 0\)/u)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

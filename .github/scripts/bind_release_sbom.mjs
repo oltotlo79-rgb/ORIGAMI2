@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { closeSync, fstatSync, ftruncateSync, fsyncSync, lstatSync, openSync, readFileSync, readSync, writeSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { buildDependencyPolicy } from './dependency_policy.mjs'
 
@@ -12,7 +12,17 @@ if (
   || path.startsWith('-')
 ) throw new Error('invalid SBOM path')
 const repositoryRoot = resolve(import.meta.dirname, '..', '..')
-const sbom = JSON.parse(readFileSync(path, 'utf8'))
+const pathStat = lstatSync(path)
+if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.size < 2 || pathStat.size > 16_777_216) throw new Error('SBOM path is not a bounded regular file')
+const sbomFd = openSync(path, 'r+')
+let sbomFdOpen = true
+process.on('exit', () => {
+  if (sbomFdOpen) closeSync(sbomFd)
+})
+const openedStat = fstatSync(sbomFd)
+if (!openedStat.isFile() || openedStat.dev !== pathStat.dev || openedStat.ino !== pathStat.ino) throw new Error('SBOM file identity changed before open')
+const sourceBytes = readFileSync(sbomFd)
+const sbom = JSON.parse(sourceBytes.toString('utf8'))
 const version = process.env.VERSION
 const platform = process.env.PLATFORM
 const commit = process.env.RELEASE_COMMIT
@@ -172,4 +182,14 @@ sbom.metadata = {
   component: { type: 'application', name: 'ORIGAMI2', version },
   properties: Object.entries(properties).map(([name, value]) => ({ name, value })),
 }
-writeFileSync(path, `${JSON.stringify(sbom)}\n`, 'utf8')
+const finalStat = fstatSync(sbomFd)
+if (finalStat.dev !== openedStat.dev || finalStat.ino !== openedStat.ino || finalStat.size !== openedStat.size) throw new Error('SBOM file changed during binding')
+const currentBytes = Buffer.alloc(sourceBytes.length)
+if (readSync(sbomFd, currentBytes, 0, currentBytes.length, 0) !== currentBytes.length || !currentBytes.equals(sourceBytes)) throw new Error('SBOM bytes changed during binding')
+const output = Buffer.from(`${JSON.stringify(sbom)}\n`)
+if (output.length > 16_777_216) throw new Error('bound SBOM exceeds size limit')
+ftruncateSync(sbomFd, 0)
+if (writeSync(sbomFd, output, 0, output.length, 0) !== output.length) throw new Error('bound SBOM write is partial')
+fsyncSync(sbomFd)
+closeSync(sbomFd)
+sbomFdOpen = false

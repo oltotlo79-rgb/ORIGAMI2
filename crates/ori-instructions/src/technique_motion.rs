@@ -524,6 +524,8 @@ pub fn compile_certified_reverse_fold_timeline_v1(
         fixed_face: Some(request.fixed_face),
         hinge_angles,
     };
+    let first_reference = path_certificate_reference_v1(first);
+    let second_reference = path_certificate_reference_v1(second);
     let step = |suffix: &str, description: &str, angles| InstructionStep {
         id: InstructionStepId::new(),
         title: format!("{title}：{suffix}"),
@@ -538,10 +540,18 @@ pub fn compile_certified_reverse_fold_timeline_v1(
             step("開始", "逆折りの開始姿勢です。", source),
             step(
                 "反転",
-                "第1の衝突・層順序証明区間の終端です。",
+                &format!(
+                    "第1の衝突・層順序証明区間の終端です。経路証明 SHA-256: {first_reference}"
+                ),
                 intermediate,
             ),
-            step("完了", "第2の衝突・層順序証明区間の終端です。", target),
+            step(
+                "完了",
+                &format!(
+                    "第2の衝突・層順序証明区間の終端です。経路証明 SHA-256: {second_reference}"
+                ),
+                target,
+            ),
         ],
     };
     validate_instruction_timeline(&timeline)
@@ -560,6 +570,14 @@ fn set_hinge_angle(angles: &mut Vec<InstructionHingeAngle>, edge: EdgeId, microd
         });
         angles.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
     }
+}
+
+fn path_certificate_reference_v1(certificate: &CertifiedPoseGraphPathCertificateV1) -> String {
+    certificate
+        .binding_fingerprint_v1()
+        .into_iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Compiles a validated named straight-line fold into a two-pose timeline.
@@ -670,12 +688,7 @@ pub fn compile_certified_book_fold_timeline_v1(
         fixed_face: Some(request.fixed_face),
         hinge_angles,
     };
-    let certificate_reference = request
-        .path_certificate
-        .binding_fingerprint_v1()
-        .into_iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let certificate_reference = path_certificate_reference_v1(request.path_certificate);
     let timeline = InstructionTimeline {
         steps: vec![
             InstructionStep {
@@ -1029,6 +1042,17 @@ mod tests {
             assert_eq!(timeline.steps.len(), 3);
             assert_eq!(timeline.steps[1].pose.hinge_angles, intermediate);
             assert_eq!(timeline.steps[2].pose.hinge_angles, target);
+            assert!(!timeline.steps[0].description.contains("経路証明 SHA-256:"));
+            assert!(
+                timeline.steps[1]
+                    .description
+                    .contains(&path_certificate_reference_v1(&first))
+            );
+            assert!(
+                timeline.steps[2]
+                    .description
+                    .contains(&path_certificate_reference_v1(&second))
+            );
         }
     }
 

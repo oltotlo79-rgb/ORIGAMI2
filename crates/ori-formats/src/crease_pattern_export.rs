@@ -324,7 +324,7 @@ fn extract_single_line_value<'a>(
 }
 
 fn decode_lower_hex(encoded: &[u8]) -> Result<Vec<u8>, CreasePatternExportError> {
-    if encoded.is_empty() || encoded.len() % 2 != 0 {
+    if encoded.is_empty() || !encoded.len().is_multiple_of(2) {
         return Err(CreasePatternExportError::MalformedGenerationProvenance);
     }
     encoded

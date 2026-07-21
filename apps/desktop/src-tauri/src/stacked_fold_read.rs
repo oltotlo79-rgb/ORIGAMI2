@@ -5606,19 +5606,17 @@ mod tests {
                     .steps
                     .is_empty()
             );
-            let Some((closing_mask, preview)) = (0..(1usize << moving.len()))
-                .find_map(|mask| {
-                    propose_current_cycle_pose_inner_with_layers(
-                        None,
-                        &app_state,
-                        Some(&layer_state),
-                        &transactions,
-                        request(instance, mask),
-                    )
-                    .ok()
-                    .map(|preview| (mask, preview))
-                })
-            else {
+            let Some((closing_mask, preview)) = (0..(1usize << moving.len())).find_map(|mask| {
+                propose_current_cycle_pose_inner_with_layers(
+                    None,
+                    &app_state,
+                    Some(&layer_state),
+                    &transactions,
+                    request(instance, mask),
+                )
+                .ok()
+                .map(|preview| (mask, preview))
+            }) else {
                 let project = super::super::lock_project(&app_state).unwrap();
                 assert_eq!(project.editor.revision(), revision);
                 assert!(project.editor.instruction_timeline().steps.is_empty());

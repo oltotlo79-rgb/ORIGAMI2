@@ -813,6 +813,30 @@ pub(crate) fn apply_beginner_part_assignments(
         leg_target.direction_milli = [0, 1000, 0];
         leg_target.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
         profile.generation_constraints.protrusions.push(leg_target);
+        let complete = ori_domain::animal_complete_bindings_v1(&profile.generation_constraints)
+            .ok_or_else(|| "part_assignment_complete_animal_binding_invalid".to_owned())?;
+        let ordered_ids = [
+            complete.horn_protrusion_id,
+            complete.tail_protrusion_id,
+            complete.ear_pair_protrusion_id,
+            complete.leg_protrusion_id,
+        ];
+        let canonical = ordered_ids
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| {
+                let mut target = profile
+                    .generation_constraints
+                    .protrusions
+                    .iter()
+                    .find(|target| target.id == id)
+                    .cloned()
+                    .ok_or_else(|| "part_assignment_complete_animal_binding_invalid".to_owned())?;
+                target.id = index as u16 + 1;
+                Ok(target)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        profile.generation_constraints.protrusions = canonical;
         if ori_domain::animal_complete_bindings_v1(&profile.generation_constraints).is_none() {
             return Err("part_assignment_complete_animal_binding_invalid".to_owned());
         }

@@ -80,7 +80,8 @@ test('AUT-101 admits only explicit symmetric animal and insect templates', () =>
   assert.match(app, /Complete composite animal base/)
   assert.match(app, /完全動物の四部位binding寸法/)
   assert.match(app, /Four complete-animal binding dimensions/)
-  assert.match(app, /\.sort\(\(left, right\) => left\.id - right\.id\)/)
+  assert.match(client, /completeAnimal && \(protrusions\.length !== 4/)
+  assert.match(client, /protrusions\[3\]\?\.count !== 4/)
   assert.match(app, /length \{length\} · thickness \{thickness\}/)
 })
 

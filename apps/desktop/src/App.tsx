@@ -8023,7 +8023,6 @@ function App() {
                             {plan.kind === 'composite_complete_animal_base' && (
                               <ol aria-label={text({ ja: '完全動物の四部位binding寸法', en: 'Four complete-animal binding dimensions' })}>
                                 {[...(nativeSnapshot.beginner_design_profile.generation_constraints.protrusions ?? [])]
-                                  .sort((left, right) => left.id - right.id)
                                   .map((target) => (
                                     <li key={target.id}>
                                       {formattedText({

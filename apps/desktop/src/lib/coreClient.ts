@@ -431,6 +431,18 @@ function normalizeBeginnerGenerationConstraints(
     return { ...item } as NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
   })
   if (protrusions.some((target) => target === null)) return null
+  const completeAnimal = record.target_category === 'animal'
+    && targetParts.some((part) => part?.kind === 'horn' && part.count === 1)
+    && targetParts.some((part) => part?.kind === 'tail' && part.count === 1)
+    && targetParts.some((part) => part?.kind === 'ear' && part.count === 2)
+    && targetParts.some((part) => part?.kind === 'leg' && part.count === 4)
+  if (completeAnimal && (protrusions.length !== 4
+    || protrusions[0]?.count !== 1 || protrusions[0]?.symmetry !== 'none'
+    || protrusions[0]?.direction_milli[0] !== 0 || protrusions[0]?.direction_milli[1] === 0
+    || protrusions[1]?.count !== 1 || protrusions[1]?.symmetry !== 'none'
+    || protrusions[1]?.direction_milli[0] === 0 || protrusions[1]?.direction_milli[1] !== 0
+    || protrusions[2]?.count !== 2 || protrusions[2]?.symmetry !== 'bilateral'
+    || protrusions[3]?.count !== 4 || protrusions[3]?.symmetry !== 'bilateral')) return null
   const bulgeIds = new Set<number>()
   const bulgeTargets = record.bulge_targets.map((value) => {
     const item = exactCoreDataRecord(value, [

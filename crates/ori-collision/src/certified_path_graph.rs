@@ -450,6 +450,11 @@ fn indeterminate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ori_domain::EdgeId;
+    use ori_kinematics::{
+        CanonicalHingeAngles, DyadicPoseGraphLimitsV1, HingeAngle,
+        generate_bounded_dyadic_pose_graph_v1,
+    };
 
     fn fingerprint(value: u8) -> PoseFingerprintV1 {
         [value; 32]
@@ -471,6 +476,101 @@ mod tests {
             fingerprint(11),
             fingerprint(12),
         )
+    }
+
+    #[test]
+    fn generated_two_hinge_grid_supports_certified_detours_and_fails_closed() {
+        let mut edges = [EdgeId::new(), EdgeId::new()];
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let angles = |values: [f64; 2]| {
+            CanonicalHingeAngles::new(
+                edges
+                    .into_iter()
+                    .zip(values)
+                    .map(|(edge, value)| HingeAngle::new(edge, value).unwrap())
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let generated = generate_bounded_dyadic_pose_graph_v1(
+            &angles([0.0, 0.0]),
+            &angles([90.0, 120.0]),
+            DyadicPoseGraphLimitsV1::default(),
+            || true,
+        )
+        .unwrap();
+        let states = (0..generated.states().len())
+            .map(|index| fingerprint(index as u8 + 1))
+            .collect::<Vec<_>>();
+        let candidates = generated
+            .transitions()
+            .iter()
+            .map(|edge| CertifiedPathTransitionCandidateV1 {
+                source: states[edge.source_state],
+                target: states[edge.target_state],
+                candidate_key: if edge.moving_hinge == edges[0] {
+                    fingerprint(1)
+                } else {
+                    fingerprint(2)
+                },
+            })
+            .collect::<Vec<_>>();
+        let source = states[generated.source_state()];
+        let target = states[generated.target_state()];
+        assert!(matches!(
+            search_certified_pose_graph_v1(&states, &candidates, source, target, |candidate| Some(
+                certify(candidate)
+            )),
+            CertifiedPathGraphSearchResultV1::Certified(_)
+        ));
+        let blocked = candidates[0];
+        assert!(matches!(
+            search_certified_pose_graph_v1(&states, &candidates, source, target, |candidate| {
+                (*candidate != blocked).then(|| certify(candidate))
+            }),
+            CertifiedPathGraphSearchResultV1::Certified(_)
+        ));
+        assert!(matches!(
+            search_certified_pose_graph_v1(&states, &candidates, source, target, |candidate| {
+                (candidate.source != source).then(|| certify(candidate))
+            }),
+            CertifiedPathGraphSearchResultV1::Indeterminate {
+                reason: CertifiedPathGraphIndeterminateReasonV1::NoCertifiedPath,
+                ..
+            }
+        ));
+        assert!(matches!(
+            search_certified_pose_graph_v1(&states, &candidates, source, target, |candidate| {
+                let mut evidence = certify(candidate);
+                evidence.source = fingerprint(250);
+                Some(evidence)
+            }),
+            CertifiedPathGraphSearchResultV1::Indeterminate {
+                reason: CertifiedPathGraphIndeterminateReasonV1::NoCertifiedPath,
+                ..
+            }
+        ));
+        let mut reordered = candidates.clone();
+        reordered.reverse();
+        let first =
+            search_certified_pose_graph_v1(&states, &candidates, source, target, |candidate| {
+                Some(certify(candidate))
+            });
+        let second =
+            search_certified_pose_graph_v1(&states, &reordered, source, target, |candidate| {
+                Some(certify(candidate))
+            });
+        let (
+            CertifiedPathGraphSearchResultV1::Certified(first),
+            CertifiedPathGraphSearchResultV1::Certified(second),
+        ) = (first, second)
+        else {
+            panic!("both canonical searches certify")
+        };
+        assert_eq!(
+            first.binding_fingerprint_v1(),
+            second.binding_fingerprint_v1()
+        );
     }
 
     #[test]

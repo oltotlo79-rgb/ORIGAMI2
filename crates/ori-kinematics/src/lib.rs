@@ -69,6 +69,7 @@
 
 #![forbid(unsafe_code)]
 
+mod dyadic_pose_graph;
 mod graph;
 mod interval;
 mod schedule;
@@ -78,6 +79,10 @@ mod tree;
 use ori_domain::{EdgeId, FaceId};
 use thiserror::Error;
 
+pub use dyadic_pose_graph::{
+    DyadicPoseGraphGenerationErrorV1, DyadicPoseGraphLimitsV1, DyadicPoseGraphTransitionV1,
+    GeneratedDyadicPoseGraphV1, generate_bounded_dyadic_pose_graph_v1,
+};
 pub use graph::{
     CandidateFaceTransform, CanonicalCycleBasisV1, ClosedMaterialHingeGraphPose,
     CycleBasisLimitsV1, DyadicIntervalClosureErrorV1, DyadicIntervalClosureLimitsV1,

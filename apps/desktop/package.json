@@ -19,6 +19,7 @@
     "test:render-performance-browser": "node scripts/render-performance-browser-e2e.mjs",
     "test:large-project-io-browser": "node scripts/large-project-io-browser-e2e.mjs",
     "test:locale-browser": "node scripts/locale-browser-e2e.mjs",
+    "test:runtime-updater-browser": "node scripts/runtime-updater-browser-e2e.mjs",
     "test:complete-animal-browser": "node scripts/complete-animal-browser-e2e.mjs",
     "test:complete-insect-browser": "node scripts/complete-insect-browser-e2e.mjs",
     "test:generic-target-browser": "node scripts/generic-target-browser-e2e.mjs",

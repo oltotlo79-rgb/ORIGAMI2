@@ -2,6 +2,8 @@
 
 use std::{
     collections::HashSet,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -50,6 +52,69 @@ pub(super) trait RecentProjectFilesystem {
 pub(super) trait RecentProjectStorage {
     fn read(&self) -> Result<Option<Vec<u8>>, ()>;
     fn replace_atomically(&mut self, bytes: &[u8]) -> Result<(), ()>;
+}
+
+pub(super) struct LocalRecentProjectFilesystem;
+
+impl RecentProjectFilesystem for LocalRecentProjectFilesystem {
+    fn probe_regular_no_follow(&self, path: &Path) -> Result<CanonicalFileIdentity, ()> {
+        let metadata = fs::symlink_metadata(path).map_err(|_| ())?;
+        if !metadata.is_file() || is_link_or_reparse(&metadata) || link_count(&metadata) != 1 {
+            return Err(());
+        }
+        canonical_identity(path, &metadata)
+    }
+}
+
+pub(super) struct FileRecentProjectStorage(PathBuf);
+
+impl FileRecentProjectStorage {
+    pub fn new(path: PathBuf) -> Self {
+        Self(path)
+    }
+}
+
+impl RecentProjectStorage for FileRecentProjectStorage {
+    fn read(&self) -> Result<Option<Vec<u8>>, ()> {
+        match fs::symlink_metadata(&self.0) {
+            Ok(metadata)
+                if metadata.is_file()
+                    && !is_link_or_reparse(&metadata)
+                    && link_count(&metadata) == 1
+                    && metadata.len() <= 64 * 1024 =>
+            {
+                fs::read(&self.0).map(Some).map_err(|_| ())
+            }
+            Ok(_) => Err(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(()),
+        }
+    }
+
+    fn replace_atomically(&mut self, bytes: &[u8]) -> Result<(), ()> {
+        if bytes.len() > 64 * 1024 {
+            return Err(());
+        }
+        let parent = self.0.parent().ok_or(())?;
+        fs::create_dir_all(parent).map_err(|_| ())?;
+        let staged = self.0.with_extension("recent.next");
+        let _ = fs::remove_file(&staged);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged)
+            .map_err(|_| ())?;
+        let result = (|| {
+            file.write_all(bytes).map_err(|_| ())?;
+            file.sync_all().map_err(|_| ())?;
+            publish_staged(&file, &staged, &self.0)
+        })();
+        drop(file);
+        if result.is_err() {
+            let _ = fs::remove_file(staged);
+        }
+        result
+    }
 }
 
 #[derive(Default)]
@@ -194,6 +259,67 @@ fn persist(entries: &[PersistedEntry], storage: &mut impl RecentProjectStorage) 
     })
     .map_err(|_| ())?;
     storage.replace_atomically(&bytes)
+}
+
+#[cfg(unix)]
+fn canonical_identity(_path: &Path, metadata: &fs::Metadata) -> Result<CanonicalFileIdentity, ()> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(CanonicalFileIdentity {
+        volume: metadata.dev(),
+        file: u128::from(metadata.ino()),
+    })
+}
+
+#[cfg(windows)]
+fn canonical_identity(path: &Path, _metadata: &fs::Metadata) -> Result<CanonicalFileIdentity, ()> {
+    use std::{mem::MaybeUninit, os::windows::io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    let file = fs::File::open(path).map_err(|_| ())?;
+    let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) };
+    if ok == 0 {
+        return Err(());
+    }
+    let info = unsafe { info.assume_init() };
+    if info.nNumberOfLinks != 1 {
+        return Err(());
+    }
+    Ok(CanonicalFileIdentity {
+        volume: u64::from(info.dwVolumeSerialNumber),
+        file: u128::from((u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow)),
+    })
+}
+
+#[cfg(unix)]
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+#[cfg(windows)]
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
+}
+
+#[cfg(unix)]
+fn link_count(metadata: &fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    metadata.nlink()
+}
+#[cfg(windows)]
+fn link_count(metadata: &fs::Metadata) -> u64 {
+    let _ = metadata;
+    1
+}
+
+#[cfg(unix)]
+fn publish_staged(_file: &fs::File, staged: &Path, destination: &Path) -> Result<(), ()> {
+    fs::rename(staged, destination).map_err(|_| ())
+}
+#[cfg(windows)]
+fn publish_staged(file: &fs::File, _staged: &Path, destination: &Path) -> Result<(), ()> {
+    super::rename_windows_staged_file(file, destination).map_err(|_| ())
 }
 
 #[cfg(test)]

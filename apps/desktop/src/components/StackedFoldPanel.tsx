@@ -4,11 +4,13 @@ import {
   cancelCurrentStackedFoldReadV1,
   cancelStackedFoldTransactionPreview,
   listenStackedFoldReadProgressV1,
+  listenCurrentCyclePoseProgressV1,
   proposeCurrentCyclePoseV1,
   proposeCurrentStackedFoldRead,
   readLiveHingeRegistryV1,
   type ProjectSnapshot,
   type CurrentCyclePosePreviewResponseV1,
+  type CurrentCyclePoseProgressV1,
 } from '../lib/coreClient'
 import { selectLocalizedText, type Locale } from '../lib/i18n'
 import {
@@ -115,6 +117,8 @@ export function StackedFoldPanel({
     useState<CurrentCyclePosePreviewResponseV1 | null>(null)
   const [cyclePoseReading, setCyclePoseReading] = useState(false)
   const [cyclePoseError, setCyclePoseError] = useState(false)
+  const [cyclePoseProgress, setCyclePoseProgress] =
+    useState<CurrentCyclePoseProgressV1 | null>(null)
   const coordinator = useMemo<StackedFoldReadCoordinator>(() =>
     createStackedFoldReadCoordinator({
       transport: proposeCurrentStackedFoldRead,
@@ -145,6 +149,7 @@ export function StackedFoldPanel({
     setCyclePosePreview(null)
     setCyclePoseReading(false)
     setCyclePoseError(false)
+    setCyclePoseProgress(null)
     cancelToken(tokenRef.current)
     tokenRef.current = null
     setConfirmed(false)
@@ -182,6 +187,22 @@ export function StackedFoldPanel({
         ) return previous
         return progress
       })
+    }).then((value) => {
+      if (disposed) value()
+      else unlisten = value
+    }).catch(() => undefined)
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | null = null
+    void listenCurrentCyclePoseProgressV1((progress) => {
+      if (progress.requestId !== progressRequestRef.current) return
+      setCyclePoseProgress(progress)
     }).then((value) => {
       if (disposed) value()
       else unlisten = value
@@ -369,6 +390,7 @@ export function StackedFoldPanel({
     setCyclePoseReading(true)
     cyclePoseActiveRef.current = true
     setCyclePoseError(false)
+    setCyclePoseProgress(null)
     const progressRequestId =
       `current-cycle:${snapshot.project_instance_id}:${snapshot.revision}:${sequence}`
     progressRequestRef.current = progressRequestId
@@ -555,6 +577,35 @@ export function StackedFoldPanel({
                 `循環経路の状態 ${pathProgress.exploredStateCount}/${pathProgress.stateLimit}、遷移 ${pathProgress.evaluatedTransitionCount}/${pathProgress.transitionLimit}`,
                 `Cycle states ${pathProgress.exploredStateCount}/${pathProgress.stateLimit}; transitions ${pathProgress.evaluatedTransitionCount}/${pathProgress.transitionLimit}`,
               )}
+            </p>
+          )}
+          {cyclePoseReading && (
+            <button
+              type="button"
+              onClick={() => {
+                const cancelledRequestId = progressRequestRef.current ?? 'current-cycle-cancelled'
+                cyclePoseSequenceRef.current += 1
+                cyclePoseActiveRef.current = false
+                progressRequestRef.current = null
+                setPathProgress(null)
+                setCyclePoseReading(false)
+                setCyclePoseProgress({
+                  version: 1,
+                  requestId: cancelledRequestId,
+                  status: 'cancelled',
+                  completedWork: 2,
+                  totalWork: 2,
+                  authorizesProjectMutation: false,
+                })
+                void cancelCurrentStackedFoldReadV1().catch(() => undefined)
+              }}
+            >
+              {t('循環経路の証明を中止', 'Cancel cycle proof')}
+            </button>
+          )}
+          {cyclePoseProgress?.status === 'cancelled' && (
+            <p role="status">
+              {t('循環経路の証明を中止しました。再試行できます。', 'Cycle proof cancelled. You can retry.')}
             </p>
           )}
           {cyclePoseError && (

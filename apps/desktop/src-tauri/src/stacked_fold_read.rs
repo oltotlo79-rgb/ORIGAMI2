@@ -67,6 +67,7 @@ const MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1: usize = 9;
 const MAX_STACKED_FOLD_ATOMIC_PATH_TRANSITIONS_V1: usize = 31;
 static STACKED_FOLD_READ_GENERATION: AtomicU64 = AtomicU64::new(0);
 const STACKED_FOLD_READ_PROGRESS_EVENT_V1: &str = "stacked-fold-read-progress-v1";
+const CURRENT_CYCLE_POSE_PROGRESS_EVENT_V1: &str = "current-cycle-pose-progress-v1";
 
 #[tauri::command]
 pub(super) fn cancel_current_stacked_fold_read_v1() -> Result<(), String> {
@@ -140,6 +141,17 @@ struct StackedFoldReadProgressDtoV1 {
     evaluated_transition_count: usize,
     state_limit: usize,
     transition_limit: usize,
+    authorizes_project_mutation: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CurrentCyclePoseProgressDtoV1 {
+    version: u32,
+    request_id: String,
+    status: &'static str,
+    completed_work: usize,
+    total_work: usize,
     authorizes_project_mutation: bool,
 }
 
@@ -245,7 +257,21 @@ pub(super) fn propose_current_cycle_pose_v1(
     transaction_state: State<'_, super::stacked_fold_transaction::StackedFoldTransactionState>,
     request: CurrentCyclePosePreviewRequestV1,
 ) -> Result<CurrentCyclePosePreviewResponseV1, String> {
-    propose_current_cycle_pose_inner(Some(&app), &app_state, &transaction_state, request)
+    let request_id = request.progress_request_id.clone();
+    let result =
+        propose_current_cycle_pose_inner(Some(&app), &app_state, &transaction_state, request);
+    if let Some(request_id) = request_id.as_deref() {
+        emit_current_cycle_terminal_v1(
+            &app,
+            request_id,
+            match &result {
+                Ok(_) => "certified",
+                Err(error) if error == CANCELLED_MESSAGE => "cancelled",
+                Err(_) => "failed",
+            },
+        );
+    }
+    result
 }
 
 fn propose_current_cycle_pose_inner(
@@ -258,6 +284,7 @@ fn propose_current_cycle_pose_inner(
     let progress_request_id =
         validate_progress_request_id_v1(request.progress_request_id.as_deref())?;
     emit_current_cycle_progress_v1(app, progress_request_id, 0, 0);
+    emit_current_cycle_status_v1(app, progress_request_id, "running", 0);
     let project = lock_project(&app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
     if project.instance_id != request.expected_project_instance_id
         || project.project_id != request.expected_project_id
@@ -359,6 +386,32 @@ fn propose_current_cycle_pose_inner(
         continuous_path_certified: true,
         authorizes_project_mutation: false,
     })
+}
+
+fn emit_current_cycle_status_v1(
+    app: Option<&AppHandle>,
+    request_id: Option<&str>,
+    status: &'static str,
+    completed_work: usize,
+) {
+    let (Some(app), Some(request_id)) = (app, request_id) else {
+        return;
+    };
+    let _ = app.emit(
+        CURRENT_CYCLE_POSE_PROGRESS_EVENT_V1,
+        CurrentCyclePoseProgressDtoV1 {
+            version: 1,
+            request_id: request_id.to_owned(),
+            status,
+            completed_work,
+            total_work: 2,
+            authorizes_project_mutation: false,
+        },
+    );
+}
+
+fn emit_current_cycle_terminal_v1(app: &AppHandle, request_id: &str, status: &'static str) {
+    emit_current_cycle_status_v1(Some(app), Some(request_id), status, 2);
 }
 
 fn begin_stacked_fold_read_generation_v1() -> Result<u64, String> {

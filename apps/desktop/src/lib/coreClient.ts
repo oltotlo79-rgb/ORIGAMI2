@@ -78,6 +78,15 @@ export type CurrentCyclePosePreviewResponseV1 = Readonly<{
   continuousPathCertified: true
   authorizesProjectMutation: false
 }>
+
+export type CurrentCyclePoseProgressV1 = Readonly<{
+  version: 1
+  requestId: string
+  status: 'running' | 'certified' | 'cancelled' | 'failed'
+  completedWork: number
+  totalWork: 2
+  authorizesProjectMutation: false
+}>
 import {
   isMeshAnimationPreviewRequest,
   isMeshAnimationSaveRequest,
@@ -2342,6 +2351,27 @@ export function proposeCurrentCyclePoseV1(
       value.authorizesProjectMutation !== false
     ) throw new Error('invalid current-cycle preview response')
     return value as CurrentCyclePosePreviewResponseV1
+  })
+}
+
+export function listenCurrentCyclePoseProgressV1(
+  onProgress: (progress: CurrentCyclePoseProgressV1) => void,
+): Promise<UnlistenFn> {
+  return listen<unknown>('current-cycle-pose-progress-v1', ({ payload }) => {
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return
+    const value = payload as Record<string, unknown>
+    if (
+      Object.keys(value).sort().join(',') !==
+        'authorizesProjectMutation,completedWork,requestId,status,totalWork,version' ||
+      value.version !== 1 ||
+      typeof value.requestId !== 'string' ||
+      value.requestId.length === 0 || value.requestId.length > 128 ||
+      !['running', 'certified', 'cancelled', 'failed'].includes(String(value.status)) ||
+      !Number.isSafeInteger(value.completedWork) || Number(value.completedWork) < 0 ||
+      Number(value.completedWork) > 2 || value.totalWork !== 2 ||
+      value.authorizesProjectMutation !== false
+    ) return
+    onProgress(value as CurrentCyclePoseProgressV1)
   })
 }
 

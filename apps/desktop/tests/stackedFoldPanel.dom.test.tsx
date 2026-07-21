@@ -11,6 +11,7 @@ const transport = vi.hoisted(() => ({
   cancelRead: vi.fn(),
   registry: vi.fn(),
   progress: null as null | ((value: any) => void),
+  cycleProgress: null as null | ((value: any) => void),
 }))
 
 vi.mock('../src/lib/coreClient', async (importOriginal) => ({
@@ -25,6 +26,12 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => ({
     transport.progress = callback
     return () => {
       transport.progress = null
+    }
+  }),
+  listenCurrentCyclePoseProgressV1: vi.fn(async (callback) => {
+    transport.cycleProgress = callback
+    return () => {
+      transport.cycleProgress = null
     }
   }),
 }))
@@ -157,6 +164,7 @@ afterEach(() => {
 
 beforeEach(() => {
   transport.progress = null
+  transport.cycleProgress = null
   transport.cancelRead.mockResolvedValue(undefined)
   transport.registry.mockResolvedValue({
     version: 1,
@@ -672,5 +680,41 @@ describe('StackedFoldPanel', () => {
     expect(screen.queryByText('99')).toBeNull()
     expect(screen.getByRole('region', { name: 'Current-pose cycle preview' }).textContent)
       .toContain('Closure intervals2')
+  })
+
+  it('announces cycle cancellation and allows an immediate retry', async () => {
+    transport.cyclePreview.mockReturnValueOnce(new Promise(() => undefined)).mockResolvedValueOnce({
+      version: 1, transactionToken: token, sourceRevision: 3, targetRevision: 4,
+      closureLeafCount: 1, continuousPathCertified: true, authorizesProjectMutation: false,
+    })
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    const schedule = {
+      version: 1,
+      entries: [{
+        edge: token,
+        uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }],
+        numeratorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+        denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }],
+        requestedAngleDegrees: 90,
+      }],
+    }
+    fireEvent.change(screen.getByLabelText('Cycle path definition (JSON, cyclic patterns only)'), {
+      target: { value: JSON.stringify(schedule) },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel cycle proof' }))
+    expect(await screen.findByText('Cycle proof cancelled. You can retry.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
+    expect(await screen.findByText('Closure intervals')).toBeTruthy()
+    expect(transport.cancelRead).toHaveBeenCalled()
   })
 })

@@ -3624,7 +3624,22 @@ fn apply_grid_plan_document(
     });
     let paper = project.editor.paper().clone();
     let project_layers = project.editor.project_layers().clone();
-    let beginner_design_profile = project.editor.beginner_design_profile().clone();
+    let mut beginner_design_profile = project.editor.beginner_design_profile().clone();
+    let source_asset_fingerprint = beginner_design_profile
+        .generation_constraints
+        .target_asset
+        .map_or_else(|| "none".to_owned(), |asset| format!("{asset:?}"));
+    beginner_design_profile.generation_provenance =
+        Some(ori_domain::BeginnerGenerationProvenanceV1 {
+            schema_version: 1,
+            topology_authority_sha256: topology_witness.topology_authority_hash,
+            confidence_score: ori_domain::beginner_target_approximation_score_v1(
+                &beginner_design_profile.generation_constraints,
+            ),
+            confidence_reasons: vec!["native_topology_witness".to_owned()],
+            explicit_override: false,
+            source_asset_fingerprint,
+        });
     execute_command(
         project,
         expected_project_instance_id,
@@ -12367,6 +12382,13 @@ mod tests {
         )
         .unwrap();
         assert!(
+            project
+                .editor
+                .beginner_design_profile()
+                .generation_provenance
+                .is_some()
+        );
+        assert!(
             apply_grid_plan_document(
                 &mut project,
                 instance_id,
@@ -12377,7 +12399,21 @@ mod tests {
             .is_err()
         );
         let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
+        assert!(
+            project
+                .editor
+                .beginner_design_profile()
+                .generation_provenance
+                .is_none()
+        );
         execute_redo(&mut project, project_id, undone.revision).unwrap();
+        assert!(
+            project
+                .editor
+                .beginner_design_profile()
+                .generation_provenance
+                .is_some()
+        );
         let mut saved = project.document();
         saved.thumbnail_svg = None;
         let bytes = write_project_ori2(&saved).unwrap();

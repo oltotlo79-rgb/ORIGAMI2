@@ -1155,12 +1155,7 @@ pub fn generate_beginner_plans_v1(
                 let endpoints = if asymmetric {
                     let _landmarks = bounded_generic_composite_endpoints(constraints)
                         .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
-                    vec![
-                        (1.0, 0.5),
-                        (0.25, 1.0),
-                        (0.25, 0.0),
-                        (0.75, 0.0),
-                    ]
+                    vec![(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)]
                 } else {
                     parameterized_symmetric_endpoints(constraints, required_count, vertical)
                         .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?
@@ -2012,10 +2007,18 @@ fn symmetric_template(
         }
         edges.push(Edge {
             id: EdgeId::derive_v5(namespace, format!("{prefix}-e-{index}").as_bytes()),
-            start: center_id,
-            end: id,
+            start: if plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase {
+                id
+            } else {
+                center_id
+            },
+            end: if plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase {
+                center_id
+            } else {
+                id
+            },
             kind: if plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
-                && index == 0
+                && index == 3
             {
                 EdgeKind::Mountain
             } else {

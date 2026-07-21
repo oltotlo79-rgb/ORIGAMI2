@@ -207,6 +207,9 @@ impl Default for Ori2Limits {
 pub struct Ori2ProjectArchive {
     pub document: ProjectDocument,
     pub editor_history: Option<EditorHistoryV1>,
+    /// Ephemeral solver evidence validated with the archive but deliberately
+    /// excluded from the current canonical `.ori2` byte representation.
+    pub layer_evidence: Option<LayerEvidenceArchiveV1>,
 }
 
 impl Ori2ProjectArchive {
@@ -215,6 +218,7 @@ impl Ori2ProjectArchive {
         Self {
             document,
             editor_history: None,
+            layer_evidence: None,
         }
     }
 }
@@ -306,6 +310,10 @@ pub fn write_project_archive_ori2_with_limits(
     project: &Ori2ProjectArchive,
     limits: Ori2Limits,
 ) -> Result<Vec<u8>, FormatError> {
+    if let Some(layer_evidence) = &project.layer_evidence {
+        validate_layer_evidence_archive_v1(layer_evidence)
+            .map_err(FormatError::InvalidLayerEvidence)?;
+    }
     if let Some(history) = &project.editor_history {
         if history.project_id() != project.document.project_id {
             return Err(FormatError::EditorHistoryProjectIdMismatch);
@@ -630,6 +638,7 @@ pub fn read_project_archive_ori2_with_limits(
     Ok(Ori2ProjectArchive {
         document: project,
         editor_history,
+        layer_evidence: None,
     })
 }
 
@@ -1297,6 +1306,7 @@ mod tests {
     fn history_archive_fixture() -> (ProjectDocument, Vec<u8>) {
         let document = sample_document();
         let project = Ori2ProjectArchive {
+            layer_evidence: None,
             editor_history: Some(empty_editor_history(document.project_id, 17)),
             document: document.clone(),
         };
@@ -1446,6 +1456,7 @@ mod tests {
         let document = sample_document();
         let legacy = write_project_ori2(&document).expect("write legacy document-only archive");
         let project = Ori2ProjectArchive {
+            layer_evidence: None,
             document: document.clone(),
             editor_history: Some(empty_editor_history(
                 document.project_id,
@@ -1464,9 +1475,50 @@ mod tests {
             .expect("read legacy-compatible archive");
         assert_eq!(restored.document, document);
         assert_eq!(restored.editor_history, None);
+        assert_eq!(restored.layer_evidence, None);
         let archive =
             ZipArchive::new(Cursor::new(&with_default_history)).expect("open generated ZIP");
         assert_eq!(archive.len(), DOCUMENT_ONLY_ENTRY_COUNT);
+    }
+
+    #[test]
+    fn valid_in_memory_layer_evidence_preserves_canonical_archive_bytes() {
+        let document = sample_document();
+        let legacy =
+            write_project_archive_ori2(&Ori2ProjectArchive::document_only(document.clone()))
+                .expect("write document-only archive");
+        let project = Ori2ProjectArchive {
+            document: document.clone(),
+            editor_history: None,
+            layer_evidence: Some(layer_evidence_fixture()),
+        };
+
+        let with_evidence =
+            write_project_archive_ori2(&project).expect("validate in-memory layer evidence");
+        assert_eq!(with_evidence, legacy);
+
+        let restored = read_project_archive_ori2(&with_evidence).expect("read canonical archive");
+        assert_eq!(restored.document, document);
+        assert_eq!(restored.editor_history, None);
+        assert_eq!(restored.layer_evidence, None);
+    }
+
+    #[test]
+    fn writer_rejects_invalid_in_memory_layer_evidence() {
+        let mut evidence = layer_evidence_fixture();
+        evidence.fold_model_fingerprint_sha256 = "not-a-hash".into();
+        let project = Ori2ProjectArchive {
+            document: sample_document(),
+            editor_history: None,
+            layer_evidence: Some(evidence),
+        };
+
+        assert!(matches!(
+            write_project_archive_ori2(&project),
+            Err(FormatError::InvalidLayerEvidence(
+                LayerEvidenceArchiveErrorV1::InvalidEvidence
+            ))
+        ));
     }
 
     #[test]
@@ -1475,6 +1527,7 @@ mod tests {
         let history = empty_editor_history(document.project_id, 17);
         assert!(!history.is_default_empty());
         let project = Ori2ProjectArchive {
+            layer_evidence: None,
             document: document.clone(),
             editor_history: Some(history.clone()),
         };
@@ -1554,6 +1607,7 @@ mod tests {
             .export_history_v1(document.project_id)
             .expect("export editor history");
         let bytes = write_project_archive_ori2(&Ori2ProjectArchive {
+            layer_evidence: None,
             document: document.clone(),
             editor_history: Some(history.clone()),
         })
@@ -1593,6 +1647,7 @@ mod tests {
         let document = sample_document();
         let history = empty_editor_history(ori_domain::ProjectId::new(), 17);
         let project = Ori2ProjectArchive {
+            layer_evidence: None,
             document,
             editor_history: Some(history),
         };
@@ -2936,6 +2991,7 @@ mod tests {
             .expect("persist layer presentation");
         document.layers = editor.project_layers().clone();
         let archive = Ori2ProjectArchive {
+            layer_evidence: None,
             editor_history: Some(
                 editor
                     .export_history_v1(document.project_id)

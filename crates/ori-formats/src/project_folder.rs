@@ -559,6 +559,7 @@ pub fn read_project_folder_v1_with_limits(
     Ok(ProjectFolderArtifactV1 {
         entries: entries.to_vec(),
         archive: Ori2ProjectArchive {
+            layer_evidence: None,
             document: project,
             editor_history,
         },
@@ -1396,6 +1397,7 @@ mod tests {
         let document = sample_document();
         let history = non_default_empty_history(document.project_id);
         let archive = Ori2ProjectArchive {
+            layer_evidence: None,
             document,
             editor_history: Some(history),
         };
@@ -1428,6 +1430,7 @@ mod tests {
         }))
         .expect("valid default history");
         let written = write_project_folder_v1(&Ori2ProjectArchive {
+            layer_evidence: None,
             editor_history: Some(default_history),
             document,
         })
@@ -1712,6 +1715,7 @@ mod tests {
 
         let document = sample_document();
         let mut history_entries = write_project_folder_v1(&Ori2ProjectArchive {
+            layer_evidence: None,
             editor_history: Some(non_default_empty_history(document.project_id)),
             document,
         })
@@ -1855,6 +1859,7 @@ mod tests {
     fn required_roles_reject_missing_duplicate_and_reordered_values() {
         let document = sample_document();
         let archive = Ori2ProjectArchive {
+            layer_evidence: None,
             editor_history: Some(non_default_empty_history(document.project_id)),
             document,
         };
@@ -1893,6 +1898,7 @@ mod tests {
             crate::RectangularPaperCreationExpressions::new("200", "200", 200.0, 200.0),
         );
         let archive = Ori2ProjectArchive {
+            layer_evidence: None,
             editor_history: Some(non_default_empty_history(document.project_id)),
             document,
         };
@@ -1969,6 +1975,7 @@ mod tests {
     fn every_payload_role_has_independent_size_and_hash_authentication() {
         let document = sample_document();
         let archive = Ori2ProjectArchive {
+            layer_evidence: None,
             editor_history: Some(non_default_empty_history(document.project_id)),
             document,
         };
@@ -2134,6 +2141,7 @@ mod tests {
     fn history_cannot_be_rebound_by_updating_only_its_descriptor_hash() {
         let document = sample_document();
         let archive = Ori2ProjectArchive {
+            layer_evidence: None,
             editor_history: Some(non_default_empty_history(document.project_id)),
             document,
         };
@@ -2167,6 +2175,7 @@ mod tests {
     fn history_project_id_cannot_be_rebound_even_with_updated_descriptor_hash() {
         let document = sample_document();
         let archive = Ori2ProjectArchive {
+            layer_evidence: None,
             editor_history: Some(non_default_empty_history(document.project_id)),
             document,
         };
@@ -2201,6 +2210,7 @@ mod tests {
     fn exact_default_empty_history_is_rejected_as_noncanonical() {
         let document = sample_document();
         let archive = Ori2ProjectArchive {
+            layer_evidence: None,
             editor_history: Some(non_default_empty_history(document.project_id)),
             document,
         };
@@ -2234,6 +2244,7 @@ mod tests {
     fn read_write_read_is_byte_stable() {
         let document = sample_document();
         let archive = Ori2ProjectArchive {
+            layer_evidence: None,
             editor_history: Some(non_default_empty_history(document.project_id)),
             document,
         };
@@ -2280,6 +2291,7 @@ mod tests {
     fn every_payload_role_caller_limit_accepts_exact_and_rejects_one_short() {
         let document = sample_document();
         let archive = Ori2ProjectArchive {
+            layer_evidence: None,
             editor_history: Some(non_default_empty_history(document.project_id)),
             document,
         };
@@ -2485,6 +2497,7 @@ mod tests {
     fn entry_count_caller_limit_accepts_exact_and_rejects_one_short() {
         let document = sample_document();
         let written = write_project_folder_v1(&Ori2ProjectArchive {
+            layer_evidence: None,
             editor_history: Some(non_default_empty_history(document.project_id)),
             document,
         })

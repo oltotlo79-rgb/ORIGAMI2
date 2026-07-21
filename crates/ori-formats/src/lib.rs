@@ -400,6 +400,8 @@ pub enum FormatError {
     InvalidEditorHistoryJson(#[source] serde_json::Error),
     #[error(".ori2 editor-history is not a valid history for the current project: {0}")]
     InvalidEditorHistory(#[source] ori_core::EditorHistoryErrorV1),
+    #[error(".ori2 in-memory layer evidence is invalid: {0}")]
+    InvalidLayerEvidence(#[source] LayerEvidenceArchiveErrorV1),
     #[error(".ori2 ZIP data is invalid: {0}")]
     InvalidZip(#[from] zip::result::ZipError),
     #[error(".ori2 ZIP end-of-central-directory record is missing or invalid")]

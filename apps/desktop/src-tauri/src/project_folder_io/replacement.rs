@@ -2061,6 +2061,7 @@ mod tests {
 
     fn artifacts() -> (ProjectFolderArtifactV1, ProjectFolderArtifactV1) {
         let old_archive = Ori2ProjectArchive {
+            layer_evidence: None,
             document: ProjectDocument::new("Before", CreasePattern::empty()),
             editor_history: None,
         };

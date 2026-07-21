@@ -1198,6 +1198,7 @@ mod windows_large_archive_budget_tests {
             .export_history_v1(document.project_id)
             .expect("export bounded history metadata");
         let archive = Ori2ProjectArchive {
+            layer_evidence: None,
             document,
             editor_history: Some(history),
         };

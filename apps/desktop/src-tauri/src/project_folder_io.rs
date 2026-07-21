@@ -1143,6 +1143,7 @@ mod tests {
             .expect("history fixture")
         });
         Ori2ProjectArchive {
+            layer_evidence: None,
             document,
             editor_history,
         }

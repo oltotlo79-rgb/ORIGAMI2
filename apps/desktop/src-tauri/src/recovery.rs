@@ -1856,6 +1856,7 @@ mod tests {
     fn project_with_reachable_invalid_instruction_pose() -> Ori2ProjectArchive {
         let source = state_with_reachable_invalid_instruction_pose();
         Ori2ProjectArchive {
+            layer_evidence: None,
             document: source.document(),
             editor_history: Some(
                 source

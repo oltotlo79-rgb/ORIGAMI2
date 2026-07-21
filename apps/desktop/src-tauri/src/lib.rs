@@ -745,6 +745,7 @@ impl ProjectState {
         )
         .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?;
         Ok(Ori2ProjectArchive {
+            layer_evidence: None,
             document,
             editor_history: (!history.is_default_empty()).then_some(history),
         })
@@ -20605,6 +20606,7 @@ mod tests {
         let source =
             project_with_reachable_invalid_instruction_pose("External unsafe history endpoint");
         let external_archive = Ori2ProjectArchive {
+            layer_evidence: None,
             document: source.document(),
             editor_history: Some(
                 source

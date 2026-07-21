@@ -1,6 +1,9 @@
 import { createRoot } from 'react-dom/client'
+import { useState } from 'react'
 import { InstructionTimelinePanel } from '../src/components/InstructionTimelinePanel'
-import { beginInstructionExportGeneration, cancelInstructionExport, previewInstructionExport, type ProjectSnapshot } from '../src/lib/coreClient'
+import { InstructionExportDialog } from '../src/components/InstructionExportDialog'
+import { beginInstructionExportGeneration, cancelInstructionExport, getInstructionExportProgress, previewInstructionExport, saveInstructionExport, type ProjectSnapshot } from '../src/lib/coreClient'
+import type { InstructionExportPreview } from '../src/lib/instructionExport'
 
 const model = 'ab'.repeat(32)
 const face = '11111111-1111-1111-1111-111111111111'
@@ -19,6 +22,7 @@ const snapshot = { project_instance_id: 'instance-miura', project_id: 'project-m
 let exports = 0
 const ipc: string[] = []
 let format: 'pdf' | 'svg_zip' = 'pdf'; let scenario: 'valid' | 'stale' | 'tamper' = 'valid'
+const preview: InstructionExportPreview = { export_id: 'miura-export', expected_project_id: snapshot.project_id, expected_revision: snapshot.revision, format: 'pdf', profile: 'instruction_export_v1', projection_profile: 'orthographic_isometric_v1', format_summary: 'PDF 1.7・固定アイソメトリック投影・A4縦', suggested_file_name: 'Miura-折り図.pdf', byte_count: 4096, step_count: 3, page_count: 3, caution_count: 0, warnings: [{ category: 'discrete_step_endpoints_only', message_ja: '構造化証明は離散姿勢の区間を再検証済みです。' }] }
 Object.assign(window, { __TAURI_INTERNALS__: { invoke: async (command: string, args?: { format?: string }) => {
   ipc.push(command === 'preview_instruction_export' ? `${command}:${args?.format}` : command)
   if (command === 'begin_instruction_export') return { export_id: 'miura-export', profile: 'instruction_export_v1' }
@@ -27,8 +31,11 @@ Object.assign(window, { __TAURI_INTERNALS__: { invoke: async (command: string, a
     return { preview: { export_id: 'miura-export' } }
   }
   if (command === 'cancel_instruction_export') return
+  if (command === 'get_instruction_export_progress') return { progress: { export_id: 'miura-export', phase: 'building_document', completed_units: 2, total_units: 3 } }
+  if (command === 'save_instruction_export') return { export_id: 'miura-export', saved: true }
   throw new Error(`unexpected ${command}`)
 } } })
 async function exportThroughProductionIpc() { ipc.length = 0; const generation = await beginInstructionExportGeneration(); let result = 'ready'; try { await previewInstructionExport(generation.export_id, snapshot.project_id, scenario === 'stale' ? snapshot.revision + 1 : snapshot.revision, format); exports += 1 } catch { result = `${scenario}-rejected`; await cancelInstructionExport(generation.export_id) } document.querySelector('[data-testid=exports]')!.textContent = `exports=${exports}; format=${format}; result=${result}; ipc=${ipc.join(',')}` }
-function Harness() { return <><output data-testid="exports">exports={exports}</output><button onClick={() => { format = 'pdf'; scenario = 'valid' }}>PDF mode</button><button onClick={() => { format = 'svg_zip'; scenario = 'valid' }}>SVG mode</button><button onClick={() => { scenario = 'stale' }}>Stale revision</button><button onClick={() => { scenario = 'tamper' }}>Tamper DTO hash</button><InstructionTimelinePanel snapshot={snapshot} appliedPose={null} poseModelKey="miura" manualPoseChangeSequence={0} coreBusy={false} benchmarkActive={false} fileOperationActive={false} exportAvailable exportButtonRef={{ current: null }} animationExportButtonRef={{ current: null }} runNativeEdit={async () => true} applyStepPose={() => true} onExport={() => { void exportThroughProductionIpc() }} onAnimationExport={() => {}} /></> }
+function ExportLifecycle() { const [active, setActive] = useState(false); const [open, setOpen] = useState(false); const [event, setEvent] = useState('idle'); return <><output data-testid="lifecycle">{event}</output><button onClick={() => { void (async () => { ipc.length = 0; const generation = await beginInstructionExportGeneration(); setOpen(true); setActive(true); await getInstructionExportProgress(generation.export_id); setEvent(`progress; ipc=${ipc.join(',')}`) })() }}>Start progress lifecycle</button>{open && <InstructionExportDialog format="pdf" preview={preview} busy={false} generationActive={active} phase={active ? 'building_document' : 'ready'} error={null} notice={null} onFormatChange={() => {}} onRetry={() => {}} onSave={(ack) => { void saveInstructionExport('miura-export', snapshot.project_id, snapshot.revision, ack).then(() => setEvent(`saved; ipc=${ipc.join(',')}`)) }} onCancel={() => { void cancelInstructionExport('miura-export').then(() => { setActive(false); setEvent(`cancelled; ipc=${ipc.join(',')}`) }) }} />}</> }
+function Harness() { return <><output data-testid="exports">exports={exports}</output><button onClick={() => { format = 'pdf'; scenario = 'valid' }}>PDF mode</button><button onClick={() => { format = 'svg_zip'; scenario = 'valid' }}>SVG mode</button><button onClick={() => { scenario = 'stale' }}>Stale revision</button><button onClick={() => { scenario = 'tamper' }}>Tamper DTO hash</button><InstructionTimelinePanel snapshot={snapshot} appliedPose={null} poseModelKey="miura" manualPoseChangeSequence={0} coreBusy={false} benchmarkActive={false} fileOperationActive={false} exportAvailable exportButtonRef={{ current: null }} animationExportButtonRef={{ current: null }} runNativeEdit={async () => true} applyStepPose={() => true} onExport={() => { void exportThroughProductionIpc() }} onAnimationExport={() => {}} /><ExportLifecycle /></> }
 createRoot(document.getElementById('root')!).render(<Harness />)

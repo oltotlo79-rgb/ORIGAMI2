@@ -16,5 +16,9 @@ try {
   await page.getByRole('button', { name: 'SVG mode', exact: true }).click(); await exportButton.click(); await page.getByText('exports=2; format=svg_zip; result=ready; ipc=begin_instruction_export,preview_instruction_export:svg_zip', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Stale revision', exact: true }).click(); await exportButton.click(); await page.getByText('exports=2; format=svg_zip; result=stale-rejected; ipc=begin_instruction_export,preview_instruction_export:svg_zip,cancel_instruction_export', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Tamper DTO hash', exact: true }).click(); await exportButton.click(); await page.getByText('exports=2; format=svg_zip; result=tamper-rejected; ipc=begin_instruction_export,preview_instruction_export:svg_zip,cancel_instruction_export', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Start progress lifecycle', exact: true }).click(); await page.getByText('progress; ipc=begin_instruction_export,get_instruction_export_progress', { exact: true }).waitFor()
+  await page.getByRole('button', { name: '生成を中止', exact: true }).click(); await page.getByText('cancelled; ipc=begin_instruction_export,get_instruction_export_progress,cancel_instruction_export', { exact: true }).waitFor()
+  await page.getByRole('checkbox', { name: '上記の注意事項を確認しました', exact: true }).check()
+  await page.getByRole('button', { name: '保存先を選んで書き出す…', exact: true }).click(); await page.getByText('saved; ipc=begin_instruction_export,get_instruction_export_progress,cancel_instruction_export,save_instruction_export', { exact: true }).waitFor()
   console.log('Miura instruction export browser E2E passed')
 } finally { await browser?.close(); server.kill('SIGTERM') }

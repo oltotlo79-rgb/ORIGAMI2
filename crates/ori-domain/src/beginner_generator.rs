@@ -1626,8 +1626,31 @@ fn bounded_generic_composite_endpoints(
     if feature_records != constraints.protrusions.len() {
         return None;
     }
+    let (minimum_x, maximum_x, minimum_y, maximum_y) =
+        skeleton_bounds(&constraints.skeleton_segments)?;
+    let available_body = [
+        u32::try_from(maximum_x.checked_sub(minimum_x)?).ok()?,
+        u32::try_from(maximum_y.checked_sub(minimum_y)?).ok()?,
+    ];
+    let body = constraints
+        .generic_body_size_tenths_mm
+        .unwrap_or(available_body);
+    if body
+        .iter()
+        .zip(available_body)
+        .any(|(target, available)| *target == 0 || *target > available)
+    {
+        return None;
+    }
     let mut endpoints = Vec::with_capacity(constraints.protrusions.len() * 4);
     for target in &constraints.protrusions {
+        let root_width = target
+            .root_width_tenths_mm
+            .unwrap_or(u32::from(target.thickness_tenths_mm));
+        let tip_width = target.tip_width_tenths_mm.unwrap_or(root_width);
+        if tip_width == 0 || tip_width > root_width || root_width > body[0].min(body[1]) {
+            return None;
+        }
         let mut isolated = constraints.clone();
         isolated
             .protrusions
@@ -1692,15 +1715,20 @@ fn parameterized_symmetric_endpoints(
     }
     let primary_span = if vertical { span_y } else { span_x };
     let length_ratio = f64::from(target.length_tenths_mm) / f64::from(primary_span as u32);
-    let thickness_ratio =
-        f64::from(target.thickness_tenths_mm) / f64::from(u32::try_from(span_x.min(span_y)).ok()?);
-    if !(0.02..=0.45).contains(&length_ratio) || !(0.001..=0.25).contains(&thickness_ratio) {
+    let root_width = target
+        .root_width_tenths_mm
+        .unwrap_or(u32::from(target.thickness_tenths_mm));
+    let tip_width = target.tip_width_tenths_mm.unwrap_or(root_width);
+    let width_ratio = f64::from(root_width.saturating_add(tip_width))
+        / 2.0
+        / f64::from(u32::try_from(span_x.min(span_y)).ok()?);
+    if !(0.02..=0.45).contains(&length_ratio) || !(0.001..=0.25).contains(&width_ratio) {
         return None;
     }
     let priority_scale = 0.75 + f64::from(target.priority) / 400.0;
     let direction_scale = f64::from(primary_direction.unsigned_abs()) / 1_000.0;
     let reach = length_ratio * priority_scale * direction_scale;
-    let spread = (thickness_ratio * 2.0).clamp(0.05, 0.2);
+    let spread = (width_ratio * 2.0).clamp(0.05, 0.2);
     let center_offset = target.position_tenths_mm[1].checked_sub(minimum_y)?;
     let center_y = f64::from(center_offset) / f64::from(span_y as u32);
     let endpoints = if vertical {
@@ -2098,6 +2126,26 @@ mod tests {
         );
         assert_eq!(generic_plans[0].crease_pattern.vertices.len(), 9);
         assert_eq!(generic_plans[0].crease_pattern.edges.len(), 8);
+        let mut tapered_generic = generic.clone();
+        tapered_generic.protrusions[1].root_width_tenths_mm = Some(1);
+        tapered_generic.protrusions[1].tip_width_tenths_mm = Some(1);
+        let tapered_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &tapered_generic).unwrap();
+        assert_ne!(
+            tapered_plans[0].crease_pattern.vertices,
+            generic_plans[0].crease_pattern.vertices
+        );
+        tapered_generic.protrusions[1].tip_width_tenths_mm = Some(2);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &tapered_generic),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
+        tapered_generic.protrusions[1].tip_width_tenths_mm = Some(1);
+        tapered_generic.generic_body_size_tenths_mm = Some([1_000_000, 1_000_000]);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &tapered_generic),
+            Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
+        );
         let mut intersecting_generic = generic.clone();
         let mut overlapping = intersecting_generic.protrusions[0].clone();
         overlapping.id = 2;

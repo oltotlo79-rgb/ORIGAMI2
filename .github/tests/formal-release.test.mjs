@@ -1234,6 +1234,11 @@ test('CI dry-run rehearses ephemeral signed candidate through runtime staging', 
     "openssl', ['cms', '-sign'", 'CycloneDX', 'SHA256SUMS.txt',
     'slsa.dev/provenance/v1', 'write_update_manifest.mjs',
     'parseRuntimeUpdateManifest', 'stageAuthorizedRuntimePayload',
+    'unsigned tag', 'wrong GPG keyring', 'wrong OS key',
+    'expired certificate policy horizon', 'checksum tamper', 'provenance tamper',
+    'SBOM tamper', 'cross-platform manifest swap', 'prerelease manifest',
+    'rollback manifest', 'staging symlink', "LC_ALL: 'C'", "TZ: 'UTC'",
+    'gpgVersion', 'opensslVersion',
   ]) assert.ok(rehearsal.includes(boundary), boundary)
   assert.doesNotMatch(rehearsal, /https?:\/\/(?!in-toto\.io|slsa\.dev|origami2\.invalid)/u)
 })

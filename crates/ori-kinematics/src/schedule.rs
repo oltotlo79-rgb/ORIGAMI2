@@ -2195,8 +2195,8 @@ mod tests {
             Point3::new(-7.0 / 25.0, 0.0, -24.0 / 25.0).unwrap(),
             Point3::new(3.0 / 5.0, 0.0, -4.0 / 5.0).unwrap(),
         ];
-        let bounded_unproven = MaterialHingeGraphGeometry::new_for_test(
-            faces.to_vec(),
+        let rational_geometry = MaterialHingeGraphGeometry::new_for_test(
+            audit.faces().to_vec(),
             (0..4)
                 .map(|index| {
                     TreeHinge::new_for_test(
@@ -2215,8 +2215,8 @@ mod tests {
                 })
                 .collect(),
         );
-        let candidate = generate_kawasaki_120_120_60_60_path_candidate_v1(
-            &bounded_unproven,
+        let candidate = generate_bounded_degree_four_kawasaki_path_candidate_v1(
+            &rational_geometry,
             &audit,
             audit.faces()[0],
             CycleScheduleLimitsV1::default(),
@@ -2229,23 +2229,21 @@ mod tests {
                 .map(|(_, _, numerator, denominator)| (numerator, denominator)),
             Some((3, 5))
         );
-        assert!(
-            bounded_unproven
-                .prove_dyadic_schedule_closure_v1(
-                    &audit,
-                    audit.faces()[0],
-                    candidate.schedule(),
-                    1.0e-9,
-                    crate::DyadicIntervalClosureLimitsV1 {
-                        max_depth: 16,
-                        max_leaves: 65_536,
-                        max_work: 1_048_576,
-                        schedule_limits: CycleScheduleLimitsV1::default(),
-                    },
-                )
-                .is_err(),
-            "a bounded exact candidate is not closure authority without the theorem"
-        );
+        let closure = rational_geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                audit.faces()[0],
+                candidate.schedule(),
+                1.0e-9,
+                crate::DyadicIntervalClosureLimitsV1 {
+                    max_depth: 16,
+                    max_leaves: 65_536,
+                    max_work: 1_048_576,
+                    schedule_limits: CycleScheduleLimitsV1::default(),
+                },
+            )
+            .expect("the bounded 3/5 exact profile has analytic closure authority");
+        assert_eq!(closure.leaves().len(), 1);
         assert_eq!(
             generate_bounded_degree_four_kawasaki_path_candidate_v1(
                 &geometry,

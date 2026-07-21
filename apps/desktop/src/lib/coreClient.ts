@@ -4743,7 +4743,6 @@ const PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS = [
   'project_layers',
   'element_metadata',
   'fold_model_fingerprint',
-  'reference_model_assets',
   'can_undo',
   'can_redo',
   'cutting_allowed',
@@ -4752,8 +4751,11 @@ const PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS = [
 function normalizeProjectLayerMutationBaseSnapshot(
   value: unknown,
 ): ProjectSnapshot | null {
+  const source = snapshotCoreDataRecord(value)
+  if (!source) return null
+  const { reference_model_assets: referenceAssetsValue, ...baseValue } = source
   const record = exactCoreDataRecord(
-    value,
+    baseValue,
     PROJECT_LAYER_MUTATION_SNAPSHOT_KEYS,
   )
   if (
@@ -4779,8 +4781,6 @@ function normalizeProjectLayerMutationBaseSnapshot(
     || !isCoreDataRecord(record.element_metadata)
     || typeof record.fold_model_fingerprint !== 'string'
     || !/^[0-9a-f]{64}$/u.test(record.fold_model_fingerprint)
-    || !Array.isArray(record.reference_model_assets)
-    || record.reference_model_assets.length > 8
     || typeof record.can_undo !== 'boolean'
     || typeof record.can_redo !== 'boolean'
     || typeof record.cutting_allowed !== 'boolean'
@@ -4799,7 +4799,9 @@ function normalizeProjectLayerMutationBaseSnapshot(
     || !Array.isArray(creasePattern.vertices)
     || !Array.isArray(creasePattern.edges)
   ) return null
-  const referenceModelAssets = (record.reference_model_assets as unknown[]).map((value) =>
+  const referenceAssets = referenceAssetsValue === undefined ? [] : referenceAssetsValue
+  if (!Array.isArray(referenceAssets) || referenceAssets.length > 8) return null
+  const referenceModelAssets = (referenceAssets as unknown[]).map((value) =>
     exactCoreDataRecord(value, ['asset_id', 'sha256'] as const))
   if (referenceModelAssets.some((asset) => !asset || !isCanonicalNonNilUuid(asset.asset_id)
     || !isBoundedIntegerTuple(asset.sha256, 32, 255))) return null

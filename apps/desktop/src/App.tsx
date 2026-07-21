@@ -8138,6 +8138,19 @@ function App() {
                             paper: candidate.paper_efficiency_score,
                           })}
                         </span>
+                        <span className="muted">{formattedText({
+                          ja: '重み付き寄与: 形状 {shape}・折りやすさ {foldability}・工程 {steps}・紙効率 {paper}',
+                          en: 'Weighted contributions: shape {shape} · foldability {foldability} · steps {steps} · paper efficiency {paper}',
+                        }, {
+                          shape: Math.round(candidate.shape_score
+                            * nativeSnapshot.beginner_design_profile.shape_fidelity_weight) / 100,
+                          foldability: Math.round(candidate.foldability_score
+                            * nativeSnapshot.beginner_design_profile.foldability_weight) / 100,
+                          steps: Math.round(candidate.step_count_score
+                            * nativeSnapshot.beginner_design_profile.step_count_weight) / 100,
+                          paper: Math.round(candidate.paper_efficiency_score
+                            * nativeSnapshot.beginner_design_profile.paper_efficiency_weight) / 100,
+                        })}</span>
                         <span className="muted">
                           {formattedText({
                             ja: '目標形状への近似 {target}/100',

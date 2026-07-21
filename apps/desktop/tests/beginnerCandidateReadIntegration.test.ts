@@ -110,6 +110,14 @@ test('AUT-106 presents one recommendation first and adds bounded candidates on d
   assert.match(app, /追加候補を生成して比較/)
 })
 
+test('AUT-103 exposes the exact weighted contribution behind each candidate comparison', () => {
+  assert.match(app, /Weighted contributions: shape \{shape\}/u)
+  assert.match(app, /candidate\.shape_score[\s\S]*shape_fidelity_weight/u)
+  assert.match(app, /candidate\.foldability_score[\s\S]*foldability_weight/u)
+  assert.match(app, /candidate\.step_count_score[\s\S]*step_count_weight/u)
+  assert.match(app, /candidate\.paper_efficiency_score[\s\S]*paper_efficiency_weight/u)
+})
+
 test('generated candidates are geometry-gated with explicit local proof scope', () => {
   assert.match(native, /fn assess_beginner_generated_plan/)
   assert.match(native, /validate_crease_pattern\(&candidate_pattern\)/)

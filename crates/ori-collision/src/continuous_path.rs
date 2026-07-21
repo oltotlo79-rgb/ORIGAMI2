@@ -7642,8 +7642,10 @@ mod tests {
             assert_eq!(proof.transition_hashes().len(), transitions.len());
             assert!(proof.is_for(&geometry, &source, &schedule, &closure));
             assert!(!proof.is_for(&geometry, &source.clone(), &schedule, &closure));
+            assert!(proof.matches_source_content_v1(&source.clone()));
             source.provenance.source.source_revision += 1;
             assert!(!proof.is_for(&geometry, &source, &schedule, &closure));
+            assert!(!proof.matches_source_content_v1(&source));
             source.provenance.source.source_revision -= 1;
             let mut reversed = transitions.clone();
             reversed[2] = vec![(first.1, first.0), second];

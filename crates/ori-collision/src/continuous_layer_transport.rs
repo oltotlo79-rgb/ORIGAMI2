@@ -77,6 +77,14 @@ impl ContinuousLayerTransportCertificateV1 {
             && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
             && self.closure_hash == closure.partition_binding_fingerprint_v1()
     }
+    /// Revalidates a transported/cloned snapshot after an outer native
+    /// capability has independently authenticated its instance/generation.
+    /// Unlike `is_for`, this deliberately checks exact content rather than
+    /// allocation identity so a pending transaction can retain an owned copy.
+    #[must_use]
+    pub fn matches_source_content_v1(&self, source: &LayerOrderSnapshot) -> bool {
+        self.source_hash == hash_source(source)
+    }
     #[must_use]
     pub const fn authorizes_project_mutation(&self) -> bool {
         false

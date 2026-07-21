@@ -141,6 +141,20 @@ jobs:
           path: ${{ runner.temp }}/diagnostics-browser
           if-no-files-found: error
           retention-days: 7
+      - name: Verify even-cycle automatic candidates in Chromium
+        id: even-cycle-browser
+        working-directory: apps/desktop
+        env:
+          ORIGAMI2_EVEN_CYCLE_BROWSER_ARTIFACT_DIRECTORY: ${{ runner.temp }}/even-cycle-browser
+        run: npm run test:even-cycle-browser
+      - name: Upload even-cycle browser failure evidence
+        if: failure() && steps.even-cycle-browser.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: even-cycle-browser-failure
+          path: ${{ runner.temp }}/even-cycle-browser
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify live locale switching for major features in Chromium
         id: locale-browser
         env:

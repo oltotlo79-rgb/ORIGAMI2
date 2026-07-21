@@ -48,13 +48,26 @@ pub struct DyadicIntervalClosureLimitsV1 {
     pub schedule_limits: CycleScheduleLimitsV1,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct DyadicMaterialHingeIntervalClosureCertificateV1 {
+    issuer_geometry: MaterialHingeGraphGeometry,
     fixed_face: FaceId,
     schedule_binding_fingerprint: [u8; 32],
     graph_binding_fingerprint: [u8; 32],
     leaves: Vec<(u32, u64, MaterialHingeIntervalClosureCertificateV1)>,
 }
+
+impl PartialEq for DyadicMaterialHingeIntervalClosureCertificateV1 {
+    fn eq(&self, other: &Self) -> bool {
+        self.issuer_geometry.same_instance(&other.issuer_geometry)
+            && self.fixed_face == other.fixed_face
+            && self.schedule_binding_fingerprint == other.schedule_binding_fingerprint
+            && self.graph_binding_fingerprint == other.graph_binding_fingerprint
+            && self.leaves == other.leaves
+    }
+}
+
+impl Eq for DyadicMaterialHingeIntervalClosureCertificateV1 {}
 
 impl DyadicMaterialHingeIntervalClosureCertificateV1 {
     #[must_use]
@@ -96,7 +109,8 @@ impl DyadicMaterialHingeIntervalClosureCertificateV1 {
             .map(TreeHinge::edge)
             .collect::<Vec<_>>();
         hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
-        self.has_canonical_complete_partition_v1()
+        self.issuer_geometry.same_instance(geometry)
+            && self.has_canonical_complete_partition_v1()
             && self.leaves.iter().all(|(_, _, leaf)| {
                 leaf.fixed_face == self.fixed_face && leaf.checked_hinges == hinges
             })
@@ -280,6 +294,7 @@ impl MaterialHingeGraphGeometry {
                 }
             }
             return Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
+                issuer_geometry: self.clone(),
                 fixed_face,
                 schedule_binding_fingerprint: schedule.certificate_binding_fingerprint_v1(),
                 graph_binding_fingerprint: schedule.graph_binding_fingerprint_v1(),
@@ -321,6 +336,7 @@ impl MaterialHingeGraphGeometry {
                 .collect::<Vec<_>>();
             checked_hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
             return Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
+                issuer_geometry: self.clone(),
                 fixed_face,
                 schedule_binding_fingerprint: schedule.certificate_binding_fingerprint_v1(),
                 graph_binding_fingerprint: schedule.graph_binding_fingerprint_v1(),
@@ -399,6 +415,7 @@ impl MaterialHingeGraphGeometry {
             }
         }
         Ok(DyadicMaterialHingeIntervalClosureCertificateV1 {
+            issuer_geometry: self.clone(),
             fixed_face,
             schedule_binding_fingerprint: schedule.certificate_binding_fingerprint_v1(),
             graph_binding_fingerprint: schedule.graph_binding_fingerprint_v1(),

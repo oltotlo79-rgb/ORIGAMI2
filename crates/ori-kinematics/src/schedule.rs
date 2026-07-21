@@ -939,7 +939,7 @@ pub struct CycleScheduleLimitsV1 {
 impl Default for CycleScheduleLimitsV1 {
     fn default() -> Self {
         Self {
-            max_hinges: 64,
+            max_hinges: 128,
             max_degree: 8,
             max_coefficient_bits: 53,
             max_work: 576,
@@ -969,7 +969,7 @@ pub struct MultiHingePathCandidateLimitsV1 {
 impl Default for MultiHingePathCandidateLimitsV1 {
     fn default() -> Self {
         Self {
-            max_hinges: 64,
+            max_hinges: 128,
             max_candidates: 1,
             max_work: 256,
         }

@@ -1,0 +1,19 @@
+{
+  "current-cycle-pose-progress-v1": {
+    "version": 1,
+    "requestId": "00000000-0000-4000-8000-000000000001",
+    "status": "running",
+    "completedWork": 1,
+    "totalWork": 2,
+    "authorizesProjectMutation": false
+  },
+  "stacked-fold-read-progress-v1": {
+    "version": 1,
+    "requestId": "00000000-0000-4000-8000-000000000002",
+    "exploredStateCount": 31,
+    "evaluatedTransitionCount": 63,
+    "stateLimit": 32,
+    "transitionLimit": 64,
+    "authorizesProjectMutation": false
+  }
+}

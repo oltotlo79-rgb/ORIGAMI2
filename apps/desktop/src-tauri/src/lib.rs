@@ -2745,6 +2745,7 @@ struct BeginnerGridCandidateResponse {
     contour_witness: BeginnerContourPlacementWitness,
     refinement_iterations: u8,
     strict_improvements: u8,
+    refinement_starts: u8,
 }
 
 #[derive(Debug, Serialize)]
@@ -2762,6 +2763,7 @@ struct BeginnerGridEvaluationResponse {
 
 const MAX_BEGINNER_REFINEMENT_ITERATIONS_V1: u8 = 8;
 const MAX_BEGINNER_REFINEMENT_PROPOSALS_V1: usize = 32;
+const BEGINNER_REFINEMENT_STARTS_V1: u8 = 5;
 
 fn refine_beginner_grid_plan_v1(
     namespace: ProjectId,
@@ -2780,18 +2782,62 @@ fn refine_beginner_grid_plan_v1(
         ori_domain::BeginnerGeneratedPlanV1,
         u8,
         u8,
+        u8,
     ),
     String,
 > {
     let Some(reference) = reference else {
-        return Ok((initial_point, initial_plan, 0, 0));
+        return Ok((initial_point, initial_plan, 0, 0, 1));
     };
     let mut point = initial_point;
     let mut plan = initial_plan;
     let mut score = compare_plan_to_reference_model_v1(&plan, reference).0;
+    let initial_score = score;
     let mut iterations = 0_u8;
     let mut improvements = 0_u8;
     let mut proposals = 0_usize;
+    for (scale_delta, spacing_delta) in [(-4_i16, 0_i16), (4, 0), (0, -6), (0, 6)] {
+        if work.cancelled.load(Ordering::Acquire) {
+            return Err("grid_evaluation_cancelled".to_owned());
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        proposals += 1;
+        let mut seed_point = initial_point;
+        seed_point.scale_percent =
+            (i16::from(initial_point.scale_percent) + scale_delta).clamp(10, 45) as u8;
+        seed_point.spacing_percent =
+            (i16::from(initial_point.spacing_percent) + spacing_delta).clamp(20, 80) as u8;
+        if seed_point == initial_point {
+            continue;
+        }
+        let Some(seed_plan) =
+            grid_template_plan(namespace, source, boundary_vertices, profile, seed_point)
+                .map_err(|_| "grid_refinement_generation_failed".to_owned())?
+                .into_iter()
+                .find(|candidate| candidate.kind == expected_kind)
+        else {
+            continue;
+        };
+        if beginner_contour_placement_witness(&profile.generation_constraints, &seed_plan).is_none()
+        {
+            continue;
+        }
+        let seed_score = compare_plan_to_reference_model_v1(&seed_plan, reference).0;
+        if seed_score > score
+            || (seed_score == score
+                && (seed_point.scale_percent, seed_point.spacing_percent)
+                    < (point.scale_percent, point.spacing_percent))
+        {
+            score = seed_score;
+            point = seed_point;
+            plan = seed_plan;
+        }
+    }
+    if score > initial_score {
+        improvements = 1;
+    }
     for _ in 0..MAX_BEGINNER_REFINEMENT_ITERATIONS_V1 {
         if work.cancelled.load(Ordering::Acquire) {
             return Err("grid_evaluation_cancelled".to_owned());
@@ -2862,7 +2908,13 @@ fn refine_beginner_grid_plan_v1(
         plan = next_plan;
         improvements = improvements.saturating_add(1);
     }
-    Ok((point, plan, iterations, improvements))
+    Ok((
+        point,
+        plan,
+        iterations,
+        improvements,
+        BEGINNER_REFINEMENT_STARTS_V1,
+    ))
 }
 
 #[tauri::command]
@@ -2952,7 +3004,7 @@ fn evaluate_beginner_parameter_grid(
                 work.terminal.store(2, Ordering::Release);
                 return Err("grid_evaluation_cancelled".to_owned());
             }
-            let (point, plan, refinement_iterations, strict_improvements) =
+            let (point, plan, refinement_iterations, strict_improvements, refinement_starts) =
                 refine_beginner_grid_plan_v1(
                     project.project_id,
                     project.editor.pattern(),
@@ -3013,6 +3065,7 @@ fn evaluate_beginner_parameter_grid(
                 contour_witness,
                 refinement_iterations,
                 strict_improvements,
+                refinement_starts,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

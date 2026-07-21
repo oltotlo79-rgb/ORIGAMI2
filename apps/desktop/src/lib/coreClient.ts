@@ -666,6 +666,7 @@ function normalizeBeginnerRecognitionProposal(
     || localConfidence.length !== (confidence.local_scores as unknown[]).length
     || localConfidence.some((item) => !item || !Number.isInteger(item.protrusion_id)
       || !Number.isInteger(item.score) || Number(item.score) < 0 || Number(item.score) > 100 || !validReasons(item.reasons)))) return null
+  const validatedLocalConfidence = localConfidence as ReadonlyArray<NonNullable<(typeof localConfidence)[number]>>
   return Object.freeze({
     schema_version: 1,
     format: expectedFormat,
@@ -689,8 +690,8 @@ function normalizeBeginnerRecognitionProposal(
     ...(record.protrusions === undefined ? {} : { protrusions: constraints.protrusions }),
     ...(confidence === null ? {} : { contour_confidence: Object.freeze({
       body_score: Number(confidence.body_score), body_reasons: Object.freeze((confidence.body_reasons as string[]).slice()),
-      local_scores: Object.freeze(localConfidence.map((item) => Object.freeze({ protrusion_id: Number(item?.protrusion_id),
-        score: Number(item?.score), reasons: Object.freeze((item?.reasons as string[]).slice()) }))),
+      local_scores: Object.freeze(validatedLocalConfidence.map((item) => Object.freeze({ protrusion_id: Number(item.protrusion_id),
+        score: Number(item.score), reasons: Object.freeze((item.reasons as string[]).slice()) }))),
       explicit_override_required: confidence.explicit_override_required as boolean,
     }) }),
   })
@@ -1892,6 +1893,7 @@ export type BeginnerGridEvaluationResponse = Readonly<{
     contour_witness: BeginnerContourPlacementWitnessV1
     refinement_iterations: number
     strict_improvements: number
+    refinement_starts: number
   }>>
 }>
 
@@ -1922,7 +1924,7 @@ export async function evaluateBeginnerParameterGrid(
     value, ['point', 'primary_score', 'plan', 'assessment', 'local_proof_scope',
       'global_proof_scope', 'complexity_score', 'scale_deviation_penalty',
       'spacing_deviation_penalty', 'detail_mismatch_penalty', 'outcome_reason', 'contour_witness',
-      'refinement_iterations', 'strict_improvements'] as const,
+      'refinement_iterations', 'strict_improvements', 'refinement_starts'] as const,
   ))
   if (rawCandidates.some((candidate) => candidate === null)) {
     throw new Error('invalid beginner parameter grid response')
@@ -2000,7 +2002,9 @@ export async function evaluateBeginnerParameterGrid(
       || !Number.isInteger(candidate.complexity_score) || Number(candidate.complexity_score) < 0 || Number(candidate.complexity_score) > 100
       || !Number.isInteger(candidate.refinement_iterations) || Number(candidate.refinement_iterations) < 0 || Number(candidate.refinement_iterations) > 8
       || !Number.isInteger(candidate.strict_improvements) || Number(candidate.strict_improvements) < 0
-      || Number(candidate.strict_improvements) > Number(candidate.refinement_iterations)
+      || Number(candidate.strict_improvements) > Number(candidate.refinement_iterations) + 1
+      || !Number.isInteger(candidate.refinement_starts) || Number(candidate.refinement_starts) < 1
+      || Number(candidate.refinement_starts) > 5
       || ![candidate.scale_deviation_penalty, candidate.spacing_deviation_penalty, candidate.detail_mismatch_penalty]
         .every((penalty) => Number.isInteger(penalty) && Number(penalty) >= 0 && Number(penalty) <= 1000)
       || Number(candidate.primary_score) !== 1000 - Number(candidate.scale_deviation_penalty)
@@ -2021,6 +2025,7 @@ export async function evaluateBeginnerParameterGrid(
       outcome_reason: candidate.outcome_reason as BeginnerGeneratedPlanAssessmentV1['reason'],
       refinement_iterations: Number(candidate.refinement_iterations),
       strict_improvements: Number(candidate.strict_improvements),
+      refinement_starts: Number(candidate.refinement_starts),
       contour_witness: Object.freeze({
         body_contour_points: Number(witness.body_contour_points),
         local_bindings: Object.freeze(bindings.map((binding) => Object.freeze({

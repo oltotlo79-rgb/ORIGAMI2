@@ -7949,9 +7949,10 @@ function App() {
                         }, { id: candidate.point.id + 1, score: candidate.primary_score })}</strong>
                         <span className="muted">{formattedText({
                           ja: '局所改善 {improvements}/{iterations}',
-                          en: 'Strict local improvements {improvements}/{iterations}',
+                          en: 'Strict local improvements {improvements}/{iterations} from {starts} starts',
                         }, { improvements: candidate.strict_improvements,
-                          iterations: candidate.refinement_iterations })}</span>
+                          iterations: candidate.refinement_iterations,
+                          starts: candidate.refinement_starts })}</span>
                         <span className="muted">{formattedText({
                           ja: '尺度 {scale}%・間隔 {spacing}%・詳細度 {detail}',
                           en: 'Scale {scale}% · spacing {spacing}% · detail {detail}',

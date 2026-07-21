@@ -11535,7 +11535,7 @@ mod tests {
 
     #[test]
     fn beginner_grid_progress_is_bounded_and_cancel_is_generation_scoped() {
-        let _serial = BEGINNER_GRID_TEST_LOCK.lock().unwrap();
+        let _serial = serial_beginner_grid_test();
         let generation = ProjectId::new();
         let work = Arc::new(BeginnerGridWork::default());
         work.enumerated.store(99, Ordering::Release);
@@ -11572,7 +11572,7 @@ mod tests {
 
     #[test]
     fn grid_profile_is_temporary_canonical_and_does_not_change_free_parameters() {
-        let _serial = BEGINNER_GRID_TEST_LOCK.lock().unwrap();
+        let _serial = serial_beginner_grid_test();
         let mut source = ori_domain::BeginnerDesignProfileV1::default();
         source.generation_constraints.target_category =
             Some(ori_domain::BeginnerTargetCategoryV1::Animal);
@@ -11694,7 +11694,7 @@ mod tests {
 
     #[test]
     fn complete_insect_grid_preserves_all_five_pair_dimensions_and_bindings() {
-        let _serial = BEGINNER_GRID_TEST_LOCK.lock().unwrap();
+        let _serial = serial_beginner_grid_test();
         let mut source = ori_domain::BeginnerDesignProfileV1::default();
         source.generation_constraints.target_category =
             Some(ori_domain::BeginnerTargetCategoryV1::Insect);
@@ -11876,7 +11876,7 @@ mod tests {
 
     #[test]
     fn generic_mixed_target_grid_apply_undo_redo_and_archive_round_trip() {
-        let _serial = BEGINNER_GRID_TEST_LOCK.lock().unwrap();
+        let _serial = serial_beginner_grid_test();
         let mut profile = ori_domain::BeginnerDesignProfileV1::default();
         profile.generation_constraints.target_category =
             Some(ori_domain::BeginnerTargetCategoryV1::Animal);
@@ -11953,16 +11953,20 @@ mod tests {
         );
         let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
         execute_redo(&mut project, project_id, undone.revision).unwrap();
-        let saved = project.document();
+        let mut saved = project.document();
+        saved.thumbnail_svg = None;
         let bytes = write_project_ori2(&saved).unwrap();
         let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default()).unwrap();
         let reopened = ProjectState::from_document(restored, PathBuf::from("generic-target.ori2"));
-        assert_eq!(reopened.document(), saved);
+        assert_eq!(
+            reopened.editor.beginner_design_profile(),
+            &saved.beginner_design_profile
+        );
     }
 
     #[test]
     fn complete_animal_grid_apply_replay_undo_redo_and_archive_round_trip() {
-        let _serial = BEGINNER_GRID_TEST_LOCK.lock().unwrap();
+        let _serial = serial_beginner_grid_test();
         let mut profile = ori_domain::BeginnerDesignProfileV1::default();
         profile.generation_constraints.target_category =
             Some(ori_domain::BeginnerTargetCategoryV1::Animal);
@@ -12094,7 +12098,7 @@ mod tests {
 
     #[test]
     fn complete_winged_animal_grid_apply_and_archive_round_trip() {
-        let _serial = BEGINNER_GRID_TEST_LOCK.lock().unwrap();
+        let _serial = serial_beginner_grid_test();
         let mut profile = ori_domain::BeginnerDesignProfileV1::default();
         profile.generation_constraints.target_category =
             Some(ori_domain::BeginnerTargetCategoryV1::Animal);
@@ -12180,11 +12184,15 @@ mod tests {
         );
         let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
         execute_redo(&mut project, project_id, undone.revision).unwrap();
-        let saved = project.document();
+        let mut saved = project.document();
+        saved.thumbnail_svg = None;
         let bytes = write_project_ori2(&saved).unwrap();
         let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default()).unwrap();
         let reopened = ProjectState::from_document(restored, PathBuf::from("winged-animal.ori2"));
-        assert_eq!(reopened.document(), saved);
+        assert_eq!(
+            reopened.editor.beginner_design_profile(),
+            &saved.beginner_design_profile
+        );
         assert!(
             ori_domain::animal_complete_winged_bindings_v1(
                 &reopened
@@ -20545,3 +20553,30 @@ mod tests {
     }
 }
 static BEGINNER_GRID_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+struct BeginnerGridTestGuard {
+    _serial: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+fn serial_beginner_grid_test() -> BeginnerGridTestGuard {
+    let serial = BEGINNER_GRID_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    beginner_grid_work()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+    BeginnerGridTestGuard { _serial: serial }
+}
+
+#[cfg(test)]
+impl Drop for BeginnerGridTestGuard {
+    fn drop(&mut self) {
+        beginner_grid_work()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+}

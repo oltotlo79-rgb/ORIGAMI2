@@ -2473,6 +2473,7 @@ dependencies = [
 name = "ori-instructions"
 version = "0.1.0"
 dependencies = [
+ "ori-collision",
  "ori-domain",
  "ori-kinematics",
  "ori-topology",

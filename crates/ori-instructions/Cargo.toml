@@ -7,8 +7,10 @@ repository.workspace = true
 
 [dependencies]
 ori-domain = { path = "../ori-domain" }
+ori-collision = { path = "../ori-collision" }
 ori-kinematics = { path = "../ori-kinematics" }
 ori-topology = { path = "../ori-topology" }
+sha2 = "0.10.9"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

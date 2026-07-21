@@ -5,6 +5,7 @@
 //! interactive Three.js scene, the current viewport, or GPU pixels.
 
 mod fold_technique_file;
+mod technique_motion;
 
 pub use fold_technique_file::{
     FOLD_TECHNIQUE_FILE_SCHEMA_V1, FOLD_TECHNIQUE_FILE_VERSION_V1, FoldTechniqueActionV1,
@@ -17,6 +18,10 @@ pub use fold_technique_file::{
     FoldTechniqueSourceV1, FoldTechniqueTemplateV1, FoldTechniqueUnsupportedPhysicalOperationV1,
     MAX_FOLD_TECHNIQUE_FILE_BYTES, read_fold_technique_file_v1, validate_fold_technique_file_v1,
     write_fold_technique_file_v1,
+};
+pub use technique_motion::{
+    BookFoldMotionError, BookFoldMotionRequestV1, compile_certified_book_fold_timeline_v1,
+    instruction_pose_fingerprint_v1,
 };
 
 use std::{

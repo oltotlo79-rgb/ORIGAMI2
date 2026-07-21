@@ -201,17 +201,32 @@ pub fn prove_continuous_layer_transport_v1(
 /// Derives every transition order from issuer-owned face poses. The caller
 /// supplies only the lineage and one finite world-space separation axis; no
 /// target order witness is accepted as input.
+pub struct ContinuousLayerTransportFromPosesInputV1<'a> {
+    pub geometry: &'a MaterialHingeGraphGeometry,
+    pub audit: &'a MaterialHingeGraphAudit,
+    pub source: &'a LayerOrderSnapshot,
+    pub source_to_target: &'a [(FaceId, FaceId)],
+    pub schedule: &'a CanonicalCycleScheduleV1,
+    pub closure: &'a DyadicMaterialHingeIntervalClosureCertificateV1,
+    pub separation_axis: [f64; 3],
+    pub tolerance: f64,
+    pub limits: ContinuousLayerTransportLimitsV1,
+}
+
 pub fn derive_continuous_layer_transport_from_poses_v1(
-    geometry: &MaterialHingeGraphGeometry,
-    audit: &MaterialHingeGraphAudit,
-    source: &LayerOrderSnapshot,
-    source_to_target: &[(FaceId, FaceId)],
-    schedule: &CanonicalCycleScheduleV1,
-    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
-    separation_axis: [f64; 3],
-    tolerance: f64,
-    limits: ContinuousLayerTransportLimitsV1,
+    input: ContinuousLayerTransportFromPosesInputV1<'_>,
 ) -> Result<ContinuousLayerTransportCertificateV1, ContinuousLayerTransportErrorV1> {
+    let ContinuousLayerTransportFromPosesInputV1 {
+        geometry,
+        audit,
+        source,
+        source_to_target,
+        schedule,
+        closure,
+        separation_axis,
+        tolerance,
+        limits,
+    } = input;
     let norm_squared = separation_axis
         .iter()
         .map(|value| value * value)

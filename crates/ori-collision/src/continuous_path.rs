@@ -1554,14 +1554,15 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
     // and closure certificates, then run the same all-pair solid proof once.
     // This also avoids exhausting subdivision on coincident swept AABBs: with
     // a zero derivative bound the swept volume is exactly the current pose.
-    if paper_thickness_mm.is_some() && derivative_sum.to_bits() == 0.0_f64.to_bits() {
+    if let Some(thickness) = paper_thickness_mm
+        && derivative_sum.to_bits() == 0.0_f64.to_bits()
+    {
         let Some(angles) = schedule.evaluate(0.0) else {
             return failed();
         };
         let Ok(pose) = geometry.solve_closed(audit, fixed_face, &angles, 1.0e-9) else {
             return failed();
         };
-        let thickness = paper_thickness_mm.expect("checked positive thickness");
         if prove_positive_thickness_graph_geometry_v1(
             geometry,
             &pose,
@@ -7669,8 +7670,17 @@ mod tests {
                     candidate.face_pair_orders = vec![order.clone()];
                     for axis in axes {
                         if let Ok(derived) = crate::derive_continuous_layer_transport_from_poses_v1(
-                            &geometry, &audit, &candidate, &mapping, &schedule, &closure, axis,
-                            1.0e-9, exact,
+                            crate::ContinuousLayerTransportFromPosesInputV1 {
+                                geometry: &geometry,
+                                audit: &audit,
+                                source: &candidate,
+                                source_to_target: &mapping,
+                                schedule: &schedule,
+                                closure: &closure,
+                                separation_axis: axis,
+                                tolerance: 1.0e-9,
+                                limits: exact,
+                            },
                         ) {
                             selected = Some((derived, candidate, axis));
                             break;
@@ -7693,15 +7703,17 @@ mod tests {
                         .any(|pair| pair[0] != pair[1])
                 );
                 let repeated = crate::derive_continuous_layer_transport_from_poses_v1(
-                    &geometry,
-                    &audit,
-                    &derivation_source,
-                    &mapping,
-                    &schedule,
-                    &closure,
-                    separation_axis,
-                    1.0e-9,
-                    exact,
+                    crate::ContinuousLayerTransportFromPosesInputV1 {
+                        geometry: &geometry,
+                        audit: &audit,
+                        source: &derivation_source,
+                        source_to_target: &mapping,
+                        schedule: &schedule,
+                        closure: &closure,
+                        separation_axis,
+                        tolerance: 1.0e-9,
+                        limits: exact,
+                    },
                 )
                 .unwrap();
                 assert_eq!(derived.transition_hashes(), repeated.transition_hashes());
@@ -7709,62 +7721,70 @@ mod tests {
                     let (foreign, foreign_audit, _, _) = rational_cycle_bay_geometry(rank, false);
                     assert!(matches!(
                         crate::derive_continuous_layer_transport_from_poses_v1(
-                            &foreign,
-                            &foreign_audit,
-                            &derivation_source,
-                            &mapping,
-                            &schedule,
-                            &closure,
-                            separation_axis,
-                            1.0e-9,
-                            exact,
+                            crate::ContinuousLayerTransportFromPosesInputV1 {
+                                geometry: &foreign,
+                                audit: &foreign_audit,
+                                source: &derivation_source,
+                                source_to_target: &mapping,
+                                schedule: &schedule,
+                                closure: &closure,
+                                separation_axis,
+                                tolerance: 1.0e-9,
+                                limits: exact,
+                            },
                         ),
                         Err(crate::ContinuousLayerTransportErrorV1::BindingMismatch)
                     ));
                 }
                 assert!(matches!(
                     crate::derive_continuous_layer_transport_from_poses_v1(
-                        &geometry,
-                        &audit,
-                        &derivation_source,
-                        &mapping,
-                        &schedule,
-                        &closure,
-                        separation_axis,
-                        1.0e9,
-                        exact,
+                        crate::ContinuousLayerTransportFromPosesInputV1 {
+                            geometry: &geometry,
+                            audit: &audit,
+                            source: &derivation_source,
+                            source_to_target: &mapping,
+                            schedule: &schedule,
+                            closure: &closure,
+                            separation_axis,
+                            tolerance: 1.0e9,
+                            limits: exact,
+                        },
                     ),
                     Err(crate::ContinuousLayerTransportErrorV1::AmbiguousOrder)
                 ));
                 assert!(matches!(
                     crate::derive_continuous_layer_transport_from_poses_v1(
-                        &geometry,
-                        &audit,
-                        &derivation_source,
-                        &mapping,
-                        &schedule,
-                        &closure,
-                        [0.0; 3],
-                        1.0e-9,
-                        exact,
+                        crate::ContinuousLayerTransportFromPosesInputV1 {
+                            geometry: &geometry,
+                            audit: &audit,
+                            source: &derivation_source,
+                            source_to_target: &mapping,
+                            schedule: &schedule,
+                            closure: &closure,
+                            separation_axis: [0.0; 3],
+                            tolerance: 1.0e-9,
+                            limits: exact,
+                        },
                     ),
                     Err(crate::ContinuousLayerTransportErrorV1::BindingMismatch)
                 ));
                 assert!(matches!(
                     crate::derive_continuous_layer_transport_from_poses_v1(
-                        &geometry,
-                        &audit,
-                        &derivation_source,
-                        &mapping,
-                        &schedule,
-                        &closure,
-                        separation_axis,
-                        1.0e-9,
-                        crate::ContinuousLayerTransportLimitsV1 {
-                            max_pair_orders: (closure.leaves().len() + 1)
-                                * derivation_source.face_pair_orders.len()
-                                - 1,
-                            ..exact
+                        crate::ContinuousLayerTransportFromPosesInputV1 {
+                            geometry: &geometry,
+                            audit: &audit,
+                            source: &derivation_source,
+                            source_to_target: &mapping,
+                            schedule: &schedule,
+                            closure: &closure,
+                            separation_axis,
+                            tolerance: 1.0e-9,
+                            limits: crate::ContinuousLayerTransportLimitsV1 {
+                                max_pair_orders: (closure.leaves().len() + 1)
+                                    * derivation_source.face_pair_orders.len()
+                                    - 1,
+                                ..exact
+                            },
                         },
                     ),
                     Err(crate::ContinuousLayerTransportErrorV1::ResourceLimit)
@@ -7778,17 +7798,19 @@ mod tests {
                 });
                 assert!(matches!(
                     crate::derive_continuous_layer_transport_from_poses_v1(
-                        &geometry,
-                        &audit,
-                        &cyclic,
-                        &mapping,
-                        &schedule,
-                        &closure,
-                        separation_axis,
-                        1.0e-9,
-                        crate::ContinuousLayerTransportLimitsV1 {
-                            max_pair_orders: exact.max_pair_orders * 2,
-                            ..exact
+                        crate::ContinuousLayerTransportFromPosesInputV1 {
+                            geometry: &geometry,
+                            audit: &audit,
+                            source: &cyclic,
+                            source_to_target: &mapping,
+                            schedule: &schedule,
+                            closure: &closure,
+                            separation_axis,
+                            tolerance: 1.0e-9,
+                            limits: crate::ContinuousLayerTransportLimitsV1 {
+                                max_pair_orders: exact.max_pair_orders * 2,
+                                ..exact
+                            },
                         },
                     ),
                     Err(crate::ContinuousLayerTransportErrorV1::Crossing)

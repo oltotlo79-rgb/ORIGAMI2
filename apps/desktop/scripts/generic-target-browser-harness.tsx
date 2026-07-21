@@ -21,6 +21,7 @@ function Harness() {
   const [bindings, setBindings] = useState([...initialBindings])
   const [kinds, setKinds] = useState<Array<'leg' | 'horn' | 'ear' | 'wing' | 'fin' | 'antenna' | 'tail'>>(['tail', 'fin'])
   const [outline, setOutline] = useState<Array<[number, number]>>([])
+  const [outlineMode, setOutlineMode] = useState<'symmetric' | 'general'>('symmetric')
   const evaluate = useRef<HTMLButtonElement>(null)
   const focus = () => requestAnimationFrame(() => evaluate.current?.focus())
   const canonicalize = (targets: typeof bindings) => targets.map(
@@ -49,7 +50,8 @@ function Harness() {
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected: target exceeds eight bindings') }}>Try oversized target</button>
     <p role="status">{status}</p>
-    {recognized && <GenericBodyOutlineEditor locale="en" points={outline} onChange={setOutline} />}
+    {recognized && <GenericBodyOutlineEditor locale="en" points={outline} onChange={setOutline}
+      mode={outlineMode} onModeChange={setOutlineMode} />}
     {recognized && <button disabled={bindings.length >= 8} onClick={() => {
       setBindings((current) => canonicalize([...current, { ...initialBindings[0]!, id: current.length + 1 }]))
       setKinds((current) => [...current, 'tail'])

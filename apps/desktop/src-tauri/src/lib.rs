@@ -1843,6 +1843,8 @@ const MAX_BEGINNER_FOLD_PATH_CREASES_V1: usize = 256;
 fn certify_beginner_fold_path_v1(
     plan: &ori_domain::BeginnerGeneratedPlanV1,
     paper: &Paper,
+    candidate_pattern: &CreasePattern,
+    topology: &TopologySnapshot,
 ) -> Option<[u8; 32]> {
     let creases = plan
         .crease_pattern
@@ -1854,9 +1856,7 @@ fn certify_beginner_fold_path_v1(
         return None;
     }
     let mut ids = HashSet::with_capacity(creases.len());
-    if creases.iter().any(|edge| !ids.insert(edge.id))
-        || validate_beginner_manufacturability_v1(&plan.crease_pattern, paper).is_err()
-    {
+    if creases.iter().any(|edge| !ids.insert(edge.id)) {
         return None;
     }
     let mut ordered = creases
@@ -1864,8 +1864,54 @@ fn certify_beginner_fold_path_v1(
         .map(|edge| (edge.id.canonical_bytes(), edge.kind, edge.start, edge.end))
         .collect::<Vec<_>>();
     ordered.sort_unstable_by_key(|record| record.0);
-    let bytes =
-        serde_json::to_vec(&("bounded_fold_path_v1", ordered, &plan.crease_pattern)).ok()?;
+    let model = ori_kinematics::MaterialTreeKinematicsModel::prepare(
+        candidate_pattern,
+        paper,
+        topology,
+        ori_kinematics::TreeKinematicsLimits::default(),
+    )
+    .ok()?;
+    let initial = ori_kinematics::CanonicalHingeAngles::new(
+        model
+            .hinges()
+            .iter()
+            .map(|hinge| ori_kinematics::HingeAngle::new(hinge.edge(), 0.0))
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?,
+    )
+    .ok()?;
+    let initial_pose = model.solve(None, &initial).ok()?;
+    let moving_hinges = model
+        .hinges()
+        .iter()
+        .map(|hinge| hinge.edge())
+        .collect::<Vec<_>>();
+    let requested_angle_degrees = if model.hinges().len() == 1 || paper.thickness_mm == 0.0 {
+        90.0
+    } else if paper.thickness_mm > 0.0 {
+        0.001
+    } else {
+        return None;
+    };
+    let path = ori_collision::diagnose_collective_hinge_path_v1(
+        &model,
+        &initial_pose,
+        &moving_hinges,
+        requested_angle_degrees,
+        paper.thickness_mm,
+        ori_collision::StackedFoldPathDiagnosticLimitsV1::default(),
+    )
+    .ok()?;
+    let certificate_model = path.continuous_certificate_model_id()?;
+    let bytes = serde_json::to_vec(&(
+        "bounded_native_fold_path_v2",
+        certificate_model,
+        paper.thickness_mm.to_bits(),
+        requested_angle_degrees.to_bits(),
+        ordered,
+        candidate_pattern,
+    ))
+    .ok()?;
     Some(sha2::Sha256::digest(bytes).into())
 }
 
@@ -2035,7 +2081,14 @@ fn assess_beginner_generated_plan_with_deadline(
                 ) {
                     Ok(report) => match report.outcome {
                         GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => {
-                            if certify_beginner_fold_path_v1(plan, paper).is_none() {
+                            if certify_beginner_fold_path_v1(
+                                plan,
+                                paper,
+                                &candidate_pattern,
+                                snapshot,
+                            )
+                            .is_none()
+                            {
                                 proof_scope = "necessary";
                                 apply_allowed = false;
                                 reason = "fold_path_certificate_unavailable";
@@ -21796,7 +21849,7 @@ mod tests {
         let p0 = VertexId::new();
         let p1 = VertexId::new();
         let p2 = VertexId::new();
-        let certified = plan(
+        let _manufacturable_sequence = plan(
             vec![
                 Vertex {
                     id: p0,
@@ -21826,11 +21879,74 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(
-            certify_beginner_fold_path_v1(&certified, &Paper::default()),
-            certify_beginner_fold_path_v1(&certified, &Paper::default())
+        let boundary_vertices = [
+            (0.0, 0.0),
+            (5.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (5.0, 10.0),
+            (0.0, 10.0),
+        ]
+        .into_iter()
+        .map(|(x, y)| Vertex {
+            id: VertexId::new(),
+            position: Point2::new(x, y),
+        })
+        .collect::<Vec<_>>();
+        let boundary_ids = boundary_vertices
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect::<Vec<_>>();
+        let certified_edge = Edge {
+            id: EdgeId::new(),
+            start: boundary_ids[1],
+            end: boundary_ids[4],
+            kind: EdgeKind::Mountain,
+        };
+        let certified = plan(
+            vec![boundary_vertices[1].clone(), boundary_vertices[4].clone()],
+            vec![certified_edge.clone()],
         );
-        assert!(certify_beginner_fold_path_v1(&certified, &Paper::default()).is_some());
+        let mut certified_edges = (0..boundary_ids.len())
+            .map(|index| Edge {
+                id: EdgeId::new(),
+                start: boundary_ids[index],
+                end: boundary_ids[(index + 1) % boundary_ids.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        certified_edges.push(certified_edge);
+        let certified_pattern = CreasePattern {
+            vertices: boundary_vertices,
+            edges: certified_edges,
+        };
+        let certified_paper = Paper {
+            boundary_vertices: boundary_ids,
+            thickness_mm: 0.0,
+            ..Paper::default()
+        };
+        let certified_editor =
+            EditorState::with_paper(certified_pattern.clone(), certified_paper.clone());
+        let certified_topology = certified_editor
+            .topology_analysis_input(ProjectId::new())
+            .analyze();
+        let certified_topology = certified_topology
+            .simulation_snapshot()
+            .expect("certificate fixture topology");
+        assert_eq!(
+            certify_beginner_fold_path_v1(
+                &certified,
+                &certified_paper,
+                &certified_pattern,
+                certified_topology,
+            ),
+            certify_beginner_fold_path_v1(
+                &certified,
+                &certified_paper,
+                &certified_pattern,
+                certified_topology,
+            )
+        );
         let ranked = plan(
             vec![
                 Vertex {

@@ -396,7 +396,7 @@ fn segments_intersect_v1(a: [i32; 2], b: [i32; 2], c: [i32; 2], d: [i32; 2]) -> 
         orient(c, d, a),
         orient(c, d, b),
     ];
-    values.iter().any(|value| *value == 0)
+    values.contains(&0)
         || (values[0].signum() != values[1].signum() && values[2].signum() != values[3].signum())
 }
 
@@ -489,8 +489,10 @@ mod tests {
             BeginnerBodyOutlineModeV1::Symmetric
         );
 
-        let mut constraints = BeginnerGenerationConstraintsV1::default();
-        constraints.generic_body_size_tenths_mm = Some([1_200, 800]);
+        let mut constraints = BeginnerGenerationConstraintsV1 {
+            generic_body_size_tenths_mm: Some([1_200, 800]),
+            ..BeginnerGenerationConstraintsV1::default()
+        };
         let mut target = BeginnerProtrusionTargetV1 {
             id: 1,
             count: 1,
@@ -516,9 +518,15 @@ mod tests {
 
     #[test]
     fn generic_body_outline_requires_canonical_symmetric_simple_polygon() {
-        let mut constraints = BeginnerGenerationConstraintsV1::default();
-        constraints.generic_body_outline_tenths_mm =
-            Some(vec![[-100, -50], [-100, 50], [100, 50], [100, -50]]);
+        let mut constraints = BeginnerGenerationConstraintsV1 {
+            generic_body_outline_tenths_mm: Some(vec![
+                [-100, -50],
+                [-100, 50],
+                [100, 50],
+                [100, -50],
+            ]),
+            ..BeginnerGenerationConstraintsV1::default()
+        };
         assert!(validate_beginner_generation_constraints_v1(&constraints));
         constraints.generic_body_outline_tenths_mm =
             Some(vec![[100, -50], [-100, -50], [-100, 50], [100, 50]]);
@@ -533,10 +541,16 @@ mod tests {
 
     #[test]
     fn general_body_outline_is_explicit_asymmetric_and_counter_clockwise() {
-        let mut constraints = BeginnerGenerationConstraintsV1::default();
-        constraints.generic_body_outline_mode = BeginnerBodyOutlineModeV1::General;
-        constraints.generic_body_outline_tenths_mm =
-            Some(vec![[-120, -40], [80, -60], [100, 50], [-70, 80]]);
+        let mut constraints = BeginnerGenerationConstraintsV1 {
+            generic_body_outline_mode: BeginnerBodyOutlineModeV1::General,
+            generic_body_outline_tenths_mm: Some(vec![
+                [-120, -40],
+                [80, -60],
+                [100, 50],
+                [-70, 80],
+            ]),
+            ..BeginnerGenerationConstraintsV1::default()
+        };
         assert!(validate_beginner_generation_constraints_v1(&constraints));
         constraints.generic_body_outline_tenths_mm =
             Some(vec![[-120, -40], [-70, 80], [100, 50], [80, -60]]);

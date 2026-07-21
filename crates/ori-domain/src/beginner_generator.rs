@@ -850,8 +850,7 @@ pub fn generate_beginner_plans_v1(
             let ears = part_count(BeginnerTargetPartKindV1::Ear) == 2;
             let legs = part_count(BeginnerTargetPartKindV1::Leg) == 4;
             let wings = part_count(BeginnerTargetPartKindV1::Wing) == 2;
-            let known_composite = feature_records == 2
-                && (horn && tail || tail && ears || horn && ears)
+            let known_composite = feature_records == 2 && (horn && (tail || ears) || tail && ears)
                 || feature_records == 3 && horn && tail && ears
                 || feature_records == 4 && horn && tail && ears && legs
                 || feature_records == 5 && horn && tail && ears && legs && wings;
@@ -2221,7 +2220,7 @@ mod tests {
             Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)
         );
         let mut intersecting_generic = generic.clone();
-        let mut overlapping = intersecting_generic.protrusions[0].clone();
+        let mut overlapping = intersecting_generic.protrusions[0];
         overlapping.id = 2;
         intersecting_generic.protrusions[1] = overlapping;
         intersecting_generic.target_parts.last_mut().unwrap().count = 1;

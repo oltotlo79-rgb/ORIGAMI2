@@ -838,9 +838,15 @@ export function parseInstructionVisual(value: unknown): InstructionVisual | null
     arrows: Object.freeze(arrows) as InstructionVisual['arrows'],
     focus_points: Object.freeze(focusPoints) as InstructionVisual['focus_points'],
     hand_guides: Object.freeze(handGuides) as InstructionVisual['hand_guides'],
-    cycle_layer_order_proof_v1:
-      value.cycle_layer_order_proof_v1 as InstructionVisual['cycle_layer_order_proof_v1'],
-    path_certificate_reference_v1: pathCertificateReference,
+    ...(Object.prototype.hasOwnProperty.call(value, 'cycle_layer_order_proof_v1')
+      ? {
+          cycle_layer_order_proof_v1:
+            value.cycle_layer_order_proof_v1 as InstructionVisual['cycle_layer_order_proof_v1'],
+        }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(value, 'path_certificate_reference_v1')
+      ? { path_certificate_reference_v1: pathCertificateReference }
+      : {}),
   })
 }
 

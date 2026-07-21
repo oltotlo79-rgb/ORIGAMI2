@@ -35,7 +35,7 @@ struct StackedFoldTransactionSlot {
     active_generation: Option<ProjectId>,
     pending: Option<PendingStackedFoldTransaction>,
     last_cancelled: Option<ProjectId>,
-    applied_layer_order: Option<PendingStackedFoldLayerProof>,
+    applied_layer_order: Option<CurrentLayerEvidence>,
 }
 
 /// Native-only preview premises. None of the proof-bearing values is
@@ -49,7 +49,7 @@ pub(super) struct PendingStackedFoldTransaction {
     expected_pose_generation: u64,
     expected_layer_generation: u64,
     requested: PendingStackedFoldRequestedPose,
-    layer_order: Option<PendingStackedFoldLayerProof>,
+    layer_order: Option<CurrentLayerEvidence>,
     pose_capability: CurrentAppliedPoseCapability,
     layer_capability: Option<CurrentLayerOrderCapability>,
 }
@@ -347,7 +347,7 @@ pub(super) struct PendingStackedFoldGraphPremises {
     pub requested: PreparedStackedFoldRequestedGraphPoseV1,
     pub continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
     pub interval_closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
-    pub layer_order: PendingStackedFoldLayerProof,
+    pub layer_order: CurrentLayerEvidence,
     pub certified_path: Option<ori_collision::CertifiedPoseGraphPathCertificateV1>,
     pub certified_edges: Vec<PendingCertifiedPathEdgeV1>,
 }
@@ -372,12 +372,12 @@ pub(super) struct PendingCurrentCyclePosePremisesV1 {
 }
 
 #[derive(Clone)]
-pub(super) enum PendingStackedFoldLayerProof {
+pub(super) enum CurrentLayerEvidence {
     NonFlat(StackedFoldNonFlatLayerOrderV1),
     CertifiedFlat(LayerOrderSnapshot),
 }
 
-impl PendingStackedFoldLayerProof {
+impl CurrentLayerEvidence {
     fn target_revision(&self) -> u64 {
         match self {
             Self::NonFlat(value) => value.target_revision(),
@@ -461,7 +461,7 @@ pub(super) fn install_pending_stacked_fold(
             requested: premises.requested,
             continuous: premises.continuous,
         },
-        layer_order: Some(PendingStackedFoldLayerProof::NonFlat(premises.layer_order)),
+        layer_order: Some(CurrentLayerEvidence::NonFlat(premises.layer_order)),
         pose_capability,
         layer_capability: Some(layer_capability),
     };
@@ -1031,7 +1031,7 @@ fn apply_stacked_fold_transaction_with_title(
 
     let requested = &pending.requested;
     let target = requested.geometry();
-    if let (Some(target), Some(PendingStackedFoldLayerProof::CertifiedFlat(snapshot))) =
+    if let (Some(target), Some(CurrentLayerEvidence::CertifiedFlat(snapshot))) =
         (target, &pending.layer_order)
     {
         let lineage = target.proof().lineage();
@@ -1148,7 +1148,7 @@ fn apply_stacked_fold_transaction_with_title(
         .last()
         .map(|step| step.pose.clone())
         .ok_or_else(|| "The certified path timeline is inconsistent.".to_owned())?;
-    if let Some(PendingStackedFoldLayerProof::NonFlat(proof)) = &applied_layer_order {
+    if let Some(CurrentLayerEvidence::NonFlat(proof)) = &applied_layer_order {
         let target_fingerprint = fold_model_fingerprint_v1(&candidate_pattern, &candidate_paper);
         let pose_angles_match = proof.hinge_angles().len()
             == persisted_current_pose.hinge_angles.len()
@@ -1183,12 +1183,12 @@ fn apply_stacked_fold_transaction_with_title(
     drop(_pose_guard);
     reissue_target_pose_or_rollback(&mut project, &persisted_current_pose, editor_before)?;
     match (&applied_layer_order, layer_guard) {
-        (Some(PendingStackedFoldLayerProof::NonFlat(_)) | None, layer_guard) => {
+        (Some(CurrentLayerEvidence::NonFlat(_)) | None, layer_guard) => {
             if let Some(layer_guard) = layer_guard {
                 layer_guard.invalidate_after_project_mutation();
             }
         }
-        (Some(PendingStackedFoldLayerProof::CertifiedFlat(snapshot)), layer_guard) => {
+        (Some(CurrentLayerEvidence::CertifiedFlat(snapshot)), layer_guard) => {
             let layer_install_succeeded = layer_guard.is_some_and(|guard| {
                 guard
                     .install_certified_target_after_project_mutation(&project, snapshot.clone())

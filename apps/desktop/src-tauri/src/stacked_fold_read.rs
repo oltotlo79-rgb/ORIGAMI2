@@ -1890,7 +1890,7 @@ async fn propose_current_stacked_fold_read_inner(
                     let material_count = layer_order.material_faces.len();
                     let overlap_count = layer_order.overlap_cells.len();
                     (
-                        super::stacked_fold_transaction::PendingStackedFoldLayerProof::CertifiedFlat(
+                        super::stacked_fold_transaction::CurrentLayerEvidence::CertifiedFlat(
                             *layer_order,
                         ),
                         material_count,
@@ -1906,7 +1906,7 @@ async fn propose_current_stacked_fold_read_inner(
                     let material_count = layer_order.material_faces().len();
                     let overlap_count = layer_order.overlap_cell_count();
                     (
-                        super::stacked_fold_transaction::PendingStackedFoldLayerProof::NonFlat(
+                        super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(
                             layer_order,
                         ),
                         material_count,

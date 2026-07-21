@@ -287,6 +287,8 @@ jobs:
         if: matrix.platform == 'macos-arm64'
         working-directory: apps/desktop
         run: npm run bundle:macos:ci
+      - name: Verify production desktop bundle CSP contract
+        run: node .github/scripts/verify_desktop_bundle_csp.mjs apps/desktop/dist
       - name: Sign macOS application
         if: matrix.platform == 'macos-arm64' && needs.validate.outputs.mode != 'dry-run'
         env:

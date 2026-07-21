@@ -25,7 +25,7 @@ pub trait Adapter: Send {
     fn get(&mut self, url: &str, timeout_secs: u64, limit: usize) -> Result<Response, ()>;
     fn verify_signature(&mut self, name: &str, bytes: &[u8]) -> Result<bool, ()>;
     fn stage_atomic(&mut self, name: &str, bytes: &[u8]) -> Result<(), ()>;
-    fn write_pending(&mut self, sha256: &str) -> Result<(), ()>;
+    fn write_pending(&mut self, sha256: &str, asset_name: &str) -> Result<(), ()>;
     fn flush(&mut self) -> Result<(), ()>;
     fn handoff(&mut self, name: &str) -> Result<(), ()>;
     fn confirm(&mut self) -> Result<bool, ()>;
@@ -33,6 +33,7 @@ pub trait Adapter: Send {
     fn clear_pending(&mut self) -> Result<(), ()>;
     fn rollback(&mut self) -> Result<(), ()>;
     fn pending(&mut self) -> Result<bool, ()>;
+    fn was_applied(&mut self, sha256: &str) -> Result<bool, ()>;
 }
 
 pub struct ProductionAdapter {
@@ -60,12 +61,9 @@ impl Adapter for ProductionAdapter {
             return Err(());
         }
         fs::create_dir_all(&self.root).map_err(|_| ())?;
-        let output_path = self
-            .root
-            .join(format!(".http-response-{}", std::process::id()));
-        write_new_synced(&output_path, b"")?;
+        let output_path = reserve_http_output(&self.root)?;
         let limit_text = limit.to_string();
-        let output = Command::new(curl_executable())
+        let output = match Command::new(curl_executable())
             .args([
                 "--silent",
                 "--show-error",
@@ -90,7 +88,13 @@ impl Adapter for ProductionAdapter {
             .arg(&output_path)
             .args(["--write-out", "%{url_effective}", url])
             .output()
-            .map_err(|_| ())?;
+        {
+            Ok(output) => output,
+            Err(_) => {
+                let _ = fs::remove_file(&output_path);
+                return Err(());
+            }
+        };
         if !output.status.success() {
             let _ = fs::remove_file(&output_path);
             return Err(());
@@ -145,11 +149,17 @@ impl Adapter for ProductionAdapter {
         Ok(())
     }
 
-    fn write_pending(&mut self, sha256: &str) -> Result<(), ()> {
+    fn write_pending(&mut self, sha256: &str, asset_name: &str) -> Result<(), ()> {
+        ensure_safe_name(asset_name)?;
         if sha256.len() != 64 {
             return Err(());
         }
-        write_new_synced(&self.root.join("pending.sha256"), sha256.as_bytes())
+        let bytes = serde_json::to_vec(&PendingRecord {
+            sha256: sha256.to_owned(),
+            asset_name: asset_name.to_owned(),
+        })
+        .map_err(|_| ())?;
+        write_new_synced(&self.root.join("pending.json"), &bytes)
     }
     fn flush(&mut self) -> Result<(), ()> {
         File::open(&self.root)
@@ -173,7 +183,7 @@ impl Adapter for ProductionAdapter {
         write_new_synced(&applied, b"applied")
     }
     fn clear_pending(&mut self) -> Result<(), ()> {
-        match fs::remove_file(self.root.join("pending.sha256")) {
+        match fs::remove_file(self.root.join("pending.json")) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(_) => Err(()),
@@ -191,8 +201,32 @@ impl Adapter for ProductionAdapter {
         Ok(())
     }
     fn pending(&mut self) -> Result<bool, ()> {
-        Ok(self.root.join("pending.sha256").is_file())
+        let path = self.root.join("pending.json");
+        if !path.is_file() {
+            return Ok(false);
+        }
+        let bytes = fs::read(path).map_err(|_| ())?;
+        if bytes.len() > 512 {
+            return Err(());
+        }
+        let record: PendingRecord = serde_json::from_slice(&bytes).map_err(|_| ())?;
+        ensure_safe_name(&record.asset_name)?;
+        if record.sha256.len() != 64 {
+            return Err(());
+        }
+        self.staged = Some(self.root.join(record.asset_name));
+        Ok(true)
     }
+    fn was_applied(&mut self, sha256: &str) -> Result<bool, ()> {
+        Ok(self.root.join(format!("applied-{sha256}")).is_file())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PendingRecord {
+    sha256: String,
+    asset_name: String,
 }
 
 fn allowed_url(url: &str, limit: usize) -> bool {
@@ -271,6 +305,20 @@ fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), ()> {
         .and_then(|()| file.sync_all())
         .map_err(|_| ())
 }
+fn reserve_http_output(root: &Path) -> Result<PathBuf, ()> {
+    for suffix in 0_u8..16 {
+        let path = root.join(format!(".http-response-{}-{suffix}", std::process::id()));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => {
+                file.sync_all().map_err(|_| ())?;
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err(()),
+        }
+    }
+    Err(())
+}
 #[cfg(target_os = "windows")]
 fn verify_platform_signature(path: &Path) -> Result<bool, ()> {
     let escaped = path.to_string_lossy().replace('\'', "''");
@@ -278,12 +326,56 @@ fn verify_platform_signature(path: &Path) -> Result<bool, ()> {
 }
 #[cfg(target_os = "macos")]
 fn verify_platform_signature(path: &Path) -> Result<bool, ()> {
-    Command::new("codesign")
-        .args(["--verify", "--deep", "--strict", "--verbose=2"])
+    let listing = Command::new("/usr/bin/tar")
+        .args(["-tzf"])
         .arg(path)
+        .output()
+        .map_err(|_| ())?;
+    if !listing.status.success() || listing.stdout.len() > 1024 * 1024 {
+        return Ok(false);
+    }
+    let entries = String::from_utf8(listing.stdout).map_err(|_| ())?;
+    let mut count = 0_usize;
+    for entry in entries.lines() {
+        count += 1;
+        if count > 4096
+            || entry.is_empty()
+            || entry.starts_with('/')
+            || entry.contains("..")
+            || entry.contains('\\')
+            || !(entry == "ORIGAMI2.app" || entry.starts_with("ORIGAMI2.app/"))
+        {
+            return Ok(false);
+        }
+    }
+    if count == 0 {
+        return Ok(false);
+    }
+    let directory = path
+        .parent()
+        .ok_or(())?
+        .join(format!("verify-app-{}", std::process::id()));
+    fs::create_dir(&directory).map_err(|_| ())?;
+    let extracted = Command::new("/usr/bin/tar")
+        .args(["--no-same-owner", "-xzf"])
+        .arg(path)
+        .arg("-C")
+        .arg(&directory)
+        .status()
+        .map_err(|_| ())?;
+    if !extracted.success() {
+        let _ = fs::remove_dir_all(&directory);
+        return Ok(false);
+    }
+    let app = directory.join("ORIGAMI2.app");
+    let valid = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict", "--verbose=2"])
+        .arg(app)
         .status()
         .map(|status| status.success())
-        .map_err(|_| ())
+        .map_err(|_| ());
+    let _ = fs::remove_dir_all(directory);
+    valid
 }
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn verify_platform_signature(_: &Path) -> Result<bool, ()> {
@@ -529,7 +621,7 @@ impl<A: Adapter> Updater<A> {
                 .stage_atomic(&feed.asset_name, &response.body)
                 .map_err(|_| "disk")?;
             self.adapter
-                .write_pending(&feed.sha256)
+                .write_pending(&feed.sha256, &feed.asset_name)
                 .map_err(|_| "disk")?;
             self.adapter.flush().map_err(|_| "disk")
         })();
@@ -545,6 +637,9 @@ impl<A: Adapter> Updater<A> {
     pub fn apply(&mut self, version: &str, platform: &str) -> Result<&'static str, &'static str> {
         let feed = self.feed.clone().ok_or("malformed")?;
         if !self.staged || feed.version != version || feed.platform != platform {
+            return Err("rollback");
+        }
+        if self.adapter.was_applied(&feed.sha256).map_err(|_| "disk")? {
             return Err("rollback");
         }
         let result = (|| {
@@ -633,7 +728,7 @@ mod tests {
             self.events.push("stage");
             Ok(())
         }
-        fn write_pending(&mut self, _: &str) -> Result<(), ()> {
+        fn write_pending(&mut self, _: &str, _: &str) -> Result<(), ()> {
             self.events.push("journal");
             self.pending = true;
             Ok(())
@@ -665,6 +760,9 @@ mod tests {
         }
         fn pending(&mut self) -> Result<bool, ()> {
             Ok(self.pending)
+        }
+        fn was_applied(&mut self, _: &str) -> Result<bool, ()> {
+            Ok(false)
         }
     }
     fn fixture(redirected: bool, signature: bool, confirm: bool) -> Updater<Mock> {

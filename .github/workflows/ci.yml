@@ -332,34 +332,34 @@ jobs:
             : > cargo-test.log
             for package in "${packages[@]}"; do
               package_status=0
+              printf '::ORIGAMI2_CARGO_PACKAGE_BEGIN::%s\n' "$package" | tee -a cargo-test.log
               cargo test -p "$package" --locked --all-targets --no-fail-fast 2>&1 \
                 | tee -a cargo-test.log || package_status=$?
+              printf '::ORIGAMI2_CARGO_PACKAGE_END::%s::status=%s\n' "$package" "$package_status" | tee -a cargo-test.log
               if [ "$package_status" -ne 0 ]; then
+                printf '%s\n' "$package" > cargo-test-failed-package.txt
                 test_status="$package_status"
                 break
               fi
             done
           else
+            printf '%s\n' workspace > cargo-test-failed-package.txt
+            printf '::ORIGAMI2_CARGO_PACKAGE_BEGIN::workspace\n' | tee cargo-test.log
             cargo test --workspace --locked --all-targets --no-fail-fast 2>&1 \
-              | tee cargo-test.log || test_status=$?
+              | tee -a cargo-test.log || test_status=$?
+            printf '::ORIGAMI2_CARGO_PACKAGE_END::workspace::status=%s\n' "$test_status" | tee -a cargo-test.log
           fi
           if [ "$test_status" -ne 0 ]; then
+            failed_package="$(cat cargo-test-failed-package.txt)"
             failure_summary="$(
-              grep -E '(^test .* FAILED$|^failures:|panicked at|test result: FAILED|error: test failed|error: could not compile)' cargo-test.log \
-                | tail -n 24 \
+              tail -n 30 cargo-test.log \
                 | tr '\n' ' ' \
                 | sed -E 's/[[:space:]]+/ /g'
             )"
             if [ -z "$failure_summary" ]; then
-              failure_summary="$(
-                tail -n 24 cargo-test.log \
-                  | tr '\n' ' ' \
-                  | sed -E 's/[[:space:]]+/ /g'
-              )"
-            fi
-            if [ -z "$failure_summary" ]; then
               failure_summary="Rust tests failed without diagnostic output."
             fi
+            failure_summary="package=$failed_package final-30-lines: $failure_summary"
             failure_summary="${failure_summary//'%'/'%25'}"
             failure_summary="${failure_summary//$'\r'/'%0D'}"
             failure_summary="${failure_summary//$'\n'/'%0A'}"
@@ -371,6 +371,7 @@ jobs:
         shell: bash
         run: |
           sanitized_tail="$RUNNER_TEMP/rust-test-tail-${{ matrix.os }}.log"
+          failed_package="$(cat cargo-test-failed-package.txt 2>/dev/null || printf '%s' workspace)"
           tail -n 30 cargo-test.log \
             | sed $'s/\033\\[[0-9;]*[mK]//g' \
             | sed -E 's#(/Users/runner/work|[A-Za-z]:\\\\a\\\\ORIGAMI2)[^[:space:]]*#[workspace]#g' \
@@ -389,7 +390,7 @@ jobs:
           annotation="${annotation//'%'/'%25'}"
           annotation="${annotation//$'\r'/'%0D'}"
           annotation="${annotation//$'\n'/'%0A'}"
-          echo "::error title=Rust test log tail::$annotation"
+          echo "::error title=Rust test log tail ($failed_package)::package=$failed_package final-30-lines: $annotation"
       - name: Upload Rust test log
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

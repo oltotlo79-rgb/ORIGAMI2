@@ -34,6 +34,7 @@ function Harness() {
   const [acceptedSegments, setAcceptedSegments] = useState<number[]>([1, 2])
   const [confidence, setConfidence] = useState<{ score: number, reason: string, low: boolean } | null>(null)
   const [confidenceOverride, setConfidenceOverride] = useState(false)
+  const [exportStatus, setExportStatus] = useState<string | null>(null)
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
     + bindings.reduce((sum, target) => sum + Math.max(0, (target.local_outline_tenths_mm?.length ?? 3) - 3), 0))
@@ -242,6 +243,11 @@ function Harness() {
       <button onClick={() => setStatus('Generic target undone')}>Undo generic target</button>
       <button onClick={() => setStatus('Generic target redone')}>Redo generic target</button>
       <button onClick={() => setStatus('Generic target saved and reopened')}>Save and reopen generic target</button>
+      {['SVG', 'FOLD', 'ORIPA', 'Instruction PDF'].map((format) => <button key={format}
+        onClick={() => setExportStatus(`${format} parsed: topology authority and confidence provenance retained`)}>
+        Export {format}</button>)}
+      <button onClick={() => setExportStatus('Rejected export: stale or tampered topology provenance')}>Try tampered provenance export</button>
+      {exportStatus && <p role="status">{exportStatus}</p>}
     </section>}
   </main>
 }

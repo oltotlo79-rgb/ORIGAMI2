@@ -169,6 +169,12 @@ try {
     await page.getByText('Applied merged authority witness: image contours + GLB depth/bulges', { exact: true }).waitFor()
     await page.getByText('Applied 3D candidate score 68/100 · depth error 7 mm', { exact: true }).waitFor()
   }
+  for (const format of ['SVG', 'FOLD', 'ORIPA', 'Instruction PDF']) {
+    await page.getByRole('button', { name: `Export ${format}` }).click()
+    await page.getByText(`${format} parsed: topology authority and confidence provenance retained`, { exact: true }).waitFor()
+  }
+  await page.getByRole('button', { name: 'Try tampered provenance export' }).click()
+  await page.getByText('Rejected export: stale or tampered topology provenance', { exact: true }).waitFor()
   console.log('generic target browser E2E passed: image/GLB, add/remove/reorder bounds, stale/cancel, apply history/save')
 } finally { await browser?.close(); server.kill('SIGTERM') }
 async function assertBindings(page) {

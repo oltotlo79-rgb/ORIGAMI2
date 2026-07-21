@@ -1561,6 +1561,7 @@ mod tests {
     fn typed_generation_provenance_is_embedded_in_every_export() {
         let (pattern, paper) = sample_pattern();
         let provenance = BeginnerGenerationProvenanceV1 {
+            fold_path_certificate_sha256: None,
             schema_version: 1,
             topology_authority_sha256: [0xabu8; 32],
             confidence_score: 87,
@@ -1613,6 +1614,7 @@ mod tests {
     fn generation_provenance_reader_rejects_ambiguous_or_tampered_metadata() {
         let (pattern, paper) = sample_pattern();
         let provenance = BeginnerGenerationProvenanceV1 {
+            fold_path_certificate_sha256: None,
             schema_version: 1,
             topology_authority_sha256: [7; 32],
             confidence_score: 91,

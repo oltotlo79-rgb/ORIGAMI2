@@ -870,6 +870,7 @@ mod tests {
     fn desktop_export_preserves_typed_generation_provenance() {
         let project = super::super::initial_project_state();
         let provenance = ori_domain::BeginnerGenerationProvenanceV1 {
+            fold_path_certificate_sha256: None,
             schema_version: 1,
             topology_authority_sha256: [0x5a; 32],
             confidence_score: 73,

@@ -34,6 +34,8 @@ pub struct BeginnerDesignProfileV1 {
 pub struct BeginnerGenerationProvenanceV1 {
     pub schema_version: u32,
     pub topology_authority_sha256: [u8; 32],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fold_path_certificate_sha256: Option<[u8; 32]>,
     pub confidence_score: u8,
     pub confidence_reasons: Vec<String>,
     pub explicit_override: bool,

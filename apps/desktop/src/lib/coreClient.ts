@@ -204,7 +204,8 @@ export type BeginnerDesignProfileV1 = {
   paper_efficiency_weight: number
   generation_constraints: BeginnerGenerationConstraintsV1
   generation_provenance?: Readonly<{
-    schema_version: 1; topology_authority_sha256: ReadonlyArray<number>; confidence_score: number
+    schema_version: 1; topology_authority_sha256: ReadonlyArray<number>
+    fold_path_certificate_sha256?: ReadonlyArray<number>; confidence_score: number
     confidence_reasons: ReadonlyArray<string>; explicit_override: boolean; source_asset_fingerprint: string
   }>
   reference_surface_landmarks_tenths_mm?: ReadonlyArray<readonly [number, number, number]>
@@ -1075,11 +1076,14 @@ export function normalizeBeginnerDesignProfile(
   const generationConstraints = normalizeBeginnerGenerationConstraints(record.generation_constraints)
   if (!generationConstraints) return null
   const provenance = record.generation_provenance === undefined ? null : exactCoreDataRecord(
-    record.generation_provenance, ['schema_version', 'topology_authority_sha256', 'confidence_score',
+    record.generation_provenance, ['schema_version', 'topology_authority_sha256', 'fold_path_certificate_sha256', 'confidence_score',
       'confidence_reasons', 'explicit_override', 'source_asset_fingerprint'] as const)
   if (record.generation_provenance !== undefined && (!provenance || provenance.schema_version !== 1
     || !Array.isArray(provenance.topology_authority_sha256) || provenance.topology_authority_sha256.length !== 32
     || provenance.topology_authority_sha256.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
+    || (provenance.fold_path_certificate_sha256 !== undefined
+      && (!Array.isArray(provenance.fold_path_certificate_sha256) || provenance.fold_path_certificate_sha256.length !== 32
+        || provenance.fold_path_certificate_sha256.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)))
     || !Number.isInteger(provenance.confidence_score) || Number(provenance.confidence_score) < 0 || Number(provenance.confidence_score) > 100
     || !Array.isArray(provenance.confidence_reasons) || provenance.confidence_reasons.length > 8
     || provenance.confidence_reasons.some((reason) => typeof reason !== 'string' || reason.length < 1 || reason.length > 64)
@@ -1104,6 +1108,11 @@ export function normalizeBeginnerDesignProfile(
       topology_authority_sha256: Object.freeze(
         (provenance.topology_authority_sha256 as unknown[]).map(Number),
       ) as ReadonlyArray<number>,
+      ...(provenance.fold_path_certificate_sha256 === undefined ? {} : {
+        fold_path_certificate_sha256: Object.freeze(
+          (provenance.fold_path_certificate_sha256 as unknown[]).map(Number),
+        ) as ReadonlyArray<number>,
+      }),
       confidence_score: Number(provenance.confidence_score),
       confidence_reasons: Object.freeze((provenance.confidence_reasons as string[]).slice()),
       explicit_override: provenance.explicit_override as boolean,

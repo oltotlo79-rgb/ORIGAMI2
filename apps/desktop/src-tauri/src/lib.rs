@@ -4148,7 +4148,30 @@ fn apply_beginner_generated_plan(
     });
     let paper = project.editor.paper().clone();
     let project_layers = project.editor.project_layers().clone();
-    let beginner_design_profile = project.editor.beginner_design_profile().clone();
+    let mut beginner_design_profile = project.editor.beginner_design_profile().clone();
+    let topology_authority_sha256: [u8; 32] = sha2::Sha256::digest(
+        serde_json::to_vec(&certificate_pattern)
+            .map_err(|_| "the generated plan topology could not be bound".to_owned())?,
+    )
+    .into();
+    beginner_design_profile.generation_provenance =
+        Some(ori_domain::BeginnerGenerationProvenanceV1 {
+            schema_version: 1,
+            topology_authority_sha256,
+            fold_path_certificate_sha256: Some(fold_path_certificate_sha256),
+            confidence_score: ori_domain::beginner_target_approximation_score_v1(
+                &beginner_design_profile.generation_constraints,
+            ),
+            confidence_reasons: vec![
+                "native_topology_witness".to_owned(),
+                "bounded_native_fold_path_v2".to_owned(),
+            ],
+            explicit_override: false,
+            source_asset_fingerprint: beginner_design_profile
+                .generation_constraints
+                .target_asset
+                .map_or_else(|| "none".to_owned(), |asset| format!("{asset:?}")),
+        });
     execute_command(
         &mut project,
         expected_project_instance_id,
@@ -4469,7 +4492,7 @@ fn apply_grid_plan_document(
         Some(ori_domain::BeginnerGenerationProvenanceV1 {
             schema_version: 1,
             topology_authority_sha256: topology_witness.topology_authority_hash,
-            fold_path_certificate_sha256: Some(fold_path_certificate_sha256),
+            fold_path_certificate_sha256: None,
             confidence_score: ori_domain::beginner_target_approximation_score_v1(
                 &beginner_design_profile.generation_constraints,
             ),

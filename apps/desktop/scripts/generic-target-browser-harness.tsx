@@ -18,6 +18,7 @@ function Harness() {
   const [recognized, setRecognized] = useState(false), [preview, setPreview] = useState(false)
   const [status, setStatus] = useState('Waiting for image or GLB'), [applied, setApplied] = useState(false)
   const [bindings, setBindings] = useState([...initialBindings])
+  const [kinds, setKinds] = useState<Array<'leg' | 'horn' | 'ear' | 'wing' | 'fin' | 'antenna' | 'tail'>>(['tail', 'fin'])
   const evaluate = useRef<HTMLButtonElement>(null)
   const focus = () => requestAnimationFrame(() => evaluate.current?.focus())
   const canonicalize = (targets: typeof bindings) => targets.map(
@@ -28,10 +29,16 @@ function Harness() {
     if (destination < 0 || destination >= current.length) return current
     const moved = [...current]
     ;[moved[index], moved[destination]] = [moved[destination]!, moved[index]!]
+    setKinds((currentKinds) => {
+      const movedKinds = [...currentKinds]
+      ;[movedKinds[index], movedKinds[destination]] = [movedKinds[destination]!, movedKinds[index]!]
+      return movedKinds
+    })
     return canonicalize(moved)
   })
   const recognize = (source: string) => {
     setBindings(initialBindings.map((target) => ({ ...target })))
+    setKinds(['tail', 'fin'])
     setRecognized(true); setPreview(false); setStatus(`${source} recognized two bounded bindings`)
   }
   return <main><h1>Bounded generic target</h1>
@@ -39,14 +46,21 @@ function Harness() {
     <button onClick={() => recognize('GLB')}>Recognize mixed target GLB</button>
     <button onClick={() => { setRecognized(false); setPreview(false); setStatus('Rejected: target exceeds eight bindings') }}>Try oversized target</button>
     <p role="status">{status}</p>
-    {recognized && <button disabled={bindings.length >= 8} onClick={() => setBindings((current) =>
-      canonicalize([...current, { ...initialBindings[0]!, id: current.length + 1 }]))}>Add binding</button>}
+    {recognized && <button disabled={bindings.length >= 8} onClick={() => {
+      setBindings((current) => canonicalize([...current, { ...initialBindings[0]!, id: current.length + 1 }]))
+      setKinds((current) => [...current, 'tail'])
+    }}>Add binding</button>}
     {recognized && <GenericTargetBindingList locale="en" protrusions={[...bindings]} />}
     {recognized && <ul aria-label="Editable generic target dimensions">{bindings.map((target, index) =>
       <ProtrusionDimensionEditor key={target.id} locale="en" target={target}
+        kind={kinds[index] ?? 'tail'} onKindChange={(kind) => setKinds((current) =>
+          current.map((item, kindIndex) => kindIndex === index ? kind : item))}
         onChange={(changed) => setBindings((current) => current.map((item) => item.id === changed.id ? changed : item))}
-        onRemove={() => setBindings((current) => current.length <= 2 ? current
-          : canonicalize(current.filter((item) => item.id !== target.id)))}
+        onRemove={() => setBindings((current) => {
+          if (current.length <= 2) return current
+          setKinds((currentKinds) => currentKinds.filter((_, kindIndex) => kindIndex !== index))
+          return canonicalize(current.filter((item) => item.id !== target.id))
+        })}
         canRemove={bindings.length > 2}
         canMoveUp={index > 0} canMoveDown={index + 1 < bindings.length}
         onMoveUp={() => move(index, -1)} onMoveDown={() => move(index, 1)} />

@@ -18,6 +18,8 @@ describe('ProtrusionDimensionEditor', () => {
     expect(change).toHaveBeenCalledWith(expect.objectContaining({ length_tenths_mm: 255 }))
     fireEvent.change(screen.getByLabelText('Thickness binding 1 (mm)'), { target: { value: '0' } })
     expect(change).toHaveBeenCalledTimes(1)
+    fireEvent.change(screen.getByLabelText('Symmetry binding 1'), { target: { value: 'bilateral' } })
+    expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ symmetry: 'bilateral', count: 2 }))
   })
   it('renders bilateral semantics in Japanese and removes explicitly', () => {
     const remove = vi.fn()
@@ -40,5 +42,12 @@ describe('ProtrusionDimensionEditor', () => {
     fireEvent.click(down)
     expect(moveUp).not.toHaveBeenCalled()
     expect(moveDown).toHaveBeenCalledOnce()
+  })
+  it('edits the bound part kind without changing dimensions', () => {
+    const kindChange = vi.fn()
+    render(<ul><ProtrusionDimensionEditor locale="en" target={target} kind="tail"
+      onKindChange={kindChange} onChange={() => {}} onRemove={() => {}} /></ul>)
+    fireEvent.change(screen.getByLabelText('Part kind binding 1'), { target: { value: 'wing' } })
+    expect(kindChange).toHaveBeenCalledWith('wing')
   })
 })

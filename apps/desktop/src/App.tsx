@@ -740,6 +740,8 @@ function App() {
     useState<BeginnerDesignProfileV1['generation_constraints']['skeleton_segments']>([])
   const [beginnerProtrusions, setBeginnerProtrusions] =
     useState<NonNullable<BeginnerDesignProfileV1['generation_constraints']['protrusions']>>([])
+  const [beginnerProtrusionKinds, setBeginnerProtrusionKinds] =
+    useState<Array<BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']>>([])
   const [beginnerBulgeTargets, setBeginnerBulgeTargets] =
     useState<NonNullable<BeginnerDesignProfileV1['generation_constraints']['bulge_targets']>>([])
   const beginnerCandidateRequestRef = useRef(0)
@@ -780,6 +782,11 @@ function App() {
     )
     setBeginnerProtrusions(
       nativeSnapshot?.beginner_design_profile.generation_constraints.protrusions ?? [],
+    )
+    setBeginnerProtrusionKinds(
+      nativeSnapshot?.beginner_design_profile.generation_constraints.target_parts
+        .filter((part) => part.kind !== 'head' && part.kind !== 'torso')
+        .map((part) => part.kind) ?? [],
     )
     setBeginnerBulgeTargets(
       nativeSnapshot?.beginner_design_profile.generation_constraints.bulge_targets ?? [],
@@ -3625,12 +3632,21 @@ function App() {
     const targetUnderlayId = String(data.get('target_reference_underlay'))
     const targetUnderlay = current.underlays?.underlays
       .find((underlay) => underlay.id === targetUnderlayId)
-    const targetParts = ([
+    const formTargetParts = ([
       'head', 'torso', 'leg', 'horn', 'ear', 'wing', 'fin', 'antenna', 'tail',
     ] as const).map((kind) => ({
       kind,
       count: Number(data.get(`target_part_${kind}`)),
     })).filter((part) => part.count > 0)
+    const targetParts = beginnerProtrusions.length >= 2
+      && beginnerProtrusionKinds.length === beginnerProtrusions.length
+      ? [
+          ...formTargetParts.filter((part) => part.kind === 'head' || part.kind === 'torso'),
+          ...beginnerProtrusions.map((target, index) => ({
+            kind: beginnerProtrusionKinds[index]!, count: target.count,
+          })),
+        ]
+      : formTargetParts
     const allowedTechniques = data.getAll('allowed_techniques').map(String)
     const generationConstraints = {
       schema_version: 1 as const,
@@ -4019,6 +4035,9 @@ function App() {
       side: String(data.get('protrusion_side')) as 'front' | 'back' | 'either',
       priority,
     }])
+    setBeginnerProtrusionKinds((kinds) => [
+      ...beginnerProtrusions.map((_, index) => kinds[index] ?? 'tail'), 'tail',
+    ])
   }
 
   function addBeginnerBulgeTarget(form: HTMLFormElement) {
@@ -8668,26 +8687,48 @@ function App() {
                   <ul aria-label={text({ ja: '突起目標一覧', en: 'Protrusion target list' })}>
                     {beginnerProtrusions.map((target, index) => (
                       <ProtrusionDimensionEditor key={target.id} locale={locale} target={target}
+                        kind={beginnerProtrusionKinds[index] ?? 'tail'}
+                        onKindChange={(kind) => setBeginnerProtrusionKinds((kinds) =>
+                          kinds.length === beginnerProtrusions.length
+                            ? kinds.map((item, kindIndex) => kindIndex === index ? kind : item)
+                            : beginnerProtrusions.map((_, kindIndex) => kindIndex === index ? kind : 'tail'))}
                         onChange={(changed) => setBeginnerProtrusions((targets) => targets.map(
                           (item) => item.id === changed.id ? changed : item,
                         ))}
-                        onRemove={() => setBeginnerProtrusions(
-                          (targets) => targets.filter((item) => item.id !== target.id)
-                            .map((item, canonicalIndex) => ({ ...item, id: canonicalIndex + 1 })),
-                        )}
+                        onRemove={() => {
+                          setBeginnerProtrusions((targets) => targets.filter((item) => item.id !== target.id)
+                            .map((item, canonicalIndex) => ({ ...item, id: canonicalIndex + 1 })))
+                          setBeginnerProtrusionKinds((kinds) => kinds.filter((_, kindIndex) => kindIndex !== index))
+                        }}
                         canMoveUp={index > 0} canMoveDown={index + 1 < beginnerProtrusions.length}
-                        onMoveUp={() => setBeginnerProtrusions((targets) => {
-                          if (index === 0) return targets
-                          const moved = [...targets]
-                          ;[moved[index - 1], moved[index]] = [moved[index]!, moved[index - 1]!]
-                          return moved.map((item, canonicalIndex) => ({ ...item, id: canonicalIndex + 1 }))
-                        })}
-                        onMoveDown={() => setBeginnerProtrusions((targets) => {
-                          if (index + 1 >= targets.length) return targets
-                          const moved = [...targets]
-                          ;[moved[index], moved[index + 1]] = [moved[index + 1]!, moved[index]!]
-                          return moved.map((item, canonicalIndex) => ({ ...item, id: canonicalIndex + 1 }))
-                        })} />
+                        onMoveUp={() => {
+                          setBeginnerProtrusions((targets) => {
+                            if (index === 0) return targets
+                            const moved = [...targets]
+                            ;[moved[index - 1], moved[index]] = [moved[index]!, moved[index - 1]!]
+                            return moved.map((item, canonicalIndex) => ({ ...item, id: canonicalIndex + 1 }))
+                          })
+                          setBeginnerProtrusionKinds((kinds) => {
+                            if (index === 0) return kinds
+                            const moved = [...kinds]
+                            ;[moved[index - 1], moved[index]] = [moved[index]!, moved[index - 1]!]
+                            return moved
+                          })
+                        }}
+                        onMoveDown={() => {
+                          setBeginnerProtrusions((targets) => {
+                            if (index + 1 >= targets.length) return targets
+                            const moved = [...targets]
+                            ;[moved[index], moved[index + 1]] = [moved[index + 1]!, moved[index]!]
+                            return moved.map((item, canonicalIndex) => ({ ...item, id: canonicalIndex + 1 }))
+                          })
+                          setBeginnerProtrusionKinds((kinds) => {
+                            if (index + 1 >= kinds.length) return kinds
+                            const moved = [...kinds]
+                            ;[moved[index], moved[index + 1]] = [moved[index + 1]!, moved[index]!]
+                            return moved
+                          })
+                        }} />
                     ))}
                   </ul>
                 </fieldset>

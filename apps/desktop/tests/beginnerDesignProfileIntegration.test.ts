@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const app = source('../src/App.tsx')
+const protrusionEditor = source('../src/components/ProtrusionDimensionEditor.tsx')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
 const domain = source('../../../crates/ori-domain/src/beginner_design.rs')
@@ -174,6 +175,17 @@ test('AUT-006 stores every bounded protrusion target attribute in profile histor
   assert.match(app, /protrusions=\{beginnerProtrusions\}/u)
   assert.match(app, /onBodyOutlineChange=\{setBeginnerBodyOutline\}/u)
   assert.match(app, /onProtrusionChange=\{\(changed\)/u)
+})
+
+test('feature constraints remain individually editable and comparable before generation', () => {
+  assert.match(app, /Feature constraint comparison/u)
+  assert.match(app, /target\.motion_degrees\.join/u)
+  assert.match(protrusionEditor, /Curvature binding/u)
+  assert.match(protrusionEditor, /Motion minimum binding/u)
+  assert.match(protrusionEditor, /Motion maximum binding/u)
+  assert.match(protrusionEditor, /Joint binding/u)
+  assert.match(protrusionEditor, /Side binding/u)
+  assert.match(protrusionEditor, /Priority binding/u)
 })
 
 test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticity', () => {

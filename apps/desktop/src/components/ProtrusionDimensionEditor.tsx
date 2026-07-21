@@ -52,6 +52,12 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
     if (direction.every((component) => component === 0)) return
     onChange({ ...target, direction_milli: direction })
   }
+  const updateMotion = (index: 0 | 1, value: number) => {
+    if (!Number.isInteger(value) || value < -360 || value > 360) return
+    const motion = [...target.motion_degrees] as [number, number]
+    motion[index] = value
+    if (motion[0] <= motion[1]) onChange({ ...target, motion_degrees: motion })
+  }
   const symmetry = locale === 'ja'
     ? target.symmetry === 'none' ? '非対称単独' : '左右対称'
     : target.symmetry === 'none' ? 'Asymmetric single' : 'Bilateral'
@@ -128,6 +134,27 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
         value={target.direction_milli[1] / 1_000}
         onChange={(event) => updateDirection(1, Number(event.currentTarget.value))} />
     </label>
+    <label>Curvature (degrees)<input type="number" min="-360" max="360" step="1"
+      aria-label={`Curvature binding ${target.id} (degrees)`} value={target.curvature_degrees}
+      onChange={(event) => { const value = Number(event.currentTarget.value)
+        if (Number.isInteger(value) && value >= -360 && value <= 360) onChange({ ...target, curvature_degrees: value }) }} /></label>
+    <label>Motion minimum (degrees)<input type="number" min="-360" max="360" step="1"
+      aria-label={`Motion minimum binding ${target.id} (degrees)`} value={target.motion_degrees[0]}
+      onChange={(event) => updateMotion(0, Number(event.currentTarget.value))} /></label>
+    <label>Motion maximum (degrees)<input type="number" min="-360" max="360" step="1"
+      aria-label={`Motion maximum binding ${target.id} (degrees)`} value={target.motion_degrees[1]}
+      onChange={(event) => updateMotion(1, Number(event.currentTarget.value))} /></label>
+    <label>Joint<select aria-label={`Joint binding ${target.id}`} value={target.joint}
+      onChange={(event) => onChange({ ...target, joint: event.currentTarget.value as Protrusion['joint'] })}>
+      <option value="fixed">fixed</option><option value="hinge">hinge</option><option value="ball">ball</option>
+    </select></label>
+    <label>Side<select aria-label={`Side binding ${target.id}`} value={target.side}
+      onChange={(event) => onChange({ ...target, side: event.currentTarget.value as Protrusion['side'] })}>
+      <option value="front">front</option><option value="back">back</option><option value="either">either</option>
+    </select></label>
+    <label>Priority<input type="number" min="1" max="100" step="1" aria-label={`Priority binding ${target.id}`}
+      value={target.priority} onChange={(event) => { const priority = Number(event.currentTarget.value)
+        if (Number.isInteger(priority) && priority >= 1 && priority <= 100) onChange({ ...target, priority }) }} /></label>
     <ProtrusionLocalOutlineEditor locale={locale} bindingId={target.id}
       symmetry={target.symmetry} points={target.local_outline_tenths_mm ?? []}
       onChange={(points) => {

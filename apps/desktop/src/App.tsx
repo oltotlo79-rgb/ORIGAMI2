@@ -9250,6 +9250,16 @@ function App() {
                     onClick={createEmptyGenericTarget}>
                     {text({ ja: '空の汎用目標を新規作成', en: 'Create empty generic target' })}
                   </button>}
+                  {beginnerProtrusions.length > 0 && <table aria-label="Feature constraint comparison">
+                    <thead><tr><th>Feature</th><th>Length</th><th>Thickness</th><th>Joint</th>
+                      <th>Motion</th><th>Side</th><th>Priority</th></tr></thead>
+                    <tbody>{beginnerProtrusions.map((target, index) => <tr key={target.id}>
+                      <td>{beginnerProtrusionKinds[index] ?? 'tail'} #{target.id}</td>
+                      <td>{target.length_tenths_mm / 10} mm</td><td>{target.thickness_tenths_mm / 10} mm</td>
+                      <td>{target.joint}</td><td>{target.motion_degrees.join('..')}°</td>
+                      <td>{target.side}</td><td>{target.priority}/100</td>
+                    </tr>)}</tbody>
+                  </table>}
                   <ul aria-label={text({ ja: '突起目標一覧', en: 'Protrusion target list' })}>
                     {beginnerProtrusions.map((target, index) => (
                       <ProtrusionDimensionEditor key={target.id} locale={locale} target={target}

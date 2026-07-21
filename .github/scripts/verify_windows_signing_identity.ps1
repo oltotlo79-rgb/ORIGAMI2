@@ -43,6 +43,8 @@ try {
         throw 'Windows Authenticode policy, chain, or RFC 3161 timestamp verification failed.'
     }
 } finally {
-    Remove-Item -LiteralPath $verificationLog -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $verificationLog) {
+        Remove-Item -LiteralPath $verificationLog -Force -ErrorAction Stop
+    }
 }
 Write-Output 'Verified Windows Authenticode identity, chain, and RFC 3161 timestamp.'

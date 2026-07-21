@@ -142,7 +142,10 @@ jobs:
             & .\..\..\.github\scripts\verify_windows_signing_identity.ps1 `
               -File $file -Certificate $certificate
           } finally {
-            Remove-Item -LiteralPath $certificate -Force -ErrorAction SilentlyContinue
+            $env:WINDOWS_CERTIFICATE_PASSWORD = $null
+            if (Test-Path -LiteralPath $certificate) {
+              Remove-Item -LiteralPath $certificate -Force -ErrorAction Stop
+            }
           }
       - name: Bundle Windows installer around the tested executable
         if: matrix.platform == 'windows-x64'
@@ -172,7 +175,20 @@ jobs:
             & .\..\..\.github\scripts\verify_windows_signing_identity.ps1 `
               -File $file -Certificate $certificate
           } finally {
-            Remove-Item -LiteralPath $certificate -Force -ErrorAction SilentlyContinue
+            $env:WINDOWS_CERTIFICATE_PASSWORD = $null
+            if (Test-Path -LiteralPath $certificate) {
+              Remove-Item -LiteralPath $certificate -Force -ErrorAction Stop
+            }
+          }
+      - name: Cleanup Windows signing material after every outcome
+        if: always() && matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $certificate = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
+          $verificationLog = Join-Path $env:RUNNER_TEMP 'windows-signature-verification.log'
+          foreach ($path in @($certificate, $verificationLog)) {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
           }
       - name: Verify Windows installer and portable executable contract
         if: matrix.platform == 'windows-x64'
@@ -207,10 +223,18 @@ jobs:
           keychain="$RUNNER_TEMP/origami2-signing.keychain-db"
           certificate="$RUNNER_TEMP/apple-signing.p12"
           cleanup_signing_material() {
-            security delete-keychain "$keychain" >/dev/null 2>&1 || true
-            rm -f -- "$certificate"
+            status="$1"
+            trap - EXIT HUP INT TERM
+            cleanup_status=0
+            security delete-keychain "$keychain" >/dev/null 2>&1 || cleanup_status=$?
+            rm -f -- "$certificate" || cleanup_status=$?
+            [ "$status" -ne 0 ] && exit "$status"
+            exit "$cleanup_status"
           }
-          trap cleanup_signing_material EXIT
+          trap 'cleanup_signing_material $?' EXIT
+          trap 'cleanup_signing_material 129' HUP
+          trap 'cleanup_signing_material 130' INT
+          trap 'cleanup_signing_material 143' TERM
           echo "$CERTIFICATE_BASE64" | base64 --decode > "$certificate"
           security create-keychain -p temporary "$keychain"
           security unlock-keychain -p temporary "$keychain"
@@ -237,7 +261,18 @@ jobs:
           echo "::add-mask::$APPLE_NOTARY_ISSUER_ID"
           key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
           archive="$RUNNER_TEMP/ORIGAMI2-notarization.zip"
-          trap 'rm -f -- "$key" "$archive"' EXIT
+          cleanup_notary_material() {
+            status="$1"
+            trap - EXIT HUP INT TERM
+            cleanup_status=0
+            rm -f -- "$key" "$archive" || cleanup_status=$?
+            [ "$status" -ne 0 ] && exit "$status"
+            exit "$cleanup_status"
+          }
+          trap 'cleanup_notary_material $?' EXIT
+          trap 'cleanup_notary_material 129' HUP
+          trap 'cleanup_notary_material 130' INT
+          trap 'cleanup_notary_material 143' TERM
           echo "$APPLE_NOTARY_KEY_BASE64" | base64 --decode > "$key"
           chmod 600 "$key"
           ditto -c -k --keepParent target/release/bundle/macos/ORIGAMI2.app "$archive"
@@ -246,6 +281,19 @@ jobs:
           xcrun stapler staple target/release/bundle/macos/ORIGAMI2.app
           xcrun stapler validate target/release/bundle/macos/ORIGAMI2.app
           spctl --assess --type execute target/release/bundle/macos/ORIGAMI2.app
+      - name: Cleanup Apple signing and notarization material after every outcome
+        if: always() && matrix.platform == 'macos-arm64' && needs.validate.outputs.mode != 'dry-run'
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/origami2-signing.keychain-db"
+          certificate="$RUNNER_TEMP/apple-signing.p12"
+          archive="$RUNNER_TEMP/ORIGAMI2-notarization.zip"
+          if [ -e "$keychain" ]; then security delete-keychain "$keychain" >/dev/null 2>&1; fi
+          rm -f -- "$certificate" "$archive" "$RUNNER_TEMP"/AuthKey_*.p8
+          test ! -e "$keychain"
+          test ! -e "$certificate"
+          test ! -e "$archive"
+          ! compgen -G "$RUNNER_TEMP/AuthKey_*.p8" >/dev/null
       - name: Verify macOS application bundle contract
         if: matrix.platform == 'macos-arm64'
         shell: bash
@@ -424,6 +472,10 @@ jobs:
             "$RUNNER_TEMP"/formal-release-*.zip.sha256 \
             "$RUNNER_TEMP"/formal-release-*.zip.entries \
             "$RUNNER_TEMP"/formal-release-*.headers
+          test ! -e "$RUNNER_TEMP/formal-release-artifacts.json"
+          test ! -e "$RUNNER_TEMP/formal-release-artifacts.headers"
+          ! compgen -G "$RUNNER_TEMP/formal-release-*.zip" >/dev/null
+          ! compgen -G "$RUNNER_TEMP/formal-release-*.headers" >/dev/null
       - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: |

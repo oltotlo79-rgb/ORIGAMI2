@@ -46,6 +46,173 @@ pub enum BookFoldMotionError {
     InvalidTimeline,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReverseFoldKindV1 {
+    Inside,
+    Outside,
+}
+
+pub struct ReverseFoldMotionRequestV1<'a> {
+    pub technique_file: &'a FoldTechniqueFileV1,
+    pub technique_id: &'a str,
+    pub kind: ReverseFoldKindV1,
+    pub source_model_fingerprint: &'a str,
+    pub fixed_face: FaceId,
+    pub first_edge: EdgeId,
+    pub second_edge: EdgeId,
+    pub source_hinge_angles: &'a [InstructionHingeAngle],
+    pub intermediate_angle_microdegrees: i64,
+    pub target_angle_microdegrees: i64,
+    pub first_path_certificate: &'a CertifiedPoseGraphPathCertificateV1,
+    pub second_path_certificate: &'a CertifiedPoseGraphPathCertificateV1,
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum ReverseFoldMotionError {
+    #[error("the requested named technique is not the selected reverse-fold kind")]
+    UnsupportedTechnique,
+    #[error("a reverse-fold angle is outside the native instruction boundary")]
+    InvalidAngle,
+    #[error("the source pose is invalid")]
+    InvalidSourcePose,
+    #[error("a path segment is empty, discontinuous, stale, or endpoint-mismatched")]
+    PathSegmentMismatch,
+    #[error("the compiled reverse-fold timeline failed validation")]
+    InvalidTimeline,
+}
+
+/// Compiles an inside/outside reverse fold as two independently certified
+/// native path segments. The intermediate endpoint is hashed once and must be
+/// exactly the target of segment one and source of segment two.
+pub fn compile_certified_reverse_fold_timeline_v1(
+    request: ReverseFoldMotionRequestV1<'_>,
+) -> Result<InstructionTimeline, ReverseFoldMotionError> {
+    let technique = request
+        .technique_file
+        .document()
+        .techniques
+        .iter()
+        .find(|technique| technique.id == request.technique_id)
+        .ok_or(ReverseFoldMotionError::UnsupportedTechnique)?;
+    let expected_action = |action: &FoldTechniqueActionV1| match request.kind {
+        ReverseFoldKindV1::Inside => matches!(action, FoldTechniqueActionV1::InsideReverseFold),
+        ReverseFoldKindV1::Outside => matches!(action, FoldTechniqueActionV1::OutsideReverseFold),
+    };
+    let physical = technique
+        .operations
+        .iter()
+        .filter(|operation| expected_action(&operation.action))
+        .collect::<Vec<_>>();
+    let expected_capability = match request.kind {
+        ReverseFoldKindV1::Inside => FoldTechniqueCapabilityV1::InsideReverseFoldMotionV1,
+        ReverseFoldKindV1::Outside => FoldTechniqueCapabilityV1::OutsideReverseFoldMotionV1,
+    };
+    if physical.len() != 1
+        || !physical[0]
+            .required_capabilities
+            .contains(&expected_capability)
+    {
+        return Err(ReverseFoldMotionError::UnsupportedTechnique);
+    }
+    if request.first_edge == request.second_edge
+        || !(0..=180_000_000).contains(&request.intermediate_angle_microdegrees)
+        || !(0..=180_000_000).contains(&request.target_angle_microdegrees)
+    {
+        return Err(ReverseFoldMotionError::InvalidAngle);
+    }
+    let mut source = request.source_hinge_angles.to_vec();
+    source.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
+    if source.windows(2).any(|pair| pair[0].edge == pair[1].edge)
+        || !source.iter().all(|hinge| hinge.angle_degrees.is_finite())
+        || request.source_model_fingerprint.len() != 64
+    {
+        return Err(ReverseFoldMotionError::InvalidSourcePose);
+    }
+    let mut intermediate = source.clone();
+    set_hinge_angle(
+        &mut intermediate,
+        request.first_edge,
+        request.intermediate_angle_microdegrees,
+    );
+    let mut target = intermediate.clone();
+    set_hinge_angle(
+        &mut target,
+        request.second_edge,
+        request.target_angle_microdegrees,
+    );
+    let fingerprint = |angles: &[InstructionHingeAngle]| {
+        instruction_pose_fingerprint_v1(
+            request.source_model_fingerprint,
+            request.fixed_face,
+            angles,
+        )
+    };
+    let source_hash = fingerprint(&source);
+    let intermediate_hash = fingerprint(&intermediate);
+    let target_hash = fingerprint(&target);
+    let first = request.first_path_certificate;
+    let second = request.second_path_certificate;
+    if first.edges().is_empty()
+        || second.edges().is_empty()
+        || first.source() != source_hash
+        || first.target() != intermediate_hash
+        || second.source() != intermediate_hash
+        || second.target() != target_hash
+        || first.target() != second.source()
+    {
+        return Err(ReverseFoldMotionError::PathSegmentMismatch);
+    }
+    let title = technique
+        .names
+        .iter()
+        .find(|text| text.locale == "ja")
+        .or_else(|| technique.names.first())
+        .map(|text| text.text.clone())
+        .ok_or(ReverseFoldMotionError::UnsupportedTechnique)?;
+    let pose = |hinge_angles| InstructionPose {
+        model: InstructionPoseModel::AbsoluteHingeAnglesV1,
+        source_model_fingerprint: request.source_model_fingerprint.to_owned(),
+        fixed_face: Some(request.fixed_face),
+        hinge_angles,
+    };
+    let step = |suffix: &str, description: &str, angles| InstructionStep {
+        id: InstructionStepId::new(),
+        title: format!("{title}：{suffix}"),
+        description: description.to_owned(),
+        caution: "認証済みの2区間を順番どおりに操作してください。".to_owned(),
+        duration_ms: 1_000,
+        visual: InstructionVisual::default(),
+        pose: pose(angles),
+    };
+    let timeline = InstructionTimeline {
+        steps: vec![
+            step("開始", "逆折りの開始姿勢です。", source),
+            step(
+                "反転",
+                "第1の衝突・層順序証明区間の終端です。",
+                intermediate,
+            ),
+            step("完了", "第2の衝突・層順序証明区間の終端です。", target),
+        ],
+    };
+    validate_instruction_timeline(&timeline)
+        .map_err(|_| ReverseFoldMotionError::InvalidTimeline)?;
+    Ok(timeline)
+}
+
+fn set_hinge_angle(angles: &mut Vec<InstructionHingeAngle>, edge: EdgeId, microdegrees: i64) {
+    let degrees = microdegrees as f64 / 1_000_000.0;
+    if let Some(hinge) = angles.iter_mut().find(|hinge| hinge.edge == edge) {
+        hinge.angle_degrees = degrees;
+    } else {
+        angles.push(InstructionHingeAngle {
+            edge,
+            angle_degrees: degrees,
+        });
+        angles.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
+    }
+}
+
 /// Compiles a validated named straight-line fold into a two-pose timeline.
 ///
 /// The certificate must contain at least one native-certified transition and
@@ -212,7 +379,8 @@ mod tests {
         FOLD_TECHNIQUE_FILE_SCHEMA_V1, FOLD_TECHNIQUE_FILE_VERSION_V1, FoldTechniqueFileDocumentV1,
         FoldTechniqueLocalizedTextV1, FoldTechniqueMetadataV1, FoldTechniqueOperationV1,
         FoldTechniqueParameterBindingV1, FoldTechniqueParameterDefinitionV1, FoldTechniqueSourceV1,
-        FoldTechniqueTemplateV1, validate_fold_technique_file_v1,
+        FoldTechniqueTemplateV1, FoldTechniqueUnsupportedPhysicalOperationV1,
+        validate_fold_technique_file_v1,
     };
 
     fn text(value: &str) -> Vec<FoldTechniqueLocalizedTextV1> {
@@ -306,6 +474,111 @@ mod tests {
             CertifiedPathGraphSearchResultV1::Certified(certificate) => certificate,
             other => panic!("expected certificate, got {other:?}"),
         }
+    }
+
+    fn reverse_fold_file(kind: ReverseFoldKindV1) -> FoldTechniqueFileV1 {
+        let mut document = book_fold_file().document().clone();
+        let technique = &mut document.techniques[0];
+        technique.names = text(match kind {
+            ReverseFoldKindV1::Inside => "中割り折り",
+            ReverseFoldKindV1::Outside => "かぶせ折り",
+        });
+        let operation = &mut technique.operations[1];
+        let (action, capability, unsupported) = match kind {
+            ReverseFoldKindV1::Inside => (
+                FoldTechniqueActionV1::InsideReverseFold,
+                FoldTechniqueCapabilityV1::InsideReverseFoldMotionV1,
+                FoldTechniqueUnsupportedPhysicalOperationV1::InsideReverseFoldMotionV1,
+            ),
+            ReverseFoldKindV1::Outside => (
+                FoldTechniqueActionV1::OutsideReverseFold,
+                FoldTechniqueCapabilityV1::OutsideReverseFoldMotionV1,
+                FoldTechniqueUnsupportedPhysicalOperationV1::OutsideReverseFoldMotionV1,
+            ),
+        };
+        operation.action = action;
+        operation.required_capabilities = vec![capability];
+        operation.execution_support =
+            FoldTechniqueExecutionSupportV1::UnsupportedPhysicalOperation {
+                operation: unsupported,
+            };
+        validate_fold_technique_file_v1(document).expect("valid reverse fold")
+    }
+
+    #[test]
+    fn inside_and_outside_reverse_folds_require_two_continuous_certified_segments() {
+        for kind in [ReverseFoldKindV1::Inside, ReverseFoldKindV1::Outside] {
+            let file = reverse_fold_file(kind);
+            let face = FaceId::new();
+            let first_edge = EdgeId::new();
+            let second_edge = EdgeId::new();
+            let model = "12".repeat(32);
+            let source = vec![InstructionHingeAngle {
+                edge: first_edge,
+                angle_degrees: 0.0,
+            }];
+            let mut intermediate = source.clone();
+            set_hinge_angle(&mut intermediate, first_edge, 45_000_000);
+            let mut target = intermediate.clone();
+            set_hinge_angle(&mut target, second_edge, 90_000_000);
+            let source_hash = instruction_pose_fingerprint_v1(&model, face, &source);
+            let intermediate_hash = instruction_pose_fingerprint_v1(&model, face, &intermediate);
+            let target_hash = instruction_pose_fingerprint_v1(&model, face, &target);
+            let first = certificate(source_hash, intermediate_hash);
+            let second = certificate(intermediate_hash, target_hash);
+            let timeline = compile_certified_reverse_fold_timeline_v1(ReverseFoldMotionRequestV1 {
+                technique_file: &file,
+                technique_id: "book-fold",
+                kind,
+                source_model_fingerprint: &model,
+                fixed_face: face,
+                first_edge,
+                second_edge,
+                source_hinge_angles: &source,
+                intermediate_angle_microdegrees: 45_000_000,
+                target_angle_microdegrees: 90_000_000,
+                first_path_certificate: &first,
+                second_path_certificate: &second,
+            })
+            .expect("two certified segments");
+            assert_eq!(timeline.steps.len(), 3);
+            assert_eq!(timeline.steps[1].pose.hinge_angles, intermediate);
+            assert_eq!(timeline.steps[2].pose.hinge_angles, target);
+        }
+    }
+
+    #[test]
+    fn reverse_fold_rejects_discontinuous_or_reordered_segment_authority() {
+        let file = reverse_fold_file(ReverseFoldKindV1::Inside);
+        let face = FaceId::new();
+        let first_edge = EdgeId::new();
+        let second_edge = EdgeId::new();
+        let model = "34".repeat(32);
+        let source = vec![InstructionHingeAngle {
+            edge: first_edge,
+            angle_degrees: 0.0,
+        }];
+        let source_hash = instruction_pose_fingerprint_v1(&model, face, &source);
+        let unrelated = [0x55; 32];
+        let first = certificate(source_hash, unrelated);
+        let second = certificate(unrelated, [0x66; 32]);
+        assert_eq!(
+            compile_certified_reverse_fold_timeline_v1(ReverseFoldMotionRequestV1 {
+                technique_file: &file,
+                technique_id: "book-fold",
+                kind: ReverseFoldKindV1::Inside,
+                source_model_fingerprint: &model,
+                fixed_face: face,
+                first_edge,
+                second_edge,
+                source_hinge_angles: &source,
+                intermediate_angle_microdegrees: 45_000_000,
+                target_angle_microdegrees: 90_000_000,
+                first_path_certificate: &first,
+                second_path_certificate: &second,
+            }),
+            Err(ReverseFoldMotionError::PathSegmentMismatch)
+        );
     }
 
     #[test]

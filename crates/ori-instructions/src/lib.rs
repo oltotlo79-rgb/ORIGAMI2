@@ -20,8 +20,9 @@ pub use fold_technique_file::{
     write_fold_technique_file_v1,
 };
 pub use technique_motion::{
-    BookFoldMotionError, BookFoldMotionRequestV1, compile_certified_book_fold_timeline_v1,
-    instruction_pose_fingerprint_v1,
+    BookFoldMotionError, BookFoldMotionRequestV1, ReverseFoldKindV1, ReverseFoldMotionError,
+    ReverseFoldMotionRequestV1, compile_certified_book_fold_timeline_v1,
+    compile_certified_reverse_fold_timeline_v1, instruction_pose_fingerprint_v1,
 };
 
 use std::{

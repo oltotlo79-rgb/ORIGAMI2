@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { localeStore, selectLocalizedText, useLocale, type Locale } from '../lib/i18n.ts'
 
 export type RuntimeUpdateUiCandidate = Readonly<{
   version: string
@@ -20,6 +21,8 @@ type State =
   | { kind: 'error'; error: RuntimeUpdaterUiError }
 
 export function RuntimeUpdaterControl({ controller }: Readonly<{ controller: RuntimeUpdaterUiController }>) {
+  const locale = useLocale(localeStore)
+  const text = (ja: string, en: string) => selectLocalizedText(locale, { ja, en })
   const [state, setState] = useState<State>({ kind: 'recovering' })
   const [candidate, setCandidate] = useState<RuntimeUpdateUiCandidate | null>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -65,32 +68,34 @@ export function RuntimeUpdaterControl({ controller }: Readonly<{ controller: Run
   const busy = ['recovering', 'checking', 'downloading', 'applying'].includes(state.kind)
   return (
     <section className="runtime-updater-control" aria-labelledby="runtime-update-title" aria-busy={busy}>
-      <h3 id="runtime-update-title">アプリ更新</h3>
-      {candidate && <dl aria-label="更新内容">
-        <dt>バージョン</dt><dd>{candidate.version}</dd>
-        <dt>プラットフォーム</dt><dd>{candidate.platform}</dd>
-        <dt>サイズ</dt><dd>{formatBytes(candidate.byteLength)}</dd>
-        <dt>リリースノート</dt><dd>{candidate.releaseNotes}</dd>
+      <h3 id="runtime-update-title">{text('アプリ更新', 'App update')}</h3>
+      {candidate && <dl aria-label={text('更新内容', 'Update details')}>
+        <dt>{text('バージョン', 'Version')}</dt><dd>{candidate.version}</dd>
+        <dt>{text('プラットフォーム', 'Platform')}</dt><dd>{candidate.platform}</dd>
+        <dt>{text('サイズ', 'Size')}</dt><dd>{formatBytes(candidate.byteLength)}</dd>
+        <dt>{text('リリースノート', 'Release notes')}</dt><dd>{candidate.releaseNotes}</dd>
       </dl>}
-      <p role="status" aria-live="polite">{statusText(state)}</p>
+      <p role="status" aria-live="polite">{statusText(state, locale)}</p>
       <div className="update-check-actions">
-        {(state.kind === 'idle' || state.kind === 'cancelled' || state.kind === 'error') && <button type="button" onClick={() => void run('check')}>更新を確認</button>}
-        {state.kind === 'available' && <button type="button" onClick={() => void run('download')}>ダウンロードして検証</button>}
-        {state.kind === 'verified' && <button type="button" onClick={() => void apply()}>再起動して適用</button>}
-        {(state.kind === 'checking' || state.kind === 'downloading') && <button type="button" onClick={cancel}>キャンセル</button>}
+        {(state.kind === 'idle' || state.kind === 'cancelled' || state.kind === 'error') && <button type="button" onClick={() => void run('check')}>{text('更新を確認', 'Check for updates')}</button>}
+        {state.kind === 'available' && <button type="button" onClick={() => void run('download')}>{text('ダウンロードして検証', 'Download and verify')}</button>}
+        {state.kind === 'verified' && <button type="button" onClick={() => void apply()}>{text('再起動して適用', 'Restart and apply')}</button>}
+        {(state.kind === 'checking' || state.kind === 'downloading') && <button type="button" onClick={cancel}>{text('キャンセル', 'Cancel')}</button>}
       </div>
     </section>
   )
 }
 
 function formatBytes(value: number) { return `${(value / 1024 / 1024).toFixed(1)} MB` }
-function statusText(state: State) {
+function statusText(state: State, locale: Locale) {
+  const localized = (ja: string, en: string) => selectLocalizedText(locale, { ja, en })
   const fixed: Record<Exclude<State['kind'], 'available' | 'error'>, string> = {
     recovering: '保留中の更新を確認しています', idle: '更新を手動で確認できます', checking: '更新を確認しています',
     downloading: 'ダウンロードして署名とchecksumを検証しています', verified: '検証済みです。明示的に再起動して適用できます',
     applying: '再起動と適用を準備しています', applied: '更新の適用を確認しました', cancelled: '操作をキャンセルしました',
   }
-  if (state.kind === 'available') return '更新を利用できます。内容を確認してダウンロードしてください'
-  if (state.kind === 'error') return `更新を安全に停止しました: ${state.error}`
-  return fixed[state.kind]
+  if (state.kind === 'available') return localized('更新を利用できます。内容を確認してダウンロードしてください', 'An update is available. Review it before downloading.')
+  if (state.kind === 'error') return localized(`更新を安全に停止しました: ${state.error}`, `Update stopped safely: ${state.error}`)
+  const english: typeof fixed = { recovering: 'Checking pending update', idle: 'Check for updates manually', checking: 'Checking for updates', downloading: 'Downloading and verifying signature and checksum', verified: 'Verified. Restart explicitly to apply', applying: 'Preparing restart and apply', applied: 'Update application confirmed', cancelled: 'Operation cancelled' }
+  return locale === 'ja' ? fixed[state.kind] : english[state.kind]
 }

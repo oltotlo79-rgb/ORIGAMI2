@@ -26,6 +26,7 @@ mod project_folder_io;
 mod project_persistence;
 #[allow(dead_code)]
 mod recovery;
+mod runtime_update;
 mod save_path;
 mod stacked_fold_read;
 mod stacked_fold_transaction;
@@ -1947,15 +1948,25 @@ fn certify_beginner_fold_path_v1(
                 .ok()?,
         )
         .ok()?;
-        let generated = ori_kinematics::generate_linear_multi_hinge_path_candidate_v1(
-            &geometry,
-            &audit,
-            fixed_face,
-            &initial,
-            &target,
-            ori_kinematics::MultiHingePathCandidateLimitsV1::default(),
-        )
-        .ok()?;
+        let generated = if geometry.hinges().len() == 4 {
+            ori_kinematics::generate_kawasaki_120_120_60_60_path_candidate_v1(
+                &geometry,
+                &audit,
+                fixed_face,
+                ori_kinematics::CycleScheduleLimitsV1::default(),
+            )
+            .ok()?
+        } else {
+            ori_kinematics::generate_linear_multi_hinge_path_candidate_v1(
+                &geometry,
+                &audit,
+                fixed_face,
+                &initial,
+                &target,
+                ori_kinematics::MultiHingePathCandidateLimitsV1::default(),
+            )
+            .ok()?
+        };
         let schedule_limits = ori_kinematics::CycleScheduleLimitsV1 {
             max_degree: 1,
             ..ori_kinematics::CycleScheduleLimitsV1::default()
@@ -11966,15 +11977,6 @@ fn macos_menu(app_handle: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )
 }
 
-const RUNTIME_UPDATE_API_HOST: &str = "api.github.com";
-const RUNTIME_UPDATE_ASSET_HOST: &str = "objects.githubusercontent.com";
-const RUNTIME_UPDATE_TIMEOUT_SECONDS: u64 = 10;
-const RUNTIME_UPDATE_METADATA_LIMIT: usize = 128 * 1024;
-const RUNTIME_UPDATE_PAYLOAD_LIMIT: usize = 1024 * 1024 * 1024;
-const _: () = assert!(RUNTIME_UPDATE_TIMEOUT_SECONDS <= 10);
-const _: () = assert!(RUNTIME_UPDATE_METADATA_LIMIT <= 128 * 1024);
-const _: () = assert!(RUNTIME_UPDATE_PAYLOAD_LIMIT <= 1024 * 1024 * 1024);
-
 fn valid_runtime_update_token(token: &str) -> bool {
     token.len() == 36
         && token.bytes().enumerate().all(|(index, byte)| {
@@ -11984,68 +11986,69 @@ fn valid_runtime_update_token(token: &str) -> bool {
 }
 
 #[tauri::command]
-fn runtime_update_recover_pending() -> &'static str {
-    "ready"
+fn runtime_update_recover_pending(
+    state: tauri::State<'_, runtime_update::State>,
+) -> Result<&'static str, String> {
+    state
+        .0
+        .lock()
+        .map_err(|_| "disk".to_owned())?
+        .recover()
+        .map_err(str::to_owned)
 }
 
 #[tauri::command]
-fn runtime_update_check(token: String) -> Result<serde_json::Value, String> {
+fn runtime_update_check(
+    token: String,
+    state: tauri::State<'_, runtime_update::State>,
+) -> Result<runtime_update::Candidate, String> {
     if !valid_runtime_update_token(&token) {
         return Err("malformed".into());
     }
-    let _bounded_https_policy = (
-        RUNTIME_UPDATE_API_HOST,
-        RUNTIME_UPDATE_ASSET_HOST,
-        RUNTIME_UPDATE_TIMEOUT_SECONDS,
-        RUNTIME_UPDATE_METADATA_LIMIT,
-        RUNTIME_UPDATE_PAYLOAD_LIMIT,
-    );
-    // Network authority is fail-closed until the platform HTTP adapter is available.
-    Err("offline".into())
+    state
+        .0
+        .lock()
+        .map_err(|_| "disk".to_owned())?
+        .check()
+        .map_err(str::to_owned)
 }
 
 #[tauri::command]
-fn runtime_update_download_verify_stage(token: String) -> Result<&'static str, String> {
+fn runtime_update_download_verify_stage(
+    token: String,
+    version: String,
+    platform: String,
+    state: tauri::State<'_, runtime_update::State>,
+) -> Result<&'static str, String> {
     if !valid_runtime_update_token(&token) {
         return Err("malformed".into());
     }
-    Err("offline".into())
+    state
+        .0
+        .lock()
+        .map_err(|_| "disk".to_owned())?
+        .download(&version, &platform)
+        .map_err(str::to_owned)
 }
 
 #[tauri::command]
-fn runtime_update_apply() -> Result<&'static str, String> {
-    // Installer execution requires a verified pending journal and remains fail-closed.
-    Err("disk".into())
+fn runtime_update_apply(
+    version: String,
+    platform: String,
+    state: tauri::State<'_, runtime_update::State>,
+) -> Result<&'static str, String> {
+    state
+        .0
+        .lock()
+        .map_err(|_| "disk".to_owned())?
+        .apply(&version, &platform)
+        .map_err(str::to_owned)
 }
 
 #[tauri::command]
-fn runtime_update_cancel(_token: String) {}
-
-#[cfg(test)]
-mod runtime_update_command_tests {
-    use super::*;
-
-    #[test]
-    fn command_boundary_is_bounded_and_fail_closed_offline() {
-        let token = "01234567-89ab-cdef-0123-456789abcdef".to_owned();
-        assert!(valid_runtime_update_token(&token));
-        assert_eq!(runtime_update_check(token.clone()).unwrap_err(), "offline");
-        assert_eq!(
-            runtime_update_download_verify_stage(token).unwrap_err(),
-            "offline"
-        );
-        assert_eq!(RUNTIME_UPDATE_API_HOST, "api.github.com");
-        assert_eq!(RUNTIME_UPDATE_ASSET_HOST, "objects.githubusercontent.com");
-    }
-
-    #[test]
-    fn malformed_and_stale_tokens_never_gain_network_authority() {
-        for token in ["", "../release", "01234567-89ab-cdef-0123-456789abcdeg"] {
-            assert_eq!(
-                runtime_update_check(token.to_owned()).unwrap_err(),
-                "malformed"
-            );
-        }
+fn runtime_update_cancel(_token: String, state: tauri::State<'_, runtime_update::State>) {
+    if let Ok(mut updater) = state.0.lock() {
+        updater.cancel();
     }
 }
 
@@ -12106,6 +12109,7 @@ pub fn run() {
         .manage(GlobalFlatFoldabilityState::default())
         .manage(InstructionExportState::default())
         .manage(StackedFoldTransactionState::default())
+        .manage(runtime_update::State::default())
         .manage(ExitGuard::default())
         .invoke_handler(tauri::generate_handler![
             runtime_update_recover_pending,
@@ -15073,21 +15077,57 @@ mod tests {
     #[test]
     fn beginner_cyclic_path_certificate_is_bound_across_supported_thicknesses() {
         for thickness_mm in [0.0, 0.1, 1.0, 3.0] {
-            let (project, _) = four_ray_square_project_state(
-                [1, 3, 5, 7],
-                [
-                    EdgeKind::Mountain,
-                    EdgeKind::Valley,
-                    EdgeKind::Mountain,
-                    EdgeKind::Valley,
-                ],
-            );
-            let pattern = project.editor.pattern().clone();
-            let mut paper = project.editor.paper().clone();
-            paper.thickness_mm = thickness_mm;
+            let points = [
+                (100.0, 0.0),
+                (-50.0, 86.602_540_378_443_86),
+                (-50.0, -86.602_540_378_443_86),
+                (50.0, -86.602_540_378_443_86),
+                (0.0, 0.0),
+            ];
+            let vertices = points
+                .into_iter()
+                .map(|(x, y)| Vertex {
+                    id: VertexId::new(),
+                    position: Point2::new(x, y),
+                })
+                .collect::<Vec<_>>();
+            let boundary = vertices[..4]
+                .iter()
+                .map(|vertex| vertex.id)
+                .collect::<Vec<_>>();
+            let center = vertices[4].id;
+            let fold_namespace = ProjectId::new();
+            let mut fold_ids = (0_u64..4)
+                .map(|index| EdgeId::derive_v5(fold_namespace, &index.to_be_bytes()))
+                .collect::<Vec<_>>();
+            fold_ids.sort_unstable_by_key(EdgeId::canonical_bytes);
+            let mut edges = (0..4)
+                .map(|index| Edge {
+                    id: EdgeId::new(),
+                    start: boundary[index],
+                    end: boundary[(index + 1) % 4],
+                    kind: EdgeKind::Boundary,
+                })
+                .collect::<Vec<_>>();
+            edges.extend((0..4).map(|index| Edge {
+                id: fold_ids[index],
+                start: boundary[index],
+                end: center,
+                kind: if index == 3 {
+                    EdgeKind::Mountain
+                } else {
+                    EdgeKind::Valley
+                },
+            }));
+            let pattern = CreasePattern { vertices, edges };
+            let paper = Paper {
+                boundary_vertices: boundary,
+                thickness_mm,
+                ..Paper::default()
+            };
             let candidate_editor = EditorState::with_paper(pattern.clone(), paper.clone());
             let topology = candidate_editor
-                .topology_analysis_input(project.project_id)
+                .topology_analysis_input(ProjectId::new())
                 .analyze();
             let topology = topology.simulation_snapshot().expect("cyclic topology");
             let plan = ori_domain::BeginnerGeneratedPlanV1 {

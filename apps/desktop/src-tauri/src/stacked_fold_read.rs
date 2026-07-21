@@ -32,10 +32,7 @@ use ori_core::{
     prepare_stacked_fold_requested_pose_v1, prepare_stacked_fold_target_graph_audit_v1,
     prepare_stacked_fold_target_model_v1,
 };
-use ori_domain::{
-    FaceId, InstructionHingeAngle, InstructionPose, InstructionPoseModel, InstructionStep,
-    InstructionStepId, InstructionVisual, MIN_INSTRUCTION_DURATION_MS, ProjectId,
-};
+use ori_domain::{FaceId, InstructionHingeAngle, ProjectId};
 use ori_foldability::{
     GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, GlobalFlatFoldabilityOutcome,
 };
@@ -635,28 +632,50 @@ fn apply_dyadic_pose_path_preview_inner_v1(
         AppliedPoseLimitsV1::default(),
     )
     .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-    let mut timeline = project.editor.instruction_timeline().clone();
-    let persisted_pose = InstructionPose {
-        model: InstructionPoseModel::AbsoluteHingeAnglesV1,
-        source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
-        fixed_face: Some(pose.fixed_face()),
-        hinge_angles: hinge_angles
-            .iter()
-            .map(|(edge, angle_degrees)| InstructionHingeAngle {
-                edge: *edge,
-                angle_degrees: *angle_degrees,
-            })
-            .collect(),
-    };
-    timeline.steps.push(InstructionStep {
-        id: InstructionStepId::new(),
-        title: "Certified dyadic pose path".to_owned(),
-        description: String::new(),
-        caution: String::new(),
-        duration_ms: MIN_INSTRUCTION_DURATION_MS,
-        visual: InstructionVisual::default(),
-        pose: persisted_pose.clone(),
-    });
+    let source_model_fingerprint = project.editor.fold_model_fingerprint_v1();
+    let source_angles = pose
+        .hinge_angles()
+        .as_slice()
+        .iter()
+        .map(|angle| InstructionHingeAngle {
+            edge: angle.edge(),
+            angle_degrees: angle.angle_degrees(),
+        })
+        .collect::<Vec<_>>();
+    let transition_targets = authority
+        .edges
+        .iter()
+        .map(|edge| {
+            edge.schedule
+                .evaluate(1.0)
+                .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())
+                .map(|angles| {
+                    angles
+                        .as_slice()
+                        .iter()
+                        .map(|angle| InstructionHingeAngle {
+                            edge: angle.edge(),
+                            angle_degrees: angle.angle_degrees(),
+                        })
+                        .collect::<Vec<_>>()
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let timeline = ori_instructions::append_certified_dyadic_path_timeline_v1(
+        project.editor.instruction_timeline(),
+        "Certified dyadic pose path",
+        &source_model_fingerprint,
+        pose.fixed_face(),
+        &source_angles,
+        &transition_targets,
+        &authority.path,
+    )
+    .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+    let persisted_pose = timeline
+        .steps
+        .last()
+        .map(|step| step.pose.clone())
+        .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
     let editor_before = project.editor.clone();
     let pattern = project.editor.pattern().clone();
     let paper = project.editor.paper().clone();
@@ -7283,6 +7302,7 @@ mod tests {
                     .then_some((schedule, target, value))
             })
             .expect("real Miura schedule yields a certified dyadic candidate");
+        let expected_steps = observed.certified_transition_count + 1;
         let request = DyadicPathPreviewRequestV1 {
             expected_project_instance_id: instance,
             expected_project_id: project_id,
@@ -7355,7 +7375,15 @@ mod tests {
         );
         let mut project = super::super::lock_project(&state).unwrap();
         assert_eq!(applied, revision + 1);
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        assert_eq!(
+            project.editor.instruction_timeline().steps.len(),
+            expected_steps
+        );
+        assert!(
+            project.editor.instruction_timeline().steps[1..]
+                .iter()
+                .all(|step| { step.visual.path_certificate_reference_v1.is_some() })
+        );
         project.editor.undo(applied).unwrap();
         let undone = project.editor.revision();
         project.editor.redo(undone).unwrap();
@@ -7365,7 +7393,15 @@ mod tests {
             std::path::PathBuf::from("dyadic-authority.ori2"),
         )
         .unwrap();
-        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+        assert_eq!(
+            reopened.editor.instruction_timeline().steps.len(),
+            expected_steps
+        );
+        assert!(
+            reopened.editor.instruction_timeline().steps[1..]
+                .iter()
+                .all(|step| { step.visual.path_certificate_reference_v1.is_some() })
+        );
     }
 
     #[test]

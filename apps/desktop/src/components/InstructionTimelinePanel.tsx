@@ -9,6 +9,8 @@ import {
 import {
   addInstructionStep,
   moveInstructionStep,
+  splitInstructionStep,
+  mergeAdjacentInstructionSteps,
   removeInstructionStep,
   replaceInstructionStepPose,
   updateInstructionStepMetadata,
@@ -596,6 +598,23 @@ export function InstructionTimelinePanel({
     setNotice(succeeded ? { kind: 'moved' } : { kind: 'move_failed' })
   }
 
+  async function splitSelectedStep() {
+    if (editingDisabled || !selectedStep) return
+    cancelPlayback('revision_changed')
+    const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
+      splitInstructionStep(projectId, revision, projectInstanceId, selectedStep.id))
+    setNotice(succeeded ? { kind: 'moved' } : { kind: 'move_failed' })
+  }
+
+  async function mergeSelectedWithNext() {
+    const next = selectedStep ? steps[selectedStep.index + 1] : undefined
+    if (editingDisabled || !selectedStep || !next) return
+    cancelPlayback('revision_changed')
+    const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
+      mergeAdjacentInstructionSteps(projectId, revision, projectInstanceId, selectedStep.id, next.id))
+    setNotice(succeeded ? { kind: 'moved' } : { kind: 'move_failed' })
+  }
+
   function showStepPose(step: InstructionStepPresentation) {
     cancelPlayback('manual_pose')
     if (step.declarativeOnly) {
@@ -938,6 +957,14 @@ export function InstructionTimelinePanel({
                       onClick={() => void moveSelectedStep(selectedStep.index + 1)}
                     >
                       {selectLocalizedText(locale, TEXT.moveLater)}
+                    </button>
+                    <button type="button" disabled={editingDisabled || selectedStep.durationMs < 200}
+                      onClick={() => void splitSelectedStep()}>
+                      {locale === 'ja' ? '手順を分割' : 'Split step'}
+                    </button>
+                    <button type="button" disabled={editingDisabled || selectedStep.index === steps.length - 1}
+                      onClick={() => void mergeSelectedWithNext()}>
+                      {locale === 'ja' ? '次の手順と結合' : 'Merge with next'}
                     </button>
                     <button
                       type="button"

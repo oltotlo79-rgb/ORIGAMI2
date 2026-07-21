@@ -8954,6 +8954,92 @@ fn move_instruction_step(
 }
 
 #[tauri::command]
+fn split_instruction_step(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    step_id: InstructionStepId,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let mut timeline = project.editor.instruction_timeline().clone();
+    let index = timeline
+        .steps
+        .iter()
+        .position(|step| step.id == step_id)
+        .ok_or_else(|| "The instruction step is unavailable.".to_owned())?;
+    let total = timeline.steps[index].duration_ms;
+    let first = total / 2;
+    let second = total - first;
+    if first < ori_domain::MIN_INSTRUCTION_DURATION_MS
+        || second < ori_domain::MIN_INSTRUCTION_DURATION_MS
+    {
+        return Err("The instruction duration is too short to split.".to_owned());
+    }
+    let mut added = timeline.steps[index].clone();
+    timeline.steps[index].duration_ms = first;
+    added.id = InstructionStepId::new();
+    added.duration_ms = second;
+    timeline.steps.insert(index + 1, added);
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::RewriteInstructionTimelineSplitMerge { timeline },
+    )
+}
+
+#[tauri::command]
+fn merge_adjacent_instruction_steps(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    first_step_id: InstructionStepId,
+    second_step_id: InstructionStepId,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let mut timeline = project.editor.instruction_timeline().clone();
+    let index = timeline
+        .steps
+        .iter()
+        .position(|step| step.id == first_step_id)
+        .ok_or_else(|| "The first instruction step is unavailable.".to_owned())?;
+    if timeline
+        .steps
+        .get(index + 1)
+        .is_none_or(|step| step.id != second_step_id)
+    {
+        return Err("The instruction steps are not adjacent.".to_owned());
+    }
+    let second = timeline.steps.remove(index + 1);
+    timeline.steps[index].duration_ms = timeline.steps[index]
+        .duration_ms
+        .checked_add(second.duration_ms)
+        .ok_or_else(|| "The merged instruction duration is invalid.".to_owned())?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::RewriteInstructionTimelineSplitMerge { timeline },
+    )
+}
+
+#[tauri::command]
 fn set_cutting_allowed(
     state: State<'_, AppState>,
     expected_project_instance_id: ProjectId,
@@ -12490,6 +12576,8 @@ pub fn run() {
             replace_instruction_step_pose,
             remove_instruction_step,
             move_instruction_step,
+            split_instruction_step,
+            merge_adjacent_instruction_steps,
             set_cutting_allowed,
             update_paper_properties,
             import_front_paper_texture,

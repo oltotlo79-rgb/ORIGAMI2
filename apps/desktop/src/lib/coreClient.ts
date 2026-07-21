@@ -3425,6 +3425,20 @@ export function moveInstructionStep(
   })
 }
 
+export function splitInstructionStep(expectedProjectId: string, expectedRevision: number,
+  expectedProjectInstanceId: string, stepId: string) {
+  return invoke<ProjectSnapshot>('split_instruction_step', {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision, stepId,
+  })
+}
+
+export function mergeAdjacentInstructionSteps(expectedProjectId: string, expectedRevision: number,
+  expectedProjectInstanceId: string, firstStepId: string, secondStepId: string) {
+  return invoke<ProjectSnapshot>('merge_adjacent_instruction_steps', {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision, firstStepId, secondStepId,
+  })
+}
+
 export function newProject(
   expectedProjectInstanceId: string,
   expectedProjectId: string,

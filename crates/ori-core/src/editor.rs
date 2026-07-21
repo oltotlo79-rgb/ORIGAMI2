@@ -286,6 +286,7 @@ pub enum Command {
         paper: Paper,
         instruction_timeline: InstructionTimeline,
         project_layers: ProjectLayerDocumentV1,
+        beginner_design_profile: BeginnerDesignProfileV1,
     },
 }
 
@@ -975,6 +976,7 @@ enum Inverse {
         paper: Paper,
         instruction_timeline: InstructionTimeline,
         project_layers: ProjectLayerDocumentV1,
+        beginner_design_profile: BeginnerDesignProfileV1,
     },
     RestoreProjectMemo {
         memo: String,
@@ -2285,6 +2287,7 @@ impl EditorState {
                 paper,
                 instruction_timeline,
                 project_layers,
+                beginner_design_profile: self.beginner_design_profile.clone(),
             },
         )?;
         self.current_applied_pose = Some(applied_pose.clone());
@@ -2385,6 +2388,7 @@ impl EditorState {
                 ref paper,
                 ref instruction_timeline,
                 ref project_layers,
+                ref beginner_design_profile,
             } => {
                 if paper.thickness_mm.to_bits() != self.paper.thickness_mm.to_bits()
                     || instruction_timeline.steps.len() <= self.instruction_timeline.steps.len()
@@ -2398,6 +2402,7 @@ impl EditorState {
                     || !source_edges_preserved_by_exact_subdivision(&self.pattern, pattern)
                     || !validate_crease_pattern(pattern).is_valid()
                     || !validate_paper(paper, pattern).is_valid()
+                    || !validate_beginner_design_profile_v1(beginner_design_profile)
                 {
                     return Err(CommandError::InvalidStackedFoldDocument);
                 }
@@ -2417,6 +2422,10 @@ impl EditorState {
                     project_layers: std::mem::replace(
                         &mut self.project_layers,
                         project_layers.clone(),
+                    ),
+                    beginner_design_profile: std::mem::replace(
+                        &mut self.beginner_design_profile,
+                        beginner_design_profile.clone(),
                     ),
                 })
             }
@@ -5191,11 +5200,14 @@ impl EditorState {
                 paper,
                 instruction_timeline,
                 project_layers,
+                beginner_design_profile,
             } => {
                 self.pattern.clone_from(pattern);
                 self.paper.clone_from(paper);
                 self.instruction_timeline.clone_from(instruction_timeline);
                 self.project_layers.clone_from(project_layers);
+                self.beginner_design_profile
+                    .clone_from(beginner_design_profile);
             }
             Inverse::RestoreProjectMemo { memo } => {
                 self.project_memo.clone_from(memo);

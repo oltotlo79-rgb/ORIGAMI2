@@ -325,6 +325,7 @@ enum CommandV1 {
         paper: Paper,
         instruction_timeline: InstructionTimeline,
         project_layers: ProjectLayerDocumentV1,
+        beginner_design_profile: BeginnerDesignProfileV1,
     },
 }
 
@@ -368,6 +369,7 @@ enum InverseV1 {
         paper: Paper,
         instruction_timeline: InstructionTimeline,
         project_layers: ProjectLayerDocumentV1,
+        beginner_design_profile: BeginnerDesignProfileV1,
     },
     RestoreProjectMemo {
         memo: String,
@@ -795,11 +797,13 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             paper,
             instruction_timeline,
             project_layers,
+            beginner_design_profile,
         } => CommandV1::ApplyStackedFoldDocument {
             pattern: pattern.clone(),
             paper: paper.clone(),
             instruction_timeline: instruction_timeline.clone(),
             project_layers: project_layers.clone(),
+            beginner_design_profile: beginner_design_profile.clone(),
         },
     })
 }
@@ -1021,11 +1025,13 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
             paper,
             instruction_timeline,
             project_layers,
+            beginner_design_profile,
         } => Command::ApplyStackedFoldDocument {
             pattern,
             paper,
             instruction_timeline,
             project_layers,
+            beginner_design_profile,
         },
     })
 }
@@ -1087,11 +1093,13 @@ fn inverse_to_wire(inverse: &Inverse) -> Result<InverseV1, EditorHistoryErrorV1>
             paper,
             instruction_timeline,
             project_layers,
+            beginner_design_profile,
         } => InverseV1::RestoreStackedFoldDocument {
             pattern: pattern.clone(),
             paper: paper.clone(),
             instruction_timeline: instruction_timeline.clone(),
             project_layers: project_layers.clone(),
+            beginner_design_profile: beginner_design_profile.clone(),
         },
         Inverse::RestoreProjectMemo { memo } => {
             InverseV1::RestoreProjectMemo { memo: memo.clone() }
@@ -1345,11 +1353,13 @@ fn inverse_from_wire(inverse: InverseV1) -> Result<Inverse, EditorHistoryErrorV1
             paper,
             instruction_timeline,
             project_layers,
+            beginner_design_profile,
         } => Inverse::RestoreStackedFoldDocument {
             pattern,
             paper,
             instruction_timeline,
             project_layers,
+            beginner_design_profile,
         },
         InverseV1::RestoreProjectMemo { memo } => Inverse::RestoreProjectMemo { memo },
         InverseV1::RestoreBeginnerDesignProfile { profile } => {
@@ -1687,6 +1697,7 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
             paper,
             instruction_timeline,
             project_layers,
+            ..
         } => validate_stacked_fold_document(
             pattern,
             paper,
@@ -1843,6 +1854,7 @@ fn validate_inverse_finite(inverse: &Inverse) -> Result<(), EditorHistoryErrorV1
             paper,
             instruction_timeline,
             project_layers,
+            ..
         } => validate_stacked_fold_document(
             pattern,
             paper,

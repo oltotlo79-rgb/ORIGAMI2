@@ -3408,6 +3408,7 @@ fn apply_beginner_generated_plan(
     });
     let paper = project.editor.paper().clone();
     let project_layers = project.editor.project_layers().clone();
+    let beginner_design_profile = project.editor.beginner_design_profile().clone();
     execute_command(
         &mut project,
         expected_project_instance_id,
@@ -3418,6 +3419,7 @@ fn apply_beginner_generated_plan(
             paper,
             instruction_timeline,
             project_layers,
+            beginner_design_profile,
         },
     )
 }
@@ -3622,6 +3624,7 @@ fn apply_grid_plan_document(
     });
     let paper = project.editor.paper().clone();
     let project_layers = project.editor.project_layers().clone();
+    let beginner_design_profile = project.editor.beginner_design_profile().clone();
     execute_command(
         project,
         expected_project_instance_id,
@@ -3632,6 +3635,7 @@ fn apply_grid_plan_document(
             paper,
             instruction_timeline,
             project_layers,
+            beginner_design_profile,
         },
     )
 }

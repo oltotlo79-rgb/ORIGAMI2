@@ -13072,6 +13072,40 @@ mod tests {
         assert_eq!(generic.protrusions[0].count, 4);
         assert_eq!(generic.protrusions[1].id, 2);
         assert_eq!(generic.protrusions[1].count, 2);
+        let generalized_parts = [
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Leg,
+                count: 4,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Wing,
+                count: 2,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Tail,
+                count: 1,
+            },
+            ori_domain::BeginnerTargetPartRecordV1 {
+                kind: ori_domain::BeginnerTargetPartKindV1::Fin,
+                count: 2,
+            },
+        ];
+        let generalized = derive_reference_model_suggestion_v1(
+            AssetId::new(),
+            &geometry,
+            None,
+            &generalized_parts,
+        )
+        .expect("four explicit generic features remain a bounded candidate");
+        assert_eq!(generalized.protrusions.len(), 4);
+        assert_eq!(
+            generalized
+                .protrusions
+                .iter()
+                .map(|target| target.count)
+                .collect::<Vec<_>>(),
+            vec![4, 2, 1, 2]
+        );
         let mut unsupported_generic_parts = generic_parts;
         unsupported_generic_parts[1].count = 8;
         assert!(

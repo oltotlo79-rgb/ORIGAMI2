@@ -1889,7 +1889,11 @@ export async function suggestBeginnerReferenceModelFeatures(
   })
   const protrusions = constraints?.protrusions ?? []
   const bilateralProtrusions = protrusions.filter((target) => target.symmetry === 'bilateral')
-  if (!constraints || ![1, 2, 3, 5].includes(protrusions.length)
+  // Native may generalize an explicitly authored generic target to at most
+  // eight bounded features. Geometry supplies measurements only; semantic
+  // kinds remain the user's current target_parts and apply still requires
+  // exact live-suggestion revalidation plus confirmation.
+  if (!constraints || protrusions.length < 1 || protrusions.length > 8
     || !Array.isArray(suggestion.pair_bindings)
     || suggestion.pair_bindings.length !== bilateralProtrusions.length
     || suggestion.pair_bindings.some((binding, index) => {

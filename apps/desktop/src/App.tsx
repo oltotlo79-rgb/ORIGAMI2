@@ -3802,7 +3802,7 @@ function App() {
     const suggestion = beginnerReferenceSuggestion
     if (!current || !suggestion || !window.confirm(text({
       ja: '境界箱・面積・法線だけから算出した範囲候補を適用しますか？',
-      en: 'Apply the range suggested only from bounding box, area, and normals?',
+      en: 'Apply this measured candidate? Bounding box, area, and normals provide geometry evidence only; part meanings come from the parts you confirmed.',
     }))) return
     void runNativeEdit((projectId, revision, projectInstanceId) =>
       applyBeginnerReferenceModelFeatures(

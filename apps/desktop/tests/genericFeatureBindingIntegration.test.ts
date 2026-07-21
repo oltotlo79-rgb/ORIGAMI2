@@ -27,3 +27,12 @@ test('generic feature topology is visible and browser-covered through persistenc
   assert.match(browser, /Redo generic target/u)
   assert.match(browser, /Save and reopen generic target/u)
 })
+
+test('3D generalization stays bounded to confirmed semantic parts', () => {
+  assert.match(client, /protrusions\.length < 1 \|\| protrusions\.length > 8/u)
+  assert.match(client, /semantic[\s\S]*remain the user's current target_parts/u)
+  assert.match(app, /geometry evidence only; part meanings come from the parts you confirmed/u)
+  assert.match(native, /four explicit generic features remain a bounded candidate/u)
+  assert.match(native, /reference_model_suggestion_confirmation_required/u)
+  assert.match(native, /reference_model_suggestion_matches_live_v1/u)
+})

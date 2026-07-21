@@ -638,21 +638,44 @@ fn path_certificate_visual_v1(
     certificate: &CertifiedPoseGraphPathCertificateV1,
     source_model_fingerprint: &str,
 ) -> InstructionVisual {
+    InstructionVisual {
+        path_certificate_reference_v1: path_certificate_reference_from_native_v1(
+            certificate,
+            source_model_fingerprint,
+        ),
+        ..InstructionVisual::default()
+    }
+}
+
+/// Converts a live native path certificate into the persisted, non-authorizing
+/// reference shared by instruction archives and PDF/SVG export validation.
+/// Empty certificates and non-canonical model fingerprints fail closed.
+#[must_use]
+pub fn path_certificate_reference_from_native_v1(
+    certificate: &CertifiedPoseGraphPathCertificateV1,
+    source_model_fingerprint: &str,
+) -> Option<PathCertificateReferenceV1> {
+    if certificate.edges().is_empty()
+        || certificate.source() == certificate.target()
+        || source_model_fingerprint.len() != 64
+        || !source_model_fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
     let mut model_hash = Sha256::new();
     model_hash.update(b"path_certificate_source_model_binding_v1");
     model_hash.update(source_model_fingerprint.as_bytes());
-    InstructionVisual {
-        path_certificate_reference_v1: Some(PathCertificateReferenceV1 {
-            version: 1,
-            model_id: PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1.to_owned(),
-            binding_sha256: certificate.binding_fingerprint_v1(),
-            source_pose_sha256: certificate.source(),
-            target_pose_sha256: certificate.target(),
-            source_model_binding_sha256: model_hash.finalize().into(),
-            transition_count: certificate.edges().len(),
-        }),
-        ..InstructionVisual::default()
-    }
+    Some(PathCertificateReferenceV1 {
+        version: 1,
+        model_id: PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1.to_owned(),
+        binding_sha256: certificate.binding_fingerprint_v1(),
+        source_pose_sha256: certificate.source(),
+        target_pose_sha256: certificate.target(),
+        source_model_binding_sha256: model_hash.finalize().into(),
+        transition_count: certificate.edges().len(),
+    })
 }
 
 /// Compiles a validated named straight-line fold into a two-pose timeline.
@@ -987,6 +1010,13 @@ mod tests {
             instruction_pose_fingerprint_v1(&model, face, &middle),
             instruction_pose_fingerprint_v1(&model, face, &target),
         );
+        let persisted = path_certificate_reference_from_native_v1(&first, &model)
+            .expect("native certificate becomes a persisted DTO");
+        assert_eq!(persisted.binding_sha256, first.binding_fingerprint_v1());
+        assert_eq!(persisted.source_pose_sha256, first.source());
+        assert_eq!(persisted.target_pose_sha256, first.target());
+        assert_eq!(persisted.transition_count, first.edges().len());
+        assert!(path_certificate_reference_from_native_v1(&first, "ABC").is_none());
         let timeline = compile_two_segment_motion(
             "二段階技法",
             &model,

@@ -3272,6 +3272,7 @@ mod tests {
                     paper: paper.clone(),
                     instruction_timeline: timeline.clone(),
                     project_layers: ProjectLayerDocumentV1::default(),
+                    beginner_design_profile: BeginnerDesignProfileV1::default(),
                 },
             )
             .unwrap();
@@ -3293,6 +3294,7 @@ mod tests {
                     paper,
                     instruction_timeline: timeline,
                     project_layers: ProjectLayerDocumentV1::default(),
+                    beginner_design_profile: BeginnerDesignProfileV1::default(),
                 },
             ),
             Err(CommandError::InvalidStackedFoldDocument)

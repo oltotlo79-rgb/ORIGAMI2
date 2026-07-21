@@ -265,7 +265,7 @@ export function StackedFoldPanel({
         current = false
       }
     }
-    void Promise.all([readLiveHingeRegistryV1({
+    void readLiveHingeRegistryV1({
       expectedProjectInstanceId: snapshot.project_instance_id,
       expectedProjectId: snapshot.project_id,
       expectedRevision: snapshot.revision,
@@ -274,16 +274,9 @@ export function StackedFoldPanel({
       fixedSide,
       rotationDirection,
       requestedAngleDegrees: Number(angle),
-    }), readEvenCycleCandidatesV1({
-      expectedProjectInstanceId: snapshot.project_instance_id,
-      expectedProjectId: snapshot.project_id,
-      expectedRevision: snapshot.revision,
-      maxPairTests: 120,
-    })]).then(([registry, automatic]) => {
+    }).then((registry) => {
       if (!current) return
       setLiveHinges(registry.entries)
-      setEvenCycleCandidates(automatic.candidates)
-      setEvenCycleStatus(automatic.status)
       setRequestedHingeAngles(Object.fromEntries(
         registry.entries.map((entry) => [entry.edge, entry.initialAngleDegrees]),
       ))
@@ -291,6 +284,19 @@ export function StackedFoldPanel({
       if (current) {
         setLiveHinges([])
         setRequestedHingeAngles({})
+      }
+    })
+    void readEvenCycleCandidatesV1({
+      expectedProjectInstanceId: snapshot.project_instance_id,
+      expectedProjectId: snapshot.project_id,
+      expectedRevision: snapshot.revision,
+      maxPairTests: 120,
+    }).then((automatic) => {
+      if (!current) return
+      setEvenCycleCandidates(automatic.candidates)
+      setEvenCycleStatus(automatic.status)
+    }).catch(() => {
+      if (current) {
         setEvenCycleCandidates([])
         setEvenCycleStatus('unsupported')
       }

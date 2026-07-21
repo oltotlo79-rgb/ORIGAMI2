@@ -106,7 +106,7 @@ use fold_technique_file_io::{
 use global_flat_foldability::{
     GlobalFlatFoldabilityState, begin_global_flat_foldability, cancel_global_flat_foldability,
     get_current_layer_order_view, get_global_flat_foldability_progress,
-    get_global_flat_foldability_result,
+    get_global_flat_foldability_result, revalidate_archived_flat_layer_evidence,
 };
 use history_settings::{get_history_entry_limit, set_history_entry_limit};
 use instruction_export::{
@@ -152,7 +152,8 @@ use ori_formats::{
     CURRENT_FORMAT_VERSION, FoldAssignmentMapping, FoldAssignmentTarget, FoldBoundaryCandidateId,
     FoldBoundaryCandidateSource, FoldConversionOptions, FoldEdgeAssignment, FoldFrameUnit,
     FoldPreview, FoldPreviewWarning, MAX_PROJECT_TEXTURE_ASSET_BYTES,
-    MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES, Ori2ProjectArchive, PolarVertexConstructionExpressions,
+    LayerEvidenceArchiveKindV1, LayerEvidenceArchiveV1, MAX_PROJECT_TEXTURE_ASSET_TOTAL_BYTES,
+    Ori2ProjectArchive, PolarVertexConstructionExpressions,
     ProjectDocument, ProjectNumericExpressions, ProjectTextureAssetV1, ProjectTextureMediaTypeV1,
     RectangularPaperCreationExpressions, SvgBoundaryCandidateId, SvgBoundaryCandidateKind,
     SvgConversionOptions, SvgDashPattern, SvgGroupMapping, SvgGroupTarget, SvgLineCap, SvgPreview,
@@ -505,6 +506,7 @@ struct ProjectState {
     /// The authority has its own slot so the global lock order remains
     /// `project -> pose -> layer order`. It is never persisted.
     applied_pose_authority: CurrentAppliedPoseAuthority,
+    current_layer_evidence: Option<stacked_fold_transaction::CurrentLayerEvidence>,
     numeric_expressions: ProjectNumericExpressions,
     texture_assets: Vec<ori_formats::ProjectTextureAssetV1>,
     reference_model_assets: Vec<ori_formats::ProjectReferenceModelAssetV1>,
@@ -527,6 +529,7 @@ impl ProjectState {
             current_path: None,
             editor,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
+            current_layer_evidence: None,
             numeric_expressions: ProjectNumericExpressions::default(),
             texture_assets: Vec::new(),
             reference_model_assets: Vec::new(),
@@ -549,6 +552,7 @@ impl ProjectState {
             current_path: None,
             editor,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
+            current_layer_evidence: None,
             numeric_expressions: ProjectNumericExpressions::default(),
             texture_assets: Vec::new(),
             reference_model_assets: Vec::new(),
@@ -590,6 +594,7 @@ impl ProjectState {
             current_path: Some(current_path),
             saved_revision: Some(editor.revision()),
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
+            current_layer_evidence: None,
             numeric_expressions,
             texture_assets,
             reference_model_assets,
@@ -627,6 +632,7 @@ impl ProjectState {
         saved_document.numeric_expressions.vertex_redo_stack.clear();
         let texture_assets = document.texture_assets.clone();
         let reference_model_assets = document.reference_model_assets.clone();
+        let archived_layer_evidence = project.layer_evidence.clone();
         let mut restored = Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -634,6 +640,7 @@ impl ProjectState {
             current_path: Some(current_path),
             saved_revision: Some(editor.revision()),
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
+            current_layer_evidence: None,
             numeric_expressions: document.numeric_expressions,
             texture_assets,
             reference_model_assets,
@@ -643,6 +650,10 @@ impl ProjectState {
         if let Some(pose) = persisted_pose.as_ref() {
             restore_persisted_current_pose(&mut restored, pose)
                 .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+        }
+        if let Some(evidence) = archived_layer_evidence.as_ref() {
+            restored.current_layer_evidence =
+                Some(revalidate_archived_layer_evidence(&restored, evidence)?);
         }
         Ok(restored)
     }
@@ -673,6 +684,7 @@ impl ProjectState {
             current_path: None,
             saved_revision: None,
             applied_pose_authority: CurrentAppliedPoseAuthority::default(),
+            current_layer_evidence: None,
             numeric_expressions: document.numeric_expressions,
             texture_assets,
             reference_model_assets,
@@ -1055,6 +1067,37 @@ fn restore_archive_editor(project: &Ori2ProjectArchive) -> Result<EditorState, (
         .map_err(|_| ())?;
     validate_reachable_history_instruction_poses(&project.document, &editor)?;
     Ok(editor)
+}
+
+fn revalidate_archived_layer_evidence(
+    project: &ProjectState,
+    archived: &LayerEvidenceArchiveV1,
+) -> Result<stacked_fold_transaction::CurrentLayerEvidence, String> {
+    let archived_instance = serde_json::from_value::<ProjectId>(serde_json::Value::String(
+        archived.project_instance_id.clone(),
+    ))
+    .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+    let archived_project = serde_json::from_value::<ProjectId>(serde_json::Value::String(
+        archived.project_id.clone(),
+    ))
+    .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+    if archived_instance.canonical_bytes() == [0; 16]
+        || archived_project != project.project_id
+        || archived.revision != project.editor.revision()
+        || archived.fold_model_fingerprint_sha256
+            != project.editor.fold_model_fingerprint_v1()
+    {
+        return Err(PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned());
+    }
+    match &archived.evidence {
+        LayerEvidenceArchiveKindV1::Flat {
+            canonical_snapshot_json,
+        } => revalidate_archived_flat_layer_evidence(project, canonical_snapshot_json)
+            .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned()),
+        LayerEvidenceArchiveKindV1::NonFlat { .. } => {
+            Err(PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())
+        }
+    }
 }
 
 fn validate_reachable_history_instruction_poses(

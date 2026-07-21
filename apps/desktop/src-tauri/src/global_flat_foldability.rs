@@ -10,7 +10,8 @@ use std::{
 
 use ori_core::{
     CooperativeAnalysisAbort, CooperativeAnalysisCheckpoint, TopologyAnalysisInput,
-    TopologySnapshot, analyze_local_flat_foldability_with_checkpoint,
+    TopologySnapshot, analyze_local_flat_foldability,
+    analyze_local_flat_foldability_with_checkpoint,
 };
 use ori_domain::{CreasePattern, FaceId, Paper, ProjectId};
 use ori_foldability::{
@@ -21,12 +22,52 @@ use ori_foldability::{
     GlobalFlatFoldabilityOutcome, GlobalFlatFoldabilityPhase, GlobalFlatFoldabilityProgress,
     GlobalFlatFoldabilityReport, GlobalFlatFoldabilityUnknownReason,
     GlobalFlatFoldabilityWorkCounts, LAYER_ORDER_MODEL_ID, LayerFace, LayerOrderProvenance,
-    LayerOrderSnapshot, analyze_global_flat_foldability_with_observer,
+    LayerOrderSnapshot, analyze_global_flat_foldability,
+    analyze_global_flat_foldability_with_observer,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
+use super::stacked_fold_transaction::CurrentLayerEvidence;
 use super::{AppState, ProjectState, lock_project};
+
+pub(super) fn revalidate_archived_flat_layer_evidence(
+    project: &ProjectState,
+    canonical_snapshot_json: &str,
+) -> Result<CurrentLayerEvidence, ()> {
+    let topology_input = project.editor.topology_analysis_input(project.project_id);
+    if topology_input.revision() != project.editor.revision() {
+        return Err(());
+    }
+    let topology = topology_input.analyze();
+    let simulation = topology.simulation_snapshot().ok_or(())?;
+    let local = analyze_local_flat_foldability(project.editor.paper(), project.editor.pattern());
+    let report = analyze_global_flat_foldability(
+        GlobalFlatFoldabilityInput::current_with_geometry(
+            project.project_id,
+            project.editor.paper(),
+            project.editor.pattern(),
+            simulation,
+            &local,
+        ),
+        native_limits(),
+    )
+    .map_err(|_| ())?;
+    let GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } = report.outcome else {
+        return Err(());
+    };
+    let provenance = layer_order.provenance.source;
+    if provenance.identity_namespace != Some(project.project_id)
+        || provenance.source_revision != project.editor.revision()
+        || provenance.source_fingerprint.is_none_or(|fingerprint| {
+            fingerprint.to_hex() != project.editor.fold_model_fingerprint_v1()
+        })
+        || serde_json::to_string(&layer_order).map_err(|_| ())? != canonical_snapshot_json
+    {
+        return Err(());
+    }
+    Ok(CurrentLayerEvidence::CertifiedFlat(*layer_order))
+}
 
 const MIN_TIME_LIMIT_MS: u64 = 1_000;
 const MAX_TIME_LIMIT_MS: u64 = 300_000;

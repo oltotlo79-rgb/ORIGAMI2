@@ -5100,6 +5100,23 @@ mod tests {
                 let undone = project.editor.revision();
                 project.editor.redo(undone).unwrap();
                 assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+                if cycle_count == 16 {
+                    let archive = project
+                        .project_archive()
+                        .expect("serialize positive-thickness C16 cycle");
+                    let mut reopened = super::super::ProjectState::from_project_archive(
+                        archive,
+                        std::path::PathBuf::from(format!("positive-c16-{thickness_mm}.ori2")),
+                    )
+                    .expect("reopen positive-thickness C16 cycle");
+                    assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+                    let reopened_revision = reopened.editor.revision();
+                    reopened.editor.undo(reopened_revision).unwrap();
+                    assert!(reopened.editor.instruction_timeline().steps.is_empty());
+                    let reopened_redo = reopened.editor.revision();
+                    reopened.editor.redo(reopened_redo).unwrap();
+                    assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+                }
             }
         }
     }

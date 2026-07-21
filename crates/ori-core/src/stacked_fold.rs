@@ -271,7 +271,11 @@ pub struct PreparedStackedFoldRequestedGraphPoseV1 {
 /// mutation authority.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StackedFoldNonFlatLayerOrderV1 {
+    identity_namespace: ProjectId,
     target_revision: Revision,
+    target_fingerprint: FoldModelFingerprintV1,
+    fixed_face: Option<FaceId>,
+    hinge_angles: Vec<HingeAngle>,
     material_faces: Vec<LayerFace>,
     tested_face_pairs: usize,
     source_overlap_cells_authenticated: usize,
@@ -327,6 +331,26 @@ impl StackedFoldNonFlatLayerOrderV1 {
     #[must_use]
     pub const fn target_revision(&self) -> Revision {
         self.target_revision
+    }
+
+    #[must_use]
+    pub const fn identity_namespace(&self) -> ProjectId {
+        self.identity_namespace
+    }
+
+    #[must_use]
+    pub const fn target_fingerprint(&self) -> FoldModelFingerprintV1 {
+        self.target_fingerprint
+    }
+
+    #[must_use]
+    pub const fn fixed_face(&self) -> Option<FaceId> {
+        self.fixed_face
+    }
+
+    #[must_use]
+    pub fn hinge_angles(&self) -> &[HingeAngle] {
+        &self.hinge_angles
     }
 
     #[must_use]
@@ -2079,7 +2103,11 @@ pub fn prepare_stacked_fold_non_flat_layer_order_with_thickness_v1(
         }
     }
     Ok(StackedFoldNonFlatLayerOrderV1 {
+        identity_namespace: lineage.identity_namespace(),
         target_revision: lineage.target_revision(),
+        target_fingerprint: lineage.target_fingerprint(),
+        fixed_face: pose.fixed_face(),
+        hinge_angles: pose.hinge_angles().to_vec(),
         material_faces,
         tested_face_pairs,
         source_overlap_cells_authenticated: source_layer_order.overlap_cells.len(),
@@ -2231,7 +2259,11 @@ pub fn prepare_stacked_fold_graph_non_flat_layer_order_v1(
         }
     }
     Ok(StackedFoldNonFlatLayerOrderV1 {
+        identity_namespace: lineage.identity_namespace(),
         target_revision: lineage.target_revision(),
+        target_fingerprint: lineage.target_fingerprint(),
+        fixed_face: Some(pose.fixed_face()),
+        hinge_angles: pose.hinge_angles().as_slice().to_vec(),
         material_faces,
         tested_face_pairs,
         source_overlap_cells_authenticated: source_layer_order.overlap_cells.len(),
@@ -4084,6 +4116,16 @@ mod tests {
             STACKED_FOLD_NON_FLAT_LAYER_ORDER_MODEL_ID_V1
         );
         assert_eq!(non_flat_order.material_faces().len(), 2);
+        assert_eq!(non_flat_order.identity_namespace(), fixture.identity);
+        assert_eq!(
+            non_flat_order.target_revision(),
+            fixture.source_revision + 1
+        );
+        assert_eq!(non_flat_order.fixed_face(), requested.pose().fixed_face());
+        assert_eq!(
+            non_flat_order.hinge_angles(),
+            requested.pose().hinge_angles()
+        );
         assert_eq!(non_flat_order.tested_face_pairs(), 1);
         assert_eq!(non_flat_order.overlap_cell_count(), 0);
         assert_eq!(non_flat_order.face_pair_order_count(), 0);

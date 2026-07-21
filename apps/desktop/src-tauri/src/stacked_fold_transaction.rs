@@ -1148,6 +1148,27 @@ fn apply_stacked_fold_transaction_with_title(
         .last()
         .map(|step| step.pose.clone())
         .ok_or_else(|| "The certified path timeline is inconsistent.".to_owned())?;
+    if let Some(PendingStackedFoldLayerProof::NonFlat(proof)) = &applied_layer_order {
+        let target_fingerprint = fold_model_fingerprint_v1(&candidate_pattern, &candidate_paper);
+        let pose_angles_match = proof.hinge_angles().len()
+            == persisted_current_pose.hinge_angles.len()
+            && proof
+                .hinge_angles()
+                .iter()
+                .zip(&persisted_current_pose.hinge_angles)
+                .all(|(sealed, persisted)| {
+                    sealed.edge() == persisted.edge
+                        && sealed.angle_degrees().to_bits() == persisted.angle_degrees.to_bits()
+                });
+        if proof.identity_namespace() != project.project_id
+            || proof.target_revision() != pending.expected_revision.saturating_add(1)
+            || proof.target_fingerprint() != target_fingerprint
+            || proof.fixed_face() != persisted_current_pose.fixed_face
+            || !pose_angles_match
+        {
+            return Err("The non-flat target layer authority is stale or tampered.".to_owned());
+        }
+    }
     let result = project
         .editor
         .execute_stacked_fold_document(

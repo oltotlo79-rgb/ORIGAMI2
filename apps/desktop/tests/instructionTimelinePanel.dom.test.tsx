@@ -466,6 +466,31 @@ describe('InstructionTimelinePanel localization', () => {
       .toBe(false)
   })
 
+  it('exports a certificate-free named technique only as an explicitly unproven step', () => {
+    const onExport = vi.fn()
+    const reopened = JSON.parse(JSON.stringify({
+      ...SNAPSHOT,
+      instruction_timeline: {
+        steps: [{
+          ...SNAPSHOT.instruction_timeline.steps[0]!,
+          description: '証明参照のない名前付き技法「中割り折り」の姿勢です。連続折り経路は未証明です。',
+        }],
+      },
+    })) as ProjectSnapshot
+    renderPanel(reopened, vi.fn(() => true), APPLIED_POSE, onExport)
+    fireEvent.click(screen.getByText('1. Fold crane · 完成形サムネイル').closest('button')!)
+    expect(screen.getByRole('textbox', { name: '説明' })).toHaveProperty(
+      'value',
+      '証明参照のない名前付き技法「中割り折り」の姿勢です。連続折り経路は未証明です。',
+    )
+    expect(screen.queryByLabelText('構造化経路証明')).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+    const exportButton = screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement
+    expect(exportButton.disabled).toBe(false)
+    fireEvent.click(exportButton)
+    expect(onExport).toHaveBeenCalledTimes(1)
+  })
+
   it('reopens a valid archive certificate and warns on model or endpoint tampering', async () => {
     const face = '11111111-1111-1111-1111-111111111111'
     const edge = '22222222-2222-2222-2222-222222222222'

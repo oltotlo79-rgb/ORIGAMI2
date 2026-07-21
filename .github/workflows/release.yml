@@ -73,6 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           ulimit -c 0
+          umask 077
           echo "::add-mask::$GH_TOKEN"
           evidence="$(node .github/scripts/verify_release_ci.mjs)"
           echo "json=$evidence" >> "$GITHUB_OUTPUT"
@@ -678,10 +679,20 @@ jobs:
             trap - EXIT
             if [ "$status" -ne 0 ] && [ "$release_published" = true ]; then
               quarantine_state="$RUNNER_TEMP/quarantine-release.json"
+              quarantine_headers="$RUNNER_TEMP/quarantine-release.headers"
               quarantine_body="$RUNNER_TEMP/quarantine-release-notes.md"
               quarantine_evidence="$RUNNER_TEMP/quarantine-evidence.json"
               quarantine_verified=false
-              if timeout 60s gh api "repos/$GH_REPO/releases/$created_release_id" > "$quarantine_state" \
+              quarantine_status="$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+                --connect-timeout 15 --max-time 60 --max-redirs 0 --max-filesize 1048576 \
+                --header "Authorization: Bearer $GH_TOKEN" \
+                --header 'Accept: application/vnd.github+json' \
+                --header 'X-GitHub-Api-Version: 2022-11-28' \
+                --header 'Cache-Control: no-cache' --header 'Pragma: no-cache' \
+                --dump-header "$quarantine_headers" --output "$quarantine_state" \
+                --write-out '%{http_code}' \
+                "https://api.github.com/repos/$GH_REPO/releases/$created_release_id")"
+              if verify_release_api_headers "$quarantine_headers" "$quarantine_status" \
                 && test "$(jq -r .id "$quarantine_state")" = "$created_release_id" \
                 && test "$(jq -r .tag_name "$quarantine_state")" = "$RELEASE_TAG" \
                 && test "$(jq -r .target_commitish "$quarantine_state")" = "$RELEASE_COMMIT" \
@@ -693,7 +704,15 @@ jobs:
                   printf 'Automated post-publication verification failed. Do not install these assets.\n\n'
                   cat -- "$public_notes_file"
                 } > "$quarantine_body"
-                if timeout 60s gh api --method PATCH "repos/$GH_REPO/releases/$created_release_id" \
+                test "$(stat -c '%s' "$quarantine_body")" -le 100512
+                quarantine_etag="$(sed -nE 's/^etag: (.*)\r$/\1/ip' "$quarantine_headers")"
+                if test "$(jq -r .name "$quarantine_state")" = "QUARANTINED $RELEASE_TAG" \
+                  && test "$(jq -r .prerelease "$quarantine_state")" = true \
+                  && jq -e --rawfile body "$quarantine_body" '.body == $body' "$quarantine_state" >/dev/null
+                then
+                  quarantine_verified=true
+                elif timeout 60s gh api --method PATCH "repos/$GH_REPO/releases/$created_release_id" \
+                  --header "If-Match: $quarantine_etag" \
                   -f name="QUARANTINED $RELEASE_TAG" -F draft=false -F prerelease=true \
                   -F body=@"$quarantine_body" > "$quarantine_state" \
                   && test "$(jq -r .id "$quarantine_state")" = "$created_release_id" \
@@ -714,6 +733,7 @@ jobs:
                 '{schemaVersion:1,event:"post-publication-verification-failure",tag:$tag,
                   commit:$commit,releaseId:$release_id,runId:$run_id,runAttempt:$run_attempt,
                   quarantineVerified:$quarantined}' > "$quarantine_evidence"
+              chmod 0600 "$quarantine_evidence"
               printf '\n## Release quarantine\n\n- Evidence SHA-256: %s\n- Quarantine verified: %s\n' \
                 "$(sha256sum "$quarantine_evidence" | cut -d ' ' -f 1)" "$quarantine_verified" >> "$GITHUB_STEP_SUMMARY"
               cat -- "$quarantine_evidence" >> "$GITHUB_STEP_SUMMARY"

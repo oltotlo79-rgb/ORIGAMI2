@@ -2771,25 +2771,37 @@ mod tests {
 
     #[test]
     fn rational_sector_rejects_near_degenerate_and_mixed_sign_profiles() {
-        let (geometry, audit, schedule) =
-            rational_symmetric_cycle_fixture(3, 5, 4, 1.0e-5, 1).unwrap();
-        assert!(
-            geometry
-                .prove_dyadic_schedule_closure_v1(
-                    &audit,
-                    audit.faces()[0],
-                    &schedule,
-                    1.0e-9,
-                    DyadicIntervalClosureLimitsV1 {
-                        max_depth: 16,
-                        max_leaves: 65_536,
-                        max_work: 1_048_576,
-                        schedule_limits: CycleScheduleLimitsV1::default(),
-                    },
-                )
-                .is_err()
-        );
-        assert!(rational_symmetric_cycle_fixture(3, 5, 4, 0.0, -1).is_err());
+        for (numerator, denominator, leg) in [(3, 5, 4), (5, 13, 12), (7, 25, 24)] {
+            let (geometry, audit, schedule) = rational_symmetric_cycle_fixture(
+                numerator,
+                denominator,
+                leg,
+                1.0e-5,
+                1,
+            )
+            .unwrap();
+            assert!(
+                geometry
+                    .prove_dyadic_schedule_closure_v1(
+                        &audit,
+                        audit.faces()[0],
+                        &schedule,
+                        1.0e-9,
+                        DyadicIntervalClosureLimitsV1 {
+                            max_depth: 16,
+                            max_leaves: 65_536,
+                            max_work: 1_048_576,
+                            schedule_limits: CycleScheduleLimitsV1::default(),
+                        },
+                    )
+                    .is_err(),
+                "axis tamper must invalidate the {numerator}/{denominator} exact theorem"
+            );
+            assert!(
+                rational_symmetric_cycle_fixture(numerator, denominator, leg, 0.0, -1).is_err(),
+                "mixed-sign tamper must be rejected for {numerator}/{denominator}"
+            );
+        }
         let (large_geometry, large_audit, large_schedule) =
             rational_symmetric_cycle_fixture(65, 97, 72, 0.0, 1).unwrap();
         assert!(

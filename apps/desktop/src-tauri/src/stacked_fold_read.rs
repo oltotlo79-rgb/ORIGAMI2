@@ -4360,11 +4360,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "rank4 global layer-authority fixture is completed in the follow-up E2E"]
     fn rank4_cycle_transports_layer_order_and_applies_atomically() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (pattern, mut paper, hinges) =
-            super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern();
+        let (pattern, mut paper, moving) =
+            super::dense_grid_cycle_test_support::three_by_three_dense_cycle_pattern();
         paper.thickness_mm = 0.1;
         let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
         let topology = project
@@ -4372,6 +4371,11 @@ mod tests {
             .topology_analysis_input(project.project_id)
             .analyze();
         let snapshot = topology.simulation_snapshot().unwrap();
+        let hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
         let fixed = snapshot.faces[0].id;
         super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
             &mut project,
@@ -4379,9 +4383,18 @@ mod tests {
             fixed,
         );
         let layer_state = GlobalFlatFoldabilityState::default();
-        super::super::global_flat_foldability::tests::install_possible_layer_order(
+        let material_faces: Vec<_> = snapshot
+            .faces
+            .iter()
+            .map(|face| ori_foldability::LayerFace {
+                face_id: face.id,
+                face_key: face.key,
+            })
+            .collect();
+        super::super::global_flat_foldability::tests::install_bound_empty_layer_order_for_graph(
             &layer_state,
             &project,
+            material_faces.clone(),
         );
         let instance = project.instance_id;
         let project_id = project.project_id;
@@ -4389,12 +4402,27 @@ mod tests {
         let app_state = AppState::new(project);
         let transactions =
             super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-        let request = |expected_project_instance_id| CurrentCyclePosePreviewRequestV1 {
+        let schedule_for = |mask: usize| {
+            let mut schedule = dense_grid_schedule(&hinges, &moving, 4);
+            for (index, entry) in schedule
+                .entries
+                .iter_mut()
+                .filter(|entry| moving.contains(&entry.edge))
+                .enumerate()
+            {
+                if mask & (1 << index) != 0 {
+                    entry.numerator_power_coefficients[1].numerator *= -1;
+                    entry.requested_angle_degrees *= -1.0;
+                }
+            }
+            schedule
+        };
+        let request = |expected_project_instance_id, mask| CurrentCyclePosePreviewRequestV1 {
             progress_request_id: Some("rank4:layer".to_owned()),
             expected_project_instance_id,
             expected_project_id: project_id,
             expected_revision: revision,
-            cycle_schedule_v1: four_bay_cycle_schedule(&hinges),
+            cycle_schedule_v1: schedule_for(mask),
         };
         assert_eq!(
             propose_current_cycle_pose_inner_with_layers(
@@ -4402,24 +4430,29 @@ mod tests {
                 &app_state,
                 Some(&layer_state),
                 &transactions,
-                request(ProjectId::new()),
+                request(ProjectId::new(), 0),
             )
             .unwrap_err(),
             STALE_MESSAGE
         );
-        let preview = propose_current_cycle_pose_inner_with_layers(
-            None,
-            &app_state,
-            Some(&layer_state),
-            &transactions,
-            request(instance),
-        )
-        .expect("rank4 layer transport preview");
+        let (closing_mask, preview) = (0..(1usize << moving.len()))
+            .find_map(|mask| {
+                propose_current_cycle_pose_inner_with_layers(
+                    None,
+                    &app_state,
+                    Some(&layer_state),
+                    &transactions,
+                    request(instance, mask),
+                )
+                .ok()
+                .map(|preview| (mask, preview))
+            })
+            .expect("one Kawasaki rank4 orientation must close");
         assert_eq!(
             preview.continuous_layer_transport_model_id,
             Some(ori_collision::CONTINUOUS_LAYER_TRANSPORT_CERTIFICATE_MODEL_ID_V1)
         );
-        assert_eq!(preview.continuous_layer_transition_count, 5);
+        assert_eq!(preview.continuous_layer_transition_count, 2);
         assert_eq!(preview.source_layer_order, preview.target_layer_order);
         assert_eq!(
             preview.continuous_layer_pair_order_count,
@@ -4441,12 +4474,37 @@ mod tests {
             )
             .is_err()
         );
+        let stale_authority_preview = propose_current_cycle_pose_inner_with_layers(
+            None,
+            &app_state,
+            Some(&layer_state),
+            &transactions,
+            request(instance, closing_mask),
+        )
+        .expect("rank4 layer authority ABA preview");
+        {
+            let project = super::super::lock_project(&app_state).unwrap();
+            super::super::global_flat_foldability::tests::install_bound_empty_layer_order_for_graph(
+                &layer_state,
+                &project,
+                material_faces,
+            );
+        }
+        assert!(
+            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                &app_state,
+                &layer_state,
+                &transactions,
+                stale_authority_preview.transaction_token,
+            )
+            .is_err()
+        );
         let preview = propose_current_cycle_pose_inner_with_layers(
             None,
             &app_state,
             Some(&layer_state),
             &transactions,
-            request(instance),
+            request(instance, closing_mask),
         )
         .expect("rank4 layer transport retry");
         let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(

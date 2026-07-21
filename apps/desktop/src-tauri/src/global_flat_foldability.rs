@@ -2271,6 +2271,42 @@ pub(super) mod tests {
         }
     }
 
+    pub(crate) fn install_bound_empty_layer_order_for_graph(
+        state: &GlobalFlatFoldabilityState,
+        project: &ProjectState,
+        material_faces: Vec<ori_foldability::LayerFace>,
+    ) {
+        let source = source_for(project, GlobalFlatFoldabilityJobId::new());
+        let reference = material_faces[0];
+        let snapshot = LayerOrderSnapshot {
+            model_id: ori_foldability::LAYER_ORDER_MODEL_ID,
+            material_faces,
+            global_bottom_to_top: None,
+            provenance: ori_foldability::LayerOrderProvenance {
+                source: ori_foldability::GlobalFlatFoldabilityProvenance::for_geometry(
+                    project.project_id,
+                    project.editor.revision(),
+                    project.editor.paper(),
+                    project.editor.pattern(),
+                ),
+                derivation: ori_foldability::LayerOrderDerivation::FacewiseCertificate {
+                    reference_face: reference,
+                    overlap_cell_count: 0,
+                    constraint_count: 0,
+                },
+            },
+            reference_face: Some(reference),
+            folded_faces: Vec::new(),
+            overlap_cells: Vec::new(),
+            face_pair_orders: Vec::new(),
+            proof_summary: None,
+        };
+        let mut slot = lock_foldability_state(state).expect("lock synthetic authority slot");
+        let certificate = mint_current_layer_order_certificate(&mut slot, source.binding, snapshot)
+            .expect("mint bound synthetic graph layer authority");
+        slot.current_layer_order = Some(certificate);
+    }
+
     fn copy_layer_order_capability(
         capability: &CurrentLayerOrderCapability,
     ) -> CurrentLayerOrderCapability {

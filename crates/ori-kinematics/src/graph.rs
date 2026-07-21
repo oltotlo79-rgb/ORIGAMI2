@@ -66,6 +66,25 @@ impl DyadicMaterialHingeIntervalClosureCertificateV1 {
         &self.leaves
     }
 
+    /// Confirms that the leaves form one canonical, gap-free left-to-right
+    /// partition of the complete schedule domain.
+    #[must_use]
+    pub fn has_canonical_complete_partition_v1(&self) -> bool {
+        let mut cursor = 0_u128;
+        for (depth, index, _) in &self.leaves {
+            if *depth >= 64 || *index >= (1_u64 << depth) {
+                return false;
+            }
+            let width = 1_u128 << (64 - depth);
+            let start = u128::from(*index) * width;
+            if start != cursor {
+                return false;
+            }
+            cursor += width;
+        }
+        cursor == (1_u128 << 64)
+    }
+
     #[doc(hidden)]
     #[must_use]
     pub const fn schedule_binding_fingerprint_v1(&self) -> [u8; 32] {
@@ -1981,6 +2000,7 @@ mod tests {
                         },
                     )
                     .expect("independent cycle proof");
+                assert!(closure.has_canonical_complete_partition_v1());
                 assert_eq!(
                     closure
                         .leaves()
@@ -1991,6 +2011,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn composed_cycle_partition_rejects_reordered_gapped_and_stale_leaves() {
+        let (geometry, audit, schedule, fixed) = composed_rational_cycles_fixture(4, None, false);
+        let closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                fixed,
+                &schedule,
+                1.0e-9,
+                DyadicIntervalClosureLimitsV1 {
+                    max_depth: 2,
+                    max_leaves: 4,
+                    max_work: 4,
+                    schedule_limits: CycleScheduleLimitsV1::default(),
+                },
+            )
+            .unwrap();
+
+        let mut reordered = closure.clone();
+        reordered.leaves.swap(1, 2);
+        assert!(!reordered.has_canonical_complete_partition_v1());
+
+        let mut gapped = closure.clone();
+        gapped.leaves.remove(1);
+        assert!(!gapped.has_canonical_complete_partition_v1());
+
+        let mut stale = closure;
+        stale.leaves[2].2.checked_hinges.pop();
+        assert!(stale.has_canonical_complete_partition_v1());
+        assert_ne!(
+            stale.leaves[2].2.checked_hinges(),
+            stale.leaves[0].2.checked_hinges()
+        );
     }
 
     #[test]

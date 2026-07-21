@@ -462,6 +462,21 @@ pub(super) fn install_pending_current_cycle_pose_v1(
     premises: PendingCurrentCyclePosePremisesV1,
     pose_capability: CurrentAppliedPoseCapability,
 ) -> Result<ProjectId, String> {
+    let mut graph_hinges = premises
+        .geometry
+        .hinges()
+        .iter()
+        .map(|hinge| hinge.edge())
+        .collect::<Vec<_>>();
+    graph_hinges.sort_unstable_by_key(ori_domain::EdgeId::canonical_bytes);
+    if !premises.closure.has_canonical_complete_partition_v1()
+        || premises.closure.fixed_face() != premises.fixed_face
+        || premises.closure.leaves().iter().any(|(_, _, leaf)| {
+            leaf.fixed_face() != premises.fixed_face || leaf.checked_hinges() != graph_hinges
+        })
+    {
+        return Err("The current-cycle pose premises are inconsistent.".to_owned());
+    }
     let token = ProjectId::new();
     let pending = PendingStackedFoldTransaction {
         token,

@@ -59,7 +59,13 @@ pub fn prepare_cycle_fold_transaction_v1(
     applied_pose: AppliedPoseV1,
 ) -> Result<ReadyCycleFoldTransactionV1, CycleFoldTransactionErrorV1> {
     let fixed = certificate.fixed_face();
-    if certificate.leaves().is_empty()
+    let mut graph_hinges = geometry
+        .hinges()
+        .iter()
+        .map(|hinge| hinge.edge())
+        .collect::<Vec<_>>();
+    graph_hinges.sort_unstable_by_key(ori_domain::EdgeId::canonical_bytes);
+    if !certificate.has_canonical_complete_partition_v1()
         || !schedule.matches_binding(geometry, audit, fixed)
         || certificate.schedule_binding_fingerprint_v1()
             != schedule.certificate_binding_fingerprint_v1()
@@ -67,7 +73,7 @@ pub fn prepare_cycle_fold_transaction_v1(
         || certificate
             .leaves()
             .iter()
-            .any(|(_, _, leaf)| leaf.fixed_face() != fixed)
+            .any(|(_, _, leaf)| leaf.fixed_face() != fixed || leaf.checked_hinges() != graph_hinges)
     {
         return Err(CycleFoldTransactionErrorV1::BindingMismatch);
     }

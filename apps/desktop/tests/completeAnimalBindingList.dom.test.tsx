@@ -15,6 +15,7 @@ const valid = [
   target(3, 2, [1000, 0, 0], 'bilateral'),
   target(4, 4, [0, 1000, 0], 'bilateral'),
 ]
+const winged = [...valid, target(5, 2, [1000, 0, 0], 'bilateral')]
 
 afterEach(cleanup)
 
@@ -34,11 +35,22 @@ describe('CompleteAnimalBindingList', () => {
       [valid[0], valid[1], valid[2], { ...valid[3], id: 3 }],
       [valid[1], valid[0], valid[2], valid[3]],
       [valid[0], valid[1], valid[2], { ...valid[3], count: 9 }],
+      [...winged, target(6, 2, [1000, 0, 0], 'bilateral')],
+      [...valid, { ...winged[4], id: 4 }],
+      [...valid, { ...winged[4], count: 1 }],
+      [...valid, { ...winged[4], symmetry: 'none' as const }],
     ]) {
       const { unmount } = render(<CompleteAnimalBindingList locale="en" protrusions={forged} />)
       expect(screen.queryByRole('list')).toBeNull()
       unmount()
     }
+  })
+
+  it('renders the optional wing pair only as the strict fifth binding', () => {
+    render(<CompleteAnimalBindingList locale="en" protrusions={winged} />)
+    const list = screen.getByRole('list', { name: 'Five complete-animal binding dimensions' })
+    expect(list.children).toHaveLength(5)
+    expect(screen.getByText('Binding 5 · count 2 · length 500 · thickness 50')).toBeTruthy()
   })
 
   it('adds no focus target beside a disabled apply action', () => {

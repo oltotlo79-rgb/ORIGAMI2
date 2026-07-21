@@ -780,6 +780,7 @@ pub(crate) fn apply_beginner_part_assignments(
         && horn_candidate_ids.len() == 1
         && tail_candidate_ids.len() == 1
         && ear_candidate_ids.len() == 2
+        && matches!(wing_candidate_ids.len(), 0 | 2)
         && profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
     {
@@ -813,14 +814,43 @@ pub(crate) fn apply_beginner_part_assignments(
         leg_target.direction_milli = [0, 1000, 0];
         leg_target.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
         profile.generation_constraints.protrusions.push(leg_target);
-        let complete = ori_domain::animal_complete_bindings_v1(&profile.generation_constraints)
-            .ok_or_else(|| "part_assignment_complete_animal_binding_invalid".to_owned())?;
-        let ordered_ids = [
-            complete.horn_protrusion_id,
-            complete.tail_protrusion_id,
-            complete.ear_pair_protrusion_id,
-            complete.leg_protrusion_id,
-        ];
+        if wing_candidate_ids.len() == 2 {
+            let wings = wing_candidate_ids
+                .iter()
+                .filter_map(|id| candidates.iter().find(|candidate| candidate.id == *id))
+                .collect::<Vec<_>>();
+            if wings.len() != 2
+                || !candidate_pair_is_symmetric(axis_twice, &wings[0].bounds, &wings[1].bounds)
+            {
+                return Err("part_assignment_complete_animal_binding_invalid".to_owned());
+            }
+            let mut wing_target = profile.generation_constraints.protrusions[2].clone();
+            wing_target.id = 5;
+            wing_target.count = 2;
+            wing_target.priority = 60;
+            wing_target.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
+            profile.generation_constraints.protrusions.push(wing_target);
+        }
+        let ordered_ids = if let Some(winged) =
+            ori_domain::animal_complete_winged_bindings_v1(&profile.generation_constraints)
+        {
+            vec![
+                winged.animal.horn_protrusion_id,
+                winged.animal.tail_protrusion_id,
+                winged.animal.ear_pair_protrusion_id,
+                winged.animal.leg_protrusion_id,
+                winged.wing_pair_protrusion_id,
+            ]
+        } else {
+            let complete = ori_domain::animal_complete_bindings_v1(&profile.generation_constraints)
+                .ok_or_else(|| "part_assignment_complete_animal_binding_invalid".to_owned())?;
+            vec![
+                complete.horn_protrusion_id,
+                complete.tail_protrusion_id,
+                complete.ear_pair_protrusion_id,
+                complete.leg_protrusion_id,
+            ]
+        };
         let canonical = ordered_ids
             .into_iter()
             .enumerate()
@@ -837,7 +867,10 @@ pub(crate) fn apply_beginner_part_assignments(
             })
             .collect::<Result<Vec<_>, String>>()?;
         profile.generation_constraints.protrusions = canonical;
-        if ori_domain::animal_complete_bindings_v1(&profile.generation_constraints).is_none() {
+        if ori_domain::animal_complete_bindings_v1(&profile.generation_constraints).is_none()
+            && ori_domain::animal_complete_winged_bindings_v1(&profile.generation_constraints)
+                .is_none()
+        {
             return Err("part_assignment_complete_animal_binding_invalid".to_owned());
         }
     }

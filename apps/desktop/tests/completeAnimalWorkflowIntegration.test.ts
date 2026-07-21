@@ -5,6 +5,7 @@ import test from 'node:test'
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const client = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8')
 const native = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8')
+const recognition = readFileSync(new URL('../src-tauri/src/beginner_recognition.rs', import.meta.url), 'utf8')
 const workflow = readFileSync(new URL('../src/lib/beginnerGridWorkflow.ts', import.meta.url), 'utf8')
 
 test('complete animal recognition reaches the bounded grid through one native contract', () => {
@@ -14,6 +15,17 @@ test('complete animal recognition reaches the bounded grid through one native co
   assert.match(client, /getBeginnerParameterGridProgress/)
   assert.match(app, /evaluateBeginnerParameterGrid/)
   assert.match(app, /setBeginnerGridProgress\(\{ enumerated: 27, globalChecked: 3 \}\)/)
+})
+
+test('optional wing pair stays the strict fifth binding across image, GLB, and wire', () => {
+  assert.match(recognition, /matches!\(wing_candidate_ids\.len\(\), 0 \| 2\)/)
+  assert.match(recognition, /wing_target\.id = 5/)
+  assert.match(recognition, /candidate_pair_is_symmetric/)
+  assert.match(native, /requested_animal_wings/)
+  assert.match(native, /wings\.id = 5/)
+  assert.match(native, /animal_complete_winged_bindings_v1/)
+  assert.match(client, /completeAnimalHasWings/)
+  assert.match(client, /composite_complete_winged_animal_base/)
 })
 
 test('grid cancellation and stale replacement stay generation and snapshot scoped', () => {
@@ -39,6 +51,7 @@ test('confirmed apply retains preview on failure and restores focus only after s
 
 test('native complete animal apply is atomic, replay-safe, undoable, redoable, and persistent', () => {
   assert.match(native, /fn complete_animal_grid_apply_replay_undo_redo_and_archive_round_trip/)
+  assert.match(native, /fn complete_winged_animal_grid_apply_and_archive_round_trip/)
   assert.match(native, /expected_grid_hash/)
   assert.match(native, /Command::ApplyStackedFoldDocument/)
   assert.match(native, /execute_undo\(&mut project/)

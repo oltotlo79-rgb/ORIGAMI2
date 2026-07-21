@@ -2261,7 +2261,11 @@ fn symmetric_plan_kind(
             .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1)
         && has(ori_domain::BeginnerTargetPartKindV1::Ear)
     {
-        ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase
+        if has(ori_domain::BeginnerTargetPartKindV1::Wing) {
+            ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteWingedAnimalBase
+        } else {
+            ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase
+        }
     } else if profile.generation_constraints.target_category
         == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
         && profile
@@ -2680,6 +2684,12 @@ fn configure_symmetric_profile(
             .target_parts
             .iter()
             .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 4);
+    let winged_animal = complete_animal
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Wing && part.count == 2);
     let wing_antenna = insect
         && profile
             .generation_constraints
@@ -2780,6 +2790,15 @@ fn configure_symmetric_profile(
                 legs.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
                 legs.direction_milli = [0, 1000, 0];
                 profile.generation_constraints.protrusions.push(legs);
+                if winged_animal {
+                    let mut wings = profile.generation_constraints.protrusions[2].clone();
+                    wings.id = 5;
+                    wings.count = 2;
+                    wings.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
+                    wings.direction_milli = [1000, 0, 0];
+                    wings.priority = 60;
+                    profile.generation_constraints.protrusions.push(wings);
+                }
             }
         }
     }
@@ -2872,6 +2891,7 @@ fn apply_beginner_generated_plan(
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeWingAntennaBase
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteWingedAnimalBase
     ) {
         return Err("the selected generated plan is preview-only".to_owned());
     }
@@ -3034,6 +3054,11 @@ fn apply_beginner_generated_plan(
             "Apply the bounded horn, tail, ear, and four-leg composite candidate.",
             "All live bindings and candidate identity were revalidated before apply.",
         ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteWingedAnimalBase => (
+            "Complete winged animal base",
+            "Apply the bounded horn, tail, ear, four-leg, and wing-pair composite candidate.",
+            "All five live bindings and candidate identity were revalidated before apply.",
+        ),
         ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold => (
             "Diagonal fold",
             "Fold the rectangular sheet on the generated diagonal.",
@@ -3191,6 +3216,11 @@ fn apply_grid_plan_document(
             "Complete composite animal grid candidate",
             "Apply the globally proven complete animal parameter-grid candidate.",
             "All live bindings, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteWingedAnimalBase => (
+            "Complete winged animal grid candidate",
+            "Apply the globally proven five-binding winged animal parameter-grid candidate.",
+            "All five live bindings, proof, and candidate identity were revalidated before apply.",
         ),
         _ => return Err("grid_candidate_kind_invalid".to_owned()),
     };
@@ -3633,7 +3663,18 @@ fn derive_reference_model_suggestion_v1(
     let requested_horn_tail = requested_single_horn && requested_single_tail;
     let requested_horn_tail_ear = requested_horn_tail && requested_horn_ear;
     let requested_complete_animal = requested_horn_tail_ear && requested_four_legs;
-    if requested_complete_animal && !bilateral {
+    let requested_animal_wings = requested_complete_animal
+        && target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Wing && part.count == 2);
+    if requested_complete_animal
+        && (!bilateral
+            || target_parts
+                .iter()
+                .filter(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Wing)
+                .count()
+                > 1)
+    {
         return Err("reference_model_feature_range".to_owned());
     }
     let requested_single_antenna = target_parts
@@ -3786,6 +3827,15 @@ fn derive_reference_model_suggestion_v1(
         legs.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
         legs.direction_milli = [0, 1000, 0];
         protrusions.push(legs);
+        if requested_animal_wings {
+            let mut wings = protrusions[2].clone();
+            wings.id = 5;
+            wings.count = 2;
+            wings.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
+            wings.direction_milli = [1000, 0, 0];
+            wings.priority = 60;
+            protrusions.push(wings);
+        }
     }
     if requested_wing_antenna {
         protrusions.clear();
@@ -4049,15 +4099,30 @@ fn apply_beginner_reference_model_features(
         }
     }
     if live.protrusions.len() == 5 {
-        let binding = ori_domain::insect_complete_bindings_v1(&profile.generation_constraints)
-            .ok_or_else(|| "reference_model_suggestion_invalid".to_owned())?;
-        let expected = [
-            binding.wing_pair_protrusion_id,
-            binding.antenna_pair_protrusion_id,
-            binding.leg_pair_protrusion_ids[0],
-            binding.leg_pair_protrusion_ids[1],
-            binding.leg_pair_protrusion_ids[2],
-        ];
+        let expected = if profile.generation_constraints.target_category
+            == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
+        {
+            let binding =
+                ori_domain::animal_complete_winged_bindings_v1(&profile.generation_constraints)
+                    .ok_or_else(|| "reference_model_suggestion_invalid".to_owned())?;
+            vec![
+                binding.animal.horn_protrusion_id,
+                binding.animal.tail_protrusion_id,
+                binding.animal.ear_pair_protrusion_id,
+                binding.animal.leg_protrusion_id,
+                binding.wing_pair_protrusion_id,
+            ]
+        } else {
+            let binding = ori_domain::insect_complete_bindings_v1(&profile.generation_constraints)
+                .ok_or_else(|| "reference_model_suggestion_invalid".to_owned())?;
+            vec![
+                binding.wing_pair_protrusion_id,
+                binding.antenna_pair_protrusion_id,
+                binding.leg_pair_protrusion_ids[0],
+                binding.leg_pair_protrusion_ids[1],
+                binding.leg_pair_protrusion_ids[2],
+            ]
+        };
         if live.protrusions.iter().map(|target| target.id).ne(expected) {
             return Err("reference_model_suggestion_invalid".to_owned());
         }
@@ -11203,6 +11268,41 @@ mod tests {
             &complete_animal,
             &replacement
         ));
+        let mut winged_animal_parts = complete_animal_parts.to_vec();
+        winged_animal_parts.push(ori_domain::BeginnerTargetPartRecordV1 {
+            kind: ori_domain::BeginnerTargetPartKindV1::Wing,
+            count: 2,
+        });
+        let winged_animal = derive_reference_model_suggestion_v1(
+            complete_animal_asset,
+            &geometry,
+            Some(ori_domain::BeginnerTargetCategoryV1::Animal),
+            &winged_animal_parts,
+        )
+        .expect("complete winged animal GLB suggestion");
+        assert_eq!(winged_animal.protrusions.len(), 5);
+        assert_eq!(winged_animal.protrusions[4].id, 5);
+        assert_eq!(winged_animal.protrusions[4].count, 2);
+        let mut forged_wing = winged_animal.clone();
+        forged_wing.protrusions[4].id = 4;
+        assert!(!reference_model_suggestion_matches_live_v1(
+            &forged_wing,
+            &winged_animal
+        ));
+        let mut duplicate_wing_parts = winged_animal_parts.clone();
+        duplicate_wing_parts.push(ori_domain::BeginnerTargetPartRecordV1 {
+            kind: ori_domain::BeginnerTargetPartKindV1::Wing,
+            count: 2,
+        });
+        assert!(
+            derive_reference_model_suggestion_v1(
+                complete_animal_asset,
+                &geometry,
+                Some(ori_domain::BeginnerTargetCategoryV1::Animal),
+                &duplicate_wing_parts,
+            )
+            .is_err()
+        );
         let composite = derive_reference_model_suggestion_v1(
             AssetId::new(),
             &geometry,
@@ -11731,6 +11831,90 @@ mod tests {
         );
         assert!(!reopened.editor.can_undo());
         assert!(!reopened.editor.can_redo());
+    }
+
+    #[test]
+    fn complete_winged_animal_grid_apply_and_archive_round_trip() {
+        let mut profile = ori_domain::BeginnerDesignProfileV1::default();
+        profile.generation_constraints.target_category =
+            Some(ori_domain::BeginnerTargetCategoryV1::Animal);
+        profile.generation_constraints.target_parts = vec![
+            (ori_domain::BeginnerTargetPartKindV1::Head, 1),
+            (ori_domain::BeginnerTargetPartKindV1::Torso, 1),
+            (ori_domain::BeginnerTargetPartKindV1::Horn, 1),
+            (ori_domain::BeginnerTargetPartKindV1::Tail, 1),
+            (ori_domain::BeginnerTargetPartKindV1::Ear, 2),
+            (ori_domain::BeginnerTargetPartKindV1::Leg, 4),
+            (ori_domain::BeginnerTargetPartKindV1::Wing, 2),
+        ]
+        .into_iter()
+        .map(|(kind, count)| ori_domain::BeginnerTargetPartRecordV1 { kind, count })
+        .collect();
+        configure_symmetric_profile(
+            &mut profile,
+            ori_domain::BeginnerSymmetricParameterEstimateV1 {
+                protrusion_count: 10,
+                scale_percent: 25,
+                spacing_percent: 50,
+            },
+            25,
+            50,
+        );
+        let binding =
+            ori_domain::animal_complete_winged_bindings_v1(&profile.generation_constraints)
+                .expect("strict five-binding winged animal");
+        assert_eq!(binding.wing_pair_protrusion_id, 5);
+        let point = ori_domain::beginner_parameter_grid_v1()[13];
+        let mut project = initial_project_state();
+        let plan = grid_template_plan(
+            project.project_id,
+            project.editor.pattern(),
+            &project.editor.paper().boundary_vertices,
+            &profile,
+            point,
+        )
+        .unwrap()
+        .into_iter()
+        .find(|plan| {
+            plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteWingedAnimalBase
+        })
+        .expect("winged animal grid plan");
+        assert_eq!(plan.crease_pattern.vertices.len(), 15);
+        assert_eq!(plan.crease_pattern.edges.len(), 14);
+        let project_id = project.project_id;
+        let instance_id = project.instance_id;
+        let revision = project.editor.revision();
+        let saved_profile = execute_command(
+            &mut project,
+            project_id,
+            revision,
+            Command::UpdateBeginnerDesignProfile { profile },
+        )
+        .unwrap();
+        let applied = apply_grid_plan_document(
+            &mut project,
+            instance_id,
+            project_id,
+            saved_profile.revision,
+            plan,
+        )
+        .unwrap();
+        let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
+        execute_redo(&mut project, project_id, undone.revision).unwrap();
+        let saved = project.document();
+        let bytes = write_project_ori2(&saved).unwrap();
+        let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default()).unwrap();
+        let reopened = ProjectState::from_document(restored, PathBuf::from("winged-animal.ori2"));
+        assert_eq!(reopened.document(), saved);
+        assert!(
+            ori_domain::animal_complete_winged_bindings_v1(
+                &reopened
+                    .editor
+                    .beginner_design_profile()
+                    .generation_constraints,
+            )
+            .is_some()
+        );
     }
 
     #[test]

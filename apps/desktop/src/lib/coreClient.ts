@@ -436,13 +436,19 @@ function normalizeBeginnerGenerationConstraints(
     && targetParts.some((part) => part?.kind === 'tail' && part.count === 1)
     && targetParts.some((part) => part?.kind === 'ear' && part.count === 2)
     && targetParts.some((part) => part?.kind === 'leg' && part.count === 4)
-  if (completeAnimal && (protrusions.length !== 4
+  const animalWingParts = targetParts.filter((part) => part?.kind === 'wing')
+  const completeAnimalHasWings = animalWingParts.length === 1 && animalWingParts[0]?.count === 2
+  if (completeAnimal && (animalWingParts.length > 1
+    || (animalWingParts.length === 1 && !completeAnimalHasWings)
+    || protrusions.length !== (completeAnimalHasWings ? 5 : 4)
     || protrusions[0]?.count !== 1 || protrusions[0]?.symmetry !== 'none'
     || protrusions[0]?.direction_milli[0] !== 0 || protrusions[0]?.direction_milli[1] === 0
     || protrusions[1]?.count !== 1 || protrusions[1]?.symmetry !== 'none'
     || protrusions[1]?.direction_milli[0] === 0 || protrusions[1]?.direction_milli[1] !== 0
     || protrusions[2]?.count !== 2 || protrusions[2]?.symmetry !== 'bilateral'
-    || protrusions[3]?.count !== 4 || protrusions[3]?.symmetry !== 'bilateral')) return null
+    || protrusions[3]?.count !== 4 || protrusions[3]?.symmetry !== 'bilateral'
+    || (completeAnimalHasWings
+      && (protrusions[4]?.count !== 2 || protrusions[4]?.symmetry !== 'bilateral')))) return null
   const bulgeIds = new Set<number>()
   const bulgeTargets = record.bulge_targets.map((value) => {
     const item = exactCoreDataRecord(value, [
@@ -642,6 +648,7 @@ export type BeginnerGeneratedPlanV1 = {
     | 'composite_wing_antenna_base'
     | 'composite_complete_insect_base'
     | 'composite_complete_animal_base'
+    | 'composite_complete_winged_animal_base'
     | 'vertical_book_fold'
     | 'horizontal_book_fold'
     | 'diagonal_fold'
@@ -750,18 +757,18 @@ function normalizeBeginnerCandidateResponse(
     if (
       !record
       || record.schema_version !== 1
-      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
+      || !['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'vertical_book_fold', 'horizontal_book_fold', 'diagonal_fold'].includes(String(record.kind))
       || !pattern
       || !Array.isArray(pattern.vertices)
       || pattern.vertices.length < 2
-      || pattern.vertices.length > (record.kind === 'composite_complete_insect_base' ? 21 : record.kind === 'composite_complete_animal_base' ? 11 : record.kind === 'symmetric_six_leg_base' ? 13 : record.kind === 'composite_wing_antenna_base' ? 9 : record.kind === 'composite_horn_tail_ear_base' ? 7 : ['composite_tail_ear_base', 'composite_horn_ear_base'].includes(String(record.kind)) ? 6 : 5)
+      || pattern.vertices.length > (record.kind === 'composite_complete_insect_base' ? 21 : record.kind === 'composite_complete_winged_animal_base' ? 15 : record.kind === 'composite_complete_animal_base' ? 11 : record.kind === 'symmetric_six_leg_base' ? 13 : record.kind === 'composite_wing_antenna_base' ? 9 : record.kind === 'composite_horn_tail_ear_base' ? 7 : ['composite_tail_ear_base', 'composite_horn_ear_base'].includes(String(record.kind)) ? 6 : 5)
       || !Array.isArray(pattern.edges)
       || pattern.edges.length < 1
-      || pattern.edges.length > (record.kind === 'composite_complete_insect_base' ? 20 : record.kind === 'composite_complete_animal_base' ? 10 : record.kind === 'symmetric_six_leg_base' ? 12 : record.kind === 'composite_wing_antenna_base' ? 8 : record.kind === 'composite_horn_tail_ear_base' ? 6 : ['composite_tail_ear_base', 'composite_horn_ear_base'].includes(String(record.kind)) ? 5 : 4)
+      || pattern.edges.length > (record.kind === 'composite_complete_insect_base' ? 20 : record.kind === 'composite_complete_winged_animal_base' ? 14 : record.kind === 'composite_complete_animal_base' ? 10 : record.kind === 'symmetric_six_leg_base' ? 12 : record.kind === 'composite_wing_antenna_base' ? 8 : record.kind === 'composite_horn_tail_ear_base' ? 6 : ['composite_tail_ear_base', 'composite_horn_ear_base'].includes(String(record.kind)) ? 5 : 4)
       || !Array.isArray(record.instruction_codes)
       || record.instruction_codes.length !== 1
       || !record.instruction_codes.every((code) =>
-        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
+        ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'book_fold_vertical', 'book_fold_horizontal', 'diagonal_fold'].includes(String(code)))
     ) return null
     const normalizedPlanInputs = normalizeBeginnerGenerationConstraints({
       schema_version: 1,
@@ -2126,6 +2133,7 @@ export function applyBeginnerGeneratedPlan(
     'composite_wing_antenna_base',
     'composite_complete_insect_base',
     'composite_complete_animal_base',
+    'composite_complete_winged_animal_base',
   ].includes(selectedKind) || !isCanonicalNonNilUuid(expectedCandidateEdgeId)) {
     return Promise.reject(new Error('unsupported generated plan'))
   }

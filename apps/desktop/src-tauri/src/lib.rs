@@ -2273,26 +2273,38 @@ fn symmetric_plan_kind(
             )
         })
         .count();
-    let generic_mixed_target = feature_records >= 2
-        && !(has(ori_domain::BeginnerTargetPartKindV1::Wing)
-            && has(ori_domain::BeginnerTargetPartKindV1::Antenna))
-        && !(profile.generation_constraints.target_category
-            == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
+    let has_one = |kind| {
+        profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == kind && part.count == 1)
+    };
+    let horn = has_one(ori_domain::BeginnerTargetPartKindV1::Horn);
+    let tail = has_one(ori_domain::BeginnerTargetPartKindV1::Tail);
+    let ears = has(ori_domain::BeginnerTargetPartKindV1::Ear);
+    let legs = profile
+        .generation_constraints
+        .target_parts
+        .iter()
+        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 4);
+    let wings = has(ori_domain::BeginnerTargetPartKindV1::Wing);
+    let known_animal = feature_records == 2 && (horn && tail || horn && ears || tail && ears)
+        || feature_records == 3 && horn && tail && ears
+        || feature_records == 4 && horn && tail && ears && legs
+        || feature_records == 5 && horn && tail && ears && legs && wings;
+    let wing_antenna = wings && has(ori_domain::BeginnerTargetPartKindV1::Antenna);
+    let known_insect = feature_records == 2 && wing_antenna
+        || feature_records == 3
+            && wing_antenna
             && profile
                 .generation_constraints
                 .target_parts
                 .iter()
                 .any(|part| {
-                    part.kind == ori_domain::BeginnerTargetPartKindV1::Horn && part.count == 1
-                })
-            && (profile
-                .generation_constraints
-                .target_parts
-                .iter()
-                .any(|part| {
-                    part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1
-                })
-                || has(ori_domain::BeginnerTargetPartKindV1::Ear)));
+                    part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6
+                });
+    let generic_mixed_target = feature_records >= 2 && !known_animal && !known_insect;
     if generic_mixed_target {
         ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
     } else if profile.generation_constraints.target_category

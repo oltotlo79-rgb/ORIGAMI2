@@ -845,12 +845,16 @@ pub fn generate_beginner_plans_v1(
                     )
                 })
                 .count();
-            let known_composite = part_count(BeginnerTargetPartKindV1::Horn) == 1
-                && part_count(BeginnerTargetPartKindV1::Tail) == 1
-                || part_count(BeginnerTargetPartKindV1::Tail) == 1
-                    && part_count(BeginnerTargetPartKindV1::Ear) == 2
-                || part_count(BeginnerTargetPartKindV1::Horn) == 1
-                    && part_count(BeginnerTargetPartKindV1::Ear) == 2;
+            let horn = part_count(BeginnerTargetPartKindV1::Horn) == 1;
+            let tail = part_count(BeginnerTargetPartKindV1::Tail) == 1;
+            let ears = part_count(BeginnerTargetPartKindV1::Ear) == 2;
+            let legs = part_count(BeginnerTargetPartKindV1::Leg) == 4;
+            let wings = part_count(BeginnerTargetPartKindV1::Wing) == 2;
+            let known_composite = feature_records == 2
+                && (horn && tail || tail && ears || horn && ears)
+                || feature_records == 3 && horn && tail && ears
+                || feature_records == 4 && horn && tail && ears && legs
+                || feature_records == 5 && horn && tail && ears && legs && wings;
             if feature_records >= 2 && !known_composite {
                 let endpoints = bounded_generic_composite_endpoints(constraints)
                     .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
@@ -1135,8 +1139,12 @@ pub fn generate_beginner_plans_v1(
                     )
                 })
                 .count();
-            let known_composite = part_count(BeginnerTargetPartKindV1::Wing) == 2
+            let wing_antenna = part_count(BeginnerTargetPartKindV1::Wing) == 2
                 && part_count(BeginnerTargetPartKindV1::Antenna) == 2;
+            let known_composite = feature_records == 2 && wing_antenna
+                || feature_records == 3
+                    && wing_antenna
+                    && part_count(BeginnerTargetPartKindV1::Leg) == 6;
             if feature_records >= 2 && !known_composite {
                 let endpoints = bounded_generic_composite_endpoints(constraints)
                     .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;

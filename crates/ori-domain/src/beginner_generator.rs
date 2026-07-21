@@ -2192,6 +2192,14 @@ mod tests {
             generate_beginner_plans_v1(namespace, &source, &ids, &outlined_generic).unwrap();
         assert_eq!(outlined_plans[0].crease_pattern.vertices.len(), 13);
         assert_eq!(outlined_plans[0].crease_pattern.edges.len(), 12);
+        let mut general_outline = generic.clone();
+        general_outline.generic_body_outline_mode = crate::BeginnerBodyOutlineModeV1::General;
+        general_outline.generic_body_outline_tenths_mm =
+            Some(vec![[-5, -5], [5, -5], [4, 5], [-3, 5]]);
+        let general_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &general_outline).unwrap();
+        assert_eq!(general_plans[0].crease_pattern.vertices.len(), 13);
+        assert_eq!(general_plans[0].crease_pattern.edges.len(), 12);
         let mut tapered_generic = generic.clone();
         tapered_generic.protrusions[1].root_width_tenths_mm = Some(1);
         tapered_generic.protrusions[1].tip_width_tenths_mm = Some(1);

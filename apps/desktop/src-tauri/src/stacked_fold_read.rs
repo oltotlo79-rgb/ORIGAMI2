@@ -786,7 +786,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
         .iter()
         .map(pose_state_fingerprint_v1)
         .collect::<Vec<_>>();
-    let candidates = graph
+    let mut candidates = graph
         .transitions()
         .iter()
         .enumerate()
@@ -800,6 +800,59 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
             }
         })
         .collect::<Vec<_>>();
+    let midpoint = ori_kinematics::CanonicalHingeAngles::new(
+        pose.hinge_angles()
+            .as_slice()
+            .iter()
+            .zip(target.as_slice())
+            .map(|(source, target)| {
+                ori_kinematics::HingeAngle::new(
+                    source.edge(),
+                    (source.angle_degrees() + target.angle_degrees()) * 0.5,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?,
+    )
+    .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+    if let Some(midpoint_state) = graph.states().iter().position(|state| state == &midpoint) {
+        for (index, (source_state, target_state)) in [
+            (graph.source_state(), midpoint_state),
+            (midpoint_state, graph.source_state()),
+            (midpoint_state, graph.target_state()),
+            (graph.target_state(), midpoint_state),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if source_state != target_state
+                && !candidates.iter().any(|edge| {
+                    edge.source == fingerprints[source_state]
+                        && edge.target == fingerprints[target_state]
+                })
+            {
+                let mut key = [0xff; 32];
+                key[24..].copy_from_slice(&(index as u64).to_be_bytes());
+                candidates.push(ori_collision::CertifiedPathTransitionCandidateV1 {
+                    source: fingerprints[source_state],
+                    target: fingerprints[target_state],
+                    candidate_key: key,
+                });
+            }
+        }
+    }
+    if graph.source_state() != graph.target_state()
+        && !candidates.iter().any(|edge| {
+            edge.source == fingerprints[graph.source_state()]
+                && edge.target == fingerprints[graph.target_state()]
+        })
+    {
+        candidates.push(ori_collision::CertifiedPathTransitionCandidateV1 {
+            source: fingerprints[graph.source_state()],
+            target: fingerprints[graph.target_state()],
+            candidate_key: [0xfe; 32],
+        });
+    }
     let mut auxiliary_certificates = std::collections::HashMap::new();
     let searched = ori_collision::search_certified_pose_graph_with_checkpoint_v1(
         &fingerprints,
@@ -814,15 +867,19 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
             let target = fingerprints
                 .iter()
                 .position(|value| value == &edge.target)?;
-            let generated = generate_linear_multi_hinge_path_candidate_v1(
-                geometry,
-                audit,
-                pose.fixed_face(),
-                &graph.states()[source],
-                &graph.states()[target],
-                MultiHingePathCandidateLimitsV1::default(),
-            )
-            .ok()?;
+            let generated = if source == graph.source_state() && target == graph.target_state() {
+                [1, 2, 4, 8, 16].into_iter().find_map(|denominator| {
+                    let generated = ori_kinematics::generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v1(
+                        geometry, audit, pose.fixed_face(), denominator, production_cycle_schedule_limits_v1()).ok()?;
+                    (generated.schedule().evaluate(1.0).as_ref() == Some(&graph.states()[target]))
+                        .then_some(generated)
+                })
+            } else {
+                None
+            }
+            .or_else(|| generate_linear_multi_hinge_path_candidate_v1(
+                geometry, audit, pose.fixed_face(), &graph.states()[source],
+                &graph.states()[target], MultiHingePathCandidateLimitsV1::default()).ok())?;
             let closure = geometry
                 .prove_dyadic_schedule_closure_v1(
                     audit,
@@ -7077,6 +7134,141 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a native trivial layer-order authority for a zero-overlap Kawasaki source"]
+    fn dyadic_private_authority_applies_and_round_trips_history() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (mut project, hinges) = super::super::applied_pose::tests::four_vertex_cycle_project();
+        super::super::applied_pose::tests::install_flat_graph_pose_authority(&mut project, hinges);
+        let layer_state = GlobalFlatFoldabilityState::default();
+        super::super::global_flat_foldability::tests::install_possible_layer_order(
+            &layer_state,
+            &project,
+        );
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let state = AppState::new(project);
+        let preview_state = DyadicPathPreviewState::default();
+        let target_for = || {
+            let project = super::super::lock_project(&state).unwrap();
+            let capability = project
+                .applied_pose_authority
+                .capture_capability(&project)
+                .unwrap()
+                .unwrap();
+            let (geometry, audit, pose) = capability.graph().unwrap();
+            ori_kinematics::generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v1(
+                geometry, audit, pose.fixed_face(), 1, production_cycle_schedule_limits_v1())
+            .ok()?
+            .schedule()
+            .evaluate(1.0)
+        };
+        let target = target_for().expect("real Kawasaki target");
+        let observed = {
+            let request = DyadicPoseGraphReadRequestV1 {
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                target_angles: target
+                    .as_slice()
+                    .iter()
+                    .map(|angle| DyadicPoseGraphAngleDtoV1 {
+                        edge: angle.edge(),
+                        angle_degrees: angle.angle_degrees(),
+                    })
+                    .collect(),
+                max_states: 32,
+                max_transitions: 128,
+            };
+            read_bounded_dyadic_pose_graph_inner_v1(&state, Some(&layer_state), request, None)
+                .expect("real Kawasaki dyadic read")
+        };
+        assert!(observed.mutation_candidate_ready);
+        let request = DyadicPathPreviewRequestV1 {
+            expected_project_instance_id: instance,
+            expected_project_id: project_id,
+            expected_revision: revision,
+            target_angles: target
+                .as_slice()
+                .iter()
+                .map(|angle| DyadicPoseGraphAngleDtoV1 {
+                    edge: angle.edge(),
+                    angle_degrees: angle.angle_degrees(),
+                })
+                .collect(),
+            max_states: 32,
+            max_transitions: 128,
+            expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
+            expected_positive_thickness_binding_sha256: observed
+                .positive_thickness_binding_sha256
+                .unwrap(),
+            expected_layer_transport_binding_sha256: observed
+                .layer_transport_binding_sha256
+                .unwrap(),
+        };
+        let preview =
+            mint_dyadic_pose_path_preview_inner_v1(&state, &layer_state, &preview_state, request)
+                .unwrap();
+        let apply_request = |path: String| ApplyDyadicPathPreviewRequestV1 {
+            preview_token: preview.preview_token,
+            expected_project_instance_id: instance,
+            expected_project_id: project_id,
+            expected_revision: revision,
+            expected_target_binding_sha256: preview.target_binding_sha256.clone(),
+            expected_path_binding_sha256: path,
+            expected_positive_thickness_binding_sha256: preview
+                .positive_thickness_binding_sha256
+                .clone(),
+            expected_layer_transport_binding_sha256: preview.layer_transport_binding_sha256.clone(),
+        };
+        assert!(
+            apply_dyadic_pose_path_preview_inner_v1(
+                &state,
+                &layer_state,
+                &preview_state,
+                apply_request("00".repeat(32))
+            )
+            .is_err()
+        );
+        assert_eq!(
+            super::super::lock_project(&state)
+                .unwrap()
+                .editor
+                .revision(),
+            revision
+        );
+        let applied = apply_dyadic_pose_path_preview_inner_v1(
+            &state,
+            &layer_state,
+            &preview_state,
+            apply_request(preview.path_binding_sha256.clone()),
+        )
+        .unwrap();
+        assert!(
+            apply_dyadic_pose_path_preview_inner_v1(
+                &state,
+                &layer_state,
+                &preview_state,
+                apply_request(preview.path_binding_sha256.clone())
+            )
+            .is_err()
+        );
+        let mut project = super::super::lock_project(&state).unwrap();
+        assert_eq!(applied, revision + 1);
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        project.editor.undo(applied).unwrap();
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
+        let archive = project.project_archive().unwrap();
+        let reopened = super::super::ProjectState::from_project_archive(
+            archive,
+            std::path::PathBuf::from("dyadic-authority.ori2"),
+        )
+        .unwrap();
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+    }
+
+    #[test]
     fn theta_positive_thickness_preview_applies_and_round_trips_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         for thickness_mm in [0.1, 1.0, 3.0] {
@@ -7302,7 +7494,7 @@ mod tests {
         let mut authenticated = 0;
         for iteration in 0..3 {
             let (mut project, hinges) =
-                super::super::applied_pose::tests::four_vertex_cycle_project();
+                super::super::applied_pose::tests::flat_foldable_cross_cycle_project();
             super::super::applied_pose::tests::install_flat_graph_pose_authority(
                 &mut project,
                 hinges.clone(),

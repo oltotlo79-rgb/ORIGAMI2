@@ -299,6 +299,7 @@ pub(super) fn propose_current_cycle_pose_v1(
     result
 }
 
+#[cfg(test)]
 fn propose_current_cycle_pose_inner(
     app: Option<&AppHandle>,
     app_state: &AppState,

@@ -756,15 +756,33 @@ jobs:
           test "$(jq -r .target_commitish "$remote_release")" = "$RELEASE_COMMIT"
           test "$(timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)" = "$created_release_id"
           test "$(timeout 60s gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_COMMIT"
+          asset_identity="$(jq -cer '
+            [.assets[] | {id, name, size, digest, updated_at}]
+            | select(length == 9 and all(.[]; (.id | numbers) > 0))
+            | sort_by(.name)
+            | select(([.[].id] | unique | length) == 9)
+          ' "$remote_release")"
           publish_prerelease=false
           [ "$RELEASE_MODE" = stable ] || publish_prerelease=true
           timeout 60s gh api --method PATCH "repos/$GH_REPO/releases/$created_release_id" \
             -f name="ORIGAMI2 $RELEASE_TAG" -F draft=false \
             -F prerelease="$publish_prerelease" -F body=@"$public_notes_file" >/dev/null
           published="$RUNNER_TEMP/published-release.json"
+          published_headers="$RUNNER_TEMP/published-release.headers"
           publish_verified=false
+          consecutive_verified=0
           for attempt in 1 2 3; do
-            if timeout 60s gh api "repos/$GH_REPO/releases/$created_release_id" > "$published" \
+            if curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+              --max-redirs 0 --max-filesize 1048576 \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              --header 'Cache-Control: no-cache' --header 'Pragma: no-cache' \
+              --dump-header "$published_headers" --output "$published" \
+              "https://api.github.com/repos/$GH_REPO/releases/$created_release_id" \
+              && grep -Eiq '^content-type: application/(json|vnd\.github\+json)(;|\r?$)' "$published_headers" \
+              && ! grep -Eiq '^link:' "$published_headers" \
+              && grep -Eiq '^etag: (W/)?"[A-Za-z0-9+/=_:.-]{1,256}"\r?$' "$published_headers" \
               && test "$(jq -r .id "$published")" = "$created_release_id" \
               && test "$(jq -r .name "$published")" = "ORIGAMI2 $RELEASE_TAG" \
               && test "$(jq -r .tag_name "$published")" = "$RELEASE_TAG" \
@@ -774,13 +792,35 @@ jobs:
               && jq -e --rawfile body "$public_notes_file" '.body == $body' "$published" >/dev/null \
               && node .github/scripts/verify_remote_release_assets.mjs release "$published"
             then
-              publish_verified=true
-              break
+              current_identity="$(jq -cer '[.assets[] | {id, name, size, digest, updated_at}] | sort_by(.name)' "$published")"
+              test "$current_identity" = "$asset_identity"
+              consecutive_verified=$((consecutive_verified + 1))
+              if [ "$consecutive_verified" -eq 2 ]; then
+                publish_verified=true
+                break
+              fi
+            else
+              consecutive_verified=0
             fi
             [ "$attempt" -eq 3 ] || sleep 5
           done
           test "$publish_verified" = true
-          test "$(timeout 60s gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" --jq .id)" = "$created_release_id"
+          tagged_published="$RUNNER_TEMP/tagged-published-release.json"
+          tagged_headers="$RUNNER_TEMP/tagged-published-release.headers"
+          curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+            --max-redirs 0 --max-filesize 1048576 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --header 'Cache-Control: no-cache' --header 'Pragma: no-cache' \
+            --dump-header "$tagged_headers" --output "$tagged_published" \
+            "https://api.github.com/repos/$GH_REPO/releases/tags/$RELEASE_TAG"
+          grep -Eiq '^content-type: application/(json|vnd\.github\+json)(;|\r?$)' "$tagged_headers"
+          ! grep -Eiq '^link:' "$tagged_headers"
+          test "$(jq -r .id "$tagged_published")" = "$created_release_id"
+          tagged_identity="$(jq -cer '[.assets[] | {id, name, size, digest, updated_at}] | sort_by(.name)' "$tagged_published")"
+          test "$tagged_identity" = "$asset_identity"
+          node .github/scripts/verify_remote_release_assets.mjs release "$tagged_published"
           test "$(timeout 60s gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_COMMIT"
           created_release_id=''
           draft_created=false

@@ -2212,6 +2212,27 @@ fn symmetric_plan_kind(
             .any(|part| {
                 part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 2
             })
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6)
+    {
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase
+    } else if profile.generation_constraints.target_category
+        == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Wing && part.count == 2)
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| {
+                part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 2
+            })
     {
         ori_domain::BeginnerGeneratedPlanKindV1::CompositeWingAntennaBase
     } else if profile.generation_constraints.target_category
@@ -2600,6 +2621,12 @@ fn configure_symmetric_profile(
             .any(|part| {
                 part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 2
             });
+    let complete_insect = wing_antenna
+        && profile
+            .generation_constraints
+            .target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6);
     let skeleton = |id, start_x, start_y, end_x, end_y| ori_domain::BeginnerSkeletonSegmentV1 {
         id,
         start: ori_domain::BeginnerSkeletonPointV1 {
@@ -2676,10 +2703,20 @@ fn configure_symmetric_profile(
     if wing_antenna {
         profile.generation_constraints.protrusions[0].count = 2;
         profile.generation_constraints.protrusions[0].direction_milli = [1000, 0, 0];
+        profile.generation_constraints.protrusions[0].priority = 60;
         let mut antennae = profile.generation_constraints.protrusions[0].clone();
         antennae.id = 2;
         antennae.direction_milli = [0, -1000, 0];
         profile.generation_constraints.protrusions.push(antennae);
+        if complete_insect {
+            for (index, center_y) in [100, 250, 400].into_iter().enumerate() {
+                let mut legs = profile.generation_constraints.protrusions[0].clone();
+                legs.id = index as u16 + 3;
+                legs.priority = 50;
+                legs.position_tenths_mm[1] = center_y;
+                profile.generation_constraints.protrusions.push(legs);
+            }
+        }
     }
 }
 
@@ -2750,6 +2787,7 @@ fn apply_beginner_generated_plan(
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailBase
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailEarBase
             | ori_domain::BeginnerGeneratedPlanKindV1::CompositeWingAntennaBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase
     ) {
         return Err("the selected generated plan is preview-only".to_owned());
     }
@@ -2902,6 +2940,11 @@ fn apply_beginner_generated_plan(
             "Create individually bound bilateral wing and antenna pairs.",
             "Both pair bindings and the global proof were revalidated before apply.",
         ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase => (
+            "Complete composite insect base",
+            "Create five individually bound bilateral wing, antenna, and leg pairs.",
+            "All five pair bindings and the global proof were revalidated before apply.",
+        ),
         ori_domain::BeginnerGeneratedPlanKindV1::DiagonalFold => (
             "Diagonal fold",
             "Fold the rectangular sheet on the generated diagonal.",
@@ -3049,6 +3092,11 @@ fn apply_grid_plan_document(
             "Composite wing and antenna grid candidate",
             "Apply the globally proven wing-and-antenna parameter-grid candidate.",
             "Both live pair bindings, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase => (
+            "Complete composite insect grid candidate",
+            "Apply the globally proven five-pair insect parameter-grid candidate.",
+            "All live bindings, proof, and candidate identity were revalidated before apply.",
         ),
         _ => return Err("grid_candidate_kind_invalid".to_owned()),
     };
@@ -3496,6 +3544,10 @@ fn derive_reference_model_suggestion_v1(
         && target_parts.iter().any(|part| {
             part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 2
         });
+    let requested_complete_insect = requested_wing_antenna
+        && target_parts
+            .iter()
+            .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6);
     let requested_pair = target_parts.iter().find(|part| {
         part.count == 2
             && matches!(
@@ -3621,12 +3673,23 @@ fn derive_reference_model_suggestion_v1(
         wings.count = 2;
         wings.direction_milli = [1000, 0, 0];
         wings.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
+        wings.priority = 60;
         let mut antennae = wings.clone();
         antennae.id = 2;
         antennae.direction_milli = [0, -1000, 0];
         antennae.length_tenths_mm = u32::try_from((extents[1] / 2).max(1))
             .map_err(|_| "reference_model_feature_range".to_owned())?;
         protrusions.extend([wings, antennae]);
+        if requested_complete_insect {
+            for (index, ordinal) in [1_i32, 2, 3].into_iter().enumerate() {
+                let mut legs = protrusions[0].clone();
+                legs.id = index as u16 + 3;
+                legs.priority = 50;
+                legs.position_tenths_mm[1] =
+                    bbox_min_tenths_mm[1].saturating_add(extents[1].saturating_mul(ordinal) / 4);
+                protrusions.push(legs);
+            }
+        }
     }
     let pair_bindings = protrusions
         .iter()
@@ -3855,6 +3918,20 @@ fn apply_beginner_reference_model_features(
             {
                 return Err("reference_model_suggestion_invalid".to_owned());
             }
+        }
+    }
+    if live.protrusions.len() == 5 {
+        let binding = ori_domain::insect_complete_bindings_v1(&profile.generation_constraints)
+            .ok_or_else(|| "reference_model_suggestion_invalid".to_owned())?;
+        let expected = [
+            binding.wing_pair_protrusion_id,
+            binding.antenna_pair_protrusion_id,
+            binding.leg_pair_protrusion_ids[0],
+            binding.leg_pair_protrusion_ids[1],
+            binding.leg_pair_protrusion_ids[2],
+        ];
+        if live.protrusions.iter().map(|target| target.id).ne(expected) {
+            return Err("reference_model_suggestion_invalid".to_owned());
         }
     }
     if !ori_domain::validate_beginner_design_profile_v1(&profile) {

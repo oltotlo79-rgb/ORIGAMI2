@@ -761,6 +761,9 @@ pub(crate) fn apply_beginner_part_assignments(
             }
         }
     }
+    let recognized_wing_antenna = (wing_candidate_ids.len() == 2
+        && antenna_candidate_ids.len() == 2)
+        .then(|| profile.generation_constraints.protrusions.clone());
     if leg_candidate_ids.len() == 6
         && profile.generation_constraints.target_category
             == Some(ori_domain::BeginnerTargetCategoryV1::Insect)
@@ -822,6 +825,20 @@ pub(crate) fn apply_beginner_part_assignments(
             });
         }
         profile.generation_constraints.protrusions = protrusions;
+        if let Some(mut pairs) = recognized_wing_antenna {
+            if pairs.len() == 2 {
+                pairs[0].id = 4;
+                pairs[0].priority = 60;
+                pairs[1].id = 5;
+                pairs[1].priority = 60;
+                profile.generation_constraints.protrusions.extend(pairs);
+                if ori_domain::insect_complete_bindings_v1(&profile.generation_constraints)
+                    .is_none()
+                {
+                    return Err("part_assignment_complete_insect_binding_invalid".to_owned());
+                }
+            }
+        }
         if ori_domain::insect_three_pair_bindings_v1(&profile.generation_constraints).is_none() {
             return Err("part_assignment_six_leg_binding_invalid".to_owned());
         }

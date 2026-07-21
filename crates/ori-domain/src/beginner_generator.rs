@@ -115,6 +115,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     CompositeHornTailBase,
     CompositeHornTailEarBase,
     CompositeWingAntennaBase,
+    CompositeCompleteInsectBase,
     VerticalBookFold,
     HorizontalBookFold,
     DiagonalFold,
@@ -193,6 +194,78 @@ pub struct BeginnerHornTailEarBindingV1 {
 pub struct BeginnerWingAntennaBindingV1 {
     pub wing_pair_protrusion_id: u16,
     pub antenna_pair_protrusion_id: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerCompleteInsectBindingV1 {
+    pub leg_pair_protrusion_ids: [u16; 3],
+    pub wing_pair_protrusion_id: u16,
+    pub antenna_pair_protrusion_id: u16,
+}
+
+#[must_use]
+pub fn insect_complete_bindings_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<BeginnerCompleteInsectBindingV1> {
+    let count = |kind| {
+        constraints
+            .target_parts
+            .iter()
+            .find(|part| part.kind == kind)
+            .map_or(0, |part| part.count)
+    };
+    if constraints.target_category != Some(BeginnerTargetCategoryV1::Insect)
+        || count(BeginnerTargetPartKindV1::Leg) != 6
+        || count(BeginnerTargetPartKindV1::Wing) != 2
+        || count(BeginnerTargetPartKindV1::Antenna) != 2
+    {
+        return None;
+    }
+    let wing = constraints.protrusions.iter().find(|target| {
+        target.count == 2
+            && target.symmetry == BeginnerProtrusionSymmetryV1::Bilateral
+            && target.direction_milli[0] != 0
+            && target.direction_milli[1] == 0
+            && target.priority == 60
+    })?;
+    let antenna = constraints.protrusions.iter().find(|target| {
+        target.count == 2
+            && target.symmetry == BeginnerProtrusionSymmetryV1::Bilateral
+            && target.direction_milli[1] != 0
+            && target.direction_milli[0] == 0
+            && target.priority == 60
+    })?;
+    let mut legs = constraints
+        .protrusions
+        .iter()
+        .filter(|target| {
+            target.count == 2
+                && target.symmetry == BeginnerProtrusionSymmetryV1::Bilateral
+                && target.direction_milli[0] != 0
+                && target.direction_milli[1] == 0
+                && target.priority == 50
+        })
+        .collect::<Vec<_>>();
+    legs.sort_by_key(|target| (target.position_tenths_mm[1], target.id));
+    if legs.len() != 3
+        || legs
+            .windows(2)
+            .any(|pair| pair[0].position_tenths_mm[1] >= pair[1].position_tenths_mm[1])
+    {
+        return None;
+    }
+    let ids = [legs[0].id, legs[1].id, legs[2].id, wing.id, antenna.id];
+    let mut unique = ids;
+    unique.sort_unstable();
+    if unique.windows(2).any(|pair| pair[0] == pair[1]) {
+        return None;
+    }
+    Some(BeginnerCompleteInsectBindingV1 {
+        leg_pair_protrusion_ids: [legs[0].id, legs[1].id, legs[2].id],
+        wing_pair_protrusion_id: wing.id,
+        antenna_pair_protrusion_id: antenna.id,
+    })
 }
 
 #[must_use]
@@ -518,6 +591,13 @@ pub fn estimate_symmetric_parameters_v1(
         }
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Tail) == 1 => 1,
         BeginnerTargetCategoryV1::Animal if count(BeginnerTargetPartKindV1::Horn) == 1 => 1,
+        BeginnerTargetCategoryV1::Insect
+            if count(BeginnerTargetPartKindV1::Wing) == 2
+                && count(BeginnerTargetPartKindV1::Antenna) == 2
+                && count(BeginnerTargetPartKindV1::Leg) == 6 =>
+        {
+            10
+        }
         BeginnerTargetCategoryV1::Insect
             if count(BeginnerTargetPartKindV1::Wing) == 2
                 && count(BeginnerTargetPartKindV1::Antenna) == 2 =>
@@ -856,6 +936,45 @@ pub fn generate_beginner_plans_v1(
         }
         BeginnerTargetCategoryV1::Insect => {
             if part_count(BeginnerTargetPartKindV1::Wing) == 2
+                && part_count(BeginnerTargetPartKindV1::Antenna) == 2
+                && part_count(BeginnerTargetPartKindV1::Leg) == 6
+            {
+                let bindings = insect_complete_bindings_v1(constraints)
+                    .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
+                let mut endpoints = Vec::with_capacity(20);
+                for (id, vertical) in [
+                    (bindings.wing_pair_protrusion_id, false),
+                    (bindings.antenna_pair_protrusion_id, true),
+                ] {
+                    let mut isolated = constraints.clone();
+                    isolated.protrusions.retain(|target| target.id == id);
+                    endpoints.extend(
+                        parameterized_symmetric_endpoints(&isolated, 2, vertical)
+                            .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?,
+                    );
+                }
+                for id in bindings.leg_pair_protrusion_ids {
+                    let mut isolated = constraints.clone();
+                    isolated.protrusions.retain(|target| target.id == id);
+                    endpoints.extend(
+                        parameterized_symmetric_endpoints(&isolated, 2, false)
+                            .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?,
+                    );
+                }
+                symmetric_template(
+                    namespace,
+                    source,
+                    BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase,
+                    kind,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    &endpoints,
+                    "composite_complete_insect_base",
+                    constraints,
+                )
+            } else if part_count(BeginnerTargetPartKindV1::Wing) == 2
                 && part_count(BeginnerTargetPartKindV1::Antenna) == 2
             {
                 let bindings = insect_wing_antenna_bindings_v1(constraints)
@@ -1699,6 +1818,33 @@ mod tests {
                 wing_pair_protrusion_id: 1,
                 antenna_pair_protrusion_id: 2,
             })
+        );
+        let mut complete = wing_antenna.clone();
+        complete.target_parts.push(BeginnerTargetPartRecordV1 {
+            kind: BeginnerTargetPartKindV1::Leg,
+            count: 6,
+        });
+        complete.protrusions[0].priority = 60;
+        complete.protrusions[1].priority = 60;
+        for (index, y) in [3, 5, 7].into_iter().enumerate() {
+            let mut leg = bilateral_protrusion(index as u16 + 3, 2);
+            leg.priority = 50;
+            leg.position_tenths_mm[1] = y;
+            complete.protrusions.push(leg);
+        }
+        let complete_plans =
+            generate_beginner_plans_v1(namespace, &source, &ids, &complete).unwrap();
+        assert_eq!(
+            complete_plans[0].kind,
+            BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase
+        );
+        assert_eq!(complete_plans[0].crease_pattern.vertices.len(), 21);
+        assert_eq!(complete_plans[0].crease_pattern.edges.len(), 20);
+        assert_eq!(
+            insect_complete_bindings_v1(&complete)
+                .unwrap()
+                .leg_pair_protrusion_ids,
+            [3, 4, 5]
         );
         let mut single_antenna = antenna.clone();
         single_antenna.target_parts[2].count = 1;

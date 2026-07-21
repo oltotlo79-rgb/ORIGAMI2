@@ -44,17 +44,17 @@ pub use beginner_generation::{
 };
 pub use beginner_generator::{
     BEGINNER_GENERATOR_SCHEMA_VERSION_V1, BEGINNER_PARAMETER_GRID_SIZE_V1,
-    BeginnerBilateralPairBindingV1, BeginnerGeneratedPlanKindV1, BeginnerGeneratedPlanV1,
-    BeginnerGeneratorErrorV1, BeginnerHornEarBindingV1, BeginnerHornTailBindingV1,
-    BeginnerHornTailEarBindingV1, BeginnerParameterGridHashV1, BeginnerParameterGridPointV1,
-    BeginnerSymmetricParameterCandidateV1, BeginnerSymmetricParameterEstimateV1,
-    BeginnerTailEarBindingV1, BeginnerWingAntennaBindingV1, MAX_BEGINNER_GENERATED_CANDIDATES_V1,
-    MAX_BEGINNER_GENERATOR_INPUT_VERTICES_V1, animal_horn_ear_bindings_v1,
-    animal_horn_tail_bindings_v1, animal_horn_tail_ear_bindings_v1, animal_tail_ear_bindings_v1,
-    beginner_parameter_grid_hash_v1, beginner_parameter_grid_v1,
+    BeginnerBilateralPairBindingV1, BeginnerCompleteInsectBindingV1, BeginnerGeneratedPlanKindV1,
+    BeginnerGeneratedPlanV1, BeginnerGeneratorErrorV1, BeginnerHornEarBindingV1,
+    BeginnerHornTailBindingV1, BeginnerHornTailEarBindingV1, BeginnerParameterGridHashV1,
+    BeginnerParameterGridPointV1, BeginnerSymmetricParameterCandidateV1,
+    BeginnerSymmetricParameterEstimateV1, BeginnerTailEarBindingV1, BeginnerWingAntennaBindingV1,
+    MAX_BEGINNER_GENERATED_CANDIDATES_V1, MAX_BEGINNER_GENERATOR_INPUT_VERTICES_V1,
+    animal_horn_ear_bindings_v1, animal_horn_tail_bindings_v1, animal_horn_tail_ear_bindings_v1,
+    animal_tail_ear_bindings_v1, beginner_parameter_grid_hash_v1, beginner_parameter_grid_v1,
     beginner_target_approximation_score_v1, estimate_symmetric_parameters_v1,
-    generate_beginner_plans_v1, insect_three_pair_bindings_v1, insect_wing_antenna_bindings_v1,
-    symmetric_parameter_candidates_v1,
+    generate_beginner_plans_v1, insect_complete_bindings_v1, insect_three_pair_bindings_v1,
+    insect_wing_antenna_bindings_v1, symmetric_parameter_candidates_v1,
 };
 pub use beginner_recognition::{
     BEGINNER_RECOGNITION_SCHEMA_VERSION_V1, BeginnerOutlineCandidateV1,

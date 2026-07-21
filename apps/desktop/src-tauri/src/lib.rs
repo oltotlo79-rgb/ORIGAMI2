@@ -11311,7 +11311,17 @@ mod tests {
         .unwrap();
         let project_id = project.project_id;
         let instance_id = project.instance_id;
-        let revision = project.editor.revision();
+        let profile_revision = project.editor.revision();
+        let profile_saved = execute_command(
+            &mut project,
+            project_id,
+            profile_revision,
+            Command::UpdateBeginnerDesignProfile {
+                profile: generatable,
+            },
+        )
+        .unwrap();
+        let revision = profile_saved.revision;
         let applied = apply_grid_plan_document(
             &mut project,
             instance_id,
@@ -11327,6 +11337,24 @@ mod tests {
         let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
         let redone = execute_redo(&mut project, project_id, undone.revision).unwrap();
         assert_eq!(redone.revision, undone.revision + 1);
+        let saved = project.document();
+        let bytes = write_project_ori2(&saved).expect("persist complete insect grid apply");
+        let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default())
+            .expect("restore complete insect grid apply");
+        let reopened =
+            ProjectState::from_document(restored, PathBuf::from("complete-insect-grid.ori2"));
+        assert_eq!(reopened.document(), saved);
+        assert!(
+            ori_domain::insect_complete_bindings_v1(
+                &reopened
+                    .editor
+                    .beginner_design_profile()
+                    .generation_constraints
+            )
+            .is_some()
+        );
+        assert!(!reopened.editor.can_undo());
+        assert!(!reopened.editor.can_redo());
     }
 
     #[test]

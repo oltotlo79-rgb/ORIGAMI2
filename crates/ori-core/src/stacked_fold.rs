@@ -4100,6 +4100,23 @@ mod tests {
             StackedFoldGeometryLimitsV1::default(),
         )
         .expect("prepare split-cycle geometry");
+        let source_subdivision = geometry
+            .proof()
+            .source_edges()
+            .iter()
+            .find(|edge| edge.target_edges().len() == 2)
+            .expect("the pre-existing source hinge is split exactly once");
+        assert!(
+            source_pattern
+                .edges
+                .iter()
+                .any(|edge| edge.id == source_subdivision.source_edge())
+        );
+        assert_eq!(geometry.proof().expected_creases().len(), 1);
+        assert_eq!(
+            geometry.proof().expected_creases()[0].target_edges().len(),
+            2
+        );
         let target =
             prepare_stacked_fold_target_graph_audit_v1(geometry, TreeKinematicsLimits::default())
                 .expect("audit split cycle");

@@ -248,8 +248,7 @@ fn positive_tree_resource_premises_v1(
     else {
         return false;
     };
-    face_count >= 3
-        && face_count <= MAX_POSITIVE_ENDPOINT_TREE_FACES_V1
+    (3..=MAX_POSITIVE_ENDPOINT_TREE_FACES_V1).contains(&face_count)
         && hinge_count >= 2
         && hinge_count.checked_add(1) == Some(face_count)
         && moving_count == hinge_count
@@ -741,14 +740,14 @@ fn two_hinge_interval_clearance_premises(
             } else {
                 None
             };
-            if let Some(next) = next {
-                if let std::collections::hash_map::Entry::Vacant(entry) = depth.entry(next) {
-                    let Some(next_depth) = parent_depth.checked_add(1) else {
-                        return false;
-                    };
-                    entry.insert(next_depth);
-                    queue.push_back(next);
-                }
+            if let Some(next) = next
+                && let std::collections::hash_map::Entry::Vacant(entry) = depth.entry(next)
+            {
+                let Some(next_depth) = parent_depth.checked_add(1) else {
+                    return false;
+                };
+                entry.insert(next_depth);
+                queue.push_back(next);
             }
         }
     }
@@ -1695,14 +1694,13 @@ fn scheduled_collinear_flat_stack_premises_v1(
                 .solve_closed(audit, fixed_face, &angles, 1.0e-9)
                 .ok()
                 .is_some_and(|pose| {
-                    let result = graph_pose_preserves_common_axis_layers(
+                    graph_pose_preserves_common_axis_layers(
                         geometry,
                         &initial_pose,
                         &pose,
                         reference_start,
                         reference_end,
-                    );
-                    result
+                    )
                 })
         })
 }
@@ -4326,19 +4324,18 @@ mod tests {
         let initial = model
             .solve(Some(model.face_ids()[0]), &initial_angles)
             .expect("initial tree pose");
-        for requested in [30.0] {
-            let diagnostic = diagnose_collective_hinge_path_v1(
-                &model,
-                &initial,
-                &moving,
-                requested,
-                0.1,
-                StackedFoldPathDiagnosticLimitsV1::default(),
-            )
-            .expect("bounded positive-thickness diagnosis");
-            assert!(diagnostic.continuous_clearance_certified(), "{requested}");
-            assert_eq!(diagnostic.safe_stop_angle_degrees(), requested);
-        }
+        let requested = 30.0;
+        let diagnostic = diagnose_collective_hinge_path_v1(
+            &model,
+            &initial,
+            &moving,
+            requested,
+            0.1,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .expect("bounded positive-thickness diagnosis");
+        assert!(diagnostic.continuous_clearance_certified(), "{requested}");
+        assert_eq!(diagnostic.safe_stop_angle_degrees(), requested);
         let beyond_bound = diagnose_collective_hinge_path_v1(
             &model,
             &initial,

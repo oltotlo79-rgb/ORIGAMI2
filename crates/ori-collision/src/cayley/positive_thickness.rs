@@ -3456,9 +3456,8 @@ mod tests {
         wrong_face_registry.faces[0].face = wrong_face_registry.faces[1].face;
 
         let mut wrong_parent_child = triangular_exact_pose(&model, &pose);
-        let original_parent = wrong_parent_child.hinges[0].parent;
-        wrong_parent_child.hinges[0].parent = wrong_parent_child.hinges[0].child;
-        wrong_parent_child.hinges[0].child = original_parent;
+        let hinge = &mut wrong_parent_child.hinges[0];
+        std::mem::swap(&mut hinge.parent, &mut hinge.child);
 
         let mut wrong_rotation_sign = triangular_exact_pose(&model, &pose);
         wrong_rotation_sign.hinges[0].rotation_sign = -wrong_rotation_sign.hinges[0].rotation_sign;

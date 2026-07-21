@@ -86,6 +86,7 @@ impl CertifiedPathTransitionEvidenceV1 {
 /// into one graph edge. Any missing or mismatched certificate rejects the
 /// edge; an unresolved CCD result is never interpreted as collision-free.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn certify_scheduled_cycle_transition_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,

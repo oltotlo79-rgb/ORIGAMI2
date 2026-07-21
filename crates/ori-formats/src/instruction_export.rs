@@ -23,6 +23,7 @@ pub const INSTRUCTION_EXPORT_PROFILE: &str = "instruction_export_v1";
 pub const INSTRUCTION_PROJECTION_PROFILE: &str = "orthographic_isometric_v1";
 const UNTITLED_INSTRUCTION_TITLE: &str = "無題";
 const PATH_CERTIFICATE_REFERENCE_LABEL: &str = "経路証明 SHA-256: ";
+const CERTIFIED_CONTINUOUS_PATH_CLAIM: &str = "認証済みの連続折り経路";
 const SOURCE_MODEL_REFERENCE_LABEL: &str = " / 元モデル SHA-256: ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -363,6 +364,9 @@ fn validate_path_certificate_references(
     timeline: &InstructionTimeline,
 ) -> Result<(), InstructionExportError> {
     for (step_index, step) in timeline.steps.iter().enumerate() {
+        let claims_certified_path = [&step.title, &step.description, &step.caution]
+            .iter()
+            .any(|text| text.contains(CERTIFIED_CONTINUOUS_PATH_CLAIM));
         let mut described_binding = None;
         let mut reference_count = 0_usize;
         for text in [&step.title, &step.description, &step.caution] {
@@ -403,7 +407,7 @@ fn validate_path_certificate_references(
             }
         }
         match &step.visual.path_certificate_reference_v1 {
-            None if reference_count == 0 => {}
+            None if reference_count == 0 && !claims_certified_path => {}
             Some(reference) if reference_count == 1 => {
                 let fixed_face = step.pose.fixed_face.ok_or(
                     InstructionExportError::InvalidPathCertificateReference { step_index },
@@ -1153,6 +1157,30 @@ mod tests {
                     &fixture.pattern,
                     &fixture.paper,
                     &tampered_endpoint,
+                    &fixture.topology,
+                ),
+                Err(InstructionExportError::InvalidPathCertificateReference { step_index: 1 })
+            ));
+        }
+
+        let mut unproven_named_technique = tampered_endpoint.clone();
+        unproven_named_technique.steps[1].description =
+            "認証済みの連続折り経路で名前付き技法を適用します。".to_owned();
+        unproven_named_technique.steps[1]
+            .visual
+            .path_certificate_reference_v1 = None;
+        for format in [
+            InstructionExportFormat::Pdf17,
+            InstructionExportFormat::SvgPageZip,
+        ] {
+            assert!(matches!(
+                export_instruction_document(
+                    format,
+                    "未証明の名前付き技法",
+                    FINGERPRINT,
+                    &fixture.pattern,
+                    &fixture.paper,
+                    &unproven_named_technique,
                     &fixture.topology,
                 ),
                 Err(InstructionExportError::InvalidPathCertificateReference { step_index: 1 })

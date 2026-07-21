@@ -83,9 +83,26 @@ if (-not $strongSignatureAlgorithms.Contains($signature.TimeStamperCertificate.S
 
 $verificationLog = Join-Path $env:RUNNER_TEMP 'windows-signature-verification.log'
 try {
-    & signtool verify /q /pa /all /tw $File *> $verificationLog
+    & signtool verify /v /pa /all /tw $File *> $verificationLog
     if ($LASTEXITCODE -ne 0) {
         throw 'Windows Authenticode policy, chain, or RFC 3161 timestamp verification failed.'
+    }
+    $timestampLines = @(Get-Content -LiteralPath $verificationLog | Where-Object {
+        $_ -match '^\s*(?:The signature is timestamped:|Timestamp:)\s*(.+?)\s*$'
+    })
+    if ($timestampLines.Count -ne 1 -or
+        $timestampLines[0] -notmatch '^\s*(?:The signature is timestamped:|Timestamp:)\s*(.+?)\s*$') {
+        throw 'Windows Authenticode timestamp evidence is missing or ambiguous.'
+    }
+    $timestamp = [DateTimeOffset]::Parse(
+        $Matches[1],
+        [Globalization.CultureInfo]::CurrentCulture,
+        [Globalization.DateTimeStyles]::AssumeLocal
+    ).ToUniversalTime()
+    $verificationTime = [DateTimeOffset]::UtcNow
+    if ($timestamp -gt $verificationTime.AddMinutes(5) -or
+        $timestamp -lt $verificationTime.AddHours(-1)) {
+        throw 'Windows Authenticode timestamp is outside the release build window.'
     }
 } finally {
     if (Test-Path -LiteralPath $verificationLog) {

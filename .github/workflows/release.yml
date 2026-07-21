@@ -309,6 +309,7 @@ jobs:
             bash ../../.github/scripts/verify_macos_signing_identity.sh \
               target/release/bundle/macos/ORIGAMI2.app
       - name: Notarize and staple macOS application
+        id: notarization
         if: matrix.platform == 'macos-arm64' && needs.validate.outputs.mode != 'dry-run'
         env:
           APPLE_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
@@ -325,11 +326,12 @@ jobs:
           echo "::add-mask::$APPLE_NOTARY_ISSUER_ID"
           key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
           archive="$RUNNER_TEMP/ORIGAMI2-notarization.zip"
+          result="$RUNNER_TEMP/ORIGAMI2-notarization-result.json"
           cleanup_notary_material() {
             status="$1"
             trap - EXIT HUP INT TERM
             cleanup_status=0
-            rm -f -- "$key" "$archive" || cleanup_status=$?
+            rm -f -- "$key" "$archive" "$result" || cleanup_status=$?
             [ "$status" -ne 0 ] && exit "$status"
             exit "$cleanup_status"
           }
@@ -341,7 +343,10 @@ jobs:
           chmod 600 "$key"
           ditto -c -k --keepParent target/release/bundle/macos/ORIGAMI2.app "$archive"
           xcrun notarytool submit "$archive" --key "$key" \
-            --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait
+            --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" \
+            --wait --output-format json > "$result"
+          test "$(jq -r .status "$result")" = Accepted
+          [[ "$(jq -r .id "$result")" =~ ^[0-9a-fA-F-]{36}$ ]]
           xcrun stapler staple target/release/bundle/macos/ORIGAMI2.app
           xcrun stapler validate target/release/bundle/macos/ORIGAMI2.app
           spctl --assess --type execute target/release/bundle/macos/ORIGAMI2.app
@@ -354,18 +359,20 @@ jobs:
           certificate="$RUNNER_TEMP/apple-signing.p12"
           signing_pem="$RUNNER_TEMP/apple-signing.pem"
           archive="$RUNNER_TEMP/ORIGAMI2-notarization.zip"
+          result="$RUNNER_TEMP/ORIGAMI2-notarization-result.json"
           if [ -e "$keychain_search_state" ]; then
             original_keychains=()
             while IFS= read -r -d '' item; do original_keychains+=("$item"); done < "$keychain_search_state"
             security list-keychains -d user -s "${original_keychains[@]}" >/dev/null 2>&1
           fi
           if [ -e "$keychain" ]; then security delete-keychain "$keychain" >/dev/null 2>&1; fi
-          rm -f -- "$certificate" "$signing_pem" "$keychain_search_state" "$archive" "$RUNNER_TEMP"/AuthKey_*.p8
+          rm -f -- "$certificate" "$signing_pem" "$keychain_search_state" "$archive" "$result" "$RUNNER_TEMP"/AuthKey_*.p8
           test ! -e "$keychain"
           test ! -e "$certificate"
           test ! -e "$signing_pem"
           test ! -e "$keychain_search_state"
           test ! -e "$archive"
+          test ! -e "$result"
           ! compgen -G "$RUNNER_TEMP/AuthKey_*.p8" >/dev/null
       - name: Verify macOS application bundle contract
         if: matrix.platform == 'macos-arm64'

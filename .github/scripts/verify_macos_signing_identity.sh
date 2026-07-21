@@ -26,6 +26,20 @@ grep -Eq '^CodeDirectory .*flags=.*runtime' <<<"$details" || {
   echo 'macOS bundle is missing the hardened runtime flag.' >&2
   exit 1
 }
+timestamp_text="$(sed -n 's/^Timestamp=//p' <<<"$details")"
+[[ -n "$timestamp_text" && "$(grep -c '^Timestamp=' <<<"$details")" -eq 1 ]] || {
+  echo 'macOS signing timestamp evidence is missing or ambiguous.' >&2
+  exit 1
+}
+timestamp_epoch="$(LC_ALL=C date -j -f '%b %d, %Y at %H:%M:%S %p' "$timestamp_text" '+%s' 2>/dev/null)" || {
+  echo 'macOS signing timestamp evidence is invalid.' >&2
+  exit 1
+}
+now_epoch="$(date -u '+%s')"
+(( timestamp_epoch <= now_epoch + 300 && timestamp_epoch >= now_epoch - 3600 )) || {
+  echo 'macOS signing timestamp is outside the release build window.' >&2
+  exit 1
+}
 codesign --verify --deep --strict --verbose=2 "$bundle"
 
 echo 'verified macOS bundle signing identity, team binding, and hardened runtime'

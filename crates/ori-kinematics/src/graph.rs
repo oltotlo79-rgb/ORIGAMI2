@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     CanonicalCycleScheduleV1, CanonicalHingeAngles, CycleScheduleLimitsV1,
     IntervalRigidTransformV1, KinematicsError, MaterialHingeGraphGeometry, OutwardIntervalV1,
-    RigidTransform, TreeHinge, TreeKinematicsLimits,
+    Point3, RigidTransform, TreeHinge, TreeKinematicsLimits,
 };
 
 pub const MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1: u32 = 1;
@@ -1639,6 +1639,71 @@ fn even_single_vertex_opposite_pair_cycle_closure_premises_v1(
                 .solve_closed(audit, fixed_face, &angles, tolerance)
                 .is_ok()
         })
+}
+
+/// Enumerates only bounded, same-assignment, geometrically opposite hinge
+/// pairs for the analytic even single-vertex cycle family.
+pub fn enumerate_even_single_vertex_opposite_pairs_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    max_pair_tests: usize,
+) -> Result<Vec<[EdgeId; 2]>, KinematicsError> {
+    let count = geometry.hinges().len();
+    if !bounded_even_single_vertex_sector_count_v1(geometry.face_ids().len(), count)
+        || audit.closure_hinges().len() != 1
+    {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    let work = count
+        .checked_mul(count.saturating_sub(1))
+        .and_then(|v| v.checked_div(2))
+        .ok_or(KinematicsError::ResourceLimitExceeded)?;
+    if work > max_pair_tests {
+        return Err(KinematicsError::ResourceLimitExceeded);
+    }
+    let pivot = geometry
+        .hinges()
+        .first()
+        .and_then(|first| {
+            [first.start(), first.end()].into_iter().find(|point| {
+                geometry
+                    .hinges()
+                    .iter()
+                    .all(|hinge| hinge.start() == *point || hinge.end() == *point)
+            })
+        })
+        .ok_or(KinematicsError::UnsupportedTopology)?;
+    let outward = |hinge: &TreeHinge| -> Option<Point3> {
+        if hinge.start() == pivot {
+            Some(hinge.axis())
+        } else {
+            Point3::new(-hinge.axis().x(), -hinge.axis().y(), -hinge.axis().z()).ok()
+        }
+    };
+    let mut pairs = Vec::new();
+    for first in 0..count {
+        for second in first + 1..count {
+            let a = &geometry.hinges()[first];
+            let b = &geometry.hinges()[second];
+            let (Some(x), Some(y)) = (outward(a), outward(b)) else {
+                return Err(KinematicsError::UnrepresentableGeometry);
+            };
+            if a.assignment() == b.assignment()
+                && x.x() == -y.x()
+                && x.y() == -y.y()
+                && x.z() == -y.z()
+            {
+                let mut pair = [a.edge(), b.edge()];
+                pair.sort_unstable_by_key(EdgeId::canonical_bytes);
+                pairs.push(pair);
+            }
+        }
+    }
+    pairs.sort_unstable_by_key(|pair| (pair[0].canonical_bytes(), pair[1].canonical_bytes()));
+    if pairs.is_empty() {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    Ok(pairs)
 }
 
 fn bounded_even_single_vertex_sector_count_v1(face_count: usize, hinge_count: usize) -> bool {

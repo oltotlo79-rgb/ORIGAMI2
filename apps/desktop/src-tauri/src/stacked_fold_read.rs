@@ -4792,6 +4792,37 @@ mod tests {
         let snapshot = topology.simulation_snapshot().unwrap();
         assert_eq!(snapshot.faces.len(), 16);
         assert_eq!(snapshot.hinge_adjacency.len(), 16);
+        let graph_geometry = ori_kinematics::MaterialHingeGraphGeometry::prepare(
+            project.editor.pattern(),
+            project.editor.paper(),
+            &snapshot,
+            ori_kinematics::TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        let graph_audit = ori_kinematics::MaterialHingeGraphAudit::prepare(
+            &snapshot,
+            ori_kinematics::TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        let automatic_pairs = ori_kinematics::enumerate_even_single_vertex_opposite_pairs_v1(
+            &graph_geometry,
+            &graph_audit,
+            120,
+        )
+        .expect("bounded C16 opposite-pair discovery");
+        assert!(
+            automatic_pairs
+                .iter()
+                .any(|pair| { pair.iter().all(|edge| moving.contains(edge)) })
+        );
+        assert!(matches!(
+            ori_kinematics::enumerate_even_single_vertex_opposite_pairs_v1(
+                &graph_geometry,
+                &graph_audit,
+                119,
+            ),
+            Err(ori_kinematics::KinematicsError::ResourceLimitExceeded)
+        ));
         let hinges = snapshot
             .hinge_adjacency
             .iter()
@@ -5247,11 +5278,26 @@ mod tests {
                     let archive = project
                         .project_archive()
                         .expect("serialize positive-thickness C16 cycle");
+                    assert!(matches!(
+                        &archive.layer_evidence,
+                        Some(ori_formats::LayerEvidenceArchiveV1 {
+                            evidence: ori_formats::LayerEvidenceArchiveKindV1::NonFlat { .. },
+                            ..
+                        })
+                    ));
                     let mut reopened = super::super::ProjectState::from_project_archive(
                         archive,
                         std::path::PathBuf::from(format!("positive-c16-{thickness_mm}.ori2")),
                     )
                     .expect("reopen positive-thickness C16 cycle");
+                    assert!(matches!(
+                        &reopened.current_layer_evidence,
+                        Some(
+                            super::super::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(
+                                _
+                            )
+                        )
+                    ));
                     assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
                     let reopened_revision = reopened.editor.revision();
                     reopened.editor.undo(reopened_revision).unwrap();

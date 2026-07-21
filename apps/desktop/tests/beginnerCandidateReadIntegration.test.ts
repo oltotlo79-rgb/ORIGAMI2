@@ -25,6 +25,16 @@ test('candidate admission requires ordered bounded explainable scores', () => {
   assert.match(app, /candidate\.paper_efficiency_score/)
 })
 
+test('asymmetric fish plans require four ordered semantic ray bindings end to end', () => {
+  assert.match(client, /'asymmetric_fish_landmark_base'/)
+  assert.match(client, /\['head', 'tail', 'fin_left', 'fin_right'\]/)
+  assert.match(client, /\(semanticRoles !== null\) !== \(semantic !== null\)/)
+  assert.match(client, /semanticBindings\.length !== semanticRoles\?\.length/)
+  assert.match(client, /rayDigests\?\.length !== 4/)
+  assert.match(app, /頭・尾・左右のひれを証明済み4放射へ結合します。/)
+  assert.match(app, /Bind the head, tail, and left\/right fins to the certified four-ray base\./)
+})
+
 test('candidate UI is bilingual, accessible, single-flight, and rejects stale ABA results', () => {
   assert.match(app, /設計候補の比較/)
   assert.match(app, /Compare design candidates/)

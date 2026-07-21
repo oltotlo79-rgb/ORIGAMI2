@@ -32,6 +32,10 @@ function Harness() {
   const witnessCanvas = useRef<HTMLCanvasElement>(null)
   const contourScore = Math.min(100, 80 + Math.max(0, outline.length - 4)
     + bindings.reduce((sum, target) => sum + Math.max(0, (target.local_outline_tenths_mm?.length ?? 3) - 3), 0))
+  const contourPointCount = outline.length + bindings.reduce(
+    (sum, target) => sum + (target.local_outline_tenths_mm?.length ?? 0), 0)
+  const synthesizedCandidateCount = Math.min(8, Math.max(3,
+    bindings.length + Math.floor(contourPointCount / 4)))
   const evaluate = useRef<HTMLButtonElement>(null)
   const depthError = glbWitness ? Math.abs(65 - (selectedCandidate === 1 ? 62 : 58)) : 0
   const threeDimensionalScore = Math.max(0, 100 - depthError * 4 - (glbWitness?.bulges ?? 0) * 2)
@@ -164,6 +168,7 @@ function Harness() {
       else { setPreview(true); setStatus('Generic target grid ready') }
     } }}>Evaluate generic target grid</button>
     {preview && <section aria-label="Generic target candidate preview"><p>Global flat-foldability proven</p>
+      <p>Deterministic candidate synthesis: {synthesizedCandidateCount} bounded designs from {bindings.length} bindings and {contourPointCount} contour points.</p>
       <button aria-pressed={selectedCandidate === 1} onClick={() => setSelectedCandidate(1)}>Select contour candidate 1</button>
       <button aria-pressed={selectedCandidate === 2} onClick={() => setSelectedCandidate(2)}>Select contour candidate 2</button>
       <p>Contour placement witness candidate {selectedCandidate}: body {outline.length || 4}, local {bindings.filter((binding) => binding.local_outline_tenths_mm).map((binding) => `${binding.id}:${binding.local_outline_tenths_mm!.length}`).join(', ') || 'none'}</p>
@@ -183,6 +188,7 @@ function Harness() {
         clearPreview: () => setPreview(false), restoreFocus: focus }).then((ok) => { if (ok) { setApplied(true); setStatus('Generic target applied') } })}>Confirm and apply generic target</button>
     </section>}
     {applied && <section aria-label="Generic target history">
+      <p>Applied synthesized candidate set: {synthesizedCandidateCount} bounded designs</p>
       <p>Applied contour placement witness candidate {selectedCandidate}</p>
       {glbWitness && <p>Applied GLB witness: bounds {glbWitness.bounds}, bulges {glbWitness.bulges}</p>}
       {mergedAuthorities && <p>Applied merged authority witness: image contours + GLB depth/bulges</p>}

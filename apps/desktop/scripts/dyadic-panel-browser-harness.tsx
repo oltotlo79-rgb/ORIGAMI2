@@ -9,11 +9,16 @@ const token = '018f47a2-4b7a-7cc1-8abc-778899aabbcc'
 const hinges = Array.from({ length: 6 }, (_, index) => `018f47a2-4b7a-7cc1-8abc-${String(index + 1).padStart(12, '0')}`)
 const hash = 'a'.repeat(64); const positive = 'b'.repeat(64); const layer = 'c'.repeat(64)
 const scenario = new URLSearchParams(location.search).get('scenario') ?? 'success'
-const evidence = { reads: 0, readHinges: 0, mints: 0, mintHinges: 0, applyAttempts: 0, mutations: 0, failures: 0, cancels: 0, timelineDtos: 0, undos: 0, redos: 0, reopens: 0 }
+const evidence = { reads: 0, readHinges: 0, readScheduleHinges: 0, mints: 0, mintHinges: 0, mintScheduleHinges: 0, applyAttempts: 0, mutations: 0, failures: 0, cancels: 0, timelineDtos: 0, undos: 0, redos: 0, reopens: 0 }
 let callback = 0
 let liveRevision = 1
 let consumed = false
 let releaseRead: ((value: unknown) => void) | null = null
+const scheduleEntryCount = (args?: { request?: Record<string, unknown> }) => {
+  const schedule = args?.request?.cycleScheduleV1
+  if (typeof schedule !== 'object' || schedule === null || !('entries' in schedule)) return 0
+  return Array.isArray(schedule.entries) ? schedule.entries.length : 0
+}
 Object.assign(window, {
   __ORIGAMI2_DYADIC_PANEL_EVIDENCE__: evidence,
   __TAURI_INTERNALS__: {
@@ -24,8 +29,8 @@ Object.assign(window, {
       if (command === 'cancel_current_stacked_fold_read_v1') { evidence.cancels++; releaseRead?.(null); releaseRead = null; return null }
       if (command === 'read_live_hinge_registry_v1') return { version: 1, projectInstanceId: instance, projectId: project, revision: liveRevision, poseGeneration: 1, graphFingerprintSha256: 'd'.repeat(64), entries: hinges.map(edge => ({ edge, initialAngleDegrees: 0 })), authorizesProjectMutation: false }
       if (command === 'read_even_cycle_candidates_v1') return { version: 1, projectInstanceId: instance, projectId: project, revision: liveRevision, status: 'ready', reason: 'one bounded candidate', candidates: [{ version: 1, edges: [hinges[0], hinges[3]], reason: 'same_assignment_geometrically_opposite' }], kawasakiEndpoints: [], authorizesProjectMutation: false }
-      if (command === 'read_bounded_dyadic_pose_graph_v1') { evidence.reads++; evidence.readHinges = Array.isArray(args?.request?.targetAngles) ? args.request.targetAngles.length : 0; if (scenario === 'cancel') return new Promise(resolve => { releaseRead = resolve }); return { version: 1, projectInstanceId: instance, projectId: project, revision: 1, status: 'certified', stateCount: 3, transitionCount: 4, exploredStateCount: 3, evaluatedTransitionCount: 1, certifiedTransitionCount: 1, certificateBindingSha256: hash, positiveThicknessTransitionCount: 1, positiveThicknessCertified: true, positiveThicknessBindingSha256: positive, layerTransportTransitionCount: 1, layerTransportCertified: true, layerTransportBindingSha256: layer, mutationCandidateReady: true, authorizesProjectMutation: false } }
-      if (command === 'mint_dyadic_pose_path_preview_v1') { evidence.mints++; evidence.mintHinges = Array.isArray(args?.request?.targetAngles) ? args.request.targetAngles.length : 0; return { version: 1, previewToken: token, projectInstanceId: instance, projectId: project, revision: 1, targetBindingSha256: 'e'.repeat(64), pathBindingSha256: hash, positiveThicknessBindingSha256: positive, layerTransportBindingSha256: layer, authorizesProjectMutation: false } }
+      if (command === 'read_bounded_dyadic_pose_graph_v1') { evidence.reads++; evidence.readHinges = Array.isArray(args?.request?.targetAngles) ? args.request.targetAngles.length : 0; evidence.readScheduleHinges = scheduleEntryCount(args); if (scenario === 'cancel') return new Promise(resolve => { releaseRead = resolve }); return { version: 1, projectInstanceId: instance, projectId: project, revision: 1, status: 'certified', stateCount: 3, transitionCount: 4, exploredStateCount: 3, evaluatedTransitionCount: 1, certifiedTransitionCount: 1, certificateBindingSha256: hash, positiveThicknessTransitionCount: 1, positiveThicknessCertified: true, positiveThicknessBindingSha256: positive, layerTransportTransitionCount: 1, layerTransportCertified: true, layerTransportBindingSha256: layer, mutationCandidateReady: true, authorizesProjectMutation: false } }
+      if (command === 'mint_dyadic_pose_path_preview_v1') { evidence.mints++; evidence.mintHinges = Array.isArray(args?.request?.targetAngles) ? args.request.targetAngles.length : 0; evidence.mintScheduleHinges = scheduleEntryCount(args); return { version: 1, previewToken: token, projectInstanceId: instance, projectId: project, revision: 1, targetBindingSha256: 'e'.repeat(64), pathBindingSha256: hash, positiveThicknessBindingSha256: positive, layerTransportBindingSha256: layer, authorizesProjectMutation: false } }
       if (command === 'apply_dyadic_pose_path_preview_v1') {
         evidence.applyAttempts++
         const request = args?.request

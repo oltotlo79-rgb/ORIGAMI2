@@ -507,6 +507,7 @@ export function StackedFoldPanel({
         })),
         maxStates: 32,
         maxTransitions: 64,
+        ...(authoredCycleSchedule ? { cycleScheduleV1: authoredCycleSchedule } : {}),
       })
       const current = authorityRef.current
       if (sequence !== dyadicGraphSequenceRef.current
@@ -538,6 +539,7 @@ export function StackedFoldPanel({
         })),
         maxStates: 32,
         maxTransitions: 64,
+        ...(authoredCycleSchedule ? { cycleScheduleV1: authoredCycleSchedule } : {}),
         expectedPathBindingSha256: graph.certificateBindingSha256,
         expectedPositiveThicknessBindingSha256: graph.positiveThicknessBindingSha256,
         expectedLayerTransportBindingSha256: graph.layerTransportBindingSha256,

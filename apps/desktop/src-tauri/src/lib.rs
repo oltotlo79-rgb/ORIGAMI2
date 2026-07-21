@@ -4428,7 +4428,9 @@ fn apply_beginner_symmetric_parameters(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
-        Command::UpdateBeginnerDesignProfile { profile },
+        Command::UpdateBeginnerDesignProfile {
+            profile: Box::new(profile),
+        },
     )
 }
 
@@ -4472,7 +4474,9 @@ fn archive_beginner_reference_model_asset(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
-        Command::UpdateBeginnerDesignProfile { profile },
+        Command::UpdateBeginnerDesignProfile {
+            profile: Box::new(profile),
+        },
     )
 }
 
@@ -5401,7 +5405,9 @@ fn update_beginner_design_profile(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
-        Command::UpdateBeginnerDesignProfile { profile },
+        Command::UpdateBeginnerDesignProfile {
+            profile: Box::new(profile),
+        },
     )
 }
 
@@ -5502,7 +5508,9 @@ fn import_beginner_reference_model(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
-        Command::UpdateBeginnerDesignProfile { profile },
+        Command::UpdateBeginnerDesignProfile {
+            profile: Box::new(profile),
+        },
     );
     if result.is_err() {
         project
@@ -5542,7 +5550,9 @@ fn activate_beginner_reference_model_asset(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
-        Command::UpdateBeginnerDesignProfile { profile },
+        Command::UpdateBeginnerDesignProfile {
+            profile: Box::new(profile),
+        },
     )
 }
 
@@ -6488,7 +6498,9 @@ fn apply_beginner_reference_model_features(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
-        Command::UpdateBeginnerDesignProfile { profile },
+        Command::UpdateBeginnerDesignProfile {
+            profile: Box::new(profile),
+        },
     )
 }
 
@@ -14538,7 +14550,7 @@ mod tests {
             project_id,
             profile_revision,
             Command::UpdateBeginnerDesignProfile {
-                profile: generatable,
+                profile: Box::new(generatable),
             },
         )
         .unwrap();
@@ -14840,7 +14852,9 @@ mod tests {
             &mut project,
             project_id,
             revision,
-            Command::UpdateBeginnerDesignProfile { profile },
+            Command::UpdateBeginnerDesignProfile {
+                profile: Box::new(profile),
+            },
         )
         .unwrap();
         let applied = apply_grid_plan_document(
@@ -15106,7 +15120,7 @@ mod tests {
                 project_id,
                 revision,
                 Command::UpdateBeginnerDesignProfile {
-                    profile: profile.clone(),
+                    profile: Box::new(profile.clone()),
                 },
             )
             .unwrap();
@@ -15405,7 +15419,7 @@ mod tests {
             project_id,
             revision,
             Command::UpdateBeginnerDesignProfile {
-                profile: apply_profile,
+                profile: Box::new(apply_profile),
             },
         )
         .unwrap();
@@ -15522,7 +15536,9 @@ mod tests {
             &mut project,
             project_id,
             revision,
-            Command::UpdateBeginnerDesignProfile { profile },
+            Command::UpdateBeginnerDesignProfile {
+                profile: Box::new(profile),
+            },
         )
         .unwrap();
         let applied = apply_grid_plan_document(

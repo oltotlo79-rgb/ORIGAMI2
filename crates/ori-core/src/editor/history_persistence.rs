@@ -141,7 +141,7 @@ enum CommandV1 {
         memo: String,
     },
     UpdateBeginnerDesignProfile {
-        profile: BeginnerDesignProfileV1,
+        profile: Box<BeginnerDesignProfileV1>,
     },
     SetElementMetadata {
         target: ElementMetadataTargetV1,
@@ -382,7 +382,7 @@ enum InverseV1 {
         memo: String,
     },
     RestoreBeginnerDesignProfile {
-        profile: BeginnerDesignProfileV1,
+        profile: Box<BeginnerDesignProfileV1>,
     },
     RestoreElementMetadata {
         target: ElementMetadataTargetV1,

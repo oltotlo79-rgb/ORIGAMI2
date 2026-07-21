@@ -1261,7 +1261,9 @@ pub(crate) fn apply_beginner_part_assignments(
         request.expected_project_instance_id,
         request.expected_project_id,
         request.expected_revision,
-        ori_core::Command::UpdateBeginnerDesignProfile { profile },
+        ori_core::Command::UpdateBeginnerDesignProfile {
+            profile: Box::new(profile),
+        },
     )
 }
 
@@ -1367,7 +1369,9 @@ pub(crate) fn apply_beginner_outline_candidate(
         request.expected_project_instance_id,
         request.expected_project_id,
         request.expected_revision,
-        ori_core::Command::UpdateBeginnerDesignProfile { profile },
+        ori_core::Command::UpdateBeginnerDesignProfile {
+            profile: Box::new(profile),
+        },
     )
 }
 

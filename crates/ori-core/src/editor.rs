@@ -97,7 +97,7 @@ pub enum Command {
         memo: String,
     },
     UpdateBeginnerDesignProfile {
-        profile: BeginnerDesignProfileV1,
+        profile: Box<BeginnerDesignProfileV1>,
     },
     SetElementMetadata {
         target: ElementMetadataTargetV1,
@@ -991,7 +991,7 @@ enum Inverse {
         memo: String,
     },
     RestoreBeginnerDesignProfile {
-        profile: BeginnerDesignProfileV1,
+        profile: Box<BeginnerDesignProfileV1>,
     },
     RestoreElementMetadata {
         target: ElementMetadataTargetV1,
@@ -2719,7 +2719,10 @@ impl EditorState {
                     return Err(CommandError::InvalidBeginnerDesignProfile);
                 }
                 Ok(Inverse::RestoreBeginnerDesignProfile {
-                    profile: std::mem::replace(&mut self.beginner_design_profile, profile.clone()),
+                    profile: Box::new(std::mem::replace(
+                        &mut self.beginner_design_profile,
+                        profile.as_ref().clone(),
+                    )),
                 })
             }
             Command::SetElementMetadata {
@@ -5499,7 +5502,7 @@ impl EditorState {
                 self.project_memo.clone_from(memo);
             }
             Inverse::RestoreBeginnerDesignProfile { profile } => {
-                self.beginner_design_profile.clone_from(profile);
+                self.beginner_design_profile.clone_from(profile.as_ref());
             }
             Inverse::RestoreElementMetadata { target, metadata } => {
                 self.replace_element_metadata(*target, metadata.clone());
@@ -18607,7 +18610,7 @@ mod tests {
             .execute(
                 0,
                 Command::UpdateBeginnerDesignProfile {
-                    profile: profile.clone(),
+                    profile: Box::new(profile.clone()),
                 },
             )
             .unwrap();
@@ -18620,7 +18623,12 @@ mod tests {
         let mut invalid = profile.clone();
         invalid.paper_efficiency_weight = 11;
         assert_eq!(
-            editor.execute(3, Command::UpdateBeginnerDesignProfile { profile: invalid },),
+            editor.execute(
+                3,
+                Command::UpdateBeginnerDesignProfile {
+                    profile: Box::new(invalid),
+                },
+            ),
             Err(CommandError::InvalidBeginnerDesignProfile)
         );
         assert_eq!(editor.beginner_design_profile(), &profile);

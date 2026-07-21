@@ -3601,6 +3601,9 @@ fn derive_reference_model_suggestion_v1(
     let requested_six_legs = target_parts
         .iter()
         .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6);
+    let requested_four_legs = target_parts
+        .iter()
+        .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 4);
     let requested_single_tail = target_parts
         .iter()
         .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Tail && part.count == 1);
@@ -3617,6 +3620,10 @@ fn derive_reference_model_suggestion_v1(
             .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Ear && part.count == 2);
     let requested_horn_tail = requested_single_horn && requested_single_tail;
     let requested_horn_tail_ear = requested_horn_tail && requested_horn_ear;
+    let requested_complete_animal = requested_horn_tail_ear && requested_four_legs;
+    if requested_complete_animal && !bilateral {
+        return Err("reference_model_feature_range".to_owned());
+    }
     let requested_single_antenna = target_parts
         .iter()
         .any(|part| part.kind == ori_domain::BeginnerTargetPartKindV1::Antenna && part.count == 1);
@@ -3759,6 +3766,14 @@ fn derive_reference_model_suggestion_v1(
         } else {
             protrusions.push(tail);
         }
+    }
+    if requested_complete_animal {
+        let mut legs = protrusions[0].clone();
+        legs.id = 4;
+        legs.count = 4;
+        legs.symmetry = ori_domain::BeginnerProtrusionSymmetryV1::Bilateral;
+        legs.direction_milli = [0, 1000, 0];
+        protrusions.push(legs);
     }
     if requested_wing_antenna {
         protrusions.clear();
@@ -4023,6 +4038,19 @@ fn apply_beginner_reference_model_features(
             binding.leg_pair_protrusion_ids[0],
             binding.leg_pair_protrusion_ids[1],
             binding.leg_pair_protrusion_ids[2],
+        ];
+        if live.protrusions.iter().map(|target| target.id).ne(expected) {
+            return Err("reference_model_suggestion_invalid".to_owned());
+        }
+    }
+    if live.protrusions.len() == 4 {
+        let binding = ori_domain::animal_complete_bindings_v1(&profile.generation_constraints)
+            .ok_or_else(|| "reference_model_suggestion_invalid".to_owned())?;
+        let expected = [
+            binding.horn_protrusion_id,
+            binding.tail_protrusion_id,
+            binding.ear_pair_protrusion_id,
+            binding.leg_protrusion_id,
         ];
         if live.protrusions.iter().map(|target| target.id).ne(expected) {
             return Err("reference_model_suggestion_invalid".to_owned());
@@ -11093,6 +11121,31 @@ mod tests {
         assert_eq!(tail.protrusions[0].length_tenths_mm, 200);
         assert_eq!(tail.protrusions[0].position_tenths_mm[1], 0);
         assert!(tail.pair_bindings.is_empty());
+        let complete_animal = derive_reference_model_suggestion_v1(
+            AssetId::new(),
+            &geometry,
+            Some(ori_domain::BeginnerTargetCategoryV1::Animal),
+            &[
+                ori_domain::BeginnerTargetPartRecordV1 {
+                    kind: ori_domain::BeginnerTargetPartKindV1::Horn,
+                    count: 1,
+                },
+                ori_domain::BeginnerTargetPartRecordV1 {
+                    kind: ori_domain::BeginnerTargetPartKindV1::Tail,
+                    count: 1,
+                },
+                ori_domain::BeginnerTargetPartRecordV1 {
+                    kind: ori_domain::BeginnerTargetPartKindV1::Ear,
+                    count: 2,
+                },
+                ori_domain::BeginnerTargetPartRecordV1 {
+                    kind: ori_domain::BeginnerTargetPartKindV1::Leg,
+                    count: 4,
+                },
+            ],
+        )
+        .expect("complete animal GLB suggestion");
+        assert_eq!(complete_animal.protrusions.len(), 4);
         let composite = derive_reference_model_suggestion_v1(
             AssetId::new(),
             &geometry,

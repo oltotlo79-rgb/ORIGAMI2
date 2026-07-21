@@ -66,7 +66,11 @@ export type CurrentCyclePosePreviewRequestV1 = Readonly<{
   expectedProjectInstanceId: string
   expectedProjectId: string
   expectedRevision: number
-  cycleScheduleV1: CycleScheduleRequestV1 | Readonly<{ version: 2; entries: readonly [] }>
+  cycleScheduleV1: CycleScheduleRequestV1 | Readonly<{
+    version: 2
+    entries: readonly []
+    endpointDenominator?: 1 | 2 | 4 | 8 | 16
+  }>
 }>
 
 export type CurrentCyclePosePreviewResponseV1 = Readonly<{
@@ -3066,7 +3070,10 @@ export function proposeCurrentCyclePoseV1(
     !Number.isSafeInteger(request.expectedRevision) ||
     request.expectedRevision < 0 ||
     !(isCycleScheduleRequestV1(request.cycleScheduleV1)
-      || (request.cycleScheduleV1.version === 2 && request.cycleScheduleV1.entries.length === 0)) ||
+      || (request.cycleScheduleV1.version === 2
+        && request.cycleScheduleV1.entries.length === 0
+        && (!('endpointDenominator' in request.cycleScheduleV1)
+          || [1, 2, 4, 8, 16].includes(Number(request.cycleScheduleV1.endpointDenominator))))) ||
     (request.progressRequestId !== undefined &&
       (!/^[\x20-\x7e]+$/.test(request.progressRequestId) || request.progressRequestId.length > 128))
   ) return Promise.reject(new Error('invalid current-cycle preview request'))

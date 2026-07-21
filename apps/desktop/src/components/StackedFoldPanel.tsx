@@ -121,6 +121,8 @@ export function StackedFoldPanel({
     collisionStatus: 'certified' | 'uncertified'
     authorizesApply: false
   }>[]>([])
+  const [selectedKawasakiEndpoint, setSelectedKawasakiEndpoint] =
+    useState<1 | 2 | 4 | 8 | 16>(1)
   const [confirmed, setConfirmed] = useState(false)
   const [applying, setApplying] = useState(false)
   const [view, setView] = useState<View>({ kind: 'idle' })
@@ -493,7 +495,7 @@ export function StackedFoldPanel({
         expectedProjectId: snapshot.project_id,
         expectedRevision: snapshot.revision,
         cycleScheduleV1: automaticKawasaki
-          ? { version: 2, entries: [] }
+          ? { version: 2, entries: [], endpointDenominator: selectedKawasakiEndpoint }
           : authoredCycleSchedule!,
       })
       const current = authorityRef.current
@@ -716,10 +718,16 @@ export function StackedFoldPanel({
               <ul data-testid="kawasaki-endpoint-candidates">
                 {kawasakiEndpoints.map((candidate) => (
                   <li key={candidate.endpointDenominator}>
+                    <button
+                      type="button"
+                      aria-pressed={selectedKawasakiEndpoint === candidate.endpointDenominator}
+                      onClick={() => setSelectedKawasakiEndpoint(candidate.endpointDenominator as 1 | 2 | 4 | 8 | 16)}
+                    >
                     1/{candidate.endpointDenominator}: {t('閉路証明済み', 'Closure certified')} /{' '}
                     {candidate.collisionStatus === 'certified'
                       ? t('衝突証明済み', 'Collision certified')
                       : t('衝突未認証', 'Collision uncertified')}
+                    </button>
                   </li>
                 ))}
               </ul>

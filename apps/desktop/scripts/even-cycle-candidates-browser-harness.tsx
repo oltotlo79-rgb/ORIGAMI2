@@ -16,11 +16,12 @@ function Harness() {
   const [proof, setProof] = useState(false)
   const [applied, setApplied] = useState(false)
   const [redo, setRedo] = useState(false)
+  const [endpoint, setEndpoint] = useState(1)
   const [reason, setReason] = useState('ready')
   const request = (capturedRevision = revision, capturedInstance = instance) => {
     if (capturedRevision !== revision) { evidence.staleRejects += 1; setReason('stale-rejected'); return }
     if (capturedInstance !== instance) { evidence.abaRejects += 1; setReason('aba-rejected'); return }
-    evidence.automaticKawasakiProofs += 1; setProof(true); setReason('proof-certified')
+    evidence.automaticKawasakiProofs += 1; setProof(true); setReason(family.startsWith('kawasaki-') ? `proof-certified-1/${endpoint}` : 'proof-certified')
   }
   return <main><h1>Even-cycle automatic candidates</h1>
     <button onClick={() => { setFamily('c6'); setReason('ready'); setSelected(false); setProof(false); setApplied(false) }}>C6</button>
@@ -33,7 +34,7 @@ function Harness() {
     <section aria-label="Automatic even-cycle candidates"><h2>{family.toUpperCase()} candidates</h2>
       {reason === 'ready' || selected || proof || applied ? <button data-testid="even-cycle-candidate" onClick={() => { setSelected(true); setReason('selected') }}>hinge-0 / hinge-{sizes[family] / 2}</button> : <p data-testid="candidate-reason">{reason}</p>}
     </section>
-    {family.startsWith('kawasaki-') && <ul data-testid="kawasaki-endpoint-candidates">{[1, 2, 4, 8, 16].map(denominator => <li key={denominator}>1/{denominator}: Closure certified / Collision uncertified</li>)}</ul>}
+    {family.startsWith('kawasaki-') && <ul data-testid="kawasaki-endpoint-candidates">{[1, 2, 4, 8, 16].map(denominator => <li key={denominator}><button aria-pressed={endpoint === denominator} onClick={() => setEndpoint(denominator)}>1/{denominator}: Closure certified / Collision uncertified</button></li>)}</ul>}
     <button disabled={!selected} onClick={() => request()}>Generate and prove Kawasaki linkage</button>
     <button disabled={!proof} onClick={() => { evidence.applies += 1; savedProfile = profiles[family]; setApplied(true); setRedo(false); setRevision(value => value + 1); setReason(`applied-profile-${profiles[family]}`) }}>apply</button>
     <button disabled={!applied} onClick={() => { evidence.undos += 1; setApplied(false); setRedo(true); setReason('undone') }}>undo</button>

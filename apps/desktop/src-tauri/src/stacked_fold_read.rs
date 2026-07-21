@@ -518,10 +518,11 @@ fn propose_current_cycle_pose_inner_with_layers(
     let automatic_kawasaki =
         request.cycle_schedule_v1.version == 2 && request.cycle_schedule_v1.entries.is_empty();
     let schedule = if automatic_kawasaki {
-        ori_kinematics::generate_bounded_degree_four_kawasaki_path_candidate_v1(
+        ori_kinematics::generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v1(
             geometry,
             audit,
             pose.fixed_face(),
+            request.cycle_schedule_v1.endpoint_denominator.unwrap_or(1),
             production_cycle_schedule_limits_v1(),
         )
         .map_err(|error| match error {
@@ -1040,6 +1041,8 @@ fn production_cycle_schedule_limits_v1() -> CycleScheduleLimitsV1 {
 struct CycleScheduleRequestV1 {
     version: u32,
     entries: Vec<CycleScheduleEntryRequestV1>,
+    #[serde(default)]
+    endpoint_denominator: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3049,6 +3052,7 @@ mod tests {
         assert!(registry.entries.len() >= 2);
         let cycle_schedule_v1 = CycleScheduleRequestV1 {
             version: 1,
+            endpoint_denominator: None,
             entries: registry
                 .entries
                 .iter()
@@ -3900,6 +3904,7 @@ mod tests {
         CycleScheduleRequestV1 {
             version: 1,
             entries,
+            endpoint_denominator: None,
         }
     }
 
@@ -3962,6 +3967,7 @@ mod tests {
         CycleScheduleRequestV1 {
             version: 1,
             entries,
+            endpoint_denominator: None,
         }
     }
 
@@ -4024,6 +4030,7 @@ mod tests {
         CycleScheduleRequestV1 {
             version: 1,
             entries,
+            endpoint_denominator: None,
         }
     }
 
@@ -4504,6 +4511,7 @@ mod tests {
         CycleScheduleRequestV1 {
             version: 1,
             entries,
+            endpoint_denominator: None,
         }
     }
 
@@ -4565,6 +4573,7 @@ mod tests {
         CycleScheduleRequestV1 {
             version: 1,
             entries,
+            endpoint_denominator: None,
         }
     }
 
@@ -4976,6 +4985,7 @@ mod tests {
                 cycle_schedule_v1: CycleScheduleRequestV1 {
                     version: 2,
                     entries: Vec::new(),
+                    endpoint_denominator: None,
                 },
             },
         )
@@ -5056,6 +5066,7 @@ mod tests {
                     cycle_schedule_v1: CycleScheduleRequestV1 {
                         version: 2,
                         entries: Vec::new(),
+                        endpoint_denominator: Some(16),
                     },
                 },
             );

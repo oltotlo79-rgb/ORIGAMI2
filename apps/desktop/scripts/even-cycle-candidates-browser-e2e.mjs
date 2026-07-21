@@ -21,8 +21,9 @@ try {
   for (const [button, family, profile] of [['Kawasaki 1/2', 'kawasaki-1-2', '1/2'], ['Kawasaki 3/5', 'kawasaki-3-5', '3/5'], ['Kawasaki 5/13', 'kawasaki-5-13', '5/13'], ['Kawasaki 7/25', 'kawasaki-7-25', '7/25']]) {
     await page.getByRole('button', { name: button, exact: true }).click()
     if (await page.getByTestId('kawasaki-endpoint-candidates').getByText('Collision uncertified').count() !== 5) throw new Error('strict endpoint statuses missing')
+    await page.getByRole('button', { name: '1/16: Closure certified / Collision uncertified', exact: true }).click()
     await page.getByTestId('even-cycle-candidate').click(); await page.getByRole('button', { name: 'Generate and prove Kawasaki linkage', exact: true }).click()
-    await page.getByRole('button', { name: 'apply', exact: true }).click(); await page.getByText(`applied-profile-${profile}`, { exact: true }).waitFor()
+    await page.getByText('proof-certified-1/16', { exact: true }).waitFor(); await page.getByRole('button', { name: 'apply', exact: true }).click(); await page.getByText(`applied-profile-${profile}`, { exact: true }).waitFor()
     await page.getByRole('button', { name: 'reopen', exact: true }).click(); await page.getByText(`reopened-${family}-profile-${profile}`, { exact: true }).waitFor()
   }
   await page.getByRole('button', { name: 'tamper profile', exact: true }).click(); await page.getByRole('button', { name: 'reopen', exact: true }).click()

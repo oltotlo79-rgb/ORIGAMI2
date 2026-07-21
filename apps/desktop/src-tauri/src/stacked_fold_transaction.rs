@@ -824,6 +824,70 @@ pub(super) fn apply_named_accordion_fold_transaction(
     )
 }
 
+#[tauri::command]
+pub(super) fn apply_named_sink_fold_transaction(
+    app_state: State<'_, AppState>,
+    foldability_state: State<'_, GlobalFlatFoldabilityState>,
+    transaction_state: State<'_, StackedFoldTransactionState>,
+    token: ProjectId,
+    technique_document_json: String,
+    technique_id: String,
+) -> Result<u64, String> {
+    if technique_document_json.len() > ori_instructions::MAX_FOLD_TECHNIQUE_FILE_BYTES {
+        return Err("The sink-fold document exceeds the resource limit.".to_owned());
+    }
+    let document =
+        ori_instructions::read_fold_technique_file_v1(technique_document_json.as_bytes())
+            .map_err(|_| "The sink-fold document is invalid.".to_owned())?;
+    let technique = document
+        .document()
+        .techniques
+        .iter()
+        .find(|value| value.id == technique_id)
+        .ok_or_else(|| "The sink-fold technique is unavailable.".to_owned())?;
+    if technique
+        .operations
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation.action,
+                ori_instructions::FoldTechniqueActionV1::SinkFold { .. }
+            )
+        })
+        .count()
+        != 1
+    {
+        return Err("Exactly one validated sink-fold operation is required.".to_owned());
+    }
+    {
+        let slot = lock_slot(&transaction_state)?;
+        let pending = slot
+            .pending
+            .as_ref()
+            .filter(|pending| pending.token() == token)
+            .ok_or_else(|| "The sink-fold preview is stale.".to_owned())?;
+        if pending.requested.ordered_timeline_angles().len() != 2
+            || !pending.requested.continuous_certified()
+        {
+            return Err("Two continuous certified sink-fold segments are required.".to_owned());
+        }
+    }
+    let title = technique
+        .names
+        .iter()
+        .find(|text| text.locale == "ja")
+        .or_else(|| technique.names.first())
+        .map(|text| text.text.clone())
+        .ok_or_else(|| "The sink-fold title is unavailable.".to_owned())?;
+    apply_stacked_fold_transaction_with_title(
+        &app_state,
+        &foldability_state,
+        &transaction_state,
+        token,
+        Some(&title),
+    )
+}
+
 pub(crate) fn apply_stacked_fold_transaction_inner(
     app_state: &AppState,
     foldability_state: &GlobalFlatFoldabilityState,

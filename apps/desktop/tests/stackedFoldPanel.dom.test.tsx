@@ -10,6 +10,7 @@ const transport = vi.hoisted(() => ({
   namedApply: vi.fn(),
   reverseApply: vi.fn(),
   accordionApply: vi.fn(),
+  sinkApply: vi.fn(),
   cancel: vi.fn(),
   cancelRead: vi.fn(),
   registry: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => ({
   applyNamedBookFoldTransaction: transport.namedApply,
   applyNamedReverseFoldTransaction: transport.reverseApply,
   applyNamedAccordionFoldTransaction: transport.accordionApply,
+  applyNamedSinkFoldTransaction: transport.sinkApply,
   cancelStackedFoldTransactionPreview: transport.cancel,
   cancelCurrentStackedFoldReadV1: transport.cancelRead,
   readLiveHingeRegistryV1: transport.registry,
@@ -578,6 +580,22 @@ describe('StackedFoldPanel', () => {
     expect(transport.apply).not.toHaveBeenCalled()
     expect(transport.namedApply).not.toHaveBeenCalled()
     expect(transport.reverseApply).not.toHaveBeenCalled()
+  })
+
+  it('routes a named sink fold through exactly two certified segments', async () => {
+    transport.preview.mockResolvedValue(ready)
+    transport.sinkApply.mockResolvedValue(4)
+    const document = { techniques: [] } as any
+    render(<StackedFoldPanel locale="en" snapshot={snapshot}
+      selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+      disabled={false} namedBookFold={{ document, techniqueId: 'open-sink', name: 'Open sink', kind: 'sink' }}
+      refreshSnapshot={vi.fn().mockResolvedValue({ ...snapshot, revision: 4 })} onApplied={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    const apply = await screen.findByRole('button', { name: 'Apply named sink fold' })
+    fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(apply)
+    await waitFor(() => expect(transport.sinkApply).toHaveBeenCalledWith(token, document, 'open-sink'))
+    expect(transport.apply).not.toHaveBeenCalled()
+    expect(transport.namedApply).not.toHaveBeenCalled()
   })
 
   it('keeps apply disabled when native metadata is not fully certified', async () => {

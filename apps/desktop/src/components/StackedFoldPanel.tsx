@@ -4,6 +4,7 @@ import {
   applyNamedBookFoldTransaction,
   applyNamedReverseFoldTransaction,
   applyNamedAccordionFoldTransaction,
+  applyNamedSinkFoldTransaction,
   cancelCurrentStackedFoldReadV1,
   cancelStackedFoldTransactionPreview,
   listenStackedFoldReadProgressV1,
@@ -49,7 +50,7 @@ type Props = Readonly<{
     document: FoldTechniqueFileDocumentV1
     techniqueId: string
     name: string
-    kind?: 'book' | 'reverse' | 'accordion'
+    kind?: 'book' | 'reverse' | 'accordion' | 'sink'
   }> | null
 }>
 
@@ -416,7 +417,9 @@ export function StackedFoldPanel({
   }
 
   function applyTransaction(token: string) {
-    return namedBookFold?.kind === 'accordion'
+    return namedBookFold?.kind === 'sink'
+      ? applyNamedSinkFoldTransaction(token, namedBookFold.document, namedBookFold.techniqueId)
+      : namedBookFold?.kind === 'accordion'
       ? applyNamedAccordionFoldTransaction(
           token, namedBookFold.document, namedBookFold.techniqueId,
         )
@@ -957,7 +960,9 @@ export function StackedFoldPanel({
             {applying
               ? t('適用中…', 'Applying…')
               : namedBookFold
-                ? namedBookFold.kind === 'accordion'
+                ? namedBookFold.kind === 'sink'
+                  ? t('名前付き沈め折りを適用', 'Apply named sink fold')
+                  : namedBookFold.kind === 'accordion'
                   ? t('名前付き蛇腹折りを適用', 'Apply named accordion fold')
                   : namedBookFold.kind === 'reverse'
                   ? t('名前付き逆折りを適用', 'Apply named reverse fold')

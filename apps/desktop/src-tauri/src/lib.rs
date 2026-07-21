@@ -189,8 +189,8 @@ use stacked_fold_read::{
 };
 use stacked_fold_transaction::{
     apply_named_accordion_fold_transaction, apply_named_book_fold_transaction,
-    apply_named_reverse_fold_transaction, apply_stacked_fold_transaction,
-    cancel_stacked_fold_transaction_preview,
+    apply_named_reverse_fold_transaction, apply_named_sink_fold_transaction,
+    apply_stacked_fold_transaction, cancel_stacked_fold_transaction_preview,
 };
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -6117,17 +6117,33 @@ async fn save_project_as(
 }
 
 fn recent_storage(app: &AppHandle) -> Result<recent_projects::FileRecentProjectStorage, String> {
-    let root = app.path().app_data_dir().map_err(|_| "recent_projects_unavailable".to_owned())?;
-    Ok(recent_projects::FileRecentProjectStorage::new(root.join("recent-projects-v1.json")))
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "recent_projects_unavailable".to_owned())?;
+    Ok(recent_projects::FileRecentProjectStorage::new(
+        root.join("recent-projects-v1.json"),
+    ))
 }
 
 fn remember_current_project(app: &AppHandle, state: &AppState) {
-    let Ok(project) = lock_project(state) else { return };
-    let (Some(path), name) = (project.current_path.clone(), project.name.clone()) else { return };
+    let Ok(project) = lock_project(state) else {
+        return;
+    };
+    let (Some(path), name) = (project.current_path.clone(), project.name.clone()) else {
+        return;
+    };
     drop(project);
-    let Ok(mut storage) = recent_storage(app) else { return };
+    let Ok(mut storage) = recent_storage(app) else {
+        return;
+    };
     let mut registry = recent_projects::RecentProjectRegistry::load(&storage);
-    let _ = registry.remember(path, &name, &recent_projects::LocalRecentProjectFilesystem, &mut storage);
+    let _ = registry.remember(
+        path,
+        &name,
+        &recent_projects::LocalRecentProjectFilesystem,
+        &mut storage,
+    );
 }
 
 #[tauri::command]
@@ -6152,17 +6168,35 @@ async fn open_recent_project(
 ) -> Result<OpenRecentProjectResponse, String> {
     let (expected_instance_id, expected_project_id, expected_revision) = {
         let project = lock_project(&state)?;
-        (project.instance_id, project.project_id, project.editor.revision())
+        (
+            project.instance_id,
+            project.project_id,
+            project.editor.revision(),
+        )
     };
     let mut storage = recent_storage(&app)?;
     let mut registry = recent_projects::RecentProjectRegistry::load(&storage);
-    let Some(path) = registry.select(&opaque_id, &recent_projects::LocalRecentProjectFilesystem, &mut storage).map_err(|_| "recent_projects_unavailable".to_owned())? else {
+    let Some(path) = registry
+        .select(
+            &opaque_id,
+            &recent_projects::LocalRecentProjectFilesystem,
+            &mut storage,
+        )
+        .map_err(|_| "recent_projects_unavailable".to_owned())?
+    else {
         return Ok(OpenRecentProjectResponse::Invalidated);
     };
-    let loaded = tauri::async_runtime::spawn_blocking(move || load_project_file(path)).await
+    let loaded = tauri::async_runtime::spawn_blocking(move || load_project_file(path))
+        .await
         .map_err(|_| PROJECT_OPEN_TASK_FAILED_MESSAGE.to_owned())??;
     let mut project = lock_project(&state)?;
-    let file = apply_loaded_project_file(&mut project, expected_instance_id, expected_project_id, expected_revision, loaded)?;
+    let file = apply_loaded_project_file(
+        &mut project,
+        expected_instance_id,
+        expected_project_id,
+        expected_revision,
+        loaded,
+    )?;
     drop(project);
     let _ = recovery.clear_after_normal_completion(&state, &file.project);
     remember_current_project(&app, &state);
@@ -12364,6 +12398,7 @@ pub fn run() {
             apply_stacked_fold_transaction,
             apply_named_book_fold_transaction,
             apply_named_reverse_fold_transaction,
+            apply_named_sink_fold_transaction,
             apply_named_accordion_fold_transaction,
             open_project,
             save_project,

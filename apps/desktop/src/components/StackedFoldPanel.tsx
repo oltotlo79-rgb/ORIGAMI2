@@ -122,6 +122,17 @@ export function StackedFoldPanel({
   const [cyclePoseError, setCyclePoseError] = useState(false)
   const [cyclePoseProgress, setCyclePoseProgress] =
     useState<CurrentCyclePoseProgressV1 | null>(null)
+  const persistedCycleLayerProof = useMemo(() => {
+    for (const step of [...(snapshot.instruction_timeline?.steps ?? [])].reverse()) {
+      const proof = step.visual.cycle_layer_order_proof_v1
+      if (proof?.version === 1 &&
+        proof.model_id === 'native_continuous_layer_transport_certificate_v1' &&
+        proof.target_order_sha256.length === 32 &&
+        proof.target_order_sha256.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255) &&
+        Number.isSafeInteger(proof.transition_count) && proof.transition_count > 0) return proof
+    }
+    return null
+  }, [snapshot.instruction_timeline?.steps])
   const coordinator = useMemo<StackedFoldReadCoordinator>(() =>
     createStackedFoldReadCoordinator({
       transport: proposeCurrentStackedFoldRead,
@@ -717,6 +728,15 @@ export function StackedFoldPanel({
             </div>
           )}
         </section>
+      )}
+      {!cyclePosePreview && persistedCycleLayerProof && (
+        <div role="status" data-testid="persisted-cycle-layer-order-viewer" className="stacked-fold-proof">
+          <h4>Applied layer-order proof</h4>
+          <p>Transitions: {persistedCycleLayerProof.transition_count}</p>
+          <p>Pairs: {persistedCycleLayerProof.pairs.length}</p>
+          <p>Proof hash: {persistedCycleLayerProof.target_order_sha256
+            .map((byte) => byte.toString(16).padStart(2, '0')).join('')}</p>
+        </div>
       )}
       {view.kind === 'failed' && (
         <p role="alert">

@@ -738,6 +738,40 @@ describe('StackedFoldPanel', () => {
     expect(transport.cancelRead).toHaveBeenCalled()
   })
 
+  it('restores a persisted applied layer-order proof from project history', () => {
+    render(
+      <StackedFoldPanel
+        locale="en"
+        snapshot={{
+          ...snapshot,
+          instruction_timeline: {
+            steps: [{
+              id: token, title: 'fold', description: '', caution: '', duration_ms: 1,
+              pose: { model: 'absolute_hinge_angles_v1', source_model_fingerprint: 'a'.repeat(64), fixed_face: null, hinge_angles: [] },
+              visual: {
+                camera: null, arrows: [], focus_points: [], hand_guides: [],
+                cycle_layer_order_proof_v1: {
+                  version: 1,
+                  model_id: 'native_continuous_layer_transport_certificate_v1',
+                  target_order_sha256: Array(32).fill(0xab),
+                  transition_count: 5,
+                  pairs: [{ lower_face: project, upper_face: token }],
+                },
+              },
+            }],
+          },
+        }}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false}
+        refreshSnapshot={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+    const viewer = screen.getByTestId('persisted-cycle-layer-order-viewer')
+    expect(viewer.textContent).toContain('Transitions: 5')
+    expect(viewer.textContent).toContain('ab'.repeat(32))
+  })
+
   it('blocks duplicate apply and cancels active work with listener cleanup on unmount', async () => {
     let resolveApply!: (value: number) => void
     transport.cyclePreview.mockResolvedValue({

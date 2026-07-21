@@ -1247,6 +1247,13 @@ export type InstructionPose = {
 
 export type InstructionPoint3 = { x: number; y: number; z: number }
 export type InstructionVisual = {
+  cycle_layer_order_proof_v1?: Readonly<{
+    version: 1
+    model_id: 'native_continuous_layer_transport_certificate_v1'
+    target_order_sha256: readonly number[]
+    transition_count: number
+    pairs: readonly Readonly<{ lower_face: string; upper_face: string }>[]
+  }> | null
   camera: {
     position: InstructionPoint3
     target: InstructionPoint3

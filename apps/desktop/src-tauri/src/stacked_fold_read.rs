@@ -2890,11 +2890,33 @@ mod tests {
         assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
         assert_eq!(response.transaction_proposal.timeline_step_count, 1);
         let after = project.editor.clone();
-        assert_eq!(
-            after.pattern().vertices.len(),
-            before.pattern().vertices.len() + 2,
-            "the new straight line must atomically create both source-hinge intersections"
+        let source_vertices = before
+            .pattern()
+            .vertices
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect::<std::collections::HashSet<_>>();
+        let inserted = after
+            .pattern()
+            .vertices
+            .iter()
+            .filter(|vertex| !source_vertices.contains(&vertex.id))
+            .collect::<Vec<_>>();
+        assert!(
+            !inserted.is_empty(),
+            "the new straight line must atomically materialize its source-hinge intersections"
         );
+        let line_start = ori_domain::Point2::new(first[0], -first[2]);
+        let line_end = ori_domain::Point2::new(second[0], -second[2]);
+        assert!(inserted.iter().all(|vertex| {
+            let cross = (line_end.x - line_start.x) * (vertex.position.y - line_start.y)
+                - (line_end.y - line_start.y) * (vertex.position.x - line_start.x);
+            cross.abs() <= f64::EPSILON
+                && vertex.position.x >= line_start.x.min(line_end.x)
+                && vertex.position.x <= line_start.x.max(line_end.x)
+                && vertex.position.y >= line_start.y.min(line_end.y)
+                && vertex.position.y <= line_start.y.max(line_end.y)
+        }));
         assert!(after.pattern().edges.len() > before.pattern().edges.len());
         project.editor.undo(applied_revision).unwrap();
         assert_eq!(project.editor.pattern(), before.pattern());

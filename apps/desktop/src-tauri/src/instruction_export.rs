@@ -1046,6 +1046,10 @@ mod tests {
             edge: fold,
             angle_degrees: 5.0,
         }];
+        let middle_angles = vec![InstructionHingeAngle {
+            edge: fold,
+            angle_degrees: 45.0,
+        }];
         let target_angles = vec![InstructionHingeAngle {
             edge: fold,
             angle_degrees: 90.0,
@@ -1061,15 +1065,23 @@ mod tests {
             <[u8; 32]>::from(hash.finalize())
         };
         let source_pose = graph_hash(&source_angles);
+        let middle_pose = graph_hash(&middle_angles);
         let target_pose = graph_hash(&target_angles);
-        let candidate = ori_collision::CertifiedPathTransitionCandidateV1 {
-            source: source_pose,
-            target: target_pose,
-            candidate_key: [7; 32],
-        };
+        let candidates = [
+            ori_collision::CertifiedPathTransitionCandidateV1 {
+                source: source_pose,
+                target: middle_pose,
+                candidate_key: [7; 32],
+            },
+            ori_collision::CertifiedPathTransitionCandidateV1 {
+                source: middle_pose,
+                target: target_pose,
+                candidate_key: [8; 32],
+            },
+        ];
         let certificate = match ori_collision::search_certified_pose_graph_v1(
-            &[source_pose, target_pose],
-            &[candidate],
+            &[source_pose, middle_pose, target_pose],
+            &candidates,
             source_pose,
             target_pose,
             |edge| {
@@ -1112,7 +1124,7 @@ mod tests {
             &model,
             fixed_face,
             &source_angles,
-            &[target_angles],
+            &[middle_angles, target_angles],
             &certificate,
         )
         .expect("atomic proof-bearing timeline");
@@ -1435,6 +1447,27 @@ mod tests {
         let archived = serde_json::to_vec(&source.timeline).expect("archive timeline");
         let reopened_timeline: ori_domain::InstructionTimeline =
             serde_json::from_slice(&archived).expect("reopen timeline");
+        assert_eq!(reopened_timeline.steps.len(), 3);
+        let first_reference = reopened_timeline.steps[1]
+            .visual
+            .path_certificate_reference_v1
+            .as_ref()
+            .expect("first Miura path reference");
+        let second_reference = reopened_timeline.steps[2]
+            .visual
+            .path_certificate_reference_v1
+            .as_ref()
+            .expect("second Miura path reference");
+        assert_eq!(first_reference.transition_count, 2);
+        assert_eq!(second_reference.transition_count, 2);
+        assert_eq!(
+            first_reference.binding_sha256,
+            second_reference.binding_sha256
+        );
+        assert_eq!(
+            first_reference.target_pose_sha256,
+            second_reference.source_pose_sha256
+        );
         for (format, magic) in [
             (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
@@ -1443,13 +1476,13 @@ mod tests {
             reopened_source.timeline = reopened_timeline.clone();
             let reopened = build_pending_export(reopened_source)
                 .expect("native export after proof-bearing reopen");
-            assert_eq!(reopened.step_count, 2);
+            assert_eq!(reopened.step_count, 3);
             assert!(reopened.bytes.starts_with(magic));
         }
 
         let mut tampered_archive: serde_json::Value =
             serde_json::from_slice(&archived).expect("inspect archived timeline");
-        tampered_archive["steps"][1]["description"] = serde_json::Value::String(format!(
+        tampered_archive["steps"][2]["description"] = serde_json::Value::String(format!(
             "経路証明 SHA-256: {} / 元モデル SHA-256: {}",
             "7c".repeat(32),
             "b".repeat(64)

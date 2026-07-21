@@ -7542,7 +7542,7 @@ mod tests {
         };
         use ori_topology::FaceKey;
 
-        for rank in [8, 16] {
+        for rank in [8, 16, 32] {
             let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(rank, false);
             let closure = geometry
                 .prove_dyadic_schedule_closure_v1(
@@ -7640,6 +7640,8 @@ mod tests {
             )
             .unwrap();
             assert_eq!(proof.transition_hashes().len(), transitions.len());
+            assert_eq!(geometry.face_ids().len(), 1 + rank * 3);
+            assert_eq!(geometry.hinges().len(), rank * 4);
             assert!(proof.is_for(&geometry, &source, &schedule, &closure));
             assert!(!proof.is_for(&geometry, &source.clone(), &schedule, &closure));
             assert!(proof.matches_source_content_v1(&source.clone()));
@@ -7683,6 +7685,21 @@ mod tests {
                     &transitions,
                     crate::ContinuousLayerTransportLimitsV1 {
                         max_pair_orders: transitions.len() * 2 - 1,
+                        ..exact
+                    },
+                ),
+                Err(crate::ContinuousLayerTransportErrorV1::ResourceLimit)
+            ));
+            assert!(matches!(
+                crate::prove_continuous_layer_transport_v1(
+                    &geometry,
+                    &source,
+                    &mapping,
+                    &schedule,
+                    &closure,
+                    &transitions,
+                    crate::ContinuousLayerTransportLimitsV1 {
+                        max_transitions: 0,
                         ..exact
                     },
                 ),

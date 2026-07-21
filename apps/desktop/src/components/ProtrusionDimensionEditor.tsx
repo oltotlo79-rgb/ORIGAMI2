@@ -24,6 +24,20 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
     if (field === 'length_tenths_mm' && tenths <= 1_000_000) onChange({ ...target, [field]: tenths })
     if (field === 'thickness_tenths_mm' && tenths <= 10_000) onChange({ ...target, [field]: tenths })
   }
+  const updateOptionalWidth = (
+    field: 'root_width_tenths_mm' | 'tip_width_tenths_mm', value: string,
+  ) => {
+    if (value.trim() === '') {
+      const next = { ...target }
+      delete next[field]
+      onChange(next)
+      return
+    }
+    const millimetres = Number(value)
+    if (!Number.isFinite(millimetres) || millimetres <= 0) return
+    const tenths = Math.round(millimetres * 10)
+    if (tenths <= 10_000) onChange({ ...target, [field]: tenths })
+  }
   const updatePosition = (index: 1 | 2, value: number) => {
     if (!Number.isFinite(value) || Math.abs(value) > 10_000) return
     const position = [...target.position_tenths_mm] as [number, number, number]
@@ -60,6 +74,18 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
         <option value="none">{locale === 'ja' ? '非対称単独' : 'Asymmetric single'}</option>
         <option value="bilateral">{locale === 'ja' ? '左右対称' : 'Bilateral'}</option>
       </select>
+    </label>
+    <label>{locale === 'ja' ? '根元幅 (mm、任意)' : 'Root width (mm, optional)'}
+      <input type="number" min="0.1" max="1000" step="0.1"
+        aria-label={`${locale === 'ja' ? '根元幅' : 'Root width'} binding ${target.id} (mm)`}
+        value={target.root_width_tenths_mm === undefined ? '' : target.root_width_tenths_mm / 10}
+        onChange={(event) => updateOptionalWidth('root_width_tenths_mm', event.currentTarget.value)} />
+    </label>
+    <label>{locale === 'ja' ? '先端幅 (mm、任意)' : 'Tip width (mm, optional)'}
+      <input type="number" min="0.1" max="1000" step="0.1"
+        aria-label={`${locale === 'ja' ? '先端幅' : 'Tip width'} binding ${target.id} (mm)`}
+        value={target.tip_width_tenths_mm === undefined ? '' : target.tip_width_tenths_mm / 10}
+        onChange={(event) => updateOptionalWidth('tip_width_tenths_mm', event.currentTarget.value)} />
     </label>
     <label>{locale === 'ja' ? '長さ (mm)' : 'Length (mm)'}
       <input type="number" min="0.1" max="100000" step="0.1"

@@ -214,14 +214,14 @@ export type BeginnerGenerationConstraintsV1 = {
     start: { x_tenths_mm: number; y_tenths_mm: number }
     end: { x_tenths_mm: number; y_tenths_mm: number }
     thickness_tenths_mm: number
-    root_width_tenths_mm?: number
-    tip_width_tenths_mm?: number
   }>
   protrusions?: Array<{
     id: number
     count: number
     length_tenths_mm: number
     thickness_tenths_mm: number
+    root_width_tenths_mm?: number
+    tip_width_tenths_mm?: number
     position_tenths_mm: [number, number, number]
     direction_milli: [number, number, number]
     symmetry: 'none' | 'bilateral' | 'radial'

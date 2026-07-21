@@ -62,4 +62,22 @@ describe('ProtrusionDimensionEditor', () => {
     fireEvent.change(screen.getByLabelText('Direction horizontal binding 1'), { target: { value: '0.5' } })
     expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ direction_milli: [500, 0, 0] }))
   })
+  it('edits optional root and tip widths and clears them without inventing fallback values', () => {
+    const change = vi.fn()
+    render(<ul><ProtrusionDimensionEditor locale="en"
+      target={{ ...target, root_width_tenths_mm: 40, tip_width_tenths_mm: 10 }}
+      onChange={change} onRemove={() => {}} /></ul>)
+    fireEvent.change(screen.getByLabelText('Root width binding 1 (mm)'), { target: { value: '5.5' } })
+    expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ root_width_tenths_mm: 55 }))
+    fireEvent.change(screen.getByLabelText('Tip width binding 1 (mm)'), { target: { value: '' } })
+    expect(change.mock.calls.at(-1)?.[0]).not.toHaveProperty('tip_width_tenths_mm')
+    fireEvent.change(screen.getByLabelText('Root width binding 1 (mm)'), { target: { value: '1001' } })
+    expect(change).toHaveBeenCalledTimes(2)
+  })
+  it('exposes the optional taper controls in Japanese', () => {
+    render(<ul><ProtrusionDimensionEditor locale="ja" target={target}
+      onChange={() => {}} onRemove={() => {}} /></ul>)
+    expect(screen.getByLabelText('根元幅 binding 1 (mm)')).toBeTruthy()
+    expect(screen.getByLabelText('先端幅 binding 1 (mm)')).toBeTruthy()
+  })
 })

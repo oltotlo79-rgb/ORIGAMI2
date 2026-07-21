@@ -3629,6 +3629,11 @@ function App() {
     const maximumSteps = Number(data.get('maximum_steps'))
     const detailLevel = String(data.get('detail_level'))
     const targetCategory = String(data.get('target_category'))
+    const bodyWidthRaw = String(data.get('generic_body_width_mm') ?? '').trim()
+    const bodyHeightRaw = String(data.get('generic_body_height_mm') ?? '').trim()
+    const bodySize = bodyWidthRaw === '' && bodyHeightRaw === ''
+      ? undefined
+      : [Math.round(Number(bodyWidthRaw) * 10), Math.round(Number(bodyHeightRaw) * 10)] as [number, number]
     const targetUnderlayId = String(data.get('target_reference_underlay'))
     const targetUnderlay = current.underlays?.underlays
       .find((underlay) => underlay.id === targetUnderlayId)
@@ -3652,6 +3657,7 @@ function App() {
       schema_version: 1 as const,
       maximum_steps: maximumSteps,
       detail_level: detailLevel as 'simple' | 'standard' | 'detailed',
+      ...(bodySize === undefined ? {} : { generic_body_size_tenths_mm: bodySize }),
       target_category: targetCategory as 'animal' | 'insect',
       target_parts: targetParts,
       skeleton_segments: beginnerSkeletonSegments,
@@ -3675,6 +3681,8 @@ function App() {
       || maximumSteps > 500
       || !['simple', 'standard', 'detailed'].includes(detailLevel)
       || !['animal', 'insect'].includes(targetCategory)
+      || (bodySize !== undefined && bodySize.some((axis) =>
+        !Number.isInteger(axis) || axis < 1 || axis > 1_000_000))
       || (targetUnderlayId !== '' && !targetUnderlay)
       || targetParts.some((part) => !Number.isInteger(part.count) || part.count > 8)
       || targetParts.reduce((sum, part) => sum + part.count, 0) > 32
@@ -4007,6 +4015,12 @@ function App() {
     const count = number('protrusion_count')
     const length = number('protrusion_length_mm')
     const thickness = number('protrusion_thickness_mm')
+    const optionalWidth = (name: string) => {
+      const raw = String(data.get(name) ?? '').trim()
+      return raw === '' ? undefined : Number(raw)
+    }
+    const rootWidth = optionalWidth('protrusion_root_width_mm')
+    const tipWidth = optionalWidth('protrusion_tip_width_mm')
     const position = ['x', 'y', 'z'].map((axis) => Math.round(number(`protrusion_position_${axis}_mm`) * 10))
     const direction = ['x', 'y', 'z'].map((axis) => Math.round(number(`protrusion_direction_${axis}`) * 1000))
     const curvature = number('protrusion_curvature_degrees')
@@ -4016,6 +4030,8 @@ function App() {
       .every(Number.isFinite)
       || !Number.isInteger(count) || count < 1 || count > 8
       || length <= 0 || length > 100_000 || thickness <= 0 || thickness > 1_000
+      || [rootWidth, tipWidth].some((width) => width !== undefined
+        && (!Number.isFinite(width) || width <= 0 || width > 1_000))
       || position.some((value) => Math.abs(value) > 100_000)
       || direction.some((value) => Math.abs(value) > 1_000) || direction.every((value) => value === 0)
       || Math.abs(curvature) > 360 || motion.some((value) => Math.abs(value) > 360)
@@ -4026,6 +4042,8 @@ function App() {
     setBeginnerProtrusions((targets) => [...targets, {
       id, count, length_tenths_mm: Math.round(length * 10),
       thickness_tenths_mm: Math.round(thickness * 10),
+      ...(rootWidth === undefined ? {} : { root_width_tenths_mm: Math.round(rootWidth * 10) }),
+      ...(tipWidth === undefined ? {} : { tip_width_tenths_mm: Math.round(tipWidth * 10) }),
       position_tenths_mm: position as [number, number, number],
       direction_milli: direction as [number, number, number],
       symmetry: String(data.get('protrusion_symmetry')) as 'none' | 'bilateral' | 'radial',
@@ -8213,6 +8231,7 @@ function App() {
                   nativeSnapshot.beginner_design_profile.preset,
                   nativeSnapshot.beginner_design_profile.generation_constraints.maximum_steps,
                   nativeSnapshot.beginner_design_profile.generation_constraints.detail_level,
+                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.generic_body_size_tenths_mm),
                   nativeSnapshot.beginner_design_profile.generation_constraints.target_category ?? 'unset',
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.target_parts),
                   JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.skeleton_segments),
@@ -8568,6 +8587,29 @@ function App() {
                     </label>
                   ))}
                 </fieldset>
+                <fieldset aria-describedby="beginner-body-size-help">
+                  <legend>{text({ ja: '胴体の目標寸法（任意）', en: 'Target body size (optional)' })}</legend>
+                  <label className="field">
+                    <span>{text({ ja: '胴体幅 (mm)', en: 'Body width (mm)' })}</span>
+                    <input name="generic_body_width_mm" type="number" min={0.1} max={100000} step={0.1}
+                      defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints
+                        .generic_body_size_tenths_mm?.[0] !== undefined
+                        ? nativeSnapshot.beginner_design_profile.generation_constraints
+                            .generic_body_size_tenths_mm[0] / 10 : ''} />
+                  </label>
+                  <label className="field">
+                    <span>{text({ ja: '胴体高さ (mm)', en: 'Body height (mm)' })}</span>
+                    <input name="generic_body_height_mm" type="number" min={0.1} max={100000} step={0.1}
+                      defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints
+                        .generic_body_size_tenths_mm?.[1] !== undefined
+                        ? nativeSnapshot.beginner_design_profile.generation_constraints
+                            .generic_body_size_tenths_mm[1] / 10 : ''} />
+                  </label>
+                  <p id="beginner-body-size-help" className="muted">{text({
+                    ja: '幅と高さを両方空欄にすると、胴体寸法を指定しません。片方だけの指定は保存しません。',
+                    en: 'Leave both fields blank for no body-size target. A partial size is not saved.',
+                  })}</p>
+                </fieldset>
                 <output id="beginner-target-parts-total" aria-live="polite">
                   {formattedText({
                     ja: '部品合計: {total} / 32',
@@ -8670,6 +8712,14 @@ function App() {
                         min={min} max={max} step={step} required />
                     </label>
                   ))}
+                  <label className="field">
+                    <span>{text({ ja: '根元幅 (mm、任意)', en: 'Root width (mm, optional)' })}</span>
+                    <input name="protrusion_root_width_mm" type="number" min={0.1} max={1000} step={0.1} />
+                  </label>
+                  <label className="field">
+                    <span>{text({ ja: '先端幅 (mm、任意)', en: 'Tip width (mm, optional)' })}</span>
+                    <input name="protrusion_tip_width_mm" type="number" min={0.1} max={1000} step={0.1} />
+                  </label>
                   <label className="field"><span>{text({ ja: '対称性', en: 'Symmetry' })}</span>
                     <select name="protrusion_symmetry" defaultValue="none">
                       <option value="none">{text({ ja: 'なし', en: 'None' })}</option>

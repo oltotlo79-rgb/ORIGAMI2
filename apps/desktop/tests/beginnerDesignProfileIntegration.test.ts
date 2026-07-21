@@ -137,6 +137,13 @@ test('AUT-006 stores every bounded protrusion target attribute in profile histor
   assert.match(formats, /beginner_design_profile/u)
   assert.match(generation, /pub generic_body_size_tenths_mm: Option<\[u32; 2\]>/u)
   assert.match(client, /generic_body_size_tenths_mm\?: \[number, number\]/u)
+  assert.match(app, /name="generic_body_width_mm"/u)
+  assert.match(app, /name="generic_body_height_mm"/u)
+  assert.match(app, /generic_body_size_tenths_mm: bodySize/u)
+  assert.match(app, /name="protrusion_root_width_mm"/u)
+  assert.match(app, /name="protrusion_tip_width_mm"/u)
+  assert.match(app, /root_width_tenths_mm: Math\.round\(rootWidth \* 10\)/u)
+  assert.match(app, /tip_width_tenths_mm: Math\.round\(tipWidth \* 10\)/u)
 })
 
 test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticity', () => {

@@ -67,6 +67,7 @@ pub use continuous_path::{
     StackedFoldBoundedPathDiagnosticV1, StackedFoldCyclePathDiagnosticV1,
     StackedFoldPathDiagnosticErrorV1, StackedFoldPathDiagnosticLimitsV1,
     UniformCycleClosureRootsV1, diagnose_canonical_cycle_schedule_path_v1,
+    diagnose_canonical_positive_thickness_cycle_schedule_path_v1,
     diagnose_collective_cycle_path_v1, diagnose_collective_hinge_path_v1,
     diagnose_scheduled_cycle_path_v1, diagnose_scheduled_positive_thickness_cycle_path_v1,
     enumerate_uniform_cycle_closure_roots_v1,

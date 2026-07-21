@@ -289,15 +289,28 @@ impl MaterialHingeGraphGeometry {
                     .collect(),
             });
         }
-        if collective_flat_stack_cycle_closure_premises_v1(
-            self, audit, fixed_face, schedule, tolerance,
-        ) || orthogonal_inverse_pair_cycle_closure_premises_v1(
-            self, audit, fixed_face, schedule, tolerance,
-        ) || theta_opposite_pair_cycle_closure_premises_v1(
-            self, audit, fixed_face, schedule, tolerance,
-        ) || symmetric_rational_kawasaki_cycle_closure_premises_v1(
-            self, audit, fixed_face, schedule, tolerance,
-        ) {
+        let stationary_closed = self.hinges().iter().all(|hinge| {
+            schedule
+                .derivative_bound(hinge.edge())
+                .is_some_and(|bound| bound.to_bits() == 0.0_f64.to_bits())
+        }) && schedule.evaluate(0.0).is_some_and(|angles| {
+            self.solve_closed(audit, fixed_face, &angles, tolerance)
+                .is_ok()
+        });
+        if stationary_closed
+            || collective_flat_stack_cycle_closure_premises_v1(
+                self, audit, fixed_face, schedule, tolerance,
+            )
+            || orthogonal_inverse_pair_cycle_closure_premises_v1(
+                self, audit, fixed_face, schedule, tolerance,
+            )
+            || theta_opposite_pair_cycle_closure_premises_v1(
+                self, audit, fixed_face, schedule, tolerance,
+            )
+            || symmetric_rational_kawasaki_cycle_closure_premises_v1(
+                self, audit, fixed_face, schedule, tolerance,
+            )
+        {
             let mut checked_hinges = self
                 .hinges()
                 .iter()

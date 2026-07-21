@@ -315,6 +315,7 @@ mod four_bay_cycle_test_support;
 
 #[cfg(test)]
 mod tests {
+    use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, ProjectId, Vertex, VertexId};
     use ori_kinematics::{
         CanonicalHingeAngles, HingeAngle, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
         TreeKinematicsLimits,
@@ -322,6 +323,121 @@ mod tests {
     use ori_topology::{FaceExtractionInput, analyze_faces};
 
     use super::*;
+
+    fn theta_shared_hinge_pattern() -> (CreasePattern, Paper) {
+        let namespace = ProjectId::new();
+        let points = [
+            (-3.0, 0.0),
+            (-1.0, -2.0),
+            (1.0, -2.0),
+            (3.0, 0.0),
+            (1.0, 2.0),
+            (-1.0, 2.0),
+            (-1.0, 0.0),
+            (1.0, 0.0),
+        ];
+        let vertices = points
+            .into_iter()
+            .enumerate()
+            .map(|(index, (x, y))| Vertex {
+                id: VertexId::derive_v5(namespace, &[index as u8]),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices[..6]
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect::<Vec<_>>();
+        let mut edges = (0..6)
+            .map(|index| Edge {
+                id: ori_domain::EdgeId::derive_v5(namespace, &[0x10, index as u8]),
+                start: boundary[index],
+                end: boundary[(index + 1) % 6],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        for (index, (start, end)) in [(6, 0), (6, 1), (6, 5), (6, 7), (7, 2), (7, 3), (7, 4)]
+            .into_iter()
+            .enumerate()
+        {
+            edges.push(Edge {
+                id: ori_domain::EdgeId::derive_v5(namespace, &[0x20, index as u8]),
+                start: vertices[start].id,
+                end: vertices[end].id,
+                kind: if index == 3 {
+                    EdgeKind::Mountain
+                } else {
+                    EdgeKind::Valley
+                },
+            });
+        }
+        (
+            CreasePattern { vertices, edges },
+            Paper {
+                boundary_vertices: boundary,
+                ..Paper::default()
+            },
+        )
+    }
+
+    #[test]
+    fn real_theta_shared_hinge_static_proof_checks_every_face_pair_once() {
+        let (pattern, mut paper) = theta_shared_hinge_pattern();
+        paper.thickness_mm = 0.1;
+        let topology = analyze_faces(FaceExtractionInput {
+            identity_namespace: ProjectId::new(),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .snapshot
+        .expect("two physical vertices sharing one hinge form a theta dual graph");
+        assert_eq!(topology.faces.len(), 6);
+        assert_eq!(topology.hinge_adjacency.len(), 7);
+        let geometry = MaterialHingeGraphGeometry::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        assert_eq!(audit.closure_hinges().len(), 2);
+        let angles = CanonicalHingeAngles::new(
+            geometry
+                .hinges()
+                .iter()
+                .map(|hinge| HingeAngle::new(hinge.edge(), 0.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = geometry
+            .solve_closed(&audit, geometry.face_ids()[0], &angles, 0.0)
+            .unwrap();
+        let proof = prove_positive_thickness_graph_geometry_v1(
+            &geometry,
+            &pose,
+            paper.thickness_mm,
+            PositiveThicknessGraphLimitsV1::default(),
+        )
+        .expect("flat real theta positive-thickness proof");
+        assert_eq!(proof.face_count(), 6);
+        assert_eq!(proof.analyzed_unordered_face_pairs(), 15);
+        assert_eq!(pose.closure_certificate().checked_hinges().len(), 7);
+        assert!(matches!(
+            prove_positive_thickness_graph_geometry_v1(
+                &geometry,
+                &pose,
+                paper.thickness_mm,
+                PositiveThicknessGraphLimitsV1 {
+                    max_unordered_face_pairs: 14,
+                    ..PositiveThicknessGraphLimitsV1::default()
+                },
+            ),
+            Err(PositiveThicknessGraphProofErrorV1::ResourceLimit)
+        ));
+    }
 
     #[test]
     fn two_to_sixteen_cycle_cactus_proof_is_instance_bound_and_resource_bounded() {

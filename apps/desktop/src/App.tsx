@@ -224,6 +224,7 @@ import {
   finishBeginnerGridCancellation,
   runBeginnerGridApplyWorkflow,
 } from './lib/beginnerGridWorkflow'
+import { analyzeGenericSkeletonTree } from './lib/genericSkeletonTree'
 import {
   cancelWindowClosePrepare,
   createWindowCloseHandshake,
@@ -739,6 +740,7 @@ function App() {
   const [beginnerPartTotal, setBeginnerPartTotal] = useState(0)
   const [beginnerSkeletonSegments, setBeginnerSkeletonSegments] =
     useState<BeginnerDesignProfileV1['generation_constraints']['skeleton_segments']>([])
+  const beginnerSkeletonTree = analyzeGenericSkeletonTree(beginnerSkeletonSegments)
   const [beginnerProtrusions, setBeginnerProtrusions] =
     useState<NonNullable<BeginnerDesignProfileV1['generation_constraints']['protrusions']>>([])
   const [beginnerBodyOutline, setBeginnerBodyOutline] = useState<Array<[number, number]>>([])
@@ -4221,7 +4223,7 @@ function App() {
   }
 
   function requestBeginnerGrid() {
-    if (beginnerGridBusy) return
+    if (beginnerGridBusy || beginnerSkeletonTree.status !== 'tree') return
     const current = latestSnapshotRef.current
     if (!current) return
     const requestId = ++beginnerGridRequestRef.current
@@ -7936,7 +7938,8 @@ function App() {
                     : text({ ja: '候補を評価', en: 'Score candidates' })}
                 </button>
                 <button ref={beginnerGridButtonRef} type="button" onClick={requestBeginnerGrid}
-                  disabled={coreBusy || recoveryBlocking || beginnerGridBusy}>
+                  disabled={coreBusy || recoveryBlocking || beginnerGridBusy
+                    || beginnerSkeletonTree.status !== 'tree'}>
                   {beginnerGridBusy
                     ? text({ ja: '27案を評価中…', en: 'Evaluating 27 designs…' })
                     : text({ ja: '27案から上位3案を評価', en: 'Evaluate top 3 of 27 designs' })}
@@ -9021,6 +9024,15 @@ function App() {
                     en: 'Up to 64 bars are stored at 0.1 mm precision. Only bars with explicit length and thickness are used for generation.',
                   })}
                 </p>
+                <p role="status">{beginnerSkeletonTree.status === 'tree'
+                  ? formattedText({
+                    ja: '骨格tree確認済み: {points}節点・{edges}枝。候補生成でbranch→crease権限を再検証します。',
+                    en: 'Skeleton tree confirmed: {points} joints and {edges} branches. Candidate generation revalidates branch-to-crease authority.',
+                  }, { points: beginnerSkeletonTree.pointCount, edges: beginnerSkeletonTree.edgeCount })
+                  : formattedText({
+                    ja: '骨格tree未確認 ({reason})。閉路・重複枝・非連結骨格はSIM証明なしに候補生成できません。',
+                    en: 'Skeleton tree unconfirmed ({reason}). Cycles, duplicate edges, and disconnected skeletons cannot generate candidates without a simulation proof.',
+                  }, { reason: beginnerSkeletonTree.status })}</p>
                 <fieldset aria-describedby="beginner-protrusion-help">
                   <legend>{text({ ja: '突起目標', en: 'Protrusion targets' })}</legend>
                   {([

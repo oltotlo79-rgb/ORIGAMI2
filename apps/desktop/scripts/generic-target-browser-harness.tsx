@@ -35,6 +35,7 @@ function Harness() {
   const [glbWitness, setGlbWitness] = useState<{ bounds: string, bulges: number, discrepancy: number } | null>(null)
   const [selectedSurfaceRanges, setSelectedSurfaceRanges] = useState<number[]>([])
   const [surfaceRangesConfirmed, setSurfaceRangesConfirmed] = useState(false)
+  const [skeletonTreeConfirmed, setSkeletonTreeConfirmed] = useState(true)
   const [mergedAuthorities, setMergedAuthorities] = useState(false)
   const [authorityValid, setAuthorityValid] = useState(true)
   const [imageDecode, setImageDecode] = useState<string | null>(null)
@@ -330,7 +331,8 @@ function Harness() {
       }}>Relax contour to 12 points and regenerate</button>
     </section>}
     <button ref={evaluate} onClick={() => { if (recognized) {
-      if (glbWitness && !surfaceRangesConfirmed) setStatus('GLB surface meanings unconfirmed: generic topology candidate blocked')
+      if (!skeletonTreeConfirmed) setStatus('Skeleton cycle blocked: simulation proof unavailable')
+      else if (glbWitness && !surfaceRangesConfirmed) setStatus('GLB surface meanings unconfirmed: generic topology candidate blocked')
       else if (segmentation && !outlineEditConfirmed) setStatus('Outline edit unconfirmed: generic topology candidate blocked')
       else if (segmentation && !imageMeaningsConfirmed) setStatus('Image meanings unconfirmed: generic topology candidate blocked')
       else if (segmentation && acceptedSegments.length < 2) setStatus('Rejected segmentation: at least two accepted protrusions required')
@@ -379,7 +381,10 @@ function Harness() {
       <p>Generic feature topology witness: {[...bindings].sort((left, right) => left.id - right.id).map((binding) =>
         `${binding.id}:${binding.count}@feature${binding.id}→skeleton${binding.id}.end#crease-${binding.id === 1 ? '91a70f2c' : 'a72be019'}`).join(', ')}</p>
       <p>Confirmed tree skeleton: root→1[feature 1], 1→2[feature 2] · authority c31488da</p>
-      <button onClick={() => setStatus('Rejected skeleton graph: cycle, duplicate edge, or branch authority tampered')}>Try tampered skeleton branch graph</button>
+      <button onClick={() => { setSkeletonTreeConfirmed(false)
+        setStatus('Rejected skeleton graph: cycle, duplicate edge, or branch authority tampered') }}>Try tampered skeleton branch graph</button>
+      {!skeletonTreeConfirmed && <button onClick={() => { setSkeletonTreeConfirmed(true)
+        setStatus('Confirmed tree skeleton restored from explicit branch adjacency') }}>Restore confirmed skeleton tree</button>}
       {mergedAuthorities && <canvas width={320} height={120} role="img" aria-label="Folded target and candidate landmark overlay" ref={(canvas) => {
         const context = canvas?.getContext('2d'); if (!canvas || !context) return
         context.clearRect(0, 0, canvas.width, canvas.height); context.fillStyle = '#2563eb'

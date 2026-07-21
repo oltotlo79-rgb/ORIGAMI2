@@ -102,6 +102,7 @@ pub enum BeginnerGeneratedPlanKindV1 {
     SymmetricWingBase,
     SymmetricBirdBase,
     AsymmetricBirdLandmarkBase,
+    AsymmetricFourLegLandmarkBase,
     SymmetricFishBase,
     SymmetricEarBase,
     SymmetricHornBase,
@@ -1115,7 +1116,24 @@ pub fn generate_beginner_plans_v1(
                 )
             } else {
                 let (required_count, vertical, plan_kind, instruction) =
-                    if part_count(BeginnerTargetPartKindV1::Leg) == 4 {
+                    if part_count(BeginnerTargetPartKindV1::Leg) == 4
+                        && constraints
+                            .protrusions
+                            .iter()
+                            .filter(|target| {
+                                target.count == 1
+                                    && target.symmetry == BeginnerProtrusionSymmetryV1::None
+                            })
+                            .count()
+                            == 4
+                    {
+                        (
+                            4,
+                            true,
+                            BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase,
+                            "asymmetric_four_leg_landmark_base",
+                        )
+                    } else if part_count(BeginnerTargetPartKindV1::Leg) == 4 {
                         (
                             4,
                             true,
@@ -1170,8 +1188,11 @@ pub fn generate_beginner_plans_v1(
                     } else {
                         return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
                     };
-                let asymmetric =
-                    plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase;
+                let asymmetric = matches!(
+                    plan_kind,
+                    BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
+                        | BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase
+                );
                 if constraints.skeleton_segments.len() < if vertical { 3 } else { 2 }
                     || (!asymmetric && !has_bilateral_skeleton(constraints))
                     || (!asymmetric && !has_bilateral_protrusion_count(constraints, required_count))
@@ -2001,7 +2022,12 @@ fn symmetric_template(
     constraints: &BeginnerGenerationConstraintsV1,
 ) -> BeginnerGeneratedPlanV1 {
     let prefix = format!("beginner-plan-{plan_kind:?}");
-    let canonical_quad = (plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase)
+    let asymmetric_landmark = matches!(
+        plan_kind,
+        BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
+            | BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase
+    );
+    let canonical_quad = asymmetric_landmark
         .then(|| {
             let points = source
                 .vertices
@@ -2040,13 +2066,13 @@ fn symmetric_template(
     let mut edges = Vec::with_capacity(endpoints.len());
     let mut asymmetric_edge_ids = (0..endpoints.len())
         .map(|index| {
-            if plan_kind != BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase {
+            if !asymmetric_landmark {
                 return EdgeId::derive_v5(namespace, format!("{prefix}-e-{index}").as_bytes());
             }
             EdgeId::derive_v5(asymmetric_namespace, &(index as u64).to_be_bytes())
         })
         .collect::<Vec<_>>();
-    if plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase {
+    if asymmetric_landmark {
         asymmetric_edge_ids.sort_unstable_by_key(EdgeId::canonical_bytes);
     }
     for (index, (x_ratio, y_ratio)) in endpoints.iter().copied().enumerate() {
@@ -2072,19 +2098,9 @@ fn symmetric_template(
         }
         edges.push(Edge {
             id: asymmetric_edge_ids[index],
-            start: if plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase {
-                id
-            } else {
-                center_id
-            },
-            end: if plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase {
-                center_id
-            } else {
-                id
-            },
-            kind: if plan_kind == BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
-                && index == 3
-            {
+            start: if asymmetric_landmark { id } else { center_id },
+            end: if asymmetric_landmark { center_id } else { id },
+            kind: if asymmetric_landmark && index == 3 {
                 EdgeKind::Mountain
             } else {
                 edge_kind

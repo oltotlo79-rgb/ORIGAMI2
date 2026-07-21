@@ -3940,6 +3940,7 @@ fn apply_beginner_generated_plan_document(
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase
             | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
+            | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase
             | ori_domain::BeginnerGeneratedPlanKindV1::SymmetricHornBase
@@ -4068,7 +4069,8 @@ fn apply_beginner_generated_plan_document(
             "Create the bounded bilateral bird-wing base creases.",
             "Confirm the saved head, torso, and two-wing target still match.",
         ),
-        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase => (
+        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
+        | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase => (
             "Asymmetric landmark bird base",
             "Create individually bound head, tail, left-wing, and right-wing landmark creases.",
             "The asymmetric landmark bindings and native fold-path certificate were revalidated.",
@@ -4312,7 +4314,8 @@ fn apply_grid_plan_document(
             "Apply the globally proven parameter-grid bird base.",
             "The canonical grid tuple and proof were revalidated immediately before apply.",
         ),
-        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase => (
+        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
+        | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase => (
             "Asymmetric landmark bird base",
             "Create individually bound asymmetric bird landmark creases.",
             "All landmark bindings and the native fold path were revalidated before apply.",

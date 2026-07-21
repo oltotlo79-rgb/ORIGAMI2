@@ -61,6 +61,62 @@ pub enum DyadicPoseGraphGenerationErrorV1 {
     Cancelled,
 }
 
+pub fn generate_bounded_collective_pose_graph_v1(
+    source: &CanonicalHingeAngles,
+    midpoint: &CanonicalHingeAngles,
+    target: &CanonicalHingeAngles,
+) -> Result<GeneratedDyadicPoseGraphV1, DyadicPoseGraphGenerationErrorV1> {
+    if source.as_slice().len() != target.as_slice().len()
+        || source.as_slice().len() != midpoint.as_slice().len()
+        || source
+            .as_slice()
+            .iter()
+            .zip(midpoint.as_slice())
+            .zip(target.as_slice())
+            .any(|((source, midpoint), target)| {
+                source.edge() != midpoint.edge() || source.edge() != target.edge()
+            })
+    {
+        return Err(DyadicPoseGraphGenerationErrorV1::BindingMismatch);
+    }
+    let moving_hinge = source
+        .as_slice()
+        .iter()
+        .zip(target.as_slice())
+        .find(|(source, target)| {
+            source.angle_degrees().to_bits() != target.angle_degrees().to_bits()
+        })
+        .map(|(source, _)| source.edge())
+        .ok_or(DyadicPoseGraphGenerationErrorV1::BindingMismatch)?;
+    Ok(GeneratedDyadicPoseGraphV1 {
+        states: vec![source.clone(), midpoint.clone(), target.clone()],
+        transitions: vec![
+            DyadicPoseGraphTransitionV1 {
+                source_state: 0,
+                target_state: 1,
+                moving_hinge,
+            },
+            DyadicPoseGraphTransitionV1 {
+                source_state: 1,
+                target_state: 0,
+                moving_hinge,
+            },
+            DyadicPoseGraphTransitionV1 {
+                source_state: 1,
+                target_state: 2,
+                moving_hinge,
+            },
+            DyadicPoseGraphTransitionV1 {
+                source_state: 2,
+                target_state: 1,
+                moving_hinge,
+            },
+        ],
+        source_state: 0,
+        target_state: 2,
+    })
+}
+
 /// Generates a canonical three-level grid (source, midpoint, target) over the
 /// complete live hinge vector. Edges are observation-only candidates: callers
 /// must run the existing continuous transition oracle for every edge before

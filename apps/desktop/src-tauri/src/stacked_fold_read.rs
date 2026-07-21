@@ -762,15 +762,30 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
     {
         return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
     }
-    let graph = match ori_kinematics::generate_bounded_dyadic_pose_graph_v1(
-        pose.hinge_angles(),
-        &target,
-        ori_kinematics::DyadicPoseGraphLimitsV1 {
-            max_states: request.max_states,
-            max_transitions: request.max_transitions,
-        },
-        || STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) == generation,
-    ) {
+    let generated_graph = if let Some(schedule) = collective_schedule.as_ref() {
+        schedule
+            .evaluate(0.5)
+            .and_then(|midpoint| {
+                ori_kinematics::generate_bounded_collective_pose_graph_v1(
+                    pose.hinge_angles(),
+                    &midpoint,
+                    &target,
+                )
+                .ok()
+            })
+            .ok_or(ori_kinematics::DyadicPoseGraphGenerationErrorV1::BindingMismatch)
+    } else {
+        ori_kinematics::generate_bounded_dyadic_pose_graph_v1(
+            pose.hinge_angles(),
+            &target,
+            ori_kinematics::DyadicPoseGraphLimitsV1 {
+                max_states: request.max_states,
+                max_transitions: request.max_transitions,
+            },
+            || STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire) == generation,
+        )
+    };
+    let graph = match generated_graph {
         Ok(value) => value,
         Err(ori_kinematics::DyadicPoseGraphGenerationErrorV1::ResourceLimit) => {
             return Ok(dyadic_graph_response(
@@ -2009,7 +2024,7 @@ fn production_cycle_schedule_limits_v1() -> CycleScheduleLimitsV1 {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CycleScheduleRequestV1 {
     version: u32,
@@ -2020,6 +2035,7 @@ struct CycleScheduleRequestV1 {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Clone)]
 struct CycleScheduleEntryRequestV1 {
     edge: ori_domain::EdgeId,
     u_domain: [RationalCoefficientRequestV1; 2],
@@ -7165,11 +7181,28 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a native trivial layer-order authority for a zero-overlap Kawasaki source"]
     fn dyadic_private_authority_applies_and_round_trips_history() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
-        let (mut project, hinges) = super::super::applied_pose::tests::four_vertex_cycle_project();
-        super::super::applied_pose::tests::install_flat_graph_pose_authority(&mut project, hinges);
+        let (pattern, mut paper, horizontal, _) =
+            super::dense_grid_cycle_test_support::miura_authority_pattern(3, 3);
+        paper.thickness_mm = 0.1;
+        let moving = horizontal.into_iter().take(3).collect::<Vec<_>>();
+        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        let hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            snapshot.faces[0].id,
+        );
         let layer_state = GlobalFlatFoldabilityState::default();
         super::super::global_flat_foldability::tests::install_possible_layer_order(
             &layer_state,
@@ -7180,42 +7213,76 @@ mod tests {
         let revision = project.editor.revision();
         let state = AppState::new(project);
         let preview_state = DyadicPathPreviewState::default();
-        let target_for = || {
-            let project = super::super::lock_project(&state).unwrap();
-            let capability = project
-                .applied_pose_authority
-                .capture_capability(&project)
-                .unwrap()
-                .unwrap();
-            let (geometry, audit, pose) = capability.graph().unwrap();
-            ori_kinematics::generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v1(
-                geometry, audit, pose.fixed_face(), 1, production_cycle_schedule_limits_v1())
-            .ok()?
-            .schedule()
-            .evaluate(1.0)
-        };
-        let target = target_for().expect("real Kawasaki target");
-        let observed = {
-            let request = DyadicPoseGraphReadRequestV1 {
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                target_angles: target
-                    .as_slice()
+        let schedule_for = |mask: usize| {
+            let mut schedule = dense_grid_schedule(&hinges, &moving, 100);
+            for (index, entry) in schedule
+                .entries
+                .iter_mut()
+                .filter(|entry| moving.contains(&entry.edge))
+                .enumerate()
+            {
+                let mountain = snapshot
+                    .hinge_adjacency
                     .iter()
-                    .map(|angle| DyadicPoseGraphAngleDtoV1 {
-                        edge: angle.edge(),
-                        angle_degrees: angle.angle_degrees(),
-                    })
-                    .collect(),
-                max_states: 32,
-                max_transitions: 128,
-                cycle_schedule_v1: None,
-            };
-            read_bounded_dyadic_pose_graph_inner_v1(&state, Some(&layer_state), request, None)
-                .expect("real Kawasaki dyadic read")
+                    .find(|hinge| hinge.edge == entry.edge)
+                    .is_some_and(|hinge| {
+                        hinge.assignment == ori_topology::FoldAssignment::Mountain
+                    });
+                if mountain ^ (mask & (1 << index) != 0) {
+                    entry.numerator_power_coefficients[1].numerator *= -1;
+                    entry.requested_angle_degrees *= -1.0;
+                }
+            }
+            schedule
         };
-        assert!(observed.mutation_candidate_ready);
+        let (schedule, target, observed) = (0..8)
+            .find_map(|mask| {
+                let schedule = schedule_for(mask);
+                let target = {
+                    let project = super::super::lock_project(&state).unwrap();
+                    let capability = project
+                        .applied_pose_authority
+                        .capture_capability(&project)
+                        .ok()??;
+                    let (geometry, audit, pose) = capability.graph()?;
+                    prepare_requested_cycle_schedule_v1(
+                        &schedule,
+                        geometry,
+                        audit,
+                        pose.fixed_face(),
+                        pose.hinge_angles(),
+                    )
+                    .ok()?
+                    .evaluate(1.0)?
+                };
+                let request = DyadicPoseGraphReadRequestV1 {
+                    expected_project_instance_id: instance,
+                    expected_project_id: project_id,
+                    expected_revision: revision,
+                    target_angles: target
+                        .as_slice()
+                        .iter()
+                        .map(|angle| DyadicPoseGraphAngleDtoV1 {
+                            edge: angle.edge(),
+                            angle_degrees: angle.angle_degrees(),
+                        })
+                        .collect(),
+                    max_states: 32,
+                    max_transitions: 128,
+                    cycle_schedule_v1: Some(schedule.clone()),
+                };
+                let value = read_bounded_dyadic_pose_graph_inner_v1(
+                    &state,
+                    Some(&layer_state),
+                    request,
+                    None,
+                )
+                .ok()?;
+                value
+                    .mutation_candidate_ready
+                    .then_some((schedule, target, value))
+            })
+            .expect("real Miura schedule yields a certified dyadic candidate");
         let request = DyadicPathPreviewRequestV1 {
             expected_project_instance_id: instance,
             expected_project_id: project_id,
@@ -7230,7 +7297,7 @@ mod tests {
                 .collect(),
             max_states: 32,
             max_transitions: 128,
-            cycle_schedule_v1: None,
+            cycle_schedule_v1: Some(schedule),
             expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
             expected_positive_thickness_binding_sha256: observed
                 .positive_thickness_binding_sha256

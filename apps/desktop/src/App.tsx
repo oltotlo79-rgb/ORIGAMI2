@@ -223,6 +223,10 @@ import {
 import { buildFoldPreviewModel } from './lib/foldPreviewModel'
 import { isExpectedNativeEditSnapshot } from './lib/projectSnapshotBinding'
 import {
+  finishBeginnerGridCancellation,
+  runBeginnerGridApplyWorkflow,
+} from './lib/beginnerGridWorkflow'
+import {
   cancelWindowClosePrepare,
   createWindowCloseHandshake,
   createWindowCloseHandshakeState,
@@ -4118,8 +4122,10 @@ function App() {
     beginnerGridGenerationRef.current = null
     if (generationId) void cancelBeginnerParameterGrid(generationId).catch(() => undefined)
     setBeginnerGridBusy(false)
-    setBeginnerGrid(null)
-    requestAnimationFrame(() => beginnerGridButtonRef.current?.focus())
+    finishBeginnerGridCancellation(
+      () => setBeginnerGrid(null),
+      () => requestAnimationFrame(() => beginnerGridButtonRef.current?.focus()),
+    )
   }
 
   function confirmAndApplyBeginnerGridCandidate(
@@ -4127,18 +4133,21 @@ function App() {
   ) {
     const grid = beginnerGrid
     const current = latestSnapshotRef.current
-    if (!grid || !current || !window.confirm(text({
-      ja: 'この案の格子・形状・大域証明を再検証して適用しますか？変更全体は1回のUndoで戻せます。',
-      en: 'Revalidate this design’s grid, geometry, and global proof, then apply it? One Undo reverts the whole change.',
-    }))) return
-    void runNativeEdit(() => applyBeginnerParameterGridCandidate(
-      current.project_id, current.revision, current.project_instance_id,
-      grid, current.beginner_design_profile, candidate,
-    )).then((applied) => {
-      if (!applied) return
-      beginnerGridRequestRef.current += 1
-      setBeginnerGrid(null)
-      requestAnimationFrame(() => beginnerGridButtonRef.current?.focus())
+    if (!grid || !current) return
+    void runBeginnerGridApplyWorkflow({
+      confirm: () => window.confirm(text({
+        ja: 'この案の格子・形状・大域証明を再検証して適用しますか？変更全体は1回のUndoで戻せます。',
+        en: 'Revalidate this design’s grid, geometry, and global proof, then apply it? One Undo reverts the whole change.',
+      })),
+      apply: () => runNativeEdit(() => applyBeginnerParameterGridCandidate(
+        current.project_id, current.revision, current.project_instance_id,
+        grid, current.beginner_design_profile, candidate,
+      )),
+      clearPreview: () => {
+        beginnerGridRequestRef.current += 1
+        setBeginnerGrid(null)
+      },
+      restoreFocus: () => requestAnimationFrame(() => beginnerGridButtonRef.current?.focus()),
     })
   }
 

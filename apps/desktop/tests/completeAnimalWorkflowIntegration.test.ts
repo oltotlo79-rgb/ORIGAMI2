@@ -5,6 +5,7 @@ import test from 'node:test'
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const client = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8')
 const native = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8')
+const workflow = readFileSync(new URL('../src/lib/beginnerGridWorkflow.ts', import.meta.url), 'utf8')
 
 test('complete animal recognition reaches the bounded grid through one native contract', () => {
   assert.match(native, /animal_complete_bindings_v1/)
@@ -22,14 +23,17 @@ test('grid cancellation and stale replacement stay generation and snapshot scope
   assert.match(app, /latest\?\.project_instance_id === response\.project_instance_id/)
   assert.match(app, /cancelBeginnerParameterGrid\(generationId\)/)
   assert.match(app, /beginnerGridGenerationRef\.current = null\s*setBeginnerGridBusy\(false\)/)
-  assert.match(app, /setBeginnerGrid\(null\)\s*requestAnimationFrame\(\(\) => beginnerGridButtonRef\.current\?\.focus\(\)\)/)
+  assert.match(app, /finishBeginnerGridCancellation/)
+  assert.match(workflow, /clearPreview\(\)\s*restoreFocus\(\)/)
 })
 
 test('confirmed apply retains preview on failure and restores focus only after success', () => {
   assert.match(app, /window\.confirm/)
   assert.match(app, /applyBeginnerParameterGridCandidate/)
-  assert.match(app, /\.then\(\(applied\) => \{\s*if \(!applied\) return/)
-  assert.match(app, /setBeginnerGrid\(null\)\s*requestAnimationFrame\(\(\) => beginnerGridButtonRef\.current\?\.focus\(\)\)/)
+  assert.match(app, /runBeginnerGridApplyWorkflow/)
+  assert.match(workflow, /if \(!confirm\(\)\) return false/)
+  assert.match(workflow, /if \(!await apply\(\)\) return false/)
+  assert.match(app, /restoreFocus: \(\) => requestAnimationFrame\(\(\) => beginnerGridButtonRef\.current\?\.focus\(\)\)/)
   assert.match(app, /ref=\{beginnerGridButtonRef\}/)
 })
 

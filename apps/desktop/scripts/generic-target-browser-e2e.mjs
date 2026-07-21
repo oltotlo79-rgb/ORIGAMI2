@@ -54,6 +54,8 @@ try {
     await page.getByRole('button', { name: button }).click()
     await page.getByText(status, { exact: true }).waitFor()
   }
+  await page.getByRole('button', { name: 'Try uncertified fold path' }).click()
+  await page.getByText('Apply blocked: bounded fold path certificate unavailable', { exact: true }).waitFor()
   await page.getByText('Deterministic silhouette segmentation: 2 protrusions · binding 1 asymmetric · binding 2 bilateral', { exact: true }).waitFor()
   await page.getByLabel('Accept segmented protrusion 1').uncheck()
   await page.getByLabel('Accept segmented protrusion 2').uncheck()
@@ -160,6 +162,7 @@ try {
   await page.getByText('Preset-weighted 2D+3D ranking: balanced · winner 3', { exact: true }).waitFor()
   await page.getByText('Deterministic replay digest: seed-v1-5-6-3-92', { exact: true }).waitFor()
   await page.getByText('Manufacturability verified: crease spacing · face area · paper boundary margin', { exact: true }).waitFor()
+  await page.getByText('Native foldability admission: global proof + bounded fold path certificate · collision clear', { exact: true }).waitFor()
   await assertWitnessCanvas(page.getByRole('img', { name: 'Contour placement correspondence candidate 1' }))
   await page.getByRole('button', { name: 'Select contour candidate 2' }).click()
   await page.getByText(/Contour placement witness candidate 2: body 4, local/).waitFor()

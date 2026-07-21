@@ -749,6 +749,7 @@ export type BeginnerGeneratedPlanAssessmentV1 = {
   reason:
     | 'geometry_invalid'
     | 'folded_pose_simulation_failed'
+    | 'fold_path_certificate_unavailable'
     | 'manufacturability_missing_vertex'
     | 'manufacturability_minimum_crease_spacing'
     | 'manufacturability_minimum_face_area'
@@ -984,7 +985,8 @@ function normalizeBeginnerCandidateResponse(
       || ((record.shape_approximation_score === null)
         !== (record.shape_difference_reason === null))
       || ![
-        'geometry_invalid', 'folded_pose_simulation_failed', 'manufacturability_missing_vertex',
+        'geometry_invalid', 'folded_pose_simulation_failed', 'fold_path_certificate_unavailable',
+        'manufacturability_missing_vertex',
         'manufacturability_minimum_crease_spacing', 'manufacturability_minimum_face_area',
         'manufacturability_paper_boundary_margin', 'necessary_conditions_satisfied',
         'necessary_conditions_violated', 'local_analysis_blocked',
@@ -993,7 +995,8 @@ function normalizeBeginnerCandidateResponse(
         'global_resource_limit', 'global_timeout', 'global_indeterminate',
       ].includes(String(record.reason))
       || (record.apply_allowed === false
-        && !['geometry_invalid', 'folded_pose_simulation_failed', 'manufacturability_missing_vertex',
+        && !['geometry_invalid', 'folded_pose_simulation_failed', 'fold_path_certificate_unavailable',
+          'manufacturability_missing_vertex',
           'manufacturability_minimum_crease_spacing', 'manufacturability_minimum_face_area',
           'manufacturability_paper_boundary_margin', 'necessary_conditions_violated', 'local_analysis_blocked',
           'global_flat_foldability_impossible']

@@ -1838,6 +1838,37 @@ fn compare_flat_surface_to_reference_model_v1(
 
 struct BeginnerGlobalFoldabilityDeadline(std::time::Instant);
 
+const MAX_BEGINNER_FOLD_PATH_CREASES_V1: usize = 256;
+
+fn certify_beginner_fold_path_v1(
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+    paper: &Paper,
+) -> Option<[u8; 32]> {
+    let creases = plan
+        .crease_pattern
+        .edges
+        .iter()
+        .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+        .collect::<Vec<_>>();
+    if creases.is_empty() || creases.len() > MAX_BEGINNER_FOLD_PATH_CREASES_V1 {
+        return None;
+    }
+    let mut ids = HashSet::with_capacity(creases.len());
+    if creases.iter().any(|edge| !ids.insert(edge.id))
+        || validate_beginner_manufacturability_v1(&plan.crease_pattern, paper).is_err()
+    {
+        return None;
+    }
+    let mut ordered = creases
+        .iter()
+        .map(|edge| (edge.id.canonical_bytes(), edge.kind, edge.start, edge.end))
+        .collect::<Vec<_>>();
+    ordered.sort_unstable_by_key(|record| record.0);
+    let bytes =
+        serde_json::to_vec(&("bounded_fold_path_v1", ordered, &plan.crease_pattern)).ok()?;
+    Some(sha2::Sha256::digest(bytes).into())
+}
+
 impl GlobalFlatFoldabilityObserver for BeginnerGlobalFoldabilityDeadline {
     fn checkpoint(&mut self) -> GlobalFlatFoldabilityCheckpoint {
         if std::time::Instant::now() >= self.0 {
@@ -2004,8 +2035,14 @@ fn assess_beginner_generated_plan_with_deadline(
                 ) {
                     Ok(report) => match report.outcome {
                         GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => {
-                            proof_scope = "sufficient";
-                            reason = "global_flat_foldability_proven";
+                            if certify_beginner_fold_path_v1(plan, paper).is_none() {
+                                proof_scope = "necessary";
+                                apply_allowed = false;
+                                reason = "fold_path_certificate_unavailable";
+                            } else {
+                                proof_scope = "sufficient";
+                                reason = "global_flat_foldability_proven";
+                            }
                             if let (Some(reference), Some(surface)) = (
                                 reference,
                                 ori_core::extract_certified_flat_surface_v1(
@@ -4250,6 +4287,7 @@ fn apply_grid_plan_document(
             confidence_reasons: vec![
                 "native_topology_witness".to_owned(),
                 "preset_weighted_2d_3d_metric".to_owned(),
+                "bounded_fold_path_certificate_v1".to_owned(),
             ],
             explicit_override: false,
             source_asset_fingerprint,
@@ -21755,6 +21793,44 @@ mod tests {
             validate_beginner_manufacturability_v1(&tiny, &Paper::default()),
             Err("manufacturability_minimum_crease_spacing")
         );
+        let p0 = VertexId::new();
+        let p1 = VertexId::new();
+        let p2 = VertexId::new();
+        let certified = plan(
+            vec![
+                Vertex {
+                    id: p0,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: p1,
+                    position: Point2::new(10.0, 0.0),
+                },
+                Vertex {
+                    id: p2,
+                    position: Point2::new(0.0, 10.0),
+                },
+            ],
+            vec![
+                Edge {
+                    id: EdgeId::new(),
+                    start: p0,
+                    end: p1,
+                    kind: EdgeKind::Mountain,
+                },
+                Edge {
+                    id: EdgeId::new(),
+                    start: p1,
+                    end: p2,
+                    kind: EdgeKind::Valley,
+                },
+            ],
+        );
+        assert_eq!(
+            certify_beginner_fold_path_v1(&certified, &Paper::default()),
+            certify_beginner_fold_path_v1(&certified, &Paper::default())
+        );
+        assert!(certify_beginner_fold_path_v1(&certified, &Paper::default()).is_some());
         let ranked = plan(
             vec![
                 Vertex {

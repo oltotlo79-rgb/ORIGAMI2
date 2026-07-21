@@ -3642,9 +3642,10 @@ mod tests {
                 hinges.clone(),
                 fixed,
             );
-            let request = CurrentCyclePosePreviewRequestV1 {
+            let instance = project.instance_id;
+            let request = |expected_project_instance_id| CurrentCyclePosePreviewRequestV1 {
                 progress_request_id: None,
-                expected_project_instance_id: project.instance_id,
+                expected_project_instance_id,
                 expected_project_id: project.project_id,
                 expected_revision: project.editor.revision(),
                 cycle_schedule_v1: dense_grid_schedule(&hinges, &horizontal, 4),
@@ -3652,7 +3653,18 @@ mod tests {
             let state = AppState::new(project);
             let transactions =
                 super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
-            let preview = propose_current_cycle_pose_inner(None, &state, &transactions, request);
+            assert_eq!(
+                propose_current_cycle_pose_inner(
+                    None,
+                    &state,
+                    &transactions,
+                    request(ProjectId::new())
+                )
+                .unwrap_err(),
+                STALE_MESSAGE
+            );
+            let preview =
+                propose_current_cycle_pose_inner(None, &state, &transactions, request(instance));
             if thickness_mm == 10_000.0 {
                 assert_eq!(preview.unwrap_err(), CYCLE_PATH_UNCERTIFIED_MESSAGE);
                 continue;
@@ -3713,6 +3725,39 @@ mod tests {
             } else {
                 let preview =
                     preview.unwrap_or_else(|error| panic!("oblique {thickness_mm}mm: {error}"));
+                if thickness_mm == 1.0 {
+                    super::super::lock_project(&state).unwrap().instance_id = ProjectId::new();
+                    assert!(super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                        &state, &GlobalFlatFoldabilityState::default(), &transactions, preview.transaction_token,
+                    ).is_err());
+                    continue;
+                }
+                if thickness_mm == 0.1 {
+                    super::super::stacked_fold_transaction::cancel_pending_stacked_fold(
+                        &transactions,
+                        preview.transaction_token,
+                    )
+                    .unwrap();
+                    assert!(super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                        &state, &GlobalFlatFoldabilityState::default(), &transactions, preview.transaction_token,
+                    ).is_err());
+                    let retry = propose_current_cycle_pose_inner(
+                        None,
+                        &state,
+                        &transactions,
+                        request(instance),
+                    )
+                    .expect("oblique retry");
+                    let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                        &state, &GlobalFlatFoldabilityState::default(), &transactions, retry.transaction_token,
+                    ).expect("oblique retry apply");
+                    super::super::lock_project(&state)
+                        .unwrap()
+                        .editor
+                        .undo(applied)
+                        .unwrap();
+                    continue;
+                }
                 let applied =
                     super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
                         &state,

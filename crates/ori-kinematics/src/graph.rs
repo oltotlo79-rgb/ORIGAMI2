@@ -1726,7 +1726,7 @@ fn rational_cactus_cycles_premises_v1(
     tolerance: f64,
 ) -> Option<usize> {
     let cycle_count = audit.closure_hinges().len();
-    if !(3..=16).contains(&cycle_count)
+    if !(3..=32).contains(&cycle_count)
         || geometry.hinges().len() != cycle_count * 4
         || geometry.face_ids().len() != 1 + cycle_count * 3
     {
@@ -2664,7 +2664,7 @@ mod tests {
             (7.0, 25.0, 24.0),
         ];
         let mut hinges = Vec::new();
-        for (group, (p, q, leg)) in triples.into_iter().take(group_count).enumerate() {
+        for (group, (p, q, leg)) in triples.into_iter().cycle().take(group_count).enumerate() {
             let origin = Point3::new(group as f64 * 10.0, 0.0, 0.0).unwrap();
             let axes = [
                 Point3::new(1.0, 0.0, 0.0).unwrap(),
@@ -2704,7 +2704,7 @@ mod tests {
             .copied()
             .enumerate()
             .map(|(index, edge)| {
-                let (p, q, _) = triples[index / 4];
+                let (p, q, _) = triples[(index / 4) % triples.len()];
                 let (p, q) = (p as i64, q as i64);
                 HalfAngleRationalEntryInputV1 {
                     edge,
@@ -2749,7 +2749,7 @@ mod tests {
     }
 
     #[test]
-    fn two_to_sixteen_independent_rational_cycles_use_canonical_balanced_leaves() {
+    fn two_to_thirty_two_independent_rational_cycles_use_canonical_balanced_leaves() {
         let cases = [
             (2, 1, vec![(1, 0), (1, 1)]),
             (3, 2, vec![(1, 0), (2, 2), (2, 3)]),
@@ -2763,6 +2763,7 @@ mod tests {
             ),
             (8, 3, (0..8).map(|index| (3, index)).collect()),
             (16, 4, (0..16).map(|index| (4, index)).collect()),
+            (32, 5, (0..32).map(|index| (5, index)).collect()),
         ];
         for (group_count, max_depth, expected) in cases {
             for reverse_hinges in [false, true] {
@@ -2793,24 +2794,24 @@ mod tests {
                 );
             }
         }
-        let (geometry, audit, schedule, fixed) = composed_rational_cycles_fixture(8, None, false);
+        let (geometry, audit, schedule, fixed) = composed_rational_cycles_fixture(32, None, false);
         let exact = DyadicIntervalClosureLimitsV1 {
-            max_depth: 3,
-            max_leaves: 8,
-            max_work: 8,
+            max_depth: 5,
+            max_leaves: 32,
+            max_work: 32,
             schedule_limits: CycleScheduleLimitsV1::default(),
         };
         for short in [
             DyadicIntervalClosureLimitsV1 {
-                max_depth: 2,
+                max_depth: 4,
                 ..exact
             },
             DyadicIntervalClosureLimitsV1 {
-                max_leaves: 7,
+                max_leaves: 31,
                 ..exact
             },
             DyadicIntervalClosureLimitsV1 {
-                max_work: 7,
+                max_work: 31,
                 ..exact
             },
         ] {
@@ -2820,7 +2821,7 @@ mod tests {
             );
         }
         let (corrupt, corrupt_audit, corrupt_schedule, corrupt_fixed) =
-            composed_rational_cycles_fixture(8, Some(7), false);
+            composed_rational_cycles_fixture(32, Some(31), false);
         assert!(
             corrupt
                 .prove_dyadic_schedule_closure_v1(

@@ -13,6 +13,8 @@ use crate::{
 };
 
 const MAX_BEGINNER_RECOGNITION_ENCODED_BYTES_V1: usize = 16 * 1024 * 1024;
+const MAX_BEGINNER_RECOGNITION_DECODED_BYTES_V1: usize =
+    ori_domain::MAX_BEGINNER_RECOGNITION_PIXELS_V1 * 4;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1620,7 +1622,10 @@ fn decode_marker_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let output_size = reader
         .output_buffer_size()
         .ok_or_else(|| "target recognition output size is unavailable".to_owned())?;
-    if output_size != pixels.saturating_mul(4) {
+    let rgba_size = pixels
+        .checked_mul(4)
+        .ok_or_else(|| "target recognition dimensions overflow".to_owned())?;
+    if output_size != rgba_size || output_size > MAX_BEGINNER_RECOGNITION_DECODED_BYTES_V1 {
         return Err("marker_png_v1 requires 8-bit RGBA pixels".to_owned());
     }
     let mut output = vec![0_u8; output_size];
@@ -1641,6 +1646,7 @@ fn decode_general_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
         .read_info()
         .map_err(|_| "recognition_requires_valid_png".to_owned())?;
     let info = reader.info();
+    let (expected_width, expected_height) = (info.width, info.height);
     let pixels = usize::try_from(info.width)
         .ok()
         .and_then(|width| usize::try_from(info.height).ok()?.checked_mul(width))
@@ -1651,21 +1657,30 @@ fn decode_general_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     {
         return Err("recognition_resource_limit".to_owned());
     }
-    let mut decoded = vec![
-        0;
-        reader
-            .output_buffer_size()
-            .ok_or_else(|| "recognition_resource_limit".to_owned())?
-    ];
+    let rgba_size = pixels
+        .checked_mul(4)
+        .ok_or_else(|| "recognition_resource_limit".to_owned())?;
+    let output_size = reader
+        .output_buffer_size()
+        .ok_or_else(|| "recognition_resource_limit".to_owned())?;
+    if output_size == 0
+        || output_size > MAX_BEGINNER_RECOGNITION_DECODED_BYTES_V1
+        || rgba_size > MAX_BEGINNER_RECOGNITION_DECODED_BYTES_V1
+    {
+        return Err("recognition_resource_limit".to_owned());
+    }
+    let mut decoded = vec![0; output_size];
     let frame = reader
         .next_frame(&mut decoded)
         .map_err(|_| "recognition_requires_valid_png".to_owned())?;
+    if frame.width != expected_width
+        || frame.height != expected_height
+        || frame.buffer_size() > output_size
+    {
+        return Err("recognition_resource_limit".to_owned());
+    }
     decoded.truncate(frame.buffer_size());
-    let mut rgba = Vec::with_capacity(
-        pixels
-            .checked_mul(4)
-            .ok_or_else(|| "recognition_resource_limit".to_owned())?,
-    );
+    let mut rgba = Vec::with_capacity(rgba_size);
     match frame.color_type {
         png::ColorType::Rgba => rgba.extend_from_slice(&decoded),
         png::ColorType::Rgb => decoded.chunks_exact(3).for_each(|pixel| {
@@ -1679,7 +1694,7 @@ fn decode_general_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
         }),
         png::ColorType::Indexed => return Err("recognition_requires_valid_png".to_owned()),
     }
-    if rgba.len() != pixels * 4 {
+    if rgba.len() != rgba_size {
         return Err("recognition_resource_limit".to_owned());
     }
     Ok((frame.width, frame.height, rgba))
@@ -1828,6 +1843,61 @@ mod tests {
             decode_general_png(&palette_png).expect("palette"),
             (2, 1, vec![10, 20, 30, 255, 40, 50, 60, 255])
         );
+    }
+
+    #[test]
+    fn png_corpus_rejects_huge_headers_bad_crc_and_truncation_before_allocation() {
+        let valid = encode(png::ColorType::Rgba, &[0, 0, 0, 0, 255, 255, 255, 255]);
+        let mut huge = valid.clone();
+        huge[16..20].copy_from_slice(&u32::MAX.to_be_bytes());
+        let crc = png_crc32(&huge[12..29]);
+        huge[29..33].copy_from_slice(&crc.to_be_bytes());
+        assert_eq!(
+            decode_general_png(&huge),
+            Err("recognition_resource_limit".to_owned())
+        );
+
+        let mut bad_crc = valid.clone();
+        bad_crc[29] ^= 1;
+        assert!(decode_general_png(&bad_crc).is_err());
+        assert!(decode_general_png(&valid[..valid.len() - 5]).is_err());
+    }
+
+    #[test]
+    fn png_corpus_bounds_sixteen_bit_and_preserves_extreme_alpha() {
+        let alpha = encode(png::ColorType::Rgba, &[1, 2, 3, 0, 4, 5, 6, 255]);
+        assert_eq!(
+            decode_general_png(&alpha).expect("alpha").2,
+            &[1, 2, 3, 0, 4, 5, 6, 255]
+        );
+
+        let mut sixteen = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut sixteen, 2, 1);
+            encoder.set_color(png::ColorType::Grayscale);
+            encoder.set_depth(png::BitDepth::Sixteen);
+            let mut writer = encoder.write_header().expect("16-bit header");
+            writer
+                .write_image_data(&[0, 0, 255, 255])
+                .expect("16-bit pixels");
+        }
+        assert_eq!(
+            decode_general_png(&sixteen)
+                .expect("16-bit bounded conversion")
+                .2,
+            &[0, 0, 0, 255, 255, 255, 255, 255]
+        );
+    }
+
+    fn png_crc32(bytes: &[u8]) -> u32 {
+        let mut crc = u32::MAX;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb8_8320 & 0_u32.wrapping_sub(crc & 1));
+            }
+        }
+        !crc
     }
 
     #[test]

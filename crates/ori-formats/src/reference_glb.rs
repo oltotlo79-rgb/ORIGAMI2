@@ -84,6 +84,7 @@ pub fn read_reference_glb_geometry_v1(
     bytes: &[u8],
 ) -> Result<ReferenceGlbGeometryV1, ReferenceGlbErrorV1> {
     validate_reference_glb_v1(bytes)?;
+    validate_accessor_budgets(bytes)?;
     let gltf = gltf::Gltf::from_slice(bytes).map_err(|_| ReferenceGlbErrorV1::Json)?;
     let blob = gltf
         .blob
@@ -144,6 +145,90 @@ pub fn read_reference_glb_geometry_v1(
         triangle_indices,
         material_color,
     })
+}
+
+fn validate_accessor_budgets(bytes: &[u8]) -> Result<(), ReferenceGlbErrorV1> {
+    let json_length = read_u32(bytes, 12).ok_or(ReferenceGlbErrorV1::Container)? as usize;
+    let json_end = 20usize
+        .checked_add(json_length)
+        .ok_or(ReferenceGlbErrorV1::Size)?;
+    let json = std::str::from_utf8(
+        bytes
+            .get(20..json_end)
+            .ok_or(ReferenceGlbErrorV1::Container)?,
+    )
+    .map_err(|_| ReferenceGlbErrorV1::Json)?;
+    let root: Value = serde_json::from_str(json.trim_end_matches([' ', '\0']))
+        .map_err(|_| ReferenceGlbErrorV1::Json)?;
+    let views = root
+        .get("bufferViews")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let accessors = root
+        .get("accessors")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let max_count = MAX_REFERENCE_GLB_VERTICES_V1.max(MAX_REFERENCE_GLB_TRIANGLES_V1 * 3);
+    for accessor in accessors {
+        if accessor.get("sparse").is_some() {
+            return Err(ReferenceGlbErrorV1::UnsupportedContent);
+        }
+        let count = json_usize(accessor.get("count"))?;
+        if count == 0 || count > max_count {
+            return Err(ReferenceGlbErrorV1::Size);
+        }
+        let component_size = match accessor.get("componentType").and_then(Value::as_u64) {
+            Some(5120 | 5121) => 1,
+            Some(5122 | 5123) => 2,
+            Some(5125 | 5126) => 4,
+            _ => return Err(ReferenceGlbErrorV1::UnsupportedContent),
+        };
+        let component_count = match accessor.get("type").and_then(Value::as_str) {
+            Some("SCALAR") => 1,
+            Some("VEC2") => 2,
+            Some("VEC3") => 3,
+            Some("VEC4" | "MAT2") => 4,
+            Some("MAT3") => 9,
+            Some("MAT4") => 16,
+            _ => return Err(ReferenceGlbErrorV1::UnsupportedContent),
+        };
+        let element_size = component_size * component_count;
+        let view_index = json_usize(accessor.get("bufferView"))?;
+        let view = views.get(view_index).ok_or(ReferenceGlbErrorV1::Json)?;
+        let view_length = json_usize(view.get("byteLength"))?;
+        let accessor_offset = accessor
+            .get("byteOffset")
+            .map(|value| json_usize(Some(value)))
+            .transpose()?
+            .unwrap_or(0);
+        let stride = view
+            .get("byteStride")
+            .map(|value| json_usize(Some(value)))
+            .transpose()?
+            .unwrap_or(element_size);
+        if stride < element_size || stride > 252 || !stride.is_multiple_of(component_size) {
+            return Err(ReferenceGlbErrorV1::Size);
+        }
+        let span = count
+            .checked_sub(1)
+            .and_then(|value| value.checked_mul(stride))
+            .and_then(|value| value.checked_add(element_size))
+            .and_then(|value| value.checked_add(accessor_offset))
+            .ok_or(ReferenceGlbErrorV1::Size)?;
+        if span > view_length || span > MAX_REFERENCE_GLB_BYTES_V1 {
+            return Err(ReferenceGlbErrorV1::Size);
+        }
+    }
+    Ok(())
+}
+
+fn json_usize(value: Option<&Value>) -> Result<usize, ReferenceGlbErrorV1> {
+    value
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or(ReferenceGlbErrorV1::Json)
 }
 
 fn contains_forbidden_member(value: &Value) -> bool {
@@ -222,6 +307,20 @@ mod tests {
             read_reference_glb_geometry_v1(&glb_with_bin(json, &binary)).expect("triangle");
         assert_eq!(geometry.positions.len(), 3);
         assert_eq!(geometry.triangle_indices, vec![[0, 1, 2]]);
+    }
+
+    #[test]
+    fn rejects_accessor_count_and_stride_bombs_before_iteration() {
+        for json in [
+            r#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":4}],"bufferViews":[{"buffer":0,"byteLength":4}],"accessors":[{"bufferView":0,"componentType":5126,"count":4294967295,"type":"VEC3"}]}"#,
+            r#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":4}],"bufferViews":[{"buffer":0,"byteLength":4,"byteStride":4294967295}],"accessors":[{"bufferView":0,"componentType":5126,"count":1,"type":"SCALAR"}]}"#,
+            r#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":4}],"bufferViews":[{"buffer":0,"byteLength":4}],"accessors":[{"bufferView":0,"byteOffset":18446744073709551615,"componentType":5126,"count":1,"type":"SCALAR"}]}"#,
+        ] {
+            assert_eq!(
+                read_reference_glb_geometry_v1(&glb_with_bin(json, &[0; 4])),
+                Err(ReferenceGlbErrorV1::Size)
+            );
+        }
     }
 
     fn glb(json: &str) -> Vec<u8> {

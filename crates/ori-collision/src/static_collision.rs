@@ -655,7 +655,7 @@ fn validate_static_collision_input<'a>(
     let bound = model
         .bind_pose(pose)
         .map_err(|_| StaticCollisionError::PoseIssuerMismatch)?;
-    if !paper_thickness_mm.is_finite() || paper_thickness_mm < 0.0 {
+    if !valid_paper_thickness(paper_thickness_mm) {
         return Err(StaticCollisionError::InvalidPaperThickness);
     }
 
@@ -693,6 +693,10 @@ fn validate_static_collision_input<'a>(
         face_count,
         expected_unordered_face_pairs,
     })
+}
+
+fn valid_paper_thickness(value: f64) -> bool {
+    value.is_finite() && value >= 0.0 && !(value == 0.0 && value.is_sign_negative())
 }
 
 fn validate_pair_diagnostic_capacity(
@@ -1147,7 +1151,7 @@ pub fn diagnose_static_collision_geometry(
             // whole-face penetration.
             && matches!(pair.topology, TopologyRelation::SharedHingeEdge)
             && (watertight_shared_hinge_area_overlap_proven
-                || pair.proves_zero_thickness_penetration);
+                || legacy_pair_proves_shared_flat_stack(pair.evidence));
         let whole_face_overlap_proven = is_positive_zero
             && !shared_feature_flat_stack_proven
             && (pair.proves_zero_thickness_penetration
@@ -1810,6 +1814,10 @@ const fn legacy_dispatch_proves_zero_thickness_penetration(
     }
 }
 
+const fn legacy_pair_proves_shared_flat_stack(evidence: IntersectionEvidenceV2) -> bool {
+    matches!(evidence, IntersectionEvidenceV2::CoplanarAreaOverlap)
+}
+
 fn scan_zero_thickness_pair_records(
     face_ids: &[FaceId],
     expected_unordered_face_pairs: usize,
@@ -1967,8 +1975,9 @@ mod tests {
         UnorderedFacePairs, ZeroThicknessAnalysisWork, ZeroThicknessPairRecord,
         checked_unordered_pair_count, finish_proven_positive_thickness_scan,
         finish_proven_transversal_scan, legacy_dispatch_proves_zero_thickness_penetration,
-        map_proven_transversal_scan_error, remaining_proven_transversal_scan_limits,
-        scan_zero_thickness_pair_records, validate_pair_diagnostic_capacity,
+        legacy_pair_proves_shared_flat_stack, map_proven_transversal_scan_error,
+        remaining_proven_transversal_scan_limits, scan_zero_thickness_pair_records,
+        valid_paper_thickness, validate_pair_diagnostic_capacity,
     };
     use crate::{IntersectionEvidenceV2, TopologyContactDecision};
 
@@ -1993,6 +2002,26 @@ mod tests {
                     .max(limits.max_rational_output_bits)
         );
         assert!(limits.max_total_rational_allocation_bits >= limits.max_rational_allocation_bits);
+    }
+
+    #[test]
+    fn negative_zero_thickness_is_rejected_before_classification() {
+        assert!(valid_paper_thickness(0.0));
+        assert!(valid_paper_thickness(0.1));
+        assert!(!valid_paper_thickness(-0.0));
+        assert!(!valid_paper_thickness(-0.1));
+        assert!(!valid_paper_thickness(f64::NAN));
+        assert!(!valid_paper_thickness(f64::INFINITY));
+    }
+
+    #[test]
+    fn only_coplanar_area_evidence_can_be_a_legacy_shared_flat_stack() {
+        assert!(legacy_pair_proves_shared_flat_stack(
+            IntersectionEvidenceV2::CoplanarAreaOverlap
+        ));
+        assert!(!legacy_pair_proves_shared_flat_stack(
+            IntersectionEvidenceV2::TransversalCrossing
+        ));
     }
 
     #[test]

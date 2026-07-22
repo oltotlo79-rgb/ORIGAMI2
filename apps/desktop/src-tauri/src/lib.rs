@@ -17342,6 +17342,29 @@ mod tests {
                 Some(restored_certificate),
                 "the fold-path certificate must bind the mountain/valley assignment"
             );
+            let mut geometry_tampered = restored.crease_pattern.clone();
+            geometry_tampered
+                .vertices
+                .last_mut()
+                .expect("restored generic tree vertex")
+                .position
+                .x += 1.0;
+            let geometry_topology =
+                EditorState::with_paper(geometry_tampered.clone(), restored.paper.clone())
+                    .topology_analysis_input(ns)
+                    .analyze();
+            assert_ne!(
+                certify_beginner_fold_path_v1(
+                    &plan,
+                    &restored.paper,
+                    &geometry_tampered,
+                    geometry_topology
+                        .simulation_snapshot()
+                        .expect("geometry-tampered tree topology"),
+                ),
+                Some(restored_certificate),
+                "the 3D fold-path certificate must bind the face geometry"
+            );
             assert!(
                 restored
                     .instruction_timeline

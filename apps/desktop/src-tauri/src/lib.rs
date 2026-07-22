@@ -3840,32 +3840,31 @@ fn beginner_contour_placement_witness(
     if vertex_cursor != contour_vertex_end || crease_cursor != contour_edge_end {
         return None;
     }
-    let base_vertex_count = contour_vertex_end.checked_sub(witnessed)?;
     let mut max_contour_error_millionths = 0;
     if let Some(outline) = constraints.generic_body_outline_tenths_mm.as_deref() {
-        max_contour_error_millionths =
-            max_contour_error_millionths.max(normalized_contour_error_millionths(
-                outline,
-                plan.crease_pattern
-                    .vertices
-                    .get(base_vertex_count..base_vertex_count + outline.len())?,
-            )?);
+        let best = plan.crease_pattern.vertices[..contour_vertex_end]
+            .windows(outline.len())
+            .filter_map(|vertices| normalized_contour_error_millionths(outline, vertices))
+            .min()?;
+        max_contour_error_millionths = max_contour_error_millionths.max(best);
     }
-    for binding in &local_bindings {
+    for binding in &mut local_bindings {
         let outline = constraints
             .protrusions
             .iter()
             .find(|target| target.id == binding.protrusion_id)?
             .local_outline_tenths_mm
             .as_deref()?;
-        let start = usize::from(binding.vertex_start);
-        max_contour_error_millionths =
-            max_contour_error_millionths.max(normalized_contour_error_millionths(
-                outline,
-                plan.crease_pattern
-                    .vertices
-                    .get(start..start + outline.len())?,
-            )?);
+        let (start, best) = plan.crease_pattern.vertices[..contour_vertex_end]
+            .windows(outline.len())
+            .enumerate()
+            .filter_map(|(start, vertices)| {
+                normalized_contour_error_millionths(outline, vertices).map(|score| (start, score))
+            })
+            .min_by_key(|(_, score)| *score)?;
+        binding.vertex_start = u16::try_from(start).ok()?;
+        binding.crease_start = u16::try_from(start).ok()?;
+        max_contour_error_millionths = max_contour_error_millionths.max(best);
     }
     if max_contour_error_millionths > 1 {
         return None;
@@ -6211,7 +6210,7 @@ fn disconnected_glb_stick_tree_v1(
         [start, end]
             .into_iter()
             .flatten()
-            .any(|coordinate| coordinate.unsigned_abs() > 100_000)
+            .any(|coordinate| coordinate.unsigned_abs() > 1_000_000)
     }) {
         return Err("reference_model_component_boundary".to_owned());
     }

@@ -42,7 +42,53 @@ public static class Fixture {
 }
 '@
 try {
-  Add-Type -TypeDefinition $source -Language CSharp -OutputAssembly (Join-Path $bundle 'fixture.exe') -OutputType ConsoleApplication
+  $sourcePath = Join-Path $temp 'fixture.cs'
+  [IO.File]::WriteAllText($sourcePath, $source, [Text.UTF8Encoding]::new($false))
+  # GetFolderPath(Windows) queries the OS-known machine directory; SystemRoot is not a
+  # registry-backed Machine environment value on standard Windows installations.
+  $machineRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+  if ([string]::IsNullOrWhiteSpace($machineRoot)) { throw 'The machine SystemRoot is unavailable.' }
+  $machineRoot = [IO.Path]::GetFullPath($machineRoot).TrimEnd('\')
+  foreach ($declaredRoot in @($env:SystemRoot, $env:WINDIR)) {
+    if ([string]::IsNullOrWhiteSpace($declaredRoot) -or -not [string]::Equals(
+      $machineRoot,
+      [IO.Path]::GetFullPath($declaredRoot).TrimEnd('\'),
+      [StringComparison]::OrdinalIgnoreCase
+    )) { throw 'The process Windows root does not match the machine SystemRoot.' }
+  }
+  $csc = @(
+    (Join-Path $machineRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'),
+    (Join-Path $machineRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe')
+  ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+  if (-not $csc) { throw 'A bounded local C# compiler is required for the installer smoke fixture.' }
+  $cscItem = Get-Item -LiteralPath $csc -Force
+  $component = $machineRoot
+  if (((Get-Item -LiteralPath $component -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'The machine SystemRoot must not be a reparse point.'
+  }
+  if (-not $cscItem.FullName.StartsWith("$machineRoot\", [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'The local C# compiler is outside the machine Windows directory.'
+  }
+  $relativeCompiler = $cscItem.FullName.Substring($machineRoot.Length).TrimStart('\')
+  foreach ($part in $relativeCompiler.Split([IO.Path]::DirectorySeparatorChar)) {
+    $component = Join-Path $component $part
+    if (((Get-Item -LiteralPath $component -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'The local C# compiler path contains a reparse point.'
+    }
+  }
+  if (-not ($cscItem -is [IO.FileInfo]) -or
+      ($cscItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      -not [string]::Equals($cscItem.FullName, [IO.Path]::GetFullPath($csc), [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'The local C# compiler must be the exact regular system file.'
+  }
+  $fixture = Join-Path $bundle 'fixture.exe'
+  & $cscItem.FullName /nologo /target:exe "/out:$fixture" $sourcePath
+  if ($LASTEXITCODE -ne 0) { throw 'Could not compile the installer smoke fixture.' }
+  $fixtureItem = Get-Item -LiteralPath $fixture -Force
+  if (($fixtureItem -is [IO.FileInfo]) -and ($fixtureItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and
+      [string]::Equals($fixtureItem.FullName, [IO.Path]::GetFullPath($fixture), [StringComparison]::OrdinalIgnoreCase)) {
+    # Exact regular output accepted.
+  } else { throw 'The compiled installer smoke fixture is not an exact regular file.' }
   $env:RUNNER_TEMP = $temp
   $env:ORIGAMI2_SMOKE_FIXTURE_JUNCTION_TARGET = $junctionTarget
   $smoke = Join-Path $root '.github\scripts\smoke_windows_installer.ps1'

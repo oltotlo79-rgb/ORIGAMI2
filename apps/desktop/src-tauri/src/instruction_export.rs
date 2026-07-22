@@ -965,14 +965,15 @@ pub(crate) mod tests {
     use sha2::{Digest, Sha256};
 
     use ori_instructions::{
-        BookFoldMotionRequestV1, FOLD_TECHNIQUE_FILE_SCHEMA_V1, FOLD_TECHNIQUE_FILE_VERSION_V1,
-        FoldTechniqueActionV1, FoldTechniqueCapabilityV1, FoldTechniqueExecutionSupportV1,
-        FoldTechniqueFileDocumentV1, FoldTechniqueFileV1, FoldTechniqueLocalizedTextV1,
-        FoldTechniqueMetadataV1, FoldTechniqueOperationV1, FoldTechniqueParameterBindingV1,
-        FoldTechniqueParameterDefinitionV1, FoldTechniqueParameterTypeV1, FoldTechniqueSinkKindV1,
-        FoldTechniqueSourceV1, FoldTechniqueTemplateV1,
-        FoldTechniqueUnsupportedPhysicalOperationV1, LayerSelectiveMotionRequestV1,
-        ReverseFoldKindV1, ReverseFoldMotionRequestV1, SinkFoldMotionRequestV1,
+        AccordionFoldMotionRequestV1, BookFoldMotionRequestV1, FOLD_TECHNIQUE_FILE_SCHEMA_V1,
+        FOLD_TECHNIQUE_FILE_VERSION_V1, FoldTechniqueActionV1, FoldTechniqueCapabilityV1,
+        FoldTechniqueExecutionSupportV1, FoldTechniqueFileDocumentV1, FoldTechniqueFileV1,
+        FoldTechniqueLocalizedTextV1, FoldTechniqueMetadataV1, FoldTechniqueOperationV1,
+        FoldTechniqueParameterBindingV1, FoldTechniqueParameterDefinitionV1,
+        FoldTechniqueParameterTypeV1, FoldTechniqueSinkKindV1, FoldTechniqueSourceV1,
+        FoldTechniqueTemplateV1, FoldTechniqueUnsupportedPhysicalOperationV1,
+        LayerSelectiveMotionRequestV1, ReverseFoldKindV1, ReverseFoldMotionRequestV1,
+        SinkFoldMotionRequestV1, compile_certified_accordion_fold_timeline_v1,
         compile_certified_book_fold_timeline_v1, compile_certified_layer_selective_timeline_v1,
         compile_certified_reverse_fold_timeline_v1, compile_certified_sink_fold_timeline_v1,
         instruction_pose_fingerprint_v1, validate_fold_technique_file_v1,
@@ -1249,6 +1250,76 @@ pub(crate) mod tests {
         }
     }
 
+    fn project_with_parallel_folds(count: usize) -> (ProjectState, Vec<EdgeId>) {
+        assert!((1..=3).contains(&count));
+        let mut project = super::super::initial_project_state();
+        let boundary = project.editor.paper().boundary_vertices.clone();
+        let boundary_edge = |start: VertexId, end: VertexId, project: &ProjectState| {
+            project
+                .editor
+                .pattern()
+                .edges
+                .iter()
+                .find(|edge| {
+                    (edge.start == start && edge.end == end)
+                        || (edge.start == end && edge.end == start)
+                })
+                .expect("boundary edge")
+                .id
+        };
+        let mut top_edge = boundary_edge(boundary[0], boundary[1], &project);
+        let mut bottom_edge = boundary_edge(boundary[2], boundary[3], &project);
+        let mut top_vertices = Vec::new();
+        let mut bottom_vertices = Vec::new();
+        for remaining in (1..=count).rev() {
+            let fraction = 1.0 / (remaining as f64 + 1.0);
+            for (edge, vertices) in [
+                (&mut top_edge, &mut top_vertices),
+                (&mut bottom_edge, &mut bottom_vertices),
+            ] {
+                let new_vertex = VertexId::new();
+                let new_edge = EdgeId::new();
+                let revision = project.editor.revision();
+                project
+                    .editor
+                    .execute(
+                        revision,
+                        Command::SplitBoundaryEdge {
+                            edge: *edge,
+                            new_vertex,
+                            new_edge,
+                            fraction,
+                        },
+                    )
+                    .expect("split boundary for parallel fold");
+                *edge = new_edge;
+                vertices.push(new_vertex);
+            }
+        }
+        let mut folds = Vec::new();
+        for (top, bottom) in top_vertices
+            .into_iter()
+            .zip(bottom_vertices.into_iter().rev())
+        {
+            let edge = EdgeId::new();
+            let revision = project.editor.revision();
+            project
+                .editor
+                .execute(
+                    revision,
+                    Command::AddEdge {
+                        id: edge,
+                        start: top,
+                        end: bottom,
+                        kind: EdgeKind::Mountain,
+                    },
+                )
+                .expect("add parallel fold");
+            folds.push(edge);
+        }
+        (project, folds)
+    }
+
     fn two_segment_file(
         title: &str,
         action: FoldTechniqueActionV1,
@@ -1266,6 +1337,21 @@ pub(crate) mod tests {
                 operation: unsupported,
             };
         validate_fold_technique_file_v1(document).expect("valid two-segment technique")
+    }
+
+    fn accordion_file() -> FoldTechniqueFileV1 {
+        let mut document = book_fold_file().document().clone();
+        let technique = &mut document.techniques[0];
+        technique.names = localized("蛇腹折り");
+        let physical = technique.operations[1].clone();
+        technique.operations = (1..=3)
+            .map(|index| {
+                let mut operation = physical.clone();
+                operation.id = format!("pleat-{index}");
+                operation
+            })
+            .collect();
+        validate_fold_technique_file_v1(document).expect("valid accordion fixture")
     }
 
     fn source_for(
@@ -1587,40 +1673,99 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn compiled_two_segment_techniques_reopen_into_native_exports_with_exact_chaining() {
-        let mut project = super::super::initial_project_state();
-        let fold_edge = EdgeId::new();
-        let second_edge = EdgeId::new();
-        let center = VertexId::new();
-        project
+    fn compiled_accordion_reopens_into_native_exports_with_all_ordered_segments() {
+        let (project, fold_edges) = project_with_parallel_folds(3);
+        let edges: [EdgeId; 3] = fold_edges.try_into().expect("three accordion folds");
+        let model = project.editor.fold_model_fingerprint_v1();
+        let topology = project
             .editor
-            .execute(
-                0,
-                Command::AddVertex {
-                    id: center,
-                    position: Point2::new(200.0, 200.0),
-                },
-            )
-            .expect("add shared fold endpoint");
-        let boundary = &project.editor.paper().boundary_vertices;
-        for (id, start, end) in [
-            (fold_edge, boundary[0], center),
-            (second_edge, center, boundary[2]),
-        ] {
-            let revision = project.editor.revision();
-            project
-                .editor
-                .execute(
-                    revision,
-                    Command::AddEdge {
-                        id,
-                        start,
-                        end,
-                        kind: EdgeKind::Mountain,
-                    },
-                )
-                .expect("add two-segment edge");
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let fixed_face = topology
+            .simulation_snapshot()
+            .expect("accordion topology")
+            .faces[0]
+            .id;
+        let targets = [45_000_000, 90_000_000, 135_000_000];
+        let mut pose = edges
+            .iter()
+            .copied()
+            .map(|edge| InstructionHingeAngle {
+                edge,
+                angle_degrees: 5.0,
+            })
+            .collect::<Vec<_>>();
+        let source = pose.clone();
+        let certificates = edges
+            .iter()
+            .copied()
+            .zip(targets)
+            .map(|(edge, target)| {
+                let source_hash = instruction_pose_fingerprint_v1(&model, fixed_face, &pose);
+                pose.iter_mut()
+                    .find(|hinge| hinge.edge == edge)
+                    .expect("accordion hinge")
+                    .angle_degrees = target as f64 / 1_000_000.0;
+                let target_hash = instruction_pose_fingerprint_v1(&model, fixed_face, &pose);
+                native_certificate(source_hash, target_hash)
+            })
+            .collect::<Vec<_>>();
+        let timeline = compile_certified_accordion_fold_timeline_v1(AccordionFoldMotionRequestV1 {
+            technique_file: &accordion_file(),
+            technique_id: "book-fold",
+            source_model_fingerprint: &model,
+            fixed_face,
+            source_hinge_angles: &source,
+            ordered_edges: &edges,
+            ordered_target_angles_microdegrees: &targets,
+            ordered_path_certificates: &certificates,
+        })
+        .expect("compile real accordion");
+        assert_eq!(timeline.steps.len(), 4);
+        assert!(timeline.steps[3].title.contains("蛇腹折り"));
+        for (index, certificate) in certificates.iter().enumerate() {
+            let reference = timeline.steps[index + 1]
+                .visual
+                .path_certificate_reference_v1
+                .as_ref()
+                .expect("accordion compiler proof");
+            assert_eq!(reference.source_pose_sha256, certificate.source());
+            assert_eq!(reference.target_pose_sha256, certificate.target());
+            if index > 0 {
+                let previous = timeline.steps[index]
+                    .visual
+                    .path_certificate_reference_v1
+                    .as_ref()
+                    .expect("previous accordion proof");
+                assert_eq!(previous.target_pose_sha256, reference.source_pose_sha256);
+            }
+            let proof_hex = reference
+                .binding_sha256
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert!(timeline.steps[index + 1].description.contains(&proof_hex));
         }
+        let archived = serde_json::to_vec(&timeline).expect("archive compiled accordion");
+        let reopened: ori_domain::InstructionTimeline =
+            serde_json::from_slice(&archived).expect("reopen compiled accordion");
+        for (format, magic) in [
+            (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+            (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = reopened.clone();
+            let artifact = build_pending_export(source).expect("export real accordion compiler");
+            assert_eq!(artifact.step_count, 4);
+            assert!(artifact.bytes.starts_with(magic));
+        }
+    }
+
+    #[test]
+    fn compiled_two_segment_techniques_reopen_into_native_exports_with_exact_chaining() {
+        let (project, fold_edges) = project_with_parallel_folds(2);
+        let [fold_edge, second_edge]: [EdgeId; 2] =
+            fold_edges.try_into().expect("two technique folds");
         let model = project.editor.fold_model_fingerprint_v1();
         let topology = project
             .editor
@@ -1628,16 +1773,34 @@ pub(crate) mod tests {
             .analyze();
         let fixed_face = topology.simulation_snapshot().expect("fold topology").faces[0].id;
         let source = vec![
-            InstructionHingeAngle { edge: fold_edge, angle_degrees: 5.0 },
-            InstructionHingeAngle { edge: second_edge, angle_degrees: 5.0 },
+            InstructionHingeAngle {
+                edge: fold_edge,
+                angle_degrees: 5.0,
+            },
+            InstructionHingeAngle {
+                edge: second_edge,
+                angle_degrees: 5.0,
+            },
         ];
         let middle = vec![
-            InstructionHingeAngle { edge: fold_edge, angle_degrees: 45.0 },
-            InstructionHingeAngle { edge: second_edge, angle_degrees: 5.0 },
+            InstructionHingeAngle {
+                edge: fold_edge,
+                angle_degrees: 45.0,
+            },
+            InstructionHingeAngle {
+                edge: second_edge,
+                angle_degrees: 5.0,
+            },
         ];
         let target = vec![
-            InstructionHingeAngle { edge: fold_edge, angle_degrees: 45.0 },
-            InstructionHingeAngle { edge: second_edge, angle_degrees: 90.0 },
+            InstructionHingeAngle {
+                edge: fold_edge,
+                angle_degrees: 45.0,
+            },
+            InstructionHingeAngle {
+                edge: second_edge,
+                angle_degrees: 90.0,
+            },
         ];
         let first = native_certificate(
             instruction_pose_fingerprint_v1(&model, fixed_face, &source),

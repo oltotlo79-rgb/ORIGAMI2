@@ -17198,6 +17198,114 @@ mod tests {
                 (assessment.proof_scope, assessment.reason),
                 ("sufficient", "native_fold_path_certified")
             );
+            let mut candidate = current.clone();
+            candidate
+                .edges
+                .extend(plan.crease_pattern.edges.iter().cloned());
+            let topology = EditorState::with_paper(candidate.clone(), paper.clone())
+                .topology_analysis_input(ns)
+                .analyze();
+            let certificate = certify_beginner_fold_path_v1(
+                &plan,
+                &paper,
+                &candidate,
+                topology
+                    .simulation_snapshot()
+                    .expect("positive tree topology"),
+            )
+            .expect("positive tree certificate");
+            let authority: [u8; 32] =
+                sha2::Sha256::digest(serde_json::to_vec(&candidate).unwrap()).into();
+            let certificate_hex = certificate
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let mut project = ProjectState::new_with_paper(current, paper.clone());
+            let mut profile = project.editor.beginner_design_profile().clone();
+            profile.generation_provenance = Some(ori_domain::BeginnerGenerationProvenanceV1 {
+                schema_version: 1,
+                topology_authority_sha256: authority,
+                fold_path_certificate_sha256: Some(certificate),
+                confidence_score: 100,
+                confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
+                explicit_override: false,
+                source_asset_fingerprint: format!("native-positive-tree-{hinges}"),
+                semantic_landmark_provenance: None,
+                generic_tree: Some(ori_domain::BeginnerGenericTreeProvenanceV1 {
+                    schema_version: 1,
+                    target_category: None,
+                    source: ori_domain::BeginnerGenericTreeSourceV1::ManualSkeleton,
+                    asset_content_sha256: None,
+                    tree_topology_sha256: authority,
+                    normalized_length_ratios: vec![1_000_000; hinges],
+                    orientation: ori_domain::BeginnerGenericTreeOrientationV1::Horizontal,
+                    generator_version: 1,
+                    authorizes_apply: false,
+                    instruction_proposal: None,
+                }),
+                reference_consensus_summary: None,
+                reference_consensus: None,
+            });
+            let mut timeline = project.editor.instruction_timeline().clone();
+            timeline.steps.push(InstructionStep {
+                id: InstructionStepId::new(),
+                title: format!("{hinges}-hinge generic tree"),
+                description: "Apply the native-proven generic tree candidate.".to_owned(),
+                caution: format!("Native fold-path certificate SHA-256: {certificate_hex}."),
+                duration_ms: 2_000,
+                visual: InstructionVisual::default(),
+                pose: InstructionPose {
+                    model: InstructionPoseModel::DeclarativeOnlyV1,
+                    source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
+                    fixed_face: None,
+                    hinge_angles: Vec::new(),
+                },
+            });
+            let project_id = project.project_id;
+            let revision = project.editor.revision();
+            let layers = project.editor.project_layers().clone();
+            let applied = execute_command(
+                &mut project,
+                project_id,
+                revision,
+                Command::ApplyStackedFoldDocument {
+                    pattern: candidate,
+                    paper,
+                    instruction_timeline: timeline,
+                    project_layers: layers,
+                    beginner_design_profile: Box::new(profile),
+                },
+            )
+            .expect("apply native-positive generic tree");
+            let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
+            assert!(
+                project
+                    .editor
+                    .beginner_design_profile()
+                    .generation_provenance
+                    .is_none()
+            );
+            execute_redo(&mut project, project_id, undone.revision).unwrap();
+            let document = project.document();
+            let bytes = write_project_ori2(&document).unwrap();
+            let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default()).unwrap();
+            assert_eq!(restored, document);
+            let restored_certificate = restored
+                .beginner_design_profile
+                .generation_provenance
+                .as_ref()
+                .and_then(|value| value.fold_path_certificate_sha256)
+                .unwrap();
+            assert_eq!(restored_certificate, certificate);
+            assert!(
+                restored
+                    .instruction_timeline
+                    .steps
+                    .last()
+                    .unwrap()
+                    .caution
+                    .contains(&certificate_hex)
+            );
         }
     }
 

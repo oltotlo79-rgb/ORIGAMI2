@@ -1510,6 +1510,45 @@ mod tests {
         write_project_archive_ori2(&archive).expect("write layer-evidence fixture")
     }
 
+    fn version_matrix_archive_fixture() -> Ori2ProjectArchive {
+        let mut document = sample_document();
+        document.texture_assets.push(crate::ProjectTextureAssetV1 {
+            id: AssetId::new(),
+            media_type: crate::ProjectTextureMediaTypeV1::Png,
+            bytes: b"\x89PNG\r\n\x1a\nversion-matrix".to_vec(),
+        });
+        document
+            .reference_model_assets
+            .push(crate::ProjectReferenceModelAssetV1 {
+                id: AssetId::new(),
+                bytes: minimal_reference_glb(),
+            });
+        let mut editor = EditorState::with_document_parts_and_constraints(
+            document.crease_pattern.clone(),
+            document.paper.clone(),
+            document.instruction_timeline.clone(),
+            document.geometric_constraints.clone(),
+        );
+        editor.set_history_entry_limit(17).unwrap();
+        let vertex = editor.pattern().vertices[0].id;
+        editor
+            .execute(
+                editor.revision(),
+                Command::MoveVertex {
+                    id: vertex,
+                    position: Point2::new(2.0, 3.0),
+                },
+            )
+            .unwrap();
+        document.crease_pattern = editor.pattern().clone();
+        let history = editor.export_history_v1(document.project_id).unwrap();
+        Ori2ProjectArchive {
+            document,
+            editor_history: Some(history),
+            layer_evidence: Some(layer_evidence_fixture()),
+        }
+    }
+
     fn manifest_for(project_bytes: &[u8]) -> Vec<u8> {
         manifest_for_features(project_bytes, Vec::new())
     }
@@ -2262,9 +2301,10 @@ mod tests {
 
     #[test]
     fn migrates_two_legacy_history_generations_and_resaves_canonically() {
-        let (document, bytes) = history_archive_fixture();
+        let original = version_matrix_archive_fixture();
+        let bytes = write_project_archive_ori2(&original).expect("write version matrix fixture");
 
-        for generation in 1..=2 {
+        for generation in 0..=2 {
             let mut entries = archive_entries(&bytes);
             let (_, history_bytes) = entries
                 .iter()
@@ -2273,8 +2313,10 @@ mod tests {
             let mut envelope: serde_json::Value =
                 serde_json::from_slice(history_bytes).expect("parse history envelope");
             let history = envelope["history"].as_object_mut().expect("history object");
-            history.remove("redo_stack");
-            if generation == 2 {
+            if generation >= 1 {
+                history.remove("redo_stack");
+            }
+            if generation >= 2 {
                 history.remove("history_entry_limit");
             }
             reseal_history_entry(
@@ -2285,11 +2327,21 @@ mod tests {
             let migrated = read_project_archive_ori2(&raw_zip_owned(&entries))
                 .expect("read legacy history generation");
             let migrated_history = migrated.editor_history.as_ref().expect("migrated history");
-            assert_eq!(migrated.document, document);
+            assert_eq!(migrated.document, original.document);
+            assert_eq!(
+                migrated.document.texture_assets,
+                original.document.texture_assets
+            );
+            assert_eq!(
+                migrated.document.reference_model_assets,
+                original.document.reference_model_assets
+            );
+            assert_eq!(migrated.layer_evidence, original.layer_evidence);
+            assert_eq!(migrated_history.undo_len(), 1);
             assert_eq!(migrated_history.redo_len(), 0);
             assert_eq!(
                 migrated_history.history_entry_limit(),
-                if generation == 1 {
+                if generation <= 1 {
                     17
                 } else {
                     MAX_EDITOR_HISTORY_ENTRIES as u32
@@ -2299,12 +2351,25 @@ mod tests {
             let canonical = write_project_archive_ori2(&migrated).expect("canonical resave");
             let reread = read_project_archive_ori2(&canonical).expect("read canonical resave");
             assert_eq!(reread.document, migrated.document);
-            if generation == 1 {
-                assert_eq!(reread.editor_history, migrated.editor_history);
-            } else {
-                assert!(reread.editor_history.is_none());
-                assert!(migrated_history.is_default_empty());
-            }
+            assert_eq!(reread, migrated);
+            assert_eq!(
+                write_project_archive_ori2(&reread).expect("second canonical resave"),
+                canonical,
+                "generation {generation} resave must be byte-idempotent"
+            );
+        }
+    }
+
+    #[test]
+    fn ori2_version_policy_rejects_future_and_downgrade_writes() {
+        for unsupported in [0, crate::CURRENT_FORMAT_VERSION + 1] {
+            let mut archive = version_matrix_archive_fixture();
+            archive.document.format_version = unsupported;
+            assert!(matches!(
+                write_project_archive_ori2(&archive),
+                Err(FormatError::UnsupportedVersion { found, latest })
+                    if found == unsupported && latest == crate::CURRENT_FORMAT_VERSION
+            ));
         }
     }
 

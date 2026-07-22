@@ -6419,8 +6419,8 @@ mod tests {
             .iter()
             .copied()
             .enumerate()
-            .map(|(_index, edge)| {
-                let numerator = 1;
+            .map(|(index, edge)| {
+                let numerator = if index == 3 { -1 } else { 1 };
                 let denominator = 1;
                 CycleScheduleEntryRequestV1 {
                     edge,

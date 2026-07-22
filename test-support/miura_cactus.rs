@@ -8,6 +8,7 @@ pub type MiuraPatternFixture = (CreasePattern, Paper, Vec<EdgeId>);
 pub type IndependentMiuraBlocksWithDocument = ([MiuraPatternFixture; 2], MiuraPatternFixture);
 pub type ThreeMiuraBlocksWithDocument = ([MiuraPatternFixture; 3], MiuraPatternFixture);
 
+#[allow(dead_code)]
 pub fn two_patch_miura_cactus_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
     let cells = [
         (0_i8, 0_i8),
@@ -21,6 +22,7 @@ pub fn two_patch_miura_cactus_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
     pattern_for_cells(&cells, ProjectId::new())
 }
 
+#[allow(dead_code)]
 pub fn independent_three_by_three_miura_blocks() -> [(CreasePattern, Paper, Vec<EdgeId>); 2] {
     independent_three_by_three_miura_blocks_with_document().0
 }
@@ -50,6 +52,7 @@ pub fn independent_three_by_three_miura_blocks_with_document() -> IndependentMiu
     )
 }
 
+#[allow(dead_code)]
 pub fn three_three_by_three_miura_blocks_with_document() -> ThreeMiuraBlocksWithDocument {
     let namespace = ProjectId::new();
     let first = (-4..=-2)

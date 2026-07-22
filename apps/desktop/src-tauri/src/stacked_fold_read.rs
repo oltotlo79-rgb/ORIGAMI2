@@ -357,168 +357,6 @@ struct BlockwisePositiveLayerPrivatePreviewStateV1(
     Mutex<Option<BlockwisePositiveLayerPreviewRecordV1>>,
 );
 
-/// Native-only hand-off for a bounded 2..=8 block proof. The proof-bearing
-/// authority never crosses the command DTO boundary.
-#[allow(dead_code)]
-struct MultiBlockPositiveLayerPreviewRecordV1 {
-    token: ProjectId,
-    project_instance_id: ProjectId,
-    project_id: ProjectId,
-    revision: u64,
-    issuer_context: [u8; 32],
-    thickness: f64,
-    articulation_layer_fingerprint: [u8; 32],
-    sources: Vec<Box<ori_foldability::LayerOrderSnapshot>>,
-    authority: ori_collision::MultiBlockPositiveLayerAuthorityV1,
-    pattern: ori_domain::CreasePattern,
-    paper: ori_domain::Paper,
-    timeline: ori_domain::InstructionTimeline,
-    layers: ori_domain::ProjectLayerDocumentV1,
-    applied_pose: ori_core::AppliedPoseV1,
-}
-
-#[derive(Default)]
-#[allow(dead_code)]
-struct MultiBlockPositiveLayerPrivatePreviewStateV1(
-    Mutex<Option<MultiBlockPositiveLayerPreviewRecordV1>>,
-);
-
-#[allow(dead_code)]
-impl MultiBlockPositiveLayerPreviewRecordV1 {
-    fn revalidates_for_apply_v1(
-        &self,
-        token: ProjectId,
-        project_instance_id: ProjectId,
-        project_id: ProjectId,
-        revision: u64,
-        issuer_context: [u8; 32],
-        thickness: f64,
-        articulation_layer_fingerprint: [u8; 32],
-    ) -> bool {
-        let sources = self.sources.iter().map(Box::as_ref).collect::<Vec<_>>();
-        self.token == token
-            && self.project_instance_id == project_instance_id
-            && self.project_id == project_id
-            && self.revision == revision
-            && self.issuer_context == issuer_context
-            && self.thickness.to_bits() == thickness.to_bits()
-            && self.articulation_layer_fingerprint == articulation_layer_fingerprint
-            && self.issuer_context
-                == blockwise_document_context_v1(
-                    &self.pattern,
-                    &self.paper,
-                    &self.timeline,
-                    &self.layers,
-                    &self.applied_pose,
-                )
-            && self.authority.revalidates_v1(
-                &sources,
-                thickness,
-                issuer_context,
-                articulation_layer_fingerprint,
-            )
-    }
-}
-
-#[allow(dead_code)]
-impl MultiBlockPositiveLayerPrivatePreviewStateV1 {
-    fn mint_once_v1(&self, record: MultiBlockPositiveLayerPreviewRecordV1) -> Result<(), String> {
-        let sources = record.sources.iter().map(Box::as_ref).collect::<Vec<_>>();
-        if record.sources.len() < ori_collision::MULTI_BLOCK_MIN_BLOCKS_V1
-            || record.sources.len() > ori_collision::MULTI_BLOCK_MAX_BLOCKS_V1
-            || record.issuer_context
-                != blockwise_document_context_v1(
-                    &record.pattern,
-                    &record.paper,
-                    &record.timeline,
-                    &record.layers,
-                    &record.applied_pose,
-                )
-            || !record.authority.revalidates_v1(
-                &sources,
-                record.thickness,
-                record.issuer_context,
-                record.articulation_layer_fingerprint,
-            )
-        {
-            return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
-        }
-        let mut slot = self.0.lock().map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
-        if slot.is_some() {
-            return Err("a multi-block positive-layer preview is already active".to_owned());
-        }
-        *slot = Some(record);
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn apply_v1(
-        &self,
-        project: &mut super::ProjectState,
-        token: ProjectId,
-        expected_revision: u64,
-        issuer_context: [u8; 32],
-        thickness: f64,
-        articulation_layer_fingerprint: [u8; 32],
-    ) -> Result<u64, String> {
-        let mut slot = self.0.lock().map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
-        let record = slot
-            .as_ref()
-            .filter(|record| {
-                record.revalidates_for_apply_v1(
-                    token,
-                    project.instance_id,
-                    project.project_id,
-                    expected_revision,
-                    issuer_context,
-                    thickness,
-                    articulation_layer_fingerprint,
-                )
-            })
-            .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-        let persisted_pairs = certified_blockwise_layer_pairs_v1(
-            &record.sources,
-            record.authority.pair_order_count_v1(),
-        )?;
-        let mut timeline = record.timeline.clone();
-        let target_step = timeline
-            .steps
-            .last_mut()
-            .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-        target_step.visual.cycle_layer_order_proof_v1 = Some(ori_domain::CycleLayerOrderProofV1 {
-            version: 1,
-            model_id: ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1.to_owned(),
-            target_order_sha256: record.authority.target_order_hash_v1(),
-            transition_count: record.authority.transition_count_v1(),
-            pairs: persisted_pairs
-                .into_iter()
-                .map(
-                    |(lower_face, upper_face)| ori_domain::CycleLayerOrderPairV1 {
-                        lower_face,
-                        upper_face,
-                    },
-                )
-                .collect(),
-        });
-        let result = project
-            .editor
-            .execute_stacked_fold_document(
-                expected_revision,
-                record.pattern.clone(),
-                record.paper.clone(),
-                timeline,
-                record.layers.clone(),
-                record
-                    .applied_pose
-                    .try_clone()
-                    .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?,
-            )
-            .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
-        slot.take();
-        Ok(result.revision)
-    }
-}
-
 #[allow(dead_code)]
 impl BlockwisePositiveLayerPreviewRecordV1 {
     #[allow(clippy::too_many_arguments)]
@@ -3407,7 +3245,7 @@ fn prepare_blockwise_current_cycle_fallback_v1(
     let transition_count = authority.transition_count_v1();
     let pair_count = authority.pair_order_count_v1();
     let target_hash = authority
-        .binding_fingerprint_v1()
+        .target_order_hash_v1()
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
@@ -6515,7 +6353,8 @@ mod tests {
     fn three_block_miura_chain_stops_at_the_two_block_positive_layer_authority_boundary() {
         use std::collections::HashSet;
 
-        let (blocks, (pattern, paper, _)) =
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (blocks, (pattern, paper, moving)) =
             super::miura_cactus_test_support::three_three_by_three_miura_blocks_with_document();
         let namespace = ProjectId::new();
         let block_faces = blocks.each_ref().map(|(pattern, paper, _)| {
@@ -6549,6 +6388,77 @@ mod tests {
         assert!(
             block_faces.len() > ori_collision::BLOCKWISE_POSITIVE_LAYER_ARITY_V1,
             "three per-block positive/layer proofs cannot yet be composed into one authority"
+        );
+        let articulation = *block_faces[0]
+            .intersection(&block_faces[1])
+            .next()
+            .expect("first articulation");
+        let hinges = document
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        let mut project =
+            super::super::ProjectState::new_with_paper(pattern.clone(), paper.clone());
+        project.project_id = namespace;
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            articulation,
+        );
+        let layer_state = GlobalFlatFoldabilityState::default();
+        super::super::global_flat_foldability::tests::install_possible_layer_order(
+            &layer_state,
+            &project,
+        );
+        let active = moving
+            .iter()
+            .copied()
+            .filter(|edge_id| {
+                let edge = pattern
+                    .edges
+                    .iter()
+                    .find(|edge| edge.id == *edge_id)
+                    .expect("moving edge");
+                let y = pattern
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == edge.start)
+                    .expect("moving edge start")
+                    .position
+                    .y;
+                y.to_bits() == (-20.0_f64).to_bits() || y.to_bits() == 20.0_f64.to_bits()
+            })
+            .collect::<Vec<_>>();
+        let revision = project.editor.revision();
+        let request = CurrentCyclePosePreviewRequestV1 {
+            progress_request_id: None,
+            expected_project_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: revision,
+            cycle_schedule_v1: dense_grid_schedule(&hinges, &active, 64),
+        };
+        let app_state = AppState::new(project);
+        let transactions =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        assert_eq!(
+            propose_current_cycle_pose_inner_with_layers(
+                None,
+                &app_state,
+                Some(&layer_state),
+                &transactions,
+                request,
+            )
+            .unwrap_err(),
+            CYCLE_NONCLOSING_MESSAGE
+        );
+        assert_eq!(transactions.pending_token_for_test_v1(), None);
+        assert_eq!(
+            super::super::lock_project(&app_state)
+                .expect("project after rejected preview")
+                .editor
+                .revision(),
+            revision
         );
     }
 

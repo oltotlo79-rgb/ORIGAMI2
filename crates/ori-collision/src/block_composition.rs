@@ -25,6 +25,11 @@ pub const fn multi_block_count_supported_v1(count: usize) -> bool {
     count >= MULTI_BLOCK_MIN_BLOCKS_V1 && count <= MULTI_BLOCK_MAX_BLOCKS_V1
 }
 
+/// One member of a caller-supplied bounded block set.
+///
+/// This input does not identify a containing project graph. Consequently the
+/// issuer can prove only the submitted blocks' tree composition; it cannot
+/// prove that their hinge union is a complete partition of a larger graph.
 pub struct MultiBlockClosureInputV1<'a> {
     pub geometry: &'a MaterialHingeGraphGeometry,
     pub audit: &'a MaterialHingeGraphAudit,
@@ -40,6 +45,11 @@ struct OwnedMultiBlockV1 {
     faces: Vec<FaceId>,
 }
 
+/// Sealed authority for one submitted 2..=8 block tree.
+///
+/// This is deliberately not whole-graph or project-mutation authority. A
+/// future production adapter must separately bind the canonical union of all
+/// submitted hinges to the complete live graph before relying on it.
 pub struct MultiBlockClosureAuthorityV1 {
     binding: [u8; 32],
     blocks: Vec<OwnedMultiBlockV1>,
@@ -66,6 +76,11 @@ pub struct MultiBlockPositiveLayerInputV1<'a> {
     pub layer: GeneralMultiFaceCellTransportProofV1,
 }
 
+/// Positive-thickness and layer authority for the same bounded submitted set.
+///
+/// Revalidation binds every owned per-block proof and source snapshot, but it
+/// does not add the missing whole-graph completeness premise described by
+/// [`MultiBlockClosureAuthorityV1`].
 pub struct MultiBlockPositiveLayerAuthorityV1 {
     binding: [u8; 32],
     parent: MultiBlockClosureAuthorityV1,
@@ -570,6 +585,11 @@ fn block_intersection_is_tree_v1(blocks: &[CanonicalBlockBindingV1]) -> bool {
     visited.into_iter().all(|seen| seen)
 }
 
+/// Issues bounded tree-composition authority for exactly the supplied blocks.
+///
+/// No inference is made that the supplied hinge union exhausts any external
+/// material graph. Callers must not use this result as project mutation
+/// authority without an independent complete-live-graph union binding.
 pub fn issue_multi_block_closure_authority_v1(
     inputs: Vec<MultiBlockClosureInputV1<'_>>,
     thickness: f64,
@@ -924,12 +944,35 @@ pub fn issue_block_composed_path_authority_v1(
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
+#[allow(clippy::duplicate_mod)]
+#[path = "../../../test-support/miura_cactus.rs"]
+mod miura_cactus_test_support;
+
+#[cfg(test)]
 mod tests {
     use super::{
         CanonicalBlockBindingV1, MULTI_BLOCK_MAX_BLOCKS_V1, MULTI_BLOCK_MIN_BLOCKS_V1,
-        block_intersection_is_tree_v1, multi_block_count_supported_v1,
+        MultiBlockClosureInputV1, MultiBlockPositiveLayerInputV1, block_intersection_is_tree_v1,
+        issue_multi_block_closure_authority_v1, issue_multi_block_positive_layer_authority_v1,
+        multi_block_count_supported_v1,
     };
-    use ori_domain::FaceId;
+    use crate::{
+        GeneralCellTransportInputV1, GeneralCellTransportLimitsV1,
+        certify_canonical_positive_thickness_cycle_schedule_path_v1,
+        certify_general_multi_face_cell_transport_v1,
+    };
+    use ori_core::{analyze_global_flat_foldability, analyze_local_flat_foldability};
+    use ori_domain::{EdgeId, FaceId, ProjectId};
+    use ori_foldability::{
+        GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, LayerOrderSnapshot,
+    };
+    use ori_kinematics::{
+        CanonicalCycleScheduleV1, CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1,
+        HalfAngleRationalEntryInputV1, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
+        RationalCoefficientV1, TreeKinematicsLimits,
+    };
+    use ori_topology::{FaceExtractionInput, analyze_faces};
 
     fn block(faces: &[FaceId]) -> CanonicalBlockBindingV1 {
         let mut faces = faces.to_vec();
@@ -980,5 +1023,339 @@ mod tests {
         assert!(!multi_block_count_supported_v1(
             MULTI_BLOCK_MAX_BLOCKS_V1 + 1
         ));
+    }
+
+    #[test]
+    fn submitted_three_block_tree_authority_revalidates_and_rejects_bound_tampering() {
+        let (fixtures, _) =
+            super::miura_cactus_test_support::three_three_by_three_miura_blocks_with_document();
+        let namespace = ProjectId::new();
+        let mut prepared = fixtures
+            .map(|(pattern, paper, moving)| {
+                let topology = analyze_faces(FaceExtractionInput {
+                    identity_namespace: namespace,
+                    source_revision: 1,
+                    paper: &paper,
+                    pattern: &pattern,
+                })
+                .snapshot
+                .expect("three-block topology");
+                let geometry = MaterialHingeGraphGeometry::prepare(
+                    &pattern,
+                    &paper,
+                    &topology,
+                    TreeKinematicsLimits::default(),
+                )
+                .expect("three-block geometry");
+                let audit =
+                    MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default())
+                        .expect("three-block audit");
+                let local = analyze_local_flat_foldability(&paper, &pattern);
+                let source = analyze_global_flat_foldability(
+                    GlobalFlatFoldabilityInput::current_with_geometry(
+                        namespace, &paper, &pattern, &topology, &local,
+                    ),
+                    GlobalFlatFoldabilityLimits::default(),
+                )
+                .expect("three-block flat foldability")
+                .layer_order()
+                .expect("three-block layer order")
+                .clone();
+                (pattern, geometry, audit, moving, source)
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        prepared.sort_unstable_by_key(|(_, geometry, _, _, _)| {
+            geometry
+                .hinges()
+                .iter()
+                .map(|hinge| hinge.edge().canonical_bytes())
+                .min()
+                .expect("non-empty block")
+        });
+        let block_faces = prepared
+            .iter()
+            .map(|(_, geometry, _, _, _)| geometry.face_ids().to_vec());
+        let block_faces = block_faces.collect::<Vec<_>>();
+        let fixed_faces = block_faces
+            .iter()
+            .enumerate()
+            .map(|(index, faces)| {
+                faces
+                    .iter()
+                    .copied()
+                    .find(|face| {
+                        block_faces
+                            .iter()
+                            .enumerate()
+                            .any(|(other, candidate)| other != index && candidate.contains(face))
+                    })
+                    .expect("shared articulation")
+            })
+            .collect::<Vec<_>>();
+        let scheduled = prepared
+            .iter()
+            .enumerate()
+            .map(|(index, (pattern, geometry, audit, moving, _))| {
+                let fixed = fixed_faces[index];
+                let row = moving
+                    .iter()
+                    .map(|edge| {
+                        let edge = pattern.edges.iter().find(|item| item.id == *edge).unwrap();
+                        pattern
+                            .vertices
+                            .iter()
+                            .find(|vertex| vertex.id == edge.start)
+                            .unwrap()
+                            .position
+                            .y
+                            .to_bits()
+                    })
+                    .min()
+                    .expect("moving row");
+                let active = moving
+                    .iter()
+                    .filter(|edge| {
+                        let edge = pattern.edges.iter().find(|item| item.id == **edge).unwrap();
+                        pattern
+                            .vertices
+                            .iter()
+                            .find(|vertex| vertex.id == edge.start)
+                            .unwrap()
+                            .position
+                            .y
+                            .to_bits()
+                            == row
+                    })
+                    .copied()
+                    .collect::<std::collections::HashSet<EdgeId>>();
+                let entries = geometry
+                    .hinges()
+                    .iter()
+                    .map(|hinge| {
+                        let moves = active.contains(&hinge.edge());
+                        HalfAngleRationalEntryInputV1 {
+                            edge: hinge.edge(),
+                            u_domain: [
+                                RationalCoefficientV1 {
+                                    numerator: 0,
+                                    denominator: 1,
+                                },
+                                RationalCoefficientV1 {
+                                    numerator: 1,
+                                    denominator: 1,
+                                },
+                            ],
+                            numerator_power_coefficients: vec![
+                                RationalCoefficientV1 {
+                                    numerator: 0,
+                                    denominator: 1,
+                                },
+                                RationalCoefficientV1 {
+                                    numerator: i64::from(moves),
+                                    denominator: 1,
+                                },
+                            ],
+                            denominator_power_coefficients: vec![RationalCoefficientV1 {
+                                numerator: if moves { 64 } else { 1 },
+                                denominator: 1,
+                            }],
+                        }
+                    })
+                    .collect();
+                let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+                    geometry,
+                    audit,
+                    fixed,
+                    entries,
+                    CycleScheduleLimitsV1::default(),
+                )
+                .expect("three-block schedule");
+                let closure = geometry
+                    .prove_dyadic_schedule_closure_v1(
+                        audit,
+                        fixed,
+                        &schedule,
+                        1.0e-8,
+                        DyadicIntervalClosureLimitsV1 {
+                            max_depth: 8,
+                            max_leaves: 256,
+                            max_work: 1_000_000,
+                            schedule_limits: CycleScheduleLimitsV1::default(),
+                        },
+                    )
+                    .expect("three-block closure");
+                (schedule, closure)
+            })
+            .collect::<Vec<_>>();
+        let thickness = 0.1;
+        let issuer_context = [0x41; 32];
+        let layer_fingerprint = [0x42; 32];
+        let closure_input = |index: usize| {
+            let (_, geometry, audit, _, _) = &prepared[index];
+            let (schedule, closure) = &scheduled[index];
+            MultiBlockClosureInputV1 {
+                geometry,
+                audit,
+                schedule,
+                closure,
+            }
+        };
+        assert!(
+            issue_multi_block_closure_authority_v1(
+                vec![closure_input(0), closure_input(0), closure_input(2)],
+                thickness,
+                issuer_context,
+            )
+            .is_none()
+        );
+        assert!(
+            issue_multi_block_closure_authority_v1(
+                vec![closure_input(0), closure_input(1), closure_input(2)],
+                0.0,
+                issuer_context,
+            )
+            .is_none()
+        );
+        assert!(
+            issue_multi_block_closure_authority_v1(
+                vec![closure_input(0), closure_input(1), closure_input(2)],
+                thickness,
+                [0; 32],
+            )
+            .is_none()
+        );
+        let parent = issue_multi_block_closure_authority_v1(
+            prepared
+                .iter()
+                .zip(&scheduled)
+                .map(
+                    |((_, geometry, audit, _, _), (schedule, closure))| MultiBlockClosureInputV1 {
+                        geometry,
+                        audit,
+                        schedule,
+                        closure,
+                    },
+                )
+                .collect(),
+            thickness,
+            issuer_context,
+        )
+        .expect("three-block closure authority");
+        let proofs = prepared
+            .iter()
+            .zip(&scheduled)
+            .map(|((_, geometry, audit, _, source), (schedule, closure))| {
+                let positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+                    geometry,
+                    audit,
+                    closure.fixed_face(),
+                    schedule,
+                    closure,
+                    thickness,
+                    32,
+                )
+                .expect("positive path");
+                let layer =
+                    certify_general_multi_face_cell_transport_v1(GeneralCellTransportInputV1 {
+                        geometry,
+                        audit,
+                        source,
+                        schedule,
+                        closure,
+                        positive_continuous: &positive,
+                        paper_thickness_mm: thickness,
+                        tolerance: 1.0e-8,
+                        limits: GeneralCellTransportLimitsV1 {
+                            max_transitions: closure.leaves().len() + 1,
+                            max_cells: 1_000_000,
+                            max_layer_records: 1_000_000,
+                            max_boundary_samples: 1_000_000,
+                        },
+                    })
+                    .expect("layer transport");
+                (positive, layer)
+            })
+            .collect::<Vec<_>>();
+        let authority = issue_multi_block_positive_layer_authority_v1(
+            parent,
+            prepared
+                .iter()
+                .zip(proofs)
+                .map(|((_, geometry, _, _, source), (positive, layer))| {
+                    MultiBlockPositiveLayerInputV1 {
+                        geometry,
+                        source,
+                        positive,
+                        layer,
+                    }
+                })
+                .collect(),
+            layer_fingerprint,
+        )
+        .expect("three-block positive layer authority");
+        let sources = prepared
+            .iter()
+            .map(|(_, _, _, _, source)| source)
+            .collect::<Vec<&LayerOrderSnapshot>>();
+        assert!(authority.revalidates_v1(&sources, thickness, issuer_context, layer_fingerprint,));
+        assert!(!authority.revalidates_v1(
+            &sources,
+            thickness + 0.1,
+            issuer_context,
+            layer_fingerprint,
+        ));
+        assert!(!authority.revalidates_v1(&sources, thickness, [0x40; 32], layer_fingerprint,));
+        assert!(!authority.revalidates_v1(&sources, thickness, issuer_context, [0x43; 32],));
+        let mut reordered_sources = sources.clone();
+        reordered_sources.swap(0, 1);
+        assert!(!authority.revalidates_v1(
+            &reordered_sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+        ));
+        let mut altered_source = (*sources[0]).clone();
+        altered_source.material_faces.pop();
+        let altered_sources = vec![&altered_source, sources[1], sources[2]];
+        assert!(!authority.revalidates_v1(
+            &altered_sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+        ));
+        let mut target = prepared
+            .iter()
+            .zip(&scheduled)
+            .flat_map(|((_, geometry, _, _, _), (schedule, _))| {
+                schedule
+                    .evaluate(1.0)
+                    .unwrap()
+                    .as_slice()
+                    .to_vec()
+                    .into_iter()
+                    .map(move |angle| {
+                        debug_assert!(
+                            geometry
+                                .hinges()
+                                .iter()
+                                .any(|hinge| hinge.edge() == angle.edge())
+                        );
+                        (angle.edge(), angle.angle_degrees())
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert!(authority.target_angles_match_v1(&target));
+        let mut missing_target = target.clone();
+        missing_target.pop();
+        assert!(!authority.target_angles_match_v1(&missing_target));
+        let mut duplicate_target = target.clone();
+        duplicate_target[1] = duplicate_target[0];
+        assert!(!authority.target_angles_match_v1(&duplicate_target));
+        target[0].1 = f64::from_bits(target[0].1.to_bits() ^ 1);
+        assert!(!authority.target_angles_match_v1(&target));
+        let mut authority = authority;
+        authority.binding[0] ^= 1;
+        assert!(!authority.revalidates_v1(&sources, thickness, issuer_context, layer_fingerprint,));
     }
 }

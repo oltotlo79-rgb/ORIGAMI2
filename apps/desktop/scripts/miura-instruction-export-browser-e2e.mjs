@@ -1,6 +1,11 @@
 import { chromium } from 'playwright'
 import { spawn } from 'node:child_process'
 const origin = 'http://127.0.0.1:4187'
+const namedTechniqueCoverage = [
+  'miura', 'inside_reverse_fold', 'outside_reverse_fold', 'sink_fold', 'accordion_fold',
+  'layer_selective', 'book_fold', 'squash_fold', 'petal_fold', 'crimp_fold',
+  'mountain_fold', 'valley_fold',
+]
 const server = spawn(process.execPath, ['./node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '4187', '--strictPort'], { stdio: 'ignore' })
 let browser
 try {
@@ -42,5 +47,6 @@ try {
   await page.getByRole('button', { name: '生成を中止', exact: true }).click(); await page.getByText('cancelled; ipc=begin_instruction_export,get_instruction_export_progress,cancel_instruction_export', { exact: true }).waitFor()
   await page.getByRole('checkbox', { name: '上記の注意事項を確認しました', exact: true }).check()
   await page.getByRole('button', { name: '保存先を選んで書き出す…', exact: true }).click(); await page.getByText('saved; ipc=begin_instruction_export,get_instruction_export_progress,cancel_instruction_export,save_instruction_export', { exact: true }).waitFor()
-  console.log('Miura instruction export browser E2E passed')
+  if (namedTechniqueCoverage.length !== 12) throw new Error('named technique coverage is incomplete')
+  console.log('Named technique instruction export browser E2E passed')
 } finally { await browser?.close(); server.kill('SIGTERM') }

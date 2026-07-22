@@ -798,6 +798,35 @@ test('CI requires the production C6 dyadic browser and exact native lifecycle', 
   assert.match(nativeRead, /!dyadic_request_hinge_counts_are_bounded_v1\(64, Some\(65\)\)/u)
 })
 
+test('CI requires one complete named-technique instruction export browser gate', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const desktopPackage = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8'))
+  const browserHarness = readFileSync(
+    join(root, 'apps/desktop/scripts/miura-instruction-export-browser-e2e.mjs'),
+    'utf8',
+  )
+  assert.equal(
+    desktopPackage.scripts['test:miura-instruction-export-browser'],
+    'node scripts/miura-instruction-export-browser-e2e.mjs',
+  )
+  assert.equal(
+    workflow.match(/npm run test:miura-instruction-export-browser/gu)?.length,
+    1,
+    'all named techniques must run once in the required frontend job',
+  )
+  assert.doesNotMatch(
+    workflow.match(/- name: Verify all named technique instruction exports[\s\S]*?run: npm run test:miura-instruction-export-browser/u)?.[0] ?? '',
+    /continue-on-error|\|\| true/u,
+  )
+  for (const marker of [
+    'miura', 'inside_reverse_fold', 'outside_reverse_fold', 'sink_fold', 'accordion_fold',
+    'layer_selective', 'book_fold', 'squash_fold', 'petal_fold', 'crimp_fold',
+    'mountain_fold', 'valley_fold',
+  ]) {
+    assert.match(browserHarness, new RegExp(`['"]${marker}['"]`, 'u'))
+  }
+})
+
 test('promotion reuses and verifies the complete prerelease asset set', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const promote = workflow.slice(workflow.indexOf('  promote:'))

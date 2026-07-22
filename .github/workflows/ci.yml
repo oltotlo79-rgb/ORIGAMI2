@@ -151,6 +151,10 @@ jobs:
         id: dyadic-panel-browser
         working-directory: apps/desktop
         run: npm run test:dyadic-panel-browser
+      - name: Verify all named technique instruction exports in Chromium
+        id: named-technique-instruction-export-browser
+        working-directory: apps/desktop
+        run: npm run test:miura-instruction-export-browser
       - name: Upload even-cycle browser failure evidence
         if: failure() && steps.even-cycle-browser.outcome == 'failure'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

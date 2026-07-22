@@ -110,6 +110,16 @@ export type DirectConstraintConflictKindV1 =
       second_edge: string
     }>
   | Readonly<{
+      kind: 'equal_length_with_non_unit_ratio_and_fixed_length'
+      first_edge: string
+      second_edge: string
+    }>
+  | Readonly<{
+      kind: 'non_reciprocal_length_ratios_with_fixed_length'
+      first_edge: string
+      second_edge: string
+    }>
+  | Readonly<{
       kind: 'parallel_with_fixed_non_parallel_angle'
       first_edge: string
       second_edge: string
@@ -786,6 +796,8 @@ function parseDirectConflictKind(
         witnessSize: 2,
       }
     case 'equal_length_with_different_fixed_lengths':
+    case 'equal_length_with_non_unit_ratio_and_fixed_length':
+    case 'non_reciprocal_length_ratios_with_fixed_length':
       if (
         !hasExactKeys(record, ['kind', 'first_edge', 'second_edge'])
         || !isCanonicalUuid(record.first_edge)
@@ -878,6 +890,8 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
       target = [kind.kind, kind.numerator_edge, kind.denominator_edge]
       break
     case 'equal_length_with_different_fixed_lengths':
+    case 'equal_length_with_non_unit_ratio_and_fixed_length':
+    case 'non_reciprocal_length_ratios_with_fixed_length':
     case 'parallel_with_fixed_non_parallel_angle':
       target = [kind.kind, kind.first_edge, kind.second_edge]
       break

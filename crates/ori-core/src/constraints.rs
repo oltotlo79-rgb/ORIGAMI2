@@ -331,6 +331,10 @@ pub enum DirectConstraintConflictKindV1 {
         first_edge: EdgeId,
         second_edge: EdgeId,
     },
+    NonReciprocalLengthRatiosWithFixedLength {
+        first_edge: EdgeId,
+        second_edge: EdgeId,
+    },
     ParallelWithFixedNonParallelAngle {
         first_edge: EdgeId,
         second_edge: EdgeId,
@@ -1620,6 +1624,43 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
             );
         }
     }
+    // Opposite ratio equations alone admit the shared zero-length solution.
+    // A positive fixed length is therefore part of every sound witness here.
+    for ((first, second), forward_assignments) in &ratios {
+        if first >= second {
+            continue;
+        }
+        let Some(reverse_assignments) = ratios.get(&(*second, *first)) else {
+            continue;
+        };
+        let Some(forward) = consistent_scalar_assignment(forward_assignments) else {
+            continue;
+        };
+        let Some(reverse) = consistent_scalar_assignment(reverse_assignments) else {
+            continue;
+        };
+        if (forward.value * reverse.value).to_bits() == 1.0_f64.to_bits() {
+            continue;
+        }
+        let fixed = fixed_lengths
+            .get(first)
+            .and_then(ScalarGroupSummary::consistent_assignment)
+            .or_else(|| {
+                fixed_lengths
+                    .get(second)
+                    .and_then(ScalarGroupSummary::consistent_assignment)
+            });
+        if let Some(fixed) = fixed {
+            push_conflict(
+                &mut conflicts,
+                DirectConstraintConflictKindV1::NonReciprocalLengthRatiosWithFixedLength {
+                    first_edge: edge_ids[first],
+                    second_edge: edge_ids[second],
+                },
+                [forward.id, reverse.id, fixed.id],
+            );
+        }
+    }
     for (pair, equal_ids) in &equal_lengths {
         let fixed = fixed_lengths
             .get(&pair.first)
@@ -1724,6 +1765,14 @@ fn canonical_constraint_ids(records: &[GeometricConstraintRecordV1]) -> Vec<Cons
     let mut ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
     canonicalize_constraint_ids(&mut ids);
     ids
+}
+
+fn consistent_scalar_assignment(assignments: &[ScalarAssignment]) -> Option<ScalarAssignment> {
+    let first = *assignments.first()?;
+    assignments
+        .iter()
+        .all(|assignment| assignment.value.to_bits() == first.value.to_bits())
+        .then_some(first)
 }
 
 fn canonicalize_constraint_ids(ids: &mut Vec<ConstraintId>) {
@@ -1894,7 +1943,7 @@ fn conflict_sort_key(
             second_edge.canonical_bytes(),
             zero,
         ),
-        DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
+        DirectConstraintConflictKindV1::NonReciprocalLengthRatiosWithFixedLength {
             first_edge,
             second_edge,
         } => (
@@ -1903,11 +1952,20 @@ fn conflict_sort_key(
             second_edge.canonical_bytes(),
             zero,
         ),
+        DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
+            first_edge,
+            second_edge,
+        } => (
+            7,
+            first_edge.canonical_bytes(),
+            second_edge.canonical_bytes(),
+            zero,
+        ),
         DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations {
             horizontal_edge,
             vertical_edge,
         } => (
-            7,
+            8,
             horizontal_edge.canonical_bytes(),
             vertical_edge.canonical_bytes(),
             zero,
@@ -2805,6 +2863,75 @@ mod tests {
                 "removing any one cause constraint must remove the direct contradiction"
             );
         }
+    }
+
+    #[test]
+    fn non_reciprocal_length_ratios_with_positive_fixed_length_have_minimal_cause() {
+        let fixture = Fixture::new();
+        let fixed = record(GeometricConstraintKindV1::FixedLength {
+            edge: fixture.edges[0],
+            length_mm: 10.0,
+        });
+        let forward = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[0],
+            denominator_edge: fixture.edges[1],
+            ratio: 2.0,
+        });
+        let reverse = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[1],
+            denominator_edge: fixture.edges[0],
+            ratio: 0.25,
+        });
+        let records = [fixed.clone(), forward.clone(), reverse.clone()];
+        let prepared = prepare(&fixture, &document(records.clone()))
+            .expect("the individually valid constraints prepare");
+        let ConstraintPreflightV1::DirectConflict { conflicts } = prepared.preflight() else {
+            panic!("non-reciprocal ratios contradict a positive fixed edge length");
+        };
+        assert_eq!(conflicts.len(), 1);
+        let mut canonical_edges = [fixture.edges[0], fixture.edges[1]];
+        canonical_edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        assert_eq!(
+            conflicts[0].conflict(),
+            &DirectConstraintConflictKindV1::NonReciprocalLengthRatiosWithFixedLength {
+                first_edge: canonical_edges[0],
+                second_edge: canonical_edges[1],
+            }
+        );
+        let mut expected_ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
+        expected_ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
+        assert_eq!(conflicts[0].constraint_ids(), expected_ids);
+
+        for removed in 0..records.len() {
+            let subset = records
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != removed)
+                .map(|(_, record)| record.clone())
+                .collect::<Vec<_>>();
+            let prepared = prepare(&fixture, &document(subset)).expect("proper subset prepares");
+            assert!(
+                !matches!(
+                    prepared.preflight(),
+                    ConstraintPreflightV1::DirectConflict { .. }
+                ),
+                "removing any one cause constraint must remove the direct contradiction"
+            );
+        }
+        let reciprocal = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[1],
+            denominator_edge: fixture.edges[0],
+            ratio: 0.5,
+        });
+        let prepared = prepare(&fixture, &document([fixed, forward, reciprocal]))
+            .expect("reciprocal ratios prepare");
+        assert!(
+            !matches!(
+                prepared.preflight(),
+                ConstraintPreflightV1::DirectConflict { .. }
+            ),
+            "exact reciprocal ratios must not be reported as contradictory"
+        );
     }
 
     #[test]

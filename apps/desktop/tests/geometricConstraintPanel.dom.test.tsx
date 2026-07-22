@@ -254,6 +254,24 @@ describe('GeometricConstraintPanel', () => {
       },
       {
         conflict: {
+          kind: 'equal_length_with_non_unit_ratio_and_fixed_length' as const,
+          first_edge: IDS[0]!,
+          second_edge: IDS[1]!,
+        },
+        expected:
+          'Equal-length edges have a non-unit ratio and a positive fixed length',
+      },
+      {
+        conflict: {
+          kind: 'non_reciprocal_length_ratios_with_fixed_length' as const,
+          first_edge: IDS[0]!,
+          second_edge: IDS[1]!,
+        },
+        expected:
+          'Opposite length ratios are not reciprocal for edges with a positive fixed length',
+      },
+      {
+        conflict: {
           kind: 'parallel_with_fixed_non_parallel_angle' as const,
           first_edge: IDS[0]!,
           second_edge: IDS[1]!,

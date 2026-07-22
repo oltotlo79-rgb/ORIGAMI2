@@ -794,6 +794,18 @@ function directConflictLabel(
         '等長にした辺へ異なる固定長が指定されています',
         'Edges constrained to equal length have different fixed lengths',
       )
+    case 'equal_length_with_non_unit_ratio_and_fixed_length':
+      return localized(
+        locale,
+        '等長な辺に1ではない長さ比と正の固定長が同時に指定されています',
+        'Equal-length edges have a non-unit ratio and a positive fixed length',
+      )
+    case 'non_reciprocal_length_ratios_with_fixed_length':
+      return localized(
+        locale,
+        '正の固定長を持つ辺の双方向の長さ比が互いに逆数ではありません',
+        'Opposite length ratios are not reciprocal for edges with a positive fixed length',
+      )
     case 'parallel_with_fixed_non_parallel_angle':
       return localized(
         locale,

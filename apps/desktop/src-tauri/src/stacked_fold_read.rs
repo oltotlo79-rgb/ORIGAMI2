@@ -4868,7 +4868,11 @@ mod tests {
             .map(|hinge| hinge.edge)
             .collect::<Vec<_>>();
         assert_eq!(hinges.len(), 4);
-        super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            snapshot.faces[0].id,
+        );
         let layer_state = GlobalFlatFoldabilityState::default();
         super::super::global_flat_foldability::tests::install_possible_layer_order(
             &layer_state,
@@ -5037,7 +5041,11 @@ mod tests {
             .map(|hinge| hinge.edge)
             .collect::<Vec<_>>();
         assert_eq!(hinges.len(), 5);
-        super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            snapshot.faces[0].id,
+        );
         let layer_state = GlobalFlatFoldabilityState::default();
         super::super::global_flat_foldability::tests::install_possible_layer_order(
             &layer_state,
@@ -5162,7 +5170,11 @@ mod tests {
             .map(|hinge| hinge.edge)
             .collect::<Vec<_>>();
         assert_eq!(hinges.len(), 6);
-        super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            snapshot.faces[0].id,
+        );
         let layer_state = GlobalFlatFoldabilityState::default();
         super::super::global_flat_foldability::tests::install_possible_layer_order(
             &layer_state,
@@ -5260,7 +5272,11 @@ mod tests {
             .map(|hinge| hinge.edge)
             .collect::<Vec<_>>();
         assert_eq!(hinges.len(), 7);
-        super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            snapshot.faces[0].id,
+        );
         let layer_state = GlobalFlatFoldabilityState::default();
         super::super::global_flat_foldability::tests::install_possible_layer_order(
             &layer_state,

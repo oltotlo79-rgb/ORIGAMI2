@@ -342,6 +342,11 @@ impl ChainedGeneralCellTransportAuthorityV1 {
     pub fn proofs(&self) -> &[GeneralMultiFaceCellTransportProofV1] {
         &self.proofs
     }
+
+    #[must_use]
+    pub fn into_proofs(self) -> Vec<GeneralMultiFaceCellTransportProofV1> {
+        self.proofs
+    }
 }
 
 #[cfg(test)]

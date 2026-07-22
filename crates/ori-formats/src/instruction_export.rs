@@ -970,8 +970,10 @@ mod tests {
             short(&reference.source_model_binding_sha256),
         );
         assert!(proof_step_text.contains(&expected_structured_summary));
-        let mut glyph_limited = InstructionExportLimits::default();
-        glyph_limited.max_glyphs = plan.glyph_count - 1;
+        let glyph_limited = InstructionExportLimits {
+            max_glyphs: plan.glyph_count - 1,
+            ..InstructionExportLimits::default()
+        };
         assert!(matches!(
             build_canonical_instruction_plan(
                 "証明付き手順",

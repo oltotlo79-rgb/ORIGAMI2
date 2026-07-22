@@ -3619,9 +3619,8 @@ fn symmetric_plan_kind(
     let generic_mixed_target = feature_records >= 2 && !known_animal && !known_insect;
     if profile.generation_constraints.target_category
         == Some(ori_domain::BeginnerTargetCategoryV1::CustomObject)
+        || generic_mixed_target
     {
-        ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
-    } else if generic_mixed_target {
         ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
     } else if profile.generation_constraints.target_category
         == Some(ori_domain::BeginnerTargetCategoryV1::Animal)

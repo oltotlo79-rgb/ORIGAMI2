@@ -4897,15 +4897,18 @@ mod tests {
             .unwrap();
         tree_target_entries.sort_unstable_by_key(|entry| entry.edge().canonical_bytes());
         let tree_target = ori_kinematics::CanonicalHingeAngles::new(tree_target_entries).unwrap();
+        let tree_diagnostic = ori_collision::diagnose_collective_hinge_path_from_pose_v1(
+            tree_capability.model(),
+            tree_capability.pose(),
+            tree_capability.pose().hinge_angles(),
+            tree_target.as_slice(),
+            project.editor.paper().thickness_mm,
+            ori_collision::StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .unwrap();
         assert!(
-            ori_collision::certify_positive_thickness_tree_continuous_path_v1(
-                tree_capability.model(),
-                tree_capability.pose(),
-                &tree_target,
-                project.editor.paper().thickness_mm,
-            )
-            .is_some(),
-            "four-hinge native Tree endpoint must issue positive evidence"
+            tree_diagnostic.continuous_clearance_certified(),
+            "four-hinge native Tree endpoint must issue positive evidence: {tree_diagnostic:?}"
         );
         let state = AppState::new(project);
         let request = |level_count, max_states, max_transitions| DyadicPoseGraphReadRequestV1 {

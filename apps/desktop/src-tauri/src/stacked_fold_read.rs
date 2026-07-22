@@ -1277,7 +1277,14 @@ fn strict_dyadic_geometry_is_in_scope_v1(project: &super::ProjectState) -> bool 
         return false;
     }
     let boundary = &project.editor.paper().boundary_vertices;
-    if boundary.len() < 3 {
+    if boundary.len() < 3
+        || boundary
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            != boundary.len()
+    {
         return false;
     }
     let point = |id| {
@@ -1288,23 +1295,76 @@ fn strict_dyadic_geometry_is_in_scope_v1(project: &super::ProjectState) -> bool 
             .map(|vertex| vertex.position)
             .filter(|point| point.x.is_finite() && point.y.is_finite())
     };
+    let Some(points) = boundary
+        .iter()
+        .copied()
+        .map(point)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    if points.iter().enumerate().any(|(index, first)| {
+        let second = points[(index + 1) % points.len()];
+        first.x.to_bits() == second.x.to_bits() && first.y.to_bits() == second.y.to_bits()
+    }) {
+        return false;
+    }
+    let cross =
+        |first: ori_domain::Point2, second: ori_domain::Point2, third: ori_domain::Point2| {
+            (second.x - first.x) * (third.y - first.y) - (second.y - first.y) * (third.x - first.x)
+        };
+    let on_segment =
+        |first: ori_domain::Point2, second: ori_domain::Point2, point: ori_domain::Point2| {
+            cross(first, second, point) == 0.0
+                && point.x >= first.x.min(second.x)
+                && point.x <= first.x.max(second.x)
+                && point.y >= first.y.min(second.y)
+                && point.y <= first.y.max(second.y)
+        };
+    let intersects = |first: ori_domain::Point2,
+                      second: ori_domain::Point2,
+                      third: ori_domain::Point2,
+                      fourth: ori_domain::Point2| {
+        let values = [
+            cross(first, second, third),
+            cross(first, second, fourth),
+            cross(third, fourth, first),
+            cross(third, fourth, second),
+        ];
+        (values[0].is_sign_positive() != values[1].is_sign_positive()
+            && values[2].is_sign_positive() != values[3].is_sign_positive()
+            && values.iter().all(|value| *value != 0.0))
+            || on_segment(first, second, third)
+            || on_segment(first, second, fourth)
+            || on_segment(third, fourth, first)
+            || on_segment(third, fourth, second)
+    };
+    for first in 0..points.len() {
+        for second in (first + 1)..points.len() {
+            if second == first + 1 || (first == 0 && second + 1 == points.len()) {
+                continue;
+            }
+            if intersects(
+                points[first],
+                points[(first + 1) % points.len()],
+                points[second],
+                points[(second + 1) % points.len()],
+            ) {
+                return false;
+            }
+        }
+    }
     let mut orientation = 0_i8;
     for index in 0..boundary.len() {
-        let Some(first) = point(boundary[index]) else {
-            return false;
-        };
-        let Some(second) = point(boundary[(index + 1) % boundary.len()]) else {
-            return false;
-        };
-        let Some(third) = point(boundary[(index + 2) % boundary.len()]) else {
-            return false;
-        };
-        let cross = (second.x - first.x) * (third.y - second.y)
-            - (second.y - first.y) * (third.x - second.x);
-        if cross == 0.0 {
+        let turn = cross(
+            points[index],
+            points[(index + 1) % points.len()],
+            points[(index + 2) % points.len()],
+        );
+        if turn == 0.0 {
             continue;
         }
-        let sign = if cross.is_sign_positive() { 1 } else { -1 };
+        let sign = if turn.is_sign_positive() { 1 } else { -1 };
         if orientation == 0 {
             orientation = sign;
         } else if orientation != sign {
@@ -6773,6 +6833,83 @@ mod tests {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         let (pattern, paper, target_edge) =
             boundary_preflight_fixture([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)], true);
+        assert_out_of_scope_boundary_is_unsupported_no_op(pattern, paper, target_edge);
+    }
+
+    fn malformed_production_boundary_fixture(
+        positions: [(f64, f64); 4],
+        boundary_order: [usize; 4],
+    ) -> (
+        ori_domain::CreasePattern,
+        ori_domain::Paper,
+        ori_domain::EdgeId,
+    ) {
+        use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
+        let namespace = ProjectId::schema_namespace([
+            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x05, 0x75,
+        ]);
+        let vertices = positions
+            .into_iter()
+            .enumerate()
+            .map(|(index, (x, y))| Vertex {
+                id: VertexId::derive_v5(namespace, &[index as u8]),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary_vertices = boundary_order.map(|index| vertices[index].id);
+        let mut edges = (0..boundary_vertices.len())
+            .map(|index| Edge {
+                id: EdgeId::derive_v5(namespace, &[0x40, index as u8]),
+                start: boundary_vertices[index],
+                end: boundary_vertices[(index + 1) % boundary_vertices.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let target_edge = EdgeId::derive_v5(namespace, b"malformed-boundary-target");
+        edges.push(Edge {
+            id: target_edge,
+            start: vertices[0].id,
+            end: vertices[2].id,
+            kind: EdgeKind::Mountain,
+        });
+        (
+            CreasePattern { vertices, edges },
+            Paper {
+                boundary_vertices: boundary_vertices.to_vec(),
+                ..Paper::default()
+            },
+            target_edge,
+        )
+    }
+
+    #[test]
+    fn duplicate_boundary_strict_dyadic_preflight_is_unsupported_no_op() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (pattern, paper, target_edge) = malformed_production_boundary_fixture(
+            [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)],
+            [0, 1, 2, 1],
+        );
+        assert_out_of_scope_boundary_is_unsupported_no_op(pattern, paper, target_edge);
+    }
+
+    #[test]
+    fn self_intersecting_boundary_strict_dyadic_preflight_is_unsupported_no_op() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (pattern, paper, target_edge) = malformed_production_boundary_fixture(
+            [(0.0, 0.0), (2.0, 2.0), (0.0, 2.0), (2.0, 0.0)],
+            [0, 1, 2, 3],
+        );
+        assert_out_of_scope_boundary_is_unsupported_no_op(pattern, paper, target_edge);
+    }
+
+    #[test]
+    fn zero_length_boundary_strict_dyadic_preflight_is_unsupported_no_op() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (pattern, paper, target_edge) = malformed_production_boundary_fixture(
+            [(0.0, 0.0), (0.0, 0.0), (2.0, 2.0), (0.0, 2.0)],
+            [0, 1, 2, 3],
+        );
         assert_out_of_scope_boundary_is_unsupported_no_op(pattern, paper, target_edge);
     }
 

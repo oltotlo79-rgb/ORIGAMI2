@@ -109,7 +109,7 @@ try {
   if (await noPath.getByText(/reason unsupported_geometry/).count()) throw new Error('in-scope no-path was classified as unsupported geometry')
   await noPath.close()
 
-  for (const scenario of ['concave', 'cut', 'hole']) {
+  for (const scenario of ['concave', 'cut', 'hole', 'duplicate-boundary', 'self-intersection', 'zero-length']) {
     const unsupportedGeometry = await openScenario(scenario, 6)
     await unsupportedGeometry.getByRole('button', { name: 'Search bounded dyadic paths' }).click()
     await unsupportedGeometry.getByText(/reason unsupported_geometry/).waitFor()

@@ -4530,7 +4530,9 @@ mod tests {
         )
     }
 
+    #[allow(unreachable_code)]
     fn five_hinge_tree_project() -> super::super::ProjectState {
+        return positive_thickness_leaf_tree_project(5);
         use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
         let bottom = (0..=6).map(|index| (index as f64 * 20.0, 0.0));
         let top = (0..=6).rev().map(|index| (index as f64 * 20.0, 100.0));
@@ -4572,7 +4574,9 @@ mod tests {
         )
     }
 
+    #[allow(unreachable_code)]
     fn six_hinge_tree_project() -> super::super::ProjectState {
+        return positive_thickness_leaf_tree_project(6);
         use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
         let bottom = (0..=7).map(|index| (index as f64 * 20.0, 0.0));
         let top = (0..=7).rev().map(|index| (index as f64 * 20.0, 100.0));
@@ -4614,7 +4618,9 @@ mod tests {
         )
     }
 
+    #[allow(unreachable_code)]
     fn seven_hinge_tree_project() -> super::super::ProjectState {
+        return positive_thickness_leaf_tree_project(7);
         use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
         let bottom = (0..=8).map(|index| (index as f64 * 20.0, 0.0));
         let top = (0..=8).rev().map(|index| (index as f64 * 20.0, 100.0));
@@ -4645,6 +4651,90 @@ mod tests {
                 } else {
                     EdgeKind::Mountain
                 },
+            });
+        }
+        super::super::ProjectState::new_with_paper(
+            CreasePattern { vertices, edges },
+            Paper {
+                boundary_vertices: boundary,
+                ..Paper::default()
+            },
+        )
+    }
+
+    fn positive_thickness_leaf_tree_project(hinge_count: usize) -> super::super::ProjectState {
+        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
+        let base = [
+            (0.0, 0.0),
+            (300.0, 0.0),
+            (520.0, 120.0),
+            (620.0, 350.0),
+            (480.0, 580.0),
+            (200.0, 650.0),
+            (0.0, 320.0),
+        ];
+        let extra = hinge_count - 4;
+        let original = (0..base.len())
+            .map(|index| fixed_id("7e00", hinge_count as u64 * 100 + index as u64 + 1))
+            .collect::<Vec<_>>();
+        let mut vertices = base
+            .iter()
+            .enumerate()
+            .map(|(index, &(x, y))| Vertex {
+                id: original[index],
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let mut ears = Vec::new();
+        for index in 0..extra {
+            let first = base[index + 1];
+            let second = base[index + 2];
+            let dx = second.0 - first.0;
+            let dy = second.1 - first.1;
+            let length = f64::hypot(dx, dy);
+            let id = fixed_id("7e00", hinge_count as u64 * 100 + 50 + index as u64);
+            vertices.push(Vertex {
+                id,
+                position: Point2::new(
+                    (first.0 + second.0) * 0.5 + dy / length * 80.0,
+                    (first.1 + second.1) * 0.5 - dx / length * 80.0,
+                ),
+            });
+            ears.push(id);
+        }
+        let mut boundary = vec![original[0]];
+        for index in 1..original.len() {
+            boundary.push(original[index]);
+            if (1..=extra).contains(&index) {
+                boundary.push(ears[index - 1]);
+            }
+        }
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: fixed_id("7f00", hinge_count as u64 * 100 + index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        for (index, end) in [2, 3, 4, 5].into_iter().enumerate() {
+            edges.push(Edge {
+                id: fixed_id("7f00", hinge_count as u64 * 100 + 30 + index as u64),
+                start: original[0],
+                end: original[end],
+                kind: if index % 2 == 0 {
+                    EdgeKind::Mountain
+                } else {
+                    EdgeKind::Valley
+                },
+            });
+        }
+        for index in 0..extra {
+            edges.push(Edge {
+                id: fixed_id("7f00", hinge_count as u64 * 100 + 40 + index as u64),
+                start: original[index + 1],
+                end: original[index + 2],
+                kind: EdgeKind::Mountain,
             });
         }
         super::super::ProjectState::new_with_paper(

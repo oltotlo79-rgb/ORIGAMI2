@@ -3739,6 +3739,178 @@ mod tests {
     }
 
     #[test]
+    fn two_block_closure_authority_is_canonical_and_tamper_closed() {
+        let project = fixed_id("ca30", 1);
+        let [first, second] = super::miura_cactus_test_support::independent_miura_cactus_blocks();
+        let prepare = |(pattern, paper, moving): (CreasePattern, Paper, Vec<EdgeId>)| {
+            let topology = analyze_faces(FaceExtractionInput {
+                identity_namespace: project,
+                source_revision: 1,
+                paper: &paper,
+                pattern: &pattern,
+            })
+            .snapshot
+            .unwrap();
+            let geometry = MaterialHingeGraphGeometry::prepare(
+                &pattern,
+                &paper,
+                &topology,
+                TreeKinematicsLimits::default(),
+            )
+            .unwrap();
+            let audit =
+                MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default())
+                    .unwrap();
+            (geometry, audit, moving)
+        };
+        let (first_geometry, first_audit, first_moving) = prepare(first);
+        let (second_geometry, second_audit, second_moving) = prepare(second);
+        let shared = first_geometry
+            .face_ids()
+            .iter()
+            .copied()
+            .filter(|face| second_geometry.face_ids().contains(face))
+            .collect::<Vec<_>>();
+        assert_eq!(shared.len(), 1);
+        let articulation = shared[0];
+        let schedule_for = |geometry: &MaterialHingeGraphGeometry,
+                            audit: &MaterialHingeGraphAudit,
+                            moving: Vec<EdgeId>| {
+            let active = moving.into_iter().collect::<HashSet<_>>();
+            let mut entries = geometry
+                .hinges()
+                .iter()
+                .map(|hinge| HalfAngleRationalEntryInputV1 {
+                    edge: hinge.edge(),
+                    u_domain: [
+                        RationalCoefficientV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ],
+                    numerator_power_coefficients: vec![
+                        RationalCoefficientV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientV1 {
+                            numerator: i64::from(active.contains(&hinge.edge())),
+                            denominator: 1,
+                        },
+                    ],
+                    denominator_power_coefficients: vec![RationalCoefficientV1 {
+                        numerator: if active.contains(&hinge.edge()) {
+                            64
+                        } else {
+                            1
+                        },
+                        denominator: 1,
+                    }],
+                })
+                .collect::<Vec<_>>();
+            entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+            let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+                geometry,
+                audit,
+                articulation,
+                entries,
+                CycleScheduleLimitsV1::default(),
+            )
+            .unwrap();
+            let closure = geometry
+                .prove_dyadic_schedule_closure_v1(
+                    audit,
+                    articulation,
+                    &schedule,
+                    1.0e-8,
+                    DyadicIntervalClosureLimitsV1 {
+                        max_depth: 16,
+                        max_leaves: 65_536,
+                        max_work: 1_000_000,
+                        schedule_limits: CycleScheduleLimitsV1::default(),
+                    },
+                )
+                .unwrap();
+            (schedule, closure)
+        };
+        let (first_schedule, first_closure) =
+            schedule_for(&first_geometry, &first_audit, first_moving);
+        let (second_schedule, second_closure) =
+            schedule_for(&second_geometry, &second_audit, second_moving);
+        let inputs = [
+            crate::BlockwiseClosureInputV1 {
+                geometry: &first_geometry,
+                audit: &first_audit,
+                schedule: &first_schedule,
+                closure: &first_closure,
+            },
+            crate::BlockwiseClosureInputV1 {
+                geometry: &second_geometry,
+                audit: &second_audit,
+                schedule: &second_schedule,
+                closure: &second_closure,
+            },
+        ];
+        let authority =
+            crate::issue_blockwise_closure_authority_v1(inputs, articulation, 0.1, [0x51; 32])
+                .expect("two independent interval closures compose");
+        assert!(authority.revalidates_v1(articulation, 0.1, [0x51; 32]));
+        assert!(!authority.revalidates_v1(articulation, 0.1, [0x50; 32]));
+        assert!(!authority.revalidates_v1(FaceId::new(), 0.1, [0x51; 32]));
+        assert!(!authority.revalidates_v1(articulation, 1.0, [0x51; 32]));
+        let reordered = crate::issue_blockwise_closure_authority_v1(
+            [
+                crate::BlockwiseClosureInputV1 {
+                    geometry: &second_geometry,
+                    audit: &second_audit,
+                    schedule: &second_schedule,
+                    closure: &second_closure,
+                },
+                crate::BlockwiseClosureInputV1 {
+                    geometry: &first_geometry,
+                    audit: &first_audit,
+                    schedule: &first_schedule,
+                    closure: &first_closure,
+                },
+            ],
+            articulation,
+            0.1,
+            [0x51; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            authority.binding_fingerprint_v1(),
+            reordered.binding_fingerprint_v1()
+        );
+        assert!(
+            crate::issue_blockwise_closure_authority_v1(
+                [
+                    crate::BlockwiseClosureInputV1 {
+                        geometry: &first_geometry,
+                        audit: &first_audit,
+                        schedule: &first_schedule,
+                        closure: &first_closure,
+                    },
+                    crate::BlockwiseClosureInputV1 {
+                        geometry: &first_geometry,
+                        audit: &first_audit,
+                        schedule: &first_schedule,
+                        closure: &first_closure,
+                    },
+                ],
+                articulation,
+                0.1,
+                [0x51; 32],
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn eight_bay_real_geometry_admits_exact_balanced_closure() {
         let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(8, false);
         let limits = ori_kinematics::DyadicIntervalClosureLimitsV1 {

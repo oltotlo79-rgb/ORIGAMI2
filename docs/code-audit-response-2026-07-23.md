@@ -54,6 +54,12 @@
 
 AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり、短期完成条件へ混入させない。
 
+## SIM-010の証明済み範囲と未証明境界
+
+`1668933`, `1d167c0`, `7d0cc69`, `99ebfe6`により、既存の単一hinge・厚さ0経路だけでなく、bounded dyadic graph/cycleとpositive-thickness Treeの一部もproduction native routeへ到達している。Tree routeは正厚連続certificateとshared-vertex layer transportを別々に保持し、preview mintとApply直前にschedule端点、source/target、紙厚、層証拠、project instance/revision/fingerprint/generationを再照合する。Applyはone-shot token、明示確認、原子的履歴、Undo/Redo・再openへ接続済みである。
+
+一方、これは任意の一般姿勢、任意多hinge schedule、一般共有hinge admission、完全な正厚衝突、一般複数層transport、全経路closure、専用層順viewerを証明しない。browser harnessのmock成功だけを能力証拠には用いず、native certificate fixtureと本番routeの双方がある狭いcaseだけを実装範囲とする。従ってSIM-010は部分実装を維持する。
+
 ## 検証
 
 - frontend TypeScript/Vite build: 成功。

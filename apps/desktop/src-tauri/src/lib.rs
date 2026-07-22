@@ -15129,7 +15129,8 @@ mod tests {
 
     use ori_domain::{Edge, LayerContentKindV1, LayerRecordV1, Vertex};
     use ori_formats::{
-        Ori2Limits, read_project_ori2_with_limits, write_project_archive_ori2, write_project_ori2,
+        Ori2Limits, read_project_folder_v1, read_project_ori2_with_limits,
+        write_project_archive_ori2, write_project_folder_v1, write_project_ori2,
     };
     #[cfg(target_os = "windows")]
     use std::fs::OpenOptions;
@@ -17299,6 +17300,33 @@ mod tests {
             assert_eq!(restored_certificate, certificate);
             assert!(
                 restored
+                    .instruction_timeline
+                    .steps
+                    .last()
+                    .unwrap()
+                    .caution
+                    .contains(&certificate_hex)
+            );
+            let archive = project.project_archive().expect("generic tree archive");
+            let folder = write_project_folder_v1(&archive).expect("write generic tree folder");
+            let folder_restored = read_project_folder_v1(folder.entries())
+                .expect("read generic tree folder")
+                .into_archive();
+            assert_eq!(folder_restored, archive);
+            let folder_provenance = folder_restored
+                .document
+                .beginner_design_profile
+                .generation_provenance
+                .as_ref()
+                .expect("folder generic tree provenance");
+            assert_eq!(
+                folder_provenance.fold_path_certificate_sha256,
+                Some(certificate)
+            );
+            assert!(folder_provenance.generic_tree.is_some());
+            assert!(
+                folder_restored
+                    .document
                     .instruction_timeline
                     .steps
                     .last()

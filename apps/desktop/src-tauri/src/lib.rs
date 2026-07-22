@@ -15231,6 +15231,112 @@ mod tests {
         }
     }
 
+    #[test]
+    fn coexisting_beginner_assets_survive_underlay_history_and_reject_stale_overwrite() {
+        let mut png_bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png_bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[0, 0, 0, 255]).unwrap();
+        }
+        let image_a = AssetId::new();
+        let image_b = AssetId::new();
+        let model = AssetId::new();
+        let mut project = initial_project_state();
+        for id in [image_a, image_b] {
+            project.texture_assets.push(ProjectTextureAssetV1 {
+                id,
+                media_type: ProjectTextureMediaTypeV1::Png,
+                bytes: png_bytes.clone(),
+            });
+        }
+        let json = br#"{"asset":{"version":"2.0"}}"#;
+        let padded = (json.len() + 3) & !3;
+        let total = 20 + padded;
+        let mut glb = b"glTF".to_vec();
+        glb.extend_from_slice(&2_u32.to_le_bytes());
+        glb.extend_from_slice(&(total as u32).to_le_bytes());
+        glb.extend_from_slice(&(padded as u32).to_le_bytes());
+        glb.extend_from_slice(&0x4E4F_534A_u32.to_le_bytes());
+        glb.extend_from_slice(json);
+        glb.resize(total, b' ');
+        project
+            .reference_model_assets
+            .push(ori_formats::ProjectReferenceModelAssetV1 {
+                id: model,
+                bytes: glb,
+            });
+        let layer = project.editor.project_layers().layers[0].id;
+        let underlay = ori_domain::UnderlayId::new();
+        let record = |asset| ori_domain::UnderlayRecordV1 {
+            id: underlay,
+            asset,
+            transform: ori_domain::UnderlayTransformV1 {
+                position: Point2::new(0.0, 0.0),
+                scale_x: 1.0,
+                scale_y: 1.0,
+                rotation_degrees: 0.0,
+            },
+            opacity: 1.0,
+            layer,
+        };
+        let project_id = project.project_id;
+        let stale_revision = project.editor.revision();
+        let added = execute_command(
+            &mut project,
+            project_id,
+            stale_revision,
+            Command::AddUnderlay {
+                record: record(image_a),
+            },
+        )
+        .unwrap();
+        let replaced = execute_command(
+            &mut project,
+            project_id,
+            added.revision,
+            Command::UpdateUnderlay {
+                record: record(image_b),
+            },
+        )
+        .unwrap();
+        let removed = execute_command(
+            &mut project,
+            project_id,
+            replaced.revision,
+            Command::RemoveUnderlay { id: underlay },
+        )
+        .unwrap();
+        let undo_remove = execute_undo(&mut project, project_id, removed.revision).unwrap();
+        assert_eq!(project.editor.underlays().underlays[0].asset, image_b);
+        let undo_replace = execute_undo(&mut project, project_id, undo_remove.revision).unwrap();
+        assert_eq!(project.editor.underlays().underlays[0].asset, image_a);
+        let redone = execute_redo(&mut project, project_id, undo_replace.revision).unwrap();
+        assert_eq!(project.editor.underlays().underlays[0].asset, image_b);
+
+        let before_stale = project.document();
+        assert!(
+            execute_command(
+                &mut project,
+                project_id,
+                stale_revision,
+                Command::UpdateBeginnerDesignProfile {
+                    profile: Box::new(ori_domain::BeginnerDesignProfileV1::default()),
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(project.document(), before_stale);
+        let archive = write_project_ori2(&before_stale).unwrap();
+        let restored = read_project_ori2_with_limits(&archive, Ori2Limits::default()).unwrap();
+        assert_eq!(restored, before_stale);
+        assert_eq!(restored.texture_assets.len(), 2);
+        assert_eq!(restored.reference_model_assets[0].id, model);
+        assert_eq!(redone.revision, undo_replace.revision + 1);
+    }
+
     struct BeginnerGridTestGuard {
         _serial: std::sync::MutexGuard<'static, ()>,
     }

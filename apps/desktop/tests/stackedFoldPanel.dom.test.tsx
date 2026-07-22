@@ -688,16 +688,26 @@ describe('StackedFoldPanel', () => {
   })
 
   it('routes a layer-selective technique through its proof-bound transaction', async () => {
-    transport.preview.mockResolvedValue(ready); transport.layerApply.mockResolvedValue(4)
+    transport.preview.mockResolvedValue(ready)
+    const layerPreview = { ...basicTimelinePreview, techniqueKind: 'layer_selective' as const }
+    transport.basicPreview.mockResolvedValue(layerPreview); transport.namedApply.mockResolvedValue(4)
     const document = { techniques: [] } as any
     render(<StackedFoldPanel locale="en" snapshot={snapshot}
       selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }} disabled={false}
-      namedBookFold={{ document, techniqueId: 'layer-select', name: 'Layer select', kind: 'layer' }}
+      namedBookFold={{ document, techniqueId: 'layer-select', name: 'Layer select', kind: 'layer_selective' }}
       refreshSnapshot={vi.fn().mockResolvedValue({ ...snapshot, revision: 4 })} onApplied={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
     const apply = await screen.findByRole('button', { name: 'Apply named layer technique' })
+    expect(apply).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: 'Preview certified timeline' }))
+    await waitFor(() => expect(transport.basicPreview).toHaveBeenCalledWith(
+      expect.objectContaining({ techniqueKind: 'layer_selective' }),
+    ))
     fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(apply)
-    await waitFor(() => expect(transport.layerApply).toHaveBeenCalledWith(token, document, 'layer-select'))
+    await waitFor(() => expect(transport.namedApply).toHaveBeenCalledWith(
+      token, document, 'layer-select', layerPreview,
+    ))
+    expect(transport.layerApply).not.toHaveBeenCalled()
     expect(transport.apply).not.toHaveBeenCalled()
   })
 

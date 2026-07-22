@@ -57,7 +57,7 @@ type Props = Readonly<{
     document: FoldTechniqueFileDocumentV1
     techniqueId: string
     name: string
-    kind?: 'book' | 'mountain' | 'valley' | 'squash' | 'crimp' | 'petal' | 'inside_reverse' | 'outside_reverse' | 'reverse' | 'accordion' | 'sink' | 'layer'
+    kind?: 'book' | 'mountain' | 'valley' | 'squash' | 'crimp' | 'petal' | 'inside_reverse' | 'outside_reverse' | 'reverse' | 'accordion' | 'sink' | 'layer' | 'layer_selective'
   }> | null
 }>
 
@@ -141,7 +141,7 @@ export function StackedFoldPanel({
     || namedBookFold?.kind === 'valley' || namedBookFold?.kind === 'squash'
     || namedBookFold?.kind === 'crimp' || namedBookFold?.kind === 'inside_reverse'
     || namedBookFold?.kind === 'outside_reverse' || namedBookFold?.kind === 'sink'
-    || namedBookFold?.kind === 'accordion'
+    || namedBookFold?.kind === 'accordion' || namedBookFold?.kind === 'layer_selective'
   const unsupportedNamedPhysicalFold = namedBookFold != null
     && (namedBookFold.kind == null || namedBookFold.kind === 'book'
       || namedBookFold.kind === 'petal')
@@ -505,7 +505,7 @@ export function StackedFoldPanel({
         expectedSourceModelFingerprint: authority.fold_model_fingerprint,
         foldEdge: selectedLine.id,
         assignment: segment.assignment,
-        techniqueKind: namedBookFold.kind as 'mountain' | 'valley' | 'squash' | 'crimp' | 'inside_reverse' | 'outside_reverse' | 'sink' | 'accordion',
+        techniqueKind: namedBookFold.kind as 'mountain' | 'valley' | 'squash' | 'crimp' | 'inside_reverse' | 'outside_reverse' | 'sink' | 'accordion' | 'layer_selective',
         techniqueDocument: namedBookFold.document,
         techniqueId: namedBookFold.techniqueId,
       })
@@ -1295,7 +1295,7 @@ export function StackedFoldPanel({
             {applying
               ? t('適用中…', 'Applying…')
               : namedBookFold
-                ? namedBookFold.kind === 'layer'
+                ? namedBookFold.kind === 'layer' || namedBookFold.kind === 'layer_selective'
                   ? t('名前付き層選択技法を適用', 'Apply named layer technique')
                   : namedBookFold.kind === 'sink'
                   ? t('名前付き沈め折りを適用', 'Apply named sink fold')

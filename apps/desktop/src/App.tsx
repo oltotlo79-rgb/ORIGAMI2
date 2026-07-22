@@ -11759,7 +11759,7 @@ function selectedNamedBookFold(
       : physical[0]?.action.kind === 'inside_reverse_fold' ? 'inside_reverse' as const
       : physical[0]?.action.kind === 'outside_reverse_fold' ? 'outside_reverse' as const
       : isSquash ? 'squash' as const : isCrimp ? 'crimp' as const
-      : isSink ? 'sink' as const : isLayer ? 'layer' as const
+      : isSink ? 'sink' as const : isLayer ? 'layer_selective' as const
       : isMountain ? 'mountain' as const : isValley ? 'valley' as const
       : isPetal ? 'petal' as const : 'book' as const,
   })

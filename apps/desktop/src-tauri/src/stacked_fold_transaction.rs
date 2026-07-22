@@ -758,6 +758,7 @@ fn compile_named_basic_fold_preview(
         "mountain" if assignment == "mountain" => Some(ori_instructions::BasicFoldKindV1::Mountain),
         "valley" if assignment == "valley" => Some(ori_instructions::BasicFoldKindV1::Valley),
         "squash" | "crimp" | "inside_reverse" | "outside_reverse" | "sink" | "accordion"
+        | "layer_selective"
             if matches!(assignment.as_str(), "mountain" | "valley") =>
         {
             None
@@ -798,6 +799,9 @@ fn compile_named_basic_fold_preview(
         lock_revalidated_current_layer_order_for_commit(&foldability_state, &project, capability)
             .map_err(|_| "The current layer-order authority is unavailable.".to_owned())?
             .ok_or_else(|| "The basic-fold transaction preview is stale.".to_owned())?;
+    }
+    if technique_kind == "layer_selective" && pending.layer_capability.is_none() {
+        return Err("Certified layer-selection authority is required.".to_owned());
     }
     let (_, hinge_ids, pending_fixed_face, _) = pending.requested.pose_components();
     let fixed_face = pending_fixed_face
@@ -970,6 +974,9 @@ fn compile_named_basic_fold_preview(
             "squash" => ori_instructions::compile_certified_squash_fold_timeline_v1(request),
             "crimp" => ori_instructions::compile_certified_crimp_fold_timeline_v1(request),
             "sink" => ori_instructions::compile_certified_sink_fold_timeline_v1(request),
+            "layer_selective" => {
+                ori_instructions::compile_certified_layer_selective_timeline_v1(request)
+            }
             "inside_reverse" | "outside_reverse" => {
                 let reverse = ori_instructions::ReverseFoldMotionRequestV1 {
                     technique_file: request.technique_file,

@@ -974,9 +974,10 @@ pub(crate) mod tests {
         FoldTechniqueParameterTypeV1, FoldTechniqueSinkKindV1, FoldTechniqueSourceV1,
         FoldTechniqueTemplateV1, FoldTechniqueUnsupportedPhysicalOperationV1,
         LayerSelectiveMotionRequestV1, ReverseFoldKindV1, ReverseFoldMotionRequestV1,
-        SinkFoldMotionRequestV1, compile_certified_accordion_fold_timeline_v1,
-        compile_certified_book_fold_timeline_v1, compile_certified_layer_selective_timeline_v1,
-        compile_certified_reverse_fold_timeline_v1, compile_certified_sink_fold_timeline_v1,
+        SinkFoldMotionRequestV1, SquashFoldMotionRequestV1,
+        compile_certified_accordion_fold_timeline_v1, compile_certified_book_fold_timeline_v1,
+        compile_certified_layer_selective_timeline_v1, compile_certified_reverse_fold_timeline_v1,
+        compile_certified_sink_fold_timeline_v1, compile_certified_squash_fold_timeline_v1,
         instruction_pose_fingerprint_v1, validate_fold_technique_file_v1,
     };
 
@@ -1908,6 +1909,14 @@ pub(crate) mod tests {
             FoldTechniqueCapabilityV1::SinkFoldMotionV1,
             FoldTechniqueUnsupportedPhysicalOperationV1::SinkFoldMotionV1,
         );
+        let squash_file = two_segment_file(
+            "つぶし折り",
+            FoldTechniqueActionV1::SinkFold {
+                sink_kind: FoldTechniqueSinkKindV1::Open,
+            },
+            FoldTechniqueCapabilityV1::SinkFoldMotionV1,
+            FoldTechniqueUnsupportedPhysicalOperationV1::SinkFoldMotionV1,
+        );
         let layer_file = two_segment_file(
             "層選択折り",
             FoldTechniqueActionV1::LayerSelectiveManipulation {
@@ -1951,6 +1960,23 @@ pub(crate) mod tests {
                     second_path_certificate: &second,
                 })
                 .expect("compile sink"),
+            ),
+            (
+                "つぶし折り",
+                compile_certified_squash_fold_timeline_v1(SquashFoldMotionRequestV1 {
+                    technique_file: &squash_file,
+                    technique_id: "book-fold",
+                    source_model_fingerprint: &model,
+                    fixed_face,
+                    first_edge: fold_edge,
+                    second_edge,
+                    source_hinge_angles: &source,
+                    intermediate_angle_microdegrees: 45_000_000,
+                    target_angle_microdegrees: 90_000_000,
+                    first_path_certificate: &first,
+                    second_path_certificate: &second,
+                })
+                .expect("compile squash from validated sink primitive"),
             ),
             (
                 "層選択折り",

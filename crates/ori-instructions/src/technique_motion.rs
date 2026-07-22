@@ -115,6 +115,17 @@ pub struct SinkFoldMotionRequestV1<'a> {
 }
 
 pub type LayerSelectiveMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
+/// A squash fold authored as the validated V1 open/closed-sink primitive.
+/// Instruction cues alone never enter this physical compiler.
+pub type SquashFoldMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
+
+/// Compiles the proof-carrying sink primitive used by a named squash fold.
+/// Missing capabilities or either missing path segment remain fail-closed.
+pub fn compile_certified_squash_fold_timeline_v1(
+    request: SquashFoldMotionRequestV1<'_>,
+) -> Result<InstructionTimeline, ReverseFoldMotionError> {
+    compile_certified_sink_fold_timeline_v1(request)
+}
 
 pub fn compile_certified_layer_selective_timeline_v1(
     request: LayerSelectiveMotionRequestV1<'_>,

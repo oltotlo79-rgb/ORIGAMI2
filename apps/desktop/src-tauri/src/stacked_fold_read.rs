@@ -9871,6 +9871,7 @@ mod tests {
     fn current_graph_cycle_authenticates_or_fails_closed_three_times() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         let mut authenticated = 0;
+        let mut rejected = Vec::new();
         for iteration in 0..3 {
             let (mut project, hinges) =
                 super::super::applied_pose::tests::flat_foldable_cross_cycle_project();
@@ -9976,6 +9977,7 @@ mod tests {
                     project.editor.redo(undo_revision).unwrap();
                 }
                 Err(error) => {
+                    rejected.push(error.clone());
                     assert!(
                         error == CYCLE_NONCLOSING_MESSAGE
                             || error == CYCLE_PATH_UNCERTIFIED_MESSAGE,
@@ -9987,7 +9989,10 @@ mod tests {
                 }
             }
         }
-        assert_eq!(authenticated, 3, "fixed native fixture must authenticate");
+        assert_eq!(
+            authenticated, 3,
+            "fixed native fixture must authenticate; rejected={rejected:?}"
+        );
     }
 
     #[test]

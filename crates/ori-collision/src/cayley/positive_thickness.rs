@@ -4682,32 +4682,37 @@ mod tests {
                 two_triangle_model_with_options(EdgeKind::Valley, true, square, 404),
             ),
         ];
-        for (fixture, model) in &models {
-            for root in model.face_ids() {
-                for thickness in [0.1, 1.0, 3.0] {
-                    for angle in [0.0, 10.0, 90.0, 135.0, 179.0] {
-                        let pose = triangular_pose_with_root(model, angle, *root);
-                        let bound = model.bind_pose(&pose).unwrap();
-                        let exact = triangular_exact_pose(model, &pose);
-                        let prerequisite_analysis =
-                            authenticated_ef_prerequisite(&exact, thickness);
-                        let SingleTriangularHingePrerequisiteResult::Authenticated(prerequisite) =
-                            &prerequisite_analysis.result
-                        else {
-                            panic!(
+        std::thread::scope(|scope| {
+            let workers = models
+                .iter()
+                .map(|(fixture, model)| {
+                    scope.spawn(move || {
+                        for root in model.face_ids() {
+                            for thickness in [0.1, 1.0, 3.0] {
+                                for angle in [0.0, 10.0, 90.0, 135.0, 179.0] {
+                                    let pose = triangular_pose_with_root(model, angle, *root);
+                                    let bound = model.bind_pose(&pose).unwrap();
+                                    let exact = triangular_exact_pose(model, &pose);
+                                    let prerequisite_analysis =
+                                        authenticated_ef_prerequisite(&exact, thickness);
+                                    let SingleTriangularHingePrerequisiteResult::Authenticated(
+                                        prerequisite,
+                                    ) = &prerequisite_analysis.result
+                                    else {
+                                        panic!(
                                 "{fixture}, root {root:?}, {thickness} mm at {angle}: prerequisite"
                             );
-                        };
-                        let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
-                            prerequisite,
-                            &exact,
-                            bound,
-                            thickness,
-                            AxisAlignedEfBoundaryLimits::default(),
-                        )
-                        .unwrap();
-                        let ef = ef_capability(&ef_analysis);
-                        let analysis = analyze_exact_e_finite_hinge_corridor_v1(
+                                    };
+                                    let ef_analysis = analyze_axis_aligned_ef_boundary_v1(
+                                        prerequisite,
+                                        &exact,
+                                        bound,
+                                        thickness,
+                                        AxisAlignedEfBoundaryLimits::default(),
+                                    )
+                                    .unwrap();
+                                    let ef = ef_capability(&ef_analysis);
+                                    let analysis = analyze_exact_e_finite_hinge_corridor_v1(
                             &prerequisite_analysis,
                             Some(ef),
                             &exact,
@@ -4718,43 +4723,43 @@ mod tests {
                         .unwrap_or_else(|error| {
                             panic!("{fixture}, root {root:?}, {thickness} mm at {angle}: {error:?}")
                         });
-                        let capability = exact_e_corridor_capability(&analysis);
-                        let expected_kind = if angle == 0.0 {
-                            ExactEFiniteHingeInteractionKind::BoundaryAreaContact
-                        } else {
-                            ExactEFiniteHingeInteractionKind::PositiveVolume
-                        };
-                        assert_eq!(
-                            capability.interaction_kind(),
-                            expected_kind,
-                            "{fixture}, root {root:?}, {thickness} mm at {angle}"
-                        );
-                        assert_eq!(capability.length_squared(), &integer(320_000));
-                        assert_eq!(
-                            capability.half_thickness(),
-                            &(BigRational::from_float(thickness).unwrap() / integer(2))
-                        );
-                        if angle == 0.0 {
-                            assert_eq!(capability.cosine_half_squared(), &integer(1));
-                            assert_eq!(
+                                    let capability = exact_e_corridor_capability(&analysis);
+                                    let expected_kind = if angle == 0.0 {
+                                        ExactEFiniteHingeInteractionKind::BoundaryAreaContact
+                                    } else {
+                                        ExactEFiniteHingeInteractionKind::PositiveVolume
+                                    };
+                                    assert_eq!(
+                                        capability.interaction_kind(),
+                                        expected_kind,
+                                        "{fixture}, root {root:?}, {thickness} mm at {angle}"
+                                    );
+                                    assert_eq!(capability.length_squared(), &integer(320_000));
+                                    assert_eq!(
+                                        capability.half_thickness(),
+                                        &(BigRational::from_float(thickness).unwrap() / integer(2))
+                                    );
+                                    if angle == 0.0 {
+                                        assert_eq!(capability.cosine_half_squared(), &integer(1));
+                                        assert_eq!(
                                 analysis.work.corridor_vertex_tests, 4,
                                 "the four closed rectangle vertices lie on axial/radial boundaries"
                             );
-                        } else {
-                            assert!(analysis.work.corridor_vertex_tests >= 4);
-                        }
-                        assert!(
-                            analysis.work.corridor_vertex_tests <= 120,
-                            "all retained exact intersection vertices are scanned"
-                        );
-                        assert_eq!(analysis.work.authenticated_faces, 2);
-                        assert_eq!(analysis.work.authenticated_hinges, 1);
-                        assert_eq!(analysis.work.prism.prisms, 2);
-                        assert!(
-                            analysis.work.exact.interval_operations
-                                >= analysis.work.prism.exact.interval_operations
-                        );
-                        let rebound = revalidate_exact_e_finite_hinge_corridor_v1(
+                                    } else {
+                                        assert!(analysis.work.corridor_vertex_tests >= 4);
+                                    }
+                                    assert!(
+                                        analysis.work.corridor_vertex_tests <= 120,
+                                        "all retained exact intersection vertices are scanned"
+                                    );
+                                    assert_eq!(analysis.work.authenticated_faces, 2);
+                                    assert_eq!(analysis.work.authenticated_hinges, 1);
+                                    assert_eq!(analysis.work.prism.prisms, 2);
+                                    assert!(
+                                        analysis.work.exact.interval_operations
+                                            >= analysis.work.prism.exact.interval_operations
+                                    );
+                                    let rebound = revalidate_exact_e_finite_hinge_corridor_v1(
                             capability,
                             prerequisite,
                             ef,
@@ -4765,11 +4770,17 @@ mod tests {
                         .expect(
                             "all phase-1, E/F, exact-E, native-instance and thickness bindings",
                         );
-                        assert!(std::ptr::eq(rebound.capability, capability));
-                    }
-                }
+                                    assert!(std::ptr::eq(rebound.capability, capability));
+                                }
+                            }
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            for worker in workers {
+                worker.join().expect("exact-E matrix worker");
             }
-        }
+        });
     }
 
     #[test]

@@ -3071,7 +3071,7 @@ export type DyadicPoseGraphReadResponseV1 = Readonly<{
   projectInstanceId: string
   projectId: string
   revision: number
-  status: 'certified' | 'no_path' | 'resource_limit' | 'cancelled'
+  status: 'certified' | 'no_path' | 'resource_limit' | 'cancelled' | 'unsupported'
   reason: 'proof_complete' | 'no_certified_path' | 'bounded_resource_limit' | 'cancelled' | 'unsupported_geometry'
   stateCount: number
   transitionCount: number
@@ -3115,9 +3115,10 @@ export function readBoundedDyadicPoseGraphV1(request: Readonly<{
       || value.projectInstanceId !== request.expectedProjectInstanceId
       || value.projectId !== request.expectedProjectId
       || value.revision !== request.expectedRevision
-      || !['certified', 'no_path', 'resource_limit', 'cancelled'].includes(String(value.status))
+      || !['certified', 'no_path', 'resource_limit', 'cancelled', 'unsupported'].includes(String(value.status))
       || !['proof_complete', 'no_certified_path', 'bounded_resource_limit', 'cancelled', 'unsupported_geometry'].includes(String(value.reason))
       || (value.reason === 'proof_complete' && value.status !== 'certified')
+      || (value.reason === 'unsupported_geometry') !== (value.status === 'unsupported')
       || ![value.stateCount, value.transitionCount, value.exploredStateCount, value.evaluatedTransitionCount, value.certifiedTransitionCount, value.positiveThicknessTransitionCount, value.layerTransportTransitionCount]
         .every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
       || (value.status === 'certified') !== (typeof value.certificateBindingSha256 === 'string' && /^[0-9a-f]{64}$/.test(value.certificateBindingSha256))

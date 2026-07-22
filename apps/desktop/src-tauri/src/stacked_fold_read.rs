@@ -767,6 +767,22 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
     ) {
         return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
     }
+    if !strict_dyadic_geometry_is_in_scope_v1(&project) {
+        return Ok(dyadic_graph_response(
+            &project,
+            "unsupported",
+            0,
+            0,
+            0,
+            0,
+            0,
+            None,
+            0,
+            None,
+            0,
+            None,
+        ));
+    }
     let layer_capability = foldability_state
         .map(|state| capture_current_layer_order_capability(state, &project))
         .transpose()
@@ -1249,6 +1265,53 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
         layer_count,
         layer_binding,
     ))
+}
+
+fn strict_dyadic_geometry_is_in_scope_v1(project: &super::ProjectState) -> bool {
+    let pattern = project.editor.pattern();
+    if pattern
+        .edges
+        .iter()
+        .any(|edge| edge.kind == ori_domain::EdgeKind::Cut)
+    {
+        return false;
+    }
+    let boundary = &project.editor.paper().boundary_vertices;
+    if boundary.len() < 3 {
+        return false;
+    }
+    let point = |id| {
+        pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == id)
+            .map(|vertex| vertex.position)
+            .filter(|point| point.x.is_finite() && point.y.is_finite())
+    };
+    let mut orientation = 0_i8;
+    for index in 0..boundary.len() {
+        let Some(first) = point(boundary[index]) else {
+            return false;
+        };
+        let Some(second) = point(boundary[(index + 1) % boundary.len()]) else {
+            return false;
+        };
+        let Some(third) = point(boundary[(index + 2) % boundary.len()]) else {
+            return false;
+        };
+        let cross = (second.x - first.x) * (third.y - second.y)
+            - (second.y - first.y) * (third.x - second.x);
+        if cross == 0.0 {
+            continue;
+        }
+        let sign = if cross.is_sign_positive() { 1 } else { -1 };
+        if orientation == 0 {
+            orientation = sign;
+        } else if orientation != sign {
+            return false;
+        }
+    }
+    orientation != 0
 }
 
 fn dyadic_graph_response(
@@ -4204,6 +4267,7 @@ mod tests {
         assert_eq!(observed.state_count, 9);
         assert_eq!(observed.transition_count, 24);
         assert_eq!(observed.status, "no_path");
+        assert_eq!(observed.reason, "no_certified_path");
         assert_eq!(observed.certified_transition_count, 0);
         assert!(observed.certificate_binding_sha256.is_none());
         assert_eq!(observed.positive_thickness_transition_count, 0);
@@ -6370,7 +6434,7 @@ mod tests {
             None,
         )
         .expect("concave read returns a fail-closed observation");
-        assert_eq!(observed.reason, "no_certified_path");
+        assert_eq!(observed.reason, "unsupported_geometry");
         assert!(!observed.mutation_candidate_ready);
         assert!(!observed.authorizes_project_mutation);
         let project = super::super::lock_project(&state).unwrap();
@@ -6469,7 +6533,7 @@ mod tests {
             None,
         )
         .expect("cut read returns a fail-closed observation");
-        assert_eq!(observed.reason, "no_certified_path");
+        assert_eq!(observed.reason, "unsupported_geometry");
         assert!(!observed.mutation_candidate_ready);
         assert!(!observed.authorizes_project_mutation);
         let project = super::super::lock_project(&state).unwrap();
@@ -6577,7 +6641,7 @@ mod tests {
             None,
         )
         .expect("hole read returns a fail-closed observation");
-        assert_eq!(observed.reason, "no_certified_path");
+        assert_eq!(observed.reason, "unsupported_geometry");
         assert!(!observed.mutation_candidate_ready);
         assert!(!observed.authorizes_project_mutation);
         let project = super::super::lock_project(&state).unwrap();

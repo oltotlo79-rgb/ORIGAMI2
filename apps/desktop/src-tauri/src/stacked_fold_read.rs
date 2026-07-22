@@ -5048,7 +5048,7 @@ mod tests {
             &mut project,
             hinges.clone(),
             snapshot.faces[0].id,
-            1.0,
+            89.0,
         );
         let layer_state = GlobalFlatFoldabilityState::default();
         super::super::global_flat_foldability::tests::install_possible_layer_order(
@@ -5063,7 +5063,7 @@ mod tests {
             .copied()
             .map(|edge| DyadicPoseGraphAngleDtoV1 {
                 edge,
-                angle_degrees: 2.0,
+                angle_degrees: 90.0,
             })
             .collect::<Vec<_>>();
         let state = AppState::new(project);

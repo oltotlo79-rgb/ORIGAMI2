@@ -1361,8 +1361,19 @@ pub fn generate_beginner_plans_v1(
                     return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
                 }
                 let endpoints = if asymmetric {
-                    let _landmarks = bounded_generic_composite_endpoints(constraints)
-                        .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+                    if constraints.protrusions.len() != usize::from(required_count)
+                        || constraints
+                            .protrusions
+                            .windows(2)
+                            .any(|pair| pair[0].id >= pair[1].id)
+                        || constraints.protrusions.iter().any(|target| {
+                            target.count != 1
+                                || target.symmetry != BeginnerProtrusionSymmetryV1::None
+                                || target.direction_milli == [0, 0, 0]
+                        })
+                    {
+                        return Err(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate);
+                    }
                     vec![(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)]
                 } else {
                     parameterized_symmetric_endpoints(constraints, required_count, vertical)

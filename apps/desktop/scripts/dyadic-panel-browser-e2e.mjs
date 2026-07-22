@@ -59,6 +59,14 @@ try {
   await verifyHigherDegreeLifecycle(8, 'C8')
   await verifyHigherDegreeLifecycle(16, 'C16')
   await verifyHigherDegreeLifecycle(32, 'C32')
+  await verifyHigherDegreeLifecycle(64, 'C64')
+
+  const overLimit = await openScenario('success', 65)
+  await overLimit.getByLabel(/Cycle path definition/).fill(exactSchedule(65))
+  if (await overLimit.getByRole('button', { name: 'Search bounded dyadic paths' }).isEnabled()) throw new Error('C65 search must be disabled before IPC')
+  const overLimitEvidence = await overLimit.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)
+  if (overLimitEvidence.reads !== 0 || await overLimit.getByTestId('dyadic-pose-graph-status').count() || await overLimit.getByRole('button', { name: 'Apply authenticated path' }).count()) throw new Error(`C65 must fail before IPC: ${JSON.stringify(overLimitEvidence)}`)
+  await overLimit.close()
 
   for (const scenario of ['stale', 'aba', 'tamper']) {
     const page = await openScenario(scenario)

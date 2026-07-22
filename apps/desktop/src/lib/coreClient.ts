@@ -3102,7 +3102,7 @@ export function readBoundedDyadicPoseGraphV1(request: Readonly<{
     || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
     || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1
     || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1
-    || !Array.isArray(request.targetAngles) || request.targetAngles.length > 256
+    || !Array.isArray(request.targetAngles) || request.targetAngles.length === 0 || request.targetAngles.length > 64
     || request.targetAngles.some((entry) => !isCanonicalNonNilUuid(entry.edge)
       || !Number.isFinite(entry.angleDegrees) || entry.angleDegrees < 0 || entry.angleDegrees > 180)) {
     return Promise.reject(new Error('invalid dyadic pose graph request'))
@@ -3161,7 +3161,7 @@ export function mintDyadicPosePathPreviewV1(request: Readonly<{
     || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
     || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1
     || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1
-    || !Array.isArray(request.targetAngles) || request.targetAngles.length > 256
+    || !Array.isArray(request.targetAngles) || request.targetAngles.length === 0 || request.targetAngles.length > 64
     || request.targetAngles.some((entry) => !isCanonicalNonNilUuid(entry.edge) || !Number.isFinite(entry.angleDegrees) || entry.angleDegrees < 0 || entry.angleDegrees > 180)
     || !hash(request.expectedPathBindingSha256)
     || !hash(request.expectedPositiveThicknessBindingSha256)

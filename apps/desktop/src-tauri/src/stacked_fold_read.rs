@@ -75,6 +75,16 @@ const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
 const CANCELLED_MESSAGE: &str = "stacked_fold_cycle_path_cancelled";
 const MAX_STACKED_FOLD_REQUEST_HINGES_V1: usize = 64;
+
+fn dyadic_request_hinge_counts_are_bounded_v1(
+    target_angle_count: usize,
+    cycle_schedule_entry_count: Option<usize>,
+) -> bool {
+    target_angle_count > 0
+        && target_angle_count <= MAX_STACKED_FOLD_REQUEST_HINGES_V1
+        && cycle_schedule_entry_count
+            .is_none_or(|count| count > 0 && count <= MAX_STACKED_FOLD_REQUEST_HINGES_V1)
+}
 const MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1: usize = 9;
 // A certified path is committed as one editor transaction. Keep the request
 // boundary aligned with the editor's bounded multi-step transaction admission.
@@ -457,6 +467,15 @@ fn mint_dyadic_pose_path_preview_inner_v1(
     {
         return Err(INVALID_REQUEST_MESSAGE.to_owned());
     }
+    if !dyadic_request_hinge_counts_are_bounded_v1(
+        request.target_angles.len(),
+        request
+            .cycle_schedule_v1
+            .as_ref()
+            .map(|schedule| schedule.entries.len()),
+    ) {
+        return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
+    }
     let target = ori_kinematics::CanonicalHingeAngles::new(
         request
             .target_angles
@@ -737,6 +756,15 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
         || project.editor.revision() != request.expected_revision
     {
         return Err(STALE_MESSAGE.to_owned());
+    }
+    if !dyadic_request_hinge_counts_are_bounded_v1(
+        request.target_angles.len(),
+        request
+            .cycle_schedule_v1
+            .as_ref()
+            .map(|schedule| schedule.entries.len()),
+    ) {
+        return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
     }
     let layer_capability = foldability_state
         .map(|state| capture_current_layer_order_capability(state, &project))
@@ -6128,8 +6156,13 @@ mod tests {
     #[test]
     fn balloon_degree_six_exact_schedule_is_admitted_by_strict_dyadic_read() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
+        assert!(dyadic_request_hinge_counts_are_bounded_v1(64, Some(64)));
+        assert!(!dyadic_request_hinge_counts_are_bounded_v1(65, Some(64)));
+        assert!(!dyadic_request_hinge_counts_are_bounded_v1(64, Some(65)));
         let (c32_pattern, c32_paper, c32_hinges) =
             super::four_bay_cycle_test_support::eight_bay_rational_cycle_pattern();
+        let (c64_pattern, c64_paper, c64_hinges) =
+            super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern();
         for (fixture_name, (pattern, mut paper, moving), cactus) in [
             ("balloon-c6", balloon_six_sector_cycle_pattern(), false),
             (
@@ -6139,6 +6172,7 @@ mod tests {
             ),
             ("radial-c16", sixteen_sector_cycle_pattern(8), false),
             ("cactus-c32", (c32_pattern, c32_paper, c32_hinges), true),
+            ("cactus-c64", (c64_pattern, c64_paper, c64_hinges), true),
         ] {
             paper.thickness_mm = 0.1;
             let mut project = super::super::ProjectState::new_with_paper(pattern, paper);

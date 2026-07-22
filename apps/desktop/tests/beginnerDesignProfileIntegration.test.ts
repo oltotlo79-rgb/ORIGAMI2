@@ -179,7 +179,10 @@ test('AUT-004 proposes only deterministic safe GLB geometry ranges and applies a
 
 test('general GLB target proposal is offline bounded read-only and explicitly copied', () => {
   assert.match(native, /general_protrusion_candidates: Vec<ori_domain::BeginnerProtrusionTargetV1>/u)
-  assert.match(native, /candidate_points[\s\S]*?\.into_iter\(\)[\s\S]*?\.take\(32\)/u)
+  assert.match(
+    native,
+    /candidate_points[\s\S]*?\.into_iter\(\)[\s\S]*?\.take\(if inferred_component_bridges \{ 8 \} else \{ 32 \}\)/u,
+  )
   assert.match(native, /principal_axis_extents_tenths_mm/u)
   assert.match(native, /struct BeginnerReferenceStickBarV1/u)
   assert.match(native, /strict_glb_vertex_index_bounds/u)
@@ -189,6 +192,19 @@ test('general GLB target proposal is offline bounded read-only and explicitly co
   assert.match(app, /Review and copy general 3D proposal to editor/u)
   assert.match(app, /setBeginnerSkeletonSegments\(suggestion\.stick_bars/u)
   assert.match(app, /setBeginnerProtrusions\(suggestion\.general_protrusion_candidates/u)
+})
+
+test('disconnected GLB components form only one bounded custom tree proposal', () => {
+  assert.match(native, /fn disconnected_glb_stick_tree_v1/u)
+  assert.match(native, /grouped\.len\(\) > 8/u)
+  assert.match(native, /edges\.sort_unstable\(\)/u)
+  assert.match(native, /bridges\.len\(\) \+ 1 != bounds\.len\(\)/u)
+  assert.match(native, /raw\.len\(\) > 16/u)
+  assert.match(native, /reference_model_component_projection_crossing/u)
+  assert.match(native, /component_bridges_are_estimated/u)
+  assert.match(client, /inferred_component_bridges/u)
+  assert.match(app, /Bridges between disconnected 3D components are estimated/u)
+  assert.match(app, /category\.value = 'custom_object'/u)
 })
 
 test('AUT-006 stores every bounded protrusion target attribute in profile history', () => {

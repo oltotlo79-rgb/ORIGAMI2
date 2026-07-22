@@ -2084,6 +2084,8 @@ export type BeginnerReferenceModelSuggestionV1 = Readonly<{
   protrusions: readonly NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number][]
   general_protrusion_candidates: readonly NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number][]
   stick_bars: readonly Readonly<{ id: number; start_tenths_mm: readonly [number, number, number]; end_tenths_mm: readonly [number, number, number]; thickness_tenths_mm: number }>[]
+  component_count: number
+  inferred_component_bridges: boolean
   principal_axis_extents_tenths_mm: readonly [number, number, number]
   quality_score: number
   quality_reasons: readonly string[]
@@ -2107,7 +2109,7 @@ export async function suggestBeginnerReferenceModelFeatures(
   const suggestionKeys = [
     'asset_id', 'bbox_min_tenths_mm', 'bbox_max_tenths_mm', 'dominant_normal_milli',
     'surface_area_milli', 'surface_landmarks_tenths_mm', 'surface_ranges', 'protrusions',
-    'general_protrusion_candidates', 'stick_bars', 'principal_axis_extents_tenths_mm',
+    'general_protrusion_candidates', 'stick_bars', 'component_count', 'inferred_component_bridges', 'principal_axis_extents_tenths_mm',
     'quality_score', 'quality_reasons', 'insufficiency_reasons', 'pair_bindings', 'method', 'suggested_part_kind',
   ] as const
   const suggestion = snapshotCoreDataRecord(response?.suggestion)
@@ -2188,8 +2190,11 @@ export async function suggestBeginnerReferenceModelFeatures(
     || !Number.isInteger(suggestion.quality_score) || Number(suggestion.quality_score) < 0 || Number(suggestion.quality_score) > 100
     || !Array.isArray(suggestion.quality_reasons) || suggestion.quality_reasons.length < 1 || suggestion.quality_reasons.length > 8
     || suggestion.quality_reasons.some((reason) => !['strict_glb_vertex_index_bounds', 'deterministic_aabb_principal_axes'].includes(String(reason)))
+    || !Number.isInteger(suggestion.component_count) || Number(suggestion.component_count) < 1 || Number(suggestion.component_count) > 8
+    || typeof suggestion.inferred_component_bridges !== 'boolean'
+    || (suggestion.inferred_component_bridges !== (Number(suggestion.component_count) > 1))
     || !Array.isArray(suggestion.insufficiency_reasons) || suggestion.insufficiency_reasons.length > 8
-    || suggestion.insufficiency_reasons.some((reason) => !['insufficient_distinct_vertices', 'protrusion_candidate_limit_reached'].includes(String(reason)))
+    || suggestion.insufficiency_reasons.some((reason) => !['insufficient_distinct_vertices', 'protrusion_candidate_limit_reached', 'component_bridges_are_estimated'].includes(String(reason)))
     || protrusions.length < 1 || protrusions.length > 8
     || !Array.isArray(suggestion.pair_bindings)
     || suggestion.pair_bindings.length !== bilateralProtrusions.length
@@ -2213,6 +2218,8 @@ export async function suggestBeginnerReferenceModelFeatures(
     protrusions: Object.freeze(protrusions.slice()),
     general_protrusion_candidates: Object.freeze(generalProtrusions.slice()),
     stick_bars: Object.freeze(stickBars as NonNullable<(typeof stickBars)[number]>[]),
+    component_count: Number(suggestion.component_count),
+    inferred_component_bridges: suggestion.inferred_component_bridges as boolean,
     pair_bindings: Object.freeze(suggestion.pair_bindings.slice()) }) as BeginnerReferenceModelSuggestionV1
 }
 

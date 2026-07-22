@@ -3893,6 +3893,14 @@ function App() {
     const suggestion = beginnerReferenceSuggestion
     const targetAsset = latestSnapshotRef.current?.beginner_design_profile.generation_constraints.target_asset
     if (!suggestion || targetAsset?.kind !== 'reference_model' || targetAsset.asset_id !== suggestion.asset_id) return
+    if (suggestion.inferred_component_bridges && !window.confirm(text({
+      ja: '切断された3D成分間のbridgeは推定です。理由を確認してカスタム対象へコピーしますか？',
+      en: 'Bridges between disconnected 3D components are estimated. Copy to a custom target after reviewing the reason?',
+    }))) return
+    if (suggestion.inferred_component_bridges) {
+      const category = beginnerDesignFormRef.current?.elements.namedItem('target_category')
+      if (category instanceof HTMLSelectElement) category.value = 'custom_object'
+    }
     setBeginnerProtrusions(suggestion.general_protrusion_candidates.map((target) => ({ ...target })))
     setBeginnerSkeletonSegments(suggestion.stick_bars.filter((bar) =>
       bar.start_tenths_mm[0] !== bar.end_tenths_mm[0]

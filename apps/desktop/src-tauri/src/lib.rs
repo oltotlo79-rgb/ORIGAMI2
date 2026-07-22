@@ -5702,6 +5702,8 @@ struct BeginnerReferenceModelSuggestionV1 {
     protrusions: Vec<ori_domain::BeginnerProtrusionTargetV1>,
     general_protrusion_candidates: Vec<ori_domain::BeginnerProtrusionTargetV1>,
     stick_bars: Vec<BeginnerReferenceStickBarV1>,
+    component_count: u8,
+    inferred_component_bridges: bool,
     principal_axis_extents_tenths_mm: [u32; 3],
     quality_score: u8,
     quality_reasons: Vec<String>,
@@ -5718,6 +5720,188 @@ struct BeginnerReferenceStickBarV1 {
     start_tenths_mm: [i32; 3],
     end_tenths_mm: [i32; 3],
     thickness_tenths_mm: u16,
+}
+
+fn disconnected_glb_stick_tree_v1(
+    geometry: &ori_formats::ReferenceGlbGeometryV1,
+) -> Result<Option<(u8, Vec<BeginnerReferenceStickBarV1>)>, String> {
+    let mut parent = (0..geometry.positions.len()).collect::<Vec<_>>();
+    fn root(parent: &mut [usize], mut node: usize) -> usize {
+        while parent[node] != node {
+            parent[node] = parent[parent[node]];
+            node = parent[node];
+        }
+        node
+    }
+    let mut used = std::collections::BTreeSet::new();
+    for triangle in &geometry.triangle_indices {
+        let vertices = triangle
+            .map(|value| {
+                usize::try_from(value)
+                    .ok()
+                    .filter(|index| *index < parent.len())
+                    .ok_or("reference_model_feature_range")
+            })
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        for vertex in &vertices {
+            used.insert(*vertex);
+        }
+        let anchor = root(&mut parent, vertices[0]);
+        for vertex in vertices.into_iter().skip(1) {
+            let other = root(&mut parent, vertex);
+            parent[other] = anchor;
+        }
+    }
+    let mut grouped = std::collections::BTreeMap::<usize, Vec<usize>>::new();
+    for vertex in used {
+        let component = root(&mut parent, vertex);
+        grouped.entry(component).or_default().push(vertex);
+    }
+    if grouped.len() <= 1 {
+        return Ok(None);
+    }
+    if grouped.len() > 8 {
+        return Err("reference_model_component_limit".to_owned());
+    }
+    let quantize = |value: f32| -> Result<i32, String> {
+        let scaled = f64::from(value) * 10_000.0;
+        if !scaled.is_finite() || scaled < i32::MIN as f64 || scaled > i32::MAX as f64 {
+            return Err("reference_model_feature_range".to_owned());
+        }
+        Ok(scaled.round() as i32)
+    };
+    let mut bounds = Vec::new();
+    for vertices in grouped.values() {
+        let mut minimum = [i32::MAX; 3];
+        let mut maximum = [i32::MIN; 3];
+        for vertex in vertices {
+            for axis in 0..3 {
+                let value = quantize(geometry.positions[*vertex][axis])?;
+                minimum[axis] = minimum[axis].min(value);
+                maximum[axis] = maximum[axis].max(value);
+            }
+        }
+        if minimum == maximum {
+            return Err("reference_model_component_degenerate".to_owned());
+        }
+        bounds.push((minimum, maximum));
+    }
+    let centers = bounds
+        .iter()
+        .map(|(minimum, maximum)| {
+            std::array::from_fn::<_, 3, _>(|axis| {
+                ((i64::from(minimum[axis]) + i64::from(maximum[axis])) / 2) as i32
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut edges = Vec::new();
+    for left in 0..bounds.len() {
+        for right in left + 1..bounds.len() {
+            let distance = (0..3)
+                .map(|axis| {
+                    let gap = if bounds[left].1[axis] < bounds[right].0[axis] {
+                        i64::from(bounds[right].0[axis]) - i64::from(bounds[left].1[axis])
+                    } else if bounds[right].1[axis] < bounds[left].0[axis] {
+                        i64::from(bounds[left].0[axis]) - i64::from(bounds[right].1[axis])
+                    } else {
+                        0
+                    };
+                    gap.saturating_mul(gap)
+                })
+                .sum::<i64>();
+            edges.push((distance, left, right));
+        }
+    }
+    edges.sort_unstable();
+    let mut component_parent = (0..bounds.len()).collect::<Vec<_>>();
+    let mut bridges = Vec::new();
+    for (_, left, right) in edges {
+        let a = root(&mut component_parent, left);
+        let b = root(&mut component_parent, right);
+        if a != b {
+            component_parent[b] = a;
+            bridges.push((left, right));
+        }
+    }
+    if bridges.len() + 1 != bounds.len() {
+        return Err("reference_model_component_degenerate".to_owned());
+    }
+    let mut raw = bounds
+        .iter()
+        .enumerate()
+        .map(|(index, (minimum, maximum))| {
+            let axis = (0..2)
+                .max_by_key(|axis| maximum[*axis].saturating_sub(minimum[*axis]))
+                .unwrap_or(0);
+            let mut end = centers[index];
+            end[axis] = maximum[axis];
+            (centers[index], end)
+        })
+        .chain(
+            bridges
+                .iter()
+                .map(|(left, right)| (centers[*left], centers[*right])),
+        )
+        .filter(|(start, end)| start != end)
+        .collect::<Vec<_>>();
+    if raw.len() > 16 || raw.len() != bounds.len() * 2 - 1 {
+        return Err("reference_model_component_degenerate".to_owned());
+    }
+    if raw.iter().any(|(start, end)| {
+        [start, end]
+            .into_iter()
+            .flatten()
+            .any(|coordinate| coordinate.unsigned_abs() > 100_000)
+    }) {
+        return Err("reference_model_component_boundary".to_owned());
+    }
+    fn orient(a: [i32; 3], b: [i32; 3], c: [i32; 3]) -> i128 {
+        (i128::from(b[0]) - i128::from(a[0])) * (i128::from(c[1]) - i128::from(a[1]))
+            - (i128::from(b[1]) - i128::from(a[1])) * (i128::from(c[0]) - i128::from(a[0]))
+    }
+    fn on(a: [i32; 3], b: [i32; 3], p: [i32; 3]) -> bool {
+        orient(a, b, p) == 0
+            && (a[0].min(b[0])..=a[0].max(b[0])).contains(&p[0])
+            && (a[1].min(b[1])..=a[1].max(b[1])).contains(&p[1])
+    }
+    for index in 0..raw.len() {
+        for other in index + 1..raw.len() {
+            let (a, b) = raw[index];
+            let (c, d) = raw[other];
+            if [a, b].into_iter().any(|point| point == c || point == d) {
+                continue;
+            }
+            let values = [
+                orient(a, b, c),
+                orient(a, b, d),
+                orient(c, d, a),
+                orient(c, d, b),
+            ];
+            if on(a, b, c)
+                || on(a, b, d)
+                || on(c, d, a)
+                || on(c, d, b)
+                || (values[0].signum() != values[1].signum()
+                    && values[2].signum() != values[3].signum())
+            {
+                return Err("reference_model_component_projection_crossing".to_owned());
+            }
+        }
+    }
+    raw.sort_unstable();
+    Ok(Some((
+        bounds.len() as u8,
+        raw.into_iter()
+            .enumerate()
+            .map(|(id, (start, end))| BeginnerReferenceStickBarV1 {
+                id: id as u8,
+                start_tenths_mm: start,
+                end_tenths_mm: end,
+                thickness_tenths_mm: 1,
+            })
+            .collect(),
+    )))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -5877,7 +6061,7 @@ fn derive_reference_model_suggestion_v1(
     let center = std::array::from_fn::<_, 3, _>(|axis| {
         bbox_min_tenths_mm[axis].saturating_add(bbox_max_tenths_mm[axis]) / 2
     });
-    let stick_bars = (0..3)
+    let mut stick_bars = (0..3)
         .map(|axis| {
             let mut start = center;
             let mut end = center;
@@ -5900,6 +6084,12 @@ fn derive_reference_model_suggestion_v1(
             }
         })
         .collect::<Vec<_>>();
+    let disconnected = disconnected_glb_stick_tree_v1(geometry)?;
+    let component_count = disconnected.as_ref().map_or(1, |value| value.0);
+    let inferred_component_bridges = disconnected.is_some();
+    if let Some((_, component_bars)) = disconnected {
+        stick_bars = component_bars;
+    }
     let mut candidate_points = surface_landmarks_tenths_mm.clone();
     candidate_points.sort_unstable_by_key(|point| {
         let delta =
@@ -5917,7 +6107,7 @@ fn derive_reference_model_suggestion_v1(
     candidate_points.dedup();
     let general_protrusion_candidates = candidate_points
         .into_iter()
-        .take(32)
+        .take(if inferred_component_bridges { 8 } else { 32 })
         .enumerate()
         .map(|(index, point)| {
             let delta = std::array::from_fn::<_, 3, _>(|axis| {
@@ -5953,8 +6143,11 @@ fn derive_reference_model_suggestion_v1(
     if general_protrusion_candidates.len() < 2 {
         insufficiency_reasons.push("insufficient_distinct_vertices".to_owned());
     }
-    if general_protrusion_candidates.len() == 32 {
+    if general_protrusion_candidates.len() == if inferred_component_bridges { 8 } else { 32 } {
         insufficiency_reasons.push("protrusion_candidate_limit_reached".to_owned());
+    }
+    if inferred_component_bridges {
+        insufficiency_reasons.push("component_bridges_are_estimated".to_owned());
     }
     let quantized = geometry
         .positions
@@ -6270,6 +6463,8 @@ fn derive_reference_model_suggestion_v1(
         protrusions,
         general_protrusion_candidates,
         stick_bars,
+        component_count,
+        inferred_component_bridges,
         principal_axis_extents_tenths_mm,
         quality_score: if insufficiency_reasons.is_empty() {
             86
@@ -14621,6 +14816,25 @@ mod tests {
             &disconnected,
             &disconnected_geometry,
         ));
+        let (component_count, bars) = disconnected_glb_stick_tree_v1(&disconnected_geometry)
+            .unwrap()
+            .unwrap();
+        assert_eq!(component_count, 2);
+        assert_eq!(bars.len(), 3);
+        let mut nine = disconnected_geometry.clone();
+        nine.positions.clear();
+        nine.triangle_indices.clear();
+        for component in 0..9_u32 {
+            let base = nine.positions.len() as u32;
+            let x = component as f32 * 10.0;
+            nine.positions
+                .extend([[x, 0.0, 0.0], [x + 1.0, 0.0, 0.0], [x, 1.0, 0.0]]);
+            nine.triangle_indices.push([base, base + 1, base + 2]);
+        }
+        assert_eq!(
+            disconnected_glb_stick_tree_v1(&nine),
+            Err("reference_model_component_limit".to_owned())
+        );
     }
 
     #[test]
@@ -24449,6 +24663,8 @@ mod tests {
             protrusions: Vec::new(),
             general_protrusion_candidates: Vec::new(),
             stick_bars: Vec::new(),
+            component_count: 1,
+            inferred_component_bridges: false,
             principal_axis_extents_tenths_mm: [100, 80, 40],
             quality_score: 0,
             quality_reasons: vec!["strict_glb_vertex_index_bounds".to_owned()],

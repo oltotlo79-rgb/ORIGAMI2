@@ -283,6 +283,77 @@ pub enum StackedFoldPathDiagnosticErrorV1 {
     StaticDiagnosisUnavailable,
 }
 
+/// Opaque positive-thickness Tree-path evidence.  It retains the complete
+/// canonical endpoints and is useful only through [`Self::is_for`], which
+/// rebinds the source pose to the supplied model and repeats the native proof.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PositiveThicknessTreeContinuousCertificateV1 {
+    source_absolute: CanonicalHingeAngles,
+    target_absolute: CanonicalHingeAngles,
+    paper_thickness_bits: u64,
+    diagnostic: StackedFoldBoundedPathDiagnosticV1,
+}
+
+impl PositiveThicknessTreeContinuousCertificateV1 {
+    #[must_use]
+    pub fn is_for(
+        &self,
+        model: &MaterialTreeKinematicsModel,
+        source_pose: &MaterialTreePose,
+        target_absolute: &CanonicalHingeAngles,
+        paper_thickness_mm: f64,
+    ) -> bool {
+        paper_thickness_mm.to_bits() == self.paper_thickness_bits
+            && target_absolute == &self.target_absolute
+            && source_pose.hinge_angles() == self.source_absolute.as_slice()
+            && diagnose_collective_hinge_path_from_pose_v1(
+                model,
+                source_pose,
+                self.source_absolute.as_slice(),
+                self.target_absolute.as_slice(),
+                paper_thickness_mm,
+                StackedFoldPathDiagnosticLimitsV1::default(),
+            )
+            .is_ok_and(|actual| {
+                actual == self.diagnostic && actual.continuous_clearance_certified()
+            })
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+}
+
+pub fn certify_positive_thickness_tree_continuous_path_v1(
+    model: &MaterialTreeKinematicsModel,
+    source_pose: &MaterialTreePose,
+    target_absolute: &CanonicalHingeAngles,
+    paper_thickness_mm: f64,
+) -> Option<PositiveThicknessTreeContinuousCertificateV1> {
+    if !paper_thickness_mm.is_finite() || paper_thickness_mm <= 0.0 {
+        return None;
+    }
+    let source_absolute = CanonicalHingeAngles::new(source_pose.hinge_angles().to_vec()).ok()?;
+    let diagnostic = diagnose_collective_hinge_path_from_pose_v1(
+        model,
+        source_pose,
+        source_absolute.as_slice(),
+        target_absolute.as_slice(),
+        paper_thickness_mm,
+        StackedFoldPathDiagnosticLimitsV1::default(),
+    )
+    .ok()?;
+    diagnostic.continuous_clearance_certified().then_some(
+        PositiveThicknessTreeContinuousCertificateV1 {
+            source_absolute,
+            target_absolute: target_absolute.clone(),
+            paper_thickness_bits: paper_thickness_mm.to_bits(),
+            diagnostic,
+        },
+    )
+}
+
 fn positive_tree_max_angle_degrees_v1(hinge_count: usize) -> Option<f64> {
     Some(match hinge_count {
         15 => 1.5,
@@ -5975,6 +6046,24 @@ mod tests {
             .expect("bounded positive-thickness diagnosis");
             assert!(diagnostic.continuous_clearance_certified(), "{requested}");
             assert_eq!(diagnostic.safe_stop_angle_degrees(), requested);
+            let target = CanonicalHingeAngles::new(
+                moving
+                    .iter()
+                    .map(|edge| HingeAngle::new(*edge, requested).unwrap())
+                    .collect(),
+            )
+            .unwrap();
+            let certificate =
+                certify_positive_thickness_tree_continuous_path_v1(&model, &initial, &target, 0.1)
+                    .expect("issuer-bound four-hinge certificate");
+            assert!(certificate.is_for(&model, &initial, &target, 0.1));
+            assert!(!certificate.authorizes_project_mutation());
+            assert!(!certificate.is_for(
+                &model,
+                &initial,
+                &target,
+                f64::from_bits(0.1_f64.to_bits() + 1),
+            ));
         }
         let beyond_bound = diagnose_collective_hinge_path_v1(
             &model,

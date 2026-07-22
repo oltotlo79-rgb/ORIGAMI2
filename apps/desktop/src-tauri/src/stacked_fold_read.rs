@@ -4531,45 +4531,115 @@ mod tests {
     }
 
     fn five_hinge_tree_project() -> super::super::ProjectState {
-        positive_thickness_fan_tree_project(5)
-    }
-
-    fn six_hinge_tree_project() -> super::super::ProjectState {
-        positive_thickness_fan_tree_project(6)
-    }
-
-    fn seven_hinge_tree_project() -> super::super::ProjectState {
-        positive_thickness_fan_tree_project(7)
-    }
-
-    fn positive_thickness_fan_tree_project(hinge_count: usize) -> super::super::ProjectState {
         use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
-        let vertex_count = hinge_count + 3;
-        let vertices = (0..vertex_count)
-            .map(|index| {
-                let angle = std::f64::consts::TAU * index as f64 / vertex_count as f64;
-                (500.0 + 400.0 * angle.cos(), 500.0 + 400.0 * angle.sin())
-            })
+        let bottom = (0..=6).map(|index| (index as f64 * 20.0, 0.0));
+        let top = (0..=6).rev().map(|index| (index as f64 * 20.0, 100.0));
+        let vertices = bottom
+            .chain(top)
             .enumerate()
             .map(|(index, (x, y))| Vertex {
-                id: fixed_id("7a00", hinge_count as u64 * 100 + index as u64 + 1),
+                id: fixed_id("7600", index as u64 + 1),
                 position: Point2::new(x, y),
             })
             .collect::<Vec<_>>();
         let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
         let mut edges = (0..boundary.len())
             .map(|index| Edge {
-                id: fixed_id("7b00", hinge_count as u64 * 100 + index as u64 + 1),
+                id: fixed_id("7700", index as u64 + 1),
                 start: boundary[index],
                 end: boundary[(index + 1) % boundary.len()],
                 kind: EdgeKind::Boundary,
             })
             .collect::<Vec<_>>();
-        for index in 0..hinge_count {
+        for index in 1..=5 {
             edges.push(Edge {
-                id: fixed_id("7b00", hinge_count as u64 * 100 + index as u64 + 20),
-                start: boundary[0],
-                end: boundary[index + 2],
+                id: fixed_id("7700", index as u64 + 20),
+                start: boundary[index],
+                end: boundary[13 - index],
+                kind: if index % 2 == 0 {
+                    EdgeKind::Valley
+                } else {
+                    EdgeKind::Mountain
+                },
+            });
+        }
+        super::super::ProjectState::new_with_paper(
+            CreasePattern { vertices, edges },
+            Paper {
+                boundary_vertices: boundary,
+                ..Paper::default()
+            },
+        )
+    }
+
+    fn six_hinge_tree_project() -> super::super::ProjectState {
+        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
+        let bottom = (0..=7).map(|index| (index as f64 * 20.0, 0.0));
+        let top = (0..=7).rev().map(|index| (index as f64 * 20.0, 100.0));
+        let vertices = bottom
+            .chain(top)
+            .enumerate()
+            .map(|(index, (x, y))| Vertex {
+                id: fixed_id("7800", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: fixed_id("7900", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        for index in 1..=6 {
+            edges.push(Edge {
+                id: fixed_id("7900", index as u64 + 20),
+                start: boundary[index],
+                end: boundary[15 - index],
+                kind: if index % 2 == 0 {
+                    EdgeKind::Valley
+                } else {
+                    EdgeKind::Mountain
+                },
+            });
+        }
+        super::super::ProjectState::new_with_paper(
+            CreasePattern { vertices, edges },
+            Paper {
+                boundary_vertices: boundary,
+                ..Paper::default()
+            },
+        )
+    }
+
+    fn seven_hinge_tree_project() -> super::super::ProjectState {
+        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
+        let bottom = (0..=8).map(|index| (index as f64 * 20.0, 0.0));
+        let top = (0..=8).rev().map(|index| (index as f64 * 20.0, 100.0));
+        let vertices = bottom
+            .chain(top)
+            .enumerate()
+            .map(|(index, (x, y))| Vertex {
+                id: fixed_id("7a00", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: fixed_id("7b00", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        for index in 1..=7 {
+            edges.push(Edge {
+                id: fixed_id("7b00", index as u64 + 20),
+                start: boundary[index],
+                end: boundary[17 - index],
                 kind: if index % 2 == 0 {
                     EdgeKind::Valley
                 } else {

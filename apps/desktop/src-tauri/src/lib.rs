@@ -15168,15 +15168,10 @@ mod tests {
                         .collect::<Vec<_>>(),
                     canonical_edge_ids
                 );
-                let assessment = assess_beginner_generated_plan(
-                    authority,
-                    project.editor.paper(),
-                    project.editor.pattern(),
-                    &authority_plan,
-                    None,
+                assert_eq!(
+                    authority_plan.crease_pattern, plan.crease_pattern,
+                    "schema-derived landmark geometry must not depend on the runtime project authority"
                 );
-                assert_eq!(assessment.proof_scope, "necessary");
-                assert!(!assessment.apply_allowed);
             }
             let state = AppState::new(project);
             let before = {

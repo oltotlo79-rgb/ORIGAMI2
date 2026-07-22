@@ -1035,16 +1035,7 @@ pub fn generate_beginner_plans_v1(
                     "asymmetric_fish_landmark_base",
                     constraints,
                 );
-                append_bounded_radial_tree_graph(
-                    plan,
-                    constraints,
-                    namespace,
-                    min_x,
-                    max_x,
-                    min_y,
-                    max_y,
-                )
-                .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?
+                plan
             } else if feature_records >= 2 && !known_composite {
                 let tree_ratios =
                     bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)

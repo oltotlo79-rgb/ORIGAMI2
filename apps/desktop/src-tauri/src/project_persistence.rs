@@ -103,6 +103,91 @@ fn is_safe_transaction_component(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum SingleFileRecoveryObject {
+    Target,
+    Temp,
+    Backup,
+    Journal,
+}
+
+trait SingleFileRecoveryFs {
+    fn object_sha256(&self, object: SingleFileRecoveryObject) -> Result<Option<String>, ()>;
+    fn rename_object(
+        &mut self,
+        from: SingleFileRecoveryObject,
+        to: SingleFileRecoveryObject,
+    ) -> Result<(), ()>;
+    fn remove_object(&mut self, object: SingleFileRecoveryObject) -> Result<(), ()>;
+    fn sync_directory(&mut self) -> Result<(), ()>;
+}
+
+fn recover_authenticated_single_file_v1(
+    fs: &mut impl SingleFileRecoveryFs,
+    journal: &SingleFileJournalPayloadV1,
+) -> Result<(), ()> {
+    let target = fs.object_sha256(SingleFileRecoveryObject::Target)?;
+    let temp = fs.object_sha256(SingleFileRecoveryObject::Temp)?;
+    let backup = fs.object_sha256(SingleFileRecoveryObject::Backup)?;
+    let expected_old = journal.old_sha256.as_ref();
+    let old_matches = |actual: &Option<String>| actual.as_ref() == expected_old;
+
+    match journal.phase {
+        SingleFileJournalPhaseV1::Prepared => {
+            if !old_matches(&target)
+                || temp
+                    .as_ref()
+                    .is_some_and(|hash| hash != &journal.temp_sha256)
+                || backup.is_some()
+            {
+                return Err(());
+            }
+            if temp.is_some() {
+                fs.remove_object(SingleFileRecoveryObject::Temp)?;
+                fs.sync_directory()?;
+            }
+            fs.remove_object(SingleFileRecoveryObject::Journal)?;
+            fs.sync_directory()
+        }
+        SingleFileJournalPhaseV1::OldMoved => {
+            let before_publish = target.is_none()
+                && temp.as_ref() == Some(&journal.temp_sha256)
+                && old_matches(&backup);
+            let after_publish = target.as_ref() == Some(&journal.temp_sha256)
+                && temp.is_none()
+                && (old_matches(&backup) || backup.is_none());
+            if !before_publish && !after_publish {
+                return Err(());
+            }
+            if before_publish {
+                fs.rename_object(
+                    SingleFileRecoveryObject::Temp,
+                    SingleFileRecoveryObject::Target,
+                )?;
+                fs.sync_directory()?;
+            }
+            if backup.is_some() {
+                fs.remove_object(SingleFileRecoveryObject::Backup)?;
+            }
+            fs.remove_object(SingleFileRecoveryObject::Journal)?;
+            fs.sync_directory()
+        }
+        SingleFileJournalPhaseV1::NewPublished => {
+            if target.as_ref() != Some(&journal.temp_sha256)
+                || temp.is_some()
+                || (!old_matches(&backup) && backup.is_some())
+            {
+                return Err(());
+            }
+            if backup.is_some() {
+                fs.remove_object(SingleFileRecoveryObject::Backup)?;
+            }
+            fs.remove_object(SingleFileRecoveryObject::Journal)?;
+            fs.sync_directory()
+        }
+    }
+}
+
 #[cfg(unix)]
 use std::ffi::CString;
 #[cfg(unix)]
@@ -837,11 +922,15 @@ fn write_complete_staged_payload(writer: &mut impl Write, bytes: &[u8]) -> std::
 
 #[cfg(test)]
 mod staged_payload_adapter_tests {
-    use std::io::{self, Write};
+    use std::{
+        collections::HashMap,
+        io::{self, Write},
+    };
 
     use super::{
         SINGLE_FILE_JOURNAL_SCHEMA_V1, SingleFileJournalPayloadV1, SingleFileJournalPhaseV1,
-        decode_single_file_journal_v1, encode_single_file_journal_v1, sha256_hex_bytes,
+        SingleFileRecoveryFs, SingleFileRecoveryObject, decode_single_file_journal_v1,
+        encode_single_file_journal_v1, recover_authenticated_single_file_v1, sha256_hex_bytes,
         write_complete_staged_payload,
     };
     use ori_domain::ProjectId;
@@ -850,6 +939,55 @@ mod staged_payload_adapter_tests {
         bytes: Vec<u8>,
         maximum_chunk: usize,
         fail_after: Option<usize>,
+    }
+
+    #[derive(Clone)]
+    struct RecoveryFsModel {
+        objects: HashMap<SingleFileRecoveryObject, String>,
+        fail_at: Option<usize>,
+        calls: usize,
+    }
+
+    impl RecoveryFsModel {
+        fn step(&mut self) -> Result<(), ()> {
+            let current = self.calls;
+            self.calls += 1;
+            if self.fail_at == Some(current) {
+                self.fail_at = None;
+                Err(())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl SingleFileRecoveryFs for RecoveryFsModel {
+        fn object_sha256(&self, object: SingleFileRecoveryObject) -> Result<Option<String>, ()> {
+            Ok(self.objects.get(&object).cloned())
+        }
+
+        fn rename_object(
+            &mut self,
+            from: SingleFileRecoveryObject,
+            to: SingleFileRecoveryObject,
+        ) -> Result<(), ()> {
+            self.step()?;
+            let value = self.objects.remove(&from).ok_or(())?;
+            if self.objects.insert(to, value).is_some() {
+                return Err(());
+            }
+            Ok(())
+        }
+
+        fn remove_object(&mut self, object: SingleFileRecoveryObject) -> Result<(), ()> {
+            self.step()?;
+            self.objects.remove(&object);
+            Ok(())
+        }
+
+        fn sync_directory(&mut self) -> Result<(), ()> {
+            self.step()
+        }
     }
 
     impl Write for InjectedWriter {
@@ -949,6 +1087,72 @@ mod staged_payload_adapter_tests {
             .is_err(),
             "phase tampering must fail authentication"
         );
+    }
+
+    #[test]
+    fn every_recovery_phase_is_idempotent_across_injected_operation_failures() {
+        let old = sha256_hex_bytes(b"old complete ori2");
+        let new = sha256_hex_bytes(b"new complete ori2");
+        for phase in [
+            SingleFileJournalPhaseV1::Prepared,
+            SingleFileJournalPhaseV1::OldMoved,
+            SingleFileJournalPhaseV1::NewPublished,
+        ] {
+            let journal = SingleFileJournalPayloadV1 {
+                schema_version: SINGLE_FILE_JOURNAL_SCHEMA_V1,
+                project_id: ProjectId::new(),
+                target_path_sha256: sha256_hex_bytes(b"target"),
+                transaction_id: "transaction-2".to_owned(),
+                temp_object_id: "temp-2".to_owned(),
+                temp_sha256: new.clone(),
+                backup_object_id: "backup-2".to_owned(),
+                old_sha256: Some(old.clone()),
+                phase,
+            };
+            let mut initial =
+                HashMap::from([(SingleFileRecoveryObject::Journal, "journal".to_owned())]);
+            match phase {
+                SingleFileJournalPhaseV1::Prepared => {
+                    initial.insert(SingleFileRecoveryObject::Target, old.clone());
+                    initial.insert(SingleFileRecoveryObject::Temp, new.clone());
+                }
+                SingleFileJournalPhaseV1::OldMoved => {
+                    initial.insert(SingleFileRecoveryObject::Backup, old.clone());
+                    initial.insert(SingleFileRecoveryObject::Temp, new.clone());
+                }
+                SingleFileJournalPhaseV1::NewPublished => {
+                    initial.insert(SingleFileRecoveryObject::Target, new.clone());
+                    initial.insert(SingleFileRecoveryObject::Backup, old.clone());
+                }
+            }
+            for fail_at in 0..8 {
+                let mut fs = RecoveryFsModel {
+                    objects: initial.clone(),
+                    fail_at: Some(fail_at),
+                    calls: 0,
+                };
+                let _ = recover_authenticated_single_file_v1(&mut fs, &journal);
+                fs.fail_at = None;
+                recover_authenticated_single_file_v1(&mut fs, &journal)
+                    .expect("restart recovery converges idempotently");
+                let expected = if phase == SingleFileJournalPhaseV1::Prepared {
+                    &old
+                } else {
+                    &new
+                };
+                assert_eq!(
+                    fs.objects.get(&SingleFileRecoveryObject::Target),
+                    Some(expected)
+                );
+                for private in [
+                    SingleFileRecoveryObject::Temp,
+                    SingleFileRecoveryObject::Backup,
+                    SingleFileRecoveryObject::Journal,
+                ] {
+                    assert!(!fs.objects.contains_key(&private));
+                }
+            }
+        }
     }
 }
 

@@ -1727,6 +1727,37 @@ pub(crate) mod tests {
             assert!(build_pending_export(source).is_ok());
         }
 
+        let mut petal_timeline = reopened_reverse.clone();
+        petal_timeline.steps[0].title = "花弁折りの開始姿勢".to_owned();
+        petal_timeline.steps[1].title = "花弁折り 1".to_owned();
+        petal_timeline.steps[2].title = "花弁折り 2".to_owned();
+        let petal_archive = serde_json::to_vec(&petal_timeline).expect("archive petal fold");
+        let reopened_petal: ori_domain::InstructionTimeline =
+            serde_json::from_slice(&petal_archive).expect("reopen petal fold");
+        for (format, magic) in [
+            (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+            (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = reopened_petal.clone();
+            let artifact = build_pending_export(source).expect("native petal-fold export");
+            assert_eq!(artifact.step_count, 3);
+            assert!(artifact.bytes.starts_with(magic));
+        }
+        let mut uncertified_petal = reopened_petal;
+        for step in &mut uncertified_petal.steps[1..] {
+            step.visual.path_certificate_reference_v1 = None;
+            step.description = "手動で作成された花弁折りです。".to_owned();
+        }
+        for format in [
+            InstructionExportFormatRequest::Pdf,
+            InstructionExportFormatRequest::SvgZip,
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = uncertified_petal.clone();
+            assert!(build_pending_export(source).is_ok());
+        }
+
         let mut tampered_reverse = reopened_reverse.clone();
         tampered_reverse.steps[2]
             .visual

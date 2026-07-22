@@ -2077,6 +2077,7 @@ export async function suggestBeginnerReferenceModelFeatures(
     target_parts: [], skeleton_segments: [], protrusions: suggestion.general_protrusion_candidates,
     bulge_targets: [], target_asset: null, allowed_techniques: ['valley_fold'],
   })
+  const generalProtrusions = generalConstraints?.protrusions ?? []
   const stickBars = Array.isArray(suggestion.stick_bars) ? suggestion.stick_bars.map((value, index) => {
     const bar = exactCoreDataRecord(value, ['id', 'start_tenths_mm', 'end_tenths_mm', 'thickness_tenths_mm'] as const)
     if (!bar || bar.id !== index || !isBoundedIntegerTuple(bar.start_tenths_mm, 3, 2_147_483_648)
@@ -2091,8 +2092,8 @@ export async function suggestBeginnerReferenceModelFeatures(
   // eight bounded features. Geometry supplies measurements only; semantic
   // kinds remain the user's current target_parts and apply still requires
   // exact live-suggestion revalidation plus confirmation.
-  if (!constraints || !generalConstraints || generalConstraints.protrusions.length < 1
-    || generalConstraints.protrusions.length > 32 || stickBars.length !== 3 || stickBars.some((bar) => !bar)
+  if (!constraints || !generalConstraints || generalProtrusions.length < 1
+    || generalProtrusions.length > 32 || stickBars.length !== 3 || stickBars.some((bar) => !bar)
     || !isBoundedIntegerTuple(suggestion.principal_axis_extents_tenths_mm, 3, 2_147_483_647)
     || suggestion.principal_axis_extents_tenths_mm.some((extent) => extent < 1)
     || !Number.isInteger(suggestion.quality_score) || Number(suggestion.quality_score) < 0 || Number(suggestion.quality_score) > 100
@@ -2121,7 +2122,7 @@ export async function suggestBeginnerReferenceModelFeatures(
       generic_body_outline_mode: constraints.generic_body_outline_mode,
     }),
     protrusions: Object.freeze(protrusions.slice()),
-    general_protrusion_candidates: Object.freeze(generalConstraints.protrusions.slice()),
+    general_protrusion_candidates: Object.freeze(generalProtrusions.slice()),
     stick_bars: Object.freeze(stickBars as NonNullable<(typeof stickBars)[number]>[]),
     pair_bindings: Object.freeze(suggestion.pair_bindings.slice()) }) as BeginnerReferenceModelSuggestionV1
 }

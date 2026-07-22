@@ -4922,6 +4922,46 @@ mod tests {
         let project = super::super::lock_project(&state).unwrap();
         assert_eq!(project.editor.revision(), revision);
         assert!(project.editor.instruction_timeline().steps.is_empty());
+        drop(project);
+        let apply_request = |path_binding: String| ApplyDyadicPathPreviewRequestV1 {
+            preview_token: preview.preview_token,
+            expected_project_instance_id: instance,
+            expected_project_id: project_id,
+            expected_revision: revision,
+            expected_target_binding_sha256: preview.target_binding_sha256.clone(),
+            expected_path_binding_sha256: path_binding,
+            expected_positive_thickness_binding_sha256: preview
+                .positive_thickness_binding_sha256
+                .clone(),
+            expected_layer_transport_binding_sha256: preview.layer_transport_binding_sha256.clone(),
+        };
+        assert!(
+            apply_dyadic_pose_path_preview_inner_v1(
+                &state,
+                &layer_state,
+                &preview_state,
+                apply_request("00".repeat(32)),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            super::super::lock_project(&state)
+                .unwrap()
+                .editor
+                .revision(),
+            revision,
+            "tampered Tree proof is an atomic no-op"
+        );
+        let applied = apply_dyadic_pose_path_preview_inner_v1(
+            &state,
+            &layer_state,
+            &preview_state,
+            apply_request(preview.path_binding_sha256.clone()),
+        )
+        .expect("issuer-bound four-hinge Tree proof applies atomically");
+        let project = super::super::lock_project(&state).unwrap();
+        assert_eq!(applied, revision + 1);
+        assert!(!project.editor.instruction_timeline().steps.is_empty());
     }
 
     #[test]

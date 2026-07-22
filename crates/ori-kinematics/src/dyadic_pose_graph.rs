@@ -404,4 +404,92 @@ mod tests {
             Err(DyadicPoseGraphGenerationErrorV1::ResourceLimit)
         );
     }
+
+    #[test]
+    fn four_hinge_three_level_cap_is_exact_and_checked_before_allocation() {
+        let mut edges = [EdgeId::new(), EdgeId::new(), EdgeId::new(), EdgeId::new()];
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let vector = |values: [f64; 4]| {
+            CanonicalHingeAngles::new(
+                edges
+                    .into_iter()
+                    .zip(values)
+                    .map(|(edge, value)| HingeAngle::new(edge, value).unwrap())
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let source = vector([0.0, 0.0, 0.0, 0.0]);
+        let target = vector([30.0, 60.0, 90.0, 120.0]);
+        let graph = generate_bounded_dyadic_pose_graph_at_levels_v1(
+            &source,
+            &target,
+            3,
+            DyadicPoseGraphLimitsV1 {
+                max_states: 81,
+                max_transitions: 432,
+            },
+            || true,
+        )
+        .unwrap();
+        assert_eq!(graph.states().len(), 81);
+        assert_eq!(graph.transitions().len(), 432);
+        assert_eq!(
+            generate_bounded_dyadic_pose_graph_at_levels_v1(
+                &source,
+                &target,
+                3,
+                DyadicPoseGraphLimitsV1 {
+                    max_states: 80,
+                    max_transitions: 432,
+                },
+                || true,
+            ),
+            Err(DyadicPoseGraphGenerationErrorV1::ResourceLimit)
+        );
+        assert_eq!(
+            generate_bounded_dyadic_pose_graph_at_levels_v1(
+                &source,
+                &target,
+                3,
+                DyadicPoseGraphLimitsV1 {
+                    max_states: 81,
+                    max_transitions: 431,
+                },
+                || true,
+            ),
+            Err(DyadicPoseGraphGenerationErrorV1::ResourceLimit)
+        );
+        assert_eq!(
+            generate_bounded_dyadic_pose_graph_at_levels_v1(
+                &source,
+                &target,
+                3,
+                DyadicPoseGraphLimitsV1 {
+                    max_states: 81,
+                    max_transitions: 432,
+                },
+                || false,
+            ),
+            Err(DyadicPoseGraphGenerationErrorV1::Cancelled)
+        );
+        let mismatched = vector([30.0, 60.0, 90.0, 120.0]);
+        let mut mismatched_entries = mismatched.as_slice().to_vec();
+        mismatched_entries[0] = HingeAngle::new(EdgeId::new(), 30.0).unwrap();
+        mismatched_entries.sort_unstable_by_key(|entry| entry.edge().canonical_bytes());
+        let mismatched = CanonicalHingeAngles::new(mismatched_entries).unwrap();
+        assert_eq!(
+            generate_bounded_dyadic_pose_graph_at_levels_v1(
+                &source,
+                &mismatched,
+                3,
+                DyadicPoseGraphLimitsV1 {
+                    max_states: 81,
+                    max_transitions: 432,
+                },
+                || true,
+            ),
+            Err(DyadicPoseGraphGenerationErrorV1::BindingMismatch)
+        );
+    }
 }

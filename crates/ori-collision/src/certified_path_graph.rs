@@ -829,4 +829,75 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn four_hinge_three_level_graph_is_certified_and_fails_closed() {
+        let mut edges = [EdgeId::new(), EdgeId::new(), EdgeId::new(), EdgeId::new()];
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let angles = |values: [f64; 4]| {
+            CanonicalHingeAngles::new(
+                edges
+                    .into_iter()
+                    .zip(values)
+                    .map(|(edge, value)| HingeAngle::new(edge, value).unwrap())
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let graph = generate_bounded_dyadic_pose_graph_at_levels_v1(
+            &angles([0.0, 0.0, 0.0, 0.0]),
+            &angles([30.0, 60.0, 90.0, 120.0]),
+            3,
+            DyadicPoseGraphLimitsV1 {
+                max_states: 81,
+                max_transitions: 432,
+            },
+            || true,
+        )
+        .unwrap();
+        let states = (0..graph.states().len())
+            .map(|index| fingerprint(index as u8 + 1))
+            .collect::<Vec<_>>();
+        let candidates = graph
+            .transitions()
+            .iter()
+            .enumerate()
+            .map(|(index, edge)| CertifiedPathTransitionCandidateV1 {
+                source: states[edge.source_state],
+                target: states[edge.target_state],
+                candidate_key: fingerprint((index % 127) as u8 + 100),
+            })
+            .collect::<Vec<_>>();
+        let source = states[graph.source_state()];
+        let target = states[graph.target_state()];
+        assert!(matches!(
+            search_certified_pose_graph_v1(&states, &candidates, source, target, |candidate| {
+                Some(certify(candidate))
+            }),
+            CertifiedPathGraphSearchResultV1::Certified(_)
+        ));
+        assert!(matches!(
+            search_certified_pose_graph_v1(&states, &candidates, source, target, |candidate| {
+                (candidate.source != source).then(|| certify(candidate))
+            }),
+            CertifiedPathGraphSearchResultV1::Indeterminate {
+                reason: CertifiedPathGraphIndeterminateReasonV1::NoCertifiedPath,
+                ..
+            }
+        ));
+        assert!(matches!(
+            search_certified_pose_graph_with_checkpoint_v1(
+                &states,
+                &candidates,
+                source,
+                target,
+                || false,
+                |candidate| Some(certify(candidate)),
+            ),
+            CertifiedPathGraphSearchResultV1::Indeterminate {
+                reason: CertifiedPathGraphIndeterminateReasonV1::Cancelled,
+                ..
+            }
+        ));
+    }
 }

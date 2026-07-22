@@ -11735,6 +11735,12 @@ function selectedNamedBookFold(
     && physical.every((operation) => operation.action.kind === 'straight_line_stacked_fold')
   const isSink = physical[0]?.action.kind === 'sink_fold'
   const isLayer = physical[0]?.action.kind === 'layer_selective_manipulation'
+  const hasCanonicalName = (names: readonly string[]) => technique.names.some(
+    (entry) => names.includes(entry.text),
+  )
+  const isMountain = hasCanonicalName(['山折り', 'Mountain fold'])
+  const isValley = hasCanonicalName(['谷折り', 'Valley fold'])
+  const isPetal = hasCanonicalName(['花弁折り', 'Petal fold'])
   if ((!isAccordion && physical.length !== 1) || (!isReverse && !isAccordion && !isSink && !isLayer && technique.operations.some(
       (operation) => operation.execution_support.status
         === 'unsupported_physical_operation',
@@ -11747,7 +11753,9 @@ function selectedNamedBookFold(
       ?? technique.names[0]?.text
       ?? technique.id,
     kind: isAccordion ? 'accordion' as const : isReverse ? 'reverse' as const
-      : isSink ? 'sink' as const : isLayer ? 'layer' as const : 'book' as const,
+      : isSink ? 'sink' as const : isLayer ? 'layer' as const
+      : isMountain ? 'mountain' as const : isValley ? 'valley' as const
+      : isPetal ? 'petal' as const : 'book' as const,
   })
 }
 

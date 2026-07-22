@@ -506,7 +506,7 @@ describe('StackedFoldPanel', () => {
         snapshot={snapshot}
         selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
         disabled={false}
-        namedBookFold={{ document, techniqueId: 'book-fold', name: '二つ折り' }}
+        namedBookFold={{ document, techniqueId: 'book-fold', name: '山折り', kind: 'mountain' }}
         refreshSnapshot={vi.fn().mockResolvedValue(refreshed)}
         onApplied={onApplied}
       />,
@@ -540,7 +540,8 @@ describe('StackedFoldPanel', () => {
         namedBookFold={{
           document: { techniques: [] } as any,
           techniqueId: 'book-fold',
-          name: 'Book fold',
+          name: 'Mountain fold',
+          kind: 'mountain',
         }}
         refreshSnapshot={vi.fn()}
         onApplied={onApplied}
@@ -558,6 +559,21 @@ describe('StackedFoldPanel', () => {
     expect(onApplied).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Apply named book fold' }))
       .toHaveProperty('disabled', false)
+  })
+
+  it('keeps a petal fold explicitly unsupported without preview or apply authority', async () => {
+    transport.preview.mockResolvedValue(ready)
+    render(<StackedFoldPanel locale="en" snapshot={snapshot}
+      selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+      disabled={false}
+      namedBookFold={{ document: { techniques: [] } as any, techniqueId: 'petal', name: 'Petal fold', kind: 'petal' }}
+      refreshSnapshot={vi.fn()} onApplied={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('Petal fold remains unsupported')
+    expect(screen.queryByRole('button', { name: 'Preview certified timeline' })).toBeNull()
+    expect(screen.getByRole('checkbox')).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: 'Apply named book fold' })).toHaveProperty('disabled', true)
+    expect(transport.namedApply).not.toHaveBeenCalled()
   })
 
   it('routes a named reverse fold only through the two-segment native transaction', async () => {

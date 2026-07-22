@@ -850,12 +850,6 @@ fn compile_named_basic_fold_preview(
             straight_fold: straight_fold(),
         },
     )
-    .or_else(|error| match error {
-        ori_instructions::BookFoldMotionError::UnsupportedTechnique => {
-            ori_instructions::compile_certified_book_fold_timeline_v1(straight_fold())
-        }
-        other => Err(other),
-    })
     .map_err(|_| "The named basic-fold compiler rejected the preview.".to_owned())?;
     let preview_binding_sha256 = basic_fold_preview_binding_v1(
         token,

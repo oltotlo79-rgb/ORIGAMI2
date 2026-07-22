@@ -59,7 +59,7 @@ type Props = Readonly<{
     document: FoldTechniqueFileDocumentV1
     techniqueId: string
     name: string
-    kind?: 'book' | 'reverse' | 'accordion' | 'sink' | 'layer'
+    kind?: 'book' | 'mountain' | 'valley' | 'petal' | 'reverse' | 'accordion' | 'sink' | 'layer'
   }> | null
 }>
 
@@ -139,8 +139,11 @@ export function StackedFoldPanel({
   const [basicFoldTimelinePreview, setBasicFoldTimelinePreview] =
     useState<BasicFoldTimelinePreviewResponseV1 | null>(null)
   const [basicFoldTimelinePreviewError, setBasicFoldTimelinePreviewError] = useState(false)
-  const namedBasicFold = namedBookFold != null
-    && (namedBookFold.kind == null || namedBookFold.kind === 'book')
+  const namedBasicFold = namedBookFold?.kind === 'mountain'
+    || namedBookFold?.kind === 'valley'
+  const unsupportedNamedPhysicalFold = namedBookFold != null
+    && (namedBookFold.kind == null || namedBookFold.kind === 'book'
+      || namedBookFold.kind === 'petal')
   useEffect(() => {
     setBasicFoldTimelinePreview(null)
     setBasicFoldTimelinePreviewError(false)
@@ -457,7 +460,7 @@ export function StackedFoldPanel({
       view.kind !== 'ready' ||
       !view.response.transactionProposal.readyForAtomicApply ||
       !confirmed ||
-      applying || (namedBasicFold
+      applying || unsupportedNamedPhysicalFold || (namedBasicFold
         && basicFoldTimelinePreview?.transactionToken !== view.response.transactionProposal.transactionToken)
     ) return
     const token = view.response.transactionProposal.transactionToken
@@ -527,7 +530,7 @@ export function StackedFoldPanel({
           namedBookFold.document,
           namedBookFold.techniqueId,
         )
-      : namedBookFold
+      : namedBookFold && !unsupportedNamedPhysicalFold
         ? basicFoldTimelinePreview?.transactionToken === token
           ? applyNamedBookFoldTransaction(
           token,
@@ -1268,11 +1271,21 @@ export function StackedFoldPanel({
               )}
             </section>
           )}
+          {unsupportedNamedPhysicalFold && (
+            <p role="alert">{t(
+              namedBookFold?.kind === 'petal'
+                ? '花弁折りは持ち上げ・隣接面の開き・最終平坦化を同時に証明できないため適用できません。'
+                : 'この基本折りには認証済みの山折り・谷折り種別がないため適用できません。',
+              namedBookFold?.kind === 'petal'
+                ? 'Petal fold remains unsupported because lift, adjacent-face opening, and final flattening are not jointly certified.'
+                : 'This basic fold has no certified mountain/valley kind and cannot be applied.',
+            )}</p>
+          )}
           <label>
-            <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={!ready || applying || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)} />
+            <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={!ready || applying || unsupportedNamedPhysicalFold || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)} />
             {t('証明済みの変更内容を確認しました。', 'I reviewed the certified changes.')}
           </label>
-          <button type="button" onClick={() => void apply()} disabled={!ready || !confirmed || applying || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)}>
+          <button type="button" onClick={() => void apply()} disabled={!ready || !confirmed || applying || unsupportedNamedPhysicalFold || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)}>
             {applying
               ? t('適用中…', 'Applying…')
               : namedBookFold

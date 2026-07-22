@@ -16,6 +16,8 @@ pub const MAX_BEGINNER_SKELETON_THICKNESS_TENTHS_MM_V1: u16 = 10_000;
 pub const MAX_BEGINNER_PROTRUSIONS_V1: usize = 32;
 pub const MAX_BEGINNER_BULGE_TARGETS_V1: usize = 32;
 pub const MAX_BEGINNER_BULGE_FACES_V1: usize = 32;
+pub const MAX_BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_CHARS_V1: usize = 64;
+pub const BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_V1: &str = "Custom object";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,6 +53,7 @@ pub enum BeginnerBodyOutlineModeV1 {
 pub enum BeginnerTargetCategoryV1 {
     Animal,
     Insect,
+    CustomObject,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -528,6 +531,20 @@ mod tests {
         assert!(validate_beginner_generation_constraints_v1(&parts));
         parts.target_parts[2].count = 9;
         assert!(!validate_beginner_generation_constraints_v1(&parts));
+
+        let custom = BeginnerGenerationConstraintsV1 {
+            target_category: Some(BeginnerTargetCategoryV1::CustomObject),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&custom).unwrap();
+        assert!(json.contains("\"target_category\":\"custom_object\""));
+        assert!(
+            BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_V1.chars().count()
+                <= MAX_BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_CHARS_V1
+        );
+        let mut unknown = serde_json::to_value(custom).unwrap();
+        unknown["target_category"] = serde_json::json!("custom_object_v2");
+        assert!(serde_json::from_value::<BeginnerGenerationConstraintsV1>(unknown).is_err());
     }
 
     #[test]

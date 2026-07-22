@@ -942,8 +942,9 @@ pub fn generate_beginner_plans_v1(
             .find(|part| part.kind == kind)
             .map_or(0, |part| part.count)
     };
-    if part_count(BeginnerTargetPartKindV1::Head) != 1
-        || part_count(BeginnerTargetPartKindV1::Torso) != 1
+    if target_category != BeginnerTargetCategoryV1::CustomObject
+        && (part_count(BeginnerTargetPartKindV1::Head) != 1
+            || part_count(BeginnerTargetPartKindV1::Torso) != 1)
     {
         return Err(BeginnerGeneratorErrorV1::MissingRequiredParts);
     }
@@ -953,6 +954,43 @@ pub fn generate_beginner_plans_v1(
         EdgeKind::Mountain
     };
     let template = match target_category {
+        BeginnerTargetCategoryV1::CustomObject => {
+            let tree_ratios = bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)
+                .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+            let endpoints = bounded_generic_composite_endpoints(constraints)
+                .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+            let instruction = format!(
+                "bounded_tree_river_axial_v1:{}",
+                tree_ratios
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            let plan = symmetric_template(
+                namespace,
+                source,
+                BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase,
+                kind,
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+                &endpoints,
+                &instruction,
+                constraints,
+            );
+            append_bounded_radial_tree_graph(
+                plan,
+                constraints,
+                namespace,
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+            )
+            .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?
+        }
         BeginnerTargetCategoryV1::Animal => {
             let feature_records = constraints
                 .target_parts
@@ -1573,6 +1611,9 @@ pub fn generate_beginner_plans_v1(
             }
         }
     };
+    if target_category == BeginnerTargetCategoryV1::CustomObject {
+        return Ok(vec![template]);
+    }
     let animal_variants = [
         (
             BeginnerGeneratedPlanKindV1::VerticalBookFold,
@@ -1598,6 +1639,7 @@ pub fn generate_beginner_plans_v1(
         BeginnerTargetCategoryV1::Insect => {
             [animal_variants[2], animal_variants[0], animal_variants[1]]
         }
+        BeginnerTargetCategoryV1::CustomObject => unreachable!("returned above"),
     };
     let mut plans = vec![template];
     plans.extend(
@@ -1813,6 +1855,7 @@ pub fn beginner_target_approximation_score_v1(constraints: &BeginnerGenerationCo
                 })
             }
         }
+        Some(BeginnerTargetCategoryV1::CustomObject) => None,
         None => None,
     };
     let base = target.map_or_else(
@@ -1935,7 +1978,8 @@ fn bounded_generic_composite_endpoints(
             )
         })
         .count();
-    if feature_records != constraints.protrusions.len()
+    if constraints.target_category != Some(BeginnerTargetCategoryV1::CustomObject)
+        && feature_records != constraints.protrusions.len()
         && feature_kinds != constraints.protrusions.len()
     {
         return None;

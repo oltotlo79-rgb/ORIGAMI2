@@ -3708,7 +3708,7 @@ function App() {
         generic_body_outline_tenths_mm: beginnerBodyOutline,
       }),
       generic_body_outline_mode: beginnerBodyOutlineMode,
-      target_category: targetCategory as 'animal' | 'insect',
+      target_category: targetCategory as 'animal' | 'insect' | 'custom_object',
       target_parts: targetParts,
       skeleton_segments: beginnerSkeletonSegments,
       protrusions: beginnerProtrusions,
@@ -3730,7 +3730,7 @@ function App() {
       || maximumSteps < 1
       || maximumSteps > 500
       || !['simple', 'standard', 'detailed'].includes(detailLevel)
-      || !['animal', 'insect'].includes(targetCategory)
+      || !['animal', 'insect', 'custom_object'].includes(targetCategory)
       || (bodySize !== undefined && bodySize.some((axis) =>
         !Number.isInteger(axis) || axis < 1 || axis > 1_000_000))
       || (beginnerBodyOutline.length !== 0
@@ -8577,12 +8577,13 @@ function App() {
                     </option>
                     <option value="animal">{text({ ja: '動物', en: 'Animal' })}</option>
                     <option value="insect">{text({ ja: '昆虫', en: 'Insect' })}</option>
+                    <option value="custom_object">{text({ ja: 'カスタム対象', en: 'Custom object' })}</option>
                   </select>
                 </label>
                 <p id="beginner-target-category-help" className="muted">
                   {text({
                     ja: '初版で対応する目標形状は動物と昆虫だけです。未対応カテゴリは推測しません。',
-                    en: 'The initial release supports only animal and insect targets. Unsupported categories are not inferred.',
+                    en: 'Animal and insect use named templates. Custom object is routed only to the bounded generic-tree candidate.',
                   })}
                 </p>
                 <label className="field">

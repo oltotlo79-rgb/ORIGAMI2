@@ -3085,7 +3085,11 @@ fn symmetric_plan_kind(
                     part.kind == ori_domain::BeginnerTargetPartKindV1::Leg && part.count == 6
                 });
     let generic_mixed_target = feature_records >= 2 && !known_animal && !known_insect;
-    if generic_mixed_target {
+    if profile.generation_constraints.target_category
+        == Some(ori_domain::BeginnerTargetCategoryV1::CustomObject)
+    {
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+    } else if generic_mixed_target {
         ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
     } else if profile.generation_constraints.target_category
         == Some(ori_domain::BeginnerTargetCategoryV1::Animal)
@@ -5274,6 +5278,11 @@ fn apply_grid_plan_document(
         });
         Some(ori_domain::BeginnerGenericTreeProvenanceV1 {
             schema_version: 1,
+            target_category: (beginner_design_profile
+                .generation_constraints
+                .target_category
+                == Some(ori_domain::BeginnerTargetCategoryV1::CustomObject))
+            .then_some(ori_domain::BeginnerTargetCategoryV1::CustomObject),
             source,
             asset_content_sha256,
             tree_topology_sha256,
@@ -6083,6 +6092,7 @@ fn derive_reference_model_suggestion_v1(
             match category {
                 Some(ori_domain::BeginnerTargetCategoryV1::Animal) => 4,
                 Some(ori_domain::BeginnerTargetCategoryV1::Insect) => 2,
+                Some(ori_domain::BeginnerTargetCategoryV1::CustomObject) => 1,
                 None => 1,
             }
         },

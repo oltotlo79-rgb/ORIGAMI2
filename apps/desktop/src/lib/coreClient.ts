@@ -214,6 +214,7 @@ export type BeginnerDesignProfileV1 = {
     confidence_reasons: ReadonlyArray<string>; explicit_override: boolean; source_asset_fingerprint: string
     generic_tree?: Readonly<{
       schema_version: 1; source: 'image_silhouette' | 'glb_geometry' | 'manual_skeleton'
+      target_category?: 'custom_object'
       asset_content_sha256?: ReadonlyArray<number>; tree_topology_sha256: ReadonlyArray<number>
       normalized_length_ratios: ReadonlyArray<number>; orientation: 'horizontal' | 'vertical'
       generator_version: 1; authorizes_apply: false
@@ -238,7 +239,7 @@ export type BeginnerGenerationConstraintsV1 = {
   generic_body_size_tenths_mm?: [number, number]
   generic_body_outline_tenths_mm?: Array<[number, number]>
   generic_body_outline_mode?: 'symmetric' | 'general'
-  target_category: 'animal' | 'insect' | null
+  target_category: 'animal' | 'insect' | 'custom_object' | null
   target_parts: Array<{
     kind: 'head' | 'torso' | 'leg' | 'horn' | 'ear' | 'wing' | 'fin' | 'antenna' | 'tail'
     count: number
@@ -446,7 +447,8 @@ function normalizeBeginnerGenerationConstraints(
     )
     || (record.target_category !== null
       && record.target_category !== 'animal'
-      && record.target_category !== 'insect')
+      && record.target_category !== 'insect'
+      && record.target_category !== 'custom_object')
     || !Array.isArray(record.target_parts)
     || record.target_parts.length > 8
     || (record.generic_body_size_tenths_mm !== undefined
@@ -997,7 +999,9 @@ function normalizeBeginnerCandidateResponse(
       schema_version: 1,
       maximum_steps: 1,
       detail_level: 'simple',
-      target_category: record.kind === 'asymmetric_insect_landmark_base' ? 'insect' : 'animal',
+      target_category: record.kind === 'composite_generic_target_base'
+        ? 'custom_object'
+        : record.kind === 'asymmetric_insect_landmark_base' ? 'insect' : 'animal',
       target_parts: record.target_parts,
       skeleton_segments: record.skeleton_segments,
       target_asset: record.target_asset,
@@ -1196,7 +1200,7 @@ export function normalizeBeginnerDesignProfile(
     record.generation_provenance, ['schema_version', 'topology_authority_sha256', 'fold_path_certificate_sha256', 'confidence_score',
       'confidence_reasons', 'explicit_override', 'source_asset_fingerprint', 'generic_tree'] as const)
   const genericTree = provenance?.generic_tree === undefined ? null : exactCoreDataRecord(
-    provenance.generic_tree, ['schema_version', 'source', 'asset_content_sha256', 'tree_topology_sha256',
+    provenance.generic_tree, ['schema_version', 'target_category', 'source', 'asset_content_sha256', 'tree_topology_sha256',
       'normalized_length_ratios', 'orientation', 'generator_version', 'authorizes_apply', 'instruction_proposal'] as const)
   const treeProposal = genericTree?.instruction_proposal === undefined ? null : exactCoreDataRecord(
     genericTree.instruction_proposal, ['schema_version', 'topology_sha256', 'generator_version', 'authorizes_apply',
@@ -1214,6 +1218,7 @@ export function normalizeBeginnerDesignProfile(
     || provenance.source_asset_fingerprint.length < 1 || provenance.source_asset_fingerprint.length > 128
     || (provenance.generic_tree !== undefined && (!genericTree || genericTree.schema_version !== 1
       || !['image_silhouette', 'glb_geometry', 'manual_skeleton'].includes(String(genericTree.source))
+      || (genericTree.target_category !== undefined && genericTree.target_category !== 'custom_object')
       || (genericTree.asset_content_sha256 !== undefined && !isBoundedIntegerTuple(genericTree.asset_content_sha256, 32, 255))
       || !isBoundedIntegerTuple(genericTree.tree_topology_sha256, 32, 255)
       || !Array.isArray(genericTree.normalized_length_ratios) || genericTree.normalized_length_ratios.length < 1
@@ -1316,6 +1321,7 @@ export function normalizeBeginnerDesignProfile(
       source_asset_fingerprint: provenance.source_asset_fingerprint as string,
       ...(genericTree === null ? {} : { generic_tree: Object.freeze({
         schema_version: 1 as const,
+        ...(genericTree.target_category === undefined ? {} : { target_category: 'custom_object' as const }),
         source: genericTree.source as 'image_silhouette' | 'glb_geometry' | 'manual_skeleton',
         ...(genericTree.asset_content_sha256 === undefined ? {} : {
           asset_content_sha256: Object.freeze((genericTree.asset_content_sha256 as number[]).slice()),

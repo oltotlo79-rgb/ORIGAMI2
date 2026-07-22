@@ -8,6 +8,7 @@ const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
 const domain = source('../../../crates/ori-domain/src/beginner_design.rs')
 const generation = source('../../../crates/ori-domain/src/beginner_generation.rs')
+const generator = source('../../../crates/ori-domain/src/beginner_generator.rs')
 const editor = source('../../../crates/ori-core/src/editor.rs')
 const formats = source('../../../crates/ori-formats/src/lib.rs')
 
@@ -51,13 +52,23 @@ test('AUT-105 generation constraints share the profile history and strict projec
   assert.match(app, /Allowed fold techniques/u)
 })
 
-test('AUT-001 admits only animal and insect target categories and connects them to generation', () => {
-  assert.match(generation, /enum BeginnerTargetCategoryV1[\s\S]*Animal[\s\S]*Insect/u)
+test('AUT-001 admits only the three versioned target categories and connects them to generation', () => {
+  assert.match(generation, /enum BeginnerTargetCategoryV1[\s\S]*Animal[\s\S]*Insect[\s\S]*CustomObject/u)
   assert.match(client, /record\.target_category !== 'animal'/u)
   assert.match(client, /record\.target_category !== 'insect'/u)
+  assert.match(client, /record\.target_category !== 'custom_object'/u)
   assert.match(app, /name="target_category"/u)
   assert.match(app, /初版で対応する目標形状は動物と昆虫だけ/u)
-  assert.match(app, /supports only animal and insect targets/u)
+  assert.match(app, /Animal and insect use named templates/u)
+})
+
+test('custom object is versioned, bounded, and routed only to the generic tree candidate', () => {
+  assert.match(generation, /BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_V1: &str = "Custom object"/u)
+  assert.match(generation, /MAX_BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_CHARS_V1: usize = 64/u)
+  assert.match(generator, /BeginnerTargetCategoryV1::CustomObject =>[\s\S]*CompositeGenericTargetBase/u)
+  assert.match(generator, /target_category == BeginnerTargetCategoryV1::CustomObject[\s\S]*return Ok\(vec!\[template\]\)/u)
+  assert.match(app, /<option value="custom_object">/u)
+  assert.match(app, /Custom object is routed only to the bounded generic-tree candidate/u)
 })
 
 test('AUT-002 composes a bounded explicit target from supported parts', () => {

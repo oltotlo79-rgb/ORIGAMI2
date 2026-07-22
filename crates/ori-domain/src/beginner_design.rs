@@ -96,6 +96,8 @@ pub enum BeginnerGenericTreeOrientationV1 {
 #[serde(deny_unknown_fields)]
 pub struct BeginnerGenericTreeProvenanceV1 {
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_category: Option<crate::BeginnerTargetCategoryV1>,
     pub source: BeginnerGenericTreeSourceV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_content_sha256: Option<[u8; 32]>,
@@ -268,6 +270,9 @@ pub fn validate_beginner_generation_provenance_v1(
             })
         && provenance.generic_tree.as_ref().is_none_or(|tree| {
             tree.schema_version == 1
+                && tree.target_category.is_none_or(|category| {
+                    category == crate::BeginnerTargetCategoryV1::CustomObject
+                })
                 && tree.generator_version == 1
                 && !tree.authorizes_apply
                 && !tree.normalized_length_ratios.is_empty()
@@ -319,6 +324,7 @@ mod tests {
                 semantic_landmark_provenance: None,
                 generic_tree: Some(BeginnerGenericTreeProvenanceV1 {
                     schema_version: 1,
+                    target_category: Some(crate::BeginnerTargetCategoryV1::CustomObject),
                     source: BeginnerGenericTreeSourceV1::ImageSilhouette,
                     asset_content_sha256: Some([2; 32]),
                     tree_topology_sha256: [3; 32],

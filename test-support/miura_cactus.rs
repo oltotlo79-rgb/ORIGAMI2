@@ -18,6 +18,13 @@ pub fn two_patch_miura_cactus_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
 }
 
 pub fn independent_three_by_three_miura_blocks() -> [(CreasePattern, Paper, Vec<EdgeId>); 2] {
+    independent_three_by_three_miura_blocks_with_document().0
+}
+
+pub fn independent_three_by_three_miura_blocks_with_document() -> (
+    [(CreasePattern, Paper, Vec<EdgeId>); 2],
+    (CreasePattern, Paper, Vec<EdgeId>),
+) {
     let namespace = ProjectId::new();
     let northwest = (-2..=0)
         .flat_map(|x| (0..=2).map(move |y| (x, y)))
@@ -25,10 +32,20 @@ pub fn independent_three_by_three_miura_blocks() -> [(CreasePattern, Paper, Vec<
     let southeast = (0..=2)
         .flat_map(|x| (-2..=0).map(move |y| (x, y)))
         .collect::<Vec<_>>();
-    [
-        pattern_for_cells(&northwest, namespace),
-        pattern_for_cells(&southeast, namespace),
-    ]
+    let combined = northwest
+        .iter()
+        .chain(&southeast)
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    (
+        [
+            pattern_for_cells(&northwest, namespace),
+            pattern_for_cells(&southeast, namespace),
+        ],
+        pattern_for_cells(&combined, namespace),
+    )
 }
 
 fn pattern_for_cells(

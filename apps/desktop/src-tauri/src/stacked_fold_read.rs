@@ -5083,12 +5083,454 @@ mod dense_grid_cycle_test_support;
 #[path = "../../../../test-support/four_bay_cycle.rs"]
 mod four_bay_cycle_test_support;
 #[cfg(test)]
+#[path = "../../../../test-support/miura_cactus.rs"]
+mod miura_cactus_test_support;
+#[cfg(test)]
 #[path = "../../../../test-support/theta_cycle.rs"]
 mod theta_cycle_test_support;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seventeen_cell_blockwise_preview_is_atomic_and_fail_closed() {
+        use ori_kinematics::{
+            CanonicalCycleScheduleV1, CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1,
+            HalfAngleRationalEntryInputV1, MaterialHingeGraphAudit, MaterialHingeGraphGeometry,
+            RationalCoefficientV1, TreeKinematicsLimits,
+        };
+        use ori_topology::FaceExtractionInput;
+        use std::collections::HashSet;
+
+        let (blocks, (document_pattern, document_paper, _document_hinges)) =
+            super::miura_cactus_test_support::independent_three_by_three_miura_blocks_with_document(
+            );
+        let mut project =
+            super::super::ProjectState::new_with_paper(document_pattern, document_paper);
+        let project_id = project.project_id;
+        let prepared = blocks.map(|(pattern, paper, moving)| {
+            let topology = analyze_faces(FaceExtractionInput {
+                identity_namespace: project_id,
+                source_revision: 1,
+                paper: &paper,
+                pattern: &pattern,
+            })
+            .snapshot
+            .unwrap();
+            let geometry = MaterialHingeGraphGeometry::prepare(
+                &pattern,
+                &paper,
+                &topology,
+                TreeKinematicsLimits::default(),
+            )
+            .unwrap();
+            let audit =
+                MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default())
+                    .unwrap();
+            let local = analyze_local_flat_foldability(&paper, &pattern);
+            let global = analyze_global_flat_foldability(
+                GlobalFlatFoldabilityInput::current_with_geometry(
+                    project_id, &paper, &pattern, &topology, &local,
+                ),
+                GlobalFlatFoldabilityLimits::default(),
+            )
+            .unwrap();
+            let source = global
+                .layer_order()
+                .expect("native block layer order")
+                .clone();
+            (pattern, geometry, audit, moving, source)
+        });
+        let [
+            (first_pattern, first_geometry, first_audit, first_moving, first_source),
+            (second_pattern, second_geometry, second_audit, second_moving, second_source),
+        ] = prepared;
+        // The transport proof intentionally binds the native snapshot identity.
+        // Allocate the snapshots at their final stable addresses before minting it.
+        let first_source = Box::new(first_source);
+        let second_source = Box::new(second_source);
+        let articulation = *first_geometry
+            .face_ids()
+            .iter()
+            .find(|face| second_geometry.face_ids().contains(face))
+            .expect("one shared articulation face");
+        let make = |pattern: &ori_domain::CreasePattern,
+                    geometry: &MaterialHingeGraphGeometry,
+                    audit: &MaterialHingeGraphAudit,
+                    moving: Vec<ori_domain::EdgeId>| {
+            let mut rows = moving
+                .iter()
+                .map(|edge| {
+                    let edge = pattern.edges.iter().find(|item| item.id == *edge).unwrap();
+                    pattern
+                        .vertices
+                        .iter()
+                        .find(|vertex| vertex.id == edge.start)
+                        .unwrap()
+                        .position
+                        .y
+                        .to_bits()
+                })
+                .collect::<Vec<_>>();
+            rows.sort_unstable();
+            rows.dedup();
+            rows.into_iter()
+                .find_map(|row| {
+                    let active = moving
+                        .iter()
+                        .copied()
+                        .filter(|edge| {
+                            let edge = pattern.edges.iter().find(|item| item.id == *edge).unwrap();
+                            pattern
+                                .vertices
+                                .iter()
+                                .find(|vertex| vertex.id == edge.start)
+                                .unwrap()
+                                .position
+                                .y
+                                .to_bits()
+                                == row
+                        })
+                        .collect::<HashSet<_>>();
+                    let entries = geometry
+                        .hinges()
+                        .iter()
+                        .map(|hinge| HalfAngleRationalEntryInputV1 {
+                            edge: hinge.edge(),
+                            u_domain: [
+                                RationalCoefficientV1 {
+                                    numerator: 0,
+                                    denominator: 1,
+                                },
+                                RationalCoefficientV1 {
+                                    numerator: 1,
+                                    denominator: 1,
+                                },
+                            ],
+                            numerator_power_coefficients: vec![
+                                RationalCoefficientV1 {
+                                    numerator: 0,
+                                    denominator: 1,
+                                },
+                                RationalCoefficientV1 {
+                                    numerator: i64::from(active.contains(&hinge.edge())),
+                                    denominator: 1,
+                                },
+                            ],
+                            denominator_power_coefficients: vec![RationalCoefficientV1 {
+                                numerator: if active.contains(&hinge.edge()) {
+                                    64
+                                } else {
+                                    1
+                                },
+                                denominator: 1,
+                            }],
+                        })
+                        .collect();
+                    let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+                        geometry,
+                        audit,
+                        articulation,
+                        entries,
+                        CycleScheduleLimitsV1::default(),
+                    )
+                    .ok()?;
+                    let closure = geometry
+                        .prove_dyadic_schedule_closure_v1(
+                            audit,
+                            articulation,
+                            &schedule,
+                            1.0e-9,
+                            DyadicIntervalClosureLimitsV1 {
+                                max_depth: 8,
+                                max_leaves: 256,
+                                max_work: 1_000_000,
+                                schedule_limits: CycleScheduleLimitsV1::default(),
+                            },
+                        )
+                        .ok()?;
+                    Some((schedule, closure))
+                })
+                .expect("canonical carrier closes")
+        };
+        let (first_schedule, first_closure) =
+            make(&first_pattern, &first_geometry, &first_audit, first_moving);
+        let (second_schedule, second_closure) = make(
+            &second_pattern,
+            &second_geometry,
+            &second_audit,
+            second_moving,
+        );
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        assert_eq!(snapshot.faces.len(), 17);
+        let document_hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect();
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            document_hinges,
+            articulation,
+        );
+        let revision = project.editor.revision();
+        let applied_pose = project.editor.current_applied_pose().unwrap();
+        let target_timeline = ori_domain::InstructionTimeline {
+            steps: vec![ori_domain::InstructionStep {
+                id: ori_domain::InstructionStepId::new(),
+                title: "二ブロック正厚み折り".to_owned(),
+                description: String::new(),
+                caution: String::new(),
+                duration_ms: ori_domain::MIN_INSTRUCTION_DURATION_MS,
+                visual: ori_domain::InstructionVisual::default(),
+                pose: ori_domain::InstructionPose {
+                    model: ori_domain::InstructionPoseModel::AbsoluteHingeAnglesV1,
+                    source_model_fingerprint: ori_core::fold_model_fingerprint_v1(
+                        project.editor.pattern(),
+                        project.editor.paper(),
+                    ),
+                    fixed_face: applied_pose.fixed_face(),
+                    hinge_angles: applied_pose
+                        .hinge_angles()
+                        .iter()
+                        .map(|angle| InstructionHingeAngle {
+                            edge: angle.edge(),
+                            angle_degrees: angle.angle_degrees(),
+                        })
+                        .collect(),
+                },
+            }],
+        };
+        let issuer_context = blockwise_document_context_v1(
+            project.editor.pattern(),
+            project.editor.paper(),
+            &target_timeline,
+            project.editor.project_layers(),
+            project.editor.current_applied_pose().unwrap(),
+        );
+        let thickness = 0.1;
+        let layer_fingerprint = [0x71; 32];
+        let first_positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+            &first_geometry,
+            &first_audit,
+            articulation,
+            &first_schedule,
+            &first_closure,
+            thickness,
+            32,
+        )
+        .unwrap();
+        let second_positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+            &second_geometry,
+            &second_audit,
+            articulation,
+            &second_schedule,
+            &second_closure,
+            thickness,
+            32,
+        )
+        .unwrap();
+        let make_layer =
+            |geometry: &MaterialHingeGraphGeometry,
+             audit: &MaterialHingeGraphAudit,
+             source: &ori_foldability::LayerOrderSnapshot,
+             schedule: &CanonicalCycleScheduleV1,
+             closure: &ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+             positive: &ori_collision::PositiveThicknessContinuousCertificateV1| {
+                certify_general_multi_face_cell_transport_v1(GeneralCellTransportInputV1 {
+                    geometry,
+                    audit,
+                    source,
+                    schedule,
+                    closure,
+                    positive_continuous: positive,
+                    paper_thickness_mm: thickness,
+                    tolerance: 1.0e-8,
+                    limits: GeneralCellTransportLimitsV1 {
+                        max_transitions: closure.leaves().len() + 1,
+                        max_cells: 1_000_000,
+                        max_layer_records: 1_000_000,
+                        max_boundary_samples: 1_000_000,
+                    },
+                })
+                .unwrap()
+            };
+        let first_layer = make_layer(
+            &first_geometry,
+            &first_audit,
+            &first_source,
+            &first_schedule,
+            &first_closure,
+            &first_positive,
+        );
+        let second_layer = make_layer(
+            &second_geometry,
+            &second_audit,
+            &second_source,
+            &second_schedule,
+            &second_closure,
+            &second_positive,
+        );
+        let parent = ori_collision::issue_blockwise_closure_authority_v1(
+            [
+                ori_collision::BlockwiseClosureInputV1 {
+                    geometry: &first_geometry,
+                    audit: &first_audit,
+                    schedule: &first_schedule,
+                    closure: &first_closure,
+                },
+                ori_collision::BlockwiseClosureInputV1 {
+                    geometry: &second_geometry,
+                    audit: &second_audit,
+                    schedule: &second_schedule,
+                    closure: &second_closure,
+                },
+            ],
+            articulation,
+            thickness,
+            issuer_context,
+        )
+        .unwrap();
+        let authority = ori_collision::issue_blockwise_positive_layer_authority_v1(
+            parent,
+            [
+                ori_collision::BlockwisePositiveLayerInputV1 {
+                    source: &first_source,
+                    positive: first_positive,
+                    layer: first_layer,
+                },
+                ori_collision::BlockwisePositiveLayerInputV1 {
+                    source: &second_source,
+                    positive: second_positive,
+                    layer: second_layer,
+                },
+            ],
+            articulation,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+        )
+        .unwrap();
+
+        let context = issuer_context;
+        let token = ProjectId::new();
+        assert!(authority.revalidates_v1(
+            [&first_source, &second_source],
+            articulation,
+            thickness,
+            context,
+            layer_fingerprint,
+        ));
+        assert_eq!(
+            context,
+            blockwise_document_context_v1(
+                project.editor.pattern(),
+                project.editor.paper(),
+                &target_timeline,
+                project.editor.project_layers(),
+                project.editor.current_applied_pose().unwrap(),
+            )
+        );
+        let record = BlockwisePositiveLayerPreviewRecordV1 {
+            token,
+            project_instance_id: project.instance_id,
+            project_id: project.project_id,
+            revision,
+            issuer_context: context,
+            articulation,
+            thickness,
+            articulation_layer_fingerprint: layer_fingerprint,
+            sources: [first_source, second_source],
+            authority,
+            pattern: project.editor.pattern().clone(),
+            paper: project.editor.paper().clone(),
+            timeline: target_timeline,
+            layers: project.editor.project_layers().clone(),
+            applied_pose: project
+                .editor
+                .current_applied_pose()
+                .unwrap()
+                .try_clone()
+                .unwrap(),
+        };
+        assert_eq!(
+            record.issuer_context,
+            blockwise_document_context_v1(
+                &record.pattern,
+                &record.paper,
+                &record.timeline,
+                &record.layers,
+                &record.applied_pose,
+            )
+        );
+        assert!(record.authority.revalidates_v1(
+            [&record.sources[0], &record.sources[1]],
+            articulation,
+            thickness,
+            context,
+            layer_fingerprint,
+        ));
+        assert!(record.revalidates_for_apply_v1(
+            token,
+            project.instance_id,
+            project.project_id,
+            revision,
+            context,
+            articulation,
+            thickness,
+            layer_fingerprint,
+        ));
+        let previews = BlockwisePositiveLayerPrivatePreviewStateV1::default();
+        previews.mint_once_v1(record).unwrap();
+        for (bad_context, bad_articulation, bad_thickness, bad_layer) in [
+            ([0; 32], articulation, thickness, layer_fingerprint),
+            (context, FaceId::new(), thickness, layer_fingerprint),
+            (context, articulation, 1.0, layer_fingerprint),
+            (context, articulation, thickness, [0x70; 32]),
+        ] {
+            assert!(
+                previews
+                    .apply_v1(
+                        &mut project,
+                        token,
+                        revision,
+                        bad_context,
+                        bad_articulation,
+                        bad_thickness,
+                        bad_layer,
+                    )
+                    .is_err()
+            );
+            assert_eq!(project.editor.revision(), revision);
+            assert!(
+                previews.0.lock().unwrap().is_some(),
+                "failed apply preserves slot"
+            );
+        }
+        let applied = previews
+            .apply_v1(
+                &mut project,
+                token,
+                revision,
+                context,
+                articulation,
+                thickness,
+                layer_fingerprint,
+            )
+            .unwrap();
+        assert_eq!(applied, revision + 1);
+        assert!(previews.0.lock().unwrap().is_none());
+        let after = project.editor.instruction_timeline().clone();
+        project.editor.undo(applied).unwrap();
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
+        assert_eq!(project.editor.instruction_timeline(), &after);
+    }
 
     #[test]
     fn regular_quad_petal_authority_shape_rejects_wrong_counts_and_tree_substitution() {

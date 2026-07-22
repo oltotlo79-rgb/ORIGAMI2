@@ -929,7 +929,9 @@ export type BeginnerCandidateResponseV1 = {
     reason: 'reference_consensus_agreement_v1' | 'reference_consensus_multiple_disagreements_v1'
     pairs: Array<{ left_asset_id: string; right_asset_id: string; component_error: number
       normalized_extent_error: number; branch_error: number; agreement_score: number
-      disagrees: boolean; pair_digest_sha256: number[] }>
+      disagrees: boolean; pair_digest_sha256: number[]; left_component_count: number
+      right_component_count: number; left_normalized_extents: [number, number]
+      right_normalized_extents: [number, number]; left_branch_count: number; right_branch_count: number }>
   }
 }
 
@@ -1053,7 +1055,9 @@ function normalizeBeginnerCandidateResponse(
     ] as const)
   const consensusPairs = consensus && Array.isArray(consensus.pairs) ? consensus.pairs.map((raw) =>
     exactCoreDataRecord(raw, ['left_asset_id', 'right_asset_id', 'component_error',
-      'normalized_extent_error', 'branch_error', 'agreement_score', 'disagrees', 'pair_digest_sha256'] as const)) : []
+      'normalized_extent_error', 'branch_error', 'agreement_score', 'disagrees', 'pair_digest_sha256',
+      'left_component_count', 'right_component_count', 'left_normalized_extents', 'right_normalized_extents',
+      'left_branch_count', 'right_branch_count'] as const)) : []
   if (
     !response
     || response.schema_version !== 1
@@ -1096,6 +1100,10 @@ function normalizeBeginnerCandidateResponse(
         || pair.left_asset_id === pair.right_asset_id || !isBoundedIntegerTuple(pair.pair_digest_sha256, 32, 255)
         || [pair.component_error, pair.normalized_extent_error, pair.branch_error, pair.agreement_score]
           .some((metric) => !Number.isInteger(metric) || Number(metric) < 0 || Number(metric) > 100)
+        || [pair.left_component_count, pair.right_component_count, pair.left_branch_count, pair.right_branch_count]
+          .some((metric) => !Number.isInteger(metric) || Number(metric) < 1 || Number(metric) > 16)
+        || !isBoundedIntegerTuple(pair.left_normalized_extents, 2, 100)
+        || !isBoundedIntegerTuple(pair.right_normalized_extents, 2, 100)
         || typeof pair.disagrees !== 'boolean')))
   ) return null
   const candidates = response.candidates.map((candidate, index) => {

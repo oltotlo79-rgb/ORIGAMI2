@@ -1759,6 +1759,12 @@ struct BeginnerReferenceConsensusPairV1 {
     agreement_score: u8,
     disagrees: bool,
     pair_digest_sha256: [u8; 32],
+    left_component_count: u8,
+    right_component_count: u8,
+    left_normalized_extents: [u8; 2],
+    right_normalized_extents: [u8; 2],
+    left_branch_count: u8,
+    right_branch_count: u8,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1903,6 +1909,12 @@ fn beginner_reference_consensus_analysis_v1(
                 agreement_score: score,
                 disagrees,
                 pair_digest_sha256: digest.finalize().into(),
+                left_component_count: a.components,
+                right_component_count: b.components,
+                left_normalized_extents: [an[0] as u8, an[1] as u8],
+                right_normalized_extents: [bn[0] as u8, bn[1] as u8],
+                left_branch_count: a.branches,
+                right_branch_count: b.branches,
             });
         }
     }

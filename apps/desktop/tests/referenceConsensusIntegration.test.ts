@@ -23,6 +23,11 @@ test('native computes at most six component extent and branch pairs and gates ap
   assert.match(app, /aria-label="Reference consensus"/u)
   assert.match(app, /function excludeBeginnerConsensusAsset/u)
   assert.match(app, /Exclude one outlier/u)
+  assert.match(app, /aria-label="Component-aware reference comparisons"/u)
+  assert.match(app, /aria-selected=\{selectedConsensusPair === key\}/u)
+  assert.match(app, /setSelectedConsensusPair\(null\)/u)
+  assert.match(app, /Read-only component highlight/u)
+  assert.doesNotMatch(app, /pair_digest_sha256/u)
 })
 
 test('apply persists complete consensus bindings exclusion and pair digests', () => {

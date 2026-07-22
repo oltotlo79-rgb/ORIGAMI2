@@ -727,6 +727,7 @@ function App() {
   const [beginnerCandidates, setBeginnerCandidates] =
     useState<BeginnerCandidateResponseV1 | null>(null)
   const [beginnerCandidateBusy, setBeginnerCandidateBusy] = useState(false)
+  const [selectedConsensusPair, setSelectedConsensusPair] = useState<string | null>(null)
   const [beginnerGrid, setBeginnerGrid] = useState<BeginnerGridEvaluationResponse | null>(null)
   const [beginnerGridSelectedPointId, setBeginnerGridSelectedPointId] = useState<number | null>(null)
   const [beginnerGridBusy, setBeginnerGridBusy] = useState(false)
@@ -815,6 +816,7 @@ function App() {
   const beginnerDesignFormRef = useRef<HTMLFormElement>(null)
   useEffect(() => {
     setBeginnerCandidates(null)
+    setSelectedConsensusPair(null)
     setBeginnerSymmetricEstimate(null)
     beginnerRecognitionRequestRef.current += 1
     setBeginnerRecognitionBusy(false)
@@ -8295,11 +8297,32 @@ function App() {
                       {beginnerCandidates.reference_consensus_analysis && (
                         <div aria-label="Reference consensus" role={beginnerCandidates.reference_consensus_analysis.apply_allowed ? 'status' : 'alert'}>
                           <p>{`Reference consensus ${beginnerCandidates.reference_consensus_analysis.agreement_score}/100; ${beginnerCandidates.reference_consensus_analysis.pair_count} pair comparisons; ${beginnerCandidates.reference_consensus_analysis.disagreement_count} disagreements.`}</p>
-                          <ul>{beginnerCandidates.reference_consensus_analysis.pairs.map((pair) => (
-                            <li key={`${pair.left_asset_id}:${pair.right_asset_id}`}>
-                              {`Pair agreement ${pair.agreement_score}/100; components ${pair.component_error}; extent ${pair.normalized_extent_error}; branches ${pair.branch_error}${pair.disagrees ? '; disagrees' : ''}`}
-                            </li>
-                          ))}</ul>
+                          <table aria-label="Component-aware reference comparisons">
+                            <thead><tr><th scope="col">References</th><th scope="col">Components</th><th scope="col">Extent</th><th scope="col">Branches</th><th scope="col">Result</th></tr></thead>
+                            <tbody>{beginnerCandidates.reference_consensus_analysis.pairs.slice(0, 6).map((pair) => {
+                              const bindings = nativeSnapshot.beginner_design_profile.reference_consensus_v1?.bindings ?? []
+                              const left = bindings.findIndex((binding) => binding.asset_id === pair.left_asset_id) + 1
+                              const right = bindings.findIndex((binding) => binding.asset_id === pair.right_asset_id) + 1
+                              const key = `${pair.left_asset_id}:${pair.right_asset_id}`
+                              const reason = pair.disagrees
+                                ? [pair.component_error > 1 ? 'component mismatch' : '', pair.normalized_extent_error > 20 ? 'extent mismatch' : '', pair.branch_error > 2 ? 'branch mismatch' : ''].filter(Boolean).join(', ')
+                                : 'within all thresholds'
+                              return <tr key={key} aria-selected={selectedConsensusPair === key}>
+                                <th scope="row"><button type="button" aria-pressed={selectedConsensusPair === key}
+                                  onClick={() => setSelectedConsensusPair(selectedConsensusPair === key ? null : key)}>
+                                  {`Reference ${left} / Reference ${right}`}</button></th>
+                                <td>{`${pair.left_component_count} / ${pair.right_component_count} (error ${pair.component_error})`}</td>
+                                <td>{`${pair.left_normalized_extents.join('×')} / ${pair.right_normalized_extents.join('×')} (error ${pair.normalized_extent_error})`}</td>
+                                <td>{`${pair.left_branch_count} / ${pair.right_branch_count} (error ${pair.branch_error})`}</td>
+                                <td>{`${pair.agreement_score}/100 — ${reason}`}</td>
+                              </tr>
+                            })}</tbody>
+                          </table>
+                          {selectedConsensusPair && (() => {
+                            const pair = beginnerCandidates.reference_consensus_analysis?.pairs.find((candidate) => `${candidate.left_asset_id}:${candidate.right_asset_id}` === selectedConsensusPair)
+                            return pair ? <p role="status" aria-live="polite">{`Read-only component highlight: A ${pair.left_normalized_extents.join('×')}, ${pair.left_branch_count} branches; B ${pair.right_normalized_extents.join('×')}, ${pair.right_branch_count} branches.`}</p> : null
+                          })()}
+                          {nativeSnapshot.beginner_design_profile.reference_consensus_v1?.excluded_asset_id && <p role="status">One explicitly excluded reference is omitted from this table.</p>}
                           {nativeSnapshot.beginner_design_profile.reference_consensus_v1 && (
                             <fieldset><legend>Exclude one outlier</legend>
                               {nativeSnapshot.beginner_design_profile.reference_consensus_v1.bindings.map((binding, index) => (

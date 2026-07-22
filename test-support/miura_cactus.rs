@@ -14,24 +14,10 @@ pub fn two_patch_miura_cactus_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
         (0, -1),
         (1, -1),
     ];
-    pattern_for_cells(&cells, ProjectId::new())
-}
-
-pub fn independent_miura_cactus_blocks() -> [(CreasePattern, Paper, Vec<EdgeId>); 2] {
     let namespace = ProjectId::new();
-    [
-        pattern_for_cells(&[(0, 0), (-1, 0), (0, 1), (-1, 1)], namespace),
-        pattern_for_cells(&[(0, 0), (1, 0), (0, -1), (1, -1)], namespace),
-    ]
-}
-
-fn pattern_for_cells(
-    cells: &[(i8, i8)],
-    namespace: ProjectId,
-) -> (CreasePattern, Paper, Vec<EdgeId>) {
     let mut points = BTreeSet::new();
     let mut incidence = BTreeMap::<((i8, i8), (i8, i8)), (usize, (i8, i8), (i8, i8))>::new();
-    for &(x, y) in cells {
+    for (x, y) in cells {
         let corners = [(x, y), (x + 1, y), (x + 1, y + 1), (x, y + 1)];
         points.extend(corners);
         for index in 0..4 {
@@ -50,8 +36,9 @@ fn pattern_for_cells(
     }
     let vertices = points
         .iter()
-        .map(|&(x, y)| Vertex {
-            id: VertexId::derive_v5(namespace, &[0xc1, (x + 2) as u8, (y + 2) as u8]),
+        .enumerate()
+        .map(|(index, &(x, y))| Vertex {
+            id: VertexId::derive_v5(namespace, &[0xc1, index as u8]),
             position: Point2::new(f64::from(x) * 20.0, f64::from(y) * 20.0),
         })
         .collect::<Vec<_>>();
@@ -65,17 +52,9 @@ fn pattern_for_cells(
     let mut moving = Vec::new();
     let edges = incidence
         .iter()
-        .map(|(&(a, b), &(count, start, end))| {
-            let id = EdgeId::derive_v5(
-                namespace,
-                &[
-                    0xc2,
-                    (a.0 + 2) as u8,
-                    (a.1 + 2) as u8,
-                    (b.0 + 2) as u8,
-                    (b.1 + 2) as u8,
-                ],
-            );
+        .enumerate()
+        .map(|(index, (&(a, b), &(count, start, end)))| {
+            let id = EdgeId::derive_v5(namespace, &[0xc2, index as u8]);
             let kind = if count == 1 {
                 EdgeKind::Boundary
             } else if a.1 == b.1 {

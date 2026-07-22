@@ -831,7 +831,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 .ok()
             })
             .ok_or(ori_kinematics::DyadicPoseGraphGenerationErrorV1::BindingMismatch)
-    } else if target.as_slice().len() >= 32 {
+    } else if audit.closure_hinges().len() >= 2 || target.as_slice().len() >= 32 {
         let midpoint = ori_kinematics::CanonicalHingeAngles::new(
             pose.hinge_angles()
                 .as_slice()
@@ -6291,12 +6291,15 @@ mod tests {
             super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern();
         let (c8_pattern, c8_paper, c8_cardinal) = octagonal_eight_sector_cycle_pattern();
         let c8_opposite = vec![c8_cardinal[0], c8_cardinal[2]];
-        for (fixture_name, (pattern, mut paper, moving), cactus) in [
-            ("balloon-c6", balloon_six_sector_cycle_pattern(), false),
-            ("octagonal-c8", (c8_pattern, c8_paper, c8_opposite), false),
-            ("radial-c16", sixteen_sector_cycle_pattern(8), false),
-            ("cactus-c32", (c32_pattern, c32_paper, c32_hinges), true),
-            ("cactus-c64", (c64_pattern, c64_paper, c64_hinges), true),
+        let (theta_pattern, theta_paper, theta_hinges, theta_moving) =
+            super::theta_cycle_test_support::theta_shared_hinge_pattern();
+        for (fixture_name, (pattern, mut paper, moving), kind) in [
+            ("balloon-c6", balloon_six_sector_cycle_pattern(), 0),
+            ("octagonal-c8", (c8_pattern, c8_paper, c8_opposite), 0),
+            ("radial-c16", sixteen_sector_cycle_pattern(8), 0),
+            ("cactus-c32", (c32_pattern, c32_paper, c32_hinges), 1),
+            ("cactus-c64", (c64_pattern, c64_paper, c64_hinges), 1),
+            ("theta-c2", (theta_pattern, theta_paper, theta_moving), 2),
         ] {
             paper.thickness_mm = 0.1;
             let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
@@ -6310,7 +6313,7 @@ mod tests {
                 .iter()
                 .map(|hinge| hinge.edge)
                 .collect::<Vec<_>>();
-            let fixed = if cactus {
+            let fixed = if kind == 1 {
                 snapshot
                     .faces
                     .iter()
@@ -6341,8 +6344,10 @@ mod tests {
             let project_id = project.project_id;
             let revision = project.editor.revision();
             let state = AppState::new(project);
-            let schedule = if cactus {
+            let schedule = if kind == 1 {
                 four_bay_cycle_schedule(&hinges)
+            } else if kind == 2 {
+                theta_cycle_schedule(&theta_hinges, &moving)
             } else {
                 dense_grid_schedule(&hinges, &moving, 100)
             };

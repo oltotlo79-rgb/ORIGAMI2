@@ -41,6 +41,11 @@ beforeEach(() => {
     .mockReturnValue(context)
   vi.spyOn(HTMLCanvasElement.prototype, 'getBoundingClientRect')
     .mockReturnValue(CANVAS_RECT)
+  Object.defineProperties(HTMLCanvasElement.prototype, {
+    setPointerCapture: { configurable: true, value: vi.fn() },
+    hasPointerCapture: { configurable: true, value: vi.fn(() => true) },
+    releasePointerCapture: { configurable: true, value: vi.fn() },
+  })
   vi.stubGlobal('ResizeObserver', MockResizeObserver)
 })
 
@@ -219,6 +224,41 @@ describe('CreaseCanvas localization', () => {
       clientY: 250,
     })
     expect(onSelectFace).toHaveBeenCalledWith('face-a')
+  })
+})
+
+describe('CreaseCanvas vertex dragging', () => {
+  it('does not silently snap a moved vertex onto an unsplit edge midpoint', () => {
+    const onMoveVertex = vi.fn()
+    renderCanvas({
+      localeStore: localeFixture('en'),
+      tool: 'select',
+      vertices: [
+        { id: 'moving', x: 100, y: 100 },
+        { id: 'left', x: 0, y: 200 },
+        { id: 'right', x: 400, y: 200 },
+      ],
+      lines: [{
+        id: 'target-edge',
+        startVertexId: 'left',
+        endVertexId: 'right',
+        x1: 0,
+        y1: 200,
+        x2: 400,
+        y2: 200,
+        kind: 'mountain',
+      }],
+      selectedVertexId: 'moving',
+      onSelectVertex: () => undefined,
+      onMoveVertex,
+    })
+    const canvas = screen.getByLabelText('Crease-pattern editing canvas')
+    fireEvent.pointerDown(canvas, { clientX: 138, clientY: 138, pointerId: 7, button: 0 })
+    fireEvent.pointerMove(canvas, { clientX: 246, clientY: 246, pointerId: 7 })
+    fireEvent.pointerUp(canvas, { clientX: 246, clientY: 246, pointerId: 7 })
+
+    expect(onMoveVertex).toHaveBeenCalledOnce()
+    expect(onMoveVertex).not.toHaveBeenCalledWith('moving', 200, 200)
   })
 })
 

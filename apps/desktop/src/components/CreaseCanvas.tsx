@@ -16,6 +16,7 @@ import {
   type SnapSettings,
 } from '../lib/snap'
 import { createIntersectionSnapIndex } from '../lib/intersectionSnap'
+import { clusterPointLiesOnSegment } from '../lib/intersectionClusterNumerics'
 import { createCanvasLineDrawBatches } from '../lib/canvasBatching'
 import {
   CREASE_LINE_PRESENTATIONS,
@@ -919,6 +920,9 @@ export function CreaseCanvas({
       spatialIndex: snapSpatialIndex,
       accept: (candidate) => {
         if (
+          candidate.kind === 'edge' ||
+          candidate.kind === 'midpoint' ||
+          lines.some((line) => clusterPointLiesOnSegment(candidate.point, line)) ||
           !isFiniteSnapPoint(candidate.point) ||
           lookupExactVertex(exactVertexIndex, candidate.point, drag.vertexId)
         ) return false

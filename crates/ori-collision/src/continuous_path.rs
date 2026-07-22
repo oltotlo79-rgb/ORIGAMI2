@@ -6178,6 +6178,31 @@ mod tests {
                 f64::from_bits(0.1_f64.to_bits() + 1),
             ));
         }
+        let nonzero_source = CanonicalHingeAngles::new(
+            moving
+                .iter()
+                .map(|edge| HingeAngle::new(*edge, 10.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let nonzero_pose = model
+            .solve(Some(model.face_ids()[0]), &nonzero_source)
+            .unwrap();
+        let nonzero_target = CanonicalHingeAngles::new(
+            moving
+                .iter()
+                .map(|edge| HingeAngle::new(*edge, 20.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let certificate = certify_positive_thickness_tree_continuous_path_v1(
+            &model,
+            &nonzero_pose,
+            &nonzero_target,
+            0.1,
+        )
+        .expect("positive Tree proof is bounded by absolute-pose excursion");
+        assert!(certificate.is_for(&model, &nonzero_pose, &nonzero_target, 0.1));
         let beyond_bound = diagnose_collective_hinge_path_v1(
             &model,
             &initial,

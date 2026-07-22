@@ -7,12 +7,102 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
+use ori_domain::ProjectId;
 #[cfg(test)]
 use ori_formats::ProjectDocument;
 use ori_formats::{
     Ori2Limits, Ori2ProjectArchive, read_project_archive_ori2_with_limits,
     write_project_archive_ori2,
 };
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+const SINGLE_FILE_JOURNAL_SCHEMA_V1: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SingleFileJournalPhaseV1 {
+    Prepared,
+    OldMoved,
+    NewPublished,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SingleFileJournalPayloadV1 {
+    schema_version: u32,
+    project_id: ProjectId,
+    target_path_sha256: String,
+    transaction_id: String,
+    temp_object_id: String,
+    temp_sha256: String,
+    backup_object_id: String,
+    old_sha256: Option<String>,
+    phase: SingleFileJournalPhaseV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthenticatedSingleFileJournalV1 {
+    payload: SingleFileJournalPayloadV1,
+    payload_sha256: String,
+}
+
+fn encode_single_file_journal_v1(
+    payload: SingleFileJournalPayloadV1,
+) -> Result<Vec<u8>, serde_json::Error> {
+    let canonical = serde_json::to_vec(&payload)?;
+    serde_json::to_vec_pretty(&AuthenticatedSingleFileJournalV1 {
+        payload,
+        payload_sha256: sha256_hex_bytes(&canonical),
+    })
+}
+
+fn decode_single_file_journal_v1(
+    bytes: &[u8],
+    expected_project_id: ProjectId,
+    expected_target_path_sha256: &str,
+) -> Result<SingleFileJournalPayloadV1, ()> {
+    let journal: AuthenticatedSingleFileJournalV1 =
+        serde_json::from_slice(bytes).map_err(|_| ())?;
+    let canonical = serde_json::to_vec(&journal.payload).map_err(|_| ())?;
+    let payload = journal.payload;
+    let valid = payload.schema_version == SINGLE_FILE_JOURNAL_SCHEMA_V1
+        && payload.project_id == expected_project_id
+        && payload.target_path_sha256 == expected_target_path_sha256
+        && journal.payload_sha256 == sha256_hex_bytes(&canonical)
+        && is_lowercase_sha256(&payload.target_path_sha256)
+        && is_lowercase_sha256(&payload.temp_sha256)
+        && payload
+            .old_sha256
+            .as_deref()
+            .is_none_or(is_lowercase_sha256)
+        && is_safe_transaction_component(&payload.transaction_id)
+        && is_safe_transaction_component(&payload.temp_object_id)
+        && is_safe_transaction_component(&payload.backup_object_id)
+        && payload.temp_object_id != payload.backup_object_id;
+    valid.then_some(payload).ok_or(())
+}
+
+fn sha256_hex_bytes(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_safe_transaction_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 96
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
 #[cfg(unix)]
 use std::ffi::CString;
 #[cfg(unix)]
@@ -749,7 +839,12 @@ fn write_complete_staged_payload(writer: &mut impl Write, bytes: &[u8]) -> std::
 mod staged_payload_adapter_tests {
     use std::io::{self, Write};
 
-    use super::write_complete_staged_payload;
+    use super::{
+        SINGLE_FILE_JOURNAL_SCHEMA_V1, SingleFileJournalPayloadV1, SingleFileJournalPhaseV1,
+        decode_single_file_journal_v1, encode_single_file_journal_v1, sha256_hex_bytes,
+        write_complete_staged_payload,
+    };
+    use ori_domain::ProjectId;
 
     struct InjectedWriter {
         bytes: Vec<u8>,
@@ -810,6 +905,50 @@ mod staged_payload_adapter_tests {
             io::ErrorKind::StorageFull | io::ErrorKind::WriteZero
         ));
         assert_ne!(full.bytes, payload);
+    }
+
+    #[test]
+    fn journal_v1_is_content_authenticated_and_bound_to_project_and_target() {
+        let project_id = ProjectId::new();
+        let target = sha256_hex_bytes(b"canonical target path");
+        let payload = SingleFileJournalPayloadV1 {
+            schema_version: SINGLE_FILE_JOURNAL_SCHEMA_V1,
+            project_id,
+            target_path_sha256: target.clone(),
+            transaction_id: "transaction-1".to_owned(),
+            temp_object_id: "temp-1".to_owned(),
+            temp_sha256: sha256_hex_bytes(b"new ori2"),
+            backup_object_id: "backup-1".to_owned(),
+            old_sha256: Some(sha256_hex_bytes(b"old ori2")),
+            phase: SingleFileJournalPhaseV1::Prepared,
+        };
+        let encoded = encode_single_file_journal_v1(payload.clone()).expect("encode journal");
+        assert_eq!(
+            decode_single_file_journal_v1(&encoded, project_id, &target),
+            Ok(payload)
+        );
+        assert!(
+            decode_single_file_journal_v1(&encoded, ProjectId::new(), &target).is_err(),
+            "a different project must not adopt the transaction"
+        );
+        assert!(
+            decode_single_file_journal_v1(&encoded, project_id, &sha256_hex_bytes(b"other target"))
+                .is_err(),
+            "a different target path must not adopt the transaction"
+        );
+
+        let mut tampered: serde_json::Value =
+            serde_json::from_slice(&encoded).expect("journal JSON");
+        tampered["payload"]["phase"] = serde_json::json!("new_published");
+        assert!(
+            decode_single_file_journal_v1(
+                &serde_json::to_vec(&tampered).expect("tampered journal"),
+                project_id,
+                &target
+            )
+            .is_err(),
+            "phase tampering must fail authentication"
+        );
     }
 }
 

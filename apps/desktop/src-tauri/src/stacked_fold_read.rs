@@ -4557,8 +4557,8 @@ mod tests {
 
     fn positive_tree_project(hinge_count: usize) -> super::super::ProjectState {
         use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
-        let points: &[(f64, f64)] = match hinge_count {
-            5 => &[
+        let points: Vec<(f64, f64)> = match hinge_count {
+            5 => vec![
                 (0.0, 0.0),
                 (300.0, 0.0),
                 (520.0, 90.0),
@@ -4568,7 +4568,7 @@ mod tests {
                 (180.0, 700.0),
                 (0.0, 340.0),
             ],
-            6 => &[
+            6 => vec![
                 (0.0, 0.0),
                 (300.0, 0.0),
                 (530.0, 70.0),
@@ -4579,7 +4579,7 @@ mod tests {
                 (140.0, 720.0),
                 (0.0, 360.0),
             ],
-            7 => &[
+            7 => vec![
                 (0.0, 0.0),
                 (300.0, 0.0),
                 (540.0, 60.0),
@@ -4591,19 +4591,20 @@ mod tests {
                 (150.0, 780.0),
                 (0.0, 390.0),
             ],
-            8 => &[
-                (0.0, 0.0),
-                (300.0, 0.0),
-                (540.0, 60.0),
-                (730.0, 190.0),
-                (840.0, 380.0),
-                (850.0, 570.0),
-                (760.0, 750.0),
-                (590.0, 880.0),
-                (370.0, 930.0),
-                (150.0, 850.0),
-                (0.0, 430.0),
-            ],
+            8 => {
+                let radius = 41_i64.pow(9);
+                let mut directions = Vec::with_capacity(11);
+                directions.push((0.0, 0.0));
+                let (mut real, mut imaginary) = (1_i64, 0_i64);
+                for power in 0..=9_u32 {
+                    let scale = 41_i64.pow(9 - power);
+                    directions.push(((real * scale) as f64, (imaginary * scale) as f64));
+                    (real, imaginary) =
+                        (real * 40 - imaginary * 9, real * 9 + imaginary * 40);
+                }
+                debug_assert_eq!(directions[1], (radius as f64, 0.0));
+                directions
+            }
             _ => unreachable!("positive Tree fixture only covers 5..=8 hinges"),
         };
         let vertices = points

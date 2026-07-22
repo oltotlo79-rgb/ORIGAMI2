@@ -58,11 +58,13 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 
 `1668933`, `1d167c0`, `7d0cc69`, `99ebfe6`, `be6a15a`, `9020f8b`, `82be62a`, `b009cfe`, `d88f870`, `a30fc59`, `16159cb`により、既存の単一hinge・厚さ0経路だけでなく、bounded dyadic graph/cycleとpositive-thickness Treeの一部もproduction native routeへ到達している。Tree routeは正厚連続certificateとshared-vertex layer transportを別々に保持し、preview mintとApply直前にschedule端点、source/target、紙厚、層証拠、project instance/revision/fingerprint/generationを再照合する。正厚4/5/6/7-hinge level-3 Treeと、flat開始・正厚8-hinge collective fixtureでは改ざん無変更、one-shot token、原子的Apply、certificate付きtimeline、Undo/Redo、ORI2再openを一つの本番routeで回帰した。
 
-一方、これは任意の一般姿勢、任意多hinge schedule、一般共有hinge admission、完全な正厚衝突、一般複数層transport、全経路closure、専用層順viewerを証明しない。browser harnessのmock成功だけを能力証拠には用いず、native certificate fixtureと本番routeの双方がある狭いcaseだけを実装範囲とする。従ってSIM-010は部分実装を維持する。
+一方、これは任意の一般姿勢、任意多hinge schedule、一般共有hinge admission、完全な正厚衝突、一般複数層transport、全経路closure、一般経路を横断する層順viewerを証明しない。browser harnessのmock成功だけを能力証拠には用いず、native certificate fixtureと本番routeの双方がある狭いcaseだけを実装範囲とする。従ってSIM-010は部分実装を維持する。
 
 `a30fc59`の84-hinge証拠は、flat graph開始のdense-cycle collective scheduleで正厚continuous pathのpreview・原子的Apply・one-shot・Undo/Redo・ORI2再openだけを固定する。layer transport model・transition・pair orderは明示的に存在しないことを回帰しており、一般非flat開始、一般84-hinge schedule、layer transportの証拠やSIM-010の昇格根拠には用いない。
 
 `16159cb`は17-faceの二block fixtureに限り、blockwise authorityのdomain分離済みtarget-order hash、transition count、両blockが証明したrestricted pairの重複なし和集合をtarget stepへ保存する。pair件数不一致はfail closedし、Undo/RedoとORI2再open後のtimeline完全一致を回帰した。これは一般block数、一般層搬送、一般姿勢の証拠ではなく、SIM-010の部分実装判定を変更しない。
+
+`195508d`はこの適用済みtimeline proofを読み取り専用viewerへ接続した。frontendでproof全field、32-byte hash、正のtransition数、v5を含むcanonical FaceId、自己pair禁止、canonical tuple順、50,000 pair上限を再検証し、先頭200 pairと省略数だけを表示する。pair endpointはbuttonとして選択でき、日英ARIAを持つ。最新proofが改ざんされている場合に古いvalid proofへfallbackせずviewerを閉じる。これは17-face・二block経路の保存証拠を観察可能にしたものであり、三block以上のpositive経路、一般layer transport、一般cycleの実装証拠には用いない。
 
 後続の多block compositionは、呼出側が提出した2..=8 block集合について、各blockのclosure・正厚連続性・layer transportと、block交差グラフがtreeであることを再検証するunit-level基盤に限定する。このauthorityは包含元の完全なlive graphを入力に持たず、提出hinge和集合がproject全体を尽くすことを証明しないため、whole-graph mutation authorityではない。本番routeは引き続き二blockだけであり、三block fixtureはpreviewが`stacked_fold_cycle_nonclosing`へfail closedし、pending tokenを発行せずrevisionを変更しないnegative回帰だけを固定した。従って三block以上のpositive Apply・Undo/Redo・archive、4..8 block、cross-block layer order成功を実装済みとは扱わず、A-1/A-2・B-6・SIM-010・85/2/0の判定を変更しない。
 
@@ -92,5 +94,6 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 - WSL collision submitted-set three-block authority改ざん拒否回帰: 1/1（331件filter）。提出三block treeの再検証とsource順序・source内容・紙厚・issuer context・layer fingerprint・target角集合・binding改ざんの拒否だけを証明し、whole graph完全性や本番Applyを証明しない。
 - WSL desktop production three-block fail-closed回帰: 1/1（610件filter）。実preview routeが`stacked_fold_cycle_nonclosing`を返し、pending tokenなし・revision不変であることだけを証明する。三block positive経路の証拠ではない。
 - WSL desktop 17-face two-block positive layer-proof回帰: 1/1。既存二block本番経路のtarget-order hash・Apply・Undo/Redo・ORI2再openを維持する回帰であり、三block以上へ一般化しない。
+- frontend適用後層順proof viewer: DOM 45/45、lint、production build、diff-check成功。v5 FaceId、canonical pair順、endpoint選択、200件表示上限、日英ARIA、改ざん・最新proof fallback拒否を検証し、17-face・二block以外の能力証拠には用いない。
 
 検証件数は各対応コミット時点の対象suiteであり、異なる時点の件数を一つの全suite件数として合算しない。全CIが成功するまでは公式完成度を更新しない。

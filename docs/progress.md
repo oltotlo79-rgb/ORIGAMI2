@@ -26,6 +26,7 @@
 
 ## 完了
 
+- 17-face・二blockのSIM-010本番経路で適用済みtimelineへ保存した層順証明を、日英の読み取り専用viewerへ接続した。target-order SHA-256、transition数、canonicalな下層→上層pairを表示し、pair endpointの選択、最大50,000件のstrict検証、先頭200件の表示上限と省略件数を備える。productionのv5 FaceIdを受理する一方、非配列、未知field、同一face、重複・非canonical順、上限超過、最新proof改ざん時の古いproofへのfallbackをfail closedにした。DOM 45件、lint、production build、diff-checkが成功した。一般三block以上のpositive Apply、一般layer transport、一般cycleを証明しないためSIM-010は部分実装、全体完成率は79.32%（表示79.3%）を維持する
 - 2Dの注釈・下絵・面属性・複数選択の移動・複製・任意軸対称編集を、strict project文書、通常・復旧保存、主履歴、Undo/Redo、native IPC、Canvasへ接続した。2D MUSTの利用者経路を再監査し、「2D展開図エディター」を100%へ更新した
 - 指定M/V単一頂点について、exact sector比較と一意なBig-Little-Big縮約witnessを持つ局所十分性certificateを実装した。必要条件だけでは肯定せず、tie、定理適用不能、資源超過はIndeterminateとし、native read境界と日英UIへ接続した。全体平坦判定workerの直列化、遅延取消競合、層順viewer失敗・共通face選択もfail-closedに修正し、「折り可能性・経路探索」を45%へ更新した
 - 折り手順の追加・削除・説明編集・並べ替え、Undo/Redo、通常・展開folder・復旧保存をE2Eで固定し、完成形、保存カメラ、折る方向、注目位置、手指・持ち替えguideを3D表示とPDF/SVG折り図へ接続した。「折り手順・PDF」を75%へ更新した

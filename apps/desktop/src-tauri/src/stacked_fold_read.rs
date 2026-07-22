@@ -1268,6 +1268,16 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
 }
 
 fn strict_dyadic_geometry_is_in_scope_v1(project: &super::ProjectState) -> bool {
+    let topology = project
+        .editor
+        .topology_analysis_input(project.project_id)
+        .analyze();
+    let Some(snapshot) = topology.simulation_snapshot() else {
+        return false;
+    };
+    if !strict_dyadic_topology_snapshot_is_in_scope_v1(snapshot) {
+        return false;
+    }
     let pattern = project.editor.pattern();
     if pattern
         .edges
@@ -1372,6 +1382,16 @@ fn strict_dyadic_geometry_is_in_scope_v1(project: &super::ProjectState) -> bool 
         }
     }
     orientation != 0
+}
+
+fn strict_dyadic_topology_snapshot_is_in_scope_v1(
+    snapshot: &ori_topology::TopologySnapshot,
+) -> bool {
+    snapshot.material_components.len() == 1
+        && snapshot
+            .faces
+            .iter()
+            .all(|face| face.holes.is_empty() && face.seams.is_empty())
 }
 
 fn dyadic_graph_response(
@@ -6467,6 +6487,7 @@ mod tests {
         let snapshot = topology
             .simulation_snapshot()
             .expect("concave production topology");
+        assert!(strict_dyadic_topology_snapshot_is_in_scope_v1(snapshot));
         super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
             &mut project,
             vec![hinge],
@@ -6566,6 +6587,14 @@ mod tests {
         let snapshot = topology
             .simulation_snapshot()
             .expect("cut production topology");
+        assert!(!strict_dyadic_topology_snapshot_is_in_scope_v1(snapshot));
+        assert!(
+            snapshot.material_components.len() != 1
+                || snapshot
+                    .faces
+                    .iter()
+                    .any(|face| !face.holes.is_empty() || !face.seams.is_empty())
+        );
         super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
             &mut project,
             vec![hinge],
@@ -6674,6 +6703,7 @@ mod tests {
             .simulation_snapshot()
             .expect("hole production topology");
         assert!(snapshot.faces.iter().any(|face| face.holes.len() == 1));
+        assert!(!strict_dyadic_topology_snapshot_is_in_scope_v1(snapshot));
         super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
             &mut project,
             vec![hinge],
@@ -6714,6 +6744,67 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn open_cut_seam_strict_dyadic_preflight_is_unsupported_no_op() {
+        use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let namespace = ProjectId::schema_namespace([
+            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x05, 0x76,
+        ]);
+        let positions = [
+            (0.0, 0.0),
+            (8.0, 0.0),
+            (8.0, 8.0),
+            (0.0, 8.0),
+            (2.0, 4.0),
+            (6.0, 4.0),
+        ];
+        let vertices = positions
+            .into_iter()
+            .enumerate()
+            .map(|(index, (x, y))| Vertex {
+                id: VertexId::derive_v5(namespace, &[index as u8]),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let mut edges = (0..4)
+            .map(|index| Edge {
+                id: EdgeId::derive_v5(namespace, &[0x50, index as u8]),
+                start: vertices[index].id,
+                end: vertices[(index + 1) % 4].id,
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let target_edge = edges[0].id;
+        edges.push(Edge {
+            id: EdgeId::derive_v5(namespace, b"open-cut-seam"),
+            start: vertices[4].id,
+            end: vertices[5].id,
+            kind: EdgeKind::Cut,
+        });
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: pattern.vertices[..4]
+                .iter()
+                .map(|vertex| vertex.id)
+                .collect(),
+            cutting_allowed: true,
+            ..Paper::default()
+        };
+        let project = super::super::ProjectState::new_with_paper(pattern.clone(), paper.clone());
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology
+            .simulation_snapshot()
+            .expect("open cut seam production topology");
+        assert!(snapshot.faces.iter().any(|face| !face.seams.is_empty()));
+        assert!(!strict_dyadic_topology_snapshot_is_in_scope_v1(snapshot));
+        assert_out_of_scope_boundary_is_unsupported_no_op(pattern, paper, target_edge);
     }
 
     fn assert_out_of_scope_boundary_is_unsupported_no_op(

@@ -476,6 +476,7 @@ jobs:
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::concave_boundary_strict_dyadic_read_fails_closed_without_mutation_authority -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::cut_boundary_strict_dyadic_read_fails_closed_without_mutation_authority -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::hole_boundary_strict_dyadic_read_fails_closed_without_mutation_authority -- --exact --test-threads=1
+          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::open_cut_seam_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::nonfinite_boundary_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::degenerate_boundary_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::missing_boundary_vertex_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1

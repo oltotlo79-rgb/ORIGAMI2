@@ -798,6 +798,7 @@ test('CI requires the production C6 dyadic browser and exact native lifecycle', 
     'concave_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
     'cut_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
     'hole_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
+    'open_cut_seam_strict_dyadic_preflight_is_unsupported_no_op',
     'nonfinite_boundary_strict_dyadic_preflight_is_unsupported_no_op',
     'degenerate_boundary_strict_dyadic_preflight_is_unsupported_no_op',
     'missing_boundary_vertex_strict_dyadic_preflight_is_unsupported_no_op',
@@ -810,7 +811,7 @@ test('CI requires the production C6 dyadic browser and exact native lifecycle', 
     assert.match(workflow, new RegExp(`cargo test --locked -p origami2-desktop --lib\\s+${fixtureFilter}\\s+-- --exact --test-threads=1`, 'u'))
     assert.match(nativeRead, new RegExp(`fn ${fixtureTest}\\(\\)`, 'u'))
   }
-  for (const scenario of ['concave', 'cut', 'hole', 'duplicate-boundary', 'self-intersection', 'zero-length']) {
+  for (const scenario of ['concave', 'cut', 'hole', 'seam', 'duplicate-boundary', 'self-intersection', 'zero-length']) {
     assert.match(browserRead, new RegExp(`'${scenario}'`, 'u'))
   }
   assert.match(browserRead, /reason unsupported_geometry/u)

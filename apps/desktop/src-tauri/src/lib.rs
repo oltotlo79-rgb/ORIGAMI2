@@ -1745,6 +1745,99 @@ struct BeginnerCandidateResponse {
     generation_status: &'static str,
     generated_plans: Vec<ori_domain::BeginnerGeneratedPlanV1>,
     plan_assessments: Vec<BeginnerGeneratedPlanAssessment>,
+    multi_reference_fusion: Option<BeginnerMultiReferenceFusionV1>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BeginnerMultiReferenceFusionV1 {
+    revision: u64,
+    image_sha256: [u8; 32],
+    reference_sha256: [u8; 32],
+    source_count: u8,
+    image_component_count: u8,
+    reference_component_count: u8,
+    image_branch_count: u8,
+    reference_branch_count: u8,
+    normalized_extent_error: u8,
+    agreement_score: u8,
+    apply_allowed: bool,
+    reason: &'static str,
+}
+
+fn beginner_multi_reference_fusion_v1(
+    project: &ProjectState,
+    reference: &BeginnerReferenceModelSuggestionV1,
+) -> Option<BeginnerMultiReferenceFusionV1> {
+    let underlay = project.editor.underlays().underlays.first()?;
+    let image = project
+        .texture_assets
+        .iter()
+        .find(|asset| asset.id == underlay.asset)?;
+    let model = project
+        .reference_model_assets
+        .iter()
+        .find(|asset| asset.id == reference.asset_id)?;
+    let (width, height, rgba) = beginner_recognition::decode_general_image(&image.bytes).ok()?;
+    let outlines = ori_domain::analyze_outline_candidates_rgba_v1(width, height, &rgba).ok()?;
+    if outlines.is_empty() || outlines.len() > 8 {
+        return None;
+    }
+    let min_x = outlines.iter().map(|item| item.bounds.min_x).min()?;
+    let max_x = outlines.iter().map(|item| item.bounds.max_x).max()?;
+    let min_y = outlines.iter().map(|item| item.bounds.min_y).min()?;
+    let max_y = outlines.iter().map(|item| item.bounds.max_y).max()?;
+    let image_extents = [u64::from(max_x - min_x + 1), u64::from(max_y - min_y + 1)];
+    let reference_extents = [
+        u64::from(reference.principal_axis_extents_tenths_mm[0]),
+        u64::from(reference.principal_axis_extents_tenths_mm[1]),
+    ];
+    let normalize = |values: [u64; 2]| {
+        let major = values[0].max(values[1]).max(1);
+        values.map(|value| value.saturating_mul(100) / major)
+    };
+    let image_normalized = normalize(image_extents);
+    let reference_normalized = normalize(reference_extents);
+    let extent_error = image_normalized[0]
+        .abs_diff(reference_normalized[0])
+        .max(image_normalized[1].abs_diff(reference_normalized[1]))
+        .min(100) as u8;
+    let image_components = outlines.len() as u8;
+    let image_branches = image_components.saturating_mul(2).saturating_sub(1);
+    let reference_branches = u8::try_from(reference.stick_bars.len()).ok()?;
+    let component_error = image_components
+        .abs_diff(reference.component_count)
+        .saturating_mul(20);
+    let branch_error = image_branches
+        .abs_diff(reference_branches)
+        .saturating_mul(10);
+    let agreement_score = 100_u8.saturating_sub(
+        extent_error
+            .saturating_mul(2)
+            .saturating_add(component_error)
+            .saturating_add(branch_error)
+            .min(100),
+    );
+    let apply_allowed = extent_error <= 20
+        && image_components.abs_diff(reference.component_count) <= 1
+        && image_branches.abs_diff(reference_branches) <= 2;
+    Some(BeginnerMultiReferenceFusionV1 {
+        revision: project.editor.revision(),
+        image_sha256: sha2::Sha256::digest(&image.bytes).into(),
+        reference_sha256: sha2::Sha256::digest(&model.bytes).into(),
+        source_count: 2,
+        image_component_count: image_components,
+        reference_component_count: reference.component_count,
+        image_branch_count: image_branches,
+        reference_branch_count: reference_branches,
+        normalized_extent_error: extent_error,
+        agreement_score,
+        apply_allowed,
+        reason: if apply_allowed {
+            "image_glb_agreement_v1"
+        } else {
+            "image_glb_disagreement_v1"
+        },
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -2883,6 +2976,7 @@ fn evaluate_beginner_candidates(
             generation_status: "missing_target_asset",
             generated_plans: Vec::new(),
             plan_assessments: Vec::new(),
+            multi_reference_fusion: None,
         });
     };
     let (generation_status, mut generated_plans) = match generation {
@@ -2909,7 +3003,10 @@ fn evaluate_beginner_candidates(
     };
     generated_plans.truncate(usize::from(requested_candidate_count));
     let reference_suggestion = live_reference_model_suggestion_v1(&project).ok();
-    let plan_assessments = generated_plans
+    let multi_reference_fusion = reference_suggestion
+        .as_ref()
+        .and_then(|reference| beginner_multi_reference_fusion_v1(&project, reference));
+    let mut plan_assessments: Vec<BeginnerGeneratedPlanAssessment> = generated_plans
         .iter()
         .map(|plan| {
             assess_beginner_generated_plan(
@@ -2921,6 +3018,16 @@ fn evaluate_beginner_candidates(
             )
         })
         .collect();
+    if multi_reference_fusion
+        .as_ref()
+        .is_some_and(|fusion| !fusion.apply_allowed)
+    {
+        for assessment in &mut plan_assessments {
+            assessment.apply_allowed = false;
+            assessment.proof_scope = "indeterminate";
+            assessment.reason = "multi_reference_disagreement";
+        }
+    }
     Ok(BeginnerCandidateResponse {
         schema_version: ori_domain::BEGINNER_CANDIDATE_SCHEMA_VERSION_V1,
         project_instance_id: project.instance_id,
@@ -2933,6 +3040,7 @@ fn evaluate_beginner_candidates(
         generation_status,
         generated_plans,
         plan_assessments,
+        multi_reference_fusion,
     })
 }
 
@@ -4801,6 +4909,13 @@ fn apply_beginner_generated_plan_document(
         return Err("the generated candidate identity changed before apply".to_owned());
     }
     let reference_suggestion = live_reference_model_suggestion_v1(&project).ok();
+    if reference_suggestion
+        .as_ref()
+        .and_then(|reference| beginner_multi_reference_fusion_v1(&project, reference))
+        .is_some_and(|fusion| !fusion.apply_allowed)
+    {
+        return Err("multi_reference_disagreement".to_owned());
+    }
     let assessment = assess_beginner_generated_plan(
         project.project_id,
         project.editor.paper(),

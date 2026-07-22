@@ -8223,6 +8223,15 @@ function App() {
                   )}
                   {beginnerCandidates.generation_status === 'ready' ? (
                     <div aria-label={text({ ja: '生成された展開図と手順の候補', en: 'Generated crease-pattern and instruction candidates' })}>
+                      {beginnerCandidates.multi_reference_fusion && (
+                        <p role={beginnerCandidates.multi_reference_fusion.apply_allowed ? 'status' : 'alert'}>
+                          {`Image/3D agreement ${beginnerCandidates.multi_reference_fusion.agreement_score}/100; `}
+                          {`extent error ${beginnerCandidates.multi_reference_fusion.normalized_extent_error}/100; `}
+                          {beginnerCandidates.multi_reference_fusion.apply_allowed
+                            ? 'two-source bounded comparison agrees.'
+                            : 'image and GLB disagree; candidate apply is blocked.'}
+                        </p>
+                      )}
                       {beginnerCandidates.generated_plans.map((plan, index) => {
                         const vertexById = new Map(
                           plan.crease_pattern.vertices.map((vertex) => [vertex.id, vertex]),

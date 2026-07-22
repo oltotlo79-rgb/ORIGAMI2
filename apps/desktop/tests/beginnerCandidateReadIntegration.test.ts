@@ -165,6 +165,17 @@ test('disconnected GLB comparison is component-aware bounded and read-only', () 
   assert.match(app, /bounded work/u)
 })
 
+test('image and GLB references fuse only under bounded dual hash authority', () => {
+  assert.match(native, /fn beginner_multi_reference_fusion_v1/u)
+  assert.match(native, /outlines\.len\(\) > 8/u)
+  assert.match(native, /image_sha256: sha2::Sha256::digest/u)
+  assert.match(native, /reference_sha256: sha2::Sha256::digest/u)
+  assert.match(native, /multi_reference_disagreement/u)
+  assert.match(client, /fusion\.revision !== expectedRevision/u)
+  assert.match(client, /isBoundedIntegerTuple\(fusion\.image_sha256, 32, 255\)/u)
+  assert.match(app, /image and GLB disagree; candidate apply is blocked/u)
+})
+
 test('AUT-101 apply rebinds candidate authority natively and requires confirmation', () => {
   assert.match(native, /fn apply_beginner_generated_plan/)
   assert.match(native, /expected_profile: ori_domain::BeginnerDesignProfileV1/)

@@ -832,6 +832,13 @@ export type BeginnerCandidateResponseV1 = {
   generated_plans: BeginnerGeneratedPlanV1[]
   plan_assessments: BeginnerGeneratedPlanAssessmentV1[]
   candidates: BeginnerCandidateScoreV1[]
+  multi_reference_fusion: null | {
+    revision: number; image_sha256: number[]; reference_sha256: number[]; source_count: 2
+    image_component_count: number; reference_component_count: number
+    image_branch_count: number; reference_branch_count: number
+    normalized_extent_error: number; agreement_score: number; apply_allowed: boolean
+    reason: 'image_glb_agreement_v1' | 'image_glb_disagreement_v1'
+  }
 }
 
 export type BeginnerGeneratedPlanAssessmentV1 = {
@@ -870,6 +877,7 @@ export type BeginnerGeneratedPlanAssessmentV1 = {
     | 'global_resource_limit'
     | 'global_timeout'
     | 'global_indeterminate'
+    | 'multi_reference_disagreement'
 }
 
 export type BeginnerGeneratedPlanV1 = {
@@ -937,7 +945,14 @@ function normalizeBeginnerCandidateResponse(
     'generated_plans',
     'plan_assessments',
     'candidates',
+    'multi_reference_fusion',
   ] as const)
+  const fusion = response && response.multi_reference_fusion === null ? null
+    : exactCoreDataRecord(response?.multi_reference_fusion, [
+      'revision', 'image_sha256', 'reference_sha256', 'source_count', 'image_component_count',
+      'reference_component_count', 'image_branch_count', 'reference_branch_count',
+      'normalized_extent_error', 'agreement_score', 'apply_allowed', 'reason',
+    ] as const)
   if (
     !response
     || response.schema_version !== 1
@@ -957,6 +972,15 @@ function normalizeBeginnerCandidateResponse(
     || response.candidates.length < 1
     || response.candidates.length > 3
     || response.candidates.length !== requestedCandidateCount
+    || (fusion !== null && (!fusion || fusion.revision !== expectedRevision || fusion.source_count !== 2
+      || !isBoundedIntegerTuple(fusion.image_sha256, 32, 255) || !isBoundedIntegerTuple(fusion.reference_sha256, 32, 255)
+      || [fusion.image_component_count, fusion.reference_component_count].some((count) => !Number.isInteger(count) || Number(count) < 1 || Number(count) > 8)
+      || [fusion.image_branch_count, fusion.reference_branch_count].some((count) => !Number.isInteger(count) || Number(count) < 1 || Number(count) > 16)
+      || !Number.isInteger(fusion.normalized_extent_error) || Number(fusion.normalized_extent_error) < 0 || Number(fusion.normalized_extent_error) > 100
+      || !Number.isInteger(fusion.agreement_score) || Number(fusion.agreement_score) < 0 || Number(fusion.agreement_score) > 100
+      || typeof fusion.apply_allowed !== 'boolean'
+      || !['image_glb_agreement_v1', 'image_glb_disagreement_v1'].includes(String(fusion.reason))
+      || (fusion.reason === 'image_glb_agreement_v1') !== fusion.apply_allowed))
   ) return null
   const candidates = response.candidates.map((candidate, index) => {
     const record = exactCoreDataRecord(candidate, [
@@ -1165,6 +1189,7 @@ function normalizeBeginnerCandidateResponse(
         'local_theorem_not_applicable', 'local_analysis_indeterminate',
         'global_flat_foldability_proven', 'global_flat_foldability_impossible',
         'global_resource_limit', 'global_timeout', 'global_indeterminate',
+        'multi_reference_disagreement',
       ].includes(String(record.reason))
       || (record.apply_allowed === false
         && !['geometry_invalid', 'folded_pose_simulation_failed', 'fold_path_certificate_unavailable',
@@ -1172,8 +1197,10 @@ function normalizeBeginnerCandidateResponse(
           'manufacturability_minimum_crease_spacing', 'manufacturability_minimum_face_area',
           'manufacturability_paper_boundary_margin', 'necessary_conditions_violated', 'local_analysis_blocked',
           'global_flat_foldability_impossible']
+          .concat('multi_reference_disagreement')
           .includes(String(record.reason)))
-      || (record.proof_scope === 'indeterminate' && record.apply_allowed !== true)
+      || (record.proof_scope === 'indeterminate' && record.apply_allowed !== true
+        && record.reason !== 'multi_reference_disagreement')
       || (record.reason === 'global_flat_foldability_proven'
         && (record.proof_scope !== 'sufficient' || record.apply_allowed !== true))
       || (record.reason === 'global_flat_foldability_impossible'
@@ -1210,6 +1237,7 @@ function normalizeBeginnerCandidateResponse(
     generated_plans: admittedPlans,
     plan_assessments: planAssessments as BeginnerGeneratedPlanAssessmentV1[],
     candidates: admitted.slice(),
+    multi_reference_fusion: fusion as BeginnerCandidateResponseV1['multi_reference_fusion'],
   }) as BeginnerCandidateResponseV1
 }
 

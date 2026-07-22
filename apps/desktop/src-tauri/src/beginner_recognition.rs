@@ -1531,7 +1531,7 @@ fn decode_general_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     Ok((frame.width, frame.height, rgba))
 }
 
-fn decode_general_image(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+pub(crate) fn decode_general_image(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     if bytes.is_empty() || bytes.len() > MAX_BEGINNER_RECOGNITION_ENCODED_BYTES_V1 {
         return Err("recognition_resource_limit".to_owned());
     }

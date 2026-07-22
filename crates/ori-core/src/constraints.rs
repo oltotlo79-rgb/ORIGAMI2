@@ -327,6 +327,10 @@ pub enum DirectConstraintConflictKindV1 {
         first_edge: EdgeId,
         second_edge: EdgeId,
     },
+    EqualLengthWithNonUnitRatioAndFixedLength {
+        first_edge: EdgeId,
+        second_edge: EdgeId,
+    },
     ParallelWithFixedNonParallelAngle {
         first_edge: EdgeId,
         second_edge: EdgeId,
@@ -1616,6 +1620,33 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
             );
         }
     }
+    for (pair, equal_ids) in &equal_lengths {
+        let fixed = fixed_lengths
+            .get(&pair.first)
+            .and_then(ScalarGroupSummary::consistent_assignment)
+            .or_else(|| {
+                fixed_lengths
+                    .get(&pair.second)
+                    .and_then(ScalarGroupSummary::consistent_assignment)
+            });
+        let ratio = ratios
+            .get(&(pair.first, pair.second))
+            .into_iter()
+            .chain(ratios.get(&(pair.second, pair.first)))
+            .flatten()
+            .filter(|assignment| assignment.value.to_bits() != 1.0_f64.to_bits())
+            .min_by_key(|assignment| assignment.id.canonical_bytes());
+        if let (Some(equal_id), Some(fixed), Some(ratio)) = (equal_ids.first(), fixed, ratio) {
+            push_conflict(
+                &mut conflicts,
+                DirectConstraintConflictKindV1::EqualLengthWithNonUnitRatioAndFixedLength {
+                    first_edge: edge_ids[&pair.first],
+                    second_edge: edge_ids[&pair.second],
+                },
+                [*equal_id, fixed.id, ratio.id],
+            );
+        }
+    }
     for (pair, parallel_ids) in &parallels {
         if let (Some(parallel_id), Some(angle_assignment)) = (
             parallel_ids.first(),
@@ -1854,7 +1885,7 @@ fn conflict_sort_key(
             second_edge.canonical_bytes(),
             zero,
         ),
-        DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
+        DirectConstraintConflictKindV1::EqualLengthWithNonUnitRatioAndFixedLength {
             first_edge,
             second_edge,
         } => (
@@ -1863,11 +1894,20 @@ fn conflict_sort_key(
             second_edge.canonical_bytes(),
             zero,
         ),
+        DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
+            first_edge,
+            second_edge,
+        } => (
+            6,
+            first_edge.canonical_bytes(),
+            second_edge.canonical_bytes(),
+            zero,
+        ),
         DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations {
             horizontal_edge,
             vertical_edge,
         } => (
-            6,
+            7,
             horizontal_edge.canonical_bytes(),
             vertical_edge.canonical_bytes(),
             zero,
@@ -2711,6 +2751,60 @@ mod tests {
             max_preflight_checks: 5,
         };
         assert_eq!(tightened.effective(), tightened);
+    }
+
+    #[test]
+    fn equal_length_non_unit_ratio_with_positive_fixed_length_has_minimal_cause() {
+        let fixture = Fixture::new();
+        let fixed = record(GeometricConstraintKindV1::FixedLength {
+            edge: fixture.edges[0],
+            length_mm: 10.0,
+        });
+        let equal = record(GeometricConstraintKindV1::EqualLength {
+            first_edge: fixture.edges[0],
+            second_edge: fixture.edges[1],
+        });
+        let ratio = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[0],
+            denominator_edge: fixture.edges[1],
+            ratio: 2.0,
+        });
+        let records = [fixed.clone(), equal.clone(), ratio.clone()];
+        let prepared = prepare(&fixture, &document(records.clone()))
+            .expect("the individually valid constraints prepare");
+        let ConstraintPreflightV1::DirectConflict { conflicts } = prepared.preflight() else {
+            panic!("equal lengths and a non-unit ratio contradict a positive fixed length");
+        };
+        assert_eq!(conflicts.len(), 1);
+        let mut canonical_edges = [fixture.edges[0], fixture.edges[1]];
+        canonical_edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        assert_eq!(
+            conflicts[0].conflict(),
+            &DirectConstraintConflictKindV1::EqualLengthWithNonUnitRatioAndFixedLength {
+                first_edge: canonical_edges[0],
+                second_edge: canonical_edges[1],
+            }
+        );
+        let mut expected_ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
+        expected_ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
+        assert_eq!(conflicts[0].constraint_ids(), expected_ids);
+
+        for removed in 0..records.len() {
+            let subset = records
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != removed)
+                .map(|(_, record)| record.clone())
+                .collect::<Vec<_>>();
+            let prepared = prepare(&fixture, &document(subset)).expect("proper subset prepares");
+            assert!(
+                !matches!(
+                    prepared.preflight(),
+                    ConstraintPreflightV1::DirectConflict { .. }
+                ),
+                "removing any one cause constraint must remove the direct contradiction"
+            );
+        }
     }
 
     #[test]

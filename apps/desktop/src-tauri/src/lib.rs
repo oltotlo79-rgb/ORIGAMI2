@@ -17318,9 +17318,14 @@ mod tests {
                 archive
             );
             assert!(
-                read_project_archive_ori2(&tamper_ori2_project_certificate(&archive_bytes))
+                read_project_archive_ori2(&tamper_ori2_project_certificate(&archive_bytes, false,))
                     .is_err(),
                 "an authenticated ORI2 must reject certificate provenance tampering"
+            );
+            assert!(
+                read_project_archive_ori2(&tamper_ori2_project_certificate(&archive_bytes, true,))
+                    .is_err(),
+                "an ORI2 must reject reauthenticated project provenance that diverges from history"
             );
             let folder = write_project_folder_v1(&archive).expect("write generic tree folder");
             let mut tampered_entries = folder.entries().to_vec();
@@ -20023,29 +20028,54 @@ mod tests {
         bytes
     }
 
-    fn tamper_ori2_project_certificate(bytes: &[u8]) -> Vec<u8> {
+    fn tamper_ori2_project_certificate(bytes: &[u8], reauthenticate_manifest: bool) -> Vec<u8> {
         let mut source = ZipArchive::new(Cursor::new(bytes)).expect("open source ORI2");
-        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        let mut entries = Vec::with_capacity(source.len());
         for index in 0..source.len() {
             let mut entry = source.by_index(index).expect("read source ORI2 entry");
             let name = entry.name().to_owned();
             let mut payload = Vec::new();
             entry.read_to_end(&mut payload).expect("read ORI2 payload");
-            if name == ori_formats::PROJECT_FOLDER_PROJECT_PATH {
-                let mut project: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-                let certificate_byte = project
-                    .pointer_mut(
-                        "/beginner_design_profile/generation_provenance/fold_path_certificate_sha256/0",
-                    )
-                    .expect("generic tree certificate byte");
-                *certificate_byte =
-                    serde_json::json!(certificate_byte.as_u64().unwrap_or_default() ^ 1);
-                payload = serde_json::to_vec(&project).unwrap();
-            }
+            entries.push((name, entry.compression(), payload));
+        }
+        let project_payload = &mut entries
+            .iter_mut()
+            .find(|(name, _, _)| name == ori_formats::PROJECT_FOLDER_PROJECT_PATH)
+            .expect("ORI2 project entry")
+            .2;
+        let mut project: serde_json::Value = serde_json::from_slice(project_payload).unwrap();
+        let certificate_byte = project
+            .pointer_mut(
+                "/beginner_design_profile/generation_provenance/fold_path_certificate_sha256/0",
+            )
+            .expect("generic tree certificate byte");
+        *certificate_byte = serde_json::json!(certificate_byte.as_u64().unwrap_or_default() ^ 1);
+        *project_payload = serde_json::to_vec(&project).unwrap();
+        if reauthenticate_manifest {
+            let project_size = project_payload.len() as u64;
+            let project_sha256 = sha2::Sha256::digest(project_payload.as_slice())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let manifest_payload = &mut entries
+                .iter_mut()
+                .find(|(name, _, _)| name == ori_formats::PROJECT_FOLDER_MANIFEST_PATH)
+                .expect("ORI2 manifest entry")
+                .2;
+            let mut manifest: serde_json::Value = serde_json::from_slice(manifest_payload).unwrap();
+            let descriptor = manifest
+                .get_mut("project")
+                .expect("ORI2 project descriptor");
+            descriptor["uncompressed_size"] = serde_json::json!(project_size);
+            descriptor["sha256"] = serde_json::json!(project_sha256);
+            *manifest_payload = serde_json::to_vec(&manifest).unwrap();
+        }
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, compression, payload) in entries {
             writer
                 .start_file(
                     name,
-                    SimpleFileOptions::default().compression_method(entry.compression()),
+                    SimpleFileOptions::default().compression_method(compression),
                 )
                 .expect("start tampered ORI2 entry");
             writer

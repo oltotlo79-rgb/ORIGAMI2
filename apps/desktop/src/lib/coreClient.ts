@@ -1406,6 +1406,14 @@ export type PathCertificateReferenceV1 = Readonly<{
   transition_count: number
 }>
 export type InstructionVisual = {
+  named_technique_compiler_v1?: Readonly<{
+    version: 1
+    model_id: 'certified_named_technique_compiler_metadata_v1'
+    technique_kind: BasicFoldTimelinePreviewRequestV1['techniqueKind']
+    segment_index: number
+    segment_count: number
+    compiler_output_sha256: readonly number[]
+  }> | null
   cycle_layer_order_proof_v1?: Readonly<{
     version: 1
     model_id: 'native_continuous_layer_transport_certificate_v1'
@@ -5185,6 +5193,22 @@ function hasStrictOptionalPathCertificateReferences(value: Readonly<Record<strin
     const visual = step && snapshotCoreDataRecord(step.visual)
     if (!visual) return false
     const referenceValue = visual.path_certificate_reference_v1
+    const metadataValue = visual.named_technique_compiler_v1
+    if (metadataValue !== undefined && metadataValue !== null) {
+      const metadata = exactCoreDataRecord(metadataValue, [
+        'version', 'model_id', 'technique_kind', 'segment_index', 'segment_count',
+        'compiler_output_sha256',
+      ] as const)
+      if (!metadata || metadata.version !== 1
+        || metadata.model_id !== 'certified_named_technique_compiler_metadata_v1'
+        || !['mountain', 'valley', 'squash', 'crimp', 'inside_reverse', 'outside_reverse',
+          'sink', 'accordion', 'layer_selective'].includes(String(metadata.technique_kind))
+        || !Number.isSafeInteger(metadata.segment_index) || Number(metadata.segment_index) < 0
+        || !Number.isSafeInteger(metadata.segment_count) || Number(metadata.segment_count) < 1
+        || Number(metadata.segment_index) >= Number(metadata.segment_count)
+        || !isBoundedIntegerTuple(metadata.compiler_output_sha256, 32, 255)
+        || !(metadata.compiler_output_sha256 as number[]).some((byte) => byte !== 0)) return false
+    }
     if (referenceValue === undefined || referenceValue === null) return true
     const reference = exactCoreDataRecord(referenceValue, [
       'version',

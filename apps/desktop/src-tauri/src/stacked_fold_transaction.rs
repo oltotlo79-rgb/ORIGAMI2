@@ -865,7 +865,7 @@ fn compile_named_basic_fold_preview(
         target_angle_microdegrees: (target_angle * 1_000_000.0) as i64,
         path_certificate: certificate,
     };
-    let timeline = if let Some(kind) = basic_kind {
+    let mut timeline = if let Some(kind) = basic_kind {
         if certificate.edges().len() != 1 || targets.len() != 1 || hinge_ids.len() != 1 {
             return Err("The basic-fold path certificate is unavailable.".to_owned());
         }
@@ -1002,6 +1002,7 @@ fn compile_named_basic_fold_preview(
         }
         .map_err(|_| "The named two-segment compiler rejected the preview.".to_owned())?
     };
+    bind_named_technique_compiler_metadata_v1(&mut timeline, &technique_kind)?;
     let preview_binding_sha256 = basic_fold_preview_binding_v1(
         token,
         expected_project_instance_id,
@@ -1024,6 +1025,29 @@ fn compile_named_basic_fold_preview(
         preview_binding_sha256,
         timeline,
     })
+}
+
+fn bind_named_technique_compiler_metadata_v1(
+    timeline: &mut ori_domain::InstructionTimeline,
+    technique_kind: &str,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec(timeline)
+        .map_err(|_| "The compiler timeline metadata could not be bound.".to_owned())?;
+    let compiler_output_sha256: [u8; 32] = Sha256::digest(bytes).into();
+    let segment_count = timeline.steps.len();
+    for (segment_index, step) in timeline.steps.iter_mut().enumerate() {
+        step.visual.named_technique_compiler_v1 =
+            Some(ori_domain::NamedTechniqueCompilerMetadataV1 {
+                version: 1,
+                model_id: ori_domain::NAMED_TECHNIQUE_COMPILER_MODEL_ID_V1.to_owned(),
+                technique_kind: technique_kind.to_owned(),
+                segment_index,
+                segment_count,
+                compiler_output_sha256,
+            });
+    }
+    ori_domain::validate_instruction_timeline(timeline)
+        .map_err(|_| "The compiler timeline metadata is invalid.".to_owned())
 }
 
 fn accordion_assignments_alternate_v1(assignments: &[&str]) -> bool {

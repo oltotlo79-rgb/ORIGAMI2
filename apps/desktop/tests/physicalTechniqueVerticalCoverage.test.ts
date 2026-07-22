@@ -10,6 +10,8 @@ const panel = readFileSync('src/components/StackedFoldPanel.tsx', 'utf8')
 const editor = readFileSync('../../crates/ori-core/src/editor.rs', 'utf8')
 const ori2 = readFileSync('../../crates/ori-formats/src/ori2.rs', 'utf8')
 const exportSource = readFileSync('src-tauri/src/instruction_export.rs', 'utf8')
+const domain = readFileSync('../../crates/ori-domain/src/lib.rs', 'utf8')
+const exportLayout = readFileSync('../../crates/ori-formats/src/instruction_export/layout.rs', 'utf8')
 
 const physicalVariants = [
   ['StraightLineStackedFold', 'book_fold', 'apply_named_book_fold_transaction'],
@@ -47,4 +49,14 @@ test('the shared atomic document path owns undo redo persistence and PDF SVG exp
   assert.match(exportSource, /InstructionExportFormatRequest::Pdf/u)
   assert.match(exportSource, /InstructionExportFormatRequest::SvgZip/u)
   assert.match(exportSource, /export_instruction_document/u)
+})
+
+test('compiler kind segment and digest metadata cross persistence and both export layouts', () => {
+  assert.match(domain, /NamedTechniqueCompilerMetadataV1/u)
+  assert.match(domain, /compiler_output_sha256/u)
+  assert.match(transaction, /bind_named_technique_compiler_metadata_v1/u)
+  assert.match(client, /named_technique_compiler_v1/u)
+  assert.match(exportLayout, /compiler-v1 \/ kind=/u)
+  assert.match(editor, /instruction_timeline: InstructionTimeline/u)
+  assert.match(ori2, /instruction_timeline/u)
 })

@@ -361,6 +361,21 @@ pub struct InstructionVisual {
     pub hand_guides: Vec<InstructionHandGuide>,
     pub cycle_layer_order_proof_v1: Option<CycleLayerOrderProofV1>,
     pub path_certificate_reference_v1: Option<PathCertificateReferenceV1>,
+    pub named_technique_compiler_v1: Option<NamedTechniqueCompilerMetadataV1>,
+}
+
+pub const NAMED_TECHNIQUE_COMPILER_MODEL_ID_V1: &str =
+    "certified_named_technique_compiler_metadata_v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NamedTechniqueCompilerMetadataV1 {
+    pub version: u32,
+    pub model_id: String,
+    pub technique_kind: String,
+    pub segment_index: usize,
+    pub segment_count: usize,
+    pub compiler_output_sha256: [u8; 32],
 }
 
 pub const PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1: &str =
@@ -870,6 +885,32 @@ fn validate_instruction_visual(
     step_index: usize,
 ) -> Result<(), InstructionTimelineValidationError> {
     if visual
+        .named_technique_compiler_v1
+        .as_ref()
+        .is_some_and(|metadata| {
+            metadata.version != 1
+                || metadata.model_id != NAMED_TECHNIQUE_COMPILER_MODEL_ID_V1
+                || !matches!(
+                    metadata.technique_kind.as_str(),
+                    "mountain"
+                        | "valley"
+                        | "squash"
+                        | "crimp"
+                        | "inside_reverse"
+                        | "outside_reverse"
+                        | "sink"
+                        | "accordion"
+                        | "layer_selective"
+                )
+                || metadata.segment_count == 0
+                || metadata.segment_count > MAX_INSTRUCTION_STEPS
+                || metadata.segment_index >= metadata.segment_count
+                || metadata.compiler_output_sha256 == [0; 32]
+        })
+    {
+        return Err(InstructionTimelineValidationError::InvalidVisual { step_index });
+    }
+    if visual
         .path_certificate_reference_v1
         .as_ref()
         .is_some_and(|proof| {
@@ -1119,6 +1160,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn named_technique_compiler_metadata_round_trips_strictly() {
+        let mut step = valid_instruction_step();
+        step.visual.named_technique_compiler_v1 = Some(NamedTechniqueCompilerMetadataV1 {
+            version: 1,
+            model_id: NAMED_TECHNIQUE_COMPILER_MODEL_ID_V1.to_owned(),
+            technique_kind: "accordion".to_owned(),
+            segment_index: 0,
+            segment_count: 4,
+            compiler_output_sha256: [0x5a; 32],
+        });
+        let timeline = InstructionTimeline { steps: vec![step] };
+        validate_instruction_timeline(&timeline).expect("valid compiler metadata");
+        let bytes = serde_json::to_vec(&timeline).unwrap();
+        let restored: InstructionTimeline = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored, timeline);
+        let metadata = restored.steps[0]
+            .visual
+            .named_technique_compiler_v1
+            .as_ref()
+            .unwrap();
+        assert_eq!(metadata.technique_kind, "accordion");
+        assert_eq!(metadata.compiler_output_sha256, [0x5a; 32]);
+    }
+
     fn valid_declarative_instruction_step() -> InstructionStep {
         InstructionStep {
             id: InstructionStepId::new(),
@@ -1209,6 +1275,7 @@ mod tests {
                 source_model_binding_sha256: [0x34; 32],
                 transition_count: 2,
             }),
+            named_technique_compiler_v1: None,
         };
         let timeline = InstructionTimeline { steps: vec![step] };
 

@@ -885,6 +885,21 @@ fn body_flow(
             font,
         )?;
     }
+    if let Some(metadata) = &step.visual.named_technique_compiler_v1 {
+        append_section(
+            &mut flow,
+            FlowSection::PathCertificate,
+            &format!(
+                "compiler-v1 / kind={} / segment={}/{} / output={}",
+                metadata.technique_kind,
+                metadata.segment_index + 1,
+                metadata.segment_count,
+                short_hash(&metadata.compiler_output_sha256),
+            ),
+            PageColor::MUTED,
+            font,
+        )?;
+    }
     Ok(flow)
 }
 

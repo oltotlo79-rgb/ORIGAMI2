@@ -47,9 +47,41 @@
 
 ## 検証ゲート
 
+### 全26項目の最終証跡索引
+
+| ID | commit evidence | test / review evidence |
+|---|---|---|
+| A-1 | `a0b4208`, `46072d6` | mesh export 22/22（純Graph拒否と認証Tree正常系を同時確認） |
+| A-2 | `2a72717` | focused 1/1、`ori-core` 299/299 |
+| A-3 | `4b6e348` | focused 1/1、static collision 29/29 |
+| A-4 | `4b6e348`, `241d855` | `-0.0`拒否3回帰、static collision 29/29 |
+| A-5 | `28e1717`, `1f97822` | `ori-formats` 305/305 |
+| A-6 | `ebd00ef` | 4098 unrelated parent entriesを含むfocused 1/1 |
+| A-7 | `9a5fb2f` | non-finite writer/reader 3/3、`ori-formats` 305/305 |
+| A-8 | `1a6c9fc` | focused 1/1、`ori-core` 299/299 |
+| A-9 | `1a6c9fc` | focused 1/1、`ori-core` 299/299 |
+| A-10 | `dbaf02f` | post-publish sync fault injection 1/1 |
+| B-1 | `9b133a8` | 要件・実装の再照合と保守的再計上 |
+| B-2 | `9b133a8` | `Indeterminate`を証明から除外して再計上 |
+| B-3 | `9b133a8` | solver/certificate到達範囲を再照合して再計上 |
+| B-4 | `9b133a8` | requirements 87行を機械集計（86/1/0） |
+| B-5 | `d158110` | 180度stacked endpoint focused、desktop check |
+| B-6 | `7f1b922`, `c9cfaac` | DTO/UI/coverageの一般化経路を静的照合 |
+| B-7 | `133606c` | source integration 1/1、TypeScript build |
+| C-1 | `50e79ac` | 到達可能な欠陥なしとしてstate/panel責務をreview |
+| C-2 | `50e79ac` | preview/apply authority経路を相互照合 |
+| C-3 | `157d198` | integration 1/1、TypeScript build |
+| C-4 | `50e79ac` | OCC/immutable DTOのABA安全境界をreview |
+| C-5 | `50e79ac` | ja/en同時保持とlocale test経路をreview |
+| C-6 | `50e79ac` | public APIとatomicity/ABA/retry回帰を静的照合 |
+| C-7 | `ceff2e3` | production check、関連10/10 |
+| C-8 | `50e79ac` | fail-closed API・editor error guard・registry用途をreview |
+| C-9 | `50e79ac` | EDT-003仕様と実装経路を照合し別要件と判定 |
+
 ### 2026-07-22 横断回帰の端末証跡
 
 - `ori-formats` lib全体: 305 passed / 0 failed。A-5以前の「表現不能なlayer evidenceを黙って破棄する」旧期待値も、専用errorへfail-closedする回帰へ修正（`1f97822`）。
+- WSL隔離targetで`ori-core` lib全体299/299、`ori-formats` lib全体305/305、desktop `mesh_export` 22/22、`static_collision` integration 29/29。
 - `cargo fmt --all -- --check`: green。
 - `cargo clippy -p ori-core -p ori-formats --all-targets -- -D warnings`: green。
 - `cargo clippy -p ori-collision --all-targets -- -D warnings`: green。

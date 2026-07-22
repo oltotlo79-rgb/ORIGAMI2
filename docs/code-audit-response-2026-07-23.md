@@ -19,7 +19,7 @@
 
 |項目|判定|対応|
 |---|---|---|
-|B-1/B-2/B-3/B-4/B-9|妥当な文書不整合|公式進捗はCIゲート中のため79.3%を維持する。自動設計60%への上方修正は採用せず、一般tree生成の実証範囲を再計上する。旧集計は次の公式更新時に単一表へ統合する。|
+|B-1/B-2/B-3/B-4/B-9|妥当な文書不整合・正本以外を是正済み|`13b1772`, `09c2e52`。公式進捗はCIゲート中のため79.3%を維持し、指示により`docs/progress.md`は変更しない。pending再評価は自動設計を60%へ上げず35%へ下げ、81.96%（表示82.0%）へ是正した。`requirements-status.md`は旧「現在」集計を履歴コメントへ隔離し、正本を85/2/0へ統一した。加重完成度とMUST行数は異なる指標であり同率には扱わない。|
 |B-5|妥当・修正済み|`657f902`。山谷は表示名でなく選択crease assignmentと明示kindで識別。WSL `ori-instructions` 40/40。|
 |B-6|一部妥当・修正済み|非連結blockを許す指摘は妥当。`ecc1dd3`でblock intersection graphをtreeに限定。公開型の死蔵は機能欠陥ではなく整理課題。|
 |B-7|妥当・修正済み|`4c28d50`。split/merged noticeを追加。|
@@ -42,8 +42,8 @@
 |項目|要件照合|判定|
 |---|---|---|
 |F-2 コンパス円交点snap|EDT-007 MUST|指摘は妥当。`77e8f1d`で円×線・円×円交点を既存snap契約と頂点追加・辺分割へ接続し、接線・重複円・非有限値・同一点候補・紙面外境界を追加回帰した。既存native commandを共有するためUndo/Redo・履歴永続化も同じ経路となる。|
-|F-6 step camera取得|INS-004 MUST|camera保存自体は既存visual JSON編集で可能。専用取得buttonは新規UXだが既存スコープを具体化するため実装対象。|
-|EDT-009 最小不能部分集合|EDT-009 MUST|既存スコープ内の未達。EDT-009を部分実装へ是正し、実装対象とする。|
+|F-6 step camera取得|INS-004 MUST|`57ee8e5`, `818d9f6`。3D previewの現在cameraを取得して選択stepの認証済みvisual更新へ渡し、camera未取得時は操作を無効化する。DOM回帰を追加した。|
+|EDT-009 最小不能部分集合|EDT-009 MUST|「Gauss-Newtonのrankから一般MUSを容易に抽出できる」という実装提案は根拠不足。局所solverの`NonConvergent`、`RankDeficient`、資源超過は不充足証明ではなく、これをoracleにしたsubset縮約は偽の矛盾原因を表示しうる。現状はsoundな7種の直接矛盾だけcanonicalな最小原因IDを表示し、それ以外を`Unknown`へ閉じるため部分実装を維持する。一般化はsoundなunsat oracleを先に要する。|
 |F-D/F-E|INS-001|作成・任意index移動は既に満たす。複製、先頭末尾button、DnDは新規shortcutでありMUST未達ではない。|
 |F-A/F-11|PRJ-008/SIM系|既存の単線・寸法表示を越える新規計測モード。新規スコープ。|
 |F-1|EDT-003|角度・長さ指定作図は実装済み。ray hit自動終端は新規スコープ。|
@@ -64,3 +64,7 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 - WSL `ori-instructions`: 40/40。
 - WSL blockwise target-angle回帰: 1/1。
 - desktop `cargo check`: 成功。無関係な既存warningは別所有差分として未変更。
+- compass intersection Node: 108/108、DOM: 10/10、production build: 成功。
+- requirements design evidence: 3/3（正本85/2/0）。
+
+検証件数は各対応コミット時点の対象suiteであり、異なる時点の件数を一つの全suite件数として合算しない。全CIが成功するまでは公式完成度を更新しない。

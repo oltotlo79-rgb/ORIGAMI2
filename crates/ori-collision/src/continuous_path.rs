@@ -467,6 +467,97 @@ pub fn diagnose_collective_hinge_path_v1(
     paper_thickness_mm: f64,
     limits: StackedFoldPathDiagnosticLimitsV1,
 ) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
+    let source_absolute = initial_pose.hinge_angles();
+    if source_absolute.iter().any(|hinge| {
+        moving_hinges.contains(&hinge.edge())
+            && hinge.angle_degrees().to_bits() != 0.0_f64.to_bits()
+    }) {
+        return Err(StackedFoldPathDiagnosticErrorV1::InvalidPath);
+    }
+    let target_absolute = CanonicalHingeAngles::new(
+        source_absolute
+            .iter()
+            .map(|hinge| {
+                HingeAngle::new(
+                    hinge.edge(),
+                    if moving_hinges.contains(&hinge.edge()) {
+                        requested_angle_degrees
+                    } else {
+                        hinge.angle_degrees()
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| StackedFoldPathDiagnosticErrorV1::InvalidPath)?,
+    )
+    .map_err(|_| StackedFoldPathDiagnosticErrorV1::InvalidPath)?;
+    diagnose_collective_hinge_path_from_pose_v1(
+        model,
+        initial_pose,
+        source_absolute,
+        target_absolute.as_slice(),
+        paper_thickness_mm,
+        limits,
+    )
+}
+
+/// Diagnoses a collective path whose endpoints are explicit absolute hinge
+/// angles.  The source is bound bit-for-bit to `initial_pose`; consequently a
+/// caller cannot reuse a diagnosis after replacing or partially changing the
+/// authenticated source pose.
+pub fn diagnose_collective_hinge_path_from_pose_v1(
+    model: &MaterialTreeKinematicsModel,
+    initial_pose: &MaterialTreePose,
+    source_absolute: &[HingeAngle],
+    target_absolute: &[HingeAngle],
+    paper_thickness_mm: f64,
+    limits: StackedFoldPathDiagnosticLimitsV1,
+) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
+    if initial_pose.hinge_angles() != source_absolute
+        || source_absolute.len() != target_absolute.len()
+        || source_absolute
+            .iter()
+            .zip(target_absolute.iter())
+            .any(|(source, target)| source.edge() != target.edge())
+    {
+        return Err(StackedFoldPathDiagnosticErrorV1::PoseIssuerMismatch);
+    }
+    let changed = source_absolute
+        .iter()
+        .zip(target_absolute.iter())
+        .filter(|(source, target)| {
+            source.angle_degrees().to_bits() != target.angle_degrees().to_bits()
+        })
+        .collect::<Vec<_>>();
+    let Some((_, first_target)) = changed.first().copied() else {
+        return Err(StackedFoldPathDiagnosticErrorV1::InvalidPath);
+    };
+    if changed.iter().any(|(_, target)| {
+        target.angle_degrees().to_bits() != first_target.angle_degrees().to_bits()
+    }) {
+        return Err(StackedFoldPathDiagnosticErrorV1::InvalidPath);
+    }
+    diagnose_collective_hinge_path_absolute_inner_v1(
+        model,
+        initial_pose,
+        &changed
+            .iter()
+            .map(|(source, _)| source.edge())
+            .collect::<Vec<_>>(),
+        first_target.angle_degrees(),
+        paper_thickness_mm,
+        limits,
+    )
+}
+
+fn diagnose_collective_hinge_path_absolute_inner_v1(
+    model: &MaterialTreeKinematicsModel,
+    initial_pose: &MaterialTreePose,
+    moving_hinges: &[EdgeId],
+    requested_angle_degrees: f64,
+    paper_thickness_mm: f64,
+    limits: StackedFoldPathDiagnosticLimitsV1,
+) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
     if limits.sample_intervals == 0 || limits.sample_intervals > MAX_STACKED_FOLD_PATH_SAMPLES_V1 {
         return Err(StackedFoldPathDiagnosticErrorV1::InvalidLimits);
     }
@@ -540,7 +631,8 @@ pub fn diagnose_collective_hinge_path_v1(
     let mut positive_endpoint_memo_pair_entries = 0;
     let mut positive_endpoint_exact_pair_calls = 0;
     for index in 0..=limits.sample_intervals {
-        let angle = requested_angle_degrees * index as f64 / limits.sample_intervals as f64;
+        let progress = index as f64 / limits.sample_intervals as f64;
+        let angle = requested_angle_degrees * progress;
         let angles = initial_pose
             .hinge_angles()
             .iter()
@@ -548,7 +640,8 @@ pub fn diagnose_collective_hinge_path_v1(
                 HingeAngle::new(
                     hinge.edge(),
                     if moving.contains(&hinge.edge()) {
-                        angle
+                        hinge.angle_degrees()
+                            + (requested_angle_degrees - hinge.angle_degrees()) * progress
                     } else {
                         hinge.angle_degrees()
                     },
@@ -5379,6 +5472,59 @@ mod tests {
         assert_eq!(
             result.continuous_certificate_model_id(),
             Some(STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1)
+        );
+    }
+
+    #[test]
+    fn absolute_collective_path_binds_the_complete_source_pose() {
+        let model = three_hinge_strip_model(false);
+        let (moving, zero_pose) = zero_tree_pose(&model);
+        let source = CanonicalHingeAngles::new(
+            moving
+                .iter()
+                .map(|edge| HingeAngle::new(*edge, 1.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let source_pose = model.solve(zero_pose.fixed_face(), &source).unwrap();
+        let target = CanonicalHingeAngles::new(
+            moving
+                .iter()
+                .map(|edge| HingeAngle::new(*edge, 2.0).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let result = diagnose_collective_hinge_path_from_pose_v1(
+            &model,
+            &source_pose,
+            source.as_slice(),
+            target.as_slice(),
+            0.0,
+            StackedFoldPathDiagnosticLimitsV1::default(),
+        )
+        .unwrap();
+        assert_eq!(result.requested_angle_degrees(), 2.0);
+        assert_eq!(
+            diagnose_collective_hinge_path_from_pose_v1(
+                &model,
+                &source_pose,
+                zero_pose.hinge_angles(),
+                target.as_slice(),
+                0.0,
+                StackedFoldPathDiagnosticLimitsV1::default(),
+            ),
+            Err(StackedFoldPathDiagnosticErrorV1::PoseIssuerMismatch)
+        );
+        assert_eq!(
+            diagnose_collective_hinge_path_v1(
+                &model,
+                &source_pose,
+                &moving,
+                2.0,
+                0.0,
+                StackedFoldPathDiagnosticLimitsV1::default(),
+            ),
+            Err(StackedFoldPathDiagnosticErrorV1::InvalidPath)
         );
     }
 

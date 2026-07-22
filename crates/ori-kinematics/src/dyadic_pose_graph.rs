@@ -492,4 +492,40 @@ mod tests {
             Err(DyadicPoseGraphGenerationErrorV1::BindingMismatch)
         );
     }
+
+    #[test]
+    fn eight_hinge_three_level_production_cap_rejects_before_allocation() {
+        let mut edges = (0..8).map(|_| EdgeId::new()).collect::<Vec<_>>();
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let vector = |value: f64| {
+            CanonicalHingeAngles::new(
+                edges
+                    .iter()
+                    .copied()
+                    .map(|edge| HingeAngle::new(edge, value).unwrap())
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let mut checkpoints = 0usize;
+        assert_eq!(
+            generate_bounded_dyadic_pose_graph_at_levels_v1(
+                &vector(0.0),
+                &vector(90.0),
+                3,
+                DyadicPoseGraphLimitsV1 {
+                    max_states: 2_187,
+                    max_transitions: 20_412,
+                },
+                || {
+                    checkpoints += 1;
+                    true
+                },
+            ),
+            Err(DyadicPoseGraphGenerationErrorV1::ResourceLimit)
+        );
+        assert_eq!(checkpoints, 1);
+        assert_eq!(3usize.pow(8), 6_561);
+        assert_eq!(2 * (3 - 1) * 8 * 3usize.pow(7), 69_984);
+    }
 }

@@ -4554,6 +4554,48 @@ mod tests {
         )
     }
 
+    fn eight_hinge_tree_project() -> super::super::ProjectState {
+        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
+        let bottom = (0..=9).map(|index| (index as f64 * 20.0, 0.0));
+        let top = (0..=9).rev().map(|index| (index as f64 * 20.0, 100.0));
+        let vertices = bottom
+            .chain(top)
+            .enumerate()
+            .map(|(index, (x, y))| Vertex {
+                id: fixed_id("7c00", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: fixed_id("7d00", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        for index in 1..=8 {
+            edges.push(Edge {
+                id: fixed_id("7d00", index as u64 + 20),
+                start: boundary[index],
+                end: boundary[19 - index],
+                kind: if index % 2 == 0 {
+                    EdgeKind::Valley
+                } else {
+                    EdgeKind::Mountain
+                },
+            });
+        }
+        super::super::ProjectState::new_with_paper(
+            CreasePattern { vertices, edges },
+            Paper {
+                boundary_vertices: boundary,
+                ..Paper::default()
+            },
+        )
+    }
+
     #[test]
     fn dyadic_pose_graph_read_is_strict_bounded_and_observation_only() {
         let (mut project, hinges) = super::super::applied_pose::tests::four_vertex_cycle_project();
@@ -5128,6 +5170,107 @@ mod tests {
             },
         )
         .expect("seven-hinge generic proof mints a bounded read-only token");
+        assert!(!preview.authorizes_project_mutation);
+        let project = super::super::lock_project(&state).unwrap();
+        assert_eq!(project.editor.revision(), revision);
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+    }
+
+    #[test]
+    fn eight_hinge_generic_grid_fails_before_allocation_and_collective_route_mints() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let mut project = eight_hinge_tree_project();
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        assert_eq!(snapshot.faces.len(), 9);
+        let hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        assert_eq!(hinges.len(), 8);
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            snapshot.faces[0].id,
+        );
+        let layer_state = GlobalFlatFoldabilityState::default();
+        super::super::global_flat_foldability::tests::install_possible_layer_order(
+            &layer_state,
+            &project,
+        );
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let angle = 2.0 * 1.0_f64.atan2(4.0).to_degrees();
+        let target_angles = hinges
+            .iter()
+            .copied()
+            .map(|edge| DyadicPoseGraphAngleDtoV1 {
+                edge,
+                angle_degrees: angle,
+            })
+            .collect::<Vec<_>>();
+        let state = AppState::new(project);
+        let request = |schedule| DyadicPoseGraphReadRequestV1 {
+            expected_project_instance_id: instance,
+            expected_project_id: project_id,
+            expected_revision: revision,
+            target_angles: target_angles.clone(),
+            max_states: 2_187,
+            max_transitions: 20_412,
+            level_count: 3,
+            cycle_schedule_v1: schedule,
+        };
+        let generic = read_bounded_dyadic_pose_graph_inner_v1(
+            &state,
+            Some(&layer_state),
+            request(None),
+            None,
+        )
+        .unwrap();
+        assert_eq!(generic.status, "resource_limit");
+        assert_eq!((generic.state_count, generic.transition_count), (0, 0));
+        assert!(!generic.mutation_candidate_ready);
+
+        let schedule = dense_grid_schedule(&hinges, &hinges, 4);
+        let observed = read_bounded_dyadic_pose_graph_inner_v1(
+            &state,
+            Some(&layer_state),
+            request(Some(schedule.clone())),
+            None,
+        )
+        .unwrap();
+        assert_eq!((observed.state_count, observed.transition_count), (3, 4));
+        assert_eq!(observed.status, "certified");
+        assert!(observed.mutation_candidate_ready);
+        let preview_state = DyadicPathPreviewState::default();
+        let preview = mint_dyadic_pose_path_preview_inner_v1(
+            &state,
+            &layer_state,
+            &preview_state,
+            DyadicPathPreviewRequestV1 {
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                target_angles,
+                max_states: 2_187,
+                max_transitions: 20_412,
+                level_count: 3,
+                cycle_schedule_v1: Some(schedule),
+                expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
+                expected_positive_thickness_binding_sha256: observed
+                    .positive_thickness_binding_sha256
+                    .unwrap(),
+                expected_layer_transport_binding_sha256: observed
+                    .layer_transport_binding_sha256
+                    .unwrap(),
+            },
+        )
+        .expect("eight-hinge collective proof mints a bounded read-only token");
         assert!(!preview.authorizes_project_mutation);
         let project = super::super::lock_project(&state).unwrap();
         assert_eq!(project.editor.revision(), revision);

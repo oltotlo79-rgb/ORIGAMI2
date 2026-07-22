@@ -103,7 +103,7 @@ try {
   if (overLimitEvidence.reads !== 0 || await overLimit.getByTestId('dyadic-pose-graph-status').count() || await overLimit.getByRole('button', { name: 'Apply authenticated path' }).count()) throw new Error(`C65 must fail before IPC: ${JSON.stringify(overLimitEvidence)}`)
   await overLimit.close()
 
-  for (const scenario of ['concave', 'cut']) {
+  for (const scenario of ['concave', 'cut', 'hole']) {
     const unsupportedGeometry = await openScenario(scenario, 6)
     await unsupportedGeometry.getByRole('button', { name: 'Search bounded dyadic paths' }).click()
     await unsupportedGeometry.getByText(/reason no_certified_path/).waitFor()

@@ -790,6 +790,16 @@ test('CI requires the production C6 dyadic browser and exact native lifecycle', 
     'one exact Rust command must cover every bounded even-cycle family without duplicate jobs',
   )
   assert.match(workflow, new RegExp(`cargo test --locked -p origami2-desktop --lib\\s+${exactFilter}\\s+-- --exact --test-threads=1`, 'u'))
+  for (const fixtureTest of [
+    'concave_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
+    'cut_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
+    'hole_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
+  ]) {
+    const fixtureFilter = `stacked_fold_read::tests::${fixtureTest}`
+    assert.equal(workflow.match(new RegExp(fixtureFilter, 'gu'))?.length, 1)
+    assert.match(workflow, new RegExp(`cargo test --locked -p origami2-desktop --lib\\s+${fixtureFilter}\\s+-- --exact --test-threads=1`, 'u'))
+    assert.match(nativeRead, new RegExp(`fn ${fixtureTest}\\(\\)`, 'u'))
+  }
   for (const fixture of ['octagonal-c8', 'radial-c16', 'cactus-c32', 'cactus-c64']) {
     assert.equal(nativeRead.match(new RegExp(`"${fixture}"`, 'gu'))?.length, 1)
   }

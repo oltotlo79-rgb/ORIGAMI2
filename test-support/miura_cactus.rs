@@ -14,10 +14,22 @@ pub fn two_patch_miura_cactus_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
         (0, -1),
         (1, -1),
     ];
+    pattern_for_cells(&cells)
+}
+
+pub fn northwest_miura_patch_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
+    pattern_for_cells(&[(0, 0), (-1, 0), (0, 1), (-1, 1)])
+}
+
+pub fn southeast_miura_patch_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
+    pattern_for_cells(&[(0, 0), (1, 0), (0, -1), (1, -1)])
+}
+
+fn pattern_for_cells(cells: &[(i8, i8)]) -> (CreasePattern, Paper, Vec<EdgeId>) {
     let namespace = ProjectId::new();
     let mut points = BTreeSet::new();
     let mut incidence = BTreeMap::<((i8, i8), (i8, i8)), (usize, (i8, i8), (i8, i8))>::new();
-    for (x, y) in cells {
+    for &(x, y) in cells {
         let corners = [(x, y), (x + 1, y), (x + 1, y + 1), (x, y + 1)];
         points.extend(corners);
         for index in 0..4 {

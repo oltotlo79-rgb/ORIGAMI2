@@ -6293,6 +6293,29 @@ mod tests {
         let c8_opposite = vec![c8_cardinal[0], c8_cardinal[2]];
         let (theta_pattern, theta_paper, theta_hinges, theta_moving) =
             super::theta_cycle_test_support::theta_shared_hinge_pattern();
+        let (mut mixed_pattern, mixed_paper, mut mixed_hinges) =
+            super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern();
+        let mut gateways = mixed_pattern
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.position.x.to_bits() == 4.0_f64.to_bits())
+            .collect::<Vec<_>>();
+        gateways.sort_by(|first, second| first.position.y.total_cmp(&second.position.y));
+        let branch_endpoints = [gateways[0].id, gateways[1].id];
+        let branch = ori_domain::EdgeId::derive_v5(
+            ProjectId::schema_namespace([
+                0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x05, 0x61,
+            ]),
+            b"mixed-cactus-tree-branch",
+        );
+        mixed_pattern.edges.push(ori_domain::Edge {
+            id: branch,
+            start: branch_endpoints[0],
+            end: branch_endpoints[1],
+            kind: ori_domain::EdgeKind::Mountain,
+        });
+        mixed_hinges.push(branch);
         for (fixture_name, (pattern, mut paper, moving), kind) in [
             ("balloon-c6", balloon_six_sector_cycle_pattern(), 0),
             ("octagonal-c8", (c8_pattern, c8_paper, c8_opposite), 0),
@@ -6300,6 +6323,11 @@ mod tests {
             ("cactus-c32", (c32_pattern, c32_paper, c32_hinges), 1),
             ("cactus-c64", (c64_pattern, c64_paper, c64_hinges), 1),
             ("theta-c2", (theta_pattern, theta_paper, theta_moving), 2),
+            (
+                "mixed-cactus-branch",
+                (mixed_pattern, mixed_paper, mixed_hinges),
+                1,
+            ),
         ] {
             paper.thickness_mm = 0.1;
             let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
@@ -6345,7 +6373,7 @@ mod tests {
             let revision = project.editor.revision();
             let state = AppState::new(project);
             let schedule = if kind == 1 {
-                four_bay_cycle_schedule(&hinges)
+                four_bay_cycle_schedule(&moving)
             } else if kind == 2 {
                 theta_cycle_schedule(&theta_hinges, &moving)
             } else {
@@ -6359,6 +6387,10 @@ mod tests {
                     .unwrap()
                     .unwrap();
                 let (geometry, audit, pose) = capability.graph().unwrap();
+                if fixture_name == "mixed-cactus-branch" {
+                    assert!(audit.closure_hinges().len() >= 4);
+                    assert!(audit.spanning_hinges().contains(&branch));
+                }
                 prepare_requested_cycle_schedule_v1(
                     &schedule,
                     geometry,
@@ -6370,6 +6402,14 @@ mod tests {
                 .evaluate(1.0)
                 .unwrap()
             };
+            if fixture_name == "mixed-cactus-branch" {
+                assert!(
+                    target
+                        .as_slice()
+                        .iter()
+                        .any(|angle| { angle.edge() == branch && angle.angle_degrees() > 0.0 })
+                );
+            }
             let target_angles = target
                 .as_slice()
                 .iter()

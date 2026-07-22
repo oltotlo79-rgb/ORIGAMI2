@@ -964,6 +964,16 @@ pub(crate) mod tests {
     };
     use sha2::{Digest, Sha256};
 
+    use ori_instructions::{
+        BookFoldMotionRequestV1, FOLD_TECHNIQUE_FILE_SCHEMA_V1, FOLD_TECHNIQUE_FILE_VERSION_V1,
+        FoldTechniqueActionV1, FoldTechniqueCapabilityV1, FoldTechniqueExecutionSupportV1,
+        FoldTechniqueFileDocumentV1, FoldTechniqueFileV1, FoldTechniqueLocalizedTextV1,
+        FoldTechniqueMetadataV1, FoldTechniqueOperationV1, FoldTechniqueParameterBindingV1,
+        FoldTechniqueParameterDefinitionV1, FoldTechniqueParameterTypeV1, FoldTechniqueSourceV1,
+        FoldTechniqueTemplateV1, compile_certified_book_fold_timeline_v1,
+        instruction_pose_fingerprint_v1, validate_fold_technique_file_v1,
+    };
+
     use super::*;
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -1135,6 +1145,104 @@ pub(crate) mod tests {
                 .expect("add proof step");
         }
         project
+    }
+
+    fn localized(text: &str) -> Vec<FoldTechniqueLocalizedTextV1> {
+        vec![FoldTechniqueLocalizedTextV1 {
+            locale: "ja".to_owned(),
+            text: text.to_owned(),
+        }]
+    }
+
+    fn book_fold_file() -> FoldTechniqueFileV1 {
+        validate_fold_technique_file_v1(FoldTechniqueFileDocumentV1 {
+            schema: FOLD_TECHNIQUE_FILE_SCHEMA_V1.to_owned(),
+            version: FOLD_TECHNIQUE_FILE_VERSION_V1,
+            package_id: "user.export.book-fold".to_owned(),
+            metadata: FoldTechniqueMetadataV1 {
+                authors: vec!["ORIGAMI2 test".to_owned()],
+                source: FoldTechniqueSourceV1::UserAuthored,
+                license_spdx_id: "MIT".to_owned(),
+            },
+            techniques: vec![FoldTechniqueTemplateV1 {
+                id: "book-fold".to_owned(),
+                version: 1,
+                names: localized("二つ折り"),
+                descriptions: localized("直線に沿う二つ折り"),
+                parameters: vec![FoldTechniqueParameterDefinitionV1 {
+                    id: "target_angle".to_owned(),
+                    names: localized("目標角度"),
+                    descriptions: localized("折り終わりの角度"),
+                    parameter_type: FoldTechniqueParameterTypeV1::AngleMicrodegrees {
+                        minimum: 1,
+                        maximum: 180_000_000,
+                        default: 90_000_000,
+                    },
+                }],
+                preconditions: vec![],
+                operations: vec![
+                    FoldTechniqueOperationV1 {
+                        id: "prepare".to_owned(),
+                        names: localized("準備"),
+                        action: FoldTechniqueActionV1::InstructionCue {
+                            instructions: localized("紙を置く"),
+                        },
+                        parameter_bindings: vec![],
+                        precondition_ids: vec![],
+                        required_capabilities: vec![
+                            FoldTechniqueCapabilityV1::HumanInterpretationV1,
+                        ],
+                        execution_support: FoldTechniqueExecutionSupportV1::DeclarativeOnly,
+                    },
+                    FoldTechniqueOperationV1 {
+                        id: "fold".to_owned(),
+                        names: localized("折る"),
+                        action: FoldTechniqueActionV1::StraightLineStackedFold,
+                        parameter_bindings: vec![FoldTechniqueParameterBindingV1 {
+                            role: "target_angle".to_owned(),
+                            parameter_id: "target_angle".to_owned(),
+                        }],
+                        precondition_ids: vec![],
+                        required_capabilities: vec![
+                            FoldTechniqueCapabilityV1::StraightLineStackedFoldV1,
+                        ],
+                        execution_support: FoldTechniqueExecutionSupportV1::DeclarativeOnly,
+                    },
+                ],
+            }],
+        })
+        .expect("valid book-fold fixture")
+    }
+
+    fn native_certificate(
+        source: [u8; 32],
+        target: [u8; 32],
+    ) -> ori_collision::CertifiedPoseGraphPathCertificateV1 {
+        let candidate = ori_collision::CertifiedPathTransitionCandidateV1 {
+            source,
+            target,
+            candidate_key: [7; 32],
+        };
+        match ori_collision::search_certified_pose_graph_v1(
+            &[source, target],
+            &[candidate],
+            source,
+            target,
+            |edge| {
+                Some(
+                    ori_collision::CertifiedPathTransitionEvidenceV1::from_native_oracle(
+                        edge.source,
+                        edge.target,
+                        [1; 32],
+                        [2; 32],
+                        [3; 32],
+                    ),
+                )
+            },
+        ) {
+            ori_collision::CertifiedPathGraphSearchResultV1::Certified(certificate) => certificate,
+            other => panic!("expected native certificate, got {other:?}"),
+        }
     }
 
     fn source_for(
@@ -1453,6 +1561,89 @@ pub(crate) mod tests {
         .err()
         .expect("stale step must be rejected");
         assert_eq!(stale_error, InstructionExportErrorCategory::TimelineStale);
+    }
+
+    #[test]
+    fn compiled_book_fold_reopens_into_native_pdf_and_svg_with_exact_proof_content() {
+        let mut project = super::super::initial_project_state();
+        let fold_edge = EdgeId::new();
+        let boundary = &project.editor.paper().boundary_vertices;
+        project
+            .editor
+            .execute(
+                0,
+                Command::AddEdge {
+                    id: fold_edge,
+                    start: boundary[0],
+                    end: boundary[2],
+                    kind: EdgeKind::Mountain,
+                },
+            )
+            .expect("add book-fold edge");
+        let model = project.editor.fold_model_fingerprint_v1();
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let fixed_face = topology.simulation_snapshot().expect("book topology").faces[0].id;
+        let source_angles = vec![InstructionHingeAngle {
+            edge: fold_edge,
+            angle_degrees: 5.0,
+        }];
+        let target_angles = vec![InstructionHingeAngle {
+            edge: fold_edge,
+            angle_degrees: 90.0,
+        }];
+        let certificate = native_certificate(
+            instruction_pose_fingerprint_v1(&model, fixed_face, &source_angles),
+            instruction_pose_fingerprint_v1(&model, fixed_face, &target_angles),
+        );
+        let compiled = compile_certified_book_fold_timeline_v1(BookFoldMotionRequestV1 {
+            technique_file: &book_fold_file(),
+            technique_id: "book-fold",
+            source_model_fingerprint: &model,
+            fixed_face,
+            fold_edge,
+            source_hinge_angles: &source_angles,
+            target_angle_microdegrees: 90_000_000,
+            path_certificate: &certificate,
+        })
+        .expect("compile real book-fold timeline");
+        assert_eq!(compiled.steps.len(), 2);
+        assert!(compiled.steps[1].title.contains("二つ折り"));
+        let reference = compiled.steps[1]
+            .visual
+            .path_certificate_reference_v1
+            .as_ref()
+            .expect("compiler emits structured proof");
+        assert_eq!(reference.source_pose_sha256, certificate.source());
+        assert_eq!(reference.target_pose_sha256, certificate.target());
+        let proof_hex = reference
+            .binding_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert!(compiled.steps[1].description.contains(&proof_hex));
+
+        let archived = serde_json::to_vec(&compiled).expect("archive compiled book fold");
+        let reopened: ori_domain::InstructionTimeline =
+            serde_json::from_slice(&archived).expect("reopen compiled book fold");
+        for step in reopened.steps.clone() {
+            let revision = project.editor.revision();
+            project
+                .editor
+                .execute(revision, Command::AddInstructionStep { step })
+                .expect("persist compiler step");
+        }
+        for (format, magic) in [
+            (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+            (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+        ] {
+            let artifact = build_pending_export(source_for(&project, format))
+                .expect("export compiler-authored book fold");
+            assert_eq!(artifact.step_count, 2);
+            assert!(artifact.bytes.starts_with(magic));
+        }
     }
 
     #[test]

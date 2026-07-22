@@ -137,6 +137,7 @@ export function StackedFoldPanel({
   const [basicFoldTimelinePreview, setBasicFoldTimelinePreview] =
     useState<BasicFoldTimelinePreviewResponseV1 | null>(null)
   const [basicFoldTimelinePreviewError, setBasicFoldTimelinePreviewError] = useState(false)
+  const [basicFoldTimelineStepIndex, setBasicFoldTimelineStepIndex] = useState(0)
   const namedBasicFold = namedBookFold?.kind === 'mountain'
     || namedBookFold?.kind === 'valley' || namedBookFold?.kind === 'squash'
     || namedBookFold?.kind === 'crimp' || namedBookFold?.kind === 'inside_reverse'
@@ -150,6 +151,9 @@ export function StackedFoldPanel({
     setBasicFoldTimelinePreviewError(false)
   }, [snapshot.project_instance_id, snapshot.project_id, snapshot.revision, selectedLine?.id,
     namedBookFold?.techniqueId])
+  useEffect(() => {
+    setBasicFoldTimelineStepIndex(0)
+  }, [basicFoldTimelinePreview])
   const dyadicGraphSequenceRef = useRef(0)
   const [confirmed, setConfirmed] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -188,6 +192,8 @@ export function StackedFoldPanel({
     }
     return null
   }, [snapshot.instruction_timeline?.steps])
+  const basicFoldTimelineStep = basicFoldTimelinePreview
+    ?.timeline.steps[basicFoldTimelineStepIndex] ?? null
   const savedCompilerProvenance = useMemo(() => {
     for (const step of [...(snapshot.instruction_timeline?.steps ?? [])].reverse()) {
       const metadata = step.visual.named_technique_compiler_v1
@@ -1285,9 +1291,35 @@ export function StackedFoldPanel({
                 {t('認証済み手順をpreview', 'Preview certified timeline')}
               </button>
               {basicFoldTimelinePreview && (
-                <div role="status">
+                <div role="status" tabIndex={0}
+                  aria-label={t('認証済み手順step再生', 'Certified timeline step player')}
+                  onKeyDown={(event) => {
+                    const last = basicFoldTimelinePreview.timeline.steps.length - 1
+                    if (event.key === 'ArrowLeft') setBasicFoldTimelineStepIndex((value) => Math.max(0, value - 1))
+                    else if (event.key === 'ArrowRight') setBasicFoldTimelineStepIndex((value) => Math.min(last, value + 1))
+                    else if (event.key === 'Home') setBasicFoldTimelineStepIndex(0)
+                    else if (event.key === 'End') setBasicFoldTimelineStepIndex(last)
+                    else return
+                    event.preventDefault()
+                  }}>
                   <p>{t('読取専用previewです。適用権限は含みません。', 'Read-only preview; no mutation authority is included.')}</p>
-                  <ol>{basicFoldTimelinePreview.timeline.steps.map((step) => <li key={step.id}>{step.title}</li>)}</ol>
+                  <p aria-live="polite">{t('step', 'Step')} {basicFoldTimelineStepIndex + 1} / {basicFoldTimelinePreview.timeline.steps.length}</p>
+                  <button type="button" disabled={basicFoldTimelineStepIndex === 0}
+                    onClick={() => setBasicFoldTimelineStepIndex((value) => Math.max(0, value - 1))}>{t('前のstep', 'Previous step')}</button>
+                  <button type="button" disabled={basicFoldTimelineStepIndex + 1 >= basicFoldTimelinePreview.timeline.steps.length}
+                    onClick={() => setBasicFoldTimelineStepIndex((value) => Math.min(basicFoldTimelinePreview.timeline.steps.length - 1, value + 1))}>{t('次のstep', 'Next step')}</button>
+                  {basicFoldTimelineStep && (
+                    <section aria-label={t('step詳細preview', 'Step detail preview')}>
+                      <h4>{basicFoldTimelineStep.title}</h4>
+                      <p>{basicFoldTimelineStep.description}</p>
+                      <dl>
+                        <div><dt>{t('固定面', 'Fixed face')}</dt><dd>{basicFoldTimelineStep.pose.fixed_face ?? t('なし', 'None')}</dd></div>
+                        <div><dt>{t('ヒンジ数', 'Hinge count')}</dt><dd>{basicFoldTimelineStep.pose.hinge_angles.length}</dd></div>
+                        <div><dt>{t('経路証明', 'Path proof')}</dt><dd>{basicFoldTimelineStep.visual.path_certificate_reference_v1 ? t('参照あり', 'Referenced') : t('なし', 'None')}</dd></div>
+                      </dl>
+                      <ol>{basicFoldTimelineStep.pose.hinge_angles.map((hinge) => <li key={hinge.edge}>{hinge.edge}: {hinge.angle_degrees}°</li>)}</ol>
+                    </section>
+                  )}
                 </div>
               )}
               {basicFoldTimelinePreviewError && (

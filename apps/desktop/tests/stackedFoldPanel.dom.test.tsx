@@ -228,6 +228,41 @@ describe('StackedFoldPanel', () => {
     expect(screen.getByText('No saved compiler proof information')).toBeTruthy()
   })
 
+  it('plays bounded read-only compiler steps by buttons and keyboard and drops stale state', async () => {
+    transport.cancel.mockResolvedValue(undefined)
+    const step = (id: string, title: string, angle: number) => ({
+      id, title, description: `${title} detail`, caution: '', duration_ms: 1000,
+      visual: { path_certificate_reference_v1: null },
+      pose: { model: 'absolute_hinge_angles_v1', source_model_fingerprint: 'a'.repeat(64),
+        fixed_face: project, hinge_angles: [{ edge: token, angle_degrees: angle }] },
+    })
+    const preview = { ...basicTimelinePreview, timeline: { steps: [
+      step('step-1', 'Start pose', 0), step('step-2', 'Folded pose', 90),
+    ] } } as any
+    transport.preview.mockResolvedValue(ready)
+    transport.basicPreview.mockResolvedValue(preview)
+    const props = {
+      locale: 'en' as const, snapshot,
+      selectedLine: { id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } },
+      disabled: false,
+      namedBookFold: { document: { techniques: [] } as any, techniqueId: 'mountain',
+        name: 'Mountain fold', kind: 'mountain' as const },
+      refreshSnapshot: vi.fn(), onApplied: vi.fn(),
+    }
+    const { rerender } = render(<StackedFoldPanel {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview certified timeline' }))
+    const player = await screen.findByRole('status', { name: 'Certified timeline step player' })
+    expect(screen.getByRole('heading', { name: 'Start pose' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Next step' }))
+    expect(screen.getByRole('heading', { name: 'Folded pose' })).toBeTruthy()
+    fireEvent.keyDown(player, { key: 'Home' })
+    expect(screen.getByRole('heading', { name: 'Start pose' })).toBeTruthy()
+    expect(screen.getByText('Read-only preview; no mutation authority is included.')).toBeTruthy()
+    rerender(<StackedFoldPanel {...props} snapshot={{ ...snapshot, revision: 4 } as ProjectSnapshot} />)
+    expect(screen.queryByRole('status', { name: 'Certified timeline step player' })).toBeNull()
+  })
+
   it('offers cooperative cancellation while a bounded path read is pending', async () => {
     transport.preview.mockReturnValue(new Promise(() => undefined))
     render(

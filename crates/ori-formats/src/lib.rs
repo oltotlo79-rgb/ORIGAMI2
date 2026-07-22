@@ -526,6 +526,8 @@ pub enum FormatError {
     InvalidAnnotations,
     #[error("project underlays are invalid")]
     InvalidUnderlays,
+    #[error("project crease-pattern geometry contains a non-finite coordinate")]
+    NonFiniteGeometry,
     #[error(
         "cannot validate geometric constraints against {actual} crease-pattern vertices; the hard maximum is {maximum}"
     )]
@@ -559,6 +561,7 @@ fn write_project_json_with_size_limit(
     requested_limit: usize,
 ) -> Result<Vec<u8>, FormatError> {
     validate_project_envelope(document)?;
+    validate_project_geometry_finiteness(document)?;
     validate_instruction_timeline(&document.instruction_timeline)?;
     validate_numeric_expressions(&document.numeric_expressions)?;
     validate_current_vertex_expression_bindings(document)?;
@@ -585,6 +588,7 @@ pub fn read_project_json_with_limits(
     ensure_project_json_size(bytes.len(), limits.max_input_size)?;
     let document: ProjectDocument = serde_json::from_slice(bytes)?;
     validate_project_envelope(&document)?;
+    validate_project_geometry_finiteness(&document)?;
     validate_instruction_timeline(&document.instruction_timeline)?;
     validate_numeric_expressions(&document.numeric_expressions)?;
     validate_current_vertex_expression_bindings(&document)?;
@@ -593,6 +597,16 @@ pub fn read_project_json_with_limits(
     validate_project_annotations(&document)?;
     validate_project_underlays(&document)?;
     Ok(document)
+}
+
+fn validate_project_geometry_finiteness(document: &ProjectDocument) -> Result<(), FormatError> {
+    document
+        .crease_pattern
+        .vertices
+        .iter()
+        .all(|vertex| vertex.position.x.is_finite() && vertex.position.y.is_finite())
+        .then_some(())
+        .ok_or(FormatError::NonFiniteGeometry)
 }
 
 fn validate_project_underlays(document: &ProjectDocument) -> Result<(), FormatError> {
@@ -1106,6 +1120,18 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn project_json_writer_rejects_non_finite_vertex_coordinates() {
+        for coordinate in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut document = sample_document();
+            document.crease_pattern.vertices[0].position.x = coordinate;
+            assert!(matches!(
+                write_project_json(&document),
+                Err(FormatError::NonFiniteGeometry)
+            ));
+        }
+    }
 
     #[test]
     fn project_memo_round_trips_and_legacy_json_defaults_to_empty() {

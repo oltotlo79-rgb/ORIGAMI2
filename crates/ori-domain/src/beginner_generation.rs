@@ -242,6 +242,17 @@ pub struct BeginnerSilhouetteThresholdsV1 {
     pub schema_version: u32,
     pub alpha: u8,
     pub luma: u8,
+    #[serde(default)]
+    pub polarity: BeginnerSilhouettePolarityV1,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeginnerSilhouettePolarityV1 {
+    #[default]
+    DarkOnLight,
+    LightOnDark,
+    AlphaOnly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

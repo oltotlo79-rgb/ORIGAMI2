@@ -272,6 +272,18 @@ test('custom silhouette thresholds are versioned bounded and stale-safe', () => 
   assert.match(app, /beginnerRecognitionRequestRef\.current \+= 1/u)
 })
 
+test('silhouette foreground polarity is explicit persisted and never auto-guessed', () => {
+  assert.match(generation, /enum BeginnerSilhouettePolarityV1/u)
+  assert.match(recognitionDomain, /DarkOnLight =>/u)
+  assert.match(recognitionDomain, /LightOnDark =>/u)
+  assert.match(recognitionDomain, /AlphaOnly => true/u)
+  assert.match(client, /'dark_on_light', 'light_on_dark', 'alpha_only'/u)
+  assert.match(app, /Silhouette foreground polarity/u)
+  assert.match(app, /Dark on light/u)
+  assert.match(app, /Light on dark/u)
+  assert.match(app, /Alpha only/u)
+})
+
 test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticity', () => {
   assert.match(generation, /struct BeginnerBulgeTargetV1/u)
   assert.match(generation, /pub face_ids: Vec<FaceId>/u)

@@ -26,6 +26,8 @@ pub(crate) struct RecognizeBeginnerTargetRequest {
     alpha_threshold: Option<u8>,
     #[serde(default)]
     luma_threshold: Option<u8>,
+    #[serde(default)]
+    polarity: Option<ori_domain::BeginnerSilhouettePolarityV1>,
 }
 
 #[tauri::command]
@@ -53,6 +55,7 @@ pub(crate) fn recognize_beginner_silhouette(
                 schema_version: 1,
                 alpha: 128,
                 luma: 127,
+                polarity: ori_domain::BeginnerSilhouettePolarityV1::DarkOnLight,
             });
         (
             asset.bytes.clone(),
@@ -60,6 +63,7 @@ pub(crate) fn recognize_beginner_silhouette(
                 schema_version: 1,
                 alpha: request.alpha_threshold.unwrap_or(saved.alpha),
                 luma: request.luma_threshold.unwrap_or(saved.luma),
+                polarity: request.polarity.unwrap_or(saved.polarity),
             },
         )
     };
@@ -74,6 +78,7 @@ pub(crate) fn recognize_beginner_silhouette(
         &rgba,
         thresholds.alpha,
         thresholds.luma,
+        thresholds.polarity,
     )
     .map_err(|error| match error {
         ori_domain::BeginnerRecognitionErrorV1::AmbiguousSilhouette => {
@@ -176,8 +181,6 @@ pub(crate) fn recognize_beginner_outline_candidates(
         revision: project.editor.revision(),
         underlay_id: request.underlay_id,
         asset_id: request.asset_id,
-        alpha_threshold: None,
-        luma_threshold: None,
         source_sha256: source_hash,
         candidates,
     })
@@ -196,6 +199,7 @@ pub(crate) fn recognize_beginner_part_suggestions(
         asset_id: request.asset_id,
         alpha_threshold: None,
         luma_threshold: None,
+        polarity: None,
     };
     let (bytes, target_category, target_parts) = {
         let project = lock_project(&state)?;
@@ -328,8 +332,6 @@ pub(crate) fn recognize_beginner_part_suggestions(
         revision: project.editor.revision(),
         underlay_id: request.underlay_id,
         asset_id: request.asset_id,
-        alpha_threshold: None,
-        luma_threshold: None,
         selected_outline_id: request.candidate.id,
         suggestions,
     })
@@ -391,6 +393,9 @@ pub(crate) fn apply_beginner_part_assignments(
         expected_revision: request.expected_revision,
         underlay_id: request.underlay_id,
         asset_id: request.asset_id,
+        alpha_threshold: None,
+        luma_threshold: None,
+        polarity: None,
     };
     let bytes = {
         let project = lock_project(&state)?;
@@ -1327,6 +1332,9 @@ pub(crate) fn apply_beginner_outline_candidate(
         expected_revision: request.expected_revision,
         underlay_id: request.underlay_id,
         asset_id: request.asset_id,
+        alpha_threshold: None,
+        luma_threshold: None,
+        polarity: None,
     };
     let bytes = {
         let project = lock_project(&state)?;

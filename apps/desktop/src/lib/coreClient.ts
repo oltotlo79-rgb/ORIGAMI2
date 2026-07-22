@@ -255,7 +255,7 @@ export type BeginnerGenerationConstraintsV1 = {
     schema_version: 1; source_asset_sha256: number[]; component_count: number; reviewed: boolean
     bridges: Array<{ id: number; start_component_id: number; end_component_id: number; accepted: boolean }>
   }
-  silhouette_thresholds?: { schema_version: 1; alpha: number; luma: number }
+  silhouette_thresholds?: { schema_version: 1; alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only' }
   protrusions?: Array<{
     id: number
     count: number
@@ -687,11 +687,13 @@ function normalizeBeginnerGenerationConstraints(
   }
   let silhouetteThresholds: BeginnerGenerationConstraintsV1['silhouette_thresholds']
   if (record.silhouette_thresholds !== undefined) {
-    const thresholds = exactCoreDataRecord(record.silhouette_thresholds, ['schema_version', 'alpha', 'luma'] as const)
+    const thresholds = snapshotCoreDataRecord(record.silhouette_thresholds)
     if (!thresholds || thresholds.schema_version !== 1
+      || Object.keys(thresholds).some((key) => !['schema_version', 'alpha', 'luma', 'polarity'].includes(key))
       || !Number.isInteger(thresholds.alpha) || Number(thresholds.alpha) < 0 || Number(thresholds.alpha) > 255
-      || !Number.isInteger(thresholds.luma) || Number(thresholds.luma) < 0 || Number(thresholds.luma) > 255) return null
-    silhouetteThresholds = { schema_version: 1, alpha: Number(thresholds.alpha), luma: Number(thresholds.luma) }
+      || !Number.isInteger(thresholds.luma) || Number(thresholds.luma) < 0 || Number(thresholds.luma) > 255
+      || !['dark_on_light', 'light_on_dark', 'alpha_only'].includes(String(thresholds.polarity ?? 'dark_on_light'))) return null
+    silhouetteThresholds = { schema_version: 1, alpha: Number(thresholds.alpha), luma: Number(thresholds.luma), polarity: (thresholds.polarity ?? 'dark_on_light') as 'dark_on_light' | 'light_on_dark' | 'alpha_only' }
   }
   return Object.freeze({
     schema_version: 1,
@@ -2823,7 +2825,7 @@ export function recognizeBeginnerSilhouette(
   expectedProjectInstanceId: string,
   underlayId: string,
   assetId: string,
-  thresholds: { alpha: number; luma: number } = { alpha: 128, luma: 127 },
+  thresholds: { alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only' } = { alpha: 128, luma: 127, polarity: 'dark_on_light' },
 ) {
   if (!isCanonicalNonNilUuid(expectedProjectId)
     || !isCanonicalNonNilUuid(expectedProjectInstanceId)
@@ -2831,12 +2833,14 @@ export function recognizeBeginnerSilhouette(
     || !isCanonicalNonNilUuid(assetId)
     || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0
     || !Number.isInteger(thresholds.alpha) || thresholds.alpha < 0 || thresholds.alpha > 255
-    || !Number.isInteger(thresholds.luma) || thresholds.luma < 0 || thresholds.luma > 255) {
+    || !Number.isInteger(thresholds.luma) || thresholds.luma < 0 || thresholds.luma > 255
+    || !['dark_on_light', 'light_on_dark', 'alpha_only'].includes(thresholds.polarity)) {
     return Promise.reject(new BeginnerRecognitionError('native_failure'))
   }
   const request = {
     expectedProjectInstanceId, expectedProjectId, expectedRevision, underlayId, assetId,
     alphaThreshold: thresholds.alpha, lumaThreshold: thresholds.luma,
+    polarity: thresholds.polarity,
   }
   return invoke<unknown>('recognize_beginner_silhouette', { request }).then((value) => {
     const proposal = normalizeBeginnerRecognitionProposal(

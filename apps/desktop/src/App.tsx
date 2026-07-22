@@ -764,11 +764,14 @@ function App() {
   const [acceptedRecognitionProtrusionIds, setAcceptedRecognitionProtrusionIds] =
     useState<ReadonlySet<number>>(() => new Set())
   const [beginnerRecognitionBusy, setBeginnerRecognitionBusy] = useState(false)
-  const [beginnerSilhouetteThresholds, setBeginnerSilhouetteThresholds] = useState({ alpha: 128, luma: 127 })
+  const [beginnerSilhouetteThresholds, setBeginnerSilhouetteThresholds] = useState<{
+    alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only'
+  }>({ alpha: 128, luma: 127, polarity: 'dark_on_light' })
   useEffect(() => {
     const timeout = window.setTimeout(() => requestBeginnerRecognition('silhouette'), 300)
     return () => window.clearTimeout(timeout)
-  }, [beginnerSilhouetteThresholds.alpha, beginnerSilhouetteThresholds.luma])
+  }, [beginnerSilhouetteThresholds.alpha, beginnerSilhouetteThresholds.luma,
+    beginnerSilhouetteThresholds.polarity])
   const beginnerRecognitionRequestRef = useRef(0)
   const [beginnerOutlineCandidates, setBeginnerOutlineCandidates] =
     useState<BeginnerOutlineCandidatesResponse | null>(null)
@@ -808,7 +811,7 @@ function App() {
     setBeginnerRecognitionBusy(false)
     setBeginnerRecognitionProposal(null)
     setBeginnerSilhouetteThresholds(nativeSnapshot?.beginner_design_profile.generation_constraints
-      .silhouette_thresholds ?? { alpha: 128, luma: 127 })
+      .silhouette_thresholds ?? { alpha: 128, luma: 127, polarity: 'dark_on_light' })
     setBeginnerOutlineCandidates(null)
     setBeginnerPartSuggestions(null)
     setBeginnerPartAssignments([])
@@ -8961,6 +8964,19 @@ function App() {
                     <input type="range" min="0" max="255" value={beginnerSilhouetteThresholds.luma}
                       onChange={(event) => { beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null); setBeginnerSilhouetteThresholds((value) => ({ ...value, luma: Number(event.target.value) })) }} />
                     <output>{beginnerSilhouetteThresholds.luma}</output>
+                  </label>
+                  <label>
+                    {text({ ja: '輪郭の前景極性', en: 'Silhouette foreground polarity' })}
+                    <select value={beginnerSilhouetteThresholds.polarity} onChange={(event) => {
+                      beginnerRecognitionRequestRef.current += 1
+                      setBeginnerRecognitionProposal(null)
+                      setBeginnerSilhouetteThresholds((value) => ({ ...value,
+                        polarity: event.target.value as 'dark_on_light' | 'light_on_dark' | 'alpha_only' }))
+                    }}>
+                      <option value="dark_on_light">{text({ ja: '明背景の暗い形', en: 'Dark on light' })}</option>
+                      <option value="light_on_dark">{text({ ja: '暗背景の明るい形', en: 'Light on dark' })}</option>
+                      <option value="alpha_only">{text({ ja: 'アルファのみ', en: 'Alpha only' })}</option>
+                    </select>
                   </label>
                   <p id="beginner-recognition-help" className="muted">
                     {text({

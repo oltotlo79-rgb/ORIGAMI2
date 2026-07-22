@@ -592,6 +592,7 @@ pub fn analyze_silhouette_png_rgba_v1(
         rgba,
         BEGINNER_SILHOUETTE_ALPHA_THRESHOLD_V1,
         BEGINNER_SILHOUETTE_LUMA_THRESHOLD_V1,
+        crate::BeginnerSilhouettePolarityV1::DarkOnLight,
     )
 }
 
@@ -604,6 +605,7 @@ pub fn analyze_silhouette_png_rgba_with_thresholds_v1(
     rgba: &[u8],
     alpha_threshold: u8,
     luma_threshold: u8,
+    polarity: crate::BeginnerSilhouettePolarityV1,
 ) -> Result<BeginnerRecognitionProposalV1, BeginnerRecognitionErrorV1> {
     validate_dimensions_and_rgba(width, height, rgba)?;
     let pixels = width as usize * height as usize;
@@ -612,7 +614,16 @@ pub fn analyze_silhouette_png_rgba_with_thresholds_v1(
         let luminance =
             (u32::from(pixel[0]) * 2126 + u32::from(pixel[1]) * 7152 + u32::from(pixel[2]) * 722)
                 / 10_000;
-        foreground[index] = pixel[3] >= alpha_threshold && luminance <= u32::from(luma_threshold);
+        foreground[index] = pixel[3] >= alpha_threshold
+            && match polarity {
+                crate::BeginnerSilhouettePolarityV1::DarkOnLight => {
+                    luminance <= u32::from(luma_threshold)
+                }
+                crate::BeginnerSilhouettePolarityV1::LightOnDark => {
+                    luminance >= u32::from(luma_threshold)
+                }
+                crate::BeginnerSilhouettePolarityV1::AlphaOnly => true,
+            };
     }
     let foreground_count = foreground.iter().filter(|value| **value).count();
     if foreground_count < 4 || foreground_count == pixels {

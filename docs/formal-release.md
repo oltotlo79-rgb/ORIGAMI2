@@ -43,6 +43,11 @@ manifests again, emits GitHub build-provenance attestations, and uses generated
 release notes. It refuses to overwrite an existing release. Promotion preserves
 the prerelease assets and notes.
 
+Windows portable ZIP and macOS application tar.gz archives use the shared
+deterministic archive writer. Entry order, timestamps, owners, modes, compression,
+and symbolic-link rejection are fixed; the contract suite rebuilds both formats
+after source metadata drift and requires byte-identical output.
+
 Local contract tests run with:
 
 ```sh

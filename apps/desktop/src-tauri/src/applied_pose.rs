@@ -920,9 +920,12 @@ impl CapturedNativePoseRequest {
         let (native_pose, face_ids, expected_hinges, semantic_fixed_face) =
             if let Ok(model) = tree_model {
                 let model = Arc::new(model);
+                let native_fixed_face = (!canonical_angles.as_slice().is_empty())
+                    .then_some(resolved_fixed_face)
+                    .flatten();
                 let pose = Arc::new(
                     model
-                        .solve(resolved_fixed_face, &canonical_angles)
+                        .solve(native_fixed_face, &canonical_angles)
                         .map_err(|_| PoseAuthorityError::KinematicsUnavailable)?,
                 );
                 model
@@ -1389,7 +1392,12 @@ fn current_applied_pose_capability_matches_locked_slot(
 
 fn material_pose_matches_semantic(pose: &MaterialTreePose, semantic: &AppliedPoseV1) -> bool {
     semantic.model_id() == APPLIED_POSE_MODEL_ID_V1
-        && pose.fixed_face() == semantic.fixed_face()
+        && (pose.fixed_face() == semantic.fixed_face()
+            || (pose.hinge_angles().is_empty()
+                && pose.fixed_face().is_none()
+                && semantic
+                    .fixed_face()
+                    .is_some_and(|face| pose.face_ids() == [face])))
         && pose.hinge_angles().len() == semantic.hinge_angles().len()
         && pose
             .hinge_angles()

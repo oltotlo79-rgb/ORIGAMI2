@@ -357,6 +357,23 @@ enum CommandV1 {
         vertex_lineage: Vec<(u8, VertexId, VertexId)>,
         edge_seeds: Vec<(u8, EdgeId, EdgeId)>,
     },
+    ApplyRadialArrayDocument {
+        before_fingerprint: String,
+        before_project_layers: ProjectLayerDocumentV1,
+        center: VertexId,
+        source_vertices: Vec<VertexId>,
+        source_edges: Vec<EdgeId>,
+        additional_copies: u8,
+        angle_microdegrees: u32,
+        pattern: CreasePattern,
+        project_layers: ProjectLayerDocumentV1,
+        new_vertices: Vec<VertexId>,
+        new_edges: Vec<EdgeId>,
+        removed_edges: Vec<EdgeId>,
+        changed_edges: Vec<EdgeId>,
+        vertex_lineage: Vec<(u8, VertexId, VertexId)>,
+        edge_seeds: Vec<(u8, EdgeId, EdgeId)>,
+    },
     ApplyStackedFoldDocument {
         pattern: CreasePattern,
         paper: Paper,
@@ -871,6 +888,23 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             vertex_lineage: plan.vertex_lineage.clone(),
             edge_seeds: plan.edge_seeds.clone(),
         },
+        Command::ApplyRadialArrayDocument(plan) => CommandV1::ApplyRadialArrayDocument {
+            before_fingerprint: plan.before_fingerprint.clone(),
+            before_project_layers: plan.before_project_layers.clone(),
+            center: plan.center,
+            source_vertices: plan.source_vertices.clone(),
+            source_edges: plan.source_edges.clone(),
+            additional_copies: plan.additional_copies,
+            angle_microdegrees: plan.angle_microdegrees,
+            pattern: plan.pattern.clone(),
+            project_layers: plan.project_layers.clone(),
+            new_vertices: plan.new_vertices.clone(),
+            new_edges: plan.new_edges.clone(),
+            removed_edges: plan.removed_edges.clone(),
+            changed_edges: plan.changed_edges.clone(),
+            vertex_lineage: plan.vertex_lineage.clone(),
+            edge_seeds: plan.edge_seeds.clone(),
+        },
         Command::ApplyStackedFoldDocument {
             pattern,
             paper,
@@ -1158,6 +1192,39 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
             source_edges,
             additional_copies,
             delta,
+            pattern,
+            project_layers,
+            new_vertices,
+            new_edges,
+            removed_edges,
+            changed_edges,
+            vertex_lineage,
+            edge_seeds,
+        }),
+        CommandV1::ApplyRadialArrayDocument {
+            before_fingerprint,
+            before_project_layers,
+            center,
+            source_vertices,
+            source_edges,
+            additional_copies,
+            angle_microdegrees,
+            pattern,
+            project_layers,
+            new_vertices,
+            new_edges,
+            removed_edges,
+            changed_edges,
+            vertex_lineage,
+            edge_seeds,
+        } => Command::ApplyRadialArrayDocument(RadialArrayPlan {
+            before_fingerprint,
+            before_project_layers,
+            center,
+            source_vertices,
+            source_edges,
+            additional_copies,
+            angle_microdegrees,
             pattern,
             project_layers,
             new_vertices,
@@ -1869,6 +1936,21 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
             if !finite_point(*delta) {
                 return Err(EditorHistoryErrorV1::NonFiniteNumber);
             }
+            for vertex in &pattern.vertices {
+                validate_vertex_finite(vertex)?;
+            }
+            if !validate_crease_pattern(pattern).is_valid()
+                || validate_project_layer_document_against_pattern_v1(project_layers, pattern)
+                    .is_err()
+            {
+                return Err(EditorHistoryErrorV1::InvalidCommand);
+            }
+        }
+        Command::ApplyRadialArrayDocument(RadialArrayPlan {
+            pattern,
+            project_layers,
+            ..
+        }) => {
             for vertex in &pattern.vertices {
                 validate_vertex_finite(vertex)?;
             }

@@ -293,6 +293,7 @@ pub enum Command {
     },
     ApplyRayToTargetDocument(RayToTargetPlan),
     ApplyLinearArrayDocument(LinearArrayPlan),
+    ApplyRadialArrayDocument(RadialArrayPlan),
     ApplyStackedFoldDocument {
         pattern: CreasePattern,
         paper: Paper,
@@ -326,6 +327,25 @@ pub struct LinearArrayPlan {
     source_edges: Vec<EdgeId>,
     additional_copies: u8,
     delta: Point2,
+    pattern: CreasePattern,
+    project_layers: ProjectLayerDocumentV1,
+    new_vertices: Vec<VertexId>,
+    new_edges: Vec<EdgeId>,
+    removed_edges: Vec<EdgeId>,
+    changed_edges: Vec<EdgeId>,
+    vertex_lineage: Vec<(u8, VertexId, VertexId)>,
+    edge_seeds: Vec<(u8, EdgeId, EdgeId)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadialArrayPlan {
+    before_fingerprint: String,
+    before_project_layers: ProjectLayerDocumentV1,
+    center: VertexId,
+    source_vertices: Vec<VertexId>,
+    source_edges: Vec<EdgeId>,
+    additional_copies: u8,
+    angle_microdegrees: u32,
     pattern: CreasePattern,
     project_layers: ProjectLayerDocumentV1,
     new_vertices: Vec<VertexId>,
@@ -380,6 +400,10 @@ pub enum CommandError {
     InvalidMirrorSelection,
     #[error("the linear-array request or resulting geometry is invalid")]
     InvalidLinearArray,
+    #[error("the radial-array request or resulting geometry is invalid")]
+    InvalidRadialArray,
+    #[error("radial-array work limit exceeded: observed {observed}, maximum {maximum}")]
+    RadialArrayWorkLimitExceeded { observed: usize, maximum: usize },
     #[error("linear-array work limit exceeded: observed {observed}, maximum {maximum}")]
     LinearArrayWorkLimitExceeded { observed: usize, maximum: usize },
     #[error("the beginner-design evaluation profile is invalid")]
@@ -1920,6 +1944,28 @@ thread_local! {
 #[cfg(test)]
 thread_local! {
     static LINEAR_ARRAY_WORK_LIMIT_FOR_TEST: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static RADIAL_ARRAY_WORK_LIMIT_FOR_TEST: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn radial_array_work_limit(default: usize) -> usize {
+    RADIAL_ARRAY_WORK_LIMIT_FOR_TEST.with(|limit| limit.get().unwrap_or(default))
+}
+#[cfg(not(test))]
+const fn radial_array_work_limit(default: usize) -> usize {
+    default
+}
+#[cfg(test)]
+fn with_radial_array_work_limit_for_test<T>(limit: usize, action: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            RADIAL_ARRAY_WORK_LIMIT_FOR_TEST.with(|value| value.set(None));
+        }
+    }
+    RADIAL_ARRAY_WORK_LIMIT_FOR_TEST.with(|value| value.set(Some(limit)));
+    let _reset = Reset;
+    action()
 }
 
 #[cfg(test)]
@@ -3009,6 +3055,277 @@ impl EditorState {
                 .collect(),
             pattern,
             project_layers,
+            vertex_lineage,
+            edge_seeds,
+        }))
+    }
+
+    pub fn plan_radial_array(
+        &self,
+        expected_revision: Revision,
+        center: VertexId,
+        vertices: Vec<VertexId>,
+        edges: Vec<EdgeId>,
+        additional_copies: u8,
+        angle_microdegrees: u32,
+    ) -> Result<Command, CommandError> {
+        const MAX_SOURCE_ELEMENTS: usize = 256;
+        self.ensure_revision(expected_revision)?;
+        let period = match angle_microdegrees {
+            90_000_000 | 270_000_000 => 4,
+            180_000_000 => 2,
+            _ => return Err(CommandError::InvalidRadialArray),
+        };
+        if additional_copies == 0
+            || additional_copies >= period
+            || vertices.is_empty() && edges.is_empty()
+            || !vertices
+                .windows(2)
+                .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+            || !edges
+                .windows(2)
+                .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+            || vertices
+                .len()
+                .checked_add(edges.len())
+                .is_none_or(|count| count > MAX_SOURCE_ELEMENTS)
+        {
+            return Err(CommandError::InvalidRadialArray);
+        }
+        let center_position = self
+            .pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == center)
+            .filter(|_| !self.paper.boundary_vertices.contains(&center))
+            .map(|vertex| vertex.position)
+            .ok_or(CommandError::InvalidRadialArray)?;
+        let source_set = vertices.iter().copied().collect::<HashSet<_>>();
+        for id in &vertices {
+            if self.paper.boundary_vertices.contains(id)
+                || !self.pattern.vertices.iter().any(|vertex| vertex.id == *id)
+            {
+                return Err(CommandError::InvalidRadialArray);
+            }
+        }
+        for id in &edges {
+            let edge = self
+                .pattern
+                .edges
+                .iter()
+                .find(|edge| edge.id == *id)
+                .ok_or(CommandError::InvalidRadialArray)?;
+            if edge.kind == EdgeKind::Boundary
+                || !source_set.contains(&edge.start)
+                || !source_set.contains(&edge.end)
+                || self.project_layers.layers.iter().any(|layer| {
+                    layer.id == self.project_layers.layer_for_edge(*id) && layer.locked
+                })
+            {
+                return Err(CommandError::InvalidRadialArray);
+            }
+        }
+        let generated_vertices = vertices
+            .len()
+            .saturating_sub(usize::from(source_set.contains(&center)))
+            .checked_mul(usize::from(additional_copies))
+            .ok_or(CommandError::InvalidRadialArray)?;
+        let generated_edges = edges
+            .len()
+            .checked_mul(usize::from(additional_copies))
+            .ok_or(CommandError::InvalidRadialArray)?;
+        let generated = generated_vertices
+            .checked_add(generated_edges)
+            .ok_or(CommandError::InvalidRadialArray)?;
+        let future = self
+            .pattern
+            .edges
+            .len()
+            .checked_add(generated_edges)
+            .ok_or(CommandError::InvalidRadialArray)?;
+        let work = generated
+            .checked_mul(future.saturating_add(1))
+            .and_then(|base| {
+                generated
+                    .checked_mul(generated)
+                    .and_then(|pairs| base.checked_add(pairs))
+            })
+            .ok_or(CommandError::InvalidRadialArray)?;
+        let maximum = radial_array_work_limit(65_536);
+        if work > maximum {
+            return Err(CommandError::RadialArrayWorkLimitExceeded {
+                observed: work,
+                maximum,
+            });
+        }
+        let paper_polygon = self
+            .paper
+            .boundary_vertices
+            .iter()
+            .map(|id| {
+                self.pattern
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == *id)
+                    .map(|vertex| vertex.position)
+                    .ok_or(CommandError::InvalidRadialArray)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let rotate = |point: Point2, copy: u8| -> Option<Point2> {
+            let mut x = point.x - center_position.x;
+            let mut y = point.y - center_position.y;
+            if !x.is_finite() || !y.is_finite() {
+                return None;
+            }
+            let turns = ((angle_microdegrees / 90_000_000) * u32::from(copy)) % 4;
+            (x, y) = match turns {
+                0 => (x, y),
+                1 => (-y, x),
+                2 => (-x, -y),
+                3 => (y, -x),
+                _ => unreachable!(),
+            };
+            let mut result = Point2::new(center_position.x + x, center_position.y + y);
+            if !result.x.is_finite() || !result.y.is_finite() {
+                return None;
+            }
+            if result.x == 0.0 {
+                result.x = 0.0;
+            }
+            if result.y == 0.0 {
+                result.y = 0.0;
+            }
+            Some(result)
+        };
+        let mut staged = self.clone();
+        staged.revision = 0;
+        staged.undo_stack.clear();
+        staged.redo_stack.clear();
+        let mut revision = 0;
+        let mut vertex_lineage = Vec::with_capacity(generated_vertices);
+        let mut edge_seeds = Vec::with_capacity(generated_edges);
+        for copy in 1..=additional_copies {
+            let mut ids = HashMap::with_capacity(vertices.len());
+            for source_id in &vertices {
+                if *source_id == center {
+                    ids.insert(*source_id, center);
+                    continue;
+                }
+                let source = self
+                    .pattern
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == *source_id)
+                    .ok_or(CommandError::InvalidRadialArray)?;
+                let position =
+                    rotate(source.position, copy).ok_or(CommandError::InvalidRadialArray)?;
+                if point_polygon_relation(position, &paper_polygon).ok()
+                    != Some(PointPolygonRelation::Inside)
+                    || staged
+                        .pattern
+                        .vertices
+                        .iter()
+                        .any(|vertex| vertex.position == position)
+                {
+                    return Err(CommandError::InvalidRadialArray);
+                }
+                let id = VertexId::new();
+                staged
+                    .execute(revision, Command::AddVertex { id, position })
+                    .map_err(|_| CommandError::InvalidRadialArray)?;
+                revision += 1;
+                ids.insert(*source_id, id);
+                vertex_lineage.push((copy, *source_id, id));
+            }
+            for source_id in &edges {
+                let source = self
+                    .pattern
+                    .edges
+                    .iter()
+                    .find(|edge| edge.id == *source_id)
+                    .ok_or(CommandError::InvalidRadialArray)?;
+                let id = EdgeId::new();
+                edge_seeds.push((copy, *source_id, id));
+                let command = staged.plan_add_edge_with_intersections_on_layer(
+                    revision,
+                    id,
+                    ids[&source.start],
+                    ids[&source.end],
+                    source.kind,
+                    Some(self.project_layers.layer_for_edge(*source_id)),
+                )?;
+                staged.execute(revision, command)?;
+                revision += 1;
+            }
+        }
+        let old_vertices = self
+            .pattern
+            .vertices
+            .iter()
+            .map(|v| v.id)
+            .collect::<HashSet<_>>();
+        let old_edges = self
+            .pattern
+            .edges
+            .iter()
+            .map(|e| e.id)
+            .collect::<HashSet<_>>();
+        let final_vertices = staged
+            .pattern
+            .vertices
+            .iter()
+            .map(|v| v.id)
+            .collect::<HashSet<_>>();
+        let final_edges = staged
+            .pattern
+            .edges
+            .iter()
+            .map(|e| e.id)
+            .collect::<HashSet<_>>();
+        let mut new_vertices = final_vertices
+            .difference(&old_vertices)
+            .copied()
+            .collect::<Vec<_>>();
+        let mut new_edges = final_edges
+            .difference(&old_edges)
+            .copied()
+            .collect::<Vec<_>>();
+        let mut removed_edges = old_edges
+            .difference(&final_edges)
+            .copied()
+            .collect::<Vec<_>>();
+        let mut changed_edges = self
+            .pattern
+            .edges
+            .iter()
+            .filter(|old| {
+                staged
+                    .pattern
+                    .edges
+                    .iter()
+                    .find(|new| new.id == old.id)
+                    .is_some_and(|new| new != *old)
+            })
+            .map(|edge| edge.id)
+            .collect::<Vec<_>>();
+        new_vertices.sort_by_key(|id| id.canonical_bytes());
+        new_edges.sort_by_key(|id| id.canonical_bytes());
+        removed_edges.sort_by_key(|id| id.canonical_bytes());
+        changed_edges.sort_by_key(|id| id.canonical_bytes());
+        Ok(Command::ApplyRadialArrayDocument(RadialArrayPlan {
+            before_fingerprint: self.fold_model_fingerprint_v1(),
+            before_project_layers: self.project_layers.clone(),
+            center,
+            source_vertices: vertices,
+            source_edges: edges,
+            additional_copies,
+            angle_microdegrees,
+            new_vertices,
+            new_edges,
+            removed_edges,
+            changed_edges,
+            pattern: staged.pattern,
+            project_layers: staged.project_layers,
             vertex_lineage,
             edge_seeds,
         }))
@@ -4307,6 +4624,608 @@ impl EditorState {
                     ),
                 })
             }
+            Command::ApplyRadialArrayDocument(ref plan) => {
+                let center = self
+                    .pattern
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == plan.center)
+                    .map(|vertex| vertex.position)
+                    .ok_or(CommandError::InvalidRadialArray)?;
+                let period = match plan.angle_microdegrees {
+                    90_000_000 | 270_000_000 => 4,
+                    180_000_000 => 2,
+                    _ => return Err(CommandError::InvalidRadialArray),
+                };
+                let source_vertices = plan.source_vertices.iter().copied().collect::<HashSet<_>>();
+                let current_vertices = self
+                    .pattern
+                    .vertices
+                    .iter()
+                    .map(|v| v.id)
+                    .collect::<HashSet<_>>();
+                let current_edges = self
+                    .pattern
+                    .edges
+                    .iter()
+                    .map(|e| e.id)
+                    .collect::<HashSet<_>>();
+                let final_vertices = plan
+                    .pattern
+                    .vertices
+                    .iter()
+                    .map(|v| v.id)
+                    .collect::<HashSet<_>>();
+                let final_edges = plan
+                    .pattern
+                    .edges
+                    .iter()
+                    .map(|e| e.id)
+                    .collect::<HashSet<_>>();
+                let actual_new_vertices = final_vertices
+                    .difference(&current_vertices)
+                    .copied()
+                    .collect::<HashSet<_>>();
+                let actual_new_edges = final_edges
+                    .difference(&current_edges)
+                    .copied()
+                    .collect::<HashSet<_>>();
+                let actual_removed_edges = current_edges
+                    .difference(&final_edges)
+                    .copied()
+                    .collect::<HashSet<_>>();
+                let actual_changed_edges = self
+                    .pattern
+                    .edges
+                    .iter()
+                    .filter(|old| {
+                        plan.pattern
+                            .edges
+                            .iter()
+                            .find(|new| new.id == old.id)
+                            .is_some_and(|new| new != *old)
+                    })
+                    .map(|edge| edge.id)
+                    .collect::<HashSet<_>>();
+                let allowed_new_vertices =
+                    plan.new_vertices.iter().copied().collect::<HashSet<_>>();
+                let allowed_new_edges = plan.new_edges.iter().copied().collect::<HashSet<_>>();
+                let allowed_removed_edges =
+                    plan.removed_edges.iter().copied().collect::<HashSet<_>>();
+                let allowed_changed_edges =
+                    plan.changed_edges.iter().copied().collect::<HashSet<_>>();
+                let rotate = |point: Point2, copy: u8| -> Option<Point2> {
+                    let mut x = point.x - center.x;
+                    let mut y = point.y - center.y;
+                    if !x.is_finite() || !y.is_finite() {
+                        return None;
+                    }
+                    (x, y) = match ((plan.angle_microdegrees / 90_000_000) * u32::from(copy)) % 4 {
+                        0 => (x, y),
+                        1 => (-y, x),
+                        2 => (-x, -y),
+                        3 => (y, -x),
+                        _ => unreachable!(),
+                    };
+                    let mut p = Point2::new(center.x + x, center.y + y);
+                    if !p.x.is_finite() || !p.y.is_finite() {
+                        return None;
+                    }
+                    if p.x == 0.0 {
+                        p.x = 0.0;
+                    }
+                    if p.y == 0.0 {
+                        p.y = 0.0;
+                    }
+                    Some(p)
+                };
+                let lineage_valid = plan.vertex_lineage.len()
+                    == plan
+                        .source_vertices
+                        .len()
+                        .saturating_sub(usize::from(source_vertices.contains(&plan.center)))
+                        * usize::from(plan.additional_copies)
+                    && plan.vertex_lineage.iter().all(|(copy, source, target)| {
+                        *copy >= 1
+                            && *copy <= plan.additional_copies
+                            && *source != plan.center
+                            && source_vertices.contains(source)
+                            && allowed_new_vertices.contains(target)
+                            && self
+                                .pattern
+                                .vertices
+                                .iter()
+                                .find(|v| v.id == *source)
+                                .zip(plan.pattern.vertices.iter().find(|v| v.id == *target))
+                                .is_some_and(|(a, b)| rotate(a.position, *copy) == Some(b.position))
+                    });
+                let canonical_allowlists = plan
+                    .new_vertices
+                    .windows(2)
+                    .all(|p| p[0].canonical_bytes() < p[1].canonical_bytes())
+                    && plan
+                        .new_edges
+                        .windows(2)
+                        .all(|p| p[0].canonical_bytes() < p[1].canonical_bytes())
+                    && plan
+                        .removed_edges
+                        .windows(2)
+                        .all(|p| p[0].canonical_bytes() < p[1].canonical_bytes())
+                    && plan
+                        .changed_edges
+                        .windows(2)
+                        .all(|p| p[0].canonical_bytes() < p[1].canonical_bytes());
+                let lineage_keys = plan
+                    .vertex_lineage
+                    .iter()
+                    .map(|(copy, source, _)| (*copy, *source))
+                    .collect::<HashSet<_>>();
+                let expected_lineage_keys = (1..=plan.additional_copies)
+                    .flat_map(|copy| {
+                        plan.source_vertices
+                            .iter()
+                            .copied()
+                            .filter(move |source| *source != plan.center)
+                            .map(move |source| (copy, source))
+                    })
+                    .collect::<Vec<_>>();
+                let actual_lineage_keys = plan
+                    .vertex_lineage
+                    .iter()
+                    .map(|(copy, source, _)| (*copy, *source))
+                    .collect::<Vec<_>>();
+                let lineage_targets = plan
+                    .vertex_lineage
+                    .iter()
+                    .map(|(_, _, target)| *target)
+                    .collect::<HashSet<_>>();
+                let seed_keys = plan
+                    .edge_seeds
+                    .iter()
+                    .map(|(copy, source, _)| (*copy, *source))
+                    .collect::<HashSet<_>>();
+                let seed_targets = plan
+                    .edge_seeds
+                    .iter()
+                    .map(|(_, _, target)| *target)
+                    .collect::<HashSet<_>>();
+                let expected_seed_keys = (1..=plan.additional_copies)
+                    .flat_map(|copy| {
+                        plan.source_edges
+                            .iter()
+                            .copied()
+                            .map(move |source| (copy, source))
+                    })
+                    .collect::<Vec<_>>();
+                let actual_seed_keys = plan
+                    .edge_seeds
+                    .iter()
+                    .map(|(copy, source, _)| (*copy, *source))
+                    .collect::<Vec<_>>();
+                let sources_valid = plan.source_vertices.iter().all(|id| {
+                    !self.paper.boundary_vertices.contains(id)
+                        && self.pattern.vertices.iter().any(|vertex| vertex.id == *id)
+                }) && plan.source_edges.iter().all(|id| {
+                    self.pattern
+                        .edges
+                        .iter()
+                        .find(|edge| edge.id == *id)
+                        .is_some_and(|edge| {
+                            edge.kind != EdgeKind::Boundary
+                                && source_vertices.contains(&edge.start)
+                                && source_vertices.contains(&edge.end)
+                                && self.project_layers.layers.iter().all(|layer| {
+                                    layer.id != self.project_layers.layer_for_edge(*id)
+                                        || !layer.locked
+                                })
+                        })
+                }) && allowed_removed_edges
+                    .iter()
+                    .chain(&allowed_changed_edges)
+                    .all(|id| {
+                        self.project_layers.layers.iter().all(|layer| {
+                            layer.id != self.project_layers.layer_for_edge(*id) || !layer.locked
+                        })
+                    });
+                let edge_seeds_valid = plan.edge_seeds.iter().all(|(copy, source_id, seed)| {
+                    if *copy == 0
+                        || *copy > plan.additional_copies
+                        || !plan.source_edges.contains(source_id)
+                    {
+                        return false;
+                    }
+                    let Some(source) = self.pattern.edges.iter().find(|edge| edge.id == *source_id)
+                    else {
+                        return false;
+                    };
+                    let endpoint = |id: VertexId| {
+                        self.pattern
+                            .vertices
+                            .iter()
+                            .find(|v| v.id == id)
+                            .and_then(|v| rotate(v.position, *copy))
+                    };
+                    let (Some(start), Some(end)) = (endpoint(source.start), endpoint(source.end))
+                    else {
+                        return false;
+                    };
+                    let descendants = plan
+                        .pattern
+                        .edges
+                        .iter()
+                        .filter(|edge| {
+                            if edge.kind != source.kind
+                                || plan.project_layers.layer_for_edge(edge.id)
+                                    != self.project_layers.layer_for_edge(*source_id)
+                            {
+                                return false;
+                            }
+                            plan.pattern
+                                .vertices
+                                .iter()
+                                .find(|v| v.id == edge.start)
+                                .zip(plan.pattern.vertices.iter().find(|v| v.id == edge.end))
+                                .is_some_and(|(a, b)| {
+                                    point_lies_on_closed_segment(start, end, a.position)
+                                        && point_lies_on_closed_segment(start, end, b.position)
+                                })
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let source_pattern = CreasePattern {
+                        vertices: vec![
+                            Vertex {
+                                id: source.start,
+                                position: start,
+                            },
+                            Vertex {
+                                id: source.end,
+                                position: end,
+                            },
+                        ],
+                        edges: vec![Edge {
+                            id: *source_id,
+                            start: source.start,
+                            end: source.end,
+                            kind: source.kind,
+                        }],
+                    };
+                    let target_pattern = CreasePattern {
+                        vertices: plan.pattern.vertices.clone(),
+                        edges: descendants.clone(),
+                    };
+                    allowed_new_edges.contains(seed)
+                        && descendants.iter().any(|edge| edge.id == *seed)
+                        && source_edges_preserved_by_exact_subdivision(
+                            &source_pattern,
+                            &target_pattern,
+                        )
+                });
+                let lineage_ids = plan
+                    .vertex_lineage
+                    .iter()
+                    .map(|(_, _, id)| *id)
+                    .collect::<HashSet<_>>();
+                let edge_on_carrier = |edge: &Edge, start: Point2, end: Point2| {
+                    plan.pattern
+                        .vertices
+                        .iter()
+                        .find(|v| v.id == edge.start)
+                        .zip(plan.pattern.vertices.iter().find(|v| v.id == edge.end))
+                        .is_some_and(|(a, b)| {
+                            point_lies_on_closed_segment(start, end, a.position)
+                                && point_lies_on_closed_segment(start, end, b.position)
+                        })
+                };
+                let new_edge_classification_valid = plan
+                    .pattern
+                    .edges
+                    .iter()
+                    .filter(|edge| allowed_new_edges.contains(&edge.id))
+                    .all(|edge| {
+                        let authored = plan
+                            .edge_seeds
+                            .iter()
+                            .filter(|(copy, source_id, _)| {
+                                self.pattern
+                                    .edges
+                                    .iter()
+                                    .find(|e| e.id == *source_id)
+                                    .is_some_and(|source| {
+                                        edge.kind == source.kind
+                                            && plan.project_layers.layer_for_edge(edge.id)
+                                                == self.project_layers.layer_for_edge(*source_id)
+                                            && self
+                                                .pattern
+                                                .vertices
+                                                .iter()
+                                                .find(|v| v.id == source.start)
+                                                .and_then(|v| rotate(v.position, *copy))
+                                                .zip(
+                                                    self.pattern
+                                                        .vertices
+                                                        .iter()
+                                                        .find(|v| v.id == source.end)
+                                                        .and_then(|v| rotate(v.position, *copy)),
+                                                )
+                                                .is_some_and(|(start, end)| {
+                                                    edge_on_carrier(edge, start, end)
+                                                })
+                                    })
+                            })
+                            .count();
+                        let old = self
+                            .pattern
+                            .edges
+                            .iter()
+                            .filter(|source| {
+                                (allowed_removed_edges.contains(&source.id)
+                                    || allowed_changed_edges.contains(&source.id))
+                                    && edge.kind == source.kind
+                                    && plan.project_layers.layer_for_edge(edge.id)
+                                        == self.project_layers.layer_for_edge(source.id)
+                                    && self
+                                        .pattern
+                                        .vertices
+                                        .iter()
+                                        .find(|v| v.id == source.start)
+                                        .zip(
+                                            self.pattern
+                                                .vertices
+                                                .iter()
+                                                .find(|v| v.id == source.end),
+                                        )
+                                        .is_some_and(|(a, b)| {
+                                            edge_on_carrier(edge, a.position, b.position)
+                                        })
+                            })
+                            .count();
+                        authored + old == 1
+                    });
+                let old_carriers_valid = self
+                    .pattern
+                    .edges
+                    .iter()
+                    .filter(|edge| {
+                        allowed_removed_edges.contains(&edge.id)
+                            || allowed_changed_edges.contains(&edge.id)
+                    })
+                    .all(|source| {
+                        let Some((start, end)) = self
+                            .pattern
+                            .vertices
+                            .iter()
+                            .find(|v| v.id == source.start)
+                            .cloned()
+                            .zip(
+                                self.pattern
+                                    .vertices
+                                    .iter()
+                                    .find(|v| v.id == source.end)
+                                    .cloned(),
+                            )
+                        else {
+                            return false;
+                        };
+                        let filtered = CreasePattern {
+                            vertices: plan.pattern.vertices.clone(),
+                            edges: plan
+                                .pattern
+                                .edges
+                                .iter()
+                                .filter(|edge| {
+                                    edge.kind == source.kind
+                                        && plan.project_layers.layer_for_edge(edge.id)
+                                            == self.project_layers.layer_for_edge(source.id)
+                                        && (allowed_new_edges.contains(&edge.id)
+                                            || edge.id == source.id)
+                                        && edge_on_carrier(edge, start.position, end.position)
+                                })
+                                .cloned()
+                                .collect(),
+                        };
+                        source_edges_preserved_by_exact_subdivision(
+                            &CreasePattern {
+                                vertices: vec![start.clone(), end.clone()],
+                                edges: vec![source.clone()],
+                            },
+                            &filtered,
+                        ) && plan.pattern.vertices.iter().any(|vertex| {
+                            allowed_new_vertices.contains(&vertex.id)
+                                && point_segment_relation(
+                                    vertex.position,
+                                    start.position,
+                                    end.position,
+                                )
+                                .ok()
+                                    == Some(PointSegmentRelation::StrictInterior)
+                        })
+                    });
+                let layer_assignments_valid = self
+                    .pattern
+                    .edges
+                    .iter()
+                    .filter(|edge| !allowed_removed_edges.contains(&edge.id))
+                    .all(|edge| {
+                        self.project_layers.layer_for_edge(edge.id)
+                            == plan.project_layers.layer_for_edge(edge.id)
+                    });
+                let generated_intersections_valid =
+                    allowed_new_vertices.difference(&lineage_ids).all(|id| {
+                        let Some(vertex) = plan.pattern.vertices.iter().find(|v| v.id == *id)
+                        else {
+                            return false;
+                        };
+                        let authored = plan
+                            .edge_seeds
+                            .iter()
+                            .filter(|(copy, source_id, _)| {
+                                self.pattern
+                                    .edges
+                                    .iter()
+                                    .find(|e| e.id == *source_id)
+                                    .and_then(|source| {
+                                        self.pattern
+                                            .vertices
+                                            .iter()
+                                            .find(|v| v.id == source.start)
+                                            .and_then(|v| rotate(v.position, *copy))
+                                            .zip(
+                                                self.pattern
+                                                    .vertices
+                                                    .iter()
+                                                    .find(|v| v.id == source.end)
+                                                    .and_then(|v| rotate(v.position, *copy)),
+                                            )
+                                    })
+                                    .is_some_and(|(start, end)| {
+                                        point_segment_relation(vertex.position, start, end).ok()
+                                            == Some(PointSegmentRelation::StrictInterior)
+                                    })
+                            })
+                            .count();
+                        let old = self
+                            .pattern
+                            .edges
+                            .iter()
+                            .filter(|edge| {
+                                allowed_removed_edges.contains(&edge.id)
+                                    || allowed_changed_edges.contains(&edge.id)
+                            })
+                            .filter(|edge| {
+                                self.pattern
+                                    .vertices
+                                    .iter()
+                                    .find(|v| v.id == edge.start)
+                                    .zip(self.pattern.vertices.iter().find(|v| v.id == edge.end))
+                                    .is_some_and(|(a, b)| {
+                                        point_segment_relation(
+                                            vertex.position,
+                                            a.position,
+                                            b.position,
+                                        )
+                                        .ok()
+                                            == Some(PointSegmentRelation::StrictInterior)
+                                    })
+                            })
+                            .count();
+                        let carriers = authored + old;
+                        carriers >= 2
+                            && plan
+                                .pattern
+                                .edges
+                                .iter()
+                                .filter(|edge| edge.start == *id || edge.end == *id)
+                                .count()
+                                == carriers.saturating_mul(2)
+                    });
+                let selected_count = plan
+                    .source_vertices
+                    .len()
+                    .checked_add(plan.source_edges.len());
+                let generated = plan
+                    .source_vertices
+                    .len()
+                    .saturating_sub(usize::from(source_vertices.contains(&plan.center)))
+                    .checked_mul(usize::from(plan.additional_copies))
+                    .and_then(|vertices| {
+                        plan.source_edges
+                            .len()
+                            .checked_mul(usize::from(plan.additional_copies))
+                            .and_then(|edges| vertices.checked_add(edges))
+                    });
+                let work_admitted = generated
+                    .and_then(|generated| {
+                        self.pattern
+                            .edges
+                            .len()
+                            .checked_add(
+                                plan.source_edges
+                                    .len()
+                                    .checked_mul(usize::from(plan.additional_copies))?,
+                            )
+                            .and_then(|future| generated.checked_mul(future.checked_add(1)?))
+                            .and_then(|base| {
+                                generated
+                                    .checked_mul(generated)
+                                    .and_then(|pairs| base.checked_add(pairs))
+                            })
+                    })
+                    .is_some_and(|work| work <= radial_array_work_limit(65_536));
+                if self.fold_model_fingerprint_v1() != plan.before_fingerprint
+                    || self.project_layers != plan.before_project_layers
+                    || self.project_layers.layers != plan.project_layers.layers
+                    || plan.additional_copies == 0
+                    || plan.additional_copies >= period
+                    || plan.source_vertices.is_empty() && plan.source_edges.is_empty()
+                    || self.paper.boundary_vertices.contains(&plan.center)
+                    || selected_count.is_none_or(|count| count > 256)
+                    || !work_admitted
+                    || !plan
+                        .source_vertices
+                        .windows(2)
+                        .all(|p| p[0].canonical_bytes() < p[1].canonical_bytes())
+                    || !plan
+                        .source_edges
+                        .windows(2)
+                        .all(|p| p[0].canonical_bytes() < p[1].canonical_bytes())
+                    || !lineage_valid
+                    || !canonical_allowlists
+                    || lineage_keys.len() != plan.vertex_lineage.len()
+                    || actual_lineage_keys != expected_lineage_keys
+                    || lineage_targets.len() != plan.vertex_lineage.len()
+                    || seed_keys.len() != plan.edge_seeds.len()
+                    || seed_targets.len() != plan.edge_seeds.len()
+                    || actual_seed_keys != expected_seed_keys
+                    || plan.edge_seeds.len()
+                        != plan.source_edges.len() * usize::from(plan.additional_copies)
+                    || !sources_valid
+                    || !edge_seeds_valid
+                    || !new_edge_classification_valid
+                    || !old_carriers_valid
+                    || !layer_assignments_valid
+                    || !generated_intersections_valid
+                    || actual_new_vertices != allowed_new_vertices
+                    || actual_new_edges != allowed_new_edges
+                    || actual_removed_edges != allowed_removed_edges
+                    || actual_changed_edges != allowed_changed_edges
+                    || plan.new_vertices.len() != allowed_new_vertices.len()
+                    || plan.new_edges.len() != allowed_new_edges.len()
+                    || plan.removed_edges.len() != allowed_removed_edges.len()
+                    || plan.changed_edges.len() != allowed_changed_edges.len()
+                    || !allowed_new_edges.is_disjoint(&allowed_removed_edges)
+                    || !allowed_new_edges.is_disjoint(&allowed_changed_edges)
+                    || !allowed_removed_edges.is_disjoint(&allowed_changed_edges)
+                    || !validate_crease_pattern(&plan.pattern).is_valid()
+                    || !validate_paper(&self.paper, &plan.pattern).is_valid()
+                    || self.pattern.vertices.iter().any(|old| {
+                        plan.pattern.vertices.iter().find(|new| new.id == old.id) != Some(old)
+                    })
+                    || self.pattern.edges.iter().any(|old| {
+                        !allowed_removed_edges.contains(&old.id)
+                            && !allowed_changed_edges.contains(&old.id)
+                            && plan.pattern.edges.iter().find(|new| new.id == old.id) != Some(old)
+                    })
+                    || !source_edges_preserved_by_exact_subdivision(&self.pattern, &plan.pattern)
+                {
+                    return Err(CommandError::InvalidRadialArray);
+                }
+                validate_project_layer_document_against_pattern_v1(
+                    &plan.project_layers,
+                    &plan.pattern,
+                )?;
+                for record in &self.geometric_constraints.constraints {
+                    validate_geometric_constraint_record_against_pattern_v1(&plan.pattern, record)
+                        .map_err(CommandError::GeometricConstraintGeometryInvalid)?;
+                }
+                Ok(Inverse::RestoreMirrorSelection {
+                    pattern: std::mem::replace(&mut self.pattern, plan.pattern.clone()),
+                    project_layers: std::mem::replace(
+                        &mut self.project_layers,
+                        plan.project_layers.clone(),
+                    ),
+                })
+            }
             Command::ApplyStackedFoldDocument {
                 ref pattern,
                 ref paper,
@@ -5363,6 +6282,7 @@ impl EditorState {
             | Command::ApplyNormalizedEdgeDocument { .. }
             | Command::ApplyRayToTargetDocument(..)
             | Command::ApplyLinearArrayDocument(..)
+            | Command::ApplyRadialArrayDocument(..)
             | Command::ApplyStackedFoldDocument { .. } => Ok(()),
         }
     }
@@ -5736,6 +6656,7 @@ impl EditorState {
             | Command::ApplyNormalizedEdgeDocument { .. }
             | Command::ApplyRayToTargetDocument(..)
             | Command::ApplyLinearArrayDocument(..)
+            | Command::ApplyRadialArrayDocument(..)
             | Command::ApplyStackedFoldDocument { .. } => {}
         }
         Ok(targets)
@@ -7749,6 +8670,7 @@ impl Command {
             Self::ApplyNormalizedEdgeDocument { pattern, .. }
             | Self::ApplyRayToTargetDocument(RayToTargetPlan { pattern, .. })
             | Self::ApplyLinearArrayDocument(LinearArrayPlan { pattern, .. })
+            | Self::ApplyRadialArrayDocument(RadialArrayPlan { pattern, .. })
             | Self::ApplyStackedFoldDocument { pattern, .. } => {
                 let added_vertices = pattern.vertices.len().saturating_sub(0);
                 let added_edges = pattern.edges.len().saturating_sub(0);
@@ -7786,6 +8708,7 @@ impl Command {
             | Self::ApplyNormalizedEdgeDocument { .. }
             | Self::ApplyRayToTargetDocument(..)
             | Self::ApplyLinearArrayDocument(..)
+            | Self::ApplyRadialArrayDocument(..)
             | Self::ApplyStackedFoldDocument { .. } => true,
             Self::UpdateProjectMemo { .. }
             | Self::UpdateBeginnerDesignProfile { .. }
@@ -8164,6 +9087,11 @@ impl Command {
                 settings: true,
                 instructions: false,
                 constraints: false,
+            },
+            Self::ApplyRadialArrayDocument(RadialArrayPlan { ref pattern, .. }) => Changes {
+                vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
+                edges: pattern.edges.iter().map(|edge| edge.id).collect(),
+                ..Changes::default()
             },
             Self::ApplyStackedFoldDocument { ref pattern, .. } => Changes {
                 vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
@@ -21244,6 +22172,690 @@ mod tests {
                     Point2::new(0.0, 5.0)
                 )
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn radial_array_quarter_turn_reuses_center_and_is_atomic() {
+        let sheet = crate::create_rectangular_sheet(100.0, 100.0, false).unwrap();
+        let (mut pattern, paper) = sheet.into_parts();
+        let center = VertexId::new();
+        let outer = VertexId::new();
+        let edge = EdgeId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: center,
+                position: Point2::new(50.0, 50.0),
+            },
+            Vertex {
+                id: outer,
+                position: Point2::new(60.0, 50.0),
+            },
+        ]);
+        pattern.edges.push(Edge {
+            id: edge,
+            start: center,
+            end: outer,
+            kind: EdgeKind::Mountain,
+        });
+        let original = pattern.clone();
+        let mut editor = EditorState::with_paper(pattern, paper);
+        let mut vertices = vec![center, outer];
+        vertices.sort_by_key(|id| id.canonical_bytes());
+        with_radial_array_work_limit_for_test(18, || {
+            assert!(
+                editor
+                    .plan_radial_array(0, center, vertices.clone(), vec![edge], 1, 90_000_000)
+                    .is_ok()
+            );
+        });
+        with_radial_array_work_limit_for_test(17, || {
+            assert_eq!(
+                editor.plan_radial_array(0, center, vertices.clone(), vec![edge], 1, 90_000_000),
+                Err(CommandError::RadialArrayWorkLimitExceeded {
+                    observed: 18,
+                    maximum: 17
+                })
+            );
+        });
+        let command = editor
+            .plan_radial_array(0, center, vertices.clone(), vec![edge], 3, 90_000_000)
+            .unwrap();
+        let assert_rejected = |tampered: Command| {
+            let mut candidate = editor.clone();
+            let before = editor_state_snapshot(&candidate);
+            assert_eq!(
+                candidate.execute(0, tampered),
+                Err(CommandError::InvalidRadialArray)
+            );
+            assert_eq!(editor_state_snapshot(&candidate), before);
+        };
+        let mut empty = command.clone();
+        if let Command::ApplyRadialArrayDocument(plan) = &mut empty {
+            plan.source_vertices.clear();
+            plan.source_edges.clear();
+            plan.vertex_lineage.clear();
+            plan.edge_seeds.clear();
+        }
+        assert_rejected(empty);
+        let mut lineage_swap = command.clone();
+        if let Command::ApplyRadialArrayDocument(plan) = &mut lineage_swap {
+            plan.vertex_lineage.swap(0, 1);
+        }
+        assert_rejected(lineage_swap);
+        let mut seed_swap = command.clone();
+        if let Command::ApplyRadialArrayDocument(plan) = &mut seed_swap {
+            plan.edge_seeds.swap(0, 1);
+        }
+        assert_rejected(seed_swap);
+        let mut tampered = Vec::new();
+        for mutate in 0..20 {
+            let mut candidate = command.clone();
+            let Command::ApplyRadialArrayDocument(plan) = &mut candidate else {
+                unreachable!()
+            };
+            match mutate {
+                0 => plan.before_fingerprint.push('0'),
+                1 => plan.center = VertexId::new(),
+                2 => plan.additional_copies = 4,
+                3 => plan.angle_microdegrees = 45_000_000,
+                4 => plan.new_vertices.push(VertexId::new()),
+                5 => plan.new_edges.push(EdgeId::new()),
+                6 => plan.removed_edges.push(edge),
+                7 => plan.changed_edges.push(edge),
+                8 => plan.vertex_lineage[0].0 = 0,
+                9 => plan.vertex_lineage[0].1 = VertexId::new(),
+                10 => plan.edge_seeds[0].0 = 0,
+                11 => plan.edge_seeds[0].1 = EdgeId::new(),
+                12 => plan.vertex_lineage[0].2 = VertexId::new(),
+                13 => plan.edge_seeds[0].2 = EdgeId::new(),
+                14 => plan.source_vertices[0] = VertexId::new(),
+                15 => plan.source_edges[0] = EdgeId::new(),
+                16 => plan.pattern.vertices.push(Vertex {
+                    id: VertexId::new(),
+                    position: Point2::new(70.0, 70.0),
+                }),
+                17 => plan.pattern.edges.push(Edge {
+                    id: EdgeId::new(),
+                    start: center,
+                    end: outer,
+                    kind: EdgeKind::Valley,
+                }),
+                18 => plan.project_layers.layers[0].name.push_str(" tampered"),
+                _ => plan.before_project_layers.layers[0]
+                    .name
+                    .push_str(" tampered"),
+            }
+            tampered.push(candidate);
+        }
+        for candidate in tampered {
+            assert_rejected(candidate);
+        }
+        editor.execute(0, command).unwrap();
+        assert_eq!(
+            editor
+                .pattern
+                .vertices
+                .iter()
+                .filter(|v| v.position == Point2::new(50.0, 50.0))
+                .count(),
+            1
+        );
+        for point in [
+            Point2::new(50.0, 60.0),
+            Point2::new(40.0, 50.0),
+            Point2::new(50.0, 40.0),
+        ] {
+            assert!(editor.pattern.vertices.iter().any(|v| v.position == point));
+        }
+        editor.undo(1).unwrap();
+        assert_eq!(editor.pattern(), &original);
+        editor.redo(2).unwrap();
+        let applied = editor.pattern.clone();
+        let history = editor
+            .export_history_v1(ori_domain::ProjectId::new())
+            .unwrap();
+        assert!(
+            serde_json::to_string(&history)
+                .unwrap()
+                .contains("\"kind\":\"apply_radial_array_document\"")
+        );
+        let mut reopened = EditorState::with_document_parts_layers_and_history_v1(
+            applied.clone(),
+            editor.paper.clone(),
+            editor.instruction_timeline.clone(),
+            editor.geometric_constraints.clone(),
+            editor.project_layers.clone(),
+            history,
+        )
+        .unwrap();
+        reopened.undo(0).unwrap();
+        assert_eq!(reopened.pattern(), &original);
+        reopened.redo(1).unwrap();
+        assert_eq!(reopened.pattern(), &applied);
+        assert_eq!(
+            editor.plan_radial_array(3, center, vertices.clone(), vec![edge], 2, 180_000_000),
+            Err(CommandError::InvalidRadialArray)
+        );
+        assert!(
+            editor
+                .plan_radial_array(3, center, vertices, vec![edge], 1, 180_000_000)
+                .is_err(),
+            "live copies collide and must fail closed"
+        );
+    }
+
+    #[test]
+    fn radial_array_accepts_only_complete_nonrepeating_orthogonal_orbits() {
+        for (angle, copies, expected) in [
+            (90_000_000, 3, Point2::new(50.0, 40.0)),
+            (180_000_000, 1, Point2::new(40.0, 50.0)),
+            (270_000_000, 3, Point2::new(50.0, 60.0)),
+        ] {
+            let sheet = crate::create_rectangular_sheet(100.0, 100.0, false).unwrap();
+            let (mut pattern, paper) = sheet.into_parts();
+            let center = VertexId::new();
+            let outer = VertexId::new();
+            let edge = EdgeId::new();
+            pattern.vertices.extend([
+                Vertex {
+                    id: center,
+                    position: Point2::new(50.0, 50.0),
+                },
+                Vertex {
+                    id: outer,
+                    position: Point2::new(60.0, 50.0),
+                },
+            ]);
+            pattern.edges.push(Edge {
+                id: edge,
+                start: center,
+                end: outer,
+                kind: EdgeKind::Valley,
+            });
+            let mut vertices = vec![center, outer];
+            vertices.sort_by_key(|id| id.canonical_bytes());
+            let mut editor = EditorState::with_paper(pattern, paper);
+            let command = editor
+                .plan_radial_array(0, center, vertices.clone(), vec![edge], copies, angle)
+                .unwrap();
+            editor.execute(0, command).unwrap();
+            assert!(
+                editor
+                    .pattern
+                    .vertices
+                    .iter()
+                    .any(|v| v.position == expected)
+            );
+            assert_eq!(
+                editor.plan_radial_array(
+                    1,
+                    center,
+                    vertices,
+                    vec![edge],
+                    if angle == 180_000_000 { 2 } else { 4 },
+                    angle
+                ),
+                Err(CommandError::InvalidRadialArray)
+            );
+        }
+    }
+
+    #[test]
+    fn radial_array_rejects_missing_boundary_and_extreme_centers_without_state_change() {
+        let sheet = crate::create_rectangular_sheet(100.0, 100.0, false).unwrap();
+        let (mut pattern, paper) = sheet.into_parts();
+        let center = VertexId::new();
+        let outer = VertexId::new();
+        let edge = EdgeId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: center,
+                position: Point2::new(50.0, 50.0),
+            },
+            Vertex {
+                id: outer,
+                position: Point2::new(60.0, 50.0),
+            },
+        ]);
+        pattern.edges.push(Edge {
+            id: edge,
+            start: center,
+            end: outer,
+            kind: EdgeKind::Auxiliary,
+        });
+        let editor = EditorState::with_paper(pattern, paper);
+        let mut vertices = vec![center, outer];
+        vertices.sort_by_key(|id| id.canonical_bytes());
+        for bad_center in [VertexId::new(), editor.paper.boundary_vertices[0]] {
+            assert_eq!(
+                editor.plan_radial_array(
+                    0,
+                    bad_center,
+                    vertices.clone(),
+                    vec![edge],
+                    1,
+                    90_000_000
+                ),
+                Err(CommandError::InvalidRadialArray)
+            );
+        }
+        let mut extreme = editor.clone();
+        extreme
+            .pattern
+            .vertices
+            .iter_mut()
+            .find(|v| v.id == center)
+            .unwrap()
+            .position = Point2::new(-f64::MAX, 50.0);
+        extreme
+            .pattern
+            .vertices
+            .iter_mut()
+            .find(|v| v.id == outer)
+            .unwrap()
+            .position = Point2::new(f64::MAX, 50.0);
+        assert_eq!(
+            extreme.plan_radial_array(0, center, vertices, vec![edge], 1, 90_000_000),
+            Err(CommandError::InvalidRadialArray)
+        );
+        assert_eq!(editor.revision(), 0);
+        assert!(!editor.can_undo());
+    }
+
+    #[test]
+    fn radial_array_rejects_noncanonical_and_oversized_sources() {
+        let sheet = crate::create_rectangular_sheet(100.0, 100.0, false).unwrap();
+        let (mut pattern, paper) = sheet.into_parts();
+        let center = VertexId::new();
+        pattern.vertices.push(Vertex {
+            id: center,
+            position: Point2::new(50.0, 50.0),
+        });
+        let mut ids = (0..256)
+            .map(|index| {
+                let id = VertexId::new();
+                pattern.vertices.push(Vertex {
+                    id,
+                    position: Point2::new(10.0 + (index % 20) as f64, 10.0 + (index / 20) as f64),
+                });
+                id
+            })
+            .collect::<Vec<_>>();
+        ids.push(center);
+        ids.sort_by_key(|id| id.canonical_bytes());
+        let editor = EditorState::with_paper(pattern, paper);
+        assert_eq!(
+            editor.plan_radial_array(0, center, ids.clone(), Vec::new(), 1, 90_000_000),
+            Err(CommandError::InvalidRadialArray)
+        );
+        let mut two = ids[..2].to_vec();
+        two.reverse();
+        assert_eq!(
+            editor.plan_radial_array(0, center, two, Vec::new(), 1, 90_000_000),
+            Err(CommandError::InvalidRadialArray)
+        );
+    }
+
+    #[test]
+    fn radial_array_normalizes_signed_zero_and_handles_tiny_representable_offsets() {
+        let sheet = crate::create_rectangular_sheet(100.0, 100.0, false).unwrap();
+        let (mut pattern, paper) = sheet.into_parts();
+        for vertex in &mut pattern.vertices {
+            vertex.position.x -= 50.0;
+            vertex.position.y -= 50.0;
+        }
+        let center = VertexId::new();
+        let outer = VertexId::new();
+        let edge = EdgeId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: center,
+                position: Point2::new(0.0, 0.0),
+            },
+            Vertex {
+                id: outer,
+                position: Point2::new(1.0, -0.0),
+            },
+        ]);
+        pattern.edges.push(Edge {
+            id: edge,
+            start: center,
+            end: outer,
+            kind: EdgeKind::Auxiliary,
+        });
+        let mut vertices = vec![center, outer];
+        vertices.sort_by_key(|id| id.canonical_bytes());
+        let mut editor = EditorState::with_paper(pattern, paper);
+        let command = editor
+            .plan_radial_array(0, center, vertices, vec![edge], 1, 90_000_000)
+            .unwrap();
+        editor.execute(0, command).unwrap();
+        let rotated = editor
+            .pattern
+            .vertices
+            .iter()
+            .find(|v| v.position.y == 1.0 && v.id != outer)
+            .unwrap();
+        assert_eq!(rotated.position.x.to_bits(), 0);
+        let sheet = crate::create_rectangular_sheet(10.0, 10.0, false).unwrap();
+        let (mut pattern, paper) = sheet.into_parts();
+        let center = VertexId::new();
+        let outer = VertexId::new();
+        let edge = EdgeId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: center,
+                position: Point2::new(1.0, 1.0),
+            },
+            Vertex {
+                id: outer,
+                position: Point2::new(1.0 + f64::EPSILON, 1.0),
+            },
+        ]);
+        pattern.edges.push(Edge {
+            id: edge,
+            start: center,
+            end: outer,
+            kind: EdgeKind::Auxiliary,
+        });
+        let mut vertices = vec![center, outer];
+        vertices.sort_by_key(|id| id.canonical_bytes());
+        let tiny = EditorState::with_paper(pattern, paper);
+        assert!(
+            tiny.plan_radial_array(0, center, vertices, vec![edge], 1, 90_000_000)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn radial_array_rejects_paper_escape_and_uses_one_external_revision() {
+        let sheet = crate::create_rectangular_sheet(100.0, 10.0, false).unwrap();
+        let (mut pattern, paper) = sheet.into_parts();
+        let center = VertexId::new();
+        let outer = VertexId::new();
+        let edge = EdgeId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: center,
+                position: Point2::new(50.0, 5.0),
+            },
+            Vertex {
+                id: outer,
+                position: Point2::new(60.0, 5.0),
+            },
+        ]);
+        pattern.edges.push(Edge {
+            id: edge,
+            start: center,
+            end: outer,
+            kind: EdgeKind::Mountain,
+        });
+        let mut vertices = vec![center, outer];
+        vertices.sort_by_key(|id| id.canonical_bytes());
+        let outside = EditorState::with_paper(pattern, paper);
+        let before = editor_state_snapshot(&outside);
+        assert_eq!(
+            outside.plan_radial_array(0, center, vertices, vec![edge], 1, 90_000_000),
+            Err(CommandError::InvalidRadialArray)
+        );
+        assert_eq!(editor_state_snapshot(&outside), before);
+        let sheet = crate::create_rectangular_sheet(100.0, 100.0, false).unwrap();
+        let (mut pattern, paper) = sheet.into_parts();
+        let center = VertexId::new();
+        let outer = VertexId::new();
+        let edge = EdgeId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: center,
+                position: Point2::new(50.0, 50.0),
+            },
+            Vertex {
+                id: outer,
+                position: Point2::new(60.0, 50.0),
+            },
+        ]);
+        pattern.edges.push(Edge {
+            id: edge,
+            start: center,
+            end: outer,
+            kind: EdgeKind::Mountain,
+        });
+        let mut vertices = vec![center, outer];
+        vertices.sort_by_key(|id| id.canonical_bytes());
+        let mut editor = EditorState::with_paper(pattern, paper);
+        editor.revision = MAX_REVISION - 1;
+        let command = editor
+            .plan_radial_array(
+                MAX_REVISION - 1,
+                center,
+                vertices,
+                vec![edge],
+                1,
+                90_000_000,
+            )
+            .unwrap();
+        let stale = command.clone();
+        assert_eq!(
+            editor.execute(MAX_REVISION - 1, command).unwrap().revision,
+            MAX_REVISION
+        );
+        assert_eq!(
+            editor.execute(MAX_REVISION, stale),
+            Err(CommandError::RevisionExhausted {
+                revision: MAX_REVISION
+            })
+        );
+    }
+
+    #[test]
+    fn radial_array_normalizes_crossing_and_t_junction_and_respects_target_lock() {
+        let build = |target_y: f64, locked: bool| {
+            let sheet = crate::create_rectangular_sheet(100.0, 100.0, false).unwrap();
+            let (mut pattern, paper) = sheet.into_parts();
+            let center = VertexId::new();
+            let outer = VertexId::new();
+            let target = [VertexId::new(), VertexId::new()];
+            let source_edge = EdgeId::new();
+            let target_edge = EdgeId::new();
+            pattern.vertices.extend([
+                Vertex {
+                    id: center,
+                    position: Point2::new(50.0, 20.0),
+                },
+                Vertex {
+                    id: outer,
+                    position: Point2::new(60.0, 20.0),
+                },
+                Vertex {
+                    id: target[0],
+                    position: Point2::new(45.0, target_y),
+                },
+                Vertex {
+                    id: target[1],
+                    position: Point2::new(55.0, target_y),
+                },
+            ]);
+            pattern.edges.extend([
+                Edge {
+                    id: source_edge,
+                    start: center,
+                    end: outer,
+                    kind: EdgeKind::Mountain,
+                },
+                Edge {
+                    id: target_edge,
+                    start: target[0],
+                    end: target[1],
+                    kind: EdgeKind::Valley,
+                },
+            ]);
+            let mut editor = EditorState::with_paper(pattern, paper);
+            let layer = test_layer("radial source");
+            editor.project_layers.layers.push(layer.clone());
+            editor
+                .project_layers
+                .edge_assignments
+                .push(EdgeLayerAssignmentV1 {
+                    edge: source_edge,
+                    layer: layer.id,
+                });
+            let mut locked_id = None;
+            if locked {
+                let mut l = test_layer("locked target");
+                l.locked = true;
+                locked_id = Some(l.id);
+                editor.project_layers.layers.push(l.clone());
+                editor
+                    .project_layers
+                    .edge_assignments
+                    .push(EdgeLayerAssignmentV1 {
+                        edge: target_edge,
+                        layer: l.id,
+                    });
+            }
+            let mut vertices = vec![center, outer];
+            vertices.sort_by_key(|id| id.canonical_bytes());
+            (editor, center, vertices, source_edge, layer.id, locked_id)
+        };
+        let (mut crossing, center, vertices, source, source_layer, _) = build(25.0, false);
+        let command = crossing
+            .plan_radial_array(0, center, vertices, vec![source], 1, 90_000_000)
+            .unwrap();
+        crossing.execute(0, command).unwrap();
+        let junction = crossing
+            .pattern
+            .vertices
+            .iter()
+            .find(|v| v.position == Point2::new(50.0, 25.0))
+            .unwrap()
+            .id;
+        assert_eq!(
+            crossing
+                .pattern
+                .edges
+                .iter()
+                .filter(|e| e.start == junction || e.end == junction)
+                .count(),
+            4
+        );
+        assert!(
+            crossing
+                .pattern
+                .edges
+                .iter()
+                .filter(|e| e.kind == EdgeKind::Mountain)
+                .all(|e| crossing.project_layers.layer_for_edge(e.id) == source_layer)
+        );
+        let (mut forged_target, center, vertices, source, _, _) = build(25.0, false);
+        let mut forged = forged_target
+            .plan_radial_array(0, center, vertices, vec![source], 1, 90_000_000)
+            .unwrap();
+        forged_target
+            .project_layers
+            .layers
+            .iter_mut()
+            .find(|layer| layer.id == DEFAULT_PROJECT_LAYER_ID)
+            .unwrap()
+            .locked = true;
+        if let Command::ApplyRadialArrayDocument(plan) = &mut forged {
+            plan.before_fingerprint = forged_target.fold_model_fingerprint_v1();
+            plan.before_project_layers = forged_target.project_layers.clone();
+            plan.project_layers.layers = forged_target.project_layers.layers.clone();
+        }
+        let before = editor_state_snapshot(&forged_target);
+        assert_eq!(
+            forged_target.execute(0, forged),
+            Err(CommandError::InvalidRadialArray)
+        );
+        assert_eq!(editor_state_snapshot(&forged_target), before);
+        let (mut t, center, vertices, source, _, _) = build(30.0, false);
+        let command = t
+            .plan_radial_array(0, center, vertices, vec![source], 1, 90_000_000)
+            .unwrap();
+        t.execute(0, command).unwrap();
+        let j = t
+            .pattern
+            .vertices
+            .iter()
+            .find(|v| v.position == Point2::new(50.0, 30.0))
+            .unwrap()
+            .id;
+        assert_eq!(
+            t.pattern
+                .edges
+                .iter()
+                .filter(|e| e.start == j || e.end == j)
+                .count(),
+            3
+        );
+        let (locked, center, vertices, source, _, locked_id) = build(25.0, true);
+        assert_eq!(
+            locked.plan_radial_array(0, center, vertices, vec![source], 1, 90_000_000),
+            Err(CommandError::LayerLocked(locked_id.unwrap()))
+        );
+        let (mut overlap, center, vertices, source, _, _) = build(25.0, false);
+        let target = overlap
+            .pattern
+            .edges
+            .iter()
+            .find(|edge| edge.kind == EdgeKind::Valley)
+            .map(|edge| (edge.start, edge.end))
+            .unwrap();
+        overlap
+            .pattern
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == target.0)
+            .unwrap()
+            .position = Point2::new(50.0, 22.0);
+        overlap
+            .pattern
+            .vertices
+            .iter_mut()
+            .find(|vertex| vertex.id == target.1)
+            .unwrap()
+            .position = Point2::new(50.0, 28.0);
+        let before = editor_state_snapshot(&overlap);
+        assert!(
+            overlap
+                .plan_radial_array(0, center, vertices, vec![source], 1, 90_000_000)
+                .is_err()
+        );
+        assert_eq!(editor_state_snapshot(&overlap), before);
+        let (mut source_locked, center, vertices, source, source_layer, _) = build(25.0, false);
+        source_locked
+            .project_layers
+            .layers
+            .iter_mut()
+            .find(|layer| layer.id == source_layer)
+            .unwrap()
+            .locked = true;
+        assert_eq!(
+            source_locked.plan_radial_array(0, center, vertices, vec![source], 1, 90_000_000),
+            Err(CommandError::InvalidRadialArray)
+        );
+        let (mut constrained, center, vertices, source, _, _) = build(25.0, false);
+        let target_edge = constrained
+            .pattern
+            .edges
+            .iter()
+            .find(|edge| edge.kind == EdgeKind::Valley)
+            .unwrap()
+            .id;
+        let constraint = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::Horizontal { edge: target_edge },
+        };
+        constrained
+            .geometric_constraints
+            .constraints
+            .push(constraint.clone());
+        assert_eq!(
+            constrained.plan_radial_array(0, center, vertices, vec![source], 1, 90_000_000),
+            Err(CommandError::GeometricConstraintBlocksGeometryMutation {
+                constraint: constraint.id
+            })
         );
     }
 

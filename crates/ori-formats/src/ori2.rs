@@ -282,31 +282,43 @@ struct Ori2EditorHistoryEnvelope {
     history: EditorHistoryV1,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MigratableEditorHistoryEnvelope {
+    project_sha256: serde_json::Value,
+    history: MigratableEditorHistory,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MigratableEditorHistory {
+    schema_version: serde_json::Value,
+    project_id: serde_json::Value,
+    #[serde(default)]
+    history_entry_limit: Option<serde_json::Value>,
+    undo_stack: serde_json::Value,
+    #[serde(default)]
+    redo_stack: Option<serde_json::Value>,
+}
+
 /// Migrates the two supported legacy history generations without weakening
 /// the strict typed decoder. Unknown fields and unsupported schema versions
 /// remain present and are rejected by `EditorHistoryV1`.
 pub(crate) fn migrate_editor_history_envelope_json(
     bytes: &[u8],
 ) -> Result<(serde_json::Value, bool), serde_json::Error> {
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
-    let mut migrated = false;
-    if let Some(history) = value
-        .get_mut("history")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        if !history.contains_key("history_entry_limit") {
-            history.insert(
-                "history_entry_limit".to_owned(),
-                serde_json::json!(MAX_EDITOR_HISTORY_ENTRIES),
-            );
-            migrated = true;
-        }
-        if !history.contains_key("redo_stack") {
-            history.insert("redo_stack".to_owned(), serde_json::json!([]));
-            migrated = true;
-        }
-    }
-    Ok((value, migrated))
+    let mut envelope: MigratableEditorHistoryEnvelope = serde_json::from_slice(bytes)?;
+    let migrated =
+        envelope.history.history_entry_limit.is_none() || envelope.history.redo_stack.is_none();
+    envelope
+        .history
+        .history_entry_limit
+        .get_or_insert_with(|| serde_json::json!(MAX_EDITOR_HISTORY_ENTRIES));
+    envelope
+        .history
+        .redo_stack
+        .get_or_insert_with(|| serde_json::json!([]));
+    serde_json::to_value(envelope).map(|value| (value, migrated))
 }
 
 impl Ori2Manifest {
@@ -2296,6 +2308,129 @@ mod tests {
             } else {
                 assert!(reread.editor_history.is_none());
                 assert!(migrated_history.is_default_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn deterministic_history_tamper_corpus_rejects_192_payloads_without_state_change() {
+        let (document, bytes) = history_archive_fixture();
+        let valid_control = read_project_archive_ori2(&bytes).expect("valid control");
+        assert!(valid_control.document.current_pose.is_none());
+        assert!(
+            valid_control
+                .document
+                .beginner_design_profile
+                .generation_provenance
+                .is_none()
+        );
+        assert!(
+            valid_control
+                .document
+                .beginner_design_profile
+                .reference_consensus_v1
+                .is_none()
+        );
+
+        for generation in 0..3 {
+            let mut generation_entries = archive_entries(&bytes);
+            if generation > 0 {
+                let history_bytes = generation_entries
+                    .iter()
+                    .find(|(path, _)| path == ORI2_EDITOR_HISTORY_PATH)
+                    .expect("history fixture")
+                    .1
+                    .clone();
+                let mut envelope: serde_json::Value =
+                    serde_json::from_slice(&history_bytes).expect("history envelope");
+                envelope["history"]
+                    .as_object_mut()
+                    .expect("history object")
+                    .remove("redo_stack");
+                if generation == 2 {
+                    envelope["history"]
+                        .as_object_mut()
+                        .expect("history object")
+                        .remove("history_entry_limit");
+                }
+                reseal_history_entry(
+                    &mut generation_entries,
+                    serde_json::to_vec_pretty(&envelope).expect("legacy generation"),
+                );
+                let control = read_project_archive_ori2(&raw_zip_owned(&generation_entries))
+                    .expect("valid legacy control");
+                assert_eq!(control.document, document);
+            }
+
+            for corpus_index in 0..64 {
+                let mut tampered = generation_entries.clone();
+                let history_bytes = tampered
+                    .iter()
+                    .find(|(path, _)| path == ORI2_EDITOR_HISTORY_PATH)
+                    .expect("history fixture")
+                    .1
+                    .clone();
+                let mut envelope: serde_json::Value =
+                    serde_json::from_slice(&history_bytes).expect("history envelope");
+                let resealed = match corpus_index % 8 {
+                    0 => vec![0xff, 0xfe, corpus_index as u8],
+                    1 => format!("{{\"truncated\":{corpus_index}").into_bytes(),
+                    2 => {
+                        envelope.as_object_mut().expect("envelope object").insert(
+                            format!("unknown_required_{corpus_index}"),
+                            serde_json::json!(true),
+                        );
+                        serde_json::to_vec(&envelope).expect("unknown envelope")
+                    }
+                    3 => {
+                        envelope["history"]
+                            .as_object_mut()
+                            .expect("history object")
+                            .insert(
+                                format!("unknown_required_{corpus_index}"),
+                                serde_json::json!(true),
+                            );
+                        serde_json::to_vec(&envelope).expect("unknown history")
+                    }
+                    4 => {
+                        envelope["history"]["schema_version"] = serde_json::json!(
+                            EDITOR_HISTORY_SCHEMA_VERSION_V1 + 1 + corpus_index as u32
+                        );
+                        serde_json::to_vec(&envelope).expect("future history")
+                    }
+                    5 => {
+                        envelope["project_sha256"] =
+                            serde_json::Value::String(format!("{:064x}", corpus_index + 1));
+                        serde_json::to_vec(&envelope).expect("hash rebound")
+                    }
+                    6 => {
+                        envelope["history"]
+                            .as_object_mut()
+                            .expect("history object")
+                            .remove("undo_stack");
+                        serde_json::to_vec(&envelope).expect("partial metadata group")
+                    }
+                    _ => {
+                        let encoded = serde_json::to_string(&envelope).expect("history JSON");
+                        encoded
+                            .replacen(
+                                "\"schema_version\":1",
+                                "\"schema_version\":1,\"schema_version\":1",
+                                1,
+                            )
+                            .into_bytes()
+                    }
+                };
+                reseal_history_entry(&mut tampered, resealed);
+                assert!(
+                    read_project_archive_ori2(&raw_zip_owned(&tampered)).is_err(),
+                    "generation {generation}, corpus {corpus_index} must reject"
+                );
+                assert_eq!(
+                    read_project_archive_ori2(&bytes).expect("control remains readable"),
+                    valid_control,
+                    "rejection must not mutate the source project or recovery slot"
+                );
             }
         }
     }

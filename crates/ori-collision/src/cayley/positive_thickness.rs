@@ -5649,10 +5649,14 @@ mod tests {
                 two_triangle_model_with_options(EdgeKind::Valley, true, square, 604),
             ),
         ];
-        let mut cases = 0_usize;
-        let mut contained_unadmitted_by_angle = [0_usize; 5];
-        let mut endpoint_mismatches_by_angle = [0_usize; 5];
-        for (fixture, model) in &models {
+        let totals = std::thread::scope(|scope| {
+            models
+                .iter()
+                .map(|(fixture, model)| {
+                    scope.spawn(move || {
+                        let mut cases = 0_usize;
+                        let mut contained_unadmitted_by_angle = [0_usize; 5];
+                        let mut endpoint_mismatches_by_angle = [0_usize; 5];
             for root in model.face_ids() {
                 for thickness in [0.1, 1.0, 3.0] {
                     for (angle_index, angle) in
@@ -5761,6 +5765,27 @@ mod tests {
                         assert!(std::ptr::eq(rebound, diagnostic));
                     }
                 }
+            }
+                        (
+                            cases,
+                            contained_unadmitted_by_angle,
+                            endpoint_mismatches_by_angle,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|worker| worker.join().expect("direct-F affine matrix worker"))
+                .collect::<Vec<_>>()
+        });
+        let mut cases = 0_usize;
+        let mut contained_unadmitted_by_angle = [0_usize; 5];
+        let mut endpoint_mismatches_by_angle = [0_usize; 5];
+        for (worker_cases, worker_contained, worker_mismatches) in totals {
+            cases += worker_cases;
+            for angle_index in 0..5 {
+                contained_unadmitted_by_angle[angle_index] += worker_contained[angle_index];
+                endpoint_mismatches_by_angle[angle_index] += worker_mismatches[angle_index];
             }
         }
         assert_eq!(cases, 120);

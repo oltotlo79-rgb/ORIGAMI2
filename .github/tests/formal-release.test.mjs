@@ -806,7 +806,7 @@ test('CI requires the production C6 dyadic browser and exact native lifecycle', 
     'self_intersecting_boundary_strict_dyadic_preflight_is_unsupported_no_op',
     'zero_length_boundary_strict_dyadic_preflight_is_unsupported_no_op',
     'missing_pose_capability_strict_dyadic_read_returns_unsupported_dto',
-    'tree_pose_capability_strict_dyadic_read_returns_unsupported_dto',
+    'tree_pose_capability_rejects_incomplete_target_without_mutation',
   ]) {
     const fixtureFilter = `stacked_fold_read::tests::${fixtureTest}`
     assert.equal(workflow.match(new RegExp(fixtureFilter, 'gu'))?.length, 1)
@@ -819,8 +819,28 @@ test('CI requires the production C6 dyadic browser and exact native lifecycle', 
   assert.match(browserRead, /reason unsupported_geometry/u)
   assert.match(browserRead, /openScenario\('no-path', 6\)/u)
   assert.match(browserRead, /reason no_certified_path/u)
-  for (const fixture of ['octagonal-c8', 'radial-c16', 'cactus-c32', 'cactus-c64']) {
+  for (const fixture of ['balloon-c6', 'octagonal-c8']) {
     assert.equal(nativeRead.match(new RegExp(`"${fixture}"`, 'gu'))?.length, 1)
+  }
+  for (const treeLifecycle of [
+    'four_hinge_tree_level_three_read_and_preview_are_bounded_read_only',
+    'five_hinge_tree_level_three_mints_only_a_certified_read_only_preview',
+    'six_hinge_tree_level_three_is_bounded_and_mints_read_only_preview',
+    'seven_hinge_generic_grid_is_bounded_and_mints_read_only_preview',
+  ]) {
+    const filter = `stacked_fold_read::tests::${treeLifecycle}`
+    assert.equal(workflow.match(new RegExp(filter, 'gu'))?.length, 1)
+    assert.match(nativeRead, new RegExp(`fn ${treeLifecycle}\\(\\)`, 'u'))
+  }
+  assert.match(nativeRead, /fn revalidates_private_proofs_v1\(/u)
+  for (const lifecycle of [
+    'balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history',
+    'coupled_cactus_previews_apply_and_round_trip_history',
+    'theta_positive_thickness_preview_applies_and_round_trips_history',
+  ]) {
+    const filter = `stacked_fold_read::tests::${lifecycle}`
+    assert.equal(workflow.match(new RegExp(filter, 'gu'))?.length, 1)
+    assert.match(nativeRead, new RegExp(`fn ${lifecycle}\\(\\)`, 'u'))
   }
   assert.match(nativeRead, /dyadic_request_hinge_counts_are_bounded_v1\(64, Some\(64\)\)/u)
   assert.match(nativeRead, /!dyadic_request_hinge_counts_are_bounded_v1\(65, Some\(64\)\)/u)

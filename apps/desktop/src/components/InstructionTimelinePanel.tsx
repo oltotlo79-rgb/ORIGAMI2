@@ -38,6 +38,7 @@ import {
   instructionEditorErrorText,
   instructionPoseMatchesApplied,
   instructionTimelineNoticeText,
+  parseInstructionVisual,
   reduceInstructionPlayback,
   resolveInstructionPoseApplicationObservation,
   validateInstructionMetadata,
@@ -257,7 +258,8 @@ export function InstructionTimelinePanel({
   const playbackActive = playback.status === 'applying'
     || playback.status === 'holding'
   const timelineAvailable = presentation.kind === 'ready'
-  const editingDisabled = coreBusy || benchmarkActive || !snapshot || !timelineAvailable
+  const editingDisabled = coreBusy || benchmarkActive || fileOperationActive
+    || !snapshot || !timelineAvailable
   const noticeText = notice
     ? instructionTimelineNoticeText(notice, locale)
     : ''
@@ -611,10 +613,14 @@ export function InstructionTimelinePanel({
       setEditorError('invalid_metadata')
       return
     }
-    let visual: InstructionVisual
+    let visual: InstructionVisual | null
     try {
-      visual = JSON.parse(editor.visualJson) as InstructionVisual
+      visual = parseInstructionVisual(JSON.parse(editor.visualJson))
     } catch {
+      setEditorError('invalid_metadata')
+      return
+    }
+    if (!visual) {
       setEditorError('invalid_metadata')
       return
     }
@@ -701,7 +707,7 @@ export function InstructionTimelinePanel({
     cancelPlayback('revision_changed')
     const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
       splitInstructionStep(projectId, revision, projectInstanceId, selectedStep.id))
-    setNotice(succeeded ? { kind: 'moved' } : { kind: 'move_failed' })
+    setNotice(succeeded ? { kind: 'split' } : { kind: 'move_failed' })
   }
 
   async function mergeSelectedWithNext() {
@@ -710,7 +716,7 @@ export function InstructionTimelinePanel({
     cancelPlayback('revision_changed')
     const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
       mergeAdjacentInstructionSteps(projectId, revision, projectInstanceId, selectedStep.id, next.id))
-    setNotice(succeeded ? { kind: 'moved' } : { kind: 'move_failed' })
+    setNotice(succeeded ? { kind: 'merged' } : { kind: 'move_failed' })
   }
 
   function showStepPose(step: InstructionStepPresentation) {
@@ -874,6 +880,7 @@ export function InstructionTimelinePanel({
             || !exportAvailable
             || steps.length === 0
             || steps.some((step) => step.stale)
+            || certificateExportBlocked
           }
           onClick={onAnimationExport}
         >
@@ -1102,11 +1109,11 @@ export function InstructionTimelinePanel({
                     >
                       {selectLocalizedText(locale, TEXT.moveLater)}
                     </button>
-                    <button type="button" disabled={editingDisabled || selectedStep.durationMs < 200}
+                    <button type="button" disabled={editingDisabled || selectedStep.declarativeOnly || selectedStep.durationMs < 200}
                       onClick={() => void splitSelectedStep()}>
                       {locale === 'ja' ? '手順を分割' : 'Split step'}
                     </button>
-                    <button type="button" disabled={editingDisabled || selectedStep.index === steps.length - 1}
+                    <button type="button" disabled={editingDisabled || selectedStep.declarativeOnly || selectedStep.index === steps.length - 1}
                       onClick={() => void mergeSelectedWithNext()}>
                       {locale === 'ja' ? '次の手順と結合' : 'Merge with next'}
                     </button>

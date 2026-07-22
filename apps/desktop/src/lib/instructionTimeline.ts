@@ -156,6 +156,8 @@ export type InstructionTimelineNotice =
   | Readonly<{ kind: 'delete_failed' }>
   | Readonly<{ kind: 'deleted'; title: string }>
   | Readonly<{ kind: 'moved' }>
+  | Readonly<{ kind: 'split' }>
+  | Readonly<{ kind: 'merged' }>
   | Readonly<{ kind: 'move_failed' }>
   | Readonly<{ kind: 'stale_pose' }>
   | Readonly<{ kind: 'pose_apply_failed' }>
@@ -512,6 +514,10 @@ export function instructionTimelineNoticeText(
       return formatLocalizedText(locale, NOTICE_DELETED, { title: notice.title })
     case 'moved':
       return selectLocalizedText(locale, NOTICE_MOVED)
+    case 'split':
+      return selectLocalizedText(locale, NOTICE_SPLIT)
+    case 'merged':
+      return selectLocalizedText(locale, NOTICE_MERGED)
     case 'move_failed':
       return selectLocalizedText(locale, NOTICE_MOVE_FAILED)
     case 'stale_pose':
@@ -620,6 +626,14 @@ const NOTICE_DELETED = localized(
 const NOTICE_MOVED = localized(
   '手順の順番を変更しました',
   'Changed the step order',
+)
+const NOTICE_SPLIT = localized(
+  '手順を分割しました',
+  'Split the step',
+)
+const NOTICE_MERGED = localized(
+  '手順を次の手順と結合しました',
+  'Merged the step with the next step',
 )
 const NOTICE_MOVE_FAILED = localized(
   '手順を移動できませんでした',

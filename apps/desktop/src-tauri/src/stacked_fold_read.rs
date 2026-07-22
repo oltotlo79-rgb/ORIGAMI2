@@ -75,8 +75,8 @@ const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
 const CANCELLED_MESSAGE: &str = "stacked_fold_cycle_path_cancelled";
 const MAX_STACKED_FOLD_REQUEST_HINGES_V1: usize = 64;
-const MAX_DYADIC_GRAPH_STATES_V1: usize = 243;
-const MAX_DYADIC_GRAPH_TRANSITIONS_V1: usize = 1_620;
+const MAX_DYADIC_GRAPH_STATES_V1: usize = 729;
+const MAX_DYADIC_GRAPH_TRANSITIONS_V1: usize = 5_832;
 
 fn dyadic_request_hinge_counts_are_bounded_v1(
     target_angle_count: usize,
@@ -4470,6 +4470,48 @@ mod tests {
         )
     }
 
+    fn six_hinge_tree_project() -> super::super::ProjectState {
+        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
+        let bottom = (0..=7).map(|index| (index as f64 * 20.0, 0.0));
+        let top = (0..=7).rev().map(|index| (index as f64 * 20.0, 100.0));
+        let vertices = bottom
+            .chain(top)
+            .enumerate()
+            .map(|(index, (x, y))| Vertex {
+                id: fixed_id("7800", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
+        let mut edges = (0..boundary.len())
+            .map(|index| Edge {
+                id: fixed_id("7900", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % boundary.len()],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        for index in 1..=6 {
+            edges.push(Edge {
+                id: fixed_id("7900", index as u64 + 20),
+                start: boundary[index],
+                end: boundary[15 - index],
+                kind: if index % 2 == 0 {
+                    EdgeKind::Valley
+                } else {
+                    EdgeKind::Mountain
+                },
+            });
+        }
+        super::super::ProjectState::new_with_paper(
+            CreasePattern { vertices, edges },
+            Paper {
+                boundary_vertices: boundary,
+                ..Paper::default()
+            },
+        )
+    }
+
     #[test]
     fn dyadic_pose_graph_read_is_strict_bounded_and_observation_only() {
         let (mut project, hinges) = super::super::applied_pose::tests::four_vertex_cycle_project();
@@ -4850,6 +4892,108 @@ mod tests {
             preview_request(revision),
         )
         .expect("five-hinge certified graph mints a read-only token");
+        assert!(!preview.authorizes_project_mutation);
+        let project = super::super::lock_project(&state).unwrap();
+        assert_eq!(project.editor.revision(), revision);
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+    }
+
+    #[test]
+    fn six_hinge_tree_level_three_is_bounded_and_mints_read_only_preview() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let mut project = six_hinge_tree_project();
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        assert_eq!(snapshot.faces.len(), 7);
+        let hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        assert_eq!(hinges.len(), 6);
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            snapshot.faces[0].id,
+        );
+        let layer_state = GlobalFlatFoldabilityState::default();
+        super::super::global_flat_foldability::tests::install_possible_layer_order(
+            &layer_state,
+            &project,
+        );
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let target_angles = hinges
+            .iter()
+            .copied()
+            .map(|edge| DyadicPoseGraphAngleDtoV1 {
+                edge,
+                angle_degrees: 0.25,
+            })
+            .collect::<Vec<_>>();
+        let state = AppState::new(project);
+        let request = |level_count, max_states, max_transitions| DyadicPoseGraphReadRequestV1 {
+            expected_project_instance_id: instance,
+            expected_project_id: project_id,
+            expected_revision: revision,
+            target_angles: target_angles.clone(),
+            max_states,
+            max_transitions,
+            level_count,
+            cycle_schedule_v1: None,
+        };
+        for (levels, states, transitions) in [(5, 125, 600), (9, 128, 512)] {
+            let limited = read_bounded_dyadic_pose_graph_inner_v1(
+                &state,
+                Some(&layer_state),
+                request(levels, states, transitions),
+                None,
+            )
+            .unwrap();
+            assert_eq!(limited.status, "resource_limit");
+            assert_eq!((limited.state_count, limited.transition_count), (0, 0));
+        }
+        let observed = read_bounded_dyadic_pose_graph_inner_v1(
+            &state,
+            Some(&layer_state),
+            request(3, 729, 5_832),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            (observed.state_count, observed.transition_count),
+            (729, 5_832)
+        );
+        assert_eq!(observed.status, "certified");
+        assert!(observed.mutation_candidate_ready);
+        let preview_state = DyadicPathPreviewState::default();
+        let preview = mint_dyadic_pose_path_preview_inner_v1(
+            &state,
+            &layer_state,
+            &preview_state,
+            DyadicPathPreviewRequestV1 {
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                target_angles,
+                max_states: 729,
+                max_transitions: 5_832,
+                level_count: 3,
+                cycle_schedule_v1: None,
+                expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
+                expected_positive_thickness_binding_sha256: observed
+                    .positive_thickness_binding_sha256
+                    .unwrap(),
+                expected_layer_transport_binding_sha256: observed
+                    .layer_transport_binding_sha256
+                    .unwrap(),
+            },
+        )
+        .expect("six-hinge bounded proof mints a read-only token");
         assert!(!preview.authorizes_project_mutation);
         let project = super::super::lock_project(&state).unwrap();
         assert_eq!(project.editor.revision(), revision);

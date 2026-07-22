@@ -12,6 +12,44 @@ use crate::PositiveThicknessContinuousCertificateV1;
 pub const GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1: &str =
     "general_multi_face_positive_thickness_cell_transport_v1";
 
+pub const REGULAR_QUAD_PETAL_RATIO_CANDIDATE_LIMIT_V1: usize = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegularQuadPetalRatioCandidateV1 {
+    pub hinges: [ori_domain::EdgeId; 3],
+    pub stage_endpoints: [[(i64, u64); 3]; 3],
+}
+
+#[must_use]
+pub fn regular_quad_petal_ratio_candidates_v1(
+    mut hinges: [(ori_domain::EdgeId, bool); 3],
+) -> [RegularQuadPetalRatioCandidateV1; REGULAR_QUAD_PETAL_RATIO_CANDIDATE_LIMIT_V1] {
+    hinges.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+    let edges = hinges.map(|(edge, _)| edge);
+    let signs = hinges.map(|(_, mountain)| if mountain { 1_i64 } else { -1_i64 });
+    [
+        [(1_i64, 4_u64), (1, 2), (1, 1)],
+        [(1, 3), (2, 3), (3, 2)],
+        [(1, 2), (1, 1), (2, 1)],
+    ]
+    .map(|ratios| RegularQuadPetalRatioCandidateV1 {
+        hinges: edges,
+        stage_endpoints: [
+            [(signs[0] * ratios[0].0, ratios[0].1), (0, 1), (0, 1)],
+            [
+                (signs[0] * ratios[0].0, ratios[0].1),
+                (signs[1] * ratios[1].0, ratios[1].1),
+                (0, 1),
+            ],
+            [
+                (signs[0] * ratios[0].0, ratios[0].1),
+                (signs[1] * ratios[1].0, ratios[1].1),
+                (signs[2] * ratios[2].0, ratios[2].1),
+            ],
+        ],
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GeneralCellTransportLimitsV1 {
     pub max_transitions: usize,
@@ -460,6 +498,44 @@ fn inverse_flat_point(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn regular_quad_petal_ratios_are_exact_canonical_and_stage_contiguous() {
+        let mut input = [
+            (ori_domain::EdgeId::new(), true),
+            (ori_domain::EdgeId::new(), false),
+            (ori_domain::EdgeId::new(), true),
+        ];
+        let first = regular_quad_petal_ratio_candidates_v1(input);
+        input.reverse();
+        assert_eq!(first, regular_quad_petal_ratio_candidates_v1(input));
+        assert_eq!(first.len(), REGULAR_QUAD_PETAL_RATIO_CANDIDATE_LIMIT_V1);
+        for candidate in first {
+            assert!(
+                candidate
+                    .hinges
+                    .windows(2)
+                    .all(|pair| { pair[0].canonical_bytes() < pair[1].canonical_bytes() })
+            );
+            assert_eq!(candidate.stage_endpoints[0][1..], [(0, 1), (0, 1)]);
+            assert_eq!(candidate.stage_endpoints[1][2], (0, 1));
+            assert_eq!(
+                candidate.stage_endpoints[0][0],
+                candidate.stage_endpoints[1][0]
+            );
+            assert_eq!(
+                candidate.stage_endpoints[1][..2],
+                candidate.stage_endpoints[2][..2]
+            );
+            assert!(
+                candidate
+                    .stage_endpoints
+                    .iter()
+                    .flatten()
+                    .all(|(p, q)| { p.unsigned_abs() <= 64 && *q <= 64 && *q != 0 })
+            );
+        }
+    }
 
     #[test]
     fn rank_one_twenty_eight_work_is_admitted_only_at_exact_limits() {

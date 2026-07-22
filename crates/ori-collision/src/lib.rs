@@ -107,8 +107,9 @@ pub use flat_endpoint_layer_order::{
 pub use general_cell_transport::{
     ChainedGeneralCellTransportAuthorityV1, GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1,
     GeneralCellTransportErrorV1, GeneralCellTransportInputV1, GeneralCellTransportLimitsV1,
-    GeneralMultiFaceCellTransportProofV1, certify_general_multi_face_cell_transport_v1,
-    preflight_general_cell_transport_work_v1,
+    GeneralMultiFaceCellTransportProofV1, REGULAR_QUAD_PETAL_RATIO_CANDIDATE_LIMIT_V1,
+    RegularQuadPetalRatioCandidateV1, certify_general_multi_face_cell_transport_v1,
+    preflight_general_cell_transport_work_v1, regular_quad_petal_ratio_candidates_v1,
 };
 pub use graph_positive_thickness::{
     NativePositiveThicknessGraphGeometryProofV1, POSITIVE_THICKNESS_GRAPH_GEOMETRY_PROOF_V1,

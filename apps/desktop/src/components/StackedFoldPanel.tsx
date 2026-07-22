@@ -15,6 +15,7 @@ import {
   readEvenCycleCandidatesV1,
   readBoundedDyadicPoseGraphV1,
   mintDyadicPosePathPreviewV1,
+  previewNamedBasicFoldTimeline,
   applyDyadicPosePathPreviewV1,
   readLiveHingeRegistryV1,
   type ProjectSnapshot,
@@ -22,6 +23,7 @@ import {
   type CurrentCyclePoseProgressV1,
   type DyadicPoseGraphReadResponseV1,
   type DyadicPathPreviewResponseV1,
+  type BasicFoldTimelinePreviewResponseV1,
 } from '../lib/coreClient'
 import { selectLocalizedText, type Locale } from '../lib/i18n'
 import {
@@ -134,6 +136,14 @@ export function StackedFoldPanel({
   const [dyadicLevelCount, setDyadicLevelCount] = useState<3 | 5 | 9>(3)
   const [dyadicPathPreview, setDyadicPathPreview] =
     useState<DyadicPathPreviewResponseV1 | null>(null)
+  const [basicFoldTimelinePreview, setBasicFoldTimelinePreview] =
+    useState<BasicFoldTimelinePreviewResponseV1 | null>(null)
+  const [basicFoldTimelinePreviewError, setBasicFoldTimelinePreviewError] = useState(false)
+  useEffect(() => {
+    setBasicFoldTimelinePreview(null)
+    setBasicFoldTimelinePreviewError(false)
+  }, [snapshot.project_instance_id, snapshot.project_id, snapshot.revision, selectedLine?.id,
+    namedBookFold?.techniqueId])
   const dyadicGraphSequenceRef = useRef(0)
   const [confirmed, setConfirmed] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -463,6 +473,35 @@ export function StackedFoldPanel({
         : { kind: 'ready', response: view.response, applyFailed: true })
     } finally {
       setApplying(false)
+    }
+  }
+
+  async function previewNamedBasicFold() {
+    if (view.kind !== 'ready' || !namedBookFold || namedBookFold.kind !== 'book'
+      || !selectedLine || disabled || applying) return
+    const token = view.response.transactionProposal.transactionToken
+    const segment = view.response.materialSegments.find((item) =>
+      item.assignment === 'mountain' || item.assignment === 'valley')
+    if (!token || !segment) return
+    const authority = authorityRef.current
+    setBasicFoldTimelinePreviewError(false)
+    try {
+      const preview = await previewNamedBasicFoldTimeline({
+        token,
+        expectedProjectInstanceId: authority.project_instance_id,
+        expectedProjectId: authority.project_id,
+        expectedRevision: authority.revision,
+        expectedSourceModelFingerprint: authority.fold_model_fingerprint,
+        foldEdge: selectedLine.id,
+        assignment: segment.assignment,
+        techniqueDocument: namedBookFold.document,
+        techniqueId: namedBookFold.techniqueId,
+      })
+      if (authorityRef.current.revision !== authority.revision || tokenRef.current !== token) return
+      setBasicFoldTimelinePreview(preview)
+    } catch {
+      setBasicFoldTimelinePreview(null)
+      setBasicFoldTimelinePreviewError(true)
     }
   }
 
@@ -850,7 +889,7 @@ export function StackedFoldPanel({
             <label>
               {t('dyadic段階数', 'Dyadic levels')}
               <select
-                aria-label="Dyadic levels"
+                aria-label={t('dyadic段階数', 'Dyadic levels')}
                 value={dyadicLevelCount}
                 disabled={disabled || applying || dyadicGraphReading}
                 onChange={(event) => setDyadicLevelCount(Number(event.target.value) as 3 | 5 | 9)}
@@ -1203,6 +1242,22 @@ export function StackedFoldPanel({
                 `The certified pose will be saved as the named technique “${namedBookFold.name}”. The same step is used by PDF/SVG instruction exports.`,
               )}
             </p>
+          )}
+          {namedBookFold?.kind === 'book' && (
+            <section aria-label={t('名前付き基本折りの手順preview', 'Named basic-fold timeline preview')}>
+              <button type="button" onClick={() => void previewNamedBasicFold()} disabled={!ready || applying}>
+                {t('認証済み手順をpreview', 'Preview certified timeline')}
+              </button>
+              {basicFoldTimelinePreview && (
+                <div role="status">
+                  <p>{t('読取専用previewです。適用権限は含みません。', 'Read-only preview; no mutation authority is included.')}</p>
+                  <ol>{basicFoldTimelinePreview.timeline.steps.map((step) => <li key={step.id}>{step.title}</li>)}</ol>
+                </div>
+              )}
+              {basicFoldTimelinePreviewError && (
+                <p role="alert">{t('認証済み手順を作成できません。Tree・古い・取消済み・改変されたtokenは拒否されます。', 'Could not build a certified timeline. Tree, stale, cancelled, or tampered tokens are rejected.')}</p>
+              )}
+            </section>
           )}
           <label>
             <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={!ready || applying} />

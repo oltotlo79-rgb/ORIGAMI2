@@ -802,21 +802,28 @@ pub(super) fn preview_named_basic_fold_timeline(
         .map(|(_, angle)| *angle)
         .filter(|angle| angle.is_finite() && (0.0..=180.0).contains(angle))
         .ok_or_else(|| "The basic-fold target angle is invalid.".to_owned())?;
+    let straight_fold = || ori_instructions::BookFoldMotionRequestV1 {
+        technique_file: &technique,
+        technique_id: &technique_id,
+        source_model_fingerprint: &expected_source_model_fingerprint,
+        fixed_face,
+        fold_edge,
+        source_hinge_angles: &source_hinge_angles,
+        target_angle_microdegrees: (target_angle * 1_000_000.0) as i64,
+        path_certificate: certificate,
+    };
     let timeline = ori_instructions::compile_certified_basic_fold_timeline_v1(
         ori_instructions::BasicFoldMotionRequestV1 {
             kind,
-            straight_fold: ori_instructions::BookFoldMotionRequestV1 {
-                technique_file: &technique,
-                technique_id: &technique_id,
-                source_model_fingerprint: &expected_source_model_fingerprint,
-                fixed_face,
-                fold_edge,
-                source_hinge_angles: &source_hinge_angles,
-                target_angle_microdegrees: (target_angle * 1_000_000.0) as i64,
-                path_certificate: certificate,
-            },
+            straight_fold: straight_fold(),
         },
     )
+    .or_else(|error| match error {
+        ori_instructions::BookFoldMotionError::UnsupportedTechnique => {
+            ori_instructions::compile_certified_book_fold_timeline_v1(straight_fold())
+        }
+        other => Err(other),
+    })
     .map_err(|_| "The named basic-fold compiler rejected the preview.".to_owned())?;
     Ok(BasicFoldTimelinePreviewResponse {
         schema_version: 1,

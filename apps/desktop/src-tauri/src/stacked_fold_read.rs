@@ -2968,6 +2968,61 @@ fn prepare_blockwise_current_cycle_fallback_v1(
     };
     let (first_schedule, first_closure, first_positive) = prepare(first)?;
     let (second_schedule, second_closure, second_positive) = prepare(second)?;
+    let block_faces = [first, second].map(|block| {
+        block
+            .geometry()
+            .face_ids()
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+    });
+    let source_snapshot = layer_capability.snapshot();
+    let mut cell_owners = std::collections::HashMap::new();
+    for cell in &source_snapshot.overlap_cells {
+        if cell.covering_faces.is_empty() || cell.bottom_to_top_faces.is_empty() {
+            return Err(CYCLE_NONCLOSING_MESSAGE.to_owned());
+        }
+        let owners = block_faces
+            .iter()
+            .enumerate()
+            .filter_map(|(index, faces)| {
+                (cell
+                    .covering_faces
+                    .iter()
+                    .all(|face| faces.contains(&face.face_id))
+                    && cell
+                        .bottom_to_top_faces
+                        .iter()
+                        .all(|face| faces.contains(face)))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let [owner] = owners.as_slice() else {
+            return Err(CYCLE_NONCLOSING_MESSAGE.to_owned());
+        };
+        if cell_owners.insert(cell.cell_key, *owner).is_some() {
+            return Err(CYCLE_NONCLOSING_MESSAGE.to_owned());
+        }
+    }
+    for pair in &source_snapshot.face_pair_orders {
+        let owners = block_faces
+            .iter()
+            .enumerate()
+            .filter_map(|(index, faces)| {
+                (faces.contains(&pair.lower_face.face_id)
+                    && faces.contains(&pair.upper_face.face_id)
+                    && !pair.supporting_cells.is_empty()
+                    && pair
+                        .supporting_cells
+                        .iter()
+                        .all(|cell| cell_owners.get(cell) == Some(&index)))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if !matches!(owners.as_slice(), [_]) {
+            return Err(CYCLE_NONCLOSING_MESSAGE.to_owned());
+        }
+    }
     let restrict_snapshot = |block: &ori_kinematics::CanonicalMaterialEdgeBlockV1| {
         let faces = block.geometry().face_ids();
         let mut snapshot = layer_capability.snapshot().clone();
@@ -3131,12 +3186,17 @@ fn prepare_blockwise_current_cycle_fallback_v1(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    let layer_pairs = layer_capability
-        .snapshot()
-        .face_pair_orders
+    let mut layer_pairs = sources
         .iter()
+        .flat_map(|source| source.face_pair_orders.iter())
         .map(|pair| (pair.lower_face.face_id, pair.upper_face.face_id))
         .collect::<Vec<_>>();
+    layer_pairs
+        .sort_unstable_by_key(|(lower, upper)| (lower.canonical_bytes(), upper.canonical_bytes()));
+    layer_pairs.dedup();
+    if layer_pairs.len() != pair_count {
+        return Err(CYCLE_NONCLOSING_MESSAGE.to_owned());
+    }
     let response_pairs = layer_pairs
         .iter()
         .map(|(lower_face, upper_face)| LayerOrderPairDtoV1 {
@@ -4847,7 +4907,7 @@ async fn propose_current_stacked_fold_read_inner(
             let material_segments = material_map
                 .segments()
                 .iter()
-                .map(|segment| StackedFoldMaterialSegmentDto {
+                .map(|segment| Ok(StackedFoldMaterialSegmentDto {
                     face_id: segment.face(),
                     start: [segment.start().x, segment.start().y],
                     end: [segment.end().x, segment.end().y],
@@ -4858,10 +4918,10 @@ async fn propose_current_stacked_fold_read_inner(
                     assignment: match segment.assignment() {
                         ori_domain::EdgeKind::Mountain => "mountain",
                         ori_domain::EdgeKind::Valley => "valley",
-                        _ => unreachable!("material map emits only mountain or valley"),
+                        _ => return Err(ANALYSIS_FAILED_MESSAGE.to_owned()),
                     },
-                })
-                .collect();
+                }))
+                .collect::<Result<Vec<_>, String>>()?;
             drop(material_map);
             drop(proposal);
             drop(guard);
@@ -5192,7 +5252,7 @@ async fn propose_current_stacked_fold_read_inner(
         let material_segments = material_map
             .segments()
             .iter()
-            .map(|segment| StackedFoldMaterialSegmentDto {
+            .map(|segment| Ok(StackedFoldMaterialSegmentDto {
                 face_id: segment.face(),
                 start: [segment.start().x, segment.start().y],
                 end: [segment.end().x, segment.end().y],
@@ -5203,10 +5263,10 @@ async fn propose_current_stacked_fold_read_inner(
                 assignment: match segment.assignment() {
                     ori_domain::EdgeKind::Mountain => "mountain",
                     ori_domain::EdgeKind::Valley => "valley",
-                    _ => unreachable!("material map emits only mountain or valley"),
+                    _ => return Err(ANALYSIS_FAILED_MESSAGE.to_owned()),
                 },
-            })
-            .collect();
+            }))
+            .collect::<Result<Vec<_>, String>>()?;
         drop(material_map);
         drop(proposal);
         drop(guard);
@@ -5501,6 +5561,34 @@ mod tests {
             &layer_state,
             &project,
         );
+        let layer_capability =
+            super::super::global_flat_foldability::capture_current_layer_order_capability(
+                &layer_state,
+                &project,
+            )
+            .unwrap()
+            .expect("17-face layer capability");
+        assert!(
+            layer_capability
+                .snapshot()
+                .overlap_cells
+                .iter()
+                .any(|cell| {
+                    block_faces
+                        .iter()
+                        .filter(|faces| {
+                            cell.covering_faces
+                                .iter()
+                                .all(|face| faces.contains(&face.face_id))
+                                && cell
+                                    .bottom_to_top_faces
+                                    .iter()
+                                    .all(|face| faces.contains(face))
+                        })
+                        .count()
+                        != 1
+                })
+        );
         let instance = project.instance_id;
         let revision = project.editor.revision();
         let state = AppState::new(project);
@@ -5648,172 +5736,25 @@ mod tests {
             revision
         );
 
-        let aba_preview = propose_current_cycle_pose_inner_with_layers(
-            None,
-            &state,
-            Some(&layer_state),
-            &transactions,
-            request(revision, schedule.clone()),
-        )
-        .expect("17-face blockwise fallback preview");
-        {
-            let project = super::super::lock_project(&state).unwrap();
-            super::super::global_flat_foldability::tests::install_possible_layer_order(
-                &layer_state,
-                &project,
-            );
-        }
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &state,
-                &layer_state,
-                &transactions,
-                aba_preview.transaction_token,
-            )
-            .is_err()
-        );
         assert_eq!(
-            super::super::lock_project(&state)
-                .unwrap()
-                .editor
-                .revision(),
-            revision
-        );
-        let pose_aba_preview = propose_current_cycle_pose_inner_with_layers(
-            None,
-            &state,
-            Some(&layer_state),
-            &transactions,
-            request(revision, schedule.clone()),
-        )
-        .expect("replacement blockwise fallback preview");
-        {
-            let mut project = super::super::lock_project(&state).unwrap();
-            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-                &mut project,
-                hinges.clone(),
-                articulation,
-            );
-        }
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &state,
-                &layer_state,
-                &transactions,
-                pose_aba_preview.transaction_token,
-            )
-            .is_err()
-        );
-        assert_eq!(
-            super::super::lock_project(&state)
-                .unwrap()
-                .editor
-                .revision(),
-            revision
-        );
-        let replaced_preview = propose_current_cycle_pose_inner_with_layers(
-            None,
-            &state,
-            Some(&layer_state),
-            &transactions,
-            request(revision, schedule.clone()),
-        )
-        .expect("pose ABA replacement blockwise fallback preview");
-        let preview = propose_current_cycle_pose_inner_with_layers(
-            None,
-            &state,
-            Some(&layer_state),
-            &transactions,
-            request(revision, schedule.clone()),
-        )
-        .expect("newest blockwise fallback preview");
-        assert_ne!(
-            replaced_preview.transaction_token,
-            preview.transaction_token
-        );
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &state,
-                &layer_state,
-                &transactions,
-                replaced_preview.transaction_token,
-            )
-            .is_err()
-        );
-        assert_eq!(
-            super::super::lock_project(&state)
-                .unwrap()
-                .editor
-                .revision(),
-            revision
-        );
-        let foreign_project = {
-            let project = super::super::lock_project(&state).unwrap();
-            super::super::ProjectState::new_with_paper(
-                project.editor.pattern().clone(),
-                project.editor.paper().clone(),
-            )
-        };
-        let foreign_revision = foreign_project.editor.revision();
-        let foreign_state = AppState::new(foreign_project);
-        let foreign_layers = GlobalFlatFoldabilityState::default();
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &foreign_state,
-                &foreign_layers,
-                &transactions,
-                preview.transaction_token,
-            )
-            .is_err()
-        );
-        assert_eq!(
-            super::super::lock_project(&foreign_state)
-                .unwrap()
-                .editor
-                .revision(),
-            foreign_revision
-        );
-        assert_eq!(
-            preview.continuous_layer_transport_model_id,
-            Some(ori_collision::BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1)
-        );
-        assert!(!preview.authorizes_project_mutation);
-        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-            &state,
-            &layer_state,
-            &transactions,
-            preview.transaction_token,
-        )
-        .expect("apply blockwise fallback");
-        assert_eq!(applied, revision + 1);
-        assert!(
-            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
-                &state,
-                &layer_state,
-                &transactions,
-                preview.transaction_token,
-            )
-            .is_err()
-        );
-        let mut project = super::super::lock_project(&state).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        let undo_revision = project.editor.revision();
-        project.editor.undo(undo_revision).unwrap();
-        assert!(project.editor.instruction_timeline().steps.is_empty());
-        let redo_revision = project.editor.revision();
-        project.editor.redo(redo_revision).unwrap();
-        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
-        drop(project);
-
-        assert!(
             propose_current_cycle_pose_inner_with_layers(
                 None,
                 &state,
                 Some(&layer_state),
                 &transactions,
-                request(revision, schedule),
+                request(revision, schedule.clone()),
             )
-            .is_err()
+            .unwrap_err(),
+            CYCLE_NONCLOSING_MESSAGE,
+            "cross-block overlap evidence must fail closed before preview"
+        );
+        assert_eq!(transactions.pending_token_for_test_v1(), None);
+        assert_eq!(
+            super::super::lock_project(&state)
+                .unwrap()
+                .editor
+                .revision(),
+            revision
         );
         let unknown_block = serde_json::json!({
             "version": 1,

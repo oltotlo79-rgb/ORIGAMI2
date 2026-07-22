@@ -297,6 +297,27 @@ pub struct PositiveThicknessTreeContinuousCertificateV1 {
 
 impl PositiveThicknessTreeContinuousCertificateV1 {
     #[must_use]
+    pub fn binding_fingerprint_v1(&self) -> [u8; 32] {
+        let mut hash = sha2::Sha256::new();
+        use sha2::Digest as _;
+        hash.update(b"positive_thickness_tree_continuous_certificate_v1");
+        for angles in [&self.source_absolute, &self.target_absolute] {
+            for angle in angles.as_slice() {
+                hash.update(angle.edge().canonical_bytes());
+                hash.update(angle.angle_degrees().to_bits().to_be_bytes());
+            }
+        }
+        hash.update(self.paper_thickness_bits.to_be_bytes());
+        hash.update(
+            self.diagnostic
+                .requested_angle_degrees()
+                .to_bits()
+                .to_be_bytes(),
+        );
+        hash.finalize().into()
+    }
+
+    #[must_use]
     pub fn is_for(
         &self,
         model: &MaterialTreeKinematicsModel,

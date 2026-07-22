@@ -1079,7 +1079,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                     },
                 )
                 .ok()?;
-            let evidence = ori_collision::certify_scheduled_cycle_transition_v1(
+            let cycle_evidence = ori_collision::certify_scheduled_cycle_transition_v1(
                 geometry,
                 audit,
                 pose.fixed_face(),
@@ -1088,7 +1088,30 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 32,
                 edge.source,
                 edge.target,
-            )?;
+            );
+            let mut tree_positive_seed = None;
+            let evidence = cycle_evidence.or_else(|| {
+                if edge.source != pose_state_fingerprint_v1(pose.hinge_angles()) {
+                    return None;
+                }
+                let (tree_model, tree_source_pose) = capability.tree()?;
+                let target = generated.schedule().evaluate(1.0)?;
+                let positive = ori_collision::certify_positive_thickness_tree_continuous_path_v1(
+                    tree_model,
+                    tree_source_pose,
+                    &target,
+                    paper_thickness_mm,
+                )?;
+                let evidence = ori_collision::CertifiedPathTransitionEvidenceV1::from_native_oracle(
+                    edge.source,
+                    edge.target,
+                    generated.schedule().certificate_binding_fingerprint_v1(),
+                    positive.binding_fingerprint_v1(),
+                    closure.partition_binding_fingerprint_v1(),
+                );
+                tree_positive_seed = Some(positive);
+                Some(evidence)
+            })?;
             let positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
                 geometry,
                 audit,
@@ -1164,13 +1187,14 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                     .tree()
                     .and_then(|(tree_model, tree_source_pose)| {
                         let target = generated.schedule().evaluate(1.0)?;
-                        let positive =
+                        let positive = tree_positive_seed.take().or_else(|| {
                             ori_collision::certify_positive_thickness_tree_continuous_path_v1(
                                 tree_model,
                                 tree_source_pose,
                                 &target,
                                 paper_thickness_mm,
-                            )?;
+                            )
+                        })?;
                         let layer = ori_collision::prepare_shared_vertex_tree_layer_transport_v1(
                             tree_model,
                             tree_source_pose,

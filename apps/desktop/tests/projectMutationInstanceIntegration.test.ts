@@ -14,6 +14,7 @@ const mutationContracts = [
   ['replaceInstructionStepPose', 'replace_instruction_step_pose'],
   ['removeInstructionStep', 'remove_instruction_step'],
   ['moveInstructionStep', 'move_instruction_step'],
+  ['duplicateInstructionStep', 'duplicate_instruction_step'],
   ['splitInstructionStep', 'split_instruction_step'],
   ['mergeAdjacentInstructionSteps', 'merge_adjacent_instruction_steps'],
   [
@@ -77,9 +78,9 @@ const mutationContracts = [
 ] as const
 
 test('the revision-changing mutation contract matrix remains complete', () => {
-  assert.equal(mutationContracts.length, 62)
-  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 62)
-  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 62)
+  assert.equal(mutationContracts.length, 63)
+  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 63)
+  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 63)
   assert.deepEqual(
     productionRevisionChangingCommands(native),
     mutationContracts.map(([, command]) => command).toSorted(),
@@ -208,8 +209,8 @@ test('InstructionTimelinePanel requires and forwards the instance binding', () =
   const boundCallbacks = instructionPanel.match(
     /runNativeEdit\(\s*(?:async\s*)?\(\s*projectId\s*,\s*revision\s*,\s*projectInstanceId\s*\)\s*=>/gu,
   ) ?? []
-  assert.equal(boundCallbacks.length, 7)
-  for (const [clientFunction] of mutationContracts.slice(0, 7)) {
+  assert.equal(boundCallbacks.length, 8)
+  for (const [clientFunction] of mutationContracts.slice(0, 8)) {
     const callIndex = instructionPanel.indexOf(`${clientFunction}(`)
     assert.ok(callIndex >= 0, `${clientFunction} panel call`)
     assert.match(

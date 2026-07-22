@@ -11264,6 +11264,51 @@ fn move_instruction_step(
 }
 
 #[tauri::command]
+fn duplicate_instruction_step(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    step_id: InstructionStepId,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let step = duplicate_instruction_step_record(project.editor.instruction_timeline(), step_id)?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::AddInstructionStep { step },
+    )
+}
+
+fn duplicate_instruction_step_record(
+    timeline: &ori_domain::InstructionTimeline,
+    step_id: InstructionStepId,
+) -> Result<InstructionStep, String> {
+    let mut step = timeline
+        .steps
+        .iter()
+        .find(|candidate| candidate.id == step_id)
+        .cloned()
+        .ok_or_else(|| "instruction_step_not_found".to_owned())?;
+    step.id = InstructionStepId::new();
+    // Persisted proof/provenance records are sequence-bound. A duplicate has
+    // a different predecessor and compiler output, even though its pose and
+    // authored visual guidance are identical.
+    step.visual.path_certificate_reference_v1 = None;
+    step.visual.cycle_layer_order_proof_v1 = None;
+    step.visual.named_technique_compiler_v1 = None;
+    Ok(step)
+}
+
+#[tauri::command]
 fn split_instruction_step(
     state: State<'_, AppState>,
     expected_project_instance_id: ProjectId,
@@ -14955,6 +15000,7 @@ pub fn run() {
             replace_instruction_step_pose,
             remove_instruction_step,
             move_instruction_step,
+            duplicate_instruction_step,
             split_instruction_step,
             merge_adjacent_instruction_steps,
             set_cutting_allowed,
@@ -19630,6 +19676,97 @@ mod tests {
         project.editor.redo(2).expect("redo instruction addition");
         assert_eq!(project.editor.instruction_timeline().steps[0].id, step_id);
         assert!(project.is_dirty());
+
+        let duplicated =
+            duplicate_instruction_step_record(project.editor.instruction_timeline(), step_id)
+                .expect("duplicate existing instruction step");
+        assert_ne!(duplicated.id, step_id);
+        let mut expected = project.editor.instruction_timeline().steps[0].clone();
+        expected.id = duplicated.id;
+        assert_eq!(duplicated, expected);
+        project
+            .editor
+            .execute(
+                3,
+                Command::AddInstructionStep {
+                    step: duplicated.clone(),
+                },
+            )
+            .expect("append duplicated instruction atomically");
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
+        project
+            .editor
+            .undo(4)
+            .expect("undo instruction duplication");
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        project
+            .editor
+            .redo(5)
+            .expect("redo instruction duplication");
+        assert_eq!(project.editor.instruction_timeline().steps[1], duplicated);
+        let duplicated_archive = write_project_ori2(&project.document())
+            .expect("persist duplicated instruction timeline");
+        let duplicated_restored =
+            read_project_ori2_with_limits(&duplicated_archive, Ori2Limits::default())
+                .expect("restore duplicated instruction timeline");
+        assert_eq!(
+            duplicated_restored.instruction_timeline.steps[1],
+            duplicated
+        );
+        assert_eq!(
+            duplicate_instruction_step_record(
+                project.editor.instruction_timeline(),
+                InstructionStepId::new()
+            ),
+            Err("instruction_step_not_found".to_owned()),
+        );
+
+        let mut certified = project.editor.instruction_timeline().steps[0].clone();
+        certified.visual.path_certificate_reference_v1 =
+            Some(ori_domain::PathCertificateReferenceV1 {
+                version: 1,
+                model_id: ori_domain::PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1.to_owned(),
+                binding_sha256: [1; 32],
+                source_pose_sha256: [2; 32],
+                target_pose_sha256: [3; 32],
+                source_model_binding_sha256: [4; 32],
+                transition_count: 1,
+            });
+        certified.visual.cycle_layer_order_proof_v1 = Some(ori_domain::CycleLayerOrderProofV1 {
+            version: 1,
+            model_id: ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1.to_owned(),
+            target_order_sha256: [5; 32],
+            transition_count: 1,
+            pairs: Vec::new(),
+        });
+        certified.visual.named_technique_compiler_v1 =
+            Some(ori_domain::NamedTechniqueCompilerMetadataV1 {
+                version: 1,
+                model_id: ori_domain::NAMED_TECHNIQUE_COMPILER_MODEL_ID_V1.to_owned(),
+                technique_kind: "book".to_owned(),
+                segment_index: 0,
+                segment_count: 1,
+                compiler_output_sha256: [6; 32],
+            });
+        let stripped = duplicate_instruction_step_record(
+            &InstructionTimeline {
+                steps: vec![certified.clone()],
+            },
+            certified.id,
+        )
+        .expect("duplicate strips sequence-bound evidence");
+        assert!(certified.visual.path_certificate_reference_v1.is_some());
+        assert!(certified.visual.cycle_layer_order_proof_v1.is_some());
+        assert!(certified.visual.named_technique_compiler_v1.is_some());
+        assert!(stripped.visual.path_certificate_reference_v1.is_none());
+        assert!(stripped.visual.cycle_layer_order_proof_v1.is_none());
+        assert!(stripped.visual.named_technique_compiler_v1.is_none());
+        let mut expected_stripped = certified;
+        expected_stripped.id = stripped.id;
+        expected_stripped.visual.path_certificate_reference_v1 = None;
+        expected_stripped.visual.cycle_layer_order_proof_v1 = None;
+        expected_stripped.visual.named_technique_compiler_v1 = None;
+        assert_eq!(stripped, expected_stripped);
     }
 
     #[test]

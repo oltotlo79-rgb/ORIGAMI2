@@ -10,13 +10,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 
 import { InstructionTimelinePanel } from '../src/components/InstructionTimelinePanel.tsx'
-import { moveInstructionStep, type ProjectSnapshot } from '../src/lib/coreClient.ts'
+import {
+  duplicateInstructionStep,
+  moveInstructionStep,
+  type ProjectSnapshot,
+} from '../src/lib/coreClient.ts'
 import type { FoldPreviewAppliedPoseSnapshot } from '../src/lib/foldPreviewAppliedPose.ts'
 import { localeStore } from '../src/lib/i18n.ts'
 
 vi.mock('../src/lib/coreClient.ts', async (importOriginal) => ({
   ...await importOriginal<typeof import('../src/lib/coreClient.ts')>(),
   moveInstructionStep: vi.fn(),
+  duplicateInstructionStep: vi.fn(),
 }))
 
 const FINGERPRINT = 'ab'.repeat(32)
@@ -185,6 +190,49 @@ describe('InstructionTimelinePanel localization', () => {
       'step-2',
       2,
     ))
+  })
+
+  it('duplicates the complete selected step through one native mutation and selects the copy', async () => {
+    localeStore.setLocale('en')
+    const duplicated = {
+      ...SNAPSHOT.instruction_timeline.steps[0]!,
+      id: 'step-copy',
+    }
+    const response = {
+      ...SNAPSHOT,
+      revision: 5,
+      instruction_timeline: {
+        steps: [SNAPSHOT.instruction_timeline.steps[0]!, duplicated],
+      },
+    } as ProjectSnapshot
+    vi.mocked(duplicateInstructionStep).mockResolvedValueOnce(response)
+    const runNativeEdit = vi.fn(async (
+      action: React.ComponentProps<typeof InstructionTimelinePanel>['runNativeEdit'] extends (
+        action: infer Action,
+      ) => Promise<boolean> ? Action : never,
+    ) => {
+      await action(SNAPSHOT.project_id, SNAPSHOT.revision, SNAPSHOT.project_instance_id)
+      return true
+    })
+    const view = render(<InstructionTimelinePanel
+      {...panelFor(SNAPSHOT).props}
+      runNativeEdit={runNativeEdit}
+    />)
+    fireEvent.click(screen.getByRole('button', { name: /1\. Fold crane/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Duplicate step' }))
+    await waitFor(() => expect(duplicateInstructionStep).toHaveBeenCalledWith(
+      SNAPSHOT.project_id,
+      SNAPSHOT.revision,
+      SNAPSHOT.project_instance_id,
+      'step-1',
+    ))
+    view.rerender(<InstructionTimelinePanel
+      {...panelFor(response).props}
+      runNativeEdit={runNativeEdit}
+    />)
+    expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Fold crane')
+    expect(screen.getByRole('button', { name: /2\. Fold crane/ }).getAttribute('aria-pressed'))
+      .toBe('true')
   })
 
   it('keeps camera capture unavailable until the 3D viewport provides a camera', async () => {

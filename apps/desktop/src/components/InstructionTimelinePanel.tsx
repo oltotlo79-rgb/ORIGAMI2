@@ -8,6 +8,7 @@ import {
 } from 'react'
 import {
   addInstructionStep,
+  duplicateInstructionStep,
   moveInstructionStep,
   splitInstructionStep,
   mergeAdjacentInstructionSteps,
@@ -158,6 +159,7 @@ export function InstructionTimelinePanel({
     [snapshot?.fold_model_fingerprint, snapshot?.instruction_timeline],
   )
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
+  const pendingSelectedStepRef = useRef<Readonly<{ id: string; revision: number }> | null>(null)
   const [editor, setEditor] = useState<InstructionEditorState | null>(null)
   const [editorError, setEditorError] = useState<InstructionEditorError | null>(null)
   const [notice, setNotice] = useState<InstructionTimelineNotice | null>(null)
@@ -276,12 +278,18 @@ export function InstructionTimelinePanel({
   useEffect(() => {
     if (!selectedStepId) return
     if (presentation.kind === 'ready' && presentation.stepsById.has(selectedStepId)) {
+      if (pendingSelectedStepRef.current?.id === selectedStepId) {
+        pendingSelectedStepRef.current = null
+      }
       return
     }
+    const pending = pendingSelectedStepRef.current
+    if (pending?.id === selectedStepId && (snapshot?.revision ?? -1) < pending.revision) return
+    pendingSelectedStepRef.current = null
     setSelectedStepId(null)
     setEditor(null)
     setEditorError(null)
-  }, [presentation, selectedStepId])
+  }, [presentation, selectedStepId, snapshot?.revision])
 
   useEffect(() => {
     if (!selectedStep) {
@@ -697,6 +705,49 @@ export function InstructionTimelinePanel({
     }
     setSelectedStepId(null)
     setNotice({ kind: 'deleted', title: selectedStep.title })
+  }
+
+  async function duplicateSelectedStep() {
+    if (
+      editingDisabled
+      || !snapshot
+      || !selectedStep
+      || steps.length >= MAX_INSTRUCTION_STEPS
+    ) return
+    cancelPlayback('revision_changed')
+    const previousIds = new Set(steps.map(({ id }) => id))
+    let duplicatedStepId: string | null = null
+    let duplicatedRevision: number | null = null
+    const succeeded = await runNativeEdit(async (projectId, revision, projectInstanceId) => {
+      const response = await duplicateInstructionStep(
+        projectId,
+        revision,
+        projectInstanceId,
+        selectedStep.id,
+      )
+      const next = createInstructionTimelinePresentation(
+        response.instruction_timeline,
+        response.fold_model_fingerprint,
+      )
+      if (next.kind === 'ready') {
+        const added = next.steps.filter(({ id }) => !previousIds.has(id))
+        if (added.length === 1) duplicatedStepId = added[0]?.id ?? null
+      }
+      duplicatedRevision = response.revision
+      return response
+    })
+    if (!succeeded) {
+      setNotice({ kind: 'add_failed' })
+      return
+    }
+    if (duplicatedStepId && duplicatedRevision !== null) {
+      pendingSelectedStepRef.current = {
+        id: duplicatedStepId,
+        revision: duplicatedRevision,
+      }
+      setSelectedStepId(duplicatedStepId)
+    }
+    setNotice({ kind: 'added', title: selectedStep.title })
   }
 
   async function moveSelectedStep(targetIndex: number) {
@@ -1158,6 +1209,13 @@ export function InstructionTimelinePanel({
                     </button>
                     <button
                       type="button"
+                      disabled={editingDisabled || steps.length >= MAX_INSTRUCTION_STEPS}
+                      onClick={() => void duplicateSelectedStep()}
+                    >
+                      {selectLocalizedText(locale, TEXT.duplicateAction)}
+                    </button>
+                    <button
+                      type="button"
                       className="danger"
                       disabled={editingDisabled}
                       onClick={() => void deleteSelectedStep()}
@@ -1305,6 +1363,7 @@ const TEXT = Object.freeze({
   moveLater: localized('次へ →', 'Later →'),
   moveFirst: localized('先頭へ', 'Move to first'),
   moveLast: localized('末尾へ', 'Move to last'),
+  duplicateAction: localized('手順を複製', 'Duplicate step'),
   deleteAction: localized('削除', 'Delete'),
   staleGuidance: localized(
     '展開図が記録時から変わりました。内容を確認し、現在の3D姿勢で更新すると再生できます。',

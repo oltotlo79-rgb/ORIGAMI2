@@ -4378,6 +4378,20 @@ export function addInstructionStep(
   })
 }
 
+export function duplicateInstructionStep(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  stepId: string,
+) {
+  return invoke<ProjectSnapshot>('duplicate_instruction_step', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    stepId,
+  })
+}
+
 export function appendNamedTechniqueInstructionSteps(
   expectedProjectId: string,
   expectedRevision: number,

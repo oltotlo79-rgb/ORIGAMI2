@@ -15,6 +15,7 @@ const commands = [
   ['replaceInstructionStepPose', 'replace_instruction_step_pose'],
   ['removeInstructionStep', 'remove_instruction_step'],
   ['moveInstructionStep', 'move_instruction_step'],
+  ['duplicateInstructionStep', 'duplicate_instruction_step'],
 ] as const
 
 test('all instruction commands keep camel-case invoke arguments and registered native handlers', () => {

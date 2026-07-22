@@ -288,6 +288,7 @@ fn recover_authenticated_single_file_v1(
 
 struct DiskSingleFileRecoveryFs {
     directory: PathBuf,
+    directory_identity: ProjectDirectoryIdentity,
     target: PathBuf,
     temp: PathBuf,
     backup: PathBuf,
@@ -303,6 +304,72 @@ impl DiskSingleFileRecoveryFs {
             SingleFileRecoveryObject::Journal => &self.journal,
         }
     }
+
+    fn verify_directory_identity(&self) -> Result<(), ()> {
+        (project_directory_identity(&self.directory)? == self.directory_identity)
+            .then_some(())
+            .ok_or(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProjectDirectoryIdentity(u64, u64);
+
+#[cfg(unix)]
+fn project_directory_identity(path: &Path) -> Result<ProjectDirectoryIdentity, ()> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
+    let metadata = options
+        .open(path)
+        .map_err(|_| ())?
+        .metadata()
+        .map_err(|_| ())?;
+    if !metadata.file_type().is_dir() {
+        return Err(());
+    }
+    Ok(ProjectDirectoryIdentity(metadata.dev(), metadata.ino()))
+}
+
+#[cfg(target_os = "windows")]
+fn project_directory_identity(path: &Path) -> Result<ProjectDirectoryIdentity, ()> {
+    use std::{mem::MaybeUninit, os::windows::io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ())?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(());
+    }
+    let mut options = OpenOptions::new();
+    options
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
+    let directory = options.open(path).map_err(|_| ())?;
+    let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // SAFETY: the output storage and directory handle are valid for the call.
+    if unsafe {
+        GetFileInformationByHandle(directory.as_raw_handle() as _, information.as_mut_ptr())
+    } == 0
+    {
+        return Err(());
+    }
+    // SAFETY: success initialized the structure.
+    let information = unsafe { information.assume_init() };
+    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(());
+    }
+    let index =
+        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
+    Ok(ProjectDirectoryIdentity(
+        u64::from(information.dwVolumeSerialNumber),
+        index,
+    ))
 }
 
 #[cfg(unix)]
@@ -349,6 +416,7 @@ fn recovery_private_object_is_exclusive(path: &Path) -> Result<bool, ()> {
 
 impl SingleFileRecoveryFs for DiskSingleFileRecoveryFs {
     fn object_sha256(&self, object: SingleFileRecoveryObject) -> Result<Option<String>, ()> {
+        self.verify_directory_identity()?;
         let path = self.path(object);
         let metadata = match std::fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
@@ -391,6 +459,7 @@ impl SingleFileRecoveryFs for DiskSingleFileRecoveryFs {
         from: SingleFileRecoveryObject,
         to: SingleFileRecoveryObject,
     ) -> Result<(), ()> {
+        self.verify_directory_identity()?;
         if std::fs::symlink_metadata(self.path(to)).is_ok() {
             return Err(());
         }
@@ -398,6 +467,7 @@ impl SingleFileRecoveryFs for DiskSingleFileRecoveryFs {
     }
 
     fn remove_object(&mut self, object: SingleFileRecoveryObject) -> Result<(), ()> {
+        self.verify_directory_identity()?;
         let path = self.path(object);
         match std::fs::symlink_metadata(path) {
             Ok(metadata)
@@ -416,6 +486,7 @@ impl SingleFileRecoveryFs for DiskSingleFileRecoveryFs {
     }
 
     fn sync_directory(&mut self) -> Result<(), ()> {
+        self.verify_directory_identity()?;
         sync_project_directory(&self.directory).map_err(|_| ())
     }
 }
@@ -476,11 +547,13 @@ fn recover_single_file_journal_for_target_inner(
     let project_id = expected_project_id.unwrap_or(untrusted.payload.project_id);
     let payload = decode_single_file_journal_v1(&bytes, project_id, &fingerprint)?;
     let directory = containing_directory(target).ok_or(())?.to_path_buf();
+    let directory_identity = project_directory_identity(&directory)?;
     let mut fs = DiskSingleFileRecoveryFs {
         temp: directory.join(&payload.temp_object_id),
         backup: directory.join(&payload.backup_object_id),
         journal: journal_path,
         target: target.to_path_buf(),
+        directory_identity,
         directory,
     };
     recover_authenticated_single_file_v1(&mut fs, &payload)
@@ -491,6 +564,8 @@ fn persist_single_file_journal_phase(
     payload: &SingleFileJournalPayloadV1,
     create_new: bool,
 ) -> Result<PathBuf, ()> {
+    let directory = containing_directory(target).ok_or(())?;
+    let directory_identity = project_directory_identity(directory)?;
     let journal = journal_path_for_target(target, &payload.target_path_sha256)?;
     if !create_new {
         let metadata = std::fs::symlink_metadata(&journal).map_err(|_| ())?;
@@ -510,6 +585,9 @@ fn persist_single_file_journal_phase(
     };
     let mut write_path_created = false;
     let write_result = (|| {
+        if project_directory_identity(directory)? != directory_identity {
+            return Err(());
+        }
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         let mut file = options.open(&write_path).map_err(|_| ())?;
@@ -518,11 +596,20 @@ fn persist_single_file_journal_phase(
         file.sync_all().map_err(|_| ())?;
         drop(file);
         if !create_new {
+            if project_directory_identity(directory)? != directory_identity {
+                return Err(());
+            }
             std::fs::rename(&write_path, &journal).map_err(|_| ())?;
         }
-        sync_project_directory(containing_directory(target).ok_or(())?).map_err(|_| ())
+        if project_directory_identity(directory)? != directory_identity {
+            return Err(());
+        }
+        sync_project_directory(directory).map_err(|_| ())
     })();
-    if write_result.is_err() && write_path_created {
+    if write_result.is_err()
+        && write_path_created
+        && project_directory_identity(directory).is_ok_and(|current| current == directory_identity)
+    {
         let _ = std::fs::remove_file(&write_path);
     }
     write_result?;
@@ -1178,6 +1265,8 @@ where
     let backup_name = format!(".origami2-backup-{transaction_id}");
     let parent =
         containing_directory(destination).ok_or_else(|| std::io::Error::other("missing parent"))?;
+    let directory_identity = project_directory_identity(parent)
+        .map_err(|()| std::io::Error::other("save directory identity failed"))?;
     let backup = parent.join(&backup_name);
     let old_sha256 = hash_regular_file_no_follow(destination)?;
     let temp_sha256 = hash_regular_file_no_follow(&staged.path)?;
@@ -1198,11 +1287,17 @@ where
     staged.close_for_journal_commit();
 
     let result = (|| {
+        if project_directory_identity(parent).ok() != Some(directory_identity) {
+            return Err(std::io::Error::other("save directory changed"));
+        }
         std::fs::rename(destination, &backup)?;
         sync_directory()?;
         payload.phase = SingleFileJournalPhaseV1::OldMoved;
         persist_single_file_journal_phase(destination, &payload, false)
             .map_err(|()| std::io::Error::other("old-moved journal failed"))?;
+        if project_directory_identity(parent).ok() != Some(directory_identity) {
+            return Err(std::io::Error::other("save directory changed"));
+        }
         std::fs::rename(&staged.path, destination)?;
         sync_directory()?;
         payload.phase = SingleFileJournalPhaseV1::NewPublished;
@@ -1283,6 +1378,9 @@ fn commit_windows_staged_project_file_with_journal(
     destination: &Path,
     project_id: ProjectId,
 ) -> Result<(), String> {
+    let parent = containing_directory(destination).ok_or_else(|| "missing parent".to_owned())?;
+    let directory_identity = project_directory_identity(parent)
+        .map_err(|()| "failed to identify the save directory".to_owned())?;
     let fingerprint = target_path_fingerprint(destination)
         .map_err(|()| "failed to fingerprint the save target".to_owned())?;
     let temp_name = staged
@@ -1312,6 +1410,9 @@ fn commit_windows_staged_project_file_with_journal(
     };
     persist_single_file_journal_phase(destination, &payload, true)
         .map_err(|()| "failed to prepare the save journal".to_owned())?;
+    if project_directory_identity(parent).ok() != Some(directory_identity) {
+        return Err("the save directory changed before commit".to_owned());
+    }
     if let Err(error) = super::rename_windows_staged_file_with_policy(
         staged.file(),
         destination,
@@ -1479,11 +1580,12 @@ mod staged_payload_adapter_tests {
     };
 
     use super::{
-        DialogSaveDestination, Ori2ProjectArchive, ProjectDocument, SINGLE_FILE_JOURNAL_SCHEMA_V1,
-        SingleFileJournalPayloadV1, SingleFileJournalPhaseV1, SingleFileRecoveryFs,
-        SingleFileRecoveryObject, acquire_project_file_operation, decode_single_file_journal_v1,
-        encode_single_file_journal_v1, journal_path_for_target, load_project_archive_from_path,
-        persist_project_archive_to_destination, recover_authenticated_single_file_v1,
+        DialogSaveDestination, DiskSingleFileRecoveryFs, Ori2ProjectArchive, ProjectDocument,
+        SINGLE_FILE_JOURNAL_SCHEMA_V1, SingleFileJournalPayloadV1, SingleFileJournalPhaseV1,
+        SingleFileRecoveryFs, SingleFileRecoveryObject, acquire_project_file_operation,
+        decode_single_file_journal_v1, encode_single_file_journal_v1, journal_path_for_target,
+        load_project_archive_from_path, persist_project_archive_to_destination,
+        project_directory_identity, recover_authenticated_single_file_v1,
         recover_single_file_journal_for_target, sha256_hex_bytes, target_path_fingerprint,
         write_complete_staged_payload, write_project_archive_ori2,
     };
@@ -1781,6 +1883,65 @@ mod staged_payload_adapter_tests {
                 .expect("recovery is idempotent after cleanup");
             fs::remove_dir_all(directory).expect("cleanup test directory");
         }
+    }
+
+    #[test]
+    fn disk_adapter_rejects_parent_directory_swap_before_rename_and_cleanup() {
+        let root = journal_test_directory("directory-swap");
+        let active = root.join("active");
+        let retired = root.join("retired");
+        fs::create_dir(&active).expect("active directory");
+        let target = active.join("project.ori2");
+        let temp = active.join("temp-transaction");
+        let backup = active.join("backup-transaction");
+        let journal = active.join("journal.json");
+        fs::write(&temp, b"owned staged bytes").expect("owned temp");
+        fs::write(&journal, b"owned journal bytes").expect("owned journal");
+        let identity = project_directory_identity(&active).expect("directory identity");
+        let mut adapter = DiskSingleFileRecoveryFs {
+            directory: active.clone(),
+            directory_identity: identity,
+            target: target.clone(),
+            temp: temp.clone(),
+            backup,
+            journal: journal.clone(),
+        };
+
+        fs::rename(&active, &retired).expect("retire verified directory");
+        fs::create_dir(&active).expect("replacement directory");
+        let external_target = active.join("project.ori2");
+        let external_temp = active.join("temp-transaction");
+        let sentinel = b"external sentinel";
+        fs::write(&external_target, sentinel).expect("external target");
+        fs::write(&external_temp, sentinel).expect("external temp");
+
+        assert!(
+            adapter
+                .rename_object(
+                    SingleFileRecoveryObject::Temp,
+                    SingleFileRecoveryObject::Target,
+                )
+                .is_err()
+        );
+        assert!(
+            adapter
+                .remove_object(SingleFileRecoveryObject::Journal)
+                .is_err()
+        );
+        assert_eq!(
+            fs::read(&external_target).expect("target unchanged"),
+            sentinel
+        );
+        assert_eq!(fs::read(&external_temp).expect("temp unchanged"), sentinel);
+        assert_eq!(
+            fs::read(retired.join("temp-transaction")).expect("owned temp retained"),
+            b"owned staged bytes"
+        );
+        assert_eq!(
+            fs::read(retired.join("journal.json")).expect("owned journal retained"),
+            b"owned journal bytes"
+        );
+        fs::remove_dir_all(root).expect("cleanup test directory");
     }
 
     #[test]

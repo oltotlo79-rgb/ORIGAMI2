@@ -72,6 +72,22 @@ const snapshot = {
   revision: 3,
 } as ProjectSnapshot
 
+function snapshotWithCycleProof(proof: unknown): ProjectSnapshot {
+  return {
+    ...snapshot,
+    instruction_timeline: {
+      steps: [{
+        id: token, title: 'fold', description: '', caution: '', duration_ms: 1,
+        pose: { model: 'absolute_hinge_angles_v1', source_model_fingerprint: 'a'.repeat(64), fixed_face: null, hinge_angles: [] },
+        visual: {
+          camera: null, arrows: [], focus_points: [], hand_guides: [],
+          cycle_layer_order_proof_v1: proof,
+        },
+      }],
+    },
+  } as ProjectSnapshot
+}
+
 const ready = {
   guardModelId: 'native_flat_stacked_fold_read_guard_v1',
   proposalModelId: 'native_linear_stacked_fold_read_proposal_v1',
@@ -1163,6 +1179,67 @@ describe('StackedFoldPanel', () => {
     const viewer = screen.getByTestId('persisted-cycle-layer-order-viewer')
     expect(viewer.textContent).toContain('Transitions: 5')
     expect(viewer.textContent).toContain('ab'.repeat(32))
+    expect(screen.getByRole('list', { name: 'Canonical proof pairs (lower to upper)' }).textContent)
+      .toContain(`${project} → ${token}`)
+    expect(viewer.textContent).toContain('read-only view of the proof persisted')
+  })
+
+  it('bounds the applied viewer, admits derived v5 faces, and selects either endpoint', () => {
+    const pairs = Array.from({ length: 201 }, (_, index) => ({
+      lower_face: `00000000-0000-5000-8000-${index.toString(16).padStart(12, '0')}`,
+      upper_face: 'ffffffff-ffff-5fff-8fff-ffffffffffff',
+    }))
+    render(<StackedFoldPanel locale="en" snapshot={snapshotWithCycleProof({
+      version: 1, model_id: 'native_continuous_layer_transport_certificate_v1',
+      target_order_sha256: Array(32).fill(0xab), transition_count: 5, pairs,
+    })} selectedLine={null} disabled={false} refreshSnapshot={vi.fn()} onApplied={vi.fn()} />)
+    const list = screen.getByRole('list', { name: 'Canonical proof pairs (lower to upper)' })
+    expect(list.querySelectorAll('li')).toHaveLength(200)
+    expect(screen.getByText('Showing the first 200; 1 more are omitted.')).toBeTruthy()
+    const lower = screen.getByRole('button', { name: pairs[0].lower_face })
+    fireEvent.click(lower)
+    expect(lower.getAttribute('aria-pressed')).toBe('true')
+    const upper = screen.getAllByRole('button', { name: pairs[0].upper_face })[0]
+    fireEvent.click(upper)
+    expect(upper.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it.each([
+    ['non-array hash', { version: 1, model_id: 'native_continuous_layer_transport_certificate_v1', target_order_sha256: null, transition_count: 1, pairs: [] }],
+    ['unknown key', { version: 1, model_id: 'native_continuous_layer_transport_certificate_v1', target_order_sha256: Array(32).fill(1), transition_count: 1, pairs: [], extra: true }],
+    ['same face', { version: 1, model_id: 'native_continuous_layer_transport_certificate_v1', target_order_sha256: Array(32).fill(1), transition_count: 1, pairs: [{ lower_face: project, upper_face: project }] }],
+    ['duplicate pair', { version: 1, model_id: 'native_continuous_layer_transport_certificate_v1', target_order_sha256: Array(32).fill(1), transition_count: 1, pairs: [{ lower_face: project, upper_face: token }, { lower_face: project, upper_face: token }] }],
+    ['noncanonical order', { version: 1, model_id: 'native_continuous_layer_transport_certificate_v1', target_order_sha256: Array(32).fill(1), transition_count: 1, pairs: [{ lower_face: token, upper_face: project }, { lower_face: project, upper_face: token }] }],
+    ['oversize', { version: 1, model_id: 'native_continuous_layer_transport_certificate_v1', target_order_sha256: Array(32).fill(1), transition_count: 1, pairs: Array.from({ length: 50_001 }, (_, index) => ({ lower_face: `00000000-0000-5000-8000-${index.toString(16).padStart(12, '0')}`, upper_face: 'ffffffff-ffff-5fff-8fff-ffffffffffff' })) }],
+  ])('fails closed for a tampered applied layer proof: %s', (_name, proof) => {
+    render(<StackedFoldPanel locale="en" snapshot={snapshotWithCycleProof(proof)}
+      selectedLine={null} disabled={false} refreshSnapshot={vi.fn()} onApplied={vi.fn()} />)
+    expect(screen.queryByTestId('persisted-cycle-layer-order-viewer')).toBeNull()
+  })
+
+  it('does not fall back to an older proof when the latest persisted proof is invalid', () => {
+    const valid = { version: 1, model_id: 'native_continuous_layer_transport_certificate_v1',
+      target_order_sha256: Array(32).fill(1), transition_count: 1,
+      pairs: [{ lower_face: project, upper_face: token }] }
+    const withTwoSteps = structuredClone(snapshotWithCycleProof(valid)) as any
+    withTwoSteps.instruction_timeline.steps.push({
+      ...withTwoSteps.instruction_timeline.steps[0], id: project,
+      visual: { ...withTwoSteps.instruction_timeline.steps[0].visual,
+        cycle_layer_order_proof_v1: { ...valid, pairs: null } },
+    })
+    render(<StackedFoldPanel locale="en" snapshot={withTwoSteps}
+      selectedLine={null} disabled={false} refreshSnapshot={vi.fn()} onApplied={vi.fn()} />)
+    expect(screen.queryByTestId('persisted-cycle-layer-order-viewer')).toBeNull()
+  })
+
+  it('labels the persisted read-only viewer in Japanese', () => {
+    render(<StackedFoldPanel locale="ja" snapshot={snapshotWithCycleProof({
+      version: 1, model_id: 'native_continuous_layer_transport_certificate_v1',
+      target_order_sha256: Array(32).fill(1), transition_count: 1,
+      pairs: [{ lower_face: project, upper_face: token }],
+    })} selectedLine={null} disabled={false} refreshSnapshot={vi.fn()} onApplied={vi.fn()} />)
+    expect(screen.getByRole('region', { name: '適用済み層順ビューアー' })).toBeTruthy()
+    expect(screen.getByText('これは適用済みタイムライン手順に保存された証明の読み取り専用表示です。')).toBeTruthy()
   })
 
   it('blocks duplicate apply and cancels active work with listener cleanup on unmount', async () => {

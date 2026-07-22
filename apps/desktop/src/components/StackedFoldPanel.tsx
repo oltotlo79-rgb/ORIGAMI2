@@ -62,6 +62,9 @@ type Props = Readonly<{
 }>
 
 const MAX_CYCLE_SCHEDULE_JSON_BYTES = 65_536
+const MAX_PERSISTED_LAYER_ORDER_PAIRS = 50_000
+const MAX_RENDERED_PERSISTED_LAYER_ORDER_PAIRS = 200
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 type View =
   | Readonly<{ kind: 'idle' }>
@@ -191,14 +194,29 @@ export function StackedFoldPanel({
   const persistedCycleLayerProof = useMemo(() => {
     for (const step of [...(snapshot.instruction_timeline?.steps ?? [])].reverse()) {
       const proof = step.visual.cycle_layer_order_proof_v1
+      if (proof === undefined || proof === null) continue
       if (proof?.version === 1 &&
         proof.model_id === 'native_continuous_layer_transport_certificate_v1' &&
+        Object.keys(proof).sort().join(',') ===
+          'model_id,pairs,target_order_sha256,transition_count,version' &&
+        Array.isArray(proof.target_order_sha256) &&
         proof.target_order_sha256.length === 32 &&
         proof.target_order_sha256.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255) &&
-        Number.isSafeInteger(proof.transition_count) && proof.transition_count > 0) return proof
+        Number.isSafeInteger(proof.transition_count) && proof.transition_count > 0 &&
+        Array.isArray(proof.pairs) && proof.pairs.length <= MAX_PERSISTED_LAYER_ORDER_PAIRS &&
+        proof.pairs.every((pair, index, pairs) => typeof pair === 'object' && pair !== null &&
+          Object.keys(pair).sort().join(',') === 'lower_face,upper_face' &&
+          CANONICAL_UUID.test(pair.lower_face) && CANONICAL_UUID.test(pair.upper_face) &&
+          pair.lower_face !== pair.upper_face &&
+          (index === 0 || `${pairs[index - 1].lower_face}:${pairs[index - 1].upper_face}` <
+            `${pair.lower_face}:${pair.upper_face}`))) return proof
+      return null
     }
     return null
   }, [snapshot.instruction_timeline?.steps])
+  const persistedLayerPairs = persistedCycleLayerProof?.pairs.slice(
+    0, MAX_RENDERED_PERSISTED_LAYER_ORDER_PAIRS,
+  ) ?? []
   const basicFoldTimelineStep = basicFoldTimelinePreview
     ?.timeline.steps[basicFoldTimelineStepIndex] ?? null
   const savedCompilerProvenance = useMemo(() => {
@@ -1128,13 +1146,46 @@ export function StackedFoldPanel({
         </section>
       )}
       {!cyclePosePreview && persistedCycleLayerProof && (
-        <div role="status" data-testid="persisted-cycle-layer-order-viewer" className="stacked-fold-proof">
-          <h4>Applied layer-order proof</h4>
-          <p>Transitions: {persistedCycleLayerProof.transition_count}</p>
-          <p>Pairs: {persistedCycleLayerProof.pairs.length}</p>
-          <p>Proof hash: {persistedCycleLayerProof.target_order_sha256
+        <section
+          aria-label={t('適用済み層順ビューアー', 'Applied layer-order viewer')}
+          data-testid="persisted-cycle-layer-order-viewer"
+          className="stacked-fold-proof"
+        >
+          <h4>{t('適用済み層順証明', 'Applied layer-order proof')}</h4>
+          <p>{t('遷移数', 'Transitions')}: {persistedCycleLayerProof.transition_count}</p>
+          <p>{t('層順ペア数', 'Pairs')}: {persistedCycleLayerProof.pairs.length}</p>
+          <p>{t('証明ハッシュ', 'Proof hash')}: {persistedCycleLayerProof.target_order_sha256
             .map((byte) => byte.toString(16).padStart(2, '0')).join('')}</p>
-        </div>
+          <ol aria-label={t('正規順の証明ペア（下層から上層）', 'Canonical proof pairs (lower to upper)')}>
+            {persistedLayerPairs.map((pair) => (
+              <li key={`${pair.lower_face}:${pair.upper_face}`}>
+                <button type="button" aria-pressed={selectedFace === pair.lower_face}
+                  onClick={() => setSelectedFace(pair.lower_face)}>
+                  {pair.lower_face}
+                </button>
+                {' → '}
+                <button type="button" aria-pressed={selectedFace === pair.upper_face}
+                  onClick={() => setSelectedFace(pair.upper_face)}>
+                  {pair.upper_face}
+                </button>
+              </li>
+            ))}
+          </ol>
+          {persistedCycleLayerProof.pairs.length > persistedLayerPairs.length && (
+            <p>{t(
+              `先頭${persistedLayerPairs.length}件を表示し、残り${persistedCycleLayerProof.pairs.length - persistedLayerPairs.length}件を省略しています。`,
+              `Showing the first ${persistedLayerPairs.length}; ${persistedCycleLayerProof.pairs.length - persistedLayerPairs.length} more are omitted.`,
+            )}</p>
+          )}
+          <p>{t(
+            'これは適用済みタイムライン手順に保存された証明の読み取り専用表示です。',
+            'This is a read-only view of the proof persisted by the applied timeline step.',
+          )}</p>
+          <p>{t(
+            'この表示は保存された証明だけを示します。一般の多ブロック層搬送は保証しません。',
+            'This view shows only the persisted proof; it does not prove general multi-block layer transport.',
+          )}</p>
+        </section>
       )}
       {view.kind === 'failed' && (
         <p role="alert">

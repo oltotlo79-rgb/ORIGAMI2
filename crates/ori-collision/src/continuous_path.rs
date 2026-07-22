@@ -4087,6 +4087,66 @@ mod tests {
             [0x61; 32],
             [0x71; 32]
         ));
+        let substituted_positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+            &first_geometry,
+            &first_audit,
+            articulation,
+            &first_schedule,
+            &first_closure,
+            0.1,
+            32,
+        )
+        .unwrap();
+        let substituted_layer = make_layer(
+            &first_geometry,
+            &first_audit,
+            &first_source,
+            &first_schedule,
+            &first_closure,
+            &substituted_positive,
+        );
+        let substitution_parent = crate::issue_blockwise_closure_authority_v1(
+            [
+                crate::BlockwiseClosureInputV1 {
+                    geometry: &first_geometry,
+                    audit: &first_audit,
+                    schedule: &first_schedule,
+                    closure: &first_closure,
+                },
+                crate::BlockwiseClosureInputV1 {
+                    geometry: &second_geometry,
+                    audit: &second_audit,
+                    schedule: &second_schedule,
+                    closure: &second_closure,
+                },
+            ],
+            articulation,
+            0.1,
+            [0x61; 32],
+        )
+        .unwrap();
+        assert!(
+            crate::issue_blockwise_positive_layer_authority_v1(
+                substitution_parent,
+                [
+                    crate::BlockwisePositiveLayerInputV1 {
+                        source: &first_source,
+                        positive: substituted_positive.clone(),
+                        layer: substituted_layer.clone(),
+                    },
+                    crate::BlockwisePositiveLayerInputV1 {
+                        source: &second_source,
+                        positive: substituted_positive,
+                        layer: substituted_layer,
+                    },
+                ],
+                articulation,
+                0.1,
+                [0x61; 32],
+                [0x71; 32],
+            )
+            .is_none()
+        );
         assert!(
             crate::issue_blockwise_closure_authority_v1(
                 [

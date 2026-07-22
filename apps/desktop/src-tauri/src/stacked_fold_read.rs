@@ -5545,7 +5545,7 @@ mod tests {
             revision
         );
 
-        let preview = propose_current_cycle_pose_inner_with_layers(
+        let aba_preview = propose_current_cycle_pose_inner_with_layers(
             None,
             &state,
             Some(&layer_state),
@@ -5553,6 +5553,37 @@ mod tests {
             request(revision, schedule.clone()),
         )
         .expect("17-face blockwise fallback preview");
+        {
+            let project = super::super::lock_project(&state).unwrap();
+            super::super::global_flat_foldability::tests::install_possible_layer_order(
+                &layer_state,
+                &project,
+            );
+        }
+        assert!(
+            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                &state,
+                &layer_state,
+                &transactions,
+                aba_preview.transaction_token,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            super::super::lock_project(&state)
+                .unwrap()
+                .editor
+                .revision(),
+            revision
+        );
+        let preview = propose_current_cycle_pose_inner_with_layers(
+            None,
+            &state,
+            Some(&layer_state),
+            &transactions,
+            request(revision, schedule.clone()),
+        )
+        .expect("replacement blockwise fallback preview");
         assert_eq!(
             preview.continuous_layer_transport_model_id,
             Some(ori_collision::BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1)

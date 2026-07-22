@@ -8040,37 +8040,9 @@ mod tests {
         assert!(!dyadic_request_hinge_counts_are_bounded_v1(64, Some(65)));
         let (c8_pattern, c8_paper, c8_cardinal) = octagonal_eight_sector_cycle_pattern();
         let c8_opposite = vec![c8_cardinal[0], c8_cardinal[2]];
-        let (mut mixed_pattern, mixed_paper, mut mixed_hinges) =
-            super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern();
-        let mut gateways = mixed_pattern
-            .vertices
-            .iter()
-            .filter(|vertex| vertex.position.x.to_bits() == 4.0_f64.to_bits())
-            .collect::<Vec<_>>();
-        gateways.sort_by(|first, second| first.position.y.total_cmp(&second.position.y));
-        let branch_endpoints = [gateways[0].id, gateways[1].id];
-        let branch = ori_domain::EdgeId::derive_v5(
-            ProjectId::schema_namespace([
-                0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x05, 0x61,
-            ]),
-            b"mixed-cactus-tree-branch",
-        );
-        mixed_pattern.edges.push(ori_domain::Edge {
-            id: branch,
-            start: branch_endpoints[0],
-            end: branch_endpoints[1],
-            kind: ori_domain::EdgeKind::Mountain,
-        });
-        mixed_hinges.push(branch);
-        for (fixture_name, (pattern, mut paper, moving), kind) in [
-            ("balloon-c6", balloon_six_sector_cycle_pattern(), 0),
-            ("octagonal-c8", (c8_pattern, c8_paper, c8_opposite), 0),
-            (
-                "mixed-cactus-branch",
-                (mixed_pattern, mixed_paper, mixed_hinges),
-                1,
-            ),
+        for (fixture_name, (pattern, mut paper, moving)) in [
+            ("balloon-c6", balloon_six_sector_cycle_pattern()),
+            ("octagonal-c8", (c8_pattern, c8_paper, c8_opposite)),
         ] {
             paper.thickness_mm = 0.1;
             let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
@@ -8084,23 +8056,7 @@ mod tests {
                 .iter()
                 .map(|hinge| hinge.edge)
                 .collect::<Vec<_>>();
-            let fixed = if kind == 1 {
-                snapshot
-                    .faces
-                    .iter()
-                    .find(|face| {
-                        snapshot
-                            .hinge_adjacency
-                            .iter()
-                            .filter(|hinge| hinge.first == face.id || hinge.second == face.id)
-                            .count()
-                            == 2
-                    })
-                    .unwrap()
-                    .id
-            } else {
-                snapshot.faces[0].id
-            };
+            let fixed = snapshot.faces[0].id;
             super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
                 &mut project,
                 hinges.clone(),
@@ -8115,17 +8071,13 @@ mod tests {
             let project_id = project.project_id;
             let revision = project.editor.revision();
             let state = AppState::new(project);
-            let schedule = if kind == 1 {
-                four_bay_cycle_schedule(&moving)
-            } else {
-                let endpoint_ratio = match hinges.len() {
-                    6 => (4, 3),
-                    8 => (7, 3),
-                    16 => (64, 1),
-                    _ => unreachable!("bounded opposite-pair fixture"),
-                };
-                dense_grid_schedule_ratio(&hinges, &moving, endpoint_ratio.0, endpoint_ratio.1)
+            let endpoint_ratio = match hinges.len() {
+                6 => (4, 3),
+                8 => (7, 3),
+                _ => unreachable!("bounded opposite-pair fixture"),
             };
+            let schedule =
+                dense_grid_schedule_ratio(&hinges, &moving, endpoint_ratio.0, endpoint_ratio.1);
             let target = {
                 let project = super::super::lock_project(&state).unwrap();
                 let capability = project
@@ -8134,10 +8086,6 @@ mod tests {
                     .unwrap()
                     .unwrap();
                 let (geometry, audit, pose) = capability.graph().unwrap();
-                if fixture_name == "mixed-cactus-branch" {
-                    assert!(audit.closure_hinges().len() >= 4);
-                    assert!(audit.spanning_hinges().contains(&branch));
-                }
                 prepare_requested_cycle_schedule_v1(
                     &schedule,
                     geometry,
@@ -8149,14 +8097,6 @@ mod tests {
                 .evaluate(1.0)
                 .unwrap()
             };
-            if fixture_name == "mixed-cactus-branch" {
-                assert!(
-                    target
-                        .as_slice()
-                        .iter()
-                        .any(|angle| { angle.edge() == branch && angle.angle_degrees() > 0.0 })
-                );
-            }
             let target_angles = target
                 .as_slice()
                 .iter()

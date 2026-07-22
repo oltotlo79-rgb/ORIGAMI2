@@ -153,6 +153,18 @@ test('GLB-backed candidates expose read-only quantized shape comparison', () => 
   assert.match(app, /the crease candidate has no surface mesh/)
 })
 
+test('disconnected GLB comparison is component-aware bounded and read-only', () => {
+  assert.match(native, /fn component_shape_comparison_v1/u)
+  assert.match(native, /!\(2\.\.=8\)\.contains\(&reference\.component_count\)/u)
+  assert.match(native, /work > 64/u)
+  assert.match(native, /extent_weight: 45,\s*branch_weight: 35,\s*bridge_weight: 20/u)
+  assert.match(native, /component_aware_quantized_shape_v1/u)
+  assert.match(client, /componentComparison\.work_units\) > 64/u)
+  assert.match(client, /componentComparison\.extent_weight !== 45/u)
+  assert.match(app, /Component-aware shape score breakdown/u)
+  assert.match(app, /bounded work/u)
+})
+
 test('AUT-101 apply rebinds candidate authority natively and requires confirmation', () => {
   assert.match(native, /fn apply_beginner_generated_plan/)
   assert.match(native, /expected_profile: ori_domain::BeginnerDesignProfileV1/)

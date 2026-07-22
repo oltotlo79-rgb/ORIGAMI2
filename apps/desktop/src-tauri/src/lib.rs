@@ -1756,12 +1756,147 @@ struct BeginnerGeneratedPlanAssessment {
     reason: &'static str,
     shape_approximation_score: Option<u8>,
     shape_difference_reason: Option<&'static str>,
+    component_shape_comparison: Option<BeginnerComponentShapeComparisonV1>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct BeginnerComponentShapeComparisonV1 {
+    component_count: u8,
+    matched_branch_count: u8,
+    work_units: u8,
+    extent_score: u8,
+    branch_score: u8,
+    bridge_score: u8,
+    extent_weight: u8,
+    branch_weight: u8,
+    bridge_weight: u8,
+}
+
+fn component_shape_comparison_v1(
+    plan: &ori_domain::BeginnerGeneratedPlanV1,
+    reference: &BeginnerReferenceModelSuggestionV1,
+) -> Option<BeginnerComponentShapeComparisonV1> {
+    if !(2..=8).contains(&reference.component_count)
+        || !reference.inferred_component_bridges
+        || reference.stick_bars.len() > 16
+        || plan.skeleton_segments.len() > 16
+    {
+        return None;
+    }
+    let length = |dx: i64, dy: i64, dz: i64| {
+        (dx.saturating_mul(dx)
+            .saturating_add(dy.saturating_mul(dy))
+            .saturating_add(dz.saturating_mul(dz)) as u64)
+            .isqrt()
+    };
+    let mut targets = reference
+        .stick_bars
+        .iter()
+        .map(|bar| {
+            length(
+                i64::from(bar.end_tenths_mm[0]) - i64::from(bar.start_tenths_mm[0]),
+                i64::from(bar.end_tenths_mm[1]) - i64::from(bar.start_tenths_mm[1]),
+                i64::from(bar.end_tenths_mm[2]) - i64::from(bar.start_tenths_mm[2]),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut branches = plan
+        .skeleton_segments
+        .iter()
+        .map(|bar| {
+            length(
+                i64::from(bar.end.x_tenths_mm) - i64::from(bar.start.x_tenths_mm),
+                i64::from(bar.end.y_tenths_mm) - i64::from(bar.start.y_tenths_mm),
+                0,
+            )
+        })
+        .collect::<Vec<_>>();
+    targets.sort_unstable_by(|a, b| b.cmp(a));
+    branches.sort_unstable_by(|a, b| b.cmp(a));
+    let branch_count = usize::from(reference.component_count).min(targets.len());
+    let targets = &targets[..branch_count];
+    if targets.is_empty() || branches.is_empty() {
+        return None;
+    }
+    let major = targets
+        .iter()
+        .chain(branches.iter())
+        .copied()
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let mut used = vec![false; branches.len()];
+    let mut error = 0_u64;
+    let mut matched = 0_u8;
+    let mut work = 0_u8;
+    for target in targets {
+        let mut best = None;
+        for (index, candidate) in branches.iter().enumerate() {
+            if used[index] {
+                continue;
+            }
+            work = work.checked_add(1)?;
+            if work > 64 {
+                return None;
+            }
+            let key = (target.abs_diff(*candidate), index);
+            if best.is_none_or(|(current, _)| key < current) {
+                best = Some((key, index));
+            }
+        }
+        if let Some((key, index)) = best {
+            used[index] = true;
+            error = error.saturating_add(key.0);
+            matched += 1;
+        }
+    }
+    let branch_score = 100_u64.saturating_sub(
+        error.saturating_mul(100) / major.saturating_mul(targets.len() as u64).max(1),
+    ) as u8;
+    let target_extent = reference
+        .principal_axis_extents_tenths_mm
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(1)
+        .max(1) as u64;
+    let candidate_extent = branches.iter().copied().max().unwrap_or(0);
+    let extent_score = 100_u64.saturating_sub(
+        target_extent.abs_diff(candidate_extent).saturating_mul(100)
+            / target_extent.max(candidate_extent).max(1),
+    ) as u8;
+    let target_bridges = u64::from(reference.component_count - 1);
+    let candidate_bridges = branches.len().saturating_sub(branch_count) as u64;
+    let bridge_score = 100_u64.saturating_sub(
+        target_bridges
+            .abs_diff(candidate_bridges)
+            .saturating_mul(100)
+            / target_bridges.max(candidate_bridges).max(1),
+    ) as u8;
+    Some(BeginnerComponentShapeComparisonV1 {
+        component_count: reference.component_count,
+        matched_branch_count: matched,
+        work_units: work,
+        extent_score,
+        branch_score,
+        bridge_score,
+        extent_weight: 45,
+        branch_weight: 35,
+        bridge_weight: 20,
+    })
 }
 
 fn compare_plan_to_reference_model_v1(
     plan: &ori_domain::BeginnerGeneratedPlanV1,
     reference: &BeginnerReferenceModelSuggestionV1,
 ) -> (u8, &'static str) {
+    if let Some(parts) = component_shape_comparison_v1(plan, reference) {
+        let score = (u16::from(parts.extent_score) * u16::from(parts.extent_weight)
+            + u16::from(parts.branch_score) * u16::from(parts.branch_weight)
+            + u16::from(parts.bridge_score) * u16::from(parts.bridge_weight))
+            / 100;
+        return (score as u8, "component_aware_quantized_shape_v1");
+    }
     if let Some(score) = bounded_folded_pose_landmark_score_v1(plan, reference) {
         return (score, "bounded_folded_pose_landmarks_v1");
     }
@@ -2310,6 +2445,8 @@ fn assess_beginner_generated_plan_with_deadline(
     let (mut shape_approximation_score, mut shape_difference_reason) = reference
         .map(|reference| compare_plan_to_reference_model_v1(plan, reference))
         .map_or((None, None), |(score, reason)| (Some(score), Some(reason)));
+    let component_shape_comparison =
+        reference.and_then(|reference| component_shape_comparison_v1(plan, reference));
     let expected_candidate_edge_id = plan
         .crease_pattern
         .edges
@@ -2325,10 +2462,13 @@ fn assess_beginner_generated_plan_with_deadline(
             reason,
             shape_approximation_score,
             shape_difference_reason,
+            component_shape_comparison,
         };
     }
-    if reference
-        .is_some_and(|reference| bounded_folded_pose_landmark_score_v1(plan, reference).is_none())
+    if component_shape_comparison.is_none()
+        && reference.is_some_and(|reference| {
+            bounded_folded_pose_landmark_score_v1(plan, reference).is_none()
+        })
     {
         return BeginnerGeneratedPlanAssessment {
             kind: plan.kind,
@@ -2338,6 +2478,7 @@ fn assess_beginner_generated_plan_with_deadline(
             reason: "folded_pose_simulation_failed",
             shape_approximation_score,
             shape_difference_reason: Some("bounded_folded_pose_landmarks_v1"),
+            component_shape_comparison,
         };
     }
     let mut candidate_pattern = current_pattern.clone();
@@ -2356,6 +2497,7 @@ fn assess_beginner_generated_plan_with_deadline(
                     reason: "geometry_invalid",
                     shape_approximation_score,
                     shape_difference_reason,
+                    component_shape_comparison,
                 };
             }
         } else {
@@ -2378,6 +2520,7 @@ fn assess_beginner_generated_plan_with_deadline(
             reason: "geometry_invalid",
             shape_approximation_score,
             shape_difference_reason,
+            component_shape_comparison,
         };
     }
     candidate_pattern
@@ -2394,6 +2537,7 @@ fn assess_beginner_generated_plan_with_deadline(
             reason: "geometry_invalid",
             shape_approximation_score,
             shape_difference_reason,
+            component_shape_comparison,
         };
     }
     const MAX_CANDIDATE_GLOBAL_RECORDS: usize = 2_048;
@@ -2422,6 +2566,7 @@ fn assess_beginner_generated_plan_with_deadline(
                 reason: "native_fold_path_certified",
                 shape_approximation_score,
                 shape_difference_reason,
+                component_shape_comparison,
             };
         }
     }
@@ -2479,14 +2624,16 @@ fn assess_beginner_generated_plan_with_deadline(
                                 proof_scope = "sufficient";
                                 reason = "global_flat_foldability_proven";
                             }
-                            if let (Some(reference), Some(surface)) = (
-                                reference,
-                                ori_core::extract_certified_flat_surface_v1(
-                                    &candidate_pattern,
-                                    snapshot,
-                                    &layer_order,
-                                ),
-                            ) {
+                            if component_shape_comparison.is_none()
+                                && let (Some(reference), Some(surface)) = (
+                                    reference,
+                                    ori_core::extract_certified_flat_surface_v1(
+                                        &candidate_pattern,
+                                        snapshot,
+                                        &layer_order,
+                                    ),
+                                )
+                            {
                                 shape_approximation_score = Some(
                                     compare_flat_surface_to_reference_model_v1(&surface, reference),
                                 );
@@ -2540,6 +2687,7 @@ fn assess_beginner_generated_plan_with_deadline(
         reason,
         shape_approximation_score,
         shape_difference_reason,
+        component_shape_comparison,
     }
 }
 

@@ -840,7 +840,18 @@ export type BeginnerGeneratedPlanAssessmentV1 = {
   proof_scope: 'necessary' | 'sufficient' | 'indeterminate'
   apply_allowed: boolean
   shape_approximation_score: number | null
-  shape_difference_reason: 'crease_preview_has_no_surface_mesh' | 'certified_flat_surface_v1' | null
+  shape_difference_reason: 'crease_preview_has_no_surface_mesh' | 'certified_flat_surface_v1' | 'component_aware_quantized_shape_v1' | null
+  component_shape_comparison: {
+    component_count: number
+    matched_branch_count: number
+    work_units: number
+    extent_score: number
+    branch_score: number
+    bridge_score: number
+    extent_weight: 45
+    branch_weight: 35
+    bridge_weight: 20
+  } | null
   reason:
     | 'geometry_invalid'
     | 'folded_pose_simulation_failed'
@@ -1109,7 +1120,15 @@ function normalizeBeginnerCandidateResponse(
     const record = exactCoreDataRecord(assessment, [
       'kind', 'expected_candidate_edge_id', 'proof_scope', 'apply_allowed', 'reason',
       'shape_approximation_score', 'shape_difference_reason',
+      'component_shape_comparison',
     ] as const)
+    const componentComparison = record && record.component_shape_comparison === null ? null
+      : exactCoreDataRecord(record?.component_shape_comparison, [
+        'component_count', 'matched_branch_count', 'work_units', 'extent_score', 'branch_score',
+        'bridge_score', 'extent_weight', 'branch_weight', 'bridge_weight',
+      ] as const)
+    const componentScores = componentComparison && [componentComparison.extent_score,
+      componentComparison.branch_score, componentComparison.bridge_score]
     const plan = admittedPlans[index]
     if (!record || !plan
       || record.kind !== plan.kind
@@ -1121,9 +1140,20 @@ function normalizeBeginnerCandidateResponse(
         && (!Number.isInteger(record.shape_approximation_score)
           || Number(record.shape_approximation_score) < 0
           || Number(record.shape_approximation_score) > 100))
-      || ![null, 'crease_preview_has_no_surface_mesh', 'certified_flat_surface_v1'].includes(
+      || ![null, 'crease_preview_has_no_surface_mesh', 'certified_flat_surface_v1', 'component_aware_quantized_shape_v1'].includes(
         record.shape_difference_reason as null | string,
       )
+      || (componentComparison !== null && (!componentComparison
+        || !Number.isInteger(componentComparison.component_count)
+        || Number(componentComparison.component_count) < 2 || Number(componentComparison.component_count) > 8
+        || !Number.isInteger(componentComparison.matched_branch_count)
+        || Number(componentComparison.matched_branch_count) < 0
+        || Number(componentComparison.matched_branch_count) > Number(componentComparison.component_count)
+        || !Number.isInteger(componentComparison.work_units) || Number(componentComparison.work_units) > 64
+        || !componentScores || componentScores.some((score) => !Number.isInteger(score) || Number(score) < 0 || Number(score) > 100)
+        || componentComparison.extent_weight !== 45 || componentComparison.branch_weight !== 35
+        || componentComparison.bridge_weight !== 20))
+      || ((record.shape_difference_reason === 'component_aware_quantized_shape_v1') !== (componentComparison !== null))
       || ((record.shape_approximation_score === null)
         !== (record.shape_difference_reason === null))
       || ![
@@ -1160,6 +1190,7 @@ function normalizeBeginnerCandidateResponse(
       reason: record.reason,
       shape_approximation_score: record.shape_approximation_score,
       shape_difference_reason: record.shape_difference_reason,
+      component_shape_comparison: componentComparison,
     }) as BeginnerGeneratedPlanAssessmentV1
   })
   if (planAssessments.some((assessment) => assessment === null)) return null

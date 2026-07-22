@@ -8436,6 +8436,16 @@ function App() {
                                   })}
                               </p>
                             )}
+                            {assessment?.component_shape_comparison && (
+                              <p className="muted" aria-label="Component-aware shape score breakdown">
+                                {`Components ${assessment.component_shape_comparison.component_count}; `}
+                                {`extent ${assessment.component_shape_comparison.extent_score}/100 × 45%; `}
+                                {`branches ${assessment.component_shape_comparison.branch_score}/100 × 35%; `}
+                                {`bridges ${assessment.component_shape_comparison.bridge_score}/100 × 20%; `}
+                                {`matched ${assessment.component_shape_comparison.matched_branch_count}; `}
+                                {`bounded work ${assessment.component_shape_comparison.work_units}/64.`}
+                              </p>
+                            )}
                             {applicableKind && (
                               <button
                                 type="button"

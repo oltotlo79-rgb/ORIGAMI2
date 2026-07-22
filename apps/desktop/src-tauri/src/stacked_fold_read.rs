@@ -14,12 +14,14 @@ use ori_collision::{
     StackedFoldFixedSideV1, StackedFoldLinearCandidateV1, StackedFoldMaterialMapLimitsV1,
     StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1, StackedFoldReadLimitsV1,
     StackedFoldReadSupportV1, StackedFoldRotationDirectionV1, StaticCollisionLimits,
-    capture_stacked_fold_read_guard_v1,
+    anchor_flat_endpoint_layer_order_v1, capture_stacked_fold_read_guard_v1,
     certify_canonical_positive_thickness_cycle_schedule_path_v1,
     certify_general_multi_face_cell_transport_v1, diagnose_collective_hinge_path_v1,
     diagnose_scheduled_cycle_path_v1, diagnose_scheduled_positive_thickness_cycle_path_v1,
-    diagnose_static_collision_geometry, propose_linear_stacked_fold_read_v1,
-    reverse_map_linear_stacked_fold_material_v1, supports_scheduled_positive_thickness_path_v1,
+    diagnose_static_collision_geometry,
+    diagnose_static_collision_geometry_with_flat_layer_order_v1,
+    propose_linear_stacked_fold_read_v1, reverse_map_linear_stacked_fold_material_v1,
+    supports_scheduled_positive_thickness_path_v1,
 };
 use ori_core::{
     AppliedPoseLimitsV1, DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS, ExpectedStackedFoldCreaseV1,
@@ -4358,7 +4360,7 @@ async fn propose_current_stacked_fold_read_inner(
                     | ori_collision::STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
             )
         );
-        let endpoint_collision = if positive_thickness_certificate {
+        let mut endpoint_collision = if positive_thickness_certificate {
             let face_count = prepared_requested_pose
                 .initial()
                 .target()
@@ -4428,15 +4430,53 @@ async fn propose_current_stacked_fold_read_inner(
                 )
                 .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
                 match report.outcome {
-                    GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => (
-                        StackedFoldFlatEndpointLayerOrderDto {
+                    GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } => {
+                        let model = prepared_requested_pose.initial().target().model();
+                        let pose = prepared_requested_pose.pose();
+                        let anchor = anchor_flat_endpoint_layer_order_v1(
+                            FlatEndpointLayerOrderInputV1 {
+                                identity_namespace: binding.project_id(),
+                                source_revision: target_revision,
+                                paper: &topology.paper,
+                                pattern: &topology.pattern,
+                                model,
+                                pose,
+                                layer_order: &layer_order,
+                            },
+                            ori_collision::FlatEndpointLayerOrderLimitsV1::default(),
+                        )
+                        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+                        let endpoint =
+                            diagnose_static_collision_geometry_with_flat_layer_order_v1(
+                                model,
+                                pose,
+                                paper.thickness_mm,
+                                StaticCollisionLimits::default(),
+                                &anchor,
+                            )
+                            .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+                        if endpoint.has_prominent_blocking_hold() {
+                            return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
+                        }
+                        endpoint_collision = StackedFoldEndpointCollisionDto {
+                            expected_pair_count: endpoint.expected_unordered_face_pairs(),
+                            separated_pair_count: endpoint.separated_pairs(),
+                            touching_pair_count: endpoint.touching_pairs(),
+                            allowed_pair_count: endpoint.allowed_pairs(),
+                            penetrating_pair_count: endpoint.penetrating_pairs(),
+                            indeterminate_pair_count: endpoint.indeterminate_pairs(),
+                            has_blocking_hold: false,
+                        };
+                        (
+                            StackedFoldFlatEndpointLayerOrderDto {
                             applicable: true,
                             certified: true,
                             material_face_count: layer_order.material_faces.len(),
                             overlap_cell_count: layer_order.overlap_cells.len(),
-                        },
-                        None,
-                    ),
+                            },
+                            None,
+                        )
+                    }
                     GlobalFlatFoldabilityOutcome::Impossible { .. }
                     | GlobalFlatFoldabilityOutcome::Unknown { .. } => (
                         StackedFoldFlatEndpointLayerOrderDto {

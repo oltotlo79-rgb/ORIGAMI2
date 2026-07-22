@@ -1341,7 +1341,7 @@ where
     result
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn abort_at_single_file_save_failpoint(expected: &str) {
     if std::env::var_os("ORIGAMI2_TEST_SINGLE_FILE_SAVE_ABORT_AT")
         .is_some_and(|value| value == expected)
@@ -1445,6 +1445,8 @@ fn commit_windows_staged_project_file_with_journal(
     };
     persist_single_file_journal_phase(destination, &payload, true)
         .map_err(|()| "failed to prepare the save journal".to_owned())?;
+    #[cfg(test)]
+    abort_at_single_file_save_failpoint("journal_prepared");
     if project_directory_identity(parent).ok() != Some(directory_identity) {
         return Err("the save directory changed before commit".to_owned());
     }
@@ -1454,6 +1456,8 @@ fn commit_windows_staged_project_file_with_journal(
         ExistingDestinationPolicy::ReplaceConfirmed,
     )?;
     staged.committed = true;
+    #[cfg(test)]
+    abort_at_single_file_save_failpoint("new_published");
     let journal = journal_path_for_target(destination, &payload.target_path_sha256)
         .map_err(|()| "failed to locate the save journal".to_owned())?;
     std::fs::remove_file(journal).map_err(|error| error.to_string())?;
@@ -1531,6 +1535,7 @@ impl StagedFile {
             .expect("a staged file handle remains present until drop")
     }
 
+    #[cfg(not(target_os = "windows"))]
     fn close_for_journal_commit(&mut self) {
         drop(self.file.take());
     }
@@ -1622,14 +1627,11 @@ mod staged_payload_adapter_tests {
         recover_single_file_journal_for_target, sha256_hex_bytes, target_path_fingerprint,
         write_complete_staged_payload, write_project_archive_ori2,
     };
-    #[cfg(unix)]
     use ori_core::{Command, EditorState};
     use ori_domain::{CreasePattern, ProjectId};
-    #[cfg(unix)]
     use ori_domain::{Point2, VertexId};
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
-    #[cfg(unix)]
     use std::process::Command as ProcessCommand;
 
     static NEXT_JOURNAL_TEST_ID: AtomicU64 = AtomicU64::new(0);
@@ -1864,7 +1866,6 @@ mod staged_payload_adapter_tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn subprocess_crash_save_helper() {
         let Some(path) = std::env::var_os("ORIGAMI2_TEST_SINGLE_FILE_SAVE_PATH") else {
@@ -1884,14 +1885,20 @@ mod staged_payload_adapter_tests {
         panic!("configured save failpoint did not abort");
     }
 
-    #[cfg(unix)]
     #[test]
     fn separate_process_crash_and_recovery_preserve_authenticated_archive_and_history() {
-        for (failpoint, expected_name) in [
+        #[cfg(unix)]
+        let cases = [
             ("journal_prepared", "old archive before crash"),
             ("old_moved", "new archive after crash"),
             ("new_published", "new archive after crash"),
-        ] {
+        ];
+        #[cfg(target_os = "windows")]
+        let cases = [
+            ("journal_prepared", "old archive before crash"),
+            ("new_published", "new archive after crash"),
+        ];
+        for (failpoint, expected_name) in cases {
             let directory = journal_test_directory(failpoint);
             let target = directory.join("project.ori2");
             let first = VertexId::new();
@@ -1955,7 +1962,13 @@ mod staged_payload_adapter_tests {
                 !status.success(),
                 "failpoint {failpoint} must terminate the child"
             );
+            #[cfg(unix)]
             assert_eq!(status.signal(), Some(6), "child must terminate via SIGABRT");
+            #[cfg(target_os = "windows")]
+            assert!(
+                status.code().is_some(),
+                "aborted Windows child must expose a status code"
+            );
 
             let recovery_status = ProcessCommand::new(
                 std::env::current_exe().expect("test executable"),

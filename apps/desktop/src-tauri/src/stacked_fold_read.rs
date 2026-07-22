@@ -5982,7 +5982,6 @@ mod tests {
             )
             .is_ok()
         );
-
         let mut unknown = json.clone();
         unknown
             .as_object_mut()
@@ -6747,8 +6746,8 @@ mod tests {
 
     #[test]
     fn regular_quad_petal_gate_accepts_only_three_hinges_on_one_square_boundary_face() {
-        let (pattern, paper, _) =
-            super::dense_grid_cycle_test_support::rectangular_dense_cycle_pattern(3, 3);
+        let (pattern, paper, _, _) =
+            super::dense_grid_cycle_test_support::miura_authority_pattern(3, 3);
         let project = super::super::ProjectState::new_with_paper(pattern, paper);
         let topology = project
             .editor

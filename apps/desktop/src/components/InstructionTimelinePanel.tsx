@@ -1123,6 +1123,13 @@ export function InstructionTimelinePanel({
                     <button
                       type="button"
                       disabled={editingDisabled || selectedStep.index === 0}
+                      onClick={() => void moveSelectedStep(0)}
+                    >
+                      {selectLocalizedText(locale, TEXT.moveFirst)}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={editingDisabled || selectedStep.index === 0}
                       onClick={() => void moveSelectedStep(selectedStep.index - 1)}
                     >
                       {selectLocalizedText(locale, TEXT.moveEarlier)}
@@ -1133,6 +1140,13 @@ export function InstructionTimelinePanel({
                       onClick={() => void moveSelectedStep(selectedStep.index + 1)}
                     >
                       {selectLocalizedText(locale, TEXT.moveLater)}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={editingDisabled || selectedStep.index === steps.length - 1}
+                      onClick={() => void moveSelectedStep(steps.length - 1)}
+                    >
+                      {selectLocalizedText(locale, TEXT.moveLast)}
                     </button>
                     <button type="button" disabled={editingDisabled || selectedStep.declarativeOnly || selectedStep.durationMs < 200}
                       onClick={() => void splitSelectedStep()}>
@@ -1289,6 +1303,8 @@ const TEXT = Object.freeze({
   ),
   moveEarlier: localized('← 前へ', '← Earlier'),
   moveLater: localized('次へ →', 'Later →'),
+  moveFirst: localized('先頭へ', 'Move to first'),
+  moveLast: localized('末尾へ', 'Move to last'),
   deleteAction: localized('削除', 'Delete'),
   staleGuidance: localized(
     '展開図が記録時から変わりました。内容を確認し、現在の3D姿勢で更新すると再生できます。',

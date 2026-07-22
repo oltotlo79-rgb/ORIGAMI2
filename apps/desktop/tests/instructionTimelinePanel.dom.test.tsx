@@ -83,6 +83,40 @@ afterEach(() => {
 })
 
 describe('InstructionTimelinePanel localization', () => {
+  it('offers bounded jumps to the first and last instruction steps', async () => {
+    localeStore.setLocale('en')
+    const snapshot = {
+      ...SNAPSHOT,
+      instruction_timeline: {
+        steps: [0, 1, 2].map((index) => ({
+          ...SNAPSHOT.instruction_timeline.steps[0]!,
+          id: `step-${index + 1}`,
+          title: `Step ${index + 1}`,
+        })),
+      },
+    } as ProjectSnapshot
+    const view = render(panelFor(snapshot))
+
+    fireEvent.click(screen.getByRole('button', { name: /1\. Step 1/ }))
+    expect((await screen.findByRole('button', { name: 'Move to first' }) as HTMLButtonElement).disabled)
+      .toBe(true)
+    expect((screen.getByRole('button', { name: 'Move to last' }) as HTMLButtonElement).disabled)
+      .toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: /3\. Step 3/ }))
+    expect((screen.getByRole('button', { name: 'Move to first' }) as HTMLButtonElement).disabled)
+      .toBe(false)
+    expect((screen.getByRole('button', { name: 'Move to last' }) as HTMLButtonElement).disabled)
+      .toBe(true)
+
+    view.rerender(panelFor(SNAPSHOT))
+    fireEvent.click(screen.getByRole('button', { name: /1\. Fold crane/ }))
+    expect((await screen.findByRole('button', { name: 'Move to first' }) as HTMLButtonElement).disabled)
+      .toBe(true)
+    expect((screen.getByRole('button', { name: 'Move to last' }) as HTMLButtonElement).disabled)
+      .toBe(true)
+  })
+
   it('keeps camera capture unavailable until the 3D viewport provides a camera', async () => {
     localeStore.setLocale('en')
     const runNativeEdit = vi.fn(async () => SNAPSHOT)

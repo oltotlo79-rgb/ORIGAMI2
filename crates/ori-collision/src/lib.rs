@@ -19,6 +19,7 @@
 
 #![forbid(unsafe_code)]
 
+mod block_composition;
 #[allow(dead_code)]
 mod cayley;
 mod cell_order_transport;
@@ -42,6 +43,10 @@ pub use cayley::{
     revalidate_tree_hinge_thickness_boundaries_v1,
 };
 
+pub use block_composition::{
+    BLOCK_COMPOSED_PATH_MODEL_ID_V1, BLOCK_COMPOSITION_LIMIT_V1, BlockComposedPathAuthorityV1,
+    issue_block_composed_path_authority_v1,
+};
 pub use cell_order_transport::{
     CURRENT_POSE_CELL_ORDER_MODEL_ID_V1, CellOrderTransportErrorV1, CellOrderTransportLimitsV1,
     CellOrderTransportResourceV1, CurrentPoseCellKeyV1, CurrentPoseLayerCellV1,

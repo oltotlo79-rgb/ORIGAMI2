@@ -1161,12 +1161,11 @@ fn validate_and_normalize_request(
     if request.complete_hinge_angles.len() > limits.max_angle_records {
         return Err(PoseAuthorityError::InvalidRequest);
     }
-    match (
+    if let (false, None) = (
         request.complete_hinge_angles.is_empty(),
         request.fixed_face_id,
     ) {
-        (false, None) => return Err(PoseAuthorityError::InvalidRequest),
-        _ => {}
+        return Err(PoseAuthorityError::InvalidRequest);
     }
     for pair in request.complete_hinge_angles.windows(2) {
         if pair[0].edge_id.canonical_bytes() >= pair[1].edge_id.canonical_bytes() {

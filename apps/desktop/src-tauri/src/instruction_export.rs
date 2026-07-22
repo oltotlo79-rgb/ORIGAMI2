@@ -1,5 +1,3 @@
-#[cfg(test)]
-use std::io::Read;
 use std::{
     io::{Cursor, Write},
     path::{Path, PathBuf},

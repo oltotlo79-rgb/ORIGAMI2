@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use ori_domain::{
     AssetId, BeginnerRecognitionProposalV1, ProjectId, UnderlayId, analyze_marker_png_rgba_v1,
-    analyze_silhouette_png_rgba_v1, analyze_silhouette_png_rgba_with_thresholds_v1,
+    analyze_silhouette_png_rgba_with_thresholds_v1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

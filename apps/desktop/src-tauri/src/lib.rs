@@ -154,8 +154,7 @@ use ori_core::{
 };
 use ori_domain::{
     AssetId, ConstraintId, CreasePattern, EdgeId, EdgeKind, FaceId, GeometricConstraintDocumentV1,
-    GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionArrow,
-    InstructionFocusPoint, InstructionHingeAngle, InstructionPoint3, InstructionPose,
+    GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionHingeAngle, InstructionPose,
     InstructionPoseModel, InstructionStep, InstructionStepId, InstructionTimeline,
     InstructionVisual, LayerContentKindV1, LayerId, LayerRecordV1, LengthDisplayUnit,
     MAX_INSTRUCTION_HINGES_PER_STEP, MAX_INSTRUCTION_STEPS, Paper, Point2, ProjectId,

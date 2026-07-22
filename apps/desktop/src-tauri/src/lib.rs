@@ -17313,9 +17313,13 @@ mod tests {
             let archive = project.project_archive().expect("generic tree archive");
             let archive_bytes =
                 write_project_archive_ori2(&archive).expect("write generic tree ORI2");
+            let archive_restored =
+                read_project_archive_ori2(&archive_bytes).expect("read generic tree ORI2");
+            assert_eq!(archive_restored, archive);
             assert_eq!(
-                read_project_archive_ori2(&archive_bytes).expect("read generic tree ORI2"),
-                archive
+                write_project_archive_ori2(&archive_restored)
+                    .expect("canonically resave generic tree ORI2"),
+                archive_bytes
             );
             assert!(
                 read_project_archive_ori2(&tamper_ori2_project_certificate(&archive_bytes, false,))
@@ -17376,6 +17380,12 @@ mod tests {
                 .expect("read generic tree folder")
                 .into_archive();
             assert_eq!(folder_restored, archive);
+            assert_eq!(
+                write_project_folder_v1(&folder_restored)
+                    .expect("canonically resave generic tree folder")
+                    .entries(),
+                folder.entries()
+            );
             let folder_provenance = folder_restored
                 .document
                 .beginner_design_profile

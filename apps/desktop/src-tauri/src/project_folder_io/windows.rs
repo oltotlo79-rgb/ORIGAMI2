@@ -13,21 +13,22 @@ use std::{
 };
 
 use windows_sys::Win32::Foundation::{
-    ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED,
-    ERROR_PATH_NOT_FOUND, GetLastError, INVALID_HANDLE_VALUE,
+    ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_PATH_NOT_FOUND,
+    GetLastError, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_SEQUENTIAL_SCAN, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
     FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FIND_FIRST_EX_LARGE_FETCH, FileDispositionInfo, FileIdInfo,
-    FileRenameInfo, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW,
-    FindNextFileW, GetFileInformationByHandle, GetFileInformationByHandleEx,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo, FileIdInfo, FileRenameInfo, FindClose,
+    FindFirstFileW, FindNextFileW, GetFileInformationByHandle, GetFileInformationByHandleEx,
     GetVolumeInformationByHandleW, SetFileInformationByHandle, WIN32_FIND_DATAW,
 };
 
-use super::{DirectoryIdentity, FsResult, ProjectFolderFilesystemError};
+use super::{
+    DirectoryIdentity, FsResult, PrefixEnumerationCollector, ProjectFolderFilesystemError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ObjectIdentity {
@@ -142,33 +143,10 @@ impl PinnedDirectory {
             .collect::<Vec<_>>();
         query.push(0);
         let mut data = WIN32_FIND_DATAW::default();
-        let mut handle = unsafe {
+        let handle = unsafe {
             // SAFETY: `query` is NUL-terminated and `data` remains writable for the call.
-            FindFirstFileExW(
-                query.as_ptr(),
-                FindExInfoBasic,
-                (&raw mut data).cast(),
-                FindExSearchNameMatch,
-                std::ptr::null(),
-                FIND_FIRST_EX_LARGE_FETCH,
-            )
+            FindFirstFileW(query.as_ptr(), &raw mut data)
         };
-        if handle == INVALID_HANDLE_VALUE {
-            let error = unsafe { GetLastError() };
-            if should_retry_find_without_large_fetch(error) {
-                handle = unsafe {
-                    // SAFETY: the same bounded NUL-terminated query and writable output are reused.
-                    FindFirstFileExW(
-                        query.as_ptr(),
-                        FindExInfoBasic,
-                        (&raw mut data).cast(),
-                        FindExSearchNameMatch,
-                        std::ptr::null(),
-                        0,
-                    )
-                };
-            }
-        }
         if handle == INVALID_HANDLE_VALUE {
             let error = unsafe { GetLastError() };
             if is_empty_find_result(error) {
@@ -177,21 +155,14 @@ impl PinnedDirectory {
             }
             return Err(ProjectFolderFilesystemError::ReadFailed);
         }
-        let mut names = Vec::new();
+        let mut collector = PrefixEnumerationCollector::new(prefix, maximum);
         let result = loop {
             let Some(length) = data.cFileName.iter().position(|unit| *unit == 0) else {
                 break Err(ProjectFolderFilesystemError::ReadFailed);
             };
             let name = OsString::from_wide(&data.cFileName[..length]);
-            if name != "." && name != ".." {
-                let candidate = name.to_string_lossy();
-                if !ascii_prefix_case_insensitive(&candidate, prefix) {
-                    break Err(ProjectFolderFilesystemError::ReadFailed);
-                }
-                names.push(name);
-            }
-            if names.len() > maximum {
-                break Err(ProjectFolderFilesystemError::InvalidTree);
+            if let Err(error) = collector.push(&name) {
+                break Err(error);
             }
             let has_next = unsafe {
                 // SAFETY: `handle` remains live and `data` is valid writable storage.
@@ -215,7 +186,7 @@ impl PinnedDirectory {
             return Err(ProjectFolderFilesystemError::ReadFailed);
         }
         self.revalidate_selected_path()?;
-        Ok(names)
+        Ok(collector.finish())
     }
 
     pub(super) fn open_child_directory(&self, name: &str) -> FsResult<Self> {
@@ -526,17 +497,8 @@ impl PinnedDirectory {
     }
 }
 
-const fn should_retry_find_without_large_fetch(error: u32) -> bool {
-    error == ERROR_INVALID_PARAMETER || error == ERROR_NOT_SUPPORTED
-}
-
 const fn is_empty_find_result(error: u32) -> bool {
     error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
-}
-
-fn ascii_prefix_case_insensitive(value: &str, prefix: &str) -> bool {
-    value.len() >= prefix.len()
-        && value.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
 }
 
 pub(super) struct PinnedFile {
@@ -1021,25 +983,10 @@ mod tests {
     }
 
     #[test]
-    fn prefix_enumeration_fallback_and_empty_errors_are_exact() {
-        assert!(should_retry_find_without_large_fetch(
-            ERROR_INVALID_PARAMETER
-        ));
-        assert!(should_retry_find_without_large_fetch(ERROR_NOT_SUPPORTED));
-        assert!(!should_retry_find_without_large_fetch(ERROR_FILE_NOT_FOUND));
+    fn prefix_enumeration_empty_errors_are_exact() {
         assert!(is_empty_find_result(ERROR_FILE_NOT_FOUND));
         assert!(is_empty_find_result(ERROR_PATH_NOT_FOUND));
         assert!(!is_empty_find_result(ERROR_INVALID_PARAMETER));
-        assert!(ascii_prefix_case_insensitive(
-            ".ORIGAMI2-folder-ABC",
-            ".origami2-folder-"
-        ));
-        assert!(!ascii_prefix_case_insensitive(
-            "x.origami2-folder-abc",
-            ".origami2-folder-"
-        ));
-        assert!(!ascii_prefix_case_insensitive(".", ".origami2-folder-"));
-        assert!(!ascii_prefix_case_insensitive("..", ".origami2-folder-"));
     }
 
     #[test]

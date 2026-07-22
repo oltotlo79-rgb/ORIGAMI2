@@ -7,7 +7,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -81,6 +81,44 @@ const ERROR_RECOVERY_REQUIRED: &str = "project_folder_recovery_required";
 const ERROR_REPLACEMENT_UNSUPPORTED: &str = "project_folder_replacement_unsupported";
 
 static NEXT_STAGING_ID: AtomicU64 = AtomicU64::new(0);
+
+struct PrefixEnumerationCollector<'a> {
+    prefix: &'a str,
+    maximum: usize,
+    names: Vec<OsString>,
+}
+
+impl<'a> PrefixEnumerationCollector<'a> {
+    fn new(prefix: &'a str, maximum: usize) -> Self {
+        Self {
+            prefix,
+            maximum,
+            names: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, name: &OsStr) -> FsResult<()> {
+        if name == "." || name == ".." {
+            return Ok(());
+        }
+        let candidate = name.to_string_lossy();
+        if candidate.len() < self.prefix.len()
+            || !candidate.as_bytes()[..self.prefix.len()]
+                .eq_ignore_ascii_case(self.prefix.as_bytes())
+        {
+            return Err(ProjectFolderFilesystemError::ReadFailed);
+        }
+        self.names.push(name.to_os_string());
+        if self.names.len() > self.maximum {
+            return Err(ProjectFolderFilesystemError::InvalidTree);
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Vec<OsString> {
+        self.names
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ProjectFolderFilesystemError {
@@ -1089,6 +1127,40 @@ mod tests {
     use super::*;
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn prefixed_enumeration_adapter_is_bounded_and_fail_closed() {
+        let prefix = ".origami2-folder-";
+        let empty = PrefixEnumerationCollector::new(prefix, 4_097).finish();
+        assert!(empty.is_empty(), "no-match must be an empty result");
+
+        let mut reserved_only = PrefixEnumerationCollector::new(prefix, 1);
+        reserved_only.push(OsStr::new(".")).unwrap();
+        reserved_only.push(OsStr::new("..")).unwrap();
+        assert!(reserved_only.finish().is_empty());
+
+        let mut bounded = PrefixEnumerationCollector::new(prefix, 4_097);
+        for index in 0..4_098 {
+            let name = format!("{prefix}{index:04x}");
+            let result = bounded.push(OsStr::new(&name));
+            if index < 4_097 {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result, Err(ProjectFolderFilesystemError::InvalidTree));
+            }
+        }
+
+        let mut wrong_namespace = PrefixEnumerationCollector::new(prefix, 1);
+        assert_eq!(
+            wrong_namespace.push(OsStr::new("x.origami2-folder-reserved")),
+            Err(ProjectFolderFilesystemError::ReadFailed)
+        );
+        let mut case_insensitive = PrefixEnumerationCollector::new(prefix, 1);
+        case_insensitive
+            .push(OsStr::new(".ORIGAMI2-FOLDER-reserved"))
+            .unwrap();
+        assert_eq!(case_insensitive.finish().len(), 1);
+    }
 
     struct TestDirectory(PathBuf);
 

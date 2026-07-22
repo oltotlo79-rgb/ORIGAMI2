@@ -802,7 +802,17 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
             )
         })
         .transpose()
-        .map_err(str::to_owned)?;
+        .map_err(str::to_owned)?
+        .or_else(|| {
+            generate_even_opposite_pair_schedule_v1(
+                geometry,
+                audit,
+                pose.fixed_face(),
+                pose.hinge_angles(),
+                &target,
+            )
+            .ok()
+        });
     if collective_schedule
         .as_ref()
         .is_some_and(|schedule| schedule.evaluate(1.0).as_ref() != Some(&target))
@@ -2060,6 +2070,101 @@ fn prepare_requested_cycle_schedule_v1(
         }
     }
     Ok(schedule)
+}
+
+fn generate_even_opposite_pair_schedule_v1(
+    geometry: &ori_kinematics::MaterialHingeGraphGeometry,
+    audit: &ori_kinematics::MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    live: &ori_kinematics::CanonicalHingeAngles,
+    target: &ori_kinematics::CanonicalHingeAngles,
+) -> Result<ori_kinematics::CanonicalCycleScheduleV1, &'static str> {
+    let changed = live
+        .as_slice()
+        .iter()
+        .zip(target.as_slice())
+        .filter_map(|(source, target)| {
+            (source.angle_degrees().to_bits() != target.angle_degrees().to_bits())
+                .then_some(target.edge())
+        })
+        .collect::<Vec<_>>();
+    if changed.len() != 2
+        || !ori_kinematics::enumerate_even_single_vertex_opposite_pairs_v1(geometry, audit, 128)
+            .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE)?
+            .iter()
+            .any(|pair| pair.iter().all(|edge| changed.contains(edge)))
+    {
+        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
+    }
+    let requested = target
+        .as_slice()
+        .iter()
+        .find(|entry| entry.edge() == changed[0])
+        .map(|entry| entry.angle_degrees())
+        .ok_or(CYCLE_PATH_UNSUPPORTED_MESSAGE)?;
+    let denominator = [1_i64, 2, 4, 8, 16, 100]
+        .into_iter()
+        .find(|value| {
+            (requested - 2.0 * 1.0_f64.atan2(*value as f64).to_degrees()).abs() <= 1.0e-12
+        })
+        .ok_or(CYCLE_PATH_UNSUPPORTED_MESSAGE)?;
+    let entries = live
+        .as_slice()
+        .iter()
+        .map(|source| {
+            let active = changed.contains(&source.edge());
+            CycleScheduleEntryRequestV1 {
+                edge: source.edge(),
+                u_domain: [
+                    RationalCoefficientRequestV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    RationalCoefficientRequestV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                numerator_power_coefficients: if active {
+                    vec![
+                        RationalCoefficientRequestV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientRequestV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ]
+                } else {
+                    vec![RationalCoefficientRequestV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    }]
+                },
+                denominator_power_coefficients: vec![RationalCoefficientRequestV1 {
+                    numerator: if active { denominator } else { 1 },
+                    denominator: 1,
+                }],
+                requested_angle_degrees: if active {
+                    requested
+                } else {
+                    source.angle_degrees()
+                },
+            }
+        })
+        .collect();
+    prepare_requested_cycle_schedule_v1(
+        &CycleScheduleRequestV1 {
+            version: 1,
+            entries,
+            endpoint_denominator: None,
+        },
+        geometry,
+        audit,
+        fixed_face,
+        live,
+    )
 }
 
 fn production_cycle_schedule_limits_v1() -> CycleScheduleLimitsV1 {
@@ -6265,7 +6370,7 @@ mod tests {
                         .collect(),
                     max_states: 32,
                     max_transitions: 128,
-                    cycle_schedule_v1: Some(schedule.clone()),
+                    cycle_schedule_v1: (fixture_name != "balloon-c6").then_some(schedule.clone()),
                 },
                 None,
             )
@@ -6292,7 +6397,7 @@ mod tests {
                     target_angles,
                     max_states: 32,
                     max_transitions: 128,
-                    cycle_schedule_v1: Some(schedule),
+                    cycle_schedule_v1: (fixture_name != "balloon-c6").then_some(schedule),
                     expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
                     expected_positive_thickness_binding_sha256: observed
                         .positive_thickness_binding_sha256

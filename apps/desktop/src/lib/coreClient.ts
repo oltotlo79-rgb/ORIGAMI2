@@ -316,6 +316,13 @@ export type BeginnerRecognitionProposalV1 = {
     local_scores: ReadonlyArray<Readonly<{ protrusion_id: number; score: number; reasons: ReadonlyArray<string> }>>
     explicit_override_required: boolean
   }>
+  skeleton_quality?: Readonly<{
+    score: number
+    reasons: ReadonlyArray<string>
+    insufficiency_reasons: ReadonlyArray<string>
+    distance_metric: 'manhattan_pixel_v1'
+    bar_limit: 32
+  }>
 }
 
 const BEGINNER_TECHNIQUES = [
@@ -653,7 +660,7 @@ function normalizeBeginnerRecognitionProposal(
     'source_sha256', 'width', 'height', 'shape_bounds', 'target_parts',
     'skeleton_segments',
   ] as const
-  const optionalKeys = ['generic_body_outline_tenths_mm', 'generic_body_outline_mode', 'protrusions', 'contour_confidence'] as const
+  const optionalKeys = ['generic_body_outline_tenths_mm', 'generic_body_outline_mode', 'protrusions', 'contour_confidence', 'skeleton_quality'] as const
   const record = snapshotCoreDataRecord(value)
   if (!record || requiredKeys.some((key) => !Object.hasOwn(record, key))
     || Object.keys(record).some((key) => ![...requiredKeys, ...optionalKeys].includes(key as never))) return null
@@ -693,6 +700,7 @@ function normalizeBeginnerRecognitionProposal(
     allowed_techniques: ['valley_fold'],
   })
   if (!constraints) return null
+  if (expectedFormat === 'silhouette_png_v1' && constraints.skeleton_segments.length > 32) return null
   const confidence = record.contour_confidence === undefined ? null : exactCoreDataRecord(
     record.contour_confidence, ['body_score', 'body_reasons', 'local_scores', 'explicit_override_required'] as const)
   const localConfidence = confidence && Array.isArray(confidence.local_scores)
@@ -707,6 +715,20 @@ function normalizeBeginnerRecognitionProposal(
     || localConfidence.some((item) => !item || !Number.isInteger(item.protrusion_id)
       || !Number.isInteger(item.score) || Number(item.score) < 0 || Number(item.score) > 100 || !validReasons(item.reasons)))) return null
   const validatedLocalConfidence = localConfidence as ReadonlyArray<NonNullable<(typeof localConfidence)[number]>>
+  const skeletonQuality = record.skeleton_quality === undefined ? null : exactCoreDataRecord(
+    record.skeleton_quality, ['score', 'reasons', 'insufficiency_reasons', 'distance_metric', 'bar_limit'] as const)
+  const validSkeletonReasons = (value: unknown, allowEmpty = false) => Array.isArray(value)
+    && (allowEmpty || value.length > 0) && value.length <= 8
+    && value.every((reason) => typeof reason === 'string' && [
+      'offline_manhattan_distance_ridges', 'deterministic_axis_spans',
+      'no_branch_evidence', 'bar_limit_reached',
+    ].includes(reason))
+  if (record.skeleton_quality !== undefined && (!skeletonQuality
+    || !Number.isInteger(skeletonQuality.score) || Number(skeletonQuality.score) < 0 || Number(skeletonQuality.score) > 100
+    || !validSkeletonReasons(skeletonQuality.reasons)
+    || !validSkeletonReasons(skeletonQuality.insufficiency_reasons, true)
+    || skeletonQuality.distance_metric !== 'manhattan_pixel_v1'
+    || skeletonQuality.bar_limit !== 32)) return null
   return Object.freeze({
     schema_version: 1,
     format: expectedFormat,
@@ -733,6 +755,13 @@ function normalizeBeginnerRecognitionProposal(
       local_scores: Object.freeze(validatedLocalConfidence.map((item) => Object.freeze({ protrusion_id: Number(item.protrusion_id),
         score: Number(item.score), reasons: Object.freeze((item.reasons as string[]).slice()) }))),
       explicit_override_required: confidence.explicit_override_required as boolean,
+    }) }),
+    ...(skeletonQuality === null ? {} : { skeleton_quality: Object.freeze({
+      score: Number(skeletonQuality.score),
+      reasons: Object.freeze((skeletonQuality.reasons as string[]).slice()),
+      insufficiency_reasons: Object.freeze((skeletonQuality.insufficiency_reasons as string[]).slice()),
+      distance_metric: 'manhattan_pixel_v1' as const,
+      bar_limit: 32 as const,
     }) }),
   })
 }

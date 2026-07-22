@@ -9025,6 +9025,20 @@ function App() {
                         en: 'Contour confidence {score}/100 · reasons {reasons}',
                       }, { score: beginnerRecognitionProposal.contour_confidence.body_score,
                         reasons: beginnerRecognitionProposal.contour_confidence.body_reasons.join(', ') })}</p>}
+                      {beginnerRecognitionProposal.skeleton_quality && (
+                        <div role="status" aria-label={text({ ja: '骨格候補の品質', en: 'Skeleton proposal quality' })}>
+                          <p>{formattedText({
+                            ja: '骨格品質 {score}/100・完全オフライン距離軸近似・最大 {limit} 本',
+                            en: 'Skeleton quality {score}/100 · fully offline distance-axis approximation · {limit} bars maximum',
+                          }, {
+                            score: beginnerRecognitionProposal.skeleton_quality.score,
+                            limit: beginnerRecognitionProposal.skeleton_quality.bar_limit,
+                          })}</p>
+                          {beginnerRecognitionProposal.skeleton_quality.insufficiency_reasons.length > 0 && <p>{formattedText({
+                            ja: '不足理由: {reasons}', en: 'Insufficiency reasons: {reasons}',
+                          }, { reasons: beginnerRecognitionProposal.skeleton_quality.insufficiency_reasons.join(', ') })}</p>}
+                        </div>
+                      )}
                       {(beginnerRecognitionProposal.protrusions?.length ?? 0) > 0 && (
                         <fieldset><legend>{text({ ja: '認識部位の確認', en: 'Confirm recognized protrusions' })}</legend>
                           {(beginnerRecognitionProposal.protrusions ?? []).map((target) => (

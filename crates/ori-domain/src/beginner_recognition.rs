@@ -16,6 +16,7 @@ pub const MAX_BEGINNER_OUTLINE_CANDIDATES_V1: usize = 16;
 pub const MAX_BEGINNER_SILHOUETTE_CONTOUR_POINTS_V1: usize = 16;
 pub const BEGINNER_SILHOUETTE_ALPHA_THRESHOLD_V1: u8 = 128;
 pub const BEGINNER_SILHOUETTE_LUMA_THRESHOLD_V1: u8 = 127;
+pub const MAX_BEGINNER_MEDIAL_AXIS_BARS_V1: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,6 +55,172 @@ pub struct BeginnerRecognitionProposalV1 {
     pub protrusions: Vec<BeginnerProtrusionTargetV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contour_confidence: Option<BeginnerContourConfidenceV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skeleton_quality: Option<BeginnerSkeletonQualityV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerSkeletonQualityV1 {
+    pub score: u8,
+    pub reasons: Vec<String>,
+    pub insufficiency_reasons: Vec<String>,
+    pub distance_metric: String,
+    pub bar_limit: u8,
+}
+
+fn approximate_medial_axis(
+    foreground: &[bool],
+    width: usize,
+    height: usize,
+) -> (Vec<BeginnerSkeletonSegmentV1>, BeginnerSkeletonQualityV1) {
+    let mut distance = vec![u16::MAX; foreground.len()];
+    for index in 0..foreground.len() {
+        if !foreground[index] {
+            distance[index] = 0;
+            continue;
+        }
+        let x = index % width;
+        let y = index / width;
+        if x == 0 || y == 0 || x + 1 == width || y + 1 == height {
+            distance[index] = 1;
+        }
+    }
+    for index in 0..distance.len() {
+        if !foreground[index] {
+            continue;
+        }
+        let x = index % width;
+        let y = index / width;
+        if x > 0 {
+            distance[index] = distance[index].min(distance[index - 1].saturating_add(1));
+        }
+        if y > 0 {
+            distance[index] = distance[index].min(distance[index - width].saturating_add(1));
+        }
+    }
+    for index in (0..distance.len()).rev() {
+        if !foreground[index] {
+            continue;
+        }
+        let x = index % width;
+        let y = index / width;
+        if x + 1 < width {
+            distance[index] = distance[index].min(distance[index + 1].saturating_add(1));
+        }
+        if y + 1 < height {
+            distance[index] = distance[index].min(distance[index + width].saturating_add(1));
+        }
+    }
+    let mut ridges = (0..foreground.len())
+        .filter(|&index| {
+            if !foreground[index] {
+                return false;
+            }
+            let x = index % width;
+            let y = index / width;
+            let value = distance[index];
+            [
+                (x > 0).then(|| index - 1),
+                (x + 1 < width).then(|| index + 1),
+                (y > 0).then(|| index - width),
+                (y + 1 < height).then(|| index + width),
+            ]
+            .into_iter()
+            .flatten()
+            .all(|neighbor| value >= distance[neighbor])
+        })
+        .collect::<Vec<_>>();
+    ridges.sort_unstable_by_key(|&index| {
+        (
+            std::cmp::Reverse(distance[index]),
+            index / width,
+            index % width,
+        )
+    });
+    let mut selected = Vec::new();
+    for index in ridges {
+        let x = index % width;
+        let y = index / width;
+        let separation = usize::from(distance[index]).max(2);
+        if selected.iter().all(|&other: &usize| {
+            (other % width).abs_diff(x) + (other / width).abs_diff(y) >= separation
+        }) {
+            selected.push(index);
+            if selected.len() == MAX_BEGINNER_MEDIAL_AXIS_BARS_V1 {
+                break;
+            }
+        }
+    }
+    let mut bars = Vec::new();
+    for index in selected {
+        let x = index % width;
+        let y = index / width;
+        let mut left = x;
+        while left > 0 && foreground[y * width + left - 1] {
+            left -= 1;
+        }
+        let mut right = x;
+        while right + 1 < width && foreground[y * width + right + 1] {
+            right += 1;
+        }
+        let mut top = y;
+        while top > 0 && foreground[(top - 1) * width + x] {
+            top -= 1;
+        }
+        let mut bottom = y;
+        while bottom + 1 < height && foreground[(bottom + 1) * width + x] {
+            bottom += 1;
+        }
+        let horizontal = right - left >= bottom - top;
+        let (start_x, start_y, end_x, end_y, thickness) = if horizontal {
+            (left, y, right, y, (bottom - top + 1) * 10)
+        } else {
+            (x, top, x, bottom, (right - left + 1) * 10)
+        };
+        if start_x == end_x && start_y == end_y {
+            continue;
+        }
+        bars.push(BeginnerSkeletonSegmentV1 {
+            id: bars.len() as u16,
+            start: BeginnerSkeletonPointV1 {
+                x_tenths_mm: start_x as i32 * 10,
+                y_tenths_mm: start_y as i32 * 10,
+            },
+            end: BeginnerSkeletonPointV1 {
+                x_tenths_mm: end_x as i32 * 10,
+                y_tenths_mm: end_y as i32 * 10,
+            },
+            thickness_tenths_mm: thickness.min(10_000) as u16,
+        });
+    }
+    let mut insufficiency_reasons = Vec::new();
+    if bars.len() <= 1 {
+        insufficiency_reasons.push("no_branch_evidence".into());
+    }
+    if bars.len() == MAX_BEGINNER_MEDIAL_AXIS_BARS_V1 {
+        insufficiency_reasons.push("bar_limit_reached".into());
+    }
+    let score = if bars.is_empty() {
+        0
+    } else if insufficiency_reasons.is_empty() {
+        86
+    } else {
+        68
+    };
+    (
+        bars,
+        BeginnerSkeletonQualityV1 {
+            score,
+            reasons: vec![
+                "offline_manhattan_distance_ridges".into(),
+                "deterministic_axis_spans".into(),
+            ],
+            insufficiency_reasons,
+            distance_metric: "manhattan_pixel_v1".into(),
+            bar_limit: MAX_BEGINNER_MEDIAL_AXIS_BARS_V1 as u8,
+        },
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,42 +549,12 @@ pub fn analyze_silhouette_png_rgba_v1(
     }) {
         return Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette);
     }
-    let center_x = ((min_x + max_x) / 2) as i32 * 10;
     let center_y = ((min_y + max_y) / 2) as i32 * 10;
-    let horizontal = max_x - min_x >= max_y - min_y;
-    let skeleton_segments = vec![BeginnerSkeletonSegmentV1 {
-        id: 0,
-        start: BeginnerSkeletonPointV1 {
-            x_tenths_mm: if horizontal {
-                min_x as i32 * 10
-            } else {
-                center_x
-            },
-            y_tenths_mm: if horizontal {
-                center_y
-            } else {
-                min_y as i32 * 10
-            },
-        },
-        end: BeginnerSkeletonPointV1 {
-            x_tenths_mm: if horizontal {
-                max_x as i32 * 10
-            } else {
-                center_x
-            },
-            y_tenths_mm: if horizontal {
-                center_y
-            } else {
-                max_y as i32 * 10
-            },
-        },
-        thickness_tenths_mm: ((if horizontal {
-            max_y - min_y + 1
-        } else {
-            max_x - min_x + 1
-        }) * 10)
-            .min(10_000) as u16,
-    }];
+    let (skeleton_segments, skeleton_quality) =
+        approximate_medial_axis(&foreground, width as usize, height as usize);
+    if skeleton_segments.is_empty() {
+        return Err(BeginnerRecognitionErrorV1::UnsupportedSilhouette);
+    }
     let shape_bounds = BeginnerRecognitionBoundsV1 {
         min_x,
         min_y,
@@ -493,6 +630,7 @@ pub fn analyze_silhouette_png_rgba_v1(
             ],
             explicit_override_required: false,
         }),
+        skeleton_quality: Some(skeleton_quality),
     })
 }
 
@@ -657,6 +795,7 @@ pub fn analyze_marker_png_rgba_v1(
         generic_body_outline_mode: Some(BeginnerBodyOutlineModeV1::General),
         protrusions: Vec::new(),
         contour_confidence: None,
+        skeleton_quality: None,
     })
 }
 
@@ -768,7 +907,8 @@ mod tests {
             proposal.target_parts[1].kind,
             BeginnerTargetPartKindV1::Torso
         );
-        assert_eq!(proposal.skeleton_segments.len(), 1);
+        assert!((1..=MAX_BEGINNER_MEDIAL_AXIS_BARS_V1).contains(&proposal.skeleton_segments.len()));
+        assert_eq!(proposal.skeleton_quality.as_ref().unwrap().bar_limit, 32);
         assert_eq!(proposal.source_sha256, [7; 32]);
         assert_eq!(
             proposal.generic_body_outline_mode,

@@ -136,6 +136,13 @@ test('confirmed outline split and merge provenance persists with the editable pr
 })
 
 test('recognized skeleton bars remain directly correctable before save and synthesis', () => {
+  assert.match(domain, /MAX_BEGINNER_MEDIAL_AXIS_BARS_V1: usize = 32/u)
+  assert.match(domain, /offline_manhattan_distance_ridges/u)
+  assert.match(domain, /deterministic_axis_spans/u)
+  assert.match(client, /expectedFormat === 'silhouette_png_v1' && constraints\.skeleton_segments\.length > 32/u)
+  assert.match(client, /'score', 'reasons', 'insufficiency_reasons', 'distance_metric', 'bar_limit'/u)
+  assert.match(app, /骨格候補の品質/u)
+  assert.match(app, /Insufficiency reasons/u)
   assert.match(app, /Skeleton bar \$\{segment\.id\} \$\{label\} \(mm\)/u)
   assert.match(app, /setBeginnerSkeletonSegments\(\(segments\) => segments\.map/u)
   assert.match(app, /changed\.start\.x_tenths_mm === changed\.end\.x_tenths_mm/u)

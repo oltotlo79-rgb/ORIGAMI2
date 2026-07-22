@@ -241,9 +241,9 @@ enum CurrentNativeMaterialPose {
     Tree {
         model: Arc<MaterialTreeKinematicsModel>,
         pose: Arc<MaterialTreePose>,
-        graph_geometry: Arc<ori_kinematics::MaterialHingeGraphGeometry>,
-        graph_audit: Arc<ori_kinematics::MaterialHingeGraphAudit>,
-        graph_pose: Arc<ori_kinematics::ClosedMaterialHingeGraphPose>,
+        graph_geometry: Option<Arc<ori_kinematics::MaterialHingeGraphGeometry>>,
+        graph_audit: Option<Arc<ori_kinematics::MaterialHingeGraphAudit>>,
+        graph_pose: Option<Arc<ori_kinematics::ClosedMaterialHingeGraphPose>>,
     },
     Graph {
         geometry: Arc<ori_kinematics::MaterialHingeGraphGeometry>,
@@ -274,9 +274,9 @@ impl CurrentNativeMaterialPose {
                 graph_pose,
                 ..
             } => Some((
-                graph_geometry.as_ref(),
-                graph_audit.as_ref(),
-                graph_pose.as_ref(),
+                graph_geometry.as_ref()?.as_ref(),
+                graph_audit.as_ref()?.as_ref(),
+                graph_pose.as_ref()?.as_ref(),
             )),
             Self::Graph {
                 geometry,
@@ -306,9 +306,21 @@ impl CurrentNativeMaterialPose {
             ) => {
                 Arc::ptr_eq(first_model, second_model)
                     && Arc::ptr_eq(first_pose, second_pose)
-                    && Arc::ptr_eq(first_graph_geometry, second_graph_geometry)
-                    && Arc::ptr_eq(first_graph_audit, second_graph_audit)
-                    && Arc::ptr_eq(first_graph_pose, second_graph_pose)
+                    && match (first_graph_geometry, second_graph_geometry) {
+                        (Some(first), Some(second)) => Arc::ptr_eq(first, second),
+                        (None, None) => true,
+                        _ => false,
+                    }
+                    && match (first_graph_audit, second_graph_audit) {
+                        (Some(first), Some(second)) => Arc::ptr_eq(first, second),
+                        (None, None) => true,
+                        _ => false,
+                    }
+                    && match (first_graph_pose, second_graph_pose) {
+                        (Some(first), Some(second)) => Arc::ptr_eq(first, second),
+                        (None, None) => true,
+                        _ => false,
+                    }
                     && first_pose.same_instance(second_pose)
             }
             (
@@ -373,6 +385,11 @@ pub(super) fn lock_revalidated_current_applied_pose_for_commit<'a>(
 }
 
 impl CurrentAppliedPoseCapability {
+    #[must_use]
+    pub(super) fn tree(&self) -> Option<(&MaterialTreeKinematicsModel, &MaterialTreePose)> {
+        self.claims.native_pose.tree()
+    }
+
     /// Observation-only access for detached native analysis. The caller must
     /// revalidate this capability against the live project before publishing
     /// any result.
@@ -891,27 +908,28 @@ impl CapturedNativePoseRequest {
                     .map(|hinge| hinge.edge())
                     .collect::<Vec<_>>();
                 let fixed_face = self.fixed_face.ok_or(PoseAuthorityError::InvalidRequest)?;
-                let graph_geometry = Arc::new(
-                    ori_kinematics::MaterialHingeGraphGeometry::prepare(
-                        self.binding.topology_input.pattern(),
-                        self.binding.topology_input.paper(),
+                let graph_companion = ori_kinematics::MaterialHingeGraphGeometry::prepare(
+                    self.binding.topology_input.pattern(),
+                    self.binding.topology_input.paper(),
+                    &topology,
+                    TreeKinematicsLimits::default(),
+                )
+                .ok()
+                .and_then(|geometry| {
+                    let audit = ori_kinematics::MaterialHingeGraphAudit::prepare(
                         &topology,
                         TreeKinematicsLimits::default(),
                     )
-                    .map_err(|_| PoseAuthorityError::KinematicsUnavailable)?,
-                );
-                let graph_audit = Arc::new(
-                    ori_kinematics::MaterialHingeGraphAudit::prepare(
-                        &topology,
-                        TreeKinematicsLimits::default(),
-                    )
-                    .map_err(|_| PoseAuthorityError::KinematicsUnavailable)?,
-                );
-                let graph_pose = Arc::new(
-                    graph_geometry
-                        .solve_closed(&graph_audit, fixed_face, &canonical_angles, 1.0e-9)
-                        .map_err(|_| PoseAuthorityError::KinematicsUnavailable)?,
-                );
+                    .ok()?;
+                    let graph_pose = geometry
+                        .solve_closed(&audit, fixed_face, &canonical_angles, 1.0e-9)
+                        .ok()?;
+                    Some((Arc::new(geometry), Arc::new(audit), Arc::new(graph_pose)))
+                });
+                let (graph_geometry, graph_audit, graph_pose) = graph_companion
+                    .map_or((None, None, None), |(geometry, audit, pose)| {
+                        (Some(geometry), Some(audit), Some(pose))
+                    });
                 (
                     CurrentNativeMaterialPose::Tree {
                         model: Arc::clone(&model),

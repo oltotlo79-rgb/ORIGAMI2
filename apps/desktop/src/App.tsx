@@ -7957,8 +7957,8 @@ function App() {
                     </div>
                     <p className="muted">
                       {formattedText({
-                        ja: '補助円 {count} 個。交点を見ながら定規相当の線作図を行えます。',
-                        en: '{count} construction circles. Use their visible intersections with the ruler-equivalent line tools.',
+                        ja: '補助円 {count} 個。現在は目視用ガイドで、交点へ自動スナップしません。',
+                        en: '{count} construction circles. These are visual guides and do not currently provide intersection snapping.',
                       }, { count: compassCircles.length })}
                     </p>
                   </fieldset>

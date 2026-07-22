@@ -4915,7 +4915,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!((observed.state_count, observed.transition_count), (81, 432));
-        assert_eq!(observed.status, "certified");
+        assert_eq!(
+            observed.status,
+            "certified",
+            "explored={} evaluated={} certified={} positive={}",
+            observed.explored_state_count,
+            observed.evaluated_transition_count,
+            observed.certified_transition_count,
+            observed.positive_thickness_transition_count,
+        );
         assert!(observed.mutation_candidate_ready);
         assert!(!observed.authorizes_project_mutation);
         let preview_state = DyadicPathPreviewState::default();

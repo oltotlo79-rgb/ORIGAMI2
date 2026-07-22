@@ -10,9 +10,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 
 import { InstructionTimelinePanel } from '../src/components/InstructionTimelinePanel.tsx'
-import type { ProjectSnapshot } from '../src/lib/coreClient.ts'
+import { moveInstructionStep, type ProjectSnapshot } from '../src/lib/coreClient.ts'
 import type { FoldPreviewAppliedPoseSnapshot } from '../src/lib/foldPreviewAppliedPose.ts'
 import { localeStore } from '../src/lib/i18n.ts'
+
+vi.mock('../src/lib/coreClient.ts', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/lib/coreClient.ts')>(),
+  moveInstructionStep: vi.fn(),
+}))
 
 const FINGERPRINT = 'ab'.repeat(32)
 const SNAPSHOT = {
@@ -115,6 +120,71 @@ describe('InstructionTimelinePanel localization', () => {
       .toBe(true)
     expect((screen.getByRole('button', { name: 'Move to last' }) as HTMLButtonElement).disabled)
       .toBe(true)
+  })
+
+  it('sends exact first and last indices and keeps the moved step selected', async () => {
+    localeStore.setLocale('en')
+    const steps = [0, 1, 2].map((index) => ({
+      ...SNAPSHOT.instruction_timeline.steps[0]!,
+      id: `step-${index + 1}`,
+      title: `Step ${index + 1}`,
+    }))
+    const snapshot = {
+      ...SNAPSHOT,
+      instruction_timeline: { steps },
+    } as ProjectSnapshot
+    const move = vi.mocked(moveInstructionStep)
+    const movedFirst = {
+      ...snapshot,
+      revision: 5,
+      instruction_timeline: { steps: [steps[1]!, steps[0]!, steps[2]!] },
+    } as ProjectSnapshot
+    move.mockResolvedValueOnce(movedFirst)
+    let authoritySnapshot = snapshot
+    const runNativeEdit = vi.fn(async (
+      action: React.ComponentProps<typeof InstructionTimelinePanel>['runNativeEdit'] extends (
+        action: infer Action,
+      ) => Promise<boolean> ? Action : never,
+    ) => action(
+      authoritySnapshot.project_id,
+      authoritySnapshot.revision,
+      authoritySnapshot.project_instance_id,
+    ))
+    const view = render(<InstructionTimelinePanel
+      {...panelFor(snapshot).props}
+      runNativeEdit={runNativeEdit}
+    />)
+
+    fireEvent.click(screen.getByRole('button', { name: /2\. Step 2/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Move to first' }))
+    await waitFor(() => expect(move).toHaveBeenCalledWith(
+      snapshot.project_id,
+      snapshot.revision,
+      snapshot.project_instance_id,
+      'step-2',
+      0,
+    ))
+    view.rerender(<InstructionTimelinePanel
+      {...panelFor(movedFirst).props}
+      runNativeEdit={runNativeEdit}
+    />)
+    authoritySnapshot = movedFirst
+    expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Step 2')
+
+    const movedLast = {
+      ...movedFirst,
+      revision: 6,
+      instruction_timeline: { steps: [steps[0]!, steps[2]!, steps[1]!] },
+    } as ProjectSnapshot
+    move.mockResolvedValueOnce(movedLast)
+    fireEvent.click(screen.getByRole('button', { name: 'Move to last' }))
+    await waitFor(() => expect(move).toHaveBeenLastCalledWith(
+      movedFirst.project_id,
+      movedFirst.revision,
+      movedFirst.project_instance_id,
+      'step-2',
+      2,
+    ))
   })
 
   it('keeps camera capture unavailable until the 3D viewport provides a camera', async () => {

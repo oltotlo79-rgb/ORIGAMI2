@@ -1758,6 +1758,37 @@ pub(crate) mod tests {
             assert!(build_pending_export(source).is_ok());
         }
 
+        let mut crimp_timeline = reopened_reverse.clone();
+        crimp_timeline.steps[0].title = "段折りの開始姿勢".to_owned();
+        crimp_timeline.steps[1].title = "段折り 1".to_owned();
+        crimp_timeline.steps[2].title = "段折り 2".to_owned();
+        let crimp_archive = serde_json::to_vec(&crimp_timeline).expect("archive crimp fold");
+        let reopened_crimp: ori_domain::InstructionTimeline =
+            serde_json::from_slice(&crimp_archive).expect("reopen crimp fold");
+        for (format, magic) in [
+            (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+            (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = reopened_crimp.clone();
+            let artifact = build_pending_export(source).expect("native crimp-fold export");
+            assert_eq!(artifact.step_count, 3);
+            assert!(artifact.bytes.starts_with(magic));
+        }
+        let mut uncertified_crimp = reopened_crimp;
+        for step in &mut uncertified_crimp.steps[1..] {
+            step.visual.path_certificate_reference_v1 = None;
+            step.description = "手動で作成された段折りです。".to_owned();
+        }
+        for format in [
+            InstructionExportFormatRequest::Pdf,
+            InstructionExportFormatRequest::SvgZip,
+        ] {
+            let mut source = source_for(&project, format);
+            source.timeline = uncertified_crimp.clone();
+            assert!(build_pending_export(source).is_ok());
+        }
+
         let mut tampered_reverse = reopened_reverse.clone();
         tampered_reverse.steps[2]
             .visual

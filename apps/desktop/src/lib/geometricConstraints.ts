@@ -765,7 +765,6 @@ function parseDirectConflictKind(
   if (!record || typeof record.kind !== 'string') return null
   switch (record.kind) {
     case 'different_fixed_lengths':
-    case 'horizontal_and_vertical':
       if (
         !hasExactKeys(record, ['kind', 'edge'])
         || !isCanonicalUuid(record.edge)
@@ -776,6 +775,18 @@ function parseDirectConflictKind(
           edge: record.edge,
         }),
         witnessSize: 2,
+      }
+    case 'horizontal_and_vertical':
+      if (
+        !hasExactKeys(record, ['kind', 'edge'])
+        || !isCanonicalUuid(record.edge)
+      ) return null
+      return {
+        conflict: Object.freeze({
+          kind: record.kind,
+          edge: record.edge,
+        }),
+        witnessSize: 3,
       }
     case 'different_fixed_angles':
       if (

@@ -834,6 +834,26 @@ mod tests {
     }
 
     #[test]
+    fn horizontal_and_vertical_alone_have_a_zero_length_residual_escape() {
+        let (pattern, document, _) =
+            single_edge(Point2::new(0.0, 0.0), Point2::new(1.0, 0.0), |edge| {
+                vec![
+                    GeometricConstraintKindV1::Horizontal { edge },
+                    GeometricConstraintKindV1::Vertical { edge },
+                ]
+            });
+        let collapsed = pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, Point2::new(0.0, 0.0)))
+            .collect();
+        assert_eq!(
+            residuals(&pattern, &document, &collapsed).expect("finite zero-length residuals"),
+            vec![0.0, 0.0]
+        );
+    }
+
+    #[test]
     fn fixed_angle_uses_vectors_pointing_outward_from_the_declared_vertex() {
         let center = VertexId::new();
         let x = VertexId::new();

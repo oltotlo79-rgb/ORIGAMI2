@@ -152,7 +152,7 @@ const DIRECT_CONFLICTS = [
       kind: 'horizontal_and_vertical',
       edge: EDGE_1,
     },
-    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2],
+    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
   },
   {
     conflict: {
@@ -737,6 +737,16 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
       status: 'direct_conflict',
       conflicts: [{
         conflict: { kind: 'future_conflict', edge: EDGE_1 },
+        constraint_ids: [CONSTRAINT_1, CONSTRAINT_2],
+      }],
+    }),
+    response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'horizontal_and_vertical',
+          edge: EDGE_1,
+        },
         constraint_ids: [CONSTRAINT_1, CONSTRAINT_2],
       }],
     }),

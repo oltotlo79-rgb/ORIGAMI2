@@ -1648,13 +1648,20 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
             horizontal_ids.first(),
             vertical.get(edge).and_then(|ids| ids.first()),
         ) {
-            push_conflict(
-                &mut conflicts,
-                DirectConstraintConflictKindV1::HorizontalAndVertical {
-                    edge: edge_ids[edge],
-                },
-                [*horizontal_id, *vertical_id],
-            );
+            if let Some(fixed) = fixed_lengths
+                .get(edge)
+                .and_then(ScalarGroupSummary::consistent_assignment)
+            {
+                push_conflict(
+                    &mut conflicts,
+                    DirectConstraintConflictKindV1::HorizontalAndVertical {
+                        edge: edge_ids[edge],
+                    },
+                    [*horizontal_id, *vertical_id, fixed.id],
+                );
+            } else {
+                unchecked.extend([*horizontal_id, *vertical_id]);
+            }
         }
     }
     for (pair, equal_ids) in &equal_lengths {
@@ -3831,7 +3838,7 @@ mod tests {
     }
 
     #[test]
-    fn nondegenerate_edge_cannot_be_both_horizontal_and_vertical() {
+    fn horizontal_and_vertical_require_a_positive_fixed_length_to_prove_conflict() {
         let fixture = Fixture::new();
         let horizontal = record(GeometricConstraintKindV1::Horizontal {
             edge: fixture.edges[0],
@@ -3843,12 +3850,29 @@ mod tests {
             .expect("each constraint is locally valid");
         assert_eq!(
             prepared.preflight(),
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                unchecked_constraint_ids: sorted_ids(&[horizontal.id, vertical.id]),
+            }
+        );
+
+        let fixed = record(GeometricConstraintKindV1::FixedLength {
+            edge: fixture.edges[0],
+            length_mm: 1.0,
+        });
+        let prepared = prepare(
+            &fixture,
+            &document([vertical.clone(), fixed.clone(), horizontal.clone()]),
+        )
+        .expect("positive fixed length excludes the zero-length escape");
+        assert_eq!(
+            prepared.preflight(),
             ConstraintPreflightV1::DirectConflict {
                 conflicts: vec![DirectConstraintConflictV1 {
                     conflict: DirectConstraintConflictKindV1::HorizontalAndVertical {
                         edge: fixture.edges[0],
                     },
-                    constraint_ids: sorted_ids(&[horizontal.id, vertical.id]),
+                    constraint_ids: sorted_ids(&[horizontal.id, vertical.id, fixed.id]),
                 }],
             }
         );
@@ -3902,6 +3926,10 @@ mod tests {
         let fixture = Fixture::new();
         let cases = [
             vec![
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[0],
+                    length_mm: 1.0,
+                }),
                 record(GeometricConstraintKindV1::Horizontal {
                     edge: fixture.edges[0],
                 }),

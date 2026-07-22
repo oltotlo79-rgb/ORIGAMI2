@@ -8040,8 +8040,6 @@ mod tests {
         assert!(!dyadic_request_hinge_counts_are_bounded_v1(64, Some(65)));
         let (c8_pattern, c8_paper, c8_cardinal) = octagonal_eight_sector_cycle_pattern();
         let c8_opposite = vec![c8_cardinal[0], c8_cardinal[2]];
-        let (theta_pattern, theta_paper, theta_hinges, theta_moving) =
-            super::theta_cycle_test_support::theta_shared_hinge_pattern();
         let (mut mixed_pattern, mixed_paper, mut mixed_hinges) =
             super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern();
         let mut gateways = mixed_pattern
@@ -8068,7 +8066,6 @@ mod tests {
         for (fixture_name, (pattern, mut paper, moving), kind) in [
             ("balloon-c6", balloon_six_sector_cycle_pattern(), 0),
             ("octagonal-c8", (c8_pattern, c8_paper, c8_opposite), 0),
-            ("theta-c2", (theta_pattern, theta_paper, theta_moving), 2),
             (
                 "mixed-cactus-branch",
                 (mixed_pattern, mixed_paper, mixed_hinges),

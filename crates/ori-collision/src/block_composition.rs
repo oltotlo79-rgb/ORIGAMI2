@@ -40,6 +40,34 @@ impl BlockComposedPathAuthorityV1 {
         self.blocks.len()
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn revalidates_v1(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+        source: &LayerOrderSnapshot,
+        fixed_face: FaceId,
+        schedule: &CanonicalCycleScheduleV1,
+        closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+        thickness: f64,
+        articulation_pose_fingerprint: [u8; 32],
+        articulation_layer_fingerprint: [u8; 32],
+    ) -> bool {
+        self.positive
+            .is_for(geometry, fixed_face, schedule, closure, thickness)
+            && self
+                .layer
+                .is_for(geometry, source, schedule, closure, thickness)
+            && self.binding
+                == block_binding_v1(
+                    schedule,
+                    closure,
+                    &self.blocks,
+                    articulation_pose_fingerprint,
+                    articulation_layer_fingerprint,
+                )
+    }
+
     pub fn into_parent_proofs(
         self,
     ) -> (
@@ -48,6 +76,31 @@ impl BlockComposedPathAuthorityV1 {
     ) {
         (self.positive, self.layer)
     }
+}
+
+fn block_binding_v1(
+    schedule: &CanonicalCycleScheduleV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+    blocks: &[CanonicalBlockBindingV1],
+    articulation_pose_fingerprint: [u8; 32],
+    articulation_layer_fingerprint: [u8; 32],
+) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(BLOCK_COMPOSED_PATH_MODEL_ID_V1.as_bytes());
+    hash.update(schedule.certificate_binding_fingerprint_v1());
+    hash.update(closure.partition_binding_fingerprint_v1());
+    hash.update(articulation_pose_fingerprint);
+    hash.update(articulation_layer_fingerprint);
+    for block in blocks {
+        hash.update((block.edges.len() as u64).to_le_bytes());
+        for edge in &block.edges {
+            hash.update(edge.canonical_bytes());
+        }
+        for face in &block.faces {
+            hash.update(face.canonical_bytes());
+        }
+    }
+    hash.finalize().into()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -129,23 +182,15 @@ pub fn issue_block_composed_path_authority_v1(
     if !has_articulation {
         return None;
     }
-    let mut hash = Sha256::new();
-    hash.update(BLOCK_COMPOSED_PATH_MODEL_ID_V1.as_bytes());
-    hash.update(schedule.certificate_binding_fingerprint_v1());
-    hash.update(closure.partition_binding_fingerprint_v1());
-    hash.update(articulation_pose_fingerprint);
-    hash.update(articulation_layer_fingerprint);
-    for block in &canonical {
-        hash.update((block.edges.len() as u64).to_le_bytes());
-        for edge in &block.edges {
-            hash.update(edge.canonical_bytes());
-        }
-        for face in &block.faces {
-            hash.update(face.canonical_bytes());
-        }
-    }
+    let binding = block_binding_v1(
+        schedule,
+        closure,
+        &canonical,
+        articulation_pose_fingerprint,
+        articulation_layer_fingerprint,
+    );
     Some(BlockComposedPathAuthorityV1 {
-        binding: hash.finalize().into(),
+        binding,
         blocks: canonical,
         positive,
         layer,

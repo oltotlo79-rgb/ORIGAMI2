@@ -6,7 +6,7 @@
 
 |項目|判定|対応証拠|
 |---|---|---|
-|A-1/A-2|妥当・修正済み|`1863da8`。cross-block cell/pairを無音破棄せず、証明済みpairだけを保存する。|
+|A-1/A-2|妥当・修正済み|`1863da8`, `0391d91`。cross-block cell/pairを無音破棄せず、保存pairを両block authorityが実際に証明した重複なし和集合へ限定し、authorityの認証済みpair数と再照合する。|
 |A-3|妥当・修正済み|`b1efa98`。頂点ドラッグ時の未分割edge snapを拒否するDOM回帰を追加。|
 |A-4|妥当・修正済み|`209ef1f`。角二等分を外積と方向残差の2行にし、反対向きを拒否。WSL 1/1。|
 |A-5|妥当・修正済み|`209ef1f`。JSON writerでunderlayを検証し、ORI2 writerにも伝播。WSL 1/1。|
@@ -23,7 +23,7 @@
 |B-5|妥当・修正済み|`657f902`。山谷は表示名でなく選択crease assignmentと明示kindで識別。WSL `ori-instructions` 40/40。|
 |B-6|一部妥当・修正済み|非連結blockを許す指摘は妥当。`ecc1dd3`でblock intersection graphをtreeに限定。公開型の死蔵は機能欠陥ではなく整理課題。|
 |B-7|妥当・修正済み|`4c28d50`。split/merged noticeを追加。|
-|B-8|説明矛盾として妥当・修正済み|`6412942`で当時の制限を正確に明記し、`77e8f1d`と後続境界回帰で円×線・円×円の交点snapを頂点追加・辺分割へ接続した。|
+|B-8|説明矛盾として妥当・修正済み|`6412942`で当時の制限を正確に明記し、`77e8f1d`, `9d20cde`で円×線・円×円の交点snapを頂点追加・辺分割へ接続し、接線・重複・非有限値・紙面外を回帰した。|
 
 ## C: 改善
 
@@ -42,7 +42,7 @@
 |項目|要件照合|判定|
 |---|---|---|
 |F-2 コンパス円交点snap|EDT-007 MUST|指摘は妥当。`77e8f1d`で円×線・円×円交点を既存snap契約と頂点追加・辺分割へ接続し、接線・重複円・非有限値・同一点候補・紙面外境界を追加回帰した。既存native commandを共有するためUndo/Redo・履歴永続化も同じ経路となる。|
-|F-6 step camera取得|INS-004 MUST|`57ee8e5`, `818d9f6`。3D previewの現在cameraを取得して選択stepの認証済みvisual更新へ渡し、camera未取得時は操作を無効化する。DOM回帰を追加した。|
+|F-6 step camera取得|INS-004 MUST|`57ee8e5`, `818d9f6`, `70c4c7f`。3D previewの現在cameraを取得して選択stepの認証済みvisual更新へ渡し、camera未取得時は操作を無効化する。取得cameraをexact preview model keyへ束縛し、project・revision・model切替後の古いcameraを別stepへ保存できない。DOMとApp統合回帰を追加した。|
 |EDT-009 最小不能部分集合|EDT-009 MUST|「Gauss-Newtonのrankから一般MUSを容易に抽出できる」という実装提案は根拠不足。局所solverの`NonConvergent`、`RankDeficient`、資源超過は不充足証明ではなく、これをoracleにしたsubset縮約は偽の矛盾原因を表示しうる。現状はsoundな7種の直接矛盾だけcanonicalな最小原因IDを表示し、それ以外を`Unknown`へ閉じるため部分実装を維持する。一般化はsoundなunsat oracleを先に要する。|
 |F-D/F-E|INS-001|作成・任意index移動は既に満たす。複製、先頭末尾button、DnDは新規shortcutでありMUST未達ではない。|
 |F-A/F-11|PRJ-008/SIM系|既存の単線・寸法表示を越える新規計測モード。新規スコープ。|
@@ -57,7 +57,7 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 ## 検証
 
 - frontend TypeScript/Vite build: 成功。
-- frontend snapshot: 1,653/1,653。
+- frontend Node: 1,656/1,656、DOM: 335/335。
 - `StackedFoldPanel` DOM: 36/36。
 - `InstructionTimelinePanel` DOM: 11/11。
 - WSL `ori-core` A-4: 1/1、`ori-formats` A-5: 1/1。

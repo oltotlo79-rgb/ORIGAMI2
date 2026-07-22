@@ -71,6 +71,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24.11.1
@@ -78,6 +79,13 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
       - run: npm test
+      - name: Verify all 87 requirement evidence bindings
+        working-directory: .
+        env:
+          REQUIREMENTS_EVIDENCE_ROOT: ${{ github.workspace }}
+        run: |
+          node --test .github/tests/requirements-traceability.test.mjs
+          node .github/scripts/verify_requirements_traceability.mjs docs/requirements-status.md docs/requirements-evidence.v1.json docs/requirements-ids.v1.txt
       - name: Audit production CSP permissions secrets dependency licenses and diagnostics privacy
         id: production-security
         shell: bash

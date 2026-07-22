@@ -1,0 +1,2335 @@
+{
+  "schema": "origami2.requirements-evidence.v1",
+  "requirements": [
+    {
+      "id": "EDT-001",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| EDT-001 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/editor.rs",
+          "selector": "Command::AddEdge {"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/numericExpressionIntegration.test.ts",
+          "selector": "selected-face translation moves its complete bounded vertex set in one native edit"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "EDT-002",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| EDT-002 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/coreClient.ts",
+          "selector": "export function addVertex("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/numericExpressionIntegration.test.ts",
+          "selector": "vertex and polar construction expressions retain source, ID, and native authority"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "EDT-003",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| EDT-003 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/coreClient.ts",
+          "selector": "export function addConnectedVertex("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/numericExpressionIntegration.test.ts",
+          "selector": "vertex and polar construction expressions retain source, ID, and native authority"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "EDT-004",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| EDT-004 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/numericExpressionNative.ts",
+          "selector": "export function evaluatePositiveMillimetreExpression("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/numericExpressionIntegration.test.ts",
+          "selector": "existing paper expressions are native-revalidated, undoable, and persisted"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "EDT-005",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| EDT-005 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/numericExpressionNative.ts",
+          "selector": "export function evaluatePositiveMillimetreExpression("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/numericExpressionIntegration.test.ts",
+          "selector": "existing paper expressions are native-revalidated, undoable, and persisted"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "EDT-006",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| EDT-006 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/snap.ts",
+          "selector": "export function resolveSnapTarget("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/snap.test.ts",
+          "selector": "addition priority is T repair, vertex, proper, midpoint, direction, parallel, angle, edge, grid"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "EDT-007",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| EDT-007 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/snap.ts",
+          "selector": "export function resolveCompassIntersectionSnap("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/snap.test.ts",
+          "selector": "compass circles snap to bounded line and circle intersections"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "EDT-008",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| EDT-008 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/coreClient.ts",
+          "selector": "export function addGeometricConstraint("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/geometricConstraintsIntegration.test.ts",
+          "selector": "constraints are editor-owned, dirty-tracked, snapshotted, and persisted"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "EDT-009",
+      "status": "部分実装",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| EDT-009 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "pub fn preflight_direct_conflicts_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "fn fixed_angle_parallel_graph_has_canonical_path_cap_and_work_boundary()"
+        }
+      ],
+      "limitations": [
+        "sound direct and bounded ratio, equal-length, and parallel graph conflicts only"
+      ],
+      "missingAcceptance": [
+        "sound general unsatisfiability oracle and minimal unsatisfiable subsets for every supported constraint kind"
+      ]
+    },
+    {
+      "id": "EDT-010",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| EDT-010 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/coreClient.ts",
+          "selector": "export function mirrorEdgeLeftRight("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/mirrorSelectionIntegration.test.ts",
+          "selector": "core mirror admission closes every mutation and identity escape"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "EDT-011",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| EDT-011 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-formats/src/project_folder.rs",
+          "selector": "pub fn write_project_folder_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-formats/src/project_folder.rs",
+          "selector": "fn unfinished_empty_project_uses_safe_placeholder_instead_of_blocking_save()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-formats/src/lib.rs",
+          "selector": "fn validate_project_geometric_constraints("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-formats/src/lib.rs",
+          "selector": "fn constraint_existence_check_preserves_repairable_degenerate_geometry()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "EDT-012",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| EDT-012 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/coreClient.ts",
+          "selector": "export function analyzeProjectTopology("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/topologyBlockerPresentation.test.ts",
+          "selector": "3D transition blockers expose every reason and every related geometry location"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "HIS-001",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| HIS-001 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/editor.rs",
+          "selector": "pub fn execute("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/editor.rs",
+          "selector": "fn execute_undo_and_redo_pushes_all_use_the_instance_history_limit()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "HIS-002",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| HIS-002 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/editor/history_persistence.rs",
+          "selector": "pub struct EditorHistoryV1 {"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-formats/src/ori2.rs",
+          "selector": "fn custom_history_limit_round_trips_in_an_authenticated_third_entry()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "HIS-003",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| HIS-003 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/editor.rs",
+          "selector": "pub fn set_history_entry_limit("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/editor.rs",
+          "selector": "fn execute_undo_and_redo_pushes_all_use_the_instance_history_limit()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "HIS-004",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| HIS-004 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src-tauri/src/recovery.rs",
+          "selector": "fn run_recovery_autosave_tick("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/recovery.rs",
+          "selector": "fn same_revision_history_limit_change_updates_checkpoint_then_deduplicates()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "HIS-005",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| HIS-005 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src-tauri/src/recovery.rs",
+          "selector": "pub(super) async fn restore_recovery("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/recovery.rs",
+          "selector": "fn dirty_autosave_and_startup_restore_preserve_limit_and_both_history_stacks()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "HIS-006",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| HIS-006 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src-tauri/src/recovery.rs",
+          "selector": "pub(super) fn prepare_window_close("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/recovery.rs",
+          "selector": "fn window_close_prepare_only_arms_an_idempotent_cancelable_token()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "INS-001",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| INS-001 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/components/InstructionTimelinePanel.tsx",
+          "selector": "export function InstructionTimelinePanel({"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/instructionRequirementsCoverage.test.ts",
+          "selector": "INS-001 through INS-006 retain timeline pose visual guide and recording contracts"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "INS-002",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| INS-002 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/instructionTimeline.ts",
+          "selector": "export function createInstructionPlaybackPlan("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/instructionTimeline.test.ts",
+          "selector": "matches complete hinge vectors independent of record order"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "INS-003",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| INS-003 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-domain/src/lib.rs",
+          "selector": "pub struct InstructionHandGuide {"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/instructionHandGuideIntegration.test.ts",
+          "selector": "instruction hand guides are authored and rendered as a touch point plus direction"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "INS-004",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| INS-004 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-domain/src/lib.rs",
+          "selector": "pub struct InstructionVisual {"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/instructionTimeline.test.ts",
+          "selector": "validates authored cameras, arrows, focus points, and hand guides"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "INS-005",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| INS-005 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-domain/src/lib.rs",
+          "selector": "pub struct InstructionHandGuide {"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/instructionTimeline.test.ts",
+          "selector": "validates authored cameras, arrows, focus points, and hand guides"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "INS-006",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| INS-006 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/instructionAutoRecord.ts",
+          "selector": "export function planInstructionAutoRecord("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/instructionAutoRecord.test.ts",
+          "selector": "plans exactly one editable step for a completed manual 3D edit"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "INS-007",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| INS-007 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/coreClient.ts",
+          "selector": "export function splitInstructionStep("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/instructionRequirementsCoverage.test.ts",
+          "selector": "INS-007 auto recording split merge angle adjustment and durable history are complete"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "INS-008",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| INS-008 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/foldTechniqueTimelineProposal.ts",
+          "selector": "export function createFoldTechniqueTimelineProposalV1("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldTechniqueTimelineProposal.test.ts",
+          "selector": "builds one deterministic inert proposal without losing source declarations"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "INS-009",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| INS-009 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/components/FoldTechniqueEditorDialog.tsx",
+          "selector": "export function FoldTechniqueEditorDialog({"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldTechniqueFileIntegration.test.ts",
+          "selector": "App exposes the complete inert create/import/edit/save-as workflow"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "INS-010",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| INS-010 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/instructionTimeline.ts",
+          "selector": "export function createInstructionPlaybackPlan("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/instructionRequirementsCoverage.test.ts",
+          "selector": "INS-008 through INS-010 retain named techniques animation images PDF and SVG"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "IO-001",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| IO-001 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-formats/src/ori2.rs",
+          "selector": "pub fn write_project_ori2("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-formats/src/ori2.rs",
+          "selector": "fn ori2_round_trip_preserves_project()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "IO-002",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| IO-002 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-formats/src/ori2.rs",
+          "selector": "pub struct Ori2ProjectArchive {"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-formats/src/ori2.rs",
+          "selector": "fn custom_history_limit_round_trips_in_an_authenticated_third_entry()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "IO-003",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| IO-003 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-formats/src/project_folder.rs",
+          "selector": "pub fn write_project_folder_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-formats/src/project_folder.rs",
+          "selector": "fn optional_history_is_authenticated_and_round_trips()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "IO-004",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| IO-004 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/foldImport.ts",
+          "selector": "export function initialFoldImportMapping("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldImportIntegration.test.ts",
+          "selector": "the client exposes only token-based preview, apply, and cancel FOLD invocations"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "IO-005",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| IO-005 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/svgImport.ts",
+          "selector": "export function initialSvgImportMapping("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/svgImport.test.ts",
+          "selector": "SVG import preselects only explicit semantic hints"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "IO-006",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| IO-006 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/creaseExport.ts",
+          "selector": "export function isCreasePatternExportFormat("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/creaseExport.test.ts",
+          "selector": "export formats are a closed FOLD/SVG/PDF/DXF set with stable labels"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "IO-007",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| IO-007 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/staticMeshExport.ts",
+          "selector": "export function isStaticMeshExportFormat("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/staticMeshExport.test.ts",
+          "selector": "strictly admits all native static-mesh preview formats"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "IO-008",
+      "status": "実装済み",
+      "commits": [
+        "6643ca273b99e0a5a99eba82e904bcbd840166ac"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| IO-008 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/staticMeshExport.ts",
+          "selector": "export function formatStaticMeshExportBytes("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/staticMeshExport.test.ts",
+          "selector": "printability report is bounded, strict, and fail-closed"
+        },
+        {
+          "kind": "contract",
+          "path": ".github/workflows/ci.yml",
+          "selector": "Load generated GLB in pinned Khronos Sample Viewer"
+        },
+        {
+          "kind": "contract",
+          "path": ".github/workflows/ci.yml",
+          "selector": "Import generated exports in Blender LTS"
+        },
+        {
+          "kind": "contract",
+          "path": ".github/workflows/ci.yml",
+          "selector": "Install checksum-verified PrusaSlicer 2.9.6"
+        },
+        {
+          "kind": "test",
+          "path": ".github/tests/formal-release.test.mjs",
+          "selector": "release-gating CI uses exact toolchains and digest-verified external tools"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "IO-009",
+      "status": "実装済み",
+      "commits": [
+        "6643ca273b99e0a5a99eba82e904bcbd840166ac"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| IO-009 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/creaseExport.ts",
+          "selector": "export function creasePatternExportWarningMessage("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/creaseExport.test.ts",
+          "selector": "native export warnings are localized from a fixed vocabulary without leaking unknown text"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/instructionExport.ts",
+          "selector": "export function instructionExportWarningMessage("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/instructionExport.test.ts",
+          "selector": "instruction export warning categories select trusted Japanese and English text"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/staticMeshExport.ts",
+          "selector": "export function staticMeshExportWarningMessage("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/staticMeshExport.test.ts",
+          "selector": "loss messages explicitly disclose mid-surface and STL limitations"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "LIN-001",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| LIN-001 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/editor.rs",
+          "selector": "Command::AddEdge {"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/editor.rs",
+          "selector": "fn edge_split_preserves_reverse_orientation_and_each_non_boundary_kind()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "LIN-002",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| LIN-002 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-domain/src/lib.rs",
+          "selector": "pub struct Edge {"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/editor.rs",
+          "selector": "fn edge_split_preserves_ids_kind_order_and_history_exactly()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "LIN-003",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| LIN-003 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/creaseLinePresentation.ts",
+          "selector": "export const CREASE_LINE_PRESENTATIONS:"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/creaseLinePresentation.test.ts",
+          "selector": "all five crease kinds remain unique after every screen colour is removed"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "LIN-004",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| LIN-004 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-domain/src/layers.rs",
+          "selector": "pub struct ProjectLayerDocumentV1 {"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/projectLayers.test.ts",
+          "selector": "normalizes, detaches, freezes, and JSON-round-trips the exact V1 document"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "LIN-005",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| LIN-005 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/coreClient.ts",
+          "selector": "export function updateProjectLayerPresentation("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/canvasBatching.test.ts",
+          "selector": "canvas line batches preserve layer order and opacity before selected highlights"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "OPS-001",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| OPS-001 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/githubReleaseUpdate.ts",
+          "selector": "export function createUpdateCheckClient("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/githubReleaseUpdate.test.ts",
+          "selector": "manual checks compare versions without sending local inputs"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "OPS-002",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| OPS-002 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/updateCheckSettings.ts",
+          "selector": "export function createUpdateCheckSettingsStore("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/updateCheckSettings.test.ts",
+          "selector": "explicit disable persists canonically and notifies only real changes"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "OPS-003",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| OPS-003 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/components/UpdateCheckControl.tsx",
+          "selector": "export function UpdateCheckPopover("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/updateCheckControl.dom.test.tsx",
+          "selector": "opens its native localized popover without communicating"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "OPS-004",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| OPS-004 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/diagnostics.ts",
+          "selector": "export function createDiagnostics()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/diagnostics.test.ts",
+          "selector": "an empty snapshot contains only the fixed schema and canonical scope order"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "OPS-005",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| OPS-005 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/diagnostics.ts",
+          "selector": "export function serializeDiagnostics()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/diagnostics.test.ts",
+          "selector": "raw paths, project content, UUIDs, coordinates, and errors cannot enter output"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "OPS-006",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| OPS-006 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/diagnosticsShare.ts",
+          "selector": "export function createDiagnosticsShareClient("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/diagnosticsShare.test.ts",
+          "selector": "save sends only the validated generation and accepts a matching result"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "OPS-007",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| OPS-007 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": ".github/workflows/release-windows.yml",
+          "selector": "name: Windows production release"
+        },
+        {
+          "kind": "test",
+          "path": ".github/tests/formal-release.test.mjs",
+          "selector": "CI and formal release share the strict Windows bundle contract"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "OPS-008",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| OPS-008 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": ".github/workflows/ci.yml",
+          "selector": "macos-latest"
+        },
+        {
+          "kind": "test",
+          "path": ".github/tests/formal-release.test.mjs",
+          "selector": "CI and formal release share the strict macOS bundle contract"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "PRJ-001",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| PRJ-001 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-formats/src/lib.rs",
+          "selector": "pub struct ProjectDocument {"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-formats/src/lib.rs",
+          "selector": "fn json_round_trip_preserves_ids_geometry_and_kinds()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "PRJ-002",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| PRJ-002 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-domain/src/lib.rs",
+          "selector": "pub struct CreasePattern {"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/editor.rs",
+          "selector": "fn edge_split_preserves_ids_kind_order_and_history_exactly()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "PRJ-003",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| PRJ-003 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-domain/src/lib.rs",
+          "selector": "pub struct Paper {"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-formats/src/lib.rs",
+          "selector": "fn json_round_trip_preserves_complete_paper_definition()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "PRJ-004",
+      "status": "実装済み",
+      "commits": [
+        "6643ca273b99e0a5a99eba82e904bcbd840166ac"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| PRJ-004 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/editor.rs",
+          "selector": "Command::SetCuttingAllowed {"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/editor.rs",
+          "selector": "fn cut_edges_require_an_undoable_project_setting()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "PRJ-005",
+      "status": "実装済み",
+      "commits": [
+        "6643ca273b99e0a5a99eba82e904bcbd840166ac"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| PRJ-005 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-formats/src/lib.rs",
+          "selector": "#[serde(deny_unknown_fields)]"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-formats/src/lib.rs",
+          "selector": "fn project_schema_rejects_adhesive_and_glue_elements()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "PRJ-006",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| PRJ-006 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-domain/src/lib.rs",
+          "selector": "pub struct Paper {"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-formats/src/lib.rs",
+          "selector": "fn json_round_trip_preserves_complete_paper_definition()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "PRJ-007",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| PRJ-007 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-domain/src/lib.rs",
+          "selector": "pub struct PaperAppearance {"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-formats/src/lib.rs",
+          "selector": "fn json_round_trip_preserves_complete_paper_definition()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "PRJ-008",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| PRJ-008 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-domain/src/lib.rs",
+          "selector": "pub enum LengthDisplayUnit {"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-formats/src/lib.rs",
+          "selector": "fn json_round_trip_preserves_complete_paper_definition()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "PRJ-009",
+      "status": "実装済み",
+      "commits": [
+        "6643ca273b99e0a5a99eba82e904bcbd840166ac"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| PRJ-009 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-domain/src/element_metadata.rs",
+          "selector": "pub struct ElementMetadataDocumentV1 {"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/editor.rs",
+          "selector": "fn vertex_edge_and_face_metadata_are_undoable_and_persistable()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "SIM-001",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| SIM-001 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/foldPreviewModel.ts",
+          "selector": "export function buildFoldPreviewModel("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldPreviewModel.test.ts",
+          "selector": "a cellular fold graph preserves every face and validated hinge in canonical order"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "SIM-002",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| SIM-002 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/foldPreviewAngleDrag.ts",
+          "selector": "export function reduceFoldPreviewAngleDrag("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldPreviewAngleDrag.test.ts",
+          "selector": "starts one primary unmodified mouse drag from the supplied applied angle"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "SIM-003",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| SIM-003 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/foldPreviewPhysicalGrab.ts",
+          "selector": "export function prepareFoldPreviewPhysicalGrab("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldPreviewPhysicalGrab.test.ts",
+          "selector": "physical grab uses one stable mapping distinct from vertical parameter drag"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "SIM-004",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| SIM-004 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/foldPreviewAnchoring.ts",
+          "selector": "export function rerootFoldPreviewTree("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldPreviewAnchoring.test.ts",
+          "selector": "dependent faces follow the selected hinge away from the fixed root"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "SIM-005",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| SIM-005 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/foldPreviewPresentation.ts",
+          "selector": "export function describeFoldPreviewThickness("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/nativeStaticCollisionNative.test.ts",
+          "selector": "inspection accepts a strictly bound positive-thickness penetration reason"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "SIM-006",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| SIM-006 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/foldPreviewTreeSingleHingeContinuousCollision.ts",
+          "selector": "export function prepareFoldPreviewTreeSingleHingeContinuousCollision("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldPreviewTreeSingleHingeContinuousCollision.test.ts",
+          "selector": "full-face point analysis blocks a collision with a stationary branch"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "SIM-007",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| SIM-007 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/foldPreviewSceneRuntime.ts",
+          "selector": "export function createFoldPreviewSceneRuntime("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldPreviewSceneRuntime.test.ts",
+          "selector": "scene runtime preserves the preview camera, renderer, lights, grid, and palette"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldPreviewSceneRuntime.test.ts",
+          "selector": "dispose is best-effort, idempotent, and releases only runtime-owned resources"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "SIM-008",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| SIM-008 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/foldPreviewModel.ts",
+          "selector": "export function buildFoldPreviewModel("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldPreviewModel.test.ts",
+          "selector": "a cut keeps both pieces visible without becoming a 3D hinge connection"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "SIM-009",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| SIM-009 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/renderBenchmark.ts",
+          "selector": "export function prepareBenchmarkRenderData("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/benchmarkBasicEditingIntegration.test.ts",
+          "selector": "the 10,000-edge benchmark exposes basic vertex and edge editing"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "SIM-010",
+      "status": "部分実装",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| SIM-010 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/coreClient.ts",
+          "selector": "export function applyDyadicPosePathPreviewV1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/continuous_path.rs",
+          "selector": "fn continuous_layer_transport_binds_every_dyadic_transition_and_fails_closed()"
+        }
+      ],
+      "limitations": [
+        "certified bounded dyadic graph/cycle and positive-thickness tree paths with fail-closed apply only"
+      ],
+      "missingAcceptance": [
+        "arbitrary-pose positive-thickness multi-hinge continuous paths, general multi-layer transport and closure, and a dedicated post-apply layer-order viewer"
+      ]
+    },
+    {
+      "id": "UI-001",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| UI-001 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/i18n.ts",
+          "selector": "export function createLocaleStore("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/i18n.test.ts",
+          "selector": "valid storage is initialized once and invalid storage defaults to Japanese"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "UI-002",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| UI-002 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/components/CreaseCanvas.tsx",
+          "selector": "export function CreaseCanvas({"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/numericExpressionIntegration.test.ts",
+          "selector": "vertex and polar construction expressions retain source, ID, and native authority"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "UI-003",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| UI-003 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/components/FoldPreview.tsx",
+          "selector": "export function FoldPreview({"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/crossViewSelectionIntegration.test.ts",
+          "selector": "2D topology faces and 3D element markers are selectable and highlighted"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "UI-004",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| UI-004 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/workspaceLayout.ts",
+          "selector": "export function createWorkspaceLayoutStore("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/workspaceLayout.test.ts",
+          "selector": "the exact versioned layout wire round trips without extra fields"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "UI-005",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| UI-005 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/theme.ts",
+          "selector": "export function createThemeStore("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/theme.test.ts",
+          "selector": "manual selection persists, detaches OS tracking, and system restores it"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "UI-006",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| UI-006 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/keyboardShortcutSettings.ts",
+          "selector": "export function resolveConfiguredKeyboardShortcut("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/keyboardShortcutSettings.test.ts",
+          "selector": "portable defaults preserve Windows and macOS standard commands"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "UI-007",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| UI-007 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/keyboardShortcutSettings.ts",
+          "selector": "export function createKeyboardShortcutStore("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/keyboardShortcutSettings.test.ts",
+          "selector": "strict versioned persistence round trips only canonical assignments"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "UI-008",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| UI-008 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/foldPreviewCameraInteraction.ts",
+          "selector": "export function resolveFoldPreviewCameraCommand("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldPreviewCameraInteraction.test.ts",
+          "selector": "camera key map supports zoom and reset across physical keyboard layouts"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldPreviewCameraInteraction.test.ts",
+          "selector": "a primary stationary pointer produces one selection gesture"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "UI-009",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| UI-009 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/App.tsx",
+          "selector": "selectedFaceId={selectedFaceId}"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/crossViewSelectionIntegration.test.ts",
+          "selector": "App shares line vertex and face selections across both views"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "VAL-001",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| VAL-001 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-geometry/src/validation.rs",
+          "selector": "pub fn validate_crease_pattern("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-geometry/src/validation.rs",
+          "selector": "fn detects_an_unsplit_crossing()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "VAL-002",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| VAL-002 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-topology/src/local_flat_foldability.rs",
+          "selector": "pub fn analyze_local_flat_foldability("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-topology/src/local_flat_foldability.rs",
+          "selector": "fn kawasaki_and_maekawa_failures_remain_independent()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "VAL-003",
+      "status": "実装済み",
+      "commits": [
+        "6643ca273b99e0a5a99eba82e904bcbd840166ac"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| VAL-003 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-foldability/src/lib.rs",
+          "selector": "pub fn analyze_global_flat_foldability("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-foldability/src/lib.rs",
+          "selector": "fn public_geometry_api_proves_a_three_panel_accordion()"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "VAL-004",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| VAL-004 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/foldPreviewTreeSingleHingeContinuousCollision.ts",
+          "selector": "export function prepareFoldPreviewTreeSingleHingeContinuousCollision("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldPreviewTreeSingleHingeContinuousCollision.test.ts",
+          "selector": "full-face point analysis blocks a collision with a stationary branch"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "VAL-005",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| VAL-005 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/globalFlatFoldability.ts",
+          "selector": "export function normalizeGlobalFlatFoldabilityTimePreset("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/globalFlatFoldabilityPanel.dom.test.tsx",
+          "selector": "starts idle with the three time presets and the permanent scope caution"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "VAL-006",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| VAL-006 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/globalFlatFoldabilityCoordinator.ts",
+          "selector": "export function createGlobalFlatFoldabilityCoordinator<"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/globalFlatFoldabilityPanel.dom.test.tsx",
+          "selector": "keeps an enabled native cancel button reachable during running and cancellation"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "VAL-007",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| VAL-007 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/globalFlatFoldabilityNative.ts",
+          "selector": "export function createGlobalFlatFoldabilityNativeTransport("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/globalFlatFoldabilityCoordinator.test.ts",
+          "selector": "start binds one preset and revision, then polls full DTOs to one terminal"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "VAL-008",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| VAL-008 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/foldPreviewTreeSingleHingeCorrectionAnalysisCoordinator.ts",
+          "selector": "export function createFoldPreviewTreeSingleHingeCorrectionAnalysisCoordinator<"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/foldPreviewTreeSingleHingeCorrectionAnalysisCoordinator.test.ts",
+          "selector": "certified state is a frozen detached authority-free snapshot"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    },
+    {
+      "id": "VAL-009",
+      "status": "実装済み",
+      "commits": [
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+      ],
+      "evidence": [
+        {
+          "kind": "documentation",
+          "path": "docs/requirements-status.md",
+          "selector": "| VAL-009 |"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "apps/desktop/src/lib/globalFlatFoldabilityPresentation.ts",
+          "selector": "export function createGlobalFlatFoldabilityPresentation("
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/globalFlatFoldabilityPresentation.test.ts",
+          "selector": "all six terminal outcomes have distinct text and live announcements"
+        }
+      ],
+      "limitations": [],
+      "missingAcceptance": []
+    }
+  ]
+}

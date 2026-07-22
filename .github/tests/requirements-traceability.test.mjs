@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 
 const verifier = resolve(import.meta.dirname, '../scripts/verify_requirements_traceability.mjs')
+const repositoryRoot = resolve(import.meta.dirname, '../..')
+
+test('the versioned requirement ID contract matches all 87 authoritative rows', () => {
+  const status = readFileSync(join(repositoryRoot, 'docs/requirements-status.md'), 'utf8')
+  const ids = readFileSync(join(repositoryRoot, 'docs/requirements-ids.v1.txt'), 'utf8').trimEnd().split('\n')
+  const rows = [...status.matchAll(/^\|\s*([A-Z]{2,4}-\d{3})\s*\|/gmu)].map((match) => match[1]).sort()
+  assert.equal(ids.length, 87)
+  assert.deepEqual(ids, rows)
+  const workflow = readFileSync(join(repositoryRoot, '.github/workflows/ci.yml'), 'utf8')
+  assert.match(workflow, /frontend:[\s\S]*actions\/checkout@[0-9a-f]{40}[\s\S]*fetch-depth: 0[\s\S]*npm test[\s\S]*Verify all 87 requirement evidence bindings[\s\S]*requirements-traceability\.test\.mjs[\s\S]*verify_requirements_traceability\.mjs docs\/requirements-status\.md docs\/requirements-evidence\.v1\.json docs\/requirements-ids\.v1\.txt/u)
+})
 
 test('requirements traceability binds every status to ancestral code and executable evidence', () => {
   const root = mkdtempSync(join(tmpdir(), 'origami2-traceability-'))

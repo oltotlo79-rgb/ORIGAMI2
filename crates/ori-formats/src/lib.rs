@@ -2490,4 +2490,18 @@ mod tests {
             ))
         ));
     }
+
+    #[test]
+    fn project_schema_rejects_adhesive_and_glue_elements() {
+        let bytes = write_project_json(&sample_document()).expect("write project fixture");
+        for forbidden in ["adhesive", "glue"] {
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&bytes).expect("project JSON");
+            value[forbidden] = serde_json::json!([]);
+            assert!(matches!(
+                read_project_json(&serde_json::to_vec(&value).expect("forbidden-field bytes")),
+                Err(FormatError::InvalidJson(_))
+            ));
+        }
+    }
 }

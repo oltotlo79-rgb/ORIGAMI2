@@ -9127,6 +9127,111 @@ mod tests {
     }
 
     #[test]
+    fn eighty_four_hinge_flat_start_path_without_layer_transport_persists_atomically() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (pattern, mut paper, moving) =
+            super::dense_grid_cycle_test_support::rectangular_dense_cycle_pattern(7, 7);
+        paper.thickness_mm = 0.1;
+        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        let hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        assert_eq!((snapshot.faces.len(), hinges.len()), (49, 84));
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            snapshot.faces[0].id,
+        );
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let state = AppState::new(project);
+        let transactions =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let preview = propose_current_cycle_pose_inner(
+            None,
+            &state,
+            &transactions,
+            CurrentCyclePosePreviewRequestV1 {
+                progress_request_id: None,
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                cycle_schedule_v1: dense_grid_schedule(&hinges, &moving, 100),
+            },
+        )
+        .expect("84-hinge positive-thickness dense proof");
+        assert_eq!(
+            (preview.closure_leaf_count, preview.checked_hinge_count),
+            (1, 84)
+        );
+        assert!(preview.continuous_path_certified);
+        assert_eq!(preview.continuous_layer_transport_model_id, None);
+        assert_eq!(preview.continuous_layer_transition_count, 0);
+        assert_eq!(preview.continuous_layer_pair_order_count, 0);
+        assert_eq!(preview.continuous_layer_target_order_sha256, None);
+        assert!(preview.source_layer_order.is_empty());
+        assert!(preview.target_layer_order.is_empty());
+        assert!(!preview.authorizes_project_mutation);
+        assert!(
+            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                &state,
+                &GlobalFlatFoldabilityState::default(),
+                &transactions,
+                ProjectId::new(),
+            )
+            .is_err(),
+            "unknown transaction token must be an atomic no-op"
+        );
+        assert_eq!(
+            super::super::lock_project(&state)
+                .unwrap()
+                .editor
+                .revision(),
+            revision
+        );
+        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            &state,
+            &GlobalFlatFoldabilityState::default(),
+            &transactions,
+            preview.transaction_token,
+        )
+        .expect("84-hinge dense proof applies atomically");
+        assert!(
+            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                &state,
+                &GlobalFlatFoldabilityState::default(),
+                &transactions,
+                preview.transaction_token,
+            )
+            .is_err(),
+            "consumed dense preview must be one-shot"
+        );
+        let mut project = super::super::lock_project(&state).unwrap();
+        assert_eq!(applied, revision + 1);
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        project.editor.undo(applied).unwrap();
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        let archive = project.project_archive().unwrap();
+        let reopened = super::super::ProjectState::from_project_archive(
+            archive,
+            std::path::PathBuf::from("eighty-four-hinge-dense.ori2"),
+        )
+        .unwrap();
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 1);
+    }
+
+    #[test]
     fn orthogonal_dense_rank_four_horizontal_axis_previews_and_applies() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         for thickness_mm in [0.1, 1.0, 3.0, 10_000.0] {

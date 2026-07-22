@@ -17410,6 +17410,24 @@ mod tests {
                 folder_provenance.fold_path_certificate_sha256,
                 Some(certificate)
             );
+            let folder_topology = EditorState::with_paper(
+                folder_restored.document.crease_pattern.clone(),
+                folder_restored.document.paper.clone(),
+            )
+            .topology_analysis_input(ns)
+            .analyze();
+            assert_eq!(
+                certify_beginner_fold_path_v1(
+                    &plan,
+                    &folder_restored.document.paper,
+                    &folder_restored.document.crease_pattern,
+                    folder_topology
+                        .simulation_snapshot()
+                        .expect("folder-restored positive tree topology"),
+                )
+                .expect("recertify folder-restored positive tree"),
+                certificate
+            );
             assert!(folder_provenance.generic_tree.is_some());
             assert!(
                 folder_restored

@@ -15643,7 +15643,21 @@ mod tests {
                 ))
                 .collect::<Vec<_>>(),
         );
-        let body_start = plan.crease_pattern.vertices.len() - 7;
+        let graph_vertex_count = profile
+            .generation_constraints
+            .skeleton_segments
+            .iter()
+            .flat_map(|segment| {
+                [
+                    (segment.start.x_tenths_mm, segment.start.y_tenths_mm),
+                    (segment.end.x_tenths_mm, segment.end.y_tenths_mm),
+                ]
+            })
+            .collect::<HashSet<_>>()
+            .len();
+        let body_start = plan.crease_pattern.vertices.len()
+            - graph_vertex_count
+            - usize::from(witness.witnessed_vertices);
         let mut cyclic_body = plan.crease_pattern.vertices[body_start..body_start + 4].to_vec();
         cyclic_body.rotate_left(2);
         cyclic_body.reverse();

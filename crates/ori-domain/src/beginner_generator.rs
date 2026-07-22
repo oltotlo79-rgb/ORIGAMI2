@@ -2101,6 +2101,14 @@ fn append_bounded_radial_tree_graph(
     min_y: f64,
     max_y: f64,
 ) -> Option<BeginnerGeneratedPlanV1> {
+    let namespace = if plan.semantic_landmark_provenance.is_some() {
+        ProjectId::schema_namespace([
+            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x05, 0x97,
+        ])
+    } else {
+        namespace
+    };
     let segments = &constraints.skeleton_segments;
     let ratios = bounded_tree_skeleton_length_ratios(segments)?;
     let point = |value: BeginnerSkeletonPointV1| (value.x_tenths_mm, value.y_tenths_mm);

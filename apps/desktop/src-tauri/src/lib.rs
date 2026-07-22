@@ -6397,11 +6397,11 @@ fn derive_reference_model_suggestion_v1(
         bbox_max_tenths_mm[1].saturating_sub(bbox_min_tenths_mm[1]),
         bbox_max_tenths_mm[2].saturating_sub(bbox_min_tenths_mm[2]),
     ];
-    if extents.iter().any(|extent| *extent <= 0) {
+    if extents.iter().all(|extent| *extent <= 0) {
         return Err("reference_model_feature_range".to_owned());
     }
     let principal_axis_extents_tenths_mm = extents.map(|extent| {
-        u32::try_from(extent).map_err(|_| "reference_model_feature_range".to_owned())
+        u32::try_from(extent.max(1)).map_err(|_| "reference_model_feature_range".to_owned())
     });
     let principal_axis_extents_tenths_mm = [
         principal_axis_extents_tenths_mm[0].clone()?,

@@ -568,6 +568,7 @@ fn write_project_json_with_size_limit(
     validate_project_geometric_constraints(document)?;
     validate_project_layer_document_against_pattern_v1(&document.layers, &document.crease_pattern)?;
     validate_project_annotations(document)?;
+    validate_project_underlays(document)?;
     let bytes = serde_json::to_vec_pretty(document)?;
     ensure_project_json_size(bytes.len(), requested_limit)?;
     Ok(bytes)
@@ -1120,6 +1121,21 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn json_and_ori2_writers_reject_invalid_underlay_documents() {
+        let mut document = sample_document();
+        document.underlays.schema_version += 1;
+
+        assert!(matches!(
+            write_project_json(&document),
+            Err(FormatError::InvalidUnderlays)
+        ));
+        assert!(matches!(
+            write_project_ori2(&document),
+            Err(FormatError::InvalidUnderlays)
+        ));
+    }
 
     #[test]
     fn project_json_writer_rejects_non_finite_vertex_coordinates() {

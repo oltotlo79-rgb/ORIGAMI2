@@ -402,6 +402,7 @@ fn hard_len(document: &GeometricConstraintDocumentV1) -> Result<usize, Constrain
                 .checked_add(match record.constraint {
                     GeometricConstraintKindV1::MirrorSymmetry { .. }
                     | GeometricConstraintKindV1::RotationalSymmetry { .. } => 2,
+                    GeometricConstraintKindV1::AngleBisector { .. } => 2,
                     _ => 1,
                 })
                 .ok_or(ConstraintSolveErrorV1::WorkLimitExceeded)
@@ -634,9 +635,13 @@ fn residuals(
                         first.0 / first.0.hypot(first.1) + second.0 / second.0.hypot(second.1);
                     let sum_y =
                         first.1 / first.0.hypot(first.1) + second.1 / second.0.hypot(second.1);
+                    let sum_norm = sum_x.hypot(sum_y);
+                    let bisector_norm = bisector.0.hypot(bisector.1);
+                    let denominator = sum_norm * bisector_norm;
+                    let direction_cosine = (sum_x * bisector.0 + sum_y * bisector.1) / denominator;
                     vec![
-                        (sum_x * bisector.1 - sum_y * bisector.0)
-                            / (sum_x.hypot(sum_y) * bisector.0.hypot(bisector.1)),
+                        (sum_x * bisector.1 - sum_y * bisector.0) / denominator,
+                        (-direction_cosine).max(0.0),
                     ]
                 }
             };
@@ -713,6 +718,81 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn angle_bisector_rejects_the_opposite_reflex_direction() {
+        let center = VertexId::new();
+        let first_vertex = VertexId::new();
+        let second_vertex = VertexId::new();
+        let reflex_vertex = VertexId::new();
+        let first_edge = EdgeId::new();
+        let second_edge = EdgeId::new();
+        let bisector_edge = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: center,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: first_vertex,
+                    position: Point2::new(1.0, 0.0),
+                },
+                Vertex {
+                    id: second_vertex,
+                    position: Point2::new(0.0, 1.0),
+                },
+                Vertex {
+                    id: reflex_vertex,
+                    position: Point2::new(-1.0, -1.0),
+                },
+            ],
+            edges: vec![
+                Edge {
+                    id: first_edge,
+                    start: center,
+                    end: first_vertex,
+                    kind: EdgeKind::Auxiliary,
+                },
+                Edge {
+                    id: second_edge,
+                    start: center,
+                    end: second_vertex,
+                    kind: EdgeKind::Auxiliary,
+                },
+                Edge {
+                    id: bisector_edge,
+                    start: center,
+                    end: reflex_vertex,
+                    kind: EdgeKind::Auxiliary,
+                },
+            ],
+        };
+        let document = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint: GeometricConstraintKindV1::AngleBisector {
+                    vertex: center,
+                    first_edge,
+                    second_edge,
+                    bisector_edge,
+                },
+            }],
+        };
+        let positions = pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, vertex.position))
+            .collect();
+
+        let values = residuals(&pattern, &document, &positions).expect("finite residuals");
+        assert!(values[0].abs() <= 1e-12, "opposite rays remain collinear");
+        assert!(
+            values[1] > 0.99,
+            "the reflex direction must carry a hard residual"
+        );
+    }
 
     fn single_edge(
         start: Point2,

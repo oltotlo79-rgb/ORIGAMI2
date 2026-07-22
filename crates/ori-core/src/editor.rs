@@ -2401,6 +2401,30 @@ impl EditorState {
             .find(|vertex| vertex.id == end)
             .ok_or(CommandError::VertexNotFound(end))?
             .position;
+        let mut authored_vertices = self
+            .pattern
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.id != start && vertex.id != end)
+            .filter(|vertex| {
+                point_segment_relation(vertex.position, start_position, end_position).ok()
+                    == Some(PointSegmentRelation::StrictInterior)
+            })
+            .map(|vertex| {
+                (
+                    segment_fraction(start_position, end_position, vertex.position),
+                    vertex.id,
+                    vertex.position,
+                )
+            })
+            .collect::<Vec<_>>();
+        authored_vertices.sort_by(|left, right| left.0.total_cmp(&right.0));
+        if authored_vertices
+            .windows(2)
+            .any(|pair| pair[0].2 == pair[1].2)
+        {
+            return Err(CommandError::IntersectionClusterJunctionPositionAmbiguous);
+        }
         let mut points = Vec::<(f64, Point2)>::new();
         for edge in self
             .pattern
@@ -2442,16 +2466,29 @@ impl EditorState {
 
         let mut staged = self.clone();
         let mut revision = staged.revision();
-        staged.execute(
-            revision,
-            Command::AddEdge {
-                id,
-                start,
-                end,
-                kind,
-            },
-        )?;
-        revision += 1;
+        let mut segment_start = start;
+        for (segment_index, segment_end) in authored_vertices
+            .iter()
+            .map(|(_, vertex, _)| *vertex)
+            .chain(std::iter::once(end))
+            .enumerate()
+        {
+            staged.execute(
+                revision,
+                Command::AddEdge {
+                    id: if segment_index == 0 {
+                        id
+                    } else {
+                        EdgeId::new()
+                    },
+                    start: segment_start,
+                    end: segment_end,
+                    kind,
+                },
+            )?;
+            revision += 1;
+            segment_start = segment_end;
+        }
         for (_, point) in points {
             let mut targets = Vec::new();
             let mut endpoint_ids = Vec::new();
@@ -2502,6 +2539,9 @@ impl EditorState {
             endpoint_ids.sort_unstable_by_key(|vertex| vertex.canonical_bytes());
             endpoint_ids.dedup();
             if targets.len() < 2 {
+                continue;
+            }
+            if targets.iter().all(|target| target.new_edge.is_none()) {
                 continue;
             }
             let command = if targets.len() == 2 {
@@ -6740,6 +6780,52 @@ mod tests {
         editor.undo(1).expect("undo atomic add");
         assert_eq!(editor.pattern(), &original);
         editor.redo(2).expect("redo atomic add");
+        assert_eq!(editor.pattern(), &normalized);
+    }
+
+    #[test]
+    fn add_edge_routes_through_existing_isolated_interior_vertices_atomically() {
+        let start = vertex_at(-2.0, 0.0);
+        let first = vertex_at(-0.5, 0.0);
+        let second = vertex_at(0.75, 0.0);
+        let end = vertex_at(2.0, 0.0);
+        let original = CreasePattern {
+            vertices: vec![start.clone(), first.clone(), second.clone(), end.clone()],
+            edges: Vec::new(),
+        };
+        let authored_edge = EdgeId::new();
+        let mut editor = EditorState::new(original.clone());
+        editor
+            .execute_add_edge_with_intersections(
+                0,
+                authored_edge,
+                start.id,
+                end.id,
+                EdgeKind::Valley,
+            )
+            .expect("route the authored edge through isolated interior vertices");
+
+        assert_eq!(editor.revision(), 1);
+        assert_eq!(editor.pattern().vertices, original.vertices);
+        assert_eq!(editor.pattern().edges.len(), 3);
+        assert_eq!(editor.pattern().edges[0].id, authored_edge);
+        assert_eq!(
+            editor
+                .pattern()
+                .edges
+                .iter()
+                .map(|edge| (edge.start, edge.end, edge.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (start.id, first.id, EdgeKind::Valley),
+                (first.id, second.id, EdgeKind::Valley),
+                (second.id, end.id, EdgeKind::Valley),
+            ]
+        );
+        let normalized = editor.pattern().clone();
+        editor.undo(1).expect("undo the atomic normalized add");
+        assert_eq!(editor.pattern(), &original);
+        editor.redo(2).expect("redo the atomic normalized add");
         assert_eq!(editor.pattern(), &normalized);
     }
 

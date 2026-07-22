@@ -19,6 +19,7 @@
     "test:even-cycle-browser": "node scripts/even-cycle-candidates-browser-e2e.mjs",
     "test:dyadic-panel-browser": "node scripts/dyadic-panel-browser-e2e.mjs",
     "test:miura-instruction-export-browser": "node scripts/miura-instruction-export-browser-e2e.mjs",
+    "test:app-instruction-export-browser": "node scripts/app-instruction-export-browser-e2e.mjs",
     "test:balloon-cycle-persistence-browser": "node scripts/balloon-cycle-persistence-browser-e2e.mjs",
     "test:recent-projects-browser": "node scripts/recent-projects-browser-e2e.mjs",
     "test:fold-preview-browser": "node scripts/fold-preview-browser-e2e.mjs",

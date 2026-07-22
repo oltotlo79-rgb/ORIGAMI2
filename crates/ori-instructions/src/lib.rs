@@ -21,10 +21,11 @@ pub use fold_technique_file::{
 };
 pub use technique_motion::{
     AccordionFoldMotionError, AccordionFoldMotionRequestV1, BookFoldMotionError,
-    BookFoldMotionRequestV1, LayerSelectiveMotionRequestV1, PhysicalTechniqueCompilerV1,
-    ReverseFoldKindV1, ReverseFoldMotionError, ReverseFoldMotionRequestV1, SinkFoldMotionRequestV1,
-    SquashFoldMotionRequestV1, append_certified_dyadic_path_timeline_v1,
-    compile_certified_accordion_fold_timeline_v1, compile_certified_book_fold_timeline_v1,
+    BookFoldMotionRequestV1, CrimpFoldMotionRequestV1, LayerSelectiveMotionRequestV1,
+    PhysicalTechniqueCompilerV1, ReverseFoldKindV1, ReverseFoldMotionError,
+    ReverseFoldMotionRequestV1, SinkFoldMotionRequestV1, SquashFoldMotionRequestV1,
+    append_certified_dyadic_path_timeline_v1, compile_certified_accordion_fold_timeline_v1,
+    compile_certified_book_fold_timeline_v1, compile_certified_crimp_fold_timeline_v1,
     compile_certified_layer_selective_timeline_v1, compile_certified_reverse_fold_timeline_v1,
     compile_certified_sink_fold_timeline_v1, compile_certified_squash_fold_timeline_v1,
     instruction_pose_fingerprint_v1, path_certificate_reference_from_native_v1,

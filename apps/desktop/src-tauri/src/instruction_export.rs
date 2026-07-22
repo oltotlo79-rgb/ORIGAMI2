@@ -966,16 +966,17 @@ pub(crate) mod tests {
     use sha2::{Digest, Sha256};
 
     use ori_instructions::{
-        AccordionFoldMotionRequestV1, BookFoldMotionRequestV1, FOLD_TECHNIQUE_FILE_SCHEMA_V1,
-        FOLD_TECHNIQUE_FILE_VERSION_V1, FoldTechniqueActionV1, FoldTechniqueCapabilityV1,
-        FoldTechniqueExecutionSupportV1, FoldTechniqueFileDocumentV1, FoldTechniqueFileV1,
-        FoldTechniqueLocalizedTextV1, FoldTechniqueMetadataV1, FoldTechniqueOperationV1,
-        FoldTechniqueParameterBindingV1, FoldTechniqueParameterDefinitionV1,
-        FoldTechniqueParameterTypeV1, FoldTechniqueSinkKindV1, FoldTechniqueSourceV1,
-        FoldTechniqueTemplateV1, FoldTechniqueUnsupportedPhysicalOperationV1,
-        LayerSelectiveMotionRequestV1, ReverseFoldKindV1, ReverseFoldMotionRequestV1,
-        SinkFoldMotionRequestV1, SquashFoldMotionRequestV1,
-        compile_certified_accordion_fold_timeline_v1, compile_certified_book_fold_timeline_v1,
+        AccordionFoldMotionRequestV1, BookFoldMotionRequestV1, CrimpFoldMotionRequestV1,
+        FOLD_TECHNIQUE_FILE_SCHEMA_V1, FOLD_TECHNIQUE_FILE_VERSION_V1, FoldTechniqueActionV1,
+        FoldTechniqueCapabilityV1, FoldTechniqueExecutionSupportV1, FoldTechniqueFileDocumentV1,
+        FoldTechniqueFileV1, FoldTechniqueLocalizedTextV1, FoldTechniqueMetadataV1,
+        FoldTechniqueOperationV1, FoldTechniqueParameterBindingV1,
+        FoldTechniqueParameterDefinitionV1, FoldTechniqueParameterTypeV1, FoldTechniqueSinkKindV1,
+        FoldTechniqueSourceV1, FoldTechniqueTemplateV1,
+        FoldTechniqueUnsupportedPhysicalOperationV1, LayerSelectiveMotionRequestV1,
+        ReverseFoldKindV1, ReverseFoldMotionRequestV1, SinkFoldMotionRequestV1,
+        SquashFoldMotionRequestV1, compile_certified_accordion_fold_timeline_v1,
+        compile_certified_book_fold_timeline_v1, compile_certified_crimp_fold_timeline_v1,
         compile_certified_layer_selective_timeline_v1, compile_certified_reverse_fold_timeline_v1,
         compile_certified_sink_fold_timeline_v1, compile_certified_squash_fold_timeline_v1,
         instruction_pose_fingerprint_v1, validate_fold_technique_file_v1,
@@ -1354,6 +1355,21 @@ pub(crate) mod tests {
             })
             .collect();
         validate_fold_technique_file_v1(document).expect("valid accordion fixture")
+    }
+
+    fn crimp_file() -> FoldTechniqueFileV1 {
+        let mut document = book_fold_file().document().clone();
+        let technique = &mut document.techniques[0];
+        technique.names = localized("段折り");
+        let physical = technique.operations[1].clone();
+        technique.operations = (1..=2)
+            .map(|index| {
+                let mut operation = physical.clone();
+                operation.id = format!("crimp-{index}");
+                operation
+            })
+            .collect();
+        validate_fold_technique_file_v1(document).expect("valid crimp fixture")
     }
 
     fn source_for(
@@ -1917,6 +1933,7 @@ pub(crate) mod tests {
             FoldTechniqueCapabilityV1::SinkFoldMotionV1,
             FoldTechniqueUnsupportedPhysicalOperationV1::SinkFoldMotionV1,
         );
+        let crimp_file = crimp_file();
         let layer_file = two_segment_file(
             "層選択折り",
             FoldTechniqueActionV1::LayerSelectiveManipulation {
@@ -1977,6 +1994,23 @@ pub(crate) mod tests {
                     second_path_certificate: &second,
                 })
                 .expect("compile squash from validated sink primitive"),
+            ),
+            (
+                "段折り",
+                compile_certified_crimp_fold_timeline_v1(CrimpFoldMotionRequestV1 {
+                    technique_file: &crimp_file,
+                    technique_id: "book-fold",
+                    source_model_fingerprint: &model,
+                    fixed_face,
+                    first_edge: fold_edge,
+                    second_edge,
+                    source_hinge_angles: &source,
+                    intermediate_angle_microdegrees: 45_000_000,
+                    target_angle_microdegrees: 90_000_000,
+                    first_path_certificate: &first,
+                    second_path_certificate: &second,
+                })
+                .expect("compile crimp from two straight-fold primitives"),
             ),
             (
                 "層選択折り",

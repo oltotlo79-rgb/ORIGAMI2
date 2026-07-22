@@ -805,13 +805,15 @@ test('CI requires the production C6 dyadic browser and exact native lifecycle', 
     'duplicate_boundary_strict_dyadic_preflight_is_unsupported_no_op',
     'self_intersecting_boundary_strict_dyadic_preflight_is_unsupported_no_op',
     'zero_length_boundary_strict_dyadic_preflight_is_unsupported_no_op',
+    'missing_pose_capability_strict_dyadic_read_returns_unsupported_dto',
+    'tree_pose_capability_strict_dyadic_read_returns_unsupported_dto',
   ]) {
     const fixtureFilter = `stacked_fold_read::tests::${fixtureTest}`
     assert.equal(workflow.match(new RegExp(fixtureFilter, 'gu'))?.length, 1)
     assert.match(workflow, new RegExp(`cargo test --locked -p origami2-desktop --lib\\s+${fixtureFilter}\\s+-- --exact --test-threads=1`, 'u'))
     assert.match(nativeRead, new RegExp(`fn ${fixtureTest}\\(\\)`, 'u'))
   }
-  for (const scenario of ['concave', 'cut', 'hole', 'seam', 'duplicate-boundary', 'self-intersection', 'zero-length']) {
+  for (const scenario of ['concave', 'cut', 'hole', 'seam', 'duplicate-boundary', 'self-intersection', 'zero-length', 'missing-capability', 'tree-capability']) {
     assert.match(browserRead, new RegExp(`'${scenario}'`, 'u'))
   }
   assert.match(browserRead, /reason unsupported_geometry/u)
@@ -877,7 +879,7 @@ test('CI requires exactly one full-App instruction export routing browser gate',
   ]) assert.match(browserHarness, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
 })
 
-test('CI requires one native export gate for all six real technique compilers', () => {
+test('CI requires one native export gate for all seven real technique compilers', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const instructionExport = readFileSync(
     join(root, 'apps/desktop/src-tauri/src/instruction_export.rs'),
@@ -886,14 +888,15 @@ test('CI requires one native export gate for all six real technique compilers', 
   assert.equal(
     workflow.match(/instruction_export::tests::compiled_/gu)?.length,
     1,
-    'the six real compilers must share one required Rust invocation',
+    'the seven real compilers must share one required Rust invocation',
   )
   assert.match(
     workflow,
     /cargo test --locked -p origami2-desktop --lib \\\s+instruction_export::tests::compiled_ \\\s+-- --test-threads=1/u,
   )
   const compilerMarkers = [
-    'book_fold', 'reverse_fold', 'sink_fold', 'squash_fold', 'layer_selective', 'accordion_fold',
+    'book_fold', 'reverse_fold', 'sink_fold', 'squash_fold', 'crimp_fold',
+    'layer_selective', 'accordion_fold',
   ]
   const gate = workflow.match(
     /- name: Verify all real named-technique compilers reach native exports[\s\S]*?-- --test-threads=1/u,

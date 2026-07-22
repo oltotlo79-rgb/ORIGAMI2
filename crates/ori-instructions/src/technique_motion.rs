@@ -118,6 +118,8 @@ pub type LayerSelectiveMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
 /// A squash fold authored as the validated V1 open/closed-sink primitive.
 /// Instruction cues alone never enter this physical compiler.
 pub type SquashFoldMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
+/// A crimp fold represented by exactly two ordered straight-line operations.
+pub type CrimpFoldMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
 
 /// Compiles the proof-carrying sink primitive used by a named squash fold.
 /// Missing capabilities or either missing path segment remain fail-closed.
@@ -125,6 +127,59 @@ pub fn compile_certified_squash_fold_timeline_v1(
     request: SquashFoldMotionRequestV1<'_>,
 ) -> Result<InstructionTimeline, ReverseFoldMotionError> {
     compile_certified_sink_fold_timeline_v1(request)
+}
+
+/// Compiles a crimp only when the technique declares exactly two validated
+/// straight-line fold primitives and both native path segments bind exactly.
+pub fn compile_certified_crimp_fold_timeline_v1(
+    request: CrimpFoldMotionRequestV1<'_>,
+) -> Result<InstructionTimeline, ReverseFoldMotionError> {
+    let technique = request
+        .technique_file
+        .document()
+        .techniques
+        .iter()
+        .find(|technique| technique.id == request.technique_id)
+        .ok_or(ReverseFoldMotionError::UnsupportedTechnique)?;
+    let physical = technique
+        .operations
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation.action,
+                FoldTechniqueActionV1::StraightLineStackedFold
+            )
+        })
+        .collect::<Vec<_>>();
+    if physical.len() != 2
+        || physical.iter().any(|operation| {
+            !operation
+                .required_capabilities
+                .contains(&FoldTechniqueCapabilityV1::StraightLineStackedFoldV1)
+                || operation.execution_support != FoldTechniqueExecutionSupportV1::DeclarativeOnly
+        })
+    {
+        return Err(ReverseFoldMotionError::UnsupportedTechnique);
+    }
+    let title = technique
+        .names
+        .iter()
+        .find(|text| text.locale == "ja")
+        .or_else(|| technique.names.first())
+        .map(|text| text.text.as_str())
+        .ok_or(ReverseFoldMotionError::UnsupportedTechnique)?;
+    compile_two_segment_motion(
+        title,
+        request.source_model_fingerprint,
+        request.fixed_face,
+        request.first_edge,
+        request.second_edge,
+        request.source_hinge_angles,
+        request.intermediate_angle_microdegrees,
+        request.target_angle_microdegrees,
+        request.first_path_certificate,
+        request.second_path_certificate,
+    )
 }
 
 pub fn compile_certified_layer_selective_timeline_v1(

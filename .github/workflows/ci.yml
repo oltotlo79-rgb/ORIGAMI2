@@ -483,10 +483,12 @@ jobs:
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::duplicate_boundary_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::self_intersecting_boundary_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::zero_length_boundary_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
+          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::missing_pose_capability_strict_dyadic_read_returns_unsupported_dto -- --exact --test-threads=1
+          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::tree_pose_capability_strict_dyadic_read_returns_unsupported_dto -- --exact --test-threads=1
       - name: Verify all real named-technique compilers reach native exports
         shell: bash
         run: |
-          printf '%s\n' 'coverage=book_fold,reverse_fold,sink_fold,squash_fold,layer_selective,accordion_fold'
+          printf '%s\n' 'coverage=book_fold,reverse_fold,sink_fold,squash_fold,crimp_fold,layer_selective,accordion_fold'
           cargo test --locked -p origami2-desktop --lib \
             instruction_export::tests::compiled_ \
             -- --test-threads=1

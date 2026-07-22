@@ -284,7 +284,9 @@ fn prepare_applied_pose_inner(
     }
 
     match (expected_hinges.is_empty(), fixed_face) {
-        (true, Some(_)) => return Err(AppliedPoseErrorV1::UnexpectedFixedFace),
+        (true, Some(_)) if expected_faces.len() != 1 => {
+            return Err(AppliedPoseErrorV1::UnexpectedFixedFace);
+        }
         (false, None) => return Err(AppliedPoseErrorV1::MissingFixedFace),
         _ => {}
     }
@@ -567,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn planar_pose_requires_no_fixed_face_and_folded_pose_requires_one() {
+    fn single_face_pose_accepts_canonical_anchor_and_folded_pose_requires_one() {
         let faces = sorted_faces(3);
         let material_faces = &faces[..2];
         let face = faces[0];
@@ -578,10 +580,9 @@ mod tests {
         assert_eq!(planar.fixed_face(), None);
         assert!(planar.hinge_angles().is_empty());
 
-        assert_eq!(
-            prepare_applied_pose_v1(&[face], &[], Some(face), &[], limits()),
-            Err(AppliedPoseErrorV1::UnexpectedFixedFace)
-        );
+        let anchored = prepare_applied_pose_v1(&[face], &[], Some(face), &[], limits())
+            .expect("single material face may carry its canonical semantic anchor");
+        assert_eq!(anchored.fixed_face(), Some(face));
         assert_eq!(
             prepare_applied_pose_v1(material_faces, &[hinge], None, &[(hinge, 10.0)], limits()),
             Err(AppliedPoseErrorV1::MissingFixedFace)

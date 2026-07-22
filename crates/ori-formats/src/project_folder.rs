@@ -1672,11 +1672,8 @@ mod tests {
                 .expect("write")
                 .entries()
                 .to_vec();
-        let mut first = entries[1].clone();
-        first.path = "作品/Ä.json".to_owned();
-        let mut second = first.clone();
-        second.path = "作品/ä.json".to_owned();
-        entries.extend([first, second]);
+        entries[1].path = "作品/Ä.json".to_owned();
+        entries[2].path = "作品/ä.json".to_owned();
         assert!(matches!(
             read_project_folder_v1(&entries),
             Err(ProjectFolderError::EntryPathCaseCollision { .. })

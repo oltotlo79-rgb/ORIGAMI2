@@ -16,6 +16,7 @@ use ori_geometry::{
     PaperValidationIssue, ValidationIssue, validate_crease_pattern, validate_paper,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 /// Default maximum size of one exported crease-pattern file.
@@ -380,6 +381,25 @@ pub fn export_crease_pattern_with_provenance(
     // project-private while the saved provenance is still strictly validated above.
     let mut safe_provenance = provenance.clone();
     safe_provenance.reference_consensus = None;
+    if safe_provenance.source_asset_fingerprint != "none"
+        && !safe_provenance
+            .source_asset_fingerprint
+            .strip_prefix("sha256:")
+            .is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+    {
+        safe_provenance.source_asset_fingerprint = format!(
+            "sha256:{}",
+            Sha256::digest(safe_provenance.source_asset_fingerprint.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+    }
     let provenance = &safe_provenance;
     let json =
         serde_json::to_vec(provenance).map_err(CreasePatternExportError::FoldSerialization)?;
@@ -1572,7 +1592,7 @@ mod tests {
             confidence_score: 87,
             confidence_reasons: vec!["native_topology_witness".to_owned()],
             explicit_override: false,
-            source_asset_fingerprint: "asset:test".to_owned(),
+            source_asset_fingerprint: format!("sha256:{}", "ab".repeat(32)),
             semantic_landmark_provenance: None,
             generic_tree: None,
             reference_consensus: None,
@@ -1654,6 +1674,8 @@ mod tests {
                 quality: 88,
             },
         ];
+        let first_wire = serde_json::to_string(&first).unwrap();
+        let second_wire = serde_json::to_string(&second).unwrap();
         let provenance = BeginnerGenerationProvenanceV1 {
             schema_version: 1,
             topology_authority_sha256: [0x33; 32],
@@ -1661,7 +1683,7 @@ mod tests {
             confidence_score: 80,
             confidence_reasons: vec!["native_topology_witness".to_owned()],
             explicit_override: false,
-            source_asset_fingerprint: "private".to_owned(),
+            source_asset_fingerprint: "C:\\Users\\private\\secret-target.png".to_owned(),
             semantic_landmark_provenance: None,
             generic_tree: None,
             reference_consensus: Some(ori_domain::BeginnerReferenceConsensusProvenanceV1 {
@@ -1678,6 +1700,7 @@ mod tests {
             CreasePatternExportFormat::Fold12,
             CreasePatternExportFormat::Svg,
             CreasePatternExportFormat::Pdf17,
+            CreasePatternExportFormat::Dxf2007Ascii,
         ] {
             let artifact = export_crease_pattern_with_provenance(
                 format,
@@ -1692,6 +1715,13 @@ mod tests {
                 .unwrap();
             assert_eq!(exported.reference_consensus, None);
             assert_eq!(exported.reference_consensus_summary, Some(summary.clone()));
+            assert!(exported.source_asset_fingerprint.starts_with("sha256:"));
+            assert_eq!(exported.source_asset_fingerprint.len(), 71);
+            let wire = String::from_utf8_lossy(&artifact.bytes);
+            assert!(!wire.contains("secret-target.png"));
+            assert!(!wire.contains("C:\\Users\\private"));
+            assert!(!wire.contains(first_wire.trim_matches('"')));
+            assert!(!wire.contains(second_wire.trim_matches('"')));
         }
     }
 

@@ -4599,8 +4599,7 @@ mod tests {
                 for power in 0..=9_u32 {
                     let scale = 41_i64.pow(9 - power);
                     directions.push(((real * scale) as f64, (imaginary * scale) as f64));
-                    (real, imaginary) =
-                        (real * 40 - imaginary * 9, real * 9 + imaginary * 40);
+                    (real, imaginary) = (real * 40 - imaginary * 9, real * 9 + imaginary * 40);
                 }
                 debug_assert_eq!(directions[1], (radius as f64, 0.0));
                 directions

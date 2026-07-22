@@ -768,20 +768,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
         return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
     }
     if !strict_dyadic_geometry_is_in_scope_v1(&project) {
-        return Ok(dyadic_graph_response(
-            &project,
-            "unsupported",
-            0,
-            0,
-            0,
-            0,
-            0,
-            None,
-            0,
-            None,
-            0,
-            None,
-        ));
+        return Ok(unsupported_dyadic_graph_response_v1(&project));
     }
     let layer_capability = foldability_state
         .map(|state| capture_current_layer_order_capability(state, &project))
@@ -789,14 +776,16 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
         .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
         .flatten();
     let paper_thickness_mm = project.editor.paper().thickness_mm;
-    let capability = project
+    let Some(capability) = project
         .applied_pose_authority
         .capture_capability(&project)
         .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
-        .ok_or_else(|| UNAVAILABLE_MESSAGE.to_owned())?;
-    let (geometry, audit, pose) = capability
-        .graph()
-        .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+    else {
+        return Ok(unsupported_dyadic_graph_response_v1(&project));
+    };
+    let Some((geometry, audit, pose)) = capability.graph() else {
+        return Ok(unsupported_dyadic_graph_response_v1(&project));
+    };
     let target = ori_kinematics::CanonicalHingeAngles::new(
         request
             .target_angles
@@ -1265,6 +1254,25 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
         layer_count,
         layer_binding,
     ))
+}
+
+fn unsupported_dyadic_graph_response_v1(
+    project: &super::ProjectState,
+) -> DyadicPoseGraphReadResponseV1 {
+    dyadic_graph_response(
+        project,
+        "unsupported",
+        0,
+        0,
+        0,
+        0,
+        0,
+        None,
+        0,
+        None,
+        0,
+        None,
+    )
 }
 
 fn strict_dyadic_geometry_is_in_scope_v1(project: &super::ProjectState) -> bool {
@@ -4475,6 +4483,86 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    fn assert_non_graph_capability_returns_unsupported_dto(
+        project: super::super::ProjectState,
+        target_edge: ori_domain::EdgeId,
+        authority_expected: bool,
+    ) {
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let state = AppState::new(project);
+        let observed = read_bounded_dyadic_pose_graph_inner_v1(
+            &state,
+            None,
+            DyadicPoseGraphReadRequestV1 {
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                target_angles: vec![DyadicPoseGraphAngleDtoV1 {
+                    edge: target_edge,
+                    angle_degrees: 1.0,
+                }],
+                max_states: 32,
+                max_transitions: 64,
+                cycle_schedule_v1: None,
+            },
+            None,
+        )
+        .expect("non-graph capability returns a read-only DTO");
+        assert_eq!(observed.status, "unsupported");
+        assert_eq!(observed.reason, "unsupported_geometry");
+        assert_eq!(observed.state_count, 0);
+        assert_eq!(observed.transition_count, 0);
+        assert_eq!(observed.explored_state_count, 0);
+        assert_eq!(observed.evaluated_transition_count, 0);
+        assert_eq!(observed.certified_transition_count, 0);
+        assert!(!observed.mutation_candidate_ready);
+        assert!(!observed.authorizes_project_mutation);
+        let project = super::super::lock_project(&state).unwrap();
+        assert_eq!(project.editor.revision(), revision);
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+        assert_eq!(
+            project
+                .applied_pose_authority
+                .capture_capability(&project)
+                .unwrap()
+                .is_some(),
+            authority_expected
+        );
+    }
+
+    #[test]
+    fn missing_pose_capability_strict_dyadic_read_returns_unsupported_dto() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let project = two_hinge_tree_project();
+        let target_edge = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze()
+            .simulation_snapshot()
+            .unwrap()
+            .hinge_adjacency[0]
+            .edge;
+        assert_non_graph_capability_returns_unsupported_dto(project, target_edge, false);
+    }
+
+    #[test]
+    fn tree_pose_capability_strict_dyadic_read_returns_unsupported_dto() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let mut project = two_hinge_tree_project();
+        let target_edge = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze()
+            .simulation_snapshot()
+            .unwrap()
+            .hinge_adjacency[0]
+            .edge;
+        super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
+        assert_non_graph_capability_returns_unsupported_dto(project, target_edge, true);
     }
 
     fn assert_two_hinge_projective_schedule_round_trip(

@@ -12,6 +12,8 @@ use crate::{
     AppState, ProjectSnapshot, ProjectState, ensure_expected_project, execute_command, lock_project,
 };
 
+const MAX_BEGINNER_RECOGNITION_ENCODED_BYTES_V1: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RecognizeBeginnerTargetRequest {
@@ -30,12 +32,15 @@ pub(crate) fn recognize_beginner_silhouette(
     let bytes = {
         let project = lock_project(&state)?;
         ensure_recognition_binding(&project, request)?;
-        project
+        let asset = project
             .texture_assets
             .iter()
             .find(|asset| asset.id == request.asset_id)
-            .map(|asset| asset.bytes.clone())
-            .ok_or_else(|| "recognition_asset_unavailable".to_owned())?
+            .ok_or_else(|| "recognition_asset_unavailable".to_owned())?;
+        if asset.bytes.len() > MAX_BEGINNER_RECOGNITION_ENCODED_BYTES_V1 {
+            return Err("recognition_resource_limit".to_owned());
+        }
+        asset.bytes.clone()
     };
     let source_sha256: [u8; 32] = Sha256::digest(&bytes).into();
     let (width, height, rgba) = decode_general_image(&bytes)?;
@@ -1527,6 +1532,9 @@ fn decode_general_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
 }
 
 fn decode_general_image(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    if bytes.is_empty() || bytes.len() > MAX_BEGINNER_RECOGNITION_ENCODED_BYTES_V1 {
+        return Err("recognition_resource_limit".to_owned());
+    }
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         decode_general_png(bytes)
     } else if bytes.starts_with(&[0xff, 0xd8]) {
@@ -1672,5 +1680,18 @@ mod tests {
     fn general_decoder_rejects_unknown_and_corrupt_jpeg_envelopes() {
         assert!(decode_general_image(b"not an image").is_err());
         assert!(decode_general_image(&[0xff, 0xd8, 0xff, 0xd9]).is_err());
+    }
+
+    #[test]
+    fn general_decoder_rejects_encoded_resource_limit_before_parsing() {
+        let oversized = vec![0_u8; super::MAX_BEGINNER_RECOGNITION_ENCODED_BYTES_V1 + 1];
+        assert_eq!(
+            decode_general_image(&oversized),
+            Err("recognition_resource_limit".to_owned())
+        );
+        assert_eq!(
+            decode_general_image(&[]),
+            Err("recognition_resource_limit".to_owned())
+        );
     }
 }

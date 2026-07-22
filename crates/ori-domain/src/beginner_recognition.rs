@@ -13,6 +13,9 @@ pub const MAX_BEGINNER_RECOGNITION_DIMENSION_V1: u32 = 4_096;
 pub const MAX_BEGINNER_RECOGNITION_PIXELS_V1: usize = 4_000_000;
 pub const MAX_BEGINNER_RECOGNITION_COMPONENTS_V1: usize = 64;
 pub const MAX_BEGINNER_OUTLINE_CANDIDATES_V1: usize = 16;
+pub const MAX_BEGINNER_SILHOUETTE_CONTOUR_POINTS_V1: usize = 16;
+pub const BEGINNER_SILHOUETTE_ALPHA_THRESHOLD_V1: u8 = 128;
+pub const BEGINNER_SILHOUETTE_LUMA_THRESHOLD_V1: u8 = 127;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -118,9 +121,9 @@ fn simplified_component_outline(
     if lower.len() < 4 {
         return proposed_body_outline(bounds);
     }
-    if lower.len() > 16 {
-        lower = (0..16)
-            .map(|index| lower[index * lower.len() / 16])
+    if lower.len() > MAX_BEGINNER_SILHOUETTE_CONTOUR_POINTS_V1 {
+        lower = (0..MAX_BEGINNER_SILHOUETTE_CONTOUR_POINTS_V1)
+            .map(|index| lower[index * lower.len() / MAX_BEGINNER_SILHOUETTE_CONTOUR_POINTS_V1])
             .collect();
     }
     let center_twice_x = i32::try_from(bounds.min_x + bounds.max_x).unwrap_or_default();
@@ -266,7 +269,8 @@ pub fn analyze_silhouette_png_rgba_v1(
         let luminance =
             (u32::from(pixel[0]) * 2126 + u32::from(pixel[1]) * 7152 + u32::from(pixel[2]) * 722)
                 / 10_000;
-        foreground[index] = pixel[3] >= 128 && luminance <= 127;
+        foreground[index] = pixel[3] >= BEGINNER_SILHOUETTE_ALPHA_THRESHOLD_V1
+            && luminance <= u32::from(BEGINNER_SILHOUETTE_LUMA_THRESHOLD_V1);
     }
     let foreground_count = foreground.iter().filter(|value| **value).count();
     if foreground_count < 4 || foreground_count == pixels {
@@ -301,6 +305,9 @@ pub fn analyze_silhouette_png_rgba_v1(
             }
         }
         components.push(component);
+        if components.len() > MAX_BEGINNER_RECOGNITION_COMPONENTS_V1 {
+            return Err(BeginnerRecognitionErrorV1::ComponentLimit);
+        }
     }
     components.sort_unstable_by_key(|component| std::cmp::Reverse(component.len()));
     if components
@@ -900,11 +907,43 @@ mod tests {
             analyze_silhouette_png_rgba_v1(UnderlayId::new(), AssetId::new(), [3; 32], 7, 7, &rgba)
                 .unwrap();
         let outline = proposal.generic_body_outline_tenths_mm.unwrap();
-        assert!((4..=16).contains(&outline.len()));
+        assert!((4..=MAX_BEGINNER_SILHOUETTE_CONTOUR_POINTS_V1).contains(&outline.len()));
         assert_eq!(outline.first(), outline.iter().min());
         assert_eq!(
             proposal.generic_body_outline_mode,
             Some(BeginnerBodyOutlineModeV1::General)
+        );
+    }
+
+    #[test]
+    fn silhouette_thresholds_are_inclusive_and_component_work_is_bounded() {
+        let mut rgba = vec![255_u8; 4 * 4 * 4];
+        for y in 1..=2 {
+            for x in 0..=2 {
+                rgba[(y * 4 + x) * 4..(y * 4 + x) * 4 + 4].copy_from_slice(&[127, 127, 127, 128]);
+            }
+        }
+        rgba[15 * 4..16 * 4].copy_from_slice(&[0, 0, 0, 127]);
+        assert!(analyze_silhouette_png_rgba_v1(
+            UnderlayId::new(), AssetId::new(), [4; 32], 4, 4, &rgba,
+        ).is_ok());
+
+        let mut fragmented = vec![255_u8; 17 * 17 * 4];
+        for y in (0..17).step_by(2) {
+            for x in (0..17).step_by(2) {
+                fragmented[(y * 17 + x) * 4..(y * 17 + x) * 4 + 4].copy_from_slice(&[0, 0, 0, 255]);
+            }
+        }
+        assert_eq!(
+            analyze_silhouette_png_rgba_v1(
+                UnderlayId::new(),
+                AssetId::new(),
+                [5; 32],
+                17,
+                17,
+                &fragmented,
+            ),
+            Err(BeginnerRecognitionErrorV1::ComponentLimit),
         );
     }
 

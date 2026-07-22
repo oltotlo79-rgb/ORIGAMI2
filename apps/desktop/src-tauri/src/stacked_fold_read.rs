@@ -2598,6 +2598,20 @@ fn propose_current_cycle_pose_inner_with_layers(
         .ok_or_else(|| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
     let automatic_kawasaki =
         request.cycle_schedule_v1.version == 2 && request.cycle_schedule_v1.entries.is_empty();
+    if !automatic_kawasaki
+        && (request.cycle_schedule_v1.entries.is_empty()
+            || request.cycle_schedule_v1.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
+            || request.cycle_schedule_v1.entries.iter().any(|entry| {
+                entry.numerator_power_coefficients.is_empty()
+                    || entry.numerator_power_coefficients.len()
+                        > MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1
+                    || entry.denominator_power_coefficients.is_empty()
+                    || entry.denominator_power_coefficients.len()
+                        > MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1
+            }))
+    {
+        return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
+    }
     let schedule = if automatic_kawasaki {
         ori_kinematics::generate_bounded_degree_four_kawasaki_path_candidate_at_dyadic_endpoint_v1(
             geometry,
@@ -5537,6 +5551,32 @@ mod tests {
             )
             .is_err()
         );
+        let mut noncanonical_schedule = schedule.clone();
+        noncanonical_schedule.entries.swap(0, 1);
+        assert!(
+            propose_current_cycle_pose_inner_with_layers(
+                None,
+                &state,
+                Some(&layer_state),
+                &transactions,
+                request(revision, noncanonical_schedule),
+            )
+            .is_err()
+        );
+        let mut oversized_coefficients = schedule.clone();
+        let coefficient = oversized_coefficients.entries[0].numerator_power_coefficients[0];
+        oversized_coefficients.entries[0].numerator_power_coefficients =
+            vec![coefficient; MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1 + 1];
+        assert!(
+            propose_current_cycle_pose_inner_with_layers(
+                None,
+                &state,
+                Some(&layer_state),
+                &transactions,
+                request(revision, oversized_coefficients),
+            )
+            .is_err()
+        );
         let mut oversized_schedule = schedule.clone();
         while oversized_schedule.entries.len() <= MAX_STACKED_FOLD_REQUEST_HINGES_V1 {
             oversized_schedule
@@ -5677,7 +5717,10 @@ mod tests {
             request(revision, schedule.clone()),
         )
         .expect("newest blockwise fallback preview");
-        assert_ne!(replaced_preview.transaction_token, preview.transaction_token);
+        assert_ne!(
+            replaced_preview.transaction_token,
+            preview.transaction_token
+        );
         assert!(
             super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
                 &state,

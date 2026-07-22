@@ -453,7 +453,7 @@ mod tests {
     use ori_domain::EdgeId;
     use ori_kinematics::{
         CanonicalHingeAngles, DyadicPoseGraphLimitsV1, HingeAngle,
-        generate_bounded_dyadic_pose_graph_v1,
+        generate_bounded_dyadic_pose_graph_at_levels_v1, generate_bounded_dyadic_pose_graph_v1,
     };
 
     fn fingerprint(value: u8) -> PoseFingerprintV1 {
@@ -756,5 +756,77 @@ mod tests {
                 && value.state_limit == MAX_CERTIFIED_PATH_GRAPH_STATES_V1
                 && value.transition_limit == MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1
         }));
+    }
+
+    #[test]
+    fn quarter_level_unlocks_a_certified_obstacle_detour() {
+        let mut edges = [EdgeId::new(), EdgeId::new()];
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let angles = |values: [f64; 2]| {
+            CanonicalHingeAngles::new(
+                edges
+                    .into_iter()
+                    .zip(values)
+                    .map(|(edge, value)| HingeAngle::new(edge, value).unwrap())
+                    .collect(),
+            )
+            .unwrap()
+        };
+        for (levels, expected_certified) in [(3, false), (5, true)] {
+            let graph = generate_bounded_dyadic_pose_graph_at_levels_v1(
+                &angles([0.0, 0.0]),
+                &angles([90.0, 120.0]),
+                levels,
+                DyadicPoseGraphLimitsV1 {
+                    max_states: 25,
+                    max_transitions: 80,
+                },
+                || true,
+            )
+            .unwrap();
+            let states = (0..graph.states().len())
+                .map(|index| fingerprint(index as u8 + 1))
+                .collect::<Vec<_>>();
+            let candidates = graph
+                .transitions()
+                .iter()
+                .map(|edge| CertifiedPathTransitionCandidateV1 {
+                    source: states[edge.source_state],
+                    target: states[edge.target_state],
+                    candidate_key: fingerprint(200),
+                })
+                .collect::<Vec<_>>();
+            let allowed = |fingerprint: PoseFingerprintV1| {
+                let index = states.iter().position(|value| *value == fingerprint)?;
+                let values = graph.states()[index].as_slice();
+                let x = values[0].angle_degrees();
+                let y = values[1].angle_degrees();
+                Some((y == 0.0 && x <= 22.5) || x == 22.5 || (y == 120.0 && x >= 22.5))
+            };
+            let searched = search_certified_pose_graph_v1(
+                &states,
+                &candidates,
+                states[graph.source_state()],
+                states[graph.target_state()],
+                |candidate| {
+                    (allowed(candidate.source) == Some(true)
+                        && allowed(candidate.target) == Some(true))
+                    .then(|| certify(candidate))
+                },
+            );
+            assert_eq!(
+                matches!(searched, CertifiedPathGraphSearchResultV1::Certified(_)),
+                expected_certified
+            );
+            if !expected_certified {
+                assert!(matches!(
+                    searched,
+                    CertifiedPathGraphSearchResultV1::Indeterminate {
+                        reason: CertifiedPathGraphIndeterminateReasonV1::NoCertifiedPath,
+                        ..
+                    }
+                ));
+            }
+        }
     }
 }

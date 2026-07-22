@@ -345,4 +345,63 @@ mod tests {
             Err(DyadicPoseGraphGenerationErrorV1::BindingMismatch)
         );
     }
+
+    #[test]
+    fn three_hinge_level_caps_are_exact_and_fail_before_allocation() {
+        let mut edges = [EdgeId::new(), EdgeId::new(), EdgeId::new()];
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let vector = |values: [f64; 3]| {
+            CanonicalHingeAngles::new(
+                edges
+                    .into_iter()
+                    .zip(values)
+                    .map(|(edge, value)| HingeAngle::new(edge, value).unwrap())
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let source = vector([0.0, 0.0, 0.0]);
+        let target = vector([30.0, 60.0, 90.0]);
+        for (levels, states, transitions) in [(3, 27, 108), (5, 125, 600)] {
+            let graph = generate_bounded_dyadic_pose_graph_at_levels_v1(
+                &source,
+                &target,
+                levels,
+                DyadicPoseGraphLimitsV1 {
+                    max_states: states,
+                    max_transitions: transitions,
+                },
+                || true,
+            )
+            .unwrap();
+            assert_eq!(graph.states().len(), states);
+            assert_eq!(graph.transitions().len(), transitions);
+        }
+        assert_eq!(
+            generate_bounded_dyadic_pose_graph_at_levels_v1(
+                &source,
+                &target,
+                5,
+                DyadicPoseGraphLimitsV1 {
+                    max_states: 124,
+                    max_transitions: 600,
+                },
+                || true,
+            ),
+            Err(DyadicPoseGraphGenerationErrorV1::ResourceLimit)
+        );
+        assert_eq!(
+            generate_bounded_dyadic_pose_graph_at_levels_v1(
+                &source,
+                &target,
+                9,
+                DyadicPoseGraphLimitsV1 {
+                    max_states: 125,
+                    max_transitions: 600,
+                },
+                || true,
+            ),
+            Err(DyadicPoseGraphGenerationErrorV1::ResourceLimit)
+        );
+    }
 }

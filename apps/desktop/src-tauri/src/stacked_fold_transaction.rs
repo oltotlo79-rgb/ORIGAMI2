@@ -1073,7 +1073,6 @@ pub(super) fn bind_named_technique_compiler_metadata_v1(
         .map_err(|_| "The compiler timeline metadata is invalid.".to_owned())
 }
 
-#[cfg(test)]
 pub(super) fn regular_quad_petal_face_v1(
     project: &super::ProjectState,
     hinges: &[ori_domain::EdgeId],

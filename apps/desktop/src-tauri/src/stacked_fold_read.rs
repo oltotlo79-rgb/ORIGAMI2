@@ -401,7 +401,6 @@ impl RegularQuadPetalPrivatePreviewStateV1 {
 
 #[allow(dead_code)]
 impl RegularQuadPetalPreviewRecordV1 {
-    #[cfg(test)]
     fn issue_v1(
         project: &super::ProjectState,
         hinges: &[ori_domain::EdgeId],
@@ -417,6 +416,55 @@ impl RegularQuadPetalPreviewRecordV1 {
         {
             return Err("regular-quad petal authority is unavailable".to_owned());
         }
+        let (geometry, audit, _) = authority
+            .pose_capability
+            .graph()
+            .ok_or_else(|| "regular-quad petal graph authority is unavailable".to_owned())?;
+        let source = authority.layer_capability.snapshot();
+        let mut inputs = Vec::with_capacity(3);
+        for edge in &authority.edges {
+            let positive = match &edge.auxiliary {
+                DyadicAuxiliaryProofV1::Graph { positive, .. } => positive,
+                DyadicAuxiliaryProofV1::Tree { .. } => {
+                    return Err("regular-quad petal requires graph proofs".to_owned());
+                }
+            };
+            let closure = edge
+                .closure
+                .as_ref()
+                .ok_or_else(|| "regular-quad petal closure is unavailable".to_owned())?;
+            let transitions = closure.leaves().len() + 1;
+            let layer_records = source
+                .overlap_cells
+                .iter()
+                .map(|cell| cell.bottom_to_top_faces.len())
+                .sum::<usize>();
+            let boundary_samples = source
+                .overlap_cells
+                .iter()
+                .map(|cell| cell.exact_boundary.len() * cell.bottom_to_top_faces.len())
+                .sum::<usize>()
+                .checked_mul(transitions)
+                .ok_or_else(|| "regular-quad petal work overflow".to_owned())?;
+            inputs.push(ori_collision::GeneralCellTransportInputV1 {
+                geometry,
+                audit,
+                source,
+                schedule: &edge.schedule,
+                closure,
+                positive_continuous: positive,
+                paper_thickness_mm: authority.paper_thickness_mm,
+                tolerance: 1.0e-9,
+                limits: ori_collision::GeneralCellTransportLimitsV1 {
+                    max_transitions: transitions,
+                    max_cells: source.overlap_cells.len(),
+                    max_layer_records: layer_records,
+                    max_boundary_samples: boundary_samples,
+                },
+            });
+        }
+        ori_collision::ChainedGeneralCellTransportAuthorityV1::issue(inputs)
+            .map_err(|_| "regular-quad petal chained layer authority failed".to_owned())?;
         Ok(Self {
             token,
             project_instance_id: project.instance_id,

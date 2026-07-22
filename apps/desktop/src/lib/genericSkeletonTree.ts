@@ -1,5 +1,5 @@
 export type GenericSkeletonTreeStatus =
-  | 'empty' | 'tree' | 'degenerate' | 'duplicate_edge' | 'disconnected' | 'cycle'
+  | 'empty' | 'tree' | 'resource_limit' | 'degenerate' | 'duplicate_edge' | 'disconnected' | 'cycle'
 
 type Point = Readonly<{ x_tenths_mm: number, y_tenths_mm: number }>
 type Segment = Readonly<{ id: number, start: Point, end: Point }>
@@ -12,6 +12,7 @@ export function analyzeGenericSkeletonTree(segments: readonly Segment[]): Readon
   edgeCount: number
 }> {
   if (segments.length === 0) return Object.freeze({ status: 'empty', pointCount: 0, edgeCount: 0 })
+  if (segments.length > 8) return Object.freeze({ status: 'resource_limit', pointCount: 0, edgeCount: segments.length })
   const adjacency = new Map<string, Set<string>>()
   const edges = new Set<string>()
   for (const segment of segments) {

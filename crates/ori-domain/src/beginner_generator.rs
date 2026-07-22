@@ -3,9 +3,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     BeginnerDetailLevelV1, BeginnerFoldTechniqueV1, BeginnerGenerationConstraintsV1,
-    BeginnerProtrusionSymmetryV1, BeginnerSkeletonSegmentV1, BeginnerTargetAssetReferenceV1,
-    BeginnerTargetCategoryV1, BeginnerTargetPartKindV1, BeginnerTargetPartRecordV1, CreasePattern,
-    Edge, EdgeId, EdgeKind, Point2, ProjectId, Vertex, VertexId,
+    BeginnerProtrusionSymmetryV1, BeginnerSkeletonPointV1, BeginnerSkeletonSegmentV1,
+    BeginnerTargetAssetReferenceV1, BeginnerTargetCategoryV1, BeginnerTargetPartKindV1,
+    BeginnerTargetPartRecordV1, CreasePattern, Edge, EdgeId, EdgeKind, Point2, ProjectId, Vertex,
+    VertexId,
 };
 
 pub const BEGINNER_GENERATOR_SCHEMA_VERSION_V1: u32 = 1;
@@ -993,8 +994,19 @@ pub fn generate_beginner_plans_v1(
                     constraints,
                 )
             } else if feature_records >= 2 && !known_composite {
+                let tree_ratios =
+                    bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)
+                        .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
                 let endpoints = bounded_generic_composite_endpoints(constraints)
                     .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
+                let instruction = format!(
+                    "bounded_tree_river_axial_v1:{}",
+                    tree_ratios
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
                 symmetric_template(
                     namespace,
                     source,
@@ -1005,7 +1017,7 @@ pub fn generate_beginner_plans_v1(
                     min_y,
                     max_y,
                     &endpoints,
-                    "composite_generic_target_base",
+                    &instruction,
                     constraints,
                 )
             } else if part_count(BeginnerTargetPartKindV1::Horn) == 1
@@ -1354,8 +1366,19 @@ pub fn generate_beginner_plans_v1(
                     constraints,
                 )
             } else if feature_records >= 2 && !known_composite {
+                let tree_ratios =
+                    bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)
+                        .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
                 let endpoints = bounded_generic_composite_endpoints(constraints)
                     .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?;
+                let instruction = format!(
+                    "bounded_tree_river_axial_v1:{}",
+                    tree_ratios
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
                 symmetric_template(
                     namespace,
                     source,
@@ -1366,7 +1389,7 @@ pub fn generate_beginner_plans_v1(
                     min_y,
                     max_y,
                     &endpoints,
-                    "composite_generic_target_base",
+                    &instruction,
                     constraints,
                 )
             } else if part_count(BeginnerTargetPartKindV1::Wing) == 2
@@ -1858,6 +1881,7 @@ fn has_bilateral_skeleton(constraints: &BeginnerGenerationConstraintsV1) -> bool
 fn bounded_generic_composite_endpoints(
     constraints: &BeginnerGenerationConstraintsV1,
 ) -> Option<Vec<(f64, f64)>> {
+    bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)?;
     if !(2..=8).contains(&constraints.protrusions.len())
         || constraints
             .protrusions
@@ -1986,6 +2010,60 @@ fn bounded_generic_composite_endpoints(
         endpoints.extend(candidates);
     }
     Some(endpoints)
+}
+
+fn bounded_tree_skeleton_length_ratios(segments: &[BeginnerSkeletonSegmentV1]) -> Option<Vec<u32>> {
+    if segments.is_empty()
+        || segments.len() > 8
+        || segments.windows(2).any(|pair| pair[0].id >= pair[1].id)
+    {
+        return None;
+    }
+    let point = |point: BeginnerSkeletonPointV1| (point.x_tenths_mm, point.y_tenths_mm);
+    let points = segments
+        .iter()
+        .flat_map(|segment| [point(segment.start), point(segment.end)])
+        .collect::<std::collections::BTreeSet<_>>();
+    if points.len() != segments.len() + 1
+        || segments
+            .iter()
+            .any(|segment| point(segment.start) == point(segment.end))
+    {
+        return None;
+    }
+    let mut reached = std::collections::BTreeSet::from([point(segments[0].start)]);
+    while reached.len() < points.len() {
+        let before = reached.len();
+        for segment in segments {
+            let start = point(segment.start);
+            let end = point(segment.end);
+            if reached.contains(&start) {
+                reached.insert(end);
+            }
+            if reached.contains(&end) {
+                reached.insert(start);
+            }
+        }
+        if reached.len() == before {
+            return None;
+        }
+    }
+    let squared = segments
+        .iter()
+        .map(|segment| {
+            let dx = i64::from(segment.end.x_tenths_mm) - i64::from(segment.start.x_tenths_mm);
+            let dy = i64::from(segment.end.y_tenths_mm) - i64::from(segment.start.y_tenths_mm);
+            u64::try_from(dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))).ok()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let minimum = *squared.iter().min()?;
+    if minimum == 0 {
+        return None;
+    }
+    squared
+        .into_iter()
+        .map(|value| u32::try_from(value.saturating_mul(1_000_000).checked_div(minimum)?).ok())
+        .collect()
 }
 
 fn parameterized_landmark_endpoint(
@@ -2385,6 +2463,40 @@ fn asymmetric_insect_semantic_provenance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_tree_ratios_reject_cycles_limits_and_degenerate_bars() {
+        let bar = |id: u16, start: (i32, i32), end: (i32, i32)| BeginnerSkeletonSegmentV1 {
+            id,
+            start: BeginnerSkeletonPointV1 {
+                x_tenths_mm: start.0,
+                y_tenths_mm: start.1,
+            },
+            end: BeginnerSkeletonPointV1 {
+                x_tenths_mm: end.0,
+                y_tenths_mm: end.1,
+            },
+            thickness_tenths_mm: 1,
+        };
+        let tree = vec![bar(0, (0, 0), (10, 0)), bar(1, (10, 0), (10, 20))];
+        assert_eq!(
+            bounded_tree_skeleton_length_ratios(&tree),
+            Some(vec![1_000_000, 4_000_000])
+        );
+        assert!(
+            bounded_tree_skeleton_length_ratios(&[
+                bar(0, (0, 0), (10, 0)),
+                bar(1, (10, 0), (5, 10)),
+                bar(2, (5, 10), (0, 0)),
+            ])
+            .is_none()
+        );
+        assert!(bounded_tree_skeleton_length_ratios(&[bar(0, (0, 0), (0, 0))]).is_none());
+        let nine = (0..9)
+            .map(|id| bar(id, (id as i32, 0), (id as i32 + 1, 0)))
+            .collect::<Vec<_>>();
+        assert!(bounded_tree_skeleton_length_ratios(&nine).is_none());
+    }
 
     #[test]
     fn generator_is_bounded_deterministic_and_fail_closed() {

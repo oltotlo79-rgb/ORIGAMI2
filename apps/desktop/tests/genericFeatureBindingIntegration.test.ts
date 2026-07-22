@@ -7,6 +7,8 @@ const app = readFileSync('src/App.tsx', 'utf8')
 const native = readFileSync('src-tauri/src/lib.rs', 'utf8')
 const browser = readFileSync('scripts/generic-target-browser-e2e.mjs', 'utf8')
 const browserHarness = readFileSync('scripts/generic-target-browser-harness.tsx', 'utf8')
+const generator = readFileSync('../../crates/ori-domain/src/beginner_generator.rs', 'utf8')
+const skeletonTree = readFileSync('src/lib/genericSkeletonTree.ts', 'utf8')
 
 test('generic feature bindings cross the exact frontend DTO boundary', () => {
   assert.match(client, /generic_feature_bindings: ReadonlyArray/u)
@@ -73,4 +75,17 @@ test('confirmed image and 3D generic candidates retain vertical proof coverage',
   assert.match(browser, /Undo generic target/u)
   assert.match(browser, /Redo generic target/u)
   assert.match(browser, /Save and reopen generic target/u)
+})
+
+test('image and GLB skeletons admit only bounded acyclic river-axial proposals', () => {
+  assert.match(generator, /fn bounded_tree_skeleton_length_ratios/u)
+  assert.match(generator, /segments\.is_empty\(\)[\s\S]*?\|\| segments\.len\(\) > 8/u)
+  assert.match(generator, /points\.len\(\) != segments\.len\(\) \+ 1/u)
+  assert.match(generator, /bounded_tree_river_axial_v1/u)
+  assert.match(generator, /saturating_mul\(1_000_000\)/u)
+  assert.match(skeletonTree, /segments\.length > 8/u)
+  assert.match(native, /validate_beginner_manufacturability_v1/u)
+  assert.match(native, /assess_beginner_generated_plan_with_deadline/u)
+  assert.match(native, /beginner_plan_paper_efficiency_score_v1/u)
+  assert.match(app, /beginnerSkeletonTree\.status !== 'tree'/u)
 })

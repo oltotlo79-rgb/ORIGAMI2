@@ -29,11 +29,11 @@
 
 |項目|判定|対応|
 |---|---|---|
-|C-1|妥当な改善|カテゴリ優先ではなくscreen distanceを基準にする変更は挙動仕様変更を伴う。snap優先度の回帰行列を追加してから適用する。|
+|C-1|妥当・修正済み|`4314420`。screen distanceと小さなcategory biasで全候補を比較。snap 101/101。|
 |C-2|一部妥当|境界edge除外は紙境界を通常creaseとして分割しない既存方針でもある。既存孤立頂点との接続は妥当だが、一括自動分割と同じ新規編集commandとして扱う。|
 |C-3|新規要件|分数/N分割gridは現行要件にない。F-3として管理する。|
 |C-4|妥当・修正済み|`4c28d50`。`fileOperationActive`を全編集gateへ追加。|
-|C-5|妥当な改善|コンパイル済み文言のlocale key化が必要。物理証明の正否には影響しない。|
+|C-5|妥当・修正済み|`6c3f972`。認証済み技法の固定手順文を日英併記し、英語利用者へ日本語だけを返さない。WSL 40/40。|
 |C-6|妥当・修正済み|`ecc1dd3`。block authorityの2 schedule終端と保存target anglesをapply時にbit-exact再照合。WSL回帰1/1。|
 |C-7|妥当・修正済み|`4c28d50`。visual JSON構造検証とGLB certificate export gateを追加。DOM 11/11。|
 

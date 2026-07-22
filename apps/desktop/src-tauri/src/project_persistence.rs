@@ -2108,6 +2108,169 @@ mod staged_payload_adapter_tests {
         fs::remove_dir_all(directory).expect("cleanup test directory");
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_real_fs_faults_preserve_complete_target_and_redact_reason() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let directory = journal_test_directory("windows-real-faults");
+        let target = directory.join("project.ori2");
+        let sentinel = directory.join("unowned-sentinel");
+        let old_archive = Ori2ProjectArchive::document_only(ProjectDocument::new(
+            "old complete",
+            CreasePattern::empty(),
+        ));
+        let new_archive = Ori2ProjectArchive::document_only(ProjectDocument::new(
+            "new complete",
+            CreasePattern::empty(),
+        ));
+        let old_bytes = write_project_archive_ori2(&old_archive).expect("old archive");
+        let sentinel_bytes = b"unowned bytes";
+        fs::write(&target, &old_bytes).expect("old target");
+        fs::write(&sentinel, sentinel_bytes).expect("sentinel");
+
+        let mut permissions = fs::metadata(&target).expect("metadata").permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&target, permissions).expect("read-only target");
+        let read_only_error = persist_project_archive_to_destination(
+            &DialogSaveDestination::confirmed(target.clone()),
+            &new_archive,
+        )
+        .expect_err("read-only replacement must fail");
+        assert_eq!(fs::read(&target).expect("complete old target"), old_bytes);
+        assert_eq!(
+            fs::read(&sentinel).expect("sentinel unchanged"),
+            sentinel_bytes
+        );
+
+        let mut permissions = fs::metadata(&target).expect("metadata").permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&target, permissions).expect("writable target");
+        let blocking_handle = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(super::FILE_SHARE_READ)
+            .open(&target)
+            .expect("non-delete-sharing handle");
+        let sharing_error = persist_project_archive_to_destination(
+            &DialogSaveDestination::confirmed(target.clone()),
+            &new_archive,
+        )
+        .expect_err("sharing violation must fail");
+        assert_eq!(
+            sharing_error, read_only_error,
+            "OS reasons must be redacted"
+        );
+        assert_eq!(fs::read(&target).expect("complete old target"), old_bytes);
+        assert_eq!(
+            fs::read(&sentinel).expect("sentinel unchanged"),
+            sentinel_bytes
+        );
+
+        drop(blocking_handle);
+        persist_project_archive_to_destination(
+            &DialogSaveDestination::confirmed(target.clone()),
+            &new_archive,
+        )
+        .expect("journal remains retryable after fault removal");
+        assert_eq!(
+            load_project_archive_from_path(&target).expect("complete new target"),
+            new_archive
+        );
+        assert_eq!(
+            fs::read(&sentinel).expect("sentinel unchanged"),
+            sentinel_bytes
+        );
+        fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_recovery_phase_fault_matrix_remains_retryable() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let old = b"old complete bytes";
+        let new = b"new complete bytes";
+        for phase in [
+            SingleFileJournalPhaseV1::Prepared,
+            SingleFileJournalPhaseV1::OldMoved,
+            SingleFileJournalPhaseV1::NewPublished,
+        ] {
+            let directory = journal_test_directory("windows-phase-fault");
+            let target = directory.join("project.ori2");
+            let temp = directory.join("temp-phase-fault");
+            let backup = directory.join("backup-phase-fault");
+            let sentinel = directory.join("sentinel");
+            fs::write(&sentinel, b"unowned").expect("sentinel");
+            match phase {
+                SingleFileJournalPhaseV1::Prepared => {
+                    fs::write(&target, old).expect("target");
+                    fs::write(&temp, new).expect("temp");
+                }
+                SingleFileJournalPhaseV1::OldMoved => {
+                    fs::write(&temp, new).expect("temp");
+                    fs::write(&backup, old).expect("backup");
+                }
+                SingleFileJournalPhaseV1::NewPublished => {
+                    fs::write(&target, new).expect("target");
+                    fs::write(&backup, old).expect("backup");
+                }
+            }
+            let project_id = ProjectId::new();
+            let fingerprint = target_path_fingerprint(&target).expect("fingerprint");
+            let payload = SingleFileJournalPayloadV1 {
+                schema_version: SINGLE_FILE_JOURNAL_SCHEMA_V1,
+                project_id,
+                target_path_sha256: fingerprint.clone(),
+                transaction_id: "phase-fault".to_owned(),
+                temp_object_id: "temp-phase-fault".to_owned(),
+                temp_sha256: sha256_hex_bytes(new),
+                backup_object_id: "backup-phase-fault".to_owned(),
+                old_sha256: Some(sha256_hex_bytes(old)),
+                phase,
+            };
+            let journal = journal_path_for_target(&target, &fingerprint).expect("journal");
+            fs::write(
+                &journal,
+                encode_single_file_journal_v1(payload).expect("journal bytes"),
+            )
+            .expect("journal");
+
+            let fault_path = if phase == SingleFileJournalPhaseV1::NewPublished {
+                &backup
+            } else {
+                &temp
+            };
+            let blocker = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(super::FILE_SHARE_READ)
+                .open(fault_path)
+                .expect("sharing fault handle");
+            assert!(recover_single_file_journal_for_target(&target, project_id).is_err());
+            assert!(journal.exists(), "journal must remain retryable");
+            assert_eq!(fs::read(&sentinel).expect("sentinel"), b"unowned");
+            if phase == SingleFileJournalPhaseV1::Prepared {
+                assert_eq!(fs::read(&target).expect("old target"), old);
+            } else if phase == SingleFileJournalPhaseV1::NewPublished {
+                assert_eq!(fs::read(&target).expect("new target"), new);
+            } else {
+                assert!(!target.exists());
+                assert_eq!(fs::read(&backup).expect("old backup"), old);
+            }
+
+            drop(blocker);
+            recover_single_file_journal_for_target(&target, project_id).expect("retry recovery");
+            let expected: &[u8] = if phase == SingleFileJournalPhaseV1::Prepared {
+                old
+            } else {
+                new
+            };
+            assert_eq!(fs::read(&target).expect("complete target"), expected);
+            assert!(!journal.exists());
+            assert_eq!(fs::read(&sentinel).expect("sentinel"), b"unowned");
+            fs::remove_dir_all(directory).expect("cleanup test directory");
+        }
+    }
+
     #[test]
     fn journal_decoder_rejects_reserved_and_casefold_colliding_private_names() {
         let project_id = ProjectId::new();

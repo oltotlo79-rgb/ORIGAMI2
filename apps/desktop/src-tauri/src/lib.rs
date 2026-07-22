@@ -3714,6 +3714,28 @@ fn beginner_contour_placement_witness(
             .map(|binding| usize::from(binding.contour_points))
             .sum(),
     );
+    let (graph_vertices, graph_edges) =
+        if plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
+            let points = constraints
+                .skeleton_segments
+                .iter()
+                .flat_map(|segment| {
+                    [
+                        (segment.start.x_tenths_mm, segment.start.y_tenths_mm),
+                        (segment.end.x_tenths_mm, segment.end.y_tenths_mm),
+                    ]
+                })
+                .collect::<HashSet<_>>();
+            (points.len(), constraints.skeleton_segments.len())
+        } else {
+            (0, 0)
+        };
+    let contour_vertex_end = plan
+        .crease_pattern
+        .vertices
+        .len()
+        .checked_sub(graph_vertices)?;
+    let contour_edge_end = plan.crease_pattern.edges.len().checked_sub(graph_edges)?;
     let mut generic_feature_bindings = Vec::new();
     if plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
         let endpoint_count = constraints
@@ -3726,10 +3748,7 @@ fn beginner_contour_placement_witness(
                     None
                 }
             })?;
-        let mut crease_cursor = plan
-            .crease_pattern
-            .edges
-            .len()
+        let mut crease_cursor = contour_edge_end
             .checked_sub(witnessed)?
             .checked_sub(endpoint_count)?;
         let mut canonical_targets = constraints.protrusions.iter().collect::<Vec<_>>();
@@ -3798,24 +3817,17 @@ fn beginner_contour_placement_witness(
         }) {
             return None;
         }
-        if crease_cursor != plan.crease_pattern.edges.len().checked_sub(witnessed)? {
+        if crease_cursor != contour_edge_end.checked_sub(witnessed)? {
             return None;
         }
     }
-    if plan.crease_pattern.vertices.len() < witnessed || plan.crease_pattern.edges.len() < witnessed
-    {
+    if contour_vertex_end < witnessed || contour_edge_end < witnessed {
         return None;
     }
-    let mut vertex_cursor = plan
-        .crease_pattern
-        .vertices
-        .len()
+    let mut vertex_cursor = contour_vertex_end
         .checked_sub(witnessed)?
         .checked_add(body_contour_points)?;
-    let mut crease_cursor = plan
-        .crease_pattern
-        .edges
-        .len()
+    let mut crease_cursor = contour_edge_end
         .checked_sub(witnessed)?
         .checked_add(body_contour_points)?;
     for (index, binding) in local_bindings.iter_mut().enumerate() {
@@ -3825,12 +3837,10 @@ fn beginner_contour_placement_witness(
         vertex_cursor = vertex_cursor.checked_add(usize::from(binding.contour_points))?;
         crease_cursor = crease_cursor.checked_add(usize::from(binding.contour_points))?;
     }
-    if vertex_cursor != plan.crease_pattern.vertices.len()
-        || crease_cursor != plan.crease_pattern.edges.len()
-    {
+    if vertex_cursor != contour_vertex_end || crease_cursor != contour_edge_end {
         return None;
     }
-    let base_vertex_count = plan.crease_pattern.vertices.len().checked_sub(witnessed)?;
+    let base_vertex_count = contour_vertex_end.checked_sub(witnessed)?;
     let mut max_contour_error_millionths = 0;
     if let Some(outline) = constraints.generic_body_outline_tenths_mm.as_deref() {
         max_contour_error_millionths =

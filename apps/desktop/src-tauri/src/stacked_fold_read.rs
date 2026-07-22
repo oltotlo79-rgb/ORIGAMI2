@@ -2600,14 +2600,13 @@ fn propose_current_cycle_pose_inner_with_layers(
         request.cycle_schedule_v1.version == 2 && request.cycle_schedule_v1.entries.is_empty();
     if !automatic_kawasaki
         && (request.cycle_schedule_v1.entries.is_empty()
-            || request.cycle_schedule_v1.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
             || request.cycle_schedule_v1.entries.iter().any(|entry| {
                 entry.numerator_power_coefficients.is_empty()
                     || entry.numerator_power_coefficients.len()
-                        > MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1
+                        > MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1 + 1
                     || entry.denominator_power_coefficients.is_empty()
                     || entry.denominator_power_coefficients.len()
-                        > MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1
+                        > MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1 + 1
             }))
     {
         return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
@@ -2675,7 +2674,8 @@ fn propose_current_cycle_pose_inner_with_layers(
                 generation,
                 progress_request_id,
                 request.expected_revision,
-            );
+            )
+            .map_err(|_| CYCLE_NONCLOSING_MESSAGE.to_owned());
         }
     };
     let closure = basis_closure.closure().clone();
@@ -2720,7 +2720,8 @@ fn propose_current_cycle_pose_inner_with_layers(
             generation,
             progress_request_id,
             request.expected_revision,
-        );
+        )
+        .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
     }
     let expected = ori_collision::certify_scheduled_cycle_transition_v1(
         geometry,
@@ -5566,7 +5567,7 @@ mod tests {
         let mut oversized_coefficients = schedule.clone();
         let coefficient = oversized_coefficients.entries[0].numerator_power_coefficients[0];
         oversized_coefficients.entries[0].numerator_power_coefficients =
-            vec![coefficient; MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1 + 1];
+            vec![coefficient; MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1 + 2];
         assert!(
             propose_current_cycle_pose_inner_with_layers(
                 None,

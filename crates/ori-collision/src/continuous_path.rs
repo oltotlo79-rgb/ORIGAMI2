@@ -8604,6 +8604,43 @@ mod tests {
         // that constraint through the shared grid selects the first complete
         // horizontal row: three segments, all with p/q = 1, and nine zeros.
         let active = horizontal.into_iter().take(3).collect::<HashSet<_>>();
+        let selected: [(ori_domain::EdgeId, bool); 3] = active
+            .iter()
+            .copied()
+            .map(|edge| (edge, true))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        let petal_candidate = crate::regular_quad_petal_ratio_candidates_v1(selected)[0];
+        let petal_schedules = crate::prepare_regular_quad_petal_schedules_v1(
+            &geometry,
+            &audit,
+            fixed,
+            &petal_candidate,
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            petal_schedules[0].evaluate(1.0),
+            petal_schedules[1].evaluate(0.0)
+        );
+        assert_eq!(
+            petal_schedules[1].evaluate(1.0),
+            petal_schedules[2].evaluate(0.0)
+        );
+        assert!(
+            petal_schedules.iter().any(|petal_schedule| {
+                geometry
+                    .solve_closed(
+                        &audit,
+                        fixed,
+                        &petal_schedule.evaluate(1.0).unwrap(),
+                        1.0e-9,
+                    )
+                    .is_err()
+            }),
+            "a candidate with an uncertified intermediate is rejected atomically"
+        );
         let endpoint = CanonicalHingeAngles::new(
             hinge_edges
                 .iter()

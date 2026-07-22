@@ -1,8 +1,9 @@
 use ori_domain::Point2;
 use ori_foldability::{FoldedFaceOrientation, LayerOrderSnapshot};
 use ori_kinematics::{
-    CanonicalCycleScheduleV1, DyadicMaterialHingeIntervalClosureCertificateV1,
-    MaterialHingeGraphAudit, MaterialHingeGraphGeometry, Point3,
+    CanonicalCycleScheduleV1, CycleScheduleLimitsV1,
+    DyadicMaterialHingeIntervalClosureCertificateV1, HalfAngleRationalEntryInputV1,
+    MaterialHingeGraphAudit, MaterialHingeGraphGeometry, Point3, RationalCoefficientV1,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -48,6 +49,70 @@ pub fn regular_quad_petal_ratio_candidates_v1(
             ],
         ],
     })
+}
+
+pub fn prepare_regular_quad_petal_schedules_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: ori_domain::FaceId,
+    candidate: &RegularQuadPetalRatioCandidateV1,
+    limits: CycleScheduleLimitsV1,
+) -> Option<[CanonicalCycleScheduleV1; 3]> {
+    let mut previous = [(0_i64, 1_u64); 3];
+    let mut schedules = Vec::with_capacity(3);
+    for targets in candidate.stage_endpoints {
+        let mut entries = geometry
+            .hinges()
+            .iter()
+            .map(|hinge| {
+                let index = candidate
+                    .hinges
+                    .iter()
+                    .position(|edge| *edge == hinge.edge());
+                let source = index.map_or((0, 1), |index| previous[index]);
+                let target = index.map_or((0, 1), |index| targets[index]);
+                let denominator = source.1.checked_mul(target.1)?;
+                let initial = source.0.checked_mul(i64::try_from(target.1).ok()?)?;
+                let target_scaled = target.0.checked_mul(i64::try_from(source.1).ok()?)?;
+                Some(HalfAngleRationalEntryInputV1 {
+                    edge: hinge.edge(),
+                    u_domain: [
+                        RationalCoefficientV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        RationalCoefficientV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ],
+                    numerator_power_coefficients: vec![
+                        RationalCoefficientV1 {
+                            numerator: initial,
+                            denominator: 1,
+                        },
+                        RationalCoefficientV1 {
+                            numerator: target_scaled.checked_sub(initial)?,
+                            denominator: 1,
+                        },
+                    ],
+                    denominator_power_coefficients: vec![RationalCoefficientV1 {
+                        numerator: i64::try_from(denominator).ok()?,
+                        denominator: 1,
+                    }],
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        schedules.push(
+            CanonicalCycleScheduleV1::prepare_half_angle_rational(
+                geometry, audit, fixed_face, entries, limits,
+            )
+            .ok()?,
+        );
+        previous = targets;
+    }
+    schedules.try_into().ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -23,7 +23,7 @@
 |B-5|妥当・修正済み|`657f902`。山谷は表示名でなく選択crease assignmentと明示kindで識別。WSL `ori-instructions` 40/40。|
 |B-6|一部妥当・修正済み|非連結blockを許す指摘は妥当。`ecc1dd3`でblock intersection graphをtreeに限定。公開型の死蔵は機能欠陥ではなく整理課題。|
 |B-7|妥当・修正済み|`4c28d50`。split/merged noticeを追加。|
-|B-8|説明矛盾として妥当・修正済み|`6412942`。円は現状visual guideで自動snapしないと明記。circle intersection snap自体は新規要件F-2。|
+|B-8|説明矛盾として妥当・修正済み|`6412942`で当時の制限を正確に明記し、`77e8f1d`と後続境界回帰で円×線・円×円の交点snapを頂点追加・辺分割へ接続した。|
 
 ## C: 改善
 
@@ -41,7 +41,7 @@
 
 |項目|要件照合|判定|
 |---|---|---|
-|F-2 コンパス円交点snap|EDT-007 MUST|既存スコープ内の未達。EDT-007を部分実装へ是正し、実装対象とする。|
+|F-2 コンパス円交点snap|EDT-007 MUST|指摘は妥当。`77e8f1d`で円×線・円×円交点を既存snap契約と頂点追加・辺分割へ接続し、接線・重複円・非有限値・同一点候補・紙面外境界を追加回帰した。既存native commandを共有するためUndo/Redo・履歴永続化も同じ経路となる。|
 |F-6 step camera取得|INS-004 MUST|camera保存自体は既存visual JSON編集で可能。専用取得buttonは新規UXだが既存スコープを具体化するため実装対象。|
 |EDT-009 最小不能部分集合|EDT-009 MUST|既存スコープ内の未達。EDT-009を部分実装へ是正し、実装対象とする。|
 |F-D/F-E|INS-001|作成・任意index移動は既に満たす。複製、先頭末尾button、DnDは新規shortcutでありMUST未達ではない。|

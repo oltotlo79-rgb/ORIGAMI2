@@ -1194,6 +1194,7 @@ mod tests {
                     semantic_landmark_provenance: None,
                     generic_tree: None,
                     reference_consensus: None,
+                    reference_consensus_summary: None,
                 });
             }
             let artifact = write_project_folder_v1(&archive).expect("write folder provenance");

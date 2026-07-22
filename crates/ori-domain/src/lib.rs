@@ -32,8 +32,9 @@ pub use beginner_design::{
     BeginnerGenericTreeInstructionStepV1, BeginnerGenericTreeOrientationV1,
     BeginnerGenericTreeProvenanceV1, BeginnerGenericTreeSourceV1, BeginnerOutlineEditAuthorityV1,
     BeginnerOutlineEditRecordV1, BeginnerReferenceBindingKindV1, BeginnerReferenceBindingV1,
-    BeginnerReferenceConsensusProvenanceV1, BeginnerReferenceConsensusV1,
-    validate_beginner_design_profile_v1, validate_beginner_generation_provenance_v1,
+    BeginnerReferenceConsensusProvenanceV1, BeginnerReferenceConsensusSummaryV1,
+    BeginnerReferenceConsensusV1, validate_beginner_design_profile_v1,
+    validate_beginner_generation_provenance_v1,
 };
 pub use beginner_generation::{
     BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_V1, BEGINNER_GENERATION_CONSTRAINTS_SCHEMA_VERSION_V1,

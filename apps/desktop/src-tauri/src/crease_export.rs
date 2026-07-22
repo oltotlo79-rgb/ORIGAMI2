@@ -880,6 +880,7 @@ mod tests {
             semantic_landmark_provenance: None,
             generic_tree: None,
             reference_consensus: None,
+            reference_consensus_summary: None,
         };
         for format in [
             CreaseExportFormatRequest::Fold,

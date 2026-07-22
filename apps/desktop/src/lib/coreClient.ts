@@ -227,7 +227,11 @@ export type BeginnerDesignProfileV1 = {
       schema_version: 1; source_revision: number
       bindings: NonNullable<BeginnerDesignProfileV1['reference_consensus_v1']>['bindings']
       excluded_asset_id?: string; pair_digests_sha256: ReadonlyArray<ReadonlyArray<number>>
+      summary: Readonly<{ schema_version: 1; model: 'component_extent_branch_v1'; source_count: number
+        excluded_count: number; agreement_score: number; component_subscore: number; extent_subscore: number; branch_subscore: number }>
     }>
+    reference_consensus_summary?: Readonly<{ schema_version: 1; model: 'component_extent_branch_v1'; source_count: number
+      excluded_count: number; agreement_score: number; component_subscore: number; extent_subscore: number; branch_subscore: number }>
   }>
   reference_surface_landmarks_tenths_mm?: ReadonlyArray<readonly [number, number, number]>
   outline_edit_authority?: Readonly<{
@@ -1405,9 +1409,13 @@ export function normalizeBeginnerDesignProfile(
   if (!generationConstraints) return null
   const provenance = record.generation_provenance === undefined ? null : exactCoreDataRecord(
     record.generation_provenance, ['schema_version', 'topology_authority_sha256', 'fold_path_certificate_sha256', 'confidence_score',
-      'confidence_reasons', 'explicit_override', 'source_asset_fingerprint', 'generic_tree', 'reference_consensus'] as const)
+      'confidence_reasons', 'explicit_override', 'source_asset_fingerprint', 'generic_tree', 'reference_consensus', 'reference_consensus_summary'] as const)
+  const exportedConsensusSummary = provenance?.reference_consensus_summary === undefined ? null : exactCoreDataRecord(
+    provenance.reference_consensus_summary, ['schema_version', 'model', 'source_count', 'excluded_count', 'agreement_score', 'component_subscore', 'extent_subscore', 'branch_subscore'] as const)
   const provenanceConsensus = provenance?.reference_consensus === undefined ? null : exactCoreDataRecord(
-    provenance.reference_consensus, ['schema_version', 'source_revision', 'bindings', 'excluded_asset_id', 'pair_digests_sha256'] as const)
+    provenance.reference_consensus, ['schema_version', 'source_revision', 'bindings', 'excluded_asset_id', 'pair_digests_sha256', 'summary'] as const)
+  const provenanceConsensusSummary = provenanceConsensus === null ? null : exactCoreDataRecord(provenanceConsensus.summary,
+    ['schema_version', 'model', 'source_count', 'excluded_count', 'agreement_score', 'component_subscore', 'extent_subscore', 'branch_subscore'] as const)
   const genericTree = provenance?.generic_tree === undefined ? null : exactCoreDataRecord(
     provenance.generic_tree, ['schema_version', 'target_category', 'source', 'asset_content_sha256', 'tree_topology_sha256',
       'normalized_length_ratios', 'orientation', 'generator_version', 'authorizes_apply', 'instruction_proposal'] as const)
@@ -1436,7 +1444,21 @@ export function normalizeBeginnerDesignProfile(
         || !(provenanceConsensus.bindings as Array<Record<string, unknown>>).some((binding) => binding.asset_id === provenanceConsensus.excluded_asset_id)))
       || !Array.isArray(provenanceConsensus.pair_digests_sha256) || provenanceConsensus.pair_digests_sha256.length < 1
       || provenanceConsensus.pair_digests_sha256.length > 6
-      || provenanceConsensus.pair_digests_sha256.some((digest) => !isBoundedIntegerTuple(digest, 32, 255))))
+      || provenanceConsensus.pair_digests_sha256.some((digest) => !isBoundedIntegerTuple(digest, 32, 255))
+      || !provenanceConsensusSummary || provenanceConsensusSummary.schema_version !== 1
+      || provenanceConsensusSummary.model !== 'component_extent_branch_v1'
+      || provenanceConsensusSummary.source_count !== provenanceConsensus.bindings.length
+      || provenanceConsensusSummary.excluded_count !== (provenanceConsensus.excluded_asset_id === undefined ? 0 : 1)
+      || [provenanceConsensusSummary.agreement_score, provenanceConsensusSummary.component_subscore,
+        provenanceConsensusSummary.extent_subscore, provenanceConsensusSummary.branch_subscore]
+        .some((score) => !Number.isInteger(score) || Number(score) < 0 || Number(score) > 100)))
+    || (provenance.reference_consensus_summary !== undefined && (!exportedConsensusSummary
+      || exportedConsensusSummary.schema_version !== 1 || exportedConsensusSummary.model !== 'component_extent_branch_v1'
+      || !Number.isInteger(exportedConsensusSummary.source_count) || Number(exportedConsensusSummary.source_count) < 2 || Number(exportedConsensusSummary.source_count) > 4
+      || ![0, 1].includes(Number(exportedConsensusSummary.excluded_count))
+      || ![exportedConsensusSummary.agreement_score, exportedConsensusSummary.component_subscore,
+        exportedConsensusSummary.extent_subscore, exportedConsensusSummary.branch_subscore]
+        .every((score) => Number.isInteger(score) && Number(score) >= 0 && Number(score) <= 100)))
     || (provenance.generic_tree !== undefined && (!genericTree || genericTree.schema_version !== 1
       || !['image_silhouette', 'glb_geometry', 'manual_skeleton'].includes(String(genericTree.source))
       || (genericTree.target_category !== undefined && genericTree.target_category !== 'custom_object')
@@ -1562,11 +1584,13 @@ export function normalizeBeginnerDesignProfile(
       confidence_reasons: Object.freeze((provenance.confidence_reasons as string[]).slice()),
       explicit_override: provenance.explicit_override as boolean,
       source_asset_fingerprint: provenance.source_asset_fingerprint as string,
+      ...(exportedConsensusSummary === null ? {} : { reference_consensus_summary: Object.freeze({ ...exportedConsensusSummary }) }),
       ...(provenanceConsensus === null ? {} : { reference_consensus: Object.freeze({
         schema_version: 1 as const, source_revision: Number(provenanceConsensus.source_revision),
         bindings: Object.freeze((provenanceConsensus.bindings as Array<Record<string, unknown>>).map((binding) => Object.freeze({ ...binding }))) as NonNullable<BeginnerDesignProfileV1['reference_consensus_v1']>['bindings'],
         ...(provenanceConsensus.excluded_asset_id === undefined ? {} : { excluded_asset_id: String(provenanceConsensus.excluded_asset_id) }),
         pair_digests_sha256: Object.freeze((provenanceConsensus.pair_digests_sha256 as number[][]).map((digest) => Object.freeze(digest.slice()))),
+        summary: Object.freeze({ ...provenanceConsensusSummary }),
       }) }),
       ...(genericTree === null ? {} : { generic_tree: Object.freeze({
         schema_version: 1 as const,

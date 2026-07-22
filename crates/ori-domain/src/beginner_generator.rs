@@ -79,6 +79,7 @@ mod parameter_grid_tests {
             semantic_landmark_provenance: Some(semantic.clone()),
             generic_tree: None,
             reference_consensus: None,
+            reference_consensus_summary: None,
         };
         assert!(crate::validate_beginner_generation_provenance_v1(
             &provenance
@@ -1023,7 +1024,7 @@ pub fn generate_beginner_plans_v1(
                 || feature_records == 4 && horn && tail && ears && legs
                 || feature_records == 5 && horn && tail && ears && legs && wings;
             if asymmetric_landmark_fish {
-                let plan = symmetric_template(
+                symmetric_template(
                     namespace,
                     source,
                     BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase,
@@ -1035,8 +1036,7 @@ pub fn generate_beginner_plans_v1(
                     &[(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)],
                     "asymmetric_fish_landmark_base",
                     constraints,
-                );
-                plan
+                )
             } else if feature_records >= 2 && !known_composite {
                 let tree_ratios =
                     bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)

@@ -106,6 +106,8 @@ pub struct BeginnerGenerationProvenanceV1 {
     pub generic_tree: Option<BeginnerGenericTreeProvenanceV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference_consensus: Option<BeginnerReferenceConsensusProvenanceV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_consensus_summary: Option<BeginnerReferenceConsensusSummaryV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +119,20 @@ pub struct BeginnerReferenceConsensusProvenanceV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub excluded_asset_id: Option<AssetId>,
     pub pair_digests_sha256: Vec<[u8; 32]>,
+    pub summary: BeginnerReferenceConsensusSummaryV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerReferenceConsensusSummaryV1 {
+    pub schema_version: u32,
+    pub model: String,
+    pub source_count: u8,
+    pub excluded_count: u8,
+    pub agreement_score: u8,
+    pub component_subscore: u8,
+    pub extent_subscore: u8,
+    pub branch_subscore: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -396,6 +412,40 @@ pub fn validate_beginner_generation_provenance_v1(
                             .iter()
                             .any(|binding| binding.asset_id == id)
                     })
+                    && consensus.summary.schema_version == 1
+                    && consensus.summary.model == "component_extent_branch_v1"
+                    && consensus.summary.source_count as usize == consensus.bindings.len()
+                    && consensus.summary.excluded_count
+                        == u8::from(consensus.excluded_asset_id.is_some())
+                    && [
+                        consensus.summary.agreement_score,
+                        consensus.summary.component_subscore,
+                        consensus.summary.extent_subscore,
+                        consensus.summary.branch_subscore,
+                    ]
+                    .into_iter()
+                    .all(|score| score <= 100)
+            })
+        && provenance
+            .reference_consensus_summary
+            .as_ref()
+            .is_none_or(|summary| {
+                summary.schema_version == 1
+                    && summary.model == "component_extent_branch_v1"
+                    && (2..=4).contains(&summary.source_count)
+                    && summary.excluded_count <= 1
+                    && [
+                        summary.agreement_score,
+                        summary.component_subscore,
+                        summary.extent_subscore,
+                        summary.branch_subscore,
+                    ]
+                    .into_iter()
+                    .all(|score| score <= 100)
+                    && provenance
+                        .reference_consensus
+                        .as_ref()
+                        .is_none_or(|consensus| &consensus.summary == summary)
             })
 }
 
@@ -474,6 +524,7 @@ mod tests {
                     }),
                 }),
                 reference_consensus: None,
+                reference_consensus_summary: None,
             }),
             ..BeginnerDesignProfileV1::default()
         }

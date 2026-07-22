@@ -376,6 +376,11 @@ pub fn export_crease_pattern_with_provenance(
     if !validate_beginner_generation_provenance_v1(provenance) {
         return Err(CreasePatternExportError::InvalidGenerationProvenance);
     }
+    // Export only the bounded aggregate. Asset identities, hashes and pair digests remain
+    // project-private while the saved provenance is still strictly validated above.
+    let mut safe_provenance = provenance.clone();
+    safe_provenance.reference_consensus = None;
+    let provenance = &safe_provenance;
     let json =
         serde_json::to_vec(provenance).map_err(CreasePatternExportError::FoldSerialization)?;
     let hex = json
@@ -1571,6 +1576,7 @@ mod tests {
             semantic_landmark_provenance: None,
             generic_tree: None,
             reference_consensus: None,
+            reference_consensus_summary: None,
         };
         for format in [
             CreasePatternExportFormat::Fold12,
@@ -1620,6 +1626,76 @@ mod tests {
     }
 
     #[test]
+    fn consensus_export_keeps_only_strict_safe_summary() {
+        let (pattern, paper) = sample_pattern();
+        let first = ori_domain::AssetId::new();
+        let second = ori_domain::AssetId::new();
+        let summary = ori_domain::BeginnerReferenceConsensusSummaryV1 {
+            schema_version: 1,
+            model: "component_extent_branch_v1".to_owned(),
+            source_count: 2,
+            excluded_count: 0,
+            agreement_score: 82,
+            component_subscore: 90,
+            extent_subscore: 78,
+            branch_subscore: 80,
+        };
+        let bindings = vec![
+            ori_domain::BeginnerReferenceBindingV1 {
+                kind: ori_domain::BeginnerReferenceBindingKindV1::Image,
+                asset_id: first,
+                sha256: [0x11; 32],
+                quality: 90,
+            },
+            ori_domain::BeginnerReferenceBindingV1 {
+                kind: ori_domain::BeginnerReferenceBindingKindV1::ReferenceModel,
+                asset_id: second,
+                sha256: [0x22; 32],
+                quality: 88,
+            },
+        ];
+        let provenance = BeginnerGenerationProvenanceV1 {
+            schema_version: 1,
+            topology_authority_sha256: [0x33; 32],
+            fold_path_certificate_sha256: None,
+            confidence_score: 80,
+            confidence_reasons: vec!["native_topology_witness".to_owned()],
+            explicit_override: false,
+            source_asset_fingerprint: "private".to_owned(),
+            semantic_landmark_provenance: None,
+            generic_tree: None,
+            reference_consensus: Some(ori_domain::BeginnerReferenceConsensusProvenanceV1 {
+                schema_version: 1,
+                source_revision: 7,
+                bindings,
+                excluded_asset_id: None,
+                pair_digests_sha256: vec![[0x44; 32]],
+                summary: summary.clone(),
+            }),
+            reference_consensus_summary: Some(summary.clone()),
+        };
+        for format in [
+            CreasePatternExportFormat::Fold12,
+            CreasePatternExportFormat::Svg,
+            CreasePatternExportFormat::Pdf17,
+        ] {
+            let artifact = export_crease_pattern_with_provenance(
+                format,
+                "consensus",
+                &pattern,
+                &paper,
+                Some(&provenance),
+            )
+            .unwrap();
+            let exported = read_crease_pattern_generation_provenance(format, &artifact.bytes)
+                .unwrap()
+                .unwrap();
+            assert_eq!(exported.reference_consensus, None);
+            assert_eq!(exported.reference_consensus_summary, Some(summary.clone()));
+        }
+    }
+
+    #[test]
     fn generation_provenance_reader_rejects_ambiguous_or_tampered_metadata() {
         let (pattern, paper) = sample_pattern();
         let provenance = BeginnerGenerationProvenanceV1 {
@@ -1633,6 +1709,7 @@ mod tests {
             semantic_landmark_provenance: None,
             generic_tree: None,
             reference_consensus: None,
+            reference_consensus_summary: None,
         };
         for format in [
             CreasePatternExportFormat::Fold12,

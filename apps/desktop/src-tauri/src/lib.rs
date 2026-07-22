@@ -5375,6 +5375,36 @@ fn apply_beginner_generated_plan_document(
                     .iter()
                     .map(|pair| pair.pair_digest_sha256)
                     .collect(),
+                summary: ori_domain::BeginnerReferenceConsensusSummaryV1 {
+                    schema_version: 1,
+                    model: "component_extent_branch_v1".to_owned(),
+                    source_count: consensus.bindings.len() as u8,
+                    excluded_count: u8::from(consensus.excluded_asset_id.is_some()),
+                    agreement_score: analysis.agreement_score,
+                    component_subscore: analysis
+                        .pairs
+                        .iter()
+                        .map(|pair| 100_u16.saturating_sub(u16::from(pair.component_error) * 20))
+                        .sum::<u16>()
+                        .checked_div(analysis.pairs.len() as u16)
+                        .unwrap_or(0) as u8,
+                    extent_subscore: analysis
+                        .pairs
+                        .iter()
+                        .map(|pair| {
+                            100_u16.saturating_sub(u16::from(pair.normalized_extent_error) * 2)
+                        })
+                        .sum::<u16>()
+                        .checked_div(analysis.pairs.len() as u16)
+                        .unwrap_or(0) as u8,
+                    branch_subscore: analysis
+                        .pairs
+                        .iter()
+                        .map(|pair| 100_u16.saturating_sub(u16::from(pair.branch_error) * 10))
+                        .sum::<u16>()
+                        .checked_div(analysis.pairs.len() as u16)
+                        .unwrap_or(0) as u8,
+                },
             })
         })
         .transpose()?;
@@ -5397,6 +5427,9 @@ fn apply_beginner_generated_plan_document(
                 .map_or_else(|| "none".to_owned(), |asset| format!("{asset:?}")),
             semantic_landmark_provenance,
             generic_tree: None,
+            reference_consensus_summary: reference_consensus_provenance
+                .as_ref()
+                .map(|value| value.summary.clone()),
             reference_consensus: reference_consensus_provenance,
         });
     execute_command(
@@ -5842,6 +5875,7 @@ fn apply_grid_plan_document(
             semantic_landmark_provenance,
             generic_tree,
             reference_consensus: None,
+            reference_consensus_summary: None,
         });
     execute_command(
         project,

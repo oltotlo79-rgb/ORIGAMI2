@@ -8628,19 +8628,16 @@ mod tests {
             petal_schedules[1].evaluate(1.0),
             petal_schedules[2].evaluate(0.0)
         );
-        assert!(
-            petal_schedules.iter().any(|petal_schedule| {
-                geometry
-                    .solve_closed(
-                        &audit,
-                        fixed,
-                        &petal_schedule.evaluate(1.0).unwrap(),
-                        1.0e-9,
-                    )
-                    .is_err()
-            }),
-            "a candidate with an uncertified intermediate is rejected atomically"
-        );
+        assert!(petal_schedules.iter().all(|petal_schedule| {
+            geometry
+                .solve_closed(
+                    &audit,
+                    fixed,
+                    &petal_schedule.evaluate(1.0).unwrap(),
+                    1.0e-9,
+                )
+                .is_ok()
+        }));
         let endpoint = CanonicalHingeAngles::new(
             hinge_edges
                 .iter()
@@ -8758,6 +8755,71 @@ mod tests {
                 .sum(),
             max_boundary_samples: cell_work,
         };
+        let petal_closures = petal_schedules
+            .iter()
+            .map(|schedule| {
+                geometry
+                    .prove_dyadic_schedule_closure_v1(
+                        &audit,
+                        fixed,
+                        schedule,
+                        1.0e-9,
+                        DyadicIntervalClosureLimitsV1 {
+                            max_depth: 8,
+                            max_leaves: 256,
+                            max_work: 1_000_000,
+                            schedule_limits: CycleScheduleLimitsV1::default(),
+                        },
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let petal_positive = petal_schedules
+            .iter()
+            .zip(&petal_closures)
+            .map(|(schedule, closure)| {
+                certify_canonical_positive_thickness_cycle_schedule_path_v1(
+                    &geometry, &audit, fixed, schedule, closure, 0.1, 1,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let petal_inputs = petal_schedules
+            .iter()
+            .zip(&petal_closures)
+            .zip(&petal_positive)
+            .map(|((schedule, closure), positive)| {
+                let transitions = closure.leaves().len() + 1;
+                crate::GeneralCellTransportInputV1 {
+                    geometry: &geometry,
+                    audit: &audit,
+                    source,
+                    schedule,
+                    closure,
+                    positive_continuous: positive,
+                    paper_thickness_mm: 0.1,
+                    tolerance: 1.0e-9,
+                    limits: crate::GeneralCellTransportLimitsV1 {
+                        max_transitions: transitions,
+                        max_cells: source.overlap_cells.len(),
+                        max_layer_records: source
+                            .overlap_cells
+                            .iter()
+                            .map(|cell| cell.bottom_to_top_faces.len())
+                            .sum(),
+                        max_boundary_samples: source
+                            .overlap_cells
+                            .iter()
+                            .map(|cell| cell.exact_boundary.len() * cell.bottom_to_top_faces.len())
+                            .sum::<usize>()
+                            * transitions,
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+        let petal_authority =
+            crate::ChainedGeneralCellTransportAuthorityV1::issue(petal_inputs).unwrap();
+        assert_eq!(petal_authority.proofs().len(), 3);
         for thickness in [0.1, 1.0, 3.0] {
             let authority = certify_canonical_positive_thickness_cycle_schedule_path_v1(
                 &geometry, &audit, fixed, &schedule, &closure, thickness, 1,

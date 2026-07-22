@@ -29,22 +29,26 @@ pub fn regular_quad_petal_ratio_candidates_v1(
     let edges = hinges.map(|(edge, _)| edge);
     let signs = hinges.map(|(_, mountain)| if mountain { 1_i64 } else { -1_i64 });
     [
-        [(1_i64, 4_u64), (1, 2), (1, 1)],
-        [(1, 3), (2, 3), (3, 2)],
-        [(1, 2), (1, 1), (2, 1)],
+        [(1_i64, 64_u64), (1, 32), (1, 16)],
+        [(1, 48), (1, 24), (1, 12)],
+        [(1, 32), (1, 16), (1, 8)],
     ]
     .map(|ratios| RegularQuadPetalRatioCandidateV1 {
         hinges: edges,
         stage_endpoints: [
-            [(signs[0] * ratios[0].0, ratios[0].1), (0, 1), (0, 1)],
             [
                 (signs[0] * ratios[0].0, ratios[0].1),
-                (signs[1] * ratios[1].0, ratios[1].1),
-                (0, 1),
+                (signs[1] * ratios[0].0, ratios[0].1),
+                (signs[2] * ratios[0].0, ratios[0].1),
             ],
             [
-                (signs[0] * ratios[0].0, ratios[0].1),
+                (signs[0] * ratios[1].0, ratios[1].1),
                 (signs[1] * ratios[1].0, ratios[1].1),
+                (signs[2] * ratios[1].0, ratios[1].1),
+            ],
+            [
+                (signs[0] * ratios[2].0, ratios[2].1),
+                (signs[1] * ratios[2].0, ratios[2].1),
                 (signs[2] * ratios[2].0, ratios[2].1),
             ],
         ],
@@ -582,16 +586,11 @@ mod tests {
                     .windows(2)
                     .all(|pair| { pair[0].canonical_bytes() < pair[1].canonical_bytes() })
             );
-            assert_eq!(candidate.stage_endpoints[0][1..], [(0, 1), (0, 1)]);
-            assert_eq!(candidate.stage_endpoints[1][2], (0, 1));
-            assert_eq!(
-                candidate.stage_endpoints[0][0],
-                candidate.stage_endpoints[1][0]
-            );
-            assert_eq!(
-                candidate.stage_endpoints[1][..2],
-                candidate.stage_endpoints[2][..2]
-            );
+            for stage in candidate.stage_endpoints {
+                let normalized = stage.map(|(p, q)| (p.unsigned_abs(), q));
+                assert_eq!(normalized[0], normalized[1]);
+                assert_eq!(normalized[1], normalized[2]);
+            }
             assert!(
                 candidate
                     .stage_endpoints

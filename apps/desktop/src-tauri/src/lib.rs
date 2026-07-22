@@ -17301,6 +17301,20 @@ mod tests {
                 .and_then(|value| value.fold_path_certificate_sha256)
                 .unwrap();
             assert_eq!(restored_certificate, certificate);
+            let restored_topology =
+                EditorState::with_paper(restored.crease_pattern.clone(), restored.paper.clone())
+                    .topology_analysis_input(ns)
+                    .analyze();
+            let recertified = certify_beginner_fold_path_v1(
+                &plan,
+                &restored.paper,
+                &restored.crease_pattern,
+                restored_topology
+                    .simulation_snapshot()
+                    .expect("restored positive tree topology"),
+            )
+            .expect("recertify restored positive tree");
+            assert_eq!(recertified, restored_certificate);
             assert!(
                 restored
                     .instruction_timeline

@@ -15118,6 +15118,7 @@ mod tests {
     use std::{
         collections::BTreeSet,
         fs,
+        io::{Cursor, Read, Write},
         sync::{
             Arc,
             atomic::{AtomicU64, Ordering as AtomicOrdering},
@@ -15129,11 +15130,13 @@ mod tests {
 
     use ori_domain::{Edge, LayerContentKindV1, LayerRecordV1, Vertex};
     use ori_formats::{
-        Ori2Limits, read_project_folder_v1, read_project_ori2_with_limits,
-        write_project_archive_ori2, write_project_folder_v1, write_project_ori2,
+        Ori2Limits, read_project_archive_ori2, read_project_folder_v1,
+        read_project_ori2_with_limits, write_project_archive_ori2, write_project_folder_v1,
+        write_project_ori2,
     };
     #[cfg(target_os = "windows")]
     use std::fs::OpenOptions;
+    use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
     use super::*;
 
@@ -17308,6 +17311,17 @@ mod tests {
                     .contains(&certificate_hex)
             );
             let archive = project.project_archive().expect("generic tree archive");
+            let archive_bytes =
+                write_project_archive_ori2(&archive).expect("write generic tree ORI2");
+            assert_eq!(
+                read_project_archive_ori2(&archive_bytes).expect("read generic tree ORI2"),
+                archive
+            );
+            assert!(
+                read_project_archive_ori2(&tamper_ori2_project_certificate(&archive_bytes))
+                    .is_err(),
+                "an authenticated ORI2 must reject certificate provenance tampering"
+            );
             let folder = write_project_folder_v1(&archive).expect("write generic tree folder");
             let mut tampered_entries = folder.entries().to_vec();
             let project_entry = tampered_entries
@@ -20007,6 +20021,38 @@ mod tests {
         let corrupt_at = payload_start + compressed_size / 2;
         bytes[corrupt_at] ^= 0x01;
         bytes
+    }
+
+    fn tamper_ori2_project_certificate(bytes: &[u8]) -> Vec<u8> {
+        let mut source = ZipArchive::new(Cursor::new(bytes)).expect("open source ORI2");
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..source.len() {
+            let mut entry = source.by_index(index).expect("read source ORI2 entry");
+            let name = entry.name().to_owned();
+            let mut payload = Vec::new();
+            entry.read_to_end(&mut payload).expect("read ORI2 payload");
+            if name == ori_formats::PROJECT_FOLDER_PROJECT_PATH {
+                let mut project: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+                let certificate_byte = project
+                    .pointer_mut(
+                        "/beginner_design_profile/generation_provenance/fold_path_certificate_sha256/0",
+                    )
+                    .expect("generic tree certificate byte");
+                *certificate_byte =
+                    serde_json::json!(certificate_byte.as_u64().unwrap_or_default() ^ 1);
+                payload = serde_json::to_vec(&project).unwrap();
+            }
+            writer
+                .start_file(
+                    name,
+                    SimpleFileOptions::default().compression_method(entry.compression()),
+                )
+                .expect("start tampered ORI2 entry");
+            writer
+                .write_all(&payload)
+                .expect("write tampered ORI2 entry");
+        }
+        writer.finish().expect("finish tampered ORI2").into_inner()
     }
 
     fn file_document(name: &str, x: f64) -> ProjectDocument {

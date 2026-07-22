@@ -2022,6 +2022,23 @@ pub(crate) mod tests {
             )
             .is_err()
         );
+        let mut substituted = petal_certificates.clone();
+        substituted[1] = substituted[0].clone();
+        assert!(
+            compile_certified_regular_quad_petal_fold_timeline_v1(
+                RegularQuadPetalFoldMotionRequestV1 {
+                    technique_file: &accordion_file(),
+                    technique_id: "book-fold",
+                    source_model_fingerprint: &model,
+                    fixed_face,
+                    source_hinge_angles: &source,
+                    ordered_edges: &edges,
+                    ordered_target_angles_microdegrees: &targets,
+                    ordered_path_certificates: &substituted,
+                }
+            )
+            .is_err()
+        );
         let timeline = compile_certified_accordion_fold_timeline_v1(AccordionFoldMotionRequestV1 {
             technique_file: &accordion_file(),
             technique_id: "book-fold",

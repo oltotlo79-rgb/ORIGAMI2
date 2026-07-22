@@ -2285,12 +2285,14 @@ fn generate_even_opposite_pair_schedule_v1(
         .find(|entry| entry.edge() == changed[0])
         .map(|entry| entry.angle_degrees())
         .ok_or(CYCLE_PATH_UNSUPPORTED_MESSAGE)?;
-    let denominator = [1_i64, 2, 4, 8, 16, 100]
-        .into_iter()
+    let denominator = (1_u64..=64)
         .find(|value| {
-            (requested - 2.0 * 1.0_f64.atan2(*value as f64).to_degrees()).abs() <= 1.0e-12
+            bounded_primitive_endpoint_ratio_v1(1, *value).is_ok()
+                && (requested - 2.0 * 1.0_f64.atan2(*value as f64).to_degrees()).abs() <= 1.0e-12
         })
-        .ok_or(CYCLE_PATH_UNSUPPORTED_MESSAGE)?;
+        .and_then(|value| bounded_primitive_endpoint_ratio_v1(1, value).ok())
+        .ok_or(CYCLE_PATH_UNSUPPORTED_MESSAGE)?
+        .1 as i64;
     let entries = live
         .as_slice()
         .iter()
@@ -2348,6 +2350,28 @@ fn generate_even_opposite_pair_schedule_v1(
         fixed_face,
         live,
     )
+}
+
+fn bounded_primitive_endpoint_ratio_v1(
+    numerator: i64,
+    denominator: u64,
+) -> Result<(i64, u64), &'static str> {
+    if numerator <= 0 || denominator == 0 || denominator > 64 {
+        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
+    }
+    let magnitude = numerator.unsigned_abs();
+    if magnitude > denominator {
+        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
+    }
+    let mut left = magnitude;
+    let mut right = denominator;
+    while right != 0 {
+        (left, right) = (right, left % right);
+    }
+    if left != 1 {
+        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
+    }
+    Ok((numerator, denominator))
 }
 
 fn production_cycle_schedule_limits_v1() -> CycleScheduleLimitsV1 {
@@ -7095,6 +7119,18 @@ mod tests {
     #[test]
     fn even_cycle_exact_schedules_are_admitted_by_strict_dyadic_read() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
+        for denominator in 1..=64 {
+            assert_eq!(
+                bounded_primitive_endpoint_ratio_v1(1, denominator),
+                Ok((1, denominator))
+            );
+        }
+        for rejected in [(2, 4), (i64::MIN, 1), (1, 0), (1, 65)] {
+            assert_eq!(
+                bounded_primitive_endpoint_ratio_v1(rejected.0, rejected.1),
+                Err(CYCLE_PATH_UNSUPPORTED_MESSAGE)
+            );
+        }
         assert!(dyadic_request_hinge_counts_are_bounded_v1(64, Some(64)));
         assert!(!dyadic_request_hinge_counts_are_bounded_v1(65, Some(64)));
         assert!(!dyadic_request_hinge_counts_are_bounded_v1(64, Some(65)));
@@ -7190,7 +7226,13 @@ mod tests {
             } else if kind == 2 {
                 theta_cycle_schedule(&theta_hinges, &moving)
             } else {
-                dense_grid_schedule(&hinges, &moving, 100)
+                let endpoint_denominator = match hinges.len() {
+                    6 => 3,
+                    8 => 7,
+                    16 => 64,
+                    _ => unreachable!("bounded opposite-pair fixture"),
+                };
+                dense_grid_schedule(&hinges, &moving, endpoint_denominator)
             };
             let target = {
                 let project = super::super::lock_project(&state).unwrap();

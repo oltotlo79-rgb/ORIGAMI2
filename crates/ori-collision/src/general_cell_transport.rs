@@ -121,6 +121,9 @@ pub fn prepare_regular_quad_petal_schedules_v1(
 
 pub struct RegularQuadPetalChainedAuthorityV1 {
     candidate: RegularQuadPetalRatioCandidateV1,
+    schedules: [CanonicalCycleScheduleV1; 3],
+    closures: [DyadicMaterialHingeIntervalClosureCertificateV1; 3],
+    positives: [PositiveThicknessContinuousCertificateV1; 3],
     transport: ChainedGeneralCellTransportAuthorityV1,
 }
 
@@ -133,6 +136,24 @@ impl RegularQuadPetalChainedAuthorityV1 {
     #[must_use]
     pub fn proofs(&self) -> &[GeneralMultiFaceCellTransportProofV1] {
         self.transport.proofs()
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        RegularQuadPetalRatioCandidateV1,
+        [CanonicalCycleScheduleV1; 3],
+        [DyadicMaterialHingeIntervalClosureCertificateV1; 3],
+        [PositiveThicknessContinuousCertificateV1; 3],
+        ChainedGeneralCellTransportAuthorityV1,
+    ) {
+        (
+            self.candidate,
+            self.schedules,
+            self.closures,
+            self.positives,
+            self.transport,
+        )
     }
 }
 
@@ -231,6 +252,9 @@ pub fn issue_regular_quad_petal_chained_authority_v1(
         if let Ok(transport) = ChainedGeneralCellTransportAuthorityV1::issue(inputs) {
             return Some(RegularQuadPetalChainedAuthorityV1 {
                 candidate,
+                schedules,
+                closures: closures.try_into().ok()?,
+                positives: positives.try_into().ok()?,
                 transport,
             });
         }

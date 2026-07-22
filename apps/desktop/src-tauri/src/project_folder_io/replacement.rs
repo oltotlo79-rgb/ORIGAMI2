@@ -2165,6 +2165,99 @@ mod tests {
     }
 
     #[test]
+    fn process_restart_recovery_matrix_converges_at_each_published_phase() {
+        let cases = [
+            (ReplacementCrashPoint::AfterPrepared, false),
+            (ReplacementCrashPoint::AfterOldMoved, true),
+            (ReplacementCrashPoint::AfterNewPublished, true),
+        ];
+        for (point, expects_new) in cases {
+            let (_directory, parent, registry_root, registry, old, new) =
+                setup_replacement(&format!("restart-matrix-{point:?}"));
+            let mut prepared = PreparedReplacementProjectFolder::prepare(
+                &registry,
+                &parent,
+                TARGET_NAME,
+                new.clone(),
+            )
+            .expect("prepare replacement");
+            assert_eq!(
+                prepared.publish_until(point),
+                Err(ProjectFolderFilesystemError::InjectedCrash)
+            );
+            drop(prepared);
+            drop(registry);
+
+            // A fresh value models a new process: no in-memory handle or phase state is reused.
+            let restarted = ReplacementRegistry::new(registry_root.clone());
+            restarted
+                .recover_pending()
+                .expect("recover after process restart");
+            assert_target(&parent, if expects_new { &new } else { &old });
+            assert_transaction_artifacts_absent(&parent, &registry_root);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_readonly_cleanup_failure_preserves_complete_target_and_retries() {
+        for (point, protects_backup, expects_new) in [
+            (ReplacementCrashPoint::AfterPrepared, false, false),
+            (ReplacementCrashPoint::AfterNewPublished, true, true),
+        ] {
+            let (_directory, parent, registry_root, registry, old, new) =
+                setup_replacement(&format!("readonly-retry-{point:?}"));
+            let transaction = transaction_id(new.archive().document.project_id.canonical_bytes());
+            let mut prepared = PreparedReplacementProjectFolder::prepare(
+                &registry,
+                &parent,
+                TARGET_NAME,
+                new.clone(),
+            )
+            .expect("prepare replacement");
+            assert_eq!(
+                prepared.publish_until(point),
+                Err(ProjectFolderFilesystemError::InjectedCrash)
+            );
+            drop(prepared);
+            drop(registry);
+
+            let protected = if protects_backup {
+                parent
+                    .join(backup_name(&transaction))
+                    .join(PROJECT_FOLDER_PROJECT_PATH)
+            } else {
+                parent
+                    .join(staging_name(&transaction))
+                    .join(PROJECT_FOLDER_PROJECT_PATH)
+            };
+            let mut permissions = fs::metadata(&protected)
+                .expect("protected payload metadata")
+                .permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&protected, permissions).expect("make cleanup payload readonly");
+
+            let restarted = ReplacementRegistry::new(registry_root.clone());
+            assert_eq!(
+                restarted.recover_pending(),
+                Err(ProjectFolderFilesystemError::RecoveryRequired)
+            );
+            assert_target(&parent, if expects_new { &new } else { &old });
+
+            let mut permissions = fs::metadata(&protected)
+                .expect("retained payload metadata")
+                .permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(&protected, permissions).expect("allow bounded retry cleanup");
+            restarted
+                .recover_pending()
+                .expect("retry cleanup after permission recovery");
+            assert_target(&parent, if expects_new { &new } else { &old });
+            assert_transaction_artifacts_absent(&parent, &registry_root);
+        }
+    }
+
+    #[test]
     fn successful_replacement_publishes_new_and_removes_journal_registry_and_backup() {
         let (_directory, parent, registry_root, registry, _old, new) = setup_replacement("success");
         let mut prepared =
@@ -2294,7 +2387,8 @@ mod tests {
                 .join(PROJECT_FOLDER_PROJECT_PATH),
         )
         .expect("emulate process kill during stage cleanup");
-        registry
+        drop(registry);
+        ReplacementRegistry::new(registry_root.clone())
             .recover_pending()
             .expect("resume authenticated partial stage cleanup");
         assert_target(&parent, &old);

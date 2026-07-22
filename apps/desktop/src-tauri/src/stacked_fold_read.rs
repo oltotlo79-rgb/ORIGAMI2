@@ -255,6 +255,8 @@ pub(super) struct DyadicPoseGraphReadRequestV1 {
     target_angles: Vec<DyadicPoseGraphAngleDtoV1>,
     max_states: usize,
     max_transitions: usize,
+    #[serde(default = "default_dyadic_level_count_v1")]
+    level_count: usize,
     #[serde(default)]
     cycle_schedule_v1: Option<CycleScheduleRequestV1>,
 }
@@ -364,6 +366,8 @@ pub(super) struct DyadicPathPreviewRequestV1 {
     target_angles: Vec<DyadicPoseGraphAngleDtoV1>,
     max_states: usize,
     max_transitions: usize,
+    #[serde(default = "default_dyadic_level_count_v1")]
+    level_count: usize,
     #[serde(default)]
     cycle_schedule_v1: Option<CycleScheduleRequestV1>,
     expected_path_binding_sha256: String,
@@ -498,6 +502,7 @@ fn mint_dyadic_pose_path_preview_inner_v1(
             target_angles: request.target_angles,
             max_states: request.max_states,
             max_transitions: request.max_transitions,
+            level_count: request.level_count,
             cycle_schedule_v1: request.cycle_schedule_v1,
         },
         Some(&mut native_authority),
@@ -744,6 +749,10 @@ fn cancel_dyadic_pose_path_preview_inner_v1(
     Ok(())
 }
 
+const fn default_dyadic_level_count_v1() -> usize {
+    3
+}
+
 fn read_bounded_dyadic_pose_graph_inner_v1(
     app_state: &AppState,
     foldability_state: Option<&GlobalFlatFoldabilityState>,
@@ -766,6 +775,9 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
             .map(|schedule| schedule.entries.len()),
     ) {
         return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
+    }
+    if !matches!(request.level_count, 3 | 5 | 9) {
+        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned());
     }
     if !strict_dyadic_geometry_is_in_scope_v1(&project) {
         return Ok(unsupported_dyadic_graph_response_v1(&project));
@@ -859,9 +871,10 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
             &target,
         )
     } else {
-        ori_kinematics::generate_bounded_dyadic_pose_graph_v1(
+        ori_kinematics::generate_bounded_dyadic_pose_graph_at_levels_v1(
             pose.hinge_angles(),
             &target,
+            request.level_count,
             ori_kinematics::DyadicPoseGraphLimitsV1 {
                 max_states: request.max_states,
                 max_transitions: request.max_transitions,
@@ -4389,6 +4402,7 @@ mod tests {
                 .collect(),
             max_states,
             max_transitions: 64,
+            level_count: 3,
             cycle_schedule_v1: None,
         };
         let limited_request = request(8);
@@ -4434,6 +4448,7 @@ mod tests {
                     .collect(),
                 max_states: 32,
                 max_transitions: 64,
+                level_count: 3,
                 cycle_schedule_v1: None,
                 expected_path_binding_sha256: "00".repeat(32),
                 expected_positive_thickness_binding_sha256: "11".repeat(32),
@@ -4555,6 +4570,7 @@ mod tests {
                 }],
                 max_states: 32,
                 max_transitions: 64,
+                level_count: 3,
                 cycle_schedule_v1: None,
             },
             None,
@@ -6655,6 +6671,7 @@ mod tests {
                 }],
                 max_states: 32,
                 max_transitions: 64,
+                level_count: 3,
                 cycle_schedule_v1: None,
             },
             None,
@@ -6762,6 +6779,7 @@ mod tests {
                 }],
                 max_states: 32,
                 max_transitions: 64,
+                level_count: 3,
                 cycle_schedule_v1: None,
             },
             None,
@@ -6871,6 +6889,7 @@ mod tests {
                 }],
                 max_states: 32,
                 max_transitions: 64,
+                level_count: 3,
                 cycle_schedule_v1: None,
             },
             None,
@@ -6975,6 +6994,7 @@ mod tests {
                 }],
                 max_states: 32,
                 max_transitions: 64,
+                level_count: 3,
                 cycle_schedule_v1: None,
             },
             None,
@@ -7341,6 +7361,7 @@ mod tests {
                         .collect(),
                     max_states: 32,
                     max_transitions: 128,
+                    level_count: 3,
                     cycle_schedule_v1: None,
                 },
                 None,
@@ -7368,6 +7389,7 @@ mod tests {
                     target_angles,
                     max_states: 32,
                     max_transitions: 128,
+                    level_count: 3,
                     cycle_schedule_v1: None,
                     expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
                     expected_positive_thickness_binding_sha256: observed
@@ -8637,6 +8659,7 @@ mod tests {
                         .collect(),
                     max_states: 32,
                     max_transitions: 128,
+                    level_count: 3,
                     cycle_schedule_v1: Some(schedule.clone()),
                 };
                 let value = read_bounded_dyadic_pose_graph_inner_v1(
@@ -8666,6 +8689,7 @@ mod tests {
                 .collect(),
             max_states: 32,
             max_transitions: 128,
+            level_count: 3,
             cycle_schedule_v1: Some(schedule),
             expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
             expected_positive_thickness_binding_sha256: observed

@@ -131,6 +131,7 @@ export function StackedFoldPanel({
   const [dyadicGraphRead, setDyadicGraphRead] =
     useState<DyadicPoseGraphReadResponseV1 | null>(null)
   const [dyadicGraphReading, setDyadicGraphReading] = useState(false)
+  const [dyadicLevelCount, setDyadicLevelCount] = useState<3 | 5 | 9>(3)
   const [dyadicPathPreview, setDyadicPathPreview] =
     useState<DyadicPathPreviewResponseV1 | null>(null)
   const dyadicGraphSequenceRef = useRef(0)
@@ -505,8 +506,9 @@ export function StackedFoldPanel({
           edge: hinge.edge,
           angleDegrees: requestedHingeAngles[hinge.edge] ?? hinge.initialAngleDegrees,
         })),
-        maxStates: 32,
-        maxTransitions: 64,
+        maxStates: dyadicLevelCount === 9 ? 128 : 32,
+        maxTransitions: dyadicLevelCount === 9 ? 512 : 128,
+        levelCount: dyadicLevelCount,
         ...(authoredCycleSchedule ? { cycleScheduleV1: authoredCycleSchedule } : {}),
       })
       const current = authorityRef.current
@@ -537,8 +539,9 @@ export function StackedFoldPanel({
           edge: hinge.edge,
           angleDegrees: requestedHingeAngles[hinge.edge] ?? hinge.initialAngleDegrees,
         })),
-        maxStates: 32,
-        maxTransitions: 64,
+        maxStates: dyadicLevelCount === 9 ? 128 : 32,
+        maxTransitions: dyadicLevelCount === 9 ? 512 : 128,
+        levelCount: dyadicLevelCount,
         ...(authoredCycleSchedule ? { cycleScheduleV1: authoredCycleSchedule } : {}),
         expectedPathBindingSha256: graph.certificateBindingSha256,
         expectedPositiveThicknessBindingSha256: graph.positiveThicknessBindingSha256,
@@ -844,6 +847,17 @@ export function StackedFoldPanel({
             >
               {dyadicGraphReading ? t('経路探索中…', 'Searching paths…') : t('有界dyadic経路を探索', 'Search bounded dyadic paths')}
             </button>
+            <label>
+              {t('dyadic段階数', 'Dyadic levels')}
+              <select
+                aria-label="Dyadic levels"
+                value={dyadicLevelCount}
+                disabled={disabled || applying || dyadicGraphReading}
+                onChange={(event) => setDyadicLevelCount(Number(event.target.value) as 3 | 5 | 9)}
+              >
+                {[3, 5, 9].map((level) => <option key={level} value={level}>{level}</option>)}
+              </select>
+            </label>
             {dyadicGraphReading && (
               <button type="button" onClick={() => {
                 dyadicGraphSequenceRef.current += 1

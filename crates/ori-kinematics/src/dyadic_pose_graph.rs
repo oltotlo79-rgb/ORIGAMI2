@@ -125,12 +125,23 @@ pub fn generate_bounded_dyadic_pose_graph_v1(
     source: &CanonicalHingeAngles,
     target: &CanonicalHingeAngles,
     limits: DyadicPoseGraphLimitsV1,
+    checkpoint: impl FnMut() -> bool,
+) -> Result<GeneratedDyadicPoseGraphV1, DyadicPoseGraphGenerationErrorV1> {
+    generate_bounded_dyadic_pose_graph_at_levels_v1(source, target, 3, limits, checkpoint)
+}
+
+pub fn generate_bounded_dyadic_pose_graph_at_levels_v1(
+    source: &CanonicalHingeAngles,
+    target: &CanonicalHingeAngles,
+    level_count: usize,
+    limits: DyadicPoseGraphLimitsV1,
     mut checkpoint: impl FnMut() -> bool,
 ) -> Result<GeneratedDyadicPoseGraphV1, DyadicPoseGraphGenerationErrorV1> {
     if !checkpoint() {
         return Err(DyadicPoseGraphGenerationErrorV1::Cancelled);
     }
-    if source.as_slice().len() != target.as_slice().len()
+    if !matches!(level_count, 3 | 5 | 9)
+        || source.as_slice().len() != target.as_slice().len()
         || source.as_slice().is_empty()
         || source
             .as_slice()
@@ -150,13 +161,13 @@ pub fn generate_bounded_dyadic_pose_graph_v1(
         })
         .collect::<Vec<_>>();
     let hinge_count = moving.len();
-    let state_count = 3usize
+    let state_count = level_count
         .checked_pow(hinge_count as u32)
         .ok_or(DyadicPoseGraphGenerationErrorV1::ResourceLimit)?;
     let transition_count = state_count
         .checked_mul(hinge_count)
-        .and_then(|v| v.checked_mul(4))
-        .map(|v| v / 3)
+        .and_then(|v| v.checked_mul(2 * (level_count - 1)))
+        .map(|v| v / level_count)
         .ok_or(DyadicPoseGraphGenerationErrorV1::ResourceLimit)?;
     if state_count > limits.max_states || transition_count > limits.max_transitions {
         return Err(DyadicPoseGraphGenerationErrorV1::ResourceLimit);
@@ -174,17 +185,15 @@ pub fn generate_bounded_dyadic_pose_graph_v1(
             .enumerate()
             .map(|(index, (source, target))| {
                 let level = if moving.contains(&index) {
-                    let level = digits % 3;
-                    digits /= 3;
+                    let level = digits % level_count;
+                    digits /= level_count;
                     level
                 } else {
                     0
                 };
-                let angle = match level {
-                    0 => source.angle_degrees(),
-                    1 => (source.angle_degrees() + target.angle_degrees()) * 0.5,
-                    _ => target.angle_degrees(),
-                };
+                let parameter = level as f64 / (level_count - 1) as f64;
+                let angle = source.angle_degrees()
+                    + (target.angle_degrees() - source.angle_degrees()) * parameter;
                 HingeAngle::new(source.edge(), angle)
                     .expect("midpoint of admitted angles is admitted")
             })
@@ -197,11 +206,14 @@ pub fn generate_bounded_dyadic_pose_graph_v1(
             if !checkpoint() {
                 return Err(DyadicPoseGraphGenerationErrorV1::Cancelled);
             }
-            let stride = 3usize.pow(moving_index as u32);
-            let level = (source_state / stride) % 3;
-            for target_level in [level.checked_sub(1), (level < 2).then_some(level + 1)]
-                .into_iter()
-                .flatten()
+            let stride = level_count.pow(moving_index as u32);
+            let level = (source_state / stride) % level_count;
+            for target_level in [
+                level.checked_sub(1),
+                (level + 1 < level_count).then_some(level + 1),
+            ]
+            .into_iter()
+            .flatten()
             {
                 transitions.push(DyadicPoseGraphTransitionV1 {
                     source_state,
@@ -254,6 +266,44 @@ mod tests {
         .unwrap();
         assert_eq!(graph.states().len(), 9);
         assert_eq!(graph.transitions().len(), 24);
+        for (levels, states, transitions) in [(3, 9, 24), (5, 25, 80), (9, 81, 288)] {
+            let selected = generate_bounded_dyadic_pose_graph_at_levels_v1(
+                &source,
+                &target,
+                levels,
+                DyadicPoseGraphLimitsV1 {
+                    max_states: states,
+                    max_transitions: transitions,
+                },
+                || true,
+            )
+            .unwrap();
+            assert_eq!(selected.states().len(), states);
+            assert_eq!(selected.transitions().len(), transitions);
+            assert_eq!(
+                generate_bounded_dyadic_pose_graph_at_levels_v1(
+                    &source,
+                    &target,
+                    levels,
+                    DyadicPoseGraphLimitsV1 {
+                        max_states: states.saturating_sub(1),
+                        max_transitions: transitions,
+                    },
+                    || true,
+                ),
+                Err(DyadicPoseGraphGenerationErrorV1::ResourceLimit)
+            );
+        }
+        assert_eq!(
+            generate_bounded_dyadic_pose_graph_at_levels_v1(
+                &source,
+                &target,
+                7,
+                DyadicPoseGraphLimitsV1::default(),
+                || true,
+            ),
+            Err(DyadicPoseGraphGenerationErrorV1::BindingMismatch)
+        );
         assert!(!graph.authorizes_project_mutation());
         let repeated = generate_bounded_dyadic_pose_graph_v1(
             &source,

@@ -103,11 +103,14 @@ try {
   if (overLimitEvidence.reads !== 0 || await overLimit.getByTestId('dyadic-pose-graph-status').count() || await overLimit.getByRole('button', { name: 'Apply authenticated path' }).count()) throw new Error(`C65 must fail before IPC: ${JSON.stringify(overLimitEvidence)}`)
   await overLimit.close()
 
-  const noPath = await openScenario('no-path', 6)
-  await noPath.getByRole('button', { name: 'Search bounded dyadic paths' }).click()
-  await noPath.getByText(/reason no_certified_path/).waitFor()
-  if (await noPath.getByText(/reason unsupported_geometry/).count()) throw new Error('in-scope no-path was classified as unsupported geometry')
-  await noPath.close()
+  for (const levels of [3, 5, 9]) {
+    const noPath = await openScenario('no-path', 6)
+    await noPath.getByLabel('Dyadic levels').selectOption(String(levels))
+    await noPath.getByRole('button', { name: 'Search bounded dyadic paths' }).click()
+    await noPath.getByText(/reason no_certified_path/).waitFor()
+    if (await noPath.getByText(/reason unsupported_geometry/).count()) throw new Error(`in-scope level-${levels} no-path was classified as unsupported geometry`)
+    await noPath.close()
+  }
 
   for (const scenario of ['concave', 'cut', 'hole', 'seam', 'duplicate-boundary', 'self-intersection', 'zero-length', 'missing-capability', 'tree-capability']) {
     const unsupportedGeometry = await openScenario(scenario, 6)

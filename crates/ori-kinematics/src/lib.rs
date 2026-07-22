@@ -82,7 +82,7 @@ use thiserror::Error;
 pub use dyadic_pose_graph::{
     DyadicPoseGraphGenerationErrorV1, DyadicPoseGraphLimitsV1, DyadicPoseGraphTransitionV1,
     GeneratedDyadicPoseGraphV1, generate_bounded_collective_pose_graph_v1,
-    generate_bounded_dyadic_pose_graph_v1,
+    generate_bounded_dyadic_pose_graph_at_levels_v1, generate_bounded_dyadic_pose_graph_v1,
 };
 pub use graph::{
     CandidateFaceTransform, CanonicalCycleBasisV1, ClosedMaterialHingeGraphPose,

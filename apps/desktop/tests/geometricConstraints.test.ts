@@ -177,6 +177,14 @@ const DIRECT_CONFLICTS = [
   },
   {
     conflict: {
+      kind: 'length_ratio_with_incompatible_fixed_lengths',
+      numerator_edge: EDGE_1,
+      denominator_edge: EDGE_2,
+    },
+    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+  },
+  {
+    conflict: {
       kind: 'parallel_with_fixed_non_parallel_angle',
       first_edge: EDGE_1,
       second_edge: EDGE_2,
@@ -585,7 +593,7 @@ test('presentation also fails closed for malformed or hostile records', () => {
   assert.equal(getterCalls, 0)
 })
 
-test('normalizes all nine direct-conflict kinds with bounded frozen witnesses', () => {
+test('normalizes all ten direct-conflict kinds with bounded frozen witnesses', () => {
   const raw = response({
     status: 'direct_conflict',
     conflicts: DIRECT_CONFLICTS,
@@ -601,7 +609,7 @@ test('normalizes all nine direct-conflict kinds with bounded frozen witnesses', 
     normalized?.result.status === 'direct_conflict'
       ? normalized.result.conflicts.length
       : 0,
-    9,
+    10,
   )
   assert.equal(MAX_DIRECT_CONFLICT_WITNESS_IDS, 3)
 })

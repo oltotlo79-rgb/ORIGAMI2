@@ -272,6 +272,15 @@ describe('GeometricConstraintPanel', () => {
       },
       {
         conflict: {
+          kind: 'length_ratio_with_incompatible_fixed_lengths' as const,
+          numerator_edge: IDS[0]!,
+          denominator_edge: IDS[1]!,
+        },
+        expected:
+          'The two fixed lengths do not exactly satisfy the specified length ratio',
+      },
+      {
+        conflict: {
           kind: 'parallel_with_fixed_non_parallel_angle' as const,
           first_edge: IDS[0]!,
           second_edge: IDS[1]!,

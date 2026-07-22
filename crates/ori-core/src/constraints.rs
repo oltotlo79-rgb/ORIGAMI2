@@ -24,6 +24,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use num_bigint::BigUint;
 pub use ori_domain::{
     ConstraintId, DEFAULT_MAX_CONSTRAINT_EDGES, DEFAULT_MAX_CONSTRAINT_RECORDS,
     DEFAULT_MAX_CONSTRAINT_REFERENCES, DEFAULT_MAX_CONSTRAINT_VERTICES,
@@ -334,6 +335,10 @@ pub enum DirectConstraintConflictKindV1 {
     NonReciprocalLengthRatiosWithFixedLength {
         first_edge: EdgeId,
         second_edge: EdgeId,
+    },
+    LengthRatioWithIncompatibleFixedLengths {
+        numerator_edge: EdgeId,
+        denominator_edge: EdgeId,
     },
     ParallelWithFixedNonParallelAngle {
         first_edge: EdgeId,
@@ -1583,6 +1588,35 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                 witness,
             );
         }
+        let Some(ratio) = consistent_scalar_assignment(assignments) else {
+            continue;
+        };
+        let Some(numerator_length) = fixed_lengths
+            .get(numerator)
+            .and_then(ScalarGroupSummary::consistent_assignment)
+        else {
+            continue;
+        };
+        let Some(denominator_length) = fixed_lengths
+            .get(denominator)
+            .and_then(ScalarGroupSummary::consistent_assignment)
+        else {
+            continue;
+        };
+        if !positive_binary64_equals_product_v1(
+            numerator_length.value,
+            ratio.value,
+            denominator_length.value,
+        ) {
+            push_conflict(
+                &mut conflicts,
+                DirectConstraintConflictKindV1::LengthRatioWithIncompatibleFixedLengths {
+                    numerator_edge: edge_ids[numerator],
+                    denominator_edge: edge_ids[denominator],
+                },
+                [numerator_length.id, denominator_length.id, ratio.id],
+            );
+        }
     }
     for (edge, horizontal_ids) in &horizontal {
         if let (Some(horizontal_id), Some(vertical_id)) = (
@@ -1775,6 +1809,33 @@ fn consistent_scalar_assignment(assignments: &[ScalarAssignment]) -> Option<Scal
         .then_some(first)
 }
 
+fn positive_binary64_odd_parts_v1(value: f64) -> (u64, i16) {
+    debug_assert!(value.is_finite() && value > 0.0);
+    let bits = value.to_bits();
+    let raw_exponent = ((bits >> 52) & 0x7ff) as i16;
+    let fraction = bits & ((1_u64 << 52) - 1);
+    let (mut significand, mut exponent) = if raw_exponent == 0 {
+        (fraction, -1074)
+    } else {
+        ((1_u64 << 52) | fraction, raw_exponent - 1023 - 52)
+    };
+    let trailing = significand.trailing_zeros();
+    significand >>= trailing;
+    exponent += trailing as i16;
+    (significand, exponent)
+}
+
+/// Compares `left == first * second` as exact positive binary64 rationals.
+/// No rounded binary64 multiplication participates in the decision.
+fn positive_binary64_equals_product_v1(left: f64, first: f64, second: f64) -> bool {
+    let (left_significand, left_exponent) = positive_binary64_odd_parts_v1(left);
+    let (first_significand, first_exponent) = positive_binary64_odd_parts_v1(first);
+    let (second_significand, second_exponent) = positive_binary64_odd_parts_v1(second);
+    left_exponent == first_exponent + second_exponent
+        && BigUint::from(left_significand)
+            == BigUint::from(first_significand) * BigUint::from(second_significand)
+}
+
 fn canonicalize_constraint_ids(ids: &mut Vec<ConstraintId>) {
     ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
     ids.dedup();
@@ -1952,11 +2013,20 @@ fn conflict_sort_key(
             second_edge.canonical_bytes(),
             zero,
         ),
+        DirectConstraintConflictKindV1::LengthRatioWithIncompatibleFixedLengths {
+            numerator_edge,
+            denominator_edge,
+        } => (
+            7,
+            numerator_edge.canonical_bytes(),
+            denominator_edge.canonical_bytes(),
+            zero,
+        ),
         DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
             first_edge,
             second_edge,
         } => (
-            7,
+            8,
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
             zero,
@@ -1965,7 +2035,7 @@ fn conflict_sort_key(
             horizontal_edge,
             vertical_edge,
         } => (
-            8,
+            9,
             horizontal_edge.canonical_bytes(),
             vertical_edge.canonical_bytes(),
             zero,
@@ -3213,6 +3283,21 @@ mod tests {
                     second_edge: fixture.edges[1],
                 }),
             ],
+            vec![
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[0],
+                    length_mm: 1.0,
+                }),
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[1],
+                    length_mm: 1.0,
+                }),
+                record(GeometricConstraintKindV1::LengthRatio {
+                    numerator_edge: fixture.edges[0],
+                    denominator_edge: fixture.edges[1],
+                    ratio: 2.0,
+                }),
+            ],
         ];
 
         for records in cases {
@@ -3247,6 +3332,84 @@ mod tests {
     }
 
     #[test]
+    fn fixed_lengths_and_ratio_use_exact_binary64_product_evidence() {
+        assert!(positive_binary64_equals_product_v1(6.0, 2.0, 3.0));
+        assert!(positive_binary64_equals_product_v1(
+            f64::from_bits(1),
+            1.0,
+            f64::from_bits(1),
+        ));
+        assert!(!positive_binary64_equals_product_v1(0.3, 3.0, 0.1));
+
+        let fixture = Fixture::new();
+        let ratio = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[0],
+            denominator_edge: fixture.edges[1],
+            ratio: 2.0,
+        });
+        let prepared = prepare(
+            &fixture,
+            &document([
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[0],
+                    length_mm: 6.0,
+                }),
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[1],
+                    length_mm: 3.0,
+                }),
+                ratio.clone(),
+            ]),
+        )
+        .expect("exactly compatible fixed lengths and ratio");
+        assert_eq!(
+            prepared.preflight(),
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                unchecked_constraint_ids: vec![ratio.id],
+            }
+        );
+
+        let numerator = record(GeometricConstraintKindV1::FixedLength {
+            edge: fixture.edges[0],
+            length_mm: 0.3,
+        });
+        let denominator = record(GeometricConstraintKindV1::FixedLength {
+            edge: fixture.edges[1],
+            length_mm: 0.1,
+        });
+        let incompatible_ratio = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[0],
+            denominator_edge: fixture.edges[1],
+            ratio: 3.0,
+        });
+        let conflict = prepare(
+            &fixture,
+            &document([
+                numerator.clone(),
+                denominator.clone(),
+                incompatible_ratio.clone(),
+            ]),
+        )
+        .expect("exactly incompatible fixed lengths and ratio")
+        .preflight();
+        let ConstraintPreflightV1::DirectConflict { conflicts } = conflict else {
+            panic!("an exact binary64 product mismatch must prove a direct conflict");
+        };
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(
+            conflicts[0].conflict(),
+            &DirectConstraintConflictKindV1::LengthRatioWithIncompatibleFixedLengths {
+                numerator_edge: fixture.edges[0],
+                denominator_edge: fixture.edges[1],
+            }
+        );
+        let mut expected_ids = vec![numerator.id, denominator.id, incompatible_ratio.id];
+        canonicalize_constraint_ids(&mut expected_ids);
+        assert_eq!(conflicts[0].constraint_ids(), expected_ids);
+    }
+
+    #[test]
     fn partially_checked_fixed_angle_and_ratio_kinds_return_unknown() {
         let fixture = Fixture::new();
 
@@ -3274,34 +3437,6 @@ mod tests {
             ConstraintPreflightV1::Unknown {
                 reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
                 unchecked_constraint_ids: vec![fixed_angle.id],
-            }
-        );
-
-        let incompatible_ratio = record(GeometricConstraintKindV1::LengthRatio {
-            numerator_edge: fixture.edges[0],
-            denominator_edge: fixture.edges[1],
-            ratio: 2.0,
-        });
-        let fixed_lengths_and_ratio = prepare(
-            &fixture,
-            &document([
-                record(GeometricConstraintKindV1::FixedLength {
-                    edge: fixture.edges[0],
-                    length_mm: 1.0,
-                }),
-                record(GeometricConstraintKindV1::FixedLength {
-                    edge: fixture.edges[1],
-                    length_mm: 1.0,
-                }),
-                incompatible_ratio.clone(),
-            ]),
-        )
-        .expect("locally valid fixed-length and ratio fixture");
-        assert_eq!(
-            fixed_lengths_and_ratio.preflight(),
-            ConstraintPreflightV1::Unknown {
-                reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
-                unchecked_constraint_ids: vec![incompatible_ratio.id],
             }
         );
 

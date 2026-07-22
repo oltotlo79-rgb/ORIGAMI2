@@ -120,6 +120,11 @@ export type DirectConstraintConflictKindV1 =
       second_edge: string
     }>
   | Readonly<{
+      kind: 'length_ratio_with_incompatible_fixed_lengths'
+      numerator_edge: string
+      denominator_edge: string
+    }>
+  | Readonly<{
       kind: 'parallel_with_fixed_non_parallel_angle'
       first_edge: string
       second_edge: string
@@ -812,6 +817,25 @@ function parseDirectConflictKind(
         }),
         witnessSize: 3,
       }
+    case 'length_ratio_with_incompatible_fixed_lengths':
+      if (
+        !hasExactKeys(record, [
+          'kind',
+          'numerator_edge',
+          'denominator_edge',
+        ])
+        || !isCanonicalUuid(record.numerator_edge)
+        || !isCanonicalUuid(record.denominator_edge)
+        || record.numerator_edge === record.denominator_edge
+      ) return null
+      return {
+        conflict: Object.freeze({
+          kind: record.kind,
+          numerator_edge: record.numerator_edge,
+          denominator_edge: record.denominator_edge,
+        }),
+        witnessSize: 3,
+      }
     case 'parallel_with_fixed_non_parallel_angle':
       if (
         !hasExactKeys(record, ['kind', 'first_edge', 'second_edge'])
@@ -887,6 +911,7 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
       ]
       break
     case 'different_length_ratios':
+    case 'length_ratio_with_incompatible_fixed_lengths':
       target = [kind.kind, kind.numerator_edge, kind.denominator_edge]
       break
     case 'equal_length_with_different_fixed_lengths':

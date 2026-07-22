@@ -774,6 +774,10 @@ test('CI requires the production C6 dyadic browser and exact native lifecycle', 
     join(root, 'apps/desktop/src-tauri/src/stacked_fold_read.rs'),
     'utf8',
   )
+  const browserRead = readFileSync(
+    join(root, 'apps/desktop/scripts/dyadic-panel-browser-e2e.mjs'),
+    'utf8',
+  )
   assert.equal(
     desktopPackage.scripts['test:dyadic-panel-browser'],
     'node scripts/dyadic-panel-browser-e2e.mjs',
@@ -794,12 +798,19 @@ test('CI requires the production C6 dyadic browser and exact native lifecycle', 
     'concave_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
     'cut_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
     'hole_boundary_strict_dyadic_read_fails_closed_without_mutation_authority',
+    'nonfinite_boundary_strict_dyadic_preflight_is_unsupported_no_op',
+    'degenerate_boundary_strict_dyadic_preflight_is_unsupported_no_op',
+    'missing_boundary_vertex_strict_dyadic_preflight_is_unsupported_no_op',
   ]) {
     const fixtureFilter = `stacked_fold_read::tests::${fixtureTest}`
     assert.equal(workflow.match(new RegExp(fixtureFilter, 'gu'))?.length, 1)
     assert.match(workflow, new RegExp(`cargo test --locked -p origami2-desktop --lib\\s+${fixtureFilter}\\s+-- --exact --test-threads=1`, 'u'))
     assert.match(nativeRead, new RegExp(`fn ${fixtureTest}\\(\\)`, 'u'))
   }
+  assert.match(browserRead, /\['concave', 'cut', 'hole'\]/u)
+  assert.match(browserRead, /reason unsupported_geometry/u)
+  assert.match(browserRead, /openScenario\('no-path', 6\)/u)
+  assert.match(browserRead, /reason no_certified_path/u)
   for (const fixture of ['octagonal-c8', 'radial-c16', 'cactus-c32', 'cactus-c64']) {
     assert.equal(nativeRead.match(new RegExp(`"${fixture}"`, 'gu'))?.length, 1)
   }

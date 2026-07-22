@@ -1644,6 +1644,35 @@ pub(super) mod tests {
         authority.commit_prepared(project, prepared).unwrap();
     }
 
+    pub(crate) fn install_tree_pose_authority_at_angle_on_face(
+        project: &mut ProjectState,
+        mut hinges: Vec<EdgeId>,
+        fixed_face: FaceId,
+        angle_degrees: f64,
+    ) {
+        hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let request = NativePoseRequest {
+            expected_project_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: project.editor.revision(),
+            fixed_face_id: Some(fixed_face),
+            complete_hinge_angles: hinges
+                .into_iter()
+                .map(|edge_id| NativePoseHingeAngleRequest {
+                    edge_id,
+                    angle_degrees,
+                })
+                .collect(),
+        };
+        let authority = project.applied_pose_authority.clone();
+        let prepared = authority
+            .capture_request(project, request)
+            .unwrap()
+            .prepare()
+            .unwrap();
+        authority.commit_prepared(project, prepared).unwrap();
+    }
+
     #[test]
     fn graph_pose_capture_commit_and_revalidation_are_native_bound() {
         let (mut project, mut hinges) = four_vertex_cycle_project();

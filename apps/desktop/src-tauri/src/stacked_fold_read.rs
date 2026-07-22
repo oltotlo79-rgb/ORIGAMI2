@@ -5044,10 +5044,11 @@ mod tests {
             .map(|hinge| hinge.edge)
             .collect::<Vec<_>>();
         assert_eq!(hinges.len(), 5);
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+        super::super::applied_pose::tests::install_tree_pose_authority_at_angle_on_face(
             &mut project,
             hinges.clone(),
             snapshot.faces[0].id,
+            1.0,
         );
         let layer_state = GlobalFlatFoldabilityState::default();
         super::super::global_flat_foldability::tests::install_possible_layer_order(
@@ -5062,7 +5063,7 @@ mod tests {
             .copied()
             .map(|edge| DyadicPoseGraphAngleDtoV1 {
                 edge,
-                angle_degrees: 1.0,
+                angle_degrees: 2.0,
             })
             .collect::<Vec<_>>();
         let state = AppState::new(project);

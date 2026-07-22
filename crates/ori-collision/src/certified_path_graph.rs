@@ -234,6 +234,37 @@ impl CertifiedPoseGraphPathCertificateV1 {
     }
 }
 
+/// Test-support issuer for a private three-stage petal transaction. Each input
+/// must already be a native-issued single-transition certificate; this only
+/// joins an exact contiguous chain and cannot manufacture transition evidence.
+#[cfg(feature = "private-petal-e2e")]
+pub fn issue_private_three_segment_path_v1(
+    segments: [CertifiedPoseGraphPathCertificateV1; 3],
+) -> Option<CertifiedPoseGraphPathCertificateV1> {
+    if segments.iter().any(|segment| segment.edges.len() != 1)
+        || segments[0].target != segments[1].source
+        || segments[1].target != segments[2].source
+    {
+        return None;
+    }
+    let explored_state_count = segments.iter().try_fold(0usize, |sum, segment| {
+        sum.checked_add(segment.explored_state_count)
+    })?;
+    let evaluated_transition_count = segments.iter().try_fold(0usize, |sum, segment| {
+        sum.checked_add(segment.evaluated_transition_count)
+    })?;
+    Some(CertifiedPoseGraphPathCertificateV1 {
+        source: segments[0].source,
+        target: segments[2].target,
+        edges: segments
+            .into_iter()
+            .flat_map(|segment| segment.edges)
+            .collect(),
+        explored_state_count,
+        evaluated_transition_count,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CertifiedPathGraphIndeterminateReasonV1 {
     ResourceLimit,
@@ -518,6 +549,32 @@ mod tests {
             fingerprint(11),
             fingerprint(12),
         )
+    }
+
+    #[cfg(feature = "private-petal-e2e")]
+    #[test]
+    fn private_three_segment_issuer_accepts_only_contiguous_native_single_edges() {
+        let segment = |source: u8, target: u8| CertifiedPoseGraphPathCertificateV1 {
+            source: fingerprint(source),
+            target: fingerprint(target),
+            edges: vec![certify(&candidate(source, target, source))],
+            explored_state_count: 2,
+            evaluated_transition_count: 1,
+        };
+        let parent =
+            issue_private_three_segment_path_v1([segment(1, 2), segment(2, 3), segment(3, 4)])
+                .unwrap();
+        assert_eq!(parent.edges().len(), 3);
+        assert_eq!(parent.source(), fingerprint(1));
+        assert_eq!(parent.target(), fingerprint(4));
+        assert!(
+            issue_private_three_segment_path_v1([segment(2, 3), segment(1, 2), segment(3, 4),])
+                .is_none()
+        );
+        assert!(
+            issue_private_three_segment_path_v1([segment(1, 2), segment(2, 4), segment(3, 4),])
+                .is_none()
+        );
     }
 
     #[test]

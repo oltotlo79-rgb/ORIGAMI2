@@ -43,4 +43,5 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 libc = "0.2"
 
 [dev-dependencies]
+ori-collision = { path = "../../../crates/ori-collision", features = ["private-petal-e2e"] }
 ori-instructions = { path = "../../../crates/ori-instructions", features = ["private-petal-e2e"] }

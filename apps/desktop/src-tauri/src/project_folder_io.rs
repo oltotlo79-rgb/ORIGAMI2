@@ -7,13 +7,15 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
+#[cfg(any(test, target_os = "windows"))]
+use std::ffi::OsStr;
 
 use ori_domain::ProjectId;
 use ori_formats::{
@@ -82,12 +84,14 @@ const ERROR_REPLACEMENT_UNSUPPORTED: &str = "project_folder_replacement_unsuppor
 
 static NEXT_STAGING_ID: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(any(test, target_os = "windows"))]
 struct PrefixEnumerationCollector<'a> {
     prefix: &'a str,
     maximum: usize,
     names: Vec<OsString>,
 }
 
+#[cfg(any(test, target_os = "windows"))]
 impl<'a> PrefixEnumerationCollector<'a> {
     fn new(prefix: &'a str, maximum: usize) -> Self {
         Self {

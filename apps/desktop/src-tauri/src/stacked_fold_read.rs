@@ -4536,11 +4536,12 @@ mod tests {
         let points = [
             (0.0, 0.0),
             (300.0, 0.0),
-            (520.0, 120.0),
-            (620.0, 350.0),
-            (480.0, 580.0),
-            (200.0, 650.0),
-            (0.0, 320.0),
+            (520.0, 90.0),
+            (680.0, 280.0),
+            (650.0, 500.0),
+            (450.0, 680.0),
+            (180.0, 700.0),
+            (0.0, 340.0),
         ];
         let vertices = points
             .into_iter()
@@ -4559,15 +4560,15 @@ mod tests {
                 kind: EdgeKind::Boundary,
             })
             .collect::<Vec<_>>();
-        for (index, end) in [2, 3, 4, 5].into_iter().enumerate() {
+        for (index, end) in [2, 3, 4, 5, 6].into_iter().enumerate() {
             edges.push(Edge {
                 id: fixed_id("7700", index as u64 + 20),
                 start: boundary[0],
                 end: boundary[end],
                 kind: if index % 2 == 0 {
-                    EdgeKind::Valley
-                } else {
                     EdgeKind::Mountain
+                } else {
+                    EdgeKind::Valley
                 },
             });
         }

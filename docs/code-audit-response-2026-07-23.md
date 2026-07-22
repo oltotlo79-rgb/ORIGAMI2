@@ -43,7 +43,7 @@
 |---|---|---|
 |F-2 コンパス円交点snap|EDT-007 MUST|指摘は妥当。`77e8f1d`で円×線・円×円交点を既存snap契約と頂点追加・辺分割へ接続し、接線・重複円・非有限値・同一点候補・紙面外境界を追加回帰した。既存native commandを共有するためUndo/Redo・履歴永続化も同じ経路となる。|
 |F-6 step camera取得|INS-004 MUST|`57ee8e5`, `818d9f6`, `70c4c7f`。3D previewの現在cameraを取得して選択stepの認証済みvisual更新へ渡し、camera未取得時は操作を無効化する。取得cameraをexact preview model keyへ束縛し、project・revision・model切替後の古いcameraを別stepへ保存できない。DOMとApp統合回帰を追加した。|
-|EDT-009 最小不能部分集合|EDT-009 MUST|「Gauss-Newtonのrankから一般MUSを容易に抽出できる」という実装提案は根拠不足。局所solverの`NonConvergent`、`RankDeficient`、資源超過は不充足証明ではなく、これをoracleにしたsubset縮約は偽の矛盾原因を表示しうる。現状はsoundな7種の直接矛盾だけcanonicalな最小原因IDを表示し、それ以外を`Unknown`へ閉じるため部分実装を維持する。一般化はsoundなunsat oracleを先に要する。|
+|EDT-009 最小不能部分集合|EDT-009 MUST|`a626dae`, `3b3a916`。「Gauss-Newtonのrankから一般MUSを容易に抽出できる」という実装提案は根拠不足。局所solverの`NonConvergent`、`RankDeficient`、資源超過は不充足証明ではなく、これをoracleにしたsubset縮約は偽の矛盾原因を表示しうる。soundな7種の直接矛盾がcanonical・削除最小な原因IDだけを返すことは回帰固定したが、production能力は増えていないため実装済みへ昇格せず85/2/0へ戻した。それ以外は`Unknown`へ閉じ、一般化にはsoundなunsat oracleを先に要する。|
 |F-D/F-E|INS-001|作成・任意index移動は既に満たす。複製、先頭末尾button、DnDは新規shortcutでありMUST未達ではない。|
 |F-A/F-11|PRJ-008/SIM系|既存の単線・寸法表示を越える新規計測モード。新規スコープ。|
 |F-1|EDT-003|角度・長さ指定作図は実装済み。ray hit自動終端は新規スコープ。|
@@ -57,7 +57,7 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 ## 検証
 
 - frontend TypeScript/Vite build: 成功。
-- frontend Node: 1,656/1,656、DOM: 335/335。
+- frontend Node: 1,658/1,658、DOM: 335/335。
 - `StackedFoldPanel` DOM: 36/36。
 - `InstructionTimelinePanel` DOM: 11/11。
 - WSL `ori-core` A-4: 1/1、`ori-formats` A-5: 1/1。
@@ -66,5 +66,6 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 - desktop `cargo check`: 成功。無関係な既存warningは別所有差分として未変更。
 - compass intersection Node: 108/108、DOM: 10/10、production build: 成功。
 - requirements design evidence: 3/3（正本85/2/0）。
+- WSL `ori-core` EDT-009 direct witness回帰: 1/1（300件filter）。production変更なしのため要件昇格証拠には用いない。
 
 検証件数は各対応コミット時点の対象suiteであり、異なる時点の件数を一つの全suite件数として合算しない。全CIが成功するまでは公式完成度を更新しない。

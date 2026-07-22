@@ -62,6 +62,39 @@ pub struct GeneralCellTransportInputV1<'a> {
     pub limits: GeneralCellTransportLimitsV1,
 }
 
+/// Issuer-private bundle proving a continuous sequence without inventing a
+/// non-flat `LayerOrderSnapshot`.
+pub(crate) struct ChainedGeneralCellTransportAuthorityV1 {
+    proofs: Vec<GeneralMultiFaceCellTransportProofV1>,
+}
+
+impl ChainedGeneralCellTransportAuthorityV1 {
+    pub(crate) fn issue(
+        inputs: Vec<GeneralCellTransportInputV1<'_>>,
+    ) -> Result<Self, GeneralCellTransportErrorV1> {
+        if inputs.is_empty()
+            || inputs.windows(2).any(|pair| {
+                !pair[0].geometry.same_instance(pair[1].geometry)
+                    || pair[0].source as *const LayerOrderSnapshot
+                        != pair[1].source as *const LayerOrderSnapshot
+                    || pair[0].paper_thickness_mm.to_bits() != pair[1].paper_thickness_mm.to_bits()
+                    || pair[0].schedule.evaluate(1.0) != pair[1].schedule.evaluate(0.0)
+            })
+        {
+            return Err(GeneralCellTransportErrorV1::BindingMismatch);
+        }
+        let proofs = inputs
+            .into_iter()
+            .map(certify_general_multi_face_cell_transport_v1)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { proofs })
+    }
+
+    pub(crate) fn proofs(&self) -> &[GeneralMultiFaceCellTransportProofV1] {
+        &self.proofs
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GeneralMultiFaceCellTransportProofV1 {
     issuer: MaterialHingeGraphGeometry,

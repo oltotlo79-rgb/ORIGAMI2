@@ -8631,7 +8631,7 @@ function App() {
                               </p>
                             )}
                             {assessment?.component_shape_comparison && (
-                              <p className="muted" aria-label="Component-aware shape score breakdown">
+                              <p className="muted" aria-label={text({ ja: '部品別の形状スコア内訳', en: 'Component-aware shape score breakdown' })}>
                                 {`Components ${assessment.component_shape_comparison.component_count}; `}
                                 {`extent ${assessment.component_shape_comparison.extent_score}/100 × 45%; `}
                                 {`branches ${assessment.component_shape_comparison.branch_score}/100 × 35%; `}
@@ -8893,7 +8893,7 @@ function App() {
                     <button type="button" disabled={consensusSelectionDraft.length < 2 || consensusSelectionDraft.length > 4 || coreBusy || recoveryBlocking}
                       onClick={saveConsensusReferences}>Save consensus references</button>
                   </fieldset>
-                  {(nativeSnapshot.reference_model_assets ?? []).length > 0 && <ul aria-label="Project 3D reference assets">
+                  {(nativeSnapshot.reference_model_assets ?? []).length > 0 && <ul aria-label={text({ ja: 'プロジェクトの3D参照資料', en: 'Project 3D reference assets' })}>
                     {(nativeSnapshot.reference_model_assets ?? []).map((asset, index) => {
                       const active = nativeSnapshot.beginner_design_profile.generation_constraints.target_asset
                         ?.kind === 'reference_model'
@@ -9064,7 +9064,7 @@ function App() {
                             {text({ ja: '確認して一般3D候補を編集欄へコピー', en: 'Review and copy general 3D proposal to editor' })}
                           </button>
                           {beginnerComponentBridgeOverride && (
-                            <fieldset aria-label="Reviewed component bridge overrides">
+                            <fieldset aria-label={text({ ja: '確認済み部品ブリッジの上書き', en: 'Reviewed component bridge overrides' })}>
                               <legend>Component bridges (reviewed, maximum 7)</legend>
                               {beginnerComponentBridgeOverride.bridges.map((bridge, index) => (
                                 <label key={bridge.id}>
@@ -9155,7 +9155,7 @@ function App() {
                       <option value="alpha_only">{text({ ja: 'アルファのみ', en: 'Alpha only' })}</option>
                     </select>
                   </label>
-                  <fieldset aria-label="Silhouette crop ROI">
+                  <fieldset aria-label={text({ ja: 'シルエットの切り抜き範囲', en: 'Silhouette crop ROI' })}>
                     <legend>{text({ ja: '輪郭クロップ範囲', en: 'Silhouette crop ROI' })}</legend>
                     <label><input type="checkbox" checked={Boolean(beginnerSilhouetteCropRoi)} onChange={(event) => {
                       beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null)
@@ -9177,7 +9177,7 @@ function App() {
                     </select>
                     <button type="button" onClick={() => setBeginnerSilhouetteOrientation(0)}>{text({ ja: '向きをリセット', en: 'Reset orientation' })}</button>
                   </label>
-                  <fieldset aria-label="Silhouette mirror">
+                  <fieldset aria-label={text({ ja: 'シルエットの反転', en: 'Silhouette mirror' })}>
                     <legend>{text({ ja: '輪郭画像の反転', en: 'Silhouette mirror' })}</legend>
                     <label><input type="checkbox" checked={beginnerSilhouetteMirror.mirror_x}
                       onChange={(event) => { beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null); setBeginnerSilhouetteMirror((value) => ({ ...value, mirror_x: event.target.checked })) }} />
@@ -9721,7 +9721,7 @@ function App() {
                     onClick={createEmptyGenericTarget}>
                     {text({ ja: '空の汎用目標を新規作成', en: 'Create empty generic target' })}
                   </button>}
-                  {beginnerProtrusions.length > 0 && <table aria-label="Feature constraint comparison">
+                  {beginnerProtrusions.length > 0 && <table aria-label={text({ ja: '特徴制約の比較', en: 'Feature constraint comparison' })}>
                     <thead><tr><th>Feature</th><th>Length</th><th>Thickness</th><th>Joint</th>
                       <th>Motion</th><th>Side</th><th>Priority</th></tr></thead>
                     <tbody>{beginnerProtrusions.map((target, index) => <tr key={target.id}>

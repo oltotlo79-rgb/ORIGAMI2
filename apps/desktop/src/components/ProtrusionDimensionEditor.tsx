@@ -134,25 +134,25 @@ export function ProtrusionDimensionEditor({ locale, target, onChange, onRemove,
         value={target.direction_milli[1] / 1_000}
         onChange={(event) => updateDirection(1, Number(event.currentTarget.value))} />
     </label>
-    <label>Curvature (degrees)<input type="number" min="-360" max="360" step="1"
-      aria-label={`Curvature binding ${target.id} (degrees)`} value={target.curvature_degrees}
+    <label>{locale === 'ja' ? '曲率 (度)' : 'Curvature (degrees)'}<input type="number" min="-360" max="360" step="1"
+      aria-label={`${locale === 'ja' ? '曲率' : 'Curvature'} binding ${target.id} (${locale === 'ja' ? '度' : 'degrees'})`} value={target.curvature_degrees}
       onChange={(event) => { const value = Number(event.currentTarget.value)
         if (Number.isInteger(value) && value >= -360 && value <= 360) onChange({ ...target, curvature_degrees: value }) }} /></label>
-    <label>Motion minimum (degrees)<input type="number" min="-360" max="360" step="1"
-      aria-label={`Motion minimum binding ${target.id} (degrees)`} value={target.motion_degrees[0]}
+    <label>{locale === 'ja' ? '可動範囲の最小 (度)' : 'Motion minimum (degrees)'}<input type="number" min="-360" max="360" step="1"
+      aria-label={`${locale === 'ja' ? '可動範囲の最小' : 'Motion minimum'} binding ${target.id} (${locale === 'ja' ? '度' : 'degrees'})`} value={target.motion_degrees[0]}
       onChange={(event) => updateMotion(0, Number(event.currentTarget.value))} /></label>
-    <label>Motion maximum (degrees)<input type="number" min="-360" max="360" step="1"
-      aria-label={`Motion maximum binding ${target.id} (degrees)`} value={target.motion_degrees[1]}
+    <label>{locale === 'ja' ? '可動範囲の最大 (度)' : 'Motion maximum (degrees)'}<input type="number" min="-360" max="360" step="1"
+      aria-label={`${locale === 'ja' ? '可動範囲の最大' : 'Motion maximum'} binding ${target.id} (${locale === 'ja' ? '度' : 'degrees'})`} value={target.motion_degrees[1]}
       onChange={(event) => updateMotion(1, Number(event.currentTarget.value))} /></label>
-    <label>Joint<select aria-label={`Joint binding ${target.id}`} value={target.joint}
+    <label>{locale === 'ja' ? '関節' : 'Joint'}<select aria-label={`${locale === 'ja' ? '関節' : 'Joint'} binding ${target.id}`} value={target.joint}
       onChange={(event) => onChange({ ...target, joint: event.currentTarget.value as Protrusion['joint'] })}>
-      <option value="fixed">fixed</option><option value="hinge">hinge</option><option value="ball">ball</option>
+      <option value="fixed">{locale === 'ja' ? '固定' : 'Fixed'}</option><option value="hinge">{locale === 'ja' ? 'ヒンジ' : 'Hinge'}</option><option value="ball">{locale === 'ja' ? '球状' : 'Ball'}</option>
     </select></label>
-    <label>Side<select aria-label={`Side binding ${target.id}`} value={target.side}
+    <label>{locale === 'ja' ? '面' : 'Side'}<select aria-label={`${locale === 'ja' ? '面' : 'Side'} binding ${target.id}`} value={target.side}
       onChange={(event) => onChange({ ...target, side: event.currentTarget.value as Protrusion['side'] })}>
-      <option value="front">front</option><option value="back">back</option><option value="either">either</option>
+      <option value="front">{locale === 'ja' ? '表' : 'Front'}</option><option value="back">{locale === 'ja' ? '裏' : 'Back'}</option><option value="either">{locale === 'ja' ? 'どちらでも可' : 'Either'}</option>
     </select></label>
-    <label>Priority<input type="number" min="1" max="100" step="1" aria-label={`Priority binding ${target.id}`}
+    <label>{locale === 'ja' ? '優先度' : 'Priority'}<input type="number" min="1" max="100" step="1" aria-label={`${locale === 'ja' ? '優先度' : 'Priority'} binding ${target.id}`}
       value={target.priority} onChange={(event) => { const priority = Number(event.currentTarget.value)
         if (Number.isInteger(priority) && priority >= 1 && priority <= 100) onChange({ ...target, priority }) }} /></label>
     <ProtrusionLocalOutlineEditor locale={locale} bindingId={target.id}

@@ -17206,9 +17206,9 @@ mod tests {
             candidate
                 .edges
                 .extend(plan.crease_pattern.edges.iter().cloned());
-            let topology = EditorState::with_paper(candidate.clone(), paper.clone())
-                .topology_analysis_input(ns)
-                .analyze();
+            let candidate_editor = EditorState::with_paper(candidate.clone(), paper.clone());
+            let candidate_fingerprint = candidate_editor.fold_model_fingerprint_v1();
+            let topology = candidate_editor.topology_analysis_input(ns).analyze();
             let certificate = certify_beginner_fold_path_v1(
                 &plan,
                 &paper,
@@ -17260,7 +17260,7 @@ mod tests {
                 visual: InstructionVisual::default(),
                 pose: InstructionPose {
                     model: InstructionPoseModel::DeclarativeOnlyV1,
-                    source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
+                    source_model_fingerprint: candidate_fingerprint.clone(),
                     fixed_face: None,
                     hinge_angles: Vec::new(),
                 },
@@ -17281,6 +17281,22 @@ mod tests {
                 },
             )
             .expect("apply native-positive generic tree");
+            assert_eq!(
+                project.editor.fold_model_fingerprint_v1(),
+                candidate_fingerprint
+            );
+            assert_eq!(
+                project
+                    .editor
+                    .instruction_timeline()
+                    .steps
+                    .last()
+                    .expect("applied generic tree instruction")
+                    .pose
+                    .source_model_fingerprint,
+                candidate_fingerprint
+            );
+            assert!(validate_document_instruction_poses(&project.document()).is_ok());
             let undone = execute_undo(&mut project, project_id, applied.revision).unwrap();
             assert!(
                 project
@@ -17290,6 +17306,11 @@ mod tests {
                     .is_none()
             );
             execute_redo(&mut project, project_id, undone.revision).unwrap();
+            assert_eq!(
+                project.editor.fold_model_fingerprint_v1(),
+                candidate_fingerprint
+            );
+            assert!(validate_document_instruction_poses(&project.document()).is_ok());
             let document = project.document();
             let bytes = write_project_ori2(&document).unwrap();
             let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default()).unwrap();

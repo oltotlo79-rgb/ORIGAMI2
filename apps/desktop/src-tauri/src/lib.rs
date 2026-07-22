@@ -6388,12 +6388,18 @@ fn import_beginner_reference_model(
         );
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    File::open(path)
+    File::open(&path)
         .and_then(|file| {
             file.take((ori_formats::MAX_REFERENCE_GLB_BYTES_V1 + 1) as u64)
                 .read_to_end(&mut bytes)
         })
         .map_err(|_| "GLBを読み込めません / Could not read GLB".to_owned())?;
+    let bytes = read_bounded_regular_import_file(
+        &path,
+        ori_formats::MAX_REFERENCE_GLB_BYTES_V1,
+        "Could not read GLB",
+        "GLB must be a non-empty regular file no larger than 16 MiB",
+    )?;
     ori_formats::validate_reference_glb_v1(&bytes).map_err(|_| {
         "安全なGLB 2.0参照モデルではありません / Not a supported passive GLB 2.0 reference"
             .to_owned()
@@ -10519,20 +10525,12 @@ fn import_underlay_image(
     let path = selected
         .into_path()
         .map_err(|_| "select a local image".to_owned())?;
-    let metadata = std::fs::metadata(&path).map_err(|_| "could not read image".to_owned())?;
-    if !metadata.is_file()
-        || metadata.len() == 0
-        || metadata.len() > MAX_PROJECT_TEXTURE_ASSET_BYTES as u64
-    {
-        return Err("image must be a PNG/JPEG no larger than 16 MiB".to_owned());
-    }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    File::open(path)
-        .and_then(|file| {
-            file.take((MAX_PROJECT_TEXTURE_ASSET_BYTES + 1) as u64)
-                .read_to_end(&mut bytes)
-        })
-        .map_err(|_| "could not read image".to_owned())?;
+    let bytes = read_bounded_regular_import_file(
+        &path,
+        MAX_PROJECT_TEXTURE_ASSET_BYTES,
+        "could not read image",
+        "image must be a PNG/JPEG no larger than 16 MiB",
+    )?;
     let media_type = if valid_png_image_envelope(&bytes) {
         ProjectTextureMediaTypeV1::Png
     } else if valid_jpeg_image_envelope(&bytes) {
@@ -10585,6 +10583,34 @@ fn import_underlay_image(
             .retain(|candidate| candidate.id != asset);
     }
     result
+}
+
+fn read_bounded_regular_import_file(
+    path: &Path,
+    maximum_bytes: usize,
+    read_error: &str,
+    bounds_error: &str,
+) -> Result<Vec<u8>, String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| read_error.to_owned())?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() == 0
+        || metadata.len() > maximum_bytes as u64
+    {
+        return Err(bounds_error.to_owned());
+    }
+    let expected_len = usize::try_from(metadata.len()).map_err(|_| bounds_error.to_owned())?;
+    let mut bytes = Vec::with_capacity(expected_len);
+    File::open(path)
+        .and_then(|file| {
+            file.take((maximum_bytes + 1) as u64)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|_| read_error.to_owned())?;
+    if bytes.len() != expected_len || bytes.len() > maximum_bytes {
+        return Err(bounds_error.to_owned());
+    }
+    Ok(bytes)
 }
 
 fn valid_png_image_envelope(bytes: &[u8]) -> bool {
@@ -15106,6 +15132,37 @@ mod tests {
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
     static BEGINNER_GRID_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn bounded_beginner_asset_import_reads_real_regular_file_without_following_aliases() {
+        let directory = TestDirectory::new();
+        let image = directory.join("target.png");
+        fs::write(&image, b"bounded-real-file").expect("fixture");
+        assert_eq!(
+            read_bounded_regular_import_file(&image, 64, "read", "bounds").unwrap(),
+            b"bounded-real-file"
+        );
+        assert_eq!(
+            read_bounded_regular_import_file(&image, 4, "read", "bounds"),
+            Err("bounds".to_owned())
+        );
+        let empty = directory.join("empty.glb");
+        fs::write(&empty, []).expect("empty fixture");
+        assert_eq!(
+            read_bounded_regular_import_file(&empty, 64, "read", "bounds"),
+            Err("bounds".to_owned())
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let alias = directory.join("alias.png");
+            symlink(&image, &alias).expect("alias");
+            assert_eq!(
+                read_bounded_regular_import_file(&alias, 64, "read", "bounds"),
+                Err("bounds".to_owned())
+            );
+        }
+    }
 
     struct BeginnerGridTestGuard {
         _serial: std::sync::MutexGuard<'static, ()>,

@@ -137,7 +137,10 @@ export function StackedFoldPanel({
   const [basicFoldTimelinePreview, setBasicFoldTimelinePreview] =
     useState<BasicFoldTimelinePreviewResponseV1 | null>(null)
   const [basicFoldTimelinePreviewError, setBasicFoldTimelinePreviewError] = useState(false)
+  const [basicFoldTimelinePreviewReading, setBasicFoldTimelinePreviewReading] = useState(false)
   const [basicFoldTimelineStepIndex, setBasicFoldTimelineStepIndex] = useState(0)
+  const basicFoldTimelineSequenceRef = useRef(0)
+  const basicFoldTimelineActiveRef = useRef(false)
   const namedBasicFold = namedBookFold?.kind === 'mountain'
     || namedBookFold?.kind === 'valley' || namedBookFold?.kind === 'squash'
     || namedBookFold?.kind === 'crimp' || namedBookFold?.kind === 'inside_reverse'
@@ -147,6 +150,13 @@ export function StackedFoldPanel({
     && (namedBookFold.kind == null || namedBookFold.kind === 'book'
       || namedBookFold.kind === 'petal')
   useEffect(() => {
+    basicFoldTimelineSequenceRef.current += 1
+    if (basicFoldTimelineActiveRef.current) {
+      basicFoldTimelineActiveRef.current = false
+      cancelToken(tokenRef.current)
+      tokenRef.current = null
+    }
+    setBasicFoldTimelinePreviewReading(false)
     setBasicFoldTimelinePreview(null)
     setBasicFoldTimelinePreviewError(false)
   }, [snapshot.project_instance_id, snapshot.project_id, snapshot.revision, selectedLine?.id,
@@ -261,6 +271,8 @@ export function StackedFoldPanel({
   ])
 
   useEffect(() => () => {
+    basicFoldTimelineSequenceRef.current += 1
+    basicFoldTimelineActiveRef.current = false
     coordinator.dispose()
     cyclePoseSequenceRef.current += 1
     if (cyclePoseActiveRef.current) {
@@ -505,12 +517,16 @@ export function StackedFoldPanel({
 
   async function previewNamedBasicFold() {
     if (view.kind !== 'ready' || !namedBookFold || !namedBasicFold
-      || !selectedLine || disabled || applying) return
+      || !selectedLine || disabled || applying || basicFoldTimelineActiveRef.current) return
+    const sequence = ++basicFoldTimelineSequenceRef.current
     const token = view.response.transactionProposal.transactionToken
     const segment = view.response.materialSegments.find((item) =>
       item.assignment === 'mountain' || item.assignment === 'valley')
     if (!token || !segment) return
     const authority = authorityRef.current
+    basicFoldTimelineActiveRef.current = true
+    setBasicFoldTimelinePreviewReading(true)
+    setBasicFoldTimelinePreview(null)
     setBasicFoldTimelinePreviewError(false)
     try {
       const preview = await previewNamedBasicFoldTimeline({
@@ -525,11 +541,26 @@ export function StackedFoldPanel({
         techniqueDocument: namedBookFold.document,
         techniqueId: namedBookFold.techniqueId,
       })
-      if (authorityRef.current.revision !== authority.revision || tokenRef.current !== token) return
+      const current = authorityRef.current
+      if (sequence !== basicFoldTimelineSequenceRef.current
+        || current.project_instance_id !== authority.project_instance_id
+        || current.project_id !== authority.project_id
+        || current.revision !== authority.revision
+        || tokenRef.current !== token) {
+        cancelToken(preview.transactionToken)
+        return
+      }
       setBasicFoldTimelinePreview(preview)
     } catch {
-      setBasicFoldTimelinePreview(null)
-      setBasicFoldTimelinePreviewError(true)
+      if (sequence === basicFoldTimelineSequenceRef.current) {
+        setBasicFoldTimelinePreview(null)
+        setBasicFoldTimelinePreviewError(true)
+      }
+    } finally {
+      if (sequence === basicFoldTimelineSequenceRef.current) {
+        basicFoldTimelineActiveRef.current = false
+        setBasicFoldTimelinePreviewReading(false)
+      }
     }
   }
 
@@ -1287,9 +1318,14 @@ export function StackedFoldPanel({
           )}
           {namedBasicFold && (
             <section aria-label={t('名前付き基本折りの手順preview', 'Named basic-fold timeline preview')}>
-              <button type="button" onClick={() => void previewNamedBasicFold()} disabled={!ready || applying}>
+              <button type="button" onClick={() => void previewNamedBasicFold()}
+                aria-busy={basicFoldTimelinePreviewReading}
+                disabled={!ready || applying || basicFoldTimelinePreviewReading}>
                 {t('認証済み手順をpreview', 'Preview certified timeline')}
               </button>
+              {basicFoldTimelinePreviewReading && (
+                <p role="status" aria-live="polite">{t('認証済み手順を作成中…', 'Building certified timeline…')}</p>
+              )}
               {basicFoldTimelinePreview && (
                 <div role="status" tabIndex={0}
                   aria-label={t('認証済み手順step再生', 'Certified timeline step player')}

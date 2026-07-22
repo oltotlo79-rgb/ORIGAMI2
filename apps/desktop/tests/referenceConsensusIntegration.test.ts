@@ -21,6 +21,8 @@ test('native computes at most six component extent and branch pairs and gates ap
   assert.match(native, /let apply_allowed = disagreement_count < 2/u)
   assert.match(native, /reference_consensus_multiple_disagreements/u)
   assert.match(app, /aria-label="Reference consensus"/u)
+  assert.match(app, /function excludeBeginnerConsensusAsset/u)
+  assert.match(app, /Exclude one outlier/u)
 })
 
 test('apply persists complete consensus bindings exclusion and pair digests', () => {

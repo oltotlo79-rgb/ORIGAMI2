@@ -3842,6 +3842,21 @@ function App() {
       archiveBeginnerReferenceModelAsset(projectId, revision, projectInstanceId, assetId, archived))
   }
 
+  function excludeBeginnerConsensusAsset(assetId: string | null) {
+    const current = latestSnapshotRef.current
+    const consensus = current?.beginner_design_profile.reference_consensus_v1
+    if (!current || !consensus || (assetId !== null && !consensus.bindings.some((binding) => binding.asset_id === assetId))) return
+    const profile = {
+      ...current.beginner_design_profile,
+      reference_consensus_v1: {
+        ...consensus,
+        ...(assetId === null ? { excluded_asset_id: undefined } : { excluded_asset_id: assetId }),
+      },
+    }
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      updateBeginnerDesignProfile(projectId, revision, projectInstanceId, profile))
+  }
+
   function toggleBeginnerReferenceModelPreview() {
     if (beginnerReferenceGeometry) {
       beginnerReferenceRequestRef.current += 1
@@ -8285,6 +8300,20 @@ function App() {
                               {`Pair agreement ${pair.agreement_score}/100; components ${pair.component_error}; extent ${pair.normalized_extent_error}; branches ${pair.branch_error}${pair.disagrees ? '; disagrees' : ''}`}
                             </li>
                           ))}</ul>
+                          {nativeSnapshot.beginner_design_profile.reference_consensus_v1 && (
+                            <fieldset><legend>Exclude one outlier</legend>
+                              {nativeSnapshot.beginner_design_profile.reference_consensus_v1.bindings.map((binding, index) => (
+                                <button type="button" key={binding.asset_id}
+                                  disabled={nativeSnapshot.beginner_design_profile.reference_consensus_v1?.excluded_asset_id === binding.asset_id}
+                                  onClick={() => excludeBeginnerConsensusAsset(binding.asset_id)}>
+                                  {`Exclude reference ${index + 1}`}
+                                </button>
+                              ))}
+                              {nativeSnapshot.beginner_design_profile.reference_consensus_v1.excluded_asset_id && (
+                                <button type="button" onClick={() => excludeBeginnerConsensusAsset(null)}>Include all references</button>
+                              )}
+                            </fieldset>
+                          )}
                         </div>
                       )}
                       {beginnerCandidates.generated_plans.map((plan, index) => {

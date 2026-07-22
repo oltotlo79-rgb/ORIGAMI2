@@ -11755,7 +11755,9 @@ function selectedNamedBookFold(
       ?? technique.names.find((entry) => entry.locale === 'ja')?.text
       ?? technique.names[0]?.text
       ?? technique.id,
-    kind: isAccordion ? 'accordion' as const : isReverse ? 'reverse' as const
+    kind: isAccordion ? 'accordion' as const
+      : physical[0]?.action.kind === 'inside_reverse_fold' ? 'inside_reverse' as const
+      : physical[0]?.action.kind === 'outside_reverse_fold' ? 'outside_reverse' as const
       : isSquash ? 'squash' as const : isCrimp ? 'crimp' as const
       : isSink ? 'sink' as const : isLayer ? 'layer' as const
       : isMountain ? 'mountain' as const : isValley ? 'valley' as const

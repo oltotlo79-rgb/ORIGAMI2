@@ -606,24 +606,31 @@ describe('StackedFoldPanel', () => {
 
   it('routes a named reverse fold only through the two-segment native transaction', async () => {
     transport.preview.mockResolvedValue(ready)
-    transport.reverseApply.mockResolvedValue(4)
+    const reversePreview = { ...basicTimelinePreview, techniqueKind: 'inside_reverse' as const }
+    transport.basicPreview.mockResolvedValue(reversePreview)
+    transport.namedApply.mockResolvedValue(4)
     const document = { techniques: [] } as any
     render(<StackedFoldPanel
       locale="en" snapshot={snapshot}
       selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
       disabled={false}
-      namedBookFold={{ document, techniqueId: 'inside-reverse', name: 'Inside reverse', kind: 'reverse' }}
+      namedBookFold={{ document, techniqueId: 'inside-reverse', name: 'Inside reverse', kind: 'inside_reverse' }}
       refreshSnapshot={vi.fn().mockResolvedValue({ ...snapshot, revision: 4 })}
       onApplied={vi.fn()}
     />)
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
     const apply = await screen.findByRole('button', { name: 'Apply named reverse fold' })
+    expect(apply).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: 'Preview certified timeline' }))
+    await waitFor(() => expect(transport.basicPreview).toHaveBeenCalledWith(
+      expect.objectContaining({ techniqueKind: 'inside_reverse' }),
+    ))
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(apply)
-    await waitFor(() => expect(transport.reverseApply).toHaveBeenCalledWith(
-      token, document, 'inside-reverse',
+    await waitFor(() => expect(transport.namedApply).toHaveBeenCalledWith(
+      token, document, 'inside-reverse', reversePreview,
     ))
-    expect(transport.namedApply).not.toHaveBeenCalled()
+    expect(transport.reverseApply).not.toHaveBeenCalled()
     expect(transport.apply).not.toHaveBeenCalled()
   })
 
@@ -651,7 +658,9 @@ describe('StackedFoldPanel', () => {
 
   it('routes a named sink fold through exactly two certified segments', async () => {
     transport.preview.mockResolvedValue(ready)
-    transport.sinkApply.mockResolvedValue(4)
+    const sinkPreview = { ...basicTimelinePreview, techniqueKind: 'sink' as const }
+    transport.basicPreview.mockResolvedValue(sinkPreview)
+    transport.namedApply.mockResolvedValue(4)
     const document = { techniques: [] } as any
     render(<StackedFoldPanel locale="en" snapshot={snapshot}
       selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
@@ -659,10 +668,16 @@ describe('StackedFoldPanel', () => {
       refreshSnapshot={vi.fn().mockResolvedValue({ ...snapshot, revision: 4 })} onApplied={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
     const apply = await screen.findByRole('button', { name: 'Apply named sink fold' })
+    fireEvent.click(screen.getByRole('button', { name: 'Preview certified timeline' }))
+    await waitFor(() => expect(transport.basicPreview).toHaveBeenCalledWith(
+      expect.objectContaining({ techniqueKind: 'sink' }),
+    ))
     fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(apply)
-    await waitFor(() => expect(transport.sinkApply).toHaveBeenCalledWith(token, document, 'open-sink'))
+    await waitFor(() => expect(transport.namedApply).toHaveBeenCalledWith(
+      token, document, 'open-sink', sinkPreview,
+    ))
     expect(transport.apply).not.toHaveBeenCalled()
-    expect(transport.namedApply).not.toHaveBeenCalled()
+    expect(transport.sinkApply).not.toHaveBeenCalled()
   })
 
   it('routes a layer-selective technique through its proof-bound transaction', async () => {

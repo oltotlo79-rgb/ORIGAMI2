@@ -4,7 +4,6 @@ import {
   applyNamedBookFoldTransaction,
   applyNamedReverseFoldTransaction,
   applyNamedAccordionFoldTransaction,
-  applyNamedSinkFoldTransaction,
   applyNamedLayerSelectiveTransaction,
   cancelCurrentStackedFoldReadV1,
   cancelStackedFoldTransactionPreview,
@@ -59,7 +58,7 @@ type Props = Readonly<{
     document: FoldTechniqueFileDocumentV1
     techniqueId: string
     name: string
-    kind?: 'book' | 'mountain' | 'valley' | 'squash' | 'crimp' | 'petal' | 'reverse' | 'accordion' | 'sink' | 'layer'
+    kind?: 'book' | 'mountain' | 'valley' | 'squash' | 'crimp' | 'petal' | 'inside_reverse' | 'outside_reverse' | 'reverse' | 'accordion' | 'sink' | 'layer'
   }> | null
 }>
 
@@ -141,7 +140,8 @@ export function StackedFoldPanel({
   const [basicFoldTimelinePreviewError, setBasicFoldTimelinePreviewError] = useState(false)
   const namedBasicFold = namedBookFold?.kind === 'mountain'
     || namedBookFold?.kind === 'valley' || namedBookFold?.kind === 'squash'
-    || namedBookFold?.kind === 'crimp'
+    || namedBookFold?.kind === 'crimp' || namedBookFold?.kind === 'inside_reverse'
+    || namedBookFold?.kind === 'outside_reverse' || namedBookFold?.kind === 'sink'
   const unsupportedNamedPhysicalFold = namedBookFold != null
     && (namedBookFold.kind == null || namedBookFold.kind === 'book'
       || namedBookFold.kind === 'petal')
@@ -505,7 +505,7 @@ export function StackedFoldPanel({
         expectedSourceModelFingerprint: authority.fold_model_fingerprint,
         foldEdge: selectedLine.id,
         assignment: segment.assignment,
-        techniqueKind: namedBookFold.kind as 'mountain' | 'valley' | 'squash' | 'crimp',
+        techniqueKind: namedBookFold.kind as 'mountain' | 'valley' | 'squash' | 'crimp' | 'inside_reverse' | 'outside_reverse' | 'sink',
         techniqueDocument: namedBookFold.document,
         techniqueId: namedBookFold.techniqueId,
       })
@@ -521,7 +521,10 @@ export function StackedFoldPanel({
     return namedBookFold?.kind === 'layer'
       ? applyNamedLayerSelectiveTransaction(token, namedBookFold.document, namedBookFold.techniqueId)
       : namedBookFold?.kind === 'sink'
-      ? applyNamedSinkFoldTransaction(token, namedBookFold.document, namedBookFold.techniqueId)
+      ? basicFoldTimelinePreview?.transactionToken === token
+        ? applyNamedBookFoldTransaction(token, namedBookFold.document, namedBookFold.techniqueId,
+          basicFoldTimelinePreview)
+        : Promise.reject(new Error('certified sink timeline preview required'))
       : namedBookFold?.kind === 'accordion'
       ? applyNamedAccordionFoldTransaction(
           token, namedBookFold.document, namedBookFold.techniqueId,
@@ -1297,7 +1300,8 @@ export function StackedFoldPanel({
                   ? t('名前付き沈め折りを適用', 'Apply named sink fold')
                   : namedBookFold.kind === 'accordion'
                   ? t('名前付き蛇腹折りを適用', 'Apply named accordion fold')
-                  : namedBookFold.kind === 'reverse'
+                  : namedBookFold.kind === 'reverse' || namedBookFold.kind === 'inside_reverse'
+                    || namedBookFold.kind === 'outside_reverse'
                   ? t('名前付き逆折りを適用', 'Apply named reverse fold')
                   : t('名前付き二つ折りを適用', 'Apply named book fold')
                 : t('折り重ねを適用', 'Apply stacked fold')}

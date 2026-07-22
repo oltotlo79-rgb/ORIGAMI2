@@ -757,7 +757,11 @@ fn compile_named_basic_fold_preview(
     let basic_kind = match technique_kind.as_str() {
         "mountain" if assignment == "mountain" => Some(ori_instructions::BasicFoldKindV1::Mountain),
         "valley" if assignment == "valley" => Some(ori_instructions::BasicFoldKindV1::Valley),
-        "squash" | "crimp" if matches!(assignment.as_str(), "mountain" | "valley") => None,
+        "squash" | "crimp" | "inside_reverse" | "outside_reverse" | "sink"
+            if matches!(assignment.as_str(), "mountain" | "valley") =>
+        {
+            None
+        }
         _ => return Err("The basic-fold assignment is unsupported.".to_owned()),
     };
     let technique =
@@ -897,6 +901,28 @@ fn compile_named_basic_fold_preview(
         match technique_kind.as_str() {
             "squash" => ori_instructions::compile_certified_squash_fold_timeline_v1(request),
             "crimp" => ori_instructions::compile_certified_crimp_fold_timeline_v1(request),
+            "sink" => ori_instructions::compile_certified_sink_fold_timeline_v1(request),
+            "inside_reverse" | "outside_reverse" => {
+                let reverse = ori_instructions::ReverseFoldMotionRequestV1 {
+                    technique_file: request.technique_file,
+                    technique_id: request.technique_id,
+                    kind: if technique_kind == "inside_reverse" {
+                        ori_instructions::ReverseFoldKindV1::Inside
+                    } else {
+                        ori_instructions::ReverseFoldKindV1::Outside
+                    },
+                    source_model_fingerprint: request.source_model_fingerprint,
+                    fixed_face: request.fixed_face,
+                    first_edge: request.first_edge,
+                    second_edge: request.second_edge,
+                    source_hinge_angles: request.source_hinge_angles,
+                    intermediate_angle_microdegrees: request.intermediate_angle_microdegrees,
+                    target_angle_microdegrees: request.target_angle_microdegrees,
+                    first_path_certificate: request.first_path_certificate,
+                    second_path_certificate: request.second_path_certificate,
+                };
+                ori_instructions::compile_certified_reverse_fold_timeline_v1(reverse)
+            }
             _ => unreachable!(),
         }
         .map_err(|_| "The named two-segment compiler rejected the preview.".to_owned())?

@@ -32,7 +32,9 @@ test('every physical technique variant reaches one proof-bound atomic desktop co
   assert.match(transaction, /InstructionPoseModel::AbsoluteHingeAnglesV1/u)
   assert.match(panel, /applyNamedBookFoldTransaction/u)
   assert.match(panel, /applyNamedReverseFoldTransaction/u)
-  assert.match(panel, /applyNamedSinkFoldTransaction/u)
+  assert.match(panel, /techniqueKind: namedBookFold.kind/u)
+  assert.match(transaction, /compile_certified_sink_fold_timeline_v1/u)
+  assert.match(transaction, /expected_preview_binding_sha256/u)
   assert.match(panel, /applyNamedLayerSelectiveTransaction/u)
 })
 

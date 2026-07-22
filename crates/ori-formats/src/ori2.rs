@@ -1512,6 +1512,20 @@ mod tests {
 
     fn version_matrix_archive_fixture() -> Ori2ProjectArchive {
         let mut document = sample_document();
+        document.beginner_design_profile.generation_provenance =
+            Some(ori_domain::BeginnerGenerationProvenanceV1 {
+                schema_version: 1,
+                topology_authority_sha256: [0x31; 32],
+                fold_path_certificate_sha256: Some([0x62; 32]),
+                confidence_score: 93,
+                confidence_reasons: vec!["bounded_native_fold_path_v2".to_owned()],
+                explicit_override: false,
+                source_asset_fingerprint: "asset:version-matrix".to_owned(),
+                semantic_landmark_provenance: None,
+                generic_tree: None,
+                reference_consensus: None,
+                reference_consensus_summary: None,
+            });
         document.texture_assets.push(crate::ProjectTextureAssetV1 {
             id: AssetId::new(),
             media_type: crate::ProjectTextureMediaTypeV1::Png,
@@ -2340,6 +2354,16 @@ mod tests {
                 original.document.reference_model_assets
             );
             assert_eq!(migrated.layer_evidence, original.layer_evidence);
+            assert_eq!(
+                migrated
+                    .document
+                    .beginner_design_profile
+                    .generation_provenance
+                    .as_ref()
+                    .and_then(|value| value.fold_path_certificate_sha256),
+                Some([0x62; 32]),
+                "generation {generation} must preserve typed fold-path provenance"
+            );
             assert_eq!(migrated_history.undo_len(), 1);
             assert_eq!(migrated_history.redo_len(), 0);
             assert_eq!(

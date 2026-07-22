@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 const origin = 'http://127.0.0.1:4184'
 const server = spawn(process.execPath, ['./node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '4184', '--strictPort'], { stdio: 'ignore' })
 let browser
-const expectedStatus = ['states 3', 'transitions 4', 'certified transitions 1', `binding ${'a'.repeat(64)}`, 'positive thickness certified 1/1', 'layer transport certified 1/1']
+const expectedStatus = ['reason proof_complete', 'states 3', 'transitions 4', 'certified transitions 1', `binding ${'a'.repeat(64)}`, 'positive thickness certified 1/1', 'layer transport certified 1/1']
 const exactSchedule = count => JSON.stringify({ version: 1, entries: Array.from({ length: count }, (_, index) => `018f47a2-4b7a-7cc1-8abc-${String(index + 1).padStart(12, '0')}`).map(edge => ({ edge, uDomain: [{ numerator: 0, denominator: 1 }, { numerator: 1, denominator: 1 }], numeratorPowerCoefficients: [{ numerator: 0, denominator: 1 }], denominatorPowerCoefficients: [{ numerator: 1, denominator: 1 }], requestedAngleDegrees: 0 })) })
 
 async function openScenario(scenario, hinges = 6) {

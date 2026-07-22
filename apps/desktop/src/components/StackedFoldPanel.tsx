@@ -853,7 +853,7 @@ export function StackedFoldPanel({
             )}
             {dyadicGraphRead && (
               <p data-testid="dyadic-pose-graph-status" role="status">
-                {dyadicGraphRead.status}; states {dyadicGraphRead.stateCount}; transitions {dyadicGraphRead.transitionCount}; explored {dyadicGraphRead.exploredStateCount}; evaluated {dyadicGraphRead.evaluatedTransitionCount}; read-only
+                {dyadicGraphRead.status}; reason {dyadicGraphRead.reason}; states {dyadicGraphRead.stateCount}; transitions {dyadicGraphRead.transitionCount}; explored {dyadicGraphRead.exploredStateCount}; evaluated {dyadicGraphRead.evaluatedTransitionCount}; read-only
                 ; certified transitions {dyadicGraphRead.certifiedTransitionCount}; binding {dyadicGraphRead.certificateBindingSha256 ?? 'unavailable'}; positive thickness {dyadicGraphRead.positiveThicknessCertified ? `certified ${dyadicGraphRead.positiveThicknessTransitionCount}/${dyadicGraphRead.certifiedTransitionCount}` : 'not certified'}; layer transport {dyadicGraphRead.layerTransportCertified ? `certified ${dyadicGraphRead.layerTransportTransitionCount}/${dyadicGraphRead.certifiedTransitionCount}` : 'not certified'}; mutation candidate {dyadicGraphRead.mutationCandidateReady ? 'ready' : 'not ready'}; Apply disabled
               </p>
             )}

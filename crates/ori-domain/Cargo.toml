@@ -7,8 +7,6 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 sha2 = "0.10"
 uuid = { workspace = true, features = ["v5"] }
-
-[dev-dependencies]
-serde_json.workspace = true

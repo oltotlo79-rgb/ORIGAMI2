@@ -1,6 +1,7 @@
 use std::{collections::HashSet, error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 mod annotations;
@@ -378,6 +379,41 @@ pub struct NamedTechniqueCompilerMetadataV1 {
     pub compiler_output_sha256: [u8; 32],
 }
 
+#[must_use]
+pub fn named_technique_compiler_output_sha256_v1(steps: &[InstructionStep]) -> Option<[u8; 32]> {
+    canonical_instruction_steps_sha256_v1(steps, true)
+}
+
+#[must_use]
+pub fn named_technique_preview_timeline_sha256_v1(
+    timeline: &InstructionTimeline,
+) -> Option<[u8; 32]> {
+    canonical_instruction_steps_sha256_v1(&timeline.steps, false)
+}
+
+fn canonical_instruction_steps_sha256_v1(
+    steps: &[InstructionStep],
+    clear_compiler_metadata: bool,
+) -> Option<[u8; 32]> {
+    let mut value = serde_json::to_value(InstructionTimeline {
+        steps: steps.to_vec(),
+    })
+    .ok()?;
+    for step in value.get_mut("steps")?.as_array_mut()? {
+        step.as_object_mut()?.insert(
+            "id".to_owned(),
+            serde_json::Value::String("00000000-0000-0000-0000-000000000000".to_owned()),
+        );
+        if clear_compiler_metadata {
+            step.get_mut("visual")?.as_object_mut()?.insert(
+                "named_technique_compiler_v1".to_owned(),
+                serde_json::Value::Null,
+            );
+        }
+    }
+    Some(Sha256::digest(serde_json::to_vec(&value).ok()?).into())
+}
+
 pub const PATH_CERTIFICATE_REFERENCE_MODEL_ID_V1: &str =
     "bounded_certified_pose_graph_path_reference_v1";
 pub const MAX_PATH_CERTIFICATE_REFERENCE_TRANSITIONS_V1: usize = 64;
@@ -748,6 +784,42 @@ pub fn validate_instruction_timeline(
             });
         }
         validate_instruction_step(step, step_index)?;
+    }
+    let mut index = 0;
+    while index < timeline.steps.len() {
+        let Some(first) = timeline.steps[index]
+            .visual
+            .named_technique_compiler_v1
+            .as_ref()
+        else {
+            index += 1;
+            continue;
+        };
+        let end = index.saturating_add(first.segment_count);
+        let valid_group = first.segment_index == 0
+            && end <= timeline.steps.len()
+            && timeline.steps[index..end]
+                .iter()
+                .enumerate()
+                .all(|(offset, step)| {
+                    step.visual
+                        .named_technique_compiler_v1
+                        .as_ref()
+                        .is_some_and(|metadata| {
+                            metadata.version == first.version
+                                && metadata.model_id == first.model_id
+                                && metadata.technique_kind == first.technique_kind
+                                && metadata.segment_index == offset
+                                && metadata.segment_count == first.segment_count
+                                && metadata.compiler_output_sha256 == first.compiler_output_sha256
+                        })
+                })
+            && named_technique_compiler_output_sha256_v1(&timeline.steps[index..end])
+                == Some(first.compiler_output_sha256);
+        if !valid_group {
+            return Err(InstructionTimelineValidationError::InvalidVisual { step_index: index });
+        }
+        index = end;
     }
 
     Ok(())
@@ -1163,13 +1235,15 @@ mod tests {
     #[test]
     fn named_technique_compiler_metadata_round_trips_strictly() {
         let mut step = valid_instruction_step();
+        let compiler_output_sha256 =
+            named_technique_compiler_output_sha256_v1(std::slice::from_ref(&step)).unwrap();
         step.visual.named_technique_compiler_v1 = Some(NamedTechniqueCompilerMetadataV1 {
             version: 1,
             model_id: NAMED_TECHNIQUE_COMPILER_MODEL_ID_V1.to_owned(),
             technique_kind: "accordion".to_owned(),
             segment_index: 0,
-            segment_count: 4,
-            compiler_output_sha256: [0x5a; 32],
+            segment_count: 1,
+            compiler_output_sha256,
         });
         let timeline = InstructionTimeline { steps: vec![step] };
         validate_instruction_timeline(&timeline).expect("valid compiler metadata");
@@ -1182,7 +1256,42 @@ mod tests {
             .as_ref()
             .unwrap();
         assert_eq!(metadata.technique_kind, "accordion");
-        assert_eq!(metadata.compiler_output_sha256, [0x5a; 32]);
+        assert_eq!(metadata.compiler_output_sha256, compiler_output_sha256);
+    }
+
+    #[test]
+    fn named_compiler_group_rejects_missing_reordered_and_tampered_metadata() {
+        let mut steps = (0..3).map(|_| valid_instruction_step()).collect::<Vec<_>>();
+        let digest = named_technique_compiler_output_sha256_v1(&steps).unwrap();
+        for (segment_index, step) in steps.iter_mut().enumerate() {
+            step.visual.named_technique_compiler_v1 = Some(NamedTechniqueCompilerMetadataV1 {
+                version: 1,
+                model_id: NAMED_TECHNIQUE_COMPILER_MODEL_ID_V1.to_owned(),
+                technique_kind: "accordion".to_owned(),
+                segment_index,
+                segment_count: 3,
+                compiler_output_sha256: digest,
+            });
+        }
+        let timeline = InstructionTimeline { steps };
+        validate_instruction_timeline(&timeline).unwrap();
+        let mut missing = timeline.clone();
+        missing.steps[1].visual.named_technique_compiler_v1 = None;
+        assert!(validate_instruction_timeline(&missing).is_err());
+        let mut reordered = timeline.clone();
+        reordered.steps.swap(1, 2);
+        assert!(validate_instruction_timeline(&reordered).is_err());
+        let mut tampered = timeline.clone();
+        tampered.steps[1].title.push('x');
+        assert!(validate_instruction_timeline(&tampered).is_err());
+        let mut digest = timeline;
+        digest.steps[1]
+            .visual
+            .named_technique_compiler_v1
+            .as_mut()
+            .unwrap()
+            .compiler_output_sha256[0] ^= 1;
+        assert!(validate_instruction_timeline(&digest).is_err());
     }
 
     fn valid_declarative_instruction_step() -> InstructionStep {

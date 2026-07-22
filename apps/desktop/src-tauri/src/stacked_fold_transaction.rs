@@ -1031,9 +1031,9 @@ fn bind_named_technique_compiler_metadata_v1(
     timeline: &mut ori_domain::InstructionTimeline,
     technique_kind: &str,
 ) -> Result<(), String> {
-    let bytes = serde_json::to_vec(timeline)
-        .map_err(|_| "The compiler timeline metadata could not be bound.".to_owned())?;
-    let compiler_output_sha256: [u8; 32] = Sha256::digest(bytes).into();
+    let compiler_output_sha256 =
+        ori_domain::named_technique_compiler_output_sha256_v1(&timeline.steps)
+            .ok_or_else(|| "The compiler timeline metadata could not be bound.".to_owned())?;
     let segment_count = timeline.steps.len();
     for (segment_index, step) in timeline.steps.iter_mut().enumerate() {
         step.visual.named_technique_compiler_v1 =
@@ -1062,8 +1062,8 @@ fn basic_fold_preview_binding_v1(
     technique_kind: &str,
     timeline: &ori_domain::InstructionTimeline,
 ) -> Result<String, String> {
-    let bytes = serde_json::to_vec(timeline)
-        .map_err(|_| "The basic-fold preview could not be bound.".to_owned())?;
+    let timeline_sha256 = ori_domain::named_technique_preview_timeline_sha256_v1(timeline)
+        .ok_or_else(|| "The basic-fold preview could not be bound.".to_owned())?;
     let mut hash = Sha256::new();
     hash.update(b"named_basic_fold_timeline_preview_binding_v1");
     hash.update(token.canonical_bytes());
@@ -1072,8 +1072,7 @@ fn basic_fold_preview_binding_v1(
     hash.update(revision.to_be_bytes());
     hash.update((technique_kind.len() as u64).to_be_bytes());
     hash.update(technique_kind.as_bytes());
-    hash.update((bytes.len() as u64).to_be_bytes());
-    hash.update(bytes);
+    hash.update(timeline_sha256);
     Ok(lowercase_hex(hash.finalize().into()))
 }
 

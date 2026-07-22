@@ -76,6 +76,7 @@ pub(super) enum PendingStackedFoldRequestedPose {
     Tree {
         requested: PreparedStackedFoldRequestedPoseV1,
         continuous: StackedFoldBoundedPathDiagnosticV1,
+        paper_thickness_mm: f64,
     },
     Graph {
         requested: PreparedStackedFoldRequestedGraphPoseV1,
@@ -118,7 +119,27 @@ impl PendingStackedFoldRequestedPose {
     }
     fn continuous_certified(&self) -> bool {
         match self {
-            Self::Tree { continuous, .. } => continuous.continuous_clearance_certified(),
+            Self::Tree {
+                requested,
+                continuous,
+                paper_thickness_mm,
+            } => {
+                let source = requested.initial().pose().hinge_angles();
+                let target = requested.pose().hinge_angles();
+                ori_collision::diagnose_collective_hinge_path_from_pose_v1(
+                    requested.initial().target().model(),
+                    requested.initial().pose(),
+                    source,
+                    target,
+                    *paper_thickness_mm,
+                    ori_collision::StackedFoldPathDiagnosticLimitsV1::default(),
+                )
+                .is_ok_and(|revalidated| {
+                    revalidated == *continuous
+                        && revalidated.continuous_clearance_certified()
+                        && !revalidated.authorizes_project_mutation()
+                })
+            }
             Self::Graph {
                 continuous,
                 interval_closure,
@@ -395,6 +416,7 @@ pub(super) struct PendingStackedFoldPremises {
     pub expected_layer_generation: u64,
     pub requested: PreparedStackedFoldRequestedPoseV1,
     pub continuous: StackedFoldBoundedPathDiagnosticV1,
+    pub paper_thickness_mm: f64,
     pub layer_order: StackedFoldNonFlatLayerOrderV1,
 }
 
@@ -521,6 +543,7 @@ pub(super) fn install_pending_stacked_fold(
         requested: PendingStackedFoldRequestedPose::Tree {
             requested: premises.requested,
             continuous: premises.continuous,
+            paper_thickness_mm: premises.paper_thickness_mm,
         },
         layer_order: Some(CurrentLayerEvidence::NonFlat(premises.layer_order)),
         pose_capability,

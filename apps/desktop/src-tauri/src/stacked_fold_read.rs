@@ -3951,6 +3951,7 @@ async fn propose_current_stacked_fold_read_inner(
                 expected_layer_generation: binding.layer_order_generation(),
                 requested: prepared_requested_pose,
                 continuous: continuous_path,
+                paper_thickness_mm,
                 layer_order,
             })
         });

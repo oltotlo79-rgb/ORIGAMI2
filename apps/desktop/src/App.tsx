@@ -9672,19 +9672,19 @@ function App() {
                 <fieldset aria-describedby="beginner-protrusion-help">
                   <legend>{text({ ja: '突起目標', en: 'Protrusion targets' })}</legend>
                   {([
-                    ['protrusion_count', 'Count', 2, 1, 8, 1],
-                    ['protrusion_length_mm', 'Length (mm)', 20, 0.1, 100000, 0.1],
-                    ['protrusion_thickness_mm', 'Thickness (mm)', 2, 0.1, 1000, 0.1],
-                    ['protrusion_position_x_mm', 'Final position X (mm)', 0, -10000, 10000, 0.1],
-                    ['protrusion_position_y_mm', 'Final position Y (mm)', 0, -10000, 10000, 0.1],
-                    ['protrusion_position_z_mm', 'Final position Z (mm)', 0, -10000, 10000, 0.1],
-                    ['protrusion_direction_x', 'Direction X', 1, -1, 1, 0.001],
-                    ['protrusion_direction_y', 'Direction Y', 0, -1, 1, 0.001],
-                    ['protrusion_direction_z', 'Direction Z', 0, -1, 1, 0.001],
-                    ['protrusion_curvature_degrees', 'Curvature (degrees)', 0, -360, 360, 1],
-                    ['protrusion_motion_min', 'Motion minimum (degrees)', 0, -360, 360, 1],
-                    ['protrusion_motion_max', 'Motion maximum (degrees)', 0, -360, 360, 1],
-                    ['protrusion_priority', 'Priority', 50, 1, 100, 1],
+                    ['protrusion_count', text({ ja: '個数', en: 'Count' }), 2, 1, 8, 1],
+                    ['protrusion_length_mm', text({ ja: '長さ (mm)', en: 'Length (mm)' }), 20, 0.1, 100000, 0.1],
+                    ['protrusion_thickness_mm', text({ ja: '太さ (mm)', en: 'Thickness (mm)' }), 2, 0.1, 1000, 0.1],
+                    ['protrusion_position_x_mm', text({ ja: '最終位置 X (mm)', en: 'Final position X (mm)' }), 0, -10000, 10000, 0.1],
+                    ['protrusion_position_y_mm', text({ ja: '最終位置 Y (mm)', en: 'Final position Y (mm)' }), 0, -10000, 10000, 0.1],
+                    ['protrusion_position_z_mm', text({ ja: '最終位置 Z (mm)', en: 'Final position Z (mm)' }), 0, -10000, 10000, 0.1],
+                    ['protrusion_direction_x', text({ ja: '向き X', en: 'Direction X' }), 1, -1, 1, 0.001],
+                    ['protrusion_direction_y', text({ ja: '向き Y', en: 'Direction Y' }), 0, -1, 1, 0.001],
+                    ['protrusion_direction_z', text({ ja: '向き Z', en: 'Direction Z' }), 0, -1, 1, 0.001],
+                    ['protrusion_curvature_degrees', text({ ja: '曲率 (度)', en: 'Curvature (degrees)' }), 0, -360, 360, 1],
+                    ['protrusion_motion_min', text({ ja: '可動範囲の最小 (度)', en: 'Motion minimum (degrees)' }), 0, -360, 360, 1],
+                    ['protrusion_motion_max', text({ ja: '可動範囲の最大 (度)', en: 'Motion maximum (degrees)' }), 0, -360, 360, 1],
+                    ['protrusion_priority', text({ ja: '優先度', en: 'Priority' }), 50, 1, 100, 1],
                   ] as const).map(([name, label, initial, min, max, step]) => (
                     <label className="field" key={name}>
                       <span>{label}</span>
@@ -9731,8 +9731,13 @@ function App() {
                     {text({ ja: '空の汎用目標を新規作成', en: 'Create empty generic target' })}
                   </button>}
                   {beginnerProtrusions.length > 0 && <table aria-label={text({ ja: '特徴制約の比較', en: 'Feature constraint comparison' })}>
-                    <thead><tr><th>Feature</th><th>Length</th><th>Thickness</th><th>Joint</th>
-                      <th>Motion</th><th>Side</th><th>Priority</th></tr></thead>
+                    <thead><tr><th>{text({ ja: '特徴', en: 'Feature' })}</th>
+                      <th>{text({ ja: '長さ', en: 'Length' })}</th>
+                      <th>{text({ ja: '太さ', en: 'Thickness' })}</th>
+                      <th>{text({ ja: '関節', en: 'Joint' })}</th>
+                      <th>{text({ ja: '可動範囲', en: 'Motion' })}</th>
+                      <th>{text({ ja: '面', en: 'Side' })}</th>
+                      <th>{text({ ja: '優先度', en: 'Priority' })}</th></tr></thead>
                     <tbody>{beginnerProtrusions.map((target, index) => <tr key={target.id}>
                       <td>{beginnerProtrusionKinds[index] ?? 'tail'} #{target.id}</td>
                       <td>{target.length_tenths_mm / 10} mm</td><td>{target.thickness_tenths_mm / 10} mm</td>

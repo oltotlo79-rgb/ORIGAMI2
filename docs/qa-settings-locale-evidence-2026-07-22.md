@@ -1,0 +1,33 @@
+# 設定・ロケール横断QA証跡（2026-07-22）
+
+## 対象
+
+Claude監査の補完として、テーマ設定の永続化・移行、日本語UIの固定英語文言、動的ARIAラベル、production build、lint、正式版配布契約を横断確認した。
+
+## 設定スキーマ
+
+- テーマ設定は `version: 1` と `preference` だけを許す厳密JSONへ移行した。
+- 旧形式の `system` / `light` / `dark` は読み込み時に正規形式へ移行する。
+- 未知フィールド、未知version、破損JSON、128 UTF-16 code unit超過を拒否する。
+- 保存失敗時もセッション選択を維持し、初期化失敗時は安全な既定値へ戻す。
+- テーマ設定DOMテスト: 4 / 4成功。テーマ単体テスト: 8 / 8成功。
+
+## ロケールとアクセシビリティ
+
+- surface範囲の割当・三角形番号、骨格バー入力の動的ARIAラベルを日英切替へ変更した。
+- 突起目標の13入力ラベルと比較表7見出しを日英切替へ変更した。
+- source scanで見つかる英語文字列は、次の2群を分離して判定した。
+  - 利用者向けUI文字列: `text({ ja, en })` または `formattedText({ ja, en }, values)` へ移す。
+  - protocol文字列: IPC field、enum wire value、command名、保存schema key、診断codeは互換性のため変更しない。
+- 全DOMテスト: 49 files / 329 tests成功。
+- 全source/snapshot契約テスト: 1,652 / 1,652成功。
+
+## 配布・静的検証
+
+- `npm run build`: 成功（TypeScript project buildとVite production build）。
+- `npm run lint`: exit code 0。既存警告は検出されるが新規errorなし。
+- `node --test .github/tests/formal-release.test.mjs`: 53 / 53成功。
+
+## 判定
+
+今回確認した設定移行と利用者向け固定英語文言は修正対象として対応した。wire互換性を構成するprotocol文字列はUI翻訳対象ではなく、変更すると保存データ・IPC・native側との契約を破るため維持した。

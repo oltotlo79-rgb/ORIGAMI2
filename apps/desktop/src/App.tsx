@@ -53,6 +53,7 @@ import { UpdateCheckPopover } from './components/UpdateCheckControl'
 import { WorkspaceLayoutControl } from './components/WorkspaceLayoutControl'
 import { WorkspaceLayoutSeparator } from './components/WorkspaceLayoutSeparator'
 import { PairMeasurementStatus } from './components/PairMeasurementStatus'
+import type { InstructionOnionSkinRequest } from './lib/instructionOnionSkin'
 import {
   advanceMeasurementPair,
   measureUnorientedEdgeAngle,
@@ -627,6 +628,12 @@ function App() {
   }
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [selectedVertexId, setSelectedVertexId] = useState<string | null>(null)
+  const [instructionOnionSkin, setInstructionOnionSkin] =
+    useState<InstructionOnionSkinRequest | null>(null)
+  const [instructionOnionSkinStatus, setInstructionOnionSkinStatus] = useState<Readonly<{
+    request: InstructionOnionSkinRequest
+    state: 'available' | 'unavailable'
+  }> | null>(null)
   const [measurementVertexIds, setMeasurementVertexIds] = useState<string[]>([])
   const [measurementLineIds, setMeasurementLineIds] = useState<string[]>([])
   const [assignedLocalSufficiency, setAssignedLocalSufficiency] =
@@ -6945,6 +6952,10 @@ function App() {
             <FoldPreview
               angle={foldAngle}
               disabled={coreBusy || recoveryBlocking || Boolean(benchmarkRun)}
+              projectInstanceId={nativeSnapshot?.project_instance_id ?? null}
+              foldModelFingerprint={nativeSnapshot?.fold_model_fingerprint ?? null}
+              onionSkinRequest={instructionOnionSkin}
+              onOnionSkinStatusChange={setInstructionOnionSkinStatus}
               hingeAngles={foldTreeHingeAngles}
               selectedHingeId={selectedPreviewHingeId}
               selectedFaceId={selectedFaceId}
@@ -11235,6 +11246,8 @@ function App() {
         applyStepPose={applyInstructionStepPose}
         onExport={beginInstructionExport}
         onAnimationExport={beginMeshAnimationExport}
+        onOnionSkinChange={setInstructionOnionSkin}
+        onionSkinStatus={instructionOnionSkinStatus}
       />
 
       {(recoveryStartup.kind === 'checking'

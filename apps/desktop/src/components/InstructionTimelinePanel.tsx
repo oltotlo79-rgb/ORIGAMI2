@@ -23,6 +23,11 @@ import {
 import type { FoldPreviewAppliedPoseSnapshot } from '../lib/foldPreviewAppliedPose'
 import { pathCertificateEndpointsMatch } from '../lib/pathCertificateIntegrity'
 import {
+  createInstructionOnionSkinRequest,
+  type InstructionOnionSkinRequest,
+  type OnionSkinDirection,
+} from '../lib/instructionOnionSkin'
+import {
   DEFAULT_INSTRUCTION_DURATION_MS,
   INSTRUCTION_APPLICATION_TIMEOUT_MS,
   MAX_INSTRUCTION_CAUTION_CHARACTERS,
@@ -91,6 +96,11 @@ type InstructionTimelinePanelProps = {
   applyStepPose(step: InstructionStepPresentation): boolean
   onExport(): void
   onAnimationExport(): void
+  onOnionSkinChange?(request: InstructionOnionSkinRequest | null): void
+  onionSkinStatus?: Readonly<{
+    request: InstructionOnionSkinRequest
+    state: 'available' | 'unavailable'
+  }> | null
 }
 
 type PathCertificateDisplay =
@@ -151,6 +161,8 @@ export function InstructionTimelinePanel({
   applyStepPose,
   onExport,
   onAnimationExport,
+  onOnionSkinChange,
+  onionSkinStatus = null,
 }: InstructionTimelinePanelProps) {
   const locale = useLocale()
   const presentation = useMemo(
@@ -165,6 +177,8 @@ export function InstructionTimelinePanel({
   const [editor, setEditor] = useState<InstructionEditorState | null>(null)
   const [editorError, setEditorError] = useState<InstructionEditorError | null>(null)
   const [notice, setNotice] = useState<InstructionTimelineNotice | null>(null)
+  const [onionSkinDirection, setOnionSkinDirection] =
+    useState<'off' | OnionSkinDirection>('off')
   const draggedStepIdRef = useRef<string | null>(null)
   const [playback, setPlayback] = useState(createInstructionPlaybackState)
   const playbackRef = useRef(playback)
@@ -185,6 +199,27 @@ export function InstructionTimelinePanel({
   const selectedStep = presentation.kind === 'ready' && selectedStepId
     ? presentation.stepsById.get(selectedStepId) ?? null
     : null
+  const editingDisabled = coreBusy || benchmarkActive || fileOperationActive
+    || !snapshot || presentation.kind !== 'ready'
+  const onionSkinRequest = useMemo(() => (
+    !editingDisabled && snapshot && selectedStep && onionSkinDirection !== 'off'
+      && typeof snapshot.fold_model_fingerprint === 'string'
+      ? createInstructionOnionSkinRequest({
+          projectInstanceId: snapshot.project_instance_id,
+          projectId: snapshot.project_id,
+          revision: snapshot.revision,
+          foldModelFingerprint: snapshot.fold_model_fingerprint,
+          steps,
+          selectedStepId: selectedStep.id,
+          direction: onionSkinDirection,
+        })
+      : null
+  ), [editingDisabled, onionSkinDirection, selectedStep, snapshot, steps])
+  useEffect(() => {
+    if (!onOnionSkinChange) return
+    onOnionSkinChange(onionSkinRequest)
+  }, [onOnionSkinChange, onionSkinRequest])
+  useEffect(() => () => onOnionSkinChange?.(null), [onOnionSkinChange])
   const selectedProofDisplay = selectedStep
     ? createPathCertificateDisplay(selectedStep)
     : null
@@ -264,9 +299,6 @@ export function InstructionTimelinePanel({
   )
   const playbackActive = playback.status === 'applying'
     || playback.status === 'holding'
-  const timelineAvailable = presentation.kind === 'ready'
-  const editingDisabled = coreBusy || benchmarkActive || fileOperationActive
-    || !snapshot || !timelineAvailable
   useEffect(() => {
     draggedStepIdRef.current = null
   }, [
@@ -1105,6 +1137,49 @@ export function InstructionTimelinePanel({
                 </p>
               )}
               {selectedStep && editor ? (
+                <>
+                <fieldset aria-label={selectLocalizedText(locale, {
+                  ja: '隣接手順のオニオンスキン', en: 'Adjacent-step onion skin',
+                })}>
+                  {(['off', 'previous', 'next'] as const).map((direction) => (
+                    <label key={direction}>
+                      <input
+                        type="radio"
+                        name="onion_skin_direction"
+                        value={direction}
+                        checked={onionSkinDirection === direction}
+                        disabled={editingDisabled}
+                        onChange={() => setOnionSkinDirection(direction)}
+                      />
+                      {direction === 'off'
+                        ? selectLocalizedText(locale, { ja: '非表示', en: 'Off' })
+                        : direction === 'previous'
+                          ? selectLocalizedText(locale, { ja: '直前', en: 'Previous' })
+                          : selectLocalizedText(locale, { ja: '直後', en: 'Next' })}
+                    </label>
+                  ))}
+                  <p role="status" aria-live="polite">
+                    {onionSkinDirection === 'off'
+                      ? selectLocalizedText(locale, { ja: 'ghostは非表示です。', en: 'Ghost is hidden.' })
+                      : !onionSkinRequest || (
+                        onionSkinStatus?.request === onionSkinRequest
+                        && onionSkinStatus.state === 'unavailable'
+                      )
+                        ? selectLocalizedText(locale, {
+                            ja: '隣接する有効な物理手順がないため表示できません。',
+                            en: 'Unavailable because there is no eligible adjacent physical step.',
+                          })
+                      : onionSkinStatus?.request === onionSkinRequest
+                        && onionSkinStatus.state === 'available'
+                      ? selectLocalizedText(locale, {
+                          ja: '配列上で隣接する有効な物理手順だけをread-only表示します。',
+                          en: 'Only the immediately adjacent eligible physical step is shown read-only.',
+                        })
+                      : selectLocalizedText(locale, {
+                          ja: 'ghostを準備しています。', en: 'Preparing ghost.',
+                        })}
+                  </p>
+                </fieldset>
                 <form className="instruction-editor" onSubmit={(event) => void saveMetadata(event)}>
                   <label>
                     <span>{selectLocalizedText(locale, TEXT.titleLabel)}</span>
@@ -1326,6 +1401,7 @@ export function InstructionTimelinePanel({
                     </p>
                   )}
                 </form>
+                </>
               ) : (
                 <p className="instruction-empty-editor">
                   {steps.length === 0

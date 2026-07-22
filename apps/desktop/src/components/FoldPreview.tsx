@@ -66,6 +66,10 @@ import {
 } from '../lib/foldPreviewContinuousMotionView'
 import { createFoldPreviewFaceGeometry } from '../lib/foldPreviewGeometry'
 import {
+  resolveInstructionOnionSkinTransforms,
+  type InstructionOnionSkinRequest,
+} from '../lib/instructionOnionSkin'
+import {
   measureWorldFaceNormalAngleDegrees,
   measureWorldVertexDistanceMm,
   resolveMidsurfaceVertexSample,
@@ -184,6 +188,13 @@ import {
 type FoldPreviewProps = {
   angle: number
   disabled?: boolean
+  projectInstanceId?: string | null
+  foldModelFingerprint?: string | null
+  onionSkinRequest?: InstructionOnionSkinRequest | null
+  onOnionSkinStatusChange?(status: Readonly<{
+    request: InstructionOnionSkinRequest
+    state: 'available' | 'unavailable'
+  }> | null): void
   hingeAngles?: readonly FoldPreviewHingeAngle[]
   selectedHingeId?: string | null
   selectedFaceId?: string | null
@@ -408,6 +419,10 @@ function staleCorrectionAnalysisState(
 export function FoldPreview({
   angle,
   disabled = false,
+  projectInstanceId = null,
+  foldModelFingerprint = null,
+  onionSkinRequest = null,
+  onOnionSkinStatusChange,
   hingeAngles,
   selectedHingeId,
   selectedFaceId,
@@ -437,6 +452,18 @@ export function FoldPreview({
   localeStore: localeStore_,
 }: FoldPreviewProps) {
   const locale = useLocale(localeStore_)
+  const onionSkinResolved = useMemo(() => resolveInstructionOnionSkinTransforms(
+    onionSkinRequest,
+    model,
+    { projectInstanceId, foldModelFingerprint },
+  ), [foldModelFingerprint, model, onionSkinRequest, projectInstanceId])
+  useEffect(() => {
+    onOnionSkinStatusChange?.(onionSkinRequest ? {
+      request: onionSkinRequest,
+      state: onionSkinResolved ? 'available' : 'unavailable',
+    } : null)
+    return () => onOnionSkinStatusChange?.(null)
+  }, [onionSkinRequest, onionSkinResolved, onOnionSkinStatusChange])
   const hostRef = useRef<HTMLDivElement>(null)
   const runtimeRef = useRef<PreviewRuntime | null>(null)
   const descriptionId = useId()
@@ -604,6 +631,8 @@ export function FoldPreview({
     const geometries: THREE.BufferGeometry[] = []
     const edgeGeometries: THREE.EdgesGeometry[] = []
     const hingeGeometries: THREE.BufferGeometry[] = []
+    const ghostGeometries: THREE.BufferGeometry[] = []
+    const ghostMaterials: THREE.Material[] = []
     const staticFaces: Array<{
       face: FoldPreviewFaceModel
       geometry: THREE.BufferGeometry
@@ -1006,6 +1035,8 @@ export function FoldPreview({
       attemptCleanup(() => vertexGeometry?.dispose())
       attemptCleanup(() => vertexMaterial?.dispose())
       attemptCleanup(() => selectedVertexMaterial?.dispose())
+      for (const geometry of ghostGeometries) attemptCleanup(() => geometry.dispose())
+      for (const material of ghostMaterials) attemptCleanup(() => material.dispose())
       const ownedSceneRuntime = sceneRuntime
       sceneRuntime = null
       attemptCleanup(() => ownedSceneRuntime?.dispose())
@@ -1035,6 +1066,39 @@ export function FoldPreview({
           collisionPenetrationEdgeMaterial: createdCollisionPenetrationEdgeMaterial,
         },
       } = createdSceneRuntime
+      const ghostTransforms = onionSkinResolved
+      if (ghostTransforms && ghostTransforms.size === model.faces.length) {
+        const ghostGroup = new THREE.Group()
+        ghostGroup.userData.readOnlyOnionSkin = true
+        const ghostMaterial = new THREE.MeshBasicMaterial({
+          color: onionSkinRequest?.direction === 'previous' ? 0x5287c6 : 0xd18a39,
+          transparent: true,
+          opacity: onionSkinRequest?.direction === 'previous' ? 0.14 : 0.2,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        })
+        ghostMaterials.push(ghostMaterial)
+        let validGhost = true
+        for (const face of model.faces) {
+          const transform = ghostTransforms.get(face.id)
+          if (!transform || !transform.elements.every(Number.isFinite)) {
+            validGhost = false
+            break
+          }
+          const geometry = createFoldPreviewFaceGeometry(face.polygon, previewThickness, face.holes ?? [])
+          ghostGeometries.push(geometry)
+          const mesh = new THREE.Mesh(geometry, ghostMaterial)
+          mesh.matrixAutoUpdate = false
+          mesh.matrix.copy(transform)
+          mesh.raycast = () => undefined
+          ghostGroup.add(mesh)
+        }
+        if (validGhost && ghostGroup.children.length === model.faces.length) {
+          scene.add(ghostGroup)
+        } else {
+          for (const child of [...ghostGroup.children]) ghostGroup.remove(child)
+        }
+      }
       const instructionVisualGroup = new THREE.Group()
       scene.add(instructionVisualGroup)
       const updateInstructionVisual = (visual: InstructionVisual | null) => {
@@ -3925,6 +3989,10 @@ export function FoldPreview({
     resolvedFixedFaceId,
     singleFoldMotionContextKey,
     treeCommitAvailable,
+    onionSkinRequest,
+    projectInstanceId,
+    foldModelFingerprint,
+    onionSkinResolved,
   ])
 
   useEffect(() => {

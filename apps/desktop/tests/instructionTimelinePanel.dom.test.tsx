@@ -302,6 +302,46 @@ describe('InstructionTimelinePanel localization', () => {
     expect(runNativeEdit).not.toHaveBeenCalled()
   })
 
+  it('publishes an adjacent onion-skin request and clears it when editing is disabled', async () => {
+    localeStore.setLocale('en')
+    const second = {
+      ...SNAPSHOT.instruction_timeline.steps[0]!, id: 'onion-second', title: 'Second',
+    }
+    const snapshot = {
+      ...SNAPSHOT,
+      instruction_timeline: { steps: [SNAPSHOT.instruction_timeline.steps[0]!, second] },
+    } as ProjectSnapshot
+    const onOnionSkinChange = vi.fn()
+    const view = render(<InstructionTimelinePanel
+      {...panelFor(snapshot).props}
+      onOnionSkinChange={onOnionSkinChange}
+    />)
+    fireEvent.click(screen.getByRole('button', { name: /1\. Fold crane/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Next' }))
+    await waitFor(() => expect(onOnionSkinChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sourceStepId: 'step-1', targetStepId: 'onion-second' }),
+    ))
+    const oldRequest = onOnionSkinChange.mock.calls.at(-1)?.[0]
+    view.rerender(<InstructionTimelinePanel
+      {...panelFor(snapshot).props}
+      onOnionSkinChange={onOnionSkinChange}
+      onionSkinStatus={{ request: oldRequest, state: 'available' }}
+    />)
+    expect(screen.getByRole('status').textContent).toContain('shown read-only')
+    view.rerender(<InstructionTimelinePanel
+      {...panelFor({ ...snapshot, revision: snapshot.revision + 1 }).props}
+      onOnionSkinChange={onOnionSkinChange}
+      onionSkinStatus={{ request: oldRequest, state: 'available' }}
+    />)
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Preparing ghost'))
+    view.rerender(<InstructionTimelinePanel
+      {...panelFor(snapshot).props}
+      coreBusy
+      onOnionSkinChange={onOnionSkinChange}
+    />)
+    await waitFor(() => expect(onOnionSkinChange).toHaveBeenLastCalledWith(null))
+  })
+
   it('duplicates the complete selected step through one native mutation and selects the copy', async () => {
     localeStore.setLocale('en')
     const duplicated = {

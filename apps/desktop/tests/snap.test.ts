@@ -6,6 +6,7 @@ import {
   ANGLE_SNAP_PRESETS,
   DEFAULT_SNAP_SETTINGS,
   DEFAULT_ANGLE_SNAP_CONFIG,
+  createDivisionGrid,
   createVisibleGrid,
   prioritizeAdditionSnapTargets,
   resolveCompassIntersectionSnap,
@@ -1270,6 +1271,77 @@ test('visible grid never exceeds the requested value count', () => {
     createVisibleGrid({ minX: 0, minY: 0, maxX: Number.POSITIVE_INFINITY, maxY: 1 }),
     EMPTY_GRID,
   )
+})
+
+test('division grid creates exact bounded thirds and eighths over paper bounds', () => {
+  assert.deepEqual(
+    createDivisionGrid({ minX: 0, minY: -3, maxX: 12, maxY: 6 }, 3, 100, true),
+    {
+      xValues: [0, 4, 8, 12],
+      yValues: [-3, 0, 3, 6],
+      diagonals: [
+        { x1: 0, y1: -3, x2: 12, y2: 6 },
+        { x1: 0, y1: 6, x2: 12, y2: -3 },
+      ],
+    },
+  )
+  const eighths = createDivisionGrid(
+    { minX: -4, minY: 0, maxX: 4, maxY: 8 },
+    8,
+    9,
+  )
+  assert.equal(eighths.xValues.length, 9)
+  assert.equal(eighths.yValues[3], 3)
+  assert.equal(Object.hasOwn(eighths, 'diagonals'), false)
+  assert.deepEqual(
+    createDivisionGrid({ minX: 0, minY: 0, maxX: 1, maxY: 1 }, 8, 8),
+    EMPTY_GRID,
+  )
+  assert.equal(createDivisionGrid(
+    { minX: 0, minY: 0, maxX: 63, maxY: 63 },
+    63,
+  ).xValues.length, 64)
+  for (const invalid of [1, 2.5, 64, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.deepEqual(
+      createDivisionGrid({ minX: 0, minY: 0, maxX: 1, maxY: 1 }, invalid),
+      EMPTY_GRID,
+    )
+  }
+  const extreme = createDivisionGrid({
+    minX: -Number.MAX_VALUE,
+    minY: -Number.MAX_VALUE,
+    maxX: Number.MAX_VALUE,
+    maxY: Number.MAX_VALUE,
+  }, 2)
+  assert.equal(extreme.xValues[0], -Number.MAX_VALUE)
+  assert.equal(extreme.xValues[2], Number.MAX_VALUE)
+  assert.ok([...extreme.xValues, ...extreme.yValues].every(Number.isFinite))
+})
+
+test('division-grid diagonals use the ordinary zoom-scaled grid snap authority', () => {
+  const grid = createDivisionGrid({ minX: 0, minY: 0, maxX: 10, maxY: 10 }, 2, 100, true)
+  const snapped = resolve({
+    point: { x: 4, y: 4.2 },
+    scale: 10,
+    settings: only('grid'),
+    grid,
+  })
+  assert.equal(snapped?.key, 'grid-diagonal:0')
+  assert.ok(Math.abs((snapped?.point.x ?? 0) - 4.1) < 1e-12)
+  assert.ok(Math.abs((snapped?.point.y ?? 0) - 4.1) < 1e-12)
+  assert.equal(resolve({
+    point: { x: 4, y: 4.2 }, scale: 100, settings: only('grid'), grid,
+  }), null)
+  assert.equal(resolve({
+    point: { x: -1, y: -0.9 }, scale: 10, settings: only('grid'), grid,
+  }), null)
+  assert.equal(resolve({
+    point: { x: 4, y: 4.2 }, scale: 10, settings: only('grid'), grid,
+    accept: (target) => target.key !== 'grid-diagonal:0',
+  }), null)
+  assert.deepEqual(resolve({
+    point: { x: 0, y: 0 }, scale: 10, settings: only('grid'), grid,
+  })?.point, { x: 0, y: 0 })
 })
 
 test('large vertex and segment sets resolve without candidate arrays', () => {

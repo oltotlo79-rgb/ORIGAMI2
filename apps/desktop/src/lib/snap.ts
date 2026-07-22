@@ -71,6 +71,12 @@ export type SnapSegment = Readonly<{
 export type SnapGrid = Readonly<{
   xValues: readonly number[]
   yValues: readonly number[]
+  diagonals?: readonly Readonly<{
+    x1: number
+    y1: number
+    x2: number
+    y2: number
+  }>[]
 }>
 
 export type CompassSnapCircle = Readonly<{
@@ -254,6 +260,7 @@ const DEFAULT_THRESHOLDS_PX: Readonly<Record<PointSnapKind, number>> = Object.fr
 
 const DEFAULT_DESIRED_INTERVALS = 20
 const DEFAULT_MAX_GRID_VALUES = 100
+const MAX_DIVISION_GRID_DIVISIONS = 63
 const SNAP_CATEGORY_BIAS_PX: Readonly<Record<PointSnapKind, number>> = Object.freeze({
   vertex: 0,
   midpoint: 0.2,
@@ -412,6 +419,46 @@ export function createVisibleGrid(
   return {
     xValues: alignedGridValues(bounds.minX, bounds.maxX, step, valueLimit),
     yValues: alignedGridValues(bounds.minY, bounds.maxY, step, valueLimit),
+  }
+}
+
+export function createDivisionGrid(
+  bounds: SnapBounds,
+  divisions: number,
+  maxValues = DEFAULT_MAX_GRID_VALUES,
+  includeDiagonals = false,
+): SnapGrid {
+  if (
+    ![bounds.minX, bounds.minY, bounds.maxX, bounds.maxY].every(Number.isFinite)
+    || bounds.maxX < bounds.minX
+    || bounds.maxY < bounds.minY
+    || !Number.isSafeInteger(divisions)
+    || divisions < 2
+    || divisions > MAX_DIVISION_GRID_DIVISIONS
+  ) return emptyGrid()
+  const valueLimit = nonNegativeIntegerOr(maxValues, DEFAULT_MAX_GRID_VALUES)
+  if (divisions + 1 > valueLimit) return emptyGrid()
+  const axis = (minimum: number, maximum: number) => Array.from(
+    { length: divisions + 1 },
+    (_, index) => {
+      if (index === 0) return minimum
+      if (index === divisions) return maximum
+      const fraction = index / divisions
+      return minimum * (1 - fraction) + maximum * fraction
+    },
+  )
+  const xValues = axis(bounds.minX, bounds.maxX)
+  const yValues = axis(bounds.minY, bounds.maxY)
+  if (![...xValues, ...yValues].every(Number.isFinite)) return emptyGrid()
+  return {
+    xValues,
+    yValues,
+    ...(includeDiagonals ? {
+      diagonals: [
+        { x1: bounds.minX, y1: bounds.minY, x2: bounds.maxX, y2: bounds.maxY },
+        { x1: bounds.minX, y1: bounds.maxY, x2: bounds.maxX, y2: bounds.minY },
+      ],
+    } : {}),
   }
 }
 
@@ -1171,18 +1218,19 @@ function angleKey(
 function nearestGridTarget(options: ResolveSnapTargetOptions, thresholdPx: number) {
   const x = nearestGridValue(options.grid.xValues, options.point.x)
   const y = nearestGridValue(options.grid.yValues, options.point.y)
-  if (x === null || y === null) return null
-  return considerTargetPoint(
-    null,
-    `grid:${numberKey(x)}:${numberKey(y)}`,
-    'grid',
-    x,
-    y,
-    options.point,
-    options.scale,
-    thresholdPx,
-    undefined,
+  let best = x === null || y === null ? null : considerTargetPoint(
+    null, `grid:${numberKey(x)}:${numberKey(y)}`, 'grid', x, y,
+    options.point, options.scale, thresholdPx, undefined,
   )
+  for (const [index, diagonal] of (options.grid.diagonals ?? []).entries()) {
+    const projected = projectGridDiagonal(options.point, diagonal)
+    if (!projected) continue
+    best = considerTargetPoint(
+      best, `grid-diagonal:${index}`, 'grid', projected.x, projected.y,
+      options.point, options.scale, thresholdPx, undefined,
+    )
+  }
+  return best
 }
 
 function bestAcceptedGridTarget(options: ResolveSnapTargetOptions, thresholdPx: number) {
@@ -1209,7 +1257,34 @@ function bestAcceptedGridTarget(options: ResolveSnapTargetOptions, thresholdPx: 
       )
     }
   }
+  for (const [index, diagonal] of (options.grid.diagonals ?? []).entries()) {
+    const projected = projectGridDiagonal(options.point, diagonal)
+    if (!projected) continue
+    best = considerTargetPoint(
+      best, `grid-diagonal:${index}`, 'grid', projected.x, projected.y,
+      options.point, options.scale, thresholdPx, undefined, options.accept,
+    )
+  }
   return best
+}
+
+function projectGridDiagonal(
+  point: SnapPoint,
+  diagonal: Readonly<{ x1: number; y1: number; x2: number; y2: number }>,
+) {
+  if (![point.x, point.y, diagonal.x1, diagonal.y1, diagonal.x2, diagonal.y2]
+    .every(Number.isFinite)) return null
+  const dx = diagonal.x2 - diagonal.x1
+  const dy = diagonal.y2 - diagonal.y1
+  const denominator = dx * dx + dy * dy
+  if (!Number.isFinite(denominator) || denominator <= 0) return null
+  const fraction = (
+    (point.x - diagonal.x1) * dx + (point.y - diagonal.y1) * dy
+  ) / denominator
+  if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) return null
+  const x = diagonal.x1 * (1 - fraction) + diagonal.x2 * fraction
+  const y = diagonal.y1 * (1 - fraction) + diagonal.y2 * fraction
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null
 }
 
 function nearestGridValue(values: readonly number[], coordinate: number) {

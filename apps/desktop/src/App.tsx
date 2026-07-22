@@ -346,6 +346,11 @@ import {
   type MessageVariables,
 } from './lib/i18n'
 import {
+  loadGridDivisionPreferenceFromHost,
+  saveGridDivisionPreferenceToHost,
+  updateGridPreferenceInput,
+} from './lib/gridPreference'
+import {
   appConfirmationText,
   appErrorLocalizedText,
 } from './lib/appMessages'
@@ -1014,6 +1019,32 @@ function App() {
   const [snapSettings, setSnapSettings] = useState<SnapSettings>(() => ({
     ...DEFAULT_SNAP_SETTINGS,
   }))
+  const [initialGridPreference] = useState(() => typeof window === 'undefined'
+    ? null
+    : loadGridDivisionPreferenceFromHost(window))
+  const [gridDivisionsInput, setGridDivisionsInput] = useState(
+    initialGridPreference?.divisions === null || !initialGridPreference
+      ? ''
+      : String(initialGridPreference.divisions),
+  )
+  const [gridDiagonals, setGridDiagonals] = useState(
+    initialGridPreference?.diagonals ?? false,
+  )
+  const parsedGridDivisions = Number(gridDivisionsInput)
+  const gridDivisions = gridDivisionsInput === ''
+    ? null
+    : parsedGridDivisions
+  const gridDivisionsValid = gridDivisions === null
+    || Number.isSafeInteger(gridDivisions)
+      && gridDivisions >= 2
+      && gridDivisions <= 63
+  useEffect(() => {
+    if (!gridDivisionsValid || typeof window === 'undefined') return
+    saveGridDivisionPreferenceToHost(window, {
+      divisions: gridDivisions,
+      diagonals: gridDiagonals,
+    })
+  }, [gridDiagonals, gridDivisions, gridDivisionsValid])
   const benchmarkStatus = appMessageText(
     locale,
     benchmarkStatusMessage,
@@ -6755,6 +6786,8 @@ function App() {
                 locale,
               )}
               snapSettings={snapSettings}
+              gridDivisions={gridDivisions}
+              gridDiagonals={gridDiagonals}
               parallelReference={benchmarkRun ? null : parallelReferenceLine}
               angleConfig={angleSnapConfig}
               compassCircles={benchmarkRun ? [] : compassCircles}
@@ -10913,6 +10946,41 @@ function App() {
                 </button>
               ))}
             </div>
+            <label className="angle-snap-field">
+              <span>{text({ ja: '用紙のN等分グリッド', en: 'Divide paper into N' })}</span>
+              <input
+                type="number"
+                min="2"
+                max="63"
+                step="1"
+                value={gridDivisionsInput}
+                placeholder={text({ ja: '自動', en: 'Auto' })}
+                aria-invalid={!gridDivisionsValid}
+                disabled={coreBusy}
+                onChange={(event) => {
+                  const next = updateGridPreferenceInput(
+                    event.target.value,
+                    gridDiagonals,
+                  )
+                  if (!next) return
+                  setGridDivisionsInput(next.input)
+                  setGridDiagonals(next.diagonals)
+                }}
+              />
+              <small>{text({
+                ja: '空欄は自動。3で三等分、8で八等分します。',
+                en: 'Leave blank for automatic spacing; use 3 for thirds or 8 for eighths.',
+              })}</small>
+            </label>
+            <button
+              type="button"
+              className={`chip${gridDiagonals ? ' active' : ''}`}
+              aria-pressed={gridDiagonals}
+              disabled={coreBusy || !gridDivisionsValid || gridDivisions === null}
+              onClick={() => setGridDiagonals((current) => !current)}
+            >
+              {text({ ja: '用紙の対角線', en: 'Paper diagonals' })}
+            </button>
             <div className="angle-snap-settings">
               <h3>{text({ ja: '角度スナップ', en: 'Angle snap' })}</h3>
               <label className="angle-snap-field">

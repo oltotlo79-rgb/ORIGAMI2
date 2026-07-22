@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react'
 import {
   DEFAULT_SNAP_SETTINGS,
+  createDivisionGrid,
   createSnapSpatialIndex,
   createVisibleGrid,
   prioritizeAdditionSnapTargets,
@@ -148,6 +149,8 @@ type Props = {
   selectedLineId: string | null
   measurementLabel?: string
   snapSettings?: SnapSettings
+  gridDivisions?: number | null
+  gridDiagonals?: boolean
   parallelReference?: ParallelSnapReference | null
   angleConfig?: AngleSnapConfig
   compassCircles?: readonly CompassConstructionCircle[]
@@ -299,6 +302,8 @@ export function CreaseCanvas({
   selectedLineId,
   measurementLabel,
   snapSettings = DEFAULT_SNAP_SETTINGS,
+  gridDivisions = null,
+  gridDiagonals = false,
   parallelReference = null,
   angleConfig,
   compassCircles = [],
@@ -361,12 +366,19 @@ export function CreaseCanvas({
     return index
   }, [lines])
   const visibleGrid = useMemo(
-    () => createVisibleGrid(
-      resolvedPaperBounds,
-      DESIRED_GRID_INTERVALS,
-      MAX_GRID_LINES_PER_AXIS,
-    ),
-    [resolvedPaperBounds],
+    () => gridDivisions === null
+      ? createVisibleGrid(
+          resolvedPaperBounds,
+          DESIRED_GRID_INTERVALS,
+          MAX_GRID_LINES_PER_AXIS,
+        )
+      : createDivisionGrid(
+          resolvedPaperBounds,
+          gridDivisions,
+          MAX_GRID_LINES_PER_AXIS,
+          gridDiagonals,
+        ),
+    [gridDiagonals, gridDivisions, resolvedPaperBounds],
   )
   const lineDrawBatches = useMemo(
     () => createCanvasLineDrawBatches(lines, selectedLineId),
@@ -485,6 +497,15 @@ export function CreaseCanvas({
           if (!Number.isFinite(y)) continue
           context.moveTo(transform.left, y)
           context.lineTo(transform.left + transform.width, y)
+        }
+        for (const diagonal of visibleGrid.diagonals ?? []) {
+          const x1 = mapX(diagonal.x1)
+          const y1 = mapY(diagonal.y1)
+          const x2 = mapX(diagonal.x2)
+          const y2 = mapY(diagonal.y2)
+          if (![x1, y1, x2, y2].every(Number.isFinite)) continue
+          context.moveTo(x1, y1)
+          context.lineTo(x2, y2)
         }
         context.stroke()
       }

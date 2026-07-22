@@ -131,3 +131,10 @@ test('the component stores semantic guide details and localizes only at paint ti
   )
   assert.doesNotMatch(canvasSource, /[ぁ-んァ-ヶ一-龠]/u)
 })
+
+test('division-grid diagonals are opt-in and share the clipped grid paint path', () => {
+  assert.match(canvasSource, /gridDiagonals = false/u)
+  assert.match(canvasSource, /createDivisionGrid\([\s\S]*?gridDiagonals/u)
+  assert.match(canvasSource, /context\.clip\('evenodd'\)[\s\S]*?visibleGrid\.diagonals/u)
+  assert.match(canvasSource, /context\.moveTo\(x1, y1\)[\s\S]*?context\.lineTo\(x2, y2\)/u)
+})

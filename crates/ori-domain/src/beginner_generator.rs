@@ -2174,10 +2174,6 @@ fn append_bounded_radial_tree_graph(
     };
     let mut vertex_ids = std::collections::BTreeMap::new();
     for source in degree.keys().copied() {
-        let id = VertexId::derive_v5(
-            namespace,
-            format!("bounded-tree-node:{}:{}", source.0, source.1).as_bytes(),
-        );
         let position = map(source)?;
         if !position.x.is_finite()
             || !position.y.is_finite()
@@ -2186,6 +2182,20 @@ fn append_bounded_radial_tree_graph(
         {
             return None;
         }
+        let id = plan
+            .crease_pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.position == position)
+            .map_or_else(
+                || {
+                    VertexId::derive_v5(
+                        namespace,
+                        format!("bounded-tree-node:{}:{}", source.0, source.1).as_bytes(),
+                    )
+                },
+                |vertex| vertex.id,
+            );
         vertex_ids.insert(source, id);
         if !plan
             .crease_pattern

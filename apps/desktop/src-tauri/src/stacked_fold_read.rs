@@ -5525,6 +5525,23 @@ mod tests {
             .collect::<Vec<_>>();
         let schedule = dense_grid_schedule(&hinges, &active, 64);
 
+        assert!(
+            propose_current_cycle_pose_inner(
+                None,
+                &state,
+                &transactions,
+                request(revision, schedule.clone()),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            super::super::lock_project(&state)
+                .unwrap()
+                .editor
+                .revision(),
+            revision
+        );
+
         let mut malformed = schedule.clone();
         malformed.entries[0].denominator_power_coefficients[0].numerator = 0;
         assert!(

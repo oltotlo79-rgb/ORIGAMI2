@@ -19,6 +19,9 @@ pub const BEGINNER_SILHOUETTE_LUMA_THRESHOLD_V1: u8 = 127;
 pub const MAX_BEGINNER_MEDIAL_AXIS_BARS_V1: usize = 32;
 pub const MAX_BEGINNER_MULTI_SILHOUETTE_COMPONENTS_V1: usize = 8;
 pub const MAX_BEGINNER_MULTI_SILHOUETTE_BARS_V1: usize = 16;
+pub const MAX_BEGINNER_MULTI_SILHOUETTE_BRIDGE_CANDIDATES_V1: usize =
+    MAX_BEGINNER_MULTI_SILHOUETTE_COMPONENTS_V1 * (MAX_BEGINNER_MULTI_SILHOUETTE_COMPONENTS_V1 - 1)
+        / 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -477,6 +480,7 @@ fn multi_component_tree_v1(
             ));
         }
     }
+    debug_assert!(candidates.len() <= MAX_BEGINNER_MULTI_SILHOUETTE_BRIDGE_CANDIDATES_V1);
     candidates.sort_unstable();
     let mut parent = (0..components.len()).collect::<Vec<_>>();
     fn root(parent: &mut [usize], mut node: usize) -> usize {
@@ -685,24 +689,27 @@ pub fn analyze_silhouette_png_rgba_with_thresholds_v1(
         .first()
         .cloned()
         .ok_or(BeginnerRecognitionErrorV1::AmbiguousSilhouette)?;
-    let all_pixels = components.iter().flatten().copied().collect::<Vec<_>>();
-    let min_x = all_pixels
+    let min_x = components
         .iter()
+        .flatten()
         .map(|index| index % width as usize)
         .min()
         .unwrap() as u32;
-    let max_x = all_pixels
+    let max_x = components
         .iter()
+        .flatten()
         .map(|index| index % width as usize)
         .max()
         .unwrap() as u32;
-    let min_y = all_pixels
+    let min_y = components
         .iter()
+        .flatten()
         .map(|index| index / width as usize)
         .min()
         .unwrap() as u32;
-    let max_y = all_pixels
+    let max_y = components
         .iter()
+        .flatten()
         .map(|index| index / width as usize)
         .max()
         .unwrap() as u32;
@@ -1366,6 +1373,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(maximum.skeleton_segments.len(), 15);
+        assert_eq!(MAX_BEGINNER_MULTI_SILHOUETTE_BRIDGE_CANDIDATES_V1, 28);
+        let repeated = analyze_silhouette_png_rgba_v1(
+            UnderlayId::new(),
+            AssetId::new(),
+            [6; 32],
+            39,
+            3,
+            &eight,
+        )
+        .unwrap();
+        assert_eq!(maximum.skeleton_segments, repeated.skeleton_segments);
         assert_eq!(
             analyze_silhouette_png_rgba_v1(
                 UnderlayId::new(),

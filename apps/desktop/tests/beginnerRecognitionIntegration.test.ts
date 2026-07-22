@@ -40,6 +40,8 @@ test('the read-only proposal is stale-safe, single-flight, and copied before nor
   assert.match(app, /read-only outline proposal/u)
   assert.match(app, /no automatic design authority/u)
   assert.match(app, /onSubmit=\{submitBeginnerDesignProfile\}/u)
+  assert.match(app, /function invalidateBeginnerRecognition\(\)[\s\S]*?setBeginnerRecognitionBusy\(false\)/u)
+  assert.match(app, /Cancel image recognition/u)
 })
 
 test('bounded PNG or JPEG silhouette recognition fails closed without inferred parts', () => {
@@ -66,6 +68,9 @@ test('bounded PNG or JPEG silhouette recognition fails closed without inferred p
 test('multiple silhouettes form one bounded custom tree only through inferred MST bridges', () => {
   assert.match(domain, /MAX_BEGINNER_MULTI_SILHOUETTE_COMPONENTS_V1: usize = 8/u)
   assert.match(domain, /MAX_BEGINNER_MULTI_SILHOUETTE_BARS_V1: usize = 16/u)
+  assert.match(domain, /MAX_BEGINNER_MULTI_SILHOUETTE_BRIDGE_CANDIDATES_V1/u)
+  assert.match(domain, /debug_assert!\(candidates\.len\(\) <= MAX_BEGINNER_MULTI_SILHOUETTE_BRIDGE_CANDIDATES_V1\)/u)
+  assert.doesNotMatch(domain, /let all_pixels = components\.iter\(\)\.flatten/u)
   assert.match(domain, /candidates\.sort_unstable\(\)/u)
   assert.match(domain, /bridges\.len\(\) \+ 1 != components\.len\(\)/u)
   assert.match(domain, /inferred_aabb_kruskal_mst_bridges/u)

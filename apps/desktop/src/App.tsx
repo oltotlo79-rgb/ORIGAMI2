@@ -4014,6 +4014,12 @@ function App() {
     })))
   }
 
+  function invalidateBeginnerRecognition() {
+    beginnerRecognitionRequestRef.current += 1
+    setBeginnerRecognitionBusy(false)
+    setBeginnerRecognitionProposal(null)
+  }
+
   function requestBeginnerRecognition(mode: 'marker' | 'silhouette' = 'marker') {
     const current = latestSnapshotRef.current
     const form = beginnerDesignFormRef.current
@@ -8869,6 +8875,10 @@ function App() {
                   >
                     {text({ ja: '3D参照モデルを読み込む', en: 'Import 3D reference model' })}
                   </button>
+                  {beginnerRecognitionBusy && <button type="button"
+                    onClick={invalidateBeginnerRecognition}>
+                    {text({ ja: '画像認識をキャンセル', en: 'Cancel image recognition' })}
+                  </button>}
                   <p id="beginner-reference-model-help" className="muted">
                     {text({
                       ja: 'GLB 2.0モデルは読み取り専用の視覚参照です。形状の自動認識や折り設計の生成権限は与えません。',
@@ -9139,20 +9149,19 @@ function App() {
                   <label>
                     {text({ ja: '輪郭アルファしきい値', en: 'Silhouette alpha threshold' })}
                     <input type="range" min="0" max="255" value={beginnerSilhouetteThresholds.alpha}
-                      onChange={(event) => { beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null); setBeginnerSilhouetteThresholds((value) => ({ ...value, alpha: Number(event.target.value) })) }} />
+                      onChange={(event) => { invalidateBeginnerRecognition(); setBeginnerSilhouetteThresholds((value) => ({ ...value, alpha: Number(event.target.value) })) }} />
                     <output>{beginnerSilhouetteThresholds.alpha}</output>
                   </label>
                   <label>
                     {text({ ja: '輪郭輝度しきい値', en: 'Silhouette luma threshold' })}
                     <input type="range" min="0" max="255" value={beginnerSilhouetteThresholds.luma}
-                      onChange={(event) => { beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null); setBeginnerSilhouetteThresholds((value) => ({ ...value, luma: Number(event.target.value) })) }} />
+                      onChange={(event) => { invalidateBeginnerRecognition(); setBeginnerSilhouetteThresholds((value) => ({ ...value, luma: Number(event.target.value) })) }} />
                     <output>{beginnerSilhouetteThresholds.luma}</output>
                   </label>
                   <label>
                     {text({ ja: '輪郭の前景極性', en: 'Silhouette foreground polarity' })}
                     <select value={beginnerSilhouetteThresholds.polarity} onChange={(event) => {
-                      beginnerRecognitionRequestRef.current += 1
-                      setBeginnerRecognitionProposal(null)
+                      invalidateBeginnerRecognition()
                       setBeginnerSilhouetteThresholds((value) => ({ ...value,
                         polarity: event.target.value as 'dark_on_light' | 'light_on_dark' | 'alpha_only' }))
                     }}>
@@ -9164,19 +9173,19 @@ function App() {
                   <fieldset aria-label={text({ ja: 'シルエットの切り抜き範囲', en: 'Silhouette crop ROI' })}>
                     <legend>{text({ ja: '輪郭クロップ範囲', en: 'Silhouette crop ROI' })}</legend>
                     <label><input type="checkbox" checked={Boolean(beginnerSilhouetteCropRoi)} onChange={(event) => {
-                      beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null)
+                      invalidateBeginnerRecognition()
                       setBeginnerSilhouetteCropRoi(event.target.checked ? { schema_version: 1, x_millionths: 0, y_millionths: 0, width_millionths: 1_000_000, height_millionths: 1_000_000 } : undefined)
                     }} />{text({ ja: 'クロップを使用', en: 'Use crop' })}</label>
                     {beginnerSilhouetteCropRoi && (['x_millionths', 'y_millionths', 'width_millionths', 'height_millionths'] as const).map((key) => (
                       <label key={key}>{key}<input type="number" min="0" max="1000000" step="1000" value={beginnerSilhouetteCropRoi[key]}
-                        onChange={(event) => { beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null); setBeginnerSilhouetteCropRoi({ ...beginnerSilhouetteCropRoi, [key]: Math.max(0, Math.min(1_000_000, Number(event.target.value))) }) }} /></label>
+                        onChange={(event) => { invalidateBeginnerRecognition(); setBeginnerSilhouetteCropRoi({ ...beginnerSilhouetteCropRoi, [key]: Math.max(0, Math.min(1_000_000, Number(event.target.value))) }) }} /></label>
                     ))}
                     <button type="button" onClick={() => setBeginnerSilhouetteCropRoi(undefined)}>{text({ ja: '画像全体へ戻す', en: 'Reset to full image' })}</button>
                   </fieldset>
                   <label>
                     {text({ ja: '輪郭画像の向き', en: 'Silhouette orientation' })}
                     <select value={beginnerSilhouetteOrientation} onChange={(event) => {
-                      beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null)
+                      invalidateBeginnerRecognition()
                       setBeginnerSilhouetteOrientation(Number(event.target.value) as 0 | 90 | 180 | 270)
                     }}>
                       {[0, 90, 180, 270].map((angle) => <option key={angle} value={angle}>{angle}°</option>)}
@@ -9186,10 +9195,10 @@ function App() {
                   <fieldset aria-label={text({ ja: 'シルエットの反転', en: 'Silhouette mirror' })}>
                     <legend>{text({ ja: '輪郭画像の反転', en: 'Silhouette mirror' })}</legend>
                     <label><input type="checkbox" checked={beginnerSilhouetteMirror.mirror_x}
-                      onChange={(event) => { beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null); setBeginnerSilhouetteMirror((value) => ({ ...value, mirror_x: event.target.checked })) }} />
+                      onChange={(event) => { invalidateBeginnerRecognition(); setBeginnerSilhouetteMirror((value) => ({ ...value, mirror_x: event.target.checked })) }} />
                       {text({ ja: '左右反転', en: 'Mirror horizontally' })}</label>
                     <label><input type="checkbox" checked={beginnerSilhouetteMirror.mirror_y}
-                      onChange={(event) => { beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null); setBeginnerSilhouetteMirror((value) => ({ ...value, mirror_y: event.target.checked })) }} />
+                      onChange={(event) => { invalidateBeginnerRecognition(); setBeginnerSilhouetteMirror((value) => ({ ...value, mirror_y: event.target.checked })) }} />
                       {text({ ja: '上下反転', en: 'Mirror vertically' })}</label>
                     <button type="button" onClick={() => setBeginnerSilhouetteMirror({ schema_version: 1, mirror_x: false, mirror_y: false })}>
                       {text({ ja: '反転をリセット', en: 'Reset mirror' })}</button>

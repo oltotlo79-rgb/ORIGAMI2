@@ -68,6 +68,7 @@ type InstructionEditorState = {
 type InstructionTimelinePanelProps = {
   snapshot: ProjectSnapshot | null
   appliedPose: FoldPreviewAppliedPoseSnapshot | null
+  currentCamera?: NonNullable<InstructionVisual['camera']> | null
   poseModelKey: string | null
   manualPoseChangeSequence: number
   coreBusy: boolean
@@ -133,6 +134,7 @@ function createPathCertificateDisplay(
 export function InstructionTimelinePanel({
   snapshot,
   appliedPose,
+  currentCamera = null,
   poseModelKey,
   manualPoseChangeSequence,
   coreBusy,
@@ -643,6 +645,21 @@ export function InstructionTimelinePanel({
       : { kind: 'update_failed' })
   }
 
+  function captureCurrentCamera() {
+    if (editingDisabled || !editor || !currentCamera) return
+    try {
+      const visual = parseInstructionVisual(JSON.parse(editor.visualJson))
+      if (!visual) throw new Error('invalid visual')
+      setEditor({
+        ...editor,
+        visualJson: JSON.stringify({ ...visual, camera: currentCamera }, null, 2),
+      })
+      setEditorError(null)
+    } catch {
+      setEditorError('invalid_metadata')
+    }
+  }
+
   async function replaceSelectedPose() {
     if (
       editingDisabled
@@ -1067,6 +1084,14 @@ export function InstructionTimelinePanel({
                     />
                     <small>{selectLocalizedText(locale, TEXT.visualHelp)}</small>
                   </label>
+                  <button
+                    type="button"
+                    disabled={editingDisabled || !currentCamera}
+                    aria-label={selectLocalizedText(locale, TEXT.captureCamera)}
+                    onClick={captureCurrentCamera}
+                  >
+                    {selectLocalizedText(locale, TEXT.captureCamera)}
+                  </button>
                   <div className="instruction-editor-actions">
                     <button type="submit" disabled={editingDisabled}>
                       {selectLocalizedText(locale, TEXT.saveMetadata)}
@@ -1251,6 +1276,7 @@ const TEXT = Object.freeze({
   cautionLabel: localized('注意', 'Caution'),
   durationLabel: localized('表示時間', 'Display time'),
   saveMetadata: localized('説明を保存', 'Save details'),
+  captureCamera: localized('現在のカメラを取得', 'Capture current camera'),
   visualLabel: localized('カメラ・矢印・注目箇所・手指ガイド（JSON）', 'Camera, arrows, focus points, and hand guides (JSON)'),
   visualHelp: localized(
     'camera、arrows、focus_pointsに加え、hand_guidesへpinch/hold/push/regripとposition/direction/labelを指定します。',

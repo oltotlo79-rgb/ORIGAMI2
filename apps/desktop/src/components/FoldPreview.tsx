@@ -191,6 +191,7 @@ type FoldPreviewProps = {
   onRequestFoldAngle?: (angleDegrees: number) => void
   onCommitHingeFoldAngle?: (edgeId: string, angleDegrees: number) => void
   onAppliedPoseChange?: (pose: FoldPreviewAppliedPoseSnapshot | null) => void
+  onCameraChange?: (camera: NonNullable<InstructionVisual['camera']>) => void
   nativeCollisionState?: NativeStaticCollisionViewState
   nativeCollisionObservedPose?: FoldPreviewAppliedPoseSnapshot | null
   onRetryNativeCollision?: () => void
@@ -408,6 +409,7 @@ export function FoldPreview({
   onRequestFoldAngle,
   onCommitHingeFoldAngle,
   onAppliedPoseChange,
+  onCameraChange,
   nativeCollisionState,
   nativeCollisionObservedPose,
   onRetryNativeCollision,
@@ -475,6 +477,8 @@ export function FoldPreview({
   onCommitHingeFoldAngleRef.current = onCommitHingeFoldAngle
   const onAppliedPoseChangeRef = useRef(onAppliedPoseChange)
   onAppliedPoseChangeRef.current = onAppliedPoseChange
+  const onCameraChangeRef = useRef(onCameraChange)
+  onCameraChangeRef.current = onCameraChange
   const treeCommitAvailable = Boolean(onCommitHingeFoldAngle)
   const resolvedFixedFaceId = fixedFaceId
     ?? (model?.kind === 'single_fold'
@@ -1487,6 +1491,15 @@ export function FoldPreview({
       controlsChangeHandler = () => {
         if (disposed) return
         try {
+          onCameraChangeRef.current?.({
+            position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+            target: {
+              x: createdControls.target.x,
+              y: createdControls.target.y,
+              z: createdControls.target.z,
+            },
+            up: { x: camera.up.x, y: camera.up.y, z: camera.up.z },
+          })
           render()
         } catch {
           reportUnexpected('fold_preview.render')
@@ -1495,6 +1508,7 @@ export function FoldPreview({
         }
       }
       createdControls.addEventListener('change', controlsChangeHandler)
+      controlsChangeHandler()
       if (
         typeof window.requestAnimationFrame !== 'function'
         || typeof window.cancelAnimationFrame !== 'function'

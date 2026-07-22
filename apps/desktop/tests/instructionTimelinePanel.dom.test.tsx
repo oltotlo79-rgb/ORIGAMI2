@@ -83,6 +83,48 @@ afterEach(() => {
 })
 
 describe('InstructionTimelinePanel localization', () => {
+  it('captures the live camera into the selected step and preserves the native save boundary', async () => {
+    localeStore.setLocale('en')
+    const camera = {
+      position: { x: 3, y: 4, z: 5 },
+      target: { x: 0.5, y: 0.25, z: 0 },
+      up: { x: 0, y: 1, z: 0 },
+    }
+    const runNativeEdit = vi.fn(async () => SNAPSHOT)
+    render(<InstructionTimelinePanel
+      snapshot={SNAPSHOT}
+      appliedPose={APPLIED_POSE}
+      currentCamera={camera}
+      poseModelKey="model-1"
+      manualPoseChangeSequence={0}
+      coreBusy={false}
+      benchmarkActive={false}
+      fileOperationActive={false}
+      exportAvailable
+      exportButtonRef={{ current: null }}
+      animationExportButtonRef={{ current: null }}
+      runNativeEdit={runNativeEdit}
+      applyStepPose={vi.fn(() => true)}
+      onExport={vi.fn()}
+      onAnimationExport={vi.fn()}
+    />)
+
+    fireEvent.click(screen.getByRole('button', { name: /1\. Fold crane/ }))
+    const capture = await screen.findByRole('button', { name: 'Capture current camera' })
+    expect((capture as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(capture)
+
+    const visual = screen.getByRole('textbox', {
+      name: /^Camera, arrows, focus points, and hand guides \(JSON\)/,
+    }) as HTMLTextAreaElement
+    expect(JSON.parse(visual.value).camera).toEqual(camera)
+    fireEvent.click(screen.getByRole('button', { name: 'Save details' }))
+    await waitFor(() => expect(runNativeEdit).toHaveBeenCalledTimes(1))
+
+    act(() => localeStore.setLocale('ja'))
+    expect(screen.getByRole('button', { name: '現在のカメラを取得' })).toBeTruthy()
+  })
+
   it('translates controls, counts, durations, editor fields, and an existing notice live', async () => {
     renderPanel()
 

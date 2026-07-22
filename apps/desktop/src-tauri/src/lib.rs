@@ -16374,6 +16374,11 @@ mod tests {
         );
         assert!(!crossing_assessment.apply_allowed);
         assert_eq!(crossing_assessment.reason, "geometry_invalid");
+        let exported_rejection = serde_json::to_value(&crossing_assessment)
+            .expect("export rejected generic candidate assessment");
+        assert_eq!(exported_rejection["reason"], "geometry_invalid");
+        assert_eq!(exported_rejection["apply_allowed"], false);
+        assert_eq!(exported_rejection["proof_scope"], "necessary");
         let mut duplicate_skeleton = profile.generation_constraints.clone();
         let mut duplicate = duplicate_skeleton.skeleton_segments[0].clone();
         duplicate.id = 99;
@@ -16504,6 +16509,15 @@ mod tests {
         assert_eq!(witness.local_bindings[0].protrusion_id, 1);
         assert_eq!(witness.local_bindings[0].generated_face_id, 1);
         assert_eq!(witness.generic_feature_bindings.len(), 2);
+        assert!(witness.generic_feature_bindings.len() <= 16);
+        assert!(
+            witness
+                .generic_feature_bindings
+                .iter()
+                .map(|binding| usize::from(binding.endpoint_count))
+                .sum::<usize>()
+                <= 16
+        );
         assert_eq!(witness.generic_feature_bindings[0].protrusion_id, 1);
         assert_eq!(witness.generic_feature_bindings[0].endpoint_count, 1);
         assert_eq!(witness.generic_feature_bindings[0].skeleton_segment_id, 1);

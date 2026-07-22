@@ -465,7 +465,7 @@ jobs:
         shell: bash
         run: >-
           cargo test --locked -p origami2-desktop --lib
-          stacked_fold_read::tests::balloon_degree_six_exact_schedule_is_admitted_by_strict_dyadic_read
+          stacked_fold_read::tests::even_cycle_exact_schedules_are_admitted_by_strict_dyadic_read
           -- --exact --test-threads=1
       - name: Summarize Rust test failure
         if: failure() && steps.rust-tests.outcome == 'failure'

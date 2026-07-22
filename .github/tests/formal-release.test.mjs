@@ -770,6 +770,10 @@ test('Windows CI executes native recovery close and diagnostics persistence cont
 test('CI requires the production C6 dyadic browser and exact native lifecycle', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const desktopPackage = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8'))
+  const nativeRead = readFileSync(
+    join(root, 'apps/desktop/src-tauri/src/stacked_fold_read.rs'),
+    'utf8',
+  )
   assert.equal(
     desktopPackage.scripts['test:dyadic-panel-browser'],
     'node scripts/dyadic-panel-browser-e2e.mjs',
@@ -779,10 +783,19 @@ test('CI requires the production C6 dyadic browser and exact native lifecycle', 
     1,
     'the C6 production Panel browser harness must be one required frontend gate',
   )
-  assert.match(
-    workflow,
-    /cargo test --locked -p origami2-desktop --lib\s+stacked_fold_read::tests::balloon_degree_six_exact_schedule_is_admitted_by_strict_dyadic_read\s+-- --exact --test-threads=1/u,
+  const exactFilter = 'stacked_fold_read::tests::even_cycle_exact_schedules_are_admitted_by_strict_dyadic_read'
+  assert.equal(
+    workflow.match(new RegExp(exactFilter, 'gu'))?.length,
+    1,
+    'one exact Rust command must cover every bounded even-cycle family without duplicate jobs',
   )
+  assert.match(workflow, new RegExp(`cargo test --locked -p origami2-desktop --lib\\s+${exactFilter}\\s+-- --exact --test-threads=1`, 'u'))
+  for (const fixture of ['octagonal-c8', 'radial-c16', 'cactus-c32', 'cactus-c64']) {
+    assert.equal(nativeRead.match(new RegExp(`"${fixture}"`, 'gu'))?.length, 1)
+  }
+  assert.match(nativeRead, /dyadic_request_hinge_counts_are_bounded_v1\(64, Some\(64\)\)/u)
+  assert.match(nativeRead, /!dyadic_request_hinge_counts_are_bounded_v1\(65, Some\(64\)\)/u)
+  assert.match(nativeRead, /!dyadic_request_hinge_counts_are_bounded_v1\(64, Some\(65\)\)/u)
 })
 
 test('promotion reuses and verifies the complete prerelease asset set', () => {

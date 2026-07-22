@@ -6154,7 +6154,7 @@ mod tests {
     }
 
     #[test]
-    fn balloon_degree_six_exact_schedule_is_admitted_by_strict_dyadic_read() {
+    fn even_cycle_exact_schedules_are_admitted_by_strict_dyadic_read() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         assert!(dyadic_request_hinge_counts_are_bounded_v1(64, Some(64)));
         assert!(!dyadic_request_hinge_counts_are_bounded_v1(65, Some(64)));

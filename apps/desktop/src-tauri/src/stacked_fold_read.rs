@@ -5002,7 +5002,9 @@ async fn propose_current_stacked_fold_read_inner(
                     | ori_collision::STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
             )
         );
-        let mut endpoint_collision = if positive_thickness_certificate {
+        let exact_flat_endpoint =
+            candidate.requested_angle_degrees().to_bits() == 180.0_f64.to_bits();
+        let mut endpoint_collision = if positive_thickness_certificate || exact_flat_endpoint {
             let face_count = prepared_requested_pose
                 .initial()
                 .target()
@@ -5041,7 +5043,7 @@ async fn propose_current_stacked_fold_read_inner(
             }
         };
         let (flat_endpoint_layer_order, transaction_layer_order) =
-            if candidate.requested_angle_degrees().to_bits() == 180.0_f64.to_bits() {
+            if exact_flat_endpoint {
                 let target_revision = geometry_proof.lineage().target_revision();
                 let topology_report = analyze_faces(FaceExtractionInput {
                     identity_namespace: binding.project_id(),
@@ -5092,7 +5094,7 @@ async fn propose_current_stacked_fold_read_inner(
                             diagnose_static_collision_geometry_with_flat_layer_order_v1(
                                 model,
                                 pose,
-                                paper.thickness_mm,
+                                0.0,
                                 StaticCollisionLimits::default(),
                                 &anchor,
                             )

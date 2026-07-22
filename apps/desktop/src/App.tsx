@@ -767,11 +767,15 @@ function App() {
   const [beginnerSilhouetteThresholds, setBeginnerSilhouetteThresholds] = useState<{
     alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only'
   }>({ alpha: 128, luma: 127, polarity: 'dark_on_light' })
+  const [beginnerSilhouetteCropRoi, setBeginnerSilhouetteCropRoi] = useState<
+    BeginnerDesignProfileV1['generation_constraints']['silhouette_crop_roi']>()
   useEffect(() => {
     const timeout = window.setTimeout(() => requestBeginnerRecognition('silhouette'), 300)
     return () => window.clearTimeout(timeout)
   }, [beginnerSilhouetteThresholds.alpha, beginnerSilhouetteThresholds.luma,
-    beginnerSilhouetteThresholds.polarity])
+    beginnerSilhouetteThresholds.polarity, beginnerSilhouetteCropRoi?.x_millionths,
+    beginnerSilhouetteCropRoi?.y_millionths, beginnerSilhouetteCropRoi?.width_millionths,
+    beginnerSilhouetteCropRoi?.height_millionths])
   const beginnerRecognitionRequestRef = useRef(0)
   const [beginnerOutlineCandidates, setBeginnerOutlineCandidates] =
     useState<BeginnerOutlineCandidatesResponse | null>(null)
@@ -812,6 +816,8 @@ function App() {
     setBeginnerRecognitionProposal(null)
     setBeginnerSilhouetteThresholds(nativeSnapshot?.beginner_design_profile.generation_constraints
       .silhouette_thresholds ?? { alpha: 128, luma: 127, polarity: 'dark_on_light' })
+    setBeginnerSilhouetteCropRoi(nativeSnapshot?.beginner_design_profile.generation_constraints
+      .silhouette_crop_roi)
     setBeginnerOutlineCandidates(null)
     setBeginnerPartSuggestions(null)
     setBeginnerPartAssignments([])
@@ -3736,6 +3742,7 @@ function App() {
       skeleton_segments: beginnerSkeletonSegments,
       ...(beginnerComponentBridgeOverride ? { component_bridge_override: beginnerComponentBridgeOverride } : {}),
       silhouette_thresholds: { schema_version: 1 as const, ...beginnerSilhouetteThresholds },
+      ...(beginnerSilhouetteCropRoi ? { silhouette_crop_roi: beginnerSilhouetteCropRoi } : {}),
       protrusions: beginnerProtrusions,
       bulge_targets: beginnerBulgeTargets,
       target_asset: targetUnderlay
@@ -3965,7 +3972,7 @@ function App() {
       binding.instanceId,
       underlay.id,
       underlay.asset,
-      beginnerSilhouetteThresholds,
+      { ...beginnerSilhouetteThresholds, crop_roi: beginnerSilhouetteCropRoi },
     ) : recognizeBeginnerTarget(binding.projectId, binding.revision, binding.instanceId,
       underlay.id, underlay.asset)
     void recognition.then((proposal) => {
@@ -8978,6 +8985,18 @@ function App() {
                       <option value="alpha_only">{text({ ja: 'アルファのみ', en: 'Alpha only' })}</option>
                     </select>
                   </label>
+                  <fieldset aria-label="Silhouette crop ROI">
+                    <legend>{text({ ja: '輪郭クロップ範囲', en: 'Silhouette crop ROI' })}</legend>
+                    <label><input type="checkbox" checked={Boolean(beginnerSilhouetteCropRoi)} onChange={(event) => {
+                      beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null)
+                      setBeginnerSilhouetteCropRoi(event.target.checked ? { schema_version: 1, x_millionths: 0, y_millionths: 0, width_millionths: 1_000_000, height_millionths: 1_000_000 } : undefined)
+                    }} />{text({ ja: 'クロップを使用', en: 'Use crop' })}</label>
+                    {beginnerSilhouetteCropRoi && (['x_millionths', 'y_millionths', 'width_millionths', 'height_millionths'] as const).map((key) => (
+                      <label key={key}>{key}<input type="number" min="0" max="1000000" step="1000" value={beginnerSilhouetteCropRoi[key]}
+                        onChange={(event) => { beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null); setBeginnerSilhouetteCropRoi({ ...beginnerSilhouetteCropRoi, [key]: Math.max(0, Math.min(1_000_000, Number(event.target.value))) }) }} /></label>
+                    ))}
+                    <button type="button" onClick={() => setBeginnerSilhouetteCropRoi(undefined)}>{text({ ja: '画像全体へ戻す', en: 'Reset to full image' })}</button>
+                  </fieldset>
                   <p id="beginner-recognition-help" className="muted">
                     {text({
                       ja: '認識結果は読取専用の案です。編集欄へコピーしても、保存するまでプロジェクトは変更されません。',

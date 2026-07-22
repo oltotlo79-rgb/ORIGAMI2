@@ -284,6 +284,16 @@ test('silhouette foreground polarity is explicit persisted and never auto-guesse
   assert.match(app, /Alpha only/u)
 })
 
+test('silhouette crop ROI is normalized bounded and decoded-dimension checked', () => {
+  assert.match(generation, /struct BeginnerSilhouetteCropRoiV1/u)
+  assert.match(recognitionNative, /recognition_crop_invalid/u)
+  assert.match(recognitionNative, /end_x\.saturating_sub\(x\) < 2/u)
+  assert.match(recognitionNative, /cropped\.extend_from_slice\(&rgba\[start\.\.end\]\)/u)
+  assert.match(client, /silhouette_crop_roi/u)
+  assert.match(app, /Silhouette crop ROI/u)
+  assert.match(app, /Reset to full image/u)
+})
+
 test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticity', () => {
   assert.match(generation, /struct BeginnerBulgeTargetV1/u)
   assert.match(generation, /pub face_ids: Vec<FaceId>/u)

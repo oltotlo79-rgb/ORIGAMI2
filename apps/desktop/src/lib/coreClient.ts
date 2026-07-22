@@ -256,6 +256,7 @@ export type BeginnerGenerationConstraintsV1 = {
     bridges: Array<{ id: number; start_component_id: number; end_component_id: number; accepted: boolean }>
   }
   silhouette_thresholds?: { schema_version: 1; alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only' }
+  silhouette_crop_roi?: { schema_version: 1; x_millionths: number; y_millionths: number; width_millionths: number; height_millionths: number }
   protrusions?: Array<{
     id: number
     count: number
@@ -430,6 +431,7 @@ function normalizeBeginnerGenerationConstraints(
     'skeleton_segments',
     'component_bridge_override',
     'silhouette_thresholds',
+    'silhouette_crop_roi',
     'protrusions',
     'bulge_targets',
     'target_asset',
@@ -441,6 +443,7 @@ function normalizeBeginnerGenerationConstraints(
       && key !== 'custom_object_display_name'
       && key !== 'component_bridge_override'
       && key !== 'silhouette_thresholds'
+      && key !== 'silhouette_crop_roi'
       && key !== 'protrusions' && key !== 'bulge_targets',
   )
   const snapshot = snapshotCoreDataRecord(value)
@@ -695,6 +698,16 @@ function normalizeBeginnerGenerationConstraints(
       || !['dark_on_light', 'light_on_dark', 'alpha_only'].includes(String(thresholds.polarity ?? 'dark_on_light'))) return null
     silhouetteThresholds = { schema_version: 1, alpha: Number(thresholds.alpha), luma: Number(thresholds.luma), polarity: (thresholds.polarity ?? 'dark_on_light') as 'dark_on_light' | 'light_on_dark' | 'alpha_only' }
   }
+  let silhouetteCropRoi: BeginnerGenerationConstraintsV1['silhouette_crop_roi']
+  if (record.silhouette_crop_roi !== undefined) {
+    const roi = exactCoreDataRecord(record.silhouette_crop_roi, ['schema_version', 'x_millionths', 'y_millionths', 'width_millionths', 'height_millionths'] as const)
+    const values = roi && [roi.x_millionths, roi.y_millionths, roi.width_millionths, roi.height_millionths]
+    if (!roi || roi.schema_version !== 1 || !values || values.some((value) => !Number.isInteger(value) || Number(value) < 0 || Number(value) > 1_000_000)
+      || Number(roi.width_millionths) < 1 || Number(roi.height_millionths) < 1
+      || Number(roi.x_millionths) + Number(roi.width_millionths) > 1_000_000
+      || Number(roi.y_millionths) + Number(roi.height_millionths) > 1_000_000) return null
+    silhouetteCropRoi = { schema_version: 1, x_millionths: Number(roi.x_millionths), y_millionths: Number(roi.y_millionths), width_millionths: Number(roi.width_millionths), height_millionths: Number(roi.height_millionths) }
+  }
   return Object.freeze({
     schema_version: 1,
     maximum_steps: Number(record.maximum_steps),
@@ -715,6 +728,7 @@ function normalizeBeginnerGenerationConstraints(
     skeleton_segments: skeletonSegments,
     ...(componentBridgeOverride ? { component_bridge_override: componentBridgeOverride } : {}),
     ...(silhouetteThresholds ? { silhouette_thresholds: silhouetteThresholds } : {}),
+    ...(silhouetteCropRoi ? { silhouette_crop_roi: silhouetteCropRoi } : {}),
     ...(hadProtrusions ? { protrusions } : {}),
     ...(hadBulgeTargets ? { bulge_targets: bulgeTargets } : {}),
     target_asset: targetAsset,
@@ -2825,7 +2839,7 @@ export function recognizeBeginnerSilhouette(
   expectedProjectInstanceId: string,
   underlayId: string,
   assetId: string,
-  thresholds: { alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only' } = { alpha: 128, luma: 127, polarity: 'dark_on_light' },
+  thresholds: { alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only'; crop_roi?: BeginnerGenerationConstraintsV1['silhouette_crop_roi'] } = { alpha: 128, luma: 127, polarity: 'dark_on_light' },
 ) {
   if (!isCanonicalNonNilUuid(expectedProjectId)
     || !isCanonicalNonNilUuid(expectedProjectInstanceId)
@@ -2841,6 +2855,7 @@ export function recognizeBeginnerSilhouette(
     expectedProjectInstanceId, expectedProjectId, expectedRevision, underlayId, assetId,
     alphaThreshold: thresholds.alpha, lumaThreshold: thresholds.luma,
     polarity: thresholds.polarity,
+    cropRoi: thresholds.crop_roi,
   }
   return invoke<unknown>('recognize_beginner_silhouette', { request }).then((value) => {
     const proposal = normalizeBeginnerRecognitionProposal(

@@ -28,6 +28,8 @@ pub(crate) struct RecognizeBeginnerTargetRequest {
     luma_threshold: Option<u8>,
     #[serde(default)]
     polarity: Option<ori_domain::BeginnerSilhouettePolarityV1>,
+    #[serde(default)]
+    crop_roi: Option<ori_domain::BeginnerSilhouetteCropRoiV1>,
 }
 
 #[tauri::command]
@@ -69,6 +71,48 @@ pub(crate) fn recognize_beginner_silhouette(
     };
     let source_sha256: [u8; 32] = Sha256::digest(&bytes).into();
     let (width, height, rgba) = decode_general_image(&bytes)?;
+    let roi = request.crop_roi.or_else(|| {
+        let project = lock_project(&state).ok()?;
+        project
+            .editor
+            .beginner_design_profile()
+            .generation_constraints
+            .silhouette_crop_roi
+    });
+    let (width, height, rgba) = if let Some(roi) = roi {
+        if roi.schema_version != 1
+            || roi.width_millionths == 0
+            || roi.height_millionths == 0
+            || roi.x_millionths.saturating_add(roi.width_millionths) > 1_000_000
+            || roi.y_millionths.saturating_add(roi.height_millionths) > 1_000_000
+        {
+            return Err("recognition_crop_invalid".to_owned());
+        }
+        let x = u64::from(width) * u64::from(roi.x_millionths) / 1_000_000;
+        let y = u64::from(height) * u64::from(roi.y_millionths) / 1_000_000;
+        let end_x = (u64::from(width)
+            * u64::from(roi.x_millionths.saturating_add(roi.width_millionths))
+            / 1_000_000)
+            .min(u64::from(width));
+        let end_y = (u64::from(height)
+            * u64::from(roi.y_millionths.saturating_add(roi.height_millionths))
+            / 1_000_000)
+            .min(u64::from(height));
+        if end_x.saturating_sub(x) < 2 || end_y.saturating_sub(y) < 2 {
+            return Err("recognition_crop_invalid".to_owned());
+        }
+        let crop_width = (end_x - x) as u32;
+        let crop_height = (end_y - y) as u32;
+        let mut cropped = Vec::with_capacity(crop_width as usize * crop_height as usize * 4);
+        for row in y as usize..end_y as usize {
+            let start = (row * width as usize + x as usize) * 4;
+            let end = start + crop_width as usize * 4;
+            cropped.extend_from_slice(&rgba[start..end]);
+        }
+        (crop_width, crop_height, cropped)
+    } else {
+        (width, height, rgba)
+    };
     let proposal = analyze_silhouette_png_rgba_with_thresholds_v1(
         request.underlay_id,
         request.asset_id,
@@ -200,6 +244,7 @@ pub(crate) fn recognize_beginner_part_suggestions(
         alpha_threshold: None,
         luma_threshold: None,
         polarity: None,
+        crop_roi: None,
     };
     let (bytes, target_category, target_parts) = {
         let project = lock_project(&state)?;
@@ -396,6 +441,7 @@ pub(crate) fn apply_beginner_part_assignments(
         alpha_threshold: None,
         luma_threshold: None,
         polarity: None,
+        crop_roi: None,
     };
     let bytes = {
         let project = lock_project(&state)?;
@@ -1335,6 +1381,7 @@ pub(crate) fn apply_beginner_outline_candidate(
         alpha_threshold: None,
         luma_threshold: None,
         polarity: None,
+        crop_roi: None,
     };
     let bytes = {
         let project = lock_project(&state)?;

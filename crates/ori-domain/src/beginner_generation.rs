@@ -198,6 +198,8 @@ pub struct BeginnerGenerationConstraintsV1 {
     pub component_bridge_override: Option<BeginnerComponentBridgeOverrideV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub silhouette_thresholds: Option<BeginnerSilhouetteThresholdsV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silhouette_crop_roi: Option<BeginnerSilhouetteCropRoiV1>,
     #[serde(default)]
     pub protrusions: Vec<BeginnerProtrusionTargetV1>,
     #[serde(default)]
@@ -222,6 +224,7 @@ impl Default for BeginnerGenerationConstraintsV1 {
             skeleton_segments: Vec::new(),
             component_bridge_override: None,
             silhouette_thresholds: None,
+            silhouette_crop_roi: None,
             protrusions: Vec::new(),
             bulge_targets: Vec::new(),
             target_asset: None,
@@ -244,6 +247,16 @@ pub struct BeginnerSilhouetteThresholdsV1 {
     pub luma: u8,
     #[serde(default)]
     pub polarity: BeginnerSilhouettePolarityV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerSilhouetteCropRoiV1 {
+    pub schema_version: u32,
+    pub x_millionths: u32,
+    pub y_millionths: u32,
+    pub width_millionths: u32,
+    pub height_millionths: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,6 +322,13 @@ pub fn validate_beginner_generation_constraints_v1(
         || constraints
             .silhouette_thresholds
             .is_some_and(|thresholds| thresholds.schema_version != 1)
+        || constraints.silhouette_crop_roi.is_some_and(|roi| {
+            roi.schema_version != 1
+                || roi.width_millionths == 0
+                || roi.height_millionths == 0
+                || roi.x_millionths.saturating_add(roi.width_millionths) > 1_000_000
+                || roi.y_millionths.saturating_add(roi.height_millionths) > 1_000_000
+        })
         || constraints.protrusions.len() > MAX_BEGINNER_PROTRUSIONS_V1
         || constraints.bulge_targets.len() > MAX_BEGINNER_BULGE_TARGETS_V1
     {

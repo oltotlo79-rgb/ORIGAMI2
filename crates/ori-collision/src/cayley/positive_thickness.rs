@@ -5426,10 +5426,18 @@ mod tests {
                 two_triangle_model_with_options(EdgeKind::Valley, true, square, 504),
             ),
         ];
-        let mut cases = 0_usize;
-        let mut contained_by_angle = [0_usize; 5];
-        let mut outside_by_angle = [0_usize; 5];
-        for (fixture, model) in &models {
+        // Each model is immutable and every certificate is issuer-bound to that
+        // model.  Dispatch the four independent fixture matrices together; this
+        // preserves all 120 proof/revalidation calls without serially repeating
+        // the expensive exact prism scan.
+        let totals = std::thread::scope(|scope| {
+            models
+                .iter()
+                .map(|(fixture, model)| {
+                    scope.spawn(move || {
+                        let mut cases = 0_usize;
+                        let mut contained_by_angle = [0_usize; 5];
+                        let mut outside_by_angle = [0_usize; 5];
             for root in model.face_ids() {
                 for thickness in [0.1, 1.0, 3.0] {
                     for (angle_index, angle) in
@@ -5525,7 +5533,11 @@ mod tests {
                                         .as_ref()
                                         .is_some_and(BigRational::is_positive)
                                 );
-                                if cases == 3 {
+                                if *fixture == "mountain/source"
+                                    && root == &model.face_ids()[0]
+                                    && thickness == 0.1
+                                    && angle == 90.0
+                                {
                                     let excess =
                                         outside.first_radial_excess.as_ref().expect("excess");
                                     // Minimal matrix fixture: Mountain/source,
@@ -5594,6 +5606,23 @@ mod tests {
                         assert!(std::ptr::eq(rebound.capability, capability.as_ref()));
                     }
                 }
+            }
+                        (cases, contained_by_angle, outside_by_angle)
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|worker| worker.join().expect("direct-F matrix worker"))
+                .collect::<Vec<_>>()
+        });
+        let mut cases = 0_usize;
+        let mut contained_by_angle = [0_usize; 5];
+        let mut outside_by_angle = [0_usize; 5];
+        for (worker_cases, worker_contained, worker_outside) in totals {
+            cases += worker_cases;
+            for angle_index in 0..5 {
+                contained_by_angle[angle_index] += worker_contained[angle_index];
+                outside_by_angle[angle_index] += worker_outside[angle_index];
             }
         }
         assert_eq!(cases, 120);

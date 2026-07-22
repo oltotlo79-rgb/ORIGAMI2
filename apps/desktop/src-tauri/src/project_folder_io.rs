@@ -720,6 +720,13 @@ struct PreparedNewProjectFolder {
 
 impl PreparedNewProjectFolder {
     fn publish(&mut self) -> FsResult<()> {
+        self.publish_with_final_sync(|parent| parent.sync_directory())
+    }
+
+    fn publish_with_final_sync(
+        &mut self,
+        final_sync: impl FnOnce(&PinnedDirectory) -> FsResult<()>,
+    ) -> FsResult<()> {
         self.parent.revalidate_selected_path()?;
         self.parent
             .revalidate_child_directory(&self.staging_name, &self.staging)?;
@@ -745,10 +752,11 @@ impl PreparedNewProjectFolder {
             &self.target_name,
         )?;
         self.committed = true;
-        // Once published, a durability retry must not be reported as an
-        // ordinary failure that could encourage a duplicate target.
-        let _ = self.parent.sync_directory();
-        Ok(())
+        // Once published, report a durability failure as recovery-required,
+        // never as an ordinary save failure that could encourage a duplicate
+        // target. The committed flag also prevents Drop from pretending the
+        // already-renamed staging directory can still be removed.
+        final_sync(&self.parent).map_err(|_| ProjectFolderFilesystemError::RecoveryRequired)
     }
 }
 
@@ -1528,6 +1536,33 @@ mod tests {
             prepare_new_project_folder(&directory.0, target_name, artifact),
             Err(ProjectFolderFilesystemError::TargetExists)
         ));
+    }
+
+    #[test]
+    fn post_publish_directory_sync_failure_is_reported_as_recovery_required() {
+        let directory = TestDirectory::new("publish-sync-failure");
+        let artifact = write_project_folder_v1(&sample_archive(false)).expect("artifact");
+        let target_name = "sync-failure.origami2-folder";
+        let mut prepared = prepare_new_project_folder(&directory.0, target_name, artifact.clone())
+            .expect("prepare");
+
+        let PreparedProjectFolder::New(prepared_new) = &mut prepared else {
+            panic!("new project transaction expected");
+        };
+        assert_eq!(
+            prepared_new
+                .publish_with_final_sync(|_| Err(ProjectFolderFilesystemError::WriteFailed)),
+            Err(ProjectFolderFilesystemError::RecoveryRequired)
+        );
+        drop(prepared);
+        assert_eq!(
+            load_project_folder_artifact(
+                &directory.0.join(target_name),
+                ProjectFolderLimits::default(),
+            )
+            .expect("published target remains inspectable"),
+            artifact
+        );
     }
 
     #[test]

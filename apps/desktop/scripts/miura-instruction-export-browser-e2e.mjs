@@ -43,6 +43,31 @@ try {
   await exportButton.click(); await page.getByText('exports=12; format=pdf; result=ready; ipc=begin_instruction_export,preview_instruction_export:pdf', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Valley fold timeline', exact: true }).click(); await page.getByText('3. 谷折り 2 · 完成形サムネイル', { exact: true }).click(); await page.getByLabel('構造化経路証明', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'SVG mode', exact: true }).click(); await exportButton.click(); await page.getByText('exports=13; format=svg_zip; result=ready; ipc=begin_instruction_export,preview_instruction_export:svg_zip', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Uncertified timelines', exact: true }).click()
+  const uncertifiedTechniques = [
+    ['Miura timeline', 'Miura atomic 2'],
+    ['Inside reverse timeline', '中割り折り 2'],
+    ['Outside reverse timeline', '外割り折り 2'],
+    ['Sink timeline', '沈め折り 2'],
+    ['Accordion timeline', '蛇腹折り 2'],
+    ['Layer selective timeline', '層選択折り 2'],
+    ['Book fold timeline', '二つ折り 2'],
+    ['Squash fold timeline', 'つぶし折り 2'],
+    ['Petal fold timeline', '花弁折り 2'],
+    ['Crimp fold timeline', '段折り 2'],
+    ['Mountain fold timeline', '山折り 2'],
+    ['Valley fold timeline', '谷折り 2'],
+  ]
+  for (const [button, title] of uncertifiedTechniques) {
+    await page.getByRole('button', { name: button, exact: true }).click()
+    await page.getByText(`3. ${title} · 完成形サムネイル`, { exact: true }).click()
+    const description = page.getByRole('textbox', { name: '説明', exact: true }); await description.waitFor()
+    if (!(await description.inputValue()).includes('連続折り経路は未証明です。')) throw new Error(`${title} omits the uncertified explanation`)
+    if (await page.getByLabel('構造化経路証明', { exact: true }).count()) throw new Error(`${title} exposes structured proof without a certificate`)
+    if (!(await exportButton.isEnabled())) throw new Error(`${title} uncertified export is disabled`)
+    await exportButton.click()
+  }
+  await page.getByText('exports=25; format=svg_zip; result=ready; ipc=begin_instruction_export,preview_instruction_export:svg_zip', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Start progress lifecycle', exact: true }).click(); await page.getByText('progress; ipc=begin_instruction_export,get_instruction_export_progress', { exact: true }).waitFor()
   await page.getByRole('button', { name: '生成を中止', exact: true }).click(); await page.getByText('cancelled; ipc=begin_instruction_export,get_instruction_export_progress,cancel_instruction_export', { exact: true }).waitFor()
   await page.getByRole('checkbox', { name: '上記の注意事項を確認しました', exact: true }).check()

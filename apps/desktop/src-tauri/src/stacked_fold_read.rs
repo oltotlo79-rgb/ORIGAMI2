@@ -5250,6 +5250,7 @@ mod tests {
             None,
         )
         .unwrap();
+        eprintln!("seven status={} states={} transitions={}", generic.status, generic.state_count, generic.transition_count);
         assert_eq!(generic.status, "certified");
         assert_eq!(
             (generic.state_count, generic.transition_count),

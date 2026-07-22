@@ -2920,7 +2920,6 @@ fn propose_current_cycle_pose_inner_with_layers(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn certified_blockwise_layer_pairs_v1(
     sources: &[Box<ori_foldability::LayerOrderSnapshot>; 2],
     certified_pair_count: usize,
@@ -2938,6 +2937,7 @@ fn certified_blockwise_layer_pairs_v1(
     Ok(pairs)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_blockwise_current_cycle_fallback_v1(
     app: Option<&AppHandle>,
     transaction_state: &super::stacked_fold_transaction::StackedFoldTransactionState,

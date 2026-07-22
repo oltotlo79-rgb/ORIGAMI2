@@ -530,9 +530,10 @@ pub fn read_project_folder_v1_with_limits(
 
     let editor_history = if has_history {
         let history_entry = entry_by_path(entries, PROJECT_FOLDER_EDITOR_HISTORY_PATH)?;
-        let envelope: ProjectFolderEditorHistoryEnvelopeV1 =
-            serde_json::from_slice(&history_entry.bytes)
-                .map_err(ProjectFolderError::InvalidEditorHistoryJson)?;
+        let migrated = crate::ori2::migrate_editor_history_envelope_json(&history_entry.bytes)
+            .map_err(ProjectFolderError::InvalidEditorHistoryJson)?;
+        let envelope: ProjectFolderEditorHistoryEnvelopeV1 = serde_json::from_value(migrated)
+            .map_err(ProjectFolderError::InvalidEditorHistoryJson)?;
         if !is_lowercase_sha256_hex(&envelope.project_sha256)
             || envelope.project_sha256 != project_sha256
         {

@@ -5,7 +5,7 @@
 
 use std::io::{Cursor, Read, Write};
 
-use ori_core::{EDITOR_HISTORY_SCHEMA_VERSION_V1, EditorHistoryV1};
+use ori_core::{EDITOR_HISTORY_SCHEMA_VERSION_V1, EditorHistoryV1, MAX_EDITOR_HISTORY_ENTRIES};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -280,6 +280,27 @@ pub struct Ori2LayerEvidenceEntry {
 struct Ori2EditorHistoryEnvelope {
     project_sha256: String,
     history: EditorHistoryV1,
+}
+
+/// Migrates the two supported legacy history generations without weakening
+/// the strict typed decoder. Unknown fields and unsupported schema versions
+/// remain present and are rejected by `EditorHistoryV1`.
+pub(crate) fn migrate_editor_history_envelope_json(
+    bytes: &[u8],
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    if let Some(history) = value
+        .get_mut("history")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        history
+            .entry("history_entry_limit")
+            .or_insert_with(|| serde_json::json!(MAX_EDITOR_HISTORY_ENTRIES));
+        history
+            .entry("redo_stack")
+            .or_insert_with(|| serde_json::json!([]));
+    }
+    Ok(value)
 }
 
 impl Ori2Manifest {
@@ -783,8 +804,10 @@ fn read_editor_history_entry(
         });
     }
 
+    let migrated = migrate_editor_history_envelope_json(&history_bytes)
+        .map_err(FormatError::InvalidEditorHistoryJson)?;
     let envelope: Ori2EditorHistoryEnvelope =
-        serde_json::from_slice(&history_bytes).map_err(FormatError::InvalidEditorHistoryJson)?;
+        serde_json::from_value(migrated).map_err(FormatError::InvalidEditorHistoryJson)?;
     if !is_lowercase_sha256_hex(&envelope.project_sha256)
         || envelope.project_sha256 != project_sha256
     {
@@ -2221,6 +2244,48 @@ mod tests {
                 && actual == MAX_EDITOR_HISTORY_JSON_BYTES + 1
                 && limit == MAX_EDITOR_HISTORY_JSON_BYTES
         ));
+    }
+
+    #[test]
+    fn migrates_two_legacy_history_generations_and_resaves_canonically() {
+        let (document, bytes) = history_archive_fixture();
+
+        for generation in 1..=2 {
+            let mut entries = archive_entries(&bytes);
+            let (_, history_bytes) = entries
+                .iter()
+                .find(|(path, _)| path == ORI2_EDITOR_HISTORY_PATH)
+                .expect("history fixture");
+            let mut envelope: serde_json::Value =
+                serde_json::from_slice(history_bytes).expect("parse history envelope");
+            let history = envelope["history"].as_object_mut().expect("history object");
+            history.remove("redo_stack");
+            if generation == 2 {
+                history.remove("history_entry_limit");
+            }
+            reseal_history_entry(
+                &mut entries,
+                serde_json::to_vec_pretty(&envelope).expect("legacy history fixture"),
+            );
+
+            let migrated = read_project_archive_ori2(&raw_zip_owned(&entries))
+                .expect("read legacy history generation");
+            let migrated_history = migrated.editor_history.as_ref().expect("migrated history");
+            assert_eq!(migrated.document, document);
+            assert_eq!(migrated_history.redo_len(), 0);
+            assert_eq!(
+                migrated_history.history_entry_limit(),
+                if generation == 1 {
+                    17
+                } else {
+                    MAX_EDITOR_HISTORY_ENTRIES as u32
+                }
+            );
+
+            let canonical = write_project_archive_ori2(&migrated).expect("canonical resave");
+            let reread = read_project_archive_ori2(&canonical).expect("read canonical resave");
+            assert_eq!(reread, migrated);
+        }
     }
 
     #[test]

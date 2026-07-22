@@ -530,8 +530,9 @@ pub fn read_project_folder_v1_with_limits(
 
     let editor_history = if has_history {
         let history_entry = entry_by_path(entries, PROJECT_FOLDER_EDITOR_HISTORY_PATH)?;
-        let migrated = crate::ori2::migrate_editor_history_envelope_json(&history_entry.bytes)
-            .map_err(ProjectFolderError::InvalidEditorHistoryJson)?;
+        let (migrated, was_migrated) =
+            crate::ori2::migrate_editor_history_envelope_json(&history_entry.bytes)
+                .map_err(ProjectFolderError::InvalidEditorHistoryJson)?;
         let envelope: ProjectFolderEditorHistoryEnvelopeV1 = serde_json::from_value(migrated)
             .map_err(ProjectFolderError::InvalidEditorHistoryJson)?;
         if !is_lowercase_sha256_hex(&envelope.project_sha256)
@@ -543,7 +544,7 @@ pub fn read_project_folder_v1_with_limits(
             return Err(ProjectFolderError::EditorHistoryProjectIdMismatch);
         }
         validate_editor_history_for_document(&project, &envelope.history)?;
-        if envelope.history.is_default_empty() {
+        if envelope.history.is_default_empty() && !was_migrated {
             return Err(ProjectFolderError::DefaultEditorHistoryMustBeOmitted);
         }
         Some(envelope.history)
@@ -2239,6 +2240,71 @@ mod tests {
             read_project_folder_v1(&entries),
             Err(ProjectFolderError::DefaultEditorHistoryMustBeOmitted)
         ));
+    }
+
+    #[test]
+    fn legacy_history_generations_round_trip_through_expanded_folder_recovery() {
+        let document = sample_document();
+        let archive = Ori2ProjectArchive {
+            layer_evidence: None,
+            editor_history: Some(non_default_empty_history(document.project_id)),
+            document,
+        };
+
+        for generation in 1..=2 {
+            let mut entries = write_project_folder_v1(&archive)
+                .expect("write current folder")
+                .entries()
+                .to_vec();
+            let history = entries
+                .iter_mut()
+                .find(|entry| entry.path == PROJECT_FOLDER_EDITOR_HISTORY_PATH)
+                .expect("history");
+            let mut envelope: serde_json::Value =
+                serde_json::from_slice(&history.bytes).expect("history JSON");
+            let history_object = envelope["history"].as_object_mut().expect("history object");
+            history_object.remove("redo_stack");
+            if generation == 2 {
+                history_object.remove("history_entry_limit");
+            }
+            history.bytes = serde_json::to_vec_pretty(&envelope).expect("legacy history JSON");
+            let hash = sha256_hex(&history.bytes);
+            let size = history.bytes.len() as u64;
+            let mut folder_manifest = manifest(&entries);
+            let descriptor =
+                descriptor_mut(&mut folder_manifest, PROJECT_FOLDER_ROLE_EDITOR_HISTORY);
+            descriptor.sha256 = hash;
+            descriptor.uncompressed_size = size;
+            replace_manifest(&mut entries, &folder_manifest);
+
+            let recovered = read_project_folder_v1(&entries).expect("recover legacy folder");
+            let recovered_history = recovered
+                .archive()
+                .editor_history
+                .as_ref()
+                .expect("recovered history");
+            assert_eq!(recovered_history.undo_len(), 0);
+            assert_eq!(recovered_history.redo_len(), 0);
+            assert_eq!(
+                recovered_history.history_entry_limit(),
+                if generation == 1 { 7 } else { 128 }
+            );
+
+            let canonical =
+                write_project_folder_v1(recovered.archive()).expect("canonical recovery resave");
+            let reread = read_project_folder_v1(canonical.entries())
+                .expect("read canonical recovery resave");
+            assert_eq!(reread.archive().document, recovered.archive().document);
+            if generation == 1 {
+                assert_eq!(
+                    reread.archive().editor_history,
+                    recovered.archive().editor_history
+                );
+            } else {
+                assert!(reread.archive().editor_history.is_none());
+                assert!(recovered_history.is_default_empty());
+            }
+        }
     }
 
     #[test]

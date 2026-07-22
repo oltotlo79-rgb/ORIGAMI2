@@ -2068,6 +2068,70 @@ mod tests {
     }
 
     #[test]
+    fn legacy_beginner_defaults_do_not_restore_generation_or_apply_authority() {
+        let document = sample_document();
+        let mut value = serde_json::to_value(&document).expect("serialize project value");
+        let mut profile = serde_json::to_value(ori_domain::BeginnerDesignProfileV1::default())
+            .expect("serialize beginner profile");
+        let constraints = profile["generation_constraints"]
+            .as_object_mut()
+            .expect("generation constraints object");
+        for legacy_missing in [
+            "target_category",
+            "custom_object_display_name",
+            "target_parts",
+            "target_asset",
+        ] {
+            constraints.remove(legacy_missing);
+        }
+        let profile_object = profile.as_object_mut().expect("beginner profile object");
+        for legacy_missing in [
+            "generation_provenance",
+            "outline_edit_authority",
+            "reference_consensus_v1",
+        ] {
+            profile_object.remove(legacy_missing);
+        }
+        value["beginner_design_profile"] = profile;
+        value
+            .as_object_mut()
+            .expect("project object")
+            .remove("current_pose");
+
+        let bytes = serde_json::to_vec(&value).expect("legacy project JSON");
+        let restored = read_project_json(&bytes).expect("read legacy beginner project");
+        let constraints = &restored.beginner_design_profile.generation_constraints;
+        assert_eq!(constraints.target_category, None);
+        assert_eq!(constraints.custom_object_display_name, None);
+        assert!(constraints.target_parts.is_empty());
+        assert_eq!(constraints.target_asset, None);
+        assert!(
+            restored
+                .beginner_design_profile
+                .generation_provenance
+                .is_none()
+        );
+        assert!(
+            restored
+                .beginner_design_profile
+                .outline_edit_authority
+                .is_none()
+        );
+        assert!(
+            restored
+                .beginner_design_profile
+                .reference_consensus_v1
+                .is_none()
+        );
+        assert!(restored.current_pose.is_none());
+
+        let rewritten = write_project_json(&restored).expect("rewrite migrated project");
+        let rewritten_text = String::from_utf8(rewritten).expect("project JSON is UTF-8");
+        assert!(!rewritten_text.contains("pending_apply"));
+        assert!(!rewritten_text.contains("apply_token"));
+    }
+
+    #[test]
     fn legacy_json_without_numeric_expressions_migrates_to_an_empty_binding() {
         let document = sample_document();
         let mut value = serde_json::to_value(&document).expect("serialize project value");

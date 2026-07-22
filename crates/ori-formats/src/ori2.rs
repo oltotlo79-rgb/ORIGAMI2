@@ -287,20 +287,26 @@ struct Ori2EditorHistoryEnvelope {
 /// remain present and are rejected by `EditorHistoryV1`.
 pub(crate) fn migrate_editor_history_envelope_json(
     bytes: &[u8],
-) -> Result<serde_json::Value, serde_json::Error> {
+) -> Result<(serde_json::Value, bool), serde_json::Error> {
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    let mut migrated = false;
     if let Some(history) = value
         .get_mut("history")
         .and_then(serde_json::Value::as_object_mut)
     {
-        history
-            .entry("history_entry_limit")
-            .or_insert_with(|| serde_json::json!(MAX_EDITOR_HISTORY_ENTRIES));
-        history
-            .entry("redo_stack")
-            .or_insert_with(|| serde_json::json!([]));
+        if !history.contains_key("history_entry_limit") {
+            history.insert(
+                "history_entry_limit".to_owned(),
+                serde_json::json!(MAX_EDITOR_HISTORY_ENTRIES),
+            );
+            migrated = true;
+        }
+        if !history.contains_key("redo_stack") {
+            history.insert("redo_stack".to_owned(), serde_json::json!([]));
+            migrated = true;
+        }
     }
-    Ok(value)
+    Ok((value, migrated))
 }
 
 impl Ori2Manifest {
@@ -804,7 +810,7 @@ fn read_editor_history_entry(
         });
     }
 
-    let migrated = migrate_editor_history_envelope_json(&history_bytes)
+    let (migrated, _) = migrate_editor_history_envelope_json(&history_bytes)
         .map_err(FormatError::InvalidEditorHistoryJson)?;
     let envelope: Ori2EditorHistoryEnvelope =
         serde_json::from_value(migrated).map_err(FormatError::InvalidEditorHistoryJson)?;
@@ -2284,7 +2290,13 @@ mod tests {
 
             let canonical = write_project_archive_ori2(&migrated).expect("canonical resave");
             let reread = read_project_archive_ori2(&canonical).expect("read canonical resave");
-            assert_eq!(reread, migrated);
+            assert_eq!(reread.document, migrated.document);
+            if generation == 1 {
+                assert_eq!(reread.editor_history, migrated.editor_history);
+            } else {
+                assert!(reread.editor_history.is_none());
+                assert!(migrated_history.is_default_empty());
+            }
         }
     }
 

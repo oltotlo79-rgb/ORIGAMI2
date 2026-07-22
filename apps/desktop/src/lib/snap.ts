@@ -246,6 +246,16 @@ const DEFAULT_THRESHOLDS_PX: Readonly<Record<PointSnapKind, number>> = Object.fr
 
 const DEFAULT_DESIRED_INTERVALS = 20
 const DEFAULT_MAX_GRID_VALUES = 100
+const SNAP_CATEGORY_BIAS_PX: Readonly<Record<PointSnapKind, number>> = Object.freeze({
+  vertex: 0,
+  midpoint: 0.2,
+  horizontal: 0.4,
+  vertical: 0.4,
+  parallel: 0.6,
+  angle: 0.6,
+  edge: 0.8,
+  grid: 1,
+})
 
 export function createSnapSpatialIndex(
   vertices: readonly SnapVertex[],
@@ -327,6 +337,7 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
     && !settings.edge
     && !settings.grid
   ) return null
+  const candidates: SnapTarget[] = []
 
   if (settings.vertex) {
     const threshold = thresholdFor('vertex', options.thresholdsPx)
@@ -346,7 +357,7 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
         options.accept,
       )
     }
-    if (best) return best.target
+    if (best) candidates.push(best.target)
   }
 
   if (settings.midpoint) {
@@ -372,22 +383,22 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
         0.5,
       )
     }
-    if (best) return best.target
+    if (best) candidates.push(best.target)
   }
 
   if (settings.horizontal || settings.vertical) {
     const best = bestDirectionTarget(options)
-    if (best) return best.target
+    if (best) candidates.push(best.target)
   }
 
   if (settings.parallel) {
     const target = parallelSnapTarget(options)
-    if (target && (!options.accept || options.accept(target))) return target
+    if (target && (!options.accept || options.accept(target))) candidates.push(target)
   }
 
   if (settings.angle) {
     const target = angleSnapTarget(options)
-    if (target) return target
+    if (target) candidates.push(target)
   }
 
   if (settings.edge) {
@@ -420,7 +431,7 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
         fraction,
       )
     }
-    if (best) return best.target
+    if (best) candidates.push(best.target)
   }
 
   if (settings.grid) {
@@ -428,10 +439,18 @@ export function resolveSnapTarget(options: ResolveSnapTargetOptions): SnapTarget
     const best = options.accept
       ? bestAcceptedGridTarget(options, threshold)
       : nearestGridTarget(options, threshold)
-    if (best) return best.target
+    if (best) candidates.push(best.target)
   }
 
-  return null
+  return candidates.reduce<SnapTarget | null>((best, candidate) => {
+    if (!best) return candidate
+    const candidateScore = candidate.distancePx + SNAP_CATEGORY_BIAS_PX[candidate.kind]
+    const bestScore = best.distancePx + SNAP_CATEGORY_BIAS_PX[best.kind]
+    return candidateScore < bestScore
+      || (candidateScore === bestScore && candidate.key < best.key)
+      ? candidate
+      : best
+  }, null)
 }
 
 export function prioritizeAdditionSnapTargets(

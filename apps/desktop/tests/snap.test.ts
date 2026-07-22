@@ -218,7 +218,7 @@ test('a drawing anchor requires one finite vertex record with the selected ID', 
   ], selected.id), undefined)
 })
 
-test('kind priority is vertex, midpoint, direction, parallel, angle, edge, then grid', () => {
+test('cross-kind priority uses pixel distance with only a modest semantic bias', () => {
   const segment: SnapSegment = {
     id: 'segment',
     startVertexId: 'start',
@@ -237,25 +237,19 @@ test('kind priority is vertex, midpoint, direction, parallel, angle, edge, then 
     angleConfig: { angleDegrees: 45, referenceKind: 'global-horizontal' } as const,
   }
 
-  assert.equal(resolve({ ...common })?.kind, 'vertex')
+  assert.equal(resolve({ ...common, settings: only('vertex', 'grid') })?.kind, 'grid')
   assert.equal(resolve({
     ...common,
-    settings: only('midpoint', 'horizontal', 'vertical', 'parallel', 'angle', 'edge', 'grid'),
-  })?.kind, 'midpoint')
+    vertices: [{ id: 'vertex', x: 0.5, y: 0 }],
+    settings: only('vertex', 'grid'),
+  })?.kind, 'vertex')
   assert.equal(resolve({
     ...common,
-    settings: only('horizontal', 'vertical', 'parallel', 'angle', 'edge', 'grid'),
-  })?.kind, 'horizontal')
-  assert.equal(resolve({
-    ...common,
-    settings: only('parallel', 'angle', 'edge', 'grid'),
-  })?.kind, 'parallel')
-  assert.equal(resolve({
-    ...common,
-    settings: only('angle', 'edge', 'grid'),
-  })?.kind, 'angle')
-  assert.equal(resolve({ ...common, settings: only('edge', 'grid') })?.kind, 'edge')
-  assert.equal(resolve({ ...common, settings: only('grid') })?.kind, 'grid')
+    vertices: [],
+    grid: { xValues: [2], yValues: [0] },
+    point: { x: 1, y: 0.5 },
+    settings: only('edge', 'grid'),
+  })?.kind, 'edge')
 })
 
 test('same-kind ties use distance and then lexical key', () => {
@@ -792,7 +786,7 @@ test('angle thresholds, side retry, 90-degree deduplication, and lower fallback 
   })?.kind, 'edge')
 })
 
-test('direction and parallel targets outrank angle, which outranks edge and grid', () => {
+test('small biases break nearby cross-kind ties without hiding a much nearer edge', () => {
   const edge: SnapSegment = {
     id: 'edge',
     startVertexId: 'start',
@@ -821,7 +815,7 @@ test('direction and parallel targets outrank angle, which outranks edge and grid
   assert.equal(resolve({
     ...common,
     settings: only('angle', 'edge', 'grid'),
-  })?.kind, 'angle')
+  })?.kind, 'edge')
   assert.equal(resolve({ ...common, settings: only('edge', 'grid') })?.kind, 'edge')
 })
 

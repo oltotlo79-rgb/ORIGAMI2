@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -1123,6 +1123,32 @@ test('CI and formal release share the strict Windows bundle contract', () => {
   assert.match(verifier, /Embedded Windows executable/u)
   assert.match(verifier, /NotoSansJP-Variable\.ttf/u)
   assert.match(verifier, /NotoSansJP-OFL\.txt/u)
+})
+
+test('Windows release workflows smoke-test the verified NSIS installer before packaging', () => {
+  const formal = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
+  const unsigned = readFileSync(join(root, '.github/workflows/release-windows.yml'), 'utf8')
+  const invocation = /smoke_windows_installer\.ps1[\s\S]*-BundleDirectory \.\/target\/release\/bundle\/nsis/u
+  assert.match(formal, invocation)
+  assert.match(unsigned, invocation)
+  assert.match(formal, /Test Windows installer smoke guardrails[\s\S]*windows-installer-smoke\.test\.ps1/u)
+  assert.match(unsigned, /Test Windows installer smoke guardrails[\s\S]*windows-installer-smoke\.test\.ps1/u)
+  assert.ok(formal.indexOf('Verify Windows installer and portable executable contract') < formal.indexOf('Smoke-test silent Windows install and uninstall'))
+  assert.ok(unsigned.indexOf('Verify bundled application resources') < unsigned.indexOf('Smoke-test silent Windows install and uninstall'))
+  assert.ok(unsigned.indexOf('Smoke-test silent Windows install and uninstall') < unsigned.indexOf('Package installer, checksum, and release notes'))
+  const smoke = readFileSync(join(root, '.github/scripts/smoke_windows_installer.ps1'), 'utf8')
+  assert.match(smoke, /@\('\/S', "\/D=\$installRoot"\)/u)
+  assert.match(smoke, /WaitForExit\(\$Seconds \* 1000\)/u)
+  assert.match(smoke, /taskkill\.exe \/PID \$process\.Id \/T \/F/u)
+  assert.match(smoke, /Assert-NoReparse \$installRoot/u)
+  assert.match(smoke, /Refusing cleanup outside RUNNER_TEMP/u)
+})
+
+test('Windows installer smoke rejects adversarial process and filesystem outcomes', { skip: process.platform !== 'win32' || !existsSync('C:\\Program Files\\PowerShell\\7\\pwsh.exe') }, () => {
+  execFileSync('C:\\Program Files\\PowerShell\\7\\pwsh.exe', ['-NoProfile', '-File', join(root, '.github/tests/windows-installer-smoke.test.ps1')], {
+    cwd: root,
+    stdio: 'pipe',
+  })
 })
 
 test('dry-run validates without a tag or GitHub mutation', () => {

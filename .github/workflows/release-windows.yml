@@ -174,6 +174,16 @@ jobs:
           ./scripts/verify_windows_bundle.ps1
           -BundleDirectory ./target/release/bundle/nsis
 
+      - name: Test Windows installer smoke guardrails
+        shell: pwsh
+        run: ./.github/tests/windows-installer-smoke.test.ps1
+
+      - name: Smoke-test silent Windows install and uninstall
+        shell: pwsh
+        run: >
+          ./.github/scripts/smoke_windows_installer.ps1
+          -BundleDirectory ./target/release/bundle/nsis
+
       - name: Package installer, checksum, and release notes
         id: package
         shell: pwsh

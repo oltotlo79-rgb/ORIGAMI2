@@ -286,6 +286,16 @@ jobs:
           -ExpectedVersion $env:RELEASE_VERSION
           -ExpectedSignatureStatus $env:SIGNATURE_STATUS
           -PortableExecutable ./target/release/origami2-desktop.exe
+      - name: Test Windows installer smoke guardrails
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: ./.github/tests/windows-installer-smoke.test.ps1
+      - name: Smoke-test silent Windows install and uninstall
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: >
+          ./.github/scripts/smoke_windows_installer.ps1
+          -BundleDirectory ./target/release/bundle/nsis
       - name: Build macOS application
         if: matrix.platform == 'macos-arm64'
         working-directory: apps/desktop

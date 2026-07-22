@@ -17202,6 +17202,22 @@ mod tests {
                 (assessment.proof_scope, assessment.reason),
                 ("sufficient", "native_fold_path_certified")
             );
+            let canonical_assessment = serde_json::to_vec(&assessment).unwrap();
+            for repetition in 0..8 {
+                let repeated = assess_beginner_generated_plan_with_deadline(
+                    ns,
+                    &paper,
+                    &current,
+                    &plan,
+                    None,
+                    std::time::Instant::now() + std::time::Duration::from_millis(750),
+                );
+                assert_eq!(
+                    serde_json::to_vec(&repeated).unwrap(),
+                    canonical_assessment,
+                    "{hinges}-hinge assessment repetition {repetition} must be deterministic"
+                );
+            }
             let mut candidate = current.clone();
             candidate
                 .edges

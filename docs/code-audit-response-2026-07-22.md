@@ -36,12 +36,12 @@
 | ID | 判定 | 対応方針 |
 |---|---|---|
 | C-1 | 正しい改善 | App stateと機能panelを挙動不変で段階分割する。単一巨大変更は回帰範囲が広いため独立checkpoint化する。 |
-| C-2 | 要追加証拠 | TS previewとRust authorityの責務は異なる。二重の「肯定authority」が存在する箇所だけを抽出し、preview近似自体は誤検知として区別する。 |
+| C-2 | 一部誤検知 | TS側は操作中preview、Rust側はapplyを許可するauthorityで責務が異なる。TS結果だけでproject変更を認可する経路はなく、二重の肯定authorityではない。相互整合fixtureは継続する。 |
 | C-3 | 正しい機能欠落 | 閉路Graphの対話poseは専用認証経路へ統合する必要がある。静的tree updaterへ流用しない。 |
 | C-4 | 改善提案 | OCC fencingは安全境界なので削除対象ではない。引数newtype/constructor集約のみを検討する。 |
 | C-5 | 正しい改善 | locale key catalogへの段階移行対象。機能不具合とは別checkpointにする。 |
 | C-6 | 一部誤検知 | core moduleは回帰testと公開primitiveを持つため単純な死蔵ではない。desktop重複経路の有無だけを継続確認する。 |
-| C-7 | 要追加証拠 | `#[allow(dead_code)]`だけでは死蔵と断定しない。production call graphと研究fixtureを分類する。 |
+| C-7 | 正しい・修正済み | `ceff2e3`。production参照0、test参照のみを確認した`direct_f_affine_corridor` moduleを`#[cfg(test)]`化。production check green、関連10/10 green。 |
 | C-8 | 複合指摘 | 未到達error、早期return、Windows registry ACLを別項目として個別検証する。 |
 | C-9 | 正しい機能欠落 | 数値角度＋対象交点までの延長をnative atomic commandとして追加する必要がある。既存の長さ＋角度commandとは別機能。 |
 

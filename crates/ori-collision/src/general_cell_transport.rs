@@ -64,14 +64,12 @@ pub struct GeneralCellTransportInputV1<'a> {
 
 /// Issuer-private bundle proving a continuous sequence without inventing a
 /// non-flat `LayerOrderSnapshot`.
-#[cfg(test)]
-pub(crate) struct ChainedGeneralCellTransportAuthorityV1 {
+pub struct ChainedGeneralCellTransportAuthorityV1 {
     proofs: Vec<GeneralMultiFaceCellTransportProofV1>,
 }
 
-#[cfg(test)]
 impl ChainedGeneralCellTransportAuthorityV1 {
-    pub(crate) fn issue(
+    pub fn issue(
         inputs: Vec<GeneralCellTransportInputV1<'_>>,
     ) -> Result<Self, GeneralCellTransportErrorV1> {
         if inputs.is_empty()
@@ -91,7 +89,7 @@ impl ChainedGeneralCellTransportAuthorityV1 {
         Ok(Self { proofs })
     }
 
-    pub(crate) fn proofs(&self) -> &[GeneralMultiFaceCellTransportProofV1] {
+    pub fn proofs(&self) -> &[GeneralMultiFaceCellTransportProofV1] {
         &self.proofs
     }
 }

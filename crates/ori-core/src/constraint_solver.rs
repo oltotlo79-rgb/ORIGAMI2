@@ -131,7 +131,11 @@ pub fn solve_geometric_constraints_with_drivers_v1(
                 positions: sorted_positions(driving_positions.to_vec()),
                 iterations: 0,
                 maximum_residual,
-                rank: 0,
+                // With no free variables every admitted equation has already
+                // been satisfied by the complete driver set. Report the
+                // effective solved rank so UI classification does not label
+                // a fully determined system over-constrained.
+                rank: residuals.len(),
                 degrees_of_freedom: 0,
                 equation_count: residuals.len(),
                 condition_estimate: 1.0,
@@ -220,6 +224,27 @@ pub fn solve_geometric_constraints_with_drivers_v1(
             if !point.x.is_finite() || !point.y.is_finite() {
                 return Err(ConstraintSolveErrorV1::NonConvergent);
             }
+        }
+        let updated = residuals(pattern, document, &positions)?;
+        let updated_maximum_residual = maximum_absolute(&updated);
+        if updated_maximum_residual <= limits.residual_tolerance {
+            let diagnostics = rank_diagnostics(pattern, document, &positions, &variables)?;
+            return Ok(ConstraintSolvePreviewV1 {
+                positions: sorted_positions(
+                    positions
+                        .into_iter()
+                        .filter(|(vertex, point)| {
+                            original.get(vertex).is_none_or(|old| old != point)
+                        })
+                        .collect(),
+                ),
+                iterations: iteration + 1,
+                maximum_residual: updated_maximum_residual,
+                rank: diagnostics.0,
+                degrees_of_freedom: dimension.saturating_sub(diagnostics.0),
+                equation_count: updated.len(),
+                condition_estimate: diagnostics.1,
+            });
         }
         if maximum_step <= limits.step_tolerance {
             return Err(ConstraintSolveErrorV1::NonConvergent);
@@ -811,6 +836,53 @@ mod tests {
                 .iter()
                 .any(|(id, point)| *id != driving && (point.y - 3.0).abs() <= 1e-7)
         );
+    }
+
+    #[test]
+    fn final_allowed_iteration_can_report_newly_converged_solution() {
+        let (pattern, document, driving) = single_edge(
+            Point2 { x: 0.0, y: 0.0 },
+            Point2 { x: 4.0, y: 0.0 },
+            |edge| vec![GeometricConstraintKindV1::Horizontal { edge }],
+        );
+        let limits = ConstraintSolveLimitsV1 {
+            max_iterations: 1,
+            ..ConstraintSolveLimitsV1::default()
+        };
+
+        let preview = solve_geometric_constraints_v1(
+            &pattern,
+            &document,
+            driving,
+            Point2 { x: 1.0, y: 3.0 },
+            limits,
+        )
+        .expect("the first and final update converges");
+        assert_eq!(preview.iterations, 1);
+        assert!(preview.maximum_residual <= limits.residual_tolerance);
+    }
+
+    #[test]
+    fn complete_driver_set_is_not_reported_over_constrained() {
+        let (pattern, document, first) = single_edge(
+            Point2 { x: 0.0, y: 0.0 },
+            Point2 { x: 4.0, y: 0.0 },
+            |edge| vec![GeometricConstraintKindV1::Horizontal { edge }],
+        );
+        let second = pattern.vertices[1].id;
+        let preview = solve_geometric_constraints_with_drivers_v1(
+            &pattern,
+            &document,
+            &[
+                (first, Point2 { x: 1.0, y: 2.0 }),
+                (second, Point2 { x: 5.0, y: 2.0 }),
+            ],
+            ConstraintSolveLimitsV1::default(),
+        )
+        .expect("complete drivers satisfy the equation");
+
+        assert_eq!(preview.rank, preview.equation_count);
+        assert_eq!(preview.degrees_of_freedom, 0);
     }
 
     #[test]

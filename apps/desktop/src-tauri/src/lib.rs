@@ -17329,23 +17329,48 @@ mod tests {
             );
             let folder = write_project_folder_v1(&archive).expect("write generic tree folder");
             let mut tampered_entries = folder.entries().to_vec();
-            let project_entry = tampered_entries
-                .iter_mut()
-                .find(|entry| entry.path == ori_formats::PROJECT_FOLDER_PROJECT_PATH)
-                .expect("generic tree project entry");
-            let mut tampered_json: serde_json::Value =
-                serde_json::from_slice(&project_entry.bytes).unwrap();
-            let certificate_byte = tampered_json
-                .pointer_mut(
-                    "/beginner_design_profile/generation_provenance/fold_path_certificate_sha256/0",
-                )
-                .expect("generic tree certificate byte");
-            *certificate_byte =
-                serde_json::json!(certificate_byte.as_u64().unwrap_or_default() ^ 1);
-            project_entry.bytes = serde_json::to_vec(&tampered_json).unwrap();
+            let (project_size, project_sha256) = {
+                let project_entry = tampered_entries
+                    .iter_mut()
+                    .find(|entry| entry.path == ori_formats::PROJECT_FOLDER_PROJECT_PATH)
+                    .expect("generic tree project entry");
+                let mut tampered_json: serde_json::Value =
+                    serde_json::from_slice(&project_entry.bytes).unwrap();
+                let certificate_byte = tampered_json
+                    .pointer_mut(
+                        "/beginner_design_profile/generation_provenance/fold_path_certificate_sha256/0",
+                    )
+                    .expect("generic tree certificate byte");
+                *certificate_byte =
+                    serde_json::json!(certificate_byte.as_u64().unwrap_or_default() ^ 1);
+                project_entry.bytes = serde_json::to_vec(&tampered_json).unwrap();
+                let sha256 = sha2::Sha256::digest(&project_entry.bytes)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                (project_entry.bytes.len() as u64, sha256)
+            };
             assert!(
                 read_project_folder_v1(&tampered_entries).is_err(),
                 "an authenticated folder must reject certificate provenance tampering"
+            );
+            let manifest_entry = tampered_entries
+                .iter_mut()
+                .find(|entry| entry.path == ori_formats::PROJECT_FOLDER_MANIFEST_PATH)
+                .expect("generic tree manifest entry");
+            let mut manifest: ori_formats::ProjectFolderManifestV1 =
+                serde_json::from_slice(&manifest_entry.bytes).unwrap();
+            let descriptor = manifest
+                .entries
+                .iter_mut()
+                .find(|entry| entry.path == ori_formats::PROJECT_FOLDER_PROJECT_PATH)
+                .expect("generic tree project descriptor");
+            descriptor.uncompressed_size = project_size;
+            descriptor.sha256 = project_sha256;
+            manifest_entry.bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+            assert!(
+                read_project_folder_v1(&tampered_entries).is_err(),
+                "a folder must reject reauthenticated project provenance that diverges from history"
             );
             let folder_restored = read_project_folder_v1(folder.entries())
                 .expect("read generic tree folder")

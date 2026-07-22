@@ -432,7 +432,7 @@ fn compile_two_segment_motion(
                 "認証済み二段階技法の開始姿勢です。 / Certified start pose for the two-stage technique.".to_owned()
             } else {
                 format!(
-                    "衝突・層順序証明に結合された区間{index}の終端です。 / Certified endpoint of collision- and layer-order-bound segment {index}. Path certificate SHA-256: {}",
+                    "衝突・層順序証明に結合された区間{index}の終端です。 / Certified endpoint of collision- and layer-order-bound segment {index}. 経路証明 SHA-256: {}",
                     certificate_references[index - 1]
                 )
             },
@@ -616,7 +616,7 @@ pub fn compile_certified_accordion_fold_timeline_v1(
                 "認証済み蛇腹折りの開始姿勢です。 / Certified accordion-fold start pose.".to_owned()
             } else {
                 format!(
-                    "認証済み区間{index}の終端姿勢です。 / Certified endpoint of segment {index}. Path certificate SHA-256: {}",
+                    "認証済み区間{index}の終端姿勢です。 / Certified endpoint of segment {index}. 経路証明 SHA-256: {}",
                     certificate_references[index - 1]
                 )
             },
@@ -759,7 +759,7 @@ pub fn compile_certified_reverse_fold_timeline_v1(
             step(
                 "反転 / Reverse",
                 &format!(
-                    "第1の衝突・層順序証明区間の終端です。 / Endpoint of certified collision and layer-order segment 1. Path certificate SHA-256: {first_reference}"
+                    "第1の衝突・層順序証明区間の終端です。 / Endpoint of certified collision and layer-order segment 1. 経路証明 SHA-256: {first_reference}"
                 ),
                 path_certificate_visual_v1(first, request.source_model_fingerprint),
                 intermediate,
@@ -767,7 +767,7 @@ pub fn compile_certified_reverse_fold_timeline_v1(
             step(
                 "完了 / Complete",
                 &format!(
-                    "第2の衝突・層順序証明区間の終端です。 / Endpoint of certified collision and layer-order segment 2. Path certificate SHA-256: {second_reference}"
+                    "第2の衝突・層順序証明区間の終端です。 / Endpoint of certified collision and layer-order segment 2. 経路証明 SHA-256: {second_reference}"
                 ),
                 path_certificate_visual_v1(second, request.source_model_fingerprint),
                 target,
@@ -801,7 +801,9 @@ fn path_certificate_reference_v1(
         .into_iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    format!("{certificate} / 元モデル / Source model SHA-256: {source_model_fingerprint}")
+    format!(
+        "{certificate} / 元モデル SHA-256: {source_model_fingerprint} / Source model SHA-256: {source_model_fingerprint}"
+    )
 }
 
 fn path_certificate_visual_v1(
@@ -903,7 +905,7 @@ pub fn append_certified_dyadic_path_timeline_v1(
             id: InstructionStepId::new(),
             title: if index == 0 { title.to_owned() } else { format!("{title} {}", index + 1) },
             description: format!(
-                "認証済みの連続折り経路で「{title}」を適用します。 / Apply “{title}” through the certified continuous fold path. Path certificate SHA-256: {binding} / Source model SHA-256: {source_model_fingerprint}"
+                "認証済みの連続折り経路で「{title}」を適用します。 / Apply “{title}” through the certified continuous fold path. 経路証明 SHA-256: {binding} / 元モデル SHA-256: {source_model_fingerprint} / Source model SHA-256: {source_model_fingerprint}"
             ),
             caution: String::new(),
             duration_ms: MIN_INSTRUCTION_DURATION_MS,
@@ -1070,7 +1072,7 @@ pub fn compile_certified_book_fold_timeline_v1(
                 id: InstructionStepId::new(),
                 title: format!("{title}：完了 / Complete"),
                 description: format!(
-                    "衝突・閉包証明に結合された経路で折ります。 / Fold along the collision- and closure-certified path. Path certificate SHA-256: {certificate_reference}"
+                    "衝突・閉包証明に結合された経路で折ります。 / Fold along the collision- and closure-certified path. 経路証明 SHA-256: {certificate_reference}"
                 ),
                 caution: "証明対象外の紙や姿勢には適用しないでください。 / Do not apply this step to paper or poses outside the proof scope.".to_owned(),
                 duration_ms: 1_500,

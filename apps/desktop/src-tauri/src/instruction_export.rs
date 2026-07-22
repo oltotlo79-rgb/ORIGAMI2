@@ -2494,8 +2494,8 @@ pub(crate) mod tests {
                     path_certificate: &native_certificate([1; 32], [2; 32]),
                 },
             }),
-            Err(ori_instructions::BookFoldMotionError::UnsupportedTechnique),
-            "assignment kind and technique name cannot be interchanged"
+            Err(ori_instructions::BookFoldMotionError::PathCertificateMismatch),
+            "explicit assignment kind must not be inferred from a localized technique name"
         );
     }
 

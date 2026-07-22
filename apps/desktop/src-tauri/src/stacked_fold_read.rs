@@ -6268,13 +6268,11 @@ mod tests {
             super::four_bay_cycle_test_support::eight_bay_rational_cycle_pattern();
         let (c64_pattern, c64_paper, c64_hinges) =
             super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern();
+        let (c8_pattern, c8_paper, c8_cardinal) = octagonal_eight_sector_cycle_pattern();
+        let c8_opposite = vec![c8_cardinal[0], c8_cardinal[2]];
         for (fixture_name, (pattern, mut paper, moving), cactus) in [
             ("balloon-c6", balloon_six_sector_cycle_pattern(), false),
-            (
-                "octagonal-c8",
-                octagonal_eight_sector_cycle_pattern(),
-                false,
-            ),
+            ("octagonal-c8", (c8_pattern, c8_paper, c8_opposite), false),
             ("radial-c16", sixteen_sector_cycle_pattern(8), false),
             ("cactus-c32", (c32_pattern, c32_paper, c32_hinges), true),
             ("cactus-c64", (c64_pattern, c64_paper, c64_hinges), true),
@@ -6370,7 +6368,7 @@ mod tests {
                         .collect(),
                     max_states: 32,
                     max_transitions: 128,
-                    cycle_schedule_v1: (fixture_name != "balloon-c6").then_some(schedule.clone()),
+                    cycle_schedule_v1: cactus.then_some(schedule.clone()),
                 },
                 None,
             )
@@ -6397,7 +6395,7 @@ mod tests {
                     target_angles,
                     max_states: 32,
                     max_transitions: 128,
-                    cycle_schedule_v1: (fixture_name != "balloon-c6").then_some(schedule),
+                    cycle_schedule_v1: cactus.then_some(schedule),
                     expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
                     expected_positive_thickness_binding_sha256: observed
                         .positive_thickness_binding_sha256

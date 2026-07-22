@@ -37,6 +37,21 @@ async function verifyHigherDegreeLifecycle(hinges, label) {
   await page.close()
 }
 
+async function verifyAutomaticOppositePair(hinges, label) {
+  const page = await openScenario('success', hinges)
+  await page.getByLabel('Angle (degrees)').fill(String(2 * Math.atan2(1, 100) * 180 / Math.PI))
+  await page.getByTestId('even-cycle-candidate').click()
+  await page.getByRole('button', { name: 'Search bounded dyadic paths' }).click()
+  await page.getByText(/mutation candidate ready/).waitFor()
+  await page.getByRole('button', { name: 'Issue read-only preview' }).click()
+  await page.getByText(/authenticated one-shot/).waitFor()
+  await page.getByRole('button', { name: 'Apply authenticated path' }).click()
+  await page.getByText('applied-revision-2-timeline-dto-2').waitFor()
+  const evidence = await page.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)
+  if (evidence.readHinges !== hinges || evidence.readScheduleHinges !== 0 || evidence.mintHinges !== hinges || evidence.mintScheduleHinges !== 0 || evidence.mutations !== 1) throw new Error(`${label}: ${JSON.stringify(evidence)}`)
+  await page.close()
+}
+
 try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(origin)).ok) break } catch {} await new Promise(resolve => setTimeout(resolve, 100)) }
   browser = await chromium.launch({ headless: true })
@@ -56,18 +71,9 @@ try {
   if (JSON.stringify(successEvidence) !== JSON.stringify({ reads: 1, readHinges: 6, readScheduleHinges: 6, mints: 1, mintHinges: 6, mintScheduleHinges: 6, applyAttempts: 2, mutations: 1, failures: 1, cancels: 0, timelineDtos: 2, undos: 1, redos: 1, reopens: 1 })) throw new Error(JSON.stringify(successEvidence))
   await success.close()
 
-  const automaticC6 = await openScenario('success', 6)
-  await automaticC6.getByLabel('Angle (degrees)').fill(String(2 * Math.atan2(1, 100) * 180 / Math.PI))
-  await automaticC6.getByTestId('even-cycle-candidate').click()
-  await automaticC6.getByRole('button', { name: 'Search bounded dyadic paths' }).click()
-  await automaticC6.getByText(/mutation candidate ready/).waitFor()
-  await automaticC6.getByRole('button', { name: 'Issue read-only preview' }).click()
-  await automaticC6.getByText(/authenticated one-shot/).waitFor()
-  await automaticC6.getByRole('button', { name: 'Apply authenticated path' }).click()
-  await automaticC6.getByText('applied-revision-2-timeline-dto-2').waitFor()
-  const automaticEvidence = await automaticC6.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)
-  if (automaticEvidence.readHinges !== 6 || automaticEvidence.readScheduleHinges !== 0 || automaticEvidence.mintHinges !== 6 || automaticEvidence.mintScheduleHinges !== 0 || automaticEvidence.mutations !== 1) throw new Error(`automatic C6: ${JSON.stringify(automaticEvidence)}`)
-  await automaticC6.close()
+  await verifyAutomaticOppositePair(6, 'automatic C6')
+  await verifyAutomaticOppositePair(8, 'automatic C8')
+  await verifyAutomaticOppositePair(16, 'automatic C16')
 
   await verifyHigherDegreeLifecycle(8, 'C8')
   await verifyHigherDegreeLifecycle(16, 'C16')

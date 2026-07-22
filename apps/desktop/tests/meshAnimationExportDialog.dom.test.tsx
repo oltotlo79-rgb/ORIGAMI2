@@ -68,4 +68,18 @@ describe('MeshAnimationExportDialog', () => {
     fireEvent.click(save)
     expect(onSave).not.toHaveBeenCalled()
   })
+
+  it('keeps keyboard focus inside the modal in both tab directions', () => {
+    render(<MeshAnimationExportDialog preview={PREVIEW} busy={false} error={null} notice={null} onRetry={vi.fn()} onSave={vi.fn()} onCancel={vi.fn()} />)
+    const buttons = (screen.getAllByRole('button') as HTMLButtonElement[])
+      .filter((button) => !button.disabled)
+    const first = buttons[0]
+    const last = buttons.at(-1) as HTMLButtonElement
+    last.focus()
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(first)
+    first.focus()
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(last)
+  })
 })

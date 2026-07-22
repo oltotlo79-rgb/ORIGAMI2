@@ -4592,6 +4592,27 @@ export function addEdge(
   })
 }
 
+export function addRayToFirstTarget(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  start: string,
+  angleMicrodegrees: number,
+  kind: 'mountain' | 'valley' | 'auxiliary' | 'cut',
+) {
+  if (!Number.isSafeInteger(angleMicrodegrees) || angleMicrodegrees < 0 || angleMicrodegrees >= 360_000_000) {
+    return Promise.reject(new Error('Angle must be an exact microdegree value from 0° up to 360° (exclusive).'))
+  }
+  return invoke<ProjectSnapshot>('add_ray_to_first_target', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    start,
+    angleMicrodegrees,
+    kind,
+  })
+}
+
 export function addConnectedVertex(
   expectedProjectId: string,
   expectedRevision: number,

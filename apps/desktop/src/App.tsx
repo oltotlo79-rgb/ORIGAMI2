@@ -66,6 +66,7 @@ import {
   addGeometricConstraint,
   addEdgeOrientationConstraint,
   addConnectedVertex,
+  addRayToFirstTarget,
   addInstructionStep,
   addVertex,
   appendNamedTechniqueInstructionSteps,
@@ -3309,6 +3310,44 @@ function App() {
     const currentVertex = currentVertices[0]
     const currentUnit = resolveLengthDisplayUnit(current)
     const form = new FormData(event.currentTarget)
+    const submitter = (event.nativeEvent as SubmitEvent).submitter
+    if (submitter instanceof HTMLButtonElement && submitter.name) {
+      form.set(submitter.name, submitter.value)
+    }
+    if (form.get('vertex_action') === 'ray_to_target') {
+      const angleSource = String(form.get('polar_angle_degrees') ?? '')
+      const edgeKind = form.get('polar_edge_kind')
+      let angleDegrees: number
+      try {
+        angleDegrees = (await evaluateFiniteNumericExpression(angleSource)).value
+      } catch (error) {
+        setCoreStatus(editExpressionErrorMessage(error))
+        return
+      }
+      const angleMicrodegrees = angleDegrees * 1_000_000
+      if (!Number.isSafeInteger(angleMicrodegrees) || angleMicrodegrees < 0
+        || angleMicrodegrees >= 360_000_000
+        || (edgeKind !== 'mountain' && edgeKind !== 'valley'
+          && edgeKind !== 'auxiliary' && edgeKind !== 'cut')
+        || (edgeKind === 'cut' && !current.cutting_allowed)) {
+        setCoreStatus(appMessage({
+          ja: '0度以上360度未満の角度を小数6桁以内で入力し、利用可能な線種を選択してください。',
+          en: 'Enter an angle from 0° up to 360° (exclusive) with at most six decimal places and choose an available line type.',
+        }))
+        return
+      }
+      const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
+        addRayToFirstTarget(projectId, revision, projectInstanceId, selectedVertex.id,
+          angleMicrodegrees, edgeKind))
+      if (!succeeded) return
+      setSelectedLineId(null)
+      setPendingEdgeStart(null)
+      setCoreStatus(appMessage({
+        ja: '指定角度で最初に交差する対象まで線を作図しました。',
+        en: 'Drew a line to the first target intersected at the specified angle.',
+      }))
+      return
+    }
     if (form.get('vertex_action') === 'polar_endpoint') {
       const lengthDisplayExpression = String(
         form.get('polar_length_display') ?? '',
@@ -8027,6 +8066,15 @@ function App() {
                           ja: '長さと角度から線を作図',
                           en: 'Draw line by length and angle',
                         })}
+                      </button>
+                      <button
+                        type="submit"
+                        name="vertex_action"
+                        value="ray_to_target"
+                        data-testid="draw-ray-to-first-target"
+                        disabled={coreBusy || selectedVertexLocked}
+                      >
+                        {text({ ja: '角度から最初の対象まで作図', en: 'Draw to first target by angle' })}
                       </button>
                     </div>
                   </fieldset>

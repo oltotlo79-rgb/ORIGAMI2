@@ -290,6 +290,7 @@ pub enum Command {
         pattern: CreasePattern,
         project_layers: ProjectLayerDocumentV1,
     },
+    ApplyRayToTargetDocument(RayToTargetPlan),
     ApplyStackedFoldDocument {
         pattern: CreasePattern,
         paper: Paper,
@@ -297,6 +298,22 @@ pub enum Command {
         project_layers: ProjectLayerDocumentV1,
         beginner_design_profile: Box<BeginnerDesignProfileV1>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RayToTargetPlan {
+    before_fingerprint: String,
+    before_project_layers: ProjectLayerDocumentV1,
+    source: VertexId,
+    angle_microdegrees: u32,
+    kind: EdgeKind,
+    pattern: CreasePattern,
+    paper: Paper,
+    project_layers: ProjectLayerDocumentV1,
+    new_vertices: Vec<VertexId>,
+    new_edges: Vec<EdgeId>,
+    removed_edges: Vec<EdgeId>,
+    changed_edges: Vec<EdgeId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -312,6 +329,12 @@ pub struct CommandResult {
 
 #[derive(Debug, Error, PartialEq)]
 pub enum CommandError {
+    #[error("ray angle must be a canonical microdegree value below 360 degrees")]
+    InvalidRayAngle,
+    #[error("the ray does not reach a target")]
+    RayTargetNotFound,
+    #[error("the nearest ray target is ambiguous")]
+    RayTargetAmbiguous,
     #[error("annotation is invalid or unavailable")]
     InvalidAnnotation,
     #[error("annotation {0:?} was not found")]
@@ -2595,6 +2618,315 @@ impl EditorState {
         self.execute(expected_revision, command)
     }
 
+    /// Plans one ray-to-nearest-target edit as one normalized document command.
+    pub fn plan_add_ray_to_first_target(
+        &self,
+        expected_revision: Revision,
+        start: VertexId,
+        angle_microdegrees: u32,
+        kind: EdgeKind,
+    ) -> Result<Command, CommandError> {
+        self.ensure_revision(expected_revision)?;
+        if angle_microdegrees >= 360_000_000 {
+            return Err(CommandError::InvalidRayAngle);
+        }
+        let mut positions = std::collections::HashMap::with_capacity(self.pattern.vertices.len());
+        for vertex in &self.pattern.vertices {
+            if positions.insert(vertex.id, vertex.position).is_some() {
+                return Err(CommandError::IntersectionClusterJunctionPositionAmbiguous);
+            }
+        }
+        let origin = *positions
+            .get(&start)
+            .ok_or(CommandError::VertexNotFound(start))?;
+        if !origin.x.is_finite() || !origin.y.is_finite() {
+            return Err(CommandError::InvalidRayAngle);
+        }
+        let radians = f64::from(angle_microdegrees) * std::f64::consts::PI / 180_000_000.0;
+        let (dy, dx) = radians.sin_cos();
+        if !dx.is_finite() || !dy.is_finite() {
+            return Err(CommandError::InvalidRayAngle);
+        }
+        let coordinate_scale = positions.values().fold(0.0_f64, |scale, point| {
+            scale.max(point.x.abs()).max(point.y.abs())
+        });
+        if !coordinate_scale.is_finite() {
+            return Err(CommandError::InvalidRayAngle);
+        }
+        let coordinate_scale = if coordinate_scale > 0.0 {
+            coordinate_scale
+        } else {
+            1.0
+        };
+        let ox = origin.x / coordinate_scale;
+        let oy = origin.y / coordinate_scale;
+        const CROSS_BOUND: f64 = 128.0 * f64::EPSILON;
+        const PARAMETER_BOUND: f64 = 128.0 * f64::EPSILON;
+        const FRACTION_BOUND: f64 = 256.0 * f64::EPSILON;
+        #[derive(Clone, Copy)]
+        struct Hit {
+            t: f64,
+            edge: Option<EdgeId>,
+            fraction: f64,
+            point: Point2,
+            endpoint: Option<VertexId>,
+        }
+        let mut hits = Vec::new();
+        for edge in &self.pattern.edges {
+            let a = *positions
+                .get(&edge.start)
+                .ok_or(CommandError::VertexNotFound(edge.start))?;
+            let b = *positions
+                .get(&edge.end)
+                .ok_or(CommandError::VertexNotFound(edge.end))?;
+            if ![a.x, a.y, b.x, b.y].into_iter().all(f64::is_finite) {
+                continue;
+            }
+            let ax = a.x / coordinate_scale - ox;
+            let ay = a.y / coordinate_scale - oy;
+            let bx = b.x / coordinate_scale - ox;
+            let by = b.y / coordinate_scale - oy;
+            let sx = bx - ax;
+            let sy = by - ay;
+            let qx = ax;
+            let qy = ay;
+            let denominator = dx * sy - dy * sx;
+            let collinear = (qx * dy - qy * dx).abs() <= CROSS_BOUND;
+            if denominator.abs() <= CROSS_BOUND {
+                if collinear
+                    && ((qx * dx + qy * dy) > PARAMETER_BOUND
+                        || (bx * dx + by * dy) > PARAMETER_BOUND)
+                {
+                    return Err(CommandError::RayTargetAmbiguous);
+                }
+                continue;
+            }
+            let t = (qx * sy - qy * sx) / denominator;
+            let fraction = (qx * dy - qy * dx) / denominator;
+            if !t.is_finite()
+                || !fraction.is_finite()
+                || t <= PARAMETER_BOUND
+                || fraction < -FRACTION_BOUND
+                || fraction > 1.0 + FRACTION_BOUND
+            {
+                continue;
+            }
+            let (fraction, point, endpoint) = if fraction <= FRACTION_BOUND {
+                (0.0, a, Some(edge.start))
+            } else if fraction >= 1.0 - FRACTION_BOUND {
+                (1.0, b, Some(edge.end))
+            } else {
+                (
+                    fraction,
+                    Point2 {
+                        x: (ox + dx * t) * coordinate_scale,
+                        y: (oy + dy * t) * coordinate_scale,
+                    },
+                    None,
+                )
+            };
+            if !point.x.is_finite() || !point.y.is_finite() {
+                continue;
+            }
+            hits.push(Hit {
+                t,
+                edge: Some(edge.id),
+                fraction,
+                point,
+                endpoint,
+            });
+        }
+        for vertex in self
+            .pattern
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.id != start)
+        {
+            let qx = vertex.position.x / coordinate_scale - ox;
+            let qy = vertex.position.y / coordinate_scale - oy;
+            let t = qx * dx + qy * dy;
+            if [qx, qy, t].into_iter().all(f64::is_finite)
+                && t > PARAMETER_BOUND
+                && (qx * dy - qy * dx).abs() <= CROSS_BOUND
+            {
+                hits.push(Hit {
+                    t,
+                    edge: None,
+                    fraction: 0.0,
+                    point: vertex.position,
+                    endpoint: Some(vertex.id),
+                });
+            }
+        }
+        hits.sort_by(|left, right| left.t.total_cmp(&right.t));
+        let Some(first) = hits.first().copied() else {
+            return Err(CommandError::RayTargetNotFound);
+        };
+        let tie_bound = 256.0 * f64::EPSILON * first.t.abs().max(1.0);
+        let nearest = hits
+            .iter()
+            .copied()
+            .take_while(|hit| (hit.t - first.t).abs() <= tie_bound)
+            .collect::<Vec<_>>();
+        let existing_endpoint = nearest.iter().map(|hit| hit.endpoint).collect::<Vec<_>>();
+        let target = if existing_endpoint
+            .iter()
+            .all(|endpoint| *endpoint == existing_endpoint[0])
+            && existing_endpoint[0].is_some()
+            && nearest.iter().all(|hit| {
+                let point_scale = first.point.x.abs().max(first.point.y.abs()).max(1.0);
+                (hit.point.x - first.point.x).abs() <= 256.0 * f64::EPSILON * point_scale
+                    && (hit.point.y - first.point.y).abs() <= 256.0 * f64::EPSILON * point_scale
+            }) {
+            let target = existing_endpoint[0].unwrap();
+            let represented = nearest
+                .iter()
+                .filter_map(|hit| hit.edge)
+                .collect::<std::collections::HashSet<_>>();
+            if self.pattern.edges.iter().any(|edge| {
+                (edge.start == target || edge.end == target) && !represented.contains(&edge.id)
+            }) {
+                return Err(CommandError::RayTargetAmbiguous);
+            }
+            target
+        } else if nearest.len() == 1 && first.endpoint.is_none() {
+            let mut staged = self.clone();
+            let new_vertex = VertexId::new();
+            let hit_edge = first.edge.ok_or(CommandError::RayTargetAmbiguous)?;
+            let split = if staged
+                .pattern
+                .edges
+                .iter()
+                .find(|edge| edge.id == hit_edge)
+                .is_some_and(|edge| edge.kind == EdgeKind::Boundary)
+            {
+                Command::SplitBoundaryEdge {
+                    edge: hit_edge,
+                    new_vertex,
+                    new_edge: EdgeId::new(),
+                    fraction: first.fraction,
+                }
+            } else {
+                Command::SplitEdge {
+                    edge: hit_edge,
+                    new_vertex,
+                    new_edge: EdgeId::new(),
+                    fraction: first.fraction,
+                }
+            };
+            staged.execute(expected_revision, split)?;
+            let normalized = staged.plan_add_edge_with_intersections(
+                staged.revision(),
+                EdgeId::new(),
+                start,
+                new_vertex,
+                kind,
+            )?;
+            let Command::ApplyNormalizedEdgeDocument {
+                pattern,
+                project_layers,
+            } = normalized
+            else {
+                return Err(CommandError::RayTargetAmbiguous);
+            };
+            return Ok(Command::ApplyRayToTargetDocument(
+                self.seal_ray_to_target_plan(
+                    start,
+                    angle_microdegrees,
+                    kind,
+                    pattern,
+                    staged.paper,
+                    project_layers,
+                ),
+            ));
+        } else {
+            return Err(CommandError::RayTargetAmbiguous);
+        };
+        let normalized = self.plan_add_edge_with_intersections(
+            expected_revision,
+            EdgeId::new(),
+            start,
+            target,
+            kind,
+        )?;
+        let Command::ApplyNormalizedEdgeDocument {
+            pattern,
+            project_layers,
+        } = normalized
+        else {
+            return Err(CommandError::RayTargetAmbiguous);
+        };
+        Ok(Command::ApplyRayToTargetDocument(
+            self.seal_ray_to_target_plan(
+                start,
+                angle_microdegrees,
+                kind,
+                pattern,
+                self.paper.clone(),
+                project_layers,
+            ),
+        ))
+    }
+
+    fn seal_ray_to_target_plan(
+        &self,
+        source: VertexId,
+        angle_microdegrees: u32,
+        kind: EdgeKind,
+        pattern: CreasePattern,
+        paper: Paper,
+        project_layers: ProjectLayerDocumentV1,
+    ) -> RayToTargetPlan {
+        let old_vertices = self
+            .pattern
+            .vertices
+            .iter()
+            .map(|v| v.id)
+            .collect::<std::collections::HashSet<_>>();
+        let old_edges = self
+            .pattern
+            .edges
+            .iter()
+            .map(|e| e.id)
+            .collect::<std::collections::HashSet<_>>();
+        let final_vertices = pattern
+            .vertices
+            .iter()
+            .map(|v| v.id)
+            .collect::<std::collections::HashSet<_>>();
+        let final_edges = pattern
+            .edges
+            .iter()
+            .map(|e| e.id)
+            .collect::<std::collections::HashSet<_>>();
+        RayToTargetPlan {
+            before_fingerprint: self.fold_model_fingerprint_v1(),
+            before_project_layers: self.project_layers.clone(),
+            source,
+            angle_microdegrees,
+            kind,
+            new_vertices: final_vertices.difference(&old_vertices).copied().collect(),
+            new_edges: final_edges.difference(&old_edges).copied().collect(),
+            removed_edges: old_edges.difference(&final_edges).copied().collect(),
+            changed_edges: self
+                .pattern
+                .edges
+                .iter()
+                .filter(|old| {
+                    pattern
+                        .edges
+                        .iter()
+                        .find(|new| new.id == old.id)
+                        .is_some_and(|new| new != *old)
+                })
+                .map(|edge| edge.id)
+                .collect(),
+            pattern,
+            paper,
+            project_layers,
+        }
+    }
+
     pub fn undo(&mut self, expected_revision: Revision) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
         let next_revision = self.next_revision()?;
@@ -2693,6 +3025,286 @@ impl EditorState {
                         &mut self.project_layers,
                         project_layers.clone(),
                     ),
+                })
+            }
+            Command::ApplyRayToTargetDocument(ref plan) => {
+                let RayToTargetPlan {
+                    pattern,
+                    paper,
+                    project_layers,
+                    ..
+                } = plan;
+                let current_vertices = self
+                    .pattern
+                    .vertices
+                    .iter()
+                    .map(|v| v.id)
+                    .collect::<std::collections::HashSet<_>>();
+                let current_edges = self
+                    .pattern
+                    .edges
+                    .iter()
+                    .map(|e| e.id)
+                    .collect::<std::collections::HashSet<_>>();
+                let final_vertices = pattern
+                    .vertices
+                    .iter()
+                    .map(|v| v.id)
+                    .collect::<std::collections::HashSet<_>>();
+                let final_edges = pattern
+                    .edges
+                    .iter()
+                    .map(|e| e.id)
+                    .collect::<std::collections::HashSet<_>>();
+                let mut actual_new_vertices = final_vertices
+                    .difference(&current_vertices)
+                    .copied()
+                    .collect::<Vec<_>>();
+                let mut actual_new_edges = final_edges
+                    .difference(&current_edges)
+                    .copied()
+                    .collect::<Vec<_>>();
+                let mut actual_removed_edges = current_edges
+                    .difference(&final_edges)
+                    .copied()
+                    .collect::<Vec<_>>();
+                let mut actual_changed_edges = self
+                    .pattern
+                    .edges
+                    .iter()
+                    .filter(|old| {
+                        pattern
+                            .edges
+                            .iter()
+                            .find(|new| new.id == old.id)
+                            .is_some_and(|new| new != *old)
+                    })
+                    .map(|edge| edge.id)
+                    .collect::<Vec<_>>();
+                actual_new_vertices.sort_by_key(|id| id.canonical_bytes());
+                actual_new_edges.sort_by_key(|id| id.canonical_bytes());
+                actual_removed_edges.sort_by_key(|id| id.canonical_bytes());
+                actual_changed_edges.sort_by_key(|id| id.canonical_bytes());
+                let mut allowed_new_vertices = plan.new_vertices.clone();
+                allowed_new_vertices.sort_by_key(|id| id.canonical_bytes());
+                let mut allowed_new_edges = plan.new_edges.clone();
+                allowed_new_edges.sort_by_key(|id| id.canonical_bytes());
+                let mut allowed_removed_edges = plan.removed_edges.clone();
+                allowed_removed_edges.sort_by_key(|id| id.canonical_bytes());
+                let mut allowed_changed_edges = plan.changed_edges.clone();
+                allowed_changed_edges.sort_by_key(|id| id.canonical_bytes());
+                let mut paper_without_boundary = paper.clone();
+                paper_without_boundary.boundary_vertices = self.paper.boundary_vertices.clone();
+                let layer_metadata_unchanged = project_layers.schema_version
+                    == self.project_layers.schema_version
+                    && project_layers.layers == self.project_layers.layers;
+                let existing_assignments_preserved =
+                    self.project_layers.edge_assignments.iter().all(|old| {
+                        plan.removed_edges.contains(&old.edge)
+                            || project_layers.edge_assignments.iter().any(|new| new == old)
+                    });
+                let assignment_diff_allowed =
+                    project_layers.edge_assignments.iter().all(|assignment| {
+                        self.project_layers.edge_assignments.contains(assignment)
+                            || plan.new_edges.contains(&assignment.edge)
+                    });
+                let boundary_without_generated = paper
+                    .boundary_vertices
+                    .iter()
+                    .filter(|id| !plan.new_vertices.contains(id))
+                    .copied()
+                    .collect::<Vec<_>>();
+                let authored_edges = pattern
+                    .edges
+                    .iter()
+                    .filter(|edge| {
+                        plan.new_edges.contains(&edge.id)
+                            && edge.kind == plan.kind
+                            && (edge.start == plan.source || edge.end == plan.source)
+                    })
+                    .collect::<Vec<_>>();
+                let authored_direction_valid =
+                    authored_edges.as_slice().first().is_some_and(|edge| {
+                        let target_id = if edge.start == plan.source {
+                            edge.end
+                        } else {
+                            edge.start
+                        };
+                        let Some(source) = pattern.vertices.iter().find(|v| v.id == plan.source)
+                        else {
+                            return false;
+                        };
+                        let Some(target) = pattern.vertices.iter().find(|v| v.id == target_id)
+                        else {
+                            return false;
+                        };
+                        let radians = f64::from(plan.angle_microdegrees) * std::f64::consts::PI
+                            / 180_000_000.0;
+                        let (dy, dx) = radians.sin_cos();
+                        let scale = source
+                            .position
+                            .x
+                            .abs()
+                            .max(source.position.y.abs())
+                            .max(target.position.x.abs())
+                            .max(target.position.y.abs());
+                        let scale = if scale > 0.0 { scale } else { 1.0 };
+                        let qx = target.position.x / scale - source.position.x / scale;
+                        let qy = target.position.y / scale - source.position.y / scale;
+                        qx * dx + qy * dy > 128.0 * f64::EPSILON
+                            && (qx * dy - qy * dx).abs() <= 256.0 * f64::EPSILON
+                    });
+                let generated_vertices_on_authored_segment =
+                    authored_edges.as_slice().first().is_some_and(|edge| {
+                        let target_id = if edge.start == plan.source {
+                            edge.end
+                        } else {
+                            edge.start
+                        };
+                        let Some(source) = pattern.vertices.iter().find(|v| v.id == plan.source)
+                        else {
+                            return false;
+                        };
+                        let Some(target) = pattern.vertices.iter().find(|v| v.id == target_id)
+                        else {
+                            return false;
+                        };
+                        let scale = source
+                            .position
+                            .x
+                            .abs()
+                            .max(source.position.y.abs())
+                            .max(target.position.x.abs())
+                            .max(target.position.y.abs());
+                        let scale = if scale > 0.0 { scale } else { 1.0 };
+                        let tx = target.position.x / scale - source.position.x / scale;
+                        let ty = target.position.y / scale - source.position.y / scale;
+                        let target_len2 = tx * tx + ty * ty;
+                        plan.new_vertices.iter().all(|id| {
+                            pattern
+                                .vertices
+                                .iter()
+                                .find(|v| v.id == *id)
+                                .is_some_and(|v| {
+                                    let qx = v.position.x / scale - source.position.x / scale;
+                                    let qy = v.position.y / scale - source.position.y / scale;
+                                    let cross = (qx * ty - qy * tx).abs();
+                                    let dot = qx * tx + qy * ty;
+                                    cross <= 256.0 * f64::EPSILON
+                                        && dot >= -256.0 * f64::EPSILON
+                                        && dot <= target_len2 + 256.0 * f64::EPSILON
+                                })
+                        })
+                    });
+                let removed_edges_split_on_generated_vertex = plan
+                    .removed_edges
+                    .iter()
+                    .chain(&plan.changed_edges)
+                    .all(|id| {
+                        self.pattern
+                            .edges
+                            .iter()
+                            .find(|edge| edge.id == *id)
+                            .is_some_and(|edge| {
+                                let Some(a) =
+                                    self.pattern.vertices.iter().find(|v| v.id == edge.start)
+                                else {
+                                    return false;
+                                };
+                                let Some(b) =
+                                    self.pattern.vertices.iter().find(|v| v.id == edge.end)
+                                else {
+                                    return false;
+                                };
+                                plan.new_vertices.iter().any(|new_id| {
+                                    pattern
+                                        .vertices
+                                        .iter()
+                                        .find(|v| v.id == *new_id)
+                                        .is_some_and(|v| {
+                                            let scale = a
+                                                .position
+                                                .x
+                                                .abs()
+                                                .max(a.position.y.abs())
+                                                .max(b.position.x.abs())
+                                                .max(b.position.y.abs())
+                                                .max(v.position.x.abs())
+                                                .max(v.position.y.abs());
+                                            let scale = if scale > 0.0 { scale } else { 1.0 };
+                                            let ax = a.position.x / scale;
+                                            let ay = a.position.y / scale;
+                                            let bx = b.position.x / scale;
+                                            let by = b.position.y / scale;
+                                            let px = v.position.x / scale;
+                                            let py = v.position.y / scale;
+                                            ((px - ax) * (by - ay) - (py - ay) * (bx - ax)).abs()
+                                                <= 256.0 * f64::EPSILON
+                                                && (px - ax) * (px - bx) + (py - ay) * (py - by)
+                                                    <= 256.0 * f64::EPSILON
+                                        })
+                                })
+                            })
+                    });
+                if self.fold_model_fingerprint_v1() != plan.before_fingerprint
+                    || plan.angle_microdegrees >= 360_000_000
+                    || plan.kind == EdgeKind::Boundary
+                    || self.project_layers != plan.before_project_layers
+                    || paper_without_boundary != self.paper
+                    || !layer_metadata_unchanged
+                    || !existing_assignments_preserved
+                    || !assignment_diff_allowed
+                    || boundary_without_generated != self.paper.boundary_vertices
+                    || paper.boundary_vertices.iter().any(|id| {
+                        !self.paper.boundary_vertices.contains(id)
+                            && !plan.new_vertices.contains(id)
+                    })
+                    || authored_edges.len() != 1
+                    || !authored_direction_valid
+                    || !generated_vertices_on_authored_segment
+                    || !removed_edges_split_on_generated_vertex
+                    || !source_edges_preserved_by_exact_subdivision(&self.pattern, pattern)
+                    || actual_new_vertices != allowed_new_vertices
+                    || actual_new_edges != allowed_new_edges
+                    || actual_removed_edges != allowed_removed_edges
+                    || actual_changed_edges != allowed_changed_edges
+                    || plan.new_edges.iter().any(|id| {
+                        plan.removed_edges.contains(id) || plan.changed_edges.contains(id)
+                    })
+                    || plan
+                        .removed_edges
+                        .iter()
+                        .any(|id| plan.changed_edges.contains(id))
+                    || self.pattern.vertices.iter().any(|old| {
+                        pattern.vertices.iter().find(|new| new.id == old.id) != Some(old)
+                    })
+                    || self.pattern.edges.iter().any(|old| {
+                        !plan.removed_edges.contains(&old.id)
+                            && !plan.changed_edges.contains(&old.id)
+                            && pattern.edges.iter().find(|new| new.id == old.id) != Some(old)
+                    })
+                {
+                    return Err(CommandError::InvalidStackedFoldDocument);
+                }
+                if !validate_crease_pattern(pattern).is_valid()
+                    || !validate_paper(paper, pattern).is_valid()
+                {
+                    return Err(CommandError::InvalidStackedFoldDocument);
+                }
+                validate_project_layer_document_against_pattern_v1(project_layers, pattern)?;
+                for record in &self.geometric_constraints.constraints {
+                    validate_geometric_constraint_record_against_pattern_v1(pattern, record)
+                        .map_err(CommandError::GeometricConstraintGeometryInvalid)?;
+                }
+                Ok(Inverse::RestoreStackedFoldDocument {
+                    pattern: std::mem::replace(&mut self.pattern, pattern.clone()),
+                    paper: std::mem::replace(&mut self.paper, paper.clone()),
+                    instruction_timeline: self.instruction_timeline.clone(),
+                    project_layers: std::mem::replace(
+                        &mut self.project_layers,
+                        project_layers.clone(),
+                    ),
+                    beginner_design_profile: self.beginner_design_profile.clone().into(),
                 })
             }
             Command::ApplyStackedFoldDocument {
@@ -3749,6 +4361,7 @@ impl EditorState {
             | Command::MoveLayer { .. }
             | Command::MirrorSelection { .. }
             | Command::ApplyNormalizedEdgeDocument { .. }
+            | Command::ApplyRayToTargetDocument(..)
             | Command::ApplyStackedFoldDocument { .. } => Ok(()),
         }
     }
@@ -4120,6 +4733,7 @@ impl EditorState {
             | Command::AssignEdgeToLayer { .. }
             | Command::MirrorSelection { .. }
             | Command::ApplyNormalizedEdgeDocument { .. }
+            | Command::ApplyRayToTargetDocument(..)
             | Command::ApplyStackedFoldDocument { .. } => {}
         }
         Ok(targets)
@@ -6131,6 +6745,7 @@ impl Command {
                 ..
             } => (new_vertices.len(), new_edges.len()),
             Self::ApplyNormalizedEdgeDocument { pattern, .. }
+            | Self::ApplyRayToTargetDocument(RayToTargetPlan { pattern, .. })
             | Self::ApplyStackedFoldDocument { pattern, .. } => {
                 let added_vertices = pattern.vertices.len().saturating_sub(0);
                 let added_edges = pattern.edges.len().saturating_sub(0);
@@ -6166,6 +6781,7 @@ impl Command {
             | Self::RemoveBoundaryVertex { .. }
             | Self::MirrorSelection { .. }
             | Self::ApplyNormalizedEdgeDocument { .. }
+            | Self::ApplyRayToTargetDocument(..)
             | Self::ApplyStackedFoldDocument { .. } => true,
             Self::UpdateProjectMemo { .. }
             | Self::UpdateBeginnerDesignProfile { .. }
@@ -6531,6 +7147,13 @@ impl Command {
                 instructions: false,
                 constraints: false,
             },
+            Self::ApplyRayToTargetDocument(RayToTargetPlan { ref pattern, .. }) => Changes {
+                vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
+                edges: pattern.edges.iter().map(|edge| edge.id).collect(),
+                settings: true,
+                instructions: false,
+                constraints: false,
+            },
             Self::ApplyStackedFoldDocument { ref pattern, .. } => Changes {
                 vertices: pattern.vertices.iter().map(|vertex| vertex.id).collect(),
                 edges: pattern.edges.iter().map(|edge| edge.id).collect(),
@@ -6827,6 +7450,353 @@ mod tests {
         assert_eq!(editor.pattern(), &original);
         editor.redo(2).expect("redo the atomic normalized add");
         assert_eq!(editor.pattern(), &normalized);
+    }
+
+    #[test]
+    fn ray_to_first_edge_splits_and_adds_as_one_history_entry() {
+        let source = vertex_at(10.0, 25.0);
+        let low = vertex_at(15.0, 24.0);
+        let high = vertex_at(15.0, 26.0);
+        let target = Edge {
+            id: EdgeId::new(),
+            start: low.id,
+            end: high.id,
+            kind: EdgeKind::Valley,
+        };
+        let sheet = crate::create_rectangular_sheet(100.0, 50.0, false).expect("valid sheet");
+        let mut original = sheet.pattern().clone();
+        original.vertices.extend([source.clone(), low, high]);
+        original.edges.push(target);
+        let mut editor = EditorState::with_paper(original.clone(), sheet.paper().clone());
+        let command = editor
+            .plan_add_ray_to_first_target(0, source.id, 0, EdgeKind::Mountain)
+            .expect("plan ray hit");
+        editor
+            .execute(0, command)
+            .expect("apply ray hit atomically");
+        assert_eq!(editor.revision(), 1);
+        assert_eq!(editor.pattern().vertices.len(), original.vertices.len() + 1);
+        assert_eq!(editor.pattern().edges.len(), original.edges.len() + 2);
+        let applied = editor.pattern().clone();
+        editor.undo(1).expect("undo ray edit");
+        assert_eq!(editor.pattern(), &original);
+        editor.redo(2).expect("redo ray edit");
+        assert_eq!(editor.pattern(), &applied);
+    }
+
+    #[test]
+    fn ray_prefers_nearest_isolated_vertex_and_rejects_collinear_or_stale() {
+        let source = vertex_at(10.0, 25.0);
+        let nearest = vertex_at(12.0, 25.0);
+        let far = vertex_at(14.0, 25.0);
+        let sheet = crate::create_rectangular_sheet(100.0, 50.0, false).expect("valid sheet");
+        let mut pattern = sheet.pattern().clone();
+        pattern
+            .vertices
+            .extend([source.clone(), nearest.clone(), far.clone()]);
+        let mut editor = EditorState::with_paper(pattern, sheet.paper().clone());
+        let command = editor
+            .plan_add_ray_to_first_target(0, source.id, 0, EdgeKind::Auxiliary)
+            .expect("isolated vertex is a ray target");
+        editor.execute(0, command).expect("add to nearest vertex");
+        assert!(
+            editor
+                .pattern()
+                .edges
+                .iter()
+                .any(|edge| { edge.start == source.id && edge.end == nearest.id })
+        );
+        assert_eq!(
+            editor.plan_add_ray_to_first_target(0, source.id, 0, EdgeKind::Auxiliary,),
+            Err(CommandError::RevisionConflict {
+                expected: 0,
+                actual: 1
+            })
+        );
+
+        let collinear = Edge {
+            id: EdgeId::new(),
+            start: nearest.id,
+            end: far.id,
+            kind: EdgeKind::Valley,
+        };
+        let editor = EditorState::new(CreasePattern {
+            vertices: vec![source.clone(), nearest, far],
+            edges: vec![collinear],
+        });
+        assert_eq!(
+            editor.plan_add_ray_to_first_target(0, source.id, 0, EdgeKind::Mountain,),
+            Err(CommandError::RayTargetAmbiguous)
+        );
+    }
+
+    #[test]
+    fn ray_rejects_invalid_angle_missing_target_and_invalid_paper_without_mutation() {
+        let source = vertex_at(0.0, 0.0);
+        let mut editor = EditorState::new(CreasePattern {
+            vertices: vec![source.clone()],
+            edges: Vec::new(),
+        });
+        let paper = editor.paper().clone();
+        assert_eq!(
+            editor.plan_add_ray_to_first_target(0, source.id, 360_000_000, EdgeKind::Valley),
+            Err(CommandError::InvalidRayAngle)
+        );
+        assert_eq!(
+            editor.plan_add_ray_to_first_target(0, source.id, 90_000_000, EdgeKind::Valley),
+            Err(CommandError::RayTargetNotFound)
+        );
+        let target = vertex_at(1.0, 0.0);
+        editor.pattern.vertices.push(target);
+        let before_command = editor.pattern().clone();
+        let command = editor
+            .plan_add_ray_to_first_target(0, source.id, 0, EdgeKind::Valley)
+            .expect("plan on legacy fixture");
+        assert_eq!(
+            editor.execute(0, command),
+            Err(CommandError::InvalidStackedFoldDocument)
+        );
+        assert_eq!(editor.pattern(), &before_command);
+        assert_eq!(editor.paper(), &paper);
+        assert_eq!(editor.revision(), 0);
+    }
+
+    #[test]
+    fn ray_splits_boundary_and_updates_paper_order_atomically() {
+        let sheet = crate::create_rectangular_sheet(100.0, 50.0, false).expect("valid sheet");
+        let mut pattern = sheet.pattern().clone();
+        let source = vertex_at(10.0, 25.0);
+        pattern.vertices.push(source.clone());
+        let mut editor = EditorState::with_paper(pattern, sheet.paper().clone());
+        let before_pattern = editor.pattern().clone();
+        let before_paper = editor.paper().clone();
+        let command = editor
+            .plan_add_ray_to_first_target(0, source.id, 180_000_000, EdgeKind::Mountain)
+            .expect("boundary hit");
+        editor.execute(0, command).expect("atomic boundary split");
+        assert_eq!(
+            editor.paper().boundary_vertices.len(),
+            before_paper.boundary_vertices.len() + 1
+        );
+        assert_eq!(
+            editor.pattern().vertices.len(),
+            before_pattern.vertices.len() + 1
+        );
+        assert_eq!(editor.pattern().edges.len(), before_pattern.edges.len() + 2);
+        let inserted = editor
+            .paper()
+            .boundary_vertices
+            .iter()
+            .copied()
+            .find(|id| !before_paper.boundary_vertices.contains(id))
+            .expect("inserted boundary vertex");
+        let inserted_vertex = editor
+            .pattern()
+            .vertices
+            .iter()
+            .find(|v| v.id == inserted)
+            .expect("inserted geometry");
+        assert_eq!(inserted_vertex.position, Point2 { x: 0.0, y: 25.0 });
+        let index = editor
+            .paper()
+            .boundary_vertices
+            .iter()
+            .position(|id| *id == inserted)
+            .unwrap();
+        let boundary = &editor.paper().boundary_vertices;
+        let previous = boundary[(index + boundary.len() - 1) % boundary.len()];
+        let next = boundary[(index + 1) % boundary.len()];
+        let position = |id| {
+            editor
+                .pattern()
+                .vertices
+                .iter()
+                .find(|v| v.id == id)
+                .unwrap()
+                .position
+        };
+        assert_eq!(position(previous).x, 0.0);
+        assert_eq!(position(next).x, 0.0);
+        assert_eq!(
+            editor
+                .pattern()
+                .edges
+                .iter()
+                .filter(
+                    |e| e.kind == EdgeKind::Boundary && (e.start == inserted || e.end == inserted)
+                )
+                .count(),
+            2
+        );
+        assert_eq!(
+            editor
+                .pattern()
+                .edges
+                .iter()
+                .filter(|e| e.kind == EdgeKind::Mountain
+                    && ((e.start == source.id && e.end == inserted)
+                        || (e.end == source.id && e.start == inserted)))
+                .count(),
+            1
+        );
+        let applied_pattern = editor.pattern().clone();
+        let applied_paper = editor.paper().clone();
+        editor.undo(1).expect("undo boundary ray");
+        assert_eq!(editor.pattern(), &before_pattern);
+        assert_eq!(editor.paper(), &before_paper);
+        editor.redo(2).expect("redo boundary ray");
+        assert_eq!(editor.pattern(), &applied_pattern);
+        assert_eq!(editor.paper(), &applied_paper);
+        let history = editor
+            .export_history_v1(ori_domain::ProjectId::new())
+            .expect("export ray history");
+        let mut reopened = EditorState::with_document_parts_layers_and_history_v1(
+            editor.pattern().clone(),
+            editor.paper().clone(),
+            editor.instruction_timeline().clone(),
+            editor.geometric_constraints().clone(),
+            editor.project_layers().clone(),
+            history,
+        )
+        .expect("reopen authenticated ray history");
+        reopened.undo(0).expect("undo reopened ray");
+        assert_eq!(reopened.pattern(), &before_pattern);
+        assert_eq!(reopened.paper(), &before_paper);
+        reopened.redo(1).expect("redo reopened ray");
+        assert_eq!(reopened.pattern(), &applied_pattern);
+        assert_eq!(reopened.paper(), &applied_paper);
+    }
+
+    #[test]
+    fn ray_kernel_handles_tiny_scale_cardinal_and_upper_angle_and_rejects_near_tie() {
+        let source = vertex_at(0.0, 0.0);
+        let north = vertex_at(0.0, 1.0e-12);
+        let editor = EditorState::new(CreasePattern {
+            vertices: vec![source.clone(), north],
+            edges: Vec::new(),
+        });
+        assert!(
+            editor
+                .plan_add_ray_to_first_target(0, source.id, 90_000_000, EdgeKind::Auxiliary)
+                .is_ok()
+        );
+
+        let radians = 359_999_999_f64 * std::f64::consts::PI / 180_000_000.0;
+        let upper = vertex_at(1.0e-12 * radians.cos(), 1.0e-12 * radians.sin());
+        let editor = EditorState::new(CreasePattern {
+            vertices: vec![source.clone(), upper],
+            edges: Vec::new(),
+        });
+        assert!(
+            editor
+                .plan_add_ray_to_first_target(0, source.id, 359_999_999, EdgeKind::Valley)
+                .is_ok()
+        );
+
+        let first = vertex_at(1.0, 0.0);
+        let tied = vertex_at(1.0 + 64.0 * f64::EPSILON, 0.0);
+        let editor = EditorState::new(CreasePattern {
+            vertices: vec![source.clone(), first, tied],
+            edges: Vec::new(),
+        });
+        assert_eq!(
+            editor.plan_add_ray_to_first_target(0, source.id, 0, EdgeKind::Mountain),
+            Err(CommandError::RayTargetAmbiguous)
+        );
+
+        let junction = vertex_at(1.0, 0.0);
+        let non_finite = vertex_at(f64::NAN, 1.0);
+        let hidden_incident = Edge {
+            id: EdgeId::new(),
+            start: junction.id,
+            end: non_finite.id,
+            kind: EdgeKind::Valley,
+        };
+        let editor = EditorState::new(CreasePattern {
+            vertices: vec![source.clone(), junction, non_finite],
+            edges: vec![hidden_incident],
+        });
+        assert_eq!(
+            editor.plan_add_ray_to_first_target(0, source.id, 0, EdgeKind::Mountain),
+            Err(CommandError::RayTargetAmbiguous)
+        );
+
+        let sheet = crate::create_rectangular_sheet(100.0, 50.0, false).expect("valid sheet");
+        let corner = sheet
+            .paper()
+            .boundary_vertices
+            .iter()
+            .copied()
+            .find(|id| {
+                sheet
+                    .pattern()
+                    .vertices
+                    .iter()
+                    .find(|v| v.id == *id)
+                    .is_some_and(|v| v.position == Point2 { x: 0.0, y: 0.0 })
+            })
+            .expect("lower-left boundary source");
+        let editor = EditorState::with_paper(sheet.pattern().clone(), sheet.paper().clone());
+        assert_eq!(
+            editor.plan_add_ray_to_first_target(0, corner, 225_000_000, EdgeKind::Auxiliary),
+            Err(CommandError::RayTargetNotFound)
+        );
+    }
+
+    #[test]
+    fn ray_sealed_plan_rejects_semantic_tampering_without_mutation() {
+        let sheet = crate::create_rectangular_sheet(100.0, 50.0, false).expect("valid sheet");
+        let mut pattern = sheet.pattern().clone();
+        let source = vertex_at(10.0, 25.0);
+        pattern.vertices.push(source.clone());
+        let editor = EditorState::with_paper(pattern, sheet.paper().clone());
+        let command = editor
+            .plan_add_ray_to_first_target(0, source.id, 180_000_000, EdgeKind::Mountain)
+            .expect("sealed plan");
+        let verify_rejected = |command: Command| {
+            let mut candidate = editor.clone();
+            let before_pattern = candidate.pattern().clone();
+            let before_paper = candidate.paper().clone();
+            let before_layers = candidate.project_layers().clone();
+            assert_eq!(
+                candidate.execute(0, command),
+                Err(CommandError::InvalidStackedFoldDocument)
+            );
+            assert_eq!(candidate.pattern(), &before_pattern);
+            assert_eq!(candidate.paper(), &before_paper);
+            assert_eq!(candidate.project_layers(), &before_layers);
+            assert_eq!(candidate.revision(), 0);
+        };
+        let mut angle = command.clone();
+        let Command::ApplyRayToTargetDocument(plan) = &mut angle else {
+            panic!("ray plan")
+        };
+        plan.angle_microdegrees = 360_000_000;
+        verify_rejected(angle);
+        let mut kind = command.clone();
+        let Command::ApplyRayToTargetDocument(plan) = &mut kind else {
+            panic!("ray plan")
+        };
+        plan.kind = EdgeKind::Boundary;
+        verify_rejected(kind);
+        let mut changed = command.clone();
+        let Command::ApplyRayToTargetDocument(plan) = &mut changed else {
+            panic!("ray plan")
+        };
+        plan.changed_edges.push(EdgeId::new());
+        verify_rejected(changed);
+        let mut paper = command.clone();
+        let Command::ApplyRayToTargetDocument(plan) = &mut paper else {
+            panic!("ray plan")
+        };
+        plan.paper.thickness_mm += 1.0;
+        verify_rejected(paper);
+        let mut layers = command;
+        let Command::ApplyRayToTargetDocument(plan) = &mut layers else {
+            panic!("ray plan")
+        };
+        plan.project_layers.layers[0].name.push_str(" tampered");
+        verify_rejected(layers);
     }
 
     #[test]

@@ -9911,6 +9911,31 @@ fn add_edge(
 }
 
 #[tauri::command]
+fn add_ray_to_first_target(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    start: VertexId,
+    angle_microdegrees: u32,
+    kind: EdgeKind,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_project_instance_identity(&project, expected_project_instance_id, expected_project_id)?;
+    let command = project
+        .editor
+        .plan_add_ray_to_first_target(expected_revision, start, angle_microdegrees, kind)
+        .map_err(|error| error.to_string())?;
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        command,
+    )
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 fn add_connected_vertex(
     state: State<'_, AppState>,
@@ -14972,6 +14997,7 @@ pub fn run() {
             apply_geometric_constraint_solve,
             remove_vertex,
             add_edge,
+            add_ray_to_first_target,
             add_connected_vertex,
             remove_edge,
             create_project_layer,

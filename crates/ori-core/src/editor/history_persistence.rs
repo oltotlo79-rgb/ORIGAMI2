@@ -327,6 +327,20 @@ enum CommandV1 {
         pattern: CreasePattern,
         project_layers: ProjectLayerDocumentV1,
     },
+    ApplyRayToTargetDocument {
+        before_fingerprint: String,
+        before_project_layers: ProjectLayerDocumentV1,
+        source: VertexId,
+        angle_microdegrees: u32,
+        edge_kind: EdgeKind,
+        pattern: CreasePattern,
+        paper: Paper,
+        project_layers: ProjectLayerDocumentV1,
+        new_vertices: Vec<VertexId>,
+        new_edges: Vec<EdgeId>,
+        removed_edges: Vec<EdgeId>,
+        changed_edges: Vec<EdgeId>,
+    },
     ApplyStackedFoldDocument {
         pattern: CreasePattern,
         paper: Paper,
@@ -811,6 +825,20 @@ fn command_to_wire(command: &Command) -> Result<CommandV1, EditorHistoryErrorV1>
             pattern: pattern.clone(),
             project_layers: project_layers.clone(),
         },
+        Command::ApplyRayToTargetDocument(plan) => CommandV1::ApplyRayToTargetDocument {
+            before_fingerprint: plan.before_fingerprint.clone(),
+            before_project_layers: plan.before_project_layers.clone(),
+            source: plan.source,
+            angle_microdegrees: plan.angle_microdegrees,
+            edge_kind: plan.kind,
+            pattern: plan.pattern.clone(),
+            paper: plan.paper.clone(),
+            project_layers: plan.project_layers.clone(),
+            new_vertices: plan.new_vertices.clone(),
+            new_edges: plan.new_edges.clone(),
+            removed_edges: plan.removed_edges.clone(),
+            changed_edges: plan.changed_edges.clone(),
+        },
         Command::ApplyStackedFoldDocument {
             pattern,
             paper,
@@ -1049,6 +1077,33 @@ fn command_from_wire(command: CommandV1) -> Result<Command, EditorHistoryErrorV1
             pattern,
             project_layers,
         },
+        CommandV1::ApplyRayToTargetDocument {
+            before_fingerprint,
+            before_project_layers,
+            source,
+            angle_microdegrees,
+            edge_kind,
+            pattern,
+            paper,
+            project_layers,
+            new_vertices,
+            new_edges,
+            removed_edges,
+            changed_edges,
+        } => Command::ApplyRayToTargetDocument(RayToTargetPlan {
+            before_fingerprint,
+            before_project_layers,
+            source,
+            angle_microdegrees,
+            kind: edge_kind,
+            pattern,
+            paper,
+            project_layers,
+            new_vertices,
+            new_edges,
+            removed_edges,
+            changed_edges,
+        }),
         CommandV1::ApplyStackedFoldDocument {
             pattern,
             paper,
@@ -1723,6 +1778,23 @@ fn validate_command_finite(command: &Command) -> Result<(), EditorHistoryErrorV1
         Command::ApplyNormalizedEdgeDocument { pattern, .. } => {
             for vertex in &pattern.vertices {
                 validate_vertex_finite(vertex)?;
+            }
+        }
+        Command::ApplyRayToTargetDocument(RayToTargetPlan {
+            pattern,
+            paper,
+            project_layers,
+            ..
+        }) => {
+            for vertex in &pattern.vertices {
+                validate_vertex_finite(vertex)?;
+            }
+            if !validate_crease_pattern(pattern).is_valid()
+                || !validate_paper(paper, pattern).is_valid()
+                || validate_project_layer_document_against_pattern_v1(project_layers, pattern)
+                    .is_err()
+            {
+                return Err(EditorHistoryErrorV1::InvalidCommand);
             }
         }
         Command::ApplyStackedFoldDocument {
@@ -3798,6 +3870,62 @@ mod tests {
         );
         assert!(matches!(result, Err(EditorHistoryErrorV1::InvalidInverse)));
         assert_eq!(history, unchanged);
+    }
+
+    #[test]
+    fn tampered_ray_changed_edge_allowlist_is_rejected_on_reopen() {
+        let sheet = crate::create_rectangular_sheet(100.0, 50.0, false).expect("valid sheet");
+        let mut pattern = sheet.pattern().clone();
+        let source = Vertex {
+            id: VertexId::new(),
+            position: Point2::new(10.0, 25.0),
+        };
+        pattern.vertices.push(source.clone());
+        let mut editor = EditorState::with_paper(pattern, sheet.paper().clone());
+        let command = editor
+            .plan_add_ray_to_first_target(0, source.id, 180_000_000, EdgeKind::Mountain)
+            .expect("ray plan");
+        editor.execute(0, command).expect("ray apply");
+        let mut history = editor
+            .export_history_v1(ProjectId::new())
+            .expect("ray history");
+        let mut angle_tampered = history.clone();
+        let CommandV1::ApplyRayToTargetDocument {
+            angle_microdegrees,
+            edge_kind,
+            ..
+        } = &mut angle_tampered.undo_stack[0].forward
+        else {
+            panic!("ray history command");
+        };
+        *angle_microdegrees = 360_000_000;
+        *edge_kind = EdgeKind::Boundary;
+        assert!(
+            EditorState::with_document_parts_layers_and_history_v1(
+                editor.pattern().clone(),
+                editor.paper().clone(),
+                editor.instruction_timeline().clone(),
+                editor.geometric_constraints().clone(),
+                editor.project_layers().clone(),
+                angle_tampered,
+            )
+            .is_err()
+        );
+        let CommandV1::ApplyRayToTargetDocument { changed_edges, .. } =
+            &mut history.undo_stack[0].forward
+        else {
+            panic!("ray history command");
+        };
+        changed_edges.push(EdgeId::new());
+        let result = EditorState::with_document_parts_layers_and_history_v1(
+            editor.pattern().clone(),
+            editor.paper().clone(),
+            editor.instruction_timeline().clone(),
+            editor.geometric_constraints().clone(),
+            editor.project_layers().clone(),
+            history,
+        );
+        assert!(result.is_err());
     }
 
     #[test]

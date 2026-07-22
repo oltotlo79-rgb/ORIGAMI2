@@ -8155,7 +8155,7 @@ function App() {
                       en: '{count} designs evaluated · grid hash {hash}',
                     }, { count: beginnerGrid.evaluated_grid_points,
                       hash: beginnerGrid.grid_hash.slice(0, 6).map((byte) => byte.toString(16).padStart(2, '0')).join('') })}</p>
-                    <table aria-label="Strict candidate authority comparison">
+                    <table aria-label={text({ ja: '候補適用権限の厳密比較', en: 'Strict candidate authority comparison' })}>
                       <thead><tr>
                         <th>{text({ ja: '選択', en: 'Select' })}</th>
                         <th>{text({ ja: '折り線', en: 'Creases' })}</th>
@@ -8168,15 +8168,18 @@ function App() {
                       </tr></thead>
                       <tbody>{beginnerGrid.candidates.map((candidate) => <tr key={candidate.point.id}>
                         <td><input type="radio" name="beginner-grid-authority"
-                          aria-label={`Select exact candidate ${candidate.point.id + 1}`}
+                          aria-label={formattedText({ ja: '厳密候補 {id} を選択', en: 'Select exact candidate {id}' }, { id: candidate.point.id + 1 })}
                           checked={beginnerGridSelectedPointId === candidate.point.id}
                           onChange={() => setBeginnerGridSelectedPointId(candidate.point.id)} /></td>
                         <td>{candidate.plan.crease_pattern.edges.length}</td>
                         <td>{candidate.plan.instruction_codes.length}</td>
                         <td>{candidate.local_proof_scope}</td>
                         <td>{candidate.global_proof_scope}</td>
-                        <td>{candidate.assessment.proof_scope === 'sufficient' ? 'certified on apply' : 'blocked'}</td>
-                        <td>{candidate.assessment.shape_approximation_score ?? 'not measured'}</td>
+                        <td>{candidate.assessment.proof_scope === 'sufficient'
+                          ? text({ ja: '適用時に認証', en: 'Certified on apply' })
+                          : text({ ja: 'ブロック', en: 'Blocked' })}</td>
+                        <td>{candidate.assessment.shape_approximation_score
+                          ?? text({ ja: '未計測', en: 'Not measured' })}</td>
                         <td>{candidate.paper_efficiency_score}/100</td>
                       </tr>)}</tbody>
                     </table>
@@ -8348,30 +8351,40 @@ function App() {
                     <div aria-label={text({ ja: '生成された展開図と手順の候補', en: 'Generated crease-pattern and instruction candidates' })}>
                       {beginnerCandidates.multi_reference_fusion && (
                         <p role={beginnerCandidates.multi_reference_fusion.apply_allowed ? 'status' : 'alert'}>
-                          {`Image/3D agreement ${beginnerCandidates.multi_reference_fusion.agreement_score}/100; `}
-                          {`extent error ${beginnerCandidates.multi_reference_fusion.normalized_extent_error}/100; `}
-                          {beginnerCandidates.multi_reference_fusion.apply_allowed
-                            ? 'two-source bounded comparison agrees.'
-                            : 'image and GLB disagree; candidate apply is blocked.'}
+                          {formattedText({
+                            ja: '画像/3D一致度 {agreement}/100・範囲誤差 {error}/100・{result}',
+                            en: 'Image/3D agreement {agreement}/100; extent error {error}/100; {result}',
+                          }, {
+                            agreement: beginnerCandidates.multi_reference_fusion.agreement_score,
+                            error: beginnerCandidates.multi_reference_fusion.normalized_extent_error,
+                            result: beginnerCandidates.multi_reference_fusion.apply_allowed
+                              ? text({ ja: '2資料の上限付き比較は一致しました。', en: 'The bounded two-source comparison agrees.' })
+                              : text({ ja: '画像とGLBが不一致のため候補適用をブロックしました。', en: 'Image and GLB disagree; candidate apply is blocked.' }),
+                          })}
                         </p>
                       )}
                       {beginnerCandidates.reference_consensus_analysis && (
-                        <div aria-label="Reference consensus" role={beginnerCandidates.reference_consensus_analysis.apply_allowed ? 'status' : 'alert'}>
-                          <p>{`Reference consensus ${beginnerCandidates.reference_consensus_analysis.agreement_score}/100; ${beginnerCandidates.reference_consensus_analysis.pair_count} pair comparisons; ${beginnerCandidates.reference_consensus_analysis.disagreement_count} disagreements.`}</p>
-                          <table aria-label="Component-aware reference comparisons">
-                            <thead><tr><th scope="col">References</th><th scope="col">Components</th><th scope="col">Extent</th><th scope="col">Branches</th><th scope="col">Result</th></tr></thead>
+                        <div aria-label={text({ ja: '参照資料の合意', en: 'Reference consensus' })} role={beginnerCandidates.reference_consensus_analysis.apply_allowed ? 'status' : 'alert'}>
+                          <p>{formattedText({
+                            ja: '参照資料の合意度 {score}/100・{pairs}組を比較・不一致 {disagreements}件。',
+                            en: 'Reference consensus {score}/100; {pairs} pair comparisons; {disagreements} disagreements.',
+                          }, { score: beginnerCandidates.reference_consensus_analysis.agreement_score,
+                            pairs: beginnerCandidates.reference_consensus_analysis.pair_count,
+                            disagreements: beginnerCandidates.reference_consensus_analysis.disagreement_count })}</p>
+                          <table aria-label={text({ ja: '部品別の参照資料比較', en: 'Component-aware reference comparisons' })}>
+                            <thead><tr><th scope="col">{text({ ja: '参照資料', en: 'References' })}</th><th scope="col">{text({ ja: '部品', en: 'Components' })}</th><th scope="col">{text({ ja: '範囲', en: 'Extent' })}</th><th scope="col">{text({ ja: '分岐', en: 'Branches' })}</th><th scope="col">{text({ ja: '結果', en: 'Result' })}</th></tr></thead>
                             <tbody>{beginnerCandidates.reference_consensus_analysis.pairs.slice(0, 6).map((pair) => {
                               const bindings = nativeSnapshot.beginner_design_profile.reference_consensus_v1?.bindings ?? []
                               const left = bindings.findIndex((binding) => binding.asset_id === pair.left_asset_id) + 1
                               const right = bindings.findIndex((binding) => binding.asset_id === pair.right_asset_id) + 1
                               const key = `${pair.left_asset_id}:${pair.right_asset_id}`
                               const reason = pair.disagrees
-                                ? [pair.component_error > 1 ? 'component mismatch' : '', pair.normalized_extent_error > 20 ? 'extent mismatch' : '', pair.branch_error > 2 ? 'branch mismatch' : ''].filter(Boolean).join(', ')
-                                : 'within all thresholds'
+                                ? [pair.component_error > 1 ? text({ ja: '部品不一致', en: 'component mismatch' }) : '', pair.normalized_extent_error > 20 ? text({ ja: '範囲不一致', en: 'extent mismatch' }) : '', pair.branch_error > 2 ? text({ ja: '分岐不一致', en: 'branch mismatch' }) : ''].filter(Boolean).join(', ')
+                                : text({ ja: '全しきい値内', en: 'within all thresholds' })
                               return <tr key={key} aria-selected={selectedConsensusPair === key}>
                                 <th scope="row"><button type="button" aria-pressed={selectedConsensusPair === key}
                                   onClick={() => setSelectedConsensusPair(selectedConsensusPair === key ? null : key)}>
-                                  {`Reference ${left} / Reference ${right}`}</button></th>
+                                  {formattedText({ ja: '参照 {left} / 参照 {right}', en: 'Reference {left} / Reference {right}' }, { left, right })}</button></th>
                                 <td>{`${pair.left_component_count} / ${pair.right_component_count} (error ${pair.component_error})`}</td>
                                 <td>{`${pair.left_normalized_extents.join('×')} / ${pair.right_normalized_extents.join('×')} (error ${pair.normalized_extent_error})`}</td>
                                 <td>{`${pair.left_branch_count} / ${pair.right_branch_count} (error ${pair.branch_error})`}</td>
@@ -8381,20 +8394,24 @@ function App() {
                           </table>
                           {selectedConsensusPair && (() => {
                             const pair = beginnerCandidates.reference_consensus_analysis?.pairs.find((candidate) => `${candidate.left_asset_id}:${candidate.right_asset_id}` === selectedConsensusPair)
-                            return pair ? <p role="status" aria-live="polite">{`Read-only component highlight: A ${pair.left_normalized_extents.join('×')}, ${pair.left_branch_count} branches; B ${pair.right_normalized_extents.join('×')}, ${pair.right_branch_count} branches.`}</p> : null
+                            return pair ? <p role="status" aria-live="polite">{formattedText({
+                              ja: '読み取り専用部品強調: A {leftExtent}・{leftBranches}分岐、B {rightExtent}・{rightBranches}分岐。',
+                              en: 'Read-only component highlight: A {leftExtent}, {leftBranches} branches; B {rightExtent}, {rightBranches} branches.',
+                            }, { leftExtent: pair.left_normalized_extents.join('×'), leftBranches: pair.left_branch_count,
+                              rightExtent: pair.right_normalized_extents.join('×'), rightBranches: pair.right_branch_count })}</p> : null
                           })()}
-                          {nativeSnapshot.beginner_design_profile.reference_consensus_v1?.excluded_asset_id && <p role="status">One explicitly excluded reference is omitted from this table.</p>}
+                          {nativeSnapshot.beginner_design_profile.reference_consensus_v1?.excluded_asset_id && <p role="status">{text({ ja: '明示的に除外した参照資料1件は表に含まれません。', en: 'One explicitly excluded reference is omitted from this table.' })}</p>}
                           {nativeSnapshot.beginner_design_profile.reference_consensus_v1 && (
-                            <fieldset><legend>Exclude one outlier</legend>
+                            <fieldset><legend>{text({ ja: '外れ値を1件除外', en: 'Exclude one outlier' })}</legend>
                               {nativeSnapshot.beginner_design_profile.reference_consensus_v1.bindings.map((binding, index) => (
                                 <button type="button" key={binding.asset_id}
                                   disabled={nativeSnapshot.beginner_design_profile.reference_consensus_v1?.excluded_asset_id === binding.asset_id}
                                   onClick={() => excludeBeginnerConsensusAsset(binding.asset_id)}>
-                                  {`Exclude reference ${index + 1}`}
+                                  {formattedText({ ja: '参照 {index} を除外', en: 'Exclude reference {index}' }, { index: index + 1 })}
                                 </button>
                               ))}
                               {nativeSnapshot.beginner_design_profile.reference_consensus_v1.excluded_asset_id && (
-                                <button type="button" onClick={() => excludeBeginnerConsensusAsset(null)}>Include all references</button>
+                                <button type="button" onClick={() => excludeBeginnerConsensusAsset(null)}>{text({ ja: 'すべての参照資料を含める', en: 'Include all references' })}</button>
                               )}
                             </fieldset>
                           )}

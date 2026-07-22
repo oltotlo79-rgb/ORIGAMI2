@@ -59,6 +59,13 @@ type Props = Readonly<{
     name: string
     kind?: 'book' | 'mountain' | 'valley' | 'squash' | 'crimp' | 'petal' | 'inside_reverse' | 'outside_reverse' | 'reverse' | 'accordion' | 'sink' | 'layer' | 'layer_selective'
   }> | null
+  namedTechniquePalette?: readonly Readonly<{
+    techniqueId: string
+    name: string
+    supported: boolean
+    reason?: string
+  }>[]
+  onSelectNamedTechnique?(techniqueId: string): void
 }>
 
 const MAX_CYCLE_SCHEDULE_JSON_BYTES = 65_536
@@ -95,10 +102,14 @@ export function StackedFoldPanel({
   onApplied,
   refreshSnapshot,
   namedBookFold = null,
+  namedTechniquePalette = [],
+  onSelectNamedTechnique,
 }: Props) {
   const t = (ja: string, en: string) => selectLocalizedText(locale, { ja, en })
   const authorityRef = useRef(snapshot)
   authorityRef.current = snapshot
+  const namedAuthorityRef = useRef({ namedBookFold, selectedLine })
+  namedAuthorityRef.current = { namedBookFold, selectedLine }
   const [fixedSide, setFixedSide] = useState<StackedFoldFixedSide>('left')
   const [rotationDirection, setRotationDirection] =
     useState<StackedFoldRotationDirection>('positive')
@@ -162,11 +173,13 @@ export function StackedFoldPanel({
     setBasicFoldTimelinePreviewReading(false)
     setBasicFoldTimelinePreview(null)
     setBasicFoldTimelinePreviewError(false)
-  }, [snapshot.project_instance_id, snapshot.project_id, snapshot.revision, selectedLine?.id,
-    namedBookFold?.techniqueId])
+  }, [snapshot.project_instance_id, snapshot.project_id, snapshot.revision,
+    snapshot.fold_model_fingerprint, disabled, selectedLine?.id,
+    namedBookFold?.techniqueId, namedBookFold?.document])
   const dyadicGraphSequenceRef = useRef(0)
   const [confirmed, setConfirmed] = useState(false)
   const [applying, setApplying] = useState(false)
+  const applyInFlightRef = useRef(false)
   const [view, setView] = useState<View>({ kind: 'idle' })
   const [selectedCell, setSelectedCell] = useState<string | null>(null)
   const [selectedFace, setSelectedFace] = useState<string | null>(null)
@@ -278,6 +291,8 @@ export function StackedFoldPanel({
     snapshot.project_instance_id,
     snapshot.project_id,
     snapshot.revision,
+    snapshot.fold_model_fingerprint,
+    disabled,
     selectedLine?.id,
     fixedSide,
     rotationDirection,
@@ -285,6 +300,7 @@ export function StackedFoldPanel({
     cycleScheduleText,
     namedBookFold?.techniqueId,
     namedBookFold?.kind,
+    namedBookFold?.document,
   ])
 
   useEffect(() => () => {
@@ -479,6 +495,7 @@ export function StackedFoldPanel({
     if (result.status === 'ready') {
       tokenRef.current = result.response.transactionProposal.transactionToken
       setView({ kind: 'ready', response: result.response, applyFailed: false })
+      if (namedBasicFold) void previewNamedBasicFold(result.response)
     } else if (result.status === 'failed') {
       setView({
         kind: 'failed',
@@ -506,11 +523,12 @@ export function StackedFoldPanel({
       view.kind !== 'ready' ||
       !view.response.transactionProposal.readyForAtomicApply ||
       !confirmed ||
-      applying || unsupportedNamedPhysicalFold || (namedBasicFold
+      applying || applyInFlightRef.current || unsupportedNamedPhysicalFold || (namedBasicFold
         && basicFoldTimelinePreview?.transactionToken !== view.response.transactionProposal.transactionToken)
     ) return
     const token = view.response.transactionProposal.transactionToken
     if (!token || token !== tokenRef.current) return
+    applyInFlightRef.current = true
     setApplying(true)
     let committed = false
     try {
@@ -528,19 +546,21 @@ export function StackedFoldPanel({
         ? { kind: 'refresh_failed' }
         : { kind: 'ready', response: view.response, applyFailed: true })
     } finally {
+      applyInFlightRef.current = false
       setApplying(false)
     }
   }
 
-  async function previewNamedBasicFold() {
-    if (view.kind !== 'ready' || !namedBookFold || !namedBasicFold
+  async function previewNamedBasicFold(response = view.kind === 'ready' ? view.response : null) {
+    if (!response || !namedBookFold || !namedBasicFold
       || !selectedLine || disabled || applying || basicFoldTimelineActiveRef.current) return
     const sequence = ++basicFoldTimelineSequenceRef.current
-    const token = view.response.transactionProposal.transactionToken
-    const segment = view.response.materialSegments.find((item) =>
+    const token = response.transactionProposal.transactionToken
+    const segment = response.materialSegments.find((item) =>
       item.assignment === 'mountain' || item.assignment === 'valley')
     if (!token || !segment) return
     const authority = authorityRef.current
+    const selectedAuthority = namedAuthorityRef.current
     basicFoldTimelineActiveRef.current = true
     setBasicFoldTimelinePreviewReading(true)
     setBasicFoldTimelinePreview(null)
@@ -560,12 +580,18 @@ export function StackedFoldPanel({
         techniqueId: namedBookFold.techniqueId,
       })
       const current = authorityRef.current
+      const currentSelection = namedAuthorityRef.current
       if (sequence !== basicFoldTimelineSequenceRef.current
         || current.project_instance_id !== authority.project_instance_id
         || current.project_id !== authority.project_id
         || current.revision !== authority.revision
+        || current.fold_model_fingerprint !== authority.fold_model_fingerprint
+        || currentSelection.namedBookFold?.document !== selectedAuthority.namedBookFold?.document
+        || currentSelection.namedBookFold?.techniqueId !== selectedAuthority.namedBookFold?.techniqueId
+        || currentSelection.selectedLine?.id !== selectedAuthority.selectedLine?.id
+        || preview.assignment !== segment.assignment
         || tokenRef.current !== token) {
-        cancelToken(preview.transactionToken)
+        void cancelStackedFoldTransactionPreview(preview.transactionToken).catch(() => undefined)
         return
       }
       setBasicFoldTimelinePreview(preview)
@@ -801,6 +827,37 @@ export function StackedFoldPanel({
 
   return (
     <section className="property-section stacked-fold-panel" aria-busy={view.kind === 'reading' || applying}>
+      {namedTechniquePalette.length > 0 && (
+        <fieldset aria-label={t('技法パレット', 'Technique palette')}>
+          <legend>{t('技法パレット', 'Technique palette')}</legend>
+          <p id="technique-palette-help">
+            {t(
+              '技法を選び、安全プレビューを確認してから明示的に適用します。',
+              'Choose a technique, review its safety preview, then apply it explicitly.',
+            )}
+          </p>
+          <div role="list" aria-describedby="technique-palette-help">
+            {namedTechniquePalette.map((item) => (
+              <div role="listitem" key={item.techniqueId}>
+                <button
+                  type="button"
+                  aria-pressed={namedBookFold?.techniqueId === item.techniqueId}
+                  aria-describedby={!item.supported ? `technique-reason-${item.techniqueId}` : undefined}
+                  disabled={disabled || applying || !item.supported}
+                  onClick={() => onSelectNamedTechnique?.(item.techniqueId)}
+                >
+                  {item.name}
+                </button>
+                {!item.supported && (
+                  <span id={`technique-reason-${item.techniqueId}`}>
+                    {item.reason ?? t('安全な物理操作として未対応です。', 'Unsupported as a certified physical operation.')}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </fieldset>
+      )}
       <h2>{t('一直線の折り重ね', 'Straight-line stacked fold')}</h2>
       <p className="muted">
         {selectedLine

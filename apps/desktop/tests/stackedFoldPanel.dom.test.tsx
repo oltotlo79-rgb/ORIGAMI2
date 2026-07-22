@@ -224,6 +224,40 @@ beforeEach(() => {
 })
 
 describe('StackedFoldPanel', () => {
+  it('selects same-named palette tiles by stable ID and explains unsupported entries bilingually', () => {
+    const onSelect = vi.fn()
+    const base = {
+      snapshot,
+      selectedLine: null,
+      disabled: false,
+      refreshSnapshot: vi.fn(),
+      onApplied: vi.fn(),
+      namedBookFold: {
+        document: { techniques: [] } as any,
+        techniqueId: 'tech-b', name: 'Same name', kind: 'mountain' as const,
+      },
+      namedTechniquePalette: [
+        { techniqueId: 'tech-b', name: 'Same name', supported: true },
+        { techniqueId: 'tech-a', name: 'Same name', supported: true },
+        { techniqueId: 'tech-x', name: 'Unsupported', supported: false },
+      ],
+      onSelectNamedTechnique: onSelect,
+    }
+    const view = render(<StackedFoldPanel locale="en" {...base} />)
+    expect(screen.getByRole('group', { name: 'Technique palette' })).toBeTruthy()
+    const same = screen.getAllByRole('button', { name: 'Same name' })
+    expect(same[0]?.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(same[1]!)
+    expect(onSelect).toHaveBeenCalledWith('tech-a')
+    const unsupported = screen.getByRole('button', { name: 'Unsupported' }) as HTMLButtonElement
+    expect(unsupported.disabled).toBe(true)
+    expect(screen.getByText('Unsupported as a certified physical operation.')).toBeTruthy()
+
+    view.rerender(<StackedFoldPanel locale="ja" {...base} />)
+    expect(screen.getByRole('group', { name: '技法パレット' })).toBeTruthy()
+    expect(screen.getByText('安全な物理操作として未対応です。')).toBeTruthy()
+  })
+
   it('shows saved compiler provenance as read only without exposing its digest', () => {
     const saved = {
       ...snapshot,
@@ -618,14 +652,16 @@ describe('StackedFoldPanel', () => {
     const apply = await screen.findByRole('button', { name: '名前付き二つ折りを適用' })
     expect(screen.getByRole('note').textContent).toContain('PDF/SVG折り図')
     expect(apply).toHaveProperty('disabled', true)
-    fireEvent.click(screen.getByRole('button', { name: /preview/i }))
     await waitFor(() => expect(transport.basicPreview).toHaveBeenCalled())
+    expect(transport.namedApply).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(apply)
     fireEvent.click(apply)
     await waitFor(() => expect(transport.namedApply).toHaveBeenCalledWith(
       token, document, 'book-fold', basicTimelinePreview,
     ))
     expect(transport.apply).not.toHaveBeenCalled()
+    expect(transport.namedApply).toHaveBeenCalledTimes(1)
     await waitFor(() => expect(onApplied).toHaveBeenCalledWith(refreshed))
   })
 

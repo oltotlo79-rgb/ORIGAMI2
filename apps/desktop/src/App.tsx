@@ -10049,6 +10049,18 @@ function App() {
                 locale,
                 selectedLine?.kind,
               )}
+              namedTechniquePalette={namedBookFoldPalette(
+                foldTechniqueWorkspace?.document ?? null,
+                locale,
+                selectedLine?.kind,
+              )}
+              onSelectNamedTechnique={(techniqueId) => {
+                const techniques = foldTechniqueWorkspace?.document.techniques ?? []
+                const index = techniques.findIndex((item) => item.id === techniqueId)
+                if (index >= 0 && techniques[index]?.id === techniqueId) {
+                  setFoldTechniqueSelectedIndex(index)
+                }
+              }}
               refreshSnapshot={requestProjectSnapshot}
               onApplied={(snapshot) => {
                 applySnapshot(snapshot)
@@ -12335,13 +12347,8 @@ function selectedNamedBookFold(
     && physical.every((operation) => operation.action.kind === 'straight_line_stacked_fold')
   const isSink = physical[0]?.action.kind === 'sink_fold'
   const isLayer = physical[0]?.action.kind === 'layer_selective_manipulation'
-  const hasCanonicalName = (names: readonly string[]) => technique.names.some(
-    (entry) => names.includes(entry.text),
-  )
   const isMountain = selectedCreaseKind === 'mountain'
   const isValley = selectedCreaseKind === 'valley'
-  const isPetal = hasCanonicalName(['花弁折り', 'Petal fold'])
-  const isSquash = hasCanonicalName(['つぶし折り', 'Squash fold'])
   const isCrimp = physical.length === 2
     && physical.every((operation) => operation.action.kind === 'straight_line_stacked_fold')
   if ((!isAccordion && !isCrimp && physical.length !== 1) || (!isReverse && !isAccordion && !isCrimp && !isSink && !isLayer && technique.operations.some(
@@ -12358,10 +12365,29 @@ function selectedNamedBookFold(
     kind: isAccordion ? 'accordion' as const
       : physical[0]?.action.kind === 'inside_reverse_fold' ? 'inside_reverse' as const
       : physical[0]?.action.kind === 'outside_reverse_fold' ? 'outside_reverse' as const
-      : isSquash ? 'squash' as const : isCrimp ? 'crimp' as const
+      : isCrimp ? 'crimp' as const
       : isSink ? 'sink' as const : isLayer ? 'layer_selective' as const
       : isMountain ? 'mountain' as const : isValley ? 'valley' as const
-      : isPetal ? 'petal' as const : 'book' as const,
+      : 'book' as const,
+  })
+}
+
+function namedBookFoldPalette(
+  document: FoldTechniqueFileDocumentV1 | null,
+  locale: Locale,
+  selectedCreaseKind?: CreaseLine['kind'],
+) {
+  if (!document) return []
+  return document.techniques.map((technique, index) => {
+    const admitted = selectedNamedBookFold(document, index, locale, selectedCreaseKind)
+    return Object.freeze({
+      techniqueId: technique.id,
+      name: technique.names.find((entry) => entry.locale === locale)?.text
+        ?? technique.names.find((entry) => entry.locale === 'ja')?.text
+        ?? technique.names[0]?.text
+        ?? technique.id,
+      supported: admitted !== null && admitted.techniqueId === technique.id,
+    })
   })
 }
 

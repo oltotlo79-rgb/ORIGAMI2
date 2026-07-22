@@ -311,6 +311,16 @@ describe('GeometricConstraintPanel', () => {
       },
       {
         conflict: {
+          kind: 'perpendicular_orientations_in_parallel_component' as const,
+          horizontal_edge: IDS[0]!,
+          vertical_edge: IDS[2]!,
+          parallel_constraint_count: 2,
+        },
+        expected:
+          'Edges connected by parallel constraints are constrained to horizontal and vertical orientations',
+      },
+      {
+        conflict: {
           kind: 'parallel_with_fixed_non_parallel_angle' as const,
           first_edge: IDS[0]!,
           second_edge: IDS[1]!,

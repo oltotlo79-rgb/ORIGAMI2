@@ -46,6 +46,7 @@ pub const MAX_DIRECT_CONFLICT_CAUSE_IDS_V1: usize = 256;
 const MAX_GENERAL_RATIO_POTENTIAL_BITS_V1: u64 = 1_048_576;
 const MAX_GENERAL_RATIO_ARITHMETIC_WORK_V1: u64 = 2_000_000;
 const MAX_GENERAL_EQUAL_GRAPH_WORK_V1: u64 = 40_000;
+const MAX_GENERAL_PARALLEL_GRAPH_WORK_V1: u64 = 40_000;
 
 type CanonicalId = [u8; 16];
 
@@ -357,6 +358,11 @@ pub enum DirectConstraintConflictKindV1 {
         first_edge: EdgeId,
         second_edge: EdgeId,
         equal_constraint_count: u16,
+    },
+    PerpendicularOrientationsInParallelComponent {
+        horizontal_edge: EdgeId,
+        vertical_edge: EdgeId,
+        parallel_constraint_count: u16,
     },
     ParallelWithFixedNonParallelAngle {
         first_edge: EdgeId,
@@ -1878,6 +1884,19 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
     }
 
     if conflicts.is_empty() {
+        match general_parallel_graph_conflict_v1(&parallels, &horizontal, &vertical, &edge_ids) {
+            Ok(Some(conflict)) => conflicts.push(conflict),
+            Ok(None) => {}
+            Err(()) => {
+                return ConstraintPreflightV1::Unknown {
+                    reason: GeometricConstraintUnknownReasonV1::WorkLimitExceeded,
+                    unchecked_constraint_ids: canonical_constraint_ids(&set.constraints),
+                };
+            }
+        }
+    }
+
+    if conflicts.is_empty() {
         match general_ratio_graph_conflict_v1(&ratios, &fixed_lengths, &edge_ids) {
             Ok(Some(conflict)) => conflicts.push(conflict),
             Ok(None) => {}
@@ -2288,6 +2307,239 @@ fn general_ratio_graph_conflict_v1(
     .map(|result| result.0)
 }
 
+fn general_parallel_graph_conflict_v1(
+    parallels: &BTreeMap<EdgePairKey, Vec<ConstraintId>>,
+    horizontal: &BTreeMap<CanonicalId, Vec<ConstraintId>>,
+    vertical: &BTreeMap<CanonicalId, Vec<ConstraintId>>,
+    edge_ids: &BTreeMap<CanonicalId, EdgeId>,
+) -> Result<Option<DirectConstraintConflictV1>, ()> {
+    #[cfg(test)]
+    let max_work = GENERAL_PARALLEL_TEST_WORK_LIMIT
+        .with(|limit| limit.get().unwrap_or(MAX_GENERAL_PARALLEL_GRAPH_WORK_V1));
+    #[cfg(not(test))]
+    let max_work = MAX_GENERAL_PARALLEL_GRAPH_WORK_V1;
+    #[cfg(test)]
+    GENERAL_PARALLEL_TEST_WORK_OBSERVED.with(|observed| observed.set(0));
+    let mut work = 0_u64;
+    let mut graph: BTreeMap<CanonicalId, Vec<(CanonicalId, ConstraintId)>> = BTreeMap::new();
+    for (pair, ids) in parallels {
+        charge_general_parallel_work_v1(&mut work, max_work, 1)?;
+        let Some(id) = ids.iter().min_by_key(|id| id.canonical_bytes()) else {
+            continue;
+        };
+        graph
+            .entry(pair.first)
+            .or_default()
+            .push((pair.second, *id));
+        graph
+            .entry(pair.second)
+            .or_default()
+            .push((pair.first, *id));
+    }
+    for arcs in graph.values_mut() {
+        let factor = usize::BITS - arcs.len().max(1).leading_zeros();
+        charge_general_parallel_work_v1(
+            &mut work,
+            max_work,
+            u64::try_from(arcs.len()).map_err(|_| ())? * (u64::from(factor) + 1),
+        )?;
+        arcs.sort_unstable_by_key(|(neighbor, id)| (*neighbor, id.canonical_bytes()));
+    }
+    let mut best: Option<(Vec<ConstraintId>, CanonicalId, CanonicalId, usize)> = None;
+    for node in graph.keys() {
+        let label_work = horizontal.get(node).map_or(0, Vec::len)
+            + vertical.get(node).map_or(0, Vec::len)
+            + graph.get(node).map_or(0, Vec::len);
+        charge_general_parallel_work_v1(
+            &mut work,
+            max_work,
+            1 + u64::try_from(label_work).map_err(|_| ())?,
+        )?;
+        let Some(horizontal_id) = horizontal
+            .get(node)
+            .and_then(|ids| ids.iter().min_by_key(|id| id.canonical_bytes()))
+        else {
+            continue;
+        };
+        let Some(vertical_id) = vertical
+            .get(node)
+            .and_then(|ids| ids.iter().min_by_key(|id| id.canonical_bytes()))
+        else {
+            continue;
+        };
+        let Some(parallel_id) = graph
+            .get(node)
+            .into_iter()
+            .flatten()
+            .map(|(_, id)| id)
+            .min_by_key(|id| id.canonical_bytes())
+        else {
+            continue;
+        };
+        let mut ids = vec![*horizontal_id, *vertical_id, *parallel_id];
+        charge_general_parallel_work_v1(&mut work, max_work, 3 * 3)?;
+        canonicalize_constraint_ids(&mut ids);
+        if let Some(current) = &best {
+            charge_general_parallel_work_v1(
+                &mut work,
+                max_work,
+                u64::try_from(ids.len().min(current.0.len())).map_err(|_| ())?,
+            )?;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|current| canonical_id_slice_cmp(&ids, &current.0).is_lt())
+        {
+            best = Some((ids, *node, *node, 1));
+        }
+    }
+
+    let mut sources = Vec::new();
+    for node in graph.keys() {
+        charge_general_parallel_work_v1(
+            &mut work,
+            max_work,
+            u64::try_from(
+                horizontal.get(node).map_or(0, Vec::len) + vertical.get(node).map_or(0, Vec::len),
+            )
+            .map_err(|_| ())?,
+        )?;
+        if let Some(id) = horizontal
+            .get(node)
+            .and_then(|ids| ids.iter().min_by_key(|id| id.canonical_bytes()))
+        {
+            sources.push((*node, *id, true));
+        }
+        if let Some(id) = vertical
+            .get(node)
+            .and_then(|ids| ids.iter().min_by_key(|id| id.canonical_bytes()))
+        {
+            sources.push((*node, *id, false));
+        }
+    }
+    sources
+        .sort_unstable_by_key(|(node, id, horizontal)| (id.canonical_bytes(), *node, *horizontal));
+    let source_factor = usize::BITS - sources.len().max(1).leading_zeros();
+    charge_general_parallel_work_v1(
+        &mut work,
+        max_work,
+        u64::try_from(sources.len()).map_err(|_| ())? * (u64::from(source_factor) + 1),
+    )?;
+    let mut owners: BTreeMap<CanonicalId, (CanonicalId, ConstraintId, bool)> = BTreeMap::new();
+    let mut parents: BTreeMap<CanonicalId, (CanonicalId, ConstraintId)> = BTreeMap::new();
+    let mut queue = VecDeque::new();
+    for source in sources {
+        charge_general_parallel_work_v1(&mut work, max_work, 1)?;
+        if let std::collections::btree_map::Entry::Vacant(entry) = owners.entry(source.0) {
+            entry.insert(source);
+            queue.push_back(source.0);
+        }
+    }
+    let mut oversized = false;
+    while let Some(node) = queue.pop_front() {
+        let owner = owners.get(&node).copied().ok_or(())?;
+        for (neighbor, parallel_id) in graph.get(&node).into_iter().flatten() {
+            charge_general_parallel_work_v1(&mut work, max_work, 1)?;
+            let Some(neighbor_owner) = owners.get(neighbor).copied() else {
+                owners.insert(*neighbor, owner);
+                parents.insert(*neighbor, (node, *parallel_id));
+                queue.push_back(*neighbor);
+                charge_general_parallel_work_v1(&mut work, max_work, 3)?;
+                continue;
+            };
+            if owner.2 == neighbor_owner.2 || owner.0 == neighbor_owner.0 {
+                continue;
+            }
+            let mut ids = Vec::new();
+            for mut cursor in [node, *neighbor] {
+                while let Some((parent, id)) = parents.get(&cursor) {
+                    charge_general_parallel_work_v1(&mut work, max_work, 1)?;
+                    ids.push(*id);
+                    if ids.len() > MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2 {
+                        oversized = true;
+                        break;
+                    }
+                    cursor = *parent;
+                }
+                if ids.len() > MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2 {
+                    break;
+                }
+            }
+            if ids.len() > MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2 {
+                continue;
+            }
+            ids.push(*parallel_id);
+            charge_general_parallel_work_v1(&mut work, max_work, 1)?;
+            if ids.len() > MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2 {
+                oversized = true;
+                continue;
+            }
+            let parallel_constraint_count = ids.len();
+            let (horizontal_owner, vertical_owner) = if owner.2 {
+                (owner, neighbor_owner)
+            } else {
+                (neighbor_owner, owner)
+            };
+            ids.extend([horizontal_owner.1, vertical_owner.1]);
+            let factor = usize::BITS - ids.len().leading_zeros();
+            charge_general_parallel_work_v1(
+                &mut work,
+                max_work,
+                u64::try_from(ids.len()).map_err(|_| ())? * (u64::from(factor) + 1),
+            )?;
+            canonicalize_constraint_ids(&mut ids);
+            if let Some(current) = &best {
+                charge_general_parallel_work_v1(
+                    &mut work,
+                    max_work,
+                    u64::try_from(ids.len().min(current.0.len())).map_err(|_| ())?,
+                )?;
+            }
+            if best.as_ref().is_none_or(|current| {
+                ids.len() < current.0.len()
+                    || (ids.len() == current.0.len()
+                        && canonical_id_slice_cmp(&ids, &current.0).is_lt())
+            }) {
+                best = Some((
+                    ids,
+                    horizontal_owner.0,
+                    vertical_owner.0,
+                    parallel_constraint_count,
+                ));
+            }
+        }
+    }
+    let Some((constraint_ids, horizontal_edge, vertical_edge, parallel_constraint_count)) = best
+    else {
+        return if oversized { Err(()) } else { Ok(None) };
+    };
+    Ok(Some(DirectConstraintConflictV1 {
+        conflict: DirectConstraintConflictKindV1::PerpendicularOrientationsInParallelComponent {
+            horizontal_edge: edge_ids[&horizontal_edge],
+            vertical_edge: edge_ids[&vertical_edge],
+            parallel_constraint_count: u16::try_from(parallel_constraint_count).map_err(|_| ())?,
+        },
+        constraint_ids,
+    }))
+}
+
+fn charge_general_parallel_work_v1(work: &mut u64, max_work: u64, amount: u64) -> Result<(), ()> {
+    *work = work.checked_add(amount).ok_or(())?;
+    #[cfg(test)]
+    GENERAL_PARALLEL_TEST_WORK_OBSERVED.with(|observed| observed.set(*work));
+    (*work <= max_work).then_some(()).ok_or(())
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static GENERAL_PARALLEL_TEST_WORK_LIMIT: std::cell::Cell<Option<u64>> = const {
+        std::cell::Cell::new(None)
+    };
+    static GENERAL_PARALLEL_TEST_WORK_OBSERVED: std::cell::Cell<u64> = const {
+        std::cell::Cell::new(0)
+    };
+}
+
 #[cfg(test)]
 std::thread_local! {
     static GENERAL_EQUAL_TEST_WORK_LIMIT: std::cell::Cell<Option<u64>> = const {
@@ -2667,11 +2919,21 @@ fn conflict_sort_key(
             second_edge.canonical_bytes(),
             u128::from(*equal_constraint_count).to_be_bytes(),
         ),
+        DirectConstraintConflictKindV1::PerpendicularOrientationsInParallelComponent {
+            horizontal_edge,
+            vertical_edge,
+            parallel_constraint_count,
+        } => (
+            11,
+            horizontal_edge.canonical_bytes(),
+            vertical_edge.canonical_bytes(),
+            u128::from(*parallel_constraint_count).to_be_bytes(),
+        ),
         DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
             first_edge,
             second_edge,
         } => (
-            11,
+            12,
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
             zero,
@@ -2680,7 +2942,7 @@ fn conflict_sort_key(
             horizontal_edge,
             vertical_edge,
         } => (
-            12,
+            13,
             horizontal_edge.canonical_bytes(),
             vertical_edge.canonical_bytes(),
             zero,
@@ -4239,6 +4501,7 @@ mod tests {
                 ratio_constraint_count: 5,
             } if *fixed_edge == fixture.edges[4]
         ));
+
         assert_eq!(conflicts[0].constraint_ids().len(), records.len());
         assert!(
             conflicts[0]
@@ -4861,6 +5124,234 @@ mod tests {
                     DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
                 ))
         ));
+    }
+
+    #[test]
+    fn parallel_graph_detects_perpendicular_orientation_paths_and_same_node_labels() {
+        let fixture = Fixture::new();
+        let path_records = vec![
+            record(GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[0],
+            }),
+            record(GeometricConstraintKindV1::Parallel {
+                first_edge: fixture.edges[0],
+                second_edge: fixture.edges[1],
+            }),
+            record(GeometricConstraintKindV1::Parallel {
+                first_edge: fixture.edges[1],
+                second_edge: fixture.edges[2],
+            }),
+            record(GeometricConstraintKindV1::Vertical {
+                edge: fixture.edges[2],
+            }),
+        ];
+        let ConstraintPreflightV1::DirectConflict { conflicts } =
+            prepare(&fixture, &document(path_records.clone()))
+                .expect("perpendicular orientations connected by a parallel path")
+                .preflight()
+        else {
+            panic!("parallel path must conflict");
+        };
+        assert_eq!(conflicts.len(), 1);
+        assert!(matches!(
+            conflicts[0].conflict(),
+            DirectConstraintConflictKindV1::PerpendicularOrientationsInParallelComponent {
+                parallel_constraint_count: 2,
+                ..
+            }
+        ));
+        let mut duplicated = path_records.clone();
+        duplicated.extend([
+            record(GeometricConstraintKindV1::Parallel {
+                first_edge: fixture.edges[0],
+                second_edge: fixture.edges[1],
+            }),
+            record(GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[0],
+            }),
+        ]);
+        let forward = prepare(&fixture, &document(duplicated.clone()))
+            .expect("duplicate parallel graph labels")
+            .preflight();
+        duplicated.reverse();
+        let reverse = prepare(&fixture, &document(duplicated))
+            .expect("source-reordered duplicate parallel graph labels")
+            .preflight();
+        assert_eq!(forward, reverse);
+        for removed in conflicts[0].constraint_ids() {
+            let subset = path_records
+                .iter()
+                .filter(|record| record.id != *removed)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert!(!matches!(
+                prepare(&fixture, &document(subset))
+                    .expect("proper parallel-path witness subset")
+                    .preflight(),
+                ConstraintPreflightV1::DirectConflict { .. }
+            ));
+        }
+
+        let same_node = vec![
+            record(GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[0],
+            }),
+            record(GeometricConstraintKindV1::Vertical {
+                edge: fixture.edges[0],
+            }),
+            record(GeometricConstraintKindV1::Parallel {
+                first_edge: fixture.edges[0],
+                second_edge: fixture.edges[1],
+            }),
+        ];
+        let ConstraintPreflightV1::DirectConflict { conflicts } =
+            prepare(&fixture, &document(same_node))
+                .expect("same-node labels made nondegenerate by incident parallel constraint")
+                .preflight()
+        else {
+            panic!("same-node labels must not be lost by single-owner BFS");
+        };
+        assert!(matches!(
+            conflicts[0].conflict(),
+            DirectConstraintConflictKindV1::PerpendicularOrientationsInParallelComponent {
+                parallel_constraint_count: 1,
+                ..
+            }
+        ));
+
+        GENERAL_PARALLEL_TEST_WORK_LIMIT.with(|limit| {
+            assert_eq!(
+                limit.replace(Some(MAX_GENERAL_PARALLEL_GRAPH_WORK_V1)),
+                None
+            );
+        });
+        let baseline = prepare(&fixture, &document(path_records.clone()))
+            .expect("work-accounted parallel graph")
+            .preflight();
+        let exact_work = GENERAL_PARALLEL_TEST_WORK_OBSERVED.with(std::cell::Cell::get);
+        GENERAL_PARALLEL_TEST_WORK_LIMIT.with(|limit| limit.set(Some(exact_work)));
+        assert_eq!(
+            prepare(&fixture, &document(path_records.clone()))
+                .expect("exact parallel work limit")
+                .preflight(),
+            baseline
+        );
+        GENERAL_PARALLEL_TEST_WORK_LIMIT.with(|limit| limit.set(Some(exact_work - 1)));
+        let limited = prepare(&fixture, &document(path_records.clone()))
+            .expect("one-short parallel work limit")
+            .preflight();
+        GENERAL_PARALLEL_TEST_WORK_LIMIT.with(|limit| limit.set(None));
+        let mut all_ids = path_records
+            .iter()
+            .map(|record| record.id)
+            .collect::<Vec<_>>();
+        canonicalize_constraint_ids(&mut all_ids);
+        assert_eq!(
+            limited,
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::WorkLimitExceeded,
+                unchecked_constraint_ids: all_ids,
+            }
+        );
+    }
+
+    #[test]
+    fn parallel_graph_witness_cap_keeps_searching_for_a_short_remote_pair() {
+        let scan = |path_edges: usize, include_short_pair: bool| {
+            let node_count = path_edges + 1 + usize::from(include_short_pair) * 3;
+            let edges = (0..node_count).map(|_| EdgeId::new()).collect::<Vec<_>>();
+            let mut parallels = BTreeMap::new();
+            for index in 0..path_edges {
+                parallels.insert(
+                    EdgePairKey::unordered(edges[index], edges[index + 1]),
+                    vec![ConstraintId::new()],
+                );
+            }
+            let mut horizontal =
+                BTreeMap::from([(edges[0].canonical_bytes(), vec![ConstraintId::new()])]);
+            let mut vertical = BTreeMap::from([(
+                edges[path_edges].canonical_bytes(),
+                vec![ConstraintId::new()],
+            )]);
+            if include_short_pair {
+                let first = path_edges + 1;
+                for offset in 0..2 {
+                    parallels.insert(
+                        EdgePairKey::unordered(edges[first + offset], edges[first + offset + 1]),
+                        vec![ConstraintId::new()],
+                    );
+                }
+                horizontal.insert(edges[first].canonical_bytes(), vec![ConstraintId::new()]);
+                vertical.insert(
+                    edges[first + 2].canonical_bytes(),
+                    vec![ConstraintId::new()],
+                );
+            }
+            let edge_ids = edges
+                .iter()
+                .map(|edge| (edge.canonical_bytes(), *edge))
+                .collect::<BTreeMap<_, _>>();
+            general_parallel_graph_conflict_v1(&parallels, &horizontal, &vertical, &edge_ids)
+        };
+        assert_eq!(
+            scan(254, false).unwrap().unwrap().constraint_ids().len(),
+            256
+        );
+        assert_eq!(scan(255, false), Err(()));
+        assert_eq!(scan(255, true).unwrap().unwrap().constraint_ids().len(), 4);
+    }
+
+    #[test]
+    fn parallel_graph_diamond_selects_the_canonical_minimum_equal_length_path() {
+        let fixture = Fixture::new();
+        let horizontal = record(GeometricConstraintKindV1::Horizontal {
+            edge: fixture.edges[0],
+        });
+        let vertical = record(GeometricConstraintKindV1::Vertical {
+            edge: fixture.edges[3],
+        });
+        let mut parallel_records = (0..4)
+            .map(|_| {
+                record(GeometricConstraintKindV1::Parallel {
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[1],
+                })
+            })
+            .collect::<Vec<_>>();
+        parallel_records.sort_unstable_by_key(|record| record.id.canonical_bytes());
+        let paths = [
+            (fixture.edges[0], fixture.edges[1]),
+            (fixture.edges[1], fixture.edges[3]),
+            (fixture.edges[0], fixture.edges[2]),
+            (fixture.edges[2], fixture.edges[3]),
+        ];
+        for (record, (first_edge, second_edge)) in parallel_records.iter_mut().zip(paths) {
+            record.constraint = GeometricConstraintKindV1::Parallel {
+                first_edge,
+                second_edge,
+            };
+        }
+        let mut records = vec![horizontal.clone(), vertical.clone()];
+        records.extend(parallel_records.clone());
+        let forward = prepare(&fixture, &document(records.clone()))
+            .expect("parallel diamond")
+            .preflight();
+        records.reverse();
+        let reverse = prepare(&fixture, &document(records))
+            .expect("source-reordered parallel diamond")
+            .preflight();
+        assert_eq!(forward, reverse);
+        let ConstraintPreflightV1::DirectConflict { conflicts } = forward else {
+            panic!("parallel diamond must conflict");
+        };
+        let mut expected = vec![
+            horizontal.id,
+            vertical.id,
+            parallel_records[0].id,
+            parallel_records[1].id,
+        ];
+        canonicalize_constraint_ids(&mut expected);
+        assert_eq!(conflicts[0].constraint_ids(), expected);
     }
 
     #[test]

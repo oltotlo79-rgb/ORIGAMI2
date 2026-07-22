@@ -222,6 +222,15 @@ const DIRECT_CONFLICTS = [
   },
   {
     conflict: {
+      kind: 'perpendicular_orientations_in_parallel_component',
+      horizontal_edge: EDGE_1,
+      vertical_edge: EDGE_3,
+      parallel_constraint_count: 2,
+    },
+    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3, CONSTRAINT_4],
+  },
+  {
+    conflict: {
       kind: 'parallel_with_fixed_non_parallel_angle',
       first_edge: EDGE_1,
       second_edge: EDGE_2,
@@ -630,7 +639,7 @@ test('presentation also fails closed for malformed or hostile records', () => {
   assert.equal(getterCalls, 0)
 })
 
-test('normalizes all thirteen direct-conflict kinds with bounded frozen witnesses', () => {
+test('normalizes all fourteen direct-conflict kinds with bounded frozen witnesses', () => {
   const raw = response({
     status: 'direct_conflict',
     conflicts: DIRECT_CONFLICTS,
@@ -646,7 +655,7 @@ test('normalizes all thirteen direct-conflict kinds with bounded frozen witnesse
     normalized?.result.status === 'direct_conflict'
       ? normalized.result.conflicts.length
       : 0,
-    13,
+    14,
   )
   assert.equal(MAX_DIRECT_CONFLICT_WITNESS_IDS, 256)
 })
@@ -783,6 +792,30 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
         ],
       }],
     })),
+    ...[0, 255, 1.5].map((parallel_constraint_count) => response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'perpendicular_orientations_in_parallel_component',
+          horizontal_edge: EDGE_1,
+          vertical_edge: EDGE_3,
+          parallel_constraint_count,
+        },
+        constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+      }],
+    })),
+    response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'perpendicular_orientations_in_parallel_component',
+          horizontal_edge: EDGE_1,
+          vertical_edge: EDGE_3,
+          parallel_constraint_count: 2,
+        },
+        constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+      }],
+    }),
     ...[
       {
         first_edge: EDGE_1,

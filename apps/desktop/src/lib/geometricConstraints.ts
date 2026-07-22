@@ -143,6 +143,12 @@ export type DirectConstraintConflictKindV1 =
       equal_constraint_count: number
     }>
   | Readonly<{
+      kind: 'perpendicular_orientations_in_parallel_component'
+      horizontal_edge: string
+      vertical_edge: string
+      parallel_constraint_count: number
+    }>
+  | Readonly<{
       kind: 'parallel_with_fixed_non_parallel_angle'
       first_edge: string
       second_edge: string
@@ -945,6 +951,30 @@ function parseDirectConflictKind(
         }),
         witnessSize: record.equal_constraint_count + 2,
       }
+    case 'perpendicular_orientations_in_parallel_component':
+      if (
+        !hasExactKeys(record, [
+          'kind',
+          'horizontal_edge',
+          'vertical_edge',
+          'parallel_constraint_count',
+        ])
+        || !isCanonicalUuid(record.horizontal_edge)
+        || !isCanonicalUuid(record.vertical_edge)
+        || typeof record.parallel_constraint_count !== 'number'
+        || !Number.isSafeInteger(record.parallel_constraint_count)
+        || record.parallel_constraint_count < 1
+        || record.parallel_constraint_count > MAX_DIRECT_CONFLICT_WITNESS_IDS - 2
+      ) return null
+      return {
+        conflict: Object.freeze({
+          kind: record.kind,
+          horizontal_edge: record.horizontal_edge,
+          vertical_edge: record.vertical_edge,
+          parallel_constraint_count: record.parallel_constraint_count,
+        }),
+        witnessSize: record.parallel_constraint_count + 2,
+      }
     case 'parallel_with_fixed_non_parallel_angle':
       if (
         !hasExactKeys(record, ['kind', 'first_edge', 'second_edge'])
@@ -1045,6 +1075,14 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
         kind.first_edge,
         kind.second_edge,
         String(kind.equal_constraint_count),
+      ]
+      break
+    case 'perpendicular_orientations_in_parallel_component':
+      target = [
+        kind.kind,
+        kind.horizontal_edge,
+        kind.vertical_edge,
+        String(kind.parallel_constraint_count),
       ]
       break
     case 'equal_length_with_different_fixed_lengths':

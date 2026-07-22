@@ -5431,6 +5431,185 @@ mod tests {
     use super::*;
 
     #[test]
+    fn seventeen_cell_current_cycle_uses_blockwise_fallback_end_to_end() {
+        use ori_kinematics::{MaterialHingeGraphGeometry, TreeKinematicsLimits};
+        use ori_topology::FaceExtractionInput;
+
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let (blocks, (pattern, paper, moving)) =
+            super::miura_cactus_test_support::independent_three_by_three_miura_blocks_with_document(
+            );
+        let project_id = ProjectId::new();
+        let block_faces = blocks.each_ref().map(|(pattern, paper, _)| {
+            let topology = analyze_faces(FaceExtractionInput {
+                identity_namespace: project_id,
+                source_revision: 1,
+                paper,
+                pattern,
+            })
+            .snapshot
+            .unwrap();
+            MaterialHingeGraphGeometry::prepare(
+                pattern,
+                paper,
+                &topology,
+                TreeKinematicsLimits::default(),
+            )
+            .unwrap()
+            .face_ids()
+            .to_vec()
+        });
+        let articulation = *block_faces[0]
+            .iter()
+            .find(|face| block_faces[1].contains(face))
+            .expect("shared articulation");
+        let mut project = super::super::ProjectState::new_with_paper(pattern, paper);
+        project.project_id = project_id;
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        assert_eq!(snapshot.faces.len(), 17);
+        let hinges = snapshot
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            hinges.clone(),
+            articulation,
+        );
+        let layer_state = GlobalFlatFoldabilityState::default();
+        super::super::global_flat_foldability::tests::install_possible_layer_order(
+            &layer_state,
+            &project,
+        );
+        let instance = project.instance_id;
+        let revision = project.editor.revision();
+        let state = AppState::new(project);
+        let transactions =
+            super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
+        let request = |expected_revision, schedule| CurrentCyclePosePreviewRequestV1 {
+            progress_request_id: None,
+            expected_project_instance_id: instance,
+            expected_project_id: project_id,
+            expected_revision,
+            cycle_schedule_v1: schedule,
+        };
+
+        let active = moving
+            .iter()
+            .copied()
+            .filter(|edge_id| {
+                let project = super::super::lock_project(&state).unwrap();
+                let edge = project
+                    .editor
+                    .pattern()
+                    .edges
+                    .iter()
+                    .find(|edge| edge.id == *edge_id)
+                    .unwrap();
+                let y = project
+                    .editor
+                    .pattern()
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == edge.start)
+                    .unwrap()
+                    .position
+                    .y;
+                y == -20.0 || y == 20.0
+            })
+            .collect::<Vec<_>>();
+        let schedule = dense_grid_schedule(&hinges, &active, 64);
+
+        let mut malformed = schedule.clone();
+        malformed.entries[0].denominator_power_coefficients[0].numerator = 0;
+        assert!(
+            propose_current_cycle_pose_inner_with_layers(
+                None,
+                &state,
+                Some(&layer_state),
+                &transactions,
+                request(revision, malformed),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            super::super::lock_project(&state)
+                .unwrap()
+                .editor
+                .revision(),
+            revision
+        );
+
+        let preview = propose_current_cycle_pose_inner_with_layers(
+            None,
+            &state,
+            Some(&layer_state),
+            &transactions,
+            request(revision, schedule.clone()),
+        )
+        .expect("17-face blockwise fallback preview");
+        assert_eq!(
+            preview.continuous_layer_transport_model_id,
+            Some(ori_collision::BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1)
+        );
+        assert!(!preview.authorizes_project_mutation);
+        let applied = super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+            &state,
+            &layer_state,
+            &transactions,
+            preview.transaction_token,
+        )
+        .expect("apply blockwise fallback");
+        assert_eq!(applied, revision + 1);
+        assert!(
+            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                &state,
+                &layer_state,
+                &transactions,
+                preview.transaction_token,
+            )
+            .is_err()
+        );
+        let mut project = super::super::lock_project(&state).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        let undo_revision = project.editor.revision();
+        project.editor.undo(undo_revision).unwrap();
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+        let redo_revision = project.editor.revision();
+        project.editor.redo(redo_revision).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 1);
+        drop(project);
+
+        assert!(
+            propose_current_cycle_pose_inner_with_layers(
+                None,
+                &state,
+                Some(&layer_state),
+                &transactions,
+                request(revision, schedule),
+            )
+            .is_err()
+        );
+        let unknown_block = serde_json::json!({
+            "version": 1,
+            "entries": [],
+            "blockProofV1": { "forged": true }
+        });
+        assert!(serde_json::from_value::<CycleScheduleRequestV1>(unknown_block).is_err());
+        let unknown_proof = serde_json::json!({
+            "version": 1,
+            "entries": [],
+            "proof": "forged"
+        });
+        assert!(serde_json::from_value::<CycleScheduleRequestV1>(unknown_proof).is_err());
+    }
+
+    #[test]
     fn seventeen_cell_blockwise_preview_is_atomic_and_fail_closed() {
         use ori_kinematics::{
             CanonicalCycleScheduleV1, CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1,

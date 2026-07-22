@@ -99,6 +99,23 @@ impl BlockwisePositiveLayerAuthorityV1 {
     }
 
     #[must_use]
+    pub fn target_order_hash_v1(&self) -> [u8; 32] {
+        let mut targets = self
+            .layer
+            .iter()
+            .map(GeneralMultiFaceCellTransportProofV1::target_order_hash)
+            .collect::<Vec<_>>();
+        targets.sort_unstable();
+        let mut hash = Sha256::new();
+        hash.update(BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+        hash.update(b"target_order_v1");
+        for target in targets {
+            hash.update(target);
+        }
+        hash.finalize().into()
+    }
+
+    #[must_use]
     pub fn target_angles_match_v1(&self, actual: &[(EdgeId, f64)]) -> bool {
         let mut expected = Vec::new();
         for (_, schedule, _) in &self.parent.blocks {

@@ -541,13 +541,37 @@ impl BlockwisePositiveLayerPrivatePreviewStateV1 {
                 )
             })
             .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+        let persisted_pairs = certified_blockwise_layer_pairs_v1(
+            &record.sources,
+            record.authority.pair_order_count_v1(),
+        )?;
+        let mut timeline = record.timeline.clone();
+        let target_step = timeline
+            .steps
+            .last_mut()
+            .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+        target_step.visual.cycle_layer_order_proof_v1 = Some(ori_domain::CycleLayerOrderProofV1 {
+            version: 1,
+            model_id: ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1.to_owned(),
+            target_order_sha256: record.authority.target_order_hash_v1(),
+            transition_count: record.authority.transition_count_v1(),
+            pairs: persisted_pairs
+                .into_iter()
+                .map(
+                    |(lower_face, upper_face)| ori_domain::CycleLayerOrderPairV1 {
+                        lower_face,
+                        upper_face,
+                    },
+                )
+                .collect(),
+        });
         let result = project
             .editor
             .execute_stacked_fold_document(
                 expected_revision,
                 record.pattern.clone(),
                 record.paper.clone(),
-                record.timeline.clone(),
+                timeline,
                 record.layers.clone(),
                 record
                     .applied_pose
@@ -6246,6 +6270,9 @@ mod tests {
             thickness,
             layer_fingerprint,
         ));
+        let expected_target_order_hash = record.authority.target_order_hash_v1();
+        let expected_transition_count = record.authority.transition_count_v1();
+        let expected_pair_count = record.authority.pair_order_count_v1();
         let previews = BlockwisePositiveLayerPrivatePreviewStateV1::default();
         previews.mint_once_v1(record).unwrap();
         for (bad_context, bad_articulation, bad_thickness, bad_layer) in [
@@ -6287,10 +6314,39 @@ mod tests {
         assert_eq!(applied, revision + 1);
         assert!(previews.0.lock().unwrap().is_none());
         let after = project.editor.instruction_timeline().clone();
+        let persisted_proof = after.steps[0]
+            .visual
+            .cycle_layer_order_proof_v1
+            .as_ref()
+            .expect("blockwise layer proof persists on the timeline");
+        assert_eq!(
+            persisted_proof.model_id,
+            ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1
+        );
+        assert_eq!(
+            persisted_proof.target_order_sha256,
+            expected_target_order_hash
+        );
+        assert_eq!(persisted_proof.transition_count, expected_transition_count);
+        assert_eq!(persisted_proof.pairs.len(), expected_pair_count);
         project.editor.undo(applied).unwrap();
         let undone = project.editor.revision();
         project.editor.redo(undone).unwrap();
         assert_eq!(project.editor.instruction_timeline(), &after);
+        let archive = project.project_archive().unwrap();
+        let reopened = super::super::ProjectState::from_project_archive(
+            archive,
+            std::path::PathBuf::from("seventeen-face-blockwise-layer-proof.ori2"),
+        )
+        .unwrap();
+        assert_eq!(reopened.editor.instruction_timeline(), &after);
+        assert_eq!(
+            reopened.editor.instruction_timeline().steps[0]
+                .visual
+                .cycle_layer_order_proof_v1
+                .as_ref(),
+            Some(persisted_proof)
+        );
     }
 
     #[test]

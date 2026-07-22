@@ -15604,6 +15604,59 @@ mod tests {
         .unwrap();
         let witness = beginner_contour_placement_witness(&profile.generation_constraints, &plan)
             .expect("generated contour geometry must provide a bounded witness");
+        let graph_edge = plan.crease_pattern.edges.last().unwrap();
+        let graph_start = plan
+            .crease_pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == graph_edge.start)
+            .unwrap()
+            .position;
+        let graph_end = plan
+            .crease_pattern
+            .vertices
+            .iter()
+            .find(|vertex| vertex.id == graph_edge.end)
+            .unwrap()
+            .position;
+        let midpoint = ori_domain::Point2::new(
+            (graph_start.x + graph_end.x) / 2.0,
+            (graph_start.y + graph_end.y) / 2.0,
+        );
+        let crossing_start = ori_domain::VertexId::new();
+        let crossing_end = ori_domain::VertexId::new();
+        let mut crossing_pattern = project.editor.pattern().clone();
+        crossing_pattern.vertices.extend([
+            ori_domain::Vertex {
+                id: crossing_start,
+                position: ori_domain::Point2::new(
+                    midpoint.x - (graph_end.y - graph_start.y) * 0.1,
+                    midpoint.y + (graph_end.x - graph_start.x) * 0.1,
+                ),
+            },
+            ori_domain::Vertex {
+                id: crossing_end,
+                position: ori_domain::Point2::new(
+                    midpoint.x + (graph_end.y - graph_start.y) * 0.1,
+                    midpoint.y - (graph_end.x - graph_start.x) * 0.1,
+                ),
+            },
+        ]);
+        crossing_pattern.edges.push(ori_domain::Edge {
+            id: ori_domain::EdgeId::new(),
+            start: crossing_start,
+            end: crossing_end,
+            kind: ori_domain::EdgeKind::Mountain,
+        });
+        let crossing_assessment = assess_beginner_generated_plan(
+            project.project_id,
+            project.editor.paper(),
+            &crossing_pattern,
+            &plan,
+            None,
+        );
+        assert!(!crossing_assessment.apply_allowed);
+        assert_eq!(crossing_assessment.reason, "geometry_invalid");
         let mut duplicate_skeleton = profile.generation_constraints.clone();
         let mut duplicate = duplicate_skeleton.skeleton_segments[0].clone();
         duplicate.id = 99;

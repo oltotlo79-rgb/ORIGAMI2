@@ -5403,11 +5403,15 @@ fn apply_beginner_generated_plan_document(
         _ => return Err("the selected generated plan is preview-only".to_owned()),
     };
     if selected_kind != ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
+        let certificate_hex = fold_path_certificate_sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         instruction_timeline.steps.push(InstructionStep {
             id: InstructionStepId::new(),
             title: title.to_owned(),
             description: description.to_owned(),
-            caution: caution.to_owned(),
+            caution: format!("{caution} Native fold-path certificate SHA-256: {certificate_hex}."),
             duration_ms: 2_000,
             visual: InstructionVisual::default(),
             pose: InstructionPose {
@@ -16856,6 +16860,33 @@ mod tests {
             .find(|plan| plan.kind == plan_kind)
             .unwrap();
             let candidate_edge = plan.crease_pattern.edges[0].id;
+            assert_eq!(
+                plan.crease_pattern
+                    .edges
+                    .iter()
+                    .filter(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+                    .count(),
+                4,
+                "native-positive landmark DTO must remain a four-hinge tree candidate"
+            );
+            let preview = assess_beginner_generated_plan_with_deadline(
+                project_id,
+                project.editor.paper(),
+                project.editor.pattern(),
+                &plan,
+                None,
+                std::time::Instant::now() + std::time::Duration::from_millis(750),
+            );
+            assert!(
+                preview.apply_allowed,
+                "preview rejected: {}",
+                preview.reason
+            );
+            assert_eq!(preview.proof_scope, "sufficient");
+            assert!(matches!(
+                preview.reason,
+                "native_fold_path_certified" | "global_flat_foldability_proven"
+            ));
             let canonical_edge_ids = plan
                 .crease_pattern
                 .edges
@@ -17040,6 +17071,24 @@ mod tests {
                     .and_then(|value| value.fold_path_certificate_sha256)
                     .is_some()
             );
+            let instruction = reopened
+                .editor
+                .instruction_timeline()
+                .steps
+                .last()
+                .expect("native-positive candidate instruction");
+            let certificate = reopened
+                .editor
+                .beginner_design_profile()
+                .generation_provenance
+                .as_ref()
+                .and_then(|value| value.fold_path_certificate_sha256)
+                .expect("archived native fold-path certificate");
+            let certificate_hex = certificate
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert!(instruction.caution.contains(&certificate_hex));
             if let Some(expected_count) = semantic_binding_count {
                 assert_eq!(
                     reopened

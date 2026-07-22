@@ -471,6 +471,13 @@ jobs:
           cargo test --locked -p origami2-desktop --lib
           stacked_fold_read::tests::even_cycle_exact_schedules_are_admitted_by_strict_dyadic_read
           -- --exact --test-threads=1
+      - name: Verify all real named-technique compilers reach native exports
+        shell: bash
+        run: |
+          printf '%s\n' 'coverage=book_fold,reverse_fold,sink_fold,layer_selective,accordion_fold'
+          cargo test --locked -p origami2-desktop --lib \
+            instruction_export::tests::compiled_ \
+            -- --test-threads=1
       - name: Summarize Rust test failure
         if: failure() && steps.rust-tests.outcome == 'failure'
         shell: bash

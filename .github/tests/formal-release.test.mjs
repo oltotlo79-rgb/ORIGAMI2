@@ -827,6 +827,34 @@ test('CI requires one complete named-technique instruction export browser gate',
   }
 })
 
+test('CI requires one native export gate for all five real technique compilers', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const instructionExport = readFileSync(
+    join(root, 'apps/desktop/src-tauri/src/instruction_export.rs'),
+    'utf8',
+  )
+  assert.equal(
+    workflow.match(/instruction_export::tests::compiled_/gu)?.length,
+    1,
+    'the five real compilers must share one required Rust invocation',
+  )
+  assert.match(
+    workflow,
+    /cargo test --locked -p origami2-desktop --lib \\\s+instruction_export::tests::compiled_ \\\s+-- --test-threads=1/u,
+  )
+  const compilerMarkers = [
+    'book_fold', 'reverse_fold', 'sink_fold', 'layer_selective', 'accordion_fold',
+  ]
+  const gate = workflow.match(
+    /- name: Verify all real named-technique compilers reach native exports[\s\S]*?-- --test-threads=1/u,
+  )?.[0] ?? ''
+  assert.doesNotMatch(gate, /continue-on-error|\|\| true/u)
+  for (const marker of compilerMarkers) {
+    assert.match(gate, new RegExp(`(?:coverage=|,)${marker}(?:,|'|$)`, 'u'))
+    assert.match(instructionExport, new RegExp(`compile_certified_${marker}_timeline_v1`, 'u'))
+  }
+})
+
 test('promotion reuses and verifies the complete prerelease asset set', () => {
   const workflow = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const promote = workflow.slice(workflow.indexOf('  promote:'))

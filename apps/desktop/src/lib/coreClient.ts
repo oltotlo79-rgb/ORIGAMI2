@@ -3875,7 +3875,7 @@ export type BasicFoldTimelinePreviewRequestV1 = Readonly<{
   expectedSourceModelFingerprint: string
   foldEdge: string
   assignment: 'mountain' | 'valley'
-  techniqueKind: 'mountain' | 'valley' | 'squash' | 'crimp' | 'inside_reverse' | 'outside_reverse' | 'sink' | 'accordion' | 'petal' | 'layer_selective'
+  techniqueKind: 'mountain' | 'valley' | 'squash' | 'crimp' | 'inside_reverse' | 'outside_reverse' | 'sink' | 'accordion' | 'layer_selective'
   techniqueDocument: unknown
   techniqueId: string
 }>
@@ -3890,7 +3890,7 @@ export type BasicFoldTimelinePreviewResponseV1 = Readonly<{
   fixedFace: string
   foldEdge: string
   assignment: 'mountain' | 'valley'
-  techniqueKind: 'mountain' | 'valley' | 'squash' | 'crimp' | 'inside_reverse' | 'outside_reverse' | 'sink' | 'accordion' | 'petal' | 'layer_selective'
+  techniqueKind: 'mountain' | 'valley' | 'squash' | 'crimp' | 'inside_reverse' | 'outside_reverse' | 'sink' | 'accordion' | 'layer_selective'
   previewBindingSha256: string
   timeline: InstructionTimeline
 }>
@@ -3905,7 +3905,7 @@ export function previewNamedBasicFoldTimeline(
     || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
     || !/^[0-9a-f]{64}$/u.test(request.expectedSourceModelFingerprint)
     || (request.assignment !== 'mountain' && request.assignment !== 'valley')
-    || !['mountain', 'valley', 'squash', 'crimp', 'inside_reverse', 'outside_reverse', 'sink', 'accordion', 'petal', 'layer_selective'].includes(request.techniqueKind)
+    || !['mountain', 'valley', 'squash', 'crimp', 'inside_reverse', 'outside_reverse', 'sink', 'accordion', 'layer_selective'].includes(request.techniqueKind)
     || typeof request.techniqueId !== 'string') {
     return Promise.reject(new Error('invalid basic-fold timeline preview request'))
   }

@@ -781,7 +781,7 @@ fn compile_named_basic_fold_preview(
         "mountain" if assignment == "mountain" => Some(ori_instructions::BasicFoldKindV1::Mountain),
         "valley" if assignment == "valley" => Some(ori_instructions::BasicFoldKindV1::Valley),
         "squash" | "crimp" | "inside_reverse" | "outside_reverse" | "sink" | "accordion"
-        | "petal" | "layer_selective"
+        | "layer_selective"
             if matches!(assignment.as_str(), "mountain" | "valley") =>
         {
             None
@@ -823,9 +823,7 @@ fn compile_named_basic_fold_preview(
             .map_err(|_| "The current layer-order authority is unavailable.".to_owned())?
             .ok_or_else(|| "The basic-fold transaction preview is stale.".to_owned())?;
     }
-    if matches!(technique_kind.as_str(), "layer_selective" | "petal")
-        && pending.layer_capability.is_none()
-    {
+    if technique_kind == "layer_selective" && pending.layer_capability.is_none() {
         return Err("Certified layer-selection authority is required.".to_owned());
     }
     let (_, hinge_ids, pending_fixed_face, _) = pending.requested.pose_components();
@@ -901,13 +899,9 @@ fn compile_named_basic_fold_preview(
             },
         )
         .map_err(|_| "The named basic-fold compiler rejected the preview.".to_owned())?
-    } else if matches!(technique_kind.as_str(), "accordion" | "petal") {
+    } else if technique_kind == "accordion" {
         let count = certificate.edges().len();
-        if !(3..=31).contains(&count)
-            || (technique_kind == "petal" && count != 3)
-            || targets.len() != count
-            || hinge_ids.len() != count
-        {
+        if !(3..=31).contains(&count) || targets.len() != count || hinge_ids.len() != count {
             return Err(
                 "Three to thirty-one continuous certified fold segments are required.".to_owned(),
             );
@@ -954,24 +948,18 @@ fn compile_named_basic_fold_preview(
                     .ok_or_else(|| "An accordion path segment is unavailable.".to_owned())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let request = ori_instructions::AccordionFoldMotionRequestV1 {
-            technique_file: &technique,
-            technique_id: &technique_id,
-            source_model_fingerprint: &expected_source_model_fingerprint,
-            fixed_face,
-            source_hinge_angles: &source_hinge_angles,
-            ordered_edges: &hinge_ids,
-            ordered_target_angles_microdegrees: &ordered_target_angles_microdegrees,
-            ordered_path_certificates: &ordered_path_certificates,
-        };
-        if technique_kind == "petal" {
-            if !regular_quad_petal_face_v1(&project, &hinge_ids) {
-                return Err("A certified regular four-edge petal face is required.".to_owned());
-            }
-            ori_instructions::compile_certified_regular_quad_petal_fold_timeline_v1(request)
-        } else {
-            ori_instructions::compile_certified_accordion_fold_timeline_v1(request)
-        }
+        ori_instructions::compile_certified_accordion_fold_timeline_v1(
+            ori_instructions::AccordionFoldMotionRequestV1 {
+                technique_file: &technique,
+                technique_id: &technique_id,
+                source_model_fingerprint: &expected_source_model_fingerprint,
+                fixed_face,
+                source_hinge_angles: &source_hinge_angles,
+                ordered_edges: &hinge_ids,
+                ordered_target_angles_microdegrees: &ordered_target_angles_microdegrees,
+                ordered_path_certificates: &ordered_path_certificates,
+            },
+        )
         .map_err(|_| "The named accordion compiler rejected the preview.".to_owned())?
     } else {
         if certificate.edges().len() != 2 || targets.len() != 2 || hinge_ids.len() != 2 {
@@ -1085,6 +1073,7 @@ fn bind_named_technique_compiler_metadata_v1(
         .map_err(|_| "The compiler timeline metadata is invalid.".to_owned())
 }
 
+#[cfg(test)]
 pub(super) fn regular_quad_petal_face_v1(
     project: &super::ProjectState,
     hinges: &[ori_domain::EdgeId],

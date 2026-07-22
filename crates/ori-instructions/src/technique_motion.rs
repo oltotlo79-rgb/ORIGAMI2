@@ -1525,6 +1525,22 @@ mod tests {
             }),
             Err(AccordionFoldMotionError::PathSegmentMismatch)
         );
+        assert_eq!(
+            compile_certified_regular_quad_petal_fold_timeline_v1(
+                RegularQuadPetalFoldMotionRequestV1 {
+                    technique_file: &file,
+                    technique_id: "book-fold",
+                    source_model_fingerprint: &model,
+                    fixed_face: face,
+                    source_hinge_angles: &[],
+                    ordered_edges: &edges,
+                    ordered_target_angles_microdegrees: &targets,
+                    ordered_path_certificates: &certificates,
+                },
+            ),
+            Err(AccordionFoldMotionError::PathSegmentMismatch),
+            "a petal certificate cannot be reordered or substituted",
+        );
     }
 
     #[test]

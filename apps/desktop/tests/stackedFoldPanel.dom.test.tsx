@@ -648,19 +648,16 @@ describe('StackedFoldPanel', () => {
       .toHaveProperty('disabled', false)
   })
 
-  it('keeps a non-certified petal fold unsupported without apply authority', async () => {
+  it('keeps a petal fold explicitly unsupported without preview or apply authority', async () => {
     transport.preview.mockResolvedValue(ready)
     transport.cancel.mockResolvedValue(undefined)
-    transport.basicPreview.mockRejectedValueOnce(new Error('regular petal premises unavailable'))
     render(<StackedFoldPanel locale="en" snapshot={snapshot}
       selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
       disabled={false}
       namedBookFold={{ document: { techniques: [] } as any, techniqueId: 'petal', name: 'Petal fold', kind: 'petal' }}
       refreshSnapshot={vi.fn()} onApplied={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Preview certified timeline' }))
-    await waitFor(() => expect(transport.basicPreview).toHaveBeenCalled())
-    expect(await screen.findByText(/Petal fold remains unsupported/u)).toBeTruthy()
+    expect((await screen.findByRole('alert')).textContent).toContain('Petal fold remains unsupported')
     const premises = screen.getByLabelText('Missing petal-fold proof premises')
     expect(premises.textContent).toContain('at least 3 in one Graph chain')
     expect(premises.textContent).toContain('Lifted-flap topology authority')
@@ -668,13 +665,14 @@ describe('StackedFoldPanel', () => {
     expect(premises.textContent).toContain('Final-flattening endpoint authority')
     expect(premises.textContent).toContain('Continuous layer-order authority')
     expect(premises.textContent).toContain('no preview or apply token is issued')
+    expect(screen.queryByRole('button', { name: 'Preview certified timeline' })).toBeNull()
     expect(screen.getByRole('checkbox')).toHaveProperty('disabled', true)
     expect(screen.getByRole('button', { name: 'Apply named book fold' })).toHaveProperty('disabled', true)
     expect(transport.namedApply).not.toHaveBeenCalled()
   })
 
-  it.each(['squash', 'crimp', 'petal'] as const)(
-    'requires a digest-bound certified preview before %s apply', async (kind) => {
+  it.each(['squash', 'crimp'] as const)(
+    'requires a digest-bound two-segment preview before %s apply', async (kind) => {
       const preview = { ...basicTimelinePreview, techniqueKind: kind }
       transport.preview.mockResolvedValue(ready)
       transport.basicPreview.mockResolvedValue(preview)

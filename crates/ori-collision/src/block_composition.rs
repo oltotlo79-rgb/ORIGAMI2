@@ -140,10 +140,21 @@ fn blockwise_positive_layer_binding_v1(
     hash.update(BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
     hash.update(parent_binding);
     hash.update(articulation_layer_fingerprint);
-    for layer in layers {
-        hash.update(layer.target_order_hash());
-        hash.update(layer.paper_thickness_mm().to_bits().to_le_bytes());
-        hash.update((layer.pair_order_count() as u64).to_le_bytes());
+    let mut records = layers
+        .iter()
+        .map(|layer| {
+            (
+                layer.target_order_hash(),
+                layer.paper_thickness_mm().to_bits(),
+                layer.pair_order_count(),
+            )
+        })
+        .collect::<Vec<_>>();
+    records.sort_unstable();
+    for (target, thickness, pair_count) in records {
+        hash.update(target);
+        hash.update(thickness.to_le_bytes());
+        hash.update((pair_count as u64).to_le_bytes());
     }
     hash.finalize().into()
 }

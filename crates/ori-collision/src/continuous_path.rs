@@ -4147,6 +4147,87 @@ mod tests {
             )
             .is_none()
         );
+        let reordered_second_positive =
+            certify_canonical_positive_thickness_cycle_schedule_path_v1(
+                &second_geometry,
+                &second_audit,
+                articulation,
+                &second_schedule,
+                &second_closure,
+                0.1,
+                32,
+            )
+            .unwrap();
+        let reordered_second_layer = make_layer(
+            &second_geometry,
+            &second_audit,
+            &second_source,
+            &second_schedule,
+            &second_closure,
+            &reordered_second_positive,
+        );
+        let reordered_first_positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+            &first_geometry,
+            &first_audit,
+            articulation,
+            &first_schedule,
+            &first_closure,
+            0.1,
+            32,
+        )
+        .unwrap();
+        let reordered_first_layer = make_layer(
+            &first_geometry,
+            &first_audit,
+            &first_source,
+            &first_schedule,
+            &first_closure,
+            &reordered_first_positive,
+        );
+        let reordered_parent = crate::issue_blockwise_closure_authority_v1(
+            [
+                crate::BlockwiseClosureInputV1 {
+                    geometry: &second_geometry,
+                    audit: &second_audit,
+                    schedule: &second_schedule,
+                    closure: &second_closure,
+                },
+                crate::BlockwiseClosureInputV1 {
+                    geometry: &first_geometry,
+                    audit: &first_audit,
+                    schedule: &first_schedule,
+                    closure: &first_closure,
+                },
+            ],
+            articulation,
+            0.1,
+            [0x61; 32],
+        )
+        .unwrap();
+        let reordered_composed = crate::issue_blockwise_positive_layer_authority_v1(
+            reordered_parent,
+            [
+                crate::BlockwisePositiveLayerInputV1 {
+                    source: &second_source,
+                    positive: reordered_second_positive,
+                    layer: reordered_second_layer,
+                },
+                crate::BlockwisePositiveLayerInputV1 {
+                    source: &first_source,
+                    positive: reordered_first_positive,
+                    layer: reordered_first_layer,
+                },
+            ],
+            articulation,
+            0.1,
+            [0x61; 32],
+            [0x71; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            composed.binding_fingerprint_v1(),
+            reordered_composed.binding_fingerprint_v1()
+        );
         assert!(
             crate::issue_blockwise_closure_authority_v1(
                 [

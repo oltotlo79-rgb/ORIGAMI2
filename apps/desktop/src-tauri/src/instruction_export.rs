@@ -969,8 +969,12 @@ pub(crate) mod tests {
         FoldTechniqueActionV1, FoldTechniqueCapabilityV1, FoldTechniqueExecutionSupportV1,
         FoldTechniqueFileDocumentV1, FoldTechniqueFileV1, FoldTechniqueLocalizedTextV1,
         FoldTechniqueMetadataV1, FoldTechniqueOperationV1, FoldTechniqueParameterBindingV1,
-        FoldTechniqueParameterDefinitionV1, FoldTechniqueParameterTypeV1, FoldTechniqueSourceV1,
-        FoldTechniqueTemplateV1, compile_certified_book_fold_timeline_v1,
+        FoldTechniqueParameterDefinitionV1, FoldTechniqueParameterTypeV1, FoldTechniqueSinkKindV1,
+        FoldTechniqueSourceV1, FoldTechniqueTemplateV1,
+        FoldTechniqueUnsupportedPhysicalOperationV1, LayerSelectiveMotionRequestV1,
+        ReverseFoldKindV1, ReverseFoldMotionRequestV1, SinkFoldMotionRequestV1,
+        compile_certified_book_fold_timeline_v1, compile_certified_layer_selective_timeline_v1,
+        compile_certified_reverse_fold_timeline_v1, compile_certified_sink_fold_timeline_v1,
         instruction_pose_fingerprint_v1, validate_fold_technique_file_v1,
     };
 
@@ -1243,6 +1247,25 @@ pub(crate) mod tests {
             ori_collision::CertifiedPathGraphSearchResultV1::Certified(certificate) => certificate,
             other => panic!("expected native certificate, got {other:?}"),
         }
+    }
+
+    fn two_segment_file(
+        title: &str,
+        action: FoldTechniqueActionV1,
+        capability: FoldTechniqueCapabilityV1,
+        unsupported: FoldTechniqueUnsupportedPhysicalOperationV1,
+    ) -> FoldTechniqueFileV1 {
+        let mut document = book_fold_file().document().clone();
+        let technique = &mut document.techniques[0];
+        technique.names = localized(title);
+        let operation = &mut technique.operations[1];
+        operation.action = action;
+        operation.required_capabilities = vec![capability];
+        operation.execution_support =
+            FoldTechniqueExecutionSupportV1::UnsupportedPhysicalOperation {
+                operation: unsupported,
+            };
+        validate_fold_technique_file_v1(document).expect("valid two-segment technique")
     }
 
     fn source_for(
@@ -1561,6 +1584,189 @@ pub(crate) mod tests {
         .err()
         .expect("stale step must be rejected");
         assert_eq!(stale_error, InstructionExportErrorCategory::TimelineStale);
+    }
+
+    #[test]
+    fn compiled_two_segment_techniques_reopen_into_native_exports_with_exact_chaining() {
+        let mut project = super::super::initial_project_state();
+        let fold_edge = EdgeId::new();
+        let second_edge = EdgeId::new();
+        let center = VertexId::new();
+        project
+            .editor
+            .execute(
+                0,
+                Command::AddVertex {
+                    id: center,
+                    position: Point2::new(200.0, 200.0),
+                },
+            )
+            .expect("add shared fold endpoint");
+        let boundary = &project.editor.paper().boundary_vertices;
+        for (id, start, end) in [
+            (fold_edge, boundary[0], center),
+            (second_edge, center, boundary[2]),
+        ] {
+            let revision = project.editor.revision();
+            project
+                .editor
+                .execute(
+                    revision,
+                    Command::AddEdge {
+                        id,
+                        start,
+                        end,
+                        kind: EdgeKind::Mountain,
+                    },
+                )
+                .expect("add two-segment edge");
+        }
+        let model = project.editor.fold_model_fingerprint_v1();
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let fixed_face = topology.simulation_snapshot().expect("fold topology").faces[0].id;
+        let source = vec![
+            InstructionHingeAngle { edge: fold_edge, angle_degrees: 5.0 },
+            InstructionHingeAngle { edge: second_edge, angle_degrees: 5.0 },
+        ];
+        let middle = vec![
+            InstructionHingeAngle { edge: fold_edge, angle_degrees: 45.0 },
+            InstructionHingeAngle { edge: second_edge, angle_degrees: 5.0 },
+        ];
+        let target = vec![
+            InstructionHingeAngle { edge: fold_edge, angle_degrees: 45.0 },
+            InstructionHingeAngle { edge: second_edge, angle_degrees: 90.0 },
+        ];
+        let first = native_certificate(
+            instruction_pose_fingerprint_v1(&model, fixed_face, &source),
+            instruction_pose_fingerprint_v1(&model, fixed_face, &middle),
+        );
+        let second = native_certificate(
+            instruction_pose_fingerprint_v1(&model, fixed_face, &middle),
+            instruction_pose_fingerprint_v1(&model, fixed_face, &target),
+        );
+
+        let inside_file = two_segment_file(
+            "中割り折り",
+            FoldTechniqueActionV1::InsideReverseFold,
+            FoldTechniqueCapabilityV1::InsideReverseFoldMotionV1,
+            FoldTechniqueUnsupportedPhysicalOperationV1::InsideReverseFoldMotionV1,
+        );
+        let sink_file = two_segment_file(
+            "沈め折り",
+            FoldTechniqueActionV1::SinkFold {
+                sink_kind: FoldTechniqueSinkKindV1::Open,
+            },
+            FoldTechniqueCapabilityV1::SinkFoldMotionV1,
+            FoldTechniqueUnsupportedPhysicalOperationV1::SinkFoldMotionV1,
+        );
+        let layer_file = two_segment_file(
+            "層選択折り",
+            FoldTechniqueActionV1::LayerSelectiveManipulation {
+                instructions: localized("対象層を選ぶ"),
+            },
+            FoldTechniqueCapabilityV1::LayerSelectiveMotionV1,
+            FoldTechniqueUnsupportedPhysicalOperationV1::LayerSelectiveMotionV1,
+        );
+        let timelines = [
+            (
+                "中割り折り",
+                compile_certified_reverse_fold_timeline_v1(ReverseFoldMotionRequestV1 {
+                    technique_file: &inside_file,
+                    technique_id: "book-fold",
+                    kind: ReverseFoldKindV1::Inside,
+                    source_model_fingerprint: &model,
+                    fixed_face,
+                    first_edge: fold_edge,
+                    second_edge,
+                    source_hinge_angles: &source,
+                    intermediate_angle_microdegrees: 45_000_000,
+                    target_angle_microdegrees: 90_000_000,
+                    first_path_certificate: &first,
+                    second_path_certificate: &second,
+                })
+                .expect("compile inside reverse"),
+            ),
+            (
+                "沈め折り",
+                compile_certified_sink_fold_timeline_v1(SinkFoldMotionRequestV1 {
+                    technique_file: &sink_file,
+                    technique_id: "book-fold",
+                    source_model_fingerprint: &model,
+                    fixed_face,
+                    first_edge: fold_edge,
+                    second_edge,
+                    source_hinge_angles: &source,
+                    intermediate_angle_microdegrees: 45_000_000,
+                    target_angle_microdegrees: 90_000_000,
+                    first_path_certificate: &first,
+                    second_path_certificate: &second,
+                })
+                .expect("compile sink"),
+            ),
+            (
+                "層選択折り",
+                compile_certified_layer_selective_timeline_v1(LayerSelectiveMotionRequestV1 {
+                    technique_file: &layer_file,
+                    technique_id: "book-fold",
+                    source_model_fingerprint: &model,
+                    fixed_face,
+                    first_edge: fold_edge,
+                    second_edge,
+                    source_hinge_angles: &source,
+                    intermediate_angle_microdegrees: 45_000_000,
+                    target_angle_microdegrees: 90_000_000,
+                    first_path_certificate: &first,
+                    second_path_certificate: &second,
+                })
+                .expect("compile layer-selective"),
+            ),
+        ];
+        for (title, timeline) in timelines {
+            assert_eq!(timeline.steps.len(), 3);
+            assert!(timeline.steps[2].title.contains(title));
+            let first_reference = timeline.steps[1]
+                .visual
+                .path_certificate_reference_v1
+                .as_ref()
+                .expect("first compiler proof");
+            let second_reference = timeline.steps[2]
+                .visual
+                .path_certificate_reference_v1
+                .as_ref()
+                .expect("second compiler proof");
+            assert_eq!(
+                first_reference.target_pose_sha256,
+                second_reference.source_pose_sha256
+            );
+            for (step, reference) in timeline.steps[1..]
+                .iter()
+                .zip([first_reference, second_reference])
+            {
+                let proof_hex = reference
+                    .binding_sha256
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                assert!(step.description.contains(&proof_hex));
+            }
+            let archived = serde_json::to_vec(&timeline).expect("archive compiler timeline");
+            let reopened: ori_domain::InstructionTimeline =
+                serde_json::from_slice(&archived).expect("reopen compiler timeline");
+            for (format, magic) in [
+                (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+                (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+            ] {
+                let mut export_source = source_for(&project, format);
+                export_source.timeline = reopened.clone();
+                let artifact = build_pending_export(export_source)
+                    .expect("export real two-segment compiler timeline");
+                assert_eq!(artifact.step_count, 3);
+                assert!(artifact.bytes.starts_with(magic));
+            }
+        }
     }
 
     #[test]

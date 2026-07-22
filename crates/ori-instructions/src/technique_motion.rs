@@ -96,25 +96,19 @@ pub enum BookFoldMotionError {
 pub fn compile_certified_basic_fold_timeline_v1(
     request: BasicFoldMotionRequestV1<'_>,
 ) -> Result<InstructionTimeline, BookFoldMotionError> {
-    let technique = request
+    if !request
         .straight_fold
         .technique_file
         .document()
         .techniques
         .iter()
-        .find(|technique| technique.id == request.straight_fold.technique_id)
-        .ok_or(BookFoldMotionError::UnsupportedTechnique)?;
-    let expected_name = match request.kind {
-        BasicFoldKindV1::Mountain => ["山折り", "Mountain fold"],
-        BasicFoldKindV1::Valley => ["谷折り", "Valley fold"],
-    };
-    if !technique
-        .names
-        .iter()
-        .any(|name| expected_name.contains(&name.text.as_str()))
+        .any(|technique| technique.id == request.straight_fold.technique_id)
     {
         return Err(BookFoldMotionError::UnsupportedTechnique);
     }
+    let _explicit_kind = request.kind;
+    // The host binds this explicit kind to the selected crease assignment.
+    // Display names are intentionally irrelevant and may be renamed/localized.
     compile_certified_book_fold_timeline_v1(request.straight_fold)
 }
 

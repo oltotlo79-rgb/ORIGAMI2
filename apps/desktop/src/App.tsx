@@ -9936,6 +9936,7 @@ function App() {
                 foldTechniqueWorkspace?.document ?? null,
                 foldTechniqueSelectedIndex,
                 locale,
+                selectedLine?.kind,
               )}
               refreshSnapshot={requestProjectSnapshot}
               onApplied={(snapshot) => {
@@ -12168,6 +12169,7 @@ function selectedNamedBookFold(
   document: FoldTechniqueFileDocumentV1 | null,
   techniqueIndex: number,
   locale: Locale,
+  selectedCreaseKind?: CreaseLine['kind'],
 ) {
   const technique = document?.techniques[techniqueIndex]
   if (!technique) return null
@@ -12187,8 +12189,8 @@ function selectedNamedBookFold(
   const hasCanonicalName = (names: readonly string[]) => technique.names.some(
     (entry) => names.includes(entry.text),
   )
-  const isMountain = hasCanonicalName(['山折り', 'Mountain fold'])
-  const isValley = hasCanonicalName(['谷折り', 'Valley fold'])
+  const isMountain = selectedCreaseKind === 'mountain'
+  const isValley = selectedCreaseKind === 'valley'
   const isPetal = hasCanonicalName(['花弁折り', 'Petal fold'])
   const isSquash = hasCanonicalName(['つぶし折り', 'Squash fold'])
   const isCrimp = physical.length === 2

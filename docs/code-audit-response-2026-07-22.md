@@ -47,6 +47,15 @@
 
 ## 検証ゲート
 
+### 2026-07-22 横断回帰の端末証跡
+
+- `ori-formats` lib全体: 305 passed / 0 failed。A-5以前の「表現不能なlayer evidenceを黙って破棄する」旧期待値も、専用errorへfail-closedする回帰へ修正（`1f97822`）。
+- `cargo fmt --all -- --check`: green。
+- `cargo clippy -p ori-core -p ori-formats --all-targets -- -D warnings`: green。
+- `cargo clippy -p ori-collision --all-targets -- -D warnings`: green。
+- `origami2-desktop` lib checkは依存crate `tauri` / `tauri_plugin_dialog` のローカルartifact欠落（E0463）で停止。監査変更由来の型・lintエラーではないため、同一head CIで再確認する。
+- `ori-collision` の分割実行はtest binaryのcompile完了後、Windows Application Control（OS error 4551）が新規生成exeの起動を拒否。assertion失敗ではない。静的検査はgreenであり、実行回帰は許可済みCI runnerを最終証跡とする。
+
 - 各修正はfocused test、関連crate全test、`rustfmt`、`git diff --check`を通す。
 - 長時間matrixはtool timeoutをテスト失敗と混同せず、隔離`CARGO_TARGET_DIR`でterminal結果を取得する。
 - B-1〜B-3の過大計上を補正したpending案は83.96%（表示84.0%）。同一headの全必須CI greenまでは正本79.3%を変更しない。

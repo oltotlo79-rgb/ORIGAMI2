@@ -162,6 +162,40 @@ pub type CrimpFoldMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
 /// Reserved request shape for a future certified petal-fold compiler.
 pub type PetalFoldMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PetalFoldMissingPremiseV1 {
+    ThreeSegmentGraphChain,
+    LiftedFlapAuthority,
+    AdjacentFaceOpeningAuthority,
+    FinalFlatteningAuthority,
+    ContinuousLayerAuthority,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PetalFoldCertificationAuditV1 {
+    pub supported: bool,
+    pub minimum_graph_segments: u8,
+    pub missing_premises: &'static [PetalFoldMissingPremiseV1],
+}
+
+const PETAL_FOLD_MISSING_PREMISES_V1: &[PetalFoldMissingPremiseV1] = &[
+    PetalFoldMissingPremiseV1::ThreeSegmentGraphChain,
+    PetalFoldMissingPremiseV1::LiftedFlapAuthority,
+    PetalFoldMissingPremiseV1::AdjacentFaceOpeningAuthority,
+    PetalFoldMissingPremiseV1::FinalFlatteningAuthority,
+    PetalFoldMissingPremiseV1::ContinuousLayerAuthority,
+];
+
+/// The V1 graph certificate binds one or two endpoint paths, but carries no
+/// single-vertex flap/open/flatten topology or continuous layer authority.
+pub const fn audit_certified_petal_fold_v1() -> PetalFoldCertificationAuditV1 {
+    PetalFoldCertificationAuditV1 {
+        supported: false,
+        minimum_graph_segments: 3,
+        missing_premises: PETAL_FOLD_MISSING_PREMISES_V1,
+    }
+}
+
 /// Compiles the proof-carrying sink primitive used by a named squash fold.
 /// Missing capabilities or either missing path segment remain fail-closed.
 pub fn compile_certified_squash_fold_timeline_v1(
@@ -229,6 +263,7 @@ pub fn compile_certified_crimp_fold_timeline_v1(
 pub const fn compile_certified_petal_fold_timeline_v1(
     _request: PetalFoldMotionRequestV1<'_>,
 ) -> Result<InstructionTimeline, ReverseFoldMotionError> {
+    let _audit = audit_certified_petal_fold_v1();
     Err(ReverseFoldMotionError::UnsupportedTechnique)
 }
 
@@ -1647,6 +1682,19 @@ mod tests {
                 path_certificate: &proof,
             }),
             Err(BookFoldMotionError::InvalidTargetAngle),
+        );
+    }
+
+    #[test]
+    fn petal_fold_audit_keeps_every_unproven_physical_premise_closed() {
+        let audit = audit_certified_petal_fold_v1();
+        assert!(!audit.supported);
+        assert_eq!(audit.minimum_graph_segments, 3);
+        assert_eq!(audit.missing_premises, PETAL_FOLD_MISSING_PREMISES_V1);
+        assert!(
+            audit
+                .missing_premises
+                .contains(&PetalFoldMissingPremiseV1::ContinuousLayerAuthority)
         );
     }
 }

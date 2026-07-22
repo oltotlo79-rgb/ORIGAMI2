@@ -1364,7 +1364,8 @@ export function StackedFoldPanel({
             </section>
           )}
           {unsupportedNamedPhysicalFold && (
-            <p role="alert">{t(
+            <div role="alert">
+            <p>{t(
               namedBookFold?.kind === 'petal'
                 ? '花弁折りは持ち上げ・隣接面の開き・最終平坦化を同時に証明できないため適用できません。'
                 : 'この基本折りには認証済みの山折り・谷折り種別がないため適用できません。',
@@ -1372,6 +1373,19 @@ export function StackedFoldPanel({
                 ? 'Petal fold remains unsupported because lift, adjacent-face opening, and final flattening are not jointly certified.'
                 : 'This basic fold has no certified mountain/valley kind and cannot be applied.',
             )}</p>
+            {namedBookFold?.kind === 'petal' && (
+              <div aria-label={t('花弁折りの不足証明premise', 'Missing petal-fold proof premises')}>
+                <p>{t('必要Graph区間: 3以上（同一Graph chain）', 'Required Graph segments: at least 3 in one Graph chain')}</p>
+                <ul>
+                  <li>{t('持ち上げるflapの位相権限', 'Lifted-flap topology authority')}</li>
+                  <li>{t('隣接面を開く経路権限', 'Adjacent-face opening path authority')}</li>
+                  <li>{t('最終平坦化のendpoint権限', 'Final-flattening endpoint authority')}</li>
+                  <li>{t('全区間を通したlayer順序権限', 'Continuous layer-order authority across every segment')}</li>
+                </ul>
+                <p>{t('現V1 certificateはこれらを結合しないためpreview/apply tokenを発行しません。', 'V1 certificates do not bind these premises together, so no preview or apply token is issued.')}</p>
+              </div>
+            )}
+            </div>
           )}
           <label>
             <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={!ready || applying || unsupportedNamedPhysicalFold || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)} />

@@ -1,11 +1,44 @@
 use std::{
+    collections::HashSet,
     ffi::OsString,
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, UNIX_EPOCH},
 };
+
+static ACTIVE_PROJECT_FILE_OPERATIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+struct ProjectFileOperationGuard {
+    key: String,
+}
+
+impl Drop for ProjectFileOperationGuard {
+    fn drop(&mut self) {
+        if let Ok(mut active) = ACTIVE_PROJECT_FILE_OPERATIONS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+        {
+            active.remove(&self.key);
+        }
+    }
+}
+
+fn acquire_project_file_operation(path: &Path) -> Result<ProjectFileOperationGuard, ()> {
+    let key = target_path_fingerprint(path)?;
+    let mut active = ACTIVE_PROJECT_FILE_OPERATIONS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .map_err(|_| ())?;
+    if !active.insert(key.clone()) {
+        return Err(());
+    }
+    Ok(ProjectFileOperationGuard { key })
+}
 
 use ori_domain::ProjectId;
 #[cfg(test)]
@@ -440,6 +473,8 @@ pub(super) enum RecoveryProjectLoad {
 pub(super) struct RecoveryPersistenceError;
 
 pub(super) fn load_project_archive_from_path(path: &Path) -> Result<Ori2ProjectArchive, String> {
+    let _operation = acquire_project_file_operation(path)
+        .map_err(|()| PROJECT_FILE_OPEN_FAILED_MESSAGE.to_owned())?;
     recover_single_file_journal_for_open(path)
         .map_err(|_| PROJECT_FILE_INVALID_MESSAGE.to_owned())?;
     let limits = Ori2Limits::default();
@@ -904,12 +939,16 @@ pub(super) fn persist_project_archive_to_destination(
         .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?;
     let bytes = write_project_archive_ori2(project)
         .map_err(|_| PROJECT_SERIALIZATION_FAILED_MESSAGE.to_owned())?;
-    let result = persist_document_atomically(
-        path,
-        project,
-        &bytes,
-        destination.existing_destination_policy(),
-    );
+    let result = (|| {
+        let _operation = acquire_project_file_operation(path)
+            .map_err(|()| "project file operation is already active".to_owned())?;
+        persist_document_atomically(
+            path,
+            project,
+            &bytes,
+            destination.existing_destination_policy(),
+        )
+    })();
     match destination.existing_destination_policy() {
         ExistingDestinationPolicy::RejectExisting => result.map_err(|_| {
             "拡張子を補正した保存先を安全に確定できなかったため、保存を中止しました。".to_owned()
@@ -1293,13 +1332,13 @@ mod staged_payload_adapter_tests {
     };
 
     use super::{
-        Ori2ProjectArchive, ProjectDocument, SINGLE_FILE_JOURNAL_SCHEMA_V1,
+        DialogSaveDestination, Ori2ProjectArchive, ProjectDocument, SINGLE_FILE_JOURNAL_SCHEMA_V1,
         SingleFileJournalPayloadV1, SingleFileJournalPhaseV1, SingleFileRecoveryFs,
-        SingleFileRecoveryObject, decode_single_file_journal_v1, encode_single_file_journal_v1,
-        journal_path_for_target, load_project_archive_from_path,
-        recover_authenticated_single_file_v1, recover_single_file_journal_for_target,
-        sha256_hex_bytes, target_path_fingerprint, write_complete_staged_payload,
-        write_project_archive_ori2,
+        SingleFileRecoveryObject, acquire_project_file_operation, decode_single_file_journal_v1,
+        encode_single_file_journal_v1, journal_path_for_target, load_project_archive_from_path,
+        persist_project_archive_to_destination, recover_authenticated_single_file_v1,
+        recover_single_file_journal_for_target, sha256_hex_bytes, target_path_fingerprint,
+        write_complete_staged_payload, write_project_archive_ori2,
     };
     use ori_domain::{CreasePattern, ProjectId};
 
@@ -1681,6 +1720,44 @@ mod staged_payload_adapter_tests {
             temp_bytes
         );
         assert_eq!(fs::read(&journal).expect("journal preserved"), tampered);
+        fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[test]
+    fn same_target_single_flight_rejects_double_writer_open_and_aba() {
+        let directory = journal_test_directory("single-flight");
+        let target = directory.join("project.ori2");
+        let old_archive =
+            Ori2ProjectArchive::document_only(ProjectDocument::new("old", CreasePattern::empty()));
+        let old_bytes = write_project_archive_ori2(&old_archive).expect("old archive");
+        fs::write(&target, &old_bytes).expect("old target");
+        let owner = acquire_project_file_operation(&target).expect("first owner");
+        assert!(acquire_project_file_operation(&target).is_err());
+        assert!(load_project_archive_from_path(&target).is_err());
+
+        let other_project = Ori2ProjectArchive::document_only(ProjectDocument::new(
+            "other project",
+            CreasePattern::empty(),
+        ));
+        assert!(
+            persist_project_archive_to_destination(
+                &DialogSaveDestination::confirmed(target.clone()),
+                &other_project,
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&target).expect("target preserved"), old_bytes);
+        assert_eq!(fs::read_dir(&directory).expect("directory").count(), 1);
+
+        drop(owner);
+        let next_owner = acquire_project_file_operation(&directory.join("./project.ori2"))
+            .expect("canonical alias acquires only after release");
+        assert!(acquire_project_file_operation(&target).is_err());
+        drop(next_owner);
+        assert_eq!(
+            load_project_archive_from_path(&target).expect("open after release"),
+            old_archive
+        );
         fs::remove_dir_all(directory).expect("cleanup test directory");
     }
 

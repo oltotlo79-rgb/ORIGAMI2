@@ -422,17 +422,17 @@ fn compile_two_segment_motion(
         path_certificate_visual_v1(first, model),
         path_certificate_visual_v1(second, model),
     ];
-    let steps = [("開始", source), ("沈め", middle), ("完了", target)]
+    let steps = [("開始 / Start", source), ("沈め / Sink", middle), ("完了 / Complete", target)]
         .into_iter()
         .enumerate()
         .map(|(index, (suffix, hinge_angles))| InstructionStep {
             id: InstructionStepId::new(),
             title: format!("{title}：{suffix}"),
             description: if index == 0 {
-                "認証済み二段階技法の開始姿勢です。".to_owned()
+                "認証済み二段階技法の開始姿勢です。 / Certified start pose for the two-stage technique.".to_owned()
             } else {
                 format!(
-                    "衝突・層順序証明に結合された区間{index}の終端です。経路証明 SHA-256: {}",
+                    "衝突・層順序証明に結合された区間{index}の終端です。 / Certified endpoint of collision- and layer-order-bound segment {index}. Path certificate SHA-256: {}",
                     certificate_references[index - 1]
                 )
             },
@@ -608,19 +608,19 @@ pub fn compile_certified_accordion_fold_timeline_v1(
         .map(|(index, hinge_angles)| InstructionStep {
             id: InstructionStepId::new(),
             title: if index == 0 {
-                format!("{title}：開始")
+                format!("{title}：開始 / Start")
             } else {
-                format!("{title}：折り{index}")
+                format!("{title}：折り{index} / Fold {index}")
             },
             description: if index == 0 {
-                "認証済み蛇腹折りの開始姿勢です。".to_owned()
+                "認証済み蛇腹折りの開始姿勢です。 / Certified accordion-fold start pose.".to_owned()
             } else {
                 format!(
-                    "認証済み区間{index}の終端姿勢です。経路証明 SHA-256: {}",
+                    "認証済み区間{index}の終端姿勢です。 / Certified endpoint of segment {index}. Path certificate SHA-256: {}",
                     certificate_references[index - 1]
                 )
             },
-            caution: "区間を入れ替えず順番どおりに折ってください。".to_owned(),
+            caution: "区間を入れ替えず順番どおりに折ってください。 / Fold the segments in order without reordering them.".to_owned(),
             duration_ms: 1_000,
             visual: if index == 0 {
                 InstructionVisual::default()
@@ -741,7 +741,7 @@ pub fn compile_certified_reverse_fold_timeline_v1(
         id: InstructionStepId::new(),
         title: format!("{title}：{suffix}"),
         description: description.to_owned(),
-        caution: "認証済みの2区間を順番どおりに操作してください。".to_owned(),
+        caution: "認証済みの2区間を順番どおりに操作してください。 / Apply the two certified segments in order.".to_owned(),
         duration_ms: 1_000,
         visual,
         pose: pose(angles),
@@ -749,23 +749,23 @@ pub fn compile_certified_reverse_fold_timeline_v1(
     let timeline = InstructionTimeline {
         steps: vec![
             step(
-                "開始",
-                "逆折りの開始姿勢です。",
+                "開始 / Start",
+                "逆折りの開始姿勢です。 / Reverse-fold start pose.",
                 InstructionVisual::default(),
                 source,
             ),
             step(
-                "反転",
+                "反転 / Reverse",
                 &format!(
-                    "第1の衝突・層順序証明区間の終端です。経路証明 SHA-256: {first_reference}"
+                    "第1の衝突・層順序証明区間の終端です。 / Endpoint of certified collision and layer-order segment 1. Path certificate SHA-256: {first_reference}"
                 ),
                 path_certificate_visual_v1(first, request.source_model_fingerprint),
                 intermediate,
             ),
             step(
-                "完了",
+                "完了 / Complete",
                 &format!(
-                    "第2の衝突・層順序証明区間の終端です。経路証明 SHA-256: {second_reference}"
+                    "第2の衝突・層順序証明区間の終端です。 / Endpoint of certified collision and layer-order segment 2. Path certificate SHA-256: {second_reference}"
                 ),
                 path_certificate_visual_v1(second, request.source_model_fingerprint),
                 target,
@@ -799,7 +799,7 @@ fn path_certificate_reference_v1(
         .into_iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    format!("{certificate} / 元モデル SHA-256: {source_model_fingerprint}")
+    format!("{certificate} / 元モデル / Source model SHA-256: {source_model_fingerprint}")
 }
 
 fn path_certificate_visual_v1(
@@ -880,8 +880,8 @@ pub fn append_certified_dyadic_path_timeline_v1(
     let mut candidate = timeline.clone();
     candidate.steps.push(InstructionStep {
         id: InstructionStepId::new(),
-        title: format!("「{title}」の開始姿勢"),
-        description: "構造化証明の始点姿勢です。".to_owned(),
+        title: format!("「{title}」の開始姿勢 / Start pose"),
+        description: "構造化証明の始点姿勢です。 / Start pose of the structured proof.".to_owned(),
         caution: String::new(),
         duration_ms: MIN_INSTRUCTION_DURATION_MS,
         visual: InstructionVisual::default(),
@@ -901,7 +901,7 @@ pub fn append_certified_dyadic_path_timeline_v1(
             id: InstructionStepId::new(),
             title: if index == 0 { title.to_owned() } else { format!("{title} {}", index + 1) },
             description: format!(
-                "認証済みの連続折り経路で「{title}」を適用します。経路証明 SHA-256: {binding} / 元モデル SHA-256: {source_model_fingerprint}"
+                "認証済みの連続折り経路で「{title}」を適用します。 / Apply “{title}” through the certified continuous fold path. Path certificate SHA-256: {binding} / Source model SHA-256: {source_model_fingerprint}"
             ),
             caution: String::new(),
             duration_ms: MIN_INSTRUCTION_DURATION_MS,
@@ -1057,8 +1057,8 @@ pub fn compile_certified_book_fold_timeline_v1(
         steps: vec![
             InstructionStep {
                 id: InstructionStepId::new(),
-                title: format!("{title}：開始"),
-                description: "認証済み経路の開始姿勢です。".to_owned(),
+                title: format!("{title}：開始 / Start"),
+                description: "認証済み経路の開始姿勢です。 / Certified path start pose.".to_owned(),
                 caution: String::new(),
                 duration_ms: 500,
                 visual: InstructionVisual::default(),
@@ -1066,11 +1066,11 @@ pub fn compile_certified_book_fold_timeline_v1(
             },
             InstructionStep {
                 id: InstructionStepId::new(),
-                title: format!("{title}：完了"),
+                title: format!("{title}：完了 / Complete"),
                 description: format!(
-                    "衝突・閉包証明に結合された経路で折ります。経路証明 SHA-256: {certificate_reference}"
+                    "衝突・閉包証明に結合された経路で折ります。 / Fold along the collision- and closure-certified path. Path certificate SHA-256: {certificate_reference}"
                 ),
-                caution: "証明対象外の紙や姿勢には適用しないでください。".to_owned(),
+                caution: "証明対象外の紙や姿勢には適用しないでください。 / Do not apply this step to paper or poses outside the proof scope.".to_owned(),
                 duration_ms: 1_500,
                 visual: path_certificate_visual_v1(
                     request.path_certificate,

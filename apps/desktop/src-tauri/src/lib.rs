@@ -10033,7 +10033,7 @@ fn append_generic_tree_instruction_proposal(
         return Err("generic_tree_instruction_proposal_stale".to_owned());
     }
     let fingerprint = project.editor.fold_model_fingerprint_v1();
-    let display_name = ori_domain::custom_object_display_name_v1(profile)
+    let display_name = ori_domain::custom_object_display_name_v1(&profile.generation_constraints)
         .unwrap_or(ori_domain::BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_V1)
         .to_owned();
     let steps = proposal

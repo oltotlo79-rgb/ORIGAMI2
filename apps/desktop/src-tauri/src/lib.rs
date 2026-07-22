@@ -11920,7 +11920,7 @@ fn execute_t_junction_connection(
         .iter()
         .find(|edge| edge.id == new_edge)
         .map(|edge| edge.start)
-        .expect("a successful T-junction command must create its requested edge");
+        .ok_or_else(|| "プロジェクト更新結果が不整合です。".to_owned())?;
     Ok(TJunctionResponse {
         snapshot,
         vertex_id,

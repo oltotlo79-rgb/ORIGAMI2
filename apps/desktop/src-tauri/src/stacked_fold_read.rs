@@ -6770,7 +6770,7 @@ mod tests {
     }
 
     #[test]
-    fn four_hinge_tree_level_three_read_and_preview_are_bounded_read_only() {
+    fn four_hinge_tree_level_three_proof_applies_and_persists_atomically() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         let mut project = four_hinge_tree_project();
         let topology = project
@@ -6790,6 +6790,7 @@ mod tests {
             snapshot.faces[0].id,
             1.0,
         );
+        assert!(project.editor.paper().thickness_mm > 0.0);
         let layer_state = GlobalFlatFoldabilityState::default();
         super::super::global_flat_foldability::tests::install_possible_layer_order(
             &layer_state,
@@ -6872,6 +6873,8 @@ mod tests {
         );
         assert!(observed.mutation_candidate_ready);
         assert!(!observed.authorizes_project_mutation);
+        assert!(observed.positive_thickness_certified);
+        assert!(observed.layer_transport_certified);
         let preview_state = DyadicPathPreviewState::default();
         let preview = mint_dyadic_pose_path_preview_inner_v1(
             &state,
@@ -6937,9 +6940,41 @@ mod tests {
             apply_request(preview.path_binding_sha256.clone()),
         )
         .expect("issuer-bound four-hinge Tree proof applies atomically");
-        let project = super::super::lock_project(&state).unwrap();
+        assert!(
+            apply_dyadic_pose_path_preview_inner_v1(
+                &state,
+                &layer_state,
+                &preview_state,
+                apply_request(preview.path_binding_sha256.clone()),
+            )
+            .is_err(),
+            "consumed Tree preview must be one-shot"
+        );
+        let mut project = super::super::lock_project(&state).unwrap();
         assert_eq!(applied, revision + 1);
-        assert!(!project.editor.instruction_timeline().steps.is_empty());
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
+        assert!(
+            project.editor.instruction_timeline().steps[1..]
+                .iter()
+                .all(|step| step.visual.path_certificate_reference_v1.is_some())
+        );
+        project.editor.undo(applied).unwrap();
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
+        let archive = project.project_archive().unwrap();
+        let reopened = super::super::ProjectState::from_project_archive(
+            archive,
+            std::path::PathBuf::from("four-hinge-tree-positive-thickness.ori2"),
+        )
+        .unwrap();
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
+        assert!(
+            reopened.editor.instruction_timeline().steps[1..]
+                .iter()
+                .all(|step| step.visual.path_certificate_reference_v1.is_some())
+        );
     }
 
     #[test]

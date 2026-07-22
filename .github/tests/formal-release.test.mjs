@@ -1128,11 +1128,13 @@ test('CI and formal release share the strict Windows bundle contract', () => {
 test('Windows release workflows smoke-test the verified NSIS installer before packaging', () => {
   const formal = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8')
   const unsigned = readFileSync(join(root, '.github/workflows/release-windows.yml'), 'utf8')
+  const ci = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const invocation = /smoke_windows_installer\.ps1[\s\S]*-BundleDirectory \.\/target\/release\/bundle\/nsis/u
   assert.match(formal, invocation)
   assert.match(unsigned, invocation)
   assert.match(formal, /Test Windows installer smoke guardrails[\s\S]*windows-installer-smoke\.test\.ps1/u)
   assert.match(unsigned, /Test Windows installer smoke guardrails[\s\S]*windows-installer-smoke\.test\.ps1/u)
+  assert.match(ci, /matrix:[\s\S]*os: \[windows-latest, macos-latest\][\s\S]*Test Windows installer smoke guardrails[\s\S]*if: runner\.os == 'Windows'[\s\S]*windows-installer-smoke\.test\.ps1/u)
   assert.ok(formal.indexOf('Verify Windows installer and portable executable contract') < formal.indexOf('Smoke-test silent Windows install and uninstall'))
   assert.ok(unsigned.indexOf('Verify bundled application resources') < unsigned.indexOf('Smoke-test silent Windows install and uninstall'))
   assert.ok(unsigned.indexOf('Smoke-test silent Windows install and uninstall') < unsigned.indexOf('Package installer, checksum, and release notes'))

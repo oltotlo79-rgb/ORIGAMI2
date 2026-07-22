@@ -396,6 +396,10 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
+      - name: Test Windows installer smoke guardrails
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./.github/tests/windows-installer-smoke.test.ps1
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: 1.90.0

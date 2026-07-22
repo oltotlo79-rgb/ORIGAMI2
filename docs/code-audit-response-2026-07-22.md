@@ -35,15 +35,15 @@
 
 | ID | 判定 | 対応方針 |
 |---|---|---|
-| C-1 | 正しい改善 | App stateと機能panelを挙動不変で段階分割する。単一巨大変更は回帰範囲が広いため独立checkpoint化する。 |
+| C-1 | 改善提案・不具合ではない | App stateとpanel分割は保守性改善だが、行数やhook数は到達可能な機能欠陥の証拠ではない。挙動不変refactorを完成率の必須条件にはしない。 |
 | C-2 | 一部誤検知 | TS側は操作中preview、Rust側はapplyを許可するauthorityで責務が異なる。TS結果だけでproject変更を認可する経路はなく、二重の肯定authorityではない。相互整合fixtureは継続する。 |
 | C-3 | 正しい・修正済み | 閉路Graphの認証preview/apply自体は`StackedFoldPanel`に既存。`157d198`で静的3D表示から同パネルへ日英・accessibility共通で明示案内し、無効dragを正規経路と誤認させない。integration 1/1とTypeScript build green。 |
-| C-4 | 改善提案 | OCC fencingは安全境界なので削除対象ではない。引数newtype/constructor集約のみを検討する。 |
-| C-5 | 正しい改善 | locale key catalogへの段階移行対象。機能不具合とは別checkpointにする。 |
-| C-6 | 一部誤検知 | core moduleは回帰testと公開primitiveを持つため単純な死蔵ではない。desktop重複経路の有無だけを継続確認する。 |
+| C-4 | 改善提案・現状維持 | OCC fencingとimmutable DTOはABA/改ざん防止の安全境界。重複量だけを根拠に削除すると保証を弱めるため、機能不具合としては不採用。 |
+| C-5 | 改善提案・不具合ではない | locale key catalog化は翻訳運用の改善。現行`foldPreviewText`等はja/enを同時保持しlocale test対象で、未翻訳による到達可能な欠陥とは別。 |
+| C-6 | 誤検知 | core moduleは公開`prepare/apply_cycle_fold_transaction_v1`とatomicity/ABA/retry回帰を持つ独立primitiveであり死蔵ではない。desktopが別の認証済みgraph transactionを持つことはcore APIを未到達にしない。 |
 | C-7 | 正しい・修正済み | `ceff2e3`。production参照0、test参照のみを確認した`direct_f_affine_corridor` moduleを`#[cfg(test)]`化。production check green、関連10/10 green。 |
-| C-8 | 複合指摘 | 未到達error、早期return、Windows registry ACLを別項目として個別検証する。 |
-| C-9 | 正しい機能欠落 | 数値角度＋対象交点までの延長をnative atomic commandとして追加する必要がある。既存の長さ＋角度commandとは別機能。 |
+| C-8 | 複合指摘・根拠付き現状維持 | `UnsupportedConstraintKind`は公開fail-closed API互換、`execute_command`早期枝はstale/revision-exhausted時にeditor固有errorを保存するguard。Windows registryは秘密情報を格納せず、絶対path・hash・識別子も回復のためのlocal metadataである。削除/ACL変更を裏付ける実害証拠なし。 |
+| C-9 | 正しい追加要望・要件外 | 現行EDT-003は仕様どおり「始点＋長さ＋角度」のatomic `add_connected_vertex`を実装済み。監査提案の「対象との交点まで」は別の新規UX要件であり、既存要件の未実装や不具合ではない。追加時はray/segment exact交差、target split、historyを単一core commandにする。 |
 
 ## 検証ゲート
 

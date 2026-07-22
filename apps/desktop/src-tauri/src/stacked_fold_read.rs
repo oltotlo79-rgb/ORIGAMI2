@@ -5542,7 +5542,7 @@ mod tests {
 
         let mut duplicate_edge_schedule = schedule.clone();
         duplicate_edge_schedule.entries[1].edge = duplicate_edge_schedule.entries[0].edge;
-        assert!(
+        assert_eq!(
             propose_current_cycle_pose_inner_with_layers(
                 None,
                 &state,
@@ -5550,11 +5550,12 @@ mod tests {
                 &transactions,
                 request(revision, duplicate_edge_schedule),
             )
-            .is_err()
+            .unwrap_err(),
+            CYCLE_PATH_UNSUPPORTED_MESSAGE
         );
         let mut noncanonical_schedule = schedule.clone();
         noncanonical_schedule.entries.swap(0, 1);
-        assert!(
+        assert_eq!(
             propose_current_cycle_pose_inner_with_layers(
                 None,
                 &state,
@@ -5562,13 +5563,14 @@ mod tests {
                 &transactions,
                 request(revision, noncanonical_schedule),
             )
-            .is_err()
+            .unwrap_err(),
+            CYCLE_PATH_UNSUPPORTED_MESSAGE
         );
         let mut oversized_coefficients = schedule.clone();
         let coefficient = oversized_coefficients.entries[0].numerator_power_coefficients[0];
         oversized_coefficients.entries[0].numerator_power_coefficients =
             vec![coefficient; MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1 + 2];
-        assert!(
+        assert_eq!(
             propose_current_cycle_pose_inner_with_layers(
                 None,
                 &state,
@@ -5576,7 +5578,8 @@ mod tests {
                 &transactions,
                 request(revision, oversized_coefficients),
             )
-            .is_err()
+            .unwrap_err(),
+            CYCLE_PATH_RESOURCE_MESSAGE
         );
         let mut oversized_schedule = schedule.clone();
         while oversized_schedule.entries.len() <= MAX_STACKED_FOLD_REQUEST_HINGES_V1 {
@@ -5584,7 +5587,7 @@ mod tests {
                 .entries
                 .push(oversized_schedule.entries[0].clone());
         }
-        assert!(
+        assert_eq!(
             propose_current_cycle_pose_inner_with_layers(
                 None,
                 &state,
@@ -5592,8 +5595,10 @@ mod tests {
                 &transactions,
                 request(revision, oversized_schedule),
             )
-            .is_err()
+            .unwrap_err(),
+            CYCLE_PATH_UNSUPPORTED_MESSAGE
         );
+        assert_eq!(transactions.pending_token_for_test_v1(), None);
         assert_eq!(
             super::super::lock_project(&state)
                 .unwrap()
@@ -5602,15 +5607,17 @@ mod tests {
             revision
         );
 
-        assert!(
+        assert_eq!(
             propose_current_cycle_pose_inner(
                 None,
                 &state,
                 &transactions,
                 request(revision, schedule.clone()),
             )
-            .is_err()
+            .unwrap_err(),
+            CYCLE_NONCLOSING_MESSAGE
         );
+        assert_eq!(transactions.pending_token_for_test_v1(), None);
         assert_eq!(
             super::super::lock_project(&state)
                 .unwrap()
@@ -5621,7 +5628,7 @@ mod tests {
 
         let mut malformed = schedule.clone();
         malformed.entries[0].denominator_power_coefficients[0].numerator = 0;
-        assert!(
+        assert_eq!(
             propose_current_cycle_pose_inner_with_layers(
                 None,
                 &state,
@@ -5629,8 +5636,10 @@ mod tests {
                 &transactions,
                 request(revision, malformed),
             )
-            .is_err()
+            .unwrap_err(),
+            CYCLE_PATH_UNSUPPORTED_MESSAGE
         );
+        assert_eq!(transactions.pending_token_for_test_v1(), None);
         assert_eq!(
             super::super::lock_project(&state)
                 .unwrap()

@@ -48,6 +48,18 @@ use super::{
 #[derive(Default)]
 pub(super) struct StackedFoldTransactionState(Mutex<StackedFoldTransactionSlot>);
 
+#[cfg(test)]
+impl StackedFoldTransactionState {
+    pub(super) fn pending_token_for_test_v1(&self) -> Option<ProjectId> {
+        self.0
+            .lock()
+            .expect("stacked-fold transaction test lock")
+            .pending
+            .as_ref()
+            .map(|pending| pending.token)
+    }
+}
+
 #[derive(Default)]
 struct StackedFoldTransactionSlot {
     active_generation: Option<ProjectId>,

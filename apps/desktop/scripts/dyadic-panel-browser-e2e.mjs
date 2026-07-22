@@ -52,6 +52,20 @@ async function verifyAutomaticOppositePair(hinges, label) {
   await page.close()
 }
 
+async function verifyDetectedCycleBasis(hinges, label) {
+  const page = await openScenario('success', hinges)
+  for (const input of await page.getByLabel(/^Requested angle /).all()) await input.fill('1')
+  await page.getByRole('button', { name: 'Search bounded dyadic paths' }).click()
+  await page.getByText(/mutation candidate ready/).waitFor()
+  await page.getByRole('button', { name: 'Issue read-only preview' }).click()
+  await page.getByText(/authenticated one-shot/).waitFor()
+  await page.getByRole('button', { name: 'Apply authenticated path' }).click()
+  await page.getByText('applied-revision-2-timeline-dto-2').waitFor()
+  const evidence = await page.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)
+  if (evidence.readHinges !== hinges || evidence.readScheduleHinges !== 0 || evidence.mintHinges !== hinges || evidence.mintScheduleHinges !== 0 || evidence.mutations !== 1) throw new Error(`${label}: ${JSON.stringify(evidence)}`)
+  await page.close()
+}
+
 try {
   for (let i = 0; i < 100; i++) { try { if ((await fetch(origin)).ok) break } catch {} await new Promise(resolve => setTimeout(resolve, 100)) }
   browser = await chromium.launch({ headless: true })
@@ -74,6 +88,8 @@ try {
   await verifyAutomaticOppositePair(6, 'automatic C6')
   await verifyAutomaticOppositePair(8, 'automatic C8')
   await verifyAutomaticOppositePair(16, 'automatic C16')
+  await verifyDetectedCycleBasis(32, 'detected C32')
+  await verifyDetectedCycleBasis(64, 'detected C64')
 
   await verifyHigherDegreeLifecycle(8, 'C8')
   await verifyHigherDegreeLifecycle(16, 'C16')

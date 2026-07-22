@@ -831,6 +831,27 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 .ok()
             })
             .ok_or(ori_kinematics::DyadicPoseGraphGenerationErrorV1::BindingMismatch)
+    } else if target.as_slice().len() >= 32 {
+        let midpoint = ori_kinematics::CanonicalHingeAngles::new(
+            pose.hinge_angles()
+                .as_slice()
+                .iter()
+                .zip(target.as_slice())
+                .map(|(source, target)| {
+                    ori_kinematics::HingeAngle::new(
+                        source.edge(),
+                        (source.angle_degrees() + target.angle_degrees()) * 0.5,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?,
+        )
+        .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+        ori_kinematics::generate_bounded_collective_pose_graph_v1(
+            pose.hinge_angles(),
+            &midpoint,
+            &target,
+        )
     } else {
         ori_kinematics::generate_bounded_dyadic_pose_graph_v1(
             pose.hinge_angles(),
@@ -6368,7 +6389,7 @@ mod tests {
                         .collect(),
                     max_states: 32,
                     max_transitions: 128,
-                    cycle_schedule_v1: cactus.then_some(schedule.clone()),
+                    cycle_schedule_v1: None,
                 },
                 None,
             )
@@ -6395,7 +6416,7 @@ mod tests {
                     target_angles,
                     max_states: 32,
                     max_transitions: 128,
-                    cycle_schedule_v1: cactus.then_some(schedule),
+                    cycle_schedule_v1: None,
                     expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
                     expected_positive_thickness_binding_sha256: observed
                         .positive_thickness_binding_sha256

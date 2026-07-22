@@ -800,8 +800,8 @@ export function StackedFoldPanel({
       {liveHinges.length > 0 && view.kind !== 'ready' && (
         <fieldset>
           <legend>{t('ヒンジ角度候補', 'Hinge angle candidate')}</legend>
-          {liveHinges.map((hinge) => (
-            <div key={hinge.edge}>
+          {liveHinges.map((hinge, index) => (
+            <div key={`${hinge.edge}:${index}`}>
               <label>
                 <span>{t('初期角度（読み取り専用）', 'Initial angle (read only)')}</span>
                 <input aria-label={`${t('初期角度', 'Initial angle')} ${hinge.edge}`} type="number" value={hinge.initialAngleDegrees} readOnly />
@@ -1194,8 +1194,8 @@ export function StackedFoldPanel({
           {liveHinges.length > 0 && (
             <fieldset>
               <legend>{t('ヒンジ角度候補', 'Hinge angle candidate')}</legend>
-              {liveHinges.map((hinge) => (
-                <div key={hinge.edge}>
+              {liveHinges.map((hinge, index) => (
+                <div key={`${hinge.edge}:${index}`}>
                   <label>
                     <span>{t('初期角度（読み取り専用）', 'Initial angle (read only)')}</span>
                     <input
@@ -1353,7 +1353,7 @@ export function StackedFoldPanel({
                         <div><dt>{t('ヒンジ数', 'Hinge count')}</dt><dd>{basicFoldTimelineStep.pose.hinge_angles.length}</dd></div>
                         <div><dt>{t('経路証明', 'Path proof')}</dt><dd>{basicFoldTimelineStep.visual.path_certificate_reference_v1 ? t('参照あり', 'Referenced') : t('なし', 'None')}</dd></div>
                       </dl>
-                      <ol>{basicFoldTimelineStep.pose.hinge_angles.map((hinge) => <li key={hinge.edge}>{hinge.edge}: {hinge.angle_degrees}°</li>)}</ol>
+                      <ol>{basicFoldTimelineStep.pose.hinge_angles.map((hinge, index) => <li key={`${hinge.edge}:${index}`}>{hinge.edge}: {hinge.angle_degrees}°</li>)}</ol>
                     </section>
                   )}
                 </div>

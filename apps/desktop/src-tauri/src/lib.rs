@@ -15152,6 +15152,73 @@ mod tests {
             read_bounded_regular_import_file(&empty, 64, "read", "bounds"),
             Err("bounds".to_owned())
         );
+        let png_path = directory.join("recognized-target.png");
+        let mut png_bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png_bytes, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().expect("PNG header");
+            writer
+                .write_image_data(&[
+                    0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 255,
+                ])
+                .expect("PNG pixels");
+        }
+        fs::write(&png_path, &png_bytes).expect("PNG fixture");
+        let imported_png = read_bounded_regular_import_file(
+            &png_path,
+            MAX_PROJECT_TEXTURE_ASSET_BYTES,
+            "read",
+            "bounds",
+        )
+        .expect("real PNG import");
+        assert!(valid_png_image_envelope(&imported_png));
+        assert!(beginner_recognition::decode_general_image(&imported_png).is_ok());
+
+        let glb_path = directory.join("multi-component.glb");
+        let json = br#"{"asset":{"version":"2.0"}}"#;
+        let padded = (json.len() + 3) & !3;
+        let total = 12 + 8 + padded;
+        let mut glb = Vec::with_capacity(total);
+        glb.extend_from_slice(b"glTF");
+        glb.extend_from_slice(&2_u32.to_le_bytes());
+        glb.extend_from_slice(&(total as u32).to_le_bytes());
+        glb.extend_from_slice(&(padded as u32).to_le_bytes());
+        glb.extend_from_slice(&0x4E4F_534A_u32.to_le_bytes());
+        glb.extend_from_slice(json);
+        glb.resize(total, b' ');
+        fs::write(&glb_path, &glb).expect("GLB fixture");
+        let imported_glb = read_bounded_regular_import_file(
+            &glb_path,
+            ori_formats::MAX_REFERENCE_GLB_BYTES_V1,
+            "read",
+            "bounds",
+        )
+        .expect("real GLB import");
+        ori_formats::validate_reference_glb_v1(&imported_glb).expect("valid passive GLB");
+
+        let mut project = initial_project_state();
+        project.texture_assets.push(ProjectTextureAssetV1 {
+            id: AssetId::new(),
+            media_type: ProjectTextureMediaTypeV1::Png,
+            bytes: imported_png,
+        });
+        project
+            .reference_model_assets
+            .push(ori_formats::ProjectReferenceModelAssetV1 {
+                id: AssetId::new(),
+                bytes: imported_glb,
+            });
+        let saved = project.document();
+        let archive = write_project_ori2(&saved).expect("archive imported assets");
+        let restored = read_project_ori2_with_limits(&archive, Ori2Limits::default())
+            .expect("restore imported assets");
+        assert_eq!(restored.texture_assets, saved.texture_assets);
+        assert_eq!(
+            restored.reference_model_assets,
+            saved.reference_model_assets
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;

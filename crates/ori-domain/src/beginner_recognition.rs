@@ -583,6 +583,28 @@ pub fn analyze_silhouette_png_rgba_v1(
     height: u32,
     rgba: &[u8],
 ) -> Result<BeginnerRecognitionProposalV1, BeginnerRecognitionErrorV1> {
+    analyze_silhouette_png_rgba_with_thresholds_v1(
+        source_underlay_id,
+        source_asset_id,
+        source_sha256,
+        width,
+        height,
+        rgba,
+        BEGINNER_SILHOUETTE_ALPHA_THRESHOLD_V1,
+        BEGINNER_SILHOUETTE_LUMA_THRESHOLD_V1,
+    )
+}
+
+pub fn analyze_silhouette_png_rgba_with_thresholds_v1(
+    source_underlay_id: UnderlayId,
+    source_asset_id: AssetId,
+    source_sha256: [u8; 32],
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    alpha_threshold: u8,
+    luma_threshold: u8,
+) -> Result<BeginnerRecognitionProposalV1, BeginnerRecognitionErrorV1> {
     validate_dimensions_and_rgba(width, height, rgba)?;
     let pixels = width as usize * height as usize;
     let mut foreground = vec![false; pixels];
@@ -590,8 +612,7 @@ pub fn analyze_silhouette_png_rgba_v1(
         let luminance =
             (u32::from(pixel[0]) * 2126 + u32::from(pixel[1]) * 7152 + u32::from(pixel[2]) * 722)
                 / 10_000;
-        foreground[index] = pixel[3] >= BEGINNER_SILHOUETTE_ALPHA_THRESHOLD_V1
-            && luminance <= u32::from(BEGINNER_SILHOUETTE_LUMA_THRESHOLD_V1);
+        foreground[index] = pixel[3] >= alpha_threshold && luminance <= u32::from(luma_threshold);
     }
     let foreground_count = foreground.iter().filter(|value| **value).count();
     if foreground_count < 4 || foreground_count == pixels {

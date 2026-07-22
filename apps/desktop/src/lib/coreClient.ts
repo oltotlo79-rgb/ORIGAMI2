@@ -255,6 +255,7 @@ export type BeginnerGenerationConstraintsV1 = {
     schema_version: 1; source_asset_sha256: number[]; component_count: number; reviewed: boolean
     bridges: Array<{ id: number; start_component_id: number; end_component_id: number; accepted: boolean }>
   }
+  silhouette_thresholds?: { schema_version: 1; alpha: number; luma: number }
   protrusions?: Array<{
     id: number
     count: number
@@ -428,6 +429,7 @@ function normalizeBeginnerGenerationConstraints(
     'target_parts',
     'skeleton_segments',
     'component_bridge_override',
+    'silhouette_thresholds',
     'protrusions',
     'bulge_targets',
     'target_asset',
@@ -438,6 +440,7 @@ function normalizeBeginnerGenerationConstraints(
       && key !== 'generic_body_outline_tenths_mm' && key !== 'generic_body_outline_mode'
       && key !== 'custom_object_display_name'
       && key !== 'component_bridge_override'
+      && key !== 'silhouette_thresholds'
       && key !== 'protrusions' && key !== 'bulge_targets',
   )
   const snapshot = snapshotCoreDataRecord(value)
@@ -682,6 +685,14 @@ function normalizeBeginnerGenerationConstraints(
     if (bridges.some((bridge) => bridge === null)) return null
     componentBridgeOverride = { schema_version: 1, source_asset_sha256: document.source_asset_sha256.slice(), component_count: Number(document.component_count), reviewed: document.reviewed, bridges: bridges as NonNullable<typeof componentBridgeOverride>['bridges'] }
   }
+  let silhouetteThresholds: BeginnerGenerationConstraintsV1['silhouette_thresholds']
+  if (record.silhouette_thresholds !== undefined) {
+    const thresholds = exactCoreDataRecord(record.silhouette_thresholds, ['schema_version', 'alpha', 'luma'] as const)
+    if (!thresholds || thresholds.schema_version !== 1
+      || !Number.isInteger(thresholds.alpha) || Number(thresholds.alpha) < 0 || Number(thresholds.alpha) > 255
+      || !Number.isInteger(thresholds.luma) || Number(thresholds.luma) < 0 || Number(thresholds.luma) > 255) return null
+    silhouetteThresholds = { schema_version: 1, alpha: Number(thresholds.alpha), luma: Number(thresholds.luma) }
+  }
   return Object.freeze({
     schema_version: 1,
     maximum_steps: Number(record.maximum_steps),
@@ -701,6 +712,7 @@ function normalizeBeginnerGenerationConstraints(
     target_parts: targetParts,
     skeleton_segments: skeletonSegments,
     ...(componentBridgeOverride ? { component_bridge_override: componentBridgeOverride } : {}),
+    ...(silhouetteThresholds ? { silhouette_thresholds: silhouetteThresholds } : {}),
     ...(hadProtrusions ? { protrusions } : {}),
     ...(hadBulgeTargets ? { bulge_targets: bulgeTargets } : {}),
     target_asset: targetAsset,
@@ -2811,16 +2823,20 @@ export function recognizeBeginnerSilhouette(
   expectedProjectInstanceId: string,
   underlayId: string,
   assetId: string,
+  thresholds: { alpha: number; luma: number } = { alpha: 128, luma: 127 },
 ) {
   if (!isCanonicalNonNilUuid(expectedProjectId)
     || !isCanonicalNonNilUuid(expectedProjectInstanceId)
     || !isCanonicalNonNilUuid(underlayId)
     || !isCanonicalNonNilUuid(assetId)
-    || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+    || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0
+    || !Number.isInteger(thresholds.alpha) || thresholds.alpha < 0 || thresholds.alpha > 255
+    || !Number.isInteger(thresholds.luma) || thresholds.luma < 0 || thresholds.luma > 255) {
     return Promise.reject(new BeginnerRecognitionError('native_failure'))
   }
   const request = {
     expectedProjectInstanceId, expectedProjectId, expectedRevision, underlayId, assetId,
+    alphaThreshold: thresholds.alpha, lumaThreshold: thresholds.luma,
   }
   return invoke<unknown>('recognize_beginner_silhouette', { request }).then((value) => {
     const proposal = normalizeBeginnerRecognitionProposal(

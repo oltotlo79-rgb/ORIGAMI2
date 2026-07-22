@@ -196,6 +196,8 @@ pub struct BeginnerGenerationConstraintsV1 {
     pub skeleton_segments: Vec<BeginnerSkeletonSegmentV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub component_bridge_override: Option<BeginnerComponentBridgeOverrideV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silhouette_thresholds: Option<BeginnerSilhouetteThresholdsV1>,
     #[serde(default)]
     pub protrusions: Vec<BeginnerProtrusionTargetV1>,
     #[serde(default)]
@@ -219,6 +221,7 @@ impl Default for BeginnerGenerationConstraintsV1 {
             target_parts: Vec::new(),
             skeleton_segments: Vec::new(),
             component_bridge_override: None,
+            silhouette_thresholds: None,
             protrusions: Vec::new(),
             bulge_targets: Vec::new(),
             target_asset: None,
@@ -231,6 +234,14 @@ impl Default for BeginnerGenerationConstraintsV1 {
             ],
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerSilhouetteThresholdsV1 {
+    pub schema_version: u32,
+    pub alpha: u8,
+    pub luma: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,6 +295,9 @@ pub fn validate_beginner_generation_constraints_v1(
                             || bridge.start_component_id == bridge.end_component_id
                     })
             })
+        || constraints
+            .silhouette_thresholds
+            .is_some_and(|thresholds| thresholds.schema_version != 1)
         || constraints.protrusions.len() > MAX_BEGINNER_PROTRUSIONS_V1
         || constraints.bulge_targets.len() > MAX_BEGINNER_BULGE_TARGETS_V1
     {

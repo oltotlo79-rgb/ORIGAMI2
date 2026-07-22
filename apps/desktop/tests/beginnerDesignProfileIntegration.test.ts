@@ -6,6 +6,8 @@ const app = source('../src/App.tsx')
 const protrusionEditor = source('../src/components/ProtrusionDimensionEditor.tsx')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
+const recognitionNative = source('../src-tauri/src/beginner_recognition.rs')
+const recognitionDomain = source('../../../crates/ori-domain/src/beginner_recognition.rs')
 const domain = source('../../../crates/ori-domain/src/beginner_design.rs')
 const generation = source('../../../crates/ori-domain/src/beginner_generation.rs')
 const generator = source('../../../crates/ori-domain/src/beginner_generator.rs')
@@ -257,6 +259,17 @@ test('feature constraints remain individually editable and comparable before gen
   assert.match(protrusionEditor, /Joint binding/u)
   assert.match(protrusionEditor, /Side binding/u)
   assert.match(protrusionEditor, /Priority binding/u)
+})
+
+test('custom silhouette thresholds are versioned bounded and stale-safe', () => {
+  assert.match(recognitionDomain, /analyze_silhouette_png_rgba_with_thresholds_v1/u)
+  assert.match(recognitionNative, /alpha: request\.alpha_threshold\.unwrap_or\(saved\.alpha\)/u)
+  assert.match(client, /silhouette_thresholds/u)
+  assert.match(client, /thresholds\.alpha < 0 \|\| thresholds\.alpha > 255/u)
+  assert.match(app, /Silhouette alpha threshold/u)
+  assert.match(app, /Silhouette luma threshold/u)
+  assert.match(app, /window\.setTimeout\(\(\) => requestBeginnerRecognition\('silhouette'\), 300\)/u)
+  assert.match(app, /beginnerRecognitionRequestRef\.current \+= 1/u)
 })
 
 test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticity', () => {

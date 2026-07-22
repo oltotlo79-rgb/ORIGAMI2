@@ -764,6 +764,11 @@ function App() {
   const [acceptedRecognitionProtrusionIds, setAcceptedRecognitionProtrusionIds] =
     useState<ReadonlySet<number>>(() => new Set())
   const [beginnerRecognitionBusy, setBeginnerRecognitionBusy] = useState(false)
+  const [beginnerSilhouetteThresholds, setBeginnerSilhouetteThresholds] = useState({ alpha: 128, luma: 127 })
+  useEffect(() => {
+    const timeout = window.setTimeout(() => requestBeginnerRecognition('silhouette'), 300)
+    return () => window.clearTimeout(timeout)
+  }, [beginnerSilhouetteThresholds.alpha, beginnerSilhouetteThresholds.luma])
   const beginnerRecognitionRequestRef = useRef(0)
   const [beginnerOutlineCandidates, setBeginnerOutlineCandidates] =
     useState<BeginnerOutlineCandidatesResponse | null>(null)
@@ -802,6 +807,8 @@ function App() {
     beginnerRecognitionRequestRef.current += 1
     setBeginnerRecognitionBusy(false)
     setBeginnerRecognitionProposal(null)
+    setBeginnerSilhouetteThresholds(nativeSnapshot?.beginner_design_profile.generation_constraints
+      .silhouette_thresholds ?? { alpha: 128, luma: 127 })
     setBeginnerOutlineCandidates(null)
     setBeginnerPartSuggestions(null)
     setBeginnerPartAssignments([])
@@ -3725,6 +3732,7 @@ function App() {
       target_parts: targetParts,
       skeleton_segments: beginnerSkeletonSegments,
       ...(beginnerComponentBridgeOverride ? { component_bridge_override: beginnerComponentBridgeOverride } : {}),
+      silhouette_thresholds: { schema_version: 1 as const, ...beginnerSilhouetteThresholds },
       protrusions: beginnerProtrusions,
       bulge_targets: beginnerBulgeTargets,
       target_asset: targetUnderlay
@@ -3948,16 +3956,16 @@ function App() {
     }
     setBeginnerRecognitionBusy(true)
     setBeginnerRecognitionProposal(null)
-    const recognize = mode === 'silhouette'
-      ? recognizeBeginnerSilhouette
-      : recognizeBeginnerTarget
-    void recognize(
+    const recognition = mode === 'silhouette' ? recognizeBeginnerSilhouette(
       binding.projectId,
       binding.revision,
       binding.instanceId,
       underlay.id,
       underlay.asset,
-    ).then((proposal) => {
+      beginnerSilhouetteThresholds,
+    ) : recognizeBeginnerTarget(binding.projectId, binding.revision, binding.instanceId,
+      underlay.id, underlay.asset)
+    void recognition.then((proposal) => {
       const latest = latestSnapshotRef.current
       if (requestId !== beginnerRecognitionRequestRef.current
         || !latest
@@ -8942,6 +8950,18 @@ function App() {
                       ? text({ ja: '認識中…', en: 'Recognizing…' })
                       : text({ ja: '一般画像から輪郭を認識', en: 'Recognize outline from image' })}
                   </button>
+                  <label>
+                    {text({ ja: '輪郭アルファしきい値', en: 'Silhouette alpha threshold' })}
+                    <input type="range" min="0" max="255" value={beginnerSilhouetteThresholds.alpha}
+                      onChange={(event) => { beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null); setBeginnerSilhouetteThresholds((value) => ({ ...value, alpha: Number(event.target.value) })) }} />
+                    <output>{beginnerSilhouetteThresholds.alpha}</output>
+                  </label>
+                  <label>
+                    {text({ ja: '輪郭輝度しきい値', en: 'Silhouette luma threshold' })}
+                    <input type="range" min="0" max="255" value={beginnerSilhouetteThresholds.luma}
+                      onChange={(event) => { beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null); setBeginnerSilhouetteThresholds((value) => ({ ...value, luma: Number(event.target.value) })) }} />
+                    <output>{beginnerSilhouetteThresholds.luma}</output>
+                  </label>
                   <p id="beginner-recognition-help" className="muted">
                     {text({
                       ja: '認識結果は読取専用の案です。編集欄へコピーしても、保存するまでプロジェクトは変更されません。',

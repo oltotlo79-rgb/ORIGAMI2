@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use ori_domain::{
     AssetId, BeginnerRecognitionProposalV1, ProjectId, UnderlayId, analyze_marker_png_rgba_v1,
-    analyze_silhouette_png_rgba_v1,
+    analyze_silhouette_png_rgba_v1, analyze_silhouette_png_rgba_with_thresholds_v1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -22,6 +22,10 @@ pub(crate) struct RecognizeBeginnerTargetRequest {
     expected_revision: u64,
     underlay_id: UnderlayId,
     asset_id: AssetId,
+    #[serde(default)]
+    alpha_threshold: Option<u8>,
+    #[serde(default)]
+    luma_threshold: Option<u8>,
 }
 
 #[tauri::command]
@@ -29,7 +33,7 @@ pub(crate) fn recognize_beginner_silhouette(
     state: State<'_, AppState>,
     request: RecognizeBeginnerTargetRequest,
 ) -> Result<BeginnerRecognitionProposalV1, String> {
-    let bytes = {
+    let (bytes, thresholds) = {
         let project = lock_project(&state)?;
         ensure_recognition_binding(&project, request)?;
         let asset = project
@@ -40,17 +44,36 @@ pub(crate) fn recognize_beginner_silhouette(
         if asset.bytes.len() > MAX_BEGINNER_RECOGNITION_ENCODED_BYTES_V1 {
             return Err("recognition_resource_limit".to_owned());
         }
-        asset.bytes.clone()
+        let saved = project
+            .editor
+            .beginner_design_profile()
+            .generation_constraints
+            .silhouette_thresholds
+            .unwrap_or(ori_domain::BeginnerSilhouetteThresholdsV1 {
+                schema_version: 1,
+                alpha: 128,
+                luma: 127,
+            });
+        (
+            asset.bytes.clone(),
+            ori_domain::BeginnerSilhouetteThresholdsV1 {
+                schema_version: 1,
+                alpha: request.alpha_threshold.unwrap_or(saved.alpha),
+                luma: request.luma_threshold.unwrap_or(saved.luma),
+            },
+        )
     };
     let source_sha256: [u8; 32] = Sha256::digest(&bytes).into();
     let (width, height, rgba) = decode_general_image(&bytes)?;
-    let proposal = analyze_silhouette_png_rgba_v1(
+    let proposal = analyze_silhouette_png_rgba_with_thresholds_v1(
         request.underlay_id,
         request.asset_id,
         source_sha256,
         width,
         height,
         &rgba,
+        thresholds.alpha,
+        thresholds.luma,
     )
     .map_err(|error| match error {
         ori_domain::BeginnerRecognitionErrorV1::AmbiguousSilhouette => {
@@ -153,6 +176,8 @@ pub(crate) fn recognize_beginner_outline_candidates(
         revision: project.editor.revision(),
         underlay_id: request.underlay_id,
         asset_id: request.asset_id,
+        alpha_threshold: None,
+        luma_threshold: None,
         source_sha256: source_hash,
         candidates,
     })
@@ -169,6 +194,8 @@ pub(crate) fn recognize_beginner_part_suggestions(
         expected_revision: request.expected_revision,
         underlay_id: request.underlay_id,
         asset_id: request.asset_id,
+        alpha_threshold: None,
+        luma_threshold: None,
     };
     let (bytes, target_category, target_parts) = {
         let project = lock_project(&state)?;
@@ -301,6 +328,8 @@ pub(crate) fn recognize_beginner_part_suggestions(
         revision: project.editor.revision(),
         underlay_id: request.underlay_id,
         asset_id: request.asset_id,
+        alpha_threshold: None,
+        luma_threshold: None,
         selected_outline_id: request.candidate.id,
         suggestions,
     })

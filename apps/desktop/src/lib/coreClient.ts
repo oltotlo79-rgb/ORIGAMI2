@@ -4799,6 +4799,50 @@ export function applyMirrorSelection(
   })
 }
 
+export type LinearArrayRequest = {
+  vertices: string[]
+  edges: string[]
+  additional_copies: number
+  delta: { x: number; y: number }
+}
+
+export type LinearArrayPreview = {
+  version: 1
+  project_instance_id: string
+  project_id: string
+  revision: number
+  request_sha256: string
+  source_vertex_count: number
+  source_edge_count: number
+  additional_copies: number
+  generated_vertex_count: number
+  generated_edge_seed_count: number
+  authorizes_project_mutation: false
+}
+
+export function previewLinearArray(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  request: LinearArrayRequest,
+) {
+  return invoke<LinearArrayPreview>('preview_linear_array', {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision, request,
+  })
+}
+
+export function confirmLinearArray(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  request: LinearArrayRequest,
+  expectedRequestSha256: string,
+) {
+  return invoke<ProjectSnapshot>('confirm_linear_array', {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision, request, expectedRequestSha256,
+  })
+}
+
 export type GeometricConstraintSolvePreview = {
   token: string
   revision: number

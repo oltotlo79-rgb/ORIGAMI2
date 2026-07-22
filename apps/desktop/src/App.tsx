@@ -76,6 +76,7 @@ import {
   applyGeometricConstraintSolve,
   applyBeginnerGeneratedPlan,
   applyMirrorSelection,
+  confirmLinearArray,
   applyFoldImport,
   applySvgImport,
   assignEdgeToProjectLayer,
@@ -118,6 +119,7 @@ import {
   previewGeometricConstraintEdgeSolve,
   previewGeometricConstraintExpressionSolve,
   preflightMirrorSelection,
+  previewLinearArray,
   previewInstructionExport,
   previewInstructionMeshAnimation,
   previewStaticMeshExport,
@@ -174,6 +176,8 @@ import {
   BeginnerRecognitionError,
   type MirrorSelectionPreflight,
   type MirrorSelectionRequest,
+  type LinearArrayPreview,
+  type LinearArrayRequest,
   type GeometricConstraintKind,
   type ProjectTopologyResponse,
   type InstructionVisual,
@@ -657,6 +661,11 @@ function App() {
     result: MirrorSelectionPreflight
   } | null>(null)
   const [mirrorBusy, setMirrorBusy] = useState(false)
+  const [linearArrayPreview, setLinearArrayPreview] = useState<{
+    request: LinearArrayRequest
+    result: LinearArrayPreview
+  } | null>(null)
+  const linearArrayRequestSequenceRef = useRef(0)
   const mirrorRequestSequenceRef = useRef(0)
   const mirrorOperationRef = useRef(false)
   const [compassCircles, setCompassCircles] = useState<readonly {
@@ -700,6 +709,10 @@ function App() {
   const [benchmarkRun, setBenchmarkRun] = useState<BenchmarkRun | null>(null)
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   const [nativeSnapshot, setNativeSnapshot] = useState<ProjectSnapshot | null>(null)
+  useEffect(() => {
+    linearArrayRequestSequenceRef.current += 1
+    setLinearArrayPreview(null)
+  }, [selectedLineId, nativeSnapshot?.project_instance_id, nativeSnapshot?.project_id, nativeSnapshot?.revision])
   const [underlayImages, setUnderlayImages] = useState<ReadonlyMap<string, HTMLImageElement>>(
     () => new Map(),
   )
@@ -2605,6 +2618,65 @@ function App() {
     setMirrorPreview(null)
     setMirrorVertexIds([])
     setMirrorEdgeIds([])
+  }
+
+  async function submitLinearArrayPreview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const current = latestSnapshotRef.current
+    if (!current || !selectedLine || selectedLine.locked || coreBusy) return
+    const sequence = ++linearArrayRequestSequenceRef.current
+    const form = new FormData(event.currentTarget)
+    const copies = Number(form.get('linear_array_copies'))
+    const dx = Number(form.get('linear_array_dx'))
+    const dy = Number(form.get('linear_array_dy'))
+    if (!Number.isInteger(copies) || copies < 1 || copies > 16
+      || !Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) {
+      setLinearArrayPreview(null)
+      setCoreStatus(appMessage({
+        ja: 'コピー数は1〜16、移動量は0以外の有限値で指定してください。',
+        en: 'Choose 1–16 copies and a finite, non-zero offset.',
+      }))
+      return
+    }
+    const request: LinearArrayRequest = {
+      vertices: [selectedLine.startVertexId, selectedLine.endVertexId].sort(),
+      edges: [selectedLine.id],
+      additional_copies: copies,
+      delta: { x: dx, y: dy },
+    }
+    try {
+      const result = await previewLinearArray(
+        current.project_id, current.revision, current.project_instance_id, request,
+      )
+      if (sequence !== linearArrayRequestSequenceRef.current
+        || latestSnapshotRef.current !== current || result.authorizes_project_mutation) return
+      setLinearArrayPreview({ request, result })
+    } catch {
+      if (sequence !== linearArrayRequestSequenceRef.current) return
+      setLinearArrayPreview(null)
+      setCoreStatus(appMessage({
+        ja: '線形配列のプレビューを作成できませんでした。',
+        en: 'The linear-array preview could not be created.',
+      }))
+    }
+  }
+
+  async function confirmCurrentLinearArray() {
+    const preview = linearArrayPreview
+    const current = latestSnapshotRef.current
+    if (!preview || !current) return
+    const result = preview.result
+    if (result.project_instance_id !== current.project_instance_id
+      || result.project_id !== current.project_id || result.revision !== current.revision) {
+      setLinearArrayPreview(null)
+      return
+    }
+    const applied = await runNativeEdit((projectId, revision, projectInstanceId) =>
+      confirmLinearArray(projectId, revision, projectInstanceId, preview.request, result.request_sha256))
+    if (applied) {
+      linearArrayRequestSequenceRef.current += 1
+      setLinearArrayPreview(null)
+    }
   }
 
   function mirrorPreflightIssueText(issue: string | null) {
@@ -7665,6 +7737,55 @@ function App() {
                       </button>
                     </fieldset>
                   </form>
+                  {selectedLine.kind !== 'boundary' && (
+                    <form
+                      onSubmit={(event) => void submitLinearArrayPreview(event)}
+                      onInput={() => {
+                        linearArrayRequestSequenceRef.current += 1
+                        setLinearArrayPreview(null)
+                      }}
+                      data-testid="linear-array-panel"
+                    >
+                      <fieldset disabled={coreBusy || selectedLine.locked}>
+                        <legend>{text({ ja: '線形配列', en: 'Linear array' })}</legend>
+                        <label className="field">
+                          {text({ ja: '追加コピー数', en: 'Additional copies' })}
+                          <input name="linear_array_copies" type="number" min="1" max="16" step="1" defaultValue="1" />
+                        </label>
+                        <label className="field">
+                          {text({ ja: 'X移動量 (mm)', en: 'X offset (mm)' })}
+                          <input name="linear_array_dx" type="number" step="any" defaultValue="10" />
+                        </label>
+                        <label className="field">
+                          {text({ ja: 'Y移動量 (mm)', en: 'Y offset (mm)' })}
+                          <input name="linear_array_dy" type="number" step="any" defaultValue="0" />
+                        </label>
+                        <button type="submit" data-testid="preview-linear-array">
+                          {text({ ja: '配列をプレビュー', en: 'Preview array' })}
+                        </button>
+                      </fieldset>
+                      {linearArrayPreview?.request.edges[0] === selectedLine.id && (
+                        <div data-testid="linear-array-preview" aria-live="polite">
+                          <p>{formattedText({
+                            ja: '追加頂点 {vertices}、追加線分シード {edges}。確認するまで図面は変更されません。',
+                            en: '{vertices} vertices and {edges} edge seeds will be added. The drawing remains unchanged until confirmation.',
+                          }, {
+                            vertices: linearArrayPreview.result.generated_vertex_count,
+                            edges: linearArrayPreview.result.generated_edge_seed_count,
+                          })}</p>
+                          <button type="button" onClick={() => void confirmCurrentLinearArray()} data-testid="confirm-linear-array">
+                            {text({ ja: '配列を確定', en: 'Confirm array' })}
+                          </button>
+                          <button type="button" onClick={() => {
+                            linearArrayRequestSequenceRef.current += 1
+                            setLinearArrayPreview(null)
+                          }}>
+                            {text({ ja: 'キャンセル', en: 'Cancel' })}
+                          </button>
+                        </div>
+                      )}
+                    </form>
+                  )}
                   <div className="property-actions">
                     <button
                       type="button"

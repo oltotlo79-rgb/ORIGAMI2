@@ -9107,6 +9107,170 @@ fn apply_mirror_selection(
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinearArrayRequestV1 {
+    vertices: Vec<VertexId>,
+    edges: Vec<EdgeId>,
+    additional_copies: u8,
+    delta: Point2,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct LinearArrayPreviewV1 {
+    version: u8,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    request_sha256: String,
+    source_vertex_count: usize,
+    source_edge_count: usize,
+    additional_copies: u8,
+    generated_vertex_count: usize,
+    generated_edge_seed_count: usize,
+    authorizes_project_mutation: bool,
+}
+
+fn linear_array_request_sha256(
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    request: &LinearArrayRequestV1,
+) -> Result<String, String> {
+    let payload = serde_json::to_vec(&(project_instance_id, project_id, revision, request))
+        .map_err(|_| "linear_array_request_invalid".to_owned())?;
+    Ok(lowercase_hex(&sha2::Sha256::digest(payload)))
+}
+
+#[tauri::command]
+fn preview_linear_array(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    request: LinearArrayRequestV1,
+) -> Result<LinearArrayPreviewV1, String> {
+    let project = lock_project(&state)?;
+    preview_linear_array_inner(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        request,
+    )
+}
+
+fn preview_linear_array_inner(
+    project: &ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    request: LinearArrayRequestV1,
+) -> Result<LinearArrayPreviewV1, String> {
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    project
+        .editor
+        .plan_linear_array(
+            expected_revision,
+            request.vertices.clone(),
+            request.edges.clone(),
+            request.additional_copies,
+            request.delta,
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(LinearArrayPreviewV1 {
+        version: 1,
+        project_instance_id: expected_project_instance_id,
+        project_id: expected_project_id,
+        revision: expected_revision,
+        request_sha256: linear_array_request_sha256(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+            &request,
+        )?,
+        source_vertex_count: request.vertices.len(),
+        source_edge_count: request.edges.len(),
+        additional_copies: request.additional_copies,
+        generated_vertex_count: request
+            .vertices
+            .len()
+            .saturating_mul(usize::from(request.additional_copies)),
+        generated_edge_seed_count: request
+            .edges
+            .len()
+            .saturating_mul(usize::from(request.additional_copies)),
+        authorizes_project_mutation: false,
+    })
+}
+
+#[tauri::command]
+fn confirm_linear_array(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    request: LinearArrayRequestV1,
+    expected_request_sha256: String,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    confirm_linear_array_inner(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        request,
+        expected_request_sha256,
+    )
+}
+
+fn confirm_linear_array_inner(
+    project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    request: LinearArrayRequestV1,
+    expected_request_sha256: String,
+) -> Result<ProjectSnapshot, String> {
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let live_digest = linear_array_request_sha256(
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        &request,
+    )?;
+    if expected_request_sha256 != live_digest {
+        return Err("linear_array_preview_stale".to_owned());
+    }
+    let command = project
+        .editor
+        .plan_linear_array(
+            expected_revision,
+            request.vertices,
+            request.edges,
+            request.additional_copies,
+            request.delta,
+        )
+        .map_err(|error| error.to_string())?;
+    execute_command(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        command,
+    )
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 fn rotate_edge_about_point(
@@ -14989,6 +15153,8 @@ pub fn run() {
             mirror_edge_left_right,
             preflight_mirror_selection,
             apply_mirror_selection,
+            preview_linear_array,
+            confirm_linear_array,
             rotate_edge_about_point,
             move_vertices,
             preview_geometric_constraint_solve,
@@ -26842,5 +27008,107 @@ mod tests {
         let before = project.document();
         let _ = bounded_folded_pose_landmark_score_v1(&oversized, &reference);
         assert_eq!(project.document(), before);
+    }
+
+    #[test]
+    fn linear_array_preview_and_confirm_are_bound_read_only_and_atomic() {
+        let sheet = create_rectangular_sheet(100.0, 100.0, false).unwrap();
+        let (mut pattern, paper) = sheet.into_parts();
+        let mut vertices = [VertexId::new(), VertexId::new()];
+        vertices.sort_by_key(|id| id.canonical_bytes());
+        let edge = EdgeId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: vertices[0],
+                position: Point2::new(20.0, 20.0),
+            },
+            Vertex {
+                id: vertices[1],
+                position: Point2::new(30.0, 20.0),
+            },
+        ]);
+        pattern.edges.push(Edge {
+            id: edge,
+            start: vertices[0],
+            end: vertices[1],
+            kind: EdgeKind::Mountain,
+        });
+        let mut project = ProjectState::new_with_paper(pattern, paper);
+        let instance = project.instance_id;
+        let id = project.project_id;
+        let request = LinearArrayRequestV1 {
+            vertices: vertices.to_vec(),
+            edges: vec![edge],
+            additional_copies: 1,
+            delta: Point2::new(0.0, 10.0),
+        };
+        let before = project.document();
+        let preview =
+            preview_linear_array_inner(&project, instance, id, 0, request.clone()).unwrap();
+        assert_eq!(project.document(), before);
+        assert!(!preview.authorizes_project_mutation);
+        for (bad_instance, bad_id, bad_revision) in [
+            (ProjectId::new(), id, 0),
+            (instance, ProjectId::new(), 0),
+            (instance, id, 1),
+        ] {
+            assert!(
+                preview_linear_array_inner(
+                    &project,
+                    bad_instance,
+                    bad_id,
+                    bad_revision,
+                    request.clone()
+                )
+                .is_err()
+            );
+            assert_eq!(project.document(), before);
+        }
+        let mut bad_digest = preview.request_sha256.clone();
+        bad_digest.replace_range(0..1, if &bad_digest[0..1] == "0" { "1" } else { "0" });
+        assert!(
+            confirm_linear_array_inner(&mut project, instance, id, 0, request.clone(), bad_digest)
+                .is_err()
+        );
+        assert_eq!(project.document(), before);
+        let mut changed_request = request.clone();
+        changed_request.delta.y = 11.0;
+        assert!(
+            confirm_linear_array_inner(
+                &mut project,
+                instance,
+                id,
+                0,
+                changed_request,
+                preview.request_sha256.clone(),
+            )
+            .is_err()
+        );
+        assert_eq!(project.document(), before);
+        let snapshot = confirm_linear_array_inner(
+            &mut project,
+            instance,
+            id,
+            0,
+            request.clone(),
+            preview.request_sha256,
+        )
+        .unwrap();
+        assert_eq!(snapshot.revision, 1);
+        assert!(
+            confirm_linear_array_inner(&mut project, instance, id, 0, request, String::new())
+                .is_err()
+        );
+        project.editor.undo(1).unwrap();
+        assert_eq!(project.editor.pattern(), &before.crease_pattern);
+        let restored = project.document();
+        let invalid = LinearArrayRequestV1 {
+            vertices: vertices.to_vec(),
+            edges: vec![edge],
+            additional_copies: 0,
+            delta: Point2::new(0.0, 10.0),
+        };
+        assert!(preview_linear_array_inner(&project, instance, id, 2, invalid).is_err());
+        assert_eq!(project.document(), restored);
     }
 }

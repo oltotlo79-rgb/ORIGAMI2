@@ -2553,6 +2553,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-single-instance",
+ "unicode-normalization",
  "windows-sys 0.61.2",
  "zip",
 ]

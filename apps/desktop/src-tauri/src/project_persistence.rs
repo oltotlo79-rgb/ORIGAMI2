@@ -49,6 +49,7 @@ use ori_formats::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use unicode_normalization::UnicodeNormalization;
 const SINGLE_FILE_JOURNAL_SCHEMA_V1: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,12 +285,14 @@ fn target_path_fingerprint(path: &Path) -> Result<String, ()> {
     let parent = containing_directory(path).ok_or(())?;
     let canonical_parent = std::fs::canonicalize(parent).map_err(|_| ())?;
     let file_name = path.file_name().and_then(|name| name.to_str()).ok_or(())?;
-    Ok(sha256_hex_bytes(
-        canonical_parent
-            .join(file_name)
-            .to_string_lossy()
-            .as_bytes(),
-    ))
+    let normalized = canonical_parent
+        .join(file_name)
+        .to_string_lossy()
+        .nfc()
+        .collect::<String>();
+    #[cfg(windows)]
+    let normalized = normalized.to_lowercase();
+    Ok(sha256_hex_bytes(normalized.as_bytes()))
 }
 
 fn journal_path_for_target(path: &Path, target_fingerprint: &str) -> Result<PathBuf, ()> {
@@ -1758,6 +1761,60 @@ mod staged_payload_adapter_tests {
             load_project_archive_from_path(&target).expect("open after release"),
             old_archive
         );
+        fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[test]
+    fn single_flight_guard_is_released_during_panic_unwind() {
+        let directory = journal_test_directory("single-flight-panic");
+        let target = directory.join("project.ori2");
+        let unwind = std::panic::catch_unwind(|| {
+            let _owner = acquire_project_file_operation(&target).expect("first owner");
+            panic!("simulate writer panic");
+        });
+        assert!(unwind.is_err());
+        let recovered = acquire_project_file_operation(&target)
+            .expect("panic drop must release the target operation");
+        drop(recovered);
+        fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[test]
+    fn single_flight_normalizes_unicode_aliases_and_allows_distinct_targets() {
+        let directory = journal_test_directory("single-flight-unicode");
+        let composed = directory.join("caf\u{e9}.ori2");
+        let decomposed = directory.join("cafe\u{301}.ori2");
+        let other = directory.join("other.ori2");
+        let owner = acquire_project_file_operation(&composed).expect("composed owner");
+        assert!(acquire_project_file_operation(&decomposed).is_err());
+        let other_owner = acquire_project_file_operation(&other)
+            .expect("an unrelated target may proceed concurrently");
+        drop(other_owner);
+        drop(owner);
+        fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn single_flight_rejects_windows_case_alias() {
+        let directory = journal_test_directory("single-flight-case");
+        let owner = acquire_project_file_operation(&directory.join("Project.ori2"))
+            .expect("mixed-case owner");
+        assert!(acquire_project_file_operation(&directory.join("project.ORI2")).is_err());
+        drop(owner);
+        fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn single_flight_keeps_unix_case_sensitive_targets_distinct() {
+        let directory = journal_test_directory("single-flight-case");
+        let owner = acquire_project_file_operation(&directory.join("Project.ori2"))
+            .expect("mixed-case owner");
+        let lower_owner = acquire_project_file_operation(&directory.join("project.ori2"))
+            .expect("Unix case-sensitive target");
+        drop(lower_owner);
+        drop(owner);
         fs::remove_dir_all(directory).expect("cleanup test directory");
     }
 

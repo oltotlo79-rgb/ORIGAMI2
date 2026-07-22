@@ -26,6 +26,7 @@ ori-topology = { path = "../../../crates/ori-topology" }
 ori-numeric = { path = "../../../crates/ori-numeric" }
 serde.workspace = true
 serde_json.workspace = true
+unicode-normalization.workspace = true
 sha2 = "0.10.9"
 base64 = "0.22"
 png = "0.18"

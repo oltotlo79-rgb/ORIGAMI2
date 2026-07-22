@@ -291,7 +291,7 @@ describe('StackedFoldPanel', () => {
     resolvePreview(basicTimelinePreview)
     await waitFor(() => expect(transport.cancel).toHaveBeenCalledTimes(2))
     expect(screen.queryByRole('status', { name: 'Certified timeline step player' })).toBeNull()
-    expect(screen.getByRole('checkbox')).toHaveProperty('disabled', true)
+    expect(screen.queryByRole('checkbox')).toBeNull()
   })
 
   it('offers cooperative cancellation while a bounded path read is pending', async () => {
@@ -721,10 +721,10 @@ describe('StackedFoldPanel', () => {
     ))
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(apply)
-    await waitFor(() => expect(transport.namedApply).toHaveBeenCalledWith(
-      token, document, 'inside-reverse', reversePreview,
+    await waitFor(() => expect(transport.reverseApply).toHaveBeenCalledWith(
+      token, document, 'inside-reverse',
     ))
-    expect(transport.reverseApply).not.toHaveBeenCalled()
+    expect(transport.namedApply).not.toHaveBeenCalled()
     expect(transport.apply).not.toHaveBeenCalled()
   })
 
@@ -798,10 +798,10 @@ describe('StackedFoldPanel', () => {
       expect.objectContaining({ techniqueKind: 'layer_selective' }),
     ))
     fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(apply)
-    await waitFor(() => expect(transport.namedApply).toHaveBeenCalledWith(
-      token, document, 'layer-select', layerPreview,
+    await waitFor(() => expect(transport.layerApply).toHaveBeenCalledWith(
+      token, document, 'layer-select',
     ))
-    expect(transport.layerApply).not.toHaveBeenCalled()
+    expect(transport.namedApply).not.toHaveBeenCalled()
     expect(transport.apply).not.toHaveBeenCalled()
   })
 

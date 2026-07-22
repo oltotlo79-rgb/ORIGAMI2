@@ -265,6 +265,8 @@ export function StackedFoldPanel({
     rotationDirection,
     angle,
     cycleScheduleText,
+    namedBookFold?.techniqueId,
+    namedBookFold?.kind,
   ])
 
   useEffect(() => () => {
@@ -563,7 +565,7 @@ export function StackedFoldPanel({
   }
 
   function applyTransaction(token: string) {
-    return namedBookFold?.kind === 'layer'
+    return namedBookFold?.kind === 'layer_selective'
       ? applyNamedLayerSelectiveTransaction(token, namedBookFold.document, namedBookFold.techniqueId)
       : namedBookFold?.kind === 'sink'
       ? basicFoldTimelinePreview?.transactionToken === token
@@ -575,7 +577,7 @@ export function StackedFoldPanel({
         ? applyNamedBookFoldTransaction(token, namedBookFold.document, namedBookFold.techniqueId,
           basicFoldTimelinePreview)
         : Promise.reject(new Error('certified accordion timeline preview required'))
-      : namedBookFold?.kind === 'reverse'
+      : namedBookFold?.kind === 'inside_reverse' || namedBookFold?.kind === 'outside_reverse'
       ? applyNamedReverseFoldTransaction(
           token,
           namedBookFold.document,
@@ -914,7 +916,7 @@ export function StackedFoldPanel({
           <button
             ref={cyclePosePreviewButtonRef}
             type="button"
-            disabled={disabled || applying || cyclePoseReading}
+            disabled={!authoredCycleSchedule || disabled || applying || cyclePoseReading}
             onClick={() => void previewCurrentCyclePose(false)}
           >
             {cyclePoseReading

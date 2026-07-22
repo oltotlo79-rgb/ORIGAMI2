@@ -6415,13 +6415,14 @@ mod tests {
     fn physical_four_vertex_cycle_schedule(
         hinges: &[ori_domain::EdgeId],
     ) -> CycleScheduleRequestV1 {
-        let mut entries = hinges
+        let mut ordered_hinges = hinges.to_vec();
+        ordered_hinges.sort_unstable_by_key(ori_domain::EdgeId::canonical_bytes);
+        let entries = ordered_hinges
             .iter()
             .copied()
             .enumerate()
             .map(|(index, edge)| {
-                let numerator = if index == 3 { -1 } else { 1 };
-                let denominator = 1;
+                let denominator = if index % 2 == 0 { 1 } else { 2 };
                 CycleScheduleEntryRequestV1 {
                     edge,
                     u_domain: [
@@ -6430,7 +6431,7 @@ mod tests {
                             denominator: 1,
                         },
                         RationalCoefficientRequestV1 {
-                            numerator,
+                            numerator: 1,
                             denominator: 1,
                         },
                     ],
@@ -6448,12 +6449,10 @@ mod tests {
                         numerator: denominator,
                         denominator: 1,
                     }],
-                    requested_angle_degrees: 2.0
-                        * (numerator as f64).atan2(denominator as f64).to_degrees(),
+                    requested_angle_degrees: 2.0 * 1.0_f64.atan2(denominator as f64).to_degrees(),
                 }
             })
             .collect::<Vec<_>>();
-        entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
         CycleScheduleRequestV1 {
             version: 1,
             entries,

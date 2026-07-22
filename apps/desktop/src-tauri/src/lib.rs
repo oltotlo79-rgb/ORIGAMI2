@@ -196,7 +196,7 @@ use stacked_fold_transaction::{
     apply_named_accordion_fold_transaction, apply_named_book_fold_transaction,
     apply_named_layer_selective_transaction, apply_named_reverse_fold_transaction,
     apply_named_sink_fold_transaction, apply_stacked_fold_transaction,
-    cancel_stacked_fold_transaction_preview,
+    cancel_stacked_fold_transaction_preview, preview_named_basic_fold_timeline,
 };
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -13489,6 +13489,7 @@ pub fn run() {
             read_live_hinge_registry_v1,
             cancel_stacked_fold_transaction_preview,
             apply_stacked_fold_transaction,
+            preview_named_basic_fold_timeline,
             apply_named_book_fold_transaction,
             apply_named_reverse_fold_transaction,
             apply_named_sink_fold_transaction,

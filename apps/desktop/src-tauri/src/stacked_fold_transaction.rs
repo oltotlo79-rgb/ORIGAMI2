@@ -15,6 +15,21 @@ use ori_foldability::fold_model_fingerprint_v1;
 use sha2::{Digest, Sha256};
 use tauri::State;
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct BasicFoldTimelinePreviewResponse {
+    schema_version: u8,
+    transaction_token: ProjectId,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    source_model_fingerprint: String,
+    fixed_face: ori_domain::FaceId,
+    fold_edge: ori_domain::EdgeId,
+    assignment: String,
+    timeline: ori_domain::InstructionTimeline,
+}
+
 use super::{
     AppState,
     applied_pose::{
@@ -685,6 +700,136 @@ pub(super) fn apply_stacked_fold_transaction(
     token: ProjectId,
 ) -> Result<u64, String> {
     apply_stacked_fold_transaction_inner(&app_state, &foldability_state, &transaction_state, token)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub(super) fn preview_named_basic_fold_timeline(
+    app_state: State<'_, AppState>,
+    foldability_state: State<'_, GlobalFlatFoldabilityState>,
+    transaction_state: State<'_, StackedFoldTransactionState>,
+    token: ProjectId,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    expected_source_model_fingerprint: String,
+    fold_edge: ori_domain::EdgeId,
+    assignment: String,
+    technique_document_json: String,
+    technique_id: String,
+) -> Result<BasicFoldTimelinePreviewResponse, String> {
+    let kind = match assignment.as_str() {
+        "mountain" => ori_instructions::BasicFoldKindV1::Mountain,
+        "valley" => ori_instructions::BasicFoldKindV1::Valley,
+        _ => return Err("The basic-fold assignment is unsupported.".to_owned()),
+    };
+    let technique =
+        ori_instructions::read_fold_technique_file_v1(technique_document_json.as_bytes())
+            .map_err(|_| "The named basic-fold document is invalid.".to_owned())?;
+    let slot = lock_slot(&transaction_state)?;
+    let pending = slot
+        .pending
+        .as_ref()
+        .filter(|pending| pending.token() == token)
+        .ok_or_else(|| "The basic-fold transaction preview is stale.".to_owned())?;
+    let project = lock_project(&app_state).map_err(|_| "The project is unavailable.".to_owned())?;
+    let fingerprint = fold_model_fingerprint_v1(project.editor.pattern(), project.editor.paper());
+    if project.instance_id != expected_project_instance_id
+        || project.project_id != expected_project_id
+        || project.editor.revision() != expected_revision
+        || fingerprint.to_hex() != expected_source_model_fingerprint
+        || !pending.matches_live_binding(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+            fingerprint.0,
+            pending.expected_pose_generation,
+            pending.expected_layer_generation,
+        )
+    {
+        return Err("The basic-fold transaction preview is stale.".to_owned());
+    }
+    let _pose_guard =
+        lock_revalidated_current_applied_pose_for_commit(&project, &pending.pose_capability)
+            .map_err(|_| "The current pose authority is unavailable.".to_owned())?
+            .ok_or_else(|| "The basic-fold transaction preview is stale.".to_owned())?;
+    if let Some(capability) = pending.layer_capability.as_ref() {
+        lock_revalidated_current_layer_order_for_commit(&foldability_state, &project, capability)
+            .map_err(|_| "The current layer-order authority is unavailable.".to_owned())?
+            .ok_or_else(|| "The basic-fold transaction preview is stale.".to_owned())?;
+    }
+    let (_, hinge_ids, pending_fixed_face, _) = pending.requested.pose_components();
+    let fixed_face = pending_fixed_face
+        .ok_or_else(|| "The basic-fold fixed-face authority is unavailable.".to_owned())?;
+    let source_angles = pending
+        .requested
+        .certified_graph_source_angles()
+        .ok_or_else(|| "The basic-fold path certificate is unavailable.".to_owned())?;
+    let targets = pending.requested.ordered_timeline_angles();
+    let certificate = pending
+        .requested
+        .certified_graph_path()
+        .filter(|path| path.edges().len() == 1)
+        .ok_or_else(|| "The basic-fold path certificate is unavailable.".to_owned())?;
+    if hinge_ids.as_slice() != [fold_edge]
+        || targets.len() != 1
+        || !project.editor.pattern().edges.iter().any(|edge| {
+            edge.id == fold_edge
+                && matches!(
+                    (kind, edge.kind),
+                    (
+                        ori_instructions::BasicFoldKindV1::Mountain,
+                        ori_domain::EdgeKind::Mountain
+                    ) | (
+                        ori_instructions::BasicFoldKindV1::Valley,
+                        ori_domain::EdgeKind::Valley
+                    )
+                )
+        })
+    {
+        return Err("The basic-fold transaction binding was tampered with.".to_owned());
+    }
+    let source_hinge_angles = source_angles
+        .into_iter()
+        .map(|(edge, angle_degrees)| InstructionHingeAngle {
+            edge,
+            angle_degrees,
+        })
+        .collect::<Vec<_>>();
+    let target_angle = targets[0]
+        .iter()
+        .find(|(edge, _)| *edge == fold_edge)
+        .map(|(_, angle)| *angle)
+        .filter(|angle| angle.is_finite() && (0.0..=180.0).contains(angle))
+        .ok_or_else(|| "The basic-fold target angle is invalid.".to_owned())?;
+    let timeline = ori_instructions::compile_certified_basic_fold_timeline_v1(
+        ori_instructions::BasicFoldMotionRequestV1 {
+            kind,
+            straight_fold: ori_instructions::BookFoldMotionRequestV1 {
+                technique_file: &technique,
+                technique_id: &technique_id,
+                source_model_fingerprint: &expected_source_model_fingerprint,
+                fixed_face,
+                fold_edge,
+                source_hinge_angles: &source_hinge_angles,
+                target_angle_microdegrees: (target_angle * 1_000_000.0) as i64,
+                path_certificate: certificate,
+            },
+        },
+    )
+    .map_err(|_| "The named basic-fold compiler rejected the preview.".to_owned())?;
+    Ok(BasicFoldTimelinePreviewResponse {
+        schema_version: 1,
+        transaction_token: token,
+        project_instance_id: expected_project_instance_id,
+        project_id: expected_project_id,
+        revision: expected_revision,
+        source_model_fingerprint: expected_source_model_fingerprint,
+        fixed_face,
+        fold_edge,
+        assignment,
+        timeline,
+    })
 }
 
 #[tauri::command]
@@ -1439,5 +1584,46 @@ mod tests {
             ],
         ));
         assert!(!bit_exact_canonical_angles_match(&expected, &exact[..1],));
+    }
+
+    #[test]
+    fn basic_fold_preview_dto_never_serializes_raw_certificate_authority() {
+        let response = BasicFoldTimelinePreviewResponse {
+            schema_version: 1,
+            transaction_token: ProjectId::new(),
+            project_instance_id: ProjectId::new(),
+            project_id: ProjectId::new(),
+            revision: 7,
+            source_model_fingerprint: "ab".repeat(32),
+            fixed_face: ori_domain::FaceId::new(),
+            fold_edge: ori_domain::EdgeId::new(),
+            assignment: "mountain".to_owned(),
+            timeline: ori_domain::InstructionTimeline { steps: Vec::new() },
+        };
+        let value = serde_json::to_value(response).expect("serialize read-only preview");
+        let object = value.as_object().expect("preview object");
+        assert_eq!(
+            object
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            [
+                "assignment",
+                "fixedFace",
+                "foldEdge",
+                "projectId",
+                "projectInstanceId",
+                "revision",
+                "schemaVersion",
+                "sourceModelFingerprint",
+                "timeline",
+                "transactionToken",
+            ]
+            .into_iter()
+            .collect()
+        );
+        let serialized = serde_json::to_string(&value).unwrap();
+        assert!(!serialized.contains("certificate"));
+        assert!(!serialized.contains("authorizesProjectMutation"));
     }
 }

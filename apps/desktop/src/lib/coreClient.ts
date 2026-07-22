@@ -3096,6 +3096,7 @@ export function readBoundedDyadicPoseGraphV1(request: Readonly<{
   targetAngles: readonly Readonly<{ edge: string; angleDegrees: number }>[]
   maxStates: number
   maxTransitions: number
+  levelCount: 3 | 5 | 9
   cycleScheduleV1?: CycleScheduleRequestV1
 }>): Promise<DyadicPoseGraphReadResponseV1> {
   if (!isCanonicalNonNilUuid(request.expectedProjectInstanceId)
@@ -3103,6 +3104,7 @@ export function readBoundedDyadicPoseGraphV1(request: Readonly<{
     || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
     || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1
     || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1
+    || ![3, 5, 9].includes(request.levelCount)
     || !Array.isArray(request.targetAngles) || request.targetAngles.length === 0 || request.targetAngles.length > 64
     || request.targetAngles.some((entry) => !isCanonicalNonNilUuid(entry.edge)
       || !Number.isFinite(entry.angleDegrees) || entry.angleDegrees < 0 || entry.angleDegrees > 180)) {
@@ -3154,6 +3156,7 @@ export function mintDyadicPosePathPreviewV1(request: Readonly<{
   targetAngles: readonly Readonly<{ edge: string; angleDegrees: number }>[]
   maxStates: number
   maxTransitions: number
+  levelCount: 3 | 5 | 9
   cycleScheduleV1?: CycleScheduleRequestV1
   expectedPathBindingSha256: string
   expectedPositiveThicknessBindingSha256: string
@@ -3165,6 +3168,7 @@ export function mintDyadicPosePathPreviewV1(request: Readonly<{
     || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
     || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1
     || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1
+    || ![3, 5, 9].includes(request.levelCount)
     || !Array.isArray(request.targetAngles) || request.targetAngles.length === 0 || request.targetAngles.length > 64
     || request.targetAngles.some((entry) => !isCanonicalNonNilUuid(entry.edge) || !Number.isFinite(entry.angleDegrees) || entry.angleDegrees < 0 || entry.angleDegrees > 180)
     || !hash(request.expectedPathBindingSha256)
@@ -3404,6 +3408,69 @@ export class StackedFoldReadNativeError extends Error {
     super('stacked-fold read failed')
     this.reason = reason
   }
+}
+
+export type BasicFoldTimelinePreviewRequestV1 = Readonly<{
+  token: string
+  expectedProjectInstanceId: string
+  expectedProjectId: string
+  expectedRevision: number
+  expectedSourceModelFingerprint: string
+  foldEdge: string
+  assignment: 'mountain' | 'valley'
+  techniqueDocument: unknown
+  techniqueId: string
+}>
+
+export type BasicFoldTimelinePreviewResponseV1 = Readonly<{
+  schemaVersion: 1
+  transactionToken: string
+  projectInstanceId: string
+  projectId: string
+  revision: number
+  sourceModelFingerprint: string
+  fixedFace: string
+  foldEdge: string
+  assignment: 'mountain' | 'valley'
+  timeline: InstructionTimeline
+}>
+
+export function previewNamedBasicFoldTimeline(
+  request: BasicFoldTimelinePreviewRequestV1,
+): Promise<BasicFoldTimelinePreviewResponseV1> {
+  if (!isCanonicalNonNilUuid(request.token)
+    || !isCanonicalNonNilUuid(request.expectedProjectInstanceId)
+    || !isCanonicalNonNilUuid(request.expectedProjectId)
+    || !isCanonicalNonNilUuid(request.foldEdge)
+    || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
+    || !/^[0-9a-f]{64}$/u.test(request.expectedSourceModelFingerprint)
+    || (request.assignment !== 'mountain' && request.assignment !== 'valley')
+    || typeof request.techniqueId !== 'string') {
+    return Promise.reject(new Error('invalid basic-fold timeline preview request'))
+  }
+  let techniqueDocumentJson: string
+  try { techniqueDocumentJson = JSON.stringify(request.techniqueDocument) } catch {
+    return Promise.reject(new Error('invalid basic-fold technique document'))
+  }
+  const { techniqueDocument: _, ...native } = request
+  return invoke<unknown>('preview_named_basic_fold_timeline', {
+    ...native,
+    techniqueDocumentJson,
+  }).then((value) => {
+    if (!value || typeof value !== 'object') throw new Error('invalid basic-fold preview response')
+    const response = value as Record<string, unknown>
+    if (Object.keys(response).sort().join(',') !== 'assignment,fixedFace,foldEdge,projectId,projectInstanceId,revision,schemaVersion,sourceModelFingerprint,timeline,transactionToken'
+      || response.schemaVersion !== 1 || response.transactionToken !== request.token
+      || response.projectInstanceId !== request.expectedProjectInstanceId
+      || response.projectId !== request.expectedProjectId || response.revision !== request.expectedRevision
+      || response.sourceModelFingerprint !== request.expectedSourceModelFingerprint
+      || !isCanonicalNonNilUuid(response.fixedFace) || response.foldEdge !== request.foldEdge
+      || response.assignment !== request.assignment || !response.timeline
+      || typeof response.timeline !== 'object' || !Array.isArray((response.timeline as { steps?: unknown }).steps)) {
+      throw new Error('invalid basic-fold preview response')
+    }
+    return response as BasicFoldTimelinePreviewResponseV1
+  })
 }
 
 export function cancelStackedFoldTransactionPreview(token: string): Promise<void> {

@@ -3677,7 +3677,7 @@ mod tests {
 
     #[test]
     fn two_patch_miura_cactus_has_native_layer_authority() {
-        let (pattern, paper, _) =
+        let (pattern, paper, _moving) =
             super::miura_cactus_test_support::two_patch_miura_cactus_pattern();
         let project = fixed_id("ca20", 1);
         let topology = analyze_faces(FaceExtractionInput {
@@ -3736,6 +3736,134 @@ mod tests {
         )
         .unwrap();
         assert!(global.layer_order().is_some(), "{:?}", global.outcome);
+        let geometry = MaterialHingeGraphGeometry::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        let hinge_count = geometry.hinges().len();
+        let (schedule, closure) = (1usize..3usize.pow(hinge_count as u32))
+            .find_map(|mut code| {
+                let coefficients = (0..hinge_count)
+                    .map(|_| {
+                        let digit = code % 3;
+                        code /= 3;
+                        match digit {
+                            0 => 0_i64,
+                            1 => 1,
+                            _ => -1,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                if coefficients.iter().filter(|value| **value != 0).count() < 2 {
+                    return None;
+                }
+                let mut entries = geometry
+                    .hinges()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, hinge)| HalfAngleRationalEntryInputV1 {
+                        edge: hinge.edge(),
+                        u_domain: [
+                            RationalCoefficientV1 {
+                                numerator: 0,
+                                denominator: 1,
+                            },
+                            RationalCoefficientV1 {
+                                numerator: 1,
+                                denominator: 1,
+                            },
+                        ],
+                        numerator_power_coefficients: vec![
+                            RationalCoefficientV1 {
+                                numerator: 0,
+                                denominator: 1,
+                            },
+                            RationalCoefficientV1 {
+                                numerator: coefficients[index],
+                                denominator: 1,
+                            },
+                        ],
+                        denominator_power_coefficients: vec![RationalCoefficientV1 {
+                            numerator: if coefficients[index] != 0 { 64 } else { 1 },
+                            denominator: 1,
+                        }],
+                    })
+                    .collect::<Vec<_>>();
+                entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+                let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+                    &geometry,
+                    &audit,
+                    articulation,
+                    entries,
+                    CycleScheduleLimitsV1::default(),
+                )
+                .ok()?;
+                geometry
+                    .solve_closed(&audit, articulation, &schedule.evaluate(1.0)?, 1.0e-8)
+                    .ok()?;
+                let closure = geometry
+                    .prove_dyadic_schedule_closure_v1(
+                        &audit,
+                        articulation,
+                        &schedule,
+                        1.0e-8,
+                        DyadicIntervalClosureLimitsV1 {
+                            max_depth: 8,
+                            max_leaves: 256,
+                            max_work: 1_000_000,
+                            schedule_limits: CycleScheduleLimitsV1::default(),
+                        },
+                    )
+                    .ok()?;
+                Some((schedule, closure))
+            })
+            .expect("bounded two-block exact closure");
+        let positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+            &geometry,
+            &audit,
+            articulation,
+            &schedule,
+            &closure,
+            0.1,
+            32,
+        )
+        .expect("two-block positive continuous authority");
+        let source = global.layer_order().unwrap();
+        let layer_records = source
+            .overlap_cells
+            .iter()
+            .map(|cell| cell.bottom_to_top_faces.len())
+            .sum();
+        let boundary_samples = source
+            .overlap_cells
+            .iter()
+            .map(|cell| cell.exact_boundary.len() * cell.bottom_to_top_faces.len())
+            .sum::<usize>()
+            * (closure.leaves().len() + 1);
+        let layer = crate::certify_general_multi_face_cell_transport_v1(
+            crate::GeneralCellTransportInputV1 {
+                geometry: &geometry,
+                audit: &audit,
+                source,
+                schedule: &schedule,
+                closure: &closure,
+                positive_continuous: &positive,
+                paper_thickness_mm: 0.1,
+                tolerance: 1.0e-9,
+                limits: crate::GeneralCellTransportLimitsV1 {
+                    max_transitions: closure.leaves().len() + 1,
+                    max_cells: source.overlap_cells.len(),
+                    max_layer_records: layer_records,
+                    max_boundary_samples: boundary_samples,
+                },
+            },
+        )
+        .expect("two-block layer transport authority");
     }
 
     #[test]

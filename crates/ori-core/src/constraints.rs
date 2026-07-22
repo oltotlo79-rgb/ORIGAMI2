@@ -45,6 +45,7 @@ pub const DEFAULT_MAX_CONSTRAINT_PRECHECKS: usize = 10_000;
 pub const MAX_DIRECT_CONFLICT_CAUSE_IDS_V1: usize = 256;
 const MAX_GENERAL_RATIO_POTENTIAL_BITS_V1: u64 = 1_048_576;
 const MAX_GENERAL_RATIO_ARITHMETIC_WORK_V1: u64 = 2_000_000;
+const MAX_GENERAL_EQUAL_GRAPH_WORK_V1: u64 = 40_000;
 
 type CanonicalId = [u8; 16];
 
@@ -351,6 +352,11 @@ pub enum DirectConstraintConflictKindV1 {
     InconsistentLengthRatioGraphWithFixedLength {
         fixed_edge: EdgeId,
         ratio_constraint_count: u16,
+    },
+    DifferentFixedLengthsInEqualLengthComponent {
+        first_edge: EdgeId,
+        second_edge: EdgeId,
+        equal_constraint_count: u16,
     },
     ParallelWithFixedNonParallelAngle {
         first_edge: EdgeId,
@@ -1852,6 +1858,19 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
     }
 
     if conflicts.is_empty() {
+        match general_equal_length_graph_conflict_v1(&equal_lengths, &fixed_lengths, &edge_ids) {
+            Ok(Some(conflict)) => conflicts.push(conflict),
+            Ok(None) => {}
+            Err(()) => {
+                return ConstraintPreflightV1::Unknown {
+                    reason: GeometricConstraintUnknownReasonV1::WorkLimitExceeded,
+                    unchecked_constraint_ids: canonical_constraint_ids(&set.constraints),
+                };
+            }
+        }
+    }
+
+    if conflicts.is_empty() {
         match general_ratio_graph_conflict_v1(&ratios, &fixed_lengths, &edge_ids) {
             Ok(Some(conflict)) => conflicts.push(conflict),
             Ok(None) => {}
@@ -2082,6 +2101,159 @@ fn tree_path_v1(
     Some((first_edges, nodes))
 }
 
+fn general_equal_length_graph_conflict_v1(
+    equal_lengths: &BTreeMap<EdgePairKey, Vec<ConstraintId>>,
+    fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
+    edge_ids: &BTreeMap<CanonicalId, EdgeId>,
+) -> Result<Option<DirectConstraintConflictV1>, ()> {
+    let mut graph: BTreeMap<CanonicalId, Vec<(CanonicalId, ConstraintId)>> = BTreeMap::new();
+    for (pair, ids) in equal_lengths {
+        let Some(id) = ids.iter().min_by_key(|id| id.canonical_bytes()) else {
+            continue;
+        };
+        graph
+            .entry(pair.first)
+            .or_default()
+            .push((pair.second, *id));
+        graph
+            .entry(pair.second)
+            .or_default()
+            .push((pair.first, *id));
+    }
+    for arcs in graph.values_mut() {
+        arcs.sort_unstable_by_key(|(neighbor, id)| (*neighbor, id.canonical_bytes()));
+    }
+
+    #[cfg(test)]
+    let max_work = GENERAL_EQUAL_TEST_WORK_LIMIT
+        .with(|limit| limit.get().unwrap_or(MAX_GENERAL_EQUAL_GRAPH_WORK_V1));
+    #[cfg(not(test))]
+    let max_work = MAX_GENERAL_EQUAL_GRAPH_WORK_V1;
+    let mut work = 0_u64;
+    #[cfg(test)]
+    GENERAL_EQUAL_TEST_WORK_OBSERVED.with(|observed| observed.set(0));
+    let mut owners: BTreeMap<CanonicalId, (CanonicalId, ScalarAssignment)> = BTreeMap::new();
+    let mut parents: BTreeMap<CanonicalId, (CanonicalId, ConstraintId)> = BTreeMap::new();
+    let mut sources = graph
+        .keys()
+        .filter_map(|edge| {
+            fixed_lengths
+                .get(edge)
+                .and_then(ScalarGroupSummary::consistent_assignment)
+                .map(|assignment| (*edge, assignment))
+        })
+        .collect::<Vec<_>>();
+    sources.sort_unstable_by_key(|(edge, assignment)| (assignment.id.canonical_bytes(), *edge));
+    let mut queue = VecDeque::new();
+    for (edge, assignment) in sources {
+        owners.insert(edge, (edge, assignment));
+        queue.push_back(edge);
+    }
+    let mut best: Option<(Vec<ConstraintId>, CanonicalId, CanonicalId, usize)> = None;
+    let mut oversized = false;
+    while let Some(node) = queue.pop_front() {
+        let owner = owners.get(&node).copied().ok_or(())?;
+        for (neighbor, edge_constraint_id) in graph.get(&node).into_iter().flatten() {
+            charge_general_equal_work_v1(&mut work, max_work, 1)?;
+            let Some(neighbor_owner) = owners.get(neighbor).copied() else {
+                owners.insert(*neighbor, owner);
+                parents.insert(*neighbor, (node, *edge_constraint_id));
+                queue.push_back(*neighbor);
+                continue;
+            };
+            if owner.0 == neighbor_owner.0
+                || owner.1.value.to_bits() == neighbor_owner.1.value.to_bits()
+            {
+                continue;
+            }
+            let mut ids = Vec::new();
+            let mut cursor = node;
+            while let Some((parent, id)) = parents.get(&cursor) {
+                charge_general_equal_work_v1(&mut work, max_work, 1)?;
+                ids.push(*id);
+                if ids.len() > MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2 {
+                    oversized = true;
+                    break;
+                }
+                cursor = *parent;
+            }
+            if ids.len() > MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2 {
+                continue;
+            }
+            cursor = *neighbor;
+            while let Some((parent, id)) = parents.get(&cursor) {
+                charge_general_equal_work_v1(&mut work, max_work, 1)?;
+                ids.push(*id);
+                if ids.len() > MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2 {
+                    oversized = true;
+                    break;
+                }
+                cursor = *parent;
+            }
+            if ids.len() > MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2 {
+                continue;
+            }
+            charge_general_equal_work_v1(&mut work, max_work, 1)?;
+            ids.push(*edge_constraint_id);
+            if ids.len() > MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 2 {
+                oversized = true;
+                continue;
+            }
+            let equal_constraint_count = ids.len();
+            let (first_edge, first, second_edge, second) =
+                if owner.1.id.canonical_bytes() < neighbor_owner.1.id.canonical_bytes() {
+                    (owner.0, owner.1, neighbor_owner.0, neighbor_owner.1)
+                } else {
+                    (neighbor_owner.0, neighbor_owner.1, owner.0, owner.1)
+                };
+            ids.extend([first.id, second.id]);
+            let sort_factor = usize::BITS - ids.len().leading_zeros();
+            let sort_work = u64::try_from(ids.len())
+                .ok()
+                .and_then(|length| length.checked_mul(u64::from(sort_factor) + 1))
+                .ok_or(())?;
+            charge_general_equal_work_v1(&mut work, max_work, sort_work)?;
+            canonicalize_constraint_ids(&mut ids);
+            if ids.len() > MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 {
+                oversized = true;
+                continue;
+            }
+            if let Some(current) = &best {
+                charge_general_equal_work_v1(
+                    &mut work,
+                    max_work,
+                    u64::try_from(ids.len().min(current.0.len())).map_err(|_| ())?,
+                )?;
+            }
+            if best.as_ref().is_none_or(|current| {
+                ids.len() < current.0.len()
+                    || (ids.len() == current.0.len()
+                        && canonical_id_slice_cmp(&ids, &current.0).is_lt())
+            }) {
+                best = Some((ids, first_edge, second_edge, equal_constraint_count));
+            }
+        }
+    }
+    let Some((constraint_ids, first_edge, second_edge, equal_constraint_count)) = best else {
+        return if oversized { Err(()) } else { Ok(None) };
+    };
+    Ok(Some(DirectConstraintConflictV1 {
+        conflict: DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent {
+            first_edge: edge_ids[&first_edge],
+            second_edge: edge_ids[&second_edge],
+            equal_constraint_count: u16::try_from(equal_constraint_count).map_err(|_| ())?,
+        },
+        constraint_ids,
+    }))
+}
+
+fn charge_general_equal_work_v1(work: &mut u64, max_work: u64, amount: u64) -> Result<(), ()> {
+    *work = work.checked_add(amount).ok_or(())?;
+    #[cfg(test)]
+    GENERAL_EQUAL_TEST_WORK_OBSERVED.with(|observed| observed.set(*work));
+    (*work <= max_work).then_some(()).ok_or(())
+}
+
 fn general_ratio_graph_conflict_v1(
     ratios: &BTreeMap<(CanonicalId, CanonicalId), Vec<ScalarAssignment>>,
     fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
@@ -2107,6 +2279,16 @@ fn general_ratio_graph_conflict_v1(
         max_arithmetic_work,
     )
     .map(|result| result.0)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static GENERAL_EQUAL_TEST_WORK_LIMIT: std::cell::Cell<Option<u64>> = const {
+        std::cell::Cell::new(None)
+    };
+    static GENERAL_EQUAL_TEST_WORK_OBSERVED: std::cell::Cell<u64> = const {
+        std::cell::Cell::new(0)
+    };
 }
 
 #[cfg(test)]
@@ -2468,11 +2650,21 @@ fn conflict_sort_key(
             [0; 16],
             u128::from(*ratio_constraint_count).to_be_bytes(),
         ),
+        DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent {
+            first_edge,
+            second_edge,
+            equal_constraint_count,
+        } => (
+            10,
+            first_edge.canonical_bytes(),
+            second_edge.canonical_bytes(),
+            u128::from(*equal_constraint_count).to_be_bytes(),
+        ),
         DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
             first_edge,
             second_edge,
         } => (
-            10,
+            11,
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
             zero,
@@ -2481,7 +2673,7 @@ fn conflict_sort_key(
             horizontal_edge,
             vertical_edge,
         } => (
-            11,
+            12,
             horizontal_edge.canonical_bytes(),
             vertical_edge.canonical_bytes(),
             zero,
@@ -4046,6 +4238,7 @@ mod tests {
             .expect("source-reordered equal duplicate assignments")
             .preflight();
         assert_eq!(forward, reversed);
+
         let ConstraintPreflightV1::DirectConflict {
             conflicts: duplicate_conflicts,
         } = forward
@@ -4318,6 +4511,247 @@ mod tests {
         .expect("fully direction-reversed remote two-edge cycle")
         .preflight();
         assert_eq!(oriented_forward, oriented_reverse);
+    }
+
+    #[test]
+    fn equal_length_graph_returns_a_bounded_deletion_minimal_shortest_witness() {
+        let fixture = Fixture::new();
+        let records = vec![
+            record(GeometricConstraintKindV1::FixedLength {
+                edge: fixture.edges[0],
+                length_mm: 1.0,
+            }),
+            record(GeometricConstraintKindV1::EqualLength {
+                first_edge: fixture.edges[0],
+                second_edge: fixture.edges[1],
+            }),
+            record(GeometricConstraintKindV1::EqualLength {
+                first_edge: fixture.edges[1],
+                second_edge: fixture.edges[2],
+            }),
+            record(GeometricConstraintKindV1::FixedLength {
+                edge: fixture.edges[2],
+                length_mm: 2.0,
+            }),
+        ];
+        let ConstraintPreflightV1::DirectConflict { conflicts } =
+            prepare(&fixture, &document(records.clone()))
+                .expect("different fixed lengths connected by an equal-length path")
+                .preflight()
+        else {
+            panic!("equal-length component must conflict");
+        };
+        assert_eq!(conflicts.len(), 1);
+        assert!(matches!(
+            conflicts[0].conflict(),
+            DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent {
+                equal_constraint_count: 2,
+                ..
+            }
+        ));
+        assert_eq!(conflicts[0].constraint_ids().len(), 4);
+        for removed in conflicts[0].constraint_ids() {
+            let subset = records
+                .iter()
+                .filter(|record| record.id != *removed)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert!(!matches!(
+                prepare(&fixture, &document(subset))
+                    .expect("proper equal-length witness subset")
+                    .preflight(),
+                ConstraintPreflightV1::DirectConflict { .. }
+            ));
+        }
+
+        let same_lengths = prepare(
+            &fixture,
+            &document([
+                records[0].clone(),
+                records[1].clone(),
+                records[2].clone(),
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[2],
+                    length_mm: 1.0,
+                }),
+            ]),
+        )
+        .expect("equal fixed lengths across the component")
+        .preflight();
+        assert!(!matches!(
+            same_lengths,
+            ConstraintPreflightV1::DirectConflict { .. }
+        ));
+
+        let duplicate_equal = record(GeometricConstraintKindV1::EqualLength {
+            first_edge: fixture.edges[0],
+            second_edge: fixture.edges[1],
+        });
+        let duplicate_fixed = record(GeometricConstraintKindV1::FixedLength {
+            edge: fixture.edges[0],
+            length_mm: 1.0,
+        });
+        let mut duplicated = records.clone();
+        duplicated.extend([duplicate_equal, duplicate_fixed]);
+        let forward = prepare(&fixture, &document(duplicated.clone()))
+            .expect("equal duplicates")
+            .preflight();
+        duplicated.reverse();
+        let reversed = prepare(&fixture, &document(duplicated))
+            .expect("source-reordered equal duplicates")
+            .preflight();
+        assert_eq!(forward, reversed);
+
+        GENERAL_EQUAL_TEST_WORK_LIMIT.with(|limit| {
+            assert_eq!(limit.replace(Some(MAX_GENERAL_EQUAL_GRAPH_WORK_V1)), None);
+        });
+        let baseline = prepare(&fixture, &document(records.clone()))
+            .expect("baseline work-accounted equal graph")
+            .preflight();
+        let exact_work = GENERAL_EQUAL_TEST_WORK_OBSERVED.with(std::cell::Cell::get);
+        GENERAL_EQUAL_TEST_WORK_LIMIT.with(|limit| {
+            assert_eq!(
+                limit.replace(Some(exact_work)),
+                Some(MAX_GENERAL_EQUAL_GRAPH_WORK_V1)
+            );
+        });
+        assert_eq!(
+            prepare(&fixture, &document(records.clone()))
+                .expect("exact equal-graph work budget")
+                .preflight(),
+            baseline
+        );
+        GENERAL_EQUAL_TEST_WORK_LIMIT.with(|limit| limit.set(Some(exact_work - 1)));
+        let limited = prepare(&fixture, &document(records.clone()))
+            .expect("one-short equal-graph work budget")
+            .preflight();
+        GENERAL_EQUAL_TEST_WORK_LIMIT.with(|limit| limit.set(None));
+        let mut all_ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
+        canonicalize_constraint_ids(&mut all_ids);
+        assert_eq!(
+            limited,
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::WorkLimitExceeded,
+                unchecked_constraint_ids: all_ids,
+            }
+        );
+    }
+
+    #[test]
+    fn equal_length_graph_diamond_with_three_values_is_source_order_invariant() {
+        let fixture = Fixture::new();
+        let mut records = vec![
+            record(GeometricConstraintKindV1::FixedLength {
+                edge: fixture.edges[0],
+                length_mm: 1.0,
+            }),
+            record(GeometricConstraintKindV1::FixedLength {
+                edge: fixture.edges[3],
+                length_mm: 2.0,
+            }),
+            record(GeometricConstraintKindV1::FixedLength {
+                edge: fixture.edges[4],
+                length_mm: 3.0,
+            }),
+            record(GeometricConstraintKindV1::EqualLength {
+                first_edge: fixture.edges[0],
+                second_edge: fixture.edges[1],
+            }),
+            record(GeometricConstraintKindV1::EqualLength {
+                first_edge: fixture.edges[1],
+                second_edge: fixture.edges[3],
+            }),
+            record(GeometricConstraintKindV1::EqualLength {
+                first_edge: fixture.edges[0],
+                second_edge: fixture.edges[2],
+            }),
+            record(GeometricConstraintKindV1::EqualLength {
+                first_edge: fixture.edges[2],
+                second_edge: fixture.edges[3],
+            }),
+            record(GeometricConstraintKindV1::EqualLength {
+                first_edge: fixture.edges[1],
+                second_edge: fixture.edges[4],
+            }),
+        ];
+        let forward = prepare(&fixture, &document(records.clone()))
+            .expect("three-value equal-length diamond")
+            .preflight();
+        records.reverse();
+        let reverse = prepare(&fixture, &document(records))
+            .expect("source-reordered equal-length diamond")
+            .preflight();
+        assert_eq!(forward, reverse);
+        let ConstraintPreflightV1::DirectConflict { conflicts } = forward else {
+            panic!("diamond must select one deterministic shortest conflict");
+        };
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].constraint_ids().len(), 4);
+    }
+
+    #[test]
+    fn equal_length_graph_witness_cap_keeps_searching_for_a_short_pair() {
+        let scan = |path_edges: usize, include_short_pair: bool| {
+            let node_count = path_edges + 1 + usize::from(include_short_pair) * 3;
+            let edges = (0..node_count).map(|_| EdgeId::new()).collect::<Vec<_>>();
+            let mut equal_lengths = BTreeMap::new();
+            for index in 0..path_edges {
+                equal_lengths.insert(
+                    EdgePairKey::unordered(edges[index], edges[index + 1]),
+                    vec![ConstraintId::new()],
+                );
+            }
+            let mut fixed_lengths = BTreeMap::from([
+                (
+                    edges[0].canonical_bytes(),
+                    ScalarGroupSummary::new(ScalarAssignment {
+                        id: ConstraintId::new(),
+                        value: 1.0,
+                    }),
+                ),
+                (
+                    edges[path_edges].canonical_bytes(),
+                    ScalarGroupSummary::new(ScalarAssignment {
+                        id: ConstraintId::new(),
+                        value: 2.0,
+                    }),
+                ),
+            ]);
+            if include_short_pair {
+                let first = path_edges + 1;
+                for offset in 0..2 {
+                    equal_lengths.insert(
+                        EdgePairKey::unordered(edges[first + offset], edges[first + offset + 1]),
+                        vec![ConstraintId::new()],
+                    );
+                }
+                fixed_lengths.insert(
+                    edges[first].canonical_bytes(),
+                    ScalarGroupSummary::new(ScalarAssignment {
+                        id: ConstraintId::new(),
+                        value: 3.0,
+                    }),
+                );
+                fixed_lengths.insert(
+                    edges[first + 2].canonical_bytes(),
+                    ScalarGroupSummary::new(ScalarAssignment {
+                        id: ConstraintId::new(),
+                        value: 4.0,
+                    }),
+                );
+            }
+            let edge_ids = edges
+                .iter()
+                .map(|edge| (edge.canonical_bytes(), *edge))
+                .collect::<BTreeMap<_, _>>();
+            general_equal_length_graph_conflict_v1(&equal_lengths, &fixed_lengths, &edge_ids)
+        };
+        assert_eq!(
+            scan(254, false).unwrap().unwrap().constraint_ids().len(),
+            256
+        );
+        assert_eq!(scan(255, false), Err(()));
+        assert_eq!(scan(255, true).unwrap().unwrap().constraint_ids().len(), 4);
     }
 
     #[test]

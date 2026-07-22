@@ -213,6 +213,15 @@ const DIRECT_CONFLICTS = [
   },
   {
     conflict: {
+      kind: 'different_fixed_lengths_in_equal_length_component',
+      first_edge: EDGE_1,
+      second_edge: EDGE_3,
+      equal_constraint_count: 2,
+    },
+    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3, CONSTRAINT_4],
+  },
+  {
+    conflict: {
       kind: 'parallel_with_fixed_non_parallel_angle',
       first_edge: EDGE_1,
       second_edge: EDGE_2,
@@ -621,7 +630,7 @@ test('presentation also fails closed for malformed or hostile records', () => {
   assert.equal(getterCalls, 0)
 })
 
-test('normalizes all twelve direct-conflict kinds with bounded frozen witnesses', () => {
+test('normalizes all thirteen direct-conflict kinds with bounded frozen witnesses', () => {
   const raw = response({
     status: 'direct_conflict',
     conflicts: DIRECT_CONFLICTS,
@@ -637,7 +646,7 @@ test('normalizes all twelve direct-conflict kinds with bounded frozen witnesses'
     normalized?.result.status === 'direct_conflict'
       ? normalized.result.conflicts.length
       : 0,
-    12,
+    13,
   )
   assert.equal(MAX_DIRECT_CONFLICT_WITNESS_IDS, 256)
 })
@@ -745,6 +754,77 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
           CONSTRAINT_3,
           CONSTRAINT_4,
         ],
+      }],
+    })),
+    ...[1, 255, 2.5].map((equal_constraint_count) => response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'different_fixed_lengths_in_equal_length_component',
+          first_edge: EDGE_1,
+          second_edge: EDGE_3,
+          equal_constraint_count,
+        },
+        constraint_ids: [
+          CONSTRAINT_1,
+          CONSTRAINT_2,
+          CONSTRAINT_3,
+          CONSTRAINT_4,
+        ],
+      }],
+    })),
+    ...[
+      {
+        first_edge: EDGE_1,
+        second_edge: EDGE_1,
+        constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3, CONSTRAINT_4],
+      },
+      {
+        first_edge: EDGE_1,
+        second_edge: EDGE_3,
+        constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+      },
+      {
+        first_edge: EDGE_1,
+        second_edge: EDGE_3,
+        constraint_ids: [
+          CONSTRAINT_1,
+          CONSTRAINT_2,
+          CONSTRAINT_3,
+          CONSTRAINT_4,
+          CONSTRAINT_5,
+        ],
+      },
+      {
+        first_edge: EDGE_1,
+        second_edge: EDGE_3,
+        constraint_ids: [
+          CONSTRAINT_1,
+          CONSTRAINT_2,
+          CONSTRAINT_2,
+          CONSTRAINT_4,
+        ],
+      },
+      {
+        first_edge: EDGE_1,
+        second_edge: EDGE_3,
+        constraint_ids: [
+          uuid(0xabc).toUpperCase(),
+          CONSTRAINT_2,
+          CONSTRAINT_3,
+          CONSTRAINT_4,
+        ],
+      },
+    ].map(({ first_edge, second_edge, constraint_ids }) => response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'different_fixed_lengths_in_equal_length_component',
+          first_edge,
+          second_edge,
+          equal_constraint_count: 2,
+        },
+        constraint_ids,
       }],
     })),
     response({

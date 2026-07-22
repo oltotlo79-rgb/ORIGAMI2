@@ -301,6 +301,16 @@ describe('GeometricConstraintPanel', () => {
       },
       {
         conflict: {
+          kind: 'different_fixed_lengths_in_equal_length_component' as const,
+          first_edge: IDS[0]!,
+          second_edge: IDS[2]!,
+          equal_constraint_count: 2,
+        },
+        expected:
+          'Edges connected by equal-length constraints have exactly different fixed lengths',
+      },
+      {
+        conflict: {
           kind: 'parallel_with_fixed_non_parallel_angle' as const,
           first_edge: IDS[0]!,
           second_edge: IDS[1]!,

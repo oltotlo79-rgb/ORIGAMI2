@@ -824,6 +824,12 @@ function directConflictLabel(
         '正の固定長につながる長さ比グラフに、厳密に両立しない循環があります',
         'A length-ratio graph connected to a positive fixed length contains an exactly inconsistent cycle',
       )
+    case 'different_fixed_lengths_in_equal_length_component':
+      return localized(
+        locale,
+        '等長制約でつながった辺に、厳密に異なる固定長が指定されています',
+        'Edges connected by equal-length constraints have exactly different fixed lengths',
+      )
     case 'parallel_with_fixed_non_parallel_angle':
       return localized(
         locale,

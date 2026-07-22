@@ -137,6 +137,12 @@ export type DirectConstraintConflictKindV1 =
       ratio_constraint_count: number
     }>
   | Readonly<{
+      kind: 'different_fixed_lengths_in_equal_length_component'
+      first_edge: string
+      second_edge: string
+      equal_constraint_count: number
+    }>
+  | Readonly<{
       kind: 'parallel_with_fixed_non_parallel_angle'
       first_edge: string
       second_edge: string
@@ -903,6 +909,31 @@ function parseDirectConflictKind(
         }),
         witnessSize: record.ratio_constraint_count + 1,
       }
+    case 'different_fixed_lengths_in_equal_length_component':
+      if (
+        !hasExactKeys(record, [
+          'kind',
+          'first_edge',
+          'second_edge',
+          'equal_constraint_count',
+        ])
+        || !isCanonicalUuid(record.first_edge)
+        || !isCanonicalUuid(record.second_edge)
+        || record.first_edge === record.second_edge
+        || typeof record.equal_constraint_count !== 'number'
+        || !Number.isSafeInteger(record.equal_constraint_count)
+        || record.equal_constraint_count < 2
+        || record.equal_constraint_count > MAX_DIRECT_CONFLICT_WITNESS_IDS - 2
+      ) return null
+      return {
+        conflict: Object.freeze({
+          kind: record.kind,
+          first_edge: record.first_edge,
+          second_edge: record.second_edge,
+          equal_constraint_count: record.equal_constraint_count,
+        }),
+        witnessSize: record.equal_constraint_count + 2,
+      }
     case 'parallel_with_fixed_non_parallel_angle':
       if (
         !hasExactKeys(record, ['kind', 'first_edge', 'second_edge'])
@@ -995,6 +1026,14 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
         kind.kind,
         kind.fixed_edge,
         String(kind.ratio_constraint_count),
+      ]
+      break
+    case 'different_fixed_lengths_in_equal_length_component':
+      target = [
+        kind.kind,
+        kind.first_edge,
+        kind.second_edge,
+        String(kind.equal_constraint_count),
       ]
       break
     case 'equal_length_with_different_fixed_lengths':

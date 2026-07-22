@@ -16,7 +16,7 @@
 
 -->
 
-2026-07-23監査再集計: EDT-007はコンパス円の円×線・円×円交点を既存の頂点追加・辺分割・Undo/Redo経路へ接続したため実装済みへ更新した。EDT-009は12種のsoundな直接矛盾とboundedな一般長さ比グラフ矛盾だけを特定し、全制約種の一般矛盾原因は特定しないため部分実装を維持する。現在の正本87行は **実装済み85 / 部分実装2 / 未着手0**。
+2026-07-23監査再集計: EDT-007はコンパス円の円×線・円×円交点を既存の頂点追加・辺分割・Undo/Redo経路へ接続したため実装済みへ更新した。EDT-009は13種のsoundな直接矛盾とboundedな一般長さ比・等長グラフ矛盾だけを特定し、全制約種の一般矛盾原因は特定しないため部分実装を維持する。現在の正本87行は **実装済み85 / 部分実装2 / 未着手0**。
 
 2026-07-19追記: SIM-010行で未実装としていた`deep-chain stress`のうち、非平行
 H8/H16のwatertight成功、H64の構造確認後の資源preflight即時拒否、subnormalの
@@ -213,7 +213,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | EDT-006 | 実装済み | 9種snap、個別切替、優先順位、空間索引 |
 | EDT-007 | 実装済み | 選択頂点を中心に表示単位で半径を指定するコンパス円を最大64個まで表示・消去できる。円×線・円×円の交点を紙面境界内でsnapし、既存の頂点追加または辺分割commandへ接続するため、一回のUndo/Redoと履歴永続化を共有する。接線、重複円、非有限値、同一点候補、紙面外候補をfail-closedまたは決定的に処理する |
 | EDT-008 | 実装済み | 固定長、固定角、水平、垂直、等長、平行、点の線上固定、鏡映対称、回転対称、角度二等分、長さ比率の全11種を、水平/垂直の直接buttonまたはstrict JSON作成UIから設定できる。unknown kind/field、非canonical ID、重複・dangling参照、非有限・範囲外値をfrontend/nativeで拒否し、project・`.ori2`・展開folder・復旧へ保存してUndo/Redo、一覧・対象選択・削除へ統合する |
-| EDT-009 | 部分実装 | 12種のsoundな矛盾をproject instance・project・revisionへ束縛して診断し、canonicalな削除最小原因制約IDをblocking表示する。等長と非1比率、非相反な双方向比率、2辺の固定長と非整合な長さ比、3辺の有向長さ比cycleに加え、正の固定長へ接続した一般長さ比グラフでは決定的spanning forestのexact binary64有理potentialから非整合な単純cycleと固定長までの最短connectorを抽出する。一般グラフ原因は最大256 ID、potential合計1,048,576 bit、算術work 2,000,000をchecked上限とし、超過時は判定保留へ閉じる。完全solverが必要な他の一般矛盾は判定保留であり、全制約種の最小不能部分集合の特定を残す |
+| EDT-009 | 部分実装 | 13種のsoundな矛盾をproject instance・project・revisionへ束縛して診断し、canonicalな削除最小原因制約IDをblocking表示する。正の固定長へ接続した一般長さ比グラフでは決定的spanning forestのexact binary64有理potentialから非整合な単純cycleと固定長までのconnectorを抽出する。一般等長グラフではmulti-source BFSにより、等長pathで接続されたbinary64 bit非同一の正固定長2件を最短の決定的pathとともに抽出する。一般グラフ原因は最大256 IDとし、長さ比はpotential合計1,048,576 bit・算術work 2,000,000、等長はarc・parent path・canonical化・比較を含むwork 40,000をchecked上限として超過時は判定保留へ閉じる。完全solverが必要な他の一般矛盾は判定保留であり、全制約種の最小不能部分集合の特定を残す |
 | EDT-010 | 実装済み | 選択線を任意の垂直対称軸Xで左右反転、または任意の中心XY・角度で回転できる日英UIとstrict IPCを実装。全入力は数式評価値をnativeでbit一致再検証し、非有限値を拒否する。直角倍数はexact sin/cosを使い、両端点を1 commandで原子的に更新してlayer lock・幾何制約・Undo/Redo・座標数式履歴を維持する |
 | EDT-011 | 実装済み | 不正・未完成状態の表示と保存を許可 |
 | EDT-012 | 実装済み | 3D折り操作へ移行する前にnative topology検証を自動実行し、project/revisionへ束縛した結果が不合格なら3D modelを生成せずfail-closedで遮断する。全blocking/fatal問題を日英の理由別に表示し、関連する全頂点・全線IDを列挙して2D/3D共通選択へ移動できる |

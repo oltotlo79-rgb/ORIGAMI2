@@ -64,6 +64,8 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 
 `16159cb`は17-faceの二block fixtureに限り、blockwise authorityのdomain分離済みtarget-order hash、transition count、両blockが証明したrestricted pairの重複なし和集合をtarget stepへ保存する。pair件数不一致はfail closedし、Undo/RedoとORI2再open後のtimeline完全一致を回帰した。これは一般block数、一般層搬送、一般姿勢の証拠ではなく、SIM-010の部分実装判定を変更しない。
 
+後続の多block compositionは、呼出側が提出した2..=8 block集合について、各blockのclosure・正厚連続性・layer transportと、block交差グラフがtreeであることを再検証するunit-level基盤に限定する。このauthorityは包含元の完全なlive graphを入力に持たず、提出hinge和集合がproject全体を尽くすことを証明しないため、whole-graph mutation authorityではない。本番routeは引き続き二blockだけであり、三block fixtureはpreviewが`stacked_fold_cycle_nonclosing`へfail closedし、pending tokenを発行せずrevisionを変更しないnegative回帰だけを固定した。従って三block以上のpositive Apply・Undo/Redo・archive、4..8 block、cross-block layer order成功を実装済みとは扱わず、A-1/A-2・B-6・SIM-010・85/2/0の判定を変更しない。
+
 ## 検証
 
 - frontend TypeScript/Vite build: 成功。
@@ -87,5 +89,8 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 - Windows desktop SIM-010 flat-start positive-thickness 8-hinge collective永続化回帰: 1/1（615件filter）、WSL Clippy `-D warnings`・workspace fmt: 成功。非flat一般開始を証明しないため部分実装を維持する。
 - Windows desktop SIM-010 flat-start positive-thickness 84-hinge dense-cycle continuous-path永続化回帰: 1/1（616件filter）。layer transportなしを明示検証し、一般非flat開始・一般schedule・SIM-010昇格の証拠には用いない。
 - Windows desktop SIM-010 17-face two-block layer-proof永続化回帰: 1/1（616件filter）。target-order hash・transition count・restricted pair unionとUndo/Redo・ORI2再openの完全一致を検証。一般block数・一般層搬送の証拠には用いない。
+- WSL collision submitted-set three-block authority改ざん拒否回帰: 1/1（331件filter）。提出三block treeの再検証とsource順序・source内容・紙厚・issuer context・layer fingerprint・target角集合・binding改ざんの拒否だけを証明し、whole graph完全性や本番Applyを証明しない。
+- WSL desktop production three-block fail-closed回帰: 1/1（610件filter）。実preview routeが`stacked_fold_cycle_nonclosing`を返し、pending tokenなし・revision不変であることだけを証明する。三block positive経路の証拠ではない。
+- WSL desktop 17-face two-block positive layer-proof回帰: 1/1。既存二block本番経路のtarget-order hash・Apply・Undo/Redo・ORI2再openを維持する回帰であり、三block以上へ一般化しない。
 
 検証件数は各対応コミット時点の対象suiteであり、異なる時点の件数を一つの全suite件数として合算しない。全CIが成功するまでは公式完成度を更新しない。

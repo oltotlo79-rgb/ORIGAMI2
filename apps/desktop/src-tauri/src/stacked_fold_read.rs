@@ -8117,8 +8117,6 @@ mod tests {
             let state = AppState::new(project);
             let schedule = if kind == 1 {
                 four_bay_cycle_schedule(&moving)
-            } else if kind == 2 {
-                theta_cycle_schedule(&theta_hinges, &moving)
             } else {
                 let endpoint_ratio = match hinges.len() {
                     6 => (4, 3),

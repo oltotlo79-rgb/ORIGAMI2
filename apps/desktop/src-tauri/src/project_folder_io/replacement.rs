@@ -1380,7 +1380,7 @@ fn validate_recovery_namespace(
     registry: &RegistryRecordV1,
 ) -> FsResult<()> {
     let names = parent
-        .list_names(MAX_RECOVERY_PARENT_ENTRIES + 1)
+        .list_names_with_ascii_prefix(RECOVERY_NAMESPACE_PREFIX, MAX_RECOVERY_PARENT_ENTRIES + 1)
         .map_err(|_| ProjectFolderFilesystemError::RecoveryRequired)?;
     let allowed = recovery_names(registry);
     for name in names {
@@ -1415,7 +1415,7 @@ fn ensure_transaction_namespace_clear(
     target_name: &str,
 ) -> FsResult<()> {
     let names = parent
-        .list_names(MAX_RECOVERY_PARENT_ENTRIES + 1)
+        .list_names_with_ascii_prefix(RECOVERY_NAMESPACE_PREFIX, MAX_RECOVERY_PARENT_ENTRIES + 1)
         .map_err(|_| ProjectFolderFilesystemError::RecoveryRequired)?;
     let allowed = recovery_names_for_transaction(transaction_id);
     for name in names {
@@ -2268,6 +2268,22 @@ mod tests {
 
         assert_target(&parent, &new);
         assert_transaction_artifacts_absent(&parent, &registry_root);
+    }
+
+    #[test]
+    fn unrelated_large_parent_directory_does_not_block_replacement_namespace_scan() {
+        let (_directory, parent, _registry_root, registry, _old, new) =
+            setup_replacement("large-unrelated-parent");
+        for index in 0..(MAX_RECOVERY_PARENT_ENTRIES + 2) {
+            fs::write(parent.join(format!("unrelated-{index:04}.txt")), b"x")
+                .expect("write unrelated parent entry");
+        }
+
+        let mut prepared =
+            PreparedReplacementProjectFolder::prepare(&registry, &parent, TARGET_NAME, new.clone())
+                .expect("unrelated entries are outside the recovery namespace budget");
+        prepared.publish().expect("publish replacement");
+        assert_target(&parent, &new);
     }
 
     #[test]

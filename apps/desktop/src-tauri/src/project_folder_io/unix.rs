@@ -60,7 +60,15 @@ impl PinnedDirectory {
     }
 
     pub(super) fn list_names(&self, maximum: usize) -> FsResult<Vec<OsString>> {
-        list_directory_names(self.file.as_raw_fd(), maximum)
+        list_directory_names(self.file.as_raw_fd(), maximum, None)
+    }
+
+    pub(super) fn list_names_with_ascii_prefix(
+        &self,
+        prefix: &str,
+        maximum: usize,
+    ) -> FsResult<Vec<OsString>> {
+        list_directory_names(self.file.as_raw_fd(), maximum, Some(prefix.as_bytes()))
     }
 
     pub(super) fn open_child_directory(&self, name: &str) -> FsResult<Self> {
@@ -455,7 +463,11 @@ fn open_directory_at(
     })
 }
 
-fn list_directory_names(directory_fd: RawFd, maximum: usize) -> FsResult<Vec<OsString>> {
+fn list_directory_names(
+    directory_fd: RawFd,
+    maximum: usize,
+    prefix: Option<&[u8]>,
+) -> FsResult<Vec<OsString>> {
     let dot = b".\0";
     let independent = unsafe {
         // SAFETY: `directory_fd` is live and `dot` is NUL terminated.
@@ -507,6 +519,9 @@ fn list_directory_names(directory_fd: RawFd, maximum: usize) -> FsResult<Vec<OsS
         }
         .to_bytes();
         if name == b"." || name == b".." {
+            continue;
+        }
+        if prefix.is_some_and(|prefix| !name.starts_with(prefix)) {
             continue;
         }
         names.push(OsString::from_vec(name.to_vec()));

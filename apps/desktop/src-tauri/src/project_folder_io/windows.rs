@@ -123,6 +123,34 @@ impl PinnedDirectory {
         Ok(names)
     }
 
+    pub(super) fn list_names_with_ascii_prefix(
+        &self,
+        prefix: &str,
+        maximum: usize,
+    ) -> FsResult<Vec<OsString>> {
+        self.revalidate_selected_path()?;
+        let entries =
+            std::fs::read_dir(&self.path).map_err(|_| ProjectFolderFilesystemError::ReadFailed)?;
+        let mut names = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|_| ProjectFolderFilesystemError::ReadFailed)?;
+            let name = entry.file_name();
+            if !name
+                .to_string_lossy()
+                .get(..prefix.len())
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+            {
+                continue;
+            }
+            names.push(name);
+            if names.len() > maximum {
+                return Err(ProjectFolderFilesystemError::InvalidTree);
+            }
+        }
+        self.revalidate_selected_path()?;
+        Ok(names)
+    }
+
     pub(super) fn open_child_directory(&self, name: &str) -> FsResult<Self> {
         validate_child_name(name)?;
         self.revalidate_selected_path()?;

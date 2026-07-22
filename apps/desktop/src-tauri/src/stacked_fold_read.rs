@@ -2285,14 +2285,8 @@ fn generate_even_opposite_pair_schedule_v1(
         .find(|entry| entry.edge() == changed[0])
         .map(|entry| entry.angle_degrees())
         .ok_or(CYCLE_PATH_UNSUPPORTED_MESSAGE)?;
-    let denominator = (1_u64..=64)
-        .find(|value| {
-            bounded_primitive_endpoint_ratio_v1(1, *value).is_ok()
-                && (requested - 2.0 * 1.0_f64.atan2(*value as f64).to_degrees()).abs() <= 1.0e-12
-        })
-        .and_then(|value| bounded_primitive_endpoint_ratio_v1(1, value).ok())
-        .ok_or(CYCLE_PATH_UNSUPPORTED_MESSAGE)?
-        .1 as i64;
+    let (endpoint_numerator, endpoint_denominator) =
+        bounded_primitive_endpoint_ratio_for_angle_v1(requested)?;
     let entries = live
         .as_slice()
         .iter()
@@ -2317,7 +2311,7 @@ fn generate_even_opposite_pair_schedule_v1(
                             denominator: 1,
                         },
                         RationalCoefficientRequestV1 {
-                            numerator: 1,
+                            numerator: endpoint_numerator,
                             denominator: 1,
                         },
                     ]
@@ -2328,7 +2322,11 @@ fn generate_even_opposite_pair_schedule_v1(
                     }]
                 },
                 denominator_power_coefficients: vec![RationalCoefficientRequestV1 {
-                    numerator: if active { denominator } else { 1 },
+                    numerator: if active {
+                        endpoint_denominator as i64
+                    } else {
+                        1
+                    },
                     denominator: 1,
                 }],
                 requested_angle_degrees: if active {
@@ -2356,7 +2354,7 @@ fn bounded_primitive_endpoint_ratio_v1(
     numerator: i64,
     denominator: u64,
 ) -> Result<(i64, u64), &'static str> {
-    if numerator <= 0 || denominator == 0 || denominator > 64 {
+    if numerator == 0 || denominator == 0 || denominator > 64 {
         return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
     }
     let magnitude = numerator.unsigned_abs();
@@ -2372,6 +2370,27 @@ fn bounded_primitive_endpoint_ratio_v1(
         return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
     }
     Ok((numerator, denominator))
+}
+
+fn bounded_primitive_endpoint_ratio_for_angle_v1(
+    requested_angle_degrees: f64,
+) -> Result<(i64, u64), &'static str> {
+    if !requested_angle_degrees.is_finite()
+        || requested_angle_degrees <= 0.0
+        || requested_angle_degrees > 90.0
+    {
+        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
+    }
+    (1_u64..=64)
+        .flat_map(|denominator| (1_i64..=denominator as i64).map(move |n| (n, denominator)))
+        .filter_map(|ratio| bounded_primitive_endpoint_ratio_v1(ratio.0, ratio.1).ok())
+        .find(|(numerator, denominator)| {
+            (requested_angle_degrees
+                - 2.0 * (*numerator as f64).atan2(*denominator as f64).to_degrees())
+            .abs()
+                <= 1.0e-12
+        })
+        .ok_or(CYCLE_PATH_UNSUPPORTED_MESSAGE)
 }
 
 fn production_cycle_schedule_limits_v1() -> CycleScheduleLimitsV1 {
@@ -5497,6 +5516,15 @@ mod tests {
         moving: &[ori_domain::EdgeId],
         denominator: i64,
     ) -> CycleScheduleRequestV1 {
+        dense_grid_schedule_ratio(hinges, moving, 1, denominator)
+    }
+
+    fn dense_grid_schedule_ratio(
+        hinges: &[ori_domain::EdgeId],
+        moving: &[ori_domain::EdgeId],
+        numerator: i64,
+        denominator: i64,
+    ) -> CycleScheduleRequestV1 {
         let moving = moving
             .iter()
             .copied()
@@ -5514,7 +5542,7 @@ mod tests {
                             denominator: 1,
                         },
                         RationalCoefficientRequestV1 {
-                            numerator: 1,
+                            numerator,
                             denominator: 1,
                         },
                     ],
@@ -5540,7 +5568,7 @@ mod tests {
                         denominator: 1,
                     }],
                     requested_angle_degrees: if active {
-                        2.0 * 1.0_f64.atan2(denominator as f64).to_degrees()
+                        2.0 * (numerator as f64).atan2(denominator as f64).to_degrees()
                     } else {
                         0.0
                     },
@@ -7125,6 +7153,25 @@ mod tests {
                 Ok((1, denominator))
             );
         }
+        for ratio in [(2, 3), (3, 7), (63, 64), (-2, 3)] {
+            assert_eq!(
+                bounded_primitive_endpoint_ratio_v1(ratio.0, ratio.1),
+                Ok(ratio)
+            );
+        }
+        for ratio in [(2, 3), (3, 7), (63, 64)] {
+            let angle = 2.0 * (ratio.0 as f64).atan2(ratio.1 as f64).to_degrees();
+            assert_eq!(
+                bounded_primitive_endpoint_ratio_for_angle_v1(angle),
+                Ok(ratio)
+            );
+        }
+        for rejected_angle in [-1.0, 0.0, 90.000_001, f64::INFINITY] {
+            assert_eq!(
+                bounded_primitive_endpoint_ratio_for_angle_v1(rejected_angle),
+                Err(CYCLE_PATH_UNSUPPORTED_MESSAGE)
+            );
+        }
         for rejected in [(2, 4), (i64::MIN, 1), (1, 0), (1, 65)] {
             assert_eq!(
                 bounded_primitive_endpoint_ratio_v1(rejected.0, rejected.1),
@@ -7226,13 +7273,13 @@ mod tests {
             } else if kind == 2 {
                 theta_cycle_schedule(&theta_hinges, &moving)
             } else {
-                let endpoint_denominator = match hinges.len() {
-                    6 => 3,
-                    8 => 7,
-                    16 => 64,
+                let endpoint_ratio = match hinges.len() {
+                    6 => (2, 3),
+                    8 => (3, 7),
+                    16 => (63, 64),
                     _ => unreachable!("bounded opposite-pair fixture"),
                 };
-                dense_grid_schedule(&hinges, &moving, endpoint_denominator)
+                dense_grid_schedule_ratio(&hinges, &moving, endpoint_ratio.0, endpoint_ratio.1)
             };
             let target = {
                 let project = super::super::lock_project(&state).unwrap();

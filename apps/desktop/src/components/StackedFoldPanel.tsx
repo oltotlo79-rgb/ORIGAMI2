@@ -161,9 +161,6 @@ export function StackedFoldPanel({
     setBasicFoldTimelinePreviewError(false)
   }, [snapshot.project_instance_id, snapshot.project_id, snapshot.revision, selectedLine?.id,
     namedBookFold?.techniqueId])
-  useEffect(() => {
-    setBasicFoldTimelineStepIndex(0)
-  }, [basicFoldTimelinePreview])
   const dyadicGraphSequenceRef = useRef(0)
   const [confirmed, setConfirmed] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -527,6 +524,7 @@ export function StackedFoldPanel({
     basicFoldTimelineActiveRef.current = true
     setBasicFoldTimelinePreviewReading(true)
     setBasicFoldTimelinePreview(null)
+    setBasicFoldTimelineStepIndex(0)
     setBasicFoldTimelinePreviewError(false)
     try {
       const preview = await previewNamedBasicFoldTimeline({

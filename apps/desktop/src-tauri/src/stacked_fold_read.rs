@@ -6782,6 +6782,7 @@ mod tests {
 
     #[test]
     fn dyadic_pose_graph_read_is_strict_bounded_and_observation_only() {
+        let _generation_guard = lock_stacked_fold_read_generation_test();
         let (mut project, hinges) = super::super::applied_pose::tests::four_vertex_cycle_project();
         super::super::applied_pose::tests::install_flat_graph_pose_authority(
             &mut project,

@@ -3676,7 +3676,9 @@ function App() {
     const maximumSteps = Number(data.get('maximum_steps'))
     const detailLevel = String(data.get('detail_level'))
     const targetCategory = String(data.get('target_category'))
-    const customObjectDisplayName = targetCategory === 'custom_object'
+    const effectiveTargetCategory = beginnerRecognitionProposal?.skeleton_quality?.distance_metric
+      === 'aabb_squared_distance_v1' ? 'custom_object' : targetCategory
+    const customObjectDisplayName = effectiveTargetCategory === 'custom_object'
       ? normalizeCustomObjectDisplayName(String(data.get('custom_object_display_name') ?? ''))
       : null
     const bodyWidthRaw = String(data.get('generic_body_width_mm') ?? '').trim()
@@ -3712,8 +3714,8 @@ function App() {
         generic_body_outline_tenths_mm: beginnerBodyOutline,
       }),
       generic_body_outline_mode: beginnerBodyOutlineMode,
-      target_category: targetCategory as 'animal' | 'insect' | 'custom_object',
-      ...(targetCategory === 'custom_object' && customObjectDisplayName !== null
+      target_category: effectiveTargetCategory as 'animal' | 'insect' | 'custom_object',
+      ...(effectiveTargetCategory === 'custom_object' && customObjectDisplayName !== null
         ? { custom_object_display_name: customObjectDisplayName } : {}),
       target_parts: targetParts,
       skeleton_segments: beginnerSkeletonSegments,
@@ -3737,7 +3739,7 @@ function App() {
       || maximumSteps > 500
       || !['simple', 'standard', 'detailed'].includes(detailLevel)
       || !['animal', 'insect', 'custom_object'].includes(targetCategory)
-      || (targetCategory === 'custom_object' && customObjectDisplayName === null)
+      || (effectiveTargetCategory === 'custom_object' && customObjectDisplayName === null)
       || (bodySize !== undefined && bodySize.some((axis) =>
         !Number.isInteger(axis) || axis < 1 || axis > 1_000_000))
       || (beginnerBodyOutline.length !== 0
@@ -4091,6 +4093,10 @@ function App() {
         input.value = String(counts.get(kind as BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']) ?? 0)
       })
       setBeginnerPartTotal(proposal.target_parts.reduce((sum, part) => sum + part.count, 0))
+    }
+    if (proposal.skeleton_quality?.distance_metric === 'aabb_squared_distance_v1') {
+      const category = form.elements.namedItem('target_category')
+      if (category instanceof HTMLSelectElement) category.value = 'custom_object'
     }
     setBeginnerSkeletonSegments(proposal.skeleton_segments.map((segment) => ({
       ...segment,

@@ -17,6 +17,8 @@ pub const MAX_BEGINNER_SILHOUETTE_CONTOUR_POINTS_V1: usize = 16;
 pub const BEGINNER_SILHOUETTE_ALPHA_THRESHOLD_V1: u8 = 128;
 pub const BEGINNER_SILHOUETTE_LUMA_THRESHOLD_V1: u8 = 127;
 pub const MAX_BEGINNER_MEDIAL_AXIS_BARS_V1: usize = 32;
+pub const MAX_BEGINNER_MULTI_SILHOUETTE_COMPONENTS_V1: usize = 8;
+pub const MAX_BEGINNER_MULTI_SILHOUETTE_BARS_V1: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -421,6 +423,158 @@ pub enum BeginnerRecognitionErrorV1 {
     UnsupportedSilhouette,
 }
 
+fn multi_component_tree_v1(
+    components: &[Vec<usize>],
+    width: usize,
+    height: usize,
+) -> Option<Vec<BeginnerSkeletonSegmentV1>> {
+    if !(2..=MAX_BEGINNER_MULTI_SILHOUETTE_COMPONENTS_V1).contains(&components.len()) {
+        return None;
+    }
+    let bounds = components
+        .iter()
+        .map(|component| {
+            let min_x = component.iter().map(|index| index % width).min()?;
+            let max_x = component.iter().map(|index| index % width).max()?;
+            let min_y = component.iter().map(|index| index / width).min()?;
+            let max_y = component.iter().map(|index| index / width).max()?;
+            Some((min_x, min_y, max_x, max_y))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if bounds
+        .iter()
+        .any(|(min_x, min_y, max_x, max_y)| min_x == max_x || min_y == max_y)
+    {
+        return None;
+    }
+    let centers = bounds
+        .iter()
+        .map(|(min_x, min_y, max_x, max_y)| ((min_x + max_x) / 2, (min_y + max_y) / 2))
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    for left in 0..bounds.len() {
+        for right in left + 1..bounds.len() {
+            let a = bounds[left];
+            let b = bounds[right];
+            let dx = if a.2 < b.0 {
+                b.0 - a.2
+            } else if b.2 < a.0 {
+                a.0 - b.2
+            } else {
+                0
+            };
+            let dy = if a.3 < b.1 {
+                b.1 - a.3
+            } else if b.3 < a.1 {
+                a.1 - b.3
+            } else {
+                0
+            };
+            candidates.push((
+                dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy)),
+                left,
+                right,
+            ));
+        }
+    }
+    candidates.sort_unstable();
+    let mut parent = (0..components.len()).collect::<Vec<_>>();
+    fn root(parent: &mut [usize], mut node: usize) -> usize {
+        while parent[node] != node {
+            parent[node] = parent[parent[node]];
+            node = parent[node];
+        }
+        node
+    }
+    let mut bridges = Vec::new();
+    for (_, left, right) in candidates {
+        let left_root = root(&mut parent, left);
+        let right_root = root(&mut parent, right);
+        if left_root != right_root {
+            parent[right_root] = left_root;
+            bridges.push((left, right));
+        }
+    }
+    if bridges.len() + 1 != components.len() {
+        return None;
+    }
+    let mut raw = centers
+        .iter()
+        .enumerate()
+        .map(|(index, center)| {
+            let (_, _, max_x, _) = bounds[index];
+            (*center, (max_x, center.1))
+        })
+        .chain(
+            bridges
+                .iter()
+                .map(|(left, right)| (centers[*left], centers[*right])),
+        )
+        .filter(|(start, end)| start != end)
+        .collect::<Vec<_>>();
+    if raw.len() > MAX_BEGINNER_MULTI_SILHOUETTE_BARS_V1 {
+        return None;
+    }
+    fn orient(a: (usize, usize), b: (usize, usize), c: (usize, usize)) -> i128 {
+        (b.0 as i128 - a.0 as i128) * (c.1 as i128 - a.1 as i128)
+            - (b.1 as i128 - a.1 as i128) * (c.0 as i128 - a.0 as i128)
+    }
+    fn on_segment(a: (usize, usize), b: (usize, usize), point: (usize, usize)) -> bool {
+        orient(a, b, point) == 0
+            && (a.0.min(b.0)..=a.0.max(b.0)).contains(&point.0)
+            && (a.1.min(b.1)..=a.1.max(b.1)).contains(&point.1)
+    }
+    for index in 0..raw.len() {
+        for other in index + 1..raw.len() {
+            let (a, b) = raw[index];
+            let (c, d) = raw[other];
+            if [a, b].into_iter().any(|point| point == c || point == d) {
+                continue;
+            }
+            let values = [
+                orient(a, b, c),
+                orient(a, b, d),
+                orient(c, d, a),
+                orient(c, d, b),
+            ];
+            if on_segment(a, b, c)
+                || on_segment(a, b, d)
+                || on_segment(c, d, a)
+                || on_segment(c, d, b)
+                || (values[0].signum() != values[1].signum()
+                    && values[2].signum() != values[3].signum())
+            {
+                return None;
+            }
+        }
+    }
+    raw.sort_unstable();
+    if raw.iter().any(|(start, end)| {
+        [start, end]
+            .into_iter()
+            .any(|point| point.0 >= width || point.1 >= height)
+    }) {
+        return None;
+    }
+    Some(
+        raw.into_iter()
+            .enumerate()
+            .map(|(id, (start, end))| BeginnerSkeletonSegmentV1 {
+                id: id as u16,
+                start: BeginnerSkeletonPointV1 {
+                    x_tenths_mm: start.0 as i32 * 10,
+                    y_tenths_mm: start.1 as i32 * 10,
+                },
+                end: BeginnerSkeletonPointV1 {
+                    x_tenths_mm: end.0 as i32 * 10,
+                    y_tenths_mm: end.1 as i32 * 10,
+                },
+                thickness_tenths_mm: 10,
+            })
+            .collect(),
+    )
+}
+
 pub fn analyze_silhouette_png_rgba_v1(
     source_underlay_id: UnderlayId,
     source_asset_id: AssetId,
@@ -477,32 +631,44 @@ pub fn analyze_silhouette_png_rgba_v1(
         }
     }
     components.sort_unstable_by_key(|component| std::cmp::Reverse(component.len()));
-    if components
-        .get(1)
-        .is_some_and(|component| component.len() >= 4)
-    {
-        return Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette);
+    components.retain(|component| component.len() >= 4);
+    if components.len() > MAX_BEGINNER_MULTI_SILHOUETTE_COMPONENTS_V1 {
+        return Err(BeginnerRecognitionErrorV1::ComponentLimit);
     }
+    let inferred_component_bridges = components.len() > 1;
+    let multi_skeleton = inferred_component_bridges
+        .then(|| multi_component_tree_v1(&components, width as usize, height as usize))
+        .flatten()
+        .ok_or(BeginnerRecognitionErrorV1::UnsupportedSilhouette)
+        .map(Some)
+        .or_else(|error| {
+            if inferred_component_bridges {
+                Err(error)
+            } else {
+                Ok(None)
+            }
+        })?;
     let component = components
-        .into_iter()
-        .next()
+        .first()
+        .cloned()
         .ok_or(BeginnerRecognitionErrorV1::AmbiguousSilhouette)?;
-    let min_x = component
+    let all_pixels = components.iter().flatten().copied().collect::<Vec<_>>();
+    let min_x = all_pixels
         .iter()
         .map(|index| index % width as usize)
         .min()
         .unwrap() as u32;
-    let max_x = component
+    let max_x = all_pixels
         .iter()
         .map(|index| index % width as usize)
         .max()
         .unwrap() as u32;
-    let min_y = component
+    let min_y = all_pixels
         .iter()
         .map(|index| index / width as usize)
         .min()
         .unwrap() as u32;
-    let max_y = component
+    let max_y = all_pixels
         .iter()
         .map(|index| index / width as usize)
         .max()
@@ -550,8 +716,22 @@ pub fn analyze_silhouette_png_rgba_v1(
         return Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette);
     }
     let center_y = ((min_y + max_y) / 2) as i32 * 10;
-    let (skeleton_segments, skeleton_quality) =
-        approximate_medial_axis(&foreground, width as usize, height as usize);
+    let (skeleton_segments, skeleton_quality) = match multi_skeleton {
+        Some(segments) => (
+            segments,
+            BeginnerSkeletonQualityV1 {
+                score: 60,
+                reasons: vec![
+                    "per_component_medial_axis_v1".into(),
+                    "inferred_aabb_kruskal_mst_bridges".into(),
+                ],
+                insufficiency_reasons: vec!["component_bridges_are_estimated".into()],
+                distance_metric: "aabb_squared_distance_v1".into(),
+                bar_limit: MAX_BEGINNER_MULTI_SILHOUETTE_BARS_V1 as u8,
+            },
+        ),
+        None => approximate_medial_axis(&foreground, width as usize, height as usize),
+    };
     if skeleton_segments.is_empty() {
         return Err(BeginnerRecognitionErrorV1::UnsupportedSilhouette);
     }
@@ -628,7 +808,7 @@ pub fn analyze_silhouette_png_rgba_v1(
                     reasons: vec!["bounded_curvature".into(), "asymmetric_extremity".into()],
                 },
             ],
-            explicit_override_required: false,
+            explicit_override_required: inferred_component_bridges,
         }),
         skeleton_quality: Some(skeleton_quality),
     })
@@ -1094,17 +1274,65 @@ mod tests {
         for index in [0, 1, 5, 6, 18, 19, 23, 24] {
             disconnected[index * 4..index * 4 + 4].copy_from_slice(&[0, 0, 0, 255]);
         }
+        let multi = analyze_silhouette_png_rgba_v1(
+            UnderlayId::new(),
+            AssetId::new(),
+            [0; 32],
+            5,
+            5,
+            &disconnected,
+        )
+        .unwrap();
+        assert!(multi.skeleton_segments.len() <= MAX_BEGINNER_MULTI_SILHOUETTE_BARS_V1);
+        assert!(multi.contour_confidence.unwrap().explicit_override_required);
+        assert!(
+            multi
+                .skeleton_quality
+                .unwrap()
+                .reasons
+                .iter()
+                .any(|reason| reason == "inferred_aabb_kruskal_mst_bridges")
+        );
+
+        let mut nine = vec![255_u8; 14 * 14 * 4];
+        for component in 0..9 {
+            let origin_x = (component % 3) * 5;
+            let origin_y = (component / 3) * 5;
+            for y in origin_y..origin_y + 2 {
+                for x in origin_x..origin_x + 2 {
+                    nine[(y * 14 + x) * 4..(y * 14 + x) * 4 + 4].copy_from_slice(&[0, 0, 0, 255]);
+                }
+            }
+        }
         assert_eq!(
             analyze_silhouette_png_rgba_v1(
                 UnderlayId::new(),
                 AssetId::new(),
-                [0; 32],
-                5,
-                5,
-                &disconnected,
+                [8; 32],
+                14,
+                14,
+                &nine,
             ),
-            Err(BeginnerRecognitionErrorV1::AmbiguousSilhouette)
+            Err(BeginnerRecognitionErrorV1::ComponentLimit)
         );
+        let mut eight = vec![255_u8; 39 * 3 * 4];
+        for component in 0..8 {
+            for y in 0..2 {
+                for x in component * 5..component * 5 + 2 {
+                    eight[(y * 39 + x) * 4..(y * 39 + x) * 4 + 4].copy_from_slice(&[0, 0, 0, 255]);
+                }
+            }
+        }
+        let maximum = analyze_silhouette_png_rgba_v1(
+            UnderlayId::new(),
+            AssetId::new(),
+            [6; 32],
+            39,
+            3,
+            &eight,
+        )
+        .unwrap();
+        assert_eq!(maximum.skeleton_segments.len(), 15);
         assert_eq!(
             analyze_silhouette_png_rgba_v1(
                 UnderlayId::new(),

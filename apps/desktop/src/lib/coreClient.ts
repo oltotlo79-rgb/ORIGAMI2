@@ -332,8 +332,8 @@ export type BeginnerRecognitionProposalV1 = {
     score: number
     reasons: ReadonlyArray<string>
     insufficiency_reasons: ReadonlyArray<string>
-    distance_metric: 'manhattan_pixel_v1'
-    bar_limit: 32
+    distance_metric: 'manhattan_pixel_v1' | 'aabb_squared_distance_v1'
+    bar_limit: 16 | 32
   }>
 }
 
@@ -753,14 +753,15 @@ function normalizeBeginnerRecognitionProposal(
     && (allowEmpty || value.length > 0) && value.length <= 8
     && value.every((reason) => typeof reason === 'string' && [
       'offline_manhattan_distance_ridges', 'deterministic_axis_spans',
-      'no_branch_evidence', 'bar_limit_reached',
+      'per_component_medial_axis_v1', 'inferred_aabb_kruskal_mst_bridges',
+      'no_branch_evidence', 'bar_limit_reached', 'component_bridges_are_estimated',
     ].includes(reason))
   if (record.skeleton_quality !== undefined && (!skeletonQuality
     || !Number.isInteger(skeletonQuality.score) || Number(skeletonQuality.score) < 0 || Number(skeletonQuality.score) > 100
     || !validSkeletonReasons(skeletonQuality.reasons)
     || !validSkeletonReasons(skeletonQuality.insufficiency_reasons, true)
-    || skeletonQuality.distance_metric !== 'manhattan_pixel_v1'
-    || skeletonQuality.bar_limit !== 32)) return null
+    || !['manhattan_pixel_v1', 'aabb_squared_distance_v1'].includes(String(skeletonQuality.distance_metric))
+    || ![16, 32].includes(Number(skeletonQuality.bar_limit)))) return null
   return Object.freeze({
     schema_version: 1,
     format: expectedFormat,
@@ -792,8 +793,8 @@ function normalizeBeginnerRecognitionProposal(
       score: Number(skeletonQuality.score),
       reasons: Object.freeze((skeletonQuality.reasons as string[]).slice()),
       insufficiency_reasons: Object.freeze((skeletonQuality.insufficiency_reasons as string[]).slice()),
-      distance_metric: 'manhattan_pixel_v1' as const,
-      bar_limit: 32 as const,
+      distance_metric: skeletonQuality.distance_metric as 'manhattan_pixel_v1' | 'aabb_squared_distance_v1',
+      bar_limit: skeletonQuality.bar_limit as 16 | 32,
     }) }),
   })
 }

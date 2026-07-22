@@ -63,6 +63,18 @@ test('bounded PNG or JPEG silhouette recognition fails closed without inferred p
   assert.match(app, /RecognitionContourCopyAction/u)
 })
 
+test('multiple silhouettes form one bounded custom tree only through inferred MST bridges', () => {
+  assert.match(domain, /MAX_BEGINNER_MULTI_SILHOUETTE_COMPONENTS_V1: usize = 8/u)
+  assert.match(domain, /MAX_BEGINNER_MULTI_SILHOUETTE_BARS_V1: usize = 16/u)
+  assert.match(domain, /candidates\.sort_unstable\(\)/u)
+  assert.match(domain, /bridges\.len\(\) \+ 1 != components\.len\(\)/u)
+  assert.match(domain, /inferred_aabb_kruskal_mst_bridges/u)
+  assert.match(domain, /component_bridges_are_estimated/u)
+  assert.match(domain, /explicit_override_required: inferred_component_bridges/u)
+  assert.match(client, /aabb_squared_distance_v1/u)
+  assert.match(app, /=== 'aabb_squared_distance_v1' \? 'custom_object'/u)
+})
+
 test('multiple outline candidates stay strict, stale-safe, and read-only', () => {
   assert.match(client, /record\.candidates\.length > 16/u)
   assert.match(client, /'id', 'bounds', 'area_pixels', 'confidence_reason'/u)

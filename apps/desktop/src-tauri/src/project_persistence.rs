@@ -14,7 +14,7 @@ use std::{
 static ACTIVE_PROJECT_FILE_OPERATIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 struct ProjectFileOperationGuard {
-    key: String,
+    keys: Vec<String>,
 }
 
 impl Drop for ProjectFileOperationGuard {
@@ -23,21 +23,86 @@ impl Drop for ProjectFileOperationGuard {
             .get_or_init(|| Mutex::new(HashSet::new()))
             .lock()
         {
-            active.remove(&self.key);
+            for key in &self.keys {
+                active.remove(key);
+            }
         }
     }
 }
 
 fn acquire_project_file_operation(path: &Path) -> Result<ProjectFileOperationGuard, ()> {
-    let key = target_path_fingerprint(path)?;
+    let keys = project_file_operation_keys(path)?;
     let mut active = ACTIVE_PROJECT_FILE_OPERATIONS
         .get_or_init(|| Mutex::new(HashSet::new()))
         .lock()
         .map_err(|_| ())?;
-    if !active.insert(key.clone()) {
+    if keys.iter().any(|key| active.contains(key)) {
         return Err(());
     }
-    Ok(ProjectFileOperationGuard { key })
+    active.extend(keys.iter().cloned());
+    Ok(ProjectFileOperationGuard { keys })
+}
+
+fn project_file_operation_keys(path: &Path) -> Result<Vec<String>, ()> {
+    let path_key = format!("path:{}", target_path_fingerprint(path)?);
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                return Err(());
+            }
+            Ok(vec![path_key, project_file_identity_key(path)?])
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(vec![path_key]),
+        Err(_) => Err(()),
+    }
+}
+
+#[cfg(unix)]
+fn project_file_identity_key(path: &Path) -> Result<String, ()> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let mut options = OpenOptions::new();
+    options.read(true).custom_flags(libc::O_NOFOLLOW);
+    let metadata = options
+        .open(path)
+        .map_err(|_| ())?
+        .metadata()
+        .map_err(|_| ())?;
+    if !metadata.file_type().is_file() {
+        return Err(());
+    }
+    Ok(format!("file:{}:{}", metadata.dev(), metadata.ino()))
+}
+
+#[cfg(target_os = "windows")]
+fn project_file_identity_key(path: &Path) -> Result<String, ()> {
+    use std::{mem::MaybeUninit, os::windows::io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let mut options = OpenOptions::new();
+    options
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
+    let file = options.open(path).map_err(|_| ())?;
+    let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // SAFETY: the output points to writable storage and the file handle stays
+    // valid for the duration of the call.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, information.as_mut_ptr()) }
+        == 0
+    {
+        return Err(());
+    }
+    // SAFETY: a successful call initialized the complete structure.
+    let information = unsafe { information.assume_init() };
+    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(());
+    }
+    let index =
+        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
+    Ok(format!("file:{}:{index}", information.dwVolumeSerialNumber))
 }
 
 use ori_domain::ProjectId;
@@ -1794,6 +1859,62 @@ mod staged_payload_adapter_tests {
             .expect("an unrelated target may proceed concurrently");
         drop(other_owner);
         drop(owner);
+        fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[test]
+    fn single_flight_rejects_hardlink_alias_to_owned_target() {
+        let directory = journal_test_directory("single-flight-hardlink");
+        let target = directory.join("project.ori2");
+        let alias = directory.join("alias.ori2");
+        fs::write(&target, b"same object").expect("target");
+        fs::hard_link(&target, &alias).expect("hardlink alias");
+        let owner = acquire_project_file_operation(&target).expect("target owner");
+        assert!(acquire_project_file_operation(&alias).is_err());
+        drop(owner);
+        drop(acquire_project_file_operation(&alias).expect("released alias"));
+        fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn single_flight_rejects_symlink_target_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let directory = journal_test_directory("single-flight-symlink");
+        let target = directory.join("project.ori2");
+        let alias = directory.join("alias.ori2");
+        fs::write(&target, b"preserve").expect("target");
+        symlink(&target, &alias).expect("symlink alias");
+        assert!(acquire_project_file_operation(&alias).is_err());
+        assert_eq!(fs::read(&target).expect("target preserved"), b"preserve");
+        fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[test]
+    fn single_flight_ownership_set_returns_to_baseline_after_many_paths() {
+        let directory = journal_test_directory("single-flight-bounded");
+        let baseline = super::ACTIVE_PROJECT_FILE_OPERATIONS
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+            .lock()
+            .expect("operation set")
+            .len();
+        for index in 0..512 {
+            drop(
+                acquire_project_file_operation(
+                    &directory.join(format!("distinct-{index:04}.ori2")),
+                )
+                .expect("distinct target"),
+            );
+        }
+        assert_eq!(
+            super::ACTIVE_PROJECT_FILE_OPERATIONS
+                .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+                .lock()
+                .expect("operation set")
+                .len(),
+            baseline
+        );
         fs::remove_dir_all(directory).expect("cleanup test directory");
     }
 

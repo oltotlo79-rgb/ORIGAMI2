@@ -4530,9 +4530,7 @@ mod tests {
         )
     }
 
-    #[allow(unreachable_code)]
     fn five_hinge_tree_project() -> super::super::ProjectState {
-        return subdivided_positive_fan_tree_project(5);
         use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
         let bottom = (0..=6).map(|index| (index as f64 * 20.0, 0.0));
         let top = (0..=6).rev().map(|index| (index as f64 * 20.0, 100.0));
@@ -4605,80 +4603,6 @@ mod tests {
                 } else {
                     EdgeKind::Mountain
                 },
-            });
-        }
-        super::super::ProjectState::new_with_paper(
-            CreasePattern { vertices, edges },
-            Paper {
-                boundary_vertices: boundary,
-                ..Paper::default()
-            },
-        )
-    }
-
-    fn subdivided_positive_fan_tree_project(hinge_count: usize) -> super::super::ProjectState {
-        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
-        let base = [
-            (0.0, 0.0),
-            (300.0, 0.0),
-            (520.0, 120.0),
-            (620.0, 350.0),
-            (480.0, 580.0),
-            (200.0, 650.0),
-            (0.0, 320.0),
-        ];
-        let extra = hinge_count - 4;
-        let mut points = Vec::new();
-        let mut original_indices = Vec::new();
-        let mut midpoint_indices = Vec::new();
-        for index in 0..base.len() {
-            original_indices.push(points.len());
-            points.push(base[index]);
-            if index >= 1 && index <= extra {
-                midpoint_indices.push(points.len());
-                let next = base[index + 1];
-                points.push((
-                    (base[index].0 + next.0) * 0.5,
-                    (base[index].1 + next.1) * 0.5,
-                ));
-            }
-        }
-        let vertices = points
-            .iter()
-            .enumerate()
-            .map(|(index, &(x, y))| Vertex {
-                id: fixed_id("7e10", hinge_count as u64 * 100 + index as u64 + 1),
-                position: Point2::new(x, y),
-            })
-            .collect::<Vec<_>>();
-        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
-        let mut edges = (0..boundary.len())
-            .map(|index| Edge {
-                id: fixed_id("7f10", hinge_count as u64 * 100 + index as u64 + 1),
-                start: boundary[index],
-                end: boundary[(index + 1) % boundary.len()],
-                kind: EdgeKind::Boundary,
-            })
-            .collect::<Vec<_>>();
-        let pivot = boundary[original_indices[0]];
-        for (index, original) in original_indices[2..=5].iter().enumerate() {
-            edges.push(Edge {
-                id: fixed_id("7f10", hinge_count as u64 * 100 + 30 + index as u64),
-                start: pivot,
-                end: boundary[*original],
-                kind: if index % 2 == 0 {
-                    EdgeKind::Mountain
-                } else {
-                    EdgeKind::Valley
-                },
-            });
-        }
-        for (index, midpoint) in midpoint_indices.iter().enumerate() {
-            edges.push(Edge {
-                id: fixed_id("7f10", hinge_count as u64 * 100 + 40 + index as u64),
-                start: pivot,
-                end: boundary[*midpoint],
-                kind: EdgeKind::Mountain,
             });
         }
         super::super::ProjectState::new_with_paper(

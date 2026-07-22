@@ -776,6 +776,9 @@ test('Windows CI rejects bounded adversarial bundle fixtures', () => {
   assert.match(verifier, /536870912/u)
   assert.match(verifier, /100000-file audit bound/u)
   assert.match(verifier, /Portable and embedded Windows executable payloads differ/u)
+  assert.match(verifier, /__TAURI_BUNDLE_TYPE_VAR_UNK/u)
+  assert.match(verifier, /__TAURI_BUNDLE_TYPE_VAR_NSS/u)
+  assert.match(verifier, /bundle-type markers are not canonical/u)
   for (const fixture of [
     'extra-dll',
     'hardlink-installer',

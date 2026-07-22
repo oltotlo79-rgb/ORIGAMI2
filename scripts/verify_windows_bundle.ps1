@@ -196,8 +196,90 @@ try {
     Assert-Version -Path $appExecutables[0].FullName -Label 'Embedded Windows executable'
     Assert-Signature -Path $appExecutables[0].FullName -Label 'Embedded Windows executable'
     if (-not [string]::IsNullOrWhiteSpace($PortableExecutable)) {
-        $portableHash = (Get-FileHash -LiteralPath $resolvedPortable -Algorithm SHA256).Hash
-        $embeddedHash = (Get-FileHash -LiteralPath $appExecutables[0].FullName -Algorithm SHA256).Hash
+        $unknownBundleMarker = '__TAURI_BUNDLE_TYPE_VAR_UNK'
+        $nsisBundleMarker = '__TAURI_BUNDLE_TYPE_VAR_NSS'
+        $unknownBundleToken = [Text.Encoding]::ASCII.GetBytes($unknownBundleMarker)
+        function Find-TokenOffsets {
+            param([string] $Path, [string] $Token)
+            $tokenBytes = [Text.Encoding]::ASCII.GetBytes($Token)
+            $offsets = [Collections.Generic.HashSet[long]]::new()
+            $stream = [IO.File]::OpenRead($Path)
+            try {
+                $buffer = [byte[]]::new(1048576)
+                $tail = [byte[]]::new(0)
+                $streamOffset = 0L
+                while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $combined = [byte[]]::new($tail.Length + $read)
+                    [Array]::Copy($tail, 0, $combined, 0, $tail.Length)
+                    [Array]::Copy($buffer, 0, $combined, $tail.Length, $read)
+                    $combinedOffset = $streamOffset - $tail.Length
+                    $searchOffset = 0
+                    while ($searchOffset -le $combined.Length - $tokenBytes.Length) {
+                        $candidate = [Array]::IndexOf($combined, $tokenBytes[0], $searchOffset)
+                        if ($candidate -lt 0 -or $candidate -gt $combined.Length - $tokenBytes.Length) {
+                            break
+                        }
+                        $matches = $true
+                        for ($index = 1; $index -lt $tokenBytes.Length; $index++) {
+                            if ($combined[$candidate + $index] -ne $tokenBytes[$index]) {
+                                $matches = $false
+                                break
+                            }
+                        }
+                        if ($matches) {
+                            [void] $offsets.Add($combinedOffset + $candidate)
+                        }
+                        $searchOffset = $candidate + 1
+                    }
+                    $tailLength = [Math]::Min($tokenBytes.Length - 1, $combined.Length)
+                    $tail = [byte[]]::new($tailLength)
+                    [Array]::Copy($combined, $combined.Length - $tailLength, $tail, 0, $tailLength)
+                    $streamOffset += $read
+                }
+            } finally {
+                $stream.Dispose()
+            }
+            return @($offsets | Sort-Object)
+        }
+        $embeddedPath = $appExecutables[0].FullName
+        $portableUnknownOffsets = @(Find-TokenOffsets $resolvedPortable $unknownBundleMarker)
+        $portableNsisOffsets = @(Find-TokenOffsets $resolvedPortable $nsisBundleMarker)
+        $embeddedUnknownOffsets = @(Find-TokenOffsets $embeddedPath $unknownBundleMarker)
+        $embeddedNsisOffsets = @(Find-TokenOffsets $embeddedPath $nsisBundleMarker)
+        if ($portableUnknownOffsets.Count -ne 1 -or $portableNsisOffsets.Count -ne 0 -or
+            $embeddedUnknownOffsets.Count -ne 0 -or $embeddedNsisOffsets.Count -ne 1) {
+            throw '[payload-identity] Windows executable bundle-type markers are not canonical.'
+        }
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        $embeddedStream = [IO.File]::OpenRead($embeddedPath)
+        try {
+            $buffer = [byte[]]::new(1048576)
+            $streamOffset = 0L
+            while (($read = $embeddedStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $overlapStart = [Math]::Max($streamOffset, $embeddedNsisOffsets[0])
+                $overlapEnd = [Math]::Min(
+                    $streamOffset + $read,
+                    $embeddedNsisOffsets[0] + $unknownBundleToken.Length
+                )
+                if ($overlapStart -lt $overlapEnd) {
+                    [Array]::Copy(
+                        $unknownBundleToken,
+                        [int] ($overlapStart - $embeddedNsisOffsets[0]),
+                        $buffer,
+                        [int] ($overlapStart - $streamOffset),
+                        [int] ($overlapEnd - $overlapStart)
+                    )
+                }
+                [void] $sha256.TransformBlock($buffer, 0, $read, $null, 0)
+                $streamOffset += $read
+            }
+            [void] $sha256.TransformFinalBlock([byte[]]::new(0), 0, 0)
+            $portableHash = (Get-FileHash -LiteralPath $resolvedPortable -Algorithm SHA256).Hash
+            $embeddedHash = [BitConverter]::ToString($sha256.Hash).Replace('-', '')
+        } finally {
+            $embeddedStream.Dispose()
+            $sha256.Dispose()
+        }
         if ($portableHash -cne $embeddedHash) {
             throw '[payload-identity] Portable and embedded Windows executable payloads differ.'
         }

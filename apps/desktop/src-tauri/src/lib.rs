@@ -4853,298 +4853,297 @@ fn apply_beginner_generated_plan_document(
                 hinge_angles: Vec::new(),
             },
         });
-        let paper = project.editor.paper().clone();
-        let project_layers = project.editor.project_layers().clone();
-        let mut beginner_design_profile = project.editor.beginner_design_profile().clone();
-        let topology_authority_sha256: [u8; 32] = sha2::Sha256::digest(
-            serde_json::to_vec(&certificate_pattern)
-                .map_err(|_| "the generated plan topology could not be bound".to_owned())?,
-        )
-        .into();
-        beginner_design_profile.generation_provenance =
-            Some(ori_domain::BeginnerGenerationProvenanceV1 {
-                schema_version: 1,
-                topology_authority_sha256,
-                fold_path_certificate_sha256: Some(fold_path_certificate_sha256),
-                confidence_score: ori_domain::beginner_target_approximation_score_v1(
-                    &beginner_design_profile.generation_constraints,
-                ),
-                confidence_reasons: vec![
-                    "native_topology_witness".to_owned(),
-                    "bounded_native_fold_path_v2".to_owned(),
-                ],
-                explicit_override: false,
-                source_asset_fingerprint: beginner_design_profile
-                    .generation_constraints
-                    .target_asset
-                    .map_or_else(|| "none".to_owned(), |asset| format!("{asset:?}")),
-                semantic_landmark_provenance,
-                generic_tree: None,
-            });
-        execute_command(
-            &mut project,
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-            Command::ApplyStackedFoldDocument {
-                pattern,
-                paper,
-                instruction_timeline,
-                project_layers,
-                beginner_design_profile: Box::new(beginner_design_profile),
-            },
-        )
     }
+    let paper = project.editor.paper().clone();
+    let project_layers = project.editor.project_layers().clone();
+    let mut beginner_design_profile = project.editor.beginner_design_profile().clone();
+    let topology_authority_sha256: [u8; 32] = sha2::Sha256::digest(
+        serde_json::to_vec(&certificate_pattern)
+            .map_err(|_| "the generated plan topology could not be bound".to_owned())?,
+    )
+    .into();
+    beginner_design_profile.generation_provenance =
+        Some(ori_domain::BeginnerGenerationProvenanceV1 {
+            schema_version: 1,
+            topology_authority_sha256,
+            fold_path_certificate_sha256: Some(fold_path_certificate_sha256),
+            confidence_score: ori_domain::beginner_target_approximation_score_v1(
+                &beginner_design_profile.generation_constraints,
+            ),
+            confidence_reasons: vec![
+                "native_topology_witness".to_owned(),
+                "bounded_native_fold_path_v2".to_owned(),
+            ],
+            explicit_override: false,
+            source_asset_fingerprint: beginner_design_profile
+                .generation_constraints
+                .target_asset
+                .map_or_else(|| "none".to_owned(), |asset| format!("{asset:?}")),
+            semantic_landmark_provenance,
+            generic_tree: None,
+        });
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::ApplyStackedFoldDocument {
+            pattern,
+            paper,
+            instruction_timeline,
+            project_layers,
+            beginner_design_profile: Box::new(beginner_design_profile),
+        },
+    )
+}
 
-    fn apply_grid_plan_document(
-        project: &mut ProjectState,
-        expected_project_instance_id: ProjectId,
-        expected_project_id: ProjectId,
-        expected_revision: u64,
-        plan: ori_domain::BeginnerGeneratedPlanV1,
-    ) -> Result<ProjectSnapshot, String> {
-        let selected_kind = plan.kind;
-        let selected_instruction_codes = plan.instruction_codes.clone();
-        let semantic_landmark_provenance = plan.semantic_landmark_provenance.clone();
-        let topology_witness = beginner_contour_placement_witness(
-            &project
-                .editor
-                .beginner_design_profile()
-                .generation_constraints,
-            &plan,
-        )
-        .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
-        let mut topology_ids = topology_witness
-            .local_bindings
-            .iter()
-            .map(|binding| {
-                let vertex_start = usize::from(binding.vertex_start);
-                let crease_start = usize::from(binding.crease_start);
-                let count = usize::from(binding.contour_points);
-                let vertices = plan
-                    .crease_pattern
-                    .vertices
-                    .get(vertex_start..vertex_start + count)?;
-                let creases = plan
-                    .crease_pattern
-                    .edges
-                    .get(crease_start..crease_start + count)?;
-                Some((
-                    binding.generated_face_id,
-                    vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>(),
-                    creases.iter().map(|edge| edge.id).collect::<Vec<_>>(),
-                ))
-            })
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
-        for binding in &topology_witness.generic_feature_bindings {
-            let start = usize::from(binding.crease_start);
-            let count = usize::from(binding.endpoint_count);
+fn apply_grid_plan_document(
+    project: &mut ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    plan: ori_domain::BeginnerGeneratedPlanV1,
+) -> Result<ProjectSnapshot, String> {
+    let selected_kind = plan.kind;
+    let selected_instruction_codes = plan.instruction_codes.clone();
+    let semantic_landmark_provenance = plan.semantic_landmark_provenance.clone();
+    let topology_witness = beginner_contour_placement_witness(
+        &project
+            .editor
+            .beginner_design_profile()
+            .generation_constraints,
+        &plan,
+    )
+    .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
+    let mut topology_ids = topology_witness
+        .local_bindings
+        .iter()
+        .map(|binding| {
+            let vertex_start = usize::from(binding.vertex_start);
+            let crease_start = usize::from(binding.crease_start);
+            let count = usize::from(binding.contour_points);
+            let vertices = plan
+                .crease_pattern
+                .vertices
+                .get(vertex_start..vertex_start + count)?;
             let creases = plan
                 .crease_pattern
                 .edges
-                .get(start..start + count)
-                .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
-            let crease_authority_sha256: [u8; 32] = sha2::Sha256::digest(
-                serde_json::to_vec(&creases.iter().map(|edge| edge.id).collect::<Vec<_>>())
-                    .map_err(|_| "grid_candidate_topology_stale".to_owned())?,
-            )
-            .into();
-            if crease_authority_sha256 != binding.crease_authority_sha256 {
-                return Err("grid_candidate_feature_crease_authority_stale".to_owned());
-            }
-            let mut vertices = Vec::with_capacity(count * 2);
-            for id in creases.iter().flat_map(|edge| [edge.start, edge.end]) {
-                if !vertices.contains(&id) {
-                    vertices.push(id);
-                }
-            }
-            topology_ids.push((
-                binding
-                    .generated_feature_id
-                    .checked_add(128)
-                    .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?,
-                vertices,
-                creases.iter().map(|edge| edge.id).collect(),
-            ));
+                .get(crease_start..crease_start + count)?;
+            Some((
+                binding.generated_face_id,
+                vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>(),
+                creases.iter().map(|edge| edge.id).collect::<Vec<_>>(),
+            ))
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
+    for binding in &topology_witness.generic_feature_bindings {
+        let start = usize::from(binding.crease_start);
+        let count = usize::from(binding.endpoint_count);
+        let creases = plan
+            .crease_pattern
+            .edges
+            .get(start..start + count)
+            .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?;
+        let crease_authority_sha256: [u8; 32] = sha2::Sha256::digest(
+            serde_json::to_vec(&creases.iter().map(|edge| edge.id).collect::<Vec<_>>())
+                .map_err(|_| "grid_candidate_topology_stale".to_owned())?,
+        )
+        .into();
+        if crease_authority_sha256 != binding.crease_authority_sha256 {
+            return Err("grid_candidate_feature_crease_authority_stale".to_owned());
         }
-        let mut pattern = project.editor.pattern().clone();
-        for vertex in plan.crease_pattern.vertices {
-            if !pattern
-                .vertices
-                .iter()
-                .any(|current| current.id == vertex.id)
-            {
-                pattern.vertices.push(vertex);
+        let mut vertices = Vec::with_capacity(count * 2);
+        for id in creases.iter().flat_map(|edge| [edge.start, edge.end]) {
+            if !vertices.contains(&id) {
+                vertices.push(id);
             }
         }
-        for edge in plan.crease_pattern.edges {
-            if pattern.edges.iter().any(|current| current.id == edge.id) {
-                return Err("grid_candidate_replayed".to_owned());
-            }
-            pattern.edges.push(edge);
-        }
-        let mut faces = std::collections::HashSet::new();
-        let mut witnessed_vertices = std::collections::HashSet::new();
-        let mut witnessed_creases = std::collections::HashSet::new();
-        if topology_ids.iter().any(|(face_id, vertices, creases)| {
-            !faces.insert(*face_id)
-                || vertices.iter().any(|id| {
-                    witnessed_vertices.insert(*id);
-                    !pattern.vertices.iter().any(|vertex| vertex.id == *id)
-                })
-                || creases.iter().any(|id| {
-                    !witnessed_creases.insert(*id)
-                        || !pattern.edges.iter().any(|edge| edge.id == *id)
-                })
-        }) {
-            return Err("grid_candidate_topology_stale".to_owned());
-        }
-        let mut instruction_timeline = project.editor.instruction_timeline().clone();
-        let (title, description, caution) = match selected_kind {
-            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase => (
-                "Symmetric four-leg grid candidate",
-                "Apply the globally proven parameter-grid four-leg base.",
-                "The canonical grid tuple and proof were revalidated immediately before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase => (
-                "Symmetric wing grid candidate",
-                "Apply the globally proven parameter-grid wing base.",
-                "The canonical grid tuple and proof were revalidated immediately before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase => (
-                "Symmetric bird grid candidate",
-                "Apply the globally proven parameter-grid bird base.",
-                "The canonical grid tuple and proof were revalidated immediately before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
-            | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase => (
-                "Asymmetric landmark bird base",
-                "Create individually bound asymmetric bird landmark creases.",
-                "All landmark bindings and the native fold path were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase => (
-                "Asymmetric insect landmark grid candidate",
-                "Apply certified four-ray geometry with ten ordered semantic landmark bindings.",
-                "All ray-group digests, live semantic bindings, and the native fold path were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase => (
-                "Asymmetric fish landmark grid candidate",
-                "Apply certified four-ray geometry with four ordered fish landmark bindings.",
-                "All semantic bindings, ray-group digests, and the native fold path were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase => (
-                "Symmetric fish grid candidate",
-                "Apply the globally proven parameter-grid fish base.",
-                "The canonical grid tuple and proof were revalidated immediately before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase => (
-                "Symmetric ear grid candidate",
-                "Apply the globally proven parameter-grid long-ear base.",
-                "The canonical grid tuple and proof were revalidated immediately before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricHornBase => (
-                "Symmetric horn grid candidate",
-                "Apply the globally proven parameter-grid horn base.",
-                "The canonical grid tuple and proof were revalidated immediately before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricAntennaBase => (
-                "Symmetric antenna grid candidate",
-                "Apply the globally proven parameter-grid antenna base.",
-                "The canonical grid tuple and proof were revalidated immediately before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase => (
-                "Symmetric insect leg-pair grid candidate",
-                "Apply the globally proven parameter-grid insect leg pair.",
-                "This limited family represents exactly two legs, not a complete six-leg insect.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::SymmetricSixLegBase => (
-                "Symmetric complete six-leg grid candidate",
-                "Apply the globally proven three-pair parameter-grid insect base.",
-                "All three pair positions and the global proof were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::CenterAxisTailBase => (
-                "Center-axis tail grid candidate",
-                "Apply the globally proven single-tail parameter-grid candidate.",
-                "The live target, proof, and candidate identity were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::CenterAxisHornBase => (
-                "Center-axis single-horn grid candidate",
-                "Apply the globally proven single-horn parameter-grid candidate.",
-                "The live target, proof, and candidate identity were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::CenterAxisAntennaBase => (
-                "Center-axis single-antenna grid candidate",
-                "Apply the globally proven single-antenna parameter-grid candidate.",
-                "The live target, proof, and candidate identity were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::CompositeTailEarBase => (
-                "Composite tail and ear grid candidate",
-                "Apply the globally proven tail-and-ear parameter-grid candidate.",
-                "Both live bindings, proof, and candidate identity were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornEarBase => (
-                "Composite horn and ear grid candidate",
-                "Apply the globally proven horn-and-ear parameter-grid candidate.",
-                "Both live bindings, proof, and candidate identity were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailBase => (
-                "Composite horn and tail grid candidate",
-                "Apply the globally proven horn-and-tail parameter-grid candidate.",
-                "Both live bindings, proof, and candidate identity were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailEarBase => (
-                "Composite horn, tail, and ear grid candidate",
-                "Apply the globally proven three-part parameter-grid candidate.",
-                "All live bindings, proof, and candidate identity were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::CompositeWingAntennaBase => (
-                "Composite wing and antenna grid candidate",
-                "Apply the globally proven wing-and-antenna parameter-grid candidate.",
-                "Both live pair bindings, proof, and candidate identity were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase => (
-                "Complete composite insect grid candidate",
-                "Apply the globally proven five-pair insect parameter-grid candidate.",
-                "All live bindings, proof, and candidate identity were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase => (
-                "Complete composite animal grid candidate",
-                "Apply the globally proven complete animal parameter-grid candidate.",
-                "All live bindings, proof, and candidate identity were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteWingedAnimalBase => (
-                "Complete winged animal grid candidate",
-                "Apply the globally proven five-binding winged animal parameter-grid candidate.",
-                "All five live bindings, proof, and candidate identity were revalidated before apply.",
-            ),
-            ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase => (
-                "Bounded composite grid candidate",
-                "Apply the globally proven parameter-grid candidate for the recognized target bindings.",
-                "Every live binding, proof, and candidate identity was revalidated before apply.",
-            ),
-            _ => return Err("grid_candidate_kind_invalid".to_owned()),
-        };
-        let authority_hex = topology_witness
-            .topology_authority_hash
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        instruction_timeline.steps.push(InstructionStep {
-            id: InstructionStepId::new(),
-            title: title.to_owned(),
-            description: description.to_owned(),
-            caution: format!("{caution} Topology authority SHA-256: {authority_hex}."),
-            duration_ms: 2_000,
-            visual: InstructionVisual::default(),
-            pose: InstructionPose {
-                model: InstructionPoseModel::DeclarativeOnlyV1,
-                source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
-                fixed_face: None,
-                hinge_angles: Vec::new(),
-            },
-        });
+        topology_ids.push((
+            binding
+                .generated_feature_id
+                .checked_add(128)
+                .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?,
+            vertices,
+            creases.iter().map(|edge| edge.id).collect(),
+        ));
     }
+    let mut pattern = project.editor.pattern().clone();
+    for vertex in plan.crease_pattern.vertices {
+        if !pattern
+            .vertices
+            .iter()
+            .any(|current| current.id == vertex.id)
+        {
+            pattern.vertices.push(vertex);
+        }
+    }
+    for edge in plan.crease_pattern.edges {
+        if pattern.edges.iter().any(|current| current.id == edge.id) {
+            return Err("grid_candidate_replayed".to_owned());
+        }
+        pattern.edges.push(edge);
+    }
+    let mut faces = std::collections::HashSet::new();
+    let mut witnessed_vertices = std::collections::HashSet::new();
+    let mut witnessed_creases = std::collections::HashSet::new();
+    if topology_ids.iter().any(|(face_id, vertices, creases)| {
+        !faces.insert(*face_id)
+            || vertices.iter().any(|id| {
+                witnessed_vertices.insert(*id);
+                !pattern.vertices.iter().any(|vertex| vertex.id == *id)
+            })
+            || creases.iter().any(|id| {
+                !witnessed_creases.insert(*id) || !pattern.edges.iter().any(|edge| edge.id == *id)
+            })
+    }) {
+        return Err("grid_candidate_topology_stale".to_owned());
+    }
+    let mut instruction_timeline = project.editor.instruction_timeline().clone();
+    let (title, description, caution) = match selected_kind {
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFourLegBase => (
+            "Symmetric four-leg grid candidate",
+            "Apply the globally proven parameter-grid four-leg base.",
+            "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricWingBase => (
+            "Symmetric wing grid candidate",
+            "Apply the globally proven parameter-grid wing base.",
+            "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricBirdBase => (
+            "Symmetric bird grid candidate",
+            "Apply the globally proven parameter-grid bird base.",
+            "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricBirdLandmarkBase
+        | ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase => (
+            "Asymmetric landmark bird base",
+            "Create individually bound asymmetric bird landmark creases.",
+            "All landmark bindings and the native fold path were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricInsectLandmarkBase => (
+            "Asymmetric insect landmark grid candidate",
+            "Apply certified four-ray geometry with ten ordered semantic landmark bindings.",
+            "All ray-group digests, live semantic bindings, and the native fold path were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase => (
+            "Asymmetric fish landmark grid candidate",
+            "Apply certified four-ray geometry with four ordered fish landmark bindings.",
+            "All semantic bindings, ray-group digests, and the native fold path were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricFishBase => (
+            "Symmetric fish grid candidate",
+            "Apply the globally proven parameter-grid fish base.",
+            "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricEarBase => (
+            "Symmetric ear grid candidate",
+            "Apply the globally proven parameter-grid long-ear base.",
+            "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricHornBase => (
+            "Symmetric horn grid candidate",
+            "Apply the globally proven parameter-grid horn base.",
+            "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricAntennaBase => (
+            "Symmetric antenna grid candidate",
+            "Apply the globally proven parameter-grid antenna base.",
+            "The canonical grid tuple and proof were revalidated immediately before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricInsectLegPairBase => (
+            "Symmetric insect leg-pair grid candidate",
+            "Apply the globally proven parameter-grid insect leg pair.",
+            "This limited family represents exactly two legs, not a complete six-leg insect.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::SymmetricSixLegBase => (
+            "Symmetric complete six-leg grid candidate",
+            "Apply the globally proven three-pair parameter-grid insect base.",
+            "All three pair positions and the global proof were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CenterAxisTailBase => (
+            "Center-axis tail grid candidate",
+            "Apply the globally proven single-tail parameter-grid candidate.",
+            "The live target, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CenterAxisHornBase => (
+            "Center-axis single-horn grid candidate",
+            "Apply the globally proven single-horn parameter-grid candidate.",
+            "The live target, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CenterAxisAntennaBase => (
+            "Center-axis single-antenna grid candidate",
+            "Apply the globally proven single-antenna parameter-grid candidate.",
+            "The live target, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeTailEarBase => (
+            "Composite tail and ear grid candidate",
+            "Apply the globally proven tail-and-ear parameter-grid candidate.",
+            "Both live bindings, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornEarBase => (
+            "Composite horn and ear grid candidate",
+            "Apply the globally proven horn-and-ear parameter-grid candidate.",
+            "Both live bindings, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailBase => (
+            "Composite horn and tail grid candidate",
+            "Apply the globally proven horn-and-tail parameter-grid candidate.",
+            "Both live bindings, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeHornTailEarBase => (
+            "Composite horn, tail, and ear grid candidate",
+            "Apply the globally proven three-part parameter-grid candidate.",
+            "All live bindings, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeWingAntennaBase => (
+            "Composite wing and antenna grid candidate",
+            "Apply the globally proven wing-and-antenna parameter-grid candidate.",
+            "Both live pair bindings, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteInsectBase => (
+            "Complete composite insect grid candidate",
+            "Apply the globally proven five-pair insect parameter-grid candidate.",
+            "All live bindings, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteAnimalBase => (
+            "Complete composite animal grid candidate",
+            "Apply the globally proven complete animal parameter-grid candidate.",
+            "All live bindings, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeCompleteWingedAnimalBase => (
+            "Complete winged animal grid candidate",
+            "Apply the globally proven five-binding winged animal parameter-grid candidate.",
+            "All five live bindings, proof, and candidate identity were revalidated before apply.",
+        ),
+        ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase => (
+            "Bounded composite grid candidate",
+            "Apply the globally proven parameter-grid candidate for the recognized target bindings.",
+            "Every live binding, proof, and candidate identity was revalidated before apply.",
+        ),
+        _ => return Err("grid_candidate_kind_invalid".to_owned()),
+    };
+    let authority_hex = topology_witness
+        .topology_authority_hash
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    instruction_timeline.steps.push(InstructionStep {
+        id: InstructionStepId::new(),
+        title: title.to_owned(),
+        description: description.to_owned(),
+        caution: format!("{caution} Topology authority SHA-256: {authority_hex}."),
+        duration_ms: 2_000,
+        visual: InstructionVisual::default(),
+        pose: InstructionPose {
+            model: InstructionPoseModel::DeclarativeOnlyV1,
+            source_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
+            fixed_face: None,
+            hinge_angles: Vec::new(),
+        },
+    });
     let paper = project.editor.paper().clone();
     let project_layers = project.editor.project_layers().clone();
     let mut beginner_design_profile = project.editor.beginner_design_profile().clone();

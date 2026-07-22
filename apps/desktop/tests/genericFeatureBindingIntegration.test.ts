@@ -118,7 +118,7 @@ test('applied generic trees persist inert versioned source provenance', () => {
   assert.match(app, /display only; no apply authority/u)
   assert.doesNotMatch(app, /asset_content_sha256.*slice/u)
   assert.match(native, /live_asset_sha256 != tree\.asset_content_sha256/u)
-  assert.match(native, /proposal\.authorizes_apply \|\| proposal\.physical_motion_proof/u)
+  assert.match(native, /proposal\.authorizes_apply\s*\|\|\s*proposal\.physical_motion_proof/u)
   assert.match(native, /Command::AppendInstructionSteps \{ steps \}/u)
   assert.match(app, /Confirm and append to instructions/u)
 })

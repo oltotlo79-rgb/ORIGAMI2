@@ -37,7 +37,7 @@
 |---|---|---|
 | C-1 | 正しい改善 | App stateと機能panelを挙動不変で段階分割する。単一巨大変更は回帰範囲が広いため独立checkpoint化する。 |
 | C-2 | 一部誤検知 | TS側は操作中preview、Rust側はapplyを許可するauthorityで責務が異なる。TS結果だけでproject変更を認可する経路はなく、二重の肯定authorityではない。相互整合fixtureは継続する。 |
-| C-3 | 正しい機能欠落 | 閉路Graphの対話poseは専用認証経路へ統合する必要がある。静的tree updaterへ流用しない。 |
+| C-3 | 正しい・修正済み | 閉路Graphの認証preview/apply自体は`StackedFoldPanel`に既存。`157d198`で静的3D表示から同パネルへ日英・accessibility共通で明示案内し、無効dragを正規経路と誤認させない。integration 1/1とTypeScript build green。 |
 | C-4 | 改善提案 | OCC fencingは安全境界なので削除対象ではない。引数newtype/constructor集約のみを検討する。 |
 | C-5 | 正しい改善 | locale key catalogへの段階移行対象。機能不具合とは別checkpointにする。 |
 | C-6 | 一部誤検知 | core moduleは回帰testと公開primitiveを持つため単純な死蔵ではない。desktop重複経路の有無だけを継続確認する。 |

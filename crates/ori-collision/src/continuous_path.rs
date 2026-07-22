@@ -2391,22 +2391,26 @@ fn scheduled_kawasaki_120_120_60_60_premises_v1(
     {
         return false;
     }
-    let pivot = geometry.hinges()[0].end();
+    let first = &geometry.hinges()[0];
+    let pivot = [first.start(), first.end()].into_iter().find(|candidate| {
+        geometry
+            .hinges()
+            .iter()
+            .all(|hinge| hinge.start() == *candidate || hinge.end() == *candidate)
+    });
+    let Some(pivot) = pivot else { return false };
     let same = |a: ori_kinematics::Point3, b: ori_kinematics::Point3| {
         a.x().to_bits() == b.x().to_bits()
             && a.y().to_bits() == b.y().to_bits()
             && a.z().to_bits() == b.z().to_bits()
     };
-    if geometry
-        .hinges()
-        .iter()
-        .any(|hinge| !same(hinge.end(), pivot) || same(hinge.start(), pivot))
-        || geometry.face_ids().iter().any(|face| {
-            geometry
-                .face_boundary_vertices(*face)
-                .is_none_or(|boundary| boundary.len() != 3)
-        })
-    {
+    if geometry.hinges().iter().any(|hinge| {
+        !same(hinge.start(), pivot) && !same(hinge.end(), pivot) || same(hinge.start(), hinge.end())
+    }) || geometry.face_ids().iter().any(|face| {
+        geometry
+            .face_boundary_vertices(*face)
+            .is_none_or(|boundary| boundary.len() != 3)
+    }) {
         return false;
     }
     [0.0, 0.5, 1.0].into_iter().all(|u| {

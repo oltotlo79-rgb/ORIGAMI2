@@ -83,6 +83,33 @@ afterEach(() => {
 })
 
 describe('InstructionTimelinePanel localization', () => {
+  it('keeps camera capture unavailable until the 3D viewport provides a camera', async () => {
+    localeStore.setLocale('en')
+    const runNativeEdit = vi.fn(async () => SNAPSHOT)
+    render(<InstructionTimelinePanel
+      snapshot={SNAPSHOT}
+      appliedPose={APPLIED_POSE}
+      currentCamera={null}
+      poseModelKey="model-1"
+      manualPoseChangeSequence={0}
+      coreBusy={false}
+      benchmarkActive={false}
+      fileOperationActive={false}
+      exportAvailable
+      exportButtonRef={{ current: null }}
+      animationExportButtonRef={{ current: null }}
+      runNativeEdit={runNativeEdit}
+      applyStepPose={vi.fn(() => true)}
+      onExport={vi.fn()}
+      onAnimationExport={vi.fn()}
+    />)
+    fireEvent.click(screen.getByRole('button', { name: /1\. Fold crane/ }))
+    const capture = await screen.findByRole('button', { name: 'Capture current camera' })
+    expect((capture as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(capture)
+    expect(runNativeEdit).not.toHaveBeenCalled()
+  })
+
   it('captures the live camera into the selected step and preserves the native save boundary', async () => {
     localeStore.setLocale('en')
     const camera = {

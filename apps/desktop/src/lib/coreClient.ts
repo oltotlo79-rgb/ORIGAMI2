@@ -258,6 +258,7 @@ export type BeginnerGenerationConstraintsV1 = {
   silhouette_thresholds?: { schema_version: 1; alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only' }
   silhouette_crop_roi?: { schema_version: 1; x_millionths: number; y_millionths: number; width_millionths: number; height_millionths: number }
   silhouette_orientation_degrees?: 0 | 90 | 180 | 270
+  silhouette_mirror?: { schema_version: 1; mirror_x: boolean; mirror_y: boolean }
   protrusions?: Array<{
     id: number
     count: number
@@ -434,6 +435,7 @@ function normalizeBeginnerGenerationConstraints(
     'silhouette_thresholds',
     'silhouette_crop_roi',
     'silhouette_orientation_degrees',
+    'silhouette_mirror',
     'protrusions',
     'bulge_targets',
     'target_asset',
@@ -447,6 +449,7 @@ function normalizeBeginnerGenerationConstraints(
       && key !== 'silhouette_thresholds'
       && key !== 'silhouette_crop_roi'
       && key !== 'silhouette_orientation_degrees'
+      && key !== 'silhouette_mirror'
       && key !== 'protrusions' && key !== 'bulge_targets',
   )
   const snapshot = snapshotCoreDataRecord(value)
@@ -713,6 +716,13 @@ function normalizeBeginnerGenerationConstraints(
   }
   const silhouetteOrientation = record.silhouette_orientation_degrees
   if (silhouetteOrientation !== undefined && ![0, 90, 180, 270].includes(Number(silhouetteOrientation))) return null
+  let silhouetteMirror: BeginnerGenerationConstraintsV1['silhouette_mirror']
+  if (record.silhouette_mirror !== undefined) {
+    const mirror = exactCoreDataRecord(record.silhouette_mirror, ['schema_version', 'mirror_x', 'mirror_y'] as const)
+    if (!mirror || mirror.schema_version !== 1 || typeof mirror.mirror_x !== 'boolean'
+      || typeof mirror.mirror_y !== 'boolean') return null
+    silhouetteMirror = { schema_version: 1, mirror_x: mirror.mirror_x, mirror_y: mirror.mirror_y }
+  }
   return Object.freeze({
     schema_version: 1,
     maximum_steps: Number(record.maximum_steps),
@@ -735,6 +745,7 @@ function normalizeBeginnerGenerationConstraints(
     ...(silhouetteThresholds ? { silhouette_thresholds: silhouetteThresholds } : {}),
     ...(silhouetteCropRoi ? { silhouette_crop_roi: silhouetteCropRoi } : {}),
     ...(silhouetteOrientation === undefined ? {} : { silhouette_orientation_degrees: Number(silhouetteOrientation) as 0 | 90 | 180 | 270 }),
+    ...(silhouetteMirror ? { silhouette_mirror: silhouetteMirror } : {}),
     ...(hadProtrusions ? { protrusions } : {}),
     ...(hadBulgeTargets ? { bulge_targets: bulgeTargets } : {}),
     target_asset: targetAsset,
@@ -2845,7 +2856,7 @@ export function recognizeBeginnerSilhouette(
   expectedProjectInstanceId: string,
   underlayId: string,
   assetId: string,
-  thresholds: { alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only'; crop_roi?: BeginnerGenerationConstraintsV1['silhouette_crop_roi']; orientation_degrees?: 0 | 90 | 180 | 270 } = { alpha: 128, luma: 127, polarity: 'dark_on_light' },
+  thresholds: { alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only'; crop_roi?: BeginnerGenerationConstraintsV1['silhouette_crop_roi']; orientation_degrees?: 0 | 90 | 180 | 270; mirror?: BeginnerGenerationConstraintsV1['silhouette_mirror'] } = { alpha: 128, luma: 127, polarity: 'dark_on_light' },
 ) {
   if (!isCanonicalNonNilUuid(expectedProjectId)
     || !isCanonicalNonNilUuid(expectedProjectInstanceId)
@@ -2863,6 +2874,7 @@ export function recognizeBeginnerSilhouette(
     polarity: thresholds.polarity,
     cropRoi: thresholds.crop_roi,
     orientationDegrees: thresholds.orientation_degrees,
+    mirror: thresholds.mirror,
   }
   return invoke<unknown>('recognize_beginner_silhouette', { request }).then((value) => {
     const proposal = normalizeBeginnerRecognitionProposal(

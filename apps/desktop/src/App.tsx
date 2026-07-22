@@ -770,13 +770,17 @@ function App() {
   const [beginnerSilhouetteCropRoi, setBeginnerSilhouetteCropRoi] = useState<
     BeginnerDesignProfileV1['generation_constraints']['silhouette_crop_roi']>()
   const [beginnerSilhouetteOrientation, setBeginnerSilhouetteOrientation] = useState<0 | 90 | 180 | 270>(0)
+  const [beginnerSilhouetteMirror, setBeginnerSilhouetteMirror] = useState({
+    schema_version: 1 as const, mirror_x: false, mirror_y: false,
+  })
   useEffect(() => {
     const timeout = window.setTimeout(() => requestBeginnerRecognition('silhouette'), 300)
     return () => window.clearTimeout(timeout)
   }, [beginnerSilhouetteThresholds.alpha, beginnerSilhouetteThresholds.luma,
     beginnerSilhouetteThresholds.polarity, beginnerSilhouetteCropRoi?.x_millionths,
     beginnerSilhouetteCropRoi?.y_millionths, beginnerSilhouetteCropRoi?.width_millionths,
-    beginnerSilhouetteCropRoi?.height_millionths, beginnerSilhouetteOrientation])
+    beginnerSilhouetteCropRoi?.height_millionths, beginnerSilhouetteOrientation,
+    beginnerSilhouetteMirror.mirror_x, beginnerSilhouetteMirror.mirror_y])
   const beginnerRecognitionRequestRef = useRef(0)
   const [beginnerOutlineCandidates, setBeginnerOutlineCandidates] =
     useState<BeginnerOutlineCandidatesResponse | null>(null)
@@ -821,6 +825,8 @@ function App() {
       .silhouette_crop_roi)
     setBeginnerSilhouetteOrientation(nativeSnapshot?.beginner_design_profile.generation_constraints
       .silhouette_orientation_degrees ?? 0)
+    setBeginnerSilhouetteMirror(nativeSnapshot?.beginner_design_profile.generation_constraints
+      .silhouette_mirror ?? { schema_version: 1, mirror_x: false, mirror_y: false })
     setBeginnerOutlineCandidates(null)
     setBeginnerPartSuggestions(null)
     setBeginnerPartAssignments([])
@@ -3747,6 +3753,7 @@ function App() {
       silhouette_thresholds: { schema_version: 1 as const, ...beginnerSilhouetteThresholds },
       ...(beginnerSilhouetteCropRoi ? { silhouette_crop_roi: beginnerSilhouetteCropRoi } : {}),
       silhouette_orientation_degrees: beginnerSilhouetteOrientation,
+      silhouette_mirror: beginnerSilhouetteMirror,
       protrusions: beginnerProtrusions,
       bulge_targets: beginnerBulgeTargets,
       target_asset: targetUnderlay
@@ -3977,7 +3984,7 @@ function App() {
       underlay.id,
       underlay.asset,
       { ...beginnerSilhouetteThresholds, crop_roi: beginnerSilhouetteCropRoi,
-        orientation_degrees: beginnerSilhouetteOrientation },
+        orientation_degrees: beginnerSilhouetteOrientation, mirror: beginnerSilhouetteMirror },
     ) : recognizeBeginnerTarget(binding.projectId, binding.revision, binding.instanceId,
       underlay.id, underlay.asset)
     void recognition.then((proposal) => {
@@ -9012,6 +9019,17 @@ function App() {
                     </select>
                     <button type="button" onClick={() => setBeginnerSilhouetteOrientation(0)}>{text({ ja: '向きをリセット', en: 'Reset orientation' })}</button>
                   </label>
+                  <fieldset aria-label="Silhouette mirror">
+                    <legend>{text({ ja: '輪郭画像の反転', en: 'Silhouette mirror' })}</legend>
+                    <label><input type="checkbox" checked={beginnerSilhouetteMirror.mirror_x}
+                      onChange={(event) => { beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null); setBeginnerSilhouetteMirror((value) => ({ ...value, mirror_x: event.target.checked })) }} />
+                      {text({ ja: '左右反転', en: 'Mirror horizontally' })}</label>
+                    <label><input type="checkbox" checked={beginnerSilhouetteMirror.mirror_y}
+                      onChange={(event) => { beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null); setBeginnerSilhouetteMirror((value) => ({ ...value, mirror_y: event.target.checked })) }} />
+                      {text({ ja: '上下反転', en: 'Mirror vertically' })}</label>
+                    <button type="button" onClick={() => setBeginnerSilhouetteMirror({ schema_version: 1, mirror_x: false, mirror_y: false })}>
+                      {text({ ja: '反転をリセット', en: 'Reset mirror' })}</button>
+                  </fieldset>
                   <p id="beginner-recognition-help" className="muted">
                     {text({
                       ja: '認識結果は読取専用の案です。編集欄へコピーしても、保存するまでプロジェクトは変更されません。',

@@ -32,6 +32,8 @@ pub(crate) struct RecognizeBeginnerTargetRequest {
     crop_roi: Option<ori_domain::BeginnerSilhouetteCropRoiV1>,
     #[serde(default)]
     orientation_degrees: Option<u16>,
+    #[serde(default)]
+    mirror: Option<ori_domain::BeginnerSilhouetteMirrorV1>,
 }
 
 #[tauri::command]
@@ -92,15 +94,43 @@ pub(crate) fn recognize_beginner_silhouette(
     } else {
         (decoded_width, decoded_height)
     };
+    let mirror = request
+        .mirror
+        .or_else(|| {
+            let project = lock_project(&state).ok()?;
+            project
+                .editor
+                .beginner_design_profile()
+                .generation_constraints
+                .silhouette_mirror
+        })
+        .unwrap_or(ori_domain::BeginnerSilhouetteMirrorV1 {
+            schema_version: 1,
+            mirror_x: false,
+            mirror_y: false,
+        });
+    if mirror.schema_version != 1 {
+        return Err("recognition_mirror_invalid".to_owned());
+    }
     let mut rgba = vec![0_u8; width as usize * height as usize * 4];
     for source_y in 0..decoded_height {
         for source_x in 0..decoded_width {
-            let (target_x, target_y) = match orientation {
+            let (rotated_x, rotated_y) = match orientation {
                 0 => (source_x, source_y),
                 90 => (decoded_height - 1 - source_y, source_x),
                 180 => (decoded_width - 1 - source_x, decoded_height - 1 - source_y),
                 270 => (source_y, decoded_width - 1 - source_x),
                 _ => unreachable!(),
+            };
+            let target_x = if mirror.mirror_x {
+                width - 1 - rotated_x
+            } else {
+                rotated_x
+            };
+            let target_y = if mirror.mirror_y {
+                height - 1 - rotated_y
+            } else {
+                rotated_y
             };
             let source = (source_y as usize * decoded_width as usize + source_x as usize) * 4;
             let target = (target_y as usize * width as usize + target_x as usize) * 4;
@@ -282,6 +312,7 @@ pub(crate) fn recognize_beginner_part_suggestions(
         polarity: None,
         crop_roi: None,
         orientation_degrees: None,
+        mirror: None,
     };
     let (bytes, target_category, target_parts) = {
         let project = lock_project(&state)?;
@@ -480,6 +511,7 @@ pub(crate) fn apply_beginner_part_assignments(
         polarity: None,
         crop_roi: None,
         orientation_degrees: None,
+        mirror: None,
     };
     let bytes = {
         let project = lock_project(&state)?;
@@ -1421,6 +1453,7 @@ pub(crate) fn apply_beginner_outline_candidate(
         polarity: None,
         crop_roi: None,
         orientation_degrees: None,
+        mirror: None,
     };
     let bytes = {
         let project = lock_project(&state)?;

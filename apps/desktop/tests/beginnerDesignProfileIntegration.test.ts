@@ -304,6 +304,21 @@ test('silhouette orientation is explicit cardinal rotation before crop', () => {
   assert.match(app, /Reset orientation/u)
 })
 
+test('silhouette mirror is versioned persisted and applied after all cardinal rotations before crop', () => {
+  assert.match(generation, /struct BeginnerSilhouetteMirrorV1/u)
+  assert.match(recognitionNative, /let \(rotated_x, rotated_y\) = match orientation/u)
+  assert.match(recognitionNative, /mirror\.mirror_x \{\s*width - 1 - rotated_x/u)
+  assert.match(recognitionNative, /mirror\.mirror_y \{\s*height - 1 - rotated_y/u)
+  assert.ok(recognitionNative.indexOf('let mirror = request')
+    < recognitionNative.indexOf('let roi = request.crop_roi'))
+  assert.match(client, /silhouette_mirror/u)
+  assert.match(client, /mirror: thresholds\.mirror/u)
+  assert.match(app, /Silhouette mirror/u)
+  assert.match(app, /Mirror horizontally/u)
+  assert.match(app, /Mirror vertically/u)
+  assert.match(app, /Reset mirror/u)
+})
+
 test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticity', () => {
   assert.match(generation, /struct BeginnerBulgeTargetV1/u)
   assert.match(generation, /pub face_ids: Vec<FaceId>/u)

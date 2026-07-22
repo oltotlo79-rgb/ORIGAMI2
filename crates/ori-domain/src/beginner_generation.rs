@@ -202,6 +202,8 @@ pub struct BeginnerGenerationConstraintsV1 {
     pub silhouette_crop_roi: Option<BeginnerSilhouetteCropRoiV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub silhouette_orientation_degrees: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silhouette_mirror: Option<BeginnerSilhouetteMirrorV1>,
     #[serde(default)]
     pub protrusions: Vec<BeginnerProtrusionTargetV1>,
     #[serde(default)]
@@ -228,6 +230,7 @@ impl Default for BeginnerGenerationConstraintsV1 {
             silhouette_thresholds: None,
             silhouette_crop_roi: None,
             silhouette_orientation_degrees: None,
+            silhouette_mirror: None,
             protrusions: Vec::new(),
             bulge_targets: Vec::new(),
             target_asset: None,
@@ -260,6 +263,14 @@ pub struct BeginnerSilhouetteCropRoiV1 {
     pub y_millionths: u32,
     pub width_millionths: u32,
     pub height_millionths: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerSilhouetteMirrorV1 {
+    pub schema_version: u32,
+    pub mirror_x: bool,
+    pub mirror_y: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -335,6 +346,9 @@ pub fn validate_beginner_generation_constraints_v1(
         || constraints
             .silhouette_orientation_degrees
             .is_some_and(|angle| !matches!(angle, 0 | 90 | 180 | 270))
+        || constraints
+            .silhouette_mirror
+            .is_some_and(|mirror| mirror.schema_version != 1)
         || constraints.protrusions.len() > MAX_BEGINNER_PROTRUSIONS_V1
         || constraints.bulge_targets.len() > MAX_BEGINNER_BULGE_TARGETS_V1
     {

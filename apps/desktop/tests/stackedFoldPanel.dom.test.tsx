@@ -61,6 +61,7 @@ const basicTimelinePreview = {
   fixedFace: project,
   foldEdge: 'edge',
   assignment: 'mountain' as const,
+  techniqueKind: 'mountain' as const,
   previewBindingSha256: 'b'.repeat(64),
   timeline: { steps: [] },
 }
@@ -575,6 +576,33 @@ describe('StackedFoldPanel', () => {
     expect(screen.getByRole('button', { name: 'Apply named book fold' })).toHaveProperty('disabled', true)
     expect(transport.namedApply).not.toHaveBeenCalled()
   })
+
+  it.each(['squash', 'crimp'] as const)(
+    'requires a digest-bound two-segment preview before %s apply', async (kind) => {
+      const preview = { ...basicTimelinePreview, techniqueKind: kind }
+      transport.preview.mockResolvedValue(ready)
+      transport.basicPreview.mockResolvedValue(preview)
+      transport.namedApply.mockResolvedValue(4)
+      const document = { techniques: [] } as any
+      render(<StackedFoldPanel locale="en" snapshot={snapshot}
+        selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
+        disabled={false} namedBookFold={{ document, techniqueId: kind, name: kind, kind }}
+        refreshSnapshot={vi.fn().mockResolvedValue({ ...snapshot, revision: 4 })}
+        onApplied={vi.fn()} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
+      const apply = await screen.findByRole('button', { name: 'Apply named book fold' })
+      expect(apply).toHaveProperty('disabled', true)
+      fireEvent.click(screen.getByRole('button', { name: 'Preview certified timeline' }))
+      await waitFor(() => expect(transport.basicPreview).toHaveBeenCalledWith(
+        expect.objectContaining({ techniqueKind: kind }),
+      ))
+      fireEvent.click(screen.getByRole('checkbox'))
+      fireEvent.click(apply)
+      await waitFor(() => expect(transport.namedApply).toHaveBeenCalledWith(
+        token, document, kind, preview,
+      ))
+    },
+  )
 
   it('routes a named reverse fold only through the two-segment native transaction', async () => {
     transport.preview.mockResolvedValue(ready)

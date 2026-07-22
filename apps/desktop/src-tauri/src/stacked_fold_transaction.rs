@@ -27,6 +27,7 @@ pub(super) struct BasicFoldTimelinePreviewResponse {
     fixed_face: ori_domain::FaceId,
     fold_edge: ori_domain::EdgeId,
     assignment: String,
+    technique_kind: String,
     preview_binding_sha256: String,
     timeline: ori_domain::InstructionTimeline,
 }
@@ -716,6 +717,7 @@ pub(super) fn preview_named_basic_fold_timeline(
     expected_source_model_fingerprint: String,
     fold_edge: ori_domain::EdgeId,
     assignment: String,
+    technique_kind: String,
     technique_document_json: String,
     technique_id: String,
 ) -> Result<BasicFoldTimelinePreviewResponse, String> {
@@ -730,6 +732,7 @@ pub(super) fn preview_named_basic_fold_timeline(
         expected_source_model_fingerprint,
         fold_edge,
         assignment,
+        technique_kind,
         technique_document_json,
         technique_id,
     )
@@ -747,12 +750,14 @@ fn compile_named_basic_fold_preview(
     expected_source_model_fingerprint: String,
     fold_edge: ori_domain::EdgeId,
     assignment: String,
+    technique_kind: String,
     technique_document_json: String,
     technique_id: String,
 ) -> Result<BasicFoldTimelinePreviewResponse, String> {
-    let kind = match assignment.as_str() {
-        "mountain" => ori_instructions::BasicFoldKindV1::Mountain,
-        "valley" => ori_instructions::BasicFoldKindV1::Valley,
+    let basic_kind = match technique_kind.as_str() {
+        "mountain" if assignment == "mountain" => Some(ori_instructions::BasicFoldKindV1::Mountain),
+        "valley" if assignment == "valley" => Some(ori_instructions::BasicFoldKindV1::Valley),
+        "squash" | "crimp" if matches!(assignment.as_str(), "mountain" | "valley") => None,
         _ => return Err("The basic-fold assignment is unsupported.".to_owned()),
     };
     let technique =
@@ -801,20 +806,22 @@ fn compile_named_basic_fold_preview(
     let certificate = pending
         .requested
         .certified_graph_path()
-        .filter(|path| path.edges().len() == 1)
         .ok_or_else(|| "The basic-fold path certificate is unavailable.".to_owned())?;
-    if hinge_ids.as_slice() != [fold_edge]
-        || targets.len() != 1
+    if hinge_ids.first() != Some(&fold_edge)
+        || targets.is_empty()
         || !project.editor.pattern().edges.iter().any(|edge| {
             edge.id == fold_edge
                 && matches!(
-                    (kind, edge.kind),
+                    (basic_kind, edge.kind),
                     (
-                        ori_instructions::BasicFoldKindV1::Mountain,
+                        Some(ori_instructions::BasicFoldKindV1::Mountain),
                         ori_domain::EdgeKind::Mountain
                     ) | (
-                        ori_instructions::BasicFoldKindV1::Valley,
+                        Some(ori_instructions::BasicFoldKindV1::Valley),
                         ori_domain::EdgeKind::Valley
+                    ) | (
+                        None,
+                        ori_domain::EdgeKind::Mountain | ori_domain::EdgeKind::Valley
                     )
                 )
         })
@@ -844,18 +851,62 @@ fn compile_named_basic_fold_preview(
         target_angle_microdegrees: (target_angle * 1_000_000.0) as i64,
         path_certificate: certificate,
     };
-    let timeline = ori_instructions::compile_certified_basic_fold_timeline_v1(
-        ori_instructions::BasicFoldMotionRequestV1 {
-            kind,
-            straight_fold: straight_fold(),
-        },
-    )
-    .map_err(|_| "The named basic-fold compiler rejected the preview.".to_owned())?;
+    let timeline = if let Some(kind) = basic_kind {
+        if certificate.edges().len() != 1 || targets.len() != 1 || hinge_ids.len() != 1 {
+            return Err("The basic-fold path certificate is unavailable.".to_owned());
+        }
+        ori_instructions::compile_certified_basic_fold_timeline_v1(
+            ori_instructions::BasicFoldMotionRequestV1 {
+                kind,
+                straight_fold: straight_fold(),
+            },
+        )
+        .map_err(|_| "The named basic-fold compiler rejected the preview.".to_owned())?
+    } else {
+        if certificate.edges().len() != 2 || targets.len() != 2 || hinge_ids.len() != 2 {
+            return Err("Two continuous certified fold segments are required.".to_owned());
+        }
+        let first = certificate
+            .segment_certificate_v1(0)
+            .ok_or_else(|| "The first fold segment is unavailable.".to_owned())?;
+        let second = certificate
+            .segment_certificate_v1(1)
+            .ok_or_else(|| "The second fold segment is unavailable.".to_owned())?;
+        let angle = |index: usize, edge: ori_domain::EdgeId| {
+            targets[index]
+                .iter()
+                .find(|(candidate, _)| *candidate == edge)
+                .map(|(_, value)| *value)
+                .filter(|value| value.is_finite() && (0.0..=180.0).contains(value))
+                .map(|value| (value * 1_000_000.0) as i64)
+                .ok_or_else(|| "A two-segment target angle is invalid.".to_owned())
+        };
+        let request = ori_instructions::SinkFoldMotionRequestV1 {
+            technique_file: &technique,
+            technique_id: &technique_id,
+            source_model_fingerprint: &expected_source_model_fingerprint,
+            fixed_face,
+            first_edge: hinge_ids[0],
+            second_edge: hinge_ids[1],
+            source_hinge_angles: &source_hinge_angles,
+            intermediate_angle_microdegrees: angle(0, hinge_ids[0])?,
+            target_angle_microdegrees: angle(1, hinge_ids[1])?,
+            first_path_certificate: &first,
+            second_path_certificate: &second,
+        };
+        match technique_kind.as_str() {
+            "squash" => ori_instructions::compile_certified_squash_fold_timeline_v1(request),
+            "crimp" => ori_instructions::compile_certified_crimp_fold_timeline_v1(request),
+            _ => unreachable!(),
+        }
+        .map_err(|_| "The named two-segment compiler rejected the preview.".to_owned())?
+    };
     let preview_binding_sha256 = basic_fold_preview_binding_v1(
         token,
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+        &technique_kind,
         &timeline,
     )?;
     Ok(BasicFoldTimelinePreviewResponse {
@@ -868,6 +919,7 @@ fn compile_named_basic_fold_preview(
         fixed_face,
         fold_edge,
         assignment,
+        technique_kind,
         preview_binding_sha256,
         timeline,
     })
@@ -878,6 +930,7 @@ fn basic_fold_preview_binding_v1(
     instance: ProjectId,
     project: ProjectId,
     revision: u64,
+    technique_kind: &str,
     timeline: &ori_domain::InstructionTimeline,
 ) -> Result<String, String> {
     let bytes = serde_json::to_vec(timeline)
@@ -888,6 +941,8 @@ fn basic_fold_preview_binding_v1(
     hash.update(instance.canonical_bytes());
     hash.update(project.canonical_bytes());
     hash.update(revision.to_be_bytes());
+    hash.update((technique_kind.len() as u64).to_be_bytes());
+    hash.update(technique_kind.as_bytes());
     hash.update((bytes.len() as u64).to_be_bytes());
     hash.update(bytes);
     Ok(lowercase_hex(hash.finalize().into()))
@@ -905,39 +960,13 @@ pub(super) fn apply_named_book_fold_transaction(
     expected_source_model_fingerprint: String,
     fold_edge: ori_domain::EdgeId,
     assignment: String,
+    technique_kind: String,
     expected_preview_binding_sha256: String,
     technique_document_json: String,
     technique_id: String,
 ) -> Result<u64, String> {
     if technique_document_json.len() > ori_instructions::MAX_FOLD_TECHNIQUE_FILE_BYTES {
         return Err("The named book-fold document exceeds the resource limit.".to_owned());
-    }
-    let document =
-        ori_instructions::read_fold_technique_file_v1(technique_document_json.as_bytes())
-            .map_err(|_| "The named book-fold document is invalid.".to_owned())?;
-    let technique = document
-        .document()
-        .techniques
-        .iter()
-        .find(|candidate| candidate.id == technique_id)
-        .ok_or_else(|| "The named book-fold technique is unavailable.".to_owned())?;
-    let physical = technique
-        .operations
-        .iter()
-        .filter(|operation| {
-            matches!(
-                operation.action,
-                ori_instructions::FoldTechniqueActionV1::StraightLineStackedFold
-            )
-        })
-        .collect::<Vec<_>>();
-    if physical.len() != 1 || technique.operations.iter().any(|operation| {
-        matches!(
-            operation.execution_support,
-            ori_instructions::FoldTechniqueExecutionSupportV1::UnsupportedPhysicalOperation { .. }
-        )
-    }) {
-        return Err("Only one proven straight-line book fold can be applied.".to_owned());
     }
     let compiled = compile_named_basic_fold_preview(
         &app_state,
@@ -950,6 +979,7 @@ pub(super) fn apply_named_book_fold_transaction(
         expected_source_model_fingerprint,
         fold_edge,
         assignment,
+        technique_kind,
         technique_document_json,
         technique_id,
     )?;
@@ -1688,6 +1718,7 @@ mod tests {
             fixed_face: ori_domain::FaceId::new(),
             fold_edge: ori_domain::EdgeId::new(),
             assignment: "mountain".to_owned(),
+            technique_kind: "mountain".to_owned(),
             preview_binding_sha256: "cd".repeat(32),
             timeline: ori_domain::InstructionTimeline { steps: Vec::new() },
         };
@@ -1708,6 +1739,7 @@ mod tests {
                 "revision",
                 "schemaVersion",
                 "sourceModelFingerprint",
+                "techniqueKind",
                 "timeline",
                 "transactionToken",
             ]
@@ -1726,20 +1758,30 @@ mod tests {
         let project = ProjectId::new();
         let timeline = ori_domain::InstructionTimeline { steps: Vec::new() };
         let expected =
-            basic_fold_preview_binding_v1(token, instance, project, 7, &timeline).unwrap();
+            basic_fold_preview_binding_v1(token, instance, project, 7, "mountain", &timeline)
+                .unwrap();
         assert_eq!(expected.len(), 64);
         assert_eq!(
             expected,
-            basic_fold_preview_binding_v1(token, instance, project, 7, &timeline).unwrap()
-        );
-        assert_ne!(
-            expected,
-            basic_fold_preview_binding_v1(ProjectId::new(), instance, project, 7, &timeline)
+            basic_fold_preview_binding_v1(token, instance, project, 7, "mountain", &timeline)
                 .unwrap()
         );
         assert_ne!(
             expected,
-            basic_fold_preview_binding_v1(token, instance, project, 8, &timeline).unwrap()
+            basic_fold_preview_binding_v1(
+                ProjectId::new(),
+                instance,
+                project,
+                7,
+                "mountain",
+                &timeline
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            expected,
+            basic_fold_preview_binding_v1(token, instance, project, 8, "mountain", &timeline)
+                .unwrap()
         );
     }
 }

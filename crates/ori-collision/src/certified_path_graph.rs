@@ -183,6 +183,19 @@ impl CertifiedPoseGraphPathCertificateV1 {
     pub fn edges(&self) -> &[CertifiedPathTransitionEvidenceV1] {
         &self.edges
     }
+    /// Derives a non-authorizing single-transition view for compilers that
+    /// verify an ordered multi-segment motion one transition at a time.
+    #[must_use]
+    pub fn segment_certificate_v1(&self, index: usize) -> Option<Self> {
+        let edge = *self.edges.get(index)?;
+        Some(Self {
+            source: edge.source(),
+            target: edge.target(),
+            edges: vec![edge],
+            explored_state_count: self.explored_state_count,
+            evaluated_transition_count: self.evaluated_transition_count,
+        })
+    }
     #[must_use]
     pub const fn explored_state_count(&self) -> usize {
         self.explored_state_count

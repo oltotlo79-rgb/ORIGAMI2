@@ -4887,6 +4887,9 @@ fn apply_beginner_generated_plan_document(
     if project.editor.beginner_design_profile() != &expected_profile {
         return Err("the beginner design profile changed before apply".to_owned());
     }
+    if !component_bridge_override_is_live_v1(&project, &expected_profile) {
+        return Err("component_bridge_override_stale_or_disconnected".to_owned());
+    }
     if !target_asset_reference_is_live(
         &project,
         expected_profile.generation_constraints.target_asset,
@@ -5735,6 +5738,56 @@ fn target_asset_reference_is_live(
     }
 }
 
+fn component_bridge_override_is_live_v1(
+    project: &ProjectState,
+    profile: &ori_domain::BeginnerDesignProfileV1,
+) -> bool {
+    let Some(document) = profile
+        .generation_constraints
+        .component_bridge_override
+        .as_ref()
+    else {
+        return true;
+    };
+    if !document.reviewed || document.bridges.len() > 7 {
+        return false;
+    }
+    let hash_matches =
+        project.reference_model_assets.iter().any(|asset| {
+            sha2::Sha256::digest(&asset.bytes).as_slice() == document.source_asset_sha256
+        }) || project.texture_assets.iter().any(|asset| {
+            sha2::Sha256::digest(&asset.bytes).as_slice() == document.source_asset_sha256
+        });
+    if !hash_matches {
+        return false;
+    }
+    let accepted = document
+        .bridges
+        .iter()
+        .filter(|bridge| bridge.accepted)
+        .collect::<Vec<_>>();
+    if accepted.len() + 1 != usize::from(document.component_count) {
+        return false;
+    }
+    let mut parent = (0..usize::from(document.component_count)).collect::<Vec<_>>();
+    fn bridge_root(parent: &mut [usize], mut node: usize) -> usize {
+        while parent[node] != node {
+            parent[node] = parent[parent[node]];
+            node = parent[node];
+        }
+        node
+    }
+    for bridge in accepted {
+        let left = bridge_root(&mut parent, usize::from(bridge.start_component_id));
+        let right = bridge_root(&mut parent, usize::from(bridge.end_component_id));
+        if left == right {
+            return false;
+        }
+        parent[right] = left;
+    }
+    (1..parent.len()).all(|index| bridge_root(&mut parent, index) == bridge_root(&mut parent, 0))
+}
+
 #[tauri::command]
 fn update_project_memo(
     state: State<'_, AppState>,
@@ -5775,6 +5828,9 @@ fn update_beginner_design_profile(
     let mut project = lock_project(&state)?;
     if !target_asset_reference_is_live(&project, profile.generation_constraints.target_asset) {
         return Err("the target reference image is unavailable".to_owned());
+    }
+    if !component_bridge_override_is_live_v1(&project, &profile) {
+        return Err("component_bridge_override_stale_or_disconnected".to_owned());
     }
     let live_fingerprint = project.editor.fold_model_fingerprint_v1();
     if profile
@@ -6199,6 +6255,7 @@ struct BeginnerReferenceModelSuggestionResponseV1 {
     project_instance_id: ProjectId,
     project_id: ProjectId,
     revision: u64,
+    source_asset_sha256: [u8; 32],
     suggestion: BeginnerReferenceModelSuggestionV1,
 }
 
@@ -6975,6 +7032,7 @@ fn suggest_beginner_reference_model_features(
         project_instance_id: project.instance_id,
         project_id: project.project_id,
         revision: project.editor.revision(),
+        source_asset_sha256: sha2::Sha256::digest(&asset.bytes).into(),
         suggestion,
     })
 }

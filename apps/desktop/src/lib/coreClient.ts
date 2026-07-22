@@ -251,6 +251,10 @@ export type BeginnerGenerationConstraintsV1 = {
     end: { x_tenths_mm: number; y_tenths_mm: number }
     thickness_tenths_mm: number
   }>
+  component_bridge_override?: {
+    schema_version: 1; source_asset_sha256: number[]; component_count: number; reviewed: boolean
+    bridges: Array<{ id: number; start_component_id: number; end_component_id: number; accepted: boolean }>
+  }
   protrusions?: Array<{
     id: number
     count: number
@@ -423,6 +427,7 @@ function normalizeBeginnerGenerationConstraints(
     'target_category', 'custom_object_display_name',
     'target_parts',
     'skeleton_segments',
+    'component_bridge_override',
     'protrusions',
     'bulge_targets',
     'target_asset',
@@ -432,6 +437,7 @@ function normalizeBeginnerGenerationConstraints(
     (key) => key !== 'generic_body_size_tenths_mm'
       && key !== 'generic_body_outline_tenths_mm' && key !== 'generic_body_outline_mode'
       && key !== 'custom_object_display_name'
+      && key !== 'component_bridge_override'
       && key !== 'protrusions' && key !== 'bulge_targets',
   )
   const snapshot = snapshotCoreDataRecord(value)
@@ -656,6 +662,26 @@ function normalizeBeginnerGenerationConstraints(
       }
     }
   }
+  let componentBridgeOverride: BeginnerGenerationConstraintsV1['component_bridge_override']
+  if (record.component_bridge_override !== undefined) {
+    const document = exactCoreDataRecord(record.component_bridge_override, [
+      'schema_version', 'source_asset_sha256', 'component_count', 'reviewed', 'bridges',
+    ] as const)
+    if (!document || document.schema_version !== 1 || !isBoundedIntegerTuple(document.source_asset_sha256, 32, 255)
+      || !Number.isInteger(document.component_count) || Number(document.component_count) < 2 || Number(document.component_count) > 8
+      || typeof document.reviewed !== 'boolean' || !Array.isArray(document.bridges) || document.bridges.length > 7) return null
+    const bridges = document.bridges.map((value, index) => {
+      const bridge = exactCoreDataRecord(value, ['id', 'start_component_id', 'end_component_id', 'accepted'] as const)
+      if (!bridge || bridge.id !== index || !Number.isInteger(bridge.start_component_id) || !Number.isInteger(bridge.end_component_id)
+        || Number(bridge.start_component_id) < 0 || Number(bridge.end_component_id) < 0
+        || Number(bridge.start_component_id) >= Number(document.component_count)
+        || Number(bridge.end_component_id) >= Number(document.component_count)
+        || bridge.start_component_id === bridge.end_component_id || typeof bridge.accepted !== 'boolean') return null
+      return { id: index, start_component_id: Number(bridge.start_component_id), end_component_id: Number(bridge.end_component_id), accepted: bridge.accepted }
+    })
+    if (bridges.some((bridge) => bridge === null)) return null
+    componentBridgeOverride = { schema_version: 1, source_asset_sha256: document.source_asset_sha256.slice(), component_count: Number(document.component_count), reviewed: document.reviewed, bridges: bridges as NonNullable<typeof componentBridgeOverride>['bridges'] }
+  }
   return Object.freeze({
     schema_version: 1,
     maximum_steps: Number(record.maximum_steps),
@@ -674,6 +700,7 @@ function normalizeBeginnerGenerationConstraints(
     }),
     target_parts: targetParts,
     skeleton_segments: skeletonSegments,
+    ...(componentBridgeOverride ? { component_bridge_override: componentBridgeOverride } : {}),
     ...(hadProtrusions ? { protrusions } : {}),
     ...(hadBulgeTargets ? { bulge_targets: bulgeTargets } : {}),
     target_asset: targetAsset,
@@ -2128,6 +2155,7 @@ export async function getBeginnerReferenceModelGeometry(
 
 export type BeginnerReferenceModelSuggestionV1 = Readonly<{
   asset_id: string
+  source_asset_sha256: readonly number[]
   bbox_min_tenths_mm: readonly [number, number, number]
   bbox_max_tenths_mm: readonly [number, number, number]
   dominant_normal_milli: readonly [number, number, number]
@@ -2163,7 +2191,7 @@ export async function suggestBeginnerReferenceModelFeatures(
     expectedProjectInstanceId, expectedProjectId, expectedRevision,
   })
   const response = exactCoreDataRecord(value, [
-    'project_instance_id', 'project_id', 'revision', 'suggestion',
+    'project_instance_id', 'project_id', 'revision', 'source_asset_sha256', 'suggestion',
   ] as const)
   const suggestionKeys = [
     'asset_id', 'bbox_min_tenths_mm', 'bbox_max_tenths_mm', 'dominant_normal_milli',
@@ -2179,6 +2207,7 @@ export async function suggestBeginnerReferenceModelFeatures(
   }
   if (!response || response.project_instance_id !== expectedProjectInstanceId
     || response.project_id !== expectedProjectId || response.revision !== expectedRevision
+    || !isBoundedIntegerTuple(response.source_asset_sha256, 32, 255)
     || !suggestion || !isCanonicalNonNilUuid(suggestion.asset_id)
     || suggestion.method !== 'bounded_bbox_area_normal_v1'
     || ![null, 'wing', 'fin', 'ear', 'horn', 'antenna', 'leg', 'tail'].includes(suggestion.suggested_part_kind as null | string)
@@ -2265,7 +2294,7 @@ export async function suggestBeginnerReferenceModelFeatures(
     })) {
     throw new Error('invalid reference model suggestion')
   }
-  return Object.freeze({ ...suggestion,
+  return Object.freeze({ ...suggestion, source_asset_sha256: Object.freeze(response.source_asset_sha256.slice()),
     surface_ranges: Object.freeze(surfaceRanges),
     surface_landmarks_tenths_mm: Object.freeze(suggestion.surface_landmarks_tenths_mm.map(
       (point) => Object.freeze((point as number[]).slice()) as unknown as readonly [number, number, number],

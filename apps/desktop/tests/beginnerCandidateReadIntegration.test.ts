@@ -176,6 +176,17 @@ test('image and GLB references fuse only under bounded dual hash authority', () 
   assert.match(app, /image and GLB disagree; candidate apply is blocked/u)
 })
 
+test('reviewed component bridge overrides persist and fail closed before mutation', () => {
+  assert.match(native, /fn component_bridge_override_is_live_v1/u)
+  assert.match(native, /accepted\.len\(\) \+ 1 != usize::from\(document\.component_count\)/u)
+  assert.match(native, /if left == right \{\s*return false/u)
+  assert.match(native, /component_bridge_override_stale_or_disconnected/u)
+  assert.match(client, /component_bridge_override/u)
+  assert.match(client, /document\.bridges\.length > 7/u)
+  assert.match(app, /Reviewed component bridge overrides/u)
+  assert.match(app, /Component bridges \(reviewed, maximum 7\)/u)
+})
+
 test('AUT-101 apply rebinds candidate authority natively and requires confirmation', () => {
   assert.match(native, /fn apply_beginner_generated_plan/)
   assert.match(native, /expected_profile: ori_domain::BeginnerDesignProfileV1/)

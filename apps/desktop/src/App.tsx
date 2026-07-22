@@ -745,6 +745,8 @@ function App() {
   const [beginnerPartTotal, setBeginnerPartTotal] = useState(0)
   const [beginnerSkeletonSegments, setBeginnerSkeletonSegments] =
     useState<BeginnerDesignProfileV1['generation_constraints']['skeleton_segments']>([])
+  const [beginnerComponentBridgeOverride, setBeginnerComponentBridgeOverride] =
+    useState<BeginnerDesignProfileV1['generation_constraints']['component_bridge_override']>()
   const beginnerSkeletonTree = analyzeGenericSkeletonTree(beginnerSkeletonSegments)
   const [beginnerProtrusions, setBeginnerProtrusions] =
     useState<NonNullable<BeginnerDesignProfileV1['generation_constraints']['protrusions']>>([])
@@ -814,6 +816,9 @@ function App() {
     )
     setBeginnerSkeletonSegments(
       nativeSnapshot?.beginner_design_profile.generation_constraints.skeleton_segments ?? [],
+    )
+    setBeginnerComponentBridgeOverride(
+      nativeSnapshot?.beginner_design_profile.generation_constraints.component_bridge_override,
     )
     setBeginnerProtrusions(
       nativeSnapshot?.beginner_design_profile.generation_constraints.protrusions ?? [],
@@ -3719,6 +3724,7 @@ function App() {
         ? { custom_object_display_name: customObjectDisplayName } : {}),
       target_parts: targetParts,
       skeleton_segments: beginnerSkeletonSegments,
+      ...(beginnerComponentBridgeOverride ? { component_bridge_override: beginnerComponentBridgeOverride } : {}),
       protrusions: beginnerProtrusions,
       bulge_targets: beginnerBulgeTargets,
       target_asset: targetUnderlay
@@ -3900,6 +3906,15 @@ function App() {
     if (suggestion.inferred_component_bridges) {
       const category = beginnerDesignFormRef.current?.elements.namedItem('target_category')
       if (category instanceof HTMLSelectElement) category.value = 'custom_object'
+      setBeginnerComponentBridgeOverride({
+        schema_version: 1,
+        source_asset_sha256: suggestion.source_asset_sha256.slice(),
+        component_count: suggestion.component_count,
+        reviewed: true,
+        bridges: Array.from({ length: suggestion.component_count - 1 }, (_, id) => ({
+          id, start_component_id: id, end_component_id: id + 1, accepted: true,
+        })),
+      })
     }
     setBeginnerProtrusions(suggestion.general_protrusion_candidates.map((target) => ({ ...target })))
     setBeginnerSkeletonSegments(suggestion.stick_bars.filter((bar) =>
@@ -8860,6 +8875,29 @@ function App() {
                           <button type="button" onClick={copyBeginnerGeneralReferenceTarget}>
                             {text({ ja: '確認して一般3D候補を編集欄へコピー', en: 'Review and copy general 3D proposal to editor' })}
                           </button>
+                          {beginnerComponentBridgeOverride && (
+                            <fieldset aria-label="Reviewed component bridge overrides">
+                              <legend>Component bridges (reviewed, maximum 7)</legend>
+                              {beginnerComponentBridgeOverride.bridges.map((bridge, index) => (
+                                <label key={bridge.id}>
+                                  <input type="checkbox" checked={bridge.accepted} onChange={(event) => {
+                                    setBeginnerComponentBridgeOverride({ ...beginnerComponentBridgeOverride,
+                                      bridges: beginnerComponentBridgeOverride.bridges.map((item, itemIndex) =>
+                                        itemIndex === index ? { ...item, accepted: event.target.checked } : item),
+                                    })
+                                  }} />
+                                  {`Bridge ${bridge.id}: component `}
+                                  <select value={bridge.start_component_id} onChange={(event) => setBeginnerComponentBridgeOverride({
+                                    ...beginnerComponentBridgeOverride, bridges: beginnerComponentBridgeOverride.bridges.map((item, itemIndex) => itemIndex === index ? { ...item, start_component_id: Number(event.target.value) } : item),
+                                  })}>{Array.from({ length: beginnerComponentBridgeOverride.component_count }, (_, id) => <option key={id} value={id}>{id}</option>)}</select>
+                                  {' to '}
+                                  <select value={bridge.end_component_id} onChange={(event) => setBeginnerComponentBridgeOverride({
+                                    ...beginnerComponentBridgeOverride, bridges: beginnerComponentBridgeOverride.bridges.map((item, itemIndex) => itemIndex === index ? { ...item, end_component_id: Number(event.target.value) } : item),
+                                  })}>{Array.from({ length: beginnerComponentBridgeOverride.component_count }, (_, id) => <option key={id} value={id}>{id}</option>)}</select>
+                                </label>
+                              ))}
+                            </fieldset>
+                          )}
                         </div>
                       )}
                       {beginnerReferenceGeometry && (

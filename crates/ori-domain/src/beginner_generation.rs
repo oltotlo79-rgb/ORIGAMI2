@@ -194,6 +194,8 @@ pub struct BeginnerGenerationConstraintsV1 {
     pub target_parts: Vec<BeginnerTargetPartRecordV1>,
     #[serde(default)]
     pub skeleton_segments: Vec<BeginnerSkeletonSegmentV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_bridge_override: Option<BeginnerComponentBridgeOverrideV1>,
     #[serde(default)]
     pub protrusions: Vec<BeginnerProtrusionTargetV1>,
     #[serde(default)]
@@ -216,6 +218,7 @@ impl Default for BeginnerGenerationConstraintsV1 {
             custom_object_display_name: None,
             target_parts: Vec::new(),
             skeleton_segments: Vec::new(),
+            component_bridge_override: None,
             protrusions: Vec::new(),
             bulge_targets: Vec::new(),
             target_asset: None,
@@ -228,6 +231,25 @@ impl Default for BeginnerGenerationConstraintsV1 {
             ],
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerComponentBridgeOverrideV1 {
+    pub schema_version: u32,
+    pub source_asset_sha256: [u8; 32],
+    pub component_count: u8,
+    pub reviewed: bool,
+    pub bridges: Vec<BeginnerComponentBridgeRecordV1>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerComponentBridgeRecordV1 {
+    pub id: u8,
+    pub start_component_id: u8,
+    pub end_component_id: u8,
+    pub accepted: bool,
 }
 
 impl BeginnerGenerationConstraintsV1 {
@@ -248,6 +270,20 @@ pub fn validate_beginner_generation_constraints_v1(
         || constraints.allowed_techniques.len() > MAX_BEGINNER_ALLOWED_TECHNIQUES_V1
         || constraints.target_parts.len() > MAX_BEGINNER_TARGET_PART_RECORDS_V1
         || constraints.skeleton_segments.len() > MAX_BEGINNER_SKELETON_SEGMENTS_V1
+        || constraints
+            .component_bridge_override
+            .as_ref()
+            .is_some_and(|document| {
+                document.schema_version != 1
+                    || !(2..=8).contains(&document.component_count)
+                    || document.bridges.len() > 7
+                    || document.bridges.iter().enumerate().any(|(index, bridge)| {
+                        bridge.id as usize != index
+                            || bridge.start_component_id >= document.component_count
+                            || bridge.end_component_id >= document.component_count
+                            || bridge.start_component_id == bridge.end_component_id
+                    })
+            })
         || constraints.protrusions.len() > MAX_BEGINNER_PROTRUSIONS_V1
         || constraints.bulge_targets.len() > MAX_BEGINNER_BULGE_TARGETS_V1
     {

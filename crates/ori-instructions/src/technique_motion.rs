@@ -162,6 +162,12 @@ pub type CrimpFoldMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
 /// Reserved request shape for a future certified petal-fold compiler.
 pub type PetalFoldMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
 
+/// Proof inputs for the deliberately narrow regular-quad petal primitive.
+/// The native transaction boundary proves the regular four-edge flap and
+/// continuous layer authority before constructing this request; this compiler
+/// still revalidates each of the three ordered path-certificate endpoints.
+pub type RegularQuadPetalFoldMotionRequestV1<'a> = AccordionFoldMotionRequestV1<'a>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PetalFoldMissingPremiseV1 {
     ThreeSegmentGraphChain,
@@ -265,6 +271,21 @@ pub const fn compile_certified_petal_fold_timeline_v1(
 ) -> Result<InstructionTimeline, ReverseFoldMotionError> {
     let _audit = audit_certified_petal_fold_v1();
     Err(ReverseFoldMotionError::UnsupportedTechnique)
+}
+
+/// Compiles only the three-stage path portion of a native-authenticated,
+/// regular-quad petal fold. General petal requests continue to use
+/// [`compile_certified_petal_fold_timeline_v1`] and remain unsupported.
+pub fn compile_certified_regular_quad_petal_fold_timeline_v1(
+    request: RegularQuadPetalFoldMotionRequestV1<'_>,
+) -> Result<InstructionTimeline, AccordionFoldMotionError> {
+    if request.ordered_edges.len() != 3
+        || request.ordered_target_angles_microdegrees.len() != 3
+        || request.ordered_path_certificates.len() != 3
+    {
+        return Err(AccordionFoldMotionError::InvalidSegments);
+    }
+    compile_certified_accordion_fold_timeline_v1(request)
 }
 
 pub fn compile_certified_layer_selective_timeline_v1(
@@ -1453,6 +1474,21 @@ mod tests {
                 Some(certificate.binding_fingerprint_v1())
             );
         }
+        let petal = compile_certified_regular_quad_petal_fold_timeline_v1(
+            RegularQuadPetalFoldMotionRequestV1 {
+                technique_file: &file,
+                technique_id: "book-fold",
+                source_model_fingerprint: &model,
+                fixed_face: face,
+                source_hinge_angles: &source,
+                ordered_edges: &edges,
+                ordered_target_angles_microdegrees: &targets,
+                ordered_path_certificates: &certificates,
+            },
+        )
+        .expect("regular-quad petal keeps the exact three-segment proof chain");
+        assert_eq!(petal.steps.len(), 4);
+        assert_eq!(petal.steps[3].pose.hinge_angles, previous);
     }
 
     #[test]

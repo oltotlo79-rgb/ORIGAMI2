@@ -6668,6 +6668,53 @@ mod tests {
     }
 
     #[test]
+    fn regular_quad_petal_gate_accepts_only_three_hinges_on_one_square_boundary_face() {
+        let (pattern, paper, _) =
+            super::dense_grid_cycle_test_support::rectangular_dense_cycle_pattern(3, 3);
+        let project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology.simulation_snapshot().unwrap();
+        let hinges = snapshot
+            .faces
+            .iter()
+            .find_map(|face| {
+                let hinges = face
+                    .outer
+                    .half_edges
+                    .iter()
+                    .filter(|half| {
+                        snapshot
+                            .hinge_adjacency
+                            .iter()
+                            .any(|adjacency| adjacency.edge == half.edge)
+                    })
+                    .map(|half| half.edge)
+                    .collect::<Vec<_>>();
+                (face.outer.half_edges.len() == 4 && hinges.len() == 3).then_some(hinges)
+            })
+            .expect("3x3 edge cell has exactly three hinge sides");
+        assert!(
+            super::super::stacked_fold_transaction::regular_quad_petal_face_v1(&project, &hinges)
+        );
+        assert!(
+            !super::super::stacked_fold_transaction::regular_quad_petal_face_v1(
+                &project,
+                &hinges[..2],
+            )
+        );
+        let mut duplicate = hinges.clone();
+        duplicate[2] = duplicate[0];
+        assert!(
+            !super::super::stacked_fold_transaction::regular_quad_petal_face_v1(
+                &project, &duplicate,
+            )
+        );
+    }
+
+    #[test]
     fn dense_square_and_rectangular_grids_preview_and_apply_atomically() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         for (columns, rows) in [

@@ -145,10 +145,10 @@ export function StackedFoldPanel({
     || namedBookFold?.kind === 'valley' || namedBookFold?.kind === 'squash'
     || namedBookFold?.kind === 'crimp' || namedBookFold?.kind === 'inside_reverse'
     || namedBookFold?.kind === 'outside_reverse' || namedBookFold?.kind === 'sink'
-    || namedBookFold?.kind === 'accordion' || namedBookFold?.kind === 'layer_selective'
+    || namedBookFold?.kind === 'accordion' || namedBookFold?.kind === 'petal'
+    || namedBookFold?.kind === 'layer_selective'
   const unsupportedNamedPhysicalFold = namedBookFold != null
-    && (namedBookFold.kind == null || namedBookFold.kind === 'book'
-      || namedBookFold.kind === 'petal')
+    && (namedBookFold.kind == null || namedBookFold.kind === 'book')
   useEffect(() => {
     basicFoldTimelineSequenceRef.current += 1
     if (basicFoldTimelineActiveRef.current) {
@@ -537,7 +537,7 @@ export function StackedFoldPanel({
         expectedSourceModelFingerprint: authority.fold_model_fingerprint,
         foldEdge: selectedLine.id,
         assignment: segment.assignment,
-        techniqueKind: namedBookFold.kind as 'mountain' | 'valley' | 'squash' | 'crimp' | 'inside_reverse' | 'outside_reverse' | 'sink' | 'accordion' | 'layer_selective',
+        techniqueKind: namedBookFold.kind as 'mountain' | 'valley' | 'squash' | 'crimp' | 'inside_reverse' | 'outside_reverse' | 'sink' | 'accordion' | 'petal' | 'layer_selective',
         techniqueDocument: namedBookFold.document,
         techniqueId: namedBookFold.techniqueId,
       })
@@ -1363,7 +1363,8 @@ export function StackedFoldPanel({
               )}
             </section>
           )}
-          {unsupportedNamedPhysicalFold && (
+          {(unsupportedNamedPhysicalFold
+            || (namedBookFold?.kind === 'petal' && basicFoldTimelinePreviewError)) && (
             <div role="alert">
             <p>{t(
               namedBookFold?.kind === 'petal'

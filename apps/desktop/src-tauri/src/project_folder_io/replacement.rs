@@ -2200,6 +2200,8 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    // This Windows-only fixture restores the FILE_ATTRIBUTE_READONLY bit; Unix modes are absent.
+    #[allow(clippy::permissions_set_readonly_false)]
     fn windows_readonly_cleanup_failure_preserves_complete_target_and_retries() {
         for (point, protects_backup, expects_new) in [
             (ReplacementCrashPoint::AfterPrepared, false, false),

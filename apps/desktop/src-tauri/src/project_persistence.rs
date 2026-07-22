@@ -2401,6 +2401,8 @@ mod staged_payload_adapter_tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    // This Windows-only fixture restores the FILE_ATTRIBUTE_READONLY bit; Unix modes are absent.
+    #[allow(clippy::permissions_set_readonly_false)]
     fn windows_real_fs_faults_preserve_complete_target_and_redact_reason() {
         use std::os::windows::fs::OpenOptionsExt;
 

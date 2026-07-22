@@ -336,21 +336,28 @@ fn project_directory_identity(path: &Path) -> Result<ProjectDirectoryIdentity, (
 
 #[cfg(target_os = "windows")]
 fn project_directory_identity(path: &Path) -> Result<ProjectDirectoryIdentity, ()> {
-    use std::{mem::MaybeUninit, os::windows::io::AsRawHandle};
-    use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
-    };
-
     let metadata = std::fs::symlink_metadata(path).map_err(|_| ())?;
     if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
         return Err(());
     }
     let mut options = OpenOptions::new();
     options
-        .access_mode(FILE_READ_ATTRIBUTES)
+        .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
     let directory = options.open(path).map_err(|_| ())?;
+    project_directory_identity_from_handle(&directory)
+}
+
+#[cfg(target_os = "windows")]
+fn project_directory_identity_from_handle(
+    directory: &File,
+) -> Result<ProjectDirectoryIdentity, ()> {
+    use std::{mem::MaybeUninit, os::windows::io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
     let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
     // SAFETY: the output storage and directory handle are valid for the call.
     if unsafe {
@@ -622,16 +629,43 @@ fn sync_project_directory(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(target_os = "windows")]
+fn windows_directory_flush_is_unsupported(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5 | 6))
+}
+
+#[cfg(target_os = "windows")]
 fn sync_project_directory(path: &Path) -> std::io::Result<()> {
+    let expected_identity = project_directory_identity(path)
+        .map_err(|()| std::io::Error::other("directory identity is unavailable"))?;
     let mut options = OpenOptions::new();
     options
-        // FlushFileBuffers requires a handle opened with write access. Keep
-        // delete sharing enabled so durability does not turn the directory
-        // handle into a transient rename blocker for sibling saves.
-        .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE)
+        .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
-    options.open(path)?.sync_all()
+    let directory = options.open(path)?;
+    if project_directory_identity_from_handle(&directory)
+        .map_err(|()| std::io::Error::other("opened directory identity is unavailable"))?
+        != expected_identity
+    {
+        return Err(std::io::Error::other("save directory changed"));
+    }
+    match directory.sync_all() {
+        Ok(()) => {}
+        Err(error) if windows_directory_flush_is_unsupported(&error) => {
+            // Windows does not guarantee FlushFileBuffers support for directory
+            // handles. Only the documented access-denied/invalid-handle cases
+            // are treated as a platform no-op; all other I/O failures remain
+            // fail-closed. Staged file data was flushed before atomic rename.
+        }
+        Err(error) => return Err(error),
+    }
+    if project_directory_identity(path)
+        .map_err(|()| std::io::Error::other("directory identity changed after synchronization"))?
+        != expected_identity
+    {
+        return Err(std::io::Error::other("save directory changed"));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -649,8 +683,8 @@ use super::{
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
 };
 
 pub(super) const PROJECT_FILE_OPEN_FAILED_MESSAGE: &str =
@@ -1599,6 +1633,23 @@ mod staged_payload_adapter_tests {
         ));
         fs::create_dir(&path).expect("create journal test directory");
         path
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn directory_flush_accepts_only_windows_unsupported_error_codes() {
+        assert!(super::windows_directory_flush_is_unsupported(
+            &std::io::Error::from_raw_os_error(5)
+        ));
+        assert!(super::windows_directory_flush_is_unsupported(
+            &std::io::Error::from_raw_os_error(6)
+        ));
+        assert!(!super::windows_directory_flush_is_unsupported(
+            &std::io::Error::from_raw_os_error(32)
+        ));
+        assert!(!super::windows_directory_flush_is_unsupported(
+            &std::io::Error::other("synthetic failure")
+        ));
     }
 
     struct InjectedWriter {

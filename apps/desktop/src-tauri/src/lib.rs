@@ -17334,6 +17334,65 @@ mod tests {
                     .caution
                     .contains(&certificate_hex)
             );
+            let mut recovered = ProjectState::from_recovery_project_archive(archive.clone())
+                .expect("recover generic tree archive");
+            let recovered_document = recovered.document();
+            assert_eq!(
+                recovered_document.crease_pattern,
+                archive.document.crease_pattern
+            );
+            assert_eq!(recovered_document.paper, archive.document.paper);
+            assert_eq!(
+                recovered_document.instruction_timeline,
+                archive.document.instruction_timeline
+            );
+            assert_eq!(
+                recovered_document.beginner_design_profile,
+                archive.document.beginner_design_profile
+            );
+            let recovered_provenance = recovered
+                .editor
+                .beginner_design_profile()
+                .generation_provenance
+                .as_ref()
+                .expect("recovered generic tree provenance");
+            assert_eq!(
+                recovered_provenance.fold_path_certificate_sha256,
+                Some(certificate)
+            );
+            assert!(recovered_provenance.generic_tree.is_some());
+            assert!(
+                recovered
+                    .editor
+                    .instruction_timeline()
+                    .steps
+                    .last()
+                    .unwrap()
+                    .caution
+                    .contains(&certificate_hex)
+            );
+            assert!(recovered.editor.can_undo());
+            let recovered_revision = recovered.editor.revision();
+            let recovered_undo = execute_undo(&mut recovered, project_id, recovered_revision)
+                .expect("undo recovered generic tree");
+            assert!(
+                recovered
+                    .editor
+                    .beginner_design_profile()
+                    .generation_provenance
+                    .is_none()
+            );
+            execute_redo(&mut recovered, project_id, recovered_undo.revision)
+                .expect("redo recovered generic tree");
+            assert_eq!(
+                recovered
+                    .editor
+                    .beginner_design_profile()
+                    .generation_provenance
+                    .as_ref()
+                    .and_then(|value| value.fold_path_certificate_sha256),
+                Some(certificate)
+            );
         }
     }
 

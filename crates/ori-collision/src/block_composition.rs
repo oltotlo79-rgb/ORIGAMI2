@@ -14,6 +14,7 @@ pub const BLOCK_COMPOSED_PATH_MODEL_ID_V1: &str = "block_composed_path_authority
 pub const BLOCK_COMPOSITION_LIMIT_V1: usize = 32;
 pub const BLOCKWISE_CLOSURE_MODEL_ID_V1: &str = "blockwise_interval_closure_authority_v1";
 pub const BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1: &str = "blockwise_positive_layer_authority_v1";
+pub const BLOCKWISE_POSITIVE_LAYER_ARITY_V1: usize = 2;
 
 pub struct BlockwiseClosureInputV1<'a> {
     pub geometry: &'a MaterialHingeGraphGeometry,

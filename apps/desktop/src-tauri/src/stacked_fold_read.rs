@@ -6350,6 +6350,47 @@ mod tests {
     }
 
     #[test]
+    fn three_block_miura_chain_stops_at_the_two_block_positive_layer_authority_boundary() {
+        use std::collections::HashSet;
+
+        let (blocks, (pattern, paper, _)) =
+            super::miura_cactus_test_support::three_three_by_three_miura_blocks_with_document();
+        let namespace = ProjectId::new();
+        let block_faces = blocks.each_ref().map(|(pattern, paper, _)| {
+            analyze_faces(FaceExtractionInput {
+                identity_namespace: namespace,
+                source_revision: 1,
+                paper,
+                pattern,
+            })
+            .snapshot
+            .unwrap()
+            .faces
+            .into_iter()
+            .map(|face| face.id)
+            .collect::<HashSet<_>>()
+        });
+        assert_eq!(block_faces.each_ref().map(HashSet::len), [9, 9, 9]);
+        assert_eq!(block_faces[0].intersection(&block_faces[1]).count(), 1);
+        assert_eq!(block_faces[1].intersection(&block_faces[2]).count(), 1);
+        assert!(block_faces[0].is_disjoint(&block_faces[2]));
+        let document = analyze_faces(FaceExtractionInput {
+            identity_namespace: namespace,
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .snapshot
+        .unwrap();
+        assert_eq!(document.faces.len(), 25);
+        assert_eq!(ori_collision::BLOCKWISE_POSITIVE_LAYER_ARITY_V1, 2);
+        assert!(
+            block_faces.len() > ori_collision::BLOCKWISE_POSITIVE_LAYER_ARITY_V1,
+            "three per-block positive/layer proofs cannot yet be composed into one authority"
+        );
+    }
+
+    #[test]
     fn regular_quad_petal_authority_shape_rejects_wrong_counts_and_tree_substitution() {
         assert!(exact_three_graph_segment_shape_v1(3, 3));
         assert!(!exact_three_graph_segment_shape_v1(2, 2));

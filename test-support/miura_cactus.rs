@@ -6,6 +6,7 @@ use ori_domain::{
 
 pub type MiuraPatternFixture = (CreasePattern, Paper, Vec<EdgeId>);
 pub type IndependentMiuraBlocksWithDocument = ([MiuraPatternFixture; 2], MiuraPatternFixture);
+pub type ThreeMiuraBlocksWithDocument = ([MiuraPatternFixture; 3], MiuraPatternFixture);
 
 pub fn two_patch_miura_cactus_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
     let cells = [
@@ -44,6 +45,35 @@ pub fn independent_three_by_three_miura_blocks_with_document() -> IndependentMiu
         [
             pattern_for_cells(&northwest, namespace),
             pattern_for_cells(&southeast, namespace),
+        ],
+        pattern_for_cells(&combined, namespace),
+    )
+}
+
+pub fn three_three_by_three_miura_blocks_with_document() -> ThreeMiuraBlocksWithDocument {
+    let namespace = ProjectId::new();
+    let first = (-4..=-2)
+        .flat_map(|x| (0..=2).map(move |y| (x, y)))
+        .collect::<Vec<_>>();
+    let second = (-2..=0)
+        .flat_map(|x| (-2..=0).map(move |y| (x, y)))
+        .collect::<Vec<_>>();
+    let third = (0..=2)
+        .flat_map(|x| (0..=2).map(move |y| (x, y)))
+        .collect::<Vec<_>>();
+    let combined = first
+        .iter()
+        .chain(&second)
+        .chain(&third)
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    (
+        [
+            pattern_for_cells(&first, namespace),
+            pattern_for_cells(&second, namespace),
+            pattern_for_cells(&third, namespace),
         ],
         pattern_for_cells(&combined, namespace),
     )

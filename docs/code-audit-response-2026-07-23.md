@@ -56,7 +56,7 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 
 ## SIM-010の証明済み範囲と未証明境界
 
-`1668933`, `1d167c0`, `7d0cc69`, `99ebfe6`, `be6a15a`, `9020f8b`, `82be62a`, `b009cfe`により、既存の単一hinge・厚さ0経路だけでなく、bounded dyadic graph/cycleとpositive-thickness Treeの一部もproduction native routeへ到達している。Tree routeは正厚連続certificateとshared-vertex layer transportを別々に保持し、preview mintとApply直前にschedule端点、source/target、紙厚、層証拠、project instance/revision/fingerprint/generationを再照合する。正厚4/5/6/7-hinge level-3 fixtureでは改ざん無変更、one-shot token、原子的Apply、certificate付きtimeline、Undo/Redo、ORI2再openを一つの本番routeで回帰した。
+`1668933`, `1d167c0`, `7d0cc69`, `99ebfe6`, `be6a15a`, `9020f8b`, `82be62a`, `b009cfe`, `d88f870`により、既存の単一hinge・厚さ0経路だけでなく、bounded dyadic graph/cycleとpositive-thickness Treeの一部もproduction native routeへ到達している。Tree routeは正厚連続certificateとshared-vertex layer transportを別々に保持し、preview mintとApply直前にschedule端点、source/target、紙厚、層証拠、project instance/revision/fingerprint/generationを再照合する。正厚4/5/6/7-hinge level-3 Treeと、flat開始・正厚8-hinge collective fixtureでは改ざん無変更、one-shot token、原子的Apply、certificate付きtimeline、Undo/Redo、ORI2再openを一つの本番routeで回帰した。
 
 一方、これは任意の一般姿勢、任意多hinge schedule、一般共有hinge admission、完全な正厚衝突、一般複数層transport、全経路closure、専用層順viewerを証明しない。browser harnessのmock成功だけを能力証拠には用いず、native certificate fixtureと本番routeの双方がある狭いcaseだけを実装範囲とする。従ってSIM-010は部分実装を維持する。
 
@@ -77,5 +77,6 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 - Windows desktop SIM-010 positive-thickness 5-hinge Tree永続化回帰: 1/1（615件filter）、workspace fmt: 成功。同じく部分実装を維持する。
 - Windows desktop SIM-010 positive-thickness 6-hinge Tree永続化回帰: 1/1（615件filter）、WSL Clippy `-D warnings`・workspace fmt: 成功。同じく部分実装を維持する。
 - Windows desktop SIM-010 positive-thickness 7-hinge generic-grid Tree永続化回帰: 1/1（615件filter）、workspace fmt: 成功。同じく部分実装を維持する。
+- Windows desktop SIM-010 flat-start positive-thickness 8-hinge collective永続化回帰: 1/1（615件filter）、WSL Clippy `-D warnings`・workspace fmt: 成功。非flat一般開始を証明しないため部分実装を維持する。
 
 検証件数は各対応コミット時点の対象suiteであり、異なる時点の件数を一つの全suite件数として合算しない。全CIが成功するまでは公式完成度を更新しない。

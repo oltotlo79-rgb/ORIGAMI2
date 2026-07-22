@@ -737,7 +737,8 @@ pub fn compile_certified_reverse_fold_timeline_v1(
     };
     let first_reference = path_certificate_reference_v1(first, request.source_model_fingerprint);
     let second_reference = path_certificate_reference_v1(second, request.source_model_fingerprint);
-    let step = |suffix: &str, description: &str, visual, angles| InstructionStep {
+    let step = |suffix: &str, description: &str, visual, angles| {
+        InstructionStep {
         id: InstructionStepId::new(),
         title: format!("{title}：{suffix}"),
         description: description.to_owned(),
@@ -745,6 +746,7 @@ pub fn compile_certified_reverse_fold_timeline_v1(
         duration_ms: 1_000,
         visual,
         pose: pose(angles),
+    }
     };
     let timeline = InstructionTimeline {
         steps: vec![

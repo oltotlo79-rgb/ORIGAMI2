@@ -3002,9 +3002,12 @@ mod tests {
             assert_eq!(conflicts.len(), 1);
             let cause = &conflicts[0];
             assert_eq!(cause.constraint_ids().len(), records.len());
-            assert!(cause.constraint_ids().windows(2).all(|pair| {
-                pair[0].canonical_bytes() < pair[1].canonical_bytes()
-            }));
+            assert!(
+                cause
+                    .constraint_ids()
+                    .windows(2)
+                    .all(|pair| { pair[0].canonical_bytes() < pair[1].canonical_bytes() })
+            );
 
             for removed in cause.constraint_ids() {
                 let subset = records

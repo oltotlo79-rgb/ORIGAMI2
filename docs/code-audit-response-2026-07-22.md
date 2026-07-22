@@ -11,11 +11,11 @@
 | A-3 | 正しい・修正済み | `4b6e348`。legacy shared-flat昇格を`CoplanarAreaOverlap`だけに限定し、`TransversalCrossing`を除外。focused 1/1 green。 |
 | A-4 | 正しい・修正済み | `4b6e348`。`-0.0`を分類前に`InvalidPaperThickness`へ拒否。NaN/無限/負値を含む境界回帰 1/1 green。 |
 | A-5 | 正しい・修正済み | `28e1717`。expanded-folderがlayer evidenceを表現できない間はwriter入口で専用errorにfail-closed。無音破棄回帰 1/1 green。 |
-| A-6 | 正しい可能性・追加証拠中 | 親entry全走査とtransaction namespace探索の責務分離が必要。replacement journal作業との競合を避け、同変更のfault matrixで最終判定する。 |
+| A-6 | 正しい・修正済み | `ebd00ef`。親entry全走査とtransaction namespace探索を分離し、recovery prefixだけをbounded列挙。4098件の無関係entryがある実filesystem replacement回帰 1/1 green。 |
 | A-7 | 正しい・修正済み | `9a5fb2f`。project JSON writer/reader共通で全crease vertex座標の有限性を検証。NaN/±Inf回帰 3/3 green。 |
 | A-8 | 正しい・修正済み | `1a6c9fc`。各更新直後に残差を再評価し、最終許容反復の収束を成功として返す。focused 1/1 green。 |
 | A-9 | 正しい・修正済み | `1a6c9fc`。全driver満足系はeffective solved rankを返し、UIのover-constrained誤分類を防止。focused 1/1 green。 |
-| A-10 | 正しい可能性・追加証拠中 | 新規folder rename後のdirectory sync失敗伝播をfault-injection testと現行replacement経路で照合中。 |
+| A-10 | 正しい・修正済み | `dbaf02f`。新規folder rename後のdirectory sync失敗を`RecoveryRequired`として伝播し、既公開targetを保持。fault-injection回帰 1/1 green。 |
 
 `ori-core`はA-2/A-8/A-9適用後にlib全299/299 green。
 

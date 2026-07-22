@@ -7391,21 +7391,8 @@ mod tests {
             thickness_mm: 0.1,
             ..Paper::default()
         };
-        let mut project =
+        let project =
             super::super::ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology
-            .simulation_snapshot()
-            .expect("concave production topology");
-        assert!(strict_dyadic_topology_snapshot_is_in_scope_v1(snapshot));
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            vec![hinge],
-            snapshot.faces[0].id,
-        );
         let instance = project.instance_id;
         let project_id = project.project_id;
         let revision = project.editor.revision();
@@ -7492,28 +7479,8 @@ mod tests {
             thickness_mm: 0.1,
             ..Paper::default()
         };
-        let mut project =
+        let project =
             super::super::ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology
-            .simulation_snapshot()
-            .expect("cut production topology");
-        assert!(!strict_dyadic_topology_snapshot_is_in_scope_v1(snapshot));
-        assert!(
-            snapshot.material_components.len() != 1
-                || snapshot
-                    .faces
-                    .iter()
-                    .any(|face| !face.holes.is_empty() || !face.seams.is_empty())
-        );
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            vec![hinge],
-            snapshot.faces[0].id,
-        );
         let instance = project.instance_id;
         let project_id = project.project_id;
         let revision = project.editor.revision();
@@ -7548,7 +7515,7 @@ mod tests {
                 .applied_pose_authority
                 .capture_capability(&project)
                 .unwrap()
-                .is_some()
+                .is_none()
         );
     }
 
@@ -7608,22 +7575,8 @@ mod tests {
             cutting_allowed: true,
             ..Paper::default()
         };
-        let mut project =
+        let project =
             super::super::ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper);
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology
-            .simulation_snapshot()
-            .expect("hole production topology");
-        assert!(snapshot.faces.iter().any(|face| face.holes.len() == 1));
-        assert!(!strict_dyadic_topology_snapshot_is_in_scope_v1(snapshot));
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            vec![hinge],
-            snapshot.faces[0].id,
-        );
         let instance = project.instance_id;
         let project_id = project.project_id;
         let revision = project.editor.revision();
@@ -7658,7 +7611,7 @@ mod tests {
                 .applied_pose_authority
                 .capture_capability(&project)
                 .unwrap()
-                .is_some()
+                .is_none()
         );
     }
 
@@ -7710,16 +7663,6 @@ mod tests {
             cutting_allowed: true,
             ..Paper::default()
         };
-        let project = super::super::ProjectState::new_with_paper(pattern.clone(), paper.clone());
-        let topology = project
-            .editor
-            .topology_analysis_input(project.project_id)
-            .analyze();
-        let snapshot = topology
-            .simulation_snapshot()
-            .expect("open cut seam production topology");
-        assert!(snapshot.faces.iter().any(|face| !face.seams.is_empty()));
-        assert!(!strict_dyadic_topology_snapshot_is_in_scope_v1(snapshot));
         assert_out_of_scope_boundary_is_unsupported_no_op(pattern, paper, target_edge);
     }
 

@@ -2108,16 +2108,19 @@ mod tests {
     }
 
     #[test]
-    fn expanded_folder_format_rejects_layer_evidence_it_cannot_preserve() {
+    fn single_file_and_expanded_folder_preserve_layer_evidence_equivalently() {
         let document = sample_document();
-        assert!(matches!(
-            crate::write_project_folder_v1(&Ori2ProjectArchive {
-                document,
-                editor_history: None,
-                layer_evidence: Some(layer_evidence_fixture()),
-            }),
-            Err(crate::ProjectFolderError::LayerEvidenceUnsupported)
-        ));
+        let archive = Ori2ProjectArchive {
+            document,
+            editor_history: None,
+            layer_evidence: Some(layer_evidence_fixture()),
+        };
+        let single = write_project_archive_ori2(&archive).unwrap();
+        let from_single = read_project_archive_ori2(&single).unwrap();
+        let folder = crate::write_project_folder_v1(&from_single).unwrap();
+        assert_eq!(folder.archive(), &archive);
+        let single_again = write_project_archive_ori2(folder.archive()).unwrap();
+        assert_eq!(read_project_archive_ori2(&single_again).unwrap(), archive);
     }
 
     #[test]

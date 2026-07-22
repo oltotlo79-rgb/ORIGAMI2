@@ -32,3 +32,11 @@
 5. 2回目のcanonical保存がbyte単位で冪等になる。
 
 `ori2_version_policy_rejects_future_and_downgrade_writes`はversion 0とcurrent+1への書込みを`UnsupportedVersion`で拒否する。
+
+## Expanded folderとの同値性
+
+- expanded folderもcurrent/current-1/current-2のhistoryを同じ規則で読み、current形式へ正規再保存する。
+- `layer-evidence.json`を必須feature・必須role・schema version・size・SHA-256で認証する。これによりsingle-fileからfolderへ変換してもlayer evidenceを欠落させない。
+- project JSON内のtexture assetと参照GLB asset、独立roleのeditor historyとlayer evidenceをすべて保持する。
+- single-file → expanded folder → single-fileの往復後に`Ori2ProjectArchive`全体が一致しなければならない。
+- unknown future container/role/schema/required featureは両形式でfail-closedとし、既知roleの非canonical順序も拒否する。

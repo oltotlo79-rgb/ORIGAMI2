@@ -16,12 +16,14 @@ use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::{
-    CURRENT_FORMAT_VERSION, FormatError, MAX_EDITOR_HISTORY_JSON_BYTES, MAX_PROJECT_JSON_BYTES,
+    CURRENT_FORMAT_VERSION, FormatError, LAYER_EVIDENCE_SCHEMA_VERSION_V1,
+    MAX_EDITOR_HISTORY_JSON_BYTES, MAX_LAYER_EVIDENCE_JSON_BYTES_V1, MAX_PROJECT_JSON_BYTES,
     ORI2_FEATURE_DECLARATIVE_INSTRUCTION_STEPS_V1, ORI2_FEATURE_EDITOR_HISTORY_V1,
     ORI2_FEATURE_GEOMETRIC_CONSTRAINTS_V1, ORI2_FEATURE_INSTRUCTION_TIMELINE_V1,
-    ORI2_FEATURE_LAYERS_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
+    ORI2_FEATURE_LAYER_EVIDENCE_V1, ORI2_FEATURE_LAYERS_V1, ORI2_FEATURE_NUMERIC_EXPRESSIONS_V1,
     ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1, Ori2ProjectArchive, ProjectDocument, ProjectJsonLimits,
-    read_project_json_with_limits, write_project_json,
+    read_layer_evidence_archive_v1, read_project_json_with_limits, write_layer_evidence_archive_v1,
+    write_project_json,
 };
 
 pub const PROJECT_FOLDER_CONTAINER_IDENTIFIER: &str = "ORIGAMI2_EXPANDED_FOLDER";
@@ -29,12 +31,14 @@ pub const CURRENT_PROJECT_FOLDER_VERSION: u32 = 1;
 pub const PROJECT_FOLDER_MANIFEST_PATH: &str = "manifest.json";
 pub const PROJECT_FOLDER_PROJECT_PATH: &str = "project.json";
 pub const PROJECT_FOLDER_EDITOR_HISTORY_PATH: &str = "editor-history.json";
+pub const PROJECT_FOLDER_LAYER_EVIDENCE_PATH: &str = "layer-evidence.json";
 pub const PROJECT_FOLDER_PREVIEW_PATH: &str = "preview/crease-pattern.svg";
 pub const PROJECT_FOLDER_ROLE_PROJECT: &str = "project";
 pub const PROJECT_FOLDER_ROLE_EDITOR_HISTORY: &str = "editor_history";
+pub const PROJECT_FOLDER_ROLE_LAYER_EVIDENCE: &str = "layer_evidence";
 pub const PROJECT_FOLDER_ROLE_CREASE_PATTERN_PREVIEW: &str = "crease_pattern_preview";
 pub const PROJECT_FOLDER_PREVIEW_SCHEMA_VERSION: u32 = 1;
-pub const MAX_PROJECT_FOLDER_ENTRY_COUNT: usize = 4;
+pub const MAX_PROJECT_FOLDER_ENTRY_COUNT: usize = 5;
 pub const MAX_PROJECT_FOLDER_ENTRY_PATH_BYTES: usize = 256;
 pub const MAX_PROJECT_FOLDER_MANIFEST_BYTES: u64 = 1024 * 1024;
 pub const MAX_PROJECT_FOLDER_PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
@@ -157,8 +161,8 @@ struct ProjectFolderEditorHistoryEnvelopeV1 {
 pub enum ProjectFolderError {
     #[error(transparent)]
     Project(#[from] FormatError),
-    #[error("expanded-folder format cannot preserve authenticated layer evidence")]
-    LayerEvidenceUnsupported,
+    #[error("expanded-folder layer evidence is invalid: {0}")]
+    InvalidLayerEvidence(#[source] crate::LayerEvidenceArchiveErrorV1),
     #[error("expanded-folder manifest JSON is invalid: {0}")]
     InvalidManifestJson(#[source] serde_json::Error),
     #[error("expanded-folder editor-history JSON is invalid: {0}")]
@@ -278,6 +282,7 @@ pub enum ProjectFolderError {
 enum FolderRole {
     Project,
     EditorHistory,
+    LayerEvidence,
     Preview,
 }
 
@@ -286,6 +291,7 @@ impl FolderRole {
         match value {
             PROJECT_FOLDER_ROLE_PROJECT => Ok(Self::Project),
             PROJECT_FOLDER_ROLE_EDITOR_HISTORY => Ok(Self::EditorHistory),
+            PROJECT_FOLDER_ROLE_LAYER_EVIDENCE => Ok(Self::LayerEvidence),
             PROJECT_FOLDER_ROLE_CREASE_PATTERN_PREVIEW => Ok(Self::Preview),
             _ => Err(ProjectFolderError::UnknownEntryRole {
                 role: value.to_owned(),
@@ -297,6 +303,7 @@ impl FolderRole {
         match self {
             Self::Project => PROJECT_FOLDER_ROLE_PROJECT,
             Self::EditorHistory => PROJECT_FOLDER_ROLE_EDITOR_HISTORY,
+            Self::LayerEvidence => PROJECT_FOLDER_ROLE_LAYER_EVIDENCE,
             Self::Preview => PROJECT_FOLDER_ROLE_CREASE_PATTERN_PREVIEW,
         }
     }
@@ -305,13 +312,14 @@ impl FolderRole {
         match self {
             Self::Project => PROJECT_FOLDER_PROJECT_PATH,
             Self::EditorHistory => PROJECT_FOLDER_EDITOR_HISTORY_PATH,
+            Self::LayerEvidence => PROJECT_FOLDER_LAYER_EVIDENCE_PATH,
             Self::Preview => PROJECT_FOLDER_PREVIEW_PATH,
         }
     }
 
     const fn content_type(self) -> &'static str {
         match self {
-            Self::Project | Self::EditorHistory => PROJECT_JSON_CONTENT_TYPE,
+            Self::Project | Self::EditorHistory | Self::LayerEvidence => PROJECT_JSON_CONTENT_TYPE,
             Self::Preview => SVG_CONTENT_TYPE,
         }
     }
@@ -320,6 +328,7 @@ impl FolderRole {
         match self {
             Self::Project => CURRENT_FORMAT_VERSION,
             Self::EditorHistory => EDITOR_HISTORY_SCHEMA_VERSION_V1,
+            Self::LayerEvidence => LAYER_EVIDENCE_SCHEMA_VERSION_V1,
             Self::Preview => PROJECT_FOLDER_PREVIEW_SCHEMA_VERSION,
         }
     }
@@ -337,9 +346,6 @@ pub fn write_project_folder_v1_with_limits(
     archive: &Ori2ProjectArchive,
     limits: ProjectFolderLimits,
 ) -> Result<ProjectFolderArtifactV1, ProjectFolderError> {
-    if archive.layer_evidence.is_some() {
-        return Err(ProjectFolderError::LayerEvidenceUnsupported);
-    }
     if let Some(history) = &archive.editor_history {
         if history.project_id() != archive.document.project_id {
             return Err(ProjectFolderError::EditorHistoryProjectIdMismatch);
@@ -350,7 +356,8 @@ pub fn write_project_folder_v1_with_limits(
         .editor_history
         .as_ref()
         .filter(|history| !history.is_default_empty());
-    let entry_count = if history.is_some() { 4 } else { 3 };
+    let entry_count =
+        3 + usize::from(history.is_some()) + usize::from(archive.layer_evidence.is_some());
     ensure_entry_count(entry_count, limits)?;
 
     for path in [
@@ -362,6 +369,9 @@ pub fn write_project_folder_v1_with_limits(
     }
     if history.is_some() {
         validate_entry_path(PROJECT_FOLDER_EDITOR_HISTORY_PATH, limits)?;
+    }
+    if archive.layer_evidence.is_some() {
+        validate_entry_path(PROJECT_FOLDER_LAYER_EVIDENCE_PATH, limits)?;
     }
 
     let project_bytes = write_project_json(&archive.document)?;
@@ -380,12 +390,23 @@ pub fn write_project_folder_v1_with_limits(
     } else {
         None
     };
+    let layer_evidence_bytes = archive
+        .layer_evidence
+        .as_ref()
+        .map(|evidence| {
+            write_layer_evidence_archive_v1(evidence)
+                .map_err(ProjectFolderError::InvalidLayerEvidence)
+        })
+        .transpose()?;
+    if let Some(bytes) = &layer_evidence_bytes {
+        ensure_role_size(FolderRole::LayerEvidence, bytes.len() as u64, limits)?;
+    }
 
     let preview_bytes =
         generate_safe_preview_svg(&archive.document, effective_preview_limit(limits))?;
     ensure_role_size(FolderRole::Preview, preview_bytes.len() as u64, limits)?;
 
-    let roles = canonical_roles(history_bytes.is_some());
+    let roles = canonical_roles(history_bytes.is_some(), layer_evidence_bytes.is_some());
     let mut descriptors = Vec::with_capacity(roles.len());
     for role in roles.iter().copied() {
         let bytes = match role {
@@ -393,6 +414,9 @@ pub fn write_project_folder_v1_with_limits(
             FolderRole::EditorHistory => history_bytes
                 .as_ref()
                 .expect("canonical history role requires history bytes"),
+            FolderRole::LayerEvidence => layer_evidence_bytes
+                .as_ref()
+                .expect("canonical layer evidence role requires bytes"),
             FolderRole::Preview => &preview_bytes,
         };
         descriptors.push(manifest_entry(role, bytes));
@@ -400,7 +424,11 @@ pub fn write_project_folder_v1_with_limits(
     let manifest = ProjectFolderManifestV1 {
         container: PROJECT_FOLDER_CONTAINER_IDENTIFIER.to_owned(),
         container_version: CURRENT_PROJECT_FOLDER_VERSION,
-        required_features: required_features(&archive.document, history_bytes.is_some()),
+        required_features: required_features(
+            &archive.document,
+            history_bytes.is_some(),
+            layer_evidence_bytes.is_some(),
+        ),
         required_roles: roles.iter().map(|role| role.as_str().to_owned()).collect(),
         entries: descriptors,
     };
@@ -421,6 +449,12 @@ pub fn write_project_folder_v1_with_limits(
         entries.push(ProjectFolderEntryV1::new(
             PROJECT_FOLDER_EDITOR_HISTORY_PATH,
             history_bytes,
+        ));
+    }
+    if let Some(layer_evidence_bytes) = layer_evidence_bytes {
+        entries.push(ProjectFolderEntryV1::new(
+            PROJECT_FOLDER_LAYER_EVIDENCE_PATH,
+            layer_evidence_bytes,
         ));
     }
     entries.push(ProjectFolderEntryV1::new(
@@ -477,7 +511,8 @@ pub fn read_project_folder_v1_with_limits(
 
     let roles = validate_manifest_entries(&manifest, limits)?;
     let has_history = roles.contains(&FolderRole::EditorHistory);
-    let expected_roles = canonical_roles(has_history);
+    let has_layer_evidence = roles.contains(&FolderRole::LayerEvidence);
+    let expected_roles = canonical_roles(has_history, has_layer_evidence);
     if roles != expected_roles {
         return Err(ProjectFolderError::RequiredRolesMismatch {
             expected: expected_roles
@@ -525,7 +560,7 @@ pub fn read_project_folder_v1_with_limits(
             max_input_size: project_limit as usize,
         },
     )?;
-    let expected_features = required_features(&project, has_history);
+    let expected_features = required_features(&project, has_history, has_layer_evidence);
     if manifest.required_features != expected_features {
         return Err(ProjectFolderError::RequiredFeaturesMismatch {
             expected: expected_features,
@@ -557,6 +592,15 @@ pub fn read_project_folder_v1_with_limits(
     } else {
         None
     };
+    let layer_evidence = if has_layer_evidence {
+        let entry = entry_by_path(entries, PROJECT_FOLDER_LAYER_EVIDENCE_PATH)?;
+        Some(
+            read_layer_evidence_archive_v1(&entry.bytes)
+                .map_err(ProjectFolderError::InvalidLayerEvidence)?,
+        )
+    } else {
+        None
+    };
 
     let preview_entry = entry_by_path(entries, PROJECT_FOLDER_PREVIEW_PATH)?;
     let expected_preview = generate_safe_preview_svg(&project, effective_preview_limit(limits))?;
@@ -567,7 +611,7 @@ pub fn read_project_folder_v1_with_limits(
     Ok(ProjectFolderArtifactV1 {
         entries: entries.to_vec(),
         archive: Ori2ProjectArchive {
-            layer_evidence: None,
+            layer_evidence,
             document: project,
             editor_history,
         },
@@ -730,22 +774,32 @@ fn entry_by_path<'a>(
             PROJECT_FOLDER_EDITOR_HISTORY_PATH => ProjectFolderError::MissingEntry {
                 path: PROJECT_FOLDER_EDITOR_HISTORY_PATH,
             },
+            PROJECT_FOLDER_LAYER_EVIDENCE_PATH => ProjectFolderError::MissingEntry {
+                path: PROJECT_FOLDER_LAYER_EVIDENCE_PATH,
+            },
             _ => ProjectFolderError::MissingEntry {
                 path: PROJECT_FOLDER_PREVIEW_PATH,
             },
         })
 }
 
-fn canonical_roles(has_history: bool) -> Vec<FolderRole> {
+fn canonical_roles(has_history: bool, has_layer_evidence: bool) -> Vec<FolderRole> {
     let mut roles = vec![FolderRole::Project];
     if has_history {
         roles.push(FolderRole::EditorHistory);
+    }
+    if has_layer_evidence {
+        roles.push(FolderRole::LayerEvidence);
     }
     roles.push(FolderRole::Preview);
     roles
 }
 
-fn required_features(document: &ProjectDocument, has_history: bool) -> Vec<String> {
+fn required_features(
+    document: &ProjectDocument,
+    has_history: bool,
+    has_layer_evidence: bool,
+) -> Vec<String> {
     let mut features = Vec::new();
     if !document.instruction_timeline.steps.is_empty() {
         features.push(ORI2_FEATURE_INSTRUCTION_TIMELINE_V1.to_owned());
@@ -773,6 +827,9 @@ fn required_features(document: &ProjectDocument, has_history: bool) -> Vec<Strin
     if has_history {
         features.push(ORI2_FEATURE_EDITOR_HISTORY_V1.to_owned());
     }
+    if has_layer_evidence {
+        features.push(ORI2_FEATURE_LAYER_EVIDENCE_V1.to_owned());
+    }
     features
 }
 
@@ -786,6 +843,7 @@ fn is_known_feature(feature: &str) -> bool {
             | ORI2_FEATURE_LAYERS_V1
             | ORI2_FEATURE_REFERENCE_MODEL_ASSETS_V1
             | ORI2_FEATURE_EDITOR_HISTORY_V1
+            | ORI2_FEATURE_LAYER_EVIDENCE_V1
     )
 }
 
@@ -794,6 +852,7 @@ fn is_known_role(role: &str) -> bool {
         role,
         PROJECT_FOLDER_ROLE_PROJECT
             | PROJECT_FOLDER_ROLE_EDITOR_HISTORY
+            | PROJECT_FOLDER_ROLE_LAYER_EVIDENCE
             | PROJECT_FOLDER_ROLE_CREASE_PATTERN_PREVIEW
     )
 }
@@ -924,6 +983,7 @@ fn ensure_role_size(
     let limit = match role {
         FolderRole::Project => effective_project_limit(limits),
         FolderRole::EditorHistory => effective_history_limit(limits),
+        FolderRole::LayerEvidence => MAX_LAYER_EVIDENCE_JSON_BYTES_V1 as u64,
         FolderRole::Preview => effective_preview_limit(limits),
     }
     .min(effective_entry_limit(limits));
@@ -1246,7 +1306,7 @@ mod tests {
     }
 
     #[test]
-    fn writer_rejects_layer_evidence_instead_of_silently_dropping_it() {
+    fn writer_preserves_layer_evidence_as_an_authenticated_role() {
         let archive = Ori2ProjectArchive {
             document: sample_document(),
             editor_history: None,
@@ -1262,10 +1322,17 @@ mod tests {
             }),
         };
 
-        assert!(matches!(
-            write_project_folder_v1(&archive),
-            Err(ProjectFolderError::LayerEvidenceUnsupported)
-        ));
+        let written = write_project_folder_v1(&archive).expect("write layer evidence folder");
+        assert_eq!(written.archive(), &archive);
+        assert!(
+            written
+                .entries()
+                .iter()
+                .any(|entry| entry.path == PROJECT_FOLDER_LAYER_EVIDENCE_PATH)
+        );
+        let reread =
+            read_project_folder_v1(written.entries()).expect("reread layer evidence folder");
+        assert_eq!(reread.archive(), &archive);
     }
 
     fn sample_document() -> ProjectDocument {
@@ -1747,11 +1814,12 @@ mod tests {
                 .to_vec();
         entries.push(ProjectFolderEntryV1::new("extra-a.json", b"{}".to_vec()));
         entries.push(ProjectFolderEntryV1::new("extra-b.json", b"{}".to_vec()));
+        entries.push(ProjectFolderEntryV1::new("extra-c.json", b"{}".to_vec()));
 
         assert!(matches!(
             read_project_folder_v1(&entries),
             Err(ProjectFolderError::TooManyEntries {
-                actual: 5,
+                actual: 6,
                 limit: MAX_PROJECT_FOLDER_ENTRY_COUNT
             })
         ));

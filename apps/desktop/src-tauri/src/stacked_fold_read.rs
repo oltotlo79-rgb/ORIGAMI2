@@ -321,6 +321,11 @@ struct BlockwisePositiveLayerPreviewRecordV1 {
     articulation_layer_fingerprint: [u8; 32],
     sources: [Box<ori_foldability::LayerOrderSnapshot>; 2],
     authority: ori_collision::BlockwisePositiveLayerAuthorityV1,
+    pattern: ori_domain::CreasePattern,
+    paper: ori_domain::Paper,
+    timeline: ori_domain::InstructionTimeline,
+    layers: ori_domain::ProjectLayerDocumentV1,
+    applied_pose: ori_core::AppliedPoseV1,
 }
 
 #[derive(Default)]
@@ -343,8 +348,14 @@ impl BlockwisePositiveLayerPreviewRecordV1 {
         articulation_layer_fingerprint: [u8; 32],
         sources: [Box<ori_foldability::LayerOrderSnapshot>; 2],
         authority: ori_collision::BlockwisePositiveLayerAuthorityV1,
+        pattern: ori_domain::CreasePattern,
+        paper: ori_domain::Paper,
+        timeline: ori_domain::InstructionTimeline,
+        layers: ori_domain::ProjectLayerDocumentV1,
+        applied_pose: ori_core::AppliedPoseV1,
     ) -> Result<Self, String> {
-        if issuer_context == [0; 32]
+        if issuer_context
+            != blockwise_document_context_v1(&pattern, &paper, &timeline, &layers, &applied_pose)
             || articulation_layer_fingerprint == [0; 32]
             || !authority.revalidates_v1(
                 [&sources[0], &sources[1]],
@@ -367,6 +378,11 @@ impl BlockwisePositiveLayerPreviewRecordV1 {
             articulation_layer_fingerprint,
             sources,
             authority,
+            pattern,
+            paper,
+            timeline,
+            layers,
+            applied_pose,
         })
     }
 
@@ -390,6 +406,14 @@ impl BlockwisePositiveLayerPreviewRecordV1 {
             && self.articulation == articulation
             && self.thickness.to_bits() == thickness.to_bits()
             && self.articulation_layer_fingerprint == articulation_layer_fingerprint
+            && self.issuer_context
+                == blockwise_document_context_v1(
+                    &self.pattern,
+                    &self.paper,
+                    &self.timeline,
+                    &self.layers,
+                    &self.applied_pose,
+                )
             && self.authority.revalidates_v1(
                 [&self.sources[0], &self.sources[1]],
                 articulation,
@@ -398,6 +422,31 @@ impl BlockwisePositiveLayerPreviewRecordV1 {
                 articulation_layer_fingerprint,
             )
     }
+}
+
+#[allow(dead_code)]
+fn blockwise_document_context_v1(
+    pattern: &ori_domain::CreasePattern,
+    paper: &ori_domain::Paper,
+    timeline: &ori_domain::InstructionTimeline,
+    layers: &ori_domain::ProjectLayerDocumentV1,
+    applied_pose: &ori_core::AppliedPoseV1,
+) -> [u8; 32] {
+    let Ok(encoded) = serde_json::to_vec(&(pattern, paper, timeline, layers)) else {
+        return [0; 32];
+    };
+    let mut hash = Sha256::new();
+    hash.update(b"blockwise_positive_layer_document_v1");
+    hash.update(encoded);
+    hash.update(applied_pose.model_id().as_bytes());
+    if let Some(face) = applied_pose.fixed_face() {
+        hash.update(face.canonical_bytes());
+    }
+    for angle in applied_pose.hinge_angles() {
+        hash.update(angle.edge().canonical_bytes());
+        hash.update(angle.angle_degrees().to_bits().to_le_bytes());
+    }
+    hash.finalize().into()
 }
 
 #[allow(dead_code)]
@@ -440,6 +489,51 @@ impl BlockwisePositiveLayerPrivatePreviewStateV1 {
         }
         slot.take()
             .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_v1(
+        &self,
+        project: &mut super::ProjectState,
+        token: ProjectId,
+        expected_revision: u64,
+        issuer_context: [u8; 32],
+        articulation: FaceId,
+        thickness: f64,
+        articulation_layer_fingerprint: [u8; 32],
+    ) -> Result<u64, String> {
+        let mut slot = self.0.lock().map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+        let record = slot
+            .as_ref()
+            .filter(|record| {
+                record.revalidates_for_apply_v1(
+                    token,
+                    project.instance_id,
+                    project.project_id,
+                    expected_revision,
+                    issuer_context,
+                    articulation,
+                    thickness,
+                    articulation_layer_fingerprint,
+                )
+            })
+            .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+        let result = project
+            .editor
+            .execute_stacked_fold_document(
+                expected_revision,
+                record.pattern.clone(),
+                record.paper.clone(),
+                record.timeline.clone(),
+                record.layers.clone(),
+                record
+                    .applied_pose
+                    .try_clone()
+                    .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?,
+            )
+            .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+        slot.take();
+        Ok(result.revision)
     }
 }
 

@@ -28,9 +28,11 @@ pub use beginner_candidates::{
 };
 pub use beginner_design::{
     BEGINNER_DESIGN_PROFILE_SCHEMA_VERSION_V1, BeginnerDesignPresetV1, BeginnerDesignProfileV1,
-    BeginnerGenerationProvenanceV1, BeginnerGenericTreeOrientationV1,
-    BeginnerGenericTreeProvenanceV1, BeginnerGenericTreeSourceV1, BeginnerOutlineEditAuthorityV1, BeginnerOutlineEditRecordV1,
-    validate_beginner_design_profile_v1, validate_beginner_generation_provenance_v1,
+    BeginnerGenerationProvenanceV1, BeginnerGenericTreeInstructionProposalV1,
+    BeginnerGenericTreeInstructionStepV1, BeginnerGenericTreeOrientationV1,
+    BeginnerGenericTreeProvenanceV1, BeginnerGenericTreeSourceV1, BeginnerOutlineEditAuthorityV1,
+    BeginnerOutlineEditRecordV1, validate_beginner_design_profile_v1,
+    validate_beginner_generation_provenance_v1,
 };
 pub use beginner_generation::{
     BEGINNER_GENERATION_CONSTRAINTS_SCHEMA_VERSION_V1, BeginnerBodyOutlineModeV1,

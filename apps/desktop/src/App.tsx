@@ -60,6 +60,7 @@ import {
   addInstructionStep,
   addVertex,
   appendNamedTechniqueInstructionSteps,
+  appendGenericTreeInstructionProposal,
   analyzeGeometricConstraints,
   analyzeProjectTopology,
   applyGeometricConstraintSolve,
@@ -4343,6 +4344,16 @@ function App() {
     })
   }
 
+  function confirmAndAppendGenericTreeInstructions() {
+    const tree = latestSnapshotRef.current?.beginner_design_profile.generation_provenance?.generic_tree
+    if (!tree?.instruction_proposal || !window.confirm(text({
+      ja: 'この読み取り専用案を確認済みとして折り手順へ追加しますか？物理動作の証明ではありません。',
+      en: 'Append this reviewed read-only proposal to the instructions? It is not physical-motion proof.',
+    }))) return
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      appendGenericTreeInstructionProposal(projectId, revision, projectInstanceId, tree.tree_topology_sha256))
+  }
+
   function confirmAndApplyBeginnerPlan(
     kind: 'diagonal_fold' | 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'asymmetric_bird_landmark_base' | 'asymmetric_four_leg_landmark_base' | 'asymmetric_insect_landmark_base' | 'asymmetric_fish_landmark_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' | 'symmetric_antenna_base' | 'symmetric_insect_leg_pair_base' | 'symmetric_six_leg_base' | 'center_axis_tail_base' | 'center_axis_horn_base' | 'center_axis_antenna_base' | 'composite_tail_ear_base' | 'composite_horn_ear_base' | 'composite_horn_tail_base' | 'composite_horn_tail_ear_base' | 'composite_wing_antenna_base' | 'composite_complete_insect_base' | 'composite_complete_animal_base' | 'composite_complete_winged_animal_base' | 'composite_generic_target_base',
     expectedCandidateEdgeId: string,
@@ -8497,7 +8508,7 @@ function App() {
                   })}</p>
                 )}
                 {nativeSnapshot.beginner_design_profile.generation_provenance?.generic_tree && (
-                  <p role="status">{formattedText({
+                  <div role="status"><p>{formattedText({
                     ja: '保存済み一般木候補の由来: {source}・{orientation}向き・generator v{version}・表示専用（再適用権限なし）',
                     en: 'Saved generic-tree origin: {source} · {orientation} orientation · generator v{version} · display only; no apply authority',
                   }, {
@@ -8505,6 +8516,22 @@ function App() {
                     orientation: nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.orientation,
                     version: nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.generator_version,
                   })}</p>
+                    {nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.instruction_proposal && (
+                      <ol aria-label={text({ ja: '読み取り専用の折り手順案', en: 'Read-only folding instruction proposal' })}>
+                        {nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.instruction_proposal.steps.map((step) => (
+                          <li key={step.canonical_crease_id}>
+                            {step.canonical_crease_id} · depth {step.tree_depth} · {step.assignment} · {step.target_branch} · fixed {step.fixed_side}
+                            <br />{step.caution}
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                    {nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.instruction_proposal && (
+                      <button type="button" onClick={confirmAndAppendGenericTreeInstructions}>
+                        {text({ ja: '確認して折り手順へ追加', en: 'Confirm and append to instructions' })}
+                      </button>
+                    )}
+                  </div>
                 )}
                 <label className="field">
                   <span>{text({ ja: '評価プリセット', en: 'Evaluation preset' })}</span>

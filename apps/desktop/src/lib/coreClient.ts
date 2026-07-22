@@ -217,6 +217,10 @@ export type BeginnerDesignProfileV1 = {
       asset_content_sha256?: ReadonlyArray<number>; tree_topology_sha256: ReadonlyArray<number>
       normalized_length_ratios: ReadonlyArray<number>; orientation: 'horizontal' | 'vertical'
       generator_version: 1; authorizes_apply: false
+      instruction_proposal?: Readonly<{ schema_version: 1; topology_sha256: ReadonlyArray<number>
+        generator_version: 1; authorizes_apply: false; physical_motion_proof: false
+        steps: ReadonlyArray<Readonly<{ canonical_crease_id: string; tree_depth: number
+          assignment: 'mountain' | 'valley'; target_branch: string; fixed_side: 'root' | 'leaf'; caution: string }>> }>
     }>
   }>
   reference_surface_landmarks_tenths_mm?: ReadonlyArray<readonly [number, number, number]>
@@ -1193,7 +1197,10 @@ export function normalizeBeginnerDesignProfile(
       'confidence_reasons', 'explicit_override', 'source_asset_fingerprint', 'generic_tree'] as const)
   const genericTree = provenance?.generic_tree === undefined ? null : exactCoreDataRecord(
     provenance.generic_tree, ['schema_version', 'source', 'asset_content_sha256', 'tree_topology_sha256',
-      'normalized_length_ratios', 'orientation', 'generator_version', 'authorizes_apply'] as const)
+      'normalized_length_ratios', 'orientation', 'generator_version', 'authorizes_apply', 'instruction_proposal'] as const)
+  const treeProposal = genericTree?.instruction_proposal === undefined ? null : exactCoreDataRecord(
+    genericTree.instruction_proposal, ['schema_version', 'topology_sha256', 'generator_version', 'authorizes_apply',
+      'physical_motion_proof', 'steps'] as const)
   if (record.generation_provenance !== undefined && (!provenance || provenance.schema_version !== 1
     || !Array.isArray(provenance.topology_authority_sha256) || provenance.topology_authority_sha256.length !== 32
     || provenance.topology_authority_sha256.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
@@ -1213,7 +1220,24 @@ export function normalizeBeginnerDesignProfile(
       || genericTree.normalized_length_ratios.length > 16 || genericTree.normalized_length_ratios.some(
         (ratio) => !Number.isSafeInteger(ratio) || Number(ratio) < 1_000_000)
       || !['horizontal', 'vertical'].includes(String(genericTree.orientation))
-      || genericTree.generator_version !== 1 || genericTree.authorizes_apply !== false)))) return null
+      || genericTree.generator_version !== 1 || genericTree.authorizes_apply !== false
+      || (genericTree.instruction_proposal !== undefined && (!treeProposal || treeProposal.schema_version !== 1
+        || !isBoundedIntegerTuple(treeProposal.topology_sha256, 32, 255)
+        || JSON.stringify(treeProposal.topology_sha256) !== JSON.stringify(genericTree.tree_topology_sha256)
+        || treeProposal.generator_version !== 1 || treeProposal.authorizes_apply !== false
+        || treeProposal.physical_motion_proof !== false || !Array.isArray(treeProposal.steps)
+        || treeProposal.steps.length < 1 || treeProposal.steps.length > 16
+        || treeProposal.steps.some((rawStep, index, all) => {
+          const step = exactCoreDataRecord(rawStep, ['canonical_crease_id', 'tree_depth', 'assignment', 'target_branch', 'fixed_side', 'caution'] as const)
+          const previous = index === 0 ? null : exactCoreDataRecord(all[index - 1], ['canonical_crease_id', 'tree_depth', 'assignment', 'target_branch', 'fixed_side', 'caution'] as const)
+          return !step || typeof step.canonical_crease_id !== 'string' || step.canonical_crease_id.length < 1 || step.canonical_crease_id.length > 64
+            || !Number.isInteger(step.tree_depth) || Number(step.tree_depth) < 0 || Number(step.tree_depth) > 16
+            || !['mountain', 'valley'].includes(String(step.assignment)) || typeof step.target_branch !== 'string'
+            || step.target_branch.length < 1 || step.target_branch.length > 96 || !['root', 'leaf'].includes(String(step.fixed_side))
+            || typeof step.caution !== 'string' || step.caution.length < 1 || step.caution.length > 256
+            || (previous !== null && (Number(previous.tree_depth) > Number(step.tree_depth)
+              || (previous.tree_depth === step.tree_depth && String(previous.canonical_crease_id) >= step.canonical_crease_id)))
+        }))))))) return null
   const landmarks = record.reference_surface_landmarks_tenths_mm
   if (landmarks !== undefined && (!Array.isArray(landmarks) || landmarks.length < 1 || landmarks.length > 256
     || landmarks.some((point) => !isBoundedIntegerTuple(point, 3, 2_147_483_648)))) return null
@@ -1300,6 +1324,15 @@ export function normalizeBeginnerDesignProfile(
         normalized_length_ratios: Object.freeze((genericTree.normalized_length_ratios as number[]).slice()),
         orientation: genericTree.orientation as 'horizontal' | 'vertical', generator_version: 1 as const,
         authorizes_apply: false as const,
+        ...(treeProposal === null ? {} : { instruction_proposal: Object.freeze({
+          schema_version: 1 as const, topology_sha256: Object.freeze((treeProposal.topology_sha256 as number[]).slice()),
+          generator_version: 1 as const, authorizes_apply: false as const, physical_motion_proof: false as const,
+          steps: Object.freeze((treeProposal.steps as Array<Record<string, unknown>>).map((step) => Object.freeze({
+            canonical_crease_id: step.canonical_crease_id as string, tree_depth: step.tree_depth as number,
+            assignment: step.assignment as 'mountain' | 'valley', target_branch: step.target_branch as string,
+            fixed_side: step.fixed_side as 'root' | 'leaf', caution: step.caution as string,
+          }))),
+        }) }),
       }) }),
     }) }),
   }) as BeginnerDesignProfileV1
@@ -4058,6 +4091,22 @@ export function appendNamedTechniqueInstructionSteps(
     proposalJson,
   }).catch(() => {
     throw new NamedTechniqueTimelineClientError('native_unavailable')
+  })
+}
+
+export function appendGenericTreeInstructionProposal(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  expectedTopologySha256: ReadonlyArray<number>,
+) {
+  if (!isCanonicalNonNilUuid(expectedProjectInstanceId) || !isCanonicalNonNilUuid(expectedProjectId)
+    || !isProjectRevision(expectedRevision) || !isBoundedIntegerTuple(expectedTopologySha256, 32, 255)) {
+    return Promise.reject(new Error('invalid_generic_tree_instruction_request'))
+  }
+  return invoke<ProjectSnapshot>('append_generic_tree_instruction_proposal', {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision,
+    expectedTopologySha256: Array.from(expectedTopologySha256), confirmed: true,
   })
 }
 

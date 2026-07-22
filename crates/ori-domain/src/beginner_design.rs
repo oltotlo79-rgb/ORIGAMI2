@@ -104,6 +104,30 @@ pub struct BeginnerGenericTreeProvenanceV1 {
     pub orientation: BeginnerGenericTreeOrientationV1,
     pub generator_version: u16,
     pub authorizes_apply: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_proposal: Option<BeginnerGenericTreeInstructionProposalV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerGenericTreeInstructionProposalV1 {
+    pub schema_version: u32,
+    pub topology_sha256: [u8; 32],
+    pub generator_version: u16,
+    pub authorizes_apply: bool,
+    pub physical_motion_proof: bool,
+    pub steps: Vec<BeginnerGenericTreeInstructionStepV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerGenericTreeInstructionStepV1 {
+    pub canonical_crease_id: String,
+    pub tree_depth: u8,
+    pub assignment: String,
+    pub target_branch: String,
+    pub fixed_side: String,
+    pub caution: String,
 }
 
 impl Default for BeginnerDesignProfileV1 {
@@ -243,10 +267,38 @@ pub fn validate_beginner_generation_provenance_v1(
                     )
             })
         && provenance.generic_tree.as_ref().is_none_or(|tree| {
-            tree.schema_version == 1 && tree.generator_version == 1 && !tree.authorizes_apply
+            tree.schema_version == 1
+                && tree.generator_version == 1
+                && !tree.authorizes_apply
                 && !tree.normalized_length_ratios.is_empty()
                 && tree.normalized_length_ratios.len() <= 16
-                && tree.normalized_length_ratios.iter().all(|ratio| *ratio >= 1_000_000)
+                && tree
+                    .normalized_length_ratios
+                    .iter()
+                    .all(|ratio| *ratio >= 1_000_000)
+                && tree.instruction_proposal.as_ref().is_none_or(|proposal| {
+                    proposal.schema_version == 1
+                        && proposal.generator_version == 1
+                        && !proposal.authorizes_apply
+                        && !proposal.physical_motion_proof
+                        && proposal.topology_sha256 == tree.tree_topology_sha256
+                        && !proposal.steps.is_empty()
+                        && proposal.steps.len() <= 16
+                        && proposal.steps.windows(2).all(|pair| {
+                            (pair[0].tree_depth, &pair[0].canonical_crease_id)
+                                < (pair[1].tree_depth, &pair[1].canonical_crease_id)
+                        })
+                        && proposal.steps.iter().all(|step| {
+                            !step.canonical_crease_id.is_empty()
+                                && step.canonical_crease_id.len() <= 64
+                                && matches!(step.assignment.as_str(), "mountain" | "valley")
+                                && !step.target_branch.is_empty()
+                                && step.target_branch.len() <= 96
+                                && matches!(step.fixed_side.as_str(), "root" | "leaf")
+                                && !step.caution.is_empty()
+                                && step.caution.len() <= 256
+                        })
+                })
         })
 }
 
@@ -274,6 +326,21 @@ mod tests {
                     orientation: BeginnerGenericTreeOrientationV1::Horizontal,
                     generator_version: 1,
                     authorizes_apply: false,
+                    instruction_proposal: Some(BeginnerGenericTreeInstructionProposalV1 {
+                        schema_version: 1,
+                        topology_sha256: [3; 32],
+                        generator_version: 1,
+                        authorizes_apply: false,
+                        physical_motion_proof: false,
+                        steps: vec![BeginnerGenericTreeInstructionStepV1 {
+                            canonical_crease_id: "tree-river-0000".into(),
+                            tree_depth: 0,
+                            assignment: "valley".into(),
+                            target_branch: "branch-0000".into(),
+                            fixed_side: "root".into(),
+                            caution: "Read-only; no motion proof.".into(),
+                        }],
+                    }),
                 }),
             }),
             ..BeginnerDesignProfileV1::default()
@@ -337,11 +404,13 @@ mod tests {
         let decoded: BeginnerDesignProfileV1 =
             serde_json::from_str(&json).expect("deserialize profile");
         assert_eq!(decoded, profile);
-        assert!(!decoded
-            .generation_provenance
-            .and_then(|value| value.generic_tree)
-            .expect("generic tree provenance")
-            .authorizes_apply);
+        assert!(
+            !decoded
+                .generation_provenance
+                .and_then(|value| value.generic_tree)
+                .expect("generic tree provenance")
+                .authorizes_apply
+        );
     }
 
     #[test]
@@ -366,7 +435,8 @@ mod tests {
 
     #[test]
     fn legacy_generation_provenance_without_generic_tree_remains_compatible() {
-        let mut json = serde_json::to_value(profile_with_generic_tree()).expect("serialize profile");
+        let mut json =
+            serde_json::to_value(profile_with_generic_tree()).expect("serialize profile");
         json["generation_provenance"]
             .as_object_mut()
             .expect("generation provenance")
@@ -374,10 +444,12 @@ mod tests {
         let decoded: BeginnerDesignProfileV1 =
             serde_json::from_value(json).expect("deserialize legacy profile");
         assert!(validate_beginner_design_profile_v1(&decoded));
-        assert!(decoded
-            .generation_provenance
-            .expect("generation provenance")
-            .generic_tree
-            .is_none());
+        assert!(
+            decoded
+                .generation_provenance
+                .expect("generation provenance")
+                .generic_tree
+                .is_none()
+        );
     }
 }

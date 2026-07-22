@@ -166,7 +166,7 @@ test('general GLB target proposal is offline bounded read-only and explicitly co
   assert.match(native, /principal_axis_extents_tenths_mm/u)
   assert.match(native, /struct BeginnerReferenceStickBarV1/u)
   assert.match(native, /strict_glb_vertex_index_bounds/u)
-  assert.match(client, /generalConstraints\.protrusions\.length > 32/u)
+  assert.match(client, /generalProtrusions\.length > 32/u)
   assert.match(client, /stickBars\.length !== 3/u)
   assert.match(app, /General 3D proposal: quality/u)
   assert.match(app, /Review and copy general 3D proposal to editor/u)

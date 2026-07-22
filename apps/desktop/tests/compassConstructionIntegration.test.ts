@@ -15,6 +15,8 @@ test('compass construction uses the selected vertex, display unit, and bounded g
   assert.match(appSource, /lengthDisplayUnit\.millimetresPerUnit/u)
   assert.match(appSource, /\.slice\(-64\)/u)
   assert.match(appSource, /if \(forceReplacement\) setCompassCircles\(\[\]\)/u)
+  assert.match(appSource, /circle-line and circle-circle intersections/u)
+  assert.doesNotMatch(appSource, /do not currently provide intersection snapping/u)
 })
 
 test('crease canvas renders every valid compass circle as a dashed full circle', () => {

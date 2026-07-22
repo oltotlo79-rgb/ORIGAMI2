@@ -7965,8 +7965,8 @@ function App() {
                     </div>
                     <p className="muted">
                       {formattedText({
-                        ja: '補助円 {count} 個。現在は目視用ガイドで、交点へ自動スナップしません。',
-                        en: '{count} construction circles. These are visual guides and do not currently provide intersection snapping.',
+                        ja: '補助円 {count} 個。頂点ツールで円と線、または円同士の交点へスナップできます。',
+                        en: '{count} construction circles. The vertex tool snaps to circle-line and circle-circle intersections.',
                       }, { count: compassCircles.length })}
                     </p>
                   </fieldset>

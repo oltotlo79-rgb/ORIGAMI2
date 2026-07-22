@@ -9,7 +9,12 @@ const faceId = '30000000-0000-4000-8000-000000000001'
 const model = 'ab'.repeat(32)
 const commands: string[] = []
 let saveMode: 'success' | 'cancel' | 'failure' = 'success'
-const evidence = { commands, setSaveMode: (mode: typeof saveMode) => { saveMode = mode } }
+let previewMode: 'valid' | 'stale' | 'tamper' = 'valid'
+const evidence = {
+  commands,
+  setSaveMode: (mode: typeof saveMode) => { saveMode = mode },
+  setPreviewMode: (mode: typeof previewMode) => { previewMode = mode },
+}
 Object.assign(window, { __ORIGAMI2_APP_EXPORT_EVIDENCE__: evidence })
 
 const visual = { camera: null, arrows: [], focus_points: [], hand_guides: [] }
@@ -57,7 +62,12 @@ Object.assign(window, { __TAURI_INTERNALS__: { invoke: async (command: string, a
   if (command === 'get_recovery_candidate') return { schema_version: 1, status: 'none' }
   if (command === 'analyze_project_topology') return topology
   if (command === 'begin_instruction_export') return { export_id: 'app-miura-export', profile: 'instruction_export_v1' }
-  if (command === 'preview_instruction_export') return { preview: preview(args?.format as 'pdf' | 'svg_zip') }
+  if (command === 'preview_instruction_export') {
+    const value = preview(args?.format as 'pdf' | 'svg_zip')
+    if (previewMode === 'stale') return { preview: { ...value, expected_revision: 8 } }
+    if (previewMode === 'tamper') return { preview: { ...value, profile: 'tampered_profile' } }
+    return { preview: value }
+  }
   if (command === 'get_instruction_export_progress') return { progress: { export_id: 'app-miura-export', phase: 'ready', completed_units: 3, total_units: 3 } }
   if (command === 'save_instruction_export') { if (saveMode === 'failure') throw new Error('atomic-save-failed'); return { canceled: saveMode === 'cancel' } }
   if (command === 'cancel_instruction_export') return null

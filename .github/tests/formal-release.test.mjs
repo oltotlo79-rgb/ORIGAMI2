@@ -848,6 +848,29 @@ test('CI requires one complete named-technique instruction export browser gate',
   }
 })
 
+test('CI requires exactly one full-App instruction export routing browser gate', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const desktopPackage = JSON.parse(readFileSync(join(root, 'apps/desktop/package.json'), 'utf8'))
+  const browserHarness = readFileSync(
+    join(root, 'apps/desktop/scripts/app-instruction-export-browser-e2e.mjs'),
+    'utf8',
+  )
+  assert.equal(
+    desktopPackage.scripts['test:app-instruction-export-browser'],
+    'node scripts/app-instruction-export-browser-e2e.mjs',
+  )
+  assert.equal(workflow.match(/npm run test:app-instruction-export-browser/gu)?.length, 1)
+  assert.doesNotMatch(
+    workflow.match(/- name: Verify full App instruction export routing[\s\S]*?run: npm run test:app-instruction-export-browser/u)?.[0] ?? '',
+    /continue-on-error|\|\| true/u,
+  )
+  for (const marker of [
+    "setSaveMode('failure')", "for (const mode of ['stale', 'tamper'])",
+    'preview_instruction_export:pdf', 'preview_instruction_export:svg_zip',
+    'save_instruction_export', 'cancel_instruction_export',
+  ]) assert.match(browserHarness, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
+})
+
 test('CI requires one native export gate for all five real technique compilers', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const instructionExport = readFileSync(

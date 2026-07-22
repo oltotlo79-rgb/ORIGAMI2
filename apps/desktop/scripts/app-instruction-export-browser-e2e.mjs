@@ -14,8 +14,11 @@ try {
   await exportButton.click(); await page.getByText('miura.pdf', { exact: true }).waitFor(); await page.getByRole('dialog').locator('select').selectOption('svg_zip'); await page.getByText('miura-svg.zip', { exact: true }).waitFor()
   await page.evaluate(() => window.__ORIGAMI2_APP_EXPORT_EVIDENCE__.setSaveMode('cancel')); await checkbox.check(); await saveButton.click(); await page.getByText('miura-svg.zip', { exact: true }).waitFor()
   await page.locator('button').filter({ hasText: /キャンセル|繧ｭ繝｣繝ｳ繧ｻ繝ｫ/ }).last().click(); await page.getByText('miura-svg.zip', { exact: true }).waitFor({ state: 'detached' })
+  await page.evaluate(() => { const evidence = window.__ORIGAMI2_APP_EXPORT_EVIDENCE__; evidence.setPreviewMode('valid'); evidence.setSaveMode('failure') }); await exportButton.click(); await page.getByText('miura.pdf', { exact: true }).waitFor(); await checkbox.check(); await saveButton.click(); await page.getByRole('dialog').getByRole('alert').waitFor(); await page.getByText('miura.pdf', { exact: true }).waitFor(); await page.locator('button').filter({ hasText: /キャンセル|繧ｭ繝｣繝ｳ繧ｻ繝ｫ/ }).last().click()
+  for (const mode of ['stale', 'tamper']) { await page.evaluate(value => window.__ORIGAMI2_APP_EXPORT_EVIDENCE__.setPreviewMode(value), mode); await exportButton.click(); await page.getByRole('dialog').getByRole('alert').waitFor(); await page.getByRole('dialog').getByRole('button', { name: /閉じる|髢峨§繧・/ }).click() }
   const commands = await page.evaluate(() => window.__ORIGAMI2_APP_EXPORT_EVIDENCE__.commands)
   for (const expected of ['project_snapshot', 'begin_instruction_export', 'preview_instruction_export:pdf', 'save_instruction_export', 'preview_instruction_export:svg_zip', 'cancel_instruction_export']) if (!commands.includes(expected)) throw new Error(`missing ${expected}: ${commands.join(',')}`)
+  if (commands.filter(command => command === 'cancel_instruction_export').length < 4) throw new Error(`stale/tamper/failure cleanup missing: ${commands.join(',')}`)
   if (errors.length) throw new Error(errors.join('\n'))
   console.log('Full App instruction export browser E2E passed')
 } finally { await browser?.close(); server.kill('SIGTERM') }

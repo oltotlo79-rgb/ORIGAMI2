@@ -1276,7 +1276,7 @@ export function StackedFoldPanel({
                     </dl>
                     {edge.hinges.map((hinge, hingeIndex) => (
                       <button
-                        key={hinge}
+                        key={`${hinge}:${hingeIndex}`}
                         type="button"
                         onClick={() => document.getElementById(
                           `stacked-fold-proof-hinge-${hinge}`,
@@ -1463,7 +1463,7 @@ export function LayerOrderViewer({
       {active.bottomToTopFaces.map((face, index) => {
         const offset = (active.bottomToTopFaces.length - 1 - index) * 9
         const highlighted = face === selectedFace || face === hoveredFace
-        return <polygon key={face} points={polygon} transform={`translate(${offset} ${-offset})`}
+        return <polygon key={`${face}:${index}`} points={polygon} transform={`translate(${offset} ${-offset})`}
           fill={highlighted ? '#f6b73c' : `hsl(${205 + index * 22} 55% 62%)`}
           fillOpacity="0.72" stroke={highlighted ? '#6b3e00' : '#29465b'}
           tabIndex={0} onClick={() => onSelectFace(face)}
@@ -1477,7 +1477,7 @@ export function LayerOrderViewer({
       })}
     </svg>
     <ol className="stacked-fold-layer-list">
-      {active.bottomToTopFaces.map((face, index) => <li key={face}>
+      {active.bottomToTopFaces.map((face, index) => <li key={`${face}:${index}`}>
         <button type="button" aria-pressed={face === selectedFace}
           onMouseEnter={() => onHoverFace(face)} onMouseLeave={() => onHoverFace(null)}
           onClick={() => onSelectFace(face)}>

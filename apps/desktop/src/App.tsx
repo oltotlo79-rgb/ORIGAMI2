@@ -77,6 +77,7 @@ import {
   applyBeginnerGeneratedPlan,
   applyMirrorSelection,
   confirmLinearArray,
+  confirmRadialArray,
   applyFoldImport,
   applySvgImport,
   assignEdgeToProjectLayer,
@@ -120,6 +121,7 @@ import {
   previewGeometricConstraintExpressionSolve,
   preflightMirrorSelection,
   previewLinearArray,
+  previewRadialArray,
   previewInstructionExport,
   previewInstructionMeshAnimation,
   previewStaticMeshExport,
@@ -178,6 +180,8 @@ import {
   type MirrorSelectionRequest,
   type LinearArrayPreview,
   type LinearArrayRequest,
+  type RadialArrayPreview,
+  type RadialArrayRequest,
   type GeometricConstraintKind,
   type ProjectTopologyResponse,
   type InstructionVisual,
@@ -666,6 +670,8 @@ function App() {
     result: LinearArrayPreview
   } | null>(null)
   const linearArrayRequestSequenceRef = useRef(0)
+  const [radialArrayPreview,setRadialArrayPreview]=useState<{request:RadialArrayRequest;result:RadialArrayPreview}|null>(null)
+  const radialArrayRequestSequenceRef=useRef(0)
   const mirrorRequestSequenceRef = useRef(0)
   const mirrorOperationRef = useRef(false)
   const [compassCircles, setCompassCircles] = useState<readonly {
@@ -712,6 +718,8 @@ function App() {
   useEffect(() => {
     linearArrayRequestSequenceRef.current += 1
     setLinearArrayPreview(null)
+    radialArrayRequestSequenceRef.current += 1
+    setRadialArrayPreview(null)
   }, [selectedLineId, nativeSnapshot?.project_instance_id, nativeSnapshot?.project_id, nativeSnapshot?.revision])
   const [underlayImages, setUnderlayImages] = useState<ReadonlyMap<string, HTMLImageElement>>(
     () => new Map(),
@@ -2677,6 +2685,52 @@ function App() {
       linearArrayRequestSequenceRef.current += 1
       setLinearArrayPreview(null)
     }
+  }
+  async function submitRadialArrayPreview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const current = latestSnapshotRef.current
+    if (!current || !selectedLine || selectedLine.locked || coreBusy) return
+    const sequence = ++radialArrayRequestSequenceRef.current
+    const form = new FormData(event.currentTarget)
+    const copies = Number(form.get('radial_array_copies'))
+    const angle = Number(form.get('radial_array_angle'))
+    if (!Number.isInteger(copies) || copies < 1 || copies > 3
+      || ![90, 180, 270].includes(angle) || (angle === 180 && copies !== 1)) {
+      setRadialArrayPreview(null)
+      return
+    }
+    const request: RadialArrayRequest = {
+      center: selectedLine.startVertexId,
+      vertices: [selectedLine.startVertexId, selectedLine.endVertexId].sort(),
+      edges: [selectedLine.id], additional_copies: copies,
+      angle_microdegrees: angle * 1_000_000,
+    }
+    try {
+      const result = await previewRadialArray(current.project_id, current.revision, current.project_instance_id, request)
+      if (sequence !== radialArrayRequestSequenceRef.current
+        || latestSnapshotRef.current !== current || result.authorizes_project_mutation
+        || result.project_instance_id !== current.project_instance_id
+        || result.project_id !== current.project_id || result.revision !== current.revision
+        || result.additional_copies !== request.additional_copies
+        || result.angle_microdegrees !== request.angle_microdegrees
+        || result.source_vertex_count !== request.vertices.length
+        || result.source_edge_count !== request.edges.length) return
+      setRadialArrayPreview({ request, result })
+    } catch { if (sequence === radialArrayRequestSequenceRef.current) setRadialArrayPreview(null) }
+  }
+
+  async function confirmCurrentRadialArray() {
+    const preview = radialArrayPreview
+    const current = latestSnapshotRef.current
+    if (!preview || !current) return
+    const result = preview.result
+    if (result.project_instance_id !== current.project_instance_id
+      || result.project_id !== current.project_id || result.revision !== current.revision) {
+      setRadialArrayPreview(null); return
+    }
+    const applied = await runNativeEdit((id, revision, instance) =>
+      confirmRadialArray(id, revision, instance, preview.request, result.request_sha256))
+    if (applied) { radialArrayRequestSequenceRef.current += 1; setRadialArrayPreview(null) }
   }
 
   function mirrorPreflightIssueText(issue: string | null) {
@@ -7784,6 +7838,17 @@ function App() {
                           </button>
                         </div>
                       )}
+                    </form>
+                  )}
+                  {selectedLine.kind !== 'boundary' && (
+                    <form onSubmit={(event)=>void submitRadialArrayPreview(event)} onInput={()=>{radialArrayRequestSequenceRef.current+=1;setRadialArrayPreview(null)}} data-testid="radial-array-panel">
+                      <fieldset disabled={coreBusy||selectedLine.locked}><legend>{text({ja:'放射配列',en:'Radial array'})}</legend>
+                        <p className="muted">{text({ja:'選択線の始点を回転中心として使用します。',en:'Uses the start vertex of the selected line as the rotation center.'})}</p>
+                        <label className="field">{text({ja:'追加コピー数',en:'Additional copies'})}<input name="radial_array_copies" type="number" min="1" max="3" step="1" defaultValue="1"/></label>
+                        <label className="field">{text({ja:'回転角度',en:'Rotation angle'})}<select name="radial_array_angle" defaultValue="90"><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label>
+                        <button type="submit" data-testid="preview-radial-array">{text({ja:'放射配列をプレビュー',en:'Preview radial array'})}</button>
+                      </fieldset>
+                      {radialArrayPreview?.request.edges[0]===selectedLine.id&&<div data-testid="radial-array-preview" aria-live="polite"><p>{formattedText({ja:'{copies}個のコピーを確認後に追加します。',en:'{copies} copies will be added after confirmation.'},{copies:radialArrayPreview.result.additional_copies})}</p><button type="button" data-testid="confirm-radial-array" onClick={()=>void confirmCurrentRadialArray()}>{text({ja:'放射配列を確定',en:'Confirm radial array'})}</button><button type="button" onClick={()=>{radialArrayRequestSequenceRef.current+=1;setRadialArrayPreview(null)}}>{text({ja:'キャンセル',en:'Cancel'})}</button></div>}
                     </form>
                   )}
                   <div className="property-actions">

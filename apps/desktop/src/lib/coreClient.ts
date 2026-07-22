@@ -4842,6 +4842,30 @@ export function confirmLinearArray(
     expectedProjectInstanceId, expectedProjectId, expectedRevision, request, expectedRequestSha256,
   })
 }
+export type RadialArrayRequest = {
+  center: string; vertices: string[]; edges: string[]
+  additional_copies: number; angle_microdegrees: number
+}
+export type RadialArrayPreview = {
+  version: 1; project_instance_id: string; project_id: string; revision: number
+  request_sha256: string; source_vertex_count: number; source_edge_count: number
+  additional_copies: number; angle_microdegrees: number
+  authorizes_project_mutation: false
+}
+export function previewRadialArray(expectedProjectId: string, expectedRevision: number,
+  expectedProjectInstanceId: string, request: RadialArrayRequest) {
+  return invoke<RadialArrayPreview>('preview_radial_array', {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision, request,
+  })
+}
+export function confirmRadialArray(expectedProjectId: string, expectedRevision: number,
+  expectedProjectInstanceId: string, request: RadialArrayRequest,
+  expectedRequestSha256: string) {
+  return invoke<ProjectSnapshot>('confirm_radial_array', {
+    expectedProjectInstanceId, expectedProjectId, expectedRevision,
+    request, expectedRequestSha256,
+  })
+}
 
 export type GeometricConstraintSolvePreview = {
   token: string

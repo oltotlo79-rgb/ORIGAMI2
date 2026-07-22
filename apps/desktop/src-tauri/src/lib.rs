@@ -9271,6 +9271,136 @@ fn confirm_linear_array_inner(
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RadialArrayRequestV1 {
+    center: VertexId,
+    vertices: Vec<VertexId>,
+    edges: Vec<EdgeId>,
+    additional_copies: u8,
+    angle_microdegrees: u32,
+}
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct RadialArrayPreviewV1 {
+    version: u8,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    request_sha256: String,
+    source_vertex_count: usize,
+    source_edge_count: usize,
+    additional_copies: u8,
+    angle_microdegrees: u32,
+    authorizes_project_mutation: bool,
+}
+fn radial_array_request_sha256(
+    instance: ProjectId,
+    id: ProjectId,
+    revision: u64,
+    request: &RadialArrayRequestV1,
+) -> Result<String, String> {
+    let mut digest = sha2::Sha256::new();
+    digest.update(b"ORIGAMI2\0radial-array-v1\0");
+    digest.update(
+        serde_json::to_vec(&(instance, id, revision, request))
+            .map_err(|_| "radial_array_request_invalid".to_owned())?,
+    );
+    Ok(lowercase_hex(&digest.finalize()))
+}
+fn preview_radial_array_inner(
+    project: &ProjectState,
+    instance: ProjectId,
+    id: ProjectId,
+    revision: u64,
+    request: RadialArrayRequestV1,
+) -> Result<RadialArrayPreviewV1, String> {
+    ensure_expected_project(project, instance, id, revision)?;
+    project
+        .editor
+        .plan_radial_array(
+            revision,
+            request.center,
+            request.vertices.clone(),
+            request.edges.clone(),
+            request.additional_copies,
+            request.angle_microdegrees,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(RadialArrayPreviewV1 {
+        version: 1,
+        project_instance_id: instance,
+        project_id: id,
+        revision,
+        request_sha256: radial_array_request_sha256(instance, id, revision, &request)?,
+        source_vertex_count: request.vertices.len(),
+        source_edge_count: request.edges.len(),
+        additional_copies: request.additional_copies,
+        angle_microdegrees: request.angle_microdegrees,
+        authorizes_project_mutation: false,
+    })
+}
+#[tauri::command]
+fn preview_radial_array(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    request: RadialArrayRequestV1,
+) -> Result<RadialArrayPreviewV1, String> {
+    let project = lock_project(&state)?;
+    preview_radial_array_inner(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        request,
+    )
+}
+fn confirm_radial_array_inner(
+    project: &mut ProjectState,
+    instance: ProjectId,
+    id: ProjectId,
+    revision: u64,
+    request: RadialArrayRequestV1,
+    expected_request_sha256: String,
+) -> Result<ProjectSnapshot, String> {
+    ensure_expected_project(project, instance, id, revision)?;
+    if radial_array_request_sha256(instance, id, revision, &request)? != expected_request_sha256 {
+        return Err("radial_array_preview_stale".to_owned());
+    }
+    let command = project
+        .editor
+        .plan_radial_array(
+            revision,
+            request.center,
+            request.vertices,
+            request.edges,
+            request.additional_copies,
+            request.angle_microdegrees,
+        )
+        .map_err(|e| e.to_string())?;
+    execute_command(project, instance, id, revision, command)
+}
+#[tauri::command]
+fn confirm_radial_array(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    request: RadialArrayRequestV1,
+    expected_request_sha256: String,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    confirm_radial_array_inner(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        request,
+        expected_request_sha256,
+    )
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 fn rotate_edge_about_point(
@@ -15155,6 +15285,8 @@ pub fn run() {
             apply_mirror_selection,
             preview_linear_array,
             confirm_linear_array,
+            preview_radial_array,
+            confirm_radial_array,
             rotate_edge_about_point,
             move_vertices,
             preview_geometric_constraint_solve,
@@ -27110,5 +27242,104 @@ mod tests {
         };
         assert!(preview_linear_array_inner(&project, instance, id, 2, invalid).is_err());
         assert_eq!(project.document(), restored);
+    }
+
+    #[test]
+    fn radial_array_preview_and_confirm_are_domain_bound_read_only_and_atomic() {
+        let sheet = create_rectangular_sheet(100.0, 100.0, false).unwrap();
+        let (mut pattern, paper) = sheet.into_parts();
+        let center = VertexId::new();
+        let outer = VertexId::new();
+        let edge = EdgeId::new();
+        pattern.vertices.extend([
+            Vertex {
+                id: center,
+                position: Point2::new(50.0, 50.0),
+            },
+            Vertex {
+                id: outer,
+                position: Point2::new(60.0, 50.0),
+            },
+        ]);
+        pattern.edges.push(Edge {
+            id: edge,
+            start: center,
+            end: outer,
+            kind: EdgeKind::Mountain,
+        });
+        let mut project = ProjectState::new_with_paper(pattern, paper);
+        let instance = project.instance_id;
+        let id = project.project_id;
+        let mut vertices = vec![center, outer];
+        vertices.sort_by_key(|id| id.canonical_bytes());
+        let request = RadialArrayRequestV1 {
+            center,
+            vertices,
+            edges: vec![edge],
+            additional_copies: 1,
+            angle_microdegrees: 90_000_000,
+        };
+        let before = project.document();
+        let preview =
+            preview_radial_array_inner(&project, instance, id, 0, request.clone()).unwrap();
+        assert_eq!(project.document(), before);
+        assert!(!preview.authorizes_project_mutation);
+        assert!(
+            preview_radial_array_inner(&project, ProjectId::new(), id, 0, request.clone()).is_err()
+        );
+        assert!(
+            preview_radial_array_inner(&project, instance, ProjectId::new(), 0, request.clone())
+                .is_err()
+        );
+        assert!(preview_radial_array_inner(&project, instance, id, 1, request.clone()).is_err());
+        assert_eq!(project.document(), before);
+        let linear = LinearArrayRequestV1 {
+            vertices: request.vertices.clone(),
+            edges: request.edges.clone(),
+            additional_copies: 1,
+            delta: Point2::new(0.0, 10.0),
+        };
+        assert_ne!(
+            preview.request_sha256,
+            linear_array_request_sha256(instance, id, 0, &linear).unwrap()
+        );
+        let mut changed = request.clone();
+        changed.angle_microdegrees = 180_000_000;
+        assert!(
+            confirm_radial_array_inner(
+                &mut project,
+                instance,
+                id,
+                0,
+                changed,
+                preview.request_sha256.clone()
+            )
+            .is_err()
+        );
+        assert_eq!(project.document(), before);
+        assert!(
+            confirm_radial_array_inner(
+                &mut project,
+                instance,
+                id,
+                0,
+                request.clone(),
+                "0".repeat(64)
+            )
+            .is_err()
+        );
+        assert_eq!(project.document(), before);
+        let snapshot = confirm_radial_array_inner(
+            &mut project,
+            instance,
+            id,
+            0,
+            request,
+            preview.request_sha256,
+        )
+        .unwrap();
+        assert_eq!(snapshot.revision, 1);
+        project.editor.undo(1).unwrap();
+        assert_eq!(project.editor.pattern(), &before.crease_pattern);
     }
 }

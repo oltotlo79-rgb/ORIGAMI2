@@ -4511,11 +4511,7 @@ mod tests {
                 id: fixed_id("7500", index as u64 + 20),
                 start: boundary[bottom],
                 end: boundary[top],
-                kind: if index % 2 == 0 {
-                    EdgeKind::Mountain
-                } else {
-                    EdgeKind::Valley
-                },
+                kind: EdgeKind::Mountain,
             });
         }
         super::super::ProjectState::new_with_paper(

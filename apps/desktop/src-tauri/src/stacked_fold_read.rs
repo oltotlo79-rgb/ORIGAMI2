@@ -488,15 +488,15 @@ fn mint_dyadic_pose_path_preview_inner_v1(
     {
         return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
     }
-    let target = ori_kinematics::CanonicalHingeAngles::new(
-        request
-            .target_angles
-            .iter()
-            .map(|entry| ori_kinematics::HingeAngle::new(entry.edge, entry.angle_degrees))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?,
-    )
-    .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
+    let mut target_entries = request
+        .target_angles
+        .iter()
+        .map(|entry| ori_kinematics::HingeAngle::new(entry.edge, entry.angle_degrees))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
+    target_entries.sort_unstable_by_key(|entry| entry.edge().canonical_bytes());
+    let target = ori_kinematics::CanonicalHingeAngles::new(target_entries)
+        .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
     let target_binding = pose_state_fingerprint_v1(&target);
     let mut native_authority = None;
     let observed = read_bounded_dyadic_pose_graph_inner_v1(
@@ -805,15 +805,15 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
     let Some((geometry, audit, pose)) = capability.graph() else {
         return Ok(unsupported_dyadic_graph_response_v1(&project));
     };
-    let target = ori_kinematics::CanonicalHingeAngles::new(
-        request
-            .target_angles
-            .iter()
-            .map(|entry| ori_kinematics::HingeAngle::new(entry.edge, entry.angle_degrees))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?,
-    )
-    .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+    let mut target_entries = request
+        .target_angles
+        .iter()
+        .map(|entry| ori_kinematics::HingeAngle::new(entry.edge, entry.angle_degrees))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
+    target_entries.sort_unstable_by_key(|entry| entry.edge().canonical_bytes());
+    let target = ori_kinematics::CanonicalHingeAngles::new(target_entries)
+        .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE.to_owned())?;
     let collective_schedule = request
         .cycle_schedule_v1
         .as_ref()

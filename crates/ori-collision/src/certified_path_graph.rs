@@ -15,8 +15,8 @@ use sha2::{Digest, Sha256};
 use crate::continuous_path::diagnose_scheduled_cycle_path_v1;
 
 pub const CERTIFIED_PATH_GRAPH_MODEL_ID_V1: &str = "bounded_certified_pose_graph_path_v1";
-pub const MAX_CERTIFIED_PATH_GRAPH_STATES_V1: usize = 32;
-pub const MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1: usize = 64;
+pub const MAX_CERTIFIED_PATH_GRAPH_STATES_V1: usize = 2_187;
+pub const MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1: usize = 20_412;
 
 pub type PoseFingerprintV1 = [u8; 32];
 

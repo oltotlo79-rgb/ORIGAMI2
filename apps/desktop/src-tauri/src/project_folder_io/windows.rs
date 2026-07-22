@@ -46,6 +46,28 @@ struct IoStatusBlock {
     information: usize,
 }
 
+pub(crate) fn flush_directory_handle(directory: &File) -> std::io::Result<()> {
+    let mut io_status = IoStatusBlock::default();
+    let status = unsafe {
+        // SAFETY: `directory` is a live directory handle and `io_status` is
+        // valid output storage for the duration of the synchronous call.
+        NtFlushBuffersFileEx(
+            directory.as_raw_handle() as RawHandle,
+            0,
+            ptr::null(),
+            0,
+            ptr::addr_of_mut!(io_status),
+        )
+    };
+    let completion_status = io_status.status as u32 as i32;
+    if status != 0 || completion_status != 0 {
+        return Err(std::io::Error::other(format!(
+            "NtFlushBuffersFileEx failed: status={status:#x}, completion={completion_status:#x}"
+        )));
+    }
+    Ok(())
+}
+
 #[repr(C)]
 #[derive(Default)]
 struct FileIsRemoteDeviceInformation {
@@ -310,21 +332,8 @@ impl PinnedDirectory {
         if information.identity != self.identity {
             return Err(ProjectFolderFilesystemError::ChangedDuringRead);
         }
-        let mut io_status = IoStatusBlock::default();
-        let status = unsafe {
-            // SAFETY: `flush_handle` is a live write-capable handle for the
-            // exact pinned directory and `io_status` is valid output storage.
-            NtFlushBuffersFileEx(
-                flush_handle.as_raw_handle() as RawHandle,
-                0,
-                ptr::null(),
-                0,
-                ptr::addr_of_mut!(io_status),
-            )
-        };
-        if status != 0 || io_status.status as u32 as i32 != 0 {
-            return Err(ProjectFolderFilesystemError::WriteFailed);
-        }
+        flush_directory_handle(&flush_handle)
+            .map_err(|_| ProjectFolderFilesystemError::WriteFailed)?;
         let after = directory_information(&flush_handle)
             .map_err(|_| ProjectFolderFilesystemError::WriteFailed)?;
         if after.identity != self.identity {

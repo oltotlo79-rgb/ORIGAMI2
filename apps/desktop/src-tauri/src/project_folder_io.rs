@@ -38,7 +38,7 @@ use super::{
 mod platform;
 #[cfg(target_os = "windows")]
 #[path = "project_folder_io/windows.rs"]
-mod platform;
+pub(crate) mod platform;
 #[path = "project_folder_io/replacement.rs"]
 mod replacement;
 

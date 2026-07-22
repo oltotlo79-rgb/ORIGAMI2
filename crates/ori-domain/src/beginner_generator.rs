@@ -13,6 +13,9 @@ pub const BEGINNER_GENERATOR_SCHEMA_VERSION_V1: u32 = 1;
 pub const MAX_BEGINNER_GENERATED_CANDIDATES_V1: usize = 3;
 pub const MAX_BEGINNER_GENERATOR_INPUT_VERTICES_V1: usize = 10_000;
 pub const BEGINNER_PARAMETER_GRID_SIZE_V1: usize = 27;
+pub const MAX_BEGINNER_GENERIC_TREE_BARS_V1: usize = 16;
+pub const MAX_BEGINNER_GENERIC_TREE_INTERSECTION_PAIRS_V1: usize = 120;
+pub const MAX_BEGINNER_GENERIC_TREE_NODES_V1: usize = 17;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2049,10 +2052,15 @@ fn append_bounded_radial_tree_graph(
         (i128::from(b.0) - i128::from(a.0)) * (i128::from(c.1) - i128::from(a.1))
             - (i128::from(b.1) - i128::from(a.1)) * (i128::from(c.0) - i128::from(a.0))
     };
+    let mut checked_pairs = 0_usize;
     for (index, left) in segments.iter().enumerate() {
         let a = point(left.start);
         let b = point(left.end);
         for right in segments.iter().skip(index + 1) {
+            checked_pairs = checked_pairs.checked_add(1)?;
+            if checked_pairs > MAX_BEGINNER_GENERIC_TREE_INTERSECTION_PAIRS_V1 {
+                return None;
+            }
             let c = point(right.start);
             let d = point(right.end);
             if [a, b]
@@ -2077,8 +2085,13 @@ fn append_bounded_radial_tree_graph(
         *degree.entry(point(segment.start)).or_default() += 1;
         *degree.entry(point(segment.end)).or_default() += 1;
     }
+    if degree.len() > MAX_BEGINNER_GENERIC_TREE_NODES_V1 {
+        return None;
+    }
     let leaf_count = degree.values().filter(|degree| **degree == 1).count();
-    if !(2..=8).contains(&leaf_count) || constraints.protrusions.is_empty() {
+    if !(2..=MAX_BEGINNER_GENERIC_TREE_BARS_V1).contains(&leaf_count)
+        || constraints.protrusions.is_empty()
+    {
         return None;
     }
     let (source_min_x, source_max_x, source_min_y, source_max_y) = skeleton_bounds(segments)?;
@@ -2147,7 +2160,7 @@ fn append_bounded_radial_tree_graph(
 
 fn bounded_tree_skeleton_length_ratios(segments: &[BeginnerSkeletonSegmentV1]) -> Option<Vec<u32>> {
     if segments.is_empty()
-        || segments.len() > 8
+        || segments.len() > MAX_BEGINNER_GENERIC_TREE_BARS_V1
         || segments.windows(2).any(|pair| pair[0].id >= pair[1].id)
     {
         return None;
@@ -2616,6 +2629,13 @@ mod tests {
             bounded_tree_skeleton_length_ratios(&tree),
             Some(vec![1_000_000, 4_000_000])
         );
+        let eight = (0..8)
+            .map(|id| bar(id, (id as i32, 0), (id as i32 + 1, 0)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bounded_tree_skeleton_length_ratios(&eight).unwrap().len(),
+            8
+        );
         assert!(
             bounded_tree_skeleton_length_ratios(&[
                 bar(0, (0, 0), (10, 0)),
@@ -2628,7 +2648,18 @@ mod tests {
         let nine = (0..9)
             .map(|id| bar(id, (id as i32, 0), (id as i32 + 1, 0)))
             .collect::<Vec<_>>();
-        assert!(bounded_tree_skeleton_length_ratios(&nine).is_none());
+        assert_eq!(bounded_tree_skeleton_length_ratios(&nine).unwrap().len(), 9);
+        let sixteen = (0..16)
+            .map(|id| bar(id, (id as i32, 0), (id as i32 + 1, 0)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bounded_tree_skeleton_length_ratios(&sixteen).unwrap().len(),
+            16
+        );
+        let seventeen = (0..17)
+            .map(|id| bar(id, (id as i32, 0), (id as i32 + 1, 0)))
+            .collect::<Vec<_>>();
+        assert!(bounded_tree_skeleton_length_ratios(&seventeen).is_none());
 
         let crossing = vec![
             bar(0, (-10, 0), (10, 0)),

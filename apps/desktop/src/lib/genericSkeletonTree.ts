@@ -12,7 +12,7 @@ export function analyzeGenericSkeletonTree(segments: readonly Segment[]): Readon
   edgeCount: number
 }> {
   if (segments.length === 0) return Object.freeze({ status: 'empty', pointCount: 0, edgeCount: 0 })
-  if (segments.length > 8) return Object.freeze({ status: 'resource_limit', pointCount: 0, edgeCount: segments.length })
+  if (segments.length > 16) return Object.freeze({ status: 'resource_limit', pointCount: 0, edgeCount: segments.length })
   const adjacency = new Map<string, Set<string>>()
   const edges = new Set<string>()
   for (const segment of segments) {

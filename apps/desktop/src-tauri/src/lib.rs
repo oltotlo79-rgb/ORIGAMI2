@@ -2971,12 +2971,64 @@ fn grid_template_plan(
 ) -> Result<Vec<ori_domain::BeginnerGeneratedPlanV1>, ori_domain::BeginnerGeneratorErrorV1> {
     let temporary = temporary_symmetric_profile_for_grid(profile, point)
         .map_err(|_| ori_domain::BeginnerGeneratorErrorV1::MissingRequiredParts)?;
-    ori_domain::generate_beginner_plans_v1(
+    let mut plans = ori_domain::generate_beginner_plans_v1(
         namespace,
         source,
         boundary_vertices,
         &temporary.generation_constraints,
-    )
+    )?;
+    if let Some(horizontal) = plans
+        .first()
+        .filter(|plan| {
+            plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+        })
+        .cloned()
+    {
+        let positions = boundary_vertices
+            .iter()
+            .filter_map(|id| {
+                source
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.id == *id)
+                    .map(|vertex| vertex.position)
+            })
+            .collect::<Vec<_>>();
+        let min_x = positions
+            .iter()
+            .map(|point| point.x)
+            .fold(f64::INFINITY, f64::min);
+        let max_x = positions
+            .iter()
+            .map(|point| point.x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min_y = positions
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::INFINITY, f64::min);
+        let max_y = positions
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let width = max_x - min_x;
+        let height = max_y - min_y;
+        if width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0 {
+            let mut vertical = horizontal;
+            for vertex in &mut vertical.crease_pattern.vertices {
+                let x_ratio = (vertex.position.x - min_x) / width;
+                let y_ratio = (vertex.position.y - min_y) / height;
+                vertex.position = Point2::new(min_x + y_ratio * width, min_y + x_ratio * height);
+            }
+            vertical
+                .instruction_codes
+                .push("bounded_tree_paper_orientation_v1:vertical".to_owned());
+            plans.insert(1, vertical);
+            plans[0]
+                .instruction_codes
+                .push("bounded_tree_paper_orientation_v1:horizontal".to_owned());
+        }
+    }
+    Ok(plans)
 }
 
 fn symmetric_plan_kind(
@@ -3745,6 +3797,9 @@ struct BeginnerGridEvaluationResponse {
 const MAX_BEGINNER_REFINEMENT_ITERATIONS_V1: u8 = 8;
 const MAX_BEGINNER_REFINEMENT_PROPOSALS_V1: usize = 32;
 const BEGINNER_REFINEMENT_STARTS_V1: u8 = 5;
+const MAX_BEGINNER_GENERIC_TREE_ORIENTATIONS_V1: usize = 2;
+const MAX_BEGINNER_GENERIC_TREE_PRIMARY_WORK_V1: usize =
+    ori_domain::BEGINNER_PARAMETER_GRID_SIZE_V1 * MAX_BEGINNER_GENERIC_TREE_ORIENTATIONS_V1;
 
 fn validate_beginner_manufacturability_v1(
     pattern: &CreasePattern,
@@ -3837,6 +3892,10 @@ fn refine_beginner_grid_plan_v1(
     };
     let mut point = initial_point;
     let mut plan = initial_plan;
+    let prefer_vertical = plan
+        .instruction_codes
+        .iter()
+        .any(|code| code == "bounded_tree_paper_orientation_v1:vertical");
     let mut score = preset_weighted_refinement_score_v1(&plan, reference, profile);
     let initial_score = score;
     let mut iterations = 0_u8;
@@ -3862,7 +3921,13 @@ fn refine_beginner_grid_plan_v1(
             grid_template_plan(namespace, source, boundary_vertices, profile, seed_point)
                 .map_err(|_| "grid_refinement_generation_failed".to_owned())?
                 .into_iter()
-                .find(|candidate| candidate.kind == expected_kind)
+                .find(|candidate| {
+                    candidate.kind == expected_kind
+                        && candidate.instruction_codes.iter().any(|code| {
+                            (code == "bounded_tree_paper_orientation_v1:vertical")
+                                == prefer_vertical
+                        })
+                })
         else {
             continue;
         };
@@ -3919,7 +3984,12 @@ fn refine_beginner_grid_plan_v1(
             )
             .map_err(|_| "grid_refinement_generation_failed".to_owned())?
             .into_iter()
-            .find(|candidate| candidate.kind == expected_kind) else {
+            .find(|candidate| {
+                candidate.kind == expected_kind
+                    && candidate.instruction_codes.iter().any(|code| {
+                        (code == "bounded_tree_paper_orientation_v1:vertical") == prefer_vertical
+                    })
+            }) else {
                 continue;
             };
             if beginner_contour_placement_witness(&profile.generation_constraints, &candidate_plan)
@@ -4004,13 +4074,13 @@ fn evaluate_beginner_parameter_grid(
     let _registration = BeginnerGridWorkRegistration(request_generation_id);
     let grid = ori_domain::beginner_parameter_grid_v1();
     let expected_kind = symmetric_plan_kind(profile);
-    let mut primary = Vec::with_capacity(grid.len());
+    let mut primary = Vec::with_capacity(MAX_BEGINNER_GENERIC_TREE_PRIMARY_WORK_V1);
     for point in grid.iter().copied() {
         if work.cancelled.load(Ordering::Acquire) {
             work.terminal.store(2, Ordering::Release);
             return Err("grid_evaluation_cancelled".to_owned());
         }
-        let plan = grid_template_plan(
+        let plans = grid_template_plan(
             project.project_id,
             project.editor.pattern(),
             &project.editor.paper().boundary_vertices,
@@ -4019,8 +4089,12 @@ fn evaluate_beginner_parameter_grid(
         )
         .map_err(|_| "grid_template_generation_failed".to_owned())?
         .into_iter()
-        .find(|plan| plan.kind == expected_kind)
-        .ok_or_else(|| "grid_template_generation_failed".to_owned())?;
+        .filter(|plan| plan.kind == expected_kind)
+        .take(MAX_BEGINNER_GENERIC_TREE_ORIENTATIONS_V1)
+        .collect::<Vec<_>>();
+        if plans.is_empty() {
+            return Err("grid_template_generation_failed".to_owned());
+        }
         let deviation = u16::from(point.scale_percent.abs_diff(estimate.scale_percent)) * 10
             + u16::from(point.spacing_percent.abs_diff(estimate.spacing_percent)) * 5;
         let detail_penalty = if point.detail_level == profile.generation_constraints.detail_level {
@@ -4028,11 +4102,13 @@ fn evaluate_beginner_parameter_grid(
         } else {
             10
         };
-        primary.push((
-            1000_u16.saturating_sub(deviation + detail_penalty),
-            point,
-            plan,
-        ));
+        for plan in plans {
+            primary.push((
+                1000_u16.saturating_sub(deviation + detail_penalty),
+                point,
+                plan,
+            ));
+        }
         work.enumerated.fetch_add(1, Ordering::Release);
     }
     primary.sort_by_key(|(score, point, _)| (std::cmp::Reverse(*score), point.id));

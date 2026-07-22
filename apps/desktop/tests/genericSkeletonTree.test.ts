@@ -14,7 +14,7 @@ test('confirmed branch trees are invariant to segment storage order', () => {
 })
 
 test('cycles duplicate edges disconnected graphs and zero-length bars fail closed', () => {
-  assert.equal(analyzeGenericSkeletonTree(Array.from({ length: 9 }, (_, id) =>
+  assert.equal(analyzeGenericSkeletonTree(Array.from({ length: 17 }, (_, id) =>
     segment(id, id, 0, id + 1, 0))).status, 'resource_limit')
   assert.equal(analyzeGenericSkeletonTree([
     segment(1, 0, 0, 10, 0), segment(2, 10, 0, 5, 10), segment(3, 5, 10, 0, 0),

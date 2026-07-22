@@ -292,6 +292,15 @@ describe('GeometricConstraintPanel', () => {
       },
       {
         conflict: {
+          kind: 'inconsistent_length_ratio_graph_with_fixed_length' as const,
+          fixed_edge: IDS[0]!,
+          ratio_constraint_count: 5,
+        },
+        expected:
+          'A length-ratio graph connected to a positive fixed length contains an exactly inconsistent cycle',
+      },
+      {
+        conflict: {
           kind: 'parallel_with_fixed_non_parallel_angle' as const,
           first_edge: IDS[0]!,
           second_edge: IDS[1]!,

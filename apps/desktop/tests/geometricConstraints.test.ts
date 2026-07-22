@@ -31,6 +31,8 @@ const CONSTRAINT_1 = uuid(101)
 const CONSTRAINT_2 = uuid(102)
 const CONSTRAINT_3 = uuid(103)
 const CONSTRAINT_4 = uuid(104)
+const CONSTRAINT_5 = uuid(105)
+const CONSTRAINT_6 = uuid(106)
 
 const BINDING = {
   project_instance_id: INSTANCE_ID,
@@ -193,6 +195,21 @@ const DIRECT_CONFLICTS = [
       fixed_edge: EDGE_1,
     },
     constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3, CONSTRAINT_4],
+  },
+  {
+    conflict: {
+      kind: 'inconsistent_length_ratio_graph_with_fixed_length',
+      fixed_edge: EDGE_1,
+      ratio_constraint_count: 5,
+    },
+    constraint_ids: [
+      CONSTRAINT_1,
+      CONSTRAINT_2,
+      CONSTRAINT_3,
+      CONSTRAINT_4,
+      CONSTRAINT_5,
+      CONSTRAINT_6,
+    ],
   },
   {
     conflict: {
@@ -604,7 +621,7 @@ test('presentation also fails closed for malformed or hostile records', () => {
   assert.equal(getterCalls, 0)
 })
 
-test('normalizes all eleven direct-conflict kinds with bounded frozen witnesses', () => {
+test('normalizes all twelve direct-conflict kinds with bounded frozen witnesses', () => {
   const raw = response({
     status: 'direct_conflict',
     conflicts: DIRECT_CONFLICTS,
@@ -620,9 +637,9 @@ test('normalizes all eleven direct-conflict kinds with bounded frozen witnesses'
     normalized?.result.status === 'direct_conflict'
       ? normalized.result.conflicts.length
       : 0,
-    11,
+    12,
   )
-  assert.equal(MAX_DIRECT_CONFLICT_WITNESS_IDS, 4)
+  assert.equal(MAX_DIRECT_CONFLICT_WITNESS_IDS, 256)
 })
 
 test('normalizes no-conflict and all three closed unknown reasons', () => {
@@ -714,6 +731,38 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
         constraint_ids: [CONSTRAINT_1, CONSTRAINT_2],
       }],
     }),
+    ...[2, 256, 3.5].map((ratio_constraint_count) => response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'inconsistent_length_ratio_graph_with_fixed_length',
+          fixed_edge: EDGE_1,
+          ratio_constraint_count,
+        },
+        constraint_ids: [
+          CONSTRAINT_1,
+          CONSTRAINT_2,
+          CONSTRAINT_3,
+          CONSTRAINT_4,
+        ],
+      }],
+    })),
+    response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'inconsistent_length_ratio_graph_with_fixed_length',
+          fixed_edge: EDGE_1,
+          ratio_constraint_count: 5,
+        },
+        constraint_ids: [
+          CONSTRAINT_1,
+          CONSTRAINT_2,
+          CONSTRAINT_3,
+          CONSTRAINT_4,
+        ],
+      }],
+    }),
     response({
       status: 'direct_conflict',
       conflicts: [{
@@ -777,7 +826,7 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
   }
 })
 
-test('preflight witnesses are canonical, duplicate-free, and bounded to four IDs', () => {
+test('preflight witnesses are canonical, duplicate-free, and bounded to 256 IDs', () => {
   const invalidWitnesses = [
     [],
     [CONSTRAINT_1],

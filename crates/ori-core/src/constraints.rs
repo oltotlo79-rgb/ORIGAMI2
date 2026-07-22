@@ -22,7 +22,7 @@
 //! not promise to convert an operating-system-wide OOM into a recoverable
 //! result.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use num_bigint::BigUint;
 pub use ori_domain::{
@@ -42,7 +42,9 @@ pub const GEOMETRIC_CONSTRAINT_MODEL_ID_V1: &str = "geometric_constraints_v1";
 /// Default and non-relaxable V1 preflight-record-count ceiling.
 pub const DEFAULT_MAX_CONSTRAINT_PRECHECKS: usize = 10_000;
 /// Maximum size of one deterministic direct-conflict cause witness.
-pub const MAX_DIRECT_CONFLICT_CAUSE_IDS_V1: usize = 4;
+pub const MAX_DIRECT_CONFLICT_CAUSE_IDS_V1: usize = 256;
+const MAX_GENERAL_RATIO_POTENTIAL_BITS_V1: u64 = 1_048_576;
+const MAX_GENERAL_RATIO_ARITHMETIC_WORK_V1: u64 = 2_000_000;
 
 type CanonicalId = [u8; 16];
 
@@ -346,6 +348,10 @@ pub enum DirectConstraintConflictKindV1 {
         third_edge: EdgeId,
         fixed_edge: EdgeId,
     },
+    InconsistentLengthRatioGraphWithFixedLength {
+        fixed_edge: EdgeId,
+        ratio_constraint_count: u16,
+    },
     ParallelWithFixedNonParallelAngle {
         first_edge: EdgeId,
         second_edge: EdgeId,
@@ -360,8 +366,9 @@ pub enum DirectConstraintConflictKindV1 {
 pub struct DirectConstraintConflictV1 {
     conflict: DirectConstraintConflictKindV1,
     /// Canonically sorted, duplicate-free minimal witness sufficient for this
-    /// direct contradiction. A witness contains at most three IDs, so repeated
-    /// authored constraints cannot make preflight output quadratic.
+    /// contradiction. Fixed-pattern witnesses contain at most four IDs; the
+    /// separately work-bounded general ratio-graph witness contains at most
+    /// 256 IDs.
     constraint_ids: Vec<ConstraintId>,
 }
 
@@ -1374,8 +1381,13 @@ impl ScalarGroupSummary {
     fn observe(&mut self, assignment: ScalarAssignment) {
         #[cfg(test)]
         record_fixed_length_summary_visit();
-        if self.first_different.is_none()
-            && assignment.value.to_bits() != self.representative.value.to_bits()
+        if assignment.value.to_bits() == self.representative.value.to_bits() {
+            if assignment.id.canonical_bytes() < self.representative.id.canonical_bytes() {
+                self.representative = assignment;
+            }
+        } else if self
+            .first_different
+            .is_none_or(|current| assignment.id.canonical_bytes() < current.id.canonical_bytes())
         {
             self.first_different = Some(assignment);
         }
@@ -1839,6 +1851,19 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
         }
     }
 
+    if conflicts.is_empty() {
+        match general_ratio_graph_conflict_v1(&ratios, &fixed_lengths, &edge_ids) {
+            Ok(Some(conflict)) => conflicts.push(conflict),
+            Ok(None) => {}
+            Err(()) => {
+                return ConstraintPreflightV1::Unknown {
+                    reason: GeometricConstraintUnknownReasonV1::WorkLimitExceeded,
+                    unchecked_constraint_ids: canonical_constraint_ids(&set.constraints),
+                };
+            }
+        }
+    }
+
     conflicts.sort_unstable_by(|left, right| {
         conflict_sort_key(&left.conflict)
             .cmp(&conflict_sort_key(&right.conflict))
@@ -1867,11 +1892,16 @@ fn canonical_constraint_ids(records: &[GeometricConstraintRecordV1]) -> Vec<Cons
 }
 
 fn consistent_scalar_assignment(assignments: &[ScalarAssignment]) -> Option<ScalarAssignment> {
-    let first = *assignments.first()?;
+    let first = assignments.first()?;
     assignments
         .iter()
         .all(|assignment| assignment.value.to_bits() == first.value.to_bits())
-        .then_some(first)
+        .then(|| {
+            *assignments
+                .iter()
+                .min_by_key(|assignment| assignment.id.canonical_bytes())
+                .expect("non-empty assignments have a minimum")
+        })
 }
 
 fn positive_binary64_odd_parts_v1(value: f64) -> (u64, i16) {
@@ -1910,6 +1940,326 @@ fn positive_binary64_product_is_one_v1(values: &[f64]) -> bool {
         significand *= BigUint::from(part_significand);
     }
     exponent == 0 && significand == BigUint::from(1_u8)
+}
+
+#[derive(Clone)]
+struct ExactPositiveRatioV1 {
+    numerator: BigUint,
+    denominator: BigUint,
+    exponent: i32,
+}
+
+impl ExactPositiveRatioV1 {
+    fn one() -> Self {
+        Self {
+            numerator: BigUint::from(1_u8),
+            denominator: BigUint::from(1_u8),
+            exponent: 0,
+        }
+    }
+
+    fn from_binary64(value: f64) -> Self {
+        let (significand, exponent) = positive_binary64_odd_parts_v1(value);
+        Self {
+            numerator: BigUint::from(significand),
+            denominator: BigUint::from(1_u8),
+            exponent: i32::from(exponent),
+        }
+    }
+
+    fn compose(
+        &self,
+        factor: &Self,
+        multiply: bool,
+        budget: &mut GeneralRatioBudgetV1,
+    ) -> Result<Self, ()> {
+        budget.charge_arithmetic(
+            self.numerator.bits()
+                + self.denominator.bits()
+                + factor.numerator.bits()
+                + factor.denominator.bits(),
+        )?;
+        let (factor_numerator, factor_denominator, factor_exponent) = if multiply {
+            (&factor.numerator, &factor.denominator, factor.exponent)
+        } else {
+            (&factor.denominator, &factor.numerator, -factor.exponent)
+        };
+        Ok(Self {
+            numerator: &self.numerator * factor_numerator,
+            denominator: &self.denominator * factor_denominator,
+            exponent: self.exponent.checked_add(factor_exponent).ok_or(())?,
+        })
+    }
+
+    fn equals(&self, other: &Self, budget: &mut GeneralRatioBudgetV1) -> Result<bool, ()> {
+        if self.exponent != other.exponent {
+            return Ok(false);
+        }
+        budget.charge_arithmetic(
+            self.numerator.bits()
+                + self.denominator.bits()
+                + other.numerator.bits()
+                + other.denominator.bits(),
+        )?;
+        Ok(&self.numerator * &other.denominator == &other.numerator * &self.denominator)
+    }
+
+    fn bits(&self) -> u64 {
+        self.numerator.bits() + self.denominator.bits()
+    }
+}
+
+struct GeneralRatioBudgetV1 {
+    potential_bits: u64,
+    arithmetic_work: u64,
+    max_potential_bits: u64,
+    max_arithmetic_work: u64,
+}
+
+impl GeneralRatioBudgetV1 {
+    fn charge_potential(&mut self, bits: u64) -> Result<(), ()> {
+        self.potential_bits = self.potential_bits.checked_add(bits).ok_or(())?;
+        (self.potential_bits <= self.max_potential_bits)
+            .then_some(())
+            .ok_or(())
+    }
+
+    fn charge_arithmetic(&mut self, work: u64) -> Result<(), ()> {
+        self.arithmetic_work = self.arithmetic_work.checked_add(work).ok_or(())?;
+        (self.arithmetic_work <= self.max_arithmetic_work)
+            .then_some(())
+            .ok_or(())
+    }
+}
+
+#[derive(Clone)]
+struct GeneralRatioArcV1 {
+    neighbor: CanonicalId,
+    constraint_id: ConstraintId,
+    factor: ExactPositiveRatioV1,
+    multiply: bool,
+}
+
+fn tree_path_v1(
+    first: CanonicalId,
+    second: CanonicalId,
+    parents: &BTreeMap<CanonicalId, (CanonicalId, ConstraintId)>,
+) -> Option<(Vec<ConstraintId>, BTreeSet<CanonicalId>)> {
+    let mut first_nodes = BTreeMap::new();
+    let mut first_edges = Vec::new();
+    let mut cursor = first;
+    first_nodes.insert(cursor, 0_usize);
+    while let Some((parent, id)) = parents.get(&cursor) {
+        first_edges.push(*id);
+        cursor = *parent;
+        first_nodes.insert(cursor, first_edges.len());
+    }
+
+    let mut second_edges = Vec::new();
+    let mut second_nodes = Vec::new();
+    cursor = second;
+    second_nodes.push(cursor);
+    let common_length = loop {
+        if let Some(length) = first_nodes.get(&cursor) {
+            break *length;
+        }
+        let (parent, id) = parents.get(&cursor)?;
+        second_edges.push(*id);
+        cursor = *parent;
+        second_nodes.push(cursor);
+    };
+    first_edges.truncate(common_length);
+    first_edges.extend(second_edges);
+
+    let mut nodes = BTreeSet::new();
+    cursor = first;
+    nodes.insert(cursor);
+    for _ in 0..common_length {
+        cursor = parents.get(&cursor)?.0;
+        nodes.insert(cursor);
+    }
+    nodes.extend(second_nodes);
+    Some((first_edges, nodes))
+}
+
+fn general_ratio_graph_conflict_v1(
+    ratios: &BTreeMap<(CanonicalId, CanonicalId), Vec<ScalarAssignment>>,
+    fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
+    edge_ids: &BTreeMap<CanonicalId, EdgeId>,
+) -> Result<Option<DirectConstraintConflictV1>, ()> {
+    #[cfg(test)]
+    let (max_potential_bits, max_arithmetic_work) = GENERAL_RATIO_TEST_LIMITS.with(|limits| {
+        limits.get().unwrap_or((
+            MAX_GENERAL_RATIO_POTENTIAL_BITS_V1,
+            MAX_GENERAL_RATIO_ARITHMETIC_WORK_V1,
+        ))
+    });
+    #[cfg(not(test))]
+    let (max_potential_bits, max_arithmetic_work) = (
+        MAX_GENERAL_RATIO_POTENTIAL_BITS_V1,
+        MAX_GENERAL_RATIO_ARITHMETIC_WORK_V1,
+    );
+    general_ratio_graph_conflict_with_limits_v1(
+        ratios,
+        fixed_lengths,
+        edge_ids,
+        max_potential_bits,
+        max_arithmetic_work,
+    )
+    .map(|result| result.0)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static GENERAL_RATIO_TEST_LIMITS: std::cell::Cell<Option<(u64, u64)>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+fn general_ratio_graph_conflict_with_limits_v1(
+    ratios: &BTreeMap<(CanonicalId, CanonicalId), Vec<ScalarAssignment>>,
+    fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
+    edge_ids: &BTreeMap<CanonicalId, EdgeId>,
+    max_potential_bits: u64,
+    max_arithmetic_work: u64,
+) -> Result<(Option<DirectConstraintConflictV1>, (u64, u64)), ()> {
+    let mut graph: BTreeMap<CanonicalId, Vec<GeneralRatioArcV1>> = BTreeMap::new();
+    for ((numerator, denominator), assignments) in ratios {
+        let Some(assignment) = consistent_scalar_assignment(assignments) else {
+            continue;
+        };
+        let factor = ExactPositiveRatioV1::from_binary64(assignment.value);
+        graph
+            .entry(*denominator)
+            .or_default()
+            .push(GeneralRatioArcV1 {
+                neighbor: *numerator,
+                constraint_id: assignment.id,
+                factor: factor.clone(),
+                multiply: true,
+            });
+        graph
+            .entry(*numerator)
+            .or_default()
+            .push(GeneralRatioArcV1 {
+                neighbor: *denominator,
+                constraint_id: assignment.id,
+                factor,
+                multiply: false,
+            });
+    }
+    for arcs in graph.values_mut() {
+        arcs.sort_unstable_by_key(|arc| (arc.neighbor, arc.constraint_id.canonical_bytes()));
+    }
+
+    let mut budget = GeneralRatioBudgetV1 {
+        potential_bits: 0,
+        arithmetic_work: 0,
+        max_potential_bits,
+        max_arithmetic_work,
+    };
+    let mut visited = BTreeSet::new();
+    let mut best: Option<Vec<ConstraintId>> = None;
+    let mut best_fixed_edge = None;
+    for root in graph.keys().copied() {
+        if visited.contains(&root) {
+            continue;
+        }
+        let one = ExactPositiveRatioV1::one();
+        budget.charge_potential(one.bits())?;
+        let mut potentials = BTreeMap::from([(root, one)]);
+        let mut parents: BTreeMap<CanonicalId, (CanonicalId, ConstraintId)> = BTreeMap::new();
+        let mut component = Vec::new();
+        let mut inconsistent = Vec::new();
+        let mut queue = VecDeque::from([root]);
+        visited.insert(root);
+        while let Some(node) = queue.pop_front() {
+            component.push(node);
+            let current = potentials.get(&node).cloned().ok_or(())?;
+            for arc in graph.get(&node).into_iter().flatten() {
+                let expected = current.compose(&arc.factor, arc.multiply, &mut budget)?;
+                if let Some(actual) = potentials.get(&arc.neighbor) {
+                    let is_parent_edge = parents
+                        .get(&node)
+                        .is_some_and(|item| item.0 == arc.neighbor && item.1 == arc.constraint_id)
+                        || parents
+                            .get(&arc.neighbor)
+                            .is_some_and(|item| item.0 == node && item.1 == arc.constraint_id);
+                    if !is_parent_edge && !expected.equals(actual, &mut budget)? {
+                        inconsistent.push((node, arc.neighbor, arc.constraint_id));
+                    }
+                    continue;
+                }
+                budget.charge_potential(expected.bits())?;
+                potentials.insert(arc.neighbor, expected);
+                parents.insert(arc.neighbor, (node, arc.constraint_id));
+                visited.insert(arc.neighbor);
+                queue.push_back(arc.neighbor);
+            }
+        }
+
+        let fixed = component
+            .iter()
+            .filter_map(|edge| {
+                fixed_lengths
+                    .get(edge)
+                    .and_then(ScalarGroupSummary::consistent_assignment)
+                    .map(|assignment| (*edge, assignment))
+            })
+            .min_by_key(|(_, assignment)| assignment.id.canonical_bytes());
+        let Some((fixed_edge, fixed)) = fixed else {
+            continue;
+        };
+        for (first, second, closing_id) in inconsistent {
+            let Some((mut cycle_ids, cycle_nodes)) = tree_path_v1(first, second, &parents) else {
+                continue;
+            };
+            cycle_ids.push(closing_id);
+            canonicalize_constraint_ids(&mut cycle_ids);
+            let connector = cycle_nodes
+                .iter()
+                .filter_map(|node| tree_path_v1(fixed_edge, *node, &parents).map(|item| item.0))
+                .min_by(|left, right| {
+                    left.len().cmp(&right.len()).then_with(|| {
+                        let mut left = left.clone();
+                        let mut right = right.clone();
+                        canonicalize_constraint_ids(&mut left);
+                        canonicalize_constraint_ids(&mut right);
+                        canonical_id_slice_cmp(&left, &right)
+                    })
+                })
+                .ok_or(())?;
+            cycle_ids.extend(connector);
+            cycle_ids.push(fixed.id);
+            canonicalize_constraint_ids(&mut cycle_ids);
+            if cycle_ids.len() > MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 {
+                return Err(());
+            }
+            if best
+                .as_ref()
+                .is_none_or(|current| canonical_id_slice_cmp(&cycle_ids, current).is_lt())
+            {
+                best_fixed_edge = Some(fixed_edge);
+                best = Some(cycle_ids);
+            }
+        }
+    }
+    let Some(ids) = best else {
+        return Ok((None, (budget.potential_bits, budget.arithmetic_work)));
+    };
+    let fixed_edge = best_fixed_edge.ok_or(())?;
+    let ratio_constraint_count =
+        u16::try_from(ids.len().checked_sub(1).ok_or(())?).map_err(|_| ())?;
+    Ok((
+        Some(DirectConstraintConflictV1 {
+            conflict: DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength {
+                fixed_edge: edge_ids[&fixed_edge],
+                ratio_constraint_count,
+            },
+            constraint_ids: ids,
+        }),
+        (budget.potential_bits, budget.arithmetic_work),
+    ))
 }
 
 fn canonicalize_constraint_ids(ids: &mut Vec<ConstraintId>) {
@@ -2109,11 +2459,20 @@ fn conflict_sort_key(
             second_edge.canonical_bytes(),
             third_edge.canonical_bytes(),
         ),
+        DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength {
+            fixed_edge,
+            ratio_constraint_count,
+        } => (
+            9,
+            fixed_edge.canonical_bytes(),
+            [0; 16],
+            u128::from(*ratio_constraint_count).to_be_bytes(),
+        ),
         DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
             first_edge,
             second_edge,
         } => (
-            9,
+            10,
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
             zero,
@@ -2122,7 +2481,7 @@ fn conflict_sort_key(
             horizontal_edge,
             vertical_edge,
         } => (
-            10,
+            11,
             horizontal_edge.canonical_bytes(),
             vertical_edge.canonical_bytes(),
             zero,
@@ -3609,6 +3968,356 @@ mod tests {
             compatible,
             ConstraintPreflightV1::DirectConflict { .. }
         ));
+    }
+
+    #[test]
+    fn general_ratio_graph_returns_a_canonical_deletion_minimal_witness() {
+        let fixture = Fixture::new();
+        let records = vec![
+            record(GeometricConstraintKindV1::FixedLength {
+                edge: fixture.edges[4],
+                length_mm: 7.0,
+            }),
+            record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: fixture.edges[4],
+                denominator_edge: fixture.edges[0],
+                ratio: 11.0,
+            }),
+            record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: fixture.edges[0],
+                denominator_edge: fixture.edges[1],
+                ratio: 2.0,
+            }),
+            record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: fixture.edges[1],
+                denominator_edge: fixture.edges[2],
+                ratio: 3.0,
+            }),
+            record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: fixture.edges[2],
+                denominator_edge: fixture.edges[3],
+                ratio: 5.0,
+            }),
+            record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: fixture.edges[3],
+                denominator_edge: fixture.edges[0],
+                ratio: 0.1,
+            }),
+        ];
+        let ConstraintPreflightV1::DirectConflict { conflicts } =
+            prepare(&fixture, &document(records.clone()))
+                .expect("bounded inconsistent ratio graph")
+                .preflight()
+        else {
+            panic!("positive anchored inconsistent component must conflict");
+        };
+        assert_eq!(conflicts.len(), 1);
+        assert!(matches!(
+            conflicts[0].conflict(),
+            DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength {
+                fixed_edge,
+                ratio_constraint_count: 5,
+            } if *fixed_edge == fixture.edges[4]
+        ));
+        assert_eq!(conflicts[0].constraint_ids().len(), records.len());
+        assert!(
+            conflicts[0]
+                .constraint_ids()
+                .windows(2)
+                .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+        );
+
+        let duplicate_fixed = record(GeometricConstraintKindV1::FixedLength {
+            edge: fixture.edges[4],
+            length_mm: 7.0,
+        });
+        let duplicate_ratio = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[4],
+            denominator_edge: fixture.edges[0],
+            ratio: 11.0,
+        });
+        let mut duplicated = records.clone();
+        duplicated.extend([duplicate_fixed.clone(), duplicate_ratio.clone()]);
+        let forward = prepare(&fixture, &document(duplicated.clone()))
+            .expect("equal duplicate assignments")
+            .preflight();
+        duplicated.reverse();
+        let reversed = prepare(&fixture, &document(duplicated))
+            .expect("source-reordered equal duplicate assignments")
+            .preflight();
+        assert_eq!(forward, reversed);
+        let ConstraintPreflightV1::DirectConflict {
+            conflicts: duplicate_conflicts,
+        } = forward
+        else {
+            panic!("duplicates preserve the graph conflict");
+        };
+        let selected = duplicate_conflicts[0].constraint_ids();
+        let expected_fixed =
+            if records[0].id.canonical_bytes() < duplicate_fixed.id.canonical_bytes() {
+                records[0].id
+            } else {
+                duplicate_fixed.id
+            };
+        let expected_ratio =
+            if records[1].id.canonical_bytes() < duplicate_ratio.id.canonical_bytes() {
+                records[1].id
+            } else {
+                duplicate_ratio.id
+            };
+        assert!(selected.contains(&expected_fixed));
+        assert!(selected.contains(&expected_ratio));
+
+        for removed in conflicts[0].constraint_ids() {
+            let subset = records
+                .iter()
+                .filter(|record| record.id != *removed)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert!(!matches!(
+                prepare(&fixture, &document(subset))
+                    .expect("proper general witness subset")
+                    .preflight(),
+                ConstraintPreflightV1::DirectConflict { .. }
+            ));
+        }
+
+        let disconnected_fixed = prepare(
+            &fixture,
+            &document([
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[5],
+                    length_mm: 7.0,
+                }),
+                records[2].clone(),
+                records[3].clone(),
+                records[4].clone(),
+                records[5].clone(),
+            ]),
+        )
+        .expect("fixed length disconnected from the inconsistent cycle")
+        .preflight();
+        assert!(!matches!(
+            disconnected_fixed,
+            ConstraintPreflightV1::DirectConflict { .. }
+        ));
+
+        let mut budget = GeneralRatioBudgetV1 {
+            potential_bits: MAX_GENERAL_RATIO_POTENTIAL_BITS_V1 - 1,
+            arithmetic_work: MAX_GENERAL_RATIO_ARITHMETIC_WORK_V1 - 1,
+            max_potential_bits: MAX_GENERAL_RATIO_POTENTIAL_BITS_V1,
+            max_arithmetic_work: MAX_GENERAL_RATIO_ARITHMETIC_WORK_V1,
+        };
+        assert_eq!(budget.charge_potential(1), Ok(()));
+        assert_eq!(budget.charge_potential(1), Err(()));
+        assert_eq!(budget.charge_arithmetic(1), Ok(()));
+        assert_eq!(budget.charge_arithmetic(1), Err(()));
+
+        let graph_at_witness_limit =
+            |connector_edges: usize, max_potential_bits: u64, max_arithmetic_work: u64| {
+                let edge_count = connector_edges + 2;
+                let edges = (0..edge_count).map(|_| EdgeId::new()).collect::<Vec<_>>();
+                let canonical = edges
+                    .iter()
+                    .map(|edge| edge.canonical_bytes())
+                    .collect::<Vec<_>>();
+                let edge_ids = edges
+                    .iter()
+                    .map(|edge| (edge.canonical_bytes(), *edge))
+                    .collect::<BTreeMap<_, _>>();
+                let mut ratios = BTreeMap::new();
+                for index in 0..connector_edges {
+                    ratios.insert(
+                        (canonical[index], canonical[index + 1]),
+                        vec![ScalarAssignment {
+                            id: ConstraintId::new(),
+                            value: 1.0,
+                        }],
+                    );
+                }
+                let cycle_first = canonical[connector_edges];
+                let cycle_second = canonical[connector_edges + 1];
+                ratios.insert(
+                    (cycle_first, cycle_second),
+                    vec![ScalarAssignment {
+                        id: ConstraintId::new(),
+                        value: 2.0,
+                    }],
+                );
+                ratios.insert(
+                    (cycle_second, cycle_first),
+                    vec![ScalarAssignment {
+                        id: ConstraintId::new(),
+                        value: 2.0,
+                    }],
+                );
+                let fixed_lengths = BTreeMap::from([(
+                    canonical[0],
+                    ScalarGroupSummary::new(ScalarAssignment {
+                        id: ConstraintId::new(),
+                        value: 1.0,
+                    }),
+                )]);
+                general_ratio_graph_conflict_with_limits_v1(
+                    &ratios,
+                    &fixed_lengths,
+                    &edge_ids,
+                    max_potential_bits,
+                    max_arithmetic_work,
+                )
+            };
+        let (at_limit, usage) = graph_at_witness_limit(
+            253,
+            MAX_GENERAL_RATIO_POTENTIAL_BITS_V1,
+            MAX_GENERAL_RATIO_ARITHMETIC_WORK_V1,
+        )
+        .expect("256-ID general witness is within the dedicated cap");
+        let at_limit = at_limit.expect("bounded graph is inconsistent");
+        assert_eq!(at_limit.constraint_ids().len(), 256);
+        assert!(graph_at_witness_limit(253, usage.0, usage.1).is_ok());
+        assert_eq!(graph_at_witness_limit(253, usage.0 - 1, usage.1), Err(()));
+        assert_eq!(graph_at_witness_limit(253, usage.0, usage.1 - 1), Err(()));
+        assert_eq!(
+            graph_at_witness_limit(
+                254,
+                MAX_GENERAL_RATIO_POTENTIAL_BITS_V1,
+                MAX_GENERAL_RATIO_ARITHMETIC_WORK_V1,
+            ),
+            Err(())
+        );
+
+        GENERAL_RATIO_TEST_LIMITS.with(|limits| {
+            assert_eq!(
+                limits.replace(Some((1, MAX_GENERAL_RATIO_ARITHMETIC_WORK_V1))),
+                None
+            );
+        });
+        let limited = prepare(&fixture, &document(records.clone()))
+            .expect("valid graph before test-only general ratio work limit")
+            .preflight();
+        GENERAL_RATIO_TEST_LIMITS.with(|limits| {
+            assert_eq!(
+                limits.replace(None),
+                Some((1, MAX_GENERAL_RATIO_ARITHMETIC_WORK_V1))
+            );
+        });
+        let mut all_ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
+        canonicalize_constraint_ids(&mut all_ids);
+        assert_eq!(
+            limited,
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::WorkLimitExceeded,
+                unchecked_constraint_ids: all_ids,
+            }
+        );
+    }
+
+    #[test]
+    fn general_ratio_graph_is_orientation_invariant_and_selects_one_canonical_parallel_cycle() {
+        let fixture = Fixture::new();
+        let fixed = record(GeometricConstraintKindV1::FixedLength {
+            edge: fixture.edges[0],
+            length_mm: 1.0,
+        });
+        let connector_a = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[0],
+            denominator_edge: fixture.edges[1],
+            ratio: 1.0,
+        });
+        let forward_a = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[1],
+            denominator_edge: fixture.edges[2],
+            ratio: 2.0,
+        });
+        let reverse_a = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[2],
+            denominator_edge: fixture.edges[1],
+            ratio: 0.25,
+        });
+        let connector_b = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[0],
+            denominator_edge: fixture.edges[3],
+            ratio: 1.0,
+        });
+        let forward_b = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[3],
+            denominator_edge: fixture.edges[4],
+            ratio: 4.0,
+        });
+        let reverse_b = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[4],
+            denominator_edge: fixture.edges[3],
+            ratio: 0.125,
+        });
+        let records = vec![
+            fixed.clone(),
+            connector_a.clone(),
+            forward_a.clone(),
+            reverse_a.clone(),
+            connector_b.clone(),
+            forward_b.clone(),
+            reverse_b.clone(),
+        ];
+        let ConstraintPreflightV1::DirectConflict { conflicts } =
+            prepare(&fixture, &document(records))
+                .expect("two inconsistent ratio cycles connected to one remote fixed edge")
+                .preflight()
+        else {
+            panic!("one canonical general graph conflict must be selected");
+        };
+        assert_eq!(conflicts.len(), 1);
+        let mut first_ids = vec![fixed.id, connector_a.id, forward_a.id, reverse_a.id];
+        let mut second_ids = vec![fixed.id, connector_b.id, forward_b.id, reverse_b.id];
+        canonicalize_constraint_ids(&mut first_ids);
+        canonicalize_constraint_ids(&mut second_ids);
+        let expected = if canonical_id_slice_cmp(&first_ids, &second_ids).is_lt() {
+            first_ids
+        } else {
+            second_ids
+        };
+        assert_eq!(conflicts[0].constraint_ids(), expected);
+
+        let reverse_kind = |record: &GeometricConstraintRecordV1| {
+            let GeometricConstraintKindV1::LengthRatio {
+                numerator_edge,
+                denominator_edge,
+                ratio,
+            } = record.constraint
+            else {
+                panic!("ratio record");
+            };
+            GeometricConstraintRecordV1 {
+                id: record.id,
+                constraint: GeometricConstraintKindV1::LengthRatio {
+                    numerator_edge: denominator_edge,
+                    denominator_edge: numerator_edge,
+                    ratio: 1.0 / ratio,
+                },
+            }
+        };
+        let oriented_forward = prepare(
+            &fixture,
+            &document([
+                fixed.clone(),
+                connector_a.clone(),
+                forward_a.clone(),
+                reverse_a.clone(),
+            ]),
+        )
+        .expect("remote two-edge cycle")
+        .preflight();
+        let oriented_reverse = prepare(
+            &fixture,
+            &document([
+                fixed,
+                reverse_kind(&connector_a),
+                reverse_kind(&forward_a),
+                reverse_kind(&reverse_a),
+            ]),
+        )
+        .expect("fully direction-reversed remote two-edge cycle")
+        .preflight();
+        assert_eq!(oriented_forward, oriented_reverse);
     }
 
     #[test]

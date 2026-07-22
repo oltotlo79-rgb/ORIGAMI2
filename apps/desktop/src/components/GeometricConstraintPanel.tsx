@@ -818,6 +818,12 @@ function directConflictLabel(
         '正の固定長を含む3辺の長さ比の循環積が1ではありません',
         'The cyclic product of three length ratios is not one for edges with a positive fixed length',
       )
+    case 'inconsistent_length_ratio_graph_with_fixed_length':
+      return localized(
+        locale,
+        '正の固定長につながる長さ比グラフに、厳密に両立しない循環があります',
+        'A length-ratio graph connected to a positive fixed length contains an exactly inconsistent cycle',
+      )
     case 'parallel_with_fixed_non_parallel_angle':
       return localized(
         locale,

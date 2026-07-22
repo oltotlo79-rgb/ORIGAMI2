@@ -9,7 +9,7 @@ export const GEOMETRIC_CONSTRAINT_SCHEMA_VERSION = 1 as const
 export const MAX_GEOMETRIC_CONSTRAINT_RECORDS = 10_000
 export const MAX_GEOMETRIC_CONSTRAINT_REFERENCES = 40_000
 export const MAX_GEOMETRIC_CONSTRAINT_DIRECT_CONFLICTS = 10_000
-export const MAX_DIRECT_CONFLICT_WITNESS_IDS = 4
+export const MAX_DIRECT_CONFLICT_WITNESS_IDS = 256
 
 export type GeometricConstraintKindV1 =
   | Readonly<{
@@ -130,6 +130,11 @@ export type DirectConstraintConflictKindV1 =
       second_edge: string
       third_edge: string
       fixed_edge: string
+    }>
+  | Readonly<{
+      kind: 'inconsistent_length_ratio_graph_with_fixed_length'
+      fixed_edge: string
+      ratio_constraint_count: number
     }>
   | Readonly<{
       kind: 'parallel_with_fixed_non_parallel_angle'
@@ -748,7 +753,7 @@ function parseDirectConflictKind(
   value: unknown,
 ): Readonly<{
   conflict: DirectConstraintConflictKindV1
-  witnessSize: 2 | 3 | 4
+  witnessSize: number
 }> | null {
   const record = snapshotDataRecord(value)
   if (!record || typeof record.kind !== 'string') return null
@@ -877,6 +882,27 @@ function parseDirectConflictKind(
         }),
         witnessSize: 4,
       }
+    case 'inconsistent_length_ratio_graph_with_fixed_length':
+      if (
+        !hasExactKeys(record, [
+          'kind',
+          'fixed_edge',
+          'ratio_constraint_count',
+        ])
+        || !isCanonicalUuid(record.fixed_edge)
+        || typeof record.ratio_constraint_count !== 'number'
+        || !Number.isSafeInteger(record.ratio_constraint_count)
+        || record.ratio_constraint_count < 3
+        || record.ratio_constraint_count >= MAX_DIRECT_CONFLICT_WITNESS_IDS
+      ) return null
+      return {
+        conflict: Object.freeze({
+          kind: record.kind,
+          fixed_edge: record.fixed_edge,
+          ratio_constraint_count: record.ratio_constraint_count,
+        }),
+        witnessSize: record.ratio_constraint_count + 1,
+      }
     case 'parallel_with_fixed_non_parallel_angle':
       if (
         !hasExactKeys(record, ['kind', 'first_edge', 'second_edge'])
@@ -962,6 +988,13 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
         kind.second_edge,
         kind.third_edge,
         kind.fixed_edge,
+      ]
+      break
+    case 'inconsistent_length_ratio_graph_with_fixed_length':
+      target = [
+        kind.kind,
+        kind.fixed_edge,
+        String(kind.ratio_constraint_count),
       ]
       break
     case 'equal_length_with_different_fixed_lengths':

@@ -492,12 +492,10 @@ fn capture_export_source(
     let view = revalidate_current_applied_pose_capability(&project, &pose_capability)
         .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?
         .ok_or_else(|| STALE_PREVIEW_MESSAGE.to_owned())?;
-    if view.graph().is_some() {
-        return Err(
-            "閉路姿勢は静的メッシュに書き出せません。閉路折りパネルで姿勢を確認してください。"
-                .to_owned(),
-        );
-    }
+    let (model, pose) = view.tree().ok_or_else(|| {
+        "閉路姿勢は静的メッシュに書き出せません。閉路折りパネルで姿勢を確認してください。"
+            .to_owned()
+    })?;
     let source_fingerprint: Arc<str> = Arc::from(project.editor.fold_model_fingerprint_v1());
     if !super::valid_fold_model_fingerprint(&source_fingerprint) {
         return Err(PREVIEW_FAILED_MESSAGE.to_owned());
@@ -588,8 +586,8 @@ fn capture_export_source(
             .transpose()?,
         paper_thickness_mm: canonical_zero(paper_thickness_mm),
         paper_thickness_bits,
-        model: view.model().clone(),
-        pose: view.pose().clone(),
+        model: model.clone(),
+        pose: pose.clone(),
         pose_capability,
     };
     Ok(source)

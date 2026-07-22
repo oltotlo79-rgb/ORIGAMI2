@@ -440,6 +440,11 @@ impl CurrentAppliedPoseView<'_> {
     }
 
     #[must_use]
+    pub(super) fn tree(&self) -> Option<(&MaterialTreeKinematicsModel, &MaterialTreePose)> {
+        self.certificate.claims.native_pose.tree()
+    }
+
+    #[must_use]
     pub(super) fn model(&self) -> &MaterialTreeKinematicsModel {
         self.certificate
             .claims

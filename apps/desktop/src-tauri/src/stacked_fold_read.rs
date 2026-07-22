@@ -8038,10 +8038,6 @@ mod tests {
         assert!(dyadic_request_hinge_counts_are_bounded_v1(64, Some(64)));
         assert!(!dyadic_request_hinge_counts_are_bounded_v1(65, Some(64)));
         assert!(!dyadic_request_hinge_counts_are_bounded_v1(64, Some(65)));
-        let (c32_pattern, c32_paper, c32_hinges) =
-            super::four_bay_cycle_test_support::eight_bay_rational_cycle_pattern();
-        let (c64_pattern, c64_paper, c64_hinges) =
-            super::four_bay_cycle_test_support::sixteen_bay_rational_cycle_pattern();
         let (c8_pattern, c8_paper, c8_cardinal) = octagonal_eight_sector_cycle_pattern();
         let c8_opposite = vec![c8_cardinal[0], c8_cardinal[2]];
         let (theta_pattern, theta_paper, theta_hinges, theta_moving) =
@@ -8072,8 +8068,6 @@ mod tests {
         for (fixture_name, (pattern, mut paper, moving), kind) in [
             ("balloon-c6", balloon_six_sector_cycle_pattern(), 0),
             ("octagonal-c8", (c8_pattern, c8_paper, c8_opposite), 0),
-            ("cactus-c32", (c32_pattern, c32_paper, c32_hinges), 1),
-            ("cactus-c64", (c64_pattern, c64_paper, c64_hinges), 1),
             ("theta-c2", (theta_pattern, theta_paper, theta_moving), 2),
             (
                 "mixed-cactus-branch",

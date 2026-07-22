@@ -53,6 +53,7 @@ pub use certified_path_graph::{
     CertifiedPathGraphProgressV1, CertifiedPathGraphSearchResultV1,
     CertifiedPathTransitionCandidateV1, CertifiedPathTransitionEvidenceV1,
     CertifiedPoseGraphPathCertificateV1, MAX_CERTIFIED_PATH_GRAPH_STATES_V1,
+    MAX_CERTIFIED_PATH_GRAPH_CANDIDATES_V1, MAX_CERTIFIED_PATH_GRAPH_OVERLAY_EDGES_V1,
     MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1, PoseFingerprintV1,
     certify_scheduled_cycle_transition_v1, search_certified_pose_graph_v1,
     search_certified_pose_graph_with_checkpoint_v1, search_certified_pose_graph_with_progress_v1,

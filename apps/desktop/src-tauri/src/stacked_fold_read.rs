@@ -1037,6 +1037,15 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
             candidate_key: [0xfe; 32],
         });
     }
+    if candidates.len()
+        > graph
+            .transitions()
+            .len()
+            .checked_add(ori_collision::MAX_CERTIFIED_PATH_GRAPH_OVERLAY_EDGES_V1)
+            .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())?
+    {
+        return Err(CYCLE_PATH_RESOURCE_MESSAGE.to_owned());
+    }
     let mut auxiliary_certificates = std::collections::HashMap::new();
     let searched = ori_collision::search_certified_pose_graph_with_checkpoint_v1(
         &fingerprints,
@@ -4546,9 +4555,39 @@ mod tests {
     fn positive_tree_project(hinge_count: usize) -> super::super::ProjectState {
         use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
         let points: &[(f64, f64)] = match hinge_count {
-            5 => &[(0.0,0.0),(300.0,0.0),(520.0,90.0),(680.0,280.0),(650.0,500.0),(450.0,680.0),(180.0,700.0),(0.0,340.0)],
-            6 => &[(0.0,0.0),(300.0,0.0),(530.0,70.0),(700.0,220.0),(760.0,430.0),(620.0,640.0),(380.0,760.0),(140.0,720.0),(0.0,360.0)],
-            7 => &[(0.0,0.0),(300.0,0.0),(540.0,60.0),(730.0,190.0),(840.0,380.0),(810.0,580.0),(650.0,760.0),(410.0,850.0),(150.0,780.0),(0.0,390.0)],
+            5 => &[
+                (0.0, 0.0),
+                (300.0, 0.0),
+                (520.0, 90.0),
+                (680.0, 280.0),
+                (650.0, 500.0),
+                (450.0, 680.0),
+                (180.0, 700.0),
+                (0.0, 340.0),
+            ],
+            6 => &[
+                (0.0, 0.0),
+                (300.0, 0.0),
+                (530.0, 70.0),
+                (700.0, 220.0),
+                (760.0, 430.0),
+                (620.0, 640.0),
+                (380.0, 760.0),
+                (140.0, 720.0),
+                (0.0, 360.0),
+            ],
+            7 => &[
+                (0.0, 0.0),
+                (300.0, 0.0),
+                (540.0, 60.0),
+                (730.0, 190.0),
+                (840.0, 380.0),
+                (810.0, 580.0),
+                (650.0, 760.0),
+                (410.0, 850.0),
+                (150.0, 780.0),
+                (0.0, 390.0),
+            ],
             _ => unreachable!("positive Tree fixture only covers 5..=7 hinges"),
         };
         let vertices = points
@@ -5250,7 +5289,6 @@ mod tests {
             None,
         )
         .unwrap();
-        eprintln!("seven status={} states={} transitions={}", generic.status, generic.state_count, generic.transition_count);
         assert_eq!(generic.status, "certified");
         assert_eq!(
             (generic.state_count, generic.transition_count),

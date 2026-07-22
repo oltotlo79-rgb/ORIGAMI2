@@ -17,6 +17,10 @@ use crate::continuous_path::diagnose_scheduled_cycle_path_v1;
 pub const CERTIFIED_PATH_GRAPH_MODEL_ID_V1: &str = "bounded_certified_pose_graph_path_v1";
 pub const MAX_CERTIFIED_PATH_GRAPH_STATES_V1: usize = 2_187;
 pub const MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1: usize = 20_412;
+/// Additional issuer-certified edges layered over a full dyadic adjacency.
+pub const MAX_CERTIFIED_PATH_GRAPH_OVERLAY_EDGES_V1: usize = 5;
+pub const MAX_CERTIFIED_PATH_GRAPH_CANDIDATES_V1: usize =
+    MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1 + MAX_CERTIFIED_PATH_GRAPH_OVERLAY_EDGES_V1;
 
 pub type PoseFingerprintV1 = [u8; 32];
 
@@ -321,7 +325,7 @@ pub fn search_certified_pose_graph_with_progress_v1(
             explored_state_count,
             evaluated_transition_count,
             state_limit: MAX_CERTIFIED_PATH_GRAPH_STATES_V1,
-            transition_limit: MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1,
+            transition_limit: MAX_CERTIFIED_PATH_GRAPH_CANDIDATES_V1,
         });
     };
     publish_progress(&mut progress, 0, 0);
@@ -330,7 +334,7 @@ pub fn search_certified_pose_graph_with_progress_v1(
     }
     if states.is_empty()
         || states.len() > MAX_CERTIFIED_PATH_GRAPH_STATES_V1
-        || transitions.len() > MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1
+        || transitions.len() > MAX_CERTIFIED_PATH_GRAPH_CANDIDATES_V1
     {
         return indeterminate(CertifiedPathGraphIndeterminateReasonV1::ResourceLimit, 0, 0);
     }
@@ -715,7 +719,7 @@ mod tests {
                 ..
             }
         ));
-        let transitions = vec![candidate(1, 2, 1); MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1 + 1];
+        let transitions = vec![candidate(1, 2, 1); MAX_CERTIFIED_PATH_GRAPH_CANDIDATES_V1 + 1];
         assert!(matches!(
             search_certified_pose_graph_v1(
                 &[fingerprint(1), fingerprint(2)],
@@ -781,7 +785,7 @@ mod tests {
                 explored_state_count: 0,
                 evaluated_transition_count: 0,
                 state_limit: MAX_CERTIFIED_PATH_GRAPH_STATES_V1,
-                transition_limit: MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1,
+                transition_limit: MAX_CERTIFIED_PATH_GRAPH_CANDIDATES_V1,
             })
         );
         assert!(observations.windows(2).all(|pair| {
@@ -792,7 +796,7 @@ mod tests {
             value.explored_state_count <= value.state_limit
                 && value.evaluated_transition_count <= value.transition_limit
                 && value.state_limit == MAX_CERTIFIED_PATH_GRAPH_STATES_V1
-                && value.transition_limit == MAX_CERTIFIED_PATH_GRAPH_TRANSITIONS_V1
+                && value.transition_limit == MAX_CERTIFIED_PATH_GRAPH_CANDIDATES_V1
         }));
     }
 

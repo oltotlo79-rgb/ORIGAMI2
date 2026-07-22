@@ -980,7 +980,7 @@ pub fn generate_beginner_plans_v1(
                 || feature_records == 4 && horn && tail && ears && legs
                 || feature_records == 5 && horn && tail && ears && legs && wings;
             if asymmetric_landmark_fish {
-                symmetric_template(
+                let plan = symmetric_template(
                     namespace,
                     source,
                     BeginnerGeneratedPlanKindV1::AsymmetricFishLandmarkBase,
@@ -992,7 +992,17 @@ pub fn generate_beginner_plans_v1(
                     &[(1.0, 0.5), (0.25, 1.0), (0.25, 0.0), (0.75, 0.0)],
                     "asymmetric_fish_landmark_base",
                     constraints,
+                );
+                append_bounded_radial_tree_graph(
+                    plan,
+                    constraints,
+                    namespace,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
                 )
+                .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?
             } else if feature_records >= 2 && !known_composite {
                 let tree_ratios =
                     bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)
@@ -1007,7 +1017,7 @@ pub fn generate_beginner_plans_v1(
                         .collect::<Vec<_>>()
                         .join(",")
                 );
-                symmetric_template(
+                let plan = symmetric_template(
                     namespace,
                     source,
                     BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase,
@@ -1019,7 +1029,17 @@ pub fn generate_beginner_plans_v1(
                     &endpoints,
                     &instruction,
                     constraints,
+                );
+                append_bounded_radial_tree_graph(
+                    plan,
+                    constraints,
+                    namespace,
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
                 )
+                .ok_or(BeginnerGeneratorErrorV1::UnsupportedInsectTemplate)?
             } else if part_count(BeginnerTargetPartKindV1::Horn) == 1
                 && part_count(BeginnerTargetPartKindV1::Tail) == 1
                 && part_count(BeginnerTargetPartKindV1::Ear) == 2
@@ -2012,6 +2032,119 @@ fn bounded_generic_composite_endpoints(
     Some(endpoints)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn append_bounded_radial_tree_graph(
+    mut plan: BeginnerGeneratedPlanV1,
+    constraints: &BeginnerGenerationConstraintsV1,
+    namespace: ProjectId,
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+) -> Option<BeginnerGeneratedPlanV1> {
+    let segments = &constraints.skeleton_segments;
+    let ratios = bounded_tree_skeleton_length_ratios(segments)?;
+    let point = |value: BeginnerSkeletonPointV1| (value.x_tenths_mm, value.y_tenths_mm);
+    let orient = |a: (i32, i32), b: (i32, i32), c: (i32, i32)| {
+        (i128::from(b.0) - i128::from(a.0)) * (i128::from(c.1) - i128::from(a.1))
+            - (i128::from(b.1) - i128::from(a.1)) * (i128::from(c.0) - i128::from(a.0))
+    };
+    for (index, left) in segments.iter().enumerate() {
+        let a = point(left.start);
+        let b = point(left.end);
+        for right in segments.iter().skip(index + 1) {
+            let c = point(right.start);
+            let d = point(right.end);
+            if [a, b]
+                .into_iter()
+                .any(|endpoint| endpoint == c || endpoint == d)
+            {
+                continue;
+            }
+            let o1 = orient(a, b, c);
+            let o2 = orient(a, b, d);
+            let o3 = orient(c, d, a);
+            let o4 = orient(c, d, b);
+            if (o1 == 0 || o2 == 0 || o1.signum() != o2.signum())
+                && (o3 == 0 || o4 == 0 || o3.signum() != o4.signum())
+            {
+                return None;
+            }
+        }
+    }
+    let mut degree = std::collections::BTreeMap::<(i32, i32), usize>::new();
+    for segment in segments {
+        *degree.entry(point(segment.start)).or_default() += 1;
+        *degree.entry(point(segment.end)).or_default() += 1;
+    }
+    let leaf_count = degree.values().filter(|degree| **degree == 1).count();
+    if !(2..=8).contains(&leaf_count) || constraints.protrusions.is_empty() {
+        return None;
+    }
+    let (source_min_x, source_max_x, source_min_y, source_max_y) = skeleton_bounds(segments)?;
+    let source_width = f64::from(source_max_x.checked_sub(source_min_x)?);
+    let source_height = f64::from(source_max_y.checked_sub(source_min_y)?);
+    if source_width <= 0.0 || source_height <= 0.0 || max_x <= min_x || max_y <= min_y {
+        return None;
+    }
+    let map = |source: (i32, i32)| {
+        let x_ratio = f64::from(source.0.checked_sub(source_min_x)?) / source_width;
+        let y_ratio = f64::from(source.1.checked_sub(source_min_y)?) / source_height;
+        Some(Point2::new(
+            min_x + (max_x - min_x) * (0.2 + x_ratio * 0.6),
+            min_y + (max_y - min_y) * (0.2 + y_ratio * 0.6),
+        ))
+    };
+    let mut vertex_ids = std::collections::BTreeMap::new();
+    for source in degree.keys().copied() {
+        let id = VertexId::derive_v5(
+            namespace,
+            format!("bounded-tree-node:{}:{}", source.0, source.1).as_bytes(),
+        );
+        let position = map(source)?;
+        if !position.x.is_finite()
+            || !position.y.is_finite()
+            || !(min_x..=max_x).contains(&position.x)
+            || !(min_y..=max_y).contains(&position.y)
+        {
+            return None;
+        }
+        vertex_ids.insert(source, id);
+        if !plan
+            .crease_pattern
+            .vertices
+            .iter()
+            .any(|vertex| vertex.id == id)
+        {
+            plan.crease_pattern.vertices.push(Vertex { id, position });
+        }
+    }
+    for (index, segment) in segments.iter().enumerate() {
+        let start = *vertex_ids.get(&point(segment.start))?;
+        let end = *vertex_ids.get(&point(segment.end))?;
+        plan.crease_pattern.edges.push(Edge {
+            id: EdgeId::derive_v5(
+                namespace,
+                format!("bounded-tree-river:{index}:{}", ratios[index]).as_bytes(),
+            ),
+            start,
+            end,
+            kind: if index % 2 == 0 {
+                EdgeKind::Valley
+            } else {
+                EdgeKind::Mountain
+            },
+        });
+    }
+    plan.instruction_codes.push(format!(
+        "bounded_tree_branch_topology_v1:nodes={}:leaves={}:bars={}",
+        degree.len(),
+        leaf_count,
+        segments.len()
+    ));
+    Some(plan)
+}
+
 fn bounded_tree_skeleton_length_ratios(segments: &[BeginnerSkeletonSegmentV1]) -> Option<Vec<u32>> {
     if segments.is_empty()
         || segments.len() > 8
@@ -2496,6 +2629,42 @@ mod tests {
             .map(|id| bar(id, (id as i32, 0), (id as i32 + 1, 0)))
             .collect::<Vec<_>>();
         assert!(bounded_tree_skeleton_length_ratios(&nine).is_none());
+
+        let crossing = vec![
+            bar(0, (-10, 0), (10, 0)),
+            bar(1, (0, -10), (0, 10)),
+            bar(2, (10, 0), (0, 10)),
+        ];
+        let constraints = BeginnerGenerationConstraintsV1 {
+            skeleton_segments: crossing,
+            protrusions: vec![bilateral_protrusion(1, 2), bilateral_protrusion(2, 2)],
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        let plan = BeginnerGeneratedPlanV1 {
+            schema_version: 1,
+            kind: BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase,
+            crease_pattern: CreasePattern {
+                vertices: Vec::new(),
+                edges: Vec::new(),
+            },
+            instruction_codes: Vec::new(),
+            target_parts: Vec::new(),
+            skeleton_segments: Vec::new(),
+            target_asset: None,
+            semantic_landmark_provenance: None,
+        };
+        assert!(
+            append_bounded_radial_tree_graph(
+                plan,
+                &constraints,
+                ProjectId::new(),
+                0.0,
+                100.0,
+                0.0,
+                100.0,
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -2782,15 +2951,15 @@ mod tests {
             generic_plans[0].kind,
             BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
         );
-        assert_eq!(generic_plans[0].crease_pattern.vertices.len(), 9);
-        assert_eq!(generic_plans[0].crease_pattern.edges.len(), 8);
+        assert_eq!(generic_plans[0].crease_pattern.vertices.len(), 13);
+        assert_eq!(generic_plans[0].crease_pattern.edges.len(), 11);
         let mut locally_outlined = generic.clone();
         locally_outlined.protrusions[0].local_outline_tenths_mm =
             Some(vec![[-2, -1], [0, -2], [2, -1], [1, 2], [-1, 2]]);
         let local_plans =
             generate_beginner_plans_v1(namespace, &source, &ids, &locally_outlined).unwrap();
-        assert_eq!(local_plans[0].crease_pattern.vertices.len(), 14);
-        assert_eq!(local_plans[0].crease_pattern.edges.len(), 13);
+        assert_eq!(local_plans[0].crease_pattern.vertices.len(), 18);
+        assert_eq!(local_plans[0].crease_pattern.edges.len(), 16);
         assert!(
             beginner_target_approximation_score_v1(&locally_outlined)
                 > beginner_target_approximation_score_v1(&generic)
@@ -2822,16 +2991,16 @@ mod tests {
             Some(vec![[-5, -5], [-5, 5], [5, 5], [5, -5]]);
         let outlined_plans =
             generate_beginner_plans_v1(namespace, &source, &ids, &outlined_generic).unwrap();
-        assert_eq!(outlined_plans[0].crease_pattern.vertices.len(), 13);
-        assert_eq!(outlined_plans[0].crease_pattern.edges.len(), 12);
+        assert_eq!(outlined_plans[0].crease_pattern.vertices.len(), 17);
+        assert_eq!(outlined_plans[0].crease_pattern.edges.len(), 15);
         let mut general_outline = generic.clone();
         general_outline.generic_body_outline_mode = crate::BeginnerBodyOutlineModeV1::General;
         general_outline.generic_body_outline_tenths_mm =
             Some(vec![[-5, -5], [5, -5], [4, 5], [-3, 5]]);
         let general_plans =
             generate_beginner_plans_v1(namespace, &source, &ids, &general_outline).unwrap();
-        assert_eq!(general_plans[0].crease_pattern.vertices.len(), 13);
-        assert_eq!(general_plans[0].crease_pattern.edges.len(), 12);
+        assert_eq!(general_plans[0].crease_pattern.vertices.len(), 17);
+        assert_eq!(general_plans[0].crease_pattern.edges.len(), 15);
         let mut tapered_generic = generic.clone();
         tapered_generic.protrusions[1].root_width_tenths_mm = Some(1);
         tapered_generic.protrusions[1].tip_width_tenths_mm = Some(1);

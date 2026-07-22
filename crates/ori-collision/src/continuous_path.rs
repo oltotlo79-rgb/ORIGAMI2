@@ -716,6 +716,10 @@ pub fn diagnose_collective_hinge_path_from_pose_v1(
     }) {
         return Err(StackedFoldPathDiagnosticErrorV1::InvalidPath);
     }
+    let path_excursion_degrees = changed
+        .iter()
+        .map(|(source, target)| (target.angle_degrees() - source.angle_degrees()).abs())
+        .fold(0.0_f64, f64::max);
     diagnose_collective_hinge_path_absolute_inner_v1(
         model,
         initial_pose,
@@ -724,6 +728,7 @@ pub fn diagnose_collective_hinge_path_from_pose_v1(
             .map(|(source, _)| source.edge())
             .collect::<Vec<_>>(),
         first_target.angle_degrees(),
+        path_excursion_degrees,
         paper_thickness_mm,
         limits,
     )
@@ -734,6 +739,7 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
     initial_pose: &MaterialTreePose,
     moving_hinges: &[EdgeId],
     requested_angle_degrees: f64,
+    path_excursion_degrees: f64,
     paper_thickness_mm: f64,
     limits: StackedFoldPathDiagnosticLimitsV1,
 ) -> Result<StackedFoldBoundedPathDiagnosticV1, StackedFoldPathDiagnosticErrorV1> {
@@ -743,6 +749,8 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
     if !requested_angle_degrees.is_finite()
         || requested_angle_degrees <= 0.0
         || requested_angle_degrees > 180.0
+        || !path_excursion_degrees.is_finite()
+        || path_excursion_degrees <= 0.0
         || moving_hinges.is_empty()
     {
         return Err(StackedFoldPathDiagnosticErrorV1::InvalidPath);
@@ -799,10 +807,7 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
             moving.len(),
         )
         && positive_tree_max_angle_degrees_v1(model.hinges().len())
-            .is_some_and(|maximum| requested_angle_degrees <= maximum)
-        && initial_pose.hinge_angles().iter().all(|angle| {
-            moving.contains(&angle.edge()) && angle.angle_degrees().to_bits() == 0.0_f64.to_bits()
-        });
+            .is_some_and(|maximum| path_excursion_degrees <= maximum);
     let mut all_positive_thickness_outer_shells = positive_thickness;
 
     let mut sampled_nonblocking_pose_count = 0;
@@ -1007,7 +1012,7 @@ fn diagnose_collective_hinge_path_absolute_inner_v1(
             && sampled_nonblocking_pose_count == limits.sample_intervals + 1,
         analytic_positive_two_hinge_clearance: positive_two_hinge_topology
             && positive_tree_max_angle_degrees_v1(model.hinges().len())
-                .is_some_and(|maximum| requested_angle_degrees <= maximum)
+                .is_some_and(|maximum| path_excursion_degrees <= maximum)
             && all_positive_thickness_outer_shells
             && first_sampled_blocking_angle_degrees.is_none()
             && sampled_nonblocking_pose_count == limits.sample_intervals + 1,

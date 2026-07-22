@@ -3122,12 +3122,16 @@ mod four_bay_cycle_test_support;
 mod tests {
     use crate::prepare_tree_hinge_thickness_boundaries_v1;
     use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, ProjectId, Vertex};
+    use ori_foldability::{
+        GlobalFlatFoldabilityModelId, GlobalFlatFoldabilityProvenance, LAYER_ORDER_MODEL_ID,
+        LayerFace, LayerOrderDerivation, LayerOrderProvenance, LayerOrderSnapshot,
+    };
     use ori_kinematics::{
         CanonicalCycleScheduleV1, CycleScheduleEntryInputV1, CycleScheduleLimitsV1,
         DyadicIntervalClosureLimitsV1, HalfAngleRationalEntryInputV1, RationalCoefficientV1,
         TreeKinematicsLimits,
     };
-    use ori_topology::{FaceExtractionInput, analyze_faces};
+    use ori_topology::{FaceExtractionInput, FaceKey, analyze_faces};
 
     use super::*;
 
@@ -3473,7 +3477,29 @@ mod tests {
 
     #[test]
     fn cactus_star_groups_three_or_more_cycles_around_an_articulation_face() {
-        let (geometry, audit, schedule, _common) = rational_cycle_bay_geometry(4, false);
+        let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(4, false);
+        let (pattern, paper, _) =
+            super::four_bay_cycle_test_support::four_bay_rational_cycle_pattern();
+        let topology = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("b600", 1),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .snapshot
+        .unwrap();
+        let local = ori_topology::analyze_local_flat_foldability(&paper, &pattern);
+        let global = ori_foldability::analyze_global_flat_foldability(
+            ori_foldability::GlobalFlatFoldabilityInput::current_with_geometry(
+                fixed_id("b600", 1),
+                &paper,
+                &pattern,
+                &topology,
+                &local,
+            ),
+            ori_foldability::GlobalFlatFoldabilityLimits::default(),
+        )
+        .unwrap();
         let exclusive = geometry
             .face_ids()
             .iter()
@@ -3488,10 +3514,161 @@ mod tests {
             .unwrap();
         let groups = rational_cactus_star_local_groups_v1(&geometry, &audit, exclusive, &schedule)
             .expect("four-cycle cactus block-cut star");
+        let common = geometry
+            .face_ids()
+            .iter()
+            .copied()
+            .max_by_key(|face| {
+                geometry
+                    .hinges()
+                    .iter()
+                    .filter(|hinge| hinge.left_face() == *face || hinge.right_face() == *face)
+                    .count()
+            })
+            .unwrap();
         assert_eq!(groups.len(), 12);
         assert_eq!(groups.values().copied().collect::<HashSet<_>>().len(), 4);
         assert!(symmetric_groups_have_disjoint_swept_balls_v1(
             &geometry, &groups
+        ));
+        let closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                fixed,
+                &schedule,
+                1.0e-8,
+                DyadicIntervalClosureLimitsV1 {
+                    max_depth: 3,
+                    max_leaves: 8,
+                    max_work: 8,
+                    schedule_limits: CycleScheduleLimitsV1::default(),
+                },
+            )
+            .unwrap();
+        let positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+            &geometry, &audit, fixed, &schedule, &closure, 0.1, 32,
+        )
+        .unwrap();
+        let material_faces = geometry
+            .face_ids()
+            .iter()
+            .enumerate()
+            .map(|(index, face_id)| LayerFace {
+                face_id: *face_id,
+                face_key: FaceKey([index as u8; 32]),
+            })
+            .collect::<Vec<_>>();
+        let _synthetic_source_is_not_authority = LayerOrderSnapshot {
+            model_id: LAYER_ORDER_MODEL_ID,
+            material_faces: material_faces.clone(),
+            global_bottom_to_top: None,
+            provenance: LayerOrderProvenance {
+                source: GlobalFlatFoldabilityProvenance {
+                    identity_namespace: Some(fixed_id("ca10", 1)),
+                    source_revision: 1,
+                    source_fingerprint: Some(ori_foldability::FoldModelFingerprintV1([0x31; 32])),
+                    model_id: GlobalFlatFoldabilityModelId::ConvexFacesFacewiseV1,
+                },
+                derivation: LayerOrderDerivation::FacewiseCertificate {
+                    reference_face: material_faces[0],
+                    overlap_cell_count: 0,
+                    constraint_count: 0,
+                },
+            },
+            reference_face: Some(material_faces[0]),
+            folded_faces: Vec::new(),
+            overlap_cells: Vec::new(),
+            face_pair_orders: Vec::new(),
+            proof_summary: None,
+        };
+        let Some(source) = global.layer_order() else {
+            assert!(
+                global.layer_order().is_none(),
+                "a cactus block authority cannot manufacture missing layer authority"
+            );
+            return;
+        };
+        let source = source.clone();
+        let layer = crate::certify_general_multi_face_cell_transport_v1(
+            crate::GeneralCellTransportInputV1 {
+                geometry: &geometry,
+                audit: &audit,
+                source: &source,
+                schedule: &schedule,
+                closure: &closure,
+                positive_continuous: &positive,
+                paper_thickness_mm: 0.1,
+                tolerance: 1.0e-8,
+                limits: crate::GeneralCellTransportLimitsV1 {
+                    max_transitions: closure.leaves().len() + 1,
+                    max_cells: 0,
+                    max_layer_records: 0,
+                    max_boundary_samples: 0,
+                },
+            },
+        )
+        .unwrap();
+        let mut blocks = vec![Vec::new(); 4];
+        for hinge in geometry.hinges() {
+            let local_face = if hinge.left_face() == common {
+                hinge.right_face()
+            } else {
+                hinge.left_face()
+            };
+            blocks[groups[&local_face]].push(hinge.edge());
+        }
+        let reversed = blocks.iter().cloned().rev().collect::<Vec<_>>();
+        let positive_reordered = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+            &geometry, &audit, fixed, &schedule, &closure, 0.1, 32,
+        )
+        .unwrap();
+        let layer_reordered = crate::certify_general_multi_face_cell_transport_v1(
+            crate::GeneralCellTransportInputV1 {
+                geometry: &geometry,
+                audit: &audit,
+                source: &source,
+                schedule: &schedule,
+                closure: &closure,
+                positive_continuous: &positive_reordered,
+                paper_thickness_mm: 0.1,
+                tolerance: 1.0e-8,
+                limits: crate::GeneralCellTransportLimitsV1 {
+                    max_transitions: closure.leaves().len() + 1,
+                    max_cells: 0,
+                    max_layer_records: 0,
+                    max_boundary_samples: 0,
+                },
+            },
+        )
+        .unwrap();
+        let reordered = crate::issue_block_composed_path_authority_v1(
+            &geometry,
+            &source,
+            fixed,
+            &schedule,
+            &closure,
+            0.1,
+            positive_reordered,
+            layer_reordered,
+            reversed,
+            [0x41; 32],
+            [0x42; 32],
+        )
+        .unwrap();
+        let first = crate::issue_block_composed_path_authority_v1(
+            &geometry, &source, fixed, &schedule, &closure, 0.1, positive, layer, blocks,
+            [0x41; 32], [0x42; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            first.binding_fingerprint_v1(),
+            reordered.binding_fingerprint_v1()
+        );
+        assert!(first.revalidates_v1(
+            &geometry, &source, fixed, &schedule, &closure, 0.1, [0x41; 32], [0x42; 32]
+        ));
+        assert!(!first.revalidates_v1(
+            &geometry, &source, fixed, &schedule, &closure, 0.1, [0x40; 32], [0x42; 32]
         ));
     }
 

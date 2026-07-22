@@ -282,6 +282,84 @@ test('compass circles snap to bounded line and circle intersections', () => {
   })
 })
 
+test('compass tangencies emit one point while coincident and invalid circles fail closed', () => {
+  const tangentLine: SnapSegment = {
+    id: 'tangent', startVertexId: 'left', endVertexId: 'right',
+    x1: -10, y1: 5, x2: 10, y2: 5,
+  }
+  let lineAdmissions = 0
+  const lineTangent = resolveCompassIntersectionSnap({
+    point: { x: 0, y: 5 }, scale: 1,
+    circles: [{ centerX: 0, centerY: 0, radius: 5 }], segments: [tangentLine],
+    accept: () => {
+      lineAdmissions += 1
+      return true
+    },
+  })
+  assert.deepEqual(lineTangent?.point, { x: 0, y: 5 })
+  assert.equal(lineAdmissions, 1)
+
+  let circleAdmissions = 0
+  const circleTangent = resolveCompassIntersectionSnap({
+    point: { x: 5, y: 0 }, scale: 1,
+    circles: [
+      { centerX: 0, centerY: 0, radius: 5 },
+      { centerX: 10, centerY: 0, radius: 5 },
+    ],
+    segments: [],
+    accept: () => {
+      circleAdmissions += 1
+      return true
+    },
+  })
+  assert.deepEqual(circleTangent?.point, { x: 5, y: 0 })
+  assert.equal(circleAdmissions, 1)
+
+  assert.equal(resolveCompassIntersectionSnap({
+    point: { x: 5, y: 0 }, scale: 1,
+    circles: [
+      { centerX: 0, centerY: 0, radius: 5 },
+      { centerX: 0, centerY: 0, radius: 5 },
+      { centerX: Number.NaN, centerY: 0, radius: 5 },
+      { centerX: 0, centerY: 0, radius: Number.POSITIVE_INFINITY },
+    ],
+    segments: [],
+  }), null)
+  assert.equal(resolveCompassIntersectionSnap({
+    point: { x: Number.NaN, y: 0 }, scale: 1,
+    circles: [], segments: [],
+  }), null)
+  assert.equal(resolveCompassIntersectionSnap({
+    point: { x: 0, y: 0 }, scale: 1,
+    circles: Array.from({ length: 65 }, () => ({ centerX: 0, centerY: 0, radius: 1 })),
+    segments: [],
+  }), null)
+})
+
+test('compass duplicate intersections are deterministic and paper acceptance selects an inside point', () => {
+  const duplicated = resolveCompassIntersectionSnap({
+    point: { x: 3.1, y: 4.1 }, scale: 1,
+    circles: [
+      { centerX: 0, centerY: 0, radius: 5 },
+      { centerX: 6, centerY: 0, radius: 5 },
+      { centerX: 0, centerY: 0, radius: 5 },
+    ],
+    segments: [],
+  })
+  assert.deepEqual(duplicated?.point, { x: 3, y: 4 })
+
+  const bounded = resolveCompassIntersectionSnap({
+    point: { x: 3, y: -3.9 }, scale: 1,
+    circles: [
+      { centerX: 0, centerY: 0, radius: 5 },
+      { centerX: 6, centerY: 0, radius: 5 },
+    ],
+    segments: [],
+    accept: ({ point }) => point.y >= 0,
+  })
+  assert.deepEqual(bounded?.point, { x: 3, y: 4 })
+})
+
 test('same-kind ties use distance and then lexical key', () => {
   const target = resolve({
     settings: only('vertex'),

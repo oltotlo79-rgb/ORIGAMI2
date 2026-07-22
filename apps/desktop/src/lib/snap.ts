@@ -342,8 +342,11 @@ export function resolveCompassIntersectionSnap(options: Readonly<{
       const discriminant = b * b - 4 * geometry.lengthSquared * c
       if (!Number.isFinite(discriminant) || discriminant < 0) continue
       const root = Math.sqrt(discriminant)
-      for (const [side, fraction] of [[0, (-b - root) / (2 * geometry.lengthSquared)],
-        [1, (-b + root) / (2 * geometry.lengthSquared)]] as const) {
+      const roots = root === 0
+        ? [[0, -b / (2 * geometry.lengthSquared)]] as const
+        : [[0, (-b - root) / (2 * geometry.lengthSquared)],
+            [1, (-b + root) / (2 * geometry.lengthSquared)]] as const
+      for (const [side, fraction] of roots) {
         if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) continue
         admit(`circle-line:${circleIndex}:${segment.id}:${side}`,
           segment.x1 + fraction * geometry.dx, segment.y1 + fraction * geometry.dy)
@@ -351,6 +354,8 @@ export function resolveCompassIntersectionSnap(options: Readonly<{
     }
     for (let otherIndex = circleIndex + 1; otherIndex < options.circles.length; otherIndex += 1) {
       const other = options.circles[otherIndex]!
+      if (!Number.isFinite(other.centerX) || !Number.isFinite(other.centerY)
+        || !Number.isFinite(other.radius) || other.radius <= 0) continue
       const dx = other.centerX - circle.centerX
       const dy = other.centerY - circle.centerY
       const distance = Math.hypot(dx, dy)
@@ -366,7 +371,9 @@ export function resolveCompassIntersectionSnap(options: Readonly<{
       const perpendicularX = -dy * height / distance
       const perpendicularY = dx * height / distance
       admit(`circle-circle:${circleIndex}:${otherIndex}:0`, baseX + perpendicularX, baseY + perpendicularY)
-      admit(`circle-circle:${circleIndex}:${otherIndex}:1`, baseX - perpendicularX, baseY - perpendicularY)
+      if (height !== 0) {
+        admit(`circle-circle:${circleIndex}:${otherIndex}:1`, baseX - perpendicularX, baseY - perpendicularY)
+      }
     }
   }
   return best

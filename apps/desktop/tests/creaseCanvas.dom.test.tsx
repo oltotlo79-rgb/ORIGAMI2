@@ -321,6 +321,31 @@ describe('CreaseCanvas compass intersection placement', () => {
       y: 280,
     })
   })
+
+  it('does not place a circle intersection outside a non-rectangular paper boundary', () => {
+    const onPlaceVertex = vi.fn()
+    renderCanvas({
+      localeStore: localeFixture('en'),
+      tool: 'vertex',
+      paperPolygon: [
+        { x: 0, y: 0 },
+        { x: 400, y: 0 },
+        { x: 200, y: 200 },
+      ],
+      compassCircles: [
+        { centerX: 140, centerY: 200, radius: 100 },
+        { centerX: 260, centerY: 200, radius: 100 },
+      ],
+      onPlaceVertex,
+    })
+
+    fireEvent.click(screen.getByLabelText('Crease-pattern editing canvas'), {
+      clientX: 250,
+      clientY: 336,
+    })
+
+    expect(onPlaceVertex).not.toHaveBeenCalled()
+  })
 })
 
 function renderCanvas(

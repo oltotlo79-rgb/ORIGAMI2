@@ -307,6 +307,142 @@ struct RegularQuadPetalPreviewRecordV1 {
 #[allow(dead_code)]
 struct RegularQuadPetalPrivatePreviewStateV1(Mutex<Option<RegularQuadPetalPreviewRecordV1>>);
 
+/// Native-only hand-off for the two-block positive-thickness/layer proof.
+/// No serializable DTO can construct or consume this record.
+#[allow(dead_code)]
+struct BlockwisePositiveLayerPreviewRecordV1 {
+    token: ProjectId,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    issuer_context: [u8; 32],
+    articulation: FaceId,
+    thickness: f64,
+    articulation_layer_fingerprint: [u8; 32],
+    sources: [Box<ori_foldability::LayerOrderSnapshot>; 2],
+    authority: ori_collision::BlockwisePositiveLayerAuthorityV1,
+}
+
+#[derive(Default)]
+#[allow(dead_code)]
+struct BlockwisePositiveLayerPrivatePreviewStateV1(
+    Mutex<Option<BlockwisePositiveLayerPreviewRecordV1>>,
+);
+
+#[allow(dead_code)]
+impl BlockwisePositiveLayerPreviewRecordV1 {
+    #[allow(clippy::too_many_arguments)]
+    fn issue_v1(
+        token: ProjectId,
+        project_instance_id: ProjectId,
+        project_id: ProjectId,
+        revision: u64,
+        issuer_context: [u8; 32],
+        articulation: FaceId,
+        thickness: f64,
+        articulation_layer_fingerprint: [u8; 32],
+        sources: [Box<ori_foldability::LayerOrderSnapshot>; 2],
+        authority: ori_collision::BlockwisePositiveLayerAuthorityV1,
+    ) -> Result<Self, String> {
+        if issuer_context == [0; 32]
+            || articulation_layer_fingerprint == [0; 32]
+            || !authority.revalidates_v1(
+                [&sources[0], &sources[1]],
+                articulation,
+                thickness,
+                issuer_context,
+                articulation_layer_fingerprint,
+            )
+        {
+            return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+        }
+        Ok(Self {
+            token,
+            project_instance_id,
+            project_id,
+            revision,
+            issuer_context,
+            articulation,
+            thickness,
+            articulation_layer_fingerprint,
+            sources,
+            authority,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn revalidates_for_apply_v1(
+        &self,
+        token: ProjectId,
+        project_instance_id: ProjectId,
+        project_id: ProjectId,
+        revision: u64,
+        issuer_context: [u8; 32],
+        articulation: FaceId,
+        thickness: f64,
+        articulation_layer_fingerprint: [u8; 32],
+    ) -> bool {
+        self.token == token
+            && self.project_instance_id == project_instance_id
+            && self.project_id == project_id
+            && self.revision == revision
+            && self.issuer_context == issuer_context
+            && self.articulation == articulation
+            && self.thickness.to_bits() == thickness.to_bits()
+            && self.articulation_layer_fingerprint == articulation_layer_fingerprint
+            && self.authority.revalidates_v1(
+                [&self.sources[0], &self.sources[1]],
+                articulation,
+                thickness,
+                issuer_context,
+                articulation_layer_fingerprint,
+            )
+    }
+}
+
+#[allow(dead_code)]
+impl BlockwisePositiveLayerPrivatePreviewStateV1 {
+    fn mint_once_v1(&self, record: BlockwisePositiveLayerPreviewRecordV1) -> Result<(), String> {
+        let mut slot = self.0.lock().map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+        if slot.is_some() {
+            return Err("a blockwise positive-layer preview is already active".to_owned());
+        }
+        *slot = Some(record);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn consume_for_apply_v1(
+        &self,
+        token: ProjectId,
+        project_instance_id: ProjectId,
+        project_id: ProjectId,
+        revision: u64,
+        issuer_context: [u8; 32],
+        articulation: FaceId,
+        thickness: f64,
+        articulation_layer_fingerprint: [u8; 32],
+    ) -> Result<BlockwisePositiveLayerPreviewRecordV1, String> {
+        let mut slot = self.0.lock().map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+        if !slot.as_ref().is_some_and(|record| {
+            record.revalidates_for_apply_v1(
+                token,
+                project_instance_id,
+                project_id,
+                revision,
+                issuer_context,
+                articulation,
+                thickness,
+                articulation_layer_fingerprint,
+            )
+        }) {
+            return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+        }
+        slot.take()
+            .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())
+    }
+}
+
 #[cfg(test)]
 pub(super) struct RegularQuadPetalCertificatePreviewStateV1(
     Mutex<

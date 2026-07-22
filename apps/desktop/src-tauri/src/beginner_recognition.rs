@@ -1640,6 +1640,9 @@ fn decode_marker_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
 }
 
 fn decode_general_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    if png_header_exceeds_recognition_budget(bytes) {
+        return Err("recognition_resource_limit".to_owned());
+    }
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder
@@ -1698,6 +1701,35 @@ fn decode_general_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
         return Err("recognition_resource_limit".to_owned());
     }
     Ok((frame.width, frame.height, rgba))
+}
+
+fn png_header_exceeds_recognition_budget(bytes: &[u8]) -> bool {
+    if bytes.get(..8) != Some(b"\x89PNG\r\n\x1a\n")
+        || bytes.get(8..12) != Some(13_u32.to_be_bytes().as_slice())
+        || bytes.get(12..16) != Some(b"IHDR")
+    {
+        return false;
+    }
+    let Some(width) = bytes
+        .get(16..20)
+        .and_then(|value| <[u8; 4]>::try_from(value).ok())
+        .map(u32::from_be_bytes)
+    else {
+        return false;
+    };
+    let Some(height) = bytes
+        .get(20..24)
+        .and_then(|value| <[u8; 4]>::try_from(value).ok())
+        .map(u32::from_be_bytes)
+    else {
+        return false;
+    };
+    width > ori_domain::MAX_BEGINNER_RECOGNITION_DIMENSION_V1
+        || height > ori_domain::MAX_BEGINNER_RECOGNITION_DIMENSION_V1
+        || usize::try_from(width)
+            .ok()
+            .and_then(|width| usize::try_from(height).ok()?.checked_mul(width))
+            .is_none_or(|pixels| pixels > ori_domain::MAX_BEGINNER_RECOGNITION_PIXELS_V1)
 }
 
 pub(crate) fn decode_general_image(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {

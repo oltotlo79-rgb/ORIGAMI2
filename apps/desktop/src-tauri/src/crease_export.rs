@@ -876,7 +876,7 @@ mod tests {
             confidence_score: 73,
             confidence_reasons: vec!["desktop_roundtrip".to_owned()],
             explicit_override: true,
-            source_asset_fingerprint: "asset:desktop-test".to_owned(),
+            source_asset_fingerprint: format!("sha256:{}", "5b".repeat(32)),
             semantic_landmark_provenance: None,
             generic_tree: None,
             reference_consensus: None,

@@ -119,6 +119,32 @@ impl MultiBlockPositiveLayerAuthorityV1 {
     }
 
     #[must_use]
+    pub fn target_angles_match_v1(&self, actual: &[(EdgeId, f64)]) -> bool {
+        let mut expected = Vec::new();
+        for block in &self.parent.blocks {
+            let Some(endpoint) = block.schedule.evaluate(1.0) else {
+                return false;
+            };
+            expected.extend(
+                endpoint
+                    .as_slice()
+                    .iter()
+                    .map(|angle| (angle.edge(), angle.angle_degrees())),
+            );
+        }
+        expected.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+        if expected.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return false;
+        }
+        let mut actual = actual.to_vec();
+        actual.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+        expected.len() == actual.len()
+            && expected.iter().zip(actual).all(|(expected, actual)| {
+                expected.0 == actual.0 && expected.1.to_bits() == actual.1.to_bits()
+            })
+    }
+
+    #[must_use]
     pub fn revalidates_v1(
         &self,
         sources: &[&LayerOrderSnapshot],

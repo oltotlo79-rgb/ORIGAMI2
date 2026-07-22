@@ -48,7 +48,6 @@ pub use cell_order_transport::{
     NATIVE_CELL_ORDER_TRANSPORT_PROOF_V1, NativeCellOrderTransportProofV1,
     prove_single_face_cell_order_transport_v1, revalidate_single_face_cell_order_transport_v1,
 };
-#[cfg(feature = "private-petal-e2e")]
 pub use certified_path_graph::issue_private_three_segment_path_v1;
 pub use certified_path_graph::{
     CERTIFIED_PATH_GRAPH_MODEL_ID_V1, CertifiedPathGraphIndeterminateReasonV1,

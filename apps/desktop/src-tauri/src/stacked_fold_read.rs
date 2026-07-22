@@ -301,7 +301,6 @@ struct RegularQuadPetalPreviewRecordV1 {
     authority: DyadicPathNativeAuthorityV1,
 }
 
-#[cfg(test)]
 #[derive(Default)]
 #[allow(dead_code)]
 struct RegularQuadPetalPrivatePreviewStateV1(Mutex<Option<RegularQuadPetalPreviewRecordV1>>);
@@ -360,7 +359,6 @@ impl RegularQuadPetalCertificatePreviewStateV1 {
     }
 }
 
-#[cfg(test)]
 #[allow(dead_code)]
 impl RegularQuadPetalPrivatePreviewStateV1 {
     fn mint_once_v1(&self, record: RegularQuadPetalPreviewRecordV1) -> Result<(), String> {
@@ -397,6 +395,72 @@ impl RegularQuadPetalPrivatePreviewStateV1 {
         slot.take()
             .ok_or_else(|| "regular-quad petal preview was consumed".to_owned())
     }
+}
+
+/// Captures both live authorities while the same project instance is locked,
+/// derives the fixed face's canonical authored M/V hinges, and only publishes
+/// the fully certified record after every stage has succeeded.
+#[allow(dead_code)]
+fn capture_and_mint_regular_quad_petal_preview_v1(
+    project: &super::ProjectState,
+    foldability_state: &GlobalFlatFoldabilityState,
+    previews: &RegularQuadPetalPrivatePreviewStateV1,
+) -> Result<(ProjectId, [u8; 32], String), String> {
+    let pose_capability = project
+        .applied_pose_authority
+        .capture_capability(project)
+        .map_err(|_| "regular-quad petal pose authority is unavailable".to_owned())?
+        .ok_or_else(|| "regular-quad petal pose authority is unavailable".to_owned())?;
+    let layer_capability = capture_current_layer_order_capability(foldability_state, project)
+        .map_err(|_| "regular-quad petal layer authority is unavailable".to_owned())?
+        .ok_or_else(|| "regular-quad petal layer authority is unavailable".to_owned())?;
+    let fixed_face = pose_capability
+        .graph()
+        .map(|(_, _, pose)| pose.fixed_face())
+        .ok_or_else(|| "regular-quad petal requires graph pose authority".to_owned())?;
+    let topology = project
+        .editor
+        .topology_analysis_input(project.project_id)
+        .analyze();
+    let snapshot = topology
+        .simulation_snapshot()
+        .ok_or_else(|| "regular-quad petal topology is unavailable".to_owned())?;
+    let face = snapshot
+        .faces
+        .iter()
+        .find(|face| face.id == fixed_face)
+        .ok_or_else(|| "regular-quad petal fixed face is unavailable".to_owned())?;
+    let pattern = project.editor.pattern();
+    let mut hinges = face
+        .outer
+        .half_edges
+        .iter()
+        .filter_map(|half| {
+            let edge = pattern.edges.iter().find(|edge| edge.id == half.edge)?;
+            let assignment = match edge.kind {
+                ori_domain::EdgeKind::Mountain => ori_topology::FoldAssignment::Mountain,
+                ori_domain::EdgeKind::Valley => ori_topology::FoldAssignment::Valley,
+                _ => return None,
+            };
+            Some((edge.id, assignment))
+        })
+        .collect::<Vec<_>>();
+    hinges.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+    let hinges: [(ori_domain::EdgeId, ori_topology::FoldAssignment); 3] = hinges
+        .try_into()
+        .map_err(|_| "regular-quad petal requires exactly three authored hinges".to_owned())?;
+    let token = ProjectId::new();
+    let record = issue_regular_quad_petal_preview_record_v1(
+        project,
+        token,
+        pose_capability,
+        layer_capability,
+        hinges,
+    )?;
+    let target = record.target_binding;
+    let path = record.path_binding.clone();
+    previews.mint_once_v1(record)?;
+    Ok((token, target, path))
 }
 
 #[allow(dead_code)]
@@ -528,6 +592,139 @@ impl RegularQuadPetalPreviewRecordV1 {
                 .authority
                 .revalidates_exact_three_graph_segments_v1(target_binding, path_binding)
     }
+}
+
+#[allow(dead_code)]
+fn issue_regular_quad_petal_preview_record_v1(
+    project: &super::ProjectState,
+    token: ProjectId,
+    pose_capability: CurrentAppliedPoseCapability,
+    layer_capability: CurrentLayerOrderCapability,
+    hinges: [(ori_domain::EdgeId, ori_topology::FoldAssignment); 3],
+) -> Result<RegularQuadPetalPreviewRecordV1, String> {
+    let hinge_ids = hinges.map(|(edge, _)| edge);
+    if !super::stacked_fold_transaction::regular_quad_petal_face_v1(project, &hinge_ids) {
+        return Err("regular-quad petal face is unavailable".to_owned());
+    }
+    let paper_thickness_mm = project.editor.paper().thickness_mm;
+    let (path, edges, target_angles) = {
+        let (geometry, audit, pose) = pose_capability
+            .graph()
+            .ok_or_else(|| "regular-quad petal requires graph pose authority".to_owned())?;
+        let fixed_face = pose.fixed_face();
+        let issued = ori_collision::issue_regular_quad_petal_chained_authority_v1(
+            geometry,
+            audit,
+            layer_capability.snapshot(),
+            fixed_face,
+            hinges.map(|(edge, assignment)| {
+                (edge, assignment == ori_topology::FoldAssignment::Mountain)
+            }),
+            paper_thickness_mm,
+            1.0e-9,
+            production_cycle_schedule_limits_v1(),
+            ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                max_depth: 8,
+                max_leaves: 256,
+                max_work: 1_000_000,
+                schedule_limits: production_cycle_schedule_limits_v1(),
+            },
+        )
+        .ok_or_else(|| "regular-quad petal candidates are uncertified".to_owned())?;
+        let (_, schedules, closures, positives, transport) = issued.into_parts();
+        let layers = transport.into_proofs();
+        let mut path_segments = Vec::with_capacity(3);
+        let mut native_edges = Vec::with_capacity(3);
+        for (((schedule, closure), positive), layer) in schedules
+            .into_iter()
+            .zip(closures)
+            .zip(positives)
+            .zip(layers)
+        {
+            let source_angles = schedule
+                .evaluate(0.0)
+                .ok_or_else(|| "invalid petal source".to_owned())?;
+            let target = schedule
+                .evaluate(1.0)
+                .ok_or_else(|| "invalid petal target".to_owned())?;
+            let source = pose_state_fingerprint_v1(&source_angles);
+            let target_fingerprint = pose_state_fingerprint_v1(&target);
+            let candidate = ori_kinematics::admit_canonical_multi_hinge_path_candidate_v1(
+                schedule.clone(),
+                &source_angles,
+                &target,
+            )
+            .map_err(|_| "invalid petal schedule".to_owned())?;
+            let evidence = ori_collision::certify_scheduled_cycle_transition_v1(
+                geometry,
+                audit,
+                fixed_face,
+                &candidate,
+                &closure,
+                1,
+                source,
+                target_fingerprint,
+            )
+            .ok_or_else(|| "petal transition is uncertified".to_owned())?;
+            let segment = ori_collision::search_certified_pose_graph_v1(
+                &[source, target_fingerprint],
+                &[ori_collision::CertifiedPathTransitionCandidateV1 {
+                    source,
+                    target: target_fingerprint,
+                    candidate_key: schedule.certificate_binding_fingerprint_v1(),
+                }],
+                source,
+                target_fingerprint,
+                |_| Some(evidence),
+            );
+            let ori_collision::CertifiedPathGraphSearchResultV1::Certified(certificate) = segment
+            else {
+                return Err("petal segment path is uncertified".to_owned());
+            };
+            path_segments.push(certificate);
+            native_edges.push(DyadicPathEdgeAuthorityV1 {
+                source,
+                target: target_fingerprint,
+                schedule,
+                closure: Some(closure),
+                auxiliary: DyadicAuxiliaryProofV1::Graph { positive, layer },
+            });
+        }
+        let path = ori_collision::issue_private_three_segment_path_v1(
+            path_segments
+                .try_into()
+                .map_err(|_| "petal segment count mismatch".to_owned())?,
+        )
+        .ok_or_else(|| "petal parent path is uncertified".to_owned())?;
+        let target_angles = native_edges
+            .last()
+            .and_then(|edge| edge.schedule.evaluate(1.0))
+            .ok_or_else(|| "petal target is unavailable".to_owned())?;
+        (path, native_edges, target_angles)
+    };
+    let target_binding = pose_state_fingerprint_v1(&target_angles);
+    let path_binding = path
+        .binding_fingerprint_v1()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let authority = DyadicPathNativeAuthorityV1 {
+        pose_capability,
+        layer_capability,
+        path,
+        edges,
+        paper_thickness_mm,
+        target_angles,
+    };
+    RegularQuadPetalPreviewRecordV1::issue_v1(
+        project,
+        &hinge_ids,
+        token,
+        project.editor.revision(),
+        target_binding,
+        path_binding,
+        authority,
+    )
 }
 
 struct DyadicPathNativeAuthorityV1 {
@@ -7008,6 +7205,26 @@ mod tests {
                 &project, &duplicate,
             )
         );
+    }
+
+    #[test]
+    fn regular_quad_petal_private_capture_rejects_without_publishing_or_mutating() {
+        let (pattern, paper, _, _) =
+            super::dense_grid_cycle_test_support::miura_authority_pattern(3, 3);
+        let project = super::super::ProjectState::new_with_paper(pattern, paper);
+        let revision = project.editor.revision();
+        let previews = RegularQuadPetalPrivatePreviewStateV1::default();
+        assert!(
+            capture_and_mint_regular_quad_petal_preview_v1(
+                &project,
+                &GlobalFlatFoldabilityState::default(),
+                &previews,
+            )
+            .is_err()
+        );
+        assert_eq!(project.editor.revision(), revision);
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+        assert!(previews.0.lock().unwrap().is_none());
     }
 
     #[test]

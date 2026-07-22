@@ -234,10 +234,9 @@ impl CertifiedPoseGraphPathCertificateV1 {
     }
 }
 
-/// Test-support issuer for a private three-stage petal transaction. Each input
-/// must already be a native-issued single-transition certificate; this only
-/// joins an exact contiguous chain and cannot manufacture transition evidence.
-#[cfg(feature = "private-petal-e2e")]
+/// Native issuer for a private three-stage petal transaction. Each input must
+/// already be a native-issued single-transition certificate; this only joins
+/// an exact contiguous chain and cannot manufacture transition evidence.
 pub fn issue_private_three_segment_path_v1(
     segments: [CertifiedPoseGraphPathCertificateV1; 3],
 ) -> Option<CertifiedPoseGraphPathCertificateV1> {

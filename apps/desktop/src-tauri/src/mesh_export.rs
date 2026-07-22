@@ -2447,6 +2447,13 @@ mod tests {
 
     fn app_state_with_current_pose() -> AppState {
         let mut project = crate::initial_project_state();
+        let fixed_face_id = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze()
+            .simulation_snapshot()
+            .and_then(|snapshot| snapshot.faces.first())
+            .map(|face| face.id);
         let authority = project.applied_pose_authority.clone();
         let captured = authority
             .capture_request(
@@ -2455,7 +2462,7 @@ mod tests {
                     expected_project_instance_id: project.instance_id,
                     expected_project_id: project.project_id,
                     expected_revision: project.editor.revision(),
-                    fixed_face_id: None,
+                    fixed_face_id,
                     complete_hinge_angles: Vec::new(),
                 },
             )
@@ -2501,6 +2508,13 @@ mod tests {
             },
         )
         .expect("select dual textures");
+        let fixed_face_id = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze()
+            .simulation_snapshot()
+            .and_then(|snapshot| snapshot.faces.first())
+            .map(|face| face.id);
         let authority = project.applied_pose_authority.clone();
         let captured = authority
             .capture_request(
@@ -2509,7 +2523,7 @@ mod tests {
                     expected_project_instance_id: instance,
                     expected_project_id: project_id,
                     expected_revision: 1,
-                    fixed_face_id: None,
+                    fixed_face_id,
                     complete_hinge_angles: Vec::new(),
                 },
             )

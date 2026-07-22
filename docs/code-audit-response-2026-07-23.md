@@ -20,7 +20,7 @@
 |項目|判定|対応|
 |---|---|---|
 |B-1/B-2/B-3/B-4/B-9|妥当な文書不整合・正本以外を是正済み|`13b1772`, `09c2e52`。公式進捗はCIゲート中のため79.3%を維持し、指示により`docs/progress.md`は変更しない。pending再評価は自動設計を60%へ上げず35%へ下げ、81.96%（表示82.0%）へ是正した。`requirements-status.md`は旧「現在」集計を履歴コメントへ隔離し、正本を85/2/0へ統一した。加重完成度とMUST行数は異なる指標であり同率には扱わない。|
-|B-5|妥当・修正済み|`657f902`。山谷は表示名でなく選択crease assignmentと明示kindで識別。WSL `ori-instructions` 40/40。|
+|B-5|妥当・修正済み|`657f902`, `c1e342d`。山谷は表示名でなく選択crease assignmentと明示kindで識別し、旧表示名依存のエラー期待値も明示kind後に到達する証明不一致へ同期した。WSL `ori-instructions` 40/40。|
 |B-6|一部妥当・修正済み|非連結blockを許す指摘は妥当。`ecc1dd3`でblock intersection graphをtreeに限定。公開型の死蔵は機能欠陥ではなく整理課題。|
 |B-7|妥当・修正済み|`4c28d50`。split/merged noticeを追加。|
 |B-8|説明矛盾として妥当・修正済み|`6412942`で当時の制限を正確に明記し、`77e8f1d`, `9d20cde`, `ed0ace0`で円×線・円×円の交点snapを頂点追加・辺分割へ接続し、接線・重複・非有限値・紙面外を回帰して案内文も実装へ再同期した。|
@@ -33,7 +33,7 @@
 |C-2|一部妥当・妥当範囲を修正済み|`322e5a7`。境界edge除外は紙境界を通常creaseとして分割しない既存方針として維持する。一方、新規描画segmentのstrict interiorにある既存頂点は順序付きで事前分節し、`ApplyNormalizedEdgeDocument`一件として原子的に適用する。Undo/Redoを回帰し、同一座標の複数頂点は曖昧としてfail closedする。|
 |C-3|新規要件|分数/N分割gridは現行要件にない。F-3として管理する。|
 |C-4|妥当・修正済み|`4c28d50`。`fileOperationActive`を全編集gateへ追加。|
-|C-5|妥当・修正済み|`6c3f972`。認証済み技法の固定手順文を日英併記し、英語利用者へ日本語だけを返さない。WSL 40/40。|
+|C-5|妥当・修正済み|`6c3f972`, `c1e342d`。認証済み技法の固定手順文を日英併記し、英語利用者へ日本語だけを返さない。同時にnative instruction exportが厳格抽出する既存の経路証明・元モデルlabelを維持した。WSL 40/40。|
 |C-6|妥当・修正済み|`ecc1dd3`。block authorityの2 schedule終端と保存target anglesをapply時にbit-exact再照合。WSL回帰1/1。|
 |C-7|妥当・修正済み|`4c28d50`。visual JSON構造検証とGLB certificate export gateを追加。DOM 11/11。|
 
@@ -72,6 +72,7 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 - `InstructionTimelinePanel` DOM: 11/11。
 - WSL `ori-core` A-4: 1/1、`ori-formats` A-5: 1/1。
 - WSL `ori-instructions`: 40/40。
+- WSL native instruction export: compiled技法4/4、再open済みproof binding 1/1。日英併記と機械可読な証明label契約の両立を確認。
 - WSL blockwise target-angle回帰: 1/1。
 - desktop `cargo check`: 成功。無関係な既存warningは別所有差分として未変更。
 - compass intersection Node: 108/108、DOM: 10/10、production build: 成功。

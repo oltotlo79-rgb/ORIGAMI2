@@ -65,6 +65,12 @@ import {
   describeFoldPreviewContinuousMotion,
 } from '../lib/foldPreviewContinuousMotionView'
 import { createFoldPreviewFaceGeometry } from '../lib/foldPreviewGeometry'
+import {
+  measureWorldFaceNormalAngleDegrees,
+  measureWorldVertexDistanceMm,
+  resolveMidsurfaceVertexSample,
+  type WorldPoint3,
+} from '../lib/foldPreviewMeasurement'
 import type { FoldPreviewHingeContactConstraint } from '../lib/foldPreviewHingeCollision'
 import {
   createFoldPreviewSceneRuntime,
@@ -177,6 +183,7 @@ import {
 
 type FoldPreviewProps = {
   angle: number
+  disabled?: boolean
   hingeAngles?: readonly FoldPreviewHingeAngle[]
   selectedHingeId?: string | null
   selectedFaceId?: string | null
@@ -241,6 +248,11 @@ type RenderedTreePoseSnapshot = Readonly<{
   visualThickness: number
   appliedAngles: readonly FoldPreviewHingeAngle[]
   requestKey: string
+}>
+
+type FoldPreviewMeasurementSelection = Readonly<{
+  kind: 'vertex' | 'face'
+  entries: readonly Readonly<{ id: string; sample: WorldPoint3 | null }>[]
 }>
 
 type LatestRequestedTreePose = Readonly<{
@@ -395,6 +407,7 @@ function staleCorrectionAnalysisState(
 
 export function FoldPreview({
   angle,
+  disabled = false,
   hingeAngles,
   selectedHingeId,
   selectedFaceId,
@@ -444,6 +457,11 @@ export function FoldPreview({
   )
   const [keyboardSelectionAnnouncement, setKeyboardSelectionAnnouncement] =
     useState<KeyboardSelectionAnnouncement | null>(null)
+  const [measurementMode, setMeasurementMode] = useState(false)
+  const measurementModeRef = useRef(false)
+  measurementModeRef.current = measurementMode && !disabled
+  const [measurementSelection, setMeasurementSelection] =
+    useState<FoldPreviewMeasurementSelection | null>(null)
   const angleDragSequenceRef = useRef(0)
   const motionSnapshotRef = useRef(motionSnapshot)
   motionSnapshotRef.current = motionSnapshot
@@ -1213,8 +1231,15 @@ export function FoldPreview({
       }
 
       const faceGroups = new Map<string, THREE.Group>()
+      const measurementFaceGroups = new Map<string, Readonly<{
+        group: THREE.Group
+        offsetX: number
+        offsetZ: number
+      }>>()
       for (const { face, geometry } of staticFaces) {
         const group = makeFace(geometry, face)
+        if (measurementFaceGroups.has(face.id)) throw new Error('duplicate face ID')
+        measurementFaceGroups.set(face.id, { group, offsetX: 0, offsetZ: 0 })
         if (model.kind === 'fold_graph') {
           group.matrixAutoUpdate = false
           if (
@@ -1252,12 +1277,21 @@ export function FoldPreview({
         if (!singleAnchor) throw new Error('missing single-fold anchor')
         pivot = new THREE.Group()
         pivot.position.set(model.hinge.start.x, 0, model.hinge.start.z)
-        pivot.add(makeFace(
+        const movingGroup = makeFace(
           movingGeometry,
           singleAnchor.movingFace,
           -model.hinge.start.x,
           -model.hinge.start.z,
-        ))
+        )
+        if (measurementFaceGroups.has(singleAnchor.movingFace.id)) {
+          throw new Error('duplicate face ID')
+        }
+        measurementFaceGroups.set(singleAnchor.movingFace.id, {
+          group: movingGroup,
+          offsetX: -model.hinge.start.x,
+          offsetZ: -model.hinge.start.z,
+        })
+        pivot.add(movingGroup)
         axis = new THREE.Vector3(
           model.hinge.end.x - model.hinge.start.x,
           0,
@@ -2576,8 +2610,66 @@ export function FoldPreview({
           return null
         }
       }
+      const measurementVertexSample = (vertexId: string): WorldPoint3 | null => {
+        const incidences: Array<Parameters<typeof resolveMidsurfaceVertexSample>[0][number]> = []
+        for (const face of model.faces) {
+          const source = face.polygon.find((vertex) => vertex.vertexId === vertexId)
+          const registered = measurementFaceGroups.get(face.id)
+          if (!source || !registered) continue
+          registered.group.updateWorldMatrix(true, false)
+          incidences.push({
+            x: source.x,
+            z: source.z,
+            offsetX: registered.offsetX,
+            offsetZ: registered.offsetZ,
+            matrix: registered.group.matrixWorld.elements.slice(),
+          })
+        }
+        const scale = Math.max(
+          1,
+          model.worldBounds.maxX - model.worldBounds.minX,
+          model.worldBounds.maxZ - model.worldBounds.minZ,
+        )
+        return resolveMidsurfaceVertexSample(incidences, scale)
+      }
+      const measurementFaceNormal = (faceId: string): WorldPoint3 | null => {
+        const registered = measurementFaceGroups.get(faceId)
+        if (!registered) return null
+        registered.group.updateWorldMatrix(true, false)
+        const normal = new THREE.Vector3(0, 1, 0).applyNormalMatrix(
+          new THREE.Matrix3().getNormalMatrix(registered.group.matrixWorld),
+        )
+        const length = normal.length()
+        if (!Number.isFinite(length) || length <= 0) return null
+        normal.multiplyScalar(1 / length)
+        return [normal.x, normal.y, normal.z].every(Number.isFinite)
+          ? Object.freeze({ x: normal.x, y: normal.y, z: normal.z })
+          : null
+      }
+      const updateMeasurement = (
+        kind: 'vertex' | 'face',
+        id: string,
+        sample: WorldPoint3 | null,
+      ) => setMeasurementSelection((current) => {
+        const entries = current?.kind === kind ? [...current.entries] : []
+        const existing = entries.findIndex((entry) => entry.id === id)
+        if (existing >= 0) entries.splice(existing, 1)
+        else if (entries.length < 2) entries.push({ id, sample })
+        else return { kind, entries: [{ id, sample }] }
+        return entries.length === 0 ? null : { kind, entries }
+      })
       const selectAt = (clientX: number, clientY: number) => {
         const target = pickAt(clientX, clientY)
+        if (measurementModeRef.current) {
+          if (target?.kind === 'vertex') {
+            updateMeasurement('vertex', target.vertexId, measurementVertexSample(target.vertexId))
+          } else if (target?.kind === 'face') {
+            updateMeasurement('face', target.faceId, measurementFaceNormal(target.faceId))
+          } else {
+            setMeasurementSelection(null)
+          }
+          return
+        }
         if (target?.kind === 'vertex') {
           onSelectHingeRef.current?.(null)
           onSelectFaceRef.current?.(null)
@@ -4126,6 +4218,30 @@ export function FoldPreview({
     publish(renderedAppliedPose)
     return () => publish(null)
   }, [renderedAppliedPose])
+  useEffect(() => {
+    setMeasurementSelection(null)
+    if (disabled) setMeasurementMode(false)
+  }, [disabled, model, renderError, renderedAppliedPose])
+  const measurementValue = useMemo(() => {
+    if (!model || !measurementSelection || measurementSelection.entries.length !== 2) return null
+    const [first, second] = measurementSelection.entries
+    if (!first?.sample || !second?.sample || first.id === second.id) return null
+    return measurementSelection.kind === 'vertex'
+      ? measureWorldVertexDistanceMm(first.sample, second.sample, model.worldUnitsPerMillimetre)
+      : measureWorldFaceNormalAngleDegrees(first.sample, second.sample)
+  }, [measurementSelection, model])
+  const measurementText = measurementSelection?.entries.length === 2
+    ? measurementSelection.kind === 'vertex'
+      ? foldPreviewText(locale, '2頂点間の距離', 'Vertex distance')
+        + `: ${formatLength(measurementValue, lengthDisplayUnit, locale)}`
+      : foldPreviewText(locale, '2面の二面角', 'Face-normal angle')
+        + `: ${measurementValue === null ? foldPreviewText(locale, '計測不能', 'Unavailable')
+          : `${measurementValue.toLocaleString(locale === 'ja' ? 'ja-JP' : 'en-US', { maximumFractionDigits: 2 })}°`}`
+    : foldPreviewText(
+        locale,
+        `同じ種類を2つ選択（${measurementSelection?.entries.length ?? 0}/2）`,
+        `Select two items of the same kind (${measurementSelection?.entries.length ?? 0}/2)`,
+      )
   const motionFaceLabels: readonly FoldPreviewMotionFaceLabel[] =
     model?.kind === 'single_fold'
     || (
@@ -4708,6 +4824,29 @@ export function FoldPreview({
         '3D fold preview',
       )}
     >
+      <section aria-label={foldPreviewText(locale, '3D計測', '3D measurement')}>
+        <button
+          type="button"
+          aria-pressed={measurementMode}
+          disabled={disabled || !previewAvailable || !model || Boolean(renderError) || !renderedAppliedPose}
+          onClick={() => {
+            setMeasurementMode((value) => !value)
+            setMeasurementSelection(null)
+          }}
+        >
+          {foldPreviewText(locale, '3D計測モード', '3D measurement mode')}
+        </button>
+        {measurementMode && (
+          <>
+            <p role="status" aria-live="polite" data-measurement-kind={measurementSelection?.kind ?? 'pending'}>
+              {measurementText}
+            </p>
+            <button type="button" onClick={() => setMeasurementSelection(null)}>
+              {foldPreviewText(locale, '計測をリセット', 'Reset measurement')}
+            </button>
+          </>
+        )}
+      </section>
       <div
         ref={hostRef}
         className="fold-preview-viewport"

@@ -39,6 +39,12 @@ describe('FoldPreview internationalization', () => {
     expect(screen.getByRole('group', {
       name: '3D fold preview',
     })).toBeTruthy()
+    expect(screen.getByRole('region', {
+      name: '3D measurement',
+    })).toBeTruthy()
+    expect((screen.getByRole('button', {
+      name: '3D measurement mode',
+    }) as HTMLButtonElement).disabled).toBe(true)
     expect(screen.getByRole('img').getAttribute('aria-label')).toContain(
       '2 faces · 3 hinges',
     )

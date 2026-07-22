@@ -6944,6 +6944,7 @@ function App() {
             </div>
             <FoldPreview
               angle={foldAngle}
+              disabled={coreBusy || recoveryBlocking || Boolean(benchmarkRun)}
               hingeAngles={foldTreeHingeAngles}
               selectedHingeId={selectedPreviewHingeId}
               selectedFaceId={selectedFaceId}

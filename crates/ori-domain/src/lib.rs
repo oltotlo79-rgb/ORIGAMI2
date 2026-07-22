@@ -991,6 +991,7 @@ fn validate_instruction_visual(
                         | "outside_reverse"
                         | "sink"
                         | "accordion"
+                        | "petal"
                         | "layer_selective"
                 )
                 || metadata.segment_count == 0
@@ -1277,6 +1278,17 @@ mod tests {
         assert_eq!(metadata.technique_kind, "accordion");
         assert_eq!(metadata.compiler_output_sha256, compiler_output_sha256);
         assert!(!metadata.grants_project_mutation_authority());
+        let mut petal = restored;
+        petal.steps[0]
+            .visual
+            .named_technique_compiler_v1
+            .as_mut()
+            .unwrap()
+            .technique_kind = "petal".to_owned();
+        validate_instruction_timeline(&petal).expect("petal is a strict persisted compiler kind");
+        let petal_bytes = serde_json::to_vec(&petal).unwrap();
+        let reopened_petal: InstructionTimeline = serde_json::from_slice(&petal_bytes).unwrap();
+        assert_eq!(reopened_petal, petal);
     }
 
     #[test]

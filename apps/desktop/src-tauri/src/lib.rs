@@ -18678,6 +18678,24 @@ mod tests {
             GeometricConstraintPreflightResult::NoDirectConflict
         );
 
+        let zero_length_escape = GeometricConstraintDocumentV1 {
+            schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![
+                horizontal.clone(),
+                GeometricConstraintRecordV1 {
+                    id: ConstraintId::new(),
+                    constraint: GeometricConstraintKindV1::Vertical { edge: first_edge },
+                },
+            ],
+        };
+        assert!(matches!(
+            analyze_geometric_constraint_document(pattern, &zero_length_escape),
+            GeometricConstraintPreflightResult::Unknown {
+                reason: GeometricConstraintUnknownReason::SolverRequiredConstraintKinds,
+                ref unchecked_constraint_ids,
+            } if unchecked_constraint_ids.len() == 2
+        ));
+
         let direct = GeometricConstraintDocumentV1 {
             schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
             constraints: vec![
@@ -18685,6 +18703,13 @@ mod tests {
                 GeometricConstraintRecordV1 {
                     id: ConstraintId::new(),
                     constraint: GeometricConstraintKindV1::Vertical { edge: first_edge },
+                },
+                GeometricConstraintRecordV1 {
+                    id: ConstraintId::new(),
+                    constraint: GeometricConstraintKindV1::FixedLength {
+                        edge: first_edge,
+                        length_mm: 1.0,
+                    },
                 },
             ],
         };
@@ -18694,6 +18719,7 @@ mod tests {
             panic!("horizontal plus vertical must be a direct conflict");
         };
         assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].constraint_ids().len(), 3);
 
         let solver_required = GeometricConstraintDocumentV1 {
             schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,

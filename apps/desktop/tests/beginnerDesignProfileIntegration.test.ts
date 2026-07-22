@@ -253,12 +253,12 @@ test('AUT-006 stores every bounded protrusion target attribute in profile histor
 test('feature constraints remain individually editable and comparable before generation', () => {
   assert.match(app, /Feature constraint comparison/u)
   assert.match(app, /target\.motion_degrees\.join/u)
-  assert.match(protrusionEditor, /Curvature binding/u)
-  assert.match(protrusionEditor, /Motion minimum binding/u)
-  assert.match(protrusionEditor, /Motion maximum binding/u)
-  assert.match(protrusionEditor, /Joint binding/u)
-  assert.match(protrusionEditor, /Side binding/u)
-  assert.match(protrusionEditor, /Priority binding/u)
+  for (const label of ['Curvature', 'Motion minimum', 'Motion maximum', 'Joint', 'Side', 'Priority']) {
+    assert.match(protrusionEditor, new RegExp(`'${label}'`, 'u'))
+  }
+  for (const label of ['曲率', '可動範囲の最小', '可動範囲の最大', '関節', '面', '優先度']) {
+    assert.match(protrusionEditor, new RegExp(`'${label}'`, 'u'))
+  }
 })
 
 test('custom silhouette thresholds are versioned bounded and stale-safe', () => {

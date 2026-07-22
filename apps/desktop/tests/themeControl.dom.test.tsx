@@ -4,9 +4,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { ThemeControl } from '../src/components/ThemeControl.tsx'
 import {
   createThemeStore,
+  encodeThemePreference,
   type EffectiveTheme,
   type ThemeMediaChangeListener,
-  type ThemePreference,
 } from '../src/lib/theme.ts'
 import { localeFixture } from './localeTestFixture.ts'
 
@@ -17,7 +17,7 @@ afterEach(() => {
 
 function createFixture(systemDark = false) {
   const applied: EffectiveTheme[] = []
-  const written: ThemePreference[] = []
+  const written: string[] = []
   const listeners = new Set<ThemeMediaChangeListener>()
   const media = {
     matches: systemDark,
@@ -94,7 +94,7 @@ describe('ThemeControl', () => {
       name: '表示テーマ',
     }), { target: { value: 'dark' } })
 
-    expect(target.written).toEqual(['dark'])
+    expect(target.written).toEqual([encodeThemePreference('dark')])
     expect(target.applied.at(-1)).toBe('dark')
     expect(screen.getByRole('status', {
       name: '現在の実効テーマ',

@@ -173,7 +173,8 @@ test('image and GLB references fuse only under bounded dual hash authority', () 
   assert.match(native, /multi_reference_disagreement/u)
   assert.match(client, /fusion\.revision !== expectedRevision/u)
   assert.match(client, /isBoundedIntegerTuple\(fusion\.image_sha256, 32, 255\)/u)
-  assert.match(app, /image and GLB disagree; candidate apply is blocked/u)
+  assert.match(app, /画像とGLBが不一致のため候補適用をブロックしました/u)
+  assert.match(app, /Image and GLB disagree; candidate apply is blocked/u)
 })
 
 test('reviewed component bridge overrides persist and fail closed before mutation', () => {

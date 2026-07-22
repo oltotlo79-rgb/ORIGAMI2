@@ -4477,17 +4477,12 @@ mod tests {
         use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
         let points = [
             (0.0, 0.0),
-            (20.0, 0.0),
-            (40.0, 0.0),
-            (60.0, 0.0),
-            (80.0, 0.0),
-            (100.0, 0.0),
-            (100.0, 100.0),
-            (80.0, 100.0),
-            (60.0, 100.0),
-            (40.0, 100.0),
-            (20.0, 100.0),
-            (0.0, 100.0),
+            (300.0, 0.0),
+            (520.0, 120.0),
+            (620.0, 350.0),
+            (480.0, 580.0),
+            (200.0, 650.0),
+            (0.0, 320.0),
         ];
         let vertices = points
             .into_iter()
@@ -4506,12 +4501,16 @@ mod tests {
                 kind: EdgeKind::Boundary,
             })
             .collect::<Vec<_>>();
-        for (index, (bottom, top)) in [(1, 10), (2, 9), (3, 8), (4, 7)].into_iter().enumerate() {
+        for (index, end) in [2, 3, 4, 5].into_iter().enumerate() {
             edges.push(Edge {
                 id: fixed_id("7500", index as u64 + 20),
-                start: boundary[bottom],
-                end: boundary[top],
-                kind: EdgeKind::Mountain,
+                start: boundary[0],
+                end: boundary[end],
+                kind: if index % 2 == 0 {
+                    EdgeKind::Mountain
+                } else {
+                    EdgeKind::Valley
+                },
             });
         }
         super::super::ProjectState::new_with_paper(

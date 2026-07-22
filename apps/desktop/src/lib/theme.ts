@@ -1,4 +1,6 @@
 export const THEME_STORAGE_KEY = 'origami2.theme'
+export const THEME_STORAGE_VERSION = 1
+const MAX_STORED_THEME_CODE_UNITS = 128
 
 export const THEME_PREFERENCES = [
   'system',
@@ -32,7 +34,7 @@ export type ThemeMediaQuery = Readonly<{
 
 export type ThemeEnvironment = Readonly<{
   readStoredPreference: () => unknown
-  writeStoredPreference: (preference: ThemePreference) => void
+  writeStoredPreference: (serialized: string) => void
   getSystemTheme: () => ThemeMediaQuery | null
   applyEffectiveTheme: (theme: EffectiveTheme) => void
 }>
@@ -53,6 +55,34 @@ const DEFAULT_THEME_SNAPSHOT: ThemeSnapshot = Object.freeze({
 
 export function isThemePreference(value: unknown): value is ThemePreference {
   return value === 'system' || value === 'light' || value === 'dark'
+}
+
+export function encodeThemePreference(preference: ThemePreference): string {
+  return JSON.stringify({ version: THEME_STORAGE_VERSION, preference })
+}
+
+export function decodeThemePreference(value: unknown): ThemePreference | null {
+  if (isThemePreference(value)) return value
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value.length > MAX_STORED_THEME_CODE_UNITS
+  ) return null
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
+    const descriptors = Object.getOwnPropertyDescriptors(parsed)
+    if (
+      Reflect.ownKeys(descriptors).length !== 2
+      || !Object.hasOwn(descriptors, 'version')
+      || !Object.hasOwn(descriptors, 'preference')
+      || descriptors.version?.value !== THEME_STORAGE_VERSION
+      || !isThemePreference(descriptors.preference?.value)
+    ) return null
+    return descriptors.preference.value
+  } catch {
+    return null
+  }
 }
 
 export function createThemeStore(
@@ -122,9 +152,15 @@ export function createThemeStore(
     } catch {
       storedPreference = null
     }
-    const preference = isThemePreference(storedPreference)
-      ? storedPreference
-      : 'system'
+    const preference = decodeThemePreference(storedPreference) ?? 'system'
+
+    if (isThemePreference(storedPreference)) {
+      try {
+        environment.writeStoredPreference(encodeThemePreference(preference))
+      } catch {
+        // A legacy preference remains usable when migration persistence fails.
+      }
+    }
 
     try {
       mediaQuery = environment.getSystemTheme()
@@ -146,7 +182,7 @@ export function createThemeStore(
     initialize()
 
     try {
-      environment.writeStoredPreference(preference)
+      environment.writeStoredPreference(encodeThemePreference(preference))
     } catch {
       // The active session still changes when persistence is unavailable.
     }
@@ -199,9 +235,9 @@ const browserThemeEnvironment: ThemeEnvironment = {
     if (typeof window === 'undefined') return null
     return window.localStorage.getItem(THEME_STORAGE_KEY)
   },
-  writeStoredPreference(preference) {
+  writeStoredPreference(serialized) {
     if (typeof window === 'undefined') return
-    window.localStorage.setItem(THEME_STORAGE_KEY, preference)
+    window.localStorage.setItem(THEME_STORAGE_KEY, serialized)
   },
   getSystemTheme() {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {

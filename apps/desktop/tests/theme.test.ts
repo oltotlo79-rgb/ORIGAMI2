@@ -3,11 +3,12 @@ import test from 'node:test'
 
 import {
   createThemeStore,
+  decodeThemePreference,
+  encodeThemePreference,
   isThemePreference,
   type EffectiveTheme,
   type ThemeEnvironment,
   type ThemeMediaChangeListener,
-  type ThemePreference,
 } from '../src/lib/theme.ts'
 
 class FakeMediaQuery {
@@ -46,7 +47,7 @@ function fixture(options: Readonly<{
   mediaThrows?: boolean
 }> = {}) {
   const applied: EffectiveTheme[] = []
-  const written: ThemePreference[] = []
+  const written: string[] = []
   const media = new FakeMediaQuery(options.systemDark ?? false)
   const environment: ThemeEnvironment = {
     readStoredPreference() {
@@ -91,7 +92,7 @@ test('theme preference uses the exact system light dark allowlist', () => {
   }
 })
 
-test('a valid manual preference is applied without subscribing to OS changes', () => {
+test('a valid legacy preference is migrated and applied without subscribing to OS changes', () => {
   const target = fixture({ stored: 'dark', systemDark: false })
   const store = createThemeStore(target.environment)
 
@@ -102,6 +103,21 @@ test('a valid manual preference is applied without subscribing to OS changes', (
   assert.deepEqual(target.applied, ['dark'])
   assert.equal(target.media.listeners.size, 0)
   assert.equal(target.media.addCount, 0)
+  assert.deepEqual(target.written, [encodeThemePreference('dark')])
+})
+
+test('versioned theme storage is strict and rejects stale corrupt or extra data', () => {
+  for (const preference of ['system', 'light', 'dark'] as const) {
+    assert.equal(decodeThemePreference(encodeThemePreference(preference)), preference)
+  }
+  for (const value of [
+    '{',
+    '[]',
+    JSON.stringify({ version: 0, preference: 'dark' }),
+    JSON.stringify({ version: 1, preference: 'sepia' }),
+    JSON.stringify({ version: 1, preference: 'dark', stale: true }),
+    'x'.repeat(129),
+  ]) assert.equal(decodeThemePreference(value), null)
 })
 
 test('missing or malformed storage defaults to system and follows OS changes', () => {
@@ -140,7 +156,7 @@ test('manual selection persists, detaches OS tracking, and system restores it', 
     preference: 'dark',
     effectiveTheme: 'dark',
   })
-  assert.deepEqual(target.written, ['dark'])
+  assert.deepEqual(target.written, [encodeThemePreference('dark')])
   assert.equal(target.media.listeners.size, 0)
   assert.equal(target.media.removeCount, 1)
 
@@ -153,7 +169,10 @@ test('manual selection persists, detaches OS tracking, and system restores it', 
     preference: 'system',
     effectiveTheme: 'dark',
   })
-  assert.deepEqual(target.written, ['dark', 'system'])
+  assert.deepEqual(target.written, [
+    encodeThemePreference('dark'),
+    encodeThemePreference('system'),
+  ])
   assert.equal(target.media.listeners.size, 1)
   assert.equal(target.media.addCount, 2)
 })

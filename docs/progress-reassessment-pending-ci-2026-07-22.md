@@ -37,6 +37,15 @@
 
 表示値は小数第1位へ丸めて **84.0%** とする。ただしCI gateまでは正本79.3%を維持する。
 
+## 監査後に追加された提案値の裏付け
+
+以下は83.96%の内訳を増額せず、既に提案へ含めた保存・path・3D・instructions・QA境界の証拠密度を上げる回帰である。
+
+- 5/8ヒンジ実証明は`.ori2`、expanded-folder、recoveryの復元後に独立再計算され、保存certificateと一致する。両保存形式は正規再保存が決定的で、未認証改ざんとhistory binding不一致をfail-closedする（`d9b3da5`、`41017dd`、`df1ba4d`、`3e543c8`、`405b355`、`82dd5e7`、`e8cfc89`）。
+- M/V割当またはface geometryを変更した同型treeは元certificateを再利用できず、pathと3D simulation inputへの結合を負例で確認した（`4252b21`、`f6eb215`）。一般正厚・一般self-contactの証明には数えない。
+- 実証明付きinstruction poseは適用対象fold model fingerprintへ結合され、ApplyおよびUndo→Redo後にpose validationを通る（`63cd9e2`）。
+- 5/8ヒンジassessmentは各8回のserialized DTOが一致し、現行と旧2世代history envelopeの全3世代でtyped certificate保持とcanonical resaveを確認した（`50c0f7a`、`684337a`、`ori-formats` 307/307）。QA領域の提案値は据え置きで、正式compatibility policy完成とは扱わない。
+
 ## 二重計上監査
 
 - Treeの正厚・層順certificateは3D領域の一般正厚完成として加算せず、「経路探索」でissuer-bound pathを成立させた分だけ評価した。

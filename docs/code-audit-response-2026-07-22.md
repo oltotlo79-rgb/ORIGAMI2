@@ -78,10 +78,18 @@
 | C-8 | `50e79ac` | fail-closed API・editor error guard・registry用途をreview |
 | C-9 | `50e79ac` | EDT-003仕様と実装経路を照合し別要件と判定 |
 
+### 監査後の追加証拠（提案値は変更しない）
+
+- 保存・復旧: `d9b3da5`、`41017dd`、`df1ba4d`で、5/8ヒンジの実証明を含む単一`.ori2`とexpanded-folderについて、manifest未更新の改ざんと、project descriptorだけを再認証してhistory bindingを壊した改ざんをともに拒否した。`3e543c8`で両形式のread→write正規再保存をbyte/entry単位で固定した。
+- path: `405b355`、`82dd5e7`、`e8cfc89`で`.ori2`、expanded-folder、recoveryの各復元後にtopology snapshotから証明を独立再計算し、保存certificateとの一致を確認した。`4252b21`でM/Vを1本反転した経路が元certificateを再利用できないことを確認した。
+- 3D: `f6eb215`で境界頂点を変更した同型treeの3D simulation inputが元certificateを再利用できないことを確認し、証明がface geometryへ結合される負例を追加した。これは一般正厚・一般多面の完成証拠ではない。
+- instructions: `63cd9e2`で実証明付き手順の`source_model_fingerprint`を適用対象modelへ結合し、Apply直後とUndo→Redo後のpose validationを確認した。
+- QA・互換性: `50c0f7a`で5/8ヒンジassessmentを各8回再実行し、serialized DTOの決定性を確認した。`684337a`で現行と旧2世代history envelopeの全3世代がtyped fold-path certificateを保持してcanonical resaveできることを確認した。正式compatibility policy全体の完成を意味しない。
+
 ### 2026-07-22 横断回帰の端末証跡
 
-- `ori-formats` lib全体: 305 passed / 0 failed。A-5以前の「表現不能なlayer evidenceを黙って破棄する」旧期待値も、専用errorへfail-closedする回帰へ修正（`1f97822`）。
-- WSL隔離targetで`ori-core` lib全体299/299、`ori-formats` lib全体305/305、desktop `mesh_export` 22/22、`static_collision` integration 29/29。
+- `ori-formats` lib全体: 307 passed / 0 failed。A-5以前の「表現不能なlayer evidenceを黙って破棄する」旧期待値も、専用errorへfail-closedする回帰へ修正（`1f97822`）。旧2世代history migrationのtyped certificate保持も含む（`684337a`）。
+- WSL隔離targetで`ori-core` lib全体299/299、`ori-formats` lib全体307/307、desktop `mesh_export` 22/22、`static_collision` integration 29/29。
 - `ori-collision`の残るintegrationも分割完走: cell-order 6/6、flat-endpoint layer-order 11/11、stacked-fold read 6/6、topology policy matrix 2/2。
 - `cargo fmt --all -- --check`: green。
 - `cargo clippy -p ori-core -p ori-formats --all-targets -- -D warnings`: green。

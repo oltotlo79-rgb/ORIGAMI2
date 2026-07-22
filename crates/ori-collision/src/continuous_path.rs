@@ -8839,6 +8839,70 @@ mod tests {
             1,
         )
         .unwrap();
+        let mut flatten_entries = hinge_edges
+            .iter()
+            .map(|edge| ori_kinematics::HalfAngleRationalEntryInputV1 {
+                edge: *edge,
+                u_domain: [
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                numerator_power_coefficients: vec![
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: 2 * i64::from(active.contains(edge)),
+                        denominator: 1,
+                    },
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: i64::from(active.contains(edge)),
+                        denominator: 1,
+                    },
+                ],
+                denominator_power_coefficients: vec![ori_kinematics::RationalCoefficientV1 {
+                    numerator: if active.contains(edge) { 100 } else { 1 },
+                    denominator: 1,
+                }],
+            })
+            .collect::<Vec<_>>();
+        flatten_entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        let flatten = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            flatten_entries,
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        assert_eq!(continuation.evaluate(1.0), flatten.evaluate(0.0));
+        let flatten_closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                fixed,
+                &flatten,
+                1.0e-9,
+                DyadicIntervalClosureLimitsV1 {
+                    max_depth: 8,
+                    max_leaves: 256,
+                    max_work: 1_000_000,
+                    schedule_limits: CycleScheduleLimitsV1::default(),
+                },
+            )
+            .unwrap();
+        let flatten_positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+            &geometry,
+            &audit,
+            fixed,
+            &flatten,
+            &flatten_closure,
+            0.1,
+            1,
+        )
+        .unwrap();
         let continuation_work = source
             .overlap_cells
             .iter()
@@ -8872,6 +8936,28 @@ mod tests {
             tolerance: 1.0e-9,
             limits,
         };
+        let flatten_work = source
+            .overlap_cells
+            .iter()
+            .map(|cell| cell.exact_boundary.len() * cell.bottom_to_top_faces.len())
+            .sum::<usize>()
+            * (flatten_closure.leaves().len() + 1);
+        let flatten_limits = crate::GeneralCellTransportLimitsV1 {
+            max_transitions: flatten_closure.leaves().len() + 1,
+            max_boundary_samples: flatten_work,
+            ..cell_limits
+        };
+        let flatten_input = || crate::GeneralCellTransportInputV1 {
+            geometry: &geometry,
+            audit: &audit,
+            source,
+            schedule: &flatten,
+            closure: &flatten_closure,
+            positive_continuous: &flatten_positive,
+            paper_thickness_mm: 0.1,
+            tolerance: 1.0e-9,
+            limits: flatten_limits,
+        };
         let chained =
             crate::general_cell_transport::ChainedGeneralCellTransportAuthorityV1::issue(vec![
                 first_input(),
@@ -8879,6 +8965,25 @@ mod tests {
             ])
             .unwrap();
         assert_eq!(chained.proofs().len(), 2);
+        let target_binding = [0x31; 32];
+        let path_binding = [0x73; 32];
+        let petal = crate::general_cell_transport::RegularQuadPetalPrivateRecordV1::issue(
+            41,
+            7,
+            target_binding,
+            path_binding,
+            vec![
+                first_input(),
+                continuation_input(continuation_limits),
+                flatten_input(),
+            ],
+        )
+        .unwrap();
+        assert!(petal.revalidates_for_apply_v1(41, 7, target_binding, path_binding));
+        assert!(!petal.revalidates_for_apply_v1(42, 7, target_binding, path_binding));
+        assert!(!petal.revalidates_for_apply_v1(41, 8, target_binding, path_binding));
+        assert!(!petal.revalidates_for_apply_v1(41, 7, [0; 32], path_binding));
+        assert!(!petal.revalidates_for_apply_v1(41, 7, target_binding, [0; 32]));
         assert!(matches!(
             crate::general_cell_transport::ChainedGeneralCellTransportAuthorityV1::issue(vec![
                 continuation_input(continuation_limits),
@@ -8894,6 +8999,23 @@ mod tests {
                     ..continuation_limits
                 }),
             ]),
+            Err(crate::GeneralCellTransportErrorV1::ResourceLimit)
+        ));
+        assert!(matches!(
+            crate::general_cell_transport::RegularQuadPetalPrivateRecordV1::issue(
+                41,
+                7,
+                target_binding,
+                path_binding,
+                vec![
+                    first_input(),
+                    continuation_input(crate::GeneralCellTransportLimitsV1 {
+                        max_transitions: 0,
+                        ..continuation_limits
+                    }),
+                    flatten_input(),
+                ],
+            ),
             Err(crate::GeneralCellTransportErrorV1::ResourceLimit)
         ));
         assert_eq!(

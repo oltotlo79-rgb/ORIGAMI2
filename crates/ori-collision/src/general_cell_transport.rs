@@ -96,6 +96,52 @@ impl ChainedGeneralCellTransportAuthorityV1 {
     }
 }
 
+#[cfg(test)]
+pub(crate) struct RegularQuadPetalPrivateRecordV1 {
+    token: u128,
+    revision: u64,
+    target_binding: [u8; 32],
+    path_binding: [u8; 32],
+    authority: ChainedGeneralCellTransportAuthorityV1,
+}
+
+#[cfg(test)]
+impl RegularQuadPetalPrivateRecordV1 {
+    pub(crate) fn issue(
+        token: u128,
+        revision: u64,
+        target_binding: [u8; 32],
+        path_binding: [u8; 32],
+        inputs: Vec<GeneralCellTransportInputV1<'_>>,
+    ) -> Result<Self, GeneralCellTransportErrorV1> {
+        let authority = ChainedGeneralCellTransportAuthorityV1::issue(inputs)?;
+        if authority.proofs().len() != 3 {
+            return Err(GeneralCellTransportErrorV1::BindingMismatch);
+        }
+        Ok(Self {
+            token,
+            revision,
+            target_binding,
+            path_binding,
+            authority,
+        })
+    }
+
+    pub(crate) fn revalidates_for_apply_v1(
+        &self,
+        token: u128,
+        revision: u64,
+        target_binding: [u8; 32],
+        path_binding: [u8; 32],
+    ) -> bool {
+        self.token == token
+            && self.revision == revision
+            && self.target_binding == target_binding
+            && self.path_binding == path_binding
+            && self.authority.proofs().len() == 3
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GeneralMultiFaceCellTransportProofV1 {
     issuer: MaterialHingeGraphGeometry,

@@ -2967,6 +2967,62 @@ mod tests {
     }
 
     #[test]
+    fn proven_direct_conflict_causes_are_canonical_and_deletion_minimal() {
+        let fixture = Fixture::new();
+        let cases = [
+            vec![
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[0],
+                }),
+                record(GeometricConstraintKindV1::Vertical {
+                    edge: fixture.edges[0],
+                }),
+            ],
+            vec![
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[0],
+                    length_mm: 1.0,
+                }),
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[1],
+                    length_mm: 2.0,
+                }),
+                record(GeometricConstraintKindV1::EqualLength {
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[1],
+                }),
+            ],
+        ];
+
+        for records in cases {
+            let prepared = prepare(&fixture, &document(records.clone())).expect("valid cause");
+            let ConstraintPreflightV1::DirectConflict { conflicts } = prepared.preflight() else {
+                panic!("complete direct witness must prove a conflict");
+            };
+            assert_eq!(conflicts.len(), 1);
+            let cause = &conflicts[0];
+            assert_eq!(cause.constraint_ids().len(), records.len());
+            assert!(cause.constraint_ids().windows(2).all(|pair| {
+                pair[0].canonical_bytes() < pair[1].canonical_bytes()
+            }));
+
+            for removed in cause.constraint_ids() {
+                let subset = records
+                    .iter()
+                    .filter(|record| record.id != *removed)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                assert!(!matches!(
+                    prepare(&fixture, &document(subset))
+                        .expect("proper witness subset remains valid input")
+                        .preflight(),
+                    ConstraintPreflightV1::DirectConflict { .. }
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn partially_checked_fixed_angle_and_ratio_kinds_return_unknown() {
         let fixture = Fixture::new();
 

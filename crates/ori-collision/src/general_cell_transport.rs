@@ -145,6 +145,14 @@ pub fn certify_general_multi_face_cell_transport_v1(
     {
         return Err(GeneralCellTransportErrorV1::BindingMismatch);
     }
+    let opposite_radial_bifold =
+        crate::continuous_path::scheduled_opposite_radial_bifold_premises_v1(
+            input.geometry,
+            input.audit,
+            input.closure.fixed_face(),
+            input.schedule,
+            input.closure,
+        );
     let transition_count = input
         .closure
         .leaves()
@@ -285,7 +293,9 @@ pub fn certify_general_multi_face_cell_transport_v1(
                         + (upper[1] - lower[1]).powi(2)
                         + (upper[2] - lower[2]).powi(2))
                     .sqrt();
-                    if separation + input.tolerance < input.paper_thickness_mm {
+                    if separation + input.tolerance < input.paper_thickness_mm
+                        && !opposite_radial_bifold
+                    {
                         return Err(GeneralCellTransportErrorV1::Crossing);
                     }
                 }

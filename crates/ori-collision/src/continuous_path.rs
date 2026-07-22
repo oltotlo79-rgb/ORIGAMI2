@@ -1664,6 +1664,16 @@ fn diagnose_canonical_cycle_schedule_path_internal_v1(
             positive_thickness_bits: None,
         };
     }
+    if scheduled_opposite_radial_bifold_premises_v1(geometry, audit, fixed_face, schedule, closure)
+    {
+        return StackedFoldCyclePathDiagnosticV1 {
+            certified: true,
+            first_closure_failure_angle_degrees: None,
+            leaf_count: closure.leaves().len(),
+            pair_work: 0,
+            positive_thickness_bits: paper_thickness_mm.map(f64::to_bits),
+        };
+    }
     let mut maximum_radius = 0.0_f64;
     for face in geometry.face_ids() {
         let Some(boundary) = geometry.face_boundary_vertices(*face) else {
@@ -2406,6 +2416,93 @@ fn scheduled_kawasaki_120_120_60_60_premises_v1(
                 .is_ok()
         })
     })
+}
+
+// A convex radial fan folded on two opposite rays is a bifold about one
+// infinite line. Exact profile equality keeps each half of the sheet rigid;
+// the two halves can meet only on that fold line. This theorem is deliberately
+// narrower than the generic swept-AABB classifier, whose boxes cannot separate
+// non-adjacent triangles that share the fan pivot.
+pub(crate) fn scheduled_opposite_radial_bifold_premises_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+) -> bool {
+    let hinge_count = geometry.hinges().len();
+    if hinge_count < 6
+        || !hinge_count.is_multiple_of(2)
+        || geometry.face_ids().len() != hinge_count
+        || audit.closure_hinges().len() != 1
+        || closure.fixed_face() != fixed_face
+        || !closure.every_leaf_covers_graph_v1(geometry)
+    {
+        return false;
+    }
+    let Some(moving) = equal_endpoint_moving_edges_v1(schedule) else {
+        return false;
+    };
+    if moving.len() != 2 {
+        return false;
+    }
+    let first = &geometry.hinges()[0];
+    let pivot = [first.start(), first.end()].into_iter().find(|candidate| {
+        geometry
+            .hinges()
+            .iter()
+            .all(|hinge| hinge.start() == *candidate || hinge.end() == *candidate)
+    });
+    let Some(pivot) = pivot else { return false };
+    if geometry.face_ids().iter().any(|face| {
+        geometry
+            .face_boundary_vertices(*face)
+            .is_none_or(|boundary| {
+                boundary.len() != 3
+                    || !boundary
+                        .iter()
+                        .any(|vertex| geometry.vertex_position(*vertex) == Some(pivot))
+            })
+    }) {
+        return false;
+    }
+    let outer = |edge: EdgeId| {
+        let hinge = geometry
+            .hinges()
+            .iter()
+            .find(|hinge| hinge.edge() == edge)?;
+        Some(if hinge.start() == pivot {
+            hinge.end()
+        } else {
+            hinge.start()
+        })
+    };
+    let (Some(a), Some(b)) = (outer(moving[0]), outer(moving[1])) else {
+        return false;
+    };
+    let av = [a.x() - pivot.x(), a.y() - pivot.y(), a.z() - pivot.z()];
+    let bv = [b.x() - pivot.x(), b.y() - pivot.y(), b.z() - pivot.z()];
+    let cross = [
+        av[1] * bv[2] - av[2] * bv[1],
+        av[2] * bv[0] - av[0] * bv[2],
+        av[0] * bv[1] - av[1] * bv[0],
+    ];
+    if cross.iter().any(|value| *value != 0.0)
+        || av.into_iter().zip(bv).map(|(a, b)| a * b).sum::<f64>() >= 0.0
+    {
+        return false;
+    }
+    let (Some(initial), Some(target)) = (schedule.evaluate(0.0), schedule.evaluate(1.0)) else {
+        return false;
+    };
+    initial
+        .as_slice()
+        .iter()
+        .all(|angle| angle.angle_degrees() == 0.0)
+        && target
+            .as_slice()
+            .iter()
+            .all(|angle| moving.contains(&angle.edge()) || angle.angle_degrees() == 0.0)
 }
 
 // Narrow zero-thickness theorem for folding an already flat stack. Exact

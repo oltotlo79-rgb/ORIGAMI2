@@ -4059,6 +4059,34 @@ mod tests {
             [0x61; 32],
             [0x70; 32]
         ));
+        assert!(!composed.revalidates_v1(
+            [&first_source, &second_source],
+            articulation,
+            0.1,
+            [0x60; 32],
+            [0x71; 32]
+        ));
+        assert!(!composed.revalidates_v1(
+            [&first_source, &second_source],
+            FaceId::new(),
+            0.1,
+            [0x61; 32],
+            [0x71; 32]
+        ));
+        assert!(!composed.revalidates_v1(
+            [&first_source, &second_source],
+            articulation,
+            1.0,
+            [0x61; 32],
+            [0x71; 32]
+        ));
+        assert!(!composed.revalidates_v1(
+            [&second_source, &first_source],
+            articulation,
+            0.1,
+            [0x61; 32],
+            [0x71; 32]
+        ));
         assert!(
             crate::issue_blockwise_closure_authority_v1(
                 [

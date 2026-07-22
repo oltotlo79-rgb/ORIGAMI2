@@ -2,7 +2,7 @@
 
 ## 監査結果
 
-`requirements-definition.md`のMUST 87件と`requirements-status.md`の正本表を照合した結果は、実装済み86件、部分実装1件、未着手0件である。部分実装はSIM-010だけであり、一般姿勢の複数層transport、正厚、多hingeの連続経路とclosureという未証明境界を状態表に明記している。したがって初版MUST全体が完成したとは扱わない。
+`requirements-definition.md`のMUST 87件と`requirements-status.md`の正本表を照合した結果は、実装済み85件、部分実装2件、未着手0件である。部分実装はEDT-009とSIM-010であり、一般矛盾原因の特定、一般姿勢の複数層transport・正厚・多hinge連続経路とclosureという未完成境界を状態表に明記している。したがって初版MUST全体が完成したとは扱わない。
 
 要件状態の「実装済み」はproduction実装、利用者経路、永続化または出力、fail-closed検証の証拠を持つ。状態表の説明を正本とし、過去の追記内にある時点集計や「未実装」は履歴であって現在値ではない。
 

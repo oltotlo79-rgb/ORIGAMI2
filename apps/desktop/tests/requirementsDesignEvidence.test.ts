@@ -10,12 +10,15 @@ const native = readFileSync('src-tauri/src/lib.rs', 'utf8')
 const client = readFileSync('src/lib/coreClient.ts', 'utf8')
 const panel = readFileSync('src/components/InstructionTimelinePanel.tsx', 'utf8')
 
-test('the authoritative MUST table has one explicit partial boundary and no unstarted row', () => {
+test('the authoritative MUST table has two explicit partial boundaries and no unstarted row', () => {
   const rows = [...status.matchAll(/^\| ([A-Z]{2,3}-\d{3}) \| (実装済み|部分実装|未着手) \|/gmu)]
   assert.equal(rows.length, 87)
   assert.equal(new Set(rows.map((row) => row[1])).size, 87)
-  assert.equal(rows.filter((row) => row[2] === '実装済み').length, 86)
-  assert.deepEqual(rows.filter((row) => row[2] === '部分実装').map((row) => row[1]), ['SIM-010'])
+  assert.equal(rows.filter((row) => row[2] === '実装済み').length, 85)
+  assert.deepEqual(
+    rows.filter((row) => row[2] === '部分実装').map((row) => row[1]),
+    ['EDT-009', 'SIM-010'],
+  )
   assert.equal(rows.filter((row) => row[2] === '未着手').length, 0)
 })
 

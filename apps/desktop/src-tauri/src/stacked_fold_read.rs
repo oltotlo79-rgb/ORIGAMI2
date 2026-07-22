@@ -4836,7 +4836,7 @@ mod tests {
             .copied()
             .map(|edge| DyadicPoseGraphAngleDtoV1 {
                 edge,
-                angle_degrees: 1.0,
+                angle_degrees: 2.0,
             })
             .collect::<Vec<_>>();
         let tree_capability = project

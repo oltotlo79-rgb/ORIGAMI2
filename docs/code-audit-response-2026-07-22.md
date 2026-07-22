@@ -23,10 +23,10 @@
 
 | ID | 判定 | 対応・根拠 |
 |---|---|---|
-| B-1 | 指摘の主旨は正しい・再計上要 | bounded template群と一般tree生成を「任意目標形状の自動設計」と同一視しない。完成率監査で実スコープへ限定する。 |
-| B-2 | 正しい・再計上要 | `Indeterminate`を安全証明へ数えない。正厚・一般多面の未証明領域をSIM-010の完了率へ反映する。 |
-| B-3 | 正しい・再計上要 | 直接矛盾7種とsolverによる一般充足可能性を区別し、EDT-009の表示を実証拠へ限定する。 |
-| B-4 | 正しい・文書統合要 | `requirements-status.md`の複数集計値を単一の機械的集計へ統合する必要がある。 |
+| B-1 | 正しい・再計上済み | bounded template/custom treeを一般目標設計と同一視せず、pending案の初心者領域を60%へ限定。 |
+| B-2 | 正しい・再計上済み | `Indeterminate`を安全証明へ数えず、一般正厚・一般多面の未証明を反映してpending案の3D領域を75%へ補正。 |
+| B-3 | 正しい・再計上済み | 11種solverと限定的な直接矛盾certificateを区別し、pending案の制約領域を85%へ補正。 |
+| B-4 | 正しい・修正済み | `requirements-status.md`の旧57/25/5説明を非表示の履歴へ移し、表示上の現在値を87行から機械集計した86/1/0へ一本化。 |
 | B-5 | 正しい・修正済み | `d158110`。180度stacked endpointで同じtarget topology/model/poseへglobal layer orderをanchorし、layer-order版collision診断の結果を利用者DTOへ接続。desktop lib check green。 |
 | B-6 | 既修正 | wire/DTO/UIは既に`proven_zero_thickness_penetration`と「ゼロ厚み面貫通・重なり」へ一般化済み。Rust variant名だけは公開API互換のため意図的に維持（coverage docsにも明記）。 |
 | B-7 | 正しい・修正済み | `133606c`。`kinematics.reason`に基づきcut componentsとcycleをvisible note/accessibility descriptionの両方で分岐。source integration 1/1とTypeScript build green。 |
@@ -49,5 +49,5 @@
 
 - 各修正はfocused test、関連crate全test、`rustfmt`、`git diff --check`を通す。
 - 長時間matrixはtool timeoutをテスト失敗と混同せず、隔離`CARGO_TARGET_DIR`でterminal結果を取得する。
-- B-1〜B-4を解消するまで、pending CIの90.35%案を権威ある完成度へ昇格しない。
+- B-1〜B-3の過大計上を補正したpending案は83.96%（表示84.0%）。同一headの全必須CI greenまでは正本79.3%を変更しない。
 - 未確定項目は「修正済み」と扱わず、コード経路またはfault-injection evidenceが揃うまで本表に残す。

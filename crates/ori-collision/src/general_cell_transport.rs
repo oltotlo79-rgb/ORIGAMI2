@@ -64,10 +64,12 @@ pub struct GeneralCellTransportInputV1<'a> {
 
 /// Issuer-private bundle proving a continuous sequence without inventing a
 /// non-flat `LayerOrderSnapshot`.
+#[cfg(test)]
 pub(crate) struct ChainedGeneralCellTransportAuthorityV1 {
     proofs: Vec<GeneralMultiFaceCellTransportProofV1>,
 }
 
+#[cfg(test)]
 impl ChainedGeneralCellTransportAuthorityV1 {
     pub(crate) fn issue(
         inputs: Vec<GeneralCellTransportInputV1<'_>>,
@@ -75,8 +77,7 @@ impl ChainedGeneralCellTransportAuthorityV1 {
         if inputs.is_empty()
             || inputs.windows(2).any(|pair| {
                 !pair[0].geometry.same_instance(pair[1].geometry)
-                    || pair[0].source as *const LayerOrderSnapshot
-                        != pair[1].source as *const LayerOrderSnapshot
+                    || !std::ptr::eq(pair[0].source, pair[1].source)
                     || pair[0].paper_thickness_mm.to_bits() != pair[1].paper_thickness_mm.to_bits()
                     || pair[0].schedule.evaluate(1.0) != pair[1].schedule.evaluate(0.0)
             })

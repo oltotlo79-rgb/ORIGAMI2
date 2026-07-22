@@ -757,7 +757,7 @@ fn compile_named_basic_fold_preview(
     let basic_kind = match technique_kind.as_str() {
         "mountain" if assignment == "mountain" => Some(ori_instructions::BasicFoldKindV1::Mountain),
         "valley" if assignment == "valley" => Some(ori_instructions::BasicFoldKindV1::Valley),
-        "squash" | "crimp" | "inside_reverse" | "outside_reverse" | "sink"
+        "squash" | "crimp" | "inside_reverse" | "outside_reverse" | "sink" | "accordion"
             if matches!(assignment.as_str(), "mountain" | "valley") =>
         {
             None
@@ -815,6 +815,12 @@ fn compile_named_basic_fold_preview(
         || targets.is_empty()
         || !project.editor.pattern().edges.iter().any(|edge| {
             edge.id == fold_edge
+                && (basic_kind.is_some()
+                    || matches!(
+                        (assignment.as_str(), edge.kind),
+                        ("mountain", ori_domain::EdgeKind::Mountain)
+                            | ("valley", ori_domain::EdgeKind::Valley)
+                    ))
                 && matches!(
                     (basic_kind, edge.kind),
                     (
@@ -866,6 +872,68 @@ fn compile_named_basic_fold_preview(
             },
         )
         .map_err(|_| "The named basic-fold compiler rejected the preview.".to_owned())?
+    } else if technique_kind == "accordion" {
+        let count = certificate.edges().len();
+        if !(3..=31).contains(&count) || targets.len() != count || hinge_ids.len() != count {
+            return Err(
+                "Three to thirty-one continuous certified fold segments are required.".to_owned(),
+            );
+        }
+        let assignments = hinge_ids
+            .iter()
+            .map(|hinge| {
+                project
+                    .editor
+                    .pattern()
+                    .edges
+                    .iter()
+                    .find(|edge| edge.id == *hinge)
+                    .and_then(|edge| match edge.kind {
+                        ori_domain::EdgeKind::Mountain => Some("mountain"),
+                        ori_domain::EdgeKind::Valley => Some("valley"),
+                        _ => None,
+                    })
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                "Every accordion segment must bind a mountain or valley crease.".to_owned()
+            })?;
+        if !accordion_assignments_alternate_v1(&assignments) {
+            return Err("Accordion segment assignments must alternate.".to_owned());
+        }
+        let ordered_target_angles_microdegrees = hinge_ids
+            .iter()
+            .enumerate()
+            .map(|(index, edge)| {
+                targets[index]
+                    .iter()
+                    .find(|(candidate, _)| candidate == edge)
+                    .map(|(_, value)| *value)
+                    .filter(|value| value.is_finite() && (0.0..=180.0).contains(value))
+                    .map(|value| (value * 1_000_000.0) as i64)
+                    .ok_or_else(|| "An accordion target angle is invalid.".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let ordered_path_certificates = (0..count)
+            .map(|index| {
+                certificate
+                    .segment_certificate_v1(index)
+                    .ok_or_else(|| "An accordion path segment is unavailable.".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        ori_instructions::compile_certified_accordion_fold_timeline_v1(
+            ori_instructions::AccordionFoldMotionRequestV1 {
+                technique_file: &technique,
+                technique_id: &technique_id,
+                source_model_fingerprint: &expected_source_model_fingerprint,
+                fixed_face,
+                source_hinge_angles: &source_hinge_angles,
+                ordered_edges: &hinge_ids,
+                ordered_target_angles_microdegrees: &ordered_target_angles_microdegrees,
+                ordered_path_certificates: &ordered_path_certificates,
+            },
+        )
+        .map_err(|_| "The named accordion compiler rejected the preview.".to_owned())?
     } else {
         if certificate.edges().len() != 2 || targets.len() != 2 || hinge_ids.len() != 2 {
             return Err("Two continuous certified fold segments are required.".to_owned());
@@ -949,6 +1017,10 @@ fn compile_named_basic_fold_preview(
         preview_binding_sha256,
         timeline,
     })
+}
+
+fn accordion_assignments_alternate_v1(assignments: &[&str]) -> bool {
+    (3..=31).contains(&assignments.len()) && assignments.windows(2).all(|pair| pair[0] != pair[1])
 }
 
 fn basic_fold_preview_binding_v1(
@@ -1809,5 +1881,17 @@ mod tests {
             basic_fold_preview_binding_v1(token, instance, project, 8, "mountain", &timeline)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn accordion_assignment_chain_is_bounded_and_strictly_alternating() {
+        assert!(accordion_assignments_alternate_v1(&[
+            "mountain", "valley", "mountain"
+        ]));
+        assert!(!accordion_assignments_alternate_v1(&[
+            "mountain", "mountain", "valley"
+        ]));
+        assert!(!accordion_assignments_alternate_v1(&["mountain", "valley"]));
+        assert!(!accordion_assignments_alternate_v1(&vec!["mountain"; 32]));
     }
 }

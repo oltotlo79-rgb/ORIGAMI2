@@ -3,7 +3,6 @@ import {
   applyStackedFoldTransaction,
   applyNamedBookFoldTransaction,
   applyNamedReverseFoldTransaction,
-  applyNamedAccordionFoldTransaction,
   applyNamedLayerSelectiveTransaction,
   cancelCurrentStackedFoldReadV1,
   cancelStackedFoldTransactionPreview,
@@ -142,6 +141,7 @@ export function StackedFoldPanel({
     || namedBookFold?.kind === 'valley' || namedBookFold?.kind === 'squash'
     || namedBookFold?.kind === 'crimp' || namedBookFold?.kind === 'inside_reverse'
     || namedBookFold?.kind === 'outside_reverse' || namedBookFold?.kind === 'sink'
+    || namedBookFold?.kind === 'accordion'
   const unsupportedNamedPhysicalFold = namedBookFold != null
     && (namedBookFold.kind == null || namedBookFold.kind === 'book'
       || namedBookFold.kind === 'petal')
@@ -505,7 +505,7 @@ export function StackedFoldPanel({
         expectedSourceModelFingerprint: authority.fold_model_fingerprint,
         foldEdge: selectedLine.id,
         assignment: segment.assignment,
-        techniqueKind: namedBookFold.kind as 'mountain' | 'valley' | 'squash' | 'crimp' | 'inside_reverse' | 'outside_reverse' | 'sink',
+        techniqueKind: namedBookFold.kind as 'mountain' | 'valley' | 'squash' | 'crimp' | 'inside_reverse' | 'outside_reverse' | 'sink' | 'accordion',
         techniqueDocument: namedBookFold.document,
         techniqueId: namedBookFold.techniqueId,
       })
@@ -526,9 +526,10 @@ export function StackedFoldPanel({
           basicFoldTimelinePreview)
         : Promise.reject(new Error('certified sink timeline preview required'))
       : namedBookFold?.kind === 'accordion'
-      ? applyNamedAccordionFoldTransaction(
-          token, namedBookFold.document, namedBookFold.techniqueId,
-        )
+      ? basicFoldTimelinePreview?.transactionToken === token
+        ? applyNamedBookFoldTransaction(token, namedBookFold.document, namedBookFold.techniqueId,
+          basicFoldTimelinePreview)
+        : Promise.reject(new Error('certified accordion timeline preview required'))
       : namedBookFold?.kind === 'reverse'
       ? applyNamedReverseFoldTransaction(
           token,

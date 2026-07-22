@@ -636,7 +636,9 @@ describe('StackedFoldPanel', () => {
 
   it('routes a named accordion only through the ordered multi-segment transaction', async () => {
     transport.preview.mockResolvedValue(ready)
-    transport.accordionApply.mockResolvedValue(4)
+    const accordionPreview = { ...basicTimelinePreview, techniqueKind: 'accordion' as const }
+    transport.basicPreview.mockResolvedValue(accordionPreview)
+    transport.namedApply.mockResolvedValue(4)
     const document = { techniques: [] } as any
     render(<StackedFoldPanel locale="ja" snapshot={snapshot}
       selectedLine={{ id: 'edge', start: { x: 1, y: 2 }, end: { x: 3, y: 4 } }}
@@ -646,13 +648,18 @@ describe('StackedFoldPanel', () => {
       onApplied={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: '安全性を確認' }))
     const apply = await screen.findByRole('button', { name: '名前付き蛇腹折りを適用' })
+    expect(apply).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: /preview/i }))
+    await waitFor(() => expect(transport.basicPreview).toHaveBeenCalledWith(
+      expect.objectContaining({ techniqueKind: 'accordion' }),
+    ))
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(apply)
-    await waitFor(() => expect(transport.accordionApply).toHaveBeenCalledWith(
-      token, document, 'accordion',
+    await waitFor(() => expect(transport.namedApply).toHaveBeenCalledWith(
+      token, document, 'accordion', accordionPreview,
     ))
     expect(transport.apply).not.toHaveBeenCalled()
-    expect(transport.namedApply).not.toHaveBeenCalled()
+    expect(transport.accordionApply).not.toHaveBeenCalled()
     expect(transport.reverseApply).not.toHaveBeenCalled()
   })
 

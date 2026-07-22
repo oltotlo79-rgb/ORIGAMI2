@@ -1713,14 +1713,14 @@ mod tests {
     }
 
     #[test]
-    fn proof_identity_pose_issuer_and_zero_sign_mismatches_are_rejected() {
-        let (state, _) = certified_no_hinge_state(-0.0);
+    fn proof_identity_pose_issuer_and_negative_zero_are_rejected() {
+        let (state, _) = certified_no_hinge_state(0.1);
 
         let mut proof_identity_mismatch = prepared_from_current(&state);
         let pose_claims = &proof_identity_mismatch.pose_capability.claims;
         let (model, pose) = pose_claims.native_pose.tree().unwrap();
         proof_identity_mismatch.geometry_proof = CurrentNativeStaticGeometryProof::Tree(
-            prove_static_collision_geometry(model, pose, -0.0, StaticCollisionLimits::default())
+            prove_static_collision_geometry(model, pose, 0.1, StaticCollisionLimits::default())
                 .expect("second exact proof"),
         );
         assert!(matches!(
@@ -1744,7 +1744,7 @@ mod tests {
         let second_pose_proof = prove_static_collision_geometry(
             model,
             &second_pose,
-            -0.0,
+            0.1,
             StaticCollisionLimits::default(),
         )
         .expect("same-angle proof");
@@ -1774,7 +1774,7 @@ mod tests {
         let foreign_proof = prove_static_collision_geometry(
             &foreign_model,
             &foreign_pose,
-            -0.0,
+            0.1,
             StaticCollisionLimits::default(),
         )
         .expect("foreign proof");
@@ -1786,20 +1786,20 @@ mod tests {
             Err(CurrentStaticCollisionError::InternalInconsistency)
         ));
 
-        let mut zero_sign_mismatch = prepared_from_current(&state);
-        let pose_claims = &zero_sign_mismatch.pose_capability.claims;
-        assert_eq!(pose_claims.paper_thickness_bits, (-0.0_f64).to_bits());
-        let (model, pose) = pose_claims.native_pose.tree().unwrap();
-        let positive_zero_proof =
-            prove_static_collision_geometry(model, pose, 0.0, StaticCollisionLimits::default())
-                .expect("positive-zero proof");
-        zero_sign_mismatch.claims.proof_identity =
-            CurrentNativeStaticGeometryProof::Tree(positive_zero_proof.clone());
-        zero_sign_mismatch.geometry_proof =
-            CurrentNativeStaticGeometryProof::Tree(positive_zero_proof);
+        let mut negative_zero_project = no_hinge_project_with_thickness(-0.0);
+        adopt_no_hinge_pose(&mut negative_zero_project);
+        let negative_zero_state = AppState::new(negative_zero_project);
+        let capability = capture_current_pose_capability(&negative_zero_state)
+            .expect("capture negative-zero pose")
+            .expect("current negative-zero pose");
         assert!(matches!(
-            mint_current_static_collision(&state, zero_sign_mismatch),
-            Err(CurrentStaticCollisionError::InternalInconsistency)
+            prepare_static_collision(capability, StaticCollisionLimits::default()),
+            Err(failure) if matches!(
+                failure.error,
+                CurrentStaticCollisionError::GeometryBlocking(
+                    StaticCollisionError::InvalidPaperThickness
+                )
+            )
         ));
     }
 

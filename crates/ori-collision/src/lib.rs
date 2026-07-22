@@ -47,9 +47,12 @@ pub use block_composition::{
     BLOCK_COMPOSED_PATH_MODEL_ID_V1, BLOCK_COMPOSITION_LIMIT_V1, BLOCKWISE_CLOSURE_MODEL_ID_V1,
     BLOCKWISE_POSITIVE_LAYER_ARITY_V1, BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1,
     BlockComposedPathAuthorityV1, BlockwiseClosureAuthorityV1, BlockwiseClosureInputV1,
-    BlockwisePositiveLayerAuthorityV1, BlockwisePositiveLayerInputV1,
-    issue_block_composed_path_authority_v1, issue_blockwise_closure_authority_v1,
-    issue_blockwise_positive_layer_authority_v1,
+    BlockwisePositiveLayerAuthorityV1, BlockwisePositiveLayerInputV1, MULTI_BLOCK_MAX_BLOCKS_V1,
+    MULTI_BLOCK_MIN_BLOCKS_V1, MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1,
+    MultiBlockClosureAuthorityV1, MultiBlockClosureInputV1, MultiBlockPositiveLayerAuthorityV1,
+    MultiBlockPositiveLayerInputV1, issue_block_composed_path_authority_v1,
+    issue_blockwise_closure_authority_v1, issue_blockwise_positive_layer_authority_v1,
+    issue_multi_block_closure_authority_v1, issue_multi_block_positive_layer_authority_v1,
 };
 pub use cell_order_transport::{
     CURRENT_POSE_CELL_ORDER_MODEL_ID_V1, CellOrderTransportErrorV1, CellOrderTransportLimitsV1,

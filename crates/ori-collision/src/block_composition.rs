@@ -15,6 +15,147 @@ pub const BLOCK_COMPOSITION_LIMIT_V1: usize = 32;
 pub const BLOCKWISE_CLOSURE_MODEL_ID_V1: &str = "blockwise_interval_closure_authority_v1";
 pub const BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1: &str = "blockwise_positive_layer_authority_v1";
 pub const BLOCKWISE_POSITIVE_LAYER_ARITY_V1: usize = 2;
+pub const MULTI_BLOCK_MIN_BLOCKS_V1: usize = 2;
+pub const MULTI_BLOCK_MAX_BLOCKS_V1: usize = 8;
+pub const MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1: &str =
+    "bounded_multi_block_positive_layer_authority_v1";
+
+pub struct MultiBlockClosureInputV1<'a> {
+    pub geometry: &'a MaterialHingeGraphGeometry,
+    pub audit: &'a MaterialHingeGraphAudit,
+    pub schedule: &'a CanonicalCycleScheduleV1,
+    pub closure: &'a DyadicMaterialHingeIntervalClosureCertificateV1,
+}
+
+struct OwnedMultiBlockV1 {
+    geometry: MaterialHingeGraphGeometry,
+    schedule: CanonicalCycleScheduleV1,
+    closure: DyadicMaterialHingeIntervalClosureCertificateV1,
+    edges: Vec<EdgeId>,
+    faces: Vec<FaceId>,
+}
+
+pub struct MultiBlockClosureAuthorityV1 {
+    binding: [u8; 32],
+    blocks: Vec<OwnedMultiBlockV1>,
+    thickness_bits: u64,
+    issuer_context: [u8; 32],
+}
+
+impl MultiBlockClosureAuthorityV1 {
+    #[must_use]
+    pub const fn binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.binding
+    }
+
+    #[must_use]
+    pub fn block_count_v1(&self) -> usize {
+        self.blocks.len()
+    }
+}
+
+pub struct MultiBlockPositiveLayerInputV1<'a> {
+    pub geometry: &'a MaterialHingeGraphGeometry,
+    pub source: &'a LayerOrderSnapshot,
+    pub positive: PositiveThicknessContinuousCertificateV1,
+    pub layer: GeneralMultiFaceCellTransportProofV1,
+}
+
+pub struct MultiBlockPositiveLayerAuthorityV1 {
+    binding: [u8; 32],
+    parent: MultiBlockClosureAuthorityV1,
+    positive: Vec<PositiveThicknessContinuousCertificateV1>,
+    layer: Vec<GeneralMultiFaceCellTransportProofV1>,
+    articulation_layer_fingerprint: [u8; 32],
+}
+
+impl MultiBlockPositiveLayerAuthorityV1 {
+    #[must_use]
+    pub const fn binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.binding
+    }
+
+    #[must_use]
+    pub fn block_count_v1(&self) -> usize {
+        self.parent.blocks.len()
+    }
+
+    #[must_use]
+    pub fn transition_count_v1(&self) -> usize {
+        self.layer
+            .iter()
+            .map(|proof| proof.transition_hashes().len())
+            .sum()
+    }
+
+    #[must_use]
+    pub fn pair_order_count_v1(&self) -> usize {
+        self.layer
+            .iter()
+            .map(|proof| proof.pair_order_count())
+            .sum()
+    }
+
+    #[must_use]
+    pub fn target_order_hash_v1(&self) -> [u8; 32] {
+        let mut targets = self
+            .layer
+            .iter()
+            .map(GeneralMultiFaceCellTransportProofV1::target_order_hash)
+            .collect::<Vec<_>>();
+        targets.sort_unstable();
+        let mut hash = Sha256::new();
+        hash.update(MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+        hash.update(b"target_order_v1");
+        for target in targets {
+            hash.update(target);
+        }
+        hash.finalize().into()
+    }
+
+    #[must_use]
+    pub fn revalidates_v1(
+        &self,
+        sources: &[&LayerOrderSnapshot],
+        thickness: f64,
+        issuer_context: [u8; 32],
+        articulation_layer_fingerprint: [u8; 32],
+    ) -> bool {
+        if sources.len() != self.parent.blocks.len()
+            || thickness.to_bits() != self.parent.thickness_bits
+            || issuer_context != self.parent.issuer_context
+            || issuer_context == [0; 32]
+            || articulation_layer_fingerprint != self.articulation_layer_fingerprint
+            || articulation_layer_fingerprint == [0; 32]
+        {
+            return false;
+        }
+        for (index, source) in sources.iter().enumerate() {
+            let block = &self.parent.blocks[index];
+            let fixed_face = block.closure.fixed_face();
+            if !self.positive[index].is_for(
+                &block.geometry,
+                fixed_face,
+                &block.schedule,
+                &block.closure,
+                thickness,
+            ) || !self.layer[index].is_for(
+                &block.geometry,
+                source,
+                &block.schedule,
+                &block.closure,
+                thickness,
+            ) {
+                return false;
+            }
+        }
+        multi_block_positive_layer_binding_v1(
+            self.parent.binding,
+            &self.layer,
+            articulation_layer_fingerprint,
+        ) == self.binding
+    }
+}
 
 pub struct BlockwiseClosureInputV1<'a> {
     pub geometry: &'a MaterialHingeGraphGeometry,
@@ -396,6 +537,190 @@ fn block_intersection_is_tree_v1(blocks: &[CanonicalBlockBindingV1]) -> bool {
         }
     }
     visited.into_iter().all(|seen| seen)
+}
+
+pub fn issue_multi_block_closure_authority_v1(
+    inputs: Vec<MultiBlockClosureInputV1<'_>>,
+    thickness: f64,
+    issuer_context: [u8; 32],
+) -> Option<MultiBlockClosureAuthorityV1> {
+    if !(MULTI_BLOCK_MIN_BLOCKS_V1..=MULTI_BLOCK_MAX_BLOCKS_V1).contains(&inputs.len())
+        || !thickness.is_finite()
+        || thickness <= 0.0
+        || issuer_context == [0; 32]
+    {
+        return None;
+    }
+    let mut observed_edges = HashSet::new();
+    let mut blocks = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let fixed_face = input.closure.fixed_face();
+        if !input
+            .schedule
+            .matches_binding(input.geometry, input.audit, fixed_face)
+            || !input.closure.every_leaf_covers_graph_v1(input.geometry)
+            || input.schedule.evaluate(0.0).is_none()
+            || input.schedule.evaluate(1.0).is_none()
+        {
+            return None;
+        }
+        let mut edges = input
+            .geometry
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        if edges.is_empty() || edges.iter().any(|edge| !observed_edges.insert(*edge)) {
+            return None;
+        }
+        let mut faces = input.geometry.face_ids().to_vec();
+        faces.sort_unstable_by_key(FaceId::canonical_bytes);
+        if faces
+            .binary_search_by_key(&fixed_face.canonical_bytes(), FaceId::canonical_bytes)
+            .is_err()
+        {
+            return None;
+        }
+        blocks.push(OwnedMultiBlockV1 {
+            geometry: input.geometry.clone(),
+            schedule: input.schedule.clone(),
+            closure: input.closure.clone(),
+            edges,
+            faces,
+        });
+    }
+    blocks.sort_unstable_by_key(|block| block.edges[0].canonical_bytes());
+    let canonical = blocks
+        .iter()
+        .map(|block| CanonicalBlockBindingV1 {
+            edges: block.edges.clone(),
+            faces: block.faces.clone(),
+        })
+        .collect::<Vec<_>>();
+    if !block_intersection_is_tree_v1(&canonical) {
+        return None;
+    }
+    let mut hash = Sha256::new();
+    hash.update(MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+    hash.update(b"closure_v1");
+    hash.update(thickness.to_bits().to_le_bytes());
+    hash.update(issuer_context);
+    for block in &blocks {
+        hash.update(block.schedule.graph_binding_fingerprint_v1());
+        hash.update(block.schedule.certificate_binding_fingerprint_v1());
+        hash.update(block.closure.partition_binding_fingerprint_v1());
+        hash.update((block.edges.len() as u64).to_le_bytes());
+        for edge in &block.edges {
+            hash.update(edge.canonical_bytes());
+        }
+        for face in &block.faces {
+            hash.update(face.canonical_bytes());
+        }
+    }
+    Some(MultiBlockClosureAuthorityV1 {
+        binding: hash.finalize().into(),
+        blocks,
+        thickness_bits: thickness.to_bits(),
+        issuer_context,
+    })
+}
+
+pub fn issue_multi_block_positive_layer_authority_v1(
+    parent: MultiBlockClosureAuthorityV1,
+    mut inputs: Vec<MultiBlockPositiveLayerInputV1<'_>>,
+    articulation_layer_fingerprint: [u8; 32],
+) -> Option<MultiBlockPositiveLayerAuthorityV1> {
+    if inputs.len() != parent.blocks.len() || articulation_layer_fingerprint == [0; 32] {
+        return None;
+    }
+    inputs.sort_unstable_by_key(|input| {
+        input
+            .geometry
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge().canonical_bytes())
+            .min()
+            .unwrap_or([0; 16])
+    });
+    let thickness = f64::from_bits(parent.thickness_bits);
+    for (block, input) in parent.blocks.iter().zip(&inputs) {
+        let fixed_face = block.closure.fixed_face();
+        let mut edges = input
+            .geometry
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let mut faces = input.geometry.face_ids().to_vec();
+        faces.sort_unstable_by_key(FaceId::canonical_bytes);
+        if edges != block.edges
+            || faces != block.faces
+            || !input.positive.is_for(
+                input.geometry,
+                fixed_face,
+                &block.schedule,
+                &block.closure,
+                thickness,
+            )
+            || !input.layer.is_for(
+                input.geometry,
+                input.source,
+                &block.schedule,
+                &block.closure,
+                thickness,
+            )
+        {
+            return None;
+        }
+    }
+    let (positive, layer): (Vec<_>, Vec<_>) = inputs
+        .into_iter()
+        .map(|input| (input.positive, input.layer))
+        .unzip();
+    let binding = multi_block_positive_layer_binding_v1(
+        parent.binding,
+        &layer,
+        articulation_layer_fingerprint,
+    );
+    Some(MultiBlockPositiveLayerAuthorityV1 {
+        binding,
+        parent,
+        positive,
+        layer,
+        articulation_layer_fingerprint,
+    })
+}
+
+fn multi_block_positive_layer_binding_v1(
+    parent_binding: [u8; 32],
+    layers: &[GeneralMultiFaceCellTransportProofV1],
+    articulation_layer_fingerprint: [u8; 32],
+) -> [u8; 32] {
+    let mut records = layers
+        .iter()
+        .map(|proof| {
+            (
+                proof.target_order_hash(),
+                proof.paper_thickness_mm().to_bits(),
+                proof.transition_hashes().len(),
+                proof.pair_order_count(),
+            )
+        })
+        .collect::<Vec<_>>();
+    records.sort_unstable();
+    let mut hash = Sha256::new();
+    hash.update(MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+    hash.update(parent_binding);
+    hash.update(articulation_layer_fingerprint);
+    for (target, thickness, transitions, pairs) in records {
+        hash.update(target);
+        hash.update(thickness.to_le_bytes());
+        hash.update((transitions as u64).to_le_bytes());
+        hash.update((pairs as u64).to_le_bytes());
+    }
+    hash.finalize().into()
 }
 
 /// Owns the already-issued whole-graph proofs and binds them to one canonical

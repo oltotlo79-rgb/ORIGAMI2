@@ -27,7 +27,7 @@
 | B-2 | 正しい・再計上要 | `Indeterminate`を安全証明へ数えない。正厚・一般多面の未証明領域をSIM-010の完了率へ反映する。 |
 | B-3 | 正しい・再計上要 | 直接矛盾7種とsolverによる一般充足可能性を区別し、EDT-009の表示を実証拠へ限定する。 |
 | B-4 | 正しい・文書統合要 | `requirements-status.md`の複数集計値を単一の機械的集計へ統合する必要がある。 |
-| B-5 | 正しい・利用者経路の証拠確認中 | layer-order版診断のcurrent-pose/stacked-fold read経路への配線をfocused UI/native testで確定する。 |
+| B-5 | 正しい・修正済み | `d158110`。180度stacked endpointで同じtarget topology/model/poseへglobal layer orderをanchorし、layer-order版collision診断の結果を利用者DTOへ接続。desktop lib check green。 |
 | B-6 | 既修正 | wire/DTO/UIは既に`proven_zero_thickness_penetration`と「ゼロ厚み面貫通・重なり」へ一般化済み。Rust variant名だけは公開API互換のため意図的に維持（coverage docsにも明記）。 |
 | B-7 | 正しい・修正済み | `133606c`。`kinematics.reason`に基づきcut componentsとcycleをvisible note/accessibility descriptionの両方で分岐。source integration 1/1とTypeScript build green。 |
 

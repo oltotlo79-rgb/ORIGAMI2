@@ -298,7 +298,7 @@ struct DyadicPathEdgeAuthorityV1 {
     source: ori_collision::PoseFingerprintV1,
     target: ori_collision::PoseFingerprintV1,
     schedule: ori_kinematics::CanonicalCycleScheduleV1,
-    closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+    closure: Option<ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1>,
     auxiliary: DyadicAuxiliaryProofV1,
 }
 
@@ -317,7 +317,7 @@ struct DyadicAuxiliaryEdgeV1 {
     positive_binding: Option<[u8; 32]>,
     layer_binding: Option<[u8; 32]>,
     schedule: ori_kinematics::CanonicalCycleScheduleV1,
-    closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+    closure: Option<ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1>,
     proof: Option<DyadicAuxiliaryProofV1>,
 }
 
@@ -352,28 +352,31 @@ impl DyadicPathNativeAuthorityV1 {
                     && path_edge.target() == edge.target
                     && match &edge.auxiliary {
                         DyadicAuxiliaryProofV1::Graph { positive, layer } => {
+                            let Some(closure) = edge.closure.as_ref() else {
+                                return false;
+                            };
                             positive.is_for(
                                 geometry,
-                                edge.closure.fixed_face(),
+                                closure.fixed_face(),
                                 &edge.schedule,
-                                &edge.closure,
+                                closure,
                                 self.paper_thickness_mm,
                             ) && layer.is_for(
                                 geometry,
                                 self.layer_capability.snapshot(),
                                 &edge.schedule,
-                                &edge.closure,
+                                closure,
                                 self.paper_thickness_mm,
                             )
                         }
                         DyadicAuxiliaryProofV1::Tree { positive, layer } => self
                             .pose_capability
                             .tree()
-                            .and_then(|(model, _)| {
+                            .and_then(|(model, native_source_pose)| {
                                 let source = edge.schedule.evaluate(0.0)?;
                                 let target = edge.schedule.evaluate(1.0)?;
                                 let source_pose =
-                                    model.solve(Some(edge.closure.fixed_face()), &source).ok()?;
+                                    model.solve(native_source_pose.fixed_face(), &source).ok()?;
                                 Some(
                                     positive.is_for(
                                         model,
@@ -1078,17 +1081,19 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                         schedule_limits: CycleScheduleLimitsV1::default(),
                     },
                 )
-                .ok()?;
-            let cycle_evidence = ori_collision::certify_scheduled_cycle_transition_v1(
-                geometry,
-                audit,
-                pose.fixed_face(),
-                &generated,
-                &closure,
-                32,
-                edge.source,
-                edge.target,
-            );
+                .ok();
+            let cycle_evidence = closure.as_ref().and_then(|closure| {
+                ori_collision::certify_scheduled_cycle_transition_v1(
+                    geometry,
+                    audit,
+                    pose.fixed_face(),
+                    &generated,
+                    &closure,
+                    32,
+                    edge.source,
+                    edge.target,
+                )
+            });
             let mut tree_positive_seed = None;
             let evidence = cycle_evidence.or_else(|| {
                 if edge.source != pose_state_fingerprint_v1(pose.hinge_angles()) {
@@ -1107,20 +1112,22 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                     edge.target,
                     generated.schedule().certificate_binding_fingerprint_v1(),
                     positive.binding_fingerprint_v1(),
-                    closure.partition_binding_fingerprint_v1(),
+                    generated.schedule().graph_binding_fingerprint_v1(),
                 );
                 tree_positive_seed = Some(positive);
                 Some(evidence)
             })?;
-            let positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
-                geometry,
-                audit,
-                pose.fixed_face(),
-                generated.schedule(),
-                &closure,
-                paper_thickness_mm,
-                32,
-            );
+            let positive = closure.as_ref().and_then(|closure| {
+                certify_canonical_positive_thickness_cycle_schedule_path_v1(
+                    geometry,
+                    audit,
+                    pose.fixed_face(),
+                    generated.schedule(),
+                    &closure,
+                    paper_thickness_mm,
+                    32,
+                )
+            });
             let mut positive_binding = positive.as_ref().map(|certificate| {
                 let mut hash = Sha256::new();
                 hash.update(b"dyadic_positive_thickness_transition_v1");
@@ -1132,6 +1139,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 <[u8; 32]>::from(hash.finalize())
             });
             let layer = positive.as_ref().and_then(|positive| {
+                let closure = closure.as_ref()?;
                 let source = layer_capability.as_ref()?.snapshot();
                 let transition_count = closure.leaves().len().checked_add(1)?;
                 let layer_records = source.overlap_cells.iter().try_fold(0usize, |sum, cell| {

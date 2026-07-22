@@ -4,7 +4,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     mem::size_of,
     os::windows::{
-        ffi::OsStrExt,
+        ffi::{OsStrExt, OsStringExt},
         fs::{MetadataExt, OpenOptionsExt},
         io::{AsRawHandle, RawHandle},
     },
@@ -12,14 +12,18 @@ use std::{
     ptr,
 };
 
+use windows_sys::Win32::Foundation::{
+    ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_SEQUENTIAL_SCAN, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
     FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo, FileIdInfo, FileRenameInfo,
-    GetFileInformationByHandle, GetFileInformationByHandleEx, GetVolumeInformationByHandleW,
-    SetFileInformationByHandle,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FIND_FIRST_EX_LARGE_FETCH, FileDispositionInfo, FileIdInfo,
+    FileRenameInfo, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW,
+    FindNextFileW, GetFileInformationByHandle, GetFileInformationByHandleEx,
+    GetVolumeInformationByHandleW, SetFileInformationByHandle, WIN32_FIND_DATAW,
 };
 
 use super::{DirectoryIdentity, FsResult, ProjectFolderFilesystemError};
@@ -129,23 +133,63 @@ impl PinnedDirectory {
         maximum: usize,
     ) -> FsResult<Vec<OsString>> {
         self.revalidate_selected_path()?;
-        let entries =
-            std::fs::read_dir(&self.path).map_err(|_| ProjectFolderFilesystemError::ReadFailed)?;
-        let mut names = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|_| ProjectFolderFilesystemError::ReadFailed)?;
-            let name = entry.file_name();
-            if !name
-                .to_string_lossy()
-                .get(..prefix.len())
-                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
-            {
-                continue;
+        let mut query = self
+            .path
+            .join(format!("{prefix}*"))
+            .as_os_str()
+            .encode_wide()
+            .collect::<Vec<_>>();
+        query.push(0);
+        let mut data = WIN32_FIND_DATAW::default();
+        let handle = unsafe {
+            // SAFETY: `query` is NUL-terminated and `data` remains writable for the call.
+            FindFirstFileExW(
+                query.as_ptr(),
+                FindExInfoBasic,
+                (&raw mut data).cast(),
+                FindExSearchNameMatch,
+                std::ptr::null(),
+                FIND_FIRST_EX_LARGE_FETCH,
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            let error = unsafe { GetLastError() };
+            if error == ERROR_FILE_NOT_FOUND {
+                self.revalidate_selected_path()?;
+                return Ok(Vec::new());
             }
+            return Err(ProjectFolderFilesystemError::ReadFailed);
+        }
+        let mut names = Vec::new();
+        let result = loop {
+            let Some(length) = data.cFileName.iter().position(|unit| *unit == 0) else {
+                break Err(ProjectFolderFilesystemError::ReadFailed);
+            };
+            let name = OsString::from_wide(&data.cFileName[..length]);
             names.push(name);
             if names.len() > maximum {
-                return Err(ProjectFolderFilesystemError::InvalidTree);
+                break Err(ProjectFolderFilesystemError::InvalidTree);
             }
+            let has_next = unsafe {
+                // SAFETY: `handle` remains live and `data` is valid writable storage.
+                FindNextFileW(handle, &raw mut data)
+            };
+            if has_next == 0 {
+                let error = unsafe { GetLastError() };
+                break if error == ERROR_NO_MORE_FILES {
+                    Ok(())
+                } else {
+                    Err(ProjectFolderFilesystemError::ReadFailed)
+                };
+            }
+        };
+        let closed = unsafe {
+            // SAFETY: `handle` is the live search handle returned above and is closed once.
+            FindClose(handle)
+        };
+        result?;
+        if closed == 0 {
+            return Err(ProjectFolderFilesystemError::ReadFailed);
         }
         self.revalidate_selected_path()?;
         Ok(names)

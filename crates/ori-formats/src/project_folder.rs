@@ -157,6 +157,8 @@ struct ProjectFolderEditorHistoryEnvelopeV1 {
 pub enum ProjectFolderError {
     #[error(transparent)]
     Project(#[from] FormatError),
+    #[error("expanded-folder format cannot preserve authenticated layer evidence")]
+    LayerEvidenceUnsupported,
     #[error("expanded-folder manifest JSON is invalid: {0}")]
     InvalidManifestJson(#[source] serde_json::Error),
     #[error("expanded-folder editor-history JSON is invalid: {0}")]
@@ -335,6 +337,9 @@ pub fn write_project_folder_v1_with_limits(
     archive: &Ori2ProjectArchive,
     limits: ProjectFolderLimits,
 ) -> Result<ProjectFolderArtifactV1, ProjectFolderError> {
+    if archive.layer_evidence.is_some() {
+        return Err(ProjectFolderError::LayerEvidenceUnsupported);
+    }
     if let Some(history) = &archive.editor_history {
         if history.project_id() != archive.document.project_id {
             return Err(ProjectFolderError::EditorHistoryProjectIdMismatch);
@@ -1238,6 +1243,29 @@ mod tests {
         bytes.extend_from_slice(json);
         bytes.resize(total_len, b' ');
         bytes
+    }
+
+    #[test]
+    fn writer_rejects_layer_evidence_instead_of_silently_dropping_it() {
+        let archive = Ori2ProjectArchive {
+            document: sample_document(),
+            editor_history: None,
+            layer_evidence: Some(crate::LayerEvidenceArchiveV1 {
+                version: crate::LAYER_EVIDENCE_SCHEMA_VERSION_V1,
+                project_instance_id: "unused-instance".to_owned(),
+                project_id: "unused-project".to_owned(),
+                revision: 0,
+                fold_model_fingerprint_sha256: "0".repeat(64),
+                evidence: crate::LayerEvidenceArchiveKindV1::Flat {
+                    canonical_snapshot_json: "{}".to_owned(),
+                },
+            }),
+        };
+
+        assert!(matches!(
+            write_project_folder_v1(&archive),
+            Err(ProjectFolderError::LayerEvidenceUnsupported)
+        ));
     }
 
     fn sample_document() -> ProjectDocument {

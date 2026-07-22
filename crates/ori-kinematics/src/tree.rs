@@ -292,6 +292,26 @@ pub struct MaterialHingeGraphGeometry {
 }
 
 impl MaterialHingeGraphGeometry {
+    pub(crate) fn edge_block_instance(
+        &self,
+        face_ids: Vec<FaceId>,
+        hinges: Vec<TreeHinge>,
+    ) -> Self {
+        let face_set = face_ids.iter().copied().collect::<HashSet<_>>();
+        Self {
+            issuer: Arc::new(()),
+            face_ids,
+            hinges,
+            positions: self.positions.clone(),
+            face_boundaries: self
+                .face_boundaries
+                .iter()
+                .filter(|boundary| face_set.contains(&boundary.face))
+                .cloned()
+                .collect(),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn new_for_test(face_ids: Vec<FaceId>, hinges: Vec<TreeHinge>) -> Self {
         Self {

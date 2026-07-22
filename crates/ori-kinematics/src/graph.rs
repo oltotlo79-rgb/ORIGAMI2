@@ -12,6 +12,61 @@ use crate::{
 
 pub const MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1: u32 = 1;
 
+/// Work bounds for canonical articulation/biconnected-edge decomposition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanonicalEdgeBlockLimitsV1 {
+    pub max_blocks: usize,
+    pub max_faces_per_block: usize,
+    pub max_hinges_per_block: usize,
+}
+
+impl Default for CanonicalEdgeBlockLimitsV1 {
+    fn default() -> Self {
+        Self {
+            max_blocks: 32,
+            max_faces_per_block: 32,
+            max_hinges_per_block: 32,
+        }
+    }
+}
+
+/// One independently issued geometry instance and its matching graph audit.
+#[derive(Debug, Clone)]
+pub struct CanonicalMaterialEdgeBlockV1 {
+    geometry: MaterialHingeGraphGeometry,
+    audit: MaterialHingeGraphAudit,
+}
+
+impl CanonicalMaterialEdgeBlockV1 {
+    #[must_use]
+    pub const fn geometry(&self) -> &MaterialHingeGraphGeometry {
+        &self.geometry
+    }
+    #[must_use]
+    pub const fn audit(&self) -> &MaterialHingeGraphAudit {
+        &self.audit
+    }
+}
+
+/// Canonically ordered edge blocks. Different blocks may meet only at listed
+/// articulation faces; all other faces and every hinge are disjoint.
+#[derive(Debug, Clone)]
+pub struct CanonicalMaterialEdgeBlockDecompositionV1 {
+    blocks: Vec<CanonicalMaterialEdgeBlockV1>,
+    articulation_faces: Vec<FaceId>,
+}
+
+impl CanonicalMaterialEdgeBlockDecompositionV1 {
+    #[must_use]
+    pub fn blocks(&self) -> &[CanonicalMaterialEdgeBlockV1] {
+        &self.blocks
+    }
+    #[must_use]
+    pub fn articulation_faces(&self) -> &[FaceId] {
+        &self.articulation_faces
+    }
+}
+
 /// Bounded evidence that every angle in one canonical hinge box preserves all
 /// material loop constraints. The interval face poses are intentionally not
 /// exposed: loss of dependency correlation must reject instead of becoming
@@ -1414,6 +1469,197 @@ impl MaterialHingeGraphAudit {
     pub const fn is_tree(&self) -> bool {
         self.closure_hinges.is_empty()
     }
+
+    fn from_block(faces: &[FaceId], hinges: &[TreeHinge]) -> Option<Self> {
+        let indices = faces
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, f)| (f, i))
+            .collect::<HashMap<_, _>>();
+        let mut parent = (0..faces.len()).collect::<Vec<_>>();
+        let mut rank = vec![0_u8; faces.len()];
+        let mut spanning_hinges = Vec::new();
+        let mut closure_hinges = Vec::new();
+        for hinge in hinges {
+            let first = *indices.get(&hinge.left_face())?;
+            let second = *indices.get(&hinge.right_face())?;
+            if union(&mut parent, &mut rank, first, second) {
+                spanning_hinges.push(hinge.edge());
+            } else {
+                closure_hinges.push(hinge.edge());
+            }
+        }
+        (spanning_hinges.len() == faces.len().saturating_sub(1)).then(|| Self {
+            faces: faces.to_vec(),
+            spanning_hinges,
+            closure_hinges,
+        })
+    }
+}
+
+impl MaterialHingeGraphGeometry {
+    /// Splits a connected material graph into canonical biconnected edge
+    /// blocks. The source audit is required to cover this exact geometry.
+    pub fn decompose_canonical_edge_blocks_v1(
+        &self,
+        audit: &MaterialHingeGraphAudit,
+        limits: CanonicalEdgeBlockLimitsV1,
+    ) -> Result<CanonicalMaterialEdgeBlockDecompositionV1, KinematicsError> {
+        if !(2..=32).contains(&limits.max_blocks)
+            || !(2..=32).contains(&limits.max_faces_per_block)
+            || !(2..=32).contains(&limits.max_hinges_per_block)
+            || self.face_ids() != audit.faces()
+        {
+            return Err(KinematicsError::ResourceLimitExceeded);
+        }
+        let audit_edges = audit
+            .spanning_hinges()
+            .iter()
+            .chain(audit.closure_hinges())
+            .copied()
+            .collect::<HashSet<_>>();
+        if audit_edges.len() != self.hinges().len()
+            || self
+                .hinges()
+                .iter()
+                .any(|hinge| !audit_edges.contains(&hinge.edge()))
+        {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+        let face_index = self
+            .face_ids()
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, face)| (face, index))
+            .collect::<HashMap<_, _>>();
+        let mut edge_order = (0..self.hinges().len()).collect::<Vec<_>>();
+        edge_order.sort_unstable_by_key(|&index| self.hinges()[index].edge().canonical_bytes());
+        let mut adjacency = vec![Vec::<(usize, usize)>::new(); self.face_ids().len()];
+        for edge in edge_order {
+            let hinge = &self.hinges()[edge];
+            let left = *face_index
+                .get(&hinge.left_face())
+                .ok_or(KinematicsError::UnsupportedTopology)?;
+            let right = *face_index
+                .get(&hinge.right_face())
+                .ok_or(KinematicsError::UnsupportedTopology)?;
+            adjacency[left].push((right, edge));
+            adjacency[right].push((left, edge));
+        }
+        for neighbors in &mut adjacency {
+            neighbors
+                .sort_unstable_by_key(|(_, edge)| self.hinges()[*edge].edge().canonical_bytes());
+        }
+        struct Search<'a> {
+            adjacency: &'a [Vec<(usize, usize)>],
+            discovery: Vec<usize>,
+            low: Vec<usize>,
+            time: usize,
+            stack: Vec<usize>,
+            blocks: Vec<Vec<usize>>,
+        }
+        impl Search<'_> {
+            fn visit(&mut self, node: usize, parent_edge: Option<usize>) {
+                self.time += 1;
+                self.discovery[node] = self.time;
+                self.low[node] = self.time;
+                for &(next, edge) in &self.adjacency[node] {
+                    if Some(edge) == parent_edge {
+                        continue;
+                    }
+                    if self.discovery[next] == 0 {
+                        self.stack.push(edge);
+                        self.visit(next, Some(edge));
+                        self.low[node] = self.low[node].min(self.low[next]);
+                        if self.low[next] >= self.discovery[node] {
+                            let mut block = Vec::new();
+                            while let Some(popped) = self.stack.pop() {
+                                block.push(popped);
+                                if popped == edge {
+                                    break;
+                                }
+                            }
+                            self.blocks.push(block);
+                        }
+                    } else if self.discovery[next] < self.discovery[node] {
+                        self.stack.push(edge);
+                        self.low[node] = self.low[node].min(self.discovery[next]);
+                    }
+                }
+            }
+        }
+        let mut search = Search {
+            adjacency: &adjacency,
+            discovery: vec![0; adjacency.len()],
+            low: vec![0; adjacency.len()],
+            time: 0,
+            stack: Vec::new(),
+            blocks: Vec::new(),
+        };
+        search.visit(0, None);
+        if search.discovery.contains(&0) || !(2..=limits.max_blocks).contains(&search.blocks.len())
+        {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+        let mut raw = search
+            .blocks
+            .into_iter()
+            .map(|edge_indices| {
+                let mut hinges = edge_indices
+                    .into_iter()
+                    .map(|i| self.hinges()[i].clone())
+                    .collect::<Vec<_>>();
+                hinges.sort_unstable_by_key(|hinge| hinge.edge().canonical_bytes());
+                let mut faces = hinges
+                    .iter()
+                    .flat_map(|hinge| [hinge.left_face(), hinge.right_face()])
+                    .collect::<Vec<_>>();
+                faces.sort_unstable_by_key(FaceId::canonical_bytes);
+                faces.dedup();
+                (faces, hinges)
+            })
+            .collect::<Vec<_>>();
+        raw.sort_unstable_by_key(|(faces, hinges)| {
+            (
+                faces[0].canonical_bytes(),
+                hinges[0].edge().canonical_bytes(),
+            )
+        });
+        if raw.iter().any(|(faces, hinges)| {
+            faces.len() > limits.max_faces_per_block || hinges.len() > limits.max_hinges_per_block
+        }) {
+            return Err(KinematicsError::ResourceLimitExceeded);
+        }
+        let mut incidence = HashMap::<FaceId, usize>::new();
+        for (faces, _) in &raw {
+            for &face in faces {
+                *incidence.entry(face).or_default() += 1;
+            }
+        }
+        let mut articulation_faces = incidence
+            .into_iter()
+            .filter_map(|(face, count)| (count > 1).then_some(face))
+            .collect::<Vec<_>>();
+        articulation_faces.sort_unstable_by_key(FaceId::canonical_bytes);
+        let blocks = raw
+            .into_iter()
+            .map(|(faces, hinges)| {
+                let block_audit = MaterialHingeGraphAudit::from_block(&faces, &hinges)
+                    .ok_or(KinematicsError::UnsupportedTopology)?;
+                let geometry = self.edge_block_instance(faces, hinges);
+                Ok(CanonicalMaterialEdgeBlockV1 {
+                    geometry,
+                    audit: block_audit,
+                })
+            })
+            .collect::<Result<Vec<_>, KinematicsError>>()?;
+        Ok(CanonicalMaterialEdgeBlockDecompositionV1 {
+            blocks,
+            articulation_faces,
+        })
+    }
 }
 
 fn find(parent: &mut [usize], mut node: usize) -> usize {
@@ -2275,6 +2521,106 @@ mod tests {
                 .collect(),
             material_components: Vec::new(),
         }
+    }
+
+    #[test]
+    fn seventeen_face_shared_articulation_decomposes_into_canonical_instances() {
+        let namespace = ProjectId::new();
+        let face_id =
+            |x: i32, y: i32| FaceId::derive_v5(namespace, format!("f:{x}:{y}").as_bytes());
+        let edge_id = |a: FaceId, b: FaceId| {
+            let mut ends = [a.canonical_bytes(), b.canonical_bytes()];
+            ends.sort_unstable();
+            EdgeId::derive_v5(
+                namespace,
+                &[ends[0].as_slice(), ends[1].as_slice()].concat(),
+            )
+        };
+        let grids = [(-2..=0, 0..=2), (0..=2, -2..=0)];
+        let mut faces = Vec::new();
+        let mut adjacency = Vec::new();
+        for (xs, ys) in grids {
+            for x in xs.clone() {
+                for y in ys.clone() {
+                    faces.push(face_id(x, y));
+                }
+            }
+            for x in xs.clone() {
+                for y in ys.clone() {
+                    if x < *xs.end() {
+                        let (a, b) = (face_id(x, y), face_id(x + 1, y));
+                        adjacency.push((edge_id(a, b), a, b));
+                    }
+                    if y < *ys.end() {
+                        let (a, b) = (face_id(x, y), face_id(x, y + 1));
+                        adjacency.push((edge_id(a, b), a, b));
+                    }
+                }
+            }
+        }
+        faces.sort_unstable_by_key(FaceId::canonical_bytes);
+        faces.dedup();
+        adjacency.sort_unstable_by_key(|item| item.0.canonical_bytes());
+        let source = topology(&faces, &adjacency);
+        let audit =
+            MaterialHingeGraphAudit::prepare(&source, TreeKinematicsLimits::default()).unwrap();
+        let origin = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let axis = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let hinges = adjacency
+            .iter()
+            .map(|&(edge, left, right)| {
+                TreeHinge::new_for_test(
+                    edge,
+                    FoldAssignment::Mountain,
+                    left,
+                    right,
+                    origin,
+                    axis,
+                    axis,
+                )
+            })
+            .collect();
+        let geometry = MaterialHingeGraphGeometry::new_for_test(faces, hinges);
+        let decomposition = geometry
+            .decompose_canonical_edge_blocks_v1(&audit, CanonicalEdgeBlockLimitsV1::default())
+            .expect("two canonical 3x3 blocks");
+        assert_eq!(decomposition.blocks().len(), 2);
+        assert_eq!(decomposition.articulation_faces(), &[face_id(0, 0)]);
+        for block in decomposition.blocks() {
+            assert_eq!(block.geometry().face_ids().len(), 9);
+            assert_eq!(block.geometry().hinges().len(), 12);
+            assert_eq!(block.audit().faces(), block.geometry().face_ids());
+            assert!(!geometry.same_instance(block.geometry()));
+        }
+        assert!(
+            !decomposition.blocks()[0]
+                .geometry()
+                .same_instance(decomposition.blocks()[1].geometry())
+        );
+        let shared = decomposition.blocks()[0]
+            .geometry()
+            .face_ids()
+            .iter()
+            .filter(|face| {
+                decomposition.blocks()[1]
+                    .geometry()
+                    .face_ids()
+                    .contains(face)
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(shared, vec![face_id(0, 0)]);
+        assert!(matches!(
+            geometry.decompose_canonical_edge_blocks_v1(
+                &audit,
+                CanonicalEdgeBlockLimitsV1 {
+                    max_blocks: 2,
+                    max_faces_per_block: 8,
+                    max_hinges_per_block: 32,
+                }
+            ),
+            Err(KinematicsError::ResourceLimitExceeded)
+        ));
     }
 
     #[test]

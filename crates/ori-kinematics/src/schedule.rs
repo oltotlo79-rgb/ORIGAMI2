@@ -1448,6 +1448,58 @@ pub struct CanonicalCycleScheduleV1 {
 }
 
 impl CanonicalCycleScheduleV1 {
+    /// Rebinds the entries belonging to one canonical edge block to that
+    /// block's independent geometry instance. No absent or foreign edge may
+    /// enter the restricted schedule.
+    pub fn restrict_to_edge_block_v1(
+        &self,
+        source_geometry: &MaterialHingeGraphGeometry,
+        source_audit: &MaterialHingeGraphAudit,
+        block_geometry: &MaterialHingeGraphGeometry,
+        block_audit: &MaterialHingeGraphAudit,
+    ) -> Result<Self, CycleSchedulePrepareErrorV1> {
+        if !self.matches_binding(source_geometry, source_audit, self.fixed_face)
+            || !block_audit.faces().contains(&self.fixed_face)
+        {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        let block_edges = block_geometry
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<std::collections::HashSet<_>>();
+        let entries = self
+            .entries
+            .iter()
+            .filter(|entry| block_edges.contains(&entry.edge))
+            .cloned()
+            .collect::<Vec<_>>();
+        let half_angle_entries = self
+            .half_angle_entries
+            .iter()
+            .filter(|entry| block_edges.contains(&entry.edge()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if entries.len() + half_angle_entries.len() != block_edges.len()
+            || entries
+                .iter()
+                .any(|entry| !block_edges.contains(&entry.edge))
+            || half_angle_entries
+                .iter()
+                .any(|entry| !block_edges.contains(&entry.edge()))
+        {
+            return Err(CycleSchedulePrepareErrorV1::InvalidInput);
+        }
+        Ok(Self {
+            binding_fingerprint: binding_fingerprint(block_geometry, block_audit, self.fixed_face),
+            schedule_fingerprint: schedule_fingerprint_v1(&entries, &half_angle_entries),
+            fixed_face: self.fixed_face,
+            domain: self.domain,
+            entries,
+            half_angle_entries,
+        })
+    }
+
     pub fn prepare(
         geometry: &MaterialHingeGraphGeometry,
         audit: &MaterialHingeGraphAudit,

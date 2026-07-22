@@ -857,10 +857,10 @@ test('CI requires the production C6 dyadic browser and exact native lifecycle', 
     assert.equal(nativeRead.match(new RegExp(`"${fixture}"`, 'gu'))?.length, 1)
   }
   for (const treeLifecycle of [
-    'four_hinge_tree_level_three_read_and_preview_are_bounded_read_only',
-    'five_hinge_tree_level_three_mints_only_a_certified_read_only_preview',
-    'six_hinge_tree_level_three_is_bounded_and_mints_read_only_preview',
-    'seven_hinge_generic_grid_is_bounded_and_mints_read_only_preview',
+    'four_hinge_tree_level_three_proof_applies_and_persists_atomically',
+    'five_hinge_tree_level_three_proof_applies_and_persists_atomically',
+    'six_hinge_tree_level_three_proof_applies_and_persists_atomically',
+    'seven_hinge_generic_grid_proof_applies_and_persists_atomically',
   ]) {
     const filter = `stacked_fold_read::tests::${treeLifecycle}`
     assert.equal(workflow.match(new RegExp(filter, 'gu'))?.length, 1)

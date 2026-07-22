@@ -485,10 +485,10 @@ jobs:
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::zero_length_boundary_strict_dyadic_preflight_is_unsupported_no_op -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::missing_pose_capability_strict_dyadic_read_returns_unsupported_dto -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::tree_pose_capability_rejects_incomplete_target_without_mutation -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::four_hinge_tree_level_three_read_and_preview_are_bounded_read_only -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::five_hinge_tree_level_three_mints_only_a_certified_read_only_preview -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::six_hinge_tree_level_three_is_bounded_and_mints_read_only_preview -- --exact --test-threads=1
-          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::seven_hinge_generic_grid_is_bounded_and_mints_read_only_preview -- --exact --test-threads=1
+          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::four_hinge_tree_level_three_proof_applies_and_persists_atomically -- --exact --test-threads=1
+          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::five_hinge_tree_level_three_proof_applies_and_persists_atomically -- --exact --test-threads=1
+          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::six_hinge_tree_level_three_proof_applies_and_persists_atomically -- --exact --test-threads=1
+          cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::seven_hinge_generic_grid_proof_applies_and_persists_atomically -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::balloon_six_sector_straight_line_cycle_previews_applies_and_round_trips_history -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::coupled_cactus_previews_apply_and_round_trip_history -- --exact --test-threads=1
           cargo test --locked -p origami2-desktop --lib stacked_fold_read::tests::theta_positive_thickness_preview_applies_and_round_trips_history -- --exact --test-threads=1

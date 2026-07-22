@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use ori_domain::{EdgeId, FaceId};
+use ori_foldability::LayerOrderSnapshot;
 use ori_kinematics::{
     CanonicalHingeAngles, DyadicMaterialHingeIntervalClosureCertificateV1,
     GeneratedMultiHingePathCandidateV1, HingeAngle, MaterialHingeGraphAudit,
@@ -352,6 +353,95 @@ pub fn certify_positive_thickness_tree_continuous_path_v1(
             diagnostic,
         },
     )
+}
+
+/// Read-only proof that an empty source ply order remains empty at a Tree
+/// endpoint: every broad-phase candidate is authenticated by the endpoint
+/// topology memo as shared-vertex-only contact.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedVertexTreeLayerTransportProofV1 {
+    source: LayerOrderSnapshot,
+    target_absolute: CanonicalHingeAngles,
+    paper_thickness_bits: u64,
+    enumerated_pairs: usize,
+}
+
+impl SharedVertexTreeLayerTransportProofV1 {
+    #[must_use]
+    pub fn is_for(
+        &self,
+        model: &MaterialTreeKinematicsModel,
+        source_pose: &MaterialTreePose,
+        source: &LayerOrderSnapshot,
+        target_absolute: &CanonicalHingeAngles,
+        paper_thickness_mm: f64,
+        positive: &PositiveThicknessTreeContinuousCertificateV1,
+    ) -> bool {
+        self.source == *source
+            && self.target_absolute == *target_absolute
+            && self.paper_thickness_bits == paper_thickness_mm.to_bits()
+            && positive.is_for(model, source_pose, target_absolute, paper_thickness_mm)
+            && prepare_shared_vertex_tree_layer_transport_v1(
+                model,
+                source_pose,
+                source,
+                target_absolute,
+                paper_thickness_mm,
+                positive,
+            )
+            .is_some_and(|actual| actual == *self)
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+}
+
+pub fn prepare_shared_vertex_tree_layer_transport_v1(
+    model: &MaterialTreeKinematicsModel,
+    source_pose: &MaterialTreePose,
+    source: &LayerOrderSnapshot,
+    target_absolute: &CanonicalHingeAngles,
+    paper_thickness_mm: f64,
+    positive: &PositiveThicknessTreeContinuousCertificateV1,
+) -> Option<SharedVertexTreeLayerTransportProofV1> {
+    if !source.overlap_cells.is_empty()
+        || !source.face_pair_orders.is_empty()
+        || !positive.is_for(model, source_pose, target_absolute, paper_thickness_mm)
+    {
+        return None;
+    }
+    let target_pose = model
+        .solve(source_pose.fixed_face(), target_absolute)
+        .ok()?;
+    let candidates = positive_endpoint_candidates_v1(model, &target_pose, paper_thickness_mm)?;
+    let memo = prepare_positive_thickness_tree_endpoint_topology_memo_v1(
+        model,
+        &target_pose,
+        paper_thickness_mm,
+        StaticCollisionLimits::default(),
+    )
+    .ok()?;
+    let expected_pairs = model
+        .face_ids()
+        .len()
+        .checked_mul(model.face_ids().len().saturating_sub(1))?
+        / 2;
+    if memo.enumerated_pairs() != expected_pairs
+        || candidates.iter().any(|(first, second)| {
+            !faces_share_material_vertex_v1(model, *first, *second)
+                && !memo.proves_shared_vertex_pair(*first, *second)
+        })
+    {
+        return None;
+    }
+    Some(SharedVertexTreeLayerTransportProofV1 {
+        source: source.clone(),
+        target_absolute: target_absolute.clone(),
+        paper_thickness_bits: paper_thickness_mm.to_bits(),
+        enumerated_pairs: memo.enumerated_pairs(),
+    })
 }
 
 fn positive_tree_max_angle_degrees_v1(hinge_count: usize) -> Option<f64> {

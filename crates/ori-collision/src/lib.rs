@@ -75,9 +75,10 @@ pub use continuous_path::{
     STACKED_FOLD_TREE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_TWO_HINGE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
-    StackedFoldBoundedPathDiagnosticV1, StackedFoldCyclePathDiagnosticV1,
-    StackedFoldPathDiagnosticErrorV1, StackedFoldPathDiagnosticLimitsV1,
-    UniformCycleClosureRootsV1, certify_canonical_positive_thickness_cycle_schedule_path_v1,
+    SharedVertexTreeLayerTransportProofV1, StackedFoldBoundedPathDiagnosticV1,
+    StackedFoldCyclePathDiagnosticV1, StackedFoldPathDiagnosticErrorV1,
+    StackedFoldPathDiagnosticLimitsV1, UniformCycleClosureRootsV1,
+    certify_canonical_positive_thickness_cycle_schedule_path_v1,
     certify_positive_thickness_tree_continuous_path_v1,
     classify_exact_dyadic_path_self_intersection_v1,
     classify_exact_dyadic_path_self_intersection_with_cancel_v1,
@@ -86,7 +87,7 @@ pub use continuous_path::{
     diagnose_collective_cycle_path_v1, diagnose_collective_hinge_path_from_pose_v1,
     diagnose_collective_hinge_path_v1, diagnose_scheduled_cycle_path_v1,
     diagnose_scheduled_positive_thickness_cycle_path_v1, enumerate_uniform_cycle_closure_roots_v1,
-    supports_scheduled_positive_thickness_path_v1,
+    prepare_shared_vertex_tree_layer_transport_v1, supports_scheduled_positive_thickness_path_v1,
 };
 pub use exact_dyadic_intersection::{
     DyadicPointV1, DyadicSegmentV1, ExactDyadicIntersectionErrorV1,

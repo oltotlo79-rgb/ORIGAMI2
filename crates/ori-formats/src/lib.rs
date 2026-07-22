@@ -101,13 +101,13 @@ pub use project_folder::{
     MAX_PROJECT_FOLDER_ENTRY_PATH_BYTES, MAX_PROJECT_FOLDER_MANIFEST_BYTES,
     MAX_PROJECT_FOLDER_PREVIEW_BYTES, MAX_PROJECT_FOLDER_TOTAL_BYTES,
     PROJECT_FOLDER_CONTAINER_IDENTIFIER, PROJECT_FOLDER_EDITOR_HISTORY_PATH,
-    PROJECT_FOLDER_MANIFEST_PATH, PROJECT_FOLDER_PREVIEW_PATH,
+    PROJECT_FOLDER_LAYER_EVIDENCE_PATH, PROJECT_FOLDER_MANIFEST_PATH, PROJECT_FOLDER_PREVIEW_PATH,
     PROJECT_FOLDER_PREVIEW_SCHEMA_VERSION, PROJECT_FOLDER_PROJECT_PATH,
     PROJECT_FOLDER_ROLE_CREASE_PATTERN_PREVIEW, PROJECT_FOLDER_ROLE_EDITOR_HISTORY,
-    PROJECT_FOLDER_ROLE_PROJECT, ProjectFolderArtifactV1, ProjectFolderEntryV1, ProjectFolderError,
-    ProjectFolderLimits, ProjectFolderManifestEntryV1, ProjectFolderManifestV1,
-    read_project_folder_v1, read_project_folder_v1_with_limits, write_project_folder_v1,
-    write_project_folder_v1_with_limits,
+    PROJECT_FOLDER_ROLE_LAYER_EVIDENCE, PROJECT_FOLDER_ROLE_PROJECT, ProjectFolderArtifactV1,
+    ProjectFolderEntryV1, ProjectFolderError, ProjectFolderLimits, ProjectFolderManifestEntryV1,
+    ProjectFolderManifestV1, read_project_folder_v1, read_project_folder_v1_with_limits,
+    write_project_folder_v1, write_project_folder_v1_with_limits,
 };
 pub use reference_glb::{
     MAX_REFERENCE_GLB_BYTES_V1, MAX_REFERENCE_GLB_TRIANGLES_V1, MAX_REFERENCE_GLB_VERTICES_V1,

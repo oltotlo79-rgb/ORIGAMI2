@@ -72,11 +72,11 @@ impl PinnedDirectory {
     }
 
     pub(super) fn open_child_directory(&self, name: &str) -> FsResult<Self> {
-        open_directory_at(self, name, false)
+        open_directory_at(self, name, false, false)
     }
 
     pub(super) fn open_child_directory_for_rename(&self, name: &str) -> FsResult<Self> {
-        open_directory_at(self, name, false)
+        open_directory_at(self, name, false, true)
     }
 
     pub(super) fn create_child_directory(&self, name: &str, _deletable: bool) -> FsResult<Self> {
@@ -92,7 +92,7 @@ impl PinnedDirectory {
             }
             return Err(ProjectFolderFilesystemError::WriteFailed);
         }
-        open_directory_at(self, name, true)
+        open_directory_at(self, name, true, true)
     }
 
     pub(super) fn open_child_file(&self, name: &str, limit: u64) -> FsResult<PinnedFile> {
@@ -228,7 +228,7 @@ impl PinnedDirectory {
     }
 
     pub(super) fn revalidate_child_directory(&self, name: &str, child: &Self) -> FsResult<()> {
-        let reopened = open_directory_at(self, name, false)?;
+        let reopened = open_directory_at(self, name, false, false)?;
         if reopened.identity != child.identity {
             return Err(ProjectFolderFilesystemError::ChangedDuringRead);
         }
@@ -431,6 +431,7 @@ fn open_directory_at(
     parent: &PinnedDirectory,
     name: &str,
     created_by_us: bool,
+    require_current_owner: bool,
 ) -> FsResult<PinnedDirectory> {
     let name_c = c_name(name)?;
     let fd = unsafe {
@@ -455,6 +456,9 @@ fn open_directory_at(
     let metadata = file.metadata().map_err(map_read_error)?;
     if !metadata.file_type().is_dir() {
         return Err(ProjectFolderFilesystemError::LinkOrSpecialEntry);
+    }
+    if require_current_owner && metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(ProjectFolderFilesystemError::WriteFailed);
     }
     Ok(PinnedDirectory {
         path: parent.path.join(name),

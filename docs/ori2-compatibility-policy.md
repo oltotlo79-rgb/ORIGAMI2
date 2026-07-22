@@ -40,3 +40,9 @@
 - project JSON内のtexture assetと参照GLB asset、独立roleのeditor historyとlayer evidenceをすべて保持する。
 - single-file → expanded folder → single-fileの往復後に`Ori2ProjectArchive`全体が一致しなければならない。
 - unknown future container/role/schema/required featureは両形式でfail-closedとし、既知roleの非canonical順序も拒否する。
+
+## Filesystem置換境界
+
+- Windowsはdirectory handleを`FILE_FLAG_OPEN_REPARSE_POINT`付きで固定し、reparse pointを拒否する。読込handleはwrite/delete sharingを与えず、置換中のrename・delete競合を検出する。sharing/AV競合で置換が完了しない場合は旧targetと復旧journalを保持し、同じ保存操作の再試行で回収する。
+- Unixは`O_DIRECTORY | O_NOFOLLOW`で固定し、置換対象directoryはeffective UID所有の場合だけrename用handleを取得する。symlink・special entry・foreign UID targetは置換しない。
+- 新規stageと復旧registryはUnixで0700とし、Windowsは親directoryのDACL policyを継承する。置換は認証済み旧targetをbackupへ退避してからstageをpublishし、失敗時に旧targetを保持する。

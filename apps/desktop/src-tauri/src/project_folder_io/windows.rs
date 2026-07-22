@@ -13,7 +13,8 @@ use std::{
 };
 
 use windows_sys::Win32::Foundation::{
-    ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE,
+    ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED,
+    ERROR_PATH_NOT_FOUND, GetLastError, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_DIRECTORY,
@@ -141,7 +142,7 @@ impl PinnedDirectory {
             .collect::<Vec<_>>();
         query.push(0);
         let mut data = WIN32_FIND_DATAW::default();
-        let handle = unsafe {
+        let mut handle = unsafe {
             // SAFETY: `query` is NUL-terminated and `data` remains writable for the call.
             FindFirstFileExW(
                 query.as_ptr(),
@@ -154,7 +155,23 @@ impl PinnedDirectory {
         };
         if handle == INVALID_HANDLE_VALUE {
             let error = unsafe { GetLastError() };
-            if error == ERROR_FILE_NOT_FOUND {
+            if should_retry_find_without_large_fetch(error) {
+                handle = unsafe {
+                    // SAFETY: the same bounded NUL-terminated query and writable output are reused.
+                    FindFirstFileExW(
+                        query.as_ptr(),
+                        FindExInfoBasic,
+                        (&raw mut data).cast(),
+                        FindExSearchNameMatch,
+                        std::ptr::null(),
+                        0,
+                    )
+                };
+            }
+        }
+        if handle == INVALID_HANDLE_VALUE {
+            let error = unsafe { GetLastError() };
+            if is_empty_find_result(error) {
                 self.revalidate_selected_path()?;
                 return Ok(Vec::new());
             }
@@ -166,7 +183,13 @@ impl PinnedDirectory {
                 break Err(ProjectFolderFilesystemError::ReadFailed);
             };
             let name = OsString::from_wide(&data.cFileName[..length]);
-            names.push(name);
+            if name != "." && name != ".." {
+                let candidate = name.to_string_lossy();
+                if !ascii_prefix_case_insensitive(&candidate, prefix) {
+                    break Err(ProjectFolderFilesystemError::ReadFailed);
+                }
+                names.push(name);
+            }
             if names.len() > maximum {
                 break Err(ProjectFolderFilesystemError::InvalidTree);
             }
@@ -501,6 +524,19 @@ impl PinnedDirectory {
         }
         Ok(())
     }
+}
+
+const fn should_retry_find_without_large_fetch(error: u32) -> bool {
+    error == ERROR_INVALID_PARAMETER || error == ERROR_NOT_SUPPORTED
+}
+
+const fn is_empty_find_result(error: u32) -> bool {
+    error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
+}
+
+fn ascii_prefix_case_insensitive(value: &str, prefix: &str) -> bool {
+    value.len() >= prefix.len()
+        && value.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
 }
 
 pub(super) struct PinnedFile {
@@ -982,6 +1018,28 @@ mod tests {
         assert!(!remote_device_result_proves_local(0, 0, 0, 0));
         assert!(!remote_device_result_proves_local(0, 0, size, 1));
         assert!(!remote_device_result_proves_local(0, 0, size, 2));
+    }
+
+    #[test]
+    fn prefix_enumeration_fallback_and_empty_errors_are_exact() {
+        assert!(should_retry_find_without_large_fetch(
+            ERROR_INVALID_PARAMETER
+        ));
+        assert!(should_retry_find_without_large_fetch(ERROR_NOT_SUPPORTED));
+        assert!(!should_retry_find_without_large_fetch(ERROR_FILE_NOT_FOUND));
+        assert!(is_empty_find_result(ERROR_FILE_NOT_FOUND));
+        assert!(is_empty_find_result(ERROR_PATH_NOT_FOUND));
+        assert!(!is_empty_find_result(ERROR_INVALID_PARAMETER));
+        assert!(ascii_prefix_case_insensitive(
+            ".ORIGAMI2-folder-ABC",
+            ".origami2-folder-"
+        ));
+        assert!(!ascii_prefix_case_insensitive(
+            "x.origami2-folder-abc",
+            ".origami2-folder-"
+        ));
+        assert!(!ascii_prefix_case_insensitive(".", ".origami2-folder-"));
+        assert!(!ascii_prefix_case_insensitive("..", ".origami2-folder-"));
     }
 
     #[test]

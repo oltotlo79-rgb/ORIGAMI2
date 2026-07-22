@@ -5871,6 +5871,9 @@ fn update_beginner_design_profile(
     if !component_bridge_override_is_live_v1(&project, &profile) {
         return Err("component_bridge_override_stale_or_disconnected".to_owned());
     }
+    if !reference_consensus_is_live_v1(&project, &profile) {
+        return Err("reference_consensus_asset_binding_stale".to_owned());
+    }
     let live_fingerprint = project.editor.fold_model_fingerprint_v1();
     if profile
         .generation_constraints
@@ -5889,6 +5892,30 @@ fn update_beginner_design_profile(
             profile: Box::new(profile),
         },
     )
+}
+
+fn reference_consensus_is_live_v1(
+    project: &ProjectState,
+    profile: &ori_domain::BeginnerDesignProfileV1,
+) -> bool {
+    let Some(consensus) = &profile.reference_consensus_v1 else {
+        return true;
+    };
+    consensus.bindings.iter().all(|binding| {
+        let bytes = match binding.kind {
+            ori_domain::BeginnerReferenceBindingKindV1::Image => project
+                .texture_assets
+                .iter()
+                .find(|asset| asset.id == binding.asset_id)
+                .map(|asset| asset.bytes.as_slice()),
+            ori_domain::BeginnerReferenceBindingKindV1::ReferenceModel => project
+                .reference_model_assets
+                .iter()
+                .find(|asset| asset.id == binding.asset_id)
+                .map(|asset| asset.bytes.as_slice()),
+        };
+        bytes.is_some_and(|bytes| <[u8; 32]>::from(sha2::Sha256::digest(bytes)) == binding.sha256)
+    })
 }
 
 #[tauri::command]

@@ -2073,6 +2073,7 @@ impl EditorState {
                 reference_surface_landmarks_tenths_mm: None,
                 outline_edit_authority: None,
                 archived_reference_model_asset_ids: Vec::new(),
+                reference_consensus_v1: None,
             },
             current_applied_pose: None,
             revision: 0,
@@ -18605,6 +18606,7 @@ mod tests {
             reference_surface_landmarks_tenths_mm: Some(vec![[10, 20, 30], [40, 50, 60]]),
             outline_edit_authority: None,
             archived_reference_model_asset_ids: Vec::new(),
+            reference_consensus_v1: None,
         };
         editor
             .execute(

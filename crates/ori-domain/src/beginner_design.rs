@@ -35,6 +35,35 @@ pub struct BeginnerDesignProfileV1 {
     pub outline_edit_authority: Option<BeginnerOutlineEditAuthorityV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub archived_reference_model_asset_ids: Vec<AssetId>,
+    /// Bounded, content-addressed authority for comparing several references.
+    /// The asset bytes stay in the native asset store; only identities and hashes persist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_consensus_v1: Option<BeginnerReferenceConsensusV1>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeginnerReferenceBindingKindV1 {
+    Image,
+    ReferenceModel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerReferenceBindingV1 {
+    pub kind: BeginnerReferenceBindingKindV1,
+    pub asset_id: AssetId,
+    pub sha256: [u8; 32],
+    pub quality: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerReferenceConsensusV1 {
+    pub schema_version: u32,
+    pub bindings: Vec<BeginnerReferenceBindingV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_asset_id: Option<AssetId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +175,7 @@ impl Default for BeginnerDesignProfileV1 {
             reference_surface_landmarks_tenths_mm: None,
             outline_edit_authority: None,
             archived_reference_model_asset_ids: Vec::new(),
+            reference_consensus_v1: None,
         }
     }
 }
@@ -198,6 +228,30 @@ pub fn validate_beginner_design_profile_v1(profile: &BeginnerDesignProfileV1) ->
             .collect::<std::collections::HashSet<_>>()
             .len()
             == profile.archived_reference_model_asset_ids.len()
+        && profile
+            .reference_consensus_v1
+            .as_ref()
+            .is_none_or(|consensus| {
+                consensus.schema_version == 1
+                    && (2..=4).contains(&consensus.bindings.len())
+                    && consensus
+                        .bindings
+                        .iter()
+                        .all(|binding| binding.quality <= 100)
+                    && consensus
+                        .bindings
+                        .iter()
+                        .map(|binding| binding.asset_id)
+                        .collect::<std::collections::HashSet<_>>()
+                        .len()
+                        == consensus.bindings.len()
+                    && consensus.excluded_asset_id.is_none_or(|excluded| {
+                        consensus
+                            .bindings
+                            .iter()
+                            .any(|binding| binding.asset_id == excluded)
+                    })
+            })
 }
 
 /// Validates the bounded, versioned provenance independently of its profile.
@@ -310,6 +364,39 @@ pub fn validate_beginner_generation_provenance_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reference_consensus_is_bounded_unique_and_explicitly_excluded() {
+        let first = AssetId::new();
+        let second = AssetId::new();
+        let binding = |asset_id, kind| BeginnerReferenceBindingV1 {
+            kind,
+            asset_id,
+            sha256: [7; 32],
+            quality: 90,
+        };
+        let mut profile = BeginnerDesignProfileV1 {
+            reference_consensus_v1: Some(BeginnerReferenceConsensusV1 {
+                schema_version: 1,
+                bindings: vec![
+                    binding(first, BeginnerReferenceBindingKindV1::Image),
+                    binding(second, BeginnerReferenceBindingKindV1::ReferenceModel),
+                ],
+                excluded_asset_id: Some(first),
+            }),
+            ..BeginnerDesignProfileV1::default()
+        };
+        assert!(validate_beginner_design_profile_v1(&profile));
+        profile.reference_consensus_v1.as_mut().unwrap().bindings[1].asset_id = first;
+        assert!(!validate_beginner_design_profile_v1(&profile));
+        profile.reference_consensus_v1.as_mut().unwrap().bindings[1].asset_id = second;
+        profile
+            .reference_consensus_v1
+            .as_mut()
+            .unwrap()
+            .excluded_asset_id = Some(AssetId::new());
+        assert!(!validate_beginner_design_profile_v1(&profile));
+    }
 
     fn profile_with_generic_tree() -> BeginnerDesignProfileV1 {
         BeginnerDesignProfileV1 {

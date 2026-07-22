@@ -230,6 +230,13 @@ export type BeginnerDesignProfileV1 = {
     edits: ReadonlyArray<Readonly<Record<string, unknown>>>
   }>
   archived_reference_model_asset_ids?: ReadonlyArray<string>
+  reference_consensus_v1?: Readonly<{
+    schema_version: 1
+    bindings: ReadonlyArray<Readonly<{
+      kind: 'image' | 'reference_model'; asset_id: string; sha256: ReadonlyArray<number>; quality: number
+    }>>
+    excluded_asset_id?: string
+  }>
 }
 
 export type BeginnerGenerationConstraintsV1 = {
@@ -1329,7 +1336,7 @@ export function normalizeBeginnerDesignProfile(
   if (!record || requiredKeys.some((key) => !Object.hasOwn(record, key))
     || Object.keys(record).some((key) => ![...requiredKeys, 'generation_provenance',
       'reference_surface_landmarks_tenths_mm', 'outline_edit_authority',
-      'archived_reference_model_asset_ids'].includes(key as never))) return null
+      'archived_reference_model_asset_ids', 'reference_consensus_v1'].includes(key as never))) return null
   if (!record || record.schema_version !== 1 || (
     record.preset !== 'balanced'
     && record.preset !== 'shape_priority'
@@ -1437,6 +1444,23 @@ export function normalizeBeginnerDesignProfile(
   if (!Array.isArray(archivedAssets) || archivedAssets.length > 8
     || archivedAssets.some((id) => !isCanonicalNonNilUuid(id))
     || new Set(archivedAssets).size !== archivedAssets.length) return null
+  const consensus = record.reference_consensus_v1 === undefined ? null
+    : exactCoreDataRecord(record.reference_consensus_v1, ['schema_version', 'bindings', 'excluded_asset_id'] as const)
+  const consensusBindings = consensus?.bindings
+  if (record.reference_consensus_v1 !== undefined && (!consensus || consensus.schema_version !== 1
+    || !Array.isArray(consensusBindings) || consensusBindings.length < 2 || consensusBindings.length > 4)) return null
+  const normalizedConsensusBindings = consensus === null ? [] : (consensusBindings as unknown[]).map((raw) => {
+    const binding = exactCoreDataRecord(raw, ['kind', 'asset_id', 'sha256', 'quality'] as const)
+    if (!binding || !['image', 'reference_model'].includes(String(binding.kind))
+      || !isCanonicalNonNilUuid(binding.asset_id) || !isBoundedIntegerTuple(binding.sha256, 32, 255)
+      || !Number.isInteger(binding.quality) || Number(binding.quality) < 0 || Number(binding.quality) > 100) return null
+    return Object.freeze({ kind: binding.kind as 'image' | 'reference_model', asset_id: String(binding.asset_id),
+      sha256: Object.freeze((binding.sha256 as number[]).slice()), quality: Number(binding.quality) })
+  })
+  if (normalizedConsensusBindings.some((binding) => binding === null)
+    || new Set(normalizedConsensusBindings.map((binding) => binding?.asset_id)).size !== normalizedConsensusBindings.length
+    || (consensus?.excluded_asset_id !== undefined && (!isCanonicalNonNilUuid(consensus.excluded_asset_id)
+      || !normalizedConsensusBindings.some((binding) => binding?.asset_id === consensus.excluded_asset_id)))) return null
   return Object.freeze({
     schema_version: 1,
     preset: record.preset,
@@ -1457,6 +1481,11 @@ export function normalizeBeginnerDesignProfile(
     ...(archivedAssets.length === 0 ? {} : {
       archived_reference_model_asset_ids: Object.freeze(archivedAssets.slice() as string[]),
     }),
+    ...(consensus === null ? {} : { reference_consensus_v1: Object.freeze({
+      schema_version: 1 as const,
+      bindings: Object.freeze(normalizedConsensusBindings as NonNullable<BeginnerDesignProfileV1['reference_consensus_v1']>['bindings']),
+      ...(consensus.excluded_asset_id === undefined ? {} : { excluded_asset_id: String(consensus.excluded_asset_id) }),
+    }) }),
     ...(provenance === null ? {} : { generation_provenance: Object.freeze({
       schema_version: 1 as const,
       topology_authority_sha256: Object.freeze(

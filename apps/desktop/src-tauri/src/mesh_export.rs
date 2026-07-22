@@ -492,6 +492,12 @@ fn capture_export_source(
     let view = revalidate_current_applied_pose_capability(&project, &pose_capability)
         .map_err(|_| PREVIEW_FAILED_MESSAGE.to_owned())?
         .ok_or_else(|| STALE_PREVIEW_MESSAGE.to_owned())?;
+    if view.graph().is_some() {
+        return Err(
+            "閉路姿勢は静的メッシュに書き出せません。閉路折りパネルで姿勢を確認してください。"
+                .to_owned(),
+        );
+    }
     let source_fingerprint: Arc<str> = Arc::from(project.editor.fold_model_fingerprint_v1());
     if !super::valid_fold_model_fingerprint(&source_fingerprint) {
         return Err(PREVIEW_FAILED_MESSAGE.to_owned());
@@ -518,52 +524,68 @@ fn capture_export_source(
             let color = project.editor.paper().back.color;
             [color.red, color.green, color.blue, color.alpha]
         },
-        paper_front_texture: project.editor.paper().front.texture_asset.map(|asset_id| {
-            let asset = project
-                .texture_assets
-                .iter()
-                .find(|asset| asset.id == asset_id)
-                .expect("validated project texture reference");
-            ResolvedStaticMeshTexture {
-                binding: TextureAuthorityBinding {
-                    project_instance_id: project.instance_id,
-                    project_id: project.project_id,
-                    revision: project.editor.revision(),
-                },
-                asset_id,
-                side: PaperTextureSide::Front,
-                media_type: match asset.media_type {
-                    ori_formats::ProjectTextureMediaTypeV1::Png => EmbeddedTextureMediaTypeV1::Png,
-                    ori_formats::ProjectTextureMediaTypeV1::Jpeg => {
-                        EmbeddedTextureMediaTypeV1::Jpeg
-                    }
-                },
-                bytes: asset.bytes.clone(),
-            }
-        }),
-        paper_back_texture: project.editor.paper().back.texture_asset.map(|asset_id| {
-            let asset = project
-                .texture_assets
-                .iter()
-                .find(|asset| asset.id == asset_id)
-                .expect("validated project texture reference");
-            ResolvedStaticMeshTexture {
-                binding: TextureAuthorityBinding {
-                    project_instance_id: project.instance_id,
-                    project_id: project.project_id,
-                    revision: project.editor.revision(),
-                },
-                asset_id,
-                side: PaperTextureSide::Back,
-                media_type: match asset.media_type {
-                    ori_formats::ProjectTextureMediaTypeV1::Png => EmbeddedTextureMediaTypeV1::Png,
-                    ori_formats::ProjectTextureMediaTypeV1::Jpeg => {
-                        EmbeddedTextureMediaTypeV1::Jpeg
-                    }
-                },
-                bytes: asset.bytes.clone(),
-            }
-        }),
+        paper_front_texture: project
+            .editor
+            .paper()
+            .front
+            .texture_asset
+            .map(|asset_id| {
+                let asset = project
+                    .texture_assets
+                    .iter()
+                    .find(|asset| asset.id == asset_id)
+                    .ok_or_else(|| PREVIEW_FAILED_MESSAGE.to_owned())?;
+                Ok::<_, String>(ResolvedStaticMeshTexture {
+                    binding: TextureAuthorityBinding {
+                        project_instance_id: project.instance_id,
+                        project_id: project.project_id,
+                        revision: project.editor.revision(),
+                    },
+                    asset_id,
+                    side: PaperTextureSide::Front,
+                    media_type: match asset.media_type {
+                        ori_formats::ProjectTextureMediaTypeV1::Png => {
+                            EmbeddedTextureMediaTypeV1::Png
+                        }
+                        ori_formats::ProjectTextureMediaTypeV1::Jpeg => {
+                            EmbeddedTextureMediaTypeV1::Jpeg
+                        }
+                    },
+                    bytes: asset.bytes.clone(),
+                })
+            })
+            .transpose()?,
+        paper_back_texture: project
+            .editor
+            .paper()
+            .back
+            .texture_asset
+            .map(|asset_id| {
+                let asset = project
+                    .texture_assets
+                    .iter()
+                    .find(|asset| asset.id == asset_id)
+                    .ok_or_else(|| PREVIEW_FAILED_MESSAGE.to_owned())?;
+                Ok::<_, String>(ResolvedStaticMeshTexture {
+                    binding: TextureAuthorityBinding {
+                        project_instance_id: project.instance_id,
+                        project_id: project.project_id,
+                        revision: project.editor.revision(),
+                    },
+                    asset_id,
+                    side: PaperTextureSide::Back,
+                    media_type: match asset.media_type {
+                        ori_formats::ProjectTextureMediaTypeV1::Png => {
+                            EmbeddedTextureMediaTypeV1::Png
+                        }
+                        ori_formats::ProjectTextureMediaTypeV1::Jpeg => {
+                            EmbeddedTextureMediaTypeV1::Jpeg
+                        }
+                    },
+                    bytes: asset.bytes.clone(),
+                })
+            })
+            .transpose()?,
         paper_thickness_mm: canonical_zero(paper_thickness_mm),
         paper_thickness_bits,
         model: view.model().clone(),
@@ -2569,6 +2591,24 @@ mod tests {
             expected_revision: project.editor.revision(),
             format,
         }
+    }
+
+    #[test]
+    fn closed_graph_pose_mesh_export_fails_without_panicking_or_poisoning_project() {
+        let (mut project, hinges) = crate::applied_pose::tests::four_vertex_cycle_project();
+        crate::applied_pose::tests::install_flat_graph_pose_authority(&mut project, hinges);
+        let state = AppState::new(project);
+        let request = preview_request(&state, StaticMeshExportFormatRequest::Glb);
+
+        let error = match capture_export_source(&state, ProjectId::new(), request) {
+            Ok(_) => panic!("closed graph export must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("閉路姿勢"), "{error}");
+        assert!(
+            lock_project(&state).is_ok(),
+            "project mutex must remain usable"
+        );
     }
 
     #[test]

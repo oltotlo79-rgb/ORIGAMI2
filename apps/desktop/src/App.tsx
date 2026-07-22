@@ -9461,6 +9461,12 @@ function App() {
                     en: 'Hold Ctrl or Command to select multiple techniques. Select at least one.',
                   })}
                 </p>
+                <p className="muted" data-testid="petal-fold-certification-scope">
+                  {text({
+                    ja: '花弁折りは設計上の指定だけで、物理運動は未証明です。',
+                    en: 'Petal fold is a design preference only; its physical motion is not certified.',
+                  })}
+                </p>
                 <button type="submit" disabled={coreBusy || recoveryBlocking}>
                   {text({ ja: '評価方針を保存', en: 'Save design priorities' })}
                 </button>

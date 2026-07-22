@@ -7,6 +7,7 @@ try {
   for (let i = 0; i < 150; i += 1) { try { if ((await fetch(origin)).ok) break } catch {} await new Promise(resolve => setTimeout(resolve, 100)) }
   browser = await chromium.launch({ headless: true }); const page = await browser.newPage(); const errors = []; page.on('pageerror', error => errors.push(String(error)))
   await page.goto(`${origin}/scripts/app-instruction-export-browser-harness.html`, { waitUntil: 'networkidle' })
+  const petalScope = page.getByTestId('petal-fold-certification-scope'); await petalScope.waitFor(); if (!(await petalScope.textContent()).includes('未証明')) throw new Error('petal fold physical motion scope is not explicit')
   try { await page.getByText(/3\. Miura atomic 2/).waitFor({ timeout: 5000 }) } catch (error) { throw new Error(`${error}\npage errors=${errors.join('|')}\nbody=${(await page.locator('body').innerText()).slice(0, 4000)}`) }
   const exportButton = page.locator('button').filter({ hasText: /折り図|謚倥ｊ蝗ｳ/ }).first(); try { await exportButton.click({ timeout: 5000 }) } catch (error) { throw new Error(`${error}\nbody=${(await page.locator('body').innerText()).slice(0, 6000)}\ncommands=${await page.evaluate(() => window.__ORIGAMI2_APP_EXPORT_EVIDENCE__.commands)}`) }
   await page.getByText('miura.pdf', { exact: true }).waitFor()

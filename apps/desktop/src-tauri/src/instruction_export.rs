@@ -974,10 +974,11 @@ pub(crate) mod tests {
         FoldTechniqueParameterDefinitionV1, FoldTechniqueParameterTypeV1, FoldTechniqueSinkKindV1,
         FoldTechniqueSourceV1, FoldTechniqueTemplateV1,
         FoldTechniqueUnsupportedPhysicalOperationV1, LayerSelectiveMotionRequestV1,
-        ReverseFoldKindV1, ReverseFoldMotionRequestV1, SinkFoldMotionRequestV1,
-        SquashFoldMotionRequestV1, compile_certified_accordion_fold_timeline_v1,
-        compile_certified_book_fold_timeline_v1, compile_certified_crimp_fold_timeline_v1,
-        compile_certified_layer_selective_timeline_v1, compile_certified_reverse_fold_timeline_v1,
+        PetalFoldMotionRequestV1, ReverseFoldKindV1, ReverseFoldMotionRequestV1,
+        SinkFoldMotionRequestV1, SquashFoldMotionRequestV1,
+        compile_certified_accordion_fold_timeline_v1, compile_certified_book_fold_timeline_v1,
+        compile_certified_crimp_fold_timeline_v1, compile_certified_layer_selective_timeline_v1,
+        compile_certified_petal_fold_timeline_v1, compile_certified_reverse_fold_timeline_v1,
         compile_certified_sink_fold_timeline_v1, compile_certified_squash_fold_timeline_v1,
         instruction_pose_fingerprint_v1, validate_fold_technique_file_v1,
     };
@@ -1942,6 +1943,22 @@ pub(crate) mod tests {
             FoldTechniqueCapabilityV1::LayerSelectiveMotionV1,
             FoldTechniqueUnsupportedPhysicalOperationV1::LayerSelectiveMotionV1,
         );
+        assert!(matches!(
+            compile_certified_petal_fold_timeline_v1(PetalFoldMotionRequestV1 {
+                technique_file: &sink_file,
+                technique_id: "book-fold",
+                source_model_fingerprint: &model,
+                fixed_face,
+                first_edge: fold_edge,
+                second_edge,
+                source_hinge_angles: &source,
+                intermediate_angle_microdegrees: 45_000_000,
+                target_angle_microdegrees: 90_000_000,
+                first_path_certificate: &first,
+                second_path_certificate: &second,
+            }),
+            Err(ori_instructions::ReverseFoldMotionError::UnsupportedTechnique)
+        ));
         let timelines = [
             (
                 "中割り折り",
@@ -2436,6 +2453,10 @@ pub(crate) mod tests {
         petal_timeline.steps[0].title = "花弁折りの開始姿勢".to_owned();
         petal_timeline.steps[1].title = "花弁折り 1".to_owned();
         petal_timeline.steps[2].title = "花弁折り 2".to_owned();
+        for step in &mut petal_timeline.steps[1..] {
+            step.visual.path_certificate_reference_v1 = None;
+            step.description = "手動で作成された花弁折りです。物理運動は未証明です。".to_owned();
+        }
         let petal_archive = serde_json::to_vec(&petal_timeline).expect("archive petal fold");
         let reopened_petal: ori_domain::InstructionTimeline =
             serde_json::from_slice(&petal_archive).expect("reopen petal fold");
@@ -2445,24 +2466,10 @@ pub(crate) mod tests {
         ] {
             let mut source = source_for(&project, format);
             source.timeline = reopened_petal.clone();
-            let artifact = build_pending_export(source).expect("native petal-fold export");
+            let artifact = build_pending_export(source).expect("uncertified petal-fold export");
             assert_eq!(artifact.step_count, 3);
             assert!(artifact.bytes.starts_with(magic));
         }
-        let mut uncertified_petal = reopened_petal;
-        for step in &mut uncertified_petal.steps[1..] {
-            step.visual.path_certificate_reference_v1 = None;
-            step.description = "手動で作成された花弁折りです。".to_owned();
-        }
-        for format in [
-            InstructionExportFormatRequest::Pdf,
-            InstructionExportFormatRequest::SvgZip,
-        ] {
-            let mut source = source_for(&project, format);
-            source.timeline = uncertified_petal.clone();
-            assert!(build_pending_export(source).is_ok());
-        }
-
         let mut crimp_timeline = reopened_reverse.clone();
         crimp_timeline.steps[0].title = "段折りの開始姿勢".to_owned();
         crimp_timeline.steps[1].title = "段折り 1".to_owned();

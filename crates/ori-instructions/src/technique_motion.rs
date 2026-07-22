@@ -120,6 +120,8 @@ pub type LayerSelectiveMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
 pub type SquashFoldMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
 /// A crimp fold represented by exactly two ordered straight-line operations.
 pub type CrimpFoldMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
+/// Reserved request shape for a future certified petal-fold compiler.
+pub type PetalFoldMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
 
 /// Compiles the proof-carrying sink primitive used by a named squash fold.
 /// Missing capabilities or either missing path segment remain fail-closed.
@@ -180,6 +182,15 @@ pub fn compile_certified_crimp_fold_timeline_v1(
         request.first_path_certificate,
         request.second_path_certificate,
     )
+}
+
+/// Petal folding needs a lifted flap, adjacent-face opening, and final
+/// flattening relation that V1 primitives do not jointly prove. Never
+/// reinterpret a reverse/sink certificate as petal-fold authority.
+pub const fn compile_certified_petal_fold_timeline_v1(
+    _request: PetalFoldMotionRequestV1<'_>,
+) -> Result<InstructionTimeline, ReverseFoldMotionError> {
+    Err(ReverseFoldMotionError::UnsupportedTechnique)
 }
 
 pub fn compile_certified_layer_selective_timeline_v1(

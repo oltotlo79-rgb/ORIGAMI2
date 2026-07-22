@@ -301,6 +301,48 @@ struct RegularQuadPetalPreviewRecordV1 {
     authority: DyadicPathNativeAuthorityV1,
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct RegularQuadPetalPrivatePreviewStateV1(Mutex<Option<RegularQuadPetalPreviewRecordV1>>);
+
+#[cfg(test)]
+impl RegularQuadPetalPrivatePreviewStateV1 {
+    fn mint_once_v1(&self, record: RegularQuadPetalPreviewRecordV1) -> Result<(), String> {
+        let mut slot = self.0.lock().map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+        if slot.is_some() {
+            return Err("a regular-quad petal preview is already active".to_owned());
+        }
+        *slot = Some(record);
+        Ok(())
+    }
+
+    fn consume_for_apply_v1(
+        &self,
+        token: ProjectId,
+        project_instance_id: ProjectId,
+        project_id: ProjectId,
+        revision: u64,
+        target_binding: [u8; 32],
+        path_binding: &str,
+    ) -> Result<RegularQuadPetalPreviewRecordV1, String> {
+        let mut slot = self.0.lock().map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+        if !slot.as_ref().is_some_and(|record| {
+            record.revalidates_for_apply_v1(
+                token,
+                project_instance_id,
+                project_id,
+                revision,
+                target_binding,
+                path_binding,
+            )
+        }) {
+            return Err("regular-quad petal preview revalidation failed".to_owned());
+        }
+        slot.take()
+            .ok_or_else(|| "regular-quad petal preview was consumed".to_owned())
+    }
+}
+
 #[allow(dead_code)]
 impl RegularQuadPetalPreviewRecordV1 {
     #[cfg(test)]
@@ -391,6 +433,22 @@ struct DyadicAuxiliaryEdgeV1 {
 }
 
 impl DyadicPathNativeAuthorityV1 {
+    #[cfg(test)]
+    fn regular_quad_petal_segment_certificates_v1(
+        &self,
+        record_target: [u8; 32],
+        record_path_binding: &str,
+    ) -> Option<[ori_collision::CertifiedPoseGraphPathCertificateV1; 3]> {
+        if !self.revalidates_exact_three_graph_segments_v1(record_target, record_path_binding) {
+            return None;
+        }
+        Some([
+            self.path.segment_certificate_v1(0)?,
+            self.path.segment_certificate_v1(1)?,
+            self.path.segment_certificate_v1(2)?,
+        ])
+    }
+
     /// Stronger authority boundary for the dormant regular-quad petal path.
     ///
     /// A petal preview must never accept the Tree fallback or infer continuous

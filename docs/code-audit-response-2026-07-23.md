@@ -56,11 +56,13 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 
 ## SIM-010の証明済み範囲と未証明境界
 
-`1668933`, `1d167c0`, `7d0cc69`, `99ebfe6`, `be6a15a`, `9020f8b`, `82be62a`, `b009cfe`, `d88f870`, `a30fc59`により、既存の単一hinge・厚さ0経路だけでなく、bounded dyadic graph/cycleとpositive-thickness Treeの一部もproduction native routeへ到達している。Tree routeは正厚連続certificateとshared-vertex layer transportを別々に保持し、preview mintとApply直前にschedule端点、source/target、紙厚、層証拠、project instance/revision/fingerprint/generationを再照合する。正厚4/5/6/7-hinge level-3 Treeと、flat開始・正厚8-hinge collective fixtureでは改ざん無変更、one-shot token、原子的Apply、certificate付きtimeline、Undo/Redo、ORI2再openを一つの本番routeで回帰した。
+`1668933`, `1d167c0`, `7d0cc69`, `99ebfe6`, `be6a15a`, `9020f8b`, `82be62a`, `b009cfe`, `d88f870`, `a30fc59`, `16159cb`により、既存の単一hinge・厚さ0経路だけでなく、bounded dyadic graph/cycleとpositive-thickness Treeの一部もproduction native routeへ到達している。Tree routeは正厚連続certificateとshared-vertex layer transportを別々に保持し、preview mintとApply直前にschedule端点、source/target、紙厚、層証拠、project instance/revision/fingerprint/generationを再照合する。正厚4/5/6/7-hinge level-3 Treeと、flat開始・正厚8-hinge collective fixtureでは改ざん無変更、one-shot token、原子的Apply、certificate付きtimeline、Undo/Redo、ORI2再openを一つの本番routeで回帰した。
 
 一方、これは任意の一般姿勢、任意多hinge schedule、一般共有hinge admission、完全な正厚衝突、一般複数層transport、全経路closure、専用層順viewerを証明しない。browser harnessのmock成功だけを能力証拠には用いず、native certificate fixtureと本番routeの双方がある狭いcaseだけを実装範囲とする。従ってSIM-010は部分実装を維持する。
 
 `a30fc59`の84-hinge証拠は、flat graph開始のdense-cycle collective scheduleで正厚continuous pathのpreview・原子的Apply・one-shot・Undo/Redo・ORI2再openだけを固定する。layer transport model・transition・pair orderは明示的に存在しないことを回帰しており、一般非flat開始、一般84-hinge schedule、layer transportの証拠やSIM-010の昇格根拠には用いない。
+
+`16159cb`は17-faceの二block fixtureに限り、blockwise authorityのdomain分離済みtarget-order hash、transition count、両blockが証明したrestricted pairの重複なし和集合をtarget stepへ保存する。pair件数不一致はfail closedし、Undo/RedoとORI2再open後のtimeline完全一致を回帰した。これは一般block数、一般層搬送、一般姿勢の証拠ではなく、SIM-010の部分実装判定を変更しない。
 
 ## 検証
 
@@ -81,5 +83,6 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 - Windows desktop SIM-010 positive-thickness 7-hinge generic-grid Tree永続化回帰: 1/1（615件filter）、workspace fmt: 成功。同じく部分実装を維持する。
 - Windows desktop SIM-010 flat-start positive-thickness 8-hinge collective永続化回帰: 1/1（615件filter）、WSL Clippy `-D warnings`・workspace fmt: 成功。非flat一般開始を証明しないため部分実装を維持する。
 - Windows desktop SIM-010 flat-start positive-thickness 84-hinge dense-cycle continuous-path永続化回帰: 1/1（616件filter）。layer transportなしを明示検証し、一般非flat開始・一般schedule・SIM-010昇格の証拠には用いない。
+- Windows desktop SIM-010 17-face two-block layer-proof永続化回帰: 1/1（616件filter）。target-order hash・transition count・restricted pair unionとUndo/Redo・ORI2再openの完全一致を検証。一般block数・一般層搬送の証拠には用いない。
 
 検証件数は各対応コミット時点の対象suiteであり、異なる時点の件数を一つの全suite件数として合算しない。全CIが成功するまでは公式完成度を更新しない。

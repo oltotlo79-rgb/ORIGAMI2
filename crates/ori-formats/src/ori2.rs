@@ -1579,6 +1579,7 @@ mod tests {
                 source_asset_fingerprint: "asset:typed-provenance".to_owned(),
                 semantic_landmark_provenance: None,
                 generic_tree: None,
+                reference_consensus: None,
             });
         let archive = Ori2ProjectArchive::document_only(document);
         let bytes = write_project_archive_ori2(&archive).expect("write typed provenance");

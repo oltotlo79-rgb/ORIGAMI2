@@ -1570,6 +1570,7 @@ mod tests {
             source_asset_fingerprint: "asset:test".to_owned(),
             semantic_landmark_provenance: None,
             generic_tree: None,
+            reference_consensus: None,
         };
         for format in [
             CreasePatternExportFormat::Fold12,
@@ -1631,6 +1632,7 @@ mod tests {
             source_asset_fingerprint: "sha256:0123456789abcdef".to_owned(),
             semantic_landmark_provenance: None,
             generic_tree: None,
+            reference_consensus: None,
         };
         for format in [
             CreasePatternExportFormat::Fold12,

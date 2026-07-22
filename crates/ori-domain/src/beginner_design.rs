@@ -104,6 +104,19 @@ pub struct BeginnerGenerationProvenanceV1 {
     pub semantic_landmark_provenance: Option<BeginnerSemanticLandmarkProvenanceV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generic_tree: Option<BeginnerGenericTreeProvenanceV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_consensus: Option<BeginnerReferenceConsensusProvenanceV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerReferenceConsensusProvenanceV1 {
+    pub schema_version: u32,
+    pub source_revision: u64,
+    pub bindings: Vec<BeginnerReferenceBindingV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_asset_id: Option<AssetId>,
+    pub pair_digests_sha256: Vec<[u8; 32]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -359,6 +372,31 @@ pub fn validate_beginner_generation_provenance_v1(
                         })
                 })
         })
+        && provenance
+            .reference_consensus
+            .as_ref()
+            .is_none_or(|consensus| {
+                consensus.schema_version == 1
+                    && (2..=4).contains(&consensus.bindings.len())
+                    && (1..=6).contains(&consensus.pair_digests_sha256.len())
+                    && consensus
+                        .bindings
+                        .iter()
+                        .all(|binding| binding.quality <= 100)
+                    && consensus
+                        .bindings
+                        .iter()
+                        .map(|binding| binding.asset_id)
+                        .collect::<std::collections::HashSet<_>>()
+                        .len()
+                        == consensus.bindings.len()
+                    && consensus.excluded_asset_id.is_none_or(|id| {
+                        consensus
+                            .bindings
+                            .iter()
+                            .any(|binding| binding.asset_id == id)
+                    })
+            })
 }
 
 #[cfg(test)]
@@ -435,6 +473,7 @@ mod tests {
                         }],
                     }),
                 }),
+                reference_consensus: None,
             }),
             ..BeginnerDesignProfileV1::default()
         }

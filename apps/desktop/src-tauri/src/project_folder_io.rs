@@ -1193,6 +1193,7 @@ mod tests {
                     source_asset_fingerprint: "asset:expanded-folder".to_owned(),
                     semantic_landmark_provenance: None,
                     generic_tree: None,
+                    reference_consensus: None,
                 });
             }
             let artifact = write_project_folder_v1(&archive).expect("write folder provenance");

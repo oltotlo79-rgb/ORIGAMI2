@@ -78,6 +78,7 @@ mod parameter_grid_tests {
             source_asset_fingerprint: "none".to_owned(),
             semantic_landmark_provenance: Some(semantic.clone()),
             generic_tree: None,
+            reference_consensus: None,
         };
         assert!(crate::validate_beginner_generation_provenance_v1(
             &provenance

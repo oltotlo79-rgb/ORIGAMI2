@@ -3204,6 +3204,7 @@ mod tests {
             source_asset_fingerprint: "asset:glb-extension".to_owned(),
             semantic_landmark_provenance: None,
             generic_tree: None,
+            reference_consensus: None,
         };
         let artifact = export_static_triangle_mesh_glb_with_provenance(&mesh, &provenance)
             .expect("GLB provenance export");

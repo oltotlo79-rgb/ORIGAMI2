@@ -223,6 +223,11 @@ export type BeginnerDesignProfileV1 = {
         steps: ReadonlyArray<Readonly<{ canonical_crease_id: string; tree_depth: number
           assignment: 'mountain' | 'valley'; target_branch: string; fixed_side: 'root' | 'leaf'; caution: string }>> }>
     }>
+    reference_consensus?: Readonly<{
+      schema_version: 1; source_revision: number
+      bindings: NonNullable<BeginnerDesignProfileV1['reference_consensus_v1']>['bindings']
+      excluded_asset_id?: string; pair_digests_sha256: ReadonlyArray<ReadonlyArray<number>>
+    }>
   }>
   reference_surface_landmarks_tenths_mm?: ReadonlyArray<readonly [number, number, number]>
   outline_edit_authority?: Readonly<{
@@ -918,6 +923,14 @@ export type BeginnerCandidateResponseV1 = {
     normalized_extent_error: number; agreement_score: number; apply_allowed: boolean
     reason: 'image_glb_agreement_v1' | 'image_glb_disagreement_v1'
   }
+  reference_consensus_analysis: null | {
+    schema_version: 1; revision: number; source_count: number; excluded_asset_id: string | null
+    pair_count: number; disagreement_count: number; agreement_score: number; apply_allowed: boolean
+    reason: 'reference_consensus_agreement_v1' | 'reference_consensus_multiple_disagreements_v1'
+    pairs: Array<{ left_asset_id: string; right_asset_id: string; component_error: number
+      normalized_extent_error: number; branch_error: number; agreement_score: number
+      disagrees: boolean; pair_digest_sha256: number[] }>
+  }
 }
 
 export type BeginnerGeneratedPlanAssessmentV1 = {
@@ -1025,6 +1038,7 @@ function normalizeBeginnerCandidateResponse(
     'plan_assessments',
     'candidates',
     'multi_reference_fusion',
+    'reference_consensus_analysis',
   ] as const)
   const fusion = response && response.multi_reference_fusion === null ? null
     : exactCoreDataRecord(response?.multi_reference_fusion, [
@@ -1032,6 +1046,14 @@ function normalizeBeginnerCandidateResponse(
       'reference_component_count', 'image_branch_count', 'reference_branch_count',
       'normalized_extent_error', 'agreement_score', 'apply_allowed', 'reason',
     ] as const)
+  const consensus = response && response.reference_consensus_analysis === null ? null
+    : exactCoreDataRecord(response?.reference_consensus_analysis, [
+      'schema_version', 'revision', 'source_count', 'excluded_asset_id', 'pair_count',
+      'disagreement_count', 'agreement_score', 'apply_allowed', 'reason', 'pairs',
+    ] as const)
+  const consensusPairs = consensus && Array.isArray(consensus.pairs) ? consensus.pairs.map((raw) =>
+    exactCoreDataRecord(raw, ['left_asset_id', 'right_asset_id', 'component_error',
+      'normalized_extent_error', 'branch_error', 'agreement_score', 'disagrees', 'pair_digest_sha256'] as const)) : []
   if (
     !response
     || response.schema_version !== 1
@@ -1060,6 +1082,21 @@ function normalizeBeginnerCandidateResponse(
       || typeof fusion.apply_allowed !== 'boolean'
       || !['image_glb_agreement_v1', 'image_glb_disagreement_v1'].includes(String(fusion.reason))
       || (fusion.reason === 'image_glb_agreement_v1') !== fusion.apply_allowed))
+    || (consensus !== null && (!consensus || consensus.schema_version !== 1 || consensus.revision !== expectedRevision
+      || !Number.isInteger(consensus.source_count) || Number(consensus.source_count) < 2 || Number(consensus.source_count) > 4
+      || (consensus.excluded_asset_id !== null && !isCanonicalNonNilUuid(consensus.excluded_asset_id))
+      || !Number.isInteger(consensus.pair_count) || Number(consensus.pair_count) < 1 || Number(consensus.pair_count) > 6
+      || consensusPairs.length !== consensus.pair_count || !Number.isInteger(consensus.disagreement_count)
+      || Number(consensus.disagreement_count) < 0 || Number(consensus.disagreement_count) > Number(consensus.pair_count)
+      || !Number.isInteger(consensus.agreement_score) || Number(consensus.agreement_score) < 0 || Number(consensus.agreement_score) > 100
+      || typeof consensus.apply_allowed !== 'boolean'
+      || !['reference_consensus_agreement_v1', 'reference_consensus_multiple_disagreements_v1'].includes(String(consensus.reason))
+      || (Number(consensus.disagreement_count) < 2) !== consensus.apply_allowed
+      || consensusPairs.some((pair) => !pair || !isCanonicalNonNilUuid(pair.left_asset_id) || !isCanonicalNonNilUuid(pair.right_asset_id)
+        || pair.left_asset_id === pair.right_asset_id || !isBoundedIntegerTuple(pair.pair_digest_sha256, 32, 255)
+        || [pair.component_error, pair.normalized_extent_error, pair.branch_error, pair.agreement_score]
+          .some((metric) => !Number.isInteger(metric) || Number(metric) < 0 || Number(metric) > 100)
+        || typeof pair.disagrees !== 'boolean')))
   ) return null
   const candidates = response.candidates.map((candidate, index) => {
     const record = exactCoreDataRecord(candidate, [
@@ -1317,6 +1354,9 @@ function normalizeBeginnerCandidateResponse(
     plan_assessments: planAssessments as BeginnerGeneratedPlanAssessmentV1[],
     candidates: admitted.slice(),
     multi_reference_fusion: fusion as BeginnerCandidateResponseV1['multi_reference_fusion'],
+    reference_consensus_analysis: consensus === null ? null : Object.freeze({
+      ...consensus, pairs: Object.freeze(consensusPairs.map((pair) => Object.freeze({ ...pair }))),
+    }) as BeginnerCandidateResponseV1['reference_consensus_analysis'],
   }) as BeginnerCandidateResponseV1
 }
 
@@ -1357,7 +1397,9 @@ export function normalizeBeginnerDesignProfile(
   if (!generationConstraints) return null
   const provenance = record.generation_provenance === undefined ? null : exactCoreDataRecord(
     record.generation_provenance, ['schema_version', 'topology_authority_sha256', 'fold_path_certificate_sha256', 'confidence_score',
-      'confidence_reasons', 'explicit_override', 'source_asset_fingerprint', 'generic_tree'] as const)
+      'confidence_reasons', 'explicit_override', 'source_asset_fingerprint', 'generic_tree', 'reference_consensus'] as const)
+  const provenanceConsensus = provenance?.reference_consensus === undefined ? null : exactCoreDataRecord(
+    provenance.reference_consensus, ['schema_version', 'source_revision', 'bindings', 'excluded_asset_id', 'pair_digests_sha256'] as const)
   const genericTree = provenance?.generic_tree === undefined ? null : exactCoreDataRecord(
     provenance.generic_tree, ['schema_version', 'target_category', 'source', 'asset_content_sha256', 'tree_topology_sha256',
       'normalized_length_ratios', 'orientation', 'generator_version', 'authorizes_apply', 'instruction_proposal'] as const)
@@ -1375,6 +1417,18 @@ export function normalizeBeginnerDesignProfile(
     || provenance.confidence_reasons.some((reason) => typeof reason !== 'string' || reason.length < 1 || reason.length > 64)
     || typeof provenance.explicit_override !== 'boolean' || typeof provenance.source_asset_fingerprint !== 'string'
     || provenance.source_asset_fingerprint.length < 1 || provenance.source_asset_fingerprint.length > 128
+    || (provenance.reference_consensus !== undefined && (!provenanceConsensus || provenanceConsensus.schema_version !== 1
+      || !Number.isSafeInteger(provenanceConsensus.source_revision) || Number(provenanceConsensus.source_revision) < 0
+      || !Array.isArray(provenanceConsensus.bindings) || provenanceConsensus.bindings.length < 2 || provenanceConsensus.bindings.length > 4
+      || provenanceConsensus.bindings.some((raw) => { const binding = exactCoreDataRecord(raw, ['kind', 'asset_id', 'sha256', 'quality'] as const); return !binding
+        || !['image', 'reference_model'].includes(String(binding.kind)) || !isCanonicalNonNilUuid(binding.asset_id)
+        || !isBoundedIntegerTuple(binding.sha256, 32, 255) || !Number.isInteger(binding.quality)
+        || Number(binding.quality) < 0 || Number(binding.quality) > 100 })
+      || (provenanceConsensus.excluded_asset_id !== undefined && (!isCanonicalNonNilUuid(provenanceConsensus.excluded_asset_id)
+        || !(provenanceConsensus.bindings as Array<Record<string, unknown>>).some((binding) => binding.asset_id === provenanceConsensus.excluded_asset_id)))
+      || !Array.isArray(provenanceConsensus.pair_digests_sha256) || provenanceConsensus.pair_digests_sha256.length < 1
+      || provenanceConsensus.pair_digests_sha256.length > 6
+      || provenanceConsensus.pair_digests_sha256.some((digest) => !isBoundedIntegerTuple(digest, 32, 255))))
     || (provenance.generic_tree !== undefined && (!genericTree || genericTree.schema_version !== 1
       || !['image_silhouette', 'glb_geometry', 'manual_skeleton'].includes(String(genericTree.source))
       || (genericTree.target_category !== undefined && genericTree.target_category !== 'custom_object')
@@ -1500,6 +1554,12 @@ export function normalizeBeginnerDesignProfile(
       confidence_reasons: Object.freeze((provenance.confidence_reasons as string[]).slice()),
       explicit_override: provenance.explicit_override as boolean,
       source_asset_fingerprint: provenance.source_asset_fingerprint as string,
+      ...(provenanceConsensus === null ? {} : { reference_consensus: Object.freeze({
+        schema_version: 1 as const, source_revision: Number(provenanceConsensus.source_revision),
+        bindings: Object.freeze((provenanceConsensus.bindings as Array<Record<string, unknown>>).map((binding) => Object.freeze({ ...binding }))) as NonNullable<BeginnerDesignProfileV1['reference_consensus_v1']>['bindings'],
+        ...(provenanceConsensus.excluded_asset_id === undefined ? {} : { excluded_asset_id: String(provenanceConsensus.excluded_asset_id) }),
+        pair_digests_sha256: Object.freeze((provenanceConsensus.pair_digests_sha256 as number[][]).map((digest) => Object.freeze(digest.slice()))),
+      }) }),
       ...(genericTree === null ? {} : { generic_tree: Object.freeze({
         schema_version: 1 as const,
         ...(genericTree.target_category === undefined ? {} : { target_category: 'custom_object' as const }),

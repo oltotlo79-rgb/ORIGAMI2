@@ -1746,6 +1746,189 @@ struct BeginnerCandidateResponse {
     generated_plans: Vec<ori_domain::BeginnerGeneratedPlanV1>,
     plan_assessments: Vec<BeginnerGeneratedPlanAssessment>,
     multi_reference_fusion: Option<BeginnerMultiReferenceFusionV1>,
+    reference_consensus_analysis: Option<BeginnerReferenceConsensusAnalysisV1>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BeginnerReferenceConsensusPairV1 {
+    left_asset_id: AssetId,
+    right_asset_id: AssetId,
+    component_error: u8,
+    normalized_extent_error: u8,
+    branch_error: u8,
+    agreement_score: u8,
+    disagrees: bool,
+    pair_digest_sha256: [u8; 32],
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BeginnerReferenceConsensusAnalysisV1 {
+    schema_version: u32,
+    revision: u64,
+    source_count: u8,
+    excluded_asset_id: Option<AssetId>,
+    pair_count: u8,
+    disagreement_count: u8,
+    agreement_score: u8,
+    apply_allowed: bool,
+    reason: &'static str,
+    pairs: Vec<BeginnerReferenceConsensusPairV1>,
+}
+
+#[derive(Clone, Copy)]
+struct BeginnerReferenceShapeDescriptorV1 {
+    asset_id: AssetId,
+    sha256: [u8; 32],
+    components: u8,
+    extents: [u64; 2],
+    branches: u8,
+}
+
+fn beginner_reference_consensus_analysis_v1(
+    project: &ProjectState,
+) -> Option<BeginnerReferenceConsensusAnalysisV1> {
+    use ori_domain::BeginnerReferenceBindingKindV1::{Image, ReferenceModel};
+    let profile = project.editor.beginner_design_profile();
+    let consensus = profile.reference_consensus_v1.as_ref()?;
+    let mut descriptors = Vec::with_capacity(consensus.bindings.len());
+    for binding in &consensus.bindings {
+        if consensus.excluded_asset_id == Some(binding.asset_id) {
+            continue;
+        }
+        let descriptor = match binding.kind {
+            Image => {
+                let asset = project
+                    .texture_assets
+                    .iter()
+                    .find(|asset| asset.id == binding.asset_id)?;
+                let hash: [u8; 32] = sha2::Sha256::digest(&asset.bytes).into();
+                if hash != binding.sha256 {
+                    return None;
+                }
+                let (width, height, rgba) =
+                    beginner_recognition::decode_general_image(&asset.bytes).ok()?;
+                let outlines =
+                    ori_domain::analyze_outline_candidates_rgba_v1(width, height, &rgba).ok()?;
+                let min_x = outlines.iter().map(|item| item.bounds.min_x).min()?;
+                let max_x = outlines.iter().map(|item| item.bounds.max_x).max()?;
+                let min_y = outlines.iter().map(|item| item.bounds.min_y).min()?;
+                let max_y = outlines.iter().map(|item| item.bounds.max_y).max()?;
+                let components = u8::try_from(outlines.len()).ok()?;
+                BeginnerReferenceShapeDescriptorV1 {
+                    asset_id: binding.asset_id,
+                    sha256: hash,
+                    components,
+                    extents: [u64::from(max_x - min_x + 1), u64::from(max_y - min_y + 1)],
+                    branches: components.saturating_mul(2).saturating_sub(1),
+                }
+            }
+            ReferenceModel => {
+                let asset = project
+                    .reference_model_assets
+                    .iter()
+                    .find(|asset| asset.id == binding.asset_id)?;
+                let hash: [u8; 32] = sha2::Sha256::digest(&asset.bytes).into();
+                if hash != binding.sha256 {
+                    return None;
+                }
+                let geometry = ori_formats::read_reference_glb_geometry_v1(&asset.bytes).ok()?;
+                let suggestion = derive_reference_model_suggestion_v1(
+                    binding.asset_id,
+                    &geometry,
+                    profile.generation_constraints.target_category,
+                    &profile.generation_constraints.target_parts,
+                )
+                .ok()?;
+                BeginnerReferenceShapeDescriptorV1 {
+                    asset_id: binding.asset_id,
+                    sha256: hash,
+                    components: suggestion.component_count,
+                    extents: [
+                        u64::from(suggestion.principal_axis_extents_tenths_mm[0]),
+                        u64::from(suggestion.principal_axis_extents_tenths_mm[1]),
+                    ],
+                    branches: u8::try_from(suggestion.stick_bars.len()).ok()?,
+                }
+            }
+        };
+        descriptors.push(descriptor);
+    }
+    if descriptors.len() < 2 {
+        return None;
+    }
+    let normalize = |values: [u64; 2]| {
+        let major = values[0].max(values[1]).max(1);
+        values.map(|v| v.saturating_mul(100) / major)
+    };
+    let mut pairs = Vec::new();
+    for left in 0..descriptors.len() {
+        for right in (left + 1)..descriptors.len() {
+            if pairs.len() == 6 {
+                return None;
+            }
+            let a = descriptors[left];
+            let b = descriptors[right];
+            let component_error = a.components.abs_diff(b.components);
+            let branch_error = a.branches.abs_diff(b.branches);
+            let an = normalize(a.extents);
+            let bn = normalize(b.extents);
+            let extent_error = an[0].abs_diff(bn[0]).max(an[1].abs_diff(bn[1])).min(100) as u8;
+            let disagrees = component_error > 1 || branch_error > 2 || extent_error > 20;
+            let score = 100_u8.saturating_sub(
+                extent_error
+                    .saturating_mul(2)
+                    .saturating_add(component_error.saturating_mul(20))
+                    .saturating_add(branch_error.saturating_mul(10))
+                    .min(100),
+            );
+            let mut digest = sha2::Sha256::new();
+            digest.update(b"origami2-reference-consensus-pair-v1\0");
+            digest.update(a.asset_id.canonical_bytes());
+            digest.update(a.sha256);
+            digest.update(b.asset_id.canonical_bytes());
+            digest.update(b.sha256);
+            digest.update([
+                component_error,
+                extent_error,
+                branch_error,
+                score,
+                u8::from(disagrees),
+            ]);
+            pairs.push(BeginnerReferenceConsensusPairV1 {
+                left_asset_id: a.asset_id,
+                right_asset_id: b.asset_id,
+                component_error,
+                normalized_extent_error: extent_error,
+                branch_error,
+                agreement_score: score,
+                disagrees,
+                pair_digest_sha256: digest.finalize().into(),
+            });
+        }
+    }
+    let disagreement_count = pairs.iter().filter(|pair| pair.disagrees).count() as u8;
+    let agreement_score = pairs
+        .iter()
+        .map(|pair| u16::from(pair.agreement_score))
+        .sum::<u16>()
+        / pairs.len() as u16;
+    let apply_allowed = disagreement_count < 2;
+    Some(BeginnerReferenceConsensusAnalysisV1 {
+        schema_version: 1,
+        revision: project.editor.revision(),
+        source_count: descriptors.len() as u8,
+        excluded_asset_id: consensus.excluded_asset_id,
+        pair_count: pairs.len() as u8,
+        disagreement_count,
+        agreement_score: agreement_score as u8,
+        apply_allowed,
+        reason: if apply_allowed {
+            "reference_consensus_agreement_v1"
+        } else {
+            "reference_consensus_multiple_disagreements_v1"
+        },
+        pairs,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2977,6 +3160,7 @@ fn evaluate_beginner_candidates(
             generated_plans: Vec::new(),
             plan_assessments: Vec::new(),
             multi_reference_fusion: None,
+            reference_consensus_analysis: None,
         });
     };
     let (generation_status, mut generated_plans) = match generation {
@@ -3006,6 +3190,7 @@ fn evaluate_beginner_candidates(
     let multi_reference_fusion = reference_suggestion
         .as_ref()
         .and_then(|reference| beginner_multi_reference_fusion_v1(&project, reference));
+    let reference_consensus_analysis = beginner_reference_consensus_analysis_v1(&project);
     let mut plan_assessments: Vec<BeginnerGeneratedPlanAssessment> = generated_plans
         .iter()
         .map(|plan| {
@@ -3028,6 +3213,16 @@ fn evaluate_beginner_candidates(
             assessment.reason = "multi_reference_disagreement";
         }
     }
+    if reference_consensus_analysis
+        .as_ref()
+        .is_some_and(|analysis| !analysis.apply_allowed)
+    {
+        for assessment in &mut plan_assessments {
+            assessment.apply_allowed = false;
+            assessment.proof_scope = "indeterminate";
+            assessment.reason = "multi_reference_disagreement";
+        }
+    }
     Ok(BeginnerCandidateResponse {
         schema_version: ori_domain::BEGINNER_CANDIDATE_SCHEMA_VERSION_V1,
         project_instance_id: project.instance_id,
@@ -3041,6 +3236,7 @@ fn evaluate_beginner_candidates(
         generated_plans,
         plan_assessments,
         multi_reference_fusion,
+        reference_consensus_analysis,
     })
 }
 
@@ -4899,6 +5095,9 @@ fn apply_beginner_generated_plan_document(
     if !component_bridge_override_is_live_v1(&project, &expected_profile) {
         return Err("component_bridge_override_stale_or_disconnected".to_owned());
     }
+    if !reference_consensus_is_live_v1(&project, &expected_profile) {
+        return Err("reference_consensus_asset_binding_stale".to_owned());
+    }
     if !target_asset_reference_is_live(
         &project,
         expected_profile.generation_constraints.target_asset,
@@ -4927,6 +5126,13 @@ fn apply_beginner_generated_plan_document(
         .is_some_and(|fusion| !fusion.apply_allowed)
     {
         return Err("multi_reference_disagreement".to_owned());
+    }
+    if expected_profile.reference_consensus_v1.is_some() {
+        let analysis = beginner_reference_consensus_analysis_v1(&project)
+            .ok_or_else(|| "reference_consensus_analysis_unavailable".to_owned())?;
+        if !analysis.apply_allowed {
+            return Err("reference_consensus_multiple_disagreements".to_owned());
+        }
     }
     let assessment = assess_beginner_generated_plan(
         project.project_id,
@@ -5141,6 +5347,25 @@ fn apply_beginner_generated_plan_document(
             .map_err(|_| "the generated plan topology could not be bound".to_owned())?,
     )
     .into();
+    let reference_consensus_provenance = beginner_design_profile
+        .reference_consensus_v1
+        .as_ref()
+        .map(|consensus| {
+            let analysis = beginner_reference_consensus_analysis_v1(&project)
+                .ok_or_else(|| "reference_consensus_analysis_unavailable".to_owned())?;
+            Ok::<_, String>(ori_domain::BeginnerReferenceConsensusProvenanceV1 {
+                schema_version: 1,
+                source_revision: expected_revision,
+                bindings: consensus.bindings.clone(),
+                excluded_asset_id: consensus.excluded_asset_id,
+                pair_digests_sha256: analysis
+                    .pairs
+                    .iter()
+                    .map(|pair| pair.pair_digest_sha256)
+                    .collect(),
+            })
+        })
+        .transpose()?;
     beginner_design_profile.generation_provenance =
         Some(ori_domain::BeginnerGenerationProvenanceV1 {
             schema_version: 1,
@@ -5160,6 +5385,7 @@ fn apply_beginner_generated_plan_document(
                 .map_or_else(|| "none".to_owned(), |asset| format!("{asset:?}")),
             semantic_landmark_provenance,
             generic_tree: None,
+            reference_consensus: reference_consensus_provenance,
         });
     execute_command(
         &mut project,
@@ -5603,6 +5829,7 @@ fn apply_grid_plan_document(
             source_asset_fingerprint,
             semantic_landmark_provenance,
             generic_tree,
+            reference_consensus: None,
         });
     execute_command(
         project,

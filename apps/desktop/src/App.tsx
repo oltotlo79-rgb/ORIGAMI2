@@ -8277,6 +8277,16 @@ function App() {
                             : 'image and GLB disagree; candidate apply is blocked.'}
                         </p>
                       )}
+                      {beginnerCandidates.reference_consensus_analysis && (
+                        <div aria-label="Reference consensus" role={beginnerCandidates.reference_consensus_analysis.apply_allowed ? 'status' : 'alert'}>
+                          <p>{`Reference consensus ${beginnerCandidates.reference_consensus_analysis.agreement_score}/100; ${beginnerCandidates.reference_consensus_analysis.pair_count} pair comparisons; ${beginnerCandidates.reference_consensus_analysis.disagreement_count} disagreements.`}</p>
+                          <ul>{beginnerCandidates.reference_consensus_analysis.pairs.map((pair) => (
+                            <li key={`${pair.left_asset_id}:${pair.right_asset_id}`}>
+                              {`Pair agreement ${pair.agreement_score}/100; components ${pair.component_error}; extent ${pair.normalized_extent_error}; branches ${pair.branch_error}${pair.disagrees ? '; disagrees' : ''}`}
+                            </li>
+                          ))}</ul>
+                        </div>
+                      )}
                       {beginnerCandidates.generated_plans.map((plan, index) => {
                         const vertexById = new Map(
                           plan.crease_pattern.vertices.map((vertex) => [vertex.id, vertex]),

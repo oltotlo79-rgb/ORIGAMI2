@@ -879,6 +879,7 @@ mod tests {
             source_asset_fingerprint: "asset:desktop-test".to_owned(),
             semantic_landmark_provenance: None,
             generic_tree: None,
+            reference_consensus: None,
         };
         for format in [
             CreaseExportFormatRequest::Fold,

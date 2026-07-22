@@ -397,7 +397,10 @@ fn sync_project_directory(path: &Path) -> std::io::Result<()> {
 fn sync_project_directory(path: &Path) -> std::io::Result<()> {
     let mut options = OpenOptions::new();
     options
-        .read(true)
+        // FlushFileBuffers requires a handle opened with write access. Keep
+        // delete sharing enabled so durability does not turn the directory
+        // handle into a transient rename blocker for sibling saves.
+        .access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     options.open(path)?.sync_all()

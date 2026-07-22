@@ -51,6 +51,7 @@ use super::{
     try_array3, verify_exact_rotation,
 };
 
+#[cfg(test)]
 mod direct_f_affine_corridor;
 mod direct_f_corridor;
 mod ef_boundary;

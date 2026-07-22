@@ -17315,6 +17315,33 @@ mod tests {
             )
             .expect("recertify restored positive tree");
             assert_eq!(recertified, restored_certificate);
+            let mut assignment_tampered = restored.crease_pattern.clone();
+            let crease = assignment_tampered
+                .edges
+                .iter_mut()
+                .find(|edge| matches!(edge.kind, EdgeKind::Mountain | EdgeKind::Valley))
+                .expect("restored generic tree crease");
+            crease.kind = match crease.kind {
+                EdgeKind::Mountain => EdgeKind::Valley,
+                EdgeKind::Valley => EdgeKind::Mountain,
+                _ => unreachable!("selected only an assigned crease"),
+            };
+            let tampered_topology =
+                EditorState::with_paper(assignment_tampered.clone(), restored.paper.clone())
+                    .topology_analysis_input(ns)
+                    .analyze();
+            assert_ne!(
+                certify_beginner_fold_path_v1(
+                    &plan,
+                    &restored.paper,
+                    &assignment_tampered,
+                    tampered_topology
+                        .simulation_snapshot()
+                        .expect("assignment-tampered tree topology"),
+                ),
+                Some(restored_certificate),
+                "the fold-path certificate must bind the mountain/valley assignment"
+            );
             assert!(
                 restored
                     .instruction_timeline

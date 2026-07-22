@@ -98,9 +98,10 @@ fn is_lowercase_sha256(value: &str) -> bool {
 fn is_safe_transaction_component(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 96
+        && !value.contains("..")
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.')
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -132,60 +133,36 @@ fn recover_authenticated_single_file_v1(
     let expected_old = journal.old_sha256.as_ref();
     let old_matches = |actual: &Option<String>| actual.as_ref() == expected_old;
 
-    match journal.phase {
-        SingleFileJournalPhaseV1::Prepared => {
-            if !old_matches(&target)
-                || temp
-                    .as_ref()
-                    .is_some_and(|hash| hash != &journal.temp_sha256)
-                || backup.is_some()
-            {
-                return Err(());
-            }
-            if temp.is_some() {
-                fs.remove_object(SingleFileRecoveryObject::Temp)?;
-                fs.sync_directory()?;
-            }
-            fs.remove_object(SingleFileRecoveryObject::Journal)?;
-            fs.sync_directory()
+    let before_old_move =
+        old_matches(&target) && temp.as_ref() == Some(&journal.temp_sha256) && backup.is_none();
+    let rollback_complete = old_matches(&target) && temp.is_none() && backup.is_none();
+    let before_publish =
+        target.is_none() && temp.as_ref() == Some(&journal.temp_sha256) && old_matches(&backup);
+    let after_publish = target.as_ref() == Some(&journal.temp_sha256)
+        && temp.is_none()
+        && (old_matches(&backup) || backup.is_none());
+    if before_old_move {
+        fs.remove_object(SingleFileRecoveryObject::Temp)?;
+        fs.sync_directory()?;
+    } else if rollback_complete {
+        // A previous recovery removed the private stage and was interrupted
+        // before unlinking the journal.
+    } else if before_publish {
+        fs.rename_object(
+            SingleFileRecoveryObject::Temp,
+            SingleFileRecoveryObject::Target,
+        )?;
+        fs.sync_directory()?;
+        fs.remove_object(SingleFileRecoveryObject::Backup)?;
+    } else if after_publish {
+        if backup.is_some() {
+            fs.remove_object(SingleFileRecoveryObject::Backup)?;
         }
-        SingleFileJournalPhaseV1::OldMoved => {
-            let before_publish = target.is_none()
-                && temp.as_ref() == Some(&journal.temp_sha256)
-                && old_matches(&backup);
-            let after_publish = target.as_ref() == Some(&journal.temp_sha256)
-                && temp.is_none()
-                && (old_matches(&backup) || backup.is_none());
-            if !before_publish && !after_publish {
-                return Err(());
-            }
-            if before_publish {
-                fs.rename_object(
-                    SingleFileRecoveryObject::Temp,
-                    SingleFileRecoveryObject::Target,
-                )?;
-                fs.sync_directory()?;
-            }
-            if backup.is_some() {
-                fs.remove_object(SingleFileRecoveryObject::Backup)?;
-            }
-            fs.remove_object(SingleFileRecoveryObject::Journal)?;
-            fs.sync_directory()
-        }
-        SingleFileJournalPhaseV1::NewPublished => {
-            if target.as_ref() != Some(&journal.temp_sha256)
-                || temp.is_some()
-                || (!old_matches(&backup) && backup.is_some())
-            {
-                return Err(());
-            }
-            if backup.is_some() {
-                fs.remove_object(SingleFileRecoveryObject::Backup)?;
-            }
-            fs.remove_object(SingleFileRecoveryObject::Journal)?;
-            fs.sync_directory()
-        }
+    } else {
+        return Err(());
     }
+    fs.remove_object(SingleFileRecoveryObject::Journal)?;
+    fs.sync_directory()
 }
 
 struct DiskSingleFileRecoveryFs {
@@ -266,9 +243,7 @@ impl SingleFileRecoveryFs for DiskSingleFileRecoveryFs {
     }
 
     fn sync_directory(&mut self) -> Result<(), ()> {
-        File::open(&self.directory)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|_| ())
+        sync_project_directory(&self.directory).map_err(|_| ())
     }
 }
 
@@ -320,6 +295,62 @@ fn recover_single_file_journal_for_target(
         directory,
     };
     recover_authenticated_single_file_v1(&mut fs, &payload)
+}
+
+fn persist_single_file_journal_phase(
+    target: &Path,
+    payload: &SingleFileJournalPayloadV1,
+    create_new: bool,
+) -> Result<PathBuf, ()> {
+    let journal = journal_path_for_target(target, &payload.target_path_sha256)?;
+    if !create_new {
+        let metadata = std::fs::symlink_metadata(&journal).map_err(|_| ())?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(());
+        }
+    }
+    let bytes = encode_single_file_journal_v1(payload.clone()).map_err(|_| ())?;
+    let write_path = if create_new {
+        journal.clone()
+    } else {
+        containing_directory(target).ok_or(())?.join(format!(
+            ".origami2-journal-update-{}-{}",
+            std::process::id(),
+            NEXT_STAGED_FILE_ID.fetch_add(1, Ordering::Relaxed)
+        ))
+    };
+    let write_result = (|| {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        let mut file = options.open(&write_path).map_err(|_| ())?;
+        write_complete_staged_payload(&mut file, &bytes).map_err(|_| ())?;
+        file.sync_all().map_err(|_| ())?;
+        drop(file);
+        if !create_new {
+            std::fs::rename(&write_path, &journal).map_err(|_| ())?;
+        }
+        sync_project_directory(containing_directory(target).ok_or(())?).map_err(|_| ())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&write_path);
+    }
+    write_result?;
+    Ok(journal)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn sync_project_directory(path: &Path) -> std::io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(target_os = "windows")]
+fn sync_project_directory(path: &Path) -> std::io::Result<()> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+    options.open(path)?.sync_all()
 }
 
 #[cfg(unix)]
@@ -880,6 +911,12 @@ fn persist_document_atomically(
     bytes: &[u8],
     existing_destination_policy: ExistingDestinationPolicy,
 ) -> Result<(), String> {
+    recover_single_file_journal_for_target(path, project.document.project_id).map_err(|_| {
+        format!(
+            "failed to recover an interrupted save for {}",
+            path.display()
+        )
+    })?;
     let mut staged = prepare_staged_file(path, project, bytes)?;
     let parent = containing_directory(path)
         .ok_or_else(|| format!("{} is not a file path", path.display()))?;
@@ -889,16 +926,118 @@ fn persist_document_atomically(
             path.display()
         )
     })?;
-    commit_unix_staged_project_file(&mut staged, path, existing_destination_policy, || {
-        directory.sync_all()
-    })
-    .map_err(|error| {
+    let commit = if existing_destination_policy == ExistingDestinationPolicy::ReplaceConfirmed
+        && std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+            metadata.file_type().is_file() && !metadata.file_type().is_symlink()
+        }) {
+        commit_unix_staged_project_file_with_journal(
+            &mut staged,
+            path,
+            project.document.project_id,
+            || directory.sync_all(),
+        )
+    } else {
+        commit_unix_staged_project_file(&mut staged, path, existing_destination_policy, || {
+            directory.sync_all()
+        })
+    };
+    commit.map_err(|error| {
         format!(
             "failed to commit and synchronize {} atomically: {error}",
             path.display()
         )
     })?;
     Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn commit_unix_staged_project_file_with_journal<F>(
+    staged: &mut StagedFile,
+    destination: &Path,
+    project_id: ProjectId,
+    mut sync_directory: F,
+) -> std::io::Result<()>
+where
+    F: FnMut() -> std::io::Result<()>,
+{
+    let fingerprint = target_path_fingerprint(destination)
+        .map_err(|()| std::io::Error::other("target fingerprint failed"))?;
+    let temp_name = staged
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| std::io::Error::other("staged name is not portable"))?
+        .to_owned();
+    let transaction_id = format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT_STAGED_FILE_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let backup_name = format!(".origami2-backup-{transaction_id}");
+    let parent =
+        containing_directory(destination).ok_or_else(|| std::io::Error::other("missing parent"))?;
+    let backup = parent.join(&backup_name);
+    let old_sha256 = hash_regular_file_no_follow(destination)?;
+    let temp_sha256 = hash_regular_file_no_follow(&staged.path)?;
+    let mut payload = SingleFileJournalPayloadV1 {
+        schema_version: SINGLE_FILE_JOURNAL_SCHEMA_V1,
+        project_id,
+        target_path_sha256: fingerprint,
+        transaction_id,
+        temp_object_id: temp_name,
+        temp_sha256,
+        backup_object_id: backup_name,
+        old_sha256: Some(old_sha256),
+        phase: SingleFileJournalPhaseV1::Prepared,
+    };
+    persist_single_file_journal_phase(destination, &payload, true)
+        .map_err(|()| std::io::Error::other("journal prepare failed"))?;
+    staged.committed = true;
+    staged.close_for_journal_commit();
+
+    let result = (|| {
+        std::fs::rename(destination, &backup)?;
+        sync_directory()?;
+        payload.phase = SingleFileJournalPhaseV1::OldMoved;
+        persist_single_file_journal_phase(destination, &payload, false)
+            .map_err(|()| std::io::Error::other("old-moved journal failed"))?;
+        std::fs::rename(&staged.path, destination)?;
+        sync_directory()?;
+        payload.phase = SingleFileJournalPhaseV1::NewPublished;
+        persist_single_file_journal_phase(destination, &payload, false)
+            .map_err(|()| std::io::Error::other("new-published journal failed"))?;
+        std::fs::remove_file(&backup)?;
+        let journal = journal_path_for_target(destination, &payload.target_path_sha256)
+            .map_err(|()| std::io::Error::other("journal path failed"))?;
+        std::fs::remove_file(journal)?;
+        sync_directory()
+    })();
+    if result.is_err() {
+        let _ = recover_single_file_journal_for_target(destination, project_id);
+    }
+    result
+}
+
+fn hash_regular_file_no_follow(path: &Path) -> std::io::Result<String> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(std::io::Error::other("not a regular no-follow file"));
+    }
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 #[cfg(target_os = "windows")]
@@ -908,14 +1047,84 @@ fn persist_document_atomically(
     bytes: &[u8],
     existing_destination_policy: ExistingDestinationPolicy,
 ) -> Result<(), String> {
+    recover_single_file_journal_for_target(path, project.document.project_id).map_err(|_| {
+        format!(
+            "failed to recover an interrupted save for {}",
+            path.display()
+        )
+    })?;
     let mut staged = prepare_staged_file(path, project, bytes)?;
-    super::rename_windows_staged_file_with_policy(
-        staged.file(),
-        path,
-        existing_destination_policy,
-    )?;
+    if existing_destination_policy == ExistingDestinationPolicy::ReplaceConfirmed
+        && std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+            metadata.file_type().is_file() && !metadata.file_type().is_symlink()
+        })
+    {
+        commit_windows_staged_project_file_with_journal(
+            &mut staged,
+            path,
+            project.document.project_id,
+        )?;
+    } else {
+        super::rename_windows_staged_file_with_policy(
+            staged.file(),
+            path,
+            existing_destination_policy,
+        )?;
+    }
     staged.committed = true;
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn commit_windows_staged_project_file_with_journal(
+    staged: &mut StagedFile,
+    destination: &Path,
+    project_id: ProjectId,
+) -> Result<(), String> {
+    let fingerprint = target_path_fingerprint(destination)
+        .map_err(|()| "failed to fingerprint the save target".to_owned())?;
+    let temp_name = staged
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "staged name is not portable".to_owned())?
+        .to_owned();
+    let transaction_id = format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT_STAGED_FILE_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let payload = SingleFileJournalPayloadV1 {
+        schema_version: SINGLE_FILE_JOURNAL_SCHEMA_V1,
+        project_id,
+        target_path_sha256: fingerprint,
+        transaction_id: transaction_id.clone(),
+        temp_object_id: temp_name,
+        temp_sha256: hash_regular_file_no_follow(&staged.path)
+            .map_err(|error| error.to_string())?,
+        backup_object_id: format!(".origami2-backup-{transaction_id}"),
+        old_sha256: Some(
+            hash_regular_file_no_follow(destination).map_err(|error| error.to_string())?,
+        ),
+        phase: SingleFileJournalPhaseV1::Prepared,
+    };
+    persist_single_file_journal_phase(destination, &payload, true)
+        .map_err(|()| "failed to prepare the save journal".to_owned())?;
+    if let Err(error) = super::rename_windows_staged_file_with_policy(
+        staged.file(),
+        destination,
+        ExistingDestinationPolicy::ReplaceConfirmed,
+    ) {
+        return Err(error);
+    }
+    staged.committed = true;
+    let journal = journal_path_for_target(destination, &payload.target_path_sha256)
+        .map_err(|()| "failed to locate the save journal".to_owned())?;
+    std::fs::remove_file(journal).map_err(|error| error.to_string())?;
+    sync_project_directory(
+        containing_directory(destination).ok_or_else(|| "missing parent".to_owned())?,
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -984,6 +1193,10 @@ impl StagedFile {
         self.file
             .as_mut()
             .expect("a staged file handle remains present until drop")
+    }
+
+    fn close_for_journal_commit(&mut self) {
+        drop(self.file.take());
     }
 }
 

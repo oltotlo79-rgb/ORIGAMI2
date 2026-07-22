@@ -4,6 +4,9 @@ use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, ProjectId, Vertex, VertexId,
 };
 
+pub type MiuraPatternFixture = (CreasePattern, Paper, Vec<EdgeId>);
+pub type IndependentMiuraBlocksWithDocument = ([MiuraPatternFixture; 2], MiuraPatternFixture);
+
 pub fn two_patch_miura_cactus_pattern() -> (CreasePattern, Paper, Vec<EdgeId>) {
     let cells = [
         (0_i8, 0_i8),
@@ -21,10 +24,8 @@ pub fn independent_three_by_three_miura_blocks() -> [(CreasePattern, Paper, Vec<
     independent_three_by_three_miura_blocks_with_document().0
 }
 
-pub fn independent_three_by_three_miura_blocks_with_document() -> (
-    [(CreasePattern, Paper, Vec<EdgeId>); 2],
-    (CreasePattern, Paper, Vec<EdgeId>),
-) {
+pub fn independent_three_by_three_miura_blocks_with_document(
+) -> IndependentMiuraBlocksWithDocument {
     let namespace = ProjectId::new();
     let northwest = (-2..=0)
         .flat_map(|x| (0..=2).map(move |y| (x, y)))

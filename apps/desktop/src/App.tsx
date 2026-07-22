@@ -1,4 +1,5 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { listen } from '@tauri-apps/api/event'
 import {
   type CSSProperties,
   type FormEvent,
@@ -86,6 +87,7 @@ import {
   applyBeginnerParameterGridCandidate,
   getBeginnerParameterGridProgress,
   cancelBeginnerParameterGrid,
+  cancelReferenceConsensus,
   getBeginnerSymmetricParameterEstimate,
   applyBeginnerSymmetricParameters,
   recognizeBeginnerTarget,
@@ -728,12 +730,28 @@ function App() {
   const [beginnerCandidates, setBeginnerCandidates] =
     useState<BeginnerCandidateResponseV1 | null>(null)
   const [beginnerCandidateBusy, setBeginnerCandidateBusy] = useState(false)
+  const [consensusProgress, setConsensusProgress] = useState({ processed_assets: 0, total_assets: 0, processed_pairs: 0, total_pairs: 0 })
   const [selectedConsensusPair, setSelectedConsensusPair] = useState<string | null>(null)
   const [consensusSelectionDraft, setConsensusSelectionDraft] = useState<Array<{ kind: 'image' | 'reference_model'; asset_id: string }>>([])
   const [beginnerGrid, setBeginnerGrid] = useState<BeginnerGridEvaluationResponse | null>(null)
   const [beginnerGridSelectedPointId, setBeginnerGridSelectedPointId] = useState<number | null>(null)
   const [beginnerGridBusy, setBeginnerGridBusy] = useState(false)
   const beginnerGridRequestRef = useRef(0)
+  const consensusGenerationRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!isNativeCoreAvailable()) return undefined
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void listen<Record<string, unknown>>('reference-consensus-progress-v1', (event) => {
+      if (disposed || event.payload.request_generation_id !== consensusGenerationRef.current) return
+      const values = ['processed_assets', 'total_assets', 'processed_pairs', 'total_pairs'].map((key) => Number(event.payload[key]))
+      if (values.some((value) => !Number.isInteger(value) || value < 0 || value > 6)
+        || values[0] > values[1] || values[2] > values[3]) return
+      setConsensusProgress({ processed_assets: values[0], total_assets: values[1], processed_pairs: values[2], total_pairs: values[3] })
+    }).then((dispose) => { if (disposed) dispose(); else unlisten = dispose })
+      .catch(() => undefined)
+    return () => { disposed = true; unlisten?.() }
+  }, [])
   const beginnerGridGenerationRef = useRef<string | null>(null)
   const [beginnerGridProgress, setBeginnerGridProgress] = useState({ enumerated: 0, globalChecked: 0, refined: 0 })
   useEffect(() => () => {
@@ -818,6 +836,9 @@ function App() {
   const beginnerDesignFormRef = useRef<HTMLFormElement>(null)
   useEffect(() => {
     setBeginnerCandidates(null)
+    if (consensusGenerationRef.current) void cancelReferenceConsensus(consensusGenerationRef.current).catch(() => undefined)
+    consensusGenerationRef.current = null
+    setConsensusProgress({ processed_assets: 0, total_assets: 0, processed_pairs: 0, total_pairs: 0 })
     setSelectedConsensusPair(null)
     setConsensusSelectionDraft((nativeSnapshot?.beginner_design_profile.reference_consensus_v1?.bindings ?? [])
       .map((binding) => ({ kind: binding.kind, asset_id: binding.asset_id })))
@@ -4345,13 +4366,17 @@ function App() {
     const current = latestSnapshotRef.current
     if (!current) return
     const requestId = beginnerCandidateRequestRef.current + 1
+    const generationId = crypto.randomUUID()
     beginnerCandidateRequestRef.current = requestId
+    consensusGenerationRef.current = generationId
+    setConsensusProgress({ processed_assets: 0, total_assets: 0, processed_pairs: 0, total_pairs: 0 })
     setBeginnerCandidateBusy(true)
     evaluateBeginnerCandidates(
       current.project_id,
       current.revision,
       current.project_instance_id,
       requestedCandidateCount,
+      generationId,
     ).then((response) => {
       if (beginnerCandidateRequestRef.current !== requestId
         || latestSnapshotRef.current !== current) return
@@ -4360,8 +4385,20 @@ function App() {
       if (beginnerCandidateRequestRef.current === requestId
         && latestSnapshotRef.current === current) setBeginnerCandidates(null)
     }).finally(() => {
-      if (beginnerCandidateRequestRef.current === requestId) setBeginnerCandidateBusy(false)
+      if (beginnerCandidateRequestRef.current === requestId) {
+        setBeginnerCandidateBusy(false)
+        consensusGenerationRef.current = null
+      }
     })
+  }
+
+  function cancelConsensusAnalysis() {
+    const generation = consensusGenerationRef.current
+    if (!generation) return
+    beginnerCandidateRequestRef.current += 1
+    consensusGenerationRef.current = null
+    setBeginnerCandidateBusy(false)
+    void cancelReferenceConsensus(generation).catch(() => undefined)
   }
 
   function cancelBeginnerCandidates() {
@@ -8096,6 +8133,10 @@ function App() {
                     ? text({ ja: '候補を評価中…', en: 'Scoring candidates…' })
                     : text({ ja: '候補を評価', en: 'Score candidates' })}
                 </button>
+                {beginnerCandidateBusy && <div role="status" aria-live="polite">
+                  {`Consensus progress: assets ${consensusProgress.processed_assets}/${consensusProgress.total_assets}; pairs ${consensusProgress.processed_pairs}/${consensusProgress.total_pairs}.`}
+                  <button type="button" onClick={cancelConsensusAnalysis}>Cancel consensus analysis</button>
+                </div>}
                 <button ref={beginnerGridButtonRef} type="button" onClick={requestBeginnerGrid}
                   disabled={coreBusy || recoveryBlocking || beginnerGridBusy
                     || beginnerSkeletonTree.status !== 'tree'}>

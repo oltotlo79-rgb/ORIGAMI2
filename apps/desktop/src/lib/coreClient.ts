@@ -2542,6 +2542,7 @@ export function evaluateBeginnerCandidates(
   expectedRevision: number,
   expectedProjectInstanceId: string,
   requestedCandidateCount: number,
+  requestGenerationId: string,
 ) {
   if (!Number.isInteger(requestedCandidateCount)
     || requestedCandidateCount < 1 || requestedCandidateCount > 3) {
@@ -2552,6 +2553,7 @@ export function evaluateBeginnerCandidates(
     expectedProjectId,
     expectedRevision,
     requestedCandidateCount,
+    requestGenerationId,
   }).then((value) => {
     const response = normalizeBeginnerCandidateResponse(
       value,
@@ -2563,6 +2565,11 @@ export function evaluateBeginnerCandidates(
     if (!response) throw new Error('invalid beginner candidate response')
     return response
   })
+}
+
+export function cancelReferenceConsensus(requestGenerationId: string) {
+  if (!isCanonicalNonNilUuid(requestGenerationId)) return Promise.reject(new Error('invalid consensus generation'))
+  return invoke<void>('cancel_reference_consensus', { requestGenerationId })
 }
 
 export type BeginnerParameterGridPointV1 = Readonly<{

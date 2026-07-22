@@ -52,6 +52,18 @@ use std::{
 };
 
 #[derive(Default)]
+struct ReferenceConsensusWorkV1 {
+    cancelled: AtomicBool,
+}
+static REFERENCE_CONSENSUS_WORK_V1: OnceLock<
+    Mutex<HashMap<ProjectId, Arc<ReferenceConsensusWorkV1>>>,
+> = OnceLock::new();
+fn reference_consensus_work_v1() -> &'static Mutex<HashMap<ProjectId, Arc<ReferenceConsensusWorkV1>>>
+{
+    REFERENCE_CONSENSUS_WORK_V1.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Default)]
 struct BeginnerGridWork {
     cancelled: AtomicBool,
     enumerated: AtomicU64,
@@ -198,7 +210,7 @@ use stacked_fold_transaction::{
     apply_named_sink_fold_transaction, apply_stacked_fold_transaction,
     cancel_stacked_fold_transaction_preview, preview_named_basic_fold_timeline,
 };
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 #[cfg(target_os = "windows")]
@@ -1792,11 +1804,19 @@ struct BeginnerReferenceShapeDescriptorV1 {
 
 fn beginner_reference_consensus_analysis_v1(
     project: &ProjectState,
+    progress: Option<(&AppHandle, ProjectId, &ReferenceConsensusWorkV1)>,
 ) -> Option<BeginnerReferenceConsensusAnalysisV1> {
     use ori_domain::BeginnerReferenceBindingKindV1::{Image, ReferenceModel};
     let profile = project.editor.beginner_design_profile();
     let consensus = profile.reference_consensus_v1.as_ref()?;
     let mut descriptors = Vec::with_capacity(consensus.bindings.len());
+    let total_assets = consensus
+        .bindings
+        .len()
+        .saturating_sub(usize::from(consensus.excluded_asset_id.is_some()))
+        as u8;
+    let total_pairs =
+        (usize::from(total_assets) * usize::from(total_assets.saturating_sub(1)) / 2).min(6) as u8;
     for binding in &consensus.bindings {
         if consensus.excluded_asset_id == Some(binding.asset_id) {
             continue;
@@ -1858,6 +1878,16 @@ fn beginner_reference_consensus_analysis_v1(
             }
         };
         descriptors.push(descriptor);
+        if let Some((app, request_generation_id, work)) = progress {
+            if work.cancelled.load(Ordering::Acquire) {
+                return None;
+            }
+            let _ = app.emit("reference-consensus-progress-v1", serde_json::json!({
+                "request_generation_id": request_generation_id, "processed_assets": descriptors.len(),
+                "total_assets": total_assets, "processed_pairs": 0, "total_pairs": total_pairs,
+                "authorizes_project_mutation": false
+            }));
+        }
     }
     if descriptors.len() < 2 {
         return None;
@@ -1916,6 +1946,16 @@ fn beginner_reference_consensus_analysis_v1(
                 left_branch_count: a.branches,
                 right_branch_count: b.branches,
             });
+            if let Some((app, request_generation_id, work)) = progress {
+                if work.cancelled.load(Ordering::Acquire) {
+                    return None;
+                }
+                let _ = app.emit("reference-consensus-progress-v1", serde_json::json!({
+                    "request_generation_id": request_generation_id, "processed_assets": total_assets,
+                    "total_assets": total_assets, "processed_pairs": pairs.len(), "total_pairs": total_pairs,
+                    "authorizes_project_mutation": false
+                }));
+            }
         }
     }
     let disagreement_count = pairs.iter().filter(|pair| pair.disagrees).count() as u8;
@@ -3113,16 +3153,23 @@ fn project_snapshot(state: State<'_, AppState>) -> Result<ProjectSnapshot, Strin
 
 #[tauri::command]
 fn evaluate_beginner_candidates(
+    app: AppHandle,
     state: State<'_, AppState>,
     expected_project_instance_id: ProjectId,
     expected_project_id: ProjectId,
     expected_revision: u64,
     requested_candidate_count: u8,
+    request_generation_id: ProjectId,
 ) -> Result<BeginnerCandidateResponse, String> {
     if !(1..=ori_domain::MAX_BEGINNER_CANDIDATES_V1 as u8).contains(&requested_candidate_count) {
         return Err("requested candidate count must be between 1 and 3".to_owned());
     }
     let project = lock_project(&state)?;
+    let work = Arc::new(ReferenceConsensusWorkV1::default());
+    reference_consensus_work_v1()
+        .lock()
+        .map_err(|_| "reference_consensus_work_unavailable")?
+        .insert(request_generation_id, Arc::clone(&work));
     ensure_expected_project(
         &project,
         expected_project_instance_id,
@@ -3202,7 +3249,17 @@ fn evaluate_beginner_candidates(
     let multi_reference_fusion = reference_suggestion
         .as_ref()
         .and_then(|reference| beginner_multi_reference_fusion_v1(&project, reference));
-    let reference_consensus_analysis = beginner_reference_consensus_analysis_v1(&project);
+    let reference_consensus_analysis = beginner_reference_consensus_analysis_v1(
+        &project,
+        Some((&app, request_generation_id, &work)),
+    );
+    reference_consensus_work_v1()
+        .lock()
+        .map_err(|_| "reference_consensus_work_unavailable")?
+        .remove(&request_generation_id);
+    if work.cancelled.load(Ordering::Acquire) {
+        return Err("reference_consensus_cancelled".to_owned());
+    }
     let mut plan_assessments: Vec<BeginnerGeneratedPlanAssessment> = generated_plans
         .iter()
         .map(|plan| {
@@ -3250,6 +3307,18 @@ fn evaluate_beginner_candidates(
         multi_reference_fusion,
         reference_consensus_analysis,
     })
+}
+
+#[tauri::command]
+fn cancel_reference_consensus(request_generation_id: ProjectId) -> Result<(), String> {
+    let registry = reference_consensus_work_v1()
+        .lock()
+        .map_err(|_| "reference_consensus_work_unavailable")?;
+    let work = registry
+        .get(&request_generation_id)
+        .ok_or_else(|| "reference_consensus_generation_not_running".to_owned())?;
+    work.cancelled.store(true, Ordering::Release);
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -5140,7 +5209,7 @@ fn apply_beginner_generated_plan_document(
         return Err("multi_reference_disagreement".to_owned());
     }
     if expected_profile.reference_consensus_v1.is_some() {
-        let analysis = beginner_reference_consensus_analysis_v1(&project)
+        let analysis = beginner_reference_consensus_analysis_v1(&project, None)
             .ok_or_else(|| "reference_consensus_analysis_unavailable".to_owned())?;
         if !analysis.apply_allowed {
             return Err("reference_consensus_multiple_disagreements".to_owned());
@@ -5363,7 +5432,7 @@ fn apply_beginner_generated_plan_document(
         .reference_consensus_v1
         .as_ref()
         .map(|consensus| {
-            let analysis = beginner_reference_consensus_analysis_v1(&project)
+            let analysis = beginner_reference_consensus_analysis_v1(&project, None)
                 .ok_or_else(|| "reference_consensus_analysis_unavailable".to_owned())?;
             Ok::<_, String>(ori_domain::BeginnerReferenceConsensusProvenanceV1 {
                 schema_version: 1,
@@ -14714,6 +14783,7 @@ pub fn run() {
             generate_benchmark_pattern,
             project_snapshot,
             evaluate_beginner_candidates,
+            cancel_reference_consensus,
             evaluate_beginner_parameter_grid,
             get_beginner_parameter_grid_progress,
             cancel_beginner_parameter_grid,
@@ -15618,6 +15688,24 @@ mod tests {
         }
         assert_eq!(beginner_grid_work().lock().unwrap().len(), 1);
         beginner_grid_work().lock().unwrap().clear();
+    }
+
+    #[test]
+    fn reference_consensus_cancel_is_generation_scoped_and_idempotent() {
+        let generation = ProjectId::new();
+        let work = Arc::new(ReferenceConsensusWorkV1::default());
+        reference_consensus_work_v1()
+            .lock()
+            .unwrap()
+            .insert(generation, Arc::clone(&work));
+        cancel_reference_consensus(generation).unwrap();
+        cancel_reference_consensus(generation).unwrap();
+        assert!(work.cancelled.load(Ordering::Acquire));
+        reference_consensus_work_v1()
+            .lock()
+            .unwrap()
+            .remove(&generation);
+        assert!(cancel_reference_consensus(generation).is_err());
     }
 
     #[test]

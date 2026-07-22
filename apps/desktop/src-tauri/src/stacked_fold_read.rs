@@ -8117,6 +8117,7 @@ mod tests {
                 fixed,
             );
             let layer_state = GlobalFlatFoldabilityState::default();
+            eprintln!("installing exact cycle layer fixture {fixture_name}");
             super::super::global_flat_foldability::tests::install_possible_layer_order(
                 &layer_state,
                 &project,

@@ -7011,6 +7011,59 @@ mod tests {
     }
 
     #[test]
+    fn regular_quad_petal_candidates_are_canonical_bounded_and_atomic() {
+        use ori_topology::FoldAssignment::{Mountain, Valley};
+        let mut hinges = [
+            (ori_domain::EdgeId::new(), Valley),
+            (ori_domain::EdgeId::new(), Mountain),
+            (ori_domain::EdgeId::new(), Valley),
+        ];
+        let first =
+            super::super::stacked_fold_transaction::regular_quad_petal_canonical_candidates_v1(
+                hinges,
+            );
+        hinges.reverse();
+        let second =
+            super::super::stacked_fold_transaction::regular_quad_petal_canonical_candidates_v1(
+                hinges,
+            );
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 3);
+        assert!(first.iter().all(|candidate| {
+            candidate
+                .hinges
+                .windows(2)
+                .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
+                && candidate.stage_target_microdegrees[0][1..] == [0, 0]
+                && candidate.stage_target_microdegrees[1][2] == 0
+        }));
+        let mut attempts = 0;
+        let accepted =
+            super::super::stacked_fold_transaction::first_certified_regular_quad_petal_candidate_v1(
+                &first,
+                |_| {
+                    attempts += 1;
+                    (attempts == 2).then_some(41)
+                },
+            );
+        assert_eq!(accepted, Some(41));
+        assert_eq!(
+            attempts, 2,
+            "search stops after the first all-stage success"
+        );
+        let mut rejected_attempts = 0;
+        let rejected =
+            super::super::stacked_fold_transaction::first_certified_regular_quad_petal_candidate_v1::<
+                (),
+            >(&first, |_| {
+                rejected_attempts += 1;
+                None
+            });
+        assert!(rejected.is_none());
+        assert_eq!(rejected_attempts, 3, "the hard candidate bound is exact");
+    }
+
+    #[test]
     fn dense_square_and_rectangular_grids_preview_and_apply_atomically() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         for (columns, rows) in [

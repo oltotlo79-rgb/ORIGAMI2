@@ -1789,6 +1789,43 @@ pub(crate) mod tests {
             assert!(build_pending_export(source).is_ok());
         }
 
+        for (technique_id, title) in [("mountain", "山折り"), ("valley", "谷折り")] {
+            let mut basic_timeline = reopened_reverse.clone();
+            basic_timeline.steps[0].title = format!("{title}の開始姿勢");
+            basic_timeline.steps[1].title = format!("{title} 1");
+            basic_timeline.steps[2].title = format!("{title} 2");
+            assert_ne!(
+                basic_timeline.steps[2].title, book_fold_timeline.steps[2].title,
+                "{technique_id} remains distinct from the book-fold technique"
+            );
+            let archived = serde_json::to_vec(&basic_timeline).expect("archive basic fold");
+            let reopened: ori_domain::InstructionTimeline =
+                serde_json::from_slice(&archived).expect("reopen basic fold");
+            for (format, magic) in [
+                (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+                (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+            ] {
+                let mut source = source_for(&project, format);
+                source.timeline = reopened.clone();
+                let artifact = build_pending_export(source).expect("native basic-fold export");
+                assert_eq!(artifact.step_count, 3);
+                assert!(artifact.bytes.starts_with(magic));
+            }
+            let mut uncertified = reopened;
+            for step in &mut uncertified.steps[1..] {
+                step.visual.path_certificate_reference_v1 = None;
+                step.description = format!("手動で作成された{title}です。");
+            }
+            for format in [
+                InstructionExportFormatRequest::Pdf,
+                InstructionExportFormatRequest::SvgZip,
+            ] {
+                let mut source = source_for(&project, format);
+                source.timeline = uncertified.clone();
+                assert!(build_pending_export(source).is_ok());
+            }
+        }
+
         let mut tampered_reverse = reopened_reverse.clone();
         tampered_reverse.steps[2]
             .visual

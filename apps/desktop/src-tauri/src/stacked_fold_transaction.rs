@@ -1050,7 +1050,7 @@ fn compile_named_basic_fold_preview(
     })
 }
 
-fn bind_named_technique_compiler_metadata_v1(
+pub(super) fn bind_named_technique_compiler_metadata_v1(
     timeline: &mut ori_domain::InstructionTimeline,
     technique_kind: &str,
 ) -> Result<(), String> {

@@ -1029,11 +1029,13 @@ pub(crate) mod tests {
         FoldTechniqueParameterBindingV1, FoldTechniqueParameterDefinitionV1,
         FoldTechniqueParameterTypeV1, FoldTechniqueSinkKindV1, FoldTechniqueSourceV1,
         FoldTechniqueTemplateV1, FoldTechniqueUnsupportedPhysicalOperationV1,
-        LayerSelectiveMotionRequestV1, PetalFoldMotionRequestV1, ReverseFoldKindV1,
-        ReverseFoldMotionRequestV1, SinkFoldMotionRequestV1, SquashFoldMotionRequestV1,
+        LayerSelectiveMotionRequestV1, PetalFoldMotionRequestV1,
+        RegularQuadPetalFoldMotionRequestV1, ReverseFoldKindV1, ReverseFoldMotionRequestV1,
+        SinkFoldMotionRequestV1, SquashFoldMotionRequestV1,
         compile_certified_accordion_fold_timeline_v1, compile_certified_basic_fold_timeline_v1,
         compile_certified_book_fold_timeline_v1, compile_certified_crimp_fold_timeline_v1,
         compile_certified_layer_selective_timeline_v1, compile_certified_petal_fold_timeline_v1,
+        compile_certified_regular_quad_petal_fold_timeline_v1,
         compile_certified_reverse_fold_timeline_v1, compile_certified_sink_fold_timeline_v1,
         compile_certified_squash_fold_timeline_v1, instruction_pose_fingerprint_v1,
         validate_fold_technique_file_v1,
@@ -1939,6 +1941,60 @@ pub(crate) mod tests {
                 native_certificate(source_hash, target_hash)
             })
             .collect::<Vec<_>>();
+        let parent = ori_collision::issue_private_three_segment_path_v1(
+            certificates
+                .clone()
+                .try_into()
+                .expect("three native segments"),
+        )
+        .expect("same-issuer contiguous parent certificate");
+        let petal_certificates = (0..3)
+            .map(|index| parent.segment_certificate_v1(index).unwrap())
+            .collect::<Vec<_>>();
+        let mut petal = compile_certified_regular_quad_petal_fold_timeline_v1(
+            RegularQuadPetalFoldMotionRequestV1 {
+                technique_file: &accordion_file(),
+                technique_id: "book-fold",
+                source_model_fingerprint: &model,
+                fixed_face,
+                source_hinge_angles: &source,
+                ordered_edges: &edges,
+                ordered_target_angles_microdegrees: &targets,
+                ordered_path_certificates: &petal_certificates,
+            },
+        )
+        .expect("compile private regular-quad petal");
+        super::super::stacked_fold_transaction::bind_named_technique_compiler_metadata_v1(
+            &mut petal,
+            "accordion",
+        )
+        .expect("bind private petal compiler metadata");
+        assert_eq!(petal.steps.len(), 4);
+        assert!(petal.steps.iter().enumerate().all(|(index, step)| {
+            step.visual
+                .named_technique_compiler_v1
+                .as_ref()
+                .is_some_and(|metadata| {
+                    metadata.segment_index == index && metadata.segment_count == 4
+                })
+        }));
+        let mut reordered = petal_certificates.clone();
+        reordered.swap(0, 1);
+        assert!(
+            compile_certified_regular_quad_petal_fold_timeline_v1(
+                RegularQuadPetalFoldMotionRequestV1 {
+                    technique_file: &accordion_file(),
+                    technique_id: "book-fold",
+                    source_model_fingerprint: &model,
+                    fixed_face,
+                    source_hinge_angles: &source,
+                    ordered_edges: &edges,
+                    ordered_target_angles_microdegrees: &targets,
+                    ordered_path_certificates: &reordered,
+                }
+            )
+            .is_err()
+        );
         let timeline = compile_certified_accordion_fold_timeline_v1(AccordionFoldMotionRequestV1 {
             technique_file: &accordion_file(),
             technique_id: "book-fold",

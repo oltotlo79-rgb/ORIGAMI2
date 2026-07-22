@@ -3761,11 +3761,20 @@ mod tests {
             let audit =
                 MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default())
                     .unwrap();
-            (pattern, geometry, audit, moving)
+            let local = ori_topology::analyze_local_flat_foldability(&paper, &pattern);
+            let global = ori_foldability::analyze_global_flat_foldability(
+                ori_foldability::GlobalFlatFoldabilityInput::current_with_geometry(
+                    project, &paper, &pattern, &topology, &local,
+                ),
+                ori_foldability::GlobalFlatFoldabilityLimits::default(),
+            )
+            .unwrap();
+            let source = global.layer_order().expect("native layer order").clone();
+            (pattern, geometry, audit, moving, source)
         });
         let [
-            (first_pattern, first_geometry, first_audit, first_moving),
-            (second_pattern, second_geometry, second_audit, second_moving),
+            (first_pattern, first_geometry, first_audit, first_moving, first_source),
+            (second_pattern, second_geometry, second_audit, second_moving, second_source),
         ] = prepared;
         let shared = first_geometry
             .face_ids()
@@ -3932,6 +3941,124 @@ mod tests {
             authority.binding_fingerprint_v1(),
             reordered.binding_fingerprint_v1()
         );
+
+        let first_positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+            &first_geometry,
+            &first_audit,
+            articulation,
+            &first_schedule,
+            &first_closure,
+            0.1,
+            32,
+        )
+        .unwrap();
+        let second_positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+            &second_geometry,
+            &second_audit,
+            articulation,
+            &second_schedule,
+            &second_closure,
+            0.1,
+            32,
+        )
+        .unwrap();
+        let make_layer =
+            |geometry: &MaterialHingeGraphGeometry,
+             audit: &MaterialHingeGraphAudit,
+             source: &LayerOrderSnapshot,
+             schedule: &CanonicalCycleScheduleV1,
+             closure: &DyadicMaterialHingeIntervalClosureCertificateV1,
+             positive: &PositiveThicknessContinuousCertificateV1| {
+                crate::certify_general_multi_face_cell_transport_v1(
+                    crate::GeneralCellTransportInputV1 {
+                        geometry,
+                        audit,
+                        source,
+                        schedule,
+                        closure,
+                        positive_continuous: positive,
+                        paper_thickness_mm: 0.1,
+                        tolerance: 1.0e-8,
+                        limits: crate::GeneralCellTransportLimitsV1 {
+                            max_transitions: closure.leaves().len() + 1,
+                            max_cells: 1_000_000,
+                            max_layer_records: 1_000_000,
+                            max_boundary_samples: 1_000_000,
+                        },
+                    },
+                )
+                .unwrap()
+            };
+        let first_layer = make_layer(
+            &first_geometry,
+            &first_audit,
+            &first_source,
+            &first_schedule,
+            &first_closure,
+            &first_positive,
+        );
+        let second_layer = make_layer(
+            &second_geometry,
+            &second_audit,
+            &second_source,
+            &second_schedule,
+            &second_closure,
+            &second_positive,
+        );
+        let parent = crate::issue_blockwise_closure_authority_v1(
+            [
+                crate::BlockwiseClosureInputV1 {
+                    geometry: &first_geometry,
+                    audit: &first_audit,
+                    schedule: &first_schedule,
+                    closure: &first_closure,
+                },
+                crate::BlockwiseClosureInputV1 {
+                    geometry: &second_geometry,
+                    audit: &second_audit,
+                    schedule: &second_schedule,
+                    closure: &second_closure,
+                },
+            ],
+            articulation,
+            0.1,
+            [0x61; 32],
+        )
+        .unwrap();
+        let composed = crate::issue_blockwise_positive_layer_authority_v1(
+            parent,
+            [
+                crate::BlockwisePositiveLayerInputV1 {
+                    source: &first_source,
+                    positive: first_positive,
+                    layer: first_layer,
+                },
+                crate::BlockwisePositiveLayerInputV1 {
+                    source: &second_source,
+                    positive: second_positive,
+                    layer: second_layer,
+                },
+            ],
+            articulation,
+            0.1,
+            [0x61; 32],
+            [0x71; 32],
+        )
+        .unwrap();
+        assert!(composed.revalidates_v1(
+            [&first_source, &second_source],
+            articulation,
+            0.1,
+            [0x61; 32],
+            [0x71; 32]
+        ));
+        assert!(!composed.revalidates_v1(
+            [&first_source, &second_source],
+            articulation,
+            0.1,
+            [0x61; 32],
+            [0x70; 32]
+        ));
         assert!(
             crate::issue_blockwise_closure_authority_v1(
                 [

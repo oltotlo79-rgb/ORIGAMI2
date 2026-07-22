@@ -13,6 +13,7 @@ use crate::{GeneralMultiFaceCellTransportProofV1, PositiveThicknessContinuousCer
 pub const BLOCK_COMPOSED_PATH_MODEL_ID_V1: &str = "block_composed_path_authority_v1";
 pub const BLOCK_COMPOSITION_LIMIT_V1: usize = 32;
 pub const BLOCKWISE_CLOSURE_MODEL_ID_V1: &str = "blockwise_interval_closure_authority_v1";
+pub const BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1: &str = "blockwise_positive_layer_authority_v1";
 
 pub struct BlockwiseClosureInputV1<'a> {
     pub geometry: &'a MaterialHingeGraphGeometry,
@@ -56,6 +57,118 @@ impl BlockwiseClosureAuthorityV1 {
                 blockwise_binding_v1(&refs, articulation, thickness, issuer_context) == self.binding
             }
     }
+}
+
+pub struct BlockwisePositiveLayerInputV1<'a> {
+    pub source: &'a LayerOrderSnapshot,
+    pub positive: PositiveThicknessContinuousCertificateV1,
+    pub layer: GeneralMultiFaceCellTransportProofV1,
+}
+
+/// Opaque authority proving that both sides of a two-block articulation have
+/// independently retained positive thickness and transported their native
+/// layer orders over the exact closure owned by the parent authority.
+pub struct BlockwisePositiveLayerAuthorityV1 {
+    binding: [u8; 32],
+    parent: BlockwiseClosureAuthorityV1,
+    positive: [PositiveThicknessContinuousCertificateV1; 2],
+    layer: [GeneralMultiFaceCellTransportProofV1; 2],
+    articulation_layer_fingerprint: [u8; 32],
+}
+
+impl BlockwisePositiveLayerAuthorityV1 {
+    #[must_use]
+    pub const fn binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.binding
+    }
+
+    #[must_use]
+    pub fn revalidates_v1(
+        &self,
+        sources: [&LayerOrderSnapshot; 2],
+        articulation: FaceId,
+        thickness: f64,
+        issuer_context: [u8; 32],
+        articulation_layer_fingerprint: [u8; 32],
+    ) -> bool {
+        if articulation_layer_fingerprint != self.articulation_layer_fingerprint
+            || articulation_layer_fingerprint == [0; 32]
+            || !self
+                .parent
+                .revalidates_v1(articulation, thickness, issuer_context)
+        {
+            return false;
+        }
+        for (index, source) in sources.into_iter().enumerate() {
+            let (geometry, schedule, closure) = &self.parent.blocks[index];
+            if !self.positive[index].is_for(geometry, articulation, schedule, closure, thickness)
+                || !self.layer[index].is_for(geometry, source, schedule, closure, thickness)
+            {
+                return false;
+            }
+        }
+        blockwise_positive_layer_binding_v1(
+            self.parent.binding,
+            &self.layer,
+            articulation_layer_fingerprint,
+        ) == self.binding
+    }
+}
+
+fn blockwise_positive_layer_binding_v1(
+    parent_binding: [u8; 32],
+    layers: &[GeneralMultiFaceCellTransportProofV1; 2],
+    articulation_layer_fingerprint: [u8; 32],
+) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+    hash.update(parent_binding);
+    hash.update(articulation_layer_fingerprint);
+    for layer in layers {
+        hash.update(layer.target_order_hash());
+        hash.update(layer.paper_thickness_mm().to_bits().to_le_bytes());
+        hash.update((layer.pair_order_count() as u64).to_le_bytes());
+    }
+    hash.finalize().into()
+}
+
+pub fn issue_blockwise_positive_layer_authority_v1(
+    parent: BlockwiseClosureAuthorityV1,
+    inputs: [BlockwisePositiveLayerInputV1<'_>; 2],
+    articulation: FaceId,
+    thickness: f64,
+    issuer_context: [u8; 32],
+    articulation_layer_fingerprint: [u8; 32],
+) -> Option<BlockwisePositiveLayerAuthorityV1> {
+    if articulation_layer_fingerprint == [0; 32]
+        || !parent.revalidates_v1(articulation, thickness, issuer_context)
+    {
+        return None;
+    }
+    for (index, input) in inputs.iter().enumerate() {
+        let (geometry, schedule, closure) = &parent.blocks[index];
+        if !input
+            .positive
+            .is_for(geometry, articulation, schedule, closure, thickness)
+            || !input
+                .layer
+                .is_for(geometry, input.source, schedule, closure, thickness)
+        {
+            return None;
+        }
+    }
+    let [first, second] = inputs;
+    let positive = [first.positive, second.positive];
+    let layer = [first.layer, second.layer];
+    let binding =
+        blockwise_positive_layer_binding_v1(parent.binding, &layer, articulation_layer_fingerprint);
+    Some(BlockwisePositiveLayerAuthorityV1 {
+        binding,
+        parent,
+        positive,
+        layer,
+        articulation_layer_fingerprint,
+    })
 }
 
 fn blockwise_binding_v1(

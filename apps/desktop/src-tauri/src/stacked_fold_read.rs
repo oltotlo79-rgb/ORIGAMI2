@@ -5576,7 +5576,7 @@ mod tests {
                 .revision(),
             revision
         );
-        let preview = propose_current_cycle_pose_inner_with_layers(
+        let pose_aba_preview = propose_current_cycle_pose_inner_with_layers(
             None,
             &state,
             Some(&layer_state),
@@ -5584,6 +5584,38 @@ mod tests {
             request(revision, schedule.clone()),
         )
         .expect("replacement blockwise fallback preview");
+        {
+            let mut project = super::super::lock_project(&state).unwrap();
+            super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+                &mut project,
+                hinges.clone(),
+                articulation,
+            );
+        }
+        assert!(
+            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                &state,
+                &layer_state,
+                &transactions,
+                pose_aba_preview.transaction_token,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            super::super::lock_project(&state)
+                .unwrap()
+                .editor
+                .revision(),
+            revision
+        );
+        let preview = propose_current_cycle_pose_inner_with_layers(
+            None,
+            &state,
+            Some(&layer_state),
+            &transactions,
+            request(revision, schedule.clone()),
+        )
+        .expect("pose ABA replacement blockwise fallback preview");
         let foreign_project = {
             let project = super::super::lock_project(&state).unwrap();
             super::super::ProjectState::new_with_paper(

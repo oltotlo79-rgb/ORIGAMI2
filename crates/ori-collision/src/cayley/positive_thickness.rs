@@ -3488,14 +3488,12 @@ mod tests {
             right_face_index: capability.left_face_index,
             hinge_index: capability.hinge_index,
         };
-        assert!(
-            revalidate_single_triangular_hinge_prerequisites_v1(
-                &swapped_face_indexes,
-                &exact,
-                0.1,
-            )
-            .is_none()
-        );
+        assert!(revalidate_single_triangular_hinge_prerequisites_v1(
+            &swapped_face_indexes,
+            &exact,
+            0.1,
+        )
+        .is_none());
         let out_of_range_hinge = AuthenticatedSingleTriangularHingePrerequisitesV1 {
             exact: &exact,
             paper_thickness_bits: 0.1_f64.to_bits(),
@@ -10072,11 +10070,19 @@ mod tests {
                 two_triangle_model_with_all_options(EdgeKind::Valley, true, true, square, 908),
             ),
         ];
-        let mut boundary = 0_usize;
-        let mut finite_corridor_volume = 0_usize;
-        let mut direct_unavailable = 0_usize;
-        let mut layer_offset = 0_usize;
-        for (fixture, model) in &models {
+        // The eight issuer-bound model matrices share no mutable authority.
+        // Batch them per immutable fixture while retaining every root,
+        // thickness and angle proof/revalidation below.
+        let totals = std::thread::scope(|scope| {
+            models
+                .chunks(2)
+                .map(|model_batch| {
+                    scope.spawn(move || {
+                        let mut boundary = 0_usize;
+                        let mut finite_corridor_volume = 0_usize;
+                        let mut direct_unavailable = 0_usize;
+                        let mut layer_offset = 0_usize;
+                        for (fixture, model) in model_batch {
             for root in model.face_ids() {
                 for thickness in [0.1, 1.0, 3.0] {
                     for angle in [0.0, 10.0, 90.0, 135.0, 179.0, 180.0] {
@@ -10347,6 +10353,27 @@ mod tests {
                     }
                 }
             }
+                        }
+                        (
+                            boundary,
+                            finite_corridor_volume,
+                            direct_unavailable,
+                            layer_offset,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|worker| worker.join().expect("shared-hinge matrix worker"))
+                .collect::<Vec<_>>()
+        });
+        let (mut boundary, mut finite_corridor_volume, mut direct_unavailable, mut layer_offset) =
+            (0_usize, 0_usize, 0_usize, 0_usize);
+        for (worker_boundary, worker_volume, worker_unavailable, worker_layer_offset) in totals {
+            boundary += worker_boundary;
+            finite_corridor_volume += worker_volume;
+            direct_unavailable += worker_unavailable;
+            layer_offset += worker_layer_offset;
         }
         assert_eq!(boundary, 48);
         assert_eq!(finite_corridor_volume, 144);

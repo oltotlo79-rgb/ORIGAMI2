@@ -140,11 +140,23 @@ const basicFoldSnapshot = (name: '山折り' | '谷折り'): ProjectSnapshot => 
   ...snapshot,
   name,
   instruction_timeline: {
-    steps: steps.map((step, index) => ({
-      ...step,
-      title: index === 0 ? `${name}の開始姿勢` : `${name} ${index}`,
-      description: index === 0 ? step.description : step.description.replace('Miura atomic', name),
-    })),
+    steps: [
+      { ...steps[0], title: `${name}の開始姿勢` },
+      {
+        ...steps[2],
+        title: name,
+        description: steps[2].description.replace('Miura atomic', name),
+        visual: {
+          ...steps[2].visual,
+          path_certificate_reference_v1: {
+            ...steps[2].visual.path_certificate_reference_v1,
+            source_pose_sha256: hashes[0],
+            target_pose_sha256: hashes[2],
+            transition_count: 1,
+          },
+        },
+      },
+    ],
   },
 })) as ProjectSnapshot
 const mountainSnapshot = basicFoldSnapshot('山折り')

@@ -488,7 +488,7 @@ jobs:
       - name: Verify all real named-technique compilers reach native exports
         shell: bash
         run: |
-          printf '%s\n' 'coverage=book_fold,reverse_fold,sink_fold,squash_fold,crimp_fold,layer_selective,accordion_fold'
+          printf '%s\n' 'coverage=book_fold,basic_fold,reverse_fold,sink_fold,squash_fold,crimp_fold,layer_selective,accordion_fold'
           cargo test --locked -p origami2-desktop --lib \
             instruction_export::tests::compiled_ \
             -- --test-threads=1

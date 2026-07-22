@@ -65,6 +65,20 @@ pub struct BookFoldMotionRequestV1<'a> {
     pub path_certificate: &'a CertifiedPoseGraphPathCertificateV1,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BasicFoldKindV1 {
+    Mountain,
+    Valley,
+}
+
+/// A named mountain/valley fold backed by the same certified straight-line
+/// primitive as a book fold. The kind is explicit and never inferred from a
+/// translated title.
+pub struct BasicFoldMotionRequestV1<'a> {
+    pub kind: BasicFoldKindV1,
+    pub straight_fold: BookFoldMotionRequestV1<'a>,
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum BookFoldMotionError {
     #[error("the requested named technique is missing or is not the supported book fold")]
@@ -77,6 +91,31 @@ pub enum BookFoldMotionError {
     PathCertificateMismatch,
     #[error("the compiled instruction timeline failed validation")]
     InvalidTimeline,
+}
+
+pub fn compile_certified_basic_fold_timeline_v1(
+    request: BasicFoldMotionRequestV1<'_>,
+) -> Result<InstructionTimeline, BookFoldMotionError> {
+    let technique = request
+        .straight_fold
+        .technique_file
+        .document()
+        .techniques
+        .iter()
+        .find(|technique| technique.id == request.straight_fold.technique_id)
+        .ok_or(BookFoldMotionError::UnsupportedTechnique)?;
+    let expected_name = match request.kind {
+        BasicFoldKindV1::Mountain => ["山折り", "Mountain fold"],
+        BasicFoldKindV1::Valley => ["谷折り", "Valley fold"],
+    };
+    if !technique
+        .names
+        .iter()
+        .any(|name| expected_name.contains(&name.text.as_str()))
+    {
+        return Err(BookFoldMotionError::UnsupportedTechnique);
+    }
+    compile_certified_book_fold_timeline_v1(request.straight_fold)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

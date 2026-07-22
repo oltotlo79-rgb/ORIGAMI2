@@ -966,21 +966,22 @@ pub(crate) mod tests {
     use sha2::{Digest, Sha256};
 
     use ori_instructions::{
-        AccordionFoldMotionRequestV1, BookFoldMotionRequestV1, CrimpFoldMotionRequestV1,
-        FOLD_TECHNIQUE_FILE_SCHEMA_V1, FOLD_TECHNIQUE_FILE_VERSION_V1, FoldTechniqueActionV1,
-        FoldTechniqueCapabilityV1, FoldTechniqueExecutionSupportV1, FoldTechniqueFileDocumentV1,
-        FoldTechniqueFileV1, FoldTechniqueLocalizedTextV1, FoldTechniqueMetadataV1,
-        FoldTechniqueOperationV1, FoldTechniqueParameterBindingV1,
-        FoldTechniqueParameterDefinitionV1, FoldTechniqueParameterTypeV1, FoldTechniqueSinkKindV1,
-        FoldTechniqueSourceV1, FoldTechniqueTemplateV1,
-        FoldTechniqueUnsupportedPhysicalOperationV1, LayerSelectiveMotionRequestV1,
-        PetalFoldMotionRequestV1, ReverseFoldKindV1, ReverseFoldMotionRequestV1,
-        SinkFoldMotionRequestV1, SquashFoldMotionRequestV1,
-        compile_certified_accordion_fold_timeline_v1, compile_certified_book_fold_timeline_v1,
-        compile_certified_crimp_fold_timeline_v1, compile_certified_layer_selective_timeline_v1,
-        compile_certified_petal_fold_timeline_v1, compile_certified_reverse_fold_timeline_v1,
-        compile_certified_sink_fold_timeline_v1, compile_certified_squash_fold_timeline_v1,
-        instruction_pose_fingerprint_v1, validate_fold_technique_file_v1,
+        AccordionFoldMotionRequestV1, BasicFoldKindV1, BasicFoldMotionRequestV1,
+        BookFoldMotionRequestV1, CrimpFoldMotionRequestV1, FOLD_TECHNIQUE_FILE_SCHEMA_V1,
+        FOLD_TECHNIQUE_FILE_VERSION_V1, FoldTechniqueActionV1, FoldTechniqueCapabilityV1,
+        FoldTechniqueExecutionSupportV1, FoldTechniqueFileDocumentV1, FoldTechniqueFileV1,
+        FoldTechniqueLocalizedTextV1, FoldTechniqueMetadataV1, FoldTechniqueOperationV1,
+        FoldTechniqueParameterBindingV1, FoldTechniqueParameterDefinitionV1,
+        FoldTechniqueParameterTypeV1, FoldTechniqueSinkKindV1, FoldTechniqueSourceV1,
+        FoldTechniqueTemplateV1, FoldTechniqueUnsupportedPhysicalOperationV1,
+        LayerSelectiveMotionRequestV1, PetalFoldMotionRequestV1, ReverseFoldKindV1,
+        ReverseFoldMotionRequestV1, SinkFoldMotionRequestV1, SquashFoldMotionRequestV1,
+        compile_certified_accordion_fold_timeline_v1, compile_certified_basic_fold_timeline_v1,
+        compile_certified_book_fold_timeline_v1, compile_certified_crimp_fold_timeline_v1,
+        compile_certified_layer_selective_timeline_v1, compile_certified_petal_fold_timeline_v1,
+        compile_certified_reverse_fold_timeline_v1, compile_certified_sink_fold_timeline_v1,
+        compile_certified_squash_fold_timeline_v1, instruction_pose_fingerprint_v1,
+        validate_fold_technique_file_v1,
     };
 
     use super::*;
@@ -1252,6 +1253,12 @@ pub(crate) mod tests {
             ori_collision::CertifiedPathGraphSearchResultV1::Certified(certificate) => certificate,
             other => panic!("expected native certificate, got {other:?}"),
         }
+    }
+
+    fn basic_fold_file(title: &str) -> FoldTechniqueFileV1 {
+        let mut document = book_fold_file().document().clone();
+        document.techniques[0].names = localized(title);
+        validate_fold_technique_file_v1(document).expect("valid basic-fold fixture")
     }
 
     fn project_with_parallel_folds(count: usize) -> (ProjectState, Vec<EdgeId>) {
@@ -2178,6 +2185,99 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn compiled_mountain_and_valley_folds_preserve_kind_through_native_pdf_and_svg() {
+        for (kind, edge_kind, title) in [
+            (BasicFoldKindV1::Mountain, EdgeKind::Mountain, "山折り"),
+            (BasicFoldKindV1::Valley, EdgeKind::Valley, "谷折り"),
+        ] {
+            let mut project = super::super::initial_project_state();
+            let fold_edge = EdgeId::new();
+            let boundary = &project.editor.paper().boundary_vertices;
+            project
+                .editor
+                .execute(
+                    0,
+                    Command::AddEdge {
+                        id: fold_edge,
+                        start: boundary[0],
+                        end: boundary[2],
+                        kind: edge_kind,
+                    },
+                )
+                .expect("add assigned basic-fold edge");
+            let model = project.editor.fold_model_fingerprint_v1();
+            let topology = project
+                .editor
+                .topology_analysis_input(project.project_id)
+                .analyze();
+            let fixed_face = topology
+                .simulation_snapshot()
+                .expect("basic topology")
+                .faces[0]
+                .id;
+            let source_angles = vec![InstructionHingeAngle {
+                edge: fold_edge,
+                angle_degrees: 5.0,
+            }];
+            let target_angles = vec![InstructionHingeAngle {
+                edge: fold_edge,
+                angle_degrees: 90.0,
+            }];
+            let certificate = native_certificate(
+                instruction_pose_fingerprint_v1(&model, fixed_face, &source_angles),
+                instruction_pose_fingerprint_v1(&model, fixed_face, &target_angles),
+            );
+            let file = basic_fold_file(title);
+            let compiled = compile_certified_basic_fold_timeline_v1(BasicFoldMotionRequestV1 {
+                kind,
+                straight_fold: BookFoldMotionRequestV1 {
+                    technique_file: &file,
+                    technique_id: "book-fold",
+                    source_model_fingerprint: &model,
+                    fixed_face,
+                    fold_edge,
+                    source_hinge_angles: &source_angles,
+                    target_angle_microdegrees: 90_000_000,
+                    path_certificate: &certificate,
+                },
+            })
+            .expect("compile assigned basic fold");
+            assert!(compiled.steps[1].title.contains(title));
+            let archived = serde_json::to_vec(&compiled).expect("archive basic fold");
+            let reopened: ori_domain::InstructionTimeline =
+                serde_json::from_slice(&archived).expect("reopen basic fold");
+            assert_compiler_artifact_content(&project, title, &reopened);
+            for (format, magic) in [
+                (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
+                (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
+            ] {
+                let mut source = source_for(&project, format);
+                source.timeline = reopened.clone();
+                let artifact = build_pending_export(source).expect("export assigned basic fold");
+                assert_eq!(artifact.step_count, 2);
+                assert!(artifact.bytes.starts_with(magic));
+            }
+        }
+        assert_eq!(
+            compile_certified_basic_fold_timeline_v1(BasicFoldMotionRequestV1 {
+                kind: BasicFoldKindV1::Valley,
+                straight_fold: BookFoldMotionRequestV1 {
+                    technique_file: &basic_fold_file("山折り"),
+                    technique_id: "book-fold",
+                    source_model_fingerprint: &"ab".repeat(32),
+                    fixed_face: ori_domain::FaceId::new(),
+                    fold_edge: EdgeId::new(),
+                    source_hinge_angles: &[],
+                    target_angle_microdegrees: 90_000_000,
+                    path_certificate: &native_certificate([1; 32], [2; 32]),
+                },
+            }),
+            Err(ori_instructions::BookFoldMotionError::UnsupportedTechnique),
+            "assignment kind and technique name cannot be interchanged"
+        );
+    }
+
+    #[test]
     fn reopened_proof_binding_reaches_native_export_and_tampering_stays_opaque() {
         let project = project_with_structured_proof_instruction();
         let source = source_for(&project, InstructionExportFormatRequest::Pdf);
@@ -2499,43 +2599,6 @@ pub(crate) mod tests {
             let mut source = source_for(&project, format);
             source.timeline = uncertified_crimp.clone();
             assert!(build_pending_export(source).is_ok());
-        }
-
-        for (technique_id, title) in [("mountain", "山折り"), ("valley", "谷折り")] {
-            let mut basic_timeline = reopened_reverse.clone();
-            basic_timeline.steps[0].title = format!("{title}の開始姿勢");
-            basic_timeline.steps[1].title = format!("{title} 1");
-            basic_timeline.steps[2].title = format!("{title} 2");
-            assert_ne!(
-                basic_timeline.steps[2].title, book_fold_timeline.steps[2].title,
-                "{technique_id} remains distinct from the book-fold technique"
-            );
-            let archived = serde_json::to_vec(&basic_timeline).expect("archive basic fold");
-            let reopened: ori_domain::InstructionTimeline =
-                serde_json::from_slice(&archived).expect("reopen basic fold");
-            for (format, magic) in [
-                (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
-                (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
-            ] {
-                let mut source = source_for(&project, format);
-                source.timeline = reopened.clone();
-                let artifact = build_pending_export(source).expect("native basic-fold export");
-                assert_eq!(artifact.step_count, 3);
-                assert!(artifact.bytes.starts_with(magic));
-            }
-            let mut uncertified = reopened;
-            for step in &mut uncertified.steps[1..] {
-                step.visual.path_certificate_reference_v1 = None;
-                step.description = format!("手動で作成された{title}です。");
-            }
-            for format in [
-                InstructionExportFormatRequest::Pdf,
-                InstructionExportFormatRequest::SvgZip,
-            ] {
-                let mut source = source_for(&project, format);
-                source.timeline = uncertified.clone();
-                assert!(build_pending_export(source).is_ok());
-            }
         }
 
         let mut tampered_reverse = reopened_reverse.clone();

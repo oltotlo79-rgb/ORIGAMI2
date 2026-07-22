@@ -39,9 +39,9 @@ try {
   await page.getByRole('button', { name: 'SVG mode', exact: true }).click(); await exportButton.click(); await page.getByText('exports=10; format=svg_zip; result=ready; ipc=begin_instruction_export,preview_instruction_export:svg_zip', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Crimp fold timeline', exact: true }).click(); await page.getByText('3. 段折り 2 · 完成形サムネイル', { exact: true }).click(); await page.getByLabel('構造化経路証明', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'PDF mode', exact: true }).click(); await exportButton.click(); await page.getByText('exports=11; format=pdf; result=ready; ipc=begin_instruction_export,preview_instruction_export:pdf', { exact: true }).waitFor()
-  await page.getByRole('button', { name: 'Mountain fold timeline', exact: true }).click(); await page.getByText('3. 山折り 2 · 完成形サムネイル', { exact: true }).click(); await page.getByLabel('構造化経路証明', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Mountain fold timeline', exact: true }).click(); await page.getByText('2. 山折り · 完成形サムネイル', { exact: true }).click(); await page.getByLabel('構造化経路証明', { exact: true }).waitFor()
   await exportButton.click(); await page.getByText('exports=12; format=pdf; result=ready; ipc=begin_instruction_export,preview_instruction_export:pdf', { exact: true }).waitFor()
-  await page.getByRole('button', { name: 'Valley fold timeline', exact: true }).click(); await page.getByText('3. 谷折り 2 · 完成形サムネイル', { exact: true }).click(); await page.getByLabel('構造化経路証明', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Valley fold timeline', exact: true }).click(); await page.getByText('2. 谷折り · 完成形サムネイル', { exact: true }).click(); await page.getByLabel('構造化経路証明', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'SVG mode', exact: true }).click(); await exportButton.click(); await page.getByText('exports=13; format=svg_zip; result=ready; ipc=begin_instruction_export,preview_instruction_export:svg_zip', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Uncertified timelines', exact: true }).click()
   const uncertifiedTechniques = [
@@ -55,12 +55,13 @@ try {
     ['Squash fold timeline', 'つぶし折り 2'],
     ['Petal fold timeline', '花弁折り 2'],
     ['Crimp fold timeline', '段折り 2'],
-    ['Mountain fold timeline', '山折り 2'],
-    ['Valley fold timeline', '谷折り 2'],
+    ['Mountain fold timeline', '山折り'],
+    ['Valley fold timeline', '谷折り'],
   ]
   for (const [button, title] of uncertifiedTechniques) {
     await page.getByRole('button', { name: button, exact: true }).click()
-    await page.getByText(`3. ${title} · 完成形サムネイル`, { exact: true }).click()
+    const ordinal = button === 'Mountain fold timeline' || button === 'Valley fold timeline' ? 2 : 3
+    await page.getByText(`${ordinal}. ${title} · 完成形サムネイル`, { exact: true }).click()
     const description = page.getByRole('textbox', { name: '説明', exact: true }); await description.waitFor()
     if (!(await description.inputValue()).includes('連続折り経路は未証明です。')) throw new Error(`${title} omits the uncertified explanation`)
     if (await page.getByLabel('構造化経路証明', { exact: true }).count()) throw new Error(`${title} exposes structured proof without a certificate`)

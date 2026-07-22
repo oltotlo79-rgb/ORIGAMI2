@@ -879,7 +879,7 @@ test('CI requires exactly one full-App instruction export routing browser gate',
   ]) assert.match(browserHarness, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
 })
 
-test('CI requires one native export gate for all seven real technique compilers', () => {
+test('CI requires one native export gate for all eight real technique compilers', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const instructionExport = readFileSync(
     join(root, 'apps/desktop/src-tauri/src/instruction_export.rs'),
@@ -888,14 +888,14 @@ test('CI requires one native export gate for all seven real technique compilers'
   assert.equal(
     workflow.match(/instruction_export::tests::compiled_/gu)?.length,
     1,
-    'the seven real compilers must share one required Rust invocation',
+    'the eight real compilers must share one required Rust invocation',
   )
   assert.match(
     workflow,
     /cargo test --locked -p origami2-desktop --lib \\\s+instruction_export::tests::compiled_ \\\s+-- --test-threads=1/u,
   )
   const compilerMarkers = [
-    'book_fold', 'reverse_fold', 'sink_fold', 'squash_fold', 'crimp_fold',
+    'book_fold', 'basic_fold', 'reverse_fold', 'sink_fold', 'squash_fold', 'crimp_fold',
     'layer_selective', 'accordion_fold',
   ]
   const gate = workflow.match(

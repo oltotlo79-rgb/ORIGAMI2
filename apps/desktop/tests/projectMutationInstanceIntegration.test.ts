@@ -56,6 +56,7 @@ const mutationContracts = [
   ['setElementMetadata', 'set_element_metadata'],
   ['updateProjectMemo', 'update_project_memo'],
   ['updateBeginnerDesignProfile', 'update_beginner_design_profile'],
+  ['updateBeginnerReferenceConsensus', 'update_beginner_reference_consensus'],
   ['importBeginnerReferenceModel', 'import_beginner_reference_model'],
   ['activateBeginnerReferenceModelAsset', 'activate_beginner_reference_model_asset'],
   ['archiveBeginnerReferenceModelAsset', 'archive_beginner_reference_model_asset'],
@@ -76,9 +77,9 @@ const mutationContracts = [
 ] as const
 
 test('the revision-changing mutation contract matrix remains complete', () => {
-  assert.equal(mutationContracts.length, 61)
-  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 61)
-  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 61)
+  assert.equal(mutationContracts.length, 62)
+  assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 62)
+  assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 62)
   assert.deepEqual(
     productionRevisionChangingCommands(native),
     mutationContracts.map(([, command]) => command).toSorted(),

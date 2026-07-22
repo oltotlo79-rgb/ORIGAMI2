@@ -97,6 +97,18 @@ pub(super) enum PendingStackedFoldRequestedPose {
         layer_order_pairs: Vec<(ori_domain::FaceId, ori_domain::FaceId)>,
         target_angles: Vec<(ori_domain::EdgeId, f64)>,
     },
+    BlockwiseCurrentCycle {
+        geometry: ori_kinematics::MaterialHingeGraphGeometry,
+        fixed_face: ori_domain::FaceId,
+        authority: ori_collision::BlockwisePositiveLayerAuthorityV1,
+        sources: [Box<LayerOrderSnapshot>; 2],
+        articulation: ori_domain::FaceId,
+        thickness: f64,
+        issuer_context: [u8; 32],
+        articulation_layer_fingerprint: [u8; 32],
+        layer_order_pairs: Vec<(ori_domain::FaceId, ori_domain::FaceId)>,
+        target_angles: Vec<(ori_domain::EdgeId, f64)>,
+    },
 }
 
 pub(super) struct PendingCertifiedPathEdgeV1 {
@@ -108,13 +120,16 @@ pub(super) struct PendingCertifiedPathEdgeV1 {
 
 impl PendingStackedFoldRequestedPose {
     fn is_graph(&self) -> bool {
-        matches!(self, Self::Graph { .. } | Self::CurrentCycle { .. })
+        matches!(
+            self,
+            Self::Graph { .. } | Self::CurrentCycle { .. } | Self::BlockwiseCurrentCycle { .. }
+        )
     }
     fn geometry(&self) -> Option<&PreparedStackedFoldGeometryV1> {
         match self {
             Self::Tree { requested, .. } => Some(requested.initial().target().geometry()),
             Self::Graph { requested, .. } => Some(requested.initial().target().geometry()),
-            Self::CurrentCycle { .. } => None,
+            Self::CurrentCycle { .. } | Self::BlockwiseCurrentCycle { .. } => None,
         }
     }
     fn continuous_certified(&self) -> bool {
@@ -231,6 +246,21 @@ impl PendingStackedFoldRequestedPose {
                     )
                     .is_some_and(|actual| actual == *expected)
             }
+            Self::BlockwiseCurrentCycle {
+                authority,
+                sources,
+                articulation,
+                thickness,
+                issuer_context,
+                articulation_layer_fingerprint,
+                ..
+            } => authority.revalidates_v1(
+                [&sources[0], &sources[1]],
+                *articulation,
+                *thickness,
+                *issuer_context,
+                *articulation_layer_fingerprint,
+            ),
         }
     }
 
@@ -241,6 +271,35 @@ impl PendingStackedFoldRequestedPose {
             ..
         } = self
         else {
+            if let Self::BlockwiseCurrentCycle {
+                authority,
+                layer_order_pairs,
+                ..
+            } = self
+            {
+                let mut pairs = layer_order_pairs
+                    .iter()
+                    .map(
+                        |(lower_face, upper_face)| ori_domain::CycleLayerOrderPairV1 {
+                            lower_face: *lower_face,
+                            upper_face: *upper_face,
+                        },
+                    )
+                    .collect::<Vec<_>>();
+                pairs.sort_unstable_by_key(|pair| {
+                    (
+                        pair.lower_face.canonical_bytes(),
+                        pair.upper_face.canonical_bytes(),
+                    )
+                });
+                return Some(ori_domain::CycleLayerOrderProofV1 {
+                    version: 1,
+                    model_id: ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1.to_owned(),
+                    target_order_sha256: authority.binding_fingerprint_v1(),
+                    transition_count: authority.transition_count_v1(),
+                    pairs,
+                });
+            }
             return None;
         };
         let mut pairs = layer_order_pairs
@@ -323,6 +382,17 @@ impl PendingStackedFoldRequestedPose {
                 Some(*fixed_face),
                 target_angles.clone(),
             ),
+            Self::BlockwiseCurrentCycle {
+                geometry,
+                fixed_face,
+                target_angles,
+                ..
+            } => (
+                geometry.face_ids().to_vec(),
+                geometry.hinges().iter().map(|hinge| hinge.edge()).collect(),
+                Some(*fixed_face),
+                target_angles.clone(),
+            ),
         }
     }
 
@@ -336,7 +406,8 @@ impl PendingStackedFoldRequestedPose {
                 .iter()
                 .map(|edge| edge.target_angles.clone())
                 .collect(),
-            Self::CurrentCycle { target_angles, .. } => vec![target_angles.clone()],
+            Self::CurrentCycle { target_angles, .. }
+            | Self::BlockwiseCurrentCycle { target_angles, .. } => vec![target_angles.clone()],
             _ => vec![self.pose_components().3],
         }
     }
@@ -450,6 +521,25 @@ pub(super) struct PendingCurrentCyclePosePremisesV1 {
     pub expected: ori_collision::CertifiedPathTransitionEvidenceV1,
     pub continuous: ori_collision::StackedFoldCyclePathDiagnosticV1,
     pub layer_transport: Option<ori_collision::GeneralMultiFaceCellTransportProofV1>,
+    pub layer_order_pairs: Vec<(ori_domain::FaceId, ori_domain::FaceId)>,
+    pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
+}
+
+pub(super) struct PendingBlockwiseCurrentCyclePremisesV1 {
+    pub expected_instance_id: ProjectId,
+    pub expected_project_id: ProjectId,
+    pub expected_revision: u64,
+    pub expected_source_fingerprint: [u8; 32],
+    pub expected_pose_generation: u64,
+    pub expected_layer_generation: u64,
+    pub geometry: ori_kinematics::MaterialHingeGraphGeometry,
+    pub fixed_face: ori_domain::FaceId,
+    pub authority: ori_collision::BlockwisePositiveLayerAuthorityV1,
+    pub sources: [Box<LayerOrderSnapshot>; 2],
+    pub articulation: ori_domain::FaceId,
+    pub thickness: f64,
+    pub issuer_context: [u8; 32],
+    pub articulation_layer_fingerprint: [u8; 32],
     pub layer_order_pairs: Vec<(ori_domain::FaceId, ori_domain::FaceId)>,
     pub target_angles: Vec<(ori_domain::EdgeId, f64)>,
 }
@@ -680,6 +770,65 @@ pub(super) fn install_pending_current_cycle_pose_v1(
     ) || !pending.requested.continuous_certified()
     {
         return Err("The current-cycle pose premises are inconsistent.".to_owned());
+    }
+    let mut slot = lock_slot(state)?;
+    slot.active_generation = Some(token);
+    slot.pending = Some(pending);
+    Ok(token)
+}
+
+pub(super) fn install_pending_blockwise_current_cycle_pose_v1(
+    state: &StackedFoldTransactionState,
+    premises: PendingBlockwiseCurrentCyclePremisesV1,
+    pose_capability: CurrentAppliedPoseCapability,
+    layer_capability: CurrentLayerOrderCapability,
+) -> Result<ProjectId, String> {
+    if premises.fixed_face != premises.articulation
+        || premises.issuer_context != premises.expected_source_fingerprint
+        || !premises.authority.revalidates_v1(
+            [&premises.sources[0], &premises.sources[1]],
+            premises.articulation,
+            premises.thickness,
+            premises.issuer_context,
+            premises.articulation_layer_fingerprint,
+        )
+    {
+        return Err("The blockwise current-cycle premises are inconsistent.".to_owned());
+    }
+    let token = ProjectId::new();
+    let pending = PendingStackedFoldTransaction {
+        token,
+        expected_instance_id: premises.expected_instance_id,
+        expected_project_id: premises.expected_project_id,
+        expected_revision: premises.expected_revision,
+        expected_source_fingerprint: premises.expected_source_fingerprint,
+        expected_pose_generation: premises.expected_pose_generation,
+        expected_layer_generation: premises.expected_layer_generation,
+        requested: PendingStackedFoldRequestedPose::BlockwiseCurrentCycle {
+            geometry: premises.geometry,
+            fixed_face: premises.fixed_face,
+            authority: premises.authority,
+            sources: premises.sources,
+            articulation: premises.articulation,
+            thickness: premises.thickness,
+            issuer_context: premises.issuer_context,
+            articulation_layer_fingerprint: premises.articulation_layer_fingerprint,
+            layer_order_pairs: premises.layer_order_pairs,
+            target_angles: premises.target_angles,
+        },
+        layer_order: None,
+        pose_capability,
+        layer_capability: Some(layer_capability),
+    };
+    if !pending.matches_live_binding(
+        pending.expected_instance_id,
+        pending.expected_project_id,
+        pending.expected_revision,
+        pending.expected_source_fingerprint,
+        pending.expected_pose_generation,
+        pending.expected_layer_generation,
+    ) {
+        return Err("The blockwise current-cycle premises are inconsistent.".to_owned());
     }
     let mut slot = lock_slot(state)?;
     slot.active_generation = Some(token);

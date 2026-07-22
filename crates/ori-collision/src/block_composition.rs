@@ -83,6 +83,22 @@ impl BlockwisePositiveLayerAuthorityV1 {
     }
 
     #[must_use]
+    pub fn transition_count_v1(&self) -> usize {
+        self.layer
+            .iter()
+            .map(|proof| proof.transition_hashes().len())
+            .sum()
+    }
+
+    #[must_use]
+    pub fn pair_order_count_v1(&self) -> usize {
+        self.layer
+            .iter()
+            .map(|proof| proof.pair_order_count())
+            .sum()
+    }
+
+    #[must_use]
     pub fn revalidates_v1(
         &self,
         sources: [&LayerOrderSnapshot; 2],

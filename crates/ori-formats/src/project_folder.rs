@@ -13,6 +13,7 @@ use ori_domain::{EdgeKind, Point2, VertexId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::{
     CURRENT_FORMAT_VERSION, FormatError, MAX_EDITOR_HISTORY_JSON_BYTES, MAX_PROJECT_JSON_BYTES,
@@ -584,7 +585,7 @@ fn validate_physical_entries(
                 path: entry.path.clone(),
             });
         }
-        let folded = entry.path.to_ascii_lowercase();
+        let folded = portable_case_fold(&entry.path);
         if let Some(first) = folded_paths.insert(folded, entry.path.clone()) {
             return Err(ProjectFolderError::EntryPathCaseCollision {
                 first,
@@ -650,7 +651,7 @@ fn validate_manifest_entries(
                 path: descriptor.path.clone(),
             });
         }
-        let folded = descriptor.path.to_ascii_lowercase();
+        let folded = portable_case_fold(&descriptor.path);
         if let Some(first) = folded_paths.insert(folded, descriptor.path.clone()) {
             return Err(ProjectFolderError::EntryPathCaseCollision {
                 first,
@@ -830,21 +831,16 @@ fn validate_entry_path(path: &str, limits: ProjectFolderLimits) -> Result<(), Pr
         });
     }
     let unsafe_path = path.is_empty()
-        || !path.is_ascii()
         || path.starts_with('/')
         || path.starts_with('\\')
         || path.ends_with('/')
         || path.contains('\\')
         || path.contains(':')
-        || path.bytes().any(|byte| byte.is_ascii_control())
+        || path.chars().any(char::is_control)
         || path.split('/').any(is_unsafe_path_component)
-        || path.bytes().any(|byte| {
-            !(byte.is_ascii_alphanumeric()
-                || byte == b'/'
-                || byte == b'.'
-                || byte == b'_'
-                || byte == b'-')
-        });
+        || path
+            .chars()
+            .any(|character| matches!(character, '<' | '>' | '"' | '|' | '?' | '*' | '~' | ' '));
     if unsafe_path {
         return Err(ProjectFolderError::UnsafeEntryPath {
             path: path.to_owned(),
@@ -853,8 +849,21 @@ fn validate_entry_path(path: &str, limits: ProjectFolderLimits) -> Result<(), Pr
     Ok(())
 }
 
+fn portable_case_fold(path: &str) -> String {
+    path.chars()
+        .flat_map(char::to_lowercase)
+        .collect::<String>()
+        .nfc()
+        .collect()
+}
+
 fn is_unsafe_path_component(component: &str) -> bool {
-    if component.is_empty() || component == "." || component == ".." || component.ends_with('.') {
+    if component.is_empty()
+        || component == "."
+        || component == ".."
+        || component.ends_with(['.', ' '])
+        || component.nfc().ne(component.chars())
+    {
         return true;
     }
     let stem = component
@@ -1588,7 +1597,6 @@ mod tests {
             "preview/CON.svg",
             "preview/lpt9.txt",
             "preview/\u{0000}crease-pattern.svg",
-            "preview/折り紙.svg",
             "preview/crease pattern.svg",
             "preview/*.svg",
         ];
@@ -1604,6 +1612,75 @@ mod tests {
                 "unsafe path was accepted: {path:?}"
             );
         }
+    }
+
+    #[test]
+    fn windows_ntfs_path_attack_matrix_is_portably_rejected() {
+        let attacks = [
+            "CON",
+            "con.txt",
+            "NUL.json",
+            "PRN",
+            "AUX.svg",
+            "COM1.dat",
+            "com9",
+            "LPT1.txt",
+            "lpt9",
+            "name:stream.json",
+            "name.",
+            "name ",
+            "//server/share/file.json",
+            "\\\\server\\share\\file.json",
+            "\\\\?\\C:\\file.json",
+            "\\\\.\\NUL",
+            "C:/file.json",
+            "folder/PROJEC~1.JSON",
+            "folder/名前~1.json",
+            "preview/e\u{301}.svg",
+        ];
+        for attack in attacks {
+            assert!(
+                matches!(
+                    validate_entry_path(attack, ProjectFolderLimits::default()),
+                    Err(ProjectFolderError::UnsafeEntryPath { .. })
+                ),
+                "NTFS attack path was accepted: {attack:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn legal_nfc_unicode_paths_round_trip_without_normalization_drift() {
+        for path in [
+            "作品/折り図.json",
+            "modèles/éléphant.svg",
+            "δοκιμή/γερανός.json",
+        ] {
+            validate_entry_path(path, ProjectFolderLimits::default())
+                .expect("legal NFC Unicode path");
+            let encoded = serde_json::to_vec(path).expect("encode Unicode path");
+            let decoded: String = serde_json::from_slice(&encoded).expect("decode Unicode path");
+            assert_eq!(decoded, path);
+            assert!(decoded.nfc().eq(path.chars()));
+        }
+    }
+
+    #[test]
+    fn unicode_case_fold_collisions_are_rejected_before_manifest_use() {
+        let mut entries =
+            write_project_folder_v1(&Ori2ProjectArchive::document_only(sample_document()))
+                .expect("write")
+                .entries()
+                .to_vec();
+        let mut first = entries[1].clone();
+        first.path = "作品/Ä.json".to_owned();
+        let mut second = first.clone();
+        second.path = "作品/ä.json".to_owned();
+        entries.extend([first, second]);
+        assert!(matches!(
+            read_project_folder_v1(&entries),
+            Err(ProjectFolderError::EntryPathCaseCollision { .. })
+        ));
     }
 
     #[test]

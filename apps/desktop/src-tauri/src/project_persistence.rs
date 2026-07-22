@@ -188,6 +188,140 @@ fn recover_authenticated_single_file_v1(
     }
 }
 
+struct DiskSingleFileRecoveryFs {
+    directory: PathBuf,
+    target: PathBuf,
+    temp: PathBuf,
+    backup: PathBuf,
+    journal: PathBuf,
+}
+
+impl DiskSingleFileRecoveryFs {
+    fn path(&self, object: SingleFileRecoveryObject) -> &Path {
+        match object {
+            SingleFileRecoveryObject::Target => &self.target,
+            SingleFileRecoveryObject::Temp => &self.temp,
+            SingleFileRecoveryObject::Backup => &self.backup,
+            SingleFileRecoveryObject::Journal => &self.journal,
+        }
+    }
+}
+
+impl SingleFileRecoveryFs for DiskSingleFileRecoveryFs {
+    fn object_sha256(&self, object: SingleFileRecoveryObject) -> Result<Option<String>, ()> {
+        let path = self.path(object);
+        let metadata = match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(()),
+        };
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(());
+        }
+        let mut file = File::open(path).map_err(|_| ())?;
+        let opened = file.metadata().map_err(|_| ())?;
+        if !opened.is_file() || opened.len() != metadata.len() {
+            return Err(());
+        }
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer).map_err(|_| ())?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        Ok(Some(
+            hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+        ))
+    }
+
+    fn rename_object(
+        &mut self,
+        from: SingleFileRecoveryObject,
+        to: SingleFileRecoveryObject,
+    ) -> Result<(), ()> {
+        if std::fs::symlink_metadata(self.path(to)).is_ok() {
+            return Err(());
+        }
+        std::fs::rename(self.path(from), self.path(to)).map_err(|_| ())
+    }
+
+    fn remove_object(&mut self, object: SingleFileRecoveryObject) -> Result<(), ()> {
+        let path = self.path(object);
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata)
+                if metadata.file_type().is_file() && !metadata.file_type().is_symlink() =>
+            {
+                std::fs::remove_file(path).map_err(|_| ())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(()),
+        }
+    }
+
+    fn sync_directory(&mut self) -> Result<(), ()> {
+        File::open(&self.directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| ())
+    }
+}
+
+fn target_path_fingerprint(path: &Path) -> Result<String, ()> {
+    let parent = containing_directory(path).ok_or(())?;
+    let canonical_parent = std::fs::canonicalize(parent).map_err(|_| ())?;
+    let file_name = path.file_name().and_then(|name| name.to_str()).ok_or(())?;
+    Ok(sha256_hex_bytes(
+        canonical_parent
+            .join(file_name)
+            .to_string_lossy()
+            .as_bytes(),
+    ))
+}
+
+fn journal_path_for_target(path: &Path, target_fingerprint: &str) -> Result<PathBuf, ()> {
+    let parent = containing_directory(path).ok_or(())?;
+    Ok(parent.join(format!(
+        ".origami2-journal-{}.json",
+        &target_fingerprint[..32]
+    )))
+}
+
+fn recover_single_file_journal_for_target(
+    target: &Path,
+    expected_project_id: ProjectId,
+) -> Result<(), ()> {
+    let fingerprint = target_path_fingerprint(target)?;
+    let journal_path = journal_path_for_target(target, &fingerprint)?;
+    let metadata = match std::fs::symlink_metadata(&journal_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(()),
+    };
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > 64 * 1024
+    {
+        return Err(());
+    }
+    let bytes = std::fs::read(&journal_path).map_err(|_| ())?;
+    let payload = decode_single_file_journal_v1(&bytes, expected_project_id, &fingerprint)?;
+    let directory = containing_directory(target).ok_or(())?.to_path_buf();
+    let mut fs = DiskSingleFileRecoveryFs {
+        temp: directory.join(&payload.temp_object_id),
+        backup: directory.join(&payload.backup_object_id),
+        journal: journal_path,
+        target: target.to_path_buf(),
+        directory,
+    };
+    recover_authenticated_single_file_v1(&mut fs, &payload)
+}
+
 #[cfg(unix)]
 use std::ffi::CString;
 #[cfg(unix)]
@@ -924,16 +1058,31 @@ fn write_complete_staged_payload(writer: &mut impl Write, bytes: &[u8]) -> std::
 mod staged_payload_adapter_tests {
     use std::{
         collections::HashMap,
+        fs,
         io::{self, Write},
+        sync::atomic::{AtomicU64, Ordering},
     };
 
     use super::{
         SINGLE_FILE_JOURNAL_SCHEMA_V1, SingleFileJournalPayloadV1, SingleFileJournalPhaseV1,
         SingleFileRecoveryFs, SingleFileRecoveryObject, decode_single_file_journal_v1,
-        encode_single_file_journal_v1, recover_authenticated_single_file_v1, sha256_hex_bytes,
-        write_complete_staged_payload,
+        encode_single_file_journal_v1, journal_path_for_target,
+        recover_authenticated_single_file_v1, recover_single_file_journal_for_target,
+        sha256_hex_bytes, target_path_fingerprint, write_complete_staged_payload,
     };
     use ori_domain::ProjectId;
+
+    static NEXT_JOURNAL_TEST_ID: AtomicU64 = AtomicU64::new(0);
+
+    fn journal_test_directory(label: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "origami2-single-journal-{label}-{}-{}",
+            std::process::id(),
+            NEXT_JOURNAL_TEST_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&path).expect("create journal test directory");
+        path
+    }
 
     struct InjectedWriter {
         bytes: Vec<u8>,
@@ -1153,6 +1302,89 @@ mod staged_payload_adapter_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn disk_adapter_recovers_every_phase_and_removes_private_objects() {
+        let old_bytes = b"old complete ori2";
+        let new_bytes = b"new complete ori2";
+        for phase in [
+            SingleFileJournalPhaseV1::Prepared,
+            SingleFileJournalPhaseV1::OldMoved,
+            SingleFileJournalPhaseV1::NewPublished,
+        ] {
+            let directory = journal_test_directory("phases");
+            let target = directory.join("project.ori2");
+            let project_id = ProjectId::new();
+            let fingerprint = target_path_fingerprint(&target).expect("target fingerprint");
+            let temp_name = "temp-transaction";
+            let backup_name = "backup-transaction";
+            let payload = SingleFileJournalPayloadV1 {
+                schema_version: SINGLE_FILE_JOURNAL_SCHEMA_V1,
+                project_id,
+                target_path_sha256: fingerprint.clone(),
+                transaction_id: "transaction-3".to_owned(),
+                temp_object_id: temp_name.to_owned(),
+                temp_sha256: sha256_hex_bytes(new_bytes),
+                backup_object_id: backup_name.to_owned(),
+                old_sha256: Some(sha256_hex_bytes(old_bytes)),
+                phase,
+            };
+            match phase {
+                SingleFileJournalPhaseV1::Prepared => {
+                    fs::write(&target, old_bytes).expect("old target");
+                    fs::write(directory.join(temp_name), new_bytes).expect("temp");
+                }
+                SingleFileJournalPhaseV1::OldMoved => {
+                    fs::write(directory.join(backup_name), old_bytes).expect("backup");
+                    fs::write(directory.join(temp_name), new_bytes).expect("temp");
+                }
+                SingleFileJournalPhaseV1::NewPublished => {
+                    fs::write(&target, new_bytes).expect("new target");
+                    fs::write(directory.join(backup_name), old_bytes).expect("backup");
+                }
+            }
+            let journal = journal_path_for_target(&target, &fingerprint).expect("journal path");
+            fs::write(
+                &journal,
+                encode_single_file_journal_v1(payload).expect("journal bytes"),
+            )
+            .expect("write journal");
+            recover_single_file_journal_for_target(&target, project_id).expect("recover phase");
+            let expected: &[u8] = if phase == SingleFileJournalPhaseV1::Prepared {
+                old_bytes
+            } else {
+                new_bytes
+            };
+            assert_eq!(fs::read(&target).expect("public target"), expected);
+            assert!(!directory.join(temp_name).exists());
+            assert!(!directory.join(backup_name).exists());
+            assert!(!journal.exists());
+            recover_single_file_journal_for_target(&target, project_id)
+                .expect("recovery is idempotent after cleanup");
+            fs::remove_dir_all(directory).expect("cleanup test directory");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_symlink_is_rejected_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let directory = journal_test_directory("nofollow");
+        let target = directory.join("project.ori2");
+        let sentinel = directory.join("outside-sentinel");
+        fs::write(&sentinel, b"preserve").expect("sentinel");
+        let fingerprint = target_path_fingerprint(&target).expect("fingerprint");
+        let journal = journal_path_for_target(&target, &fingerprint).expect("journal path");
+        symlink(&sentinel, &journal).expect("journal symlink");
+        assert!(recover_single_file_journal_for_target(&target, ProjectId::new()).is_err());
+        assert_eq!(
+            fs::read(&sentinel).expect("sentinel preserved"),
+            b"preserve"
+        );
+        fs::remove_file(&journal).expect("remove symlink");
+        fs::remove_dir_all(directory).expect("cleanup test directory");
     }
 }
 

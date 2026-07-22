@@ -1,4 +1,6 @@
 import {
+  type DragEvent,
+  type KeyboardEvent,
   type RefObject,
   useCallback,
   useEffect,
@@ -163,6 +165,7 @@ export function InstructionTimelinePanel({
   const [editor, setEditor] = useState<InstructionEditorState | null>(null)
   const [editorError, setEditorError] = useState<InstructionEditorError | null>(null)
   const [notice, setNotice] = useState<InstructionTimelineNotice | null>(null)
+  const draggedStepIdRef = useRef<string | null>(null)
   const [playback, setPlayback] = useState(createInstructionPlaybackState)
   const playbackRef = useRef(playback)
   playbackRef.current = playback
@@ -264,6 +267,14 @@ export function InstructionTimelinePanel({
   const timelineAvailable = presentation.kind === 'ready'
   const editingDisabled = coreBusy || benchmarkActive || fileOperationActive
     || !snapshot || !timelineAvailable
+  useEffect(() => {
+    draggedStepIdRef.current = null
+  }, [
+    editingDisabled,
+    snapshot?.project_instance_id,
+    snapshot?.project_id,
+    snapshot?.revision,
+  ])
   const noticeText = notice
     ? instructionTimelineNoticeText(notice, locale)
     : ''
@@ -750,13 +761,16 @@ export function InstructionTimelinePanel({
     setNotice({ kind: 'added', title: selectedStep.title })
   }
 
-  async function moveSelectedStep(targetIndex: number) {
+  async function moveStep(stepId: string, targetIndex: number) {
+    const source = presentation.kind === 'ready'
+      ? presentation.stepsById.get(stepId)
+      : undefined
     if (
       editingDisabled
-      || !selectedStep
+      || !source
       || targetIndex < 0
       || targetIndex >= steps.length
-      || targetIndex === selectedStep.index
+      || targetIndex === source.index
     ) return
     cancelPlayback('revision_changed')
     const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
@@ -764,10 +778,49 @@ export function InstructionTimelinePanel({
         projectId,
         revision,
         projectInstanceId,
-        selectedStep.id,
+        source.id,
         targetIndex,
       ))
     setNotice(succeeded ? { kind: 'moved' } : { kind: 'move_failed' })
+  }
+
+  async function moveSelectedStep(targetIndex: number) {
+    if (!selectedStep) return
+    await moveStep(selectedStep.id, targetIndex)
+  }
+
+  function handleStepKeyDown(
+    event: KeyboardEvent<HTMLButtonElement>,
+    step: InstructionStepPresentation,
+  ) {
+    if (editingDisabled || !event.altKey) return
+    const targetIndex = event.key === 'ArrowLeft' || event.key === 'ArrowUp'
+      ? step.index - 1
+      : event.key === 'ArrowRight' || event.key === 'ArrowDown'
+        ? step.index + 1
+        : event.key === 'Home'
+          ? 0
+          : event.key === 'End'
+            ? steps.length - 1
+            : null
+    if (targetIndex === null || targetIndex < 0 || targetIndex >= steps.length) return
+    event.preventDefault()
+    setSelectedStepId(step.id)
+    void moveStep(step.id, targetIndex)
+  }
+
+  function handleStepDrop(event: DragEvent<HTMLButtonElement>, targetIndex: number) {
+    event.preventDefault()
+    const stepId = draggedStepIdRef.current || event.dataTransfer.getData('text/plain')
+    draggedStepIdRef.current = null
+    if (
+      !stepId
+      || editingDisabled
+      || presentation.kind !== 'ready'
+      || !presentation.stepsById.has(stepId)
+    ) return
+    setSelectedStepId(stepId)
+    void moveStep(stepId, targetIndex)
   }
 
   async function splitSelectedStep() {
@@ -965,7 +1018,13 @@ export function InstructionTimelinePanel({
             <div
               className="timeline-track"
               aria-label={selectLocalizedText(locale, TEXT.timelineList)}
+              aria-describedby="instruction-reorder-help"
             >
+              <span id="instruction-reorder-help" className="visually-hidden">
+                {locale === 'ja'
+                  ? '手順はドラッグして移動できます。キーボードではAltキーと矢印キー、Home、Endを使います。'
+                  : 'Drag steps to reorder. With the keyboard, use Alt plus an arrow key, Home, or End.'}
+              </span>
               {steps.map((step) => {
                 const selected = step.id === selectedStepId
                 const displayed = !step.stale
@@ -982,6 +1041,29 @@ export function InstructionTimelinePanel({
                     ].filter(Boolean).join(' ')}
                     aria-pressed={selected}
                     aria-current={displayed ? 'step' : undefined}
+                    draggable={!editingDisabled && steps.length > 1}
+                    data-drop-target-index={step.index}
+                    onDragStart={(event) => {
+                      if (editingDisabled) {
+                        event.preventDefault()
+                        return
+                      }
+                      draggedStepIdRef.current = step.id
+                      setSelectedStepId(step.id)
+                      event.dataTransfer.effectAllowed = 'move'
+                      event.dataTransfer.setData('text/plain', step.id)
+                    }}
+                    onDragEnd={() => {
+                      draggedStepIdRef.current = null
+                    }}
+                    onDragOver={(event) => {
+                      if (!editingDisabled && draggedStepIdRef.current) {
+                        event.preventDefault()
+                        event.dataTransfer.dropEffect = 'move'
+                      }
+                    }}
+                    onDrop={(event) => handleStepDrop(event, step.index)}
+                    onKeyDown={(event) => handleStepKeyDown(event, step)}
                     onClick={() => setSelectedStepId(step.id)}
                   >
                     <span>

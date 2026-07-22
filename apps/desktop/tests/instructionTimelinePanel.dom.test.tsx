@@ -192,6 +192,116 @@ describe('InstructionTimelinePanel localization', () => {
     ))
   })
 
+  it('reorders by pointer drop and Alt keyboard shortcuts with bilingual guidance', async () => {
+    localeStore.setLocale('en')
+    const steps = [0, 1, 2].map((index) => ({
+      ...SNAPSHOT.instruction_timeline.steps[0]!,
+      id: `dnd-step-${index + 1}`,
+      title: `DnD ${index + 1}`,
+    }))
+    const snapshot = {
+      ...SNAPSHOT,
+      instruction_timeline: { steps },
+    } as ProjectSnapshot
+    const move = vi.mocked(moveInstructionStep)
+    move.mockResolvedValue(snapshot)
+    const runNativeEdit = vi.fn(async (
+      action: React.ComponentProps<typeof InstructionTimelinePanel>['runNativeEdit'] extends (
+        action: infer Action,
+      ) => Promise<boolean> ? Action : never,
+    ) => {
+      await action(snapshot.project_id, snapshot.revision, snapshot.project_instance_id)
+      return true
+    })
+    const view = render(<InstructionTimelinePanel
+      {...panelFor(snapshot).props}
+      runNativeEdit={runNativeEdit}
+    />)
+    expect(screen.getByText(/Drag steps to reorder/).classList.contains('visually-hidden')).toBe(true)
+    const source = screen.getByRole('button', { name: /1\. DnD 1/ })
+    const target = screen.getByRole('button', { name: /3\. DnD 3/ })
+    const transfer = {
+      effectAllowed: 'none', dropEffect: 'none',
+      setData: vi.fn(), getData: vi.fn(() => 'dnd-step-1'),
+    }
+    fireEvent.dragStart(source, { dataTransfer: transfer })
+    fireEvent.dragOver(target, { dataTransfer: transfer })
+    fireEvent.drop(target, { dataTransfer: transfer })
+    await waitFor(() => expect(move).toHaveBeenCalledWith(
+      snapshot.project_id, snapshot.revision, snapshot.project_instance_id,
+      'dnd-step-1', 2,
+    ))
+    expect(source.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.dragEnd(source, { dataTransfer: transfer })
+
+    const callCount = move.mock.calls.length
+    fireEvent.drop(target, {
+      dataTransfer: { ...transfer, getData: vi.fn(() => 'forged-external-step') },
+    })
+    expect(move).toHaveBeenCalledTimes(callCount)
+    expect(source.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.keyDown(target, { key: 'Home', altKey: true })
+    await waitFor(() => expect(move).toHaveBeenLastCalledWith(
+      snapshot.project_id, snapshot.revision, snapshot.project_instance_id,
+      'dnd-step-3', 0,
+    ))
+    expect(target.getAttribute('aria-pressed')).toBe('true')
+
+    localeStore.setLocale('ja')
+    view.rerender(<InstructionTimelinePanel
+      {...panelFor(snapshot).props}
+      runNativeEdit={runNativeEdit}
+    />)
+    expect(screen.getByText(/手順はドラッグして移動できます/).classList.contains('visually-hidden')).toBe(true)
+  })
+
+  it('disables drag reorder for locked editing and zero-or-one step boundaries', () => {
+    localeStore.setLocale('en')
+    const single = render(<InstructionTimelinePanel
+      {...panelFor(SNAPSHOT).props}
+      coreBusy
+    />)
+    expect(screen.getByRole('button', { name: /1\. Fold crane/ }).getAttribute('draggable'))
+      .toBe('false')
+    single.rerender(panelFor({
+      ...SNAPSHOT,
+      instruction_timeline: { steps: [] },
+    } as ProjectSnapshot))
+    expect(screen.queryByRole('button', { name: /Fold crane/ })).toBeNull()
+  })
+
+  it('cancels a drag when its authoritative revision becomes stale', () => {
+    localeStore.setLocale('en')
+    const second = {
+      ...SNAPSHOT.instruction_timeline.steps[0]!, id: 'stale-second', title: 'Second',
+    }
+    const snapshot = {
+      ...SNAPSHOT,
+      instruction_timeline: { steps: [SNAPSHOT.instruction_timeline.steps[0]!, second] },
+    } as ProjectSnapshot
+    const runNativeEdit = vi.fn()
+    const view = render(<InstructionTimelinePanel
+      {...panelFor(snapshot).props}
+      runNativeEdit={runNativeEdit}
+    />)
+    const transfer = {
+      effectAllowed: 'none', dropEffect: 'none',
+      setData: vi.fn(), getData: vi.fn(() => ''),
+    }
+    fireEvent.dragStart(screen.getByRole('button', { name: /1\. Fold crane/ }), {
+      dataTransfer: transfer,
+    })
+    view.rerender(<InstructionTimelinePanel
+      {...panelFor({ ...snapshot, revision: snapshot.revision + 1 }).props}
+      runNativeEdit={runNativeEdit}
+    />)
+    fireEvent.drop(screen.getByRole('button', { name: /2\. Second/ }), {
+      dataTransfer: transfer,
+    })
+    expect(runNativeEdit).not.toHaveBeenCalled()
+  })
+
   it('duplicates the complete selected step through one native mutation and selects the copy', async () => {
     localeStore.setLocale('en')
     const duplicated = {

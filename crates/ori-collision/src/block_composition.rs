@@ -20,6 +20,11 @@ pub const MULTI_BLOCK_MAX_BLOCKS_V1: usize = 8;
 pub const MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1: &str =
     "bounded_multi_block_positive_layer_authority_v1";
 
+#[must_use]
+pub const fn multi_block_count_supported_v1(count: usize) -> bool {
+    count >= MULTI_BLOCK_MIN_BLOCKS_V1 && count <= MULTI_BLOCK_MAX_BLOCKS_V1
+}
+
 pub struct MultiBlockClosureInputV1<'a> {
     pub geometry: &'a MaterialHingeGraphGeometry,
     pub audit: &'a MaterialHingeGraphAudit,
@@ -544,7 +549,7 @@ pub fn issue_multi_block_closure_authority_v1(
     thickness: f64,
     issuer_context: [u8; 32],
 ) -> Option<MultiBlockClosureAuthorityV1> {
-    if !(MULTI_BLOCK_MIN_BLOCKS_V1..=MULTI_BLOCK_MAX_BLOCKS_V1).contains(&inputs.len())
+    if !multi_block_count_supported_v1(inputs.len())
         || !thickness.is_finite()
         || thickness <= 0.0
         || issuer_context == [0; 32]
@@ -600,6 +605,16 @@ pub fn issue_multi_block_closure_authority_v1(
         .collect::<Vec<_>>();
     if !block_intersection_is_tree_v1(&canonical) {
         return None;
+    }
+    for (index, block) in blocks.iter().enumerate() {
+        let fixed_face = block.closure.fixed_face();
+        if !blocks
+            .iter()
+            .enumerate()
+            .any(|(other_index, other)| other_index != index && other.faces.contains(&fixed_face))
+        {
+            return None;
+        }
     }
     let mut hash = Sha256::new();
     hash.update(MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
@@ -884,7 +899,10 @@ pub fn issue_block_composed_path_authority_v1(
 
 #[cfg(test)]
 mod tests {
-    use super::{CanonicalBlockBindingV1, block_intersection_is_tree_v1};
+    use super::{
+        CanonicalBlockBindingV1, MULTI_BLOCK_MAX_BLOCKS_V1, MULTI_BLOCK_MIN_BLOCKS_V1,
+        block_intersection_is_tree_v1, multi_block_count_supported_v1,
+    };
     use ori_domain::FaceId;
 
     fn block(faces: &[FaceId]) -> CanonicalBlockBindingV1 {
@@ -924,5 +942,17 @@ mod tests {
             block(&[b, c]),
             block(&[c, a]),
         ]));
+    }
+
+    #[test]
+    fn bounded_multi_block_count_fails_closed() {
+        assert!(!multi_block_count_supported_v1(
+            MULTI_BLOCK_MIN_BLOCKS_V1 - 1
+        ));
+        assert!(multi_block_count_supported_v1(MULTI_BLOCK_MIN_BLOCKS_V1));
+        assert!(multi_block_count_supported_v1(MULTI_BLOCK_MAX_BLOCKS_V1));
+        assert!(!multi_block_count_supported_v1(
+            MULTI_BLOCK_MAX_BLOCKS_V1 + 1
+        ));
     }
 }

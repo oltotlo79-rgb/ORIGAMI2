@@ -53,6 +53,7 @@ pub use block_composition::{
     MultiBlockPositiveLayerInputV1, issue_block_composed_path_authority_v1,
     issue_blockwise_closure_authority_v1, issue_blockwise_positive_layer_authority_v1,
     issue_multi_block_closure_authority_v1, issue_multi_block_positive_layer_authority_v1,
+    multi_block_count_supported_v1,
 };
 pub use cell_order_transport::{
     CURRENT_POSE_CELL_ORDER_MODEL_ID_V1, CellOrderTransportErrorV1, CellOrderTransportLimitsV1,

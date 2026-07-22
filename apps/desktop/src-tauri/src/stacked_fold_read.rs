@@ -357,6 +357,168 @@ struct BlockwisePositiveLayerPrivatePreviewStateV1(
     Mutex<Option<BlockwisePositiveLayerPreviewRecordV1>>,
 );
 
+/// Native-only hand-off for a bounded 2..=8 block proof. The proof-bearing
+/// authority never crosses the command DTO boundary.
+#[allow(dead_code)]
+struct MultiBlockPositiveLayerPreviewRecordV1 {
+    token: ProjectId,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    issuer_context: [u8; 32],
+    thickness: f64,
+    articulation_layer_fingerprint: [u8; 32],
+    sources: Vec<Box<ori_foldability::LayerOrderSnapshot>>,
+    authority: ori_collision::MultiBlockPositiveLayerAuthorityV1,
+    pattern: ori_domain::CreasePattern,
+    paper: ori_domain::Paper,
+    timeline: ori_domain::InstructionTimeline,
+    layers: ori_domain::ProjectLayerDocumentV1,
+    applied_pose: ori_core::AppliedPoseV1,
+}
+
+#[derive(Default)]
+#[allow(dead_code)]
+struct MultiBlockPositiveLayerPrivatePreviewStateV1(
+    Mutex<Option<MultiBlockPositiveLayerPreviewRecordV1>>,
+);
+
+#[allow(dead_code)]
+impl MultiBlockPositiveLayerPreviewRecordV1 {
+    fn revalidates_for_apply_v1(
+        &self,
+        token: ProjectId,
+        project_instance_id: ProjectId,
+        project_id: ProjectId,
+        revision: u64,
+        issuer_context: [u8; 32],
+        thickness: f64,
+        articulation_layer_fingerprint: [u8; 32],
+    ) -> bool {
+        let sources = self.sources.iter().map(Box::as_ref).collect::<Vec<_>>();
+        self.token == token
+            && self.project_instance_id == project_instance_id
+            && self.project_id == project_id
+            && self.revision == revision
+            && self.issuer_context == issuer_context
+            && self.thickness.to_bits() == thickness.to_bits()
+            && self.articulation_layer_fingerprint == articulation_layer_fingerprint
+            && self.issuer_context
+                == blockwise_document_context_v1(
+                    &self.pattern,
+                    &self.paper,
+                    &self.timeline,
+                    &self.layers,
+                    &self.applied_pose,
+                )
+            && self.authority.revalidates_v1(
+                &sources,
+                thickness,
+                issuer_context,
+                articulation_layer_fingerprint,
+            )
+    }
+}
+
+#[allow(dead_code)]
+impl MultiBlockPositiveLayerPrivatePreviewStateV1 {
+    fn mint_once_v1(&self, record: MultiBlockPositiveLayerPreviewRecordV1) -> Result<(), String> {
+        let sources = record.sources.iter().map(Box::as_ref).collect::<Vec<_>>();
+        if record.sources.len() < ori_collision::MULTI_BLOCK_MIN_BLOCKS_V1
+            || record.sources.len() > ori_collision::MULTI_BLOCK_MAX_BLOCKS_V1
+            || record.issuer_context
+                != blockwise_document_context_v1(
+                    &record.pattern,
+                    &record.paper,
+                    &record.timeline,
+                    &record.layers,
+                    &record.applied_pose,
+                )
+            || !record.authority.revalidates_v1(
+                &sources,
+                record.thickness,
+                record.issuer_context,
+                record.articulation_layer_fingerprint,
+            )
+        {
+            return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
+        }
+        let mut slot = self.0.lock().map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+        if slot.is_some() {
+            return Err("a multi-block positive-layer preview is already active".to_owned());
+        }
+        *slot = Some(record);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_v1(
+        &self,
+        project: &mut super::ProjectState,
+        token: ProjectId,
+        expected_revision: u64,
+        issuer_context: [u8; 32],
+        thickness: f64,
+        articulation_layer_fingerprint: [u8; 32],
+    ) -> Result<u64, String> {
+        let mut slot = self.0.lock().map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+        let record = slot
+            .as_ref()
+            .filter(|record| {
+                record.revalidates_for_apply_v1(
+                    token,
+                    project.instance_id,
+                    project.project_id,
+                    expected_revision,
+                    issuer_context,
+                    thickness,
+                    articulation_layer_fingerprint,
+                )
+            })
+            .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+        let persisted_pairs = certified_blockwise_layer_pairs_v1(
+            &record.sources,
+            record.authority.pair_order_count_v1(),
+        )?;
+        let mut timeline = record.timeline.clone();
+        let target_step = timeline
+            .steps
+            .last_mut()
+            .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+        target_step.visual.cycle_layer_order_proof_v1 = Some(ori_domain::CycleLayerOrderProofV1 {
+            version: 1,
+            model_id: ori_domain::CYCLE_LAYER_ORDER_PROOF_MODEL_ID_V1.to_owned(),
+            target_order_sha256: record.authority.target_order_hash_v1(),
+            transition_count: record.authority.transition_count_v1(),
+            pairs: persisted_pairs
+                .into_iter()
+                .map(
+                    |(lower_face, upper_face)| ori_domain::CycleLayerOrderPairV1 {
+                        lower_face,
+                        upper_face,
+                    },
+                )
+                .collect(),
+        });
+        let result = project
+            .editor
+            .execute_stacked_fold_document(
+                expected_revision,
+                record.pattern.clone(),
+                record.paper.clone(),
+                timeline,
+                record.layers.clone(),
+                record
+                    .applied_pose
+                    .try_clone()
+                    .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?,
+            )
+            .map_err(|_| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?;
+        slot.take();
+        Ok(result.revision)
+    }
+}
+
 #[allow(dead_code)]
 impl BlockwisePositiveLayerPreviewRecordV1 {
     #[allow(clippy::too_many_arguments)]
@@ -2945,7 +3107,7 @@ fn propose_current_cycle_pose_inner_with_layers(
 }
 
 fn certified_blockwise_layer_pairs_v1(
-    sources: &[Box<ori_foldability::LayerOrderSnapshot>; 2],
+    sources: &[Box<ori_foldability::LayerOrderSnapshot>],
     certified_pair_count: usize,
 ) -> Result<Vec<(FaceId, FaceId)>, String> {
     let mut pairs = sources

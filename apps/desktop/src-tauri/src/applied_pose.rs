@@ -595,6 +595,21 @@ impl CurrentAppliedPoseAuthority {
             return Err(PoseAuthorityError::StaleRequest);
         }
         let complete_hinge_angles = validate_and_normalize_request(&mut request)?;
+        if complete_hinge_angles.is_empty() && request.fixed_face_id.is_some() {
+            let analysis = project
+                .editor
+                .topology_analysis_input(project.project_id)
+                .analyze();
+            let Some(snapshot) = analysis.simulation_snapshot() else {
+                return Err(PoseAuthorityError::InvalidRequest);
+            };
+            let [only_face] = snapshot.faces.as_slice() else {
+                return Err(PoseAuthorityError::InvalidRequest);
+            };
+            if request.fixed_face_id != Some(only_face.id) {
+                return Err(PoseAuthorityError::InvalidRequest);
+            }
+        }
 
         let topology_input = Arc::new(project.editor.topology_analysis_input(project.project_id));
         let fold_model_fingerprint: Arc<str> =
@@ -891,12 +906,23 @@ impl CapturedNativePoseRequest {
         }
         let canonical_angles = CanonicalHingeAngles::new(native_angles)
             .map_err(|_| PoseAuthorityError::InvalidRequest)?;
+        let resolved_fixed_face = if canonical_angles.as_slice().is_empty() {
+            let [only_face] = topology.faces.as_slice() else {
+                return Err(PoseAuthorityError::InvalidRequest);
+            };
+            if self.fixed_face.is_some_and(|face| face != only_face.id) {
+                return Err(PoseAuthorityError::InvalidRequest);
+            }
+            Some(only_face.id)
+        } else {
+            self.fixed_face
+        };
         let (native_pose, face_ids, expected_hinges, semantic_fixed_face) =
             if let Ok(model) = tree_model {
                 let model = Arc::new(model);
                 let pose = Arc::new(
                     model
-                        .solve(self.fixed_face, &canonical_angles)
+                        .solve(resolved_fixed_face, &canonical_angles)
                         .map_err(|_| PoseAuthorityError::KinematicsUnavailable)?,
                 );
                 model
@@ -907,7 +933,7 @@ impl CapturedNativePoseRequest {
                     .iter()
                     .map(|hinge| hinge.edge())
                     .collect::<Vec<_>>();
-                let fixed_face = self.fixed_face.ok_or(PoseAuthorityError::InvalidRequest)?;
+                let fixed_face = resolved_fixed_face.ok_or(PoseAuthorityError::InvalidRequest)?;
                 let graph_companion = ori_kinematics::MaterialHingeGraphGeometry::prepare(
                     self.binding.topology_input.pattern(),
                     self.binding.topology_input.paper(),
@@ -940,10 +966,10 @@ impl CapturedNativePoseRequest {
                     },
                     model.face_ids().to_vec(),
                     hinges,
-                    self.fixed_face,
+                    resolved_fixed_face,
                 )
             } else {
-                let fixed_face = self.fixed_face.ok_or(PoseAuthorityError::InvalidRequest)?;
+                let fixed_face = resolved_fixed_face.ok_or(PoseAuthorityError::InvalidRequest)?;
                 let geometry = Arc::new(
                     ori_kinematics::MaterialHingeGraphGeometry::prepare(
                         self.binding.topology_input.pattern(),
@@ -1136,7 +1162,7 @@ fn validate_and_normalize_request(
         request.complete_hinge_angles.is_empty(),
         request.fixed_face_id,
     ) {
-        (true, Some(_)) | (false, None) => return Err(PoseAuthorityError::InvalidRequest),
+        (false, None) => return Err(PoseAuthorityError::InvalidRequest),
         _ => {}
     }
     for pair in request.complete_hinge_angles.windows(2) {

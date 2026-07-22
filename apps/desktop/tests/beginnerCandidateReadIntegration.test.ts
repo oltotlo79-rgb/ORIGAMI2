@@ -181,6 +181,8 @@ test('reviewed component bridge overrides persist and fail closed before mutatio
   assert.match(native, /accepted\.len\(\) \+ 1 != usize::from\(document\.component_count\)/u)
   assert.match(native, /if left == right \{\s*return false/u)
   assert.match(native, /component_bridge_override_stale_or_disconnected/u)
+  assert.match(native, /skeleton_segments\.len\(\) > 16/u)
+  assert.match(native, /o1\.signum\(\) != o2\.signum\(\)/u)
   assert.match(client, /component_bridge_override/u)
   assert.match(client, /document\.bridges\.length > 7/u)
   assert.match(app, /Reviewed component bridge overrides/u)

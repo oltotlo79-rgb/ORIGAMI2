@@ -5749,8 +5749,38 @@ fn component_bridge_override_is_live_v1(
     else {
         return true;
     };
-    if !document.reviewed || document.bridges.len() > 7 {
+    if !document.reviewed
+        || document.bridges.len() > 7
+        || profile.generation_constraints.skeleton_segments.len() > 16
+    {
         return false;
+    }
+    let segments = &profile.generation_constraints.skeleton_segments;
+    let orient = |a: [i32; 2], b: [i32; 2], c: [i32; 2]| {
+        (i128::from(b[0]) - i128::from(a[0])) * (i128::from(c[1]) - i128::from(a[1]))
+            - (i128::from(b[1]) - i128::from(a[1])) * (i128::from(c[0]) - i128::from(a[0]))
+    };
+    for (index, left) in segments.iter().enumerate() {
+        let a = [left.start.x_tenths_mm, left.start.y_tenths_mm];
+        let b = [left.end.x_tenths_mm, left.end.y_tenths_mm];
+        for right in &segments[index + 1..] {
+            let c = [right.start.x_tenths_mm, right.start.y_tenths_mm];
+            let d = [right.end.x_tenths_mm, right.end.y_tenths_mm];
+            if [a, b].iter().any(|point| *point == c || *point == d) {
+                continue;
+            }
+            let (o1, o2, o3, o4) = (
+                orient(a, b, c),
+                orient(a, b, d),
+                orient(c, d, a),
+                orient(c, d, b),
+            );
+            if (o1 == 0 || o2 == 0 || o1.signum() != o2.signum())
+                && (o3 == 0 || o4 == 0 || o3.signum() != o4.signum())
+            {
+                return false;
+            }
+        }
     }
     let hash_matches =
         project.reference_model_assets.iter().any(|asset| {

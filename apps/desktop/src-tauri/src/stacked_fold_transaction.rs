@@ -1155,43 +1155,19 @@ pub(super) fn regular_quad_petal_face_v1(
     })
 }
 
-const REGULAR_QUAD_PETAL_CANDIDATE_LIMIT_V1: usize = 3;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct RegularQuadPetalCanonicalCandidateV1 {
-    pub hinges: [ori_domain::EdgeId; 3],
-    pub stage_target_microdegrees: [[i64; 3]; 3],
-}
+pub(super) type RegularQuadPetalCanonicalCandidateV1 =
+    ori_collision::RegularQuadPetalRatioCandidateV1;
 
 /// Derives the only bounded candidate family admitted by the dormant native
 /// petal issuer. Caller-provided angles never enter this boundary.
 pub(super) fn regular_quad_petal_canonical_candidates_v1(
-    mut hinges: [(ori_domain::EdgeId, ori_topology::FoldAssignment); 3],
-) -> [RegularQuadPetalCanonicalCandidateV1; REGULAR_QUAD_PETAL_CANDIDATE_LIMIT_V1] {
-    hinges.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
-    let edges = hinges.map(|(edge, _)| edge);
-    let signs = hinges.map(|(_, assignment)| match assignment {
-        ori_topology::FoldAssignment::Mountain => 1_i64,
-        ori_topology::FoldAssignment::Valley => -1_i64,
-    });
-    [[15_i64, 45, 90], [30_i64, 60, 120], [45_i64, 90, 135]].map(|angles| {
-        RegularQuadPetalCanonicalCandidateV1 {
-            hinges: edges,
-            stage_target_microdegrees: [
-                [signs[0] * angles[0] * 1_000_000, 0, 0],
-                [
-                    signs[0] * angles[0] * 1_000_000,
-                    signs[1] * angles[1] * 1_000_000,
-                    0,
-                ],
-                [
-                    signs[0] * angles[0] * 1_000_000,
-                    signs[1] * angles[1] * 1_000_000,
-                    signs[2] * angles[2] * 1_000_000,
-                ],
-            ],
-        }
-    })
+    hinges: [(ori_domain::EdgeId, ori_topology::FoldAssignment); 3],
+) -> [RegularQuadPetalCanonicalCandidateV1;
+    ori_collision::REGULAR_QUAD_PETAL_RATIO_CANDIDATE_LIMIT_V1] {
+    ori_collision::regular_quad_petal_ratio_candidates_v1(
+        hinges
+            .map(|(edge, assignment)| (edge, assignment == ori_topology::FoldAssignment::Mountain)),
+    )
 }
 
 /// Evaluates candidates in canonical order and publishes only the first fully
@@ -1202,7 +1178,7 @@ pub(super) fn first_certified_regular_quad_petal_candidate_v1<T>(
 ) -> Option<T> {
     candidates
         .iter()
-        .take(REGULAR_QUAD_PETAL_CANDIDATE_LIMIT_V1)
+        .take(ori_collision::REGULAR_QUAD_PETAL_RATIO_CANDIDATE_LIMIT_V1)
         .find_map(&mut certify_all_stages)
 }
 

@@ -7034,8 +7034,10 @@ mod tests {
                 .hinges
                 .windows(2)
                 .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
-                && candidate.stage_target_microdegrees[0][1..] == [0, 0]
-                && candidate.stage_target_microdegrees[1][2] == 0
+                && candidate.stage_endpoints.iter().all(|stage| {
+                    let absolute = stage.map(|(p, q)| (p.unsigned_abs(), q));
+                    absolute[0] == absolute[1] && absolute[1] == absolute[2]
+                })
         }));
         let mut attempts = 0;
         let accepted =

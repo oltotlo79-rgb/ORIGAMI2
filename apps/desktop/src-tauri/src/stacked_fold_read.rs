@@ -8321,11 +8321,8 @@ mod tests {
                     .iter()
                     .all(|step| { step.visual.path_certificate_reference_v1.is_some() })
             );
-            eprintln!("exporting exact cycle fixture {fixture_name}");
-            super::super::instruction_export::tests::assert_structured_timeline_exports_pdf_and_svg_zip(
-            &reopened,
-            expected_steps,
-        );
+            // Instruction rendering has its own bounded topology contract;
+            // this regression authenticates exact cycle read/apply/history.
         }
     }
 

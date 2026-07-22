@@ -5525,6 +5525,42 @@ mod tests {
             .collect::<Vec<_>>();
         let schedule = dense_grid_schedule(&hinges, &active, 64);
 
+        let mut duplicate_edge_schedule = schedule.clone();
+        duplicate_edge_schedule.entries[1].edge = duplicate_edge_schedule.entries[0].edge;
+        assert!(
+            propose_current_cycle_pose_inner_with_layers(
+                None,
+                &state,
+                Some(&layer_state),
+                &transactions,
+                request(revision, duplicate_edge_schedule),
+            )
+            .is_err()
+        );
+        let mut oversized_schedule = schedule.clone();
+        while oversized_schedule.entries.len() <= MAX_STACKED_FOLD_REQUEST_HINGES_V1 {
+            oversized_schedule
+                .entries
+                .push(oversized_schedule.entries[0].clone());
+        }
+        assert!(
+            propose_current_cycle_pose_inner_with_layers(
+                None,
+                &state,
+                Some(&layer_state),
+                &transactions,
+                request(revision, oversized_schedule),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            super::super::lock_project(&state)
+                .unwrap()
+                .editor
+                .revision(),
+            revision
+        );
+
         assert!(
             propose_current_cycle_pose_inner(
                 None,

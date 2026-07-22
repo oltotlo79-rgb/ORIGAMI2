@@ -176,9 +176,11 @@ fn decode_single_file_journal_v1(
             .as_deref()
             .is_none_or(is_lowercase_sha256)
         && is_safe_transaction_component(&payload.transaction_id)
-        && is_safe_transaction_component(&payload.temp_object_id)
-        && is_safe_transaction_component(&payload.backup_object_id)
-        && payload.temp_object_id != payload.backup_object_id;
+        && is_safe_recovery_object_component(&payload.temp_object_id)
+        && is_safe_recovery_object_component(&payload.backup_object_id)
+        && !payload
+            .temp_object_id
+            .eq_ignore_ascii_case(&payload.backup_object_id);
     valid.then_some(payload).ok_or(())
 }
 
@@ -201,6 +203,26 @@ fn is_safe_transaction_component(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.')
+}
+
+fn is_windows_reserved_device_component(value: &str) -> bool {
+    let stem = value
+        .trim_end_matches(['.', ' '])
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$")
+        || stem
+            .strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT"))
+            .is_some_and(|suffix| {
+                matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+            })
+}
+
+fn is_safe_recovery_object_component(value: &str) -> bool {
+    is_safe_transaction_component(value) && !is_windows_reserved_device_component(value)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -283,6 +305,48 @@ impl DiskSingleFileRecoveryFs {
     }
 }
 
+#[cfg(unix)]
+fn recovery_private_object_is_exclusive(path: &Path) -> Result<bool, ()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ())?;
+    Ok(metadata.file_type().is_file()
+        && !metadata.file_type().is_symlink()
+        && metadata.nlink() == 1)
+}
+
+#[cfg(target_os = "windows")]
+fn recovery_private_object_is_exclusive(path: &Path) -> Result<bool, ()> {
+    use std::{mem::MaybeUninit, os::windows::io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ())?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+    let mut options = OpenOptions::new();
+    options
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
+    let file = options.open(path).map_err(|_| ())?;
+    let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+    // SAFETY: the output storage and handle are valid for the call.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, information.as_mut_ptr()) }
+        == 0
+    {
+        return Err(());
+    }
+    // SAFETY: success initialized the structure.
+    let information = unsafe { information.assume_init() };
+    Ok(
+        information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+            && information.nNumberOfLinks == 1,
+    )
+}
+
 impl SingleFileRecoveryFs for DiskSingleFileRecoveryFs {
     fn object_sha256(&self, object: SingleFileRecoveryObject) -> Result<Option<String>, ()> {
         let path = self.path(object);
@@ -292,6 +356,11 @@ impl SingleFileRecoveryFs for DiskSingleFileRecoveryFs {
             Err(_) => return Err(()),
         };
         if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(());
+        }
+        if object != SingleFileRecoveryObject::Target
+            && !recovery_private_object_is_exclusive(path)?
+        {
             return Err(());
         }
         let mut file = File::open(path).map_err(|_| ())?;
@@ -334,6 +403,11 @@ impl SingleFileRecoveryFs for DiskSingleFileRecoveryFs {
             Ok(metadata)
                 if metadata.file_type().is_file() && !metadata.file_type().is_symlink() =>
             {
+                if object != SingleFileRecoveryObject::Target
+                    && !recovery_private_object_is_exclusive(path)?
+                {
+                    return Err(());
+                }
                 std::fs::remove_file(path).map_err(|_| ())
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -434,10 +508,12 @@ fn persist_single_file_journal_phase(
             NEXT_STAGED_FILE_ID.fetch_add(1, Ordering::Relaxed)
         ))
     };
+    let mut write_path_created = false;
     let write_result = (|| {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         let mut file = options.open(&write_path).map_err(|_| ())?;
+        write_path_created = true;
         write_complete_staged_payload(&mut file, &bytes).map_err(|_| ())?;
         file.sync_all().map_err(|_| ())?;
         drop(file);
@@ -446,7 +522,7 @@ fn persist_single_file_journal_phase(
         }
         sync_project_directory(containing_directory(target).ok_or(())?).map_err(|_| ())
     })();
-    if write_result.is_err() {
+    if write_result.is_err() && write_path_created {
         let _ = std::fs::remove_file(&write_path);
     }
     write_result?;
@@ -1792,6 +1868,111 @@ mod staged_payload_adapter_tests {
         );
         assert_eq!(fs::read(&journal).expect("journal preserved"), tampered);
         fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[test]
+    fn recovery_rejects_hardlinked_private_object_and_preserves_sentinel() {
+        let directory = journal_test_directory("private-hardlink");
+        let target = directory.join("project.ori2");
+        let sentinel = directory.join("sentinel");
+        let temp_name = "temp-hardlink-transaction";
+        let backup_name = "backup-hardlink-transaction";
+        let old_bytes = b"old complete ori2";
+        let new_bytes = b"sentinel new bytes";
+        fs::write(&sentinel, new_bytes).expect("sentinel");
+        fs::hard_link(&sentinel, directory.join(temp_name)).expect("hardlinked temp");
+        fs::write(directory.join(backup_name), old_bytes).expect("backup");
+        let project_id = ProjectId::new();
+        let fingerprint = target_path_fingerprint(&target).expect("fingerprint");
+        let payload = SingleFileJournalPayloadV1 {
+            schema_version: SINGLE_FILE_JOURNAL_SCHEMA_V1,
+            project_id,
+            target_path_sha256: fingerprint.clone(),
+            transaction_id: "hardlink-transaction".to_owned(),
+            temp_object_id: temp_name.to_owned(),
+            temp_sha256: sha256_hex_bytes(new_bytes),
+            backup_object_id: backup_name.to_owned(),
+            old_sha256: Some(sha256_hex_bytes(old_bytes)),
+            phase: SingleFileJournalPhaseV1::OldMoved,
+        };
+        let journal = journal_path_for_target(&target, &fingerprint).expect("journal");
+        fs::write(
+            &journal,
+            encode_single_file_journal_v1(payload).expect("journal bytes"),
+        )
+        .expect("write journal");
+
+        assert!(recover_single_file_journal_for_target(&target, project_id).is_err());
+        assert_eq!(fs::read(&sentinel).expect("sentinel preserved"), new_bytes);
+        assert_eq!(
+            fs::read(directory.join(temp_name)).expect("hardlink preserved"),
+            new_bytes
+        );
+        assert!(directory.join(backup_name).exists());
+        assert!(journal.exists());
+        fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[test]
+    fn save_rejects_preexisting_hardlinked_journal_without_unlinking_it() {
+        let directory = journal_test_directory("journal-hardlink");
+        let target = directory.join("project.ori2");
+        let sentinel = directory.join("sentinel");
+        let sentinel_bytes = b"attacker sentinel";
+        fs::write(&sentinel, sentinel_bytes).expect("sentinel");
+        let fingerprint = target_path_fingerprint(&target).expect("fingerprint");
+        let journal = journal_path_for_target(&target, &fingerprint).expect("journal");
+        fs::hard_link(&sentinel, &journal).expect("hardlinked journal");
+        let archive = Ori2ProjectArchive::document_only(ProjectDocument::new(
+            "must not save",
+            CreasePattern::empty(),
+        ));
+
+        assert!(
+            persist_project_archive_to_destination(
+                &DialogSaveDestination::confirmed(target.clone()),
+                &archive,
+            )
+            .is_err()
+        );
+        assert!(!target.exists());
+        assert_eq!(
+            fs::read(&sentinel).expect("sentinel preserved"),
+            sentinel_bytes
+        );
+        assert_eq!(
+            fs::read(&journal).expect("journal link preserved"),
+            sentinel_bytes
+        );
+        fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[test]
+    fn journal_decoder_rejects_reserved_and_casefold_colliding_private_names() {
+        let project_id = ProjectId::new();
+        let fingerprint = "1".repeat(64);
+        let base = SingleFileJournalPayloadV1 {
+            schema_version: SINGLE_FILE_JOURNAL_SCHEMA_V1,
+            project_id,
+            target_path_sha256: fingerprint.clone(),
+            transaction_id: "transaction".to_owned(),
+            temp_object_id: "temp-object".to_owned(),
+            temp_sha256: "2".repeat(64),
+            backup_object_id: "backup-object".to_owned(),
+            old_sha256: Some("3".repeat(64)),
+            phase: SingleFileJournalPhaseV1::Prepared,
+        };
+        for reserved in ["CON", "con.txt", "AUX", "COM1.log", "lpt9"] {
+            let mut payload = base.clone();
+            payload.temp_object_id = reserved.to_owned();
+            let bytes = encode_single_file_journal_v1(payload).expect("encoded journal");
+            assert!(decode_single_file_journal_v1(&bytes, project_id, &fingerprint).is_err());
+        }
+        let mut collision = base;
+        collision.temp_object_id = "Private-Object".to_owned();
+        collision.backup_object_id = "private-object".to_owned();
+        let bytes = encode_single_file_journal_v1(collision).expect("encoded collision");
+        assert!(decode_single_file_journal_v1(&bytes, project_id, &fingerprint).is_err());
     }
 
     #[test]

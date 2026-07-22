@@ -74,7 +74,7 @@ test('custom object is versioned, bounded, and routed only to the generic tree c
   assert.match(client, /\\u202A-\\u202E\\u2066-\\u2069/u)
   assert.match(app, /name="custom_object_display_name"/u)
   assert.match(app, /does not affect generator authority or candidate scoring/u)
-  assert.match(native, /custom_object_display_name_v1\(profile\)/u)
+  assert.match(native, /custom_object_display_name_v1\(&profile\.generation_constraints\)/u)
 })
 
 test('AUT-002 composes a bounded explicit target from supported parts', () => {

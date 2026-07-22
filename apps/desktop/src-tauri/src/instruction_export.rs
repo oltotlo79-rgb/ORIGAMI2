@@ -1,4 +1,7 @@
+#[cfg(test)]
+use std::io::Read;
 use std::{
+    io::{Cursor, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard,
@@ -265,6 +268,7 @@ struct InstructionExportSource {
     current_fold_model_fingerprint: String,
     cancellation: Arc<AtomicBool>,
     phase: Arc<AtomicU8>,
+    consensus_summary: Option<ori_domain::BeginnerReferenceConsensusSummaryV1>,
 }
 
 #[tauri::command]
@@ -588,6 +592,16 @@ fn capture_export_source(
     }) {
         return Err(InstructionExportErrorCategory::TimelineStale);
     }
+    let generation_provenance = project
+        .editor
+        .beginner_design_profile()
+        .generation_provenance
+        .as_ref();
+    if generation_provenance
+        .is_some_and(|value| !ori_domain::validate_beginner_generation_provenance_v1(value))
+    {
+        return Err(InstructionExportErrorCategory::DocumentContractInvalid);
+    }
     Ok(InstructionExportSource {
         export_id,
         expected_instance_id: project.instance_id,
@@ -602,6 +616,8 @@ fn capture_export_source(
         current_fold_model_fingerprint,
         cancellation,
         phase,
+        consensus_summary: generation_provenance
+            .and_then(|value| value.reference_consensus_summary.clone()),
     })
 }
 
@@ -620,7 +636,7 @@ fn build_pending_export(
         .simulation_snapshot()
         .ok_or(InstructionExportErrorCategory::TopologyUnsupported)?;
     advance_generation_phase(&source.phase, PHASE_BUILDING_DOCUMENT)?;
-    let artifact = export_instruction_document(
+    let mut artifact = export_instruction_document(
         source.format.exporter_format(),
         &source.name,
         &source.current_fold_model_fingerprint,
@@ -632,6 +648,9 @@ fn build_pending_export(
     .map_err(instruction_document_failure_category)?;
     ensure_not_cancelled(&source.cancellation)?;
     validate_artifact_contract(source.format, &source.timeline, &artifact)?;
+    if let Some(summary) = &source.consensus_summary {
+        embed_instruction_consensus_summary(&mut artifact, source.format, summary)?;
+    }
     let warnings = instruction_export_warning_snapshots(&artifact.warnings);
     advance_generation_phase(&source.phase, PHASE_READY)?;
     Ok(PendingInstructionExport {
@@ -651,6 +670,44 @@ fn build_pending_export(
         caution_count: artifact.caution_count,
         warnings,
     })
+}
+
+fn embed_instruction_consensus_summary(
+    artifact: &mut InstructionExportArtifact,
+    format: InstructionExportFormatRequest,
+    summary: &ori_domain::BeginnerReferenceConsensusSummaryV1,
+) -> InstructionExportResult<()> {
+    let json = serde_json::to_vec(summary)
+        .map_err(|_| InstructionExportErrorCategory::DocumentContractInvalid)?;
+    match format {
+        InstructionExportFormatRequest::Pdf => {
+            artifact
+                .bytes
+                .extend_from_slice(b"\n% ORIGAMI2_REFERENCE_CONSENSUS_SUMMARY ");
+            artifact.bytes.extend_from_slice(&json);
+            artifact.bytes.push(b'\n');
+        }
+        InstructionExportFormatRequest::SvgZip => {
+            let cursor = Cursor::new(std::mem::take(&mut artifact.bytes));
+            let mut archive = zip::ZipWriter::new_append(cursor)
+                .map_err(|_| InstructionExportErrorCategory::DocumentContractInvalid)?;
+            archive
+                .start_file(
+                    "origami2-reference-consensus-summary.json",
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Deflated),
+                )
+                .map_err(|_| InstructionExportErrorCategory::DocumentContractInvalid)?;
+            archive
+                .write_all(&json)
+                .map_err(|_| InstructionExportErrorCategory::DocumentContractInvalid)?;
+            artifact.bytes = archive
+                .finish()
+                .map_err(|_| InstructionExportErrorCategory::DocumentContractInvalid)?
+                .into_inner();
+        }
+    }
+    Ok(())
 }
 
 fn instruction_document_failure_category(
@@ -1398,6 +1455,12 @@ pub(crate) mod tests {
             current_fold_model_fingerprint: project.editor.fold_model_fingerprint_v1(),
             cancellation: Arc::new(AtomicBool::new(false)),
             phase: Arc::new(AtomicU8::new(PHASE_VALIDATING)),
+            consensus_summary: project
+                .editor
+                .beginner_design_profile()
+                .generation_provenance
+                .as_ref()
+                .and_then(|value| value.reference_consensus_summary.clone()),
         }
     }
 
@@ -1407,6 +1470,67 @@ pub(crate) mod tests {
             encoded.push_str(&format!("{unit:04X}"));
         }
         encoded
+    }
+
+    #[test]
+    fn instruction_exports_embed_only_safe_consensus_summary() {
+        let summary = ori_domain::BeginnerReferenceConsensusSummaryV1 {
+            schema_version: 1,
+            model: "component_extent_branch_v1".to_owned(),
+            source_count: 3,
+            excluded_count: 1,
+            agreement_score: 81,
+            component_subscore: 90,
+            extent_subscore: 76,
+            branch_subscore: 78,
+        };
+        let artifact = |format, bytes| InstructionExportArtifact {
+            format,
+            media_type: "test",
+            file_extension: "test",
+            profile: INSTRUCTION_EXPORT_PROFILE,
+            projection_profile: INSTRUCTION_EXPORT_PROJECTION_PROFILE,
+            bytes,
+            step_count: 1,
+            page_count: 1,
+            glyph_count: 0,
+            projected_vertex_visits: 0,
+            caution_count: 0,
+            warnings: Vec::new(),
+        };
+        let mut pdf = artifact(InstructionExportFormat::Pdf17, b"%PDF-1.7".to_vec());
+        embed_instruction_consensus_summary(
+            &mut pdf,
+            InstructionExportFormatRequest::Pdf,
+            &summary,
+        )
+        .unwrap();
+        let pdf_text = String::from_utf8(pdf.bytes).unwrap();
+        assert!(pdf_text.contains("ORIGAMI2_REFERENCE_CONSENSUS_SUMMARY"));
+        assert!(pdf_text.contains("component_subscore"));
+        assert!(!pdf_text.contains("asset_id"));
+        assert!(!pdf_text.contains("sha256"));
+
+        let cursor = Cursor::new(Vec::new());
+        let zip_bytes = zip::ZipWriter::new(cursor).finish().unwrap().into_inner();
+        let mut svg = artifact(InstructionExportFormat::SvgPageZip, zip_bytes);
+        embed_instruction_consensus_summary(
+            &mut svg,
+            InstructionExportFormatRequest::SvgZip,
+            &summary,
+        )
+        .unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(svg.bytes)).unwrap();
+        let mut text = String::new();
+        archive
+            .by_name("origami2-reference-consensus-summary.json")
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<ori_domain::BeginnerReferenceConsensusSummaryV1>(&text).unwrap(),
+            summary
+        );
     }
 
     fn assert_compiler_artifact_content(

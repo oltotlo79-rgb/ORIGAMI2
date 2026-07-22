@@ -75,8 +75,8 @@ const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
 const CANCELLED_MESSAGE: &str = "stacked_fold_cycle_path_cancelled";
 const MAX_STACKED_FOLD_REQUEST_HINGES_V1: usize = 64;
-const MAX_DYADIC_GRAPH_STATES_V1: usize = 729;
-const MAX_DYADIC_GRAPH_TRANSITIONS_V1: usize = 5_832;
+const MAX_DYADIC_GRAPH_STATES_V1: usize = 2_187;
+const MAX_DYADIC_GRAPH_TRANSITIONS_V1: usize = 20_412;
 
 fn dyadic_request_hinge_counts_are_bounded_v1(
     target_angle_count: usize,
@@ -5043,7 +5043,7 @@ mod tests {
     }
 
     #[test]
-    fn seven_hinge_generic_grid_fails_before_allocation_and_routes_to_collective_proof() {
+    fn seven_hinge_generic_grid_is_bounded_and_mints_read_only_preview() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         let mut project = seven_hinge_tree_project();
         let topology = project
@@ -5086,8 +5086,8 @@ mod tests {
             expected_project_id: project_id,
             expected_revision: revision,
             target_angles: target_angles.clone(),
-            max_states: 729,
-            max_transitions: 5_832,
+            max_states: 2_187,
+            max_transitions: 20_412,
             level_count: 3,
             cycle_schedule_v1: schedule,
         };
@@ -5098,21 +5098,12 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(generic.status, "resource_limit");
-        assert_eq!((generic.state_count, generic.transition_count), (0, 0));
-        assert!(!generic.mutation_candidate_ready);
-
-        let schedule = dense_grid_schedule(&hinges, &hinges, 4);
-        let observed = read_bounded_dyadic_pose_graph_inner_v1(
-            &state,
-            Some(&layer_state),
-            request(Some(schedule.clone())),
-            None,
-        )
-        .unwrap();
-        assert_eq!((observed.state_count, observed.transition_count), (3, 4));
-        assert_eq!(observed.status, "certified");
-        assert!(observed.mutation_candidate_ready);
+        assert_eq!(generic.status, "certified");
+        assert_eq!(
+            (generic.state_count, generic.transition_count),
+            (2_187, 20_412)
+        );
+        assert!(generic.mutation_candidate_ready);
         let preview_state = DyadicPathPreviewState::default();
         let preview = mint_dyadic_pose_path_preview_inner_v1(
             &state,
@@ -5123,20 +5114,20 @@ mod tests {
                 expected_project_id: project_id,
                 expected_revision: revision,
                 target_angles,
-                max_states: 729,
-                max_transitions: 5_832,
+                max_states: 2_187,
+                max_transitions: 20_412,
                 level_count: 3,
-                cycle_schedule_v1: Some(schedule),
-                expected_path_binding_sha256: observed.certificate_binding_sha256.unwrap(),
-                expected_positive_thickness_binding_sha256: observed
+                cycle_schedule_v1: None,
+                expected_path_binding_sha256: generic.certificate_binding_sha256.unwrap(),
+                expected_positive_thickness_binding_sha256: generic
                     .positive_thickness_binding_sha256
                     .unwrap(),
-                expected_layer_transport_binding_sha256: observed
+                expected_layer_transport_binding_sha256: generic
                     .layer_transport_binding_sha256
                     .unwrap(),
             },
         )
-        .expect("seven-hinge collective proof mints a bounded read-only token");
+        .expect("seven-hinge generic proof mints a bounded read-only token");
         assert!(!preview.authorizes_project_mutation);
         let project = super::super::lock_project(&state).unwrap();
         assert_eq!(project.editor.revision(), revision);

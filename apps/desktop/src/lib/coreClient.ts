@@ -3102,8 +3102,8 @@ export function readBoundedDyadicPoseGraphV1(request: Readonly<{
   if (!isCanonicalNonNilUuid(request.expectedProjectInstanceId)
     || !isCanonicalNonNilUuid(request.expectedProjectId)
     || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
-    || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1 || request.maxStates > 729
-    || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1 || request.maxTransitions > 5832
+    || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1 || request.maxStates > 2187
+    || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1 || request.maxTransitions > 20412
     || ![3, 5, 9].includes(request.levelCount)
     || !Array.isArray(request.targetAngles) || request.targetAngles.length === 0 || request.targetAngles.length > 64
     || request.targetAngles.some((entry) => !isCanonicalNonNilUuid(entry.edge)
@@ -3166,8 +3166,8 @@ export function mintDyadicPosePathPreviewV1(request: Readonly<{
   if (!isCanonicalNonNilUuid(request.expectedProjectInstanceId)
     || !isCanonicalNonNilUuid(request.expectedProjectId)
     || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
-    || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1 || request.maxStates > 729
-    || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1 || request.maxTransitions > 5832
+    || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1 || request.maxStates > 2187
+    || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1 || request.maxTransitions > 20412
     || ![3, 5, 9].includes(request.levelCount)
     || !Array.isArray(request.targetAngles) || request.targetAngles.length === 0 || request.targetAngles.length > 64
     || request.targetAngles.some((entry) => !isCanonicalNonNilUuid(entry.edge) || !Number.isFinite(entry.angleDegrees) || entry.angleDegrees < 0 || entry.angleDegrees > 180)
@@ -3418,6 +3418,7 @@ export type BasicFoldTimelinePreviewRequestV1 = Readonly<{
   expectedSourceModelFingerprint: string
   foldEdge: string
   assignment: 'mountain' | 'valley'
+  techniqueKind: 'mountain' | 'valley' | 'squash' | 'crimp'
   techniqueDocument: unknown
   techniqueId: string
 }>
@@ -3432,6 +3433,7 @@ export type BasicFoldTimelinePreviewResponseV1 = Readonly<{
   fixedFace: string
   foldEdge: string
   assignment: 'mountain' | 'valley'
+  techniqueKind: 'mountain' | 'valley' | 'squash' | 'crimp'
   previewBindingSha256: string
   timeline: InstructionTimeline
 }>
@@ -3446,6 +3448,7 @@ export function previewNamedBasicFoldTimeline(
     || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
     || !/^[0-9a-f]{64}$/u.test(request.expectedSourceModelFingerprint)
     || (request.assignment !== 'mountain' && request.assignment !== 'valley')
+    || !['mountain', 'valley', 'squash', 'crimp'].includes(request.techniqueKind)
     || typeof request.techniqueId !== 'string') {
     return Promise.reject(new Error('invalid basic-fold timeline preview request'))
   }
@@ -3460,13 +3463,13 @@ export function previewNamedBasicFoldTimeline(
   }).then((value) => {
     if (!value || typeof value !== 'object') throw new Error('invalid basic-fold preview response')
     const response = value as Record<string, unknown>
-    if (Object.keys(response).sort().join(',') !== 'assignment,fixedFace,foldEdge,previewBindingSha256,projectId,projectInstanceId,revision,schemaVersion,sourceModelFingerprint,timeline,transactionToken'
+    if (Object.keys(response).sort().join(',') !== 'assignment,fixedFace,foldEdge,previewBindingSha256,projectId,projectInstanceId,revision,schemaVersion,sourceModelFingerprint,techniqueKind,timeline,transactionToken'
       || response.schemaVersion !== 1 || response.transactionToken !== request.token
       || response.projectInstanceId !== request.expectedProjectInstanceId
       || response.projectId !== request.expectedProjectId || response.revision !== request.expectedRevision
       || response.sourceModelFingerprint !== request.expectedSourceModelFingerprint
       || !isCanonicalNonNilUuid(response.fixedFace) || response.foldEdge !== request.foldEdge
-      || response.assignment !== request.assignment
+      || response.assignment !== request.assignment || response.techniqueKind !== request.techniqueKind
       || typeof response.previewBindingSha256 !== 'string'
       || !/^[0-9a-f]{64}$/u.test(response.previewBindingSha256) || !response.timeline
       || typeof response.timeline !== 'object' || !Array.isArray((response.timeline as { steps?: unknown }).steps)) {
@@ -3526,6 +3529,7 @@ export function applyNamedBookFoldTransaction(
     expectedSourceModelFingerprint: preview.sourceModelFingerprint,
     foldEdge: preview.foldEdge,
     assignment: preview.assignment,
+    techniqueKind: preview.techniqueKind,
     expectedPreviewBindingSha256: preview.previewBindingSha256,
     techniqueDocumentJson,
     techniqueId,

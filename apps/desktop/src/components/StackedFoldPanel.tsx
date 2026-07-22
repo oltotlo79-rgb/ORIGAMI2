@@ -59,7 +59,7 @@ type Props = Readonly<{
     document: FoldTechniqueFileDocumentV1
     techniqueId: string
     name: string
-    kind?: 'book' | 'mountain' | 'valley' | 'petal' | 'reverse' | 'accordion' | 'sink' | 'layer'
+    kind?: 'book' | 'mountain' | 'valley' | 'squash' | 'crimp' | 'petal' | 'reverse' | 'accordion' | 'sink' | 'layer'
   }> | null
 }>
 
@@ -140,7 +140,8 @@ export function StackedFoldPanel({
     useState<BasicFoldTimelinePreviewResponseV1 | null>(null)
   const [basicFoldTimelinePreviewError, setBasicFoldTimelinePreviewError] = useState(false)
   const namedBasicFold = namedBookFold?.kind === 'mountain'
-    || namedBookFold?.kind === 'valley'
+    || namedBookFold?.kind === 'valley' || namedBookFold?.kind === 'squash'
+    || namedBookFold?.kind === 'crimp'
   const unsupportedNamedPhysicalFold = namedBookFold != null
     && (namedBookFold.kind == null || namedBookFold.kind === 'book'
       || namedBookFold.kind === 'petal')
@@ -504,6 +505,7 @@ export function StackedFoldPanel({
         expectedSourceModelFingerprint: authority.fold_model_fingerprint,
         foldEdge: selectedLine.id,
         assignment: segment.assignment,
+        techniqueKind: namedBookFold.kind as 'mountain' | 'valley' | 'squash' | 'crimp',
         techniqueDocument: namedBookFold.document,
         techniqueId: namedBookFold.techniqueId,
       })
@@ -557,8 +559,8 @@ export function StackedFoldPanel({
           edge: hinge.edge,
           angleDegrees: requestedHingeAngles[hinge.edge] ?? hinge.initialAngleDegrees,
         })),
-        maxStates: dyadicLevelCount === 3 ? 729 : dyadicLevelCount === 5 ? 125 : 128,
-        maxTransitions: dyadicLevelCount === 3 ? 5832 : dyadicLevelCount === 5 ? 600 : 512,
+        maxStates: dyadicLevelCount === 3 ? 2187 : dyadicLevelCount === 5 ? 125 : 128,
+        maxTransitions: dyadicLevelCount === 3 ? 20412 : dyadicLevelCount === 5 ? 600 : 512,
         levelCount: dyadicLevelCount,
         ...(authoredCycleSchedule ? { cycleScheduleV1: authoredCycleSchedule } : {}),
       })
@@ -590,8 +592,8 @@ export function StackedFoldPanel({
           edge: hinge.edge,
           angleDegrees: requestedHingeAngles[hinge.edge] ?? hinge.initialAngleDegrees,
         })),
-        maxStates: dyadicLevelCount === 3 ? 729 : dyadicLevelCount === 5 ? 125 : 128,
-        maxTransitions: dyadicLevelCount === 3 ? 5832 : dyadicLevelCount === 5 ? 600 : 512,
+        maxStates: dyadicLevelCount === 3 ? 2187 : dyadicLevelCount === 5 ? 125 : 128,
+        maxTransitions: dyadicLevelCount === 3 ? 20412 : dyadicLevelCount === 5 ? 600 : 512,
         levelCount: dyadicLevelCount,
         ...(authoredCycleSchedule ? { cycleScheduleV1: authoredCycleSchedule } : {}),
         expectedPathBindingSha256: graph.certificateBindingSha256,

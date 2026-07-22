@@ -348,6 +348,7 @@ pub fn search_certified_pose_graph_with_progress_v1(
     canonical_transitions
         .sort_unstable_by_key(|edge| (edge.source, edge.target, edge.candidate_key));
     canonical_transitions.dedup();
+    let adjacency = canonical_transition_adjacency_v1(&canonical_transitions);
     let mut queue = VecDeque::from([source]);
     let mut parents =
         BTreeMap::<PoseFingerprintV1, (PoseFingerprintV1, CertifiedPathTransitionEvidenceV1)>::new(
@@ -366,9 +367,10 @@ pub fn search_certified_pose_graph_with_progress_v1(
         }
         explored += 1;
         publish_progress(&mut progress, explored, evaluated);
-        for candidate in canonical_transitions
-            .iter()
-            .filter(|edge| edge.source == current)
+        for candidate in adjacency
+            .get(&current)
+            .into_iter()
+            .flat_map(|range| &canonical_transitions[range.clone()])
         {
             if !checkpoint() {
                 return indeterminate(
@@ -435,6 +437,23 @@ pub fn search_certified_pose_graph_with_progress_v1(
     )
 }
 
+fn canonical_transition_adjacency_v1(
+    transitions: &[CertifiedPathTransitionCandidateV1],
+) -> BTreeMap<PoseFingerprintV1, std::ops::Range<usize>> {
+    let mut adjacency = BTreeMap::new();
+    let mut start = 0;
+    while start < transitions.len() {
+        let source = transitions[start].source;
+        let mut end = start + 1;
+        while end < transitions.len() && transitions[end].source == source {
+            end += 1;
+        }
+        adjacency.insert(source, start..end);
+        start = end;
+    }
+    adjacency
+}
+
 fn indeterminate(
     reason: CertifiedPathGraphIndeterminateReasonV1,
     explored_state_count: usize,
@@ -458,6 +477,12 @@ mod tests {
 
     fn fingerprint(value: u8) -> PoseFingerprintV1 {
         [value; 32]
+    }
+
+    fn large_fingerprint(value: usize) -> PoseFingerprintV1 {
+        let mut fingerprint = [0; 32];
+        fingerprint[24..].copy_from_slice(&(value as u64).to_be_bytes());
+        fingerprint
     }
     fn candidate(source: u8, target: u8, key: u8) -> CertifiedPathTransitionCandidateV1 {
         CertifiedPathTransitionCandidateV1 {
@@ -899,5 +924,81 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn seven_hinge_adjacency_visits_each_canonical_edge_at_most_once() {
+        let mut edges = [
+            EdgeId::new(),
+            EdgeId::new(),
+            EdgeId::new(),
+            EdgeId::new(),
+            EdgeId::new(),
+            EdgeId::new(),
+            EdgeId::new(),
+        ];
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let angles = |value: f64| {
+            CanonicalHingeAngles::new(
+                edges
+                    .into_iter()
+                    .map(|edge| HingeAngle::new(edge, value).unwrap())
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let graph = generate_bounded_dyadic_pose_graph_at_levels_v1(
+            &angles(0.0),
+            &angles(1.0),
+            3,
+            DyadicPoseGraphLimitsV1 {
+                max_states: 2_187,
+                max_transitions: 20_412,
+            },
+            || true,
+        )
+        .unwrap();
+        let states = (0..graph.states().len())
+            .map(large_fingerprint)
+            .collect::<Vec<_>>();
+        let mut candidates = graph
+            .transitions()
+            .iter()
+            .enumerate()
+            .map(|(index, edge)| CertifiedPathTransitionCandidateV1 {
+                source: states[edge.source_state],
+                target: states[edge.target_state],
+                candidate_key: large_fingerprint(index + states.len()),
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|edge| (edge.source, edge.target, edge.candidate_key));
+        candidates.dedup();
+        let adjacency = canonical_transition_adjacency_v1(&candidates);
+        assert_eq!(
+            adjacency.values().map(|range| range.len()).sum::<usize>(),
+            20_412
+        );
+        assert!(adjacency.len() <= 2_187);
+        assert!(adjacency.iter().all(|(source, range)| {
+            candidates[range.clone()]
+                .iter()
+                .all(|edge| edge.source == *source)
+        }));
+        let mut evaluated = 0usize;
+        let searched = search_certified_pose_graph_v1(
+            &states,
+            &candidates,
+            states[graph.source_state()],
+            states[graph.target_state()],
+            |candidate| {
+                evaluated += 1;
+                Some(certify(candidate))
+            },
+        );
+        assert!(matches!(
+            searched,
+            CertifiedPathGraphSearchResultV1::Certified(_)
+        ));
+        assert!(evaluated <= candidates.len());
     }
 }

@@ -778,7 +778,10 @@ test('Windows CI rejects bounded adversarial bundle fixtures', () => {
   assert.match(verifier, /Portable and embedded Windows executable payloads differ/u)
   assert.match(verifier, /__TAURI_BUNDLE_TYPE_VAR_UNK/u)
   assert.match(verifier, /__TAURI_BUNDLE_TYPE_VAR_NSS/u)
-  assert.match(verifier, /bundle-type markers are not canonical/u)
+  assert.match(verifier, /no unique NSIS bundle-type patch/u)
+  assert.match(verifier, /executable lengths differ/u)
+  assert.match(verifier, /observedDifferences\.SetEquals\(\$expectedDifferences\)/u)
+  assert.match(verifier, /differs outside the NSIS bundle-type patch/u)
   for (const fixture of [
     'extra-dll',
     'hardlink-installer',

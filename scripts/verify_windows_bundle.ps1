@@ -243,12 +243,63 @@ try {
         }
         $embeddedPath = $appExecutables[0].FullName
         $portableUnknownOffsets = @(Find-TokenOffsets $resolvedPortable $unknownBundleMarker)
-        $portableNsisOffsets = @(Find-TokenOffsets $resolvedPortable $nsisBundleMarker)
-        $embeddedUnknownOffsets = @(Find-TokenOffsets $embeddedPath $unknownBundleMarker)
         $embeddedNsisOffsets = @(Find-TokenOffsets $embeddedPath $nsisBundleMarker)
-        if ($portableUnknownOffsets.Count -ne 1 -or $portableNsisOffsets.Count -ne 0 -or
-            $embeddedUnknownOffsets.Count -ne 0 -or $embeddedNsisOffsets.Count -ne 1) {
-            throw '[payload-identity] Windows executable bundle-type markers are not canonical.'
+        $bundlePatchOffsets = @(
+            $portableUnknownOffsets | Where-Object {
+                $portableOffset = $_
+                $embeddedNsisOffsets -contains $portableOffset
+            }
+        )
+        if ($bundlePatchOffsets.Count -ne 1) {
+            throw '[payload-identity] Windows executable has no unique NSIS bundle-type patch.'
+        }
+        $portableStream = [IO.File]::OpenRead($resolvedPortable)
+        $embeddedCompareStream = [IO.File]::OpenRead($embeddedPath)
+        try {
+            if ($portableStream.Length -ne $embeddedCompareStream.Length) {
+                throw '[payload-identity] Portable and embedded Windows executable lengths differ.'
+            }
+            $portableBuffer = [byte[]]::new(1048576)
+            $embeddedBuffer = [byte[]]::new(1048576)
+            $observedDifferences = [Collections.Generic.HashSet[long]]::new()
+            $streamOffset = 0L
+            while (($portableRead = $portableStream.Read(
+                $portableBuffer, 0, $portableBuffer.Length
+            )) -gt 0) {
+                $embeddedRead = $embeddedCompareStream.Read(
+                    $embeddedBuffer, 0, $embeddedBuffer.Length
+                )
+                if ($portableRead -ne $embeddedRead) {
+                    throw '[payload-identity] Portable and embedded Windows reads differ.'
+                }
+                $binaryEncoding = [Text.Encoding]::GetEncoding(28591)
+                $portableChunk = $binaryEncoding.GetString($portableBuffer, 0, $portableRead)
+                $embeddedChunk = $binaryEncoding.GetString($embeddedBuffer, 0, $embeddedRead)
+                if ($portableChunk -cne $embeddedChunk) {
+                    for ($index = 0; $index -lt $portableRead; $index++) {
+                        if ($portableBuffer[$index] -ne $embeddedBuffer[$index]) {
+                            [void] $observedDifferences.Add($streamOffset + $index)
+                        }
+                    }
+                }
+                $streamOffset += $portableRead
+            }
+            if ($embeddedCompareStream.ReadByte() -ne -1) {
+                throw '[payload-identity] Embedded Windows executable has trailing bytes.'
+            }
+        } finally {
+            $portableStream.Dispose()
+            $embeddedCompareStream.Dispose()
+        }
+        $expectedDifferences = [Collections.Generic.HashSet[long]]::new()
+        $nsisBundleToken = [Text.Encoding]::ASCII.GetBytes($nsisBundleMarker)
+        for ($index = 0; $index -lt $unknownBundleToken.Length; $index++) {
+            if ($unknownBundleToken[$index] -ne $nsisBundleToken[$index]) {
+                [void] $expectedDifferences.Add($bundlePatchOffsets[0] + $index)
+            }
+        }
+        if (-not $observedDifferences.SetEquals($expectedDifferences)) {
+            throw '[payload-identity] Windows executable differs outside the NSIS bundle-type patch.'
         }
         $sha256 = [Security.Cryptography.SHA256]::Create()
         $embeddedStream = [IO.File]::OpenRead($embeddedPath)
@@ -256,15 +307,15 @@ try {
             $buffer = [byte[]]::new(1048576)
             $streamOffset = 0L
             while (($read = $embeddedStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                $overlapStart = [Math]::Max($streamOffset, $embeddedNsisOffsets[0])
+                $overlapStart = [Math]::Max($streamOffset, $bundlePatchOffsets[0])
                 $overlapEnd = [Math]::Min(
                     $streamOffset + $read,
-                    $embeddedNsisOffsets[0] + $unknownBundleToken.Length
+                    $bundlePatchOffsets[0] + $unknownBundleToken.Length
                 )
                 if ($overlapStart -lt $overlapEnd) {
                     [Array]::Copy(
                         $unknownBundleToken,
-                        [int] ($overlapStart - $embeddedNsisOffsets[0]),
+                        [int] ($overlapStart - $bundlePatchOffsets[0]),
                         $buffer,
                         [int] ($overlapStart - $streamOffset),
                         [int] ($overlapEnd - $overlapStart)

@@ -59,4 +59,8 @@ test('compiler kind segment and digest metadata cross persistence and both expor
   assert.match(exportLayout, /compiler-v1 \/ kind=/u)
   assert.match(editor, /instruction_timeline: InstructionTimeline/u)
   assert.match(ori2, /instruction_timeline/u)
+  assert.match(domain, /grants_project_mutation_authority[\s\S]*false/u)
+  assert.match(transaction, /pending[\s\S]*filter\(\|pending\| pending\.token\(\) == token\)/u)
+  assert.doesNotMatch(panel, /compiler_output_sha256/u)
+  assert.doesNotMatch(exportLayout, /output=\{\}/u)
 })

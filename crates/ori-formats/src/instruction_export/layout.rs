@@ -890,11 +890,10 @@ fn body_flow(
             &mut flow,
             FlowSection::PathCertificate,
             &format!(
-                "compiler-v1 / kind={} / segment={}/{} / output={}",
+                "compiler-v1 / kind={} / segment={}/{} / read-only provenance",
                 metadata.technique_kind,
                 metadata.segment_index + 1,
                 metadata.segment_count,
-                short_hash(&metadata.compiler_output_sha256),
             ),
             PageColor::MUTED,
             font,

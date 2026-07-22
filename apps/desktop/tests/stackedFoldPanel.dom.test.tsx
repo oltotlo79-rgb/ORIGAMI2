@@ -208,6 +208,26 @@ beforeEach(() => {
 })
 
 describe('StackedFoldPanel', () => {
+  it('shows saved compiler provenance as read only without exposing its digest', () => {
+    const saved = {
+      ...snapshot,
+      instruction_timeline: { steps: [{
+        visual: { named_technique_compiler_v1: {
+          version: 1, model_id: 'certified_named_technique_compiler_metadata_v1',
+          technique_kind: 'accordion', segment_index: 0, segment_count: 4,
+          compiler_output_sha256: Array(32).fill(0x5a),
+        } },
+      }] },
+    } as unknown as ProjectSnapshot
+    const { rerender } = render(<StackedFoldPanel locale="en" snapshot={saved}
+      selectedLine={null} disabled={false} refreshSnapshot={vi.fn()} onApplied={vi.fn()} />)
+    expect(screen.getByText('Saved compiler provenance (read only): accordion / 4 steps')).toBeTruthy()
+    expect(document.body.textContent).not.toContain('5a5a5a5a')
+    rerender(<StackedFoldPanel locale="en" snapshot={snapshot}
+      selectedLine={null} disabled={false} refreshSnapshot={vi.fn()} onApplied={vi.fn()} />)
+    expect(screen.getByText('No saved compiler proof information')).toBeTruthy()
+  })
+
   it('offers cooperative cancellation while a bounded path read is pending', async () => {
     transport.preview.mockReturnValue(new Promise(() => undefined))
     render(

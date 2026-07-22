@@ -379,6 +379,15 @@ pub struct NamedTechniqueCompilerMetadataV1 {
     pub compiler_output_sha256: [u8; 32],
 }
 
+impl NamedTechniqueCompilerMetadataV1 {
+    /// Persisted provenance is display/export evidence only. A live pending
+    /// transaction remains the sole source of project-mutation authority.
+    #[must_use]
+    pub const fn grants_project_mutation_authority(&self) -> bool {
+        false
+    }
+}
+
 #[must_use]
 pub fn named_technique_compiler_output_sha256_v1(steps: &[InstructionStep]) -> Option<[u8; 32]> {
     canonical_instruction_steps_sha256_v1(steps, true)
@@ -1257,6 +1266,7 @@ mod tests {
             .unwrap();
         assert_eq!(metadata.technique_kind, "accordion");
         assert_eq!(metadata.compiler_output_sha256, compiler_output_sha256);
+        assert!(!metadata.grants_project_mutation_authority());
     }
 
     #[test]

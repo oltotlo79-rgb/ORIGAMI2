@@ -188,6 +188,16 @@ export function StackedFoldPanel({
     }
     return null
   }, [snapshot.instruction_timeline?.steps])
+  const savedCompilerProvenance = useMemo(() => {
+    for (const step of [...(snapshot.instruction_timeline?.steps ?? [])].reverse()) {
+      const metadata = step.visual.named_technique_compiler_v1
+      if (metadata?.version === 1
+        && metadata.model_id === 'certified_named_technique_compiler_metadata_v1') {
+        return { kind: metadata.technique_kind, segmentCount: metadata.segment_count }
+      }
+    }
+    return null
+  }, [snapshot.instruction_timeline?.steps])
   const coordinator = useMemo<StackedFoldReadCoordinator>(() =>
     createStackedFoldReadCoordinator({
       transport: proposeCurrentStackedFoldRead,
@@ -741,6 +751,14 @@ export function StackedFoldPanel({
         {selectedLine
           ? t('選択中の線を折り軸としてnative証明を作成します。', 'The selected line is used as the axis for a native proof.')
           : t('2Dキャンバスで折り軸にする線を選択してください。', 'Select a fold-axis line on the 2D canvas.')}
+      </p>
+      <p className="muted">
+        {savedCompilerProvenance
+          ? t(
+            `保存済みcompiler provenance（読み取り専用）: ${savedCompilerProvenance.kind} / ${savedCompilerProvenance.segmentCount} steps`,
+            `Saved compiler provenance (read only): ${savedCompilerProvenance.kind} / ${savedCompilerProvenance.segmentCount} steps`,
+          )
+          : t('保存済みcompiler証明情報なし', 'No saved compiler proof information')}
       </p>
       {liveHinges.length > 0 && view.kind !== 'ready' && (
         <fieldset>

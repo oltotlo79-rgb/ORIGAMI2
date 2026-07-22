@@ -271,6 +271,17 @@ fn recover_single_file_journal_for_target(
     target: &Path,
     expected_project_id: ProjectId,
 ) -> Result<(), ()> {
+    recover_single_file_journal_for_target_inner(target, Some(expected_project_id))
+}
+
+fn recover_single_file_journal_for_open(target: &Path) -> Result<(), ()> {
+    recover_single_file_journal_for_target_inner(target, None)
+}
+
+fn recover_single_file_journal_for_target_inner(
+    target: &Path,
+    expected_project_id: Option<ProjectId>,
+) -> Result<(), ()> {
     let fingerprint = target_path_fingerprint(target)?;
     let journal_path = journal_path_for_target(target, &fingerprint)?;
     let metadata = match std::fs::symlink_metadata(&journal_path) {
@@ -285,7 +296,10 @@ fn recover_single_file_journal_for_target(
         return Err(());
     }
     let bytes = std::fs::read(&journal_path).map_err(|_| ())?;
-    let payload = decode_single_file_journal_v1(&bytes, expected_project_id, &fingerprint)?;
+    let untrusted: AuthenticatedSingleFileJournalV1 =
+        serde_json::from_slice(&bytes).map_err(|_| ())?;
+    let project_id = expected_project_id.unwrap_or(untrusted.payload.project_id);
+    let payload = decode_single_file_journal_v1(&bytes, project_id, &fingerprint)?;
     let directory = containing_directory(target).ok_or(())?.to_path_buf();
     let mut fs = DiskSingleFileRecoveryFs {
         temp: directory.join(&payload.temp_object_id),
@@ -426,6 +440,8 @@ pub(super) enum RecoveryProjectLoad {
 pub(super) struct RecoveryPersistenceError;
 
 pub(super) fn load_project_archive_from_path(path: &Path) -> Result<Ori2ProjectArchive, String> {
+    recover_single_file_journal_for_open(path)
+        .map_err(|_| PROJECT_FILE_INVALID_MESSAGE.to_owned())?;
     let limits = Ori2Limits::default();
     let file = File::open(path).map_err(|_| PROJECT_FILE_OPEN_FAILED_MESSAGE.to_owned())?;
     let declared_size = file
@@ -1277,13 +1293,15 @@ mod staged_payload_adapter_tests {
     };
 
     use super::{
-        SINGLE_FILE_JOURNAL_SCHEMA_V1, SingleFileJournalPayloadV1, SingleFileJournalPhaseV1,
-        SingleFileRecoveryFs, SingleFileRecoveryObject, decode_single_file_journal_v1,
-        encode_single_file_journal_v1, journal_path_for_target,
+        Ori2ProjectArchive, ProjectDocument, SINGLE_FILE_JOURNAL_SCHEMA_V1,
+        SingleFileJournalPayloadV1, SingleFileJournalPhaseV1, SingleFileRecoveryFs,
+        SingleFileRecoveryObject, decode_single_file_journal_v1, encode_single_file_journal_v1,
+        journal_path_for_target, load_project_archive_from_path,
         recover_authenticated_single_file_v1, recover_single_file_journal_for_target,
         sha256_hex_bytes, target_path_fingerprint, write_complete_staged_payload,
+        write_project_archive_ori2,
     };
-    use ori_domain::ProjectId;
+    use ori_domain::{CreasePattern, ProjectId};
 
     static NEXT_JOURNAL_TEST_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -1577,6 +1595,93 @@ mod staged_payload_adapter_tests {
                 .expect("recovery is idempotent after cleanup");
             fs::remove_dir_all(directory).expect("cleanup test directory");
         }
+    }
+
+    #[test]
+    fn open_recovers_interrupted_old_moved_transaction_before_reading() {
+        let directory = journal_test_directory("open-recovery");
+        let target = directory.join("project.ori2");
+        let mut old_document = ProjectDocument::new("old", CreasePattern::empty());
+        let project_id = old_document.project_id;
+        let old_bytes =
+            write_project_archive_ori2(&Ori2ProjectArchive::document_only(old_document.clone()))
+                .expect("old archive");
+        old_document.name = "new".to_owned();
+        let new_archive = Ori2ProjectArchive::document_only(old_document);
+        let new_bytes = write_project_archive_ori2(&new_archive).expect("new archive");
+        let fingerprint = target_path_fingerprint(&target).expect("fingerprint");
+        let temp_name = "temp-open-transaction";
+        let backup_name = "backup-open-transaction";
+        fs::write(directory.join(temp_name), &new_bytes).expect("temp archive");
+        fs::write(directory.join(backup_name), &old_bytes).expect("backup archive");
+        let payload = SingleFileJournalPayloadV1 {
+            schema_version: SINGLE_FILE_JOURNAL_SCHEMA_V1,
+            project_id,
+            target_path_sha256: fingerprint.clone(),
+            transaction_id: "open-transaction".to_owned(),
+            temp_object_id: temp_name.to_owned(),
+            temp_sha256: sha256_hex_bytes(&new_bytes),
+            backup_object_id: backup_name.to_owned(),
+            old_sha256: Some(sha256_hex_bytes(&old_bytes)),
+            phase: SingleFileJournalPhaseV1::OldMoved,
+        };
+        let journal = journal_path_for_target(&target, &fingerprint).expect("journal path");
+        fs::write(
+            &journal,
+            encode_single_file_journal_v1(payload).expect("journal"),
+        )
+        .expect("write journal");
+
+        assert_eq!(
+            load_project_archive_from_path(&target).expect("open recovers first"),
+            new_archive
+        );
+        assert_eq!(fs::read(&target).expect("published target"), new_bytes);
+        assert!(!journal.exists());
+        assert!(!directory.join(temp_name).exists());
+        assert!(!directory.join(backup_name).exists());
+        fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[test]
+    fn open_rejects_tampered_journal_without_changing_any_object() {
+        let directory = journal_test_directory("open-tamper");
+        let target = directory.join("project.ori2");
+        let document = ProjectDocument::new("preserve", CreasePattern::empty());
+        let project_id = document.project_id;
+        let old_bytes = write_project_archive_ori2(&Ori2ProjectArchive::document_only(document))
+            .expect("old archive");
+        let temp_bytes = old_bytes.clone();
+        fs::write(&target, &old_bytes).expect("target");
+        let fingerprint = target_path_fingerprint(&target).expect("fingerprint");
+        let temp_name = "temp-tampered-transaction";
+        fs::write(directory.join(temp_name), &temp_bytes).expect("temp");
+        let payload = SingleFileJournalPayloadV1 {
+            schema_version: SINGLE_FILE_JOURNAL_SCHEMA_V1,
+            project_id,
+            target_path_sha256: fingerprint.clone(),
+            transaction_id: "tampered-transaction".to_owned(),
+            temp_object_id: temp_name.to_owned(),
+            temp_sha256: sha256_hex_bytes(&temp_bytes),
+            backup_object_id: "backup-tampered-transaction".to_owned(),
+            old_sha256: Some(sha256_hex_bytes(&old_bytes)),
+            phase: SingleFileJournalPhaseV1::Prepared,
+        };
+        let journal = journal_path_for_target(&target, &fingerprint).expect("journal path");
+        let encoded = encode_single_file_journal_v1(payload).expect("journal");
+        let mut value: serde_json::Value = serde_json::from_slice(&encoded).expect("JSON");
+        value["payload"]["phase"] = serde_json::json!("new_published");
+        let tampered = serde_json::to_vec(&value).expect("tampered JSON");
+        fs::write(&journal, &tampered).expect("write tampered journal");
+
+        assert!(load_project_archive_from_path(&target).is_err());
+        assert_eq!(fs::read(&target).expect("target preserved"), old_bytes);
+        assert_eq!(
+            fs::read(directory.join(temp_name)).expect("temp preserved"),
+            temp_bytes
+        );
+        assert_eq!(fs::read(&journal).expect("journal preserved"), tampered);
+        fs::remove_dir_all(directory).expect("cleanup test directory");
     }
 
     #[cfg(unix)]

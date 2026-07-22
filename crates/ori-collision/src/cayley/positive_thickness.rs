@@ -8269,11 +8269,14 @@ mod tests {
                 two_triangle_model_with_options(EdgeKind::Valley, true, square, 704),
             ),
         ];
-        let mut cases = 0_usize;
-        let mut admitted_by_angle = [0_usize; 5];
-        let mut boundary_mismatch_by_angle = [0_usize; 5];
-        let mut unresolved_by_angle = [0_usize; 5];
-        for (fixture, model) in &models {
+        let totals = std::thread::scope(|scope| {
+            models
+                .iter()
+                .map(|(fixture, model)| scope.spawn(move || {
+                    let mut cases = 0_usize;
+                    let mut admitted_by_angle = [0_usize; 5];
+                    let mut boundary_mismatch_by_angle = [0_usize; 5];
+                    let mut unresolved_by_angle = [0_usize; 5];
             for root in model.face_ids() {
                 for thickness in [0.1, 1.0, 3.0] {
                     for (angle_index, angle) in
@@ -8385,6 +8388,29 @@ mod tests {
                         }
                     }
                 }
+            }
+                    (
+                        cases,
+                        admitted_by_angle,
+                        boundary_mismatch_by_angle,
+                        unresolved_by_angle,
+                    )
+                }))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|worker| worker.join().expect("shared-hinge admission matrix worker"))
+                .collect::<Vec<_>>()
+        });
+        let mut cases = 0_usize;
+        let mut admitted_by_angle = [0_usize; 5];
+        let mut boundary_mismatch_by_angle = [0_usize; 5];
+        let mut unresolved_by_angle = [0_usize; 5];
+        for (worker_cases, worker_admitted, worker_mismatch, worker_unresolved) in totals {
+            cases += worker_cases;
+            for angle_index in 0..5 {
+                admitted_by_angle[angle_index] += worker_admitted[angle_index];
+                boundary_mismatch_by_angle[angle_index] += worker_mismatch[angle_index];
+                unresolved_by_angle[angle_index] += worker_unresolved[angle_index];
             }
         }
         assert_eq!(cases, 120);

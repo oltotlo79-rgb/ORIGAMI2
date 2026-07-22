@@ -186,9 +186,7 @@ pub(crate) fn recognize_beginner_silhouette(
         width,
         height,
         &rgba,
-        thresholds.alpha,
-        thresholds.luma,
-        thresholds.polarity,
+        thresholds,
     )
     .map_err(|error| match error {
         ori_domain::BeginnerRecognitionErrorV1::AmbiguousSilhouette => {

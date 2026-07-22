@@ -459,14 +459,14 @@ fn multi_component_tree_v1(
             let dx = if a.2 < b.0 {
                 b.0 - a.2
             } else if b.2 < a.0 {
-                a.0 - b.2
+                a.0.saturating_sub(b.2)
             } else {
                 0
             };
             let dy = if a.3 < b.1 {
                 b.1 - a.3
             } else if b.3 < a.1 {
-                a.1 - b.3
+                a.1.saturating_sub(b.3)
             } else {
                 0
             };
@@ -590,9 +590,12 @@ pub fn analyze_silhouette_png_rgba_v1(
         width,
         height,
         rgba,
-        BEGINNER_SILHOUETTE_ALPHA_THRESHOLD_V1,
-        BEGINNER_SILHOUETTE_LUMA_THRESHOLD_V1,
-        crate::BeginnerSilhouettePolarityV1::DarkOnLight,
+        crate::BeginnerSilhouetteThresholdsV1 {
+            schema_version: 1,
+            alpha: BEGINNER_SILHOUETTE_ALPHA_THRESHOLD_V1,
+            luma: BEGINNER_SILHOUETTE_LUMA_THRESHOLD_V1,
+            polarity: crate::BeginnerSilhouettePolarityV1::DarkOnLight,
+        },
     )
 }
 
@@ -603,9 +606,7 @@ pub fn analyze_silhouette_png_rgba_with_thresholds_v1(
     width: u32,
     height: u32,
     rgba: &[u8],
-    alpha_threshold: u8,
-    luma_threshold: u8,
-    polarity: crate::BeginnerSilhouettePolarityV1,
+    thresholds: crate::BeginnerSilhouetteThresholdsV1,
 ) -> Result<BeginnerRecognitionProposalV1, BeginnerRecognitionErrorV1> {
     validate_dimensions_and_rgba(width, height, rgba)?;
     let pixels = width as usize * height as usize;
@@ -614,13 +615,13 @@ pub fn analyze_silhouette_png_rgba_with_thresholds_v1(
         let luminance =
             (u32::from(pixel[0]) * 2126 + u32::from(pixel[1]) * 7152 + u32::from(pixel[2]) * 722)
                 / 10_000;
-        foreground[index] = pixel[3] >= alpha_threshold
-            && match polarity {
+        foreground[index] = pixel[3] >= thresholds.alpha
+            && match thresholds.polarity {
                 crate::BeginnerSilhouettePolarityV1::DarkOnLight => {
-                    luminance <= u32::from(luma_threshold)
+                    luminance <= u32::from(thresholds.luma)
                 }
                 crate::BeginnerSilhouettePolarityV1::LightOnDark => {
-                    luminance >= u32::from(luma_threshold)
+                    luminance >= u32::from(thresholds.luma)
                 }
                 crate::BeginnerSilhouettePolarityV1::AlphaOnly => true,
             };

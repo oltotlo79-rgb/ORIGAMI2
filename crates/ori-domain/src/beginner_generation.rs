@@ -492,8 +492,7 @@ pub fn validate_custom_object_display_name_v1(
         (Some(BeginnerTargetCategoryV1::CustomObject), None) => true,
         (Some(BeginnerTargetCategoryV1::CustomObject), Some(value)) => {
             let count = value.chars().count();
-            count >= 1
-                && count <= MAX_BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_CHARS_V1
+            (1..=MAX_BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_CHARS_V1).contains(&count)
                 && value.trim() == value
                 && value.nfc().eq(value.chars())
                 && !value.chars().any(|character| {

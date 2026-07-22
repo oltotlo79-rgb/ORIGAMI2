@@ -963,9 +963,9 @@ describe('StackedFoldPanel', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Prove from current pose' }))
     expect(await screen.findByText('Closure intervals')).toBeTruthy()
-    expect(document.activeElement).toBe(
+    await waitFor(() => expect(document.activeElement).toBe(
       screen.getByText('Closure intervals').closest('[role="status"]'),
-    )
+    ))
     expect(screen.getByText('This preview is read-only. The project is unchanged until you explicitly apply it.')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel preview' }))
     await waitFor(() => expect(transport.cancel).toHaveBeenCalledWith(token))

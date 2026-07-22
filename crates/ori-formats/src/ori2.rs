@@ -2069,20 +2069,16 @@ mod tests {
     }
 
     #[test]
-    fn expanded_folder_format_remains_layer_evidence_agnostic() {
+    fn expanded_folder_format_rejects_layer_evidence_it_cannot_preserve() {
         let document = sample_document();
-        let without =
-            crate::write_project_folder_v1(&Ori2ProjectArchive::document_only(document.clone()))
-                .expect("write folder without evidence");
-        let with = crate::write_project_folder_v1(&Ori2ProjectArchive {
-            document,
-            editor_history: None,
-            layer_evidence: Some(layer_evidence_fixture()),
-        })
-        .expect("write folder with evidence");
-
-        assert_eq!(with.entries(), without.entries());
-        assert_eq!(with.archive().layer_evidence, None);
+        assert!(matches!(
+            crate::write_project_folder_v1(&Ori2ProjectArchive {
+                document,
+                editor_history: None,
+                layer_evidence: Some(layer_evidence_fixture()),
+            }),
+            Err(crate::ProjectFolderError::LayerEvidenceUnsupported)
+        ));
     }
 
     #[test]

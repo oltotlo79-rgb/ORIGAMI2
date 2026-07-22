@@ -303,9 +303,65 @@ struct RegularQuadPetalPreviewRecordV1 {
 
 #[cfg(test)]
 #[derive(Default)]
+#[allow(dead_code)]
 struct RegularQuadPetalPrivatePreviewStateV1(Mutex<Option<RegularQuadPetalPreviewRecordV1>>);
 
 #[cfg(test)]
+pub(super) struct RegularQuadPetalCertificatePreviewStateV1(
+    Mutex<
+        Option<(
+            ProjectId,
+            [u8; 32],
+            ori_collision::CertifiedPoseGraphPathCertificateV1,
+        )>,
+    >,
+);
+
+#[cfg(test)]
+impl RegularQuadPetalCertificatePreviewStateV1 {
+    pub(super) fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    pub(super) fn mint_once_v1(
+        &self,
+        token: ProjectId,
+        binding: [u8; 32],
+        parent: ori_collision::CertifiedPoseGraphPathCertificateV1,
+    ) -> Result<(), String> {
+        if parent.edges().len() != 3 || parent.binding_fingerprint_v1() != binding {
+            return Err("invalid petal parent".to_owned());
+        }
+        let mut slot = self.0.lock().map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+        if slot.is_some() {
+            return Err("petal preview occupied".to_owned());
+        }
+        *slot = Some((token, binding, parent));
+        Ok(())
+    }
+
+    pub(super) fn consume_v1(
+        &self,
+        token: ProjectId,
+        binding: [u8; 32],
+    ) -> Result<ori_collision::CertifiedPoseGraphPathCertificateV1, String> {
+        let mut slot = self.0.lock().map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
+        if !slot
+            .as_ref()
+            .is_some_and(|(stored_token, stored_binding, parent)| {
+                *stored_token == token
+                    && *stored_binding == binding
+                    && parent.binding_fingerprint_v1() == binding
+            })
+        {
+            return Err("petal preview mismatch".to_owned());
+        }
+        Ok(slot.take().expect("validated occupied petal slot").2)
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 impl RegularQuadPetalPrivatePreviewStateV1 {
     fn mint_once_v1(&self, record: RegularQuadPetalPreviewRecordV1) -> Result<(), String> {
         let mut slot = self.0.lock().map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;

@@ -1606,6 +1606,7 @@ pub(crate) mod tests {
         assert!(pages.contains("data-text-run=\"1\""));
     }
 
+    #[allow(dead_code)]
     pub(crate) fn assert_structured_timeline_exports_pdf_and_svg_zip(
         project: &super::super::ProjectState,
         expected_steps: usize,
@@ -1948,6 +1949,33 @@ pub(crate) mod tests {
                 .expect("three native segments"),
         )
         .expect("same-issuer contiguous parent certificate");
+        let preview_state =
+            super::super::stacked_fold_read::RegularQuadPetalCertificatePreviewStateV1::new();
+        let preview_token = ProjectId::new();
+        let parent_binding = parent.binding_fingerprint_v1();
+        preview_state
+            .mint_once_v1(preview_token, parent_binding, parent.clone())
+            .unwrap();
+        assert!(
+            preview_state
+                .mint_once_v1(ProjectId::new(), parent_binding, parent.clone())
+                .is_err()
+        );
+        assert!(
+            preview_state
+                .consume_v1(ProjectId::new(), parent_binding)
+                .is_err()
+        );
+        assert!(preview_state.consume_v1(preview_token, [0; 32]).is_err());
+        let consumed = preview_state
+            .consume_v1(preview_token, parent_binding)
+            .unwrap();
+        assert_eq!(consumed.binding_fingerprint_v1(), parent_binding);
+        assert!(
+            preview_state
+                .consume_v1(preview_token, parent_binding)
+                .is_err()
+        );
         let petal_certificates = (0..3)
             .map(|index| parent.segment_certificate_v1(index).unwrap())
             .collect::<Vec<_>>();
@@ -1965,8 +1993,7 @@ pub(crate) mod tests {
         )
         .expect("compile private regular-quad petal");
         super::super::stacked_fold_transaction::bind_named_technique_compiler_metadata_v1(
-            &mut petal,
-            "accordion",
+            &mut petal, "petal",
         )
         .expect("bind private petal compiler metadata");
         assert_eq!(petal.steps.len(), 4);

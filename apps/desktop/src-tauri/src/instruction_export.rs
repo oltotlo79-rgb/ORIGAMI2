@@ -950,6 +950,7 @@ pub(crate) mod tests {
     use std::{
         collections::BTreeSet,
         fs,
+        io::{Cursor, Read},
         sync::{
             Barrier,
             atomic::{AtomicU64, Ordering as AtomicOrdering},
@@ -1375,6 +1376,87 @@ pub(crate) mod tests {
         }
     }
 
+    fn pdf_utf16be_hex(text: &str) -> String {
+        let mut encoded = String::from("FEFF");
+        for unit in text.encode_utf16() {
+            encoded.push_str(&format!("{unit:04X}"));
+        }
+        encoded
+    }
+
+    fn assert_compiler_artifact_content(
+        project: &ProjectState,
+        technique_title: &str,
+        timeline: &ori_domain::InstructionTimeline,
+    ) {
+        let proof_bindings = timeline.steps[1..]
+            .iter()
+            .map(|step| {
+                let reference = step
+                    .visual
+                    .path_certificate_reference_v1
+                    .as_ref()
+                    .expect("compiler step has structured proof");
+                let binding = reference
+                    .binding_sha256
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                assert!(step.description.contains(&binding));
+                binding
+            })
+            .collect::<Vec<_>>();
+
+        let mut pdf_source = source_for(project, InstructionExportFormatRequest::Pdf);
+        pdf_source.name = technique_title.to_owned();
+        pdf_source.timeline = timeline.clone();
+        let pdf = build_pending_export(pdf_source).expect("compiler PDF content");
+        let body = std::str::from_utf8(&pdf.bytes[15..]).expect("ASCII PDF body");
+        assert!(body.contains(&format!("/Title <{}>", pdf_utf16be_hex(technique_title))));
+        assert!(body.matches("\nstream\n").count() >= timeline.steps.len());
+        assert!(body.contains(" m\n") && body.contains(" l\n"));
+
+        let mut without_summary = timeline.clone();
+        for step in &mut without_summary.steps[1..] {
+            step.description = "証明要約を除いた比較用手順".to_owned();
+            step.visual.path_certificate_reference_v1 = None;
+        }
+        let mut stripped_source = source_for(project, InstructionExportFormatRequest::Pdf);
+        stripped_source.name = technique_title.to_owned();
+        stripped_source.timeline = without_summary;
+        let stripped = build_pending_export(stripped_source).expect("stripped comparison PDF");
+        assert_ne!(pdf.bytes.as_ref(), stripped.bytes.as_ref());
+
+        let mut svg_source = source_for(project, InstructionExportFormatRequest::SvgZip);
+        svg_source.name = technique_title.to_owned();
+        svg_source.timeline = timeline.clone();
+        let svg = build_pending_export(svg_source).expect("compiler SVG content");
+        let mut archive = zip::ZipArchive::new(Cursor::new(svg.bytes.as_ref())).expect("SVG ZIP");
+        let mut manifest = String::new();
+        archive
+            .by_name("manifest.json")
+            .expect("SVG manifest")
+            .read_to_string(&mut manifest)
+            .expect("read SVG manifest");
+        let manifest: serde_json::Value = serde_json::from_str(&manifest).expect("manifest JSON");
+        assert_eq!(manifest["title"], technique_title);
+        let mut pages = String::new();
+        for page in 1..=svg.page_count {
+            archive
+                .by_name(&format!("pages/page-{page:04}.svg"))
+                .expect("SVG page")
+                .read_to_string(&mut pages)
+                .expect("read SVG page");
+        }
+        assert!(pages.contains(technique_title));
+        for binding in proof_bindings {
+            assert!(pages.contains(&binding[..8]));
+        }
+        assert!(pages.contains("<polygon "));
+        assert!(pages.contains("<line "));
+        assert!(pages.contains("data-text-run=\"1\""));
+    }
+
     pub(crate) fn assert_structured_timeline_exports_pdf_and_svg_zip(
         project: &super::super::ProjectState,
         expected_steps: usize,
@@ -1749,6 +1831,7 @@ pub(crate) mod tests {
         let archived = serde_json::to_vec(&timeline).expect("archive compiled accordion");
         let reopened: ori_domain::InstructionTimeline =
             serde_json::from_slice(&archived).expect("reopen compiled accordion");
+        assert_compiler_artifact_content(&project, "蛇腹折り", &reopened);
         for (format, magic) in [
             (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
             (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
@@ -1918,6 +2001,7 @@ pub(crate) mod tests {
             let archived = serde_json::to_vec(&timeline).expect("archive compiler timeline");
             let reopened: ori_domain::InstructionTimeline =
                 serde_json::from_slice(&archived).expect("reopen compiler timeline");
+            assert_compiler_artifact_content(&project, title, &reopened);
             for (format, magic) in [
                 (InstructionExportFormatRequest::Pdf, b"%PDF-1.7".as_slice()),
                 (InstructionExportFormatRequest::SvgZip, b"PK".as_slice()),
@@ -1997,6 +2081,7 @@ pub(crate) mod tests {
         let archived = serde_json::to_vec(&compiled).expect("archive compiled book fold");
         let reopened: ori_domain::InstructionTimeline =
             serde_json::from_slice(&archived).expect("reopen compiled book fold");
+        assert_compiler_artifact_content(&project, "二つ折り", &reopened);
         for step in reopened.steps.clone() {
             let revision = project.editor.revision();
             project

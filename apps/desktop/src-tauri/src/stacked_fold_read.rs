@@ -356,7 +356,7 @@ impl RegularQuadPetalPreviewRecordV1 {
         authority: DyadicPathNativeAuthorityV1,
     ) -> Result<Self, String> {
         if project.editor.revision() != revision
-            || !super::super::stacked_fold_transaction::regular_quad_petal_face_v1(project, hinges)
+            || !super::stacked_fold_transaction::regular_quad_petal_face_v1(project, hinges)
             || !authority.revalidates_exact_three_graph_segments_v1(target_binding, &path_binding)
         {
             return Err("regular-quad petal authority is unavailable".to_owned());

@@ -4,6 +4,8 @@ import {
   createSnapSpatialIndex,
   createVisibleGrid,
   prioritizeAdditionSnapTargets,
+  prioritizePointSnapTargets,
+  resolveCompassIntersectionSnap,
   resolveUniqueSnapAnchor,
   resolveSnapTarget,
   vertexSnapOutranksBlockedIntersection,
@@ -833,7 +835,7 @@ export function CreaseCanvas({
       pointTestPaperPolygon,
       useLegacyRectangularPaper,
     )
-    const pointTarget = resolveSnapTarget({
+    const ordinaryTarget = resolveSnapTarget({
       point,
       scale: transform.scale,
       settings: snapSettings,
@@ -846,6 +848,16 @@ export function CreaseCanvas({
       accept,
       spatialIndex: snapSpatialIndex,
     })
+    const compassTarget = snapSettings.intersection
+      ? resolveCompassIntersectionSnap({
+          point,
+          scale: transform.scale,
+          circles: compassCircles,
+          segments: lines,
+          accept,
+        })
+      : null
+    const pointTarget = prioritizePointSnapTargets(ordinaryTarget, compassTarget)
     if (!snapSettings.intersection) return { status: 'ready', target: pointTarget }
 
     const intersectionResult = intersectionSnapIndex.query({

@@ -36,6 +36,7 @@ test('crease canvas presents its complete fixed copy in Japanese and English', (
     vertical: ['垂直', 'Vertical'],
     parallel: ['平行', 'Parallel'],
     angle: ['角度', 'Angle'],
+    'circle-intersection': ['円の交点', 'Circle intersection'],
     edge: ['辺', 'Edge'],
     grid: ['グリッド', 'Grid'],
   }

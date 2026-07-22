@@ -14,6 +14,7 @@ export type SnapKind =
   | 'vertical'
   | 'parallel'
   | 'angle'
+  | 'circle-intersection'
   | 'edge'
   | 'grid'
 
@@ -70,6 +71,12 @@ export type SnapSegment = Readonly<{
 export type SnapGrid = Readonly<{
   xValues: readonly number[]
   yValues: readonly number[]
+}>
+
+export type CompassSnapCircle = Readonly<{
+  centerX: number
+  centerY: number
+  radius: number
 }>
 
 export type SnapAnchor = Readonly<{
@@ -240,6 +247,7 @@ const DEFAULT_THRESHOLDS_PX: Readonly<Record<PointSnapKind, number>> = Object.fr
   vertical: 8,
   parallel: 8,
   angle: 8,
+  'circle-intersection': 8,
   edge: 7,
   grid: 7,
 })
@@ -253,6 +261,7 @@ const SNAP_CATEGORY_BIAS_PX: Readonly<Record<PointSnapKind, number>> = Object.fr
   vertical: 0.4,
   parallel: 0.6,
   angle: 0.6,
+  'circle-intersection': 0.3,
   edge: 0.8,
   grid: 1,
 })
@@ -285,6 +294,82 @@ export function createSnapSpatialIndex(
       value: segment,
     }))),
   })
+}
+
+export function prioritizePointSnapTargets(
+  first: SnapTarget | null,
+  second: SnapTarget | null,
+): SnapTarget | null {
+  if (!first) return second
+  if (!second) return first
+  const firstScore = first.distancePx + SNAP_CATEGORY_BIAS_PX[first.kind]
+  const secondScore = second.distancePx + SNAP_CATEGORY_BIAS_PX[second.kind]
+  return secondScore < firstScore
+    || (secondScore === firstScore && second.key < first.key)
+    ? second
+    : first
+}
+
+export function resolveCompassIntersectionSnap(options: Readonly<{
+  point: SnapPoint
+  scale: number
+  circles: readonly CompassSnapCircle[]
+  segments: readonly SnapSegment[]
+  thresholdPx?: number
+  accept?: (target: SnapTarget) => boolean
+}>): SnapTarget | null {
+  if (!isFinitePoint(options.point) || !Number.isFinite(options.scale) || options.scale <= 0
+    || options.circles.length > 64) return null
+  const threshold = options.thresholdPx ?? DEFAULT_THRESHOLDS_PX['circle-intersection']
+  if (!Number.isFinite(threshold) || threshold < 0) return null
+  let best: SnapTarget | null = null
+  const admit = (key: string, x: number, y: number) => {
+    const candidate = considerTargetPoint(null, key, 'circle-intersection', x, y, options.point,
+      options.scale, threshold, undefined, options.accept)
+    if (candidate) best = prioritizePointSnapTargets(best, candidate.target)
+  }
+  for (let circleIndex = 0; circleIndex < options.circles.length; circleIndex += 1) {
+    const circle = options.circles[circleIndex]!
+    if (!Number.isFinite(circle.centerX) || !Number.isFinite(circle.centerY)
+      || !Number.isFinite(circle.radius) || circle.radius <= 0) continue
+    for (const segment of options.segments) {
+      const geometry = validSegmentGeometry(segment)
+      if (!geometry) continue
+      const ox = segment.x1 - circle.centerX
+      const oy = segment.y1 - circle.centerY
+      const b = 2 * (ox * geometry.dx + oy * geometry.dy)
+      const c = ox * ox + oy * oy - circle.radius * circle.radius
+      const discriminant = b * b - 4 * geometry.lengthSquared * c
+      if (!Number.isFinite(discriminant) || discriminant < 0) continue
+      const root = Math.sqrt(discriminant)
+      for (const [side, fraction] of [[0, (-b - root) / (2 * geometry.lengthSquared)],
+        [1, (-b + root) / (2 * geometry.lengthSquared)]] as const) {
+        if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) continue
+        admit(`circle-line:${circleIndex}:${segment.id}:${side}`,
+          segment.x1 + fraction * geometry.dx, segment.y1 + fraction * geometry.dy)
+      }
+    }
+    for (let otherIndex = circleIndex + 1; otherIndex < options.circles.length; otherIndex += 1) {
+      const other = options.circles[otherIndex]!
+      const dx = other.centerX - circle.centerX
+      const dy = other.centerY - circle.centerY
+      const distance = Math.hypot(dx, dy)
+      if (!Number.isFinite(distance) || distance === 0
+        || distance > circle.radius + other.radius
+        || distance < Math.abs(circle.radius - other.radius)) continue
+      const along = (circle.radius ** 2 - other.radius ** 2 + distance ** 2) / (2 * distance)
+      const heightSquared = circle.radius ** 2 - along ** 2
+      if (!Number.isFinite(heightSquared) || heightSquared < 0) continue
+      const height = Math.sqrt(Math.max(0, heightSquared))
+      const baseX = circle.centerX + along * dx / distance
+      const baseY = circle.centerY + along * dy / distance
+      const perpendicularX = -dy * height / distance
+      const perpendicularY = dx * height / distance
+      admit(`circle-circle:${circleIndex}:${otherIndex}:0`, baseX + perpendicularX, baseY + perpendicularY)
+      admit(`circle-circle:${circleIndex}:${otherIndex}:1`, baseX - perpendicularX, baseY - perpendicularY)
+    }
+  }
+  return best
 }
 
 export function createVisibleGrid(
@@ -486,7 +571,7 @@ export function vertexSnapOutranksBlockedIntersection(
     && pointTarget.distancePx < blockedDistancePx
 }
 
-export function toggleSnapSetting(settings: SnapSettings, kind: SnapKind): SnapSettings {
+export function toggleSnapSetting(settings: SnapSettings, kind: keyof SnapSettings): SnapSettings {
   return { ...settings, [kind]: !settings[kind] }
 }
 

@@ -262,6 +262,67 @@ describe('CreaseCanvas vertex dragging', () => {
   })
 })
 
+describe('CreaseCanvas compass intersection placement', () => {
+  it('routes a circle-line intersection through the existing edge-split operation', () => {
+    const onPlaceVertex = vi.fn()
+    renderCanvas({
+      localeStore: localeFixture('en'),
+      tool: 'vertex',
+      vertices: [
+        { id: 'left', x: 0, y: 200 },
+        { id: 'right', x: 400, y: 200 },
+      ],
+      lines: [{
+        id: 'crease',
+        startVertexId: 'left',
+        endVertexId: 'right',
+        x1: 0,
+        y1: 200,
+        x2: 400,
+        y2: 200,
+        kind: 'mountain',
+      }],
+      compassCircles: [{ centerX: 200, centerY: 200, radius: 100 }],
+      onPlaceVertex,
+    })
+
+    fireEvent.click(screen.getByLabelText('Crease-pattern editing canvas'), {
+      clientX: 357,
+      clientY: 250,
+    })
+
+    expect(onPlaceVertex).toHaveBeenCalledWith({
+      operation: 'split-edge',
+      edgeId: 'crease',
+      fraction: 0.75,
+    })
+  })
+
+  it('routes a circle-circle intersection through the existing vertex-add operation', () => {
+    const onPlaceVertex = vi.fn()
+    renderCanvas({
+      localeStore: localeFixture('en'),
+      tool: 'vertex',
+      compassCircles: [
+        { centerX: 140, centerY: 200, radius: 100 },
+        { centerX: 260, centerY: 200, radius: 100 },
+      ],
+      onPlaceVertex,
+    })
+
+    fireEvent.click(screen.getByLabelText('Crease-pattern editing canvas'), {
+      clientX: 250,
+      clientY: 336,
+    })
+
+    expect(onPlaceVertex).toHaveBeenCalledWith({
+      operation: 'add',
+      x: 200,
+      y: 280,
+    })
+  })
+})
+
 function renderCanvas(
   overrides: Partial<React.ComponentProps<typeof CreaseCanvas>> = {},
 ) {

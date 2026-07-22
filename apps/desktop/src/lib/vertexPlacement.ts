@@ -53,6 +53,12 @@ export function createVertexPlacement(
   if (target?.kind === 'intersection') {
     return intersectionPlacement(point, target, segments, vertices)
   }
+  if (target?.kind === 'circle-intersection') {
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)
+      || point.x !== target.point.x || point.y !== target.point.y
+      || !Number.isFinite(target.distancePx) || target.distancePx < 0) return null
+    return splitOrAddPoint(point, segments)
+  }
   if (
     target?.kind === 'horizontal'
     || target?.kind === 'vertical'

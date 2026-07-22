@@ -8,6 +8,7 @@ import {
   DEFAULT_ANGLE_SNAP_CONFIG,
   createVisibleGrid,
   prioritizeAdditionSnapTargets,
+  resolveCompassIntersectionSnap,
   resolveUniqueSnapAnchor,
   resolveSnapTarget,
   toggleSnapSetting,
@@ -250,6 +251,35 @@ test('cross-kind priority uses pixel distance with only a modest semantic bias',
     point: { x: 1, y: 0.5 },
     settings: only('edge', 'grid'),
   })?.kind, 'edge')
+})
+
+test('compass circles snap to bounded line and circle intersections', () => {
+  const segment: SnapSegment = {
+    id: 'diameter', startVertexId: 'left', endVertexId: 'right',
+    x1: -10, y1: 0, x2: 10, y2: 0,
+  }
+  const lineTarget = resolveCompassIntersectionSnap({
+    point: { x: 5.2, y: 0.1 }, scale: 1,
+    circles: [{ centerX: 0, centerY: 0, radius: 5 }], segments: [segment],
+  })
+  assert.equal(lineTarget?.kind, 'circle-intersection')
+  assert.deepEqual(lineTarget?.point, { x: 5, y: 0 })
+  assert.deepEqual(createVertexPlacement(lineTarget!.point, lineTarget, [segment]), {
+    operation: 'split-edge', edgeId: 'diameter', fraction: 0.75,
+  })
+
+  const circleTarget = resolveCompassIntersectionSnap({
+    point: { x: 3.1, y: 4.1 }, scale: 1,
+    circles: [
+      { centerX: 0, centerY: 0, radius: 5 },
+      { centerX: 6, centerY: 0, radius: 5 },
+    ],
+    segments: [],
+  })
+  assert.deepEqual(circleTarget?.point, { x: 3, y: 4 })
+  assert.deepEqual(createVertexPlacement(circleTarget!.point, circleTarget, []), {
+    operation: 'add', x: 3, y: 4,
+  })
 })
 
 test('same-kind ties use distance and then lexical key', () => {

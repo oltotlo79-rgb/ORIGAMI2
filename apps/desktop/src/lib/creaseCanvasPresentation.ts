@@ -55,6 +55,7 @@ const SNAP_KIND_TEXT: Readonly<Record<SnapKind, LocalizedText>> =
     vertical: Object.freeze({ ja: '垂直', en: 'Vertical' }),
     parallel: Object.freeze({ ja: '平行', en: 'Parallel' }),
     angle: Object.freeze({ ja: '角度', en: 'Angle' }),
+    'circle-intersection': Object.freeze({ ja: '円の交点', en: 'Circle intersection' }),
     edge: Object.freeze({ ja: '辺', en: 'Edge' }),
     grid: Object.freeze({ ja: 'グリッド', en: 'Grid' }),
   })

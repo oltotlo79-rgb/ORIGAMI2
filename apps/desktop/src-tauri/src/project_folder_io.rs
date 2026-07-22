@@ -5,6 +5,8 @@
 //! project capture, create-new publication, and journaled whole-tree
 //! replacement with startup recovery.
 
+#[cfg(any(test, target_os = "windows"))]
+use std::ffi::OsStr;
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
@@ -14,8 +16,6 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
-#[cfg(any(test, target_os = "windows"))]
-use std::ffi::OsStr;
 
 use ori_domain::ProjectId;
 use ori_formats::{

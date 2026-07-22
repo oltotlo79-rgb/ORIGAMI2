@@ -4188,6 +4188,134 @@ mod tests {
         );
     }
 
+    #[test]
+    fn certified_cardinal_degree_four_remains_unsupported_without_vertex_relief() {
+        let points = [
+            (100.0, 100.0),
+            (-100.0, 100.0),
+            (-100.0, -100.0),
+            (100.0, -100.0),
+            (0.0, 0.0),
+        ];
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(index, &(x, y))| Vertex {
+                id: fixed_id("ce00", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices[..4]
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect::<Vec<_>>();
+        let center = vertices[4].id;
+        let hinges = (0..4)
+            .map(|index| fixed_id("cf00", index as u64 + 10))
+            .collect::<Vec<_>>();
+        let mut edges = (0..4)
+            .map(|index| Edge {
+                id: fixed_id("cf00", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % 4],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        edges.extend((0..4).map(|index| Edge {
+            id: hinges[index],
+            start: boundary[index],
+            end: center,
+            kind: if index == 3 {
+                EdgeKind::Mountain
+            } else {
+                EdgeKind::Valley
+            },
+        }));
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let project = fixed_id("cc00", 1);
+        let topology = analyze_faces(FaceExtractionInput {
+            identity_namespace: project,
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .snapshot
+        .unwrap();
+        let local = ori_topology::analyze_local_flat_foldability(&paper, &pattern);
+        let global = ori_foldability::analyze_global_flat_foldability(
+            ori_foldability::GlobalFlatFoldabilityInput::current_with_geometry(
+                project, &paper, &pattern, &topology, &local,
+            ),
+            ori_foldability::GlobalFlatFoldabilityLimits::default(),
+        )
+        .unwrap();
+        let geometry = MaterialHingeGraphGeometry::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        let selected = [(hinges[0], false), (hinges[1], false), (hinges[2], false)];
+        let completion_candidates =
+            crate::general_cell_transport::degree_four_petal_completion_candidates_v1(
+                &geometry, selected,
+            );
+        assert_eq!(completion_candidates.len(), 4);
+        assert!(
+            completion_candidates.iter().any(|candidate| {
+                crate::prepare_regular_quad_petal_schedules_v1(
+                    &geometry,
+                    &audit,
+                    audit.faces()[0],
+                    candidate,
+                    ori_kinematics::CycleScheduleLimitsV1::default(),
+                )
+                .is_some_and(|schedules| {
+                    schedules.iter().all(|schedule| {
+                        geometry
+                            .solve_closed(
+                                &audit,
+                                audit.faces()[0],
+                                &schedule.evaluate(1.0).unwrap(),
+                                1.0e-9,
+                            )
+                            .is_ok()
+                    })
+                })
+            }),
+            "no bounded endpoint closes"
+        );
+        let authority = crate::issue_regular_quad_petal_chained_authority_v1(
+            &geometry,
+            &audit,
+            global
+                .layer_order()
+                .expect("Kawasaki and Maekawa authority"),
+            audit.faces()[0],
+            selected,
+            0.1,
+            1.0e-9,
+            ori_kinematics::CycleScheduleLimitsV1::default(),
+            ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                max_depth: 8,
+                max_leaves: 256,
+                max_work: 1_000_000,
+                schedule_limits: ori_kinematics::CycleScheduleLimitsV1::default(),
+            },
+        );
+        assert!(
+            authority.is_none(),
+            "positive thickness needs vertex relief"
+        );
+    }
+
     fn one_hinge_model() -> MaterialTreeKinematicsModel {
         let points = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
         let vertices = points

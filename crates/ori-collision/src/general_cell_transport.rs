@@ -14,6 +14,7 @@ pub const GENERAL_MULTI_FACE_CELL_TRANSPORT_MODEL_ID_V1: &str =
     "general_multi_face_positive_thickness_cell_transport_v1";
 
 pub const REGULAR_QUAD_PETAL_RATIO_CANDIDATE_LIMIT_V1: usize = 3;
+pub const DEGREE_FOUR_PETAL_COMPLETION_LIMIT_V1: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegularQuadPetalRatioCandidateV1 {
@@ -55,6 +56,63 @@ pub fn regular_quad_petal_ratio_candidates_v1(
     })
 }
 
+pub(crate) fn degree_four_petal_completion_candidates_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    mut selected: [(ori_domain::EdgeId, bool); 3],
+) -> Vec<RegularQuadPetalRatioCandidateV1> {
+    if geometry.hinges().len() != 4
+        || geometry
+            .hinges()
+            .iter()
+            .filter(|hinge| hinge.assignment() == ori_topology::FoldAssignment::Mountain)
+            .count()
+            .abs_diff(2)
+            != 1
+    {
+        return Vec::new();
+    }
+    let first = &geometry.hinges()[0];
+    let pivot = [first.start(), first.end()].into_iter().find(|point| {
+        geometry
+            .hinges()
+            .iter()
+            .all(|hinge| hinge.start() == *point || hinge.end() == *point)
+    });
+    if pivot.is_none()
+        || selected
+            .iter()
+            .any(|(edge, _)| !geometry.hinges().iter().any(|hinge| hinge.edge() == *edge))
+    {
+        return Vec::new();
+    }
+    selected.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+    let edges = selected.map(|(edge, _)| edge);
+    let mut candidates = Vec::with_capacity(DEGREE_FOUR_PETAL_COMPLETION_LIMIT_V1);
+    for phase in 0..2 {
+        for sign in [1_i64, -1] {
+            let stages = [64_u64, 32, 16].map(|base| {
+                edges.map(|edge| {
+                    let rank = geometry
+                        .hinges()
+                        .iter()
+                        .position(|hinge| hinge.edge() == edge)
+                        .expect("selected hinge was validated");
+                    if rank % 2 == phase {
+                        (sign, base)
+                    } else {
+                        (0, 1)
+                    }
+                })
+            });
+            candidates.push(RegularQuadPetalRatioCandidateV1 {
+                hinges: edges,
+                stage_endpoints: stages,
+            });
+        }
+    }
+    candidates
+}
+
 pub fn prepare_regular_quad_petal_schedules_v1(
     geometry: &MaterialHingeGraphGeometry,
     audit: &MaterialHingeGraphAudit,
@@ -73,8 +131,42 @@ pub fn prepare_regular_quad_petal_schedules_v1(
                     .hinges
                     .iter()
                     .position(|edge| *edge == hinge.edge());
-                let source = index.map_or((0, 1), |index| previous[index]);
-                let target = index.map_or((0, 1), |index| targets[index]);
+                let completion = |endpoints: &[(i64, u64); 3]| {
+                    (geometry.hinges().len() == 4
+                        && candidate.stage_endpoints[0]
+                            .iter()
+                            .map(|(_, denominator)| *denominator)
+                            .collect::<std::collections::HashSet<_>>()
+                            .len()
+                            == 2)
+                        .then(|| {
+                            let rank = geometry
+                                .hinges()
+                                .iter()
+                                .position(|other| other.edge() == hinge.edge())?;
+                            let (selected_index, &(numerator, denominator)) = endpoints
+                                .iter()
+                                .enumerate()
+                                .find(|(_, (numerator, _))| *numerator != 0)?;
+                            let phase = geometry.hinges().iter().position(|other| {
+                                other.edge() == candidate.hinges[selected_index]
+                            })? % 2;
+                            Some(if rank % 2 == phase {
+                                (numerator.signum(), denominator)
+                            } else {
+                                (0, 1)
+                            })
+                        })
+                        .flatten()
+                };
+                let source = index.map_or_else(
+                    || completion(&previous).unwrap_or((0, 1)),
+                    |index| previous[index],
+                );
+                let target = index.map_or_else(
+                    || completion(&targets).unwrap_or((0, 1)),
+                    |index| targets[index],
+                );
                 let denominator = source.1.checked_mul(target.1)?;
                 let initial = source.0.checked_mul(i64::try_from(target.1).ok()?)?;
                 let target_scaled = target.0.checked_mul(i64::try_from(source.1).ok()?)?;
@@ -169,7 +261,10 @@ pub fn issue_regular_quad_petal_chained_authority_v1(
     schedule_limits: CycleScheduleLimitsV1,
     closure_limits: DyadicIntervalClosureLimitsV1,
 ) -> Option<RegularQuadPetalChainedAuthorityV1> {
-    for candidate in regular_quad_petal_ratio_candidates_v1(hinges) {
+    let candidates = regular_quad_petal_ratio_candidates_v1(hinges)
+        .into_iter()
+        .chain(degree_four_petal_completion_candidates_v1(geometry, hinges));
+    for candidate in candidates {
         let Some(schedules) = prepare_regular_quad_petal_schedules_v1(
             geometry,
             audit,

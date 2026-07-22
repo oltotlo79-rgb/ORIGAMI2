@@ -3739,6 +3739,246 @@ mod tests {
     }
 
     #[test]
+    fn three_by_three_blocks_issue_canonical_blockwise_closure() {
+        let project = fixed_id("ca40", 1);
+        let blocks = super::miura_cactus_test_support::independent_three_by_three_miura_blocks();
+        let prepared = blocks.map(|(pattern, paper, moving)| {
+            let topology = analyze_faces(FaceExtractionInput {
+                identity_namespace: project,
+                source_revision: 1,
+                paper: &paper,
+                pattern: &pattern,
+            })
+            .snapshot
+            .unwrap();
+            let geometry = MaterialHingeGraphGeometry::prepare(
+                &pattern,
+                &paper,
+                &topology,
+                TreeKinematicsLimits::default(),
+            )
+            .unwrap();
+            let audit =
+                MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default())
+                    .unwrap();
+            (pattern, geometry, audit, moving)
+        });
+        let [
+            (first_pattern, first_geometry, first_audit, first_moving),
+            (second_pattern, second_geometry, second_audit, second_moving),
+        ] = prepared;
+        let shared = first_geometry
+            .face_ids()
+            .iter()
+            .copied()
+            .filter(|face| second_geometry.face_ids().contains(face))
+            .collect::<Vec<_>>();
+        assert_eq!(shared.len(), 1);
+        let articulation = shared[0];
+        let make = |pattern: &CreasePattern,
+                    geometry: &MaterialHingeGraphGeometry,
+                    audit: &MaterialHingeGraphAudit,
+                    moving: Vec<EdgeId>| {
+            let mut rows = moving
+                .iter()
+                .filter_map(|edge| {
+                    let source = pattern.edges.iter().find(|source| source.id == *edge)?;
+                    let start = pattern
+                        .vertices
+                        .iter()
+                        .find(|vertex| vertex.id == source.start)?;
+                    Some(start.position.y.to_bits())
+                })
+                .collect::<Vec<_>>();
+            rows.sort_unstable();
+            rows.dedup();
+            rows.into_iter()
+                .find_map(|row| {
+                    let active = moving
+                        .iter()
+                        .copied()
+                        .filter(|edge| {
+                            let source = pattern
+                                .edges
+                                .iter()
+                                .find(|source| source.id == *edge)
+                                .unwrap();
+                            pattern
+                                .vertices
+                                .iter()
+                                .find(|vertex| vertex.id == source.start)
+                                .unwrap()
+                                .position
+                                .y
+                                .to_bits()
+                                == row
+                        })
+                        .collect::<HashSet<_>>();
+                    let mut entries = geometry
+                        .hinges()
+                        .iter()
+                        .map(|hinge| HalfAngleRationalEntryInputV1 {
+                            edge: hinge.edge(),
+                            u_domain: [
+                                RationalCoefficientV1 {
+                                    numerator: 0,
+                                    denominator: 1,
+                                },
+                                RationalCoefficientV1 {
+                                    numerator: 1,
+                                    denominator: 1,
+                                },
+                            ],
+                            numerator_power_coefficients: vec![
+                                RationalCoefficientV1 {
+                                    numerator: 0,
+                                    denominator: 1,
+                                },
+                                RationalCoefficientV1 {
+                                    numerator: i64::from(active.contains(&hinge.edge())),
+                                    denominator: 1,
+                                },
+                            ],
+                            denominator_power_coefficients: vec![RationalCoefficientV1 {
+                                numerator: if active.contains(&hinge.edge()) {
+                                    64
+                                } else {
+                                    1
+                                },
+                                denominator: 1,
+                            }],
+                        })
+                        .collect::<Vec<_>>();
+                    entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+                    let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+                        geometry,
+                        audit,
+                        articulation,
+                        entries,
+                        CycleScheduleLimitsV1::default(),
+                    )
+                    .ok()?;
+                    let closure = geometry
+                        .prove_dyadic_schedule_closure_v1(
+                            audit,
+                            articulation,
+                            &schedule,
+                            1.0e-9,
+                            DyadicIntervalClosureLimitsV1 {
+                                max_depth: 8,
+                                max_leaves: 256,
+                                max_work: 1_000_000,
+                                schedule_limits: CycleScheduleLimitsV1::default(),
+                            },
+                        )
+                        .ok()?;
+                    Some((schedule, closure))
+                })
+                .expect("one canonical carrier closes")
+        };
+        let (first_schedule, first_closure) =
+            make(&first_pattern, &first_geometry, &first_audit, first_moving);
+        let (second_schedule, second_closure) = make(
+            &second_pattern,
+            &second_geometry,
+            &second_audit,
+            second_moving,
+        );
+        let authority = crate::issue_blockwise_closure_authority_v1(
+            [
+                crate::BlockwiseClosureInputV1 {
+                    geometry: &first_geometry,
+                    audit: &first_audit,
+                    schedule: &first_schedule,
+                    closure: &first_closure,
+                },
+                crate::BlockwiseClosureInputV1 {
+                    geometry: &second_geometry,
+                    audit: &second_audit,
+                    schedule: &second_schedule,
+                    closure: &second_closure,
+                },
+            ],
+            articulation,
+            0.1,
+            [0x61; 32],
+        )
+        .unwrap();
+        assert!(authority.revalidates_v1(articulation, 0.1, [0x61; 32]));
+        assert!(!authority.revalidates_v1(articulation, 0.1, [0x60; 32]));
+        assert!(!authority.revalidates_v1(FaceId::new(), 0.1, [0x61; 32]));
+        assert!(!authority.revalidates_v1(articulation, 1.0, [0x61; 32]));
+        let reordered = crate::issue_blockwise_closure_authority_v1(
+            [
+                crate::BlockwiseClosureInputV1 {
+                    geometry: &second_geometry,
+                    audit: &second_audit,
+                    schedule: &second_schedule,
+                    closure: &second_closure,
+                },
+                crate::BlockwiseClosureInputV1 {
+                    geometry: &first_geometry,
+                    audit: &first_audit,
+                    schedule: &first_schedule,
+                    closure: &first_closure,
+                },
+            ],
+            articulation,
+            0.1,
+            [0x61; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            authority.binding_fingerprint_v1(),
+            reordered.binding_fingerprint_v1()
+        );
+        assert!(
+            crate::issue_blockwise_closure_authority_v1(
+                [
+                    crate::BlockwiseClosureInputV1 {
+                        geometry: &first_geometry,
+                        audit: &first_audit,
+                        schedule: &first_schedule,
+                        closure: &first_closure,
+                    },
+                    crate::BlockwiseClosureInputV1 {
+                        geometry: &first_geometry,
+                        audit: &first_audit,
+                        schedule: &first_schedule,
+                        closure: &first_closure,
+                    },
+                ],
+                articulation,
+                0.1,
+                [0x61; 32],
+            )
+            .is_none()
+        );
+        assert!(
+            crate::issue_blockwise_closure_authority_v1(
+                [
+                    crate::BlockwiseClosureInputV1 {
+                        geometry: &first_geometry,
+                        audit: &first_audit,
+                        schedule: &first_schedule,
+                        closure: &first_closure,
+                    },
+                    crate::BlockwiseClosureInputV1 {
+                        geometry: &second_geometry,
+                        audit: &second_audit,
+                        schedule: &first_schedule,
+                        closure: &first_closure,
+                    },
+                ],
+                articulation,
+                0.1,
+                [0x61; 32],
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn eight_bay_real_geometry_admits_exact_balanced_closure() {
         let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(8, false);
         let limits = ori_kinematics::DyadicIntervalClosureLimitsV1 {

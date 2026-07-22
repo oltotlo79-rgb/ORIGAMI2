@@ -53,6 +53,7 @@
 - `cargo fmt --all -- --check`: green。
 - `cargo clippy -p ori-core -p ori-formats --all-targets -- -D warnings`: green。
 - `cargo clippy -p ori-collision --all-targets -- -D warnings`: green。
+- CI #622で検出したA-4以前の3期待値を`241d855`で統一。`-0.0`は公開境界で`InvalidPaperThickness`、`0.0`のexact coplanar area昇格と正厚み診断は従来どおり維持。`static_collision` test binary compileとall-target clippyはgreen。
 - `origami2-desktop` lib checkは依存crate `tauri` / `tauri_plugin_dialog` のローカルartifact欠落（E0463）で停止。監査変更由来の型・lintエラーではないため、同一head CIで再確認する。
 - `ori-collision` の分割実行はtest binaryのcompile完了後、Windows Application Control（OS error 4551）が新規生成exeの起動を拒否。assertion失敗ではない。静的検査はgreenであり、実行回帰は許可済みCI runnerを最終証跡とする。
 

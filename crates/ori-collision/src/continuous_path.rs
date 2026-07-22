@@ -3117,6 +3117,9 @@ mod dense_grid_cycle_test_support;
 #[cfg(test)]
 #[path = "../../../test-support/four_bay_cycle.rs"]
 mod four_bay_cycle_test_support;
+#[cfg(test)]
+#[path = "../../../test-support/miura_cactus.rs"]
+mod miura_cactus_test_support;
 
 #[cfg(test)]
 mod tests {
@@ -3670,6 +3673,69 @@ mod tests {
         assert!(!first.revalidates_v1(
             &geometry, &source, fixed, &schedule, &closure, 0.1, [0x40; 32], [0x42; 32]
         ));
+    }
+
+    #[test]
+    fn two_patch_miura_cactus_has_native_layer_authority() {
+        let (pattern, paper, _) =
+            super::miura_cactus_test_support::two_patch_miura_cactus_pattern();
+        let project = fixed_id("ca20", 1);
+        let topology = analyze_faces(FaceExtractionInput {
+            identity_namespace: project,
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .snapshot
+        .expect("seven-cell cactus topology");
+        assert_eq!(topology.faces.len(), 7);
+        assert_eq!(topology.hinge_adjacency.len() + 1 - topology.faces.len(), 2);
+        let articulation = topology
+            .faces
+            .iter()
+            .find(|face| {
+                topology
+                    .hinge_adjacency
+                    .iter()
+                    .filter(|hinge| hinge.first == face.id || hinge.second == face.id)
+                    .count()
+                    == 4
+            })
+            .expect("central articulation face")
+            .id;
+        let mut remaining = topology
+            .faces
+            .iter()
+            .map(|face| face.id)
+            .filter(|face| *face != articulation)
+            .collect::<HashSet<_>>();
+        let mut component_count = 0;
+        while let Some(seed) = remaining.iter().next().copied() {
+            component_count += 1;
+            remaining.remove(&seed);
+            let mut frontier = vec![seed];
+            while let Some(face) = frontier.pop() {
+                for next in topology.hinge_adjacency.iter().filter_map(|hinge| {
+                    (hinge.first == face)
+                        .then_some(hinge.second)
+                        .or_else(|| (hinge.second == face).then_some(hinge.first))
+                }) {
+                    if next != articulation && remaining.remove(&next) {
+                        frontier.push(next);
+                    }
+                }
+            }
+        }
+        assert_eq!(component_count, 2);
+        let local = ori_topology::analyze_local_flat_foldability(&paper, &pattern);
+        let global = ori_foldability::analyze_global_flat_foldability(
+            ori_foldability::GlobalFlatFoldabilityInput::current_with_geometry(
+                project, &paper, &pattern, &topology, &local,
+            ),
+            ori_foldability::GlobalFlatFoldabilityLimits::default(),
+        )
+        .unwrap();
+        assert!(global.layer_order().is_some(), "{:?}", global.outcome);
     }
 
     #[test]

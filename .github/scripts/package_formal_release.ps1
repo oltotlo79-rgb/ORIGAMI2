@@ -18,14 +18,13 @@ if ($env:PLATFORM -eq 'windows-x64') {
     $installer = Get-ChildItem (Join-Path $releaseRoot 'bundle\nsis') -Filter '*.exe' -File -Recurse
     if (@($installer).Count -ne 1) { throw 'Expected exactly one NSIS installer.' }
     Copy-Item $installer.FullName (Join-Path $output "$prefix-setup.exe")
-    Compress-Archive @(
-        (Join-Path $releaseRoot 'origami2-desktop.exe'),
-        (Join-Path $releaseRoot 'fonts'),
-        (Join-Path $releaseRoot 'licenses')
-    ) (Join-Path $output "$prefix-portable.zip")
+    node (Join-Path $PSScriptRoot 'create_reproducible_release_archive.mjs') `
+        $env:PLATFORM (Join-Path $output "$prefix-portable.zip") $releaseRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create the reproducible Windows archive.' }
 } elseif ($env:PLATFORM -eq 'macos-arm64') {
-    tar -C (Join-Path $releaseRoot 'bundle/macos') -czf (Join-Path $output "$prefix-app.tar.gz") 'ORIGAMI2.app'
-    if ($LASTEXITCODE -ne 0) { throw 'Could not archive the macOS application.' }
+    node (Join-Path $PSScriptRoot 'create_reproducible_release_archive.mjs') `
+        $env:PLATFORM (Join-Path $output "$prefix-app.tar.gz") $releaseRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create the reproducible macOS archive.' }
 }
 
 node (Join-Path $PSScriptRoot 'write_update_manifest.mjs') $output

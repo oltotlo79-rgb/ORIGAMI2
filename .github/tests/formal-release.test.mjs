@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -26,6 +26,36 @@ const ciArtifactsFixture = [
   createdAt: ciArtifactFixture.createdAt,
   expiresAt: ciArtifactFixture.expiresAt,
 }))
+
+test('Windows and macOS release archives are byte reproducible across metadata drift', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'origami2-reproducible-archive-'))
+  const helper = join(root, '.github/scripts/create_reproducible_release_archive.mjs')
+  try {
+    const release = join(directory, 'release')
+    mkdirSync(join(release, 'fonts'), { recursive: true })
+    mkdirSync(join(release, 'licenses'), { recursive: true })
+    mkdirSync(join(release, 'bundle', 'macos', 'ORIGAMI2.app', 'Contents', 'MacOS'), { recursive: true })
+    writeFileSync(join(release, 'origami2-desktop.exe'), 'windows executable')
+    writeFileSync(join(release, 'fonts', 'font.ttf'), 'font')
+    writeFileSync(join(release, 'licenses', 'font.txt'), 'license')
+    const macExecutable = join(release, 'bundle', 'macos', 'ORIGAMI2.app', 'Contents', 'MacOS', 'origami2-desktop')
+    writeFileSync(macExecutable, 'mac executable')
+    chmodSync(macExecutable, 0o755)
+    for (const platform of ['windows-x64', 'macos-arm64']) {
+      const extension = platform === 'windows-x64' ? 'zip' : 'tar.gz'
+      const first = join(directory, `${platform}-first.${extension}`)
+      const second = join(directory, `${platform}-second.${extension}`)
+      utimesSync(macExecutable, new Date('2020-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z'))
+      execFileSync(process.execPath, [helper, platform, first, release])
+      utimesSync(macExecutable, new Date('2026-07-22T00:00:00Z'), new Date('2026-07-22T00:00:00Z'))
+      execFileSync(process.execPath, [helper, platform, second, release])
+      assert.deepEqual(readFileSync(second), readFileSync(first), platform)
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 function fixtureCrc32(bytes) {
   let crc = 0xffffffff
   for (const byte of bytes) {
@@ -84,6 +114,10 @@ test('PowerShell and bash release helpers anchor repository paths to their scrip
       copyFileSync(
         join(root, '.github/scripts/write_update_manifest.mjs'),
         join(scripts, 'write_update_manifest.mjs'),
+      )
+      copyFileSync(
+        join(root, '.github/scripts/create_reproducible_release_archive.mjs'),
+        join(scripts, 'create_reproducible_release_archive.mjs'),
       )
       writeFileSync(join(release, 'bundle', 'nsis', 'installer.exe'), 'installer')
       writeFileSync(join(release, 'origami2-desktop.exe'), 'desktop')

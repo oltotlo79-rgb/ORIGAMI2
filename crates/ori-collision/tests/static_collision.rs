@@ -466,11 +466,11 @@ fn assert_error(
 }
 
 #[test]
-fn one_material_face_has_a_complete_zero_pair_proof_at_all_thicknesses() {
+fn one_material_face_has_a_complete_zero_pair_proof_at_all_valid_thicknesses() {
     let fixture = fixture(false);
     let model = model(&fixture);
 
-    for thickness in [-0.0, 0.0, 0.1, 3.0] {
+    for thickness in [0.0, 0.1, 3.0] {
         let pose = model.solve(None, &no_angles()).expect("planar pose");
         let proof = prove_static_collision_geometry(
             &model,
@@ -503,6 +503,12 @@ fn one_material_face_has_a_complete_zero_pair_proof_at_all_thicknesses() {
         assert_eq!(proof.expected_triangle_pairs(), 0);
         assert_eq!(proof.analyzed_triangle_pairs(), 0);
     }
+
+    let pose = model.solve(None, &no_angles()).expect("planar pose");
+    assert_error(
+        prove_static_collision_geometry(&model, &pose, -0.0, StaticCollisionLimits::default()),
+        StaticCollisionError::InvalidPaperThickness,
+    );
 
     let pose = model.solve(None, &no_angles()).expect("planar pose");
     let proof = prove_static_collision_geometry(
@@ -1917,7 +1923,16 @@ fn public_entry_promotes_exact_full_fold_coplanar_area_without_order_bias() {
                     first_proven_transversal_pair: expected_pair,
                 },
             );
-            for thickness in [-0.0, 0.1, 3.0] {
+            assert_error(
+                prove_static_collision_geometry(
+                    &fixture.model,
+                    &pose,
+                    -0.0,
+                    StaticCollisionLimits::default(),
+                ),
+                StaticCollisionError::InvalidPaperThickness,
+            );
+            for thickness in [0.1, 3.0] {
                 assert_error(
                     prove_static_collision_geometry(
                         &fixture.model,
@@ -2062,7 +2077,7 @@ fn triangular_legacy_transversal_cannot_bypass_the_cayley_dual_gate() {
 }
 
 #[test]
-fn signed_zero_keeps_the_existing_contract_and_positive_thickness_has_its_own_reason() {
+fn signed_zero_is_rejected_and_positive_thickness_has_its_own_reason() {
     let fixture = midpoint_mountain_400mm_fixture(false);
     let angles = CanonicalHingeAngles::new(
         fixture
@@ -2078,7 +2093,7 @@ fn signed_zero_keeps_the_existing_contract_and_positive_thickness_has_its_own_re
         .solve(Some(fixture.model.face_ids()[0]), &angles)
         .expect("folded midpoint pose");
 
-    // Signed negative zero retains the previous fail-closed result and cannot
+    // Signed negative zero is rejected at the public boundary and cannot
     // inherit either affirmative reason.
     assert_error(
         prove_static_collision_geometry(
@@ -2087,9 +2102,7 @@ fn signed_zero_keeps_the_existing_contract_and_positive_thickness_has_its_own_re
             -0.0,
             StaticCollisionLimits::default(),
         ),
-        StaticCollisionError::PairEvidenceUnavailable {
-            expected_unordered_face_pairs: 3,
-        },
+        StaticCollisionError::InvalidPaperThickness,
     );
     assert_error(
         prove_static_collision_geometry(

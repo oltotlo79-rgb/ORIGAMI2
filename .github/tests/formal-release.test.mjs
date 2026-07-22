@@ -779,6 +779,7 @@ test('Windows CI rejects bounded adversarial bundle fixtures', () => {
   for (const fixture of [
     'extra-dll',
     'hardlink-installer',
+    'unexpected-portable-hardlink',
     'reparse-installer',
     'oversized-installer',
     'wrong-version',

@@ -27,7 +27,8 @@ if ($installers.Count -ne 1) {
 function Assert-BoundedRegularFile {
     param(
         [Parameter(Mandatory = $true)][string] $Path,
-        [Parameter(Mandatory = $true)][string] $Label
+        [Parameter(Mandatory = $true)][string] $Label,
+        [string[]] $AllowedHardLinkPaths = @()
     )
 
     $item = Get-Item -LiteralPath $Path -Force
@@ -38,8 +39,34 @@ function Assert-BoundedRegularFile {
         throw "[file-identity] $Label size is outside the 512 MiB audit bound."
     }
     $hardLinks = @(& fsutil.exe hardlink list $item.FullName 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $hardLinks.Count -ne 1) {
-        throw "[file-identity] $Label must have exactly one hard link."
+    if ($LASTEXITCODE -ne 0) {
+        throw "[file-identity] $Label hard-link identity could not be inspected."
+    }
+    $driveRoot = [IO.Path]::GetPathRoot($item.FullName).TrimEnd('\')
+    $resolvedHardLinks = @(
+        $hardLinks | ForEach-Object {
+            $reportedPath = $_.Trim()
+            if (-not [IO.Path]::IsPathRooted($reportedPath) -or $reportedPath.StartsWith('\')) {
+                $reportedPath = $driveRoot + $reportedPath
+            }
+            [IO.Path]::GetFullPath($reportedPath)
+        }
+    )
+    $expectedHardLinks = @($item.FullName) + @(
+        $AllowedHardLinkPaths |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            ForEach-Object { [IO.Path]::GetFullPath($_) }
+    )
+    $unexpectedHardLinks = @(
+        $resolvedHardLinks | Where-Object {
+            $candidate = $_
+            -not ($expectedHardLinks | Where-Object {
+                [string]::Equals($_, $candidate, [StringComparison]::OrdinalIgnoreCase)
+            })
+        }
+    )
+    if ($resolvedHardLinks.Count -ne $expectedHardLinks.Count -or $unexpectedHardLinks.Count -ne 0) {
+        throw "[file-identity] $Label has an unexpected hard-link peer."
     }
 }
 
@@ -99,7 +126,11 @@ Assert-Version -Path $installers[0].FullName -Label 'Windows NSIS installer'
 Assert-Signature -Path $installers[0].FullName -Label 'Windows NSIS installer'
 if (-not [string]::IsNullOrWhiteSpace($PortableExecutable)) {
     $resolvedPortable = (Resolve-Path -LiteralPath $PortableExecutable).Path
-    Assert-BoundedRegularFile -Path $resolvedPortable -Label 'Windows portable executable'
+    $portableDirectory = Split-Path -Parent $resolvedPortable
+    $cargoExecutableName = ([IO.Path]::GetFileNameWithoutExtension($resolvedPortable) -replace '-', '_') + '.exe'
+    $cargoPeer = Join-Path (Join-Path $portableDirectory 'deps') $cargoExecutableName
+    Assert-BoundedRegularFile -Path $resolvedPortable -Label 'Windows portable executable' `
+        -AllowedHardLinkPaths @($cargoPeer)
     Assert-Version -Path $resolvedPortable -Label 'Windows portable executable'
     Assert-Signature -Path $resolvedPortable -Label 'Windows portable executable'
 }

@@ -8,6 +8,17 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $verifier = Join-Path $PSScriptRoot '..\..\scripts\verify_windows_bundle.ps1'
+$verifierSource = Get-Content -LiteralPath $verifier -Raw
+$identityFunctionStart = $verifierSource.IndexOf('function Assert-BoundedRegularFile')
+$identityFunctionEnd = $verifierSource.IndexOf(
+    'Assert-BoundedRegularFile -Path $installers', $identityFunctionStart
+)
+if ($identityFunctionStart -lt 0 -or $identityFunctionEnd -le $identityFunctionStart) {
+    throw 'Could not load the Windows file-identity contract.'
+}
+Invoke-Expression $verifierSource.Substring(
+    $identityFunctionStart, $identityFunctionEnd - $identityFunctionStart
+)
 $sourceInstaller = @(Get-ChildItem -LiteralPath $BundleDirectory -File -Filter '*.exe')
 if ($sourceInstaller.Count -ne 1) { throw 'Expected one source installer fixture.' }
 $temporaryRoot = Join-Path $env:RUNNER_TEMP ('origami2-windows-adversarial-' + [guid]::NewGuid())
@@ -26,6 +37,35 @@ function Assert-Rejected {
 }
 
 try {
+    $resolvedPortable = (Resolve-Path -LiteralPath $PortableExecutable).Path
+    $portableDirectory = Split-Path -Parent $resolvedPortable
+    $cargoPeerName = ([IO.Path]::GetFileNameWithoutExtension($resolvedPortable) -replace '-', '_') + '.exe'
+    $cargoPeer = Join-Path (Join-Path $portableDirectory 'deps') $cargoPeerName
+    Assert-BoundedRegularFile -Path $resolvedPortable -Label 'real Cargo portable' `
+        -AllowedHardLinkPaths @($cargoPeer)
+
+    $singleDirectory = Join-Path $temporaryRoot 'single-portable'
+    New-Item -ItemType Directory -Path $singleDirectory | Out-Null
+    $singlePortable = Join-Path $singleDirectory 'app.exe'
+    Copy-Item $resolvedPortable $singlePortable
+    Assert-BoundedRegularFile -Path $singlePortable -Label 'single portable' `
+        -AllowedHardLinkPaths @((Join-Path $singleDirectory 'deps\app.exe'))
+
+    $mismatchedDirectory = Join-Path $temporaryRoot 'mismatched-cargo-peer'
+    $mismatchedDeps = Join-Path $mismatchedDirectory 'deps'
+    New-Item -ItemType Directory -Path $mismatchedDeps -Force | Out-Null
+    $mismatchedPortable = Join-Path $mismatchedDirectory 'app.exe'
+    $mismatchedPeer = Join-Path $mismatchedDeps 'app.exe'
+    Copy-Item $resolvedPortable $mismatchedPortable
+    Copy-Item $resolvedPortable $mismatchedPeer
+    try {
+        Assert-BoundedRegularFile -Path $mismatchedPortable -Label 'different FileId peer' `
+            -AllowedHardLinkPaths @($mismatchedPeer)
+        throw 'Validator accepted a same-name Cargo peer with a different FileId.'
+    } catch {
+        if ($_.Exception.Message -notlike '[[]file-identity[]]*') { throw }
+    }
+
     $extra = Join-Path $temporaryRoot 'extra-entry'
     New-Item -ItemType Directory -Path $extra | Out-Null
     Copy-Item $sourceInstaller[0].FullName (Join-Path $extra 'installer.exe')
@@ -59,6 +99,12 @@ try {
     Copy-Item $sourceInstaller[0].FullName (Join-Path $validShape 'installer.exe')
     Assert-Rejected wrong-version $validShape $PortableExecutable '999.0.0'
     Assert-Rejected substituted-portable $validShape $sourceInstaller[0].FullName
+
+    $hostilePortable = Join-Path $temporaryRoot 'hostile-portable.exe'
+    Copy-Item $PortableExecutable $hostilePortable
+    New-Item -ItemType HardLink -Path (Join-Path $temporaryRoot 'portable-peer.exe') `
+        -Target $hostilePortable | Out-Null
+    Assert-Rejected unexpected-portable-hardlink $validShape $hostilePortable
 
     Write-Output 'Windows adversarial bundle contract passed.'
 } finally {

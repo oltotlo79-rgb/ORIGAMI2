@@ -1557,9 +1557,9 @@ pub(super) mod tests {
     pub(crate) fn flat_foldable_cross_cycle_project() -> (ProjectState, Vec<EdgeId>) {
         let points = [
             (100.0, 0.0),
-            (0.0, 100.0),
-            (-100.0, 0.0),
-            (0.0, -100.0),
+            (-50.0, 86.602_540_378_443_86),
+            (-50.0, -86.602_540_378_443_86),
+            (50.0, -86.602_540_378_443_86),
             (0.0, 0.0),
         ];
         let vertices = points

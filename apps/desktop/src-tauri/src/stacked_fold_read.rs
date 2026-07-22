@@ -2358,7 +2358,7 @@ fn bounded_primitive_endpoint_ratio_v1(
         return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
     }
     let magnitude = numerator.unsigned_abs();
-    if magnitude > denominator {
+    if magnitude > 64 {
         return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
     }
     let mut left = magnitude;
@@ -2376,13 +2376,18 @@ fn bounded_primitive_endpoint_ratio_for_angle_v1(
     requested_angle_degrees: f64,
 ) -> Result<(i64, u64), &'static str> {
     if !requested_angle_degrees.is_finite()
-        || requested_angle_degrees <= 0.0
-        || requested_angle_degrees > 90.0
+        || requested_angle_degrees == 0.0
+        || requested_angle_degrees.abs() >= 180.0
     {
         return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
     }
+    let sign = if requested_angle_degrees.is_sign_positive() {
+        1_i64
+    } else {
+        -1_i64
+    };
     (1_u64..=64)
-        .flat_map(|denominator| (1_i64..=denominator as i64).map(move |n| (n, denominator)))
+        .flat_map(|denominator| (1_i64..=64).map(move |n| (n * sign, denominator)))
         .filter_map(|ratio| bounded_primitive_endpoint_ratio_v1(ratio.0, ratio.1).ok())
         .find(|(numerator, denominator)| {
             (requested_angle_degrees
@@ -7153,26 +7158,26 @@ mod tests {
                 Ok((1, denominator))
             );
         }
-        for ratio in [(2, 3), (3, 7), (63, 64), (-2, 3)] {
+        for ratio in [(2, 3), (3, 7), (63, 64), (-2, 3), (4, 3), (7, 3), (64, 1)] {
             assert_eq!(
                 bounded_primitive_endpoint_ratio_v1(ratio.0, ratio.1),
                 Ok(ratio)
             );
         }
-        for ratio in [(2, 3), (3, 7), (63, 64)] {
+        for ratio in [(2, 3), (3, 7), (63, 64), (4, 3), (7, 3), (64, 1), (-4, 3)] {
             let angle = 2.0 * (ratio.0 as f64).atan2(ratio.1 as f64).to_degrees();
             assert_eq!(
                 bounded_primitive_endpoint_ratio_for_angle_v1(angle),
                 Ok(ratio)
             );
         }
-        for rejected_angle in [-1.0, 0.0, 90.000_001, f64::INFINITY] {
+        for rejected_angle in [0.0, 180.0, -180.0, f64::INFINITY] {
             assert_eq!(
                 bounded_primitive_endpoint_ratio_for_angle_v1(rejected_angle),
                 Err(CYCLE_PATH_UNSUPPORTED_MESSAGE)
             );
         }
-        for rejected in [(2, 4), (i64::MIN, 1), (1, 0), (1, 65)] {
+        for rejected in [(2, 4), (i64::MIN, 1), (1, 0), (1, 65), (65, 64)] {
             assert_eq!(
                 bounded_primitive_endpoint_ratio_v1(rejected.0, rejected.1),
                 Err(CYCLE_PATH_UNSUPPORTED_MESSAGE)
@@ -7274,9 +7279,9 @@ mod tests {
                 theta_cycle_schedule(&theta_hinges, &moving)
             } else {
                 let endpoint_ratio = match hinges.len() {
-                    6 => (2, 3),
-                    8 => (3, 7),
-                    16 => (63, 64),
+                    6 => (4, 3),
+                    8 => (7, 3),
+                    16 => (64, 1),
                     _ => unreachable!("bounded opposite-pair fixture"),
                 };
                 dense_grid_schedule_ratio(&hinges, &moving, endpoint_ratio.0, endpoint_ratio.1)

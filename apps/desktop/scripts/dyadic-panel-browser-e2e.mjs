@@ -85,9 +85,9 @@ try {
   if (JSON.stringify(successEvidence) !== JSON.stringify({ reads: 1, readHinges: 6, readScheduleHinges: 6, mints: 1, mintHinges: 6, mintScheduleHinges: 6, applyAttempts: 2, mutations: 1, failures: 1, cancels: 0, timelineDtos: 2, undos: 1, redos: 1, reopens: 1 })) throw new Error(JSON.stringify(successEvidence))
   await success.close()
 
-  await verifyAutomaticOppositePair(6, 2, 3, 'automatic C6 ratio 2/3')
-  await verifyAutomaticOppositePair(8, 3, 7, 'automatic C8 ratio 3/7')
-  await verifyAutomaticOppositePair(16, 63, 64, 'automatic C16 ratio 63/64')
+  await verifyAutomaticOppositePair(6, 4, 3, 'automatic C6 ratio 4/3')
+  await verifyAutomaticOppositePair(8, 7, 3, 'automatic C8 ratio 7/3')
+  await verifyAutomaticOppositePair(16, 64, 1, 'automatic C16 ratio 64/1')
   await verifyDetectedCycleBasis(32, 'detected C32')
   await verifyDetectedCycleBasis(64, 'detected C64')
 

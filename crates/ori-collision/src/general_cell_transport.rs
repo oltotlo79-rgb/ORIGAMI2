@@ -1,7 +1,7 @@
 use ori_domain::Point2;
 use ori_foldability::{FoldedFaceOrientation, LayerOrderSnapshot};
 use ori_kinematics::{
-    CanonicalCycleScheduleV1, CycleScheduleLimitsV1,
+    CanonicalCycleScheduleV1, CycleScheduleLimitsV1, DyadicIntervalClosureLimitsV1,
     DyadicMaterialHingeIntervalClosureCertificateV1, HalfAngleRationalEntryInputV1,
     MaterialHingeGraphAudit, MaterialHingeGraphGeometry, Point3, RationalCoefficientV1,
 };
@@ -117,6 +117,125 @@ pub fn prepare_regular_quad_petal_schedules_v1(
         previous = targets;
     }
     schedules.try_into().ok()
+}
+
+pub struct RegularQuadPetalChainedAuthorityV1 {
+    candidate: RegularQuadPetalRatioCandidateV1,
+    transport: ChainedGeneralCellTransportAuthorityV1,
+}
+
+impl RegularQuadPetalChainedAuthorityV1 {
+    #[must_use]
+    pub const fn candidate(&self) -> &RegularQuadPetalRatioCandidateV1 {
+        &self.candidate
+    }
+
+    #[must_use]
+    pub fn proofs(&self) -> &[GeneralMultiFaceCellTransportProofV1] {
+        self.transport.proofs()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn issue_regular_quad_petal_chained_authority_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    source: &LayerOrderSnapshot,
+    fixed_face: ori_domain::FaceId,
+    hinges: [(ori_domain::EdgeId, bool); 3],
+    paper_thickness_mm: f64,
+    tolerance: f64,
+    schedule_limits: CycleScheduleLimitsV1,
+    closure_limits: DyadicIntervalClosureLimitsV1,
+) -> Option<RegularQuadPetalChainedAuthorityV1> {
+    for candidate in regular_quad_petal_ratio_candidates_v1(hinges) {
+        let Some(schedules) = prepare_regular_quad_petal_schedules_v1(
+            geometry,
+            audit,
+            fixed_face,
+            &candidate,
+            schedule_limits,
+        ) else {
+            continue;
+        };
+        let closures = schedules
+            .iter()
+            .map(|schedule| {
+                geometry
+                    .prove_dyadic_schedule_closure_v1(
+                        audit,
+                        fixed_face,
+                        schedule,
+                        tolerance,
+                        closure_limits,
+                    )
+                    .ok()
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(closures) = closures else { continue };
+        let positives = schedules
+            .iter()
+            .zip(&closures)
+            .map(|(schedule, closure)| {
+                crate::certify_canonical_positive_thickness_cycle_schedule_path_v1(
+                    geometry,
+                    audit,
+                    fixed_face,
+                    schedule,
+                    closure,
+                    paper_thickness_mm,
+                    1,
+                )
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(positives) = positives else { continue };
+        let inputs = schedules
+            .iter()
+            .zip(&closures)
+            .zip(&positives)
+            .map(|((schedule, closure), positive)| {
+                let transitions = closure.leaves().len().checked_add(1)?;
+                let layer_records = source.overlap_cells.iter().try_fold(0usize, |sum, cell| {
+                    sum.checked_add(cell.bottom_to_top_faces.len())
+                })?;
+                let boundary_samples = source
+                    .overlap_cells
+                    .iter()
+                    .try_fold(0usize, |sum, cell| {
+                        sum.checked_add(
+                            cell.exact_boundary
+                                .len()
+                                .checked_mul(cell.bottom_to_top_faces.len())?,
+                        )
+                    })?
+                    .checked_mul(transitions)?;
+                Some(GeneralCellTransportInputV1 {
+                    geometry,
+                    audit,
+                    source,
+                    schedule,
+                    closure,
+                    positive_continuous: positive,
+                    paper_thickness_mm,
+                    tolerance,
+                    limits: GeneralCellTransportLimitsV1 {
+                        max_transitions: transitions,
+                        max_cells: source.overlap_cells.len(),
+                        max_layer_records: layer_records,
+                        max_boundary_samples: boundary_samples,
+                    },
+                })
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(inputs) = inputs else { continue };
+        if let Ok(transport) = ChainedGeneralCellTransportAuthorityV1::issue(inputs) {
+            return Some(RegularQuadPetalChainedAuthorityV1 {
+                candidate,
+                transport,
+            });
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

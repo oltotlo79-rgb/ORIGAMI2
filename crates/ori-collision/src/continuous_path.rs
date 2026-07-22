@@ -8755,6 +8755,53 @@ mod tests {
                 .sum(),
             max_boundary_samples: cell_work,
         };
+        let petal_closure_limits = DyadicIntervalClosureLimitsV1 {
+            max_depth: 8,
+            max_leaves: 256,
+            max_work: 1_000_000,
+            schedule_limits: CycleScheduleLimitsV1::default(),
+        };
+        let issued_petal = crate::issue_regular_quad_petal_chained_authority_v1(
+            &geometry,
+            &audit,
+            source,
+            fixed,
+            selected,
+            0.1,
+            1.0e-9,
+            CycleScheduleLimitsV1::default(),
+            petal_closure_limits,
+        )
+        .expect("bounded issuer finds the first fully certified cooperative candidate");
+        assert_eq!(issued_petal.proofs().len(), 3);
+        assert_eq!(issued_petal.candidate(), &petal_candidate);
+        let repeated_petal = crate::issue_regular_quad_petal_chained_authority_v1(
+            &geometry,
+            &audit,
+            source,
+            fixed,
+            selected,
+            0.1,
+            1.0e-9,
+            CycleScheduleLimitsV1::default(),
+            petal_closure_limits,
+        )
+        .unwrap();
+        assert_eq!(repeated_petal.candidate(), issued_petal.candidate());
+        assert!(
+            crate::issue_regular_quad_petal_chained_authority_v1(
+                &geometry,
+                &audit,
+                source,
+                fixed,
+                selected,
+                10_000.0,
+                1.0e-9,
+                CycleScheduleLimitsV1::default(),
+                petal_closure_limits,
+            )
+            .is_none()
+        );
         let petal_closures = petal_schedules
             .iter()
             .map(|schedule| {

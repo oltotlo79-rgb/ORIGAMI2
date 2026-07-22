@@ -1155,33 +1155,6 @@ pub(super) fn regular_quad_petal_face_v1(
     })
 }
 
-pub(super) type RegularQuadPetalCanonicalCandidateV1 =
-    ori_collision::RegularQuadPetalRatioCandidateV1;
-
-/// Derives the only bounded candidate family admitted by the dormant native
-/// petal issuer. Caller-provided angles never enter this boundary.
-pub(super) fn regular_quad_petal_canonical_candidates_v1(
-    hinges: [(ori_domain::EdgeId, ori_topology::FoldAssignment); 3],
-) -> [RegularQuadPetalCanonicalCandidateV1;
-    ori_collision::REGULAR_QUAD_PETAL_RATIO_CANDIDATE_LIMIT_V1] {
-    ori_collision::regular_quad_petal_ratio_candidates_v1(
-        hinges
-            .map(|(edge, assignment)| (edge, assignment == ori_topology::FoldAssignment::Mountain)),
-    )
-}
-
-/// Evaluates candidates in canonical order and publishes only the first fully
-/// certified three-stage result. Rejections cannot partially update a slot.
-pub(super) fn first_certified_regular_quad_petal_candidate_v1<T>(
-    candidates: &[RegularQuadPetalCanonicalCandidateV1],
-    mut certify_all_stages: impl FnMut(&RegularQuadPetalCanonicalCandidateV1) -> Option<T>,
-) -> Option<T> {
-    candidates
-        .iter()
-        .take(ori_collision::REGULAR_QUAD_PETAL_RATIO_CANDIDATE_LIMIT_V1)
-        .find_map(&mut certify_all_stages)
-}
-
 fn accordion_assignments_alternate_v1(assignments: &[&str]) -> bool {
     (3..=31).contains(&assignments.len()) && assignments.windows(2).all(|pair| pair[0] != pair[1])
 }

@@ -82,6 +82,7 @@
 
 - `ori-formats` lib全体: 305 passed / 0 failed。A-5以前の「表現不能なlayer evidenceを黙って破棄する」旧期待値も、専用errorへfail-closedする回帰へ修正（`1f97822`）。
 - WSL隔離targetで`ori-core` lib全体299/299、`ori-formats` lib全体305/305、desktop `mesh_export` 22/22、`static_collision` integration 29/29。
+- `ori-collision`の残るintegrationも分割完走: cell-order 6/6、flat-endpoint layer-order 11/11、stacked-fold read 6/6、topology policy matrix 2/2。
 - `cargo fmt --all -- --check`: green。
 - `cargo clippy -p ori-core -p ori-formats --all-targets -- -D warnings`: green。
 - `cargo clippy -p ori-collision --all-targets -- -D warnings`: green。

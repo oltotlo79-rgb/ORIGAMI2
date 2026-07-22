@@ -696,7 +696,7 @@ pub(super) fn prepare_staged_file(
     bytes: &[u8],
 ) -> Result<StagedFile, String> {
     let mut staged = create_staged_file(path)?;
-    staged.file_mut().write_all(bytes).map_err(|error| {
+    write_complete_staged_payload(staged.file_mut(), bytes).map_err(|error| {
         format!(
             "failed to write staged project data for {}: {error}",
             path.display()
@@ -739,6 +739,78 @@ pub(super) fn prepare_staged_file(
     }
     verify_generated_ori2(project, &staged_bytes)?;
     Ok(staged)
+}
+
+fn write_complete_staged_payload(writer: &mut impl Write, bytes: &[u8]) -> std::io::Result<()> {
+    writer.write_all(bytes)
+}
+
+#[cfg(test)]
+mod staged_payload_adapter_tests {
+    use std::io::{self, Write};
+
+    use super::write_complete_staged_payload;
+
+    struct InjectedWriter {
+        bytes: Vec<u8>,
+        maximum_chunk: usize,
+        fail_after: Option<usize>,
+    }
+
+    impl Write for InjectedWriter {
+        fn write(&mut self, source: &[u8]) -> io::Result<usize> {
+            if self
+                .fail_after
+                .is_some_and(|limit| self.bytes.len() >= limit)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::StorageFull,
+                    "injected disk full",
+                ));
+            }
+            let remaining = self
+                .fail_after
+                .map_or(source.len(), |limit| limit.saturating_sub(self.bytes.len()));
+            let count = source.len().min(self.maximum_chunk).min(remaining);
+            if count == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "injected write zero",
+                ));
+            }
+            self.bytes.extend_from_slice(&source[..count]);
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn short_writes_are_completed_and_disk_full_never_reports_success() {
+        let payload = b"complete authenticated ori2 payload";
+        let mut short = InjectedWriter {
+            bytes: Vec::new(),
+            maximum_chunk: 3,
+            fail_after: None,
+        };
+        write_complete_staged_payload(&mut short, payload).expect("complete short writes");
+        assert_eq!(short.bytes, payload);
+
+        let mut full = InjectedWriter {
+            bytes: Vec::new(),
+            maximum_chunk: 4,
+            fail_after: Some(9),
+        };
+        let error = write_complete_staged_payload(&mut full, payload)
+            .expect_err("disk full must abort staging");
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::StorageFull | io::ErrorKind::WriteZero
+        ));
+        assert_ne!(full.bytes, payload);
+    }
 }
 
 pub(super) fn create_staged_file(path: &Path) -> Result<StagedFile, String> {

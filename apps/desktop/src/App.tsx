@@ -653,8 +653,10 @@ function App() {
   })
   const [appliedFoldPose, setAppliedFoldPose] =
     useState<FoldPreviewAppliedPoseSnapshot | null>(null)
-  const [foldPreviewCamera, setFoldPreviewCamera] =
-    useState<NonNullable<InstructionVisual['camera']> | null>(null)
+  const [foldPreviewCamera, setFoldPreviewCamera] = useState<Readonly<{
+    poseModelKey: string
+    camera: NonNullable<InstructionVisual['camera']>
+  }> | null>(null)
   const [instructionVisual, setInstructionVisual] =
     useState<InstructionVisual | null>(null)
   const [boundNativeStaticCollisionView, setBoundNativeStaticCollisionView] =
@@ -6910,7 +6912,10 @@ function App() {
                   : undefined
               }
               onAppliedPoseChange={setAppliedFoldPose}
-              onCameraChange={setFoldPreviewCamera}
+              onCameraChange={(camera) => {
+                if (!foldPreviewPoseModelKey) return
+                setFoldPreviewCamera({ poseModelKey: foldPreviewPoseModelKey, camera })
+              }}
               nativeCollisionState={
                 isNativeCoreAvailable() && foldPreviewModel
                   ? nativeStaticCollisionState
@@ -11063,7 +11068,9 @@ function App() {
       <InstructionTimelinePanel
         snapshot={nativeSnapshot}
         appliedPose={appliedFoldPose}
-        currentCamera={foldPreviewCamera}
+        currentCamera={foldPreviewCamera?.poseModelKey === foldPreviewPoseModelKey
+          ? foldPreviewCamera.camera
+          : null}
         poseModelKey={foldPreviewPoseModelKey}
         manualPoseChangeSequence={manualPoseChangeSequence}
         coreBusy={coreBusy}

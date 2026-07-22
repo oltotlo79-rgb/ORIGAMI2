@@ -1278,7 +1278,10 @@ fn dyadic_graph_response(
         revision: project.editor.revision(),
         status,
         reason: match status {
-            "certified" => "proof_complete",
+            "certified" if positive_thickness_certified && layer_transport_certified => {
+                "proof_complete"
+            }
+            "certified" => "no_certified_path",
             "no_path" => "no_certified_path",
             "resource_limit" => "bounded_resource_limit",
             "cancelled" => "cancelled",
@@ -6285,6 +6288,94 @@ mod tests {
         let reopened_second_redo = reopened.editor.revision();
         reopened.editor.redo(reopened_second_redo).unwrap();
         assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
+    }
+
+    #[test]
+    fn concave_boundary_strict_dyadic_read_fails_closed_without_mutation_authority() {
+        use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, Vertex, VertexId};
+        let _generation_guard = lock_stacked_fold_read_generation_test();
+        let namespace = ProjectId::schema_namespace([
+            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x05, 0x71,
+        ]);
+        let coordinates = [
+            (0.0, 0.0),
+            (3.0, 0.0),
+            (3.0, 1.0),
+            (1.0, 1.0),
+            (1.0, 3.0),
+            (0.0, 3.0),
+        ];
+        let vertices = coordinates
+            .into_iter()
+            .enumerate()
+            .map(|(index, (x, y))| Vertex {
+                id: VertexId::derive_v5(namespace, &[index as u8]),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let hinge = EdgeId::derive_v5(namespace, b"concave-hinge");
+        let mut edges = (0..vertices.len())
+            .map(|index| Edge {
+                id: EdgeId::derive_v5(namespace, &[0x20, index as u8]),
+                start: vertices[index].id,
+                end: vertices[(index + 1) % vertices.len()].id,
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        edges.push(Edge {
+            id: hinge,
+            start: vertices[0].id,
+            end: vertices[3].id,
+            kind: EdgeKind::Mountain,
+        });
+        let paper = Paper {
+            boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
+            thickness_mm: 0.1,
+            ..Paper::default()
+        };
+        let mut project =
+            super::super::ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper);
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let snapshot = topology
+            .simulation_snapshot()
+            .expect("concave production topology");
+        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+            &mut project,
+            vec![hinge],
+            snapshot.faces[0].id,
+        );
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let state = AppState::new(project);
+        let observed = read_bounded_dyadic_pose_graph_inner_v1(
+            &state,
+            None,
+            DyadicPoseGraphReadRequestV1 {
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                target_angles: vec![DyadicPoseGraphAngleDtoV1 {
+                    edge: hinge,
+                    angle_degrees: 1.0,
+                }],
+                max_states: 32,
+                max_transitions: 64,
+                cycle_schedule_v1: None,
+            },
+            None,
+        )
+        .expect("concave read returns a fail-closed observation");
+        assert_eq!(observed.reason, "no_certified_path");
+        assert!(!observed.mutation_candidate_ready);
+        assert!(!observed.authorizes_project_mutation);
+        let project = super::super::lock_project(&state).unwrap();
+        assert_eq!(project.editor.revision(), revision);
+        assert!(project.editor.instruction_timeline().steps.is_empty());
     }
 
     #[test]

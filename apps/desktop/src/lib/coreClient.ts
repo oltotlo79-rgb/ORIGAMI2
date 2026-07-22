@@ -3117,7 +3117,7 @@ export function readBoundedDyadicPoseGraphV1(request: Readonly<{
       || value.revision !== request.expectedRevision
       || !['certified', 'no_path', 'resource_limit', 'cancelled'].includes(String(value.status))
       || !['proof_complete', 'no_certified_path', 'bounded_resource_limit', 'cancelled', 'unsupported_geometry'].includes(String(value.reason))
-      || (value.status === 'certified') !== (value.reason === 'proof_complete')
+      || (value.reason === 'proof_complete' && value.status !== 'certified')
       || ![value.stateCount, value.transitionCount, value.exploredStateCount, value.evaluatedTransitionCount, value.certifiedTransitionCount, value.positiveThicknessTransitionCount, value.layerTransportTransitionCount]
         .every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
       || (value.status === 'certified') !== (typeof value.certificateBindingSha256 === 'string' && /^[0-9a-f]{64}$/.test(value.certificateBindingSha256))

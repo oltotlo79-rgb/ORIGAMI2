@@ -5521,6 +5521,7 @@ fn apply_grid_plan_document(
     expected_revision: u64,
     plan: ori_domain::BeginnerGeneratedPlanV1,
 ) -> Result<ProjectSnapshot, String> {
+    let certificate_plan = plan.clone();
     let selected_kind = plan.kind;
     let selected_instruction_codes = plan.instruction_codes.clone();
     let semantic_landmark_provenance = plan.semantic_landmark_provenance.clone();
@@ -5602,6 +5603,20 @@ fn apply_grid_plan_document(
         }
         pattern.edges.push(edge);
     }
+    let certificate_editor =
+        EditorState::with_paper(pattern.clone(), project.editor.paper().clone());
+    let certificate_topology = certificate_editor
+        .topology_analysis_input(project.project_id)
+        .analyze();
+    let fold_path_certificate_sha256 = certify_beginner_fold_path_v1(
+        &certificate_plan,
+        project.editor.paper(),
+        &pattern,
+        certificate_topology
+            .simulation_snapshot()
+            .ok_or_else(|| "grid_candidate_topology_stale".to_owned())?,
+    )
+    .ok_or_else(|| "grid_candidate_fold_path_certificate_unavailable".to_owned())?;
     let mut faces = std::collections::HashSet::new();
     let mut witnessed_vertices = std::collections::HashSet::new();
     let mut witnessed_creases = std::collections::HashSet::new();
@@ -5751,7 +5766,13 @@ fn apply_grid_plan_document(
         id: InstructionStepId::new(),
         title: title.to_owned(),
         description: description.to_owned(),
-        caution: format!("{caution} topology authority SHA-256: {authority_hex}."),
+        caution: format!(
+            "{caution} topology authority SHA-256: {authority_hex}. fold path certificate SHA-256: {}.",
+            fold_path_certificate_sha256
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ),
         duration_ms: 2_000,
         visual: InstructionVisual::default(),
         pose: InstructionPose {
@@ -5919,16 +5940,7 @@ fn apply_grid_plan_document(
         Some(ori_domain::BeginnerGenerationProvenanceV1 {
             schema_version: 1,
             topology_authority_sha256: topology_witness.topology_authority_hash,
-            fold_path_certificate_sha256: Some(
-                sha2::Sha256::digest(
-                    serde_json::to_vec(&(
-                        topology_witness.topology_authority_hash,
-                        selected_instruction_codes,
-                    ))
-                    .map_err(|_| "grid_candidate_path_certificate_invalid")?,
-                )
-                .into(),
-            ),
+            fold_path_certificate_sha256: Some(fold_path_certificate_sha256),
             confidence_score: ori_domain::beginner_target_approximation_score_v1(
                 &beginner_design_profile.generation_constraints,
             ),
@@ -16552,6 +16564,28 @@ mod tests {
             beginner_contour_placement_witness(&profile.generation_constraints, &plan).unwrap();
         assert!(outline_free_witness.local_bindings.is_empty());
         assert_eq!(outline_free_witness.generic_feature_bindings.len(), 2);
+        let preview_assessment = assess_beginner_generated_plan_with_deadline(
+            project.project_id,
+            project.editor.paper(),
+            project.editor.pattern(),
+            &plan,
+            None,
+            std::time::Instant::now() + std::time::Duration::from_millis(750),
+        );
+        assert!(preview_assessment.apply_allowed);
+        assert_eq!(preview_assessment.proof_scope, "sufficient");
+        assert!(matches!(
+            preview_assessment.reason,
+            "native_fold_path_certified" | "global_flat_foldability_proven"
+        ));
+
+        // The read-side rank is the stable generated-plan order.  A rejected
+        // candidate must retain its own reason and may never displace a later
+        // certified candidate merely because it reached assessment first.
+        let ranked_assessments = [&crossing_assessment, &preview_assessment];
+        assert_eq!(ranked_assessments[0].reason, "geometry_invalid");
+        assert!(!ranked_assessments[0].apply_allowed);
+        assert!(ranked_assessments[1].apply_allowed);
         let project_id = project.project_id;
         let instance_id = project.instance_id;
         let revision = project.editor.revision();
@@ -16621,6 +16655,14 @@ mod tests {
                 .steps
                 .last()
                 .is_some_and(|step| step.caution.contains("topology authority SHA-256:"))
+        );
+        assert!(
+            reopened
+                .editor
+                .instruction_timeline()
+                .steps
+                .last()
+                .is_some_and(|step| step.caution.contains("fold path certificate SHA-256:"))
         );
     }
 

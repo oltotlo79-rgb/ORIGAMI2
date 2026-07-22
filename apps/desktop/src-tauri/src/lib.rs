@@ -17455,6 +17455,24 @@ mod tests {
                 recovered_document.beginner_design_profile,
                 archive.document.beginner_design_profile
             );
+            let recovered_topology = EditorState::with_paper(
+                recovered_document.crease_pattern.clone(),
+                recovered_document.paper.clone(),
+            )
+            .topology_analysis_input(ns)
+            .analyze();
+            assert_eq!(
+                certify_beginner_fold_path_v1(
+                    &plan,
+                    &recovered_document.paper,
+                    &recovered_document.crease_pattern,
+                    recovered_topology
+                        .simulation_snapshot()
+                        .expect("recovered positive tree topology"),
+                )
+                .expect("recertify recovered positive tree"),
+                certificate
+            );
             let recovered_provenance = recovered
                 .editor
                 .beginner_design_profile()

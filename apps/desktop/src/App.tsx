@@ -8969,7 +8969,10 @@ function App() {
                               if (!target) return null
                               return <div key={range.id}>
                                 <input type="checkbox"
-                                  aria-label={`Assign surface range ${range.id} to part ${target.id}`}
+                                  aria-label={formattedText({
+                                    ja: 'surface範囲 {rangeId} を部位 {partId} に割り当てる',
+                                    en: 'Assign surface range {rangeId} to part {partId}',
+                                  }, { rangeId: range.id, partId: target.id })}
                                   checked={beginnerSurfaceAssignments.some(
                                     (item) => item.range_id === range.id)}
                                   onChange={(event) => setBeginnerSurfaceAssignments((current) => {
@@ -8996,7 +8999,10 @@ function App() {
                                   en: ' Triangle indices (add/remove adjacent faces only)',
                                 })}</span>
                                 <input type="text"
-                                  aria-label={`Surface range ${range.id} triangle indices`}
+                                  aria-label={formattedText({
+                                    ja: 'surface範囲 {rangeId} の三角形番号',
+                                    en: 'Surface range {rangeId} triangle indices',
+                                  }, { rangeId: range.id })}
                                   value={beginnerSurfaceEdits.find(
                                     (edit) => edit.range_id === range.id)?.triangle_indices.join(',') ?? ''}
                                   onChange={(event) => {
@@ -9610,17 +9616,20 @@ function App() {
                           en: 'thickness {thickness} mm',
                         }, { thickness: segment.thickness_tenths_mm / 10 })}
                         {([
-                          ['start.x_tenths_mm', 'Start X', segment.start.x_tenths_mm],
-                          ['start.y_tenths_mm', 'Start Y', segment.start.y_tenths_mm],
-                          ['end.x_tenths_mm', 'End X', segment.end.x_tenths_mm],
-                          ['end.y_tenths_mm', 'End Y', segment.end.y_tenths_mm],
-                          ['thickness_tenths_mm', 'Thickness', segment.thickness_tenths_mm],
+                          ['start.x_tenths_mm', text({ ja: '始点 X', en: 'Start X' }), segment.start.x_tenths_mm],
+                          ['start.y_tenths_mm', text({ ja: '始点 Y', en: 'Start Y' }), segment.start.y_tenths_mm],
+                          ['end.x_tenths_mm', text({ ja: '終点 X', en: 'End X' }), segment.end.x_tenths_mm],
+                          ['end.y_tenths_mm', text({ ja: '終点 Y', en: 'End Y' }), segment.end.y_tenths_mm],
+                          ['thickness_tenths_mm', text({ ja: '太さ', en: 'Thickness' }), segment.thickness_tenths_mm],
                         ] as const).map(([field, label, tenths]) => <label key={field}>
                           <span>{label} (mm)</span>
                           <input type="number" step="0.1" defaultValue={tenths / 10}
                             min={field === 'thickness_tenths_mm' ? 0.1 : -10000}
                             max={field === 'thickness_tenths_mm' ? 1000 : 10000}
-                            aria-label={`Skeleton bar ${segment.id} ${label} (mm)`}
+                            aria-label={formattedText({
+                              ja: '骨格バー {segmentId} {label} (mm)',
+                              en: 'Skeleton bar {segmentId} {label} (mm)',
+                            }, { segmentId: segment.id, label })}
                             onBlur={(event) => {
                               const next = Math.round(Number(event.currentTarget.value) * 10)
                               const valid = Number.isSafeInteger(next) && (field === 'thickness_tenths_mm'

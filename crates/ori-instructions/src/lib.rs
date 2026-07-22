@@ -35,6 +35,11 @@ pub use technique_motion::{
     physical_technique_compiler_v1,
 };
 
+#[cfg(feature = "private-petal-e2e")]
+pub use technique_motion::{
+    RegularQuadPetalFoldMotionRequestV1, compile_certified_regular_quad_petal_fold_timeline_v1,
+};
+
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},

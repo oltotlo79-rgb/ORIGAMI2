@@ -166,7 +166,7 @@ pub type PetalFoldMotionRequestV1<'a> = SinkFoldMotionRequestV1<'a>;
 /// The native transaction boundary proves the regular four-edge flap and
 /// continuous layer authority before constructing this request; this compiler
 /// still revalidates each of the three ordered path-certificate endpoints.
-#[cfg(test)]
+#[cfg(any(test, feature = "private-petal-e2e"))]
 pub type RegularQuadPetalFoldMotionRequestV1<'a> = AccordionFoldMotionRequestV1<'a>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -277,7 +277,7 @@ pub const fn compile_certified_petal_fold_timeline_v1(
 /// Compiles only the three-stage path portion of a native-authenticated,
 /// regular-quad petal fold. General petal requests continue to use
 /// [`compile_certified_petal_fold_timeline_v1`] and remain unsupported.
-#[cfg(test)]
+#[cfg(any(test, feature = "private-petal-e2e"))]
 pub fn compile_certified_regular_quad_petal_fold_timeline_v1(
     request: RegularQuadPetalFoldMotionRequestV1<'_>,
 ) -> Result<InstructionTimeline, AccordionFoldMotionError> {

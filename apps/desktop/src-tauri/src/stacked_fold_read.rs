@@ -303,6 +303,33 @@ struct RegularQuadPetalPreviewRecordV1 {
 
 #[allow(dead_code)]
 impl RegularQuadPetalPreviewRecordV1 {
+    #[cfg(test)]
+    fn issue_v1(
+        project: &super::ProjectState,
+        hinges: &[ori_domain::EdgeId],
+        token: ProjectId,
+        revision: u64,
+        target_binding: [u8; 32],
+        path_binding: String,
+        authority: DyadicPathNativeAuthorityV1,
+    ) -> Result<Self, String> {
+        if project.editor.revision() != revision
+            || !super::super::stacked_fold_transaction::regular_quad_petal_face_v1(project, hinges)
+            || !authority.revalidates_exact_three_graph_segments_v1(target_binding, &path_binding)
+        {
+            return Err("regular-quad petal authority is unavailable".to_owned());
+        }
+        Ok(Self {
+            token,
+            project_instance_id: project.instance_id,
+            project_id: project.project_id,
+            revision,
+            target_binding,
+            path_binding,
+            authority,
+        })
+    }
+
     /// The apply boundary rechecks both the immutable preview envelope and all
     /// issuer-bound per-segment proofs.  A caller-provided binding can never
     /// substitute for the native certificate retained in this record.

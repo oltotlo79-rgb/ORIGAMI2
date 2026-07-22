@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+private-petal-e2e = []
+
 [dependencies]
 ori-domain = { path = "../ori-domain" }
 ori-collision = { path = "../ori-collision" }

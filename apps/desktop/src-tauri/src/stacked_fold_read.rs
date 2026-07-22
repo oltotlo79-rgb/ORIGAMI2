@@ -5515,7 +5515,7 @@ mod tests {
     }
 
     #[test]
-    fn tree_pose_capability_strict_dyadic_read_returns_unsupported_dto() {
+    fn tree_pose_capability_rejects_incomplete_target_without_mutation() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         let mut project = two_hinge_tree_project();
         let target_edge = project
@@ -5527,7 +5527,32 @@ mod tests {
             .hinge_adjacency[0]
             .edge;
         super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
-        assert_non_graph_capability_returns_unsupported_dto(project, target_edge, true);
+        let instance = project.instance_id;
+        let project_id = project.project_id;
+        let revision = project.editor.revision();
+        let state = AppState::new(project);
+        let result = read_bounded_dyadic_pose_graph_inner_v1(
+            &state,
+            None,
+            DyadicPoseGraphReadRequestV1 {
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                target_angles: vec![DyadicPoseGraphAngleDtoV1 {
+                    edge: target_edge,
+                    angle_degrees: 1.0,
+                }],
+                max_states: 32,
+                max_transitions: 64,
+                level_count: 3,
+                cycle_schedule_v1: None,
+            },
+            None,
+        );
+        assert_eq!(result.unwrap_err(), CYCLE_PATH_UNSUPPORTED_MESSAGE);
+        let project = super::super::lock_project(&state).unwrap();
+        assert_eq!(project.editor.revision(), revision);
+        assert!(project.editor.instruction_timeline().steps.is_empty());
     }
 
     fn assert_two_hinge_projective_schedule_round_trip(

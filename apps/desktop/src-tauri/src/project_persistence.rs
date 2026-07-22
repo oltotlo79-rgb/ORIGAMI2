@@ -1303,6 +1303,8 @@ where
     };
     persist_single_file_journal_phase(destination, &payload, true)
         .map_err(|()| std::io::Error::other("journal prepare failed"))?;
+    #[cfg(test)]
+    abort_at_single_file_save_failpoint("journal_prepared");
     staged.committed = true;
     staged.close_for_journal_commit();
 
@@ -1315,6 +1317,8 @@ where
         payload.phase = SingleFileJournalPhaseV1::OldMoved;
         persist_single_file_journal_phase(destination, &payload, false)
             .map_err(|()| std::io::Error::other("old-moved journal failed"))?;
+        #[cfg(test)]
+        abort_at_single_file_save_failpoint("old_moved");
         if project_directory_identity(parent).ok() != Some(directory_identity) {
             return Err(std::io::Error::other("save directory changed"));
         }
@@ -1323,6 +1327,8 @@ where
         payload.phase = SingleFileJournalPhaseV1::NewPublished;
         persist_single_file_journal_phase(destination, &payload, false)
             .map_err(|()| std::io::Error::other("new-published journal failed"))?;
+        #[cfg(test)]
+        abort_at_single_file_save_failpoint("new_published");
         std::fs::remove_file(&backup)?;
         let journal = journal_path_for_target(destination, &payload.target_path_sha256)
             .map_err(|()| std::io::Error::other("journal path failed"))?;
@@ -1333,6 +1339,15 @@ where
         let _ = recover_single_file_journal_for_target(destination, project_id);
     }
     result
+}
+
+#[cfg(all(test, unix))]
+fn abort_at_single_file_save_failpoint(expected: &str) {
+    if std::env::var_os("ORIGAMI2_TEST_SINGLE_FILE_SAVE_ABORT_AT")
+        .is_some_and(|value| value == expected)
+    {
+        std::process::abort();
+    }
 }
 
 fn hash_regular_file_no_follow(path: &Path) -> std::io::Result<String> {
@@ -1607,7 +1622,15 @@ mod staged_payload_adapter_tests {
         recover_single_file_journal_for_target, sha256_hex_bytes, target_path_fingerprint,
         write_complete_staged_payload, write_project_archive_ori2,
     };
+    #[cfg(unix)]
+    use ori_core::{Command, EditorState};
     use ori_domain::{CreasePattern, ProjectId};
+    #[cfg(unix)]
+    use ori_domain::{Point2, VertexId};
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+    #[cfg(unix)]
+    use std::process::Command as ProcessCommand;
 
     static NEXT_JOURNAL_TEST_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -1838,6 +1861,128 @@ mod staged_payload_adapter_tests {
                     assert!(!fs.objects.contains_key(&private));
                 }
             }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn subprocess_crash_save_helper() {
+        let Some(path) = std::env::var_os("ORIGAMI2_TEST_SINGLE_FILE_SAVE_PATH") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        if std::env::var_os("ORIGAMI2_TEST_SINGLE_FILE_SAVE_MODE").as_deref()
+            == Some(std::ffi::OsStr::new("recover"))
+        {
+            load_project_archive_from_path(&path).expect("recover in a fresh subprocess");
+            return;
+        }
+        let mut archive = load_project_archive_from_path(&path).expect("load crash source");
+        archive.document.name = "new archive after crash".to_owned();
+        persist_project_archive_to_destination(&DialogSaveDestination::confirmed(path), &archive)
+            .expect("the configured failpoint must abort before save returns");
+        panic!("configured save failpoint did not abort");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn separate_process_crash_and_recovery_preserve_authenticated_archive_and_history() {
+        for (failpoint, expected_name) in [
+            ("journal_prepared", "old archive before crash"),
+            ("old_moved", "new archive after crash"),
+            ("new_published", "new archive after crash"),
+        ] {
+            let directory = journal_test_directory(failpoint);
+            let target = directory.join("project.ori2");
+            let first = VertexId::new();
+            let second = VertexId::new();
+            let mut editor = EditorState::new(CreasePattern::empty());
+            editor
+                .set_history_entry_limit(7)
+                .expect("non-default limit");
+            editor
+                .execute(
+                    0,
+                    Command::AddVertex {
+                        id: first,
+                        position: Point2::new(1.0, 2.0),
+                    },
+                )
+                .expect("first history command");
+            editor
+                .execute(
+                    1,
+                    Command::AddVertex {
+                        id: second,
+                        position: Point2::new(3.0, 4.0),
+                    },
+                )
+                .expect("second history command");
+            editor.undo(2).expect("create non-empty Redo stack");
+            let document =
+                ProjectDocument::new("old archive before crash", editor.pattern().clone());
+            let history = editor
+                .export_history_v1(document.project_id)
+                .expect("authenticated non-empty history");
+            assert_eq!(
+                (
+                    history.undo_len(),
+                    history.redo_len(),
+                    history.history_entry_limit()
+                ),
+                (1, 1, 7)
+            );
+            let old_archive = Ori2ProjectArchive {
+                document,
+                editor_history: Some(history.clone()),
+                layer_evidence: None,
+            };
+            fs::write(
+                &target,
+                write_project_archive_ori2(&old_archive).expect("old archive bytes"),
+            )
+            .expect("old target");
+
+            let status = ProcessCommand::new(std::env::current_exe().expect("test executable"))
+                .arg("--exact")
+                .arg("project_persistence::staged_payload_adapter_tests::subprocess_crash_save_helper")
+                .arg("--nocapture")
+                .env("ORIGAMI2_TEST_SINGLE_FILE_SAVE_PATH", &target)
+                .env("ORIGAMI2_TEST_SINGLE_FILE_SAVE_ABORT_AT", failpoint)
+                .status()
+                .expect("run crash subprocess");
+            assert!(
+                !status.success(),
+                "failpoint {failpoint} must terminate the child"
+            );
+            assert_eq!(status.signal(), Some(6), "child must terminate via SIGABRT");
+
+            let recovery_status = ProcessCommand::new(
+                std::env::current_exe().expect("test executable"),
+            )
+            .arg("--exact")
+            .arg("project_persistence::staged_payload_adapter_tests::subprocess_crash_save_helper")
+            .env("ORIGAMI2_TEST_SINGLE_FILE_SAVE_PATH", &target)
+            .env("ORIGAMI2_TEST_SINGLE_FILE_SAVE_MODE", "recover")
+            .status()
+            .expect("run recovery subprocess");
+            assert!(
+                recovery_status.success(),
+                "fresh recovery subprocess must succeed"
+            );
+            let recovered = load_project_archive_from_path(&target).expect("second recovery");
+            assert_eq!(recovered.document.name, expected_name);
+            assert_eq!(
+                recovered.document.project_id,
+                old_archive.document.project_id
+            );
+            assert_eq!(recovered.editor_history, Some(history));
+            let remaining = fs::read_dir(&directory)
+                .expect("recovery directory")
+                .map(|entry| entry.expect("directory entry").file_name())
+                .collect::<Vec<_>>();
+            assert_eq!(remaining, vec![std::ffi::OsString::from("project.ori2")]);
+            fs::remove_dir_all(directory).expect("cleanup test directory");
         }
     }
 

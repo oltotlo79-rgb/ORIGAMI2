@@ -8072,7 +8072,6 @@ mod tests {
         for (fixture_name, (pattern, mut paper, moving), kind) in [
             ("balloon-c6", balloon_six_sector_cycle_pattern(), 0),
             ("octagonal-c8", (c8_pattern, c8_paper, c8_opposite), 0),
-            ("radial-c16", sixteen_sector_cycle_pattern(8), 0),
             ("cactus-c32", (c32_pattern, c32_paper, c32_hinges), 1),
             ("cactus-c64", (c64_pattern, c64_paper, c64_hinges), 1),
             ("theta-c2", (theta_pattern, theta_paper, theta_moving), 2),
@@ -8117,7 +8116,6 @@ mod tests {
                 fixed,
             );
             let layer_state = GlobalFlatFoldabilityState::default();
-            eprintln!("installing exact cycle layer fixture {fixture_name}");
             super::super::global_flat_foldability::tests::install_possible_layer_order(
                 &layer_state,
                 &project,

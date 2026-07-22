@@ -769,13 +769,14 @@ function App() {
   }>({ alpha: 128, luma: 127, polarity: 'dark_on_light' })
   const [beginnerSilhouetteCropRoi, setBeginnerSilhouetteCropRoi] = useState<
     BeginnerDesignProfileV1['generation_constraints']['silhouette_crop_roi']>()
+  const [beginnerSilhouetteOrientation, setBeginnerSilhouetteOrientation] = useState<0 | 90 | 180 | 270>(0)
   useEffect(() => {
     const timeout = window.setTimeout(() => requestBeginnerRecognition('silhouette'), 300)
     return () => window.clearTimeout(timeout)
   }, [beginnerSilhouetteThresholds.alpha, beginnerSilhouetteThresholds.luma,
     beginnerSilhouetteThresholds.polarity, beginnerSilhouetteCropRoi?.x_millionths,
     beginnerSilhouetteCropRoi?.y_millionths, beginnerSilhouetteCropRoi?.width_millionths,
-    beginnerSilhouetteCropRoi?.height_millionths])
+    beginnerSilhouetteCropRoi?.height_millionths, beginnerSilhouetteOrientation])
   const beginnerRecognitionRequestRef = useRef(0)
   const [beginnerOutlineCandidates, setBeginnerOutlineCandidates] =
     useState<BeginnerOutlineCandidatesResponse | null>(null)
@@ -818,6 +819,8 @@ function App() {
       .silhouette_thresholds ?? { alpha: 128, luma: 127, polarity: 'dark_on_light' })
     setBeginnerSilhouetteCropRoi(nativeSnapshot?.beginner_design_profile.generation_constraints
       .silhouette_crop_roi)
+    setBeginnerSilhouetteOrientation(nativeSnapshot?.beginner_design_profile.generation_constraints
+      .silhouette_orientation_degrees ?? 0)
     setBeginnerOutlineCandidates(null)
     setBeginnerPartSuggestions(null)
     setBeginnerPartAssignments([])
@@ -3743,6 +3746,7 @@ function App() {
       ...(beginnerComponentBridgeOverride ? { component_bridge_override: beginnerComponentBridgeOverride } : {}),
       silhouette_thresholds: { schema_version: 1 as const, ...beginnerSilhouetteThresholds },
       ...(beginnerSilhouetteCropRoi ? { silhouette_crop_roi: beginnerSilhouetteCropRoi } : {}),
+      silhouette_orientation_degrees: beginnerSilhouetteOrientation,
       protrusions: beginnerProtrusions,
       bulge_targets: beginnerBulgeTargets,
       target_asset: targetUnderlay
@@ -3972,7 +3976,8 @@ function App() {
       binding.instanceId,
       underlay.id,
       underlay.asset,
-      { ...beginnerSilhouetteThresholds, crop_roi: beginnerSilhouetteCropRoi },
+      { ...beginnerSilhouetteThresholds, crop_roi: beginnerSilhouetteCropRoi,
+        orientation_degrees: beginnerSilhouetteOrientation },
     ) : recognizeBeginnerTarget(binding.projectId, binding.revision, binding.instanceId,
       underlay.id, underlay.asset)
     void recognition.then((proposal) => {
@@ -8997,6 +9002,16 @@ function App() {
                     ))}
                     <button type="button" onClick={() => setBeginnerSilhouetteCropRoi(undefined)}>{text({ ja: '画像全体へ戻す', en: 'Reset to full image' })}</button>
                   </fieldset>
+                  <label>
+                    {text({ ja: '輪郭画像の向き', en: 'Silhouette orientation' })}
+                    <select value={beginnerSilhouetteOrientation} onChange={(event) => {
+                      beginnerRecognitionRequestRef.current += 1; setBeginnerRecognitionProposal(null)
+                      setBeginnerSilhouetteOrientation(Number(event.target.value) as 0 | 90 | 180 | 270)
+                    }}>
+                      {[0, 90, 180, 270].map((angle) => <option key={angle} value={angle}>{angle}°</option>)}
+                    </select>
+                    <button type="button" onClick={() => setBeginnerSilhouetteOrientation(0)}>{text({ ja: '向きをリセット', en: 'Reset orientation' })}</button>
+                  </label>
                   <p id="beginner-recognition-help" className="muted">
                     {text({
                       ja: '認識結果は読取専用の案です。編集欄へコピーしても、保存するまでプロジェクトは変更されません。',

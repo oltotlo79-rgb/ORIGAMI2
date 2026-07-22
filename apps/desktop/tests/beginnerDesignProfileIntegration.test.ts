@@ -294,6 +294,16 @@ test('silhouette crop ROI is normalized bounded and decoded-dimension checked', 
   assert.match(app, /Reset to full image/u)
 })
 
+test('silhouette orientation is explicit cardinal rotation before crop', () => {
+  assert.match(generation, /silhouette_orientation_degrees/u)
+  assert.match(recognitionNative, /recognition_orientation_invalid/u)
+  assert.match(recognitionNative, /90 => \(decoded_height - 1 - source_y, source_x\)/u)
+  assert.match(recognitionNative, /270 => \(source_y, decoded_width - 1 - source_x\)/u)
+  assert.match(client, /\[0, 90, 180, 270\]/u)
+  assert.match(app, /Silhouette orientation/u)
+  assert.match(app, /Reset orientation/u)
+})
+
 test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticity', () => {
   assert.match(generation, /struct BeginnerBulgeTargetV1/u)
   assert.match(generation, /pub face_ids: Vec<FaceId>/u)

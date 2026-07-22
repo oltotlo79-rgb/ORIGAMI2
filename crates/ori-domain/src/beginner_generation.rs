@@ -200,6 +200,8 @@ pub struct BeginnerGenerationConstraintsV1 {
     pub silhouette_thresholds: Option<BeginnerSilhouetteThresholdsV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub silhouette_crop_roi: Option<BeginnerSilhouetteCropRoiV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silhouette_orientation_degrees: Option<u16>,
     #[serde(default)]
     pub protrusions: Vec<BeginnerProtrusionTargetV1>,
     #[serde(default)]
@@ -225,6 +227,7 @@ impl Default for BeginnerGenerationConstraintsV1 {
             component_bridge_override: None,
             silhouette_thresholds: None,
             silhouette_crop_roi: None,
+            silhouette_orientation_degrees: None,
             protrusions: Vec::new(),
             bulge_targets: Vec::new(),
             target_asset: None,
@@ -329,6 +332,9 @@ pub fn validate_beginner_generation_constraints_v1(
                 || roi.x_millionths.saturating_add(roi.width_millionths) > 1_000_000
                 || roi.y_millionths.saturating_add(roi.height_millionths) > 1_000_000
         })
+        || constraints
+            .silhouette_orientation_degrees
+            .is_some_and(|angle| !matches!(angle, 0 | 90 | 180 | 270))
         || constraints.protrusions.len() > MAX_BEGINNER_PROTRUSIONS_V1
         || constraints.bulge_targets.len() > MAX_BEGINNER_BULGE_TARGETS_V1
     {

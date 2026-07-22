@@ -30,6 +30,8 @@ pub(crate) struct RecognizeBeginnerTargetRequest {
     polarity: Option<ori_domain::BeginnerSilhouettePolarityV1>,
     #[serde(default)]
     crop_roi: Option<ori_domain::BeginnerSilhouetteCropRoiV1>,
+    #[serde(default)]
+    orientation_degrees: Option<u16>,
 }
 
 #[tauri::command]
@@ -70,7 +72,41 @@ pub(crate) fn recognize_beginner_silhouette(
         )
     };
     let source_sha256: [u8; 32] = Sha256::digest(&bytes).into();
-    let (width, height, rgba) = decode_general_image(&bytes)?;
+    let (decoded_width, decoded_height, decoded_rgba) = decode_general_image(&bytes)?;
+    let orientation = request
+        .orientation_degrees
+        .or_else(|| {
+            let project = lock_project(&state).ok()?;
+            project
+                .editor
+                .beginner_design_profile()
+                .generation_constraints
+                .silhouette_orientation_degrees
+        })
+        .unwrap_or(0);
+    if !matches!(orientation, 0 | 90 | 180 | 270) {
+        return Err("recognition_orientation_invalid".to_owned());
+    }
+    let (width, height) = if matches!(orientation, 90 | 270) {
+        (decoded_height, decoded_width)
+    } else {
+        (decoded_width, decoded_height)
+    };
+    let mut rgba = vec![0_u8; width as usize * height as usize * 4];
+    for source_y in 0..decoded_height {
+        for source_x in 0..decoded_width {
+            let (target_x, target_y) = match orientation {
+                0 => (source_x, source_y),
+                90 => (decoded_height - 1 - source_y, source_x),
+                180 => (decoded_width - 1 - source_x, decoded_height - 1 - source_y),
+                270 => (source_y, decoded_width - 1 - source_x),
+                _ => unreachable!(),
+            };
+            let source = (source_y as usize * decoded_width as usize + source_x as usize) * 4;
+            let target = (target_y as usize * width as usize + target_x as usize) * 4;
+            rgba[target..target + 4].copy_from_slice(&decoded_rgba[source..source + 4]);
+        }
+    }
     let roi = request.crop_roi.or_else(|| {
         let project = lock_project(&state).ok()?;
         project
@@ -245,6 +281,7 @@ pub(crate) fn recognize_beginner_part_suggestions(
         luma_threshold: None,
         polarity: None,
         crop_roi: None,
+        orientation_degrees: None,
     };
     let (bytes, target_category, target_parts) = {
         let project = lock_project(&state)?;
@@ -442,6 +479,7 @@ pub(crate) fn apply_beginner_part_assignments(
         luma_threshold: None,
         polarity: None,
         crop_roi: None,
+        orientation_degrees: None,
     };
     let bytes = {
         let project = lock_project(&state)?;
@@ -1382,6 +1420,7 @@ pub(crate) fn apply_beginner_outline_candidate(
         luma_threshold: None,
         polarity: None,
         crop_roi: None,
+        orientation_degrees: None,
     };
     let bytes = {
         let project = lock_project(&state)?;

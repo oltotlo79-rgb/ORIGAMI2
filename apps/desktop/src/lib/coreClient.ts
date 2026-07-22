@@ -257,6 +257,7 @@ export type BeginnerGenerationConstraintsV1 = {
   }
   silhouette_thresholds?: { schema_version: 1; alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only' }
   silhouette_crop_roi?: { schema_version: 1; x_millionths: number; y_millionths: number; width_millionths: number; height_millionths: number }
+  silhouette_orientation_degrees?: 0 | 90 | 180 | 270
   protrusions?: Array<{
     id: number
     count: number
@@ -432,6 +433,7 @@ function normalizeBeginnerGenerationConstraints(
     'component_bridge_override',
     'silhouette_thresholds',
     'silhouette_crop_roi',
+    'silhouette_orientation_degrees',
     'protrusions',
     'bulge_targets',
     'target_asset',
@@ -444,6 +446,7 @@ function normalizeBeginnerGenerationConstraints(
       && key !== 'component_bridge_override'
       && key !== 'silhouette_thresholds'
       && key !== 'silhouette_crop_roi'
+      && key !== 'silhouette_orientation_degrees'
       && key !== 'protrusions' && key !== 'bulge_targets',
   )
   const snapshot = snapshotCoreDataRecord(value)
@@ -708,6 +711,8 @@ function normalizeBeginnerGenerationConstraints(
       || Number(roi.y_millionths) + Number(roi.height_millionths) > 1_000_000) return null
     silhouetteCropRoi = { schema_version: 1, x_millionths: Number(roi.x_millionths), y_millionths: Number(roi.y_millionths), width_millionths: Number(roi.width_millionths), height_millionths: Number(roi.height_millionths) }
   }
+  const silhouetteOrientation = record.silhouette_orientation_degrees
+  if (silhouetteOrientation !== undefined && ![0, 90, 180, 270].includes(Number(silhouetteOrientation))) return null
   return Object.freeze({
     schema_version: 1,
     maximum_steps: Number(record.maximum_steps),
@@ -729,6 +734,7 @@ function normalizeBeginnerGenerationConstraints(
     ...(componentBridgeOverride ? { component_bridge_override: componentBridgeOverride } : {}),
     ...(silhouetteThresholds ? { silhouette_thresholds: silhouetteThresholds } : {}),
     ...(silhouetteCropRoi ? { silhouette_crop_roi: silhouetteCropRoi } : {}),
+    ...(silhouetteOrientation === undefined ? {} : { silhouette_orientation_degrees: Number(silhouetteOrientation) as 0 | 90 | 180 | 270 }),
     ...(hadProtrusions ? { protrusions } : {}),
     ...(hadBulgeTargets ? { bulge_targets: bulgeTargets } : {}),
     target_asset: targetAsset,
@@ -2839,7 +2845,7 @@ export function recognizeBeginnerSilhouette(
   expectedProjectInstanceId: string,
   underlayId: string,
   assetId: string,
-  thresholds: { alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only'; crop_roi?: BeginnerGenerationConstraintsV1['silhouette_crop_roi'] } = { alpha: 128, luma: 127, polarity: 'dark_on_light' },
+  thresholds: { alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only'; crop_roi?: BeginnerGenerationConstraintsV1['silhouette_crop_roi']; orientation_degrees?: 0 | 90 | 180 | 270 } = { alpha: 128, luma: 127, polarity: 'dark_on_light' },
 ) {
   if (!isCanonicalNonNilUuid(expectedProjectId)
     || !isCanonicalNonNilUuid(expectedProjectInstanceId)
@@ -2856,6 +2862,7 @@ export function recognizeBeginnerSilhouette(
     alphaThreshold: thresholds.alpha, lumaThreshold: thresholds.luma,
     polarity: thresholds.polarity,
     cropRoi: thresholds.crop_roi,
+    orientationDegrees: thresholds.orientation_degrees,
   }
   return invoke<unknown>('recognize_beginner_silhouette', { request }).then((value) => {
     const proposal = normalizeBeginnerRecognitionProposal(

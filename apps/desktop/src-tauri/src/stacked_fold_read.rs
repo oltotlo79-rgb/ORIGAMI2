@@ -372,6 +372,36 @@ impl RegularQuadPetalPreviewRecordV1 {
         })
     }
 
+    #[cfg(test)]
+    fn compile_timeline_v1(
+        &self,
+        technique_file: &ori_instructions::FoldTechniqueFileV1,
+        technique_id: &str,
+        source_model_fingerprint: &str,
+        fixed_face: ori_domain::FaceId,
+        source_hinge_angles: &[ori_domain::InstructionHingeAngle],
+        ordered_edges: &[ori_domain::EdgeId; 3],
+        ordered_target_angles_microdegrees: &[i64; 3],
+    ) -> Result<ori_domain::InstructionTimeline, String> {
+        let certificates = self
+            .authority
+            .regular_quad_petal_segment_certificates_v1(self.target_binding, &self.path_binding)
+            .ok_or_else(|| "regular-quad petal segment authority is unavailable".to_owned())?;
+        ori_instructions::compile_certified_regular_quad_petal_fold_timeline_v1(
+            ori_instructions::RegularQuadPetalFoldMotionRequestV1 {
+                technique_file,
+                technique_id,
+                source_model_fingerprint,
+                fixed_face,
+                source_hinge_angles,
+                ordered_edges,
+                ordered_target_angles_microdegrees,
+                ordered_path_certificates: &certificates,
+            },
+        )
+        .map_err(|error| error.to_string())
+    }
+
     /// The apply boundary rechecks both the immutable preview envelope and all
     /// issuer-bound per-segment proofs.  A caller-provided binding can never
     /// substitute for the native certificate retained in this record.

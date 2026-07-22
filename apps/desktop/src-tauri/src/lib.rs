@@ -5413,7 +5413,7 @@ fn apply_grid_plan_document(
         id: InstructionStepId::new(),
         title: title.to_owned(),
         description: description.to_owned(),
-        caution: format!("{caution} Topology authority SHA-256: {authority_hex}."),
+        caution: format!("{caution} topology authority SHA-256: {authority_hex}."),
         duration_ms: 2_000,
         visual: InstructionVisual::default(),
         pose: InstructionPose {

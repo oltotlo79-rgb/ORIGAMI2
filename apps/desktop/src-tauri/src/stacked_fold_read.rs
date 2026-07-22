@@ -4885,6 +4885,29 @@ mod tests {
                 angle_degrees: 1.0,
             })
             .collect::<Vec<_>>();
+        let tree_capability = project
+            .applied_pose_authority
+            .capture_capability(&project)
+            .unwrap()
+            .unwrap();
+        let tree_target = ori_kinematics::CanonicalHingeAngles::new(
+            target_angles
+                .iter()
+                .map(|entry| ori_kinematics::HingeAngle::new(entry.edge, entry.angle_degrees))
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            ori_collision::certify_positive_thickness_tree_continuous_path_v1(
+                tree_capability.model(),
+                tree_capability.pose(),
+                &tree_target,
+                project.editor.paper().thickness_mm,
+            )
+            .is_some(),
+            "four-hinge native Tree endpoint must issue positive evidence"
+        );
         let state = AppState::new(project);
         let request = |level_count, max_states, max_transitions| DyadicPoseGraphReadRequestV1 {
             expected_project_instance_id: instance,

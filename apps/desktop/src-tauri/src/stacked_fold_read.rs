@@ -77,6 +77,28 @@ const BUSY_MESSAGE: &str = "Another native pose analysis is already running.";
 const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
 const CANCELLED_MESSAGE: &str = "stacked_fold_cycle_path_cancelled";
+const FLAT_ENDPOINT_COLLISION_THICKNESS_MM_V1: f64 = 0.0;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EndpointCollisionPlanV1 {
+    DeferToFlatLayerOrder,
+    CertifiedPositiveThickness,
+    StaticGeometry,
+}
+
+fn endpoint_collision_plan_v1(
+    requested_angle_degrees: f64,
+    positive_thickness_certificate: bool,
+) -> EndpointCollisionPlanV1 {
+    if requested_angle_degrees.to_bits() == 180.0_f64.to_bits() {
+        EndpointCollisionPlanV1::DeferToFlatLayerOrder
+    } else if positive_thickness_certificate {
+        EndpointCollisionPlanV1::CertifiedPositiveThickness
+    } else {
+        EndpointCollisionPlanV1::StaticGeometry
+    }
+}
+
 const MAX_STACKED_FOLD_REQUEST_HINGES_V1: usize = 64;
 const MAX_DYADIC_GRAPH_STATES_V1: usize = 2_187;
 const MAX_DYADIC_GRAPH_TRANSITIONS_V1: usize = 20_412;
@@ -5002,9 +5024,13 @@ async fn propose_current_stacked_fold_read_inner(
                     | ori_collision::STACKED_FOLD_TWO_HINGE_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1
             )
         );
+        let endpoint_collision_plan = endpoint_collision_plan_v1(
+            candidate.requested_angle_degrees(),
+            positive_thickness_certificate,
+        );
         let exact_flat_endpoint =
-            candidate.requested_angle_degrees().to_bits() == 180.0_f64.to_bits();
-        let mut endpoint_collision = if positive_thickness_certificate || exact_flat_endpoint {
+            endpoint_collision_plan == EndpointCollisionPlanV1::DeferToFlatLayerOrder;
+        let mut endpoint_collision = if endpoint_collision_plan != EndpointCollisionPlanV1::StaticGeometry {
             let face_count = prepared_requested_pose
                 .initial()
                 .target()
@@ -5094,7 +5120,7 @@ async fn propose_current_stacked_fold_read_inner(
                             diagnose_static_collision_geometry_with_flat_layer_order_v1(
                                 model,
                                 pose,
-                                0.0,
+                                FLAT_ENDPOINT_COLLISION_THICKNESS_MM_V1,
                                 StaticCollisionLimits::default(),
                                 &anchor,
                             )
@@ -5506,6 +5532,34 @@ mod theta_cycle_test_support;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_flat_endpoint_defers_until_zero_thickness_layer_order_diagnosis() {
+        assert_eq!(
+            endpoint_collision_plan_v1(180.0, false),
+            EndpointCollisionPlanV1::DeferToFlatLayerOrder,
+        );
+        assert_eq!(
+            endpoint_collision_plan_v1(180.0, true),
+            EndpointCollisionPlanV1::DeferToFlatLayerOrder,
+        );
+        assert_eq!(
+            FLAT_ENDPOINT_COLLISION_THICKNESS_MM_V1.to_bits(),
+            0.0_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn near_flat_endpoint_keeps_the_existing_static_collision_path() {
+        assert_eq!(
+            endpoint_collision_plan_v1(179.999, false),
+            EndpointCollisionPlanV1::StaticGeometry,
+        );
+        assert_eq!(
+            endpoint_collision_plan_v1(179.999, true),
+            EndpointCollisionPlanV1::CertifiedPositiveThickness,
+        );
+    }
 
     #[test]
     fn seventeen_cell_current_cycle_uses_blockwise_fallback_end_to_end() {

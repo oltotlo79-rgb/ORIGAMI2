@@ -5584,6 +5584,32 @@ mod tests {
             request(revision, schedule.clone()),
         )
         .expect("replacement blockwise fallback preview");
+        let foreign_project = {
+            let project = super::super::lock_project(&state).unwrap();
+            super::super::ProjectState::new_with_paper(
+                project.editor.pattern().clone(),
+                project.editor.paper().clone(),
+            )
+        };
+        let foreign_revision = foreign_project.editor.revision();
+        let foreign_state = AppState::new(foreign_project);
+        let foreign_layers = GlobalFlatFoldabilityState::default();
+        assert!(
+            super::super::stacked_fold_transaction::apply_stacked_fold_transaction_inner(
+                &foreign_state,
+                &foreign_layers,
+                &transactions,
+                preview.transaction_token,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            super::super::lock_project(&foreign_state)
+                .unwrap()
+                .editor
+                .revision(),
+            foreign_revision
+        );
         assert_eq!(
             preview.continuous_layer_transport_model_id,
             Some(ori_collision::BLOCKWISE_POSITIVE_LAYER_MODEL_ID_V1)

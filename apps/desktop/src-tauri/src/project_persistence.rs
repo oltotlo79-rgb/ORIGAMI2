@@ -1619,16 +1619,17 @@ mod staged_payload_adapter_tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
+    #[cfg(target_os = "windows")]
+    use super::PROJECT_REPLACE_SAVE_FAILED_MESSAGE;
     use super::{
-        DialogSaveDestination, DiskSingleFileRecoveryFs, Ori2ProjectArchive,
-        PROJECT_REPLACE_SAVE_FAILED_MESSAGE, ProjectDocument, SINGLE_FILE_JOURNAL_SCHEMA_V1,
-        SingleFileJournalPayloadV1, SingleFileJournalPhaseV1, SingleFileRecoveryFs,
-        SingleFileRecoveryObject, acquire_project_file_operation, decode_single_file_journal_v1,
-        encode_single_file_journal_v1, journal_path_for_target, load_project_archive_from_path,
-        persist_project_archive_to_destination, project_directory_identity,
-        recover_authenticated_single_file_v1, recover_single_file_journal_for_target,
-        sha256_hex_bytes, target_path_fingerprint, write_complete_staged_payload,
-        write_project_archive_ori2,
+        DialogSaveDestination, DiskSingleFileRecoveryFs, Ori2ProjectArchive, ProjectDocument,
+        SINGLE_FILE_JOURNAL_SCHEMA_V1, SingleFileJournalPayloadV1, SingleFileJournalPhaseV1,
+        SingleFileRecoveryFs, SingleFileRecoveryObject, acquire_project_file_operation,
+        decode_single_file_journal_v1, encode_single_file_journal_v1, journal_path_for_target,
+        load_project_archive_from_path, persist_project_archive_to_destination,
+        project_directory_identity, recover_authenticated_single_file_v1,
+        recover_single_file_journal_for_target, sha256_hex_bytes, target_path_fingerprint,
+        write_complete_staged_payload, write_project_archive_ori2,
     };
     use ori_core::{Command, EditorState};
     use ori_domain::{CreasePattern, ProjectId};

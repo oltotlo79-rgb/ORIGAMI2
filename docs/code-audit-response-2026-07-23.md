@@ -30,7 +30,7 @@
 |項目|判定|対応|
 |---|---|---|
 |C-1|妥当・修正済み|`4314420`。screen distanceと小さなcategory biasで全候補を比較。snap 101/101。|
-|C-2|一部妥当|境界edge除外は紙境界を通常creaseとして分割しない既存方針でもある。既存孤立頂点との接続は妥当だが、一括自動分割と同じ新規編集commandとして扱う。|
+|C-2|一部妥当・妥当範囲を修正済み|`322e5a7`。境界edge除外は紙境界を通常creaseとして分割しない既存方針として維持する。一方、新規描画segmentのstrict interiorにある既存頂点は順序付きで事前分節し、`ApplyNormalizedEdgeDocument`一件として原子的に適用する。Undo/Redoを回帰し、同一座標の複数頂点は曖昧としてfail closedする。|
 |C-3|新規要件|分数/N分割gridは現行要件にない。F-3として管理する。|
 |C-4|妥当・修正済み|`4c28d50`。`fileOperationActive`を全編集gateへ追加。|
 |C-5|妥当・修正済み|`6c3f972`。認証済み技法の固定手順文を日英併記し、英語利用者へ日本語だけを返さない。WSL 40/40。|
@@ -75,6 +75,7 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 - WSL blockwise target-angle回帰: 1/1。
 - desktop `cargo check`: 成功。無関係な既存warningは別所有差分として未変更。
 - compass intersection Node: 108/108、DOM: 10/10、production build: 成功。
+- `ori-core` C-2既存interior頂点への原子的分節・Undo/Redo回帰: 1/1。Windowsでの独立再実行はApplication Control（OS error 4551）によりbinary起動前に遮断されたため、実装担当のfocused成功を記録しCIで再確認する。
 - requirements design evidence: 3/3（正本85/2/0）。
 - WSL `ori-core` EDT-009 direct witness回帰: 1/1（300件filter）。production変更なしのため要件昇格証拠には用いない。
 - Windows desktop SIM-010 positive-thickness 4-hinge Tree永続化回帰: 1/1（615件filter）。既存の狭い証明済みrouteの受入強化であり、部分実装を維持する。

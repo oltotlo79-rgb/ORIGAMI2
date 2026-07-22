@@ -52,6 +52,13 @@ import { ThemeControl } from './components/ThemeControl'
 import { UpdateCheckPopover } from './components/UpdateCheckControl'
 import { WorkspaceLayoutControl } from './components/WorkspaceLayoutControl'
 import { WorkspaceLayoutSeparator } from './components/WorkspaceLayoutSeparator'
+import { PairMeasurementStatus } from './components/PairMeasurementStatus'
+import {
+  advanceMeasurementPair,
+  measureUnorientedEdgeAngle,
+  measureVertexPair,
+  retainMeasurementPair,
+} from './lib/pairMeasurement'
 import {
   addEdge,
   addAnnotation,
@@ -620,6 +627,8 @@ function App() {
   }
   const [selectedLineId, setSelectedLineId] = useState<string | null>(null)
   const [selectedVertexId, setSelectedVertexId] = useState<string | null>(null)
+  const [measurementVertexIds, setMeasurementVertexIds] = useState<string[]>([])
+  const [measurementLineIds, setMeasurementLineIds] = useState<string[]>([])
   const [assignedLocalSufficiency, setAssignedLocalSufficiency] =
     useState<AssignedLocalSufficiencyResponseV1 | null>(null)
   const [assignedLocalSummary, setAssignedLocalSummary] =
@@ -1530,6 +1539,25 @@ function App() {
   ])
   const displayedLines = benchmarkRun?.lines ?? nativeLines
   const displayedVertices = benchmarkRun?.vertices ?? nativeVertices
+  useEffect(() => {
+    const lineIds = new Set(displayedLines.map(({ id }) => id))
+    const vertexIds = new Set(displayedVertices.map(({ id }) => id))
+    setMeasurementLineIds((current) => {
+      const next = retainMeasurementPair(current, lineIds)
+      return next.length === current.length
+        && next.every((id, index) => id === current[index]) ? current : next
+    })
+    setMeasurementVertexIds((current) => {
+      const next = retainMeasurementPair(current, vertexIds)
+      return next.length === current.length
+        && next.every((id, index) => id === current[index]) ? current : next
+    })
+  }, [displayedLines, displayedVertices])
+  useEffect(() => {
+    if (activeTool === 'measure') return
+    setMeasurementLineIds([])
+    setMeasurementVertexIds([])
+  }, [activeTool])
   const firstDisplayedLineById = useMemo(() => {
     const index = new Map<string, CreaseLine>()
     for (const line of displayedLines) {
@@ -1558,6 +1586,19 @@ function App() {
     ? String(parsedAngleInput)
     : 'custom'
   const selectedLineMeasurement = selectedLine ? measureCreaseLine(selectedLine) : null
+  const pairMeasurement = useMemo(() => {
+    if (measurementVertexIds.length === 2) {
+      const first = displayedVertices.find(({ id }) => id === measurementVertexIds[0])
+      const second = displayedVertices.find(({ id }) => id === measurementVertexIds[1])
+      if (first && second) return { kind: 'vertex' as const, value: measureVertexPair(first, second) }
+    }
+    if (measurementLineIds.length === 2) {
+      const first = displayedLines.find(({ id }) => id === measurementLineIds[0])
+      const second = displayedLines.find(({ id }) => id === measurementLineIds[1])
+      if (first && second) return { kind: 'line' as const, value: measureUnorientedEdgeAngle(first, second) }
+    }
+    return null
+  }, [displayedLines, displayedVertices, measurementLineIds, measurementVertexIds])
   const selectedVertex = useMemo(
     () => nativeLayerView.vertices.some(({ id }) => id === selectedVertexId)
       ? nativeSnapshot?.crease_pattern.vertices.find(
@@ -1694,6 +1735,11 @@ function App() {
   const displayedLengthUnit = benchmarkRun
     ? MILLIMETRE_LENGTH_DISPLAY_UNIT
     : lengthDisplayUnit
+  const pairMeasurementFormattedValue = pairMeasurement?.kind === 'vertex'
+    ? formatLength(pairMeasurement.value, displayedLengthUnit, locale)
+    : pairMeasurement?.kind === 'line'
+      ? formatMeasurementValue(pairMeasurement.value, '°', 2, locale)
+      : undefined
   const rectangularPaperSize = useMemo(
     () => resolveRectangularPaperSize(nativeSnapshot),
     [nativeSnapshot],
@@ -6772,7 +6818,7 @@ function App() {
               )}
               vertices={displayedVertices}
               faces={benchmarkRun ? [] : canvasFaces}
-              tool={benchmarkRun ? 'select' : activeTool}
+              tool={activeTool === 'measure' ? 'measure' : benchmarkRun ? 'select' : activeTool}
               selectedVertexId={selectedVertexId}
               selectedFaceId={selectedFaceId}
               highlightedFaceId={hoveredLayerFaceId}
@@ -6807,6 +6853,13 @@ function App() {
                 if (lineId) {
                   setSelectedVertexId(null)
                   setSelectedFaceId(null)
+                  if (activeTool === 'measure') {
+                    setMeasurementLineIds((current) => advanceMeasurementPair(current, lineId))
+                    setMeasurementVertexIds([])
+                  }
+                } else if (activeTool === 'measure') {
+                  setMeasurementLineIds([])
+                  setMeasurementVertexIds([])
                 }
               }}
               onSelectFace={benchmarkRun
@@ -6836,7 +6889,15 @@ function App() {
                       }))
                     }
                   }}
-              onSelectVertex={benchmarkRun
+              onSelectVertex={activeTool === 'measure'
+                ? (vertexId) => {
+                    setSelectedVertexId(vertexId)
+                    setSelectedLineId(null)
+                    setSelectedFaceId(null)
+                    setMeasurementVertexIds((current) => advanceMeasurementPair(current, vertexId))
+                    setMeasurementLineIds([])
+                  }
+                : benchmarkRun
                 ? (vertexId) => {
                     setSelectedVertexId(vertexId)
                     setSelectedLineId(null)
@@ -6851,6 +6912,15 @@ function App() {
                       moveVertex(projectId, revision, projectInstanceId, vertexId, x, y))
                   }}
             />
+            {activeTool === 'measure' && (
+              <PairMeasurementStatus
+                locale={locale}
+                kind={pairMeasurement?.kind ?? 'pending'}
+                formattedValue={pairMeasurementFormattedValue}
+                vertexCount={measurementVertexIds.length}
+                lineCount={measurementLineIds.length}
+              />
+            )}
           </article>
 
           <WorkspaceLayoutSeparator kind="editor" />

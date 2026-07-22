@@ -181,6 +181,35 @@ describe('CreaseCanvas localization', () => {
     )
   })
 
+  it('selects a locked vertex before an overlapping edge in measure mode without moving it', () => {
+    const onSelectVertex = vi.fn()
+    const onSelectLine = vi.fn()
+    const onMoveVertex = vi.fn()
+    renderCanvas({
+      localeStore: localeFixture('en'),
+      tool: 'measure',
+      paperBounds: { minX: 0, minY: 0, maxX: 100, maxY: 100 },
+      vertices: [{ id: 'locked', x: 50, y: 50 }],
+      lockedVertexIds: new Set(['locked']),
+      lines: [{
+        id: 'edge', startVertexId: 'a', endVertexId: 'b',
+        x1: 0, y1: 50, x2: 100, y2: 50, kind: 'mountain',
+      }],
+      onSelectVertex,
+      onSelectLine,
+      onMoveVertex,
+    })
+
+    fireEvent.click(screen.getByLabelText('Crease-pattern editing canvas'), {
+      clientX: 250,
+      clientY: 250,
+    })
+
+    expect(onSelectVertex).toHaveBeenCalledWith('locked')
+    expect(onSelectLine).toHaveBeenCalledWith(null)
+    expect(onMoveVertex).not.toHaveBeenCalled()
+  })
+
   it('applies each admitted layer opacity to its crease stroke', async () => {
     renderCanvas({
       localeStore: localeFixture('en'),

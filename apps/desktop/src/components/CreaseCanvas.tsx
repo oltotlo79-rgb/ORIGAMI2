@@ -1057,7 +1057,7 @@ export function CreaseCanvas({
         return
       }
     }
-    if (tool === 'select' && closestVertex && onSelectVertex) {
+    if ((tool === 'select' || tool === 'measure') && closestVertex && onSelectVertex) {
       onSelectVertex(closestVertex.id)
       onSelectLine(null)
       return

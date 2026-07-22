@@ -4890,14 +4890,13 @@ mod tests {
             .capture_capability(&project)
             .unwrap()
             .unwrap();
-        let tree_target = ori_kinematics::CanonicalHingeAngles::new(
-            target_angles
-                .iter()
-                .map(|entry| ori_kinematics::HingeAngle::new(entry.edge, entry.angle_degrees))
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap(),
-        )
-        .unwrap();
+        let mut tree_target_entries = target_angles
+            .iter()
+            .map(|entry| ori_kinematics::HingeAngle::new(entry.edge, entry.angle_degrees))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        tree_target_entries.sort_unstable_by_key(|entry| entry.edge().canonical_bytes());
+        let tree_target = ori_kinematics::CanonicalHingeAngles::new(tree_target_entries).unwrap();
         assert!(
             ori_collision::certify_positive_thickness_tree_continuous_path_v1(
                 tree_capability.model(),

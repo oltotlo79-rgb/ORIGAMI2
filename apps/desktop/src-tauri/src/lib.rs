@@ -2609,7 +2609,9 @@ fn certify_beginner_fold_path_v1(
                 .ok()?,
         )
         .ok()?;
-        let initial_pose = model.solve(None, &initial).ok()?;
+        let mut fixed_faces = model.face_ids().to_vec();
+        fixed_faces.sort_unstable_by_key(|face| face.canonical_bytes());
+        let initial_pose = model.solve(fixed_faces.first().copied(), &initial).ok()?;
         let moving_hinges = model
             .hinges()
             .iter()
@@ -17101,6 +17103,101 @@ mod tests {
                     Some(expected_count)
                 );
             }
+        }
+    }
+
+    #[test]
+    fn beginner_certifier_matches_positive_five_and_eight_hinge_tree_fixtures() {
+        let fixtures: [&[(f64, f64)]; 2] = [
+            &[
+                (0., 0.),
+                (300., 0.),
+                (520., 90.),
+                (680., 280.),
+                (650., 500.),
+                (450., 680.),
+                (180., 700.),
+                (0., 340.),
+            ],
+            &[
+                (0., 0.),
+                (300., 0.),
+                (540., 60.),
+                (730., 190.),
+                (840., 380.),
+                (850., 570.),
+                (760., 750.),
+                (590., 880.),
+                (370., 930.),
+                (150., 850.),
+                (0., 430.),
+            ],
+        ];
+        for (hinges, points) in [5_usize, 8].into_iter().zip(fixtures) {
+            let ns = ProjectId::new();
+            let vertices = points
+                .iter()
+                .enumerate()
+                .map(|(i, &(x, y))| Vertex {
+                    id: VertexId::derive_v5(ns, format!("v{i}").as_bytes()),
+                    position: Point2::new(x, y),
+                })
+                .collect::<Vec<_>>();
+            let boundary = (0..vertices.len())
+                .map(|i| Edge {
+                    id: EdgeId::derive_v5(ns, format!("b{i}").as_bytes()),
+                    start: vertices[i].id,
+                    end: vertices[(i + 1) % vertices.len()].id,
+                    kind: EdgeKind::Boundary,
+                })
+                .collect::<Vec<_>>();
+            let creases = (2..=hinges + 1)
+                .enumerate()
+                .map(|(i, end)| Edge {
+                    id: EdgeId::derive_v5(ns, format!("h{i}").as_bytes()),
+                    start: vertices[0].id,
+                    end: vertices[end].id,
+                    kind: if i.is_multiple_of(2) {
+                        EdgeKind::Mountain
+                    } else {
+                        EdgeKind::Valley
+                    },
+                })
+                .collect::<Vec<_>>();
+            let paper = Paper {
+                boundary_vertices: vertices.iter().map(|v| v.id).collect(),
+                ..Paper::default()
+            };
+            let current = CreasePattern {
+                vertices: vertices.clone(),
+                edges: boundary,
+            };
+            let plan = ori_domain::BeginnerGeneratedPlanV1 {
+                schema_version: 1,
+                kind: ori_domain::BeginnerGeneratedPlanKindV1::AsymmetricFourLegLandmarkBase,
+                crease_pattern: CreasePattern {
+                    vertices,
+                    edges: creases,
+                },
+                instruction_codes: vec![format!("tree-{hinges}")],
+                target_parts: Vec::new(),
+                skeleton_segments: Vec::new(),
+                target_asset: None,
+                semantic_landmark_provenance: None,
+            };
+            let assessment = assess_beginner_generated_plan_with_deadline(
+                ns,
+                &paper,
+                &current,
+                &plan,
+                None,
+                std::time::Instant::now() + std::time::Duration::from_millis(750),
+            );
+            assert!(assessment.apply_allowed, "{hinges}: {}", assessment.reason);
+            assert_eq!(
+                (assessment.proof_scope, assessment.reason),
+                ("sufficient", "native_fold_path_certified")
+            );
         }
     }
 

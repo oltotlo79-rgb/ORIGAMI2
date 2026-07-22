@@ -4495,12 +4495,11 @@ mod tests {
         let points = [
             (0.0, 0.0),
             (300.0, 0.0),
-            (520.0, 90.0),
-            (680.0, 280.0),
-            (650.0, 500.0),
-            (450.0, 680.0),
-            (180.0, 700.0),
-            (0.0, 340.0),
+            (520.0, 120.0),
+            (620.0, 350.0),
+            (480.0, 580.0),
+            (200.0, 650.0),
+            (0.0, 320.0),
         ];
         let vertices = points
             .into_iter()
@@ -4519,7 +4518,7 @@ mod tests {
                 kind: EdgeKind::Boundary,
             })
             .collect::<Vec<_>>();
-        for (index, end) in [2, 3, 4, 5, 6].into_iter().enumerate() {
+        for (index, end) in [2, 3, 4, 5].into_iter().enumerate() {
             edges.push(Edge {
                 id: fixed_id("7500", index as u64 + 20),
                 start: boundary[0],
@@ -4550,6 +4549,10 @@ mod tests {
 
     fn seven_hinge_tree_project() -> super::super::ProjectState {
         positive_tree_project(7)
+    }
+
+    fn eight_hinge_tree_project() -> super::super::ProjectState {
+        positive_tree_project(8)
     }
 
     fn positive_tree_project(hinge_count: usize) -> super::super::ProjectState {
@@ -4588,7 +4591,20 @@ mod tests {
                 (150.0, 780.0),
                 (0.0, 390.0),
             ],
-            _ => unreachable!("positive Tree fixture only covers 5..=7 hinges"),
+            8 => &[
+                (0.0, 0.0),
+                (300.0, 0.0),
+                (540.0, 60.0),
+                (730.0, 190.0),
+                (840.0, 380.0),
+                (850.0, 570.0),
+                (760.0, 750.0),
+                (590.0, 880.0),
+                (370.0, 930.0),
+                (150.0, 850.0),
+                (0.0, 430.0),
+            ],
+            _ => unreachable!("positive Tree fixture only covers 5..=8 hinges"),
         };
         let vertices = points
             .iter()
@@ -4616,48 +4632,6 @@ mod tests {
                     EdgeKind::Mountain
                 } else {
                     EdgeKind::Valley
-                },
-            });
-        }
-        super::super::ProjectState::new_with_paper(
-            CreasePattern { vertices, edges },
-            Paper {
-                boundary_vertices: boundary,
-                ..Paper::default()
-            },
-        )
-    }
-
-    fn eight_hinge_tree_project() -> super::super::ProjectState {
-        use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, Vertex};
-        let bottom = (0..=9).map(|index| (index as f64 * 20.0, 0.0));
-        let top = (0..=9).rev().map(|index| (index as f64 * 20.0, 100.0));
-        let vertices = bottom
-            .chain(top)
-            .enumerate()
-            .map(|(index, (x, y))| Vertex {
-                id: fixed_id("7c00", index as u64 + 1),
-                position: Point2::new(x, y),
-            })
-            .collect::<Vec<_>>();
-        let boundary = vertices.iter().map(|vertex| vertex.id).collect::<Vec<_>>();
-        let mut edges = (0..boundary.len())
-            .map(|index| Edge {
-                id: fixed_id("7d00", index as u64 + 1),
-                start: boundary[index],
-                end: boundary[(index + 1) % boundary.len()],
-                kind: EdgeKind::Boundary,
-            })
-            .collect::<Vec<_>>();
-        for index in 1..=8 {
-            edges.push(Edge {
-                id: fixed_id("7d00", index as u64 + 20),
-                start: boundary[index],
-                end: boundary[19 - index],
-                kind: if index % 2 == 0 {
-                    EdgeKind::Valley
-                } else {
-                    EdgeKind::Mountain
                 },
             });
         }
@@ -5147,10 +5121,11 @@ mod tests {
             .map(|hinge| hinge.edge)
             .collect::<Vec<_>>();
         assert_eq!(hinges.len(), 6);
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
+        super::super::applied_pose::tests::install_tree_pose_authority_at_angle_on_face(
             &mut project,
             hinges.clone(),
             snapshot.faces[0].id,
+            1.0,
         );
         let layer_state = GlobalFlatFoldabilityState::default();
         super::super::global_flat_foldability::tests::install_possible_layer_order(
@@ -5354,7 +5329,7 @@ mod tests {
         let instance = project.instance_id;
         let project_id = project.project_id;
         let revision = project.editor.revision();
-        let angle = 2.0 * 1.0_f64.atan2(4.0).to_degrees();
+        let angle = 2.0 * 1.0_f64.atan2(64.0).to_degrees();
         let target_angles = hinges
             .iter()
             .copied()
@@ -5385,7 +5360,7 @@ mod tests {
         assert_eq!((generic.state_count, generic.transition_count), (0, 0));
         assert!(!generic.mutation_candidate_ready);
 
-        let schedule = dense_grid_schedule(&hinges, &hinges, 4);
+        let schedule = dense_grid_schedule_ratio(&hinges, &hinges, 1, 64);
         let observed = read_bounded_dyadic_pose_graph_inner_v1(
             &state,
             Some(&layer_state),

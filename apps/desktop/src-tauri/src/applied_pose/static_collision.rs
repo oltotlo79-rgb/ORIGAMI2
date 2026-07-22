@@ -792,16 +792,8 @@ fn prepare_static_collision_for_diagnostic(
         }));
     }
     let paper_thickness_mm = f64::from_bits(capability.claims.paper_thickness_bits);
-    if capability.claims.native_pose.graph().is_some() {
-        return prepare_static_collision(capability, limits);
-    }
     let Some((model, pose)) = capability.claims.native_pose.tree() else {
-        return Err(Box::new(FailedCurrentStaticCollisionPreparation {
-            pose_capability: capability,
-            layer_order_capability: layer_order.map(|source| source.capability),
-            error: CurrentStaticCollisionError::InternalInconsistency,
-            diagnostic_snapshot: None,
-        }));
+        return prepare_static_collision(capability, limits);
     };
     let diagnosed = layer_order.as_ref().and_then(|source| {
         let anchor = anchor_flat_endpoint_layer_order_v1(

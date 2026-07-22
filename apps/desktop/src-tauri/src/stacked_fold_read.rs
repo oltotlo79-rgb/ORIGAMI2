@@ -6413,49 +6413,12 @@ mod tests {
     }
 
     fn physical_four_vertex_cycle_schedule(
-        hinges: &[ori_domain::EdgeId],
+        _hinges: &[ori_domain::EdgeId],
     ) -> CycleScheduleRequestV1 {
-        let mut entries = hinges
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, edge)| {
-                let denominator = if index % 2 == 0 { 1 } else { 2 };
-                CycleScheduleEntryRequestV1 {
-                    edge,
-                    u_domain: [
-                        RationalCoefficientRequestV1 {
-                            numerator: 0,
-                            denominator: 1,
-                        },
-                        RationalCoefficientRequestV1 {
-                            numerator: 1,
-                            denominator: 1,
-                        },
-                    ],
-                    numerator_power_coefficients: vec![
-                        RationalCoefficientRequestV1 {
-                            numerator: 0,
-                            denominator: 1,
-                        },
-                        RationalCoefficientRequestV1 {
-                            numerator: 1,
-                            denominator: 1,
-                        },
-                    ],
-                    denominator_power_coefficients: vec![RationalCoefficientRequestV1 {
-                        numerator: denominator,
-                        denominator: 1,
-                    }],
-                    requested_angle_degrees: 2.0 * 1.0_f64.atan2(denominator as f64).to_degrees(),
-                }
-            })
-            .collect::<Vec<_>>();
-        entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
         CycleScheduleRequestV1 {
-            version: 1,
-            entries,
-            endpoint_denominator: None,
+            version: 2,
+            entries: Vec::new(),
+            endpoint_denominator: Some(1),
         }
     }
 

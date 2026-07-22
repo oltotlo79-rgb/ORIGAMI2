@@ -689,6 +689,8 @@ pub(super) const PROJECT_INSTRUCTIONS_SAVE_FAILED_MESSAGE: &str =
     "プロジェクト内の折り手順データを安全に保存できませんでした。";
 pub(super) const PROJECT_SERIALIZATION_FAILED_MESSAGE: &str =
     "プロジェクトの保存データを作成できませんでした。";
+const PROJECT_REPLACE_SAVE_FAILED_MESSAGE: &str =
+    "プロジェクトを保存先へ安全に確定できなかったため、保存を中止しました。";
 
 static NEXT_STAGED_FILE_ID: AtomicU64 = AtomicU64::new(0);
 pub(super) const FRONTEND_MAX_SAFE_INTEGER_U64: u64 = (1_u64 << 53) - 1;
@@ -1207,9 +1209,9 @@ pub(super) fn persist_project_archive_to_destination(
         ExistingDestinationPolicy::RejectExisting => result.map_err(|_| {
             "拡張子を補正した保存先を安全に確定できなかったため、保存を中止しました。".to_owned()
         }),
-        ExistingDestinationPolicy::ReplaceConfirmed => result.map_err(|_| {
-            "プロジェクトを保存先へ安全に確定できなかったため、保存を中止しました。".to_owned()
-        }),
+        ExistingDestinationPolicy::ReplaceConfirmed => {
+            result.map_err(|_| PROJECT_REPLACE_SAVE_FAILED_MESSAGE.to_owned())
+        }
     }
 }
 
@@ -1618,14 +1620,15 @@ mod staged_payload_adapter_tests {
     };
 
     use super::{
-        DialogSaveDestination, DiskSingleFileRecoveryFs, Ori2ProjectArchive, ProjectDocument,
-        SINGLE_FILE_JOURNAL_SCHEMA_V1, SingleFileJournalPayloadV1, SingleFileJournalPhaseV1,
-        SingleFileRecoveryFs, SingleFileRecoveryObject, acquire_project_file_operation,
-        decode_single_file_journal_v1, encode_single_file_journal_v1, journal_path_for_target,
-        load_project_archive_from_path, persist_project_archive_to_destination,
-        project_directory_identity, recover_authenticated_single_file_v1,
-        recover_single_file_journal_for_target, sha256_hex_bytes, target_path_fingerprint,
-        write_complete_staged_payload, write_project_archive_ori2,
+        DialogSaveDestination, DiskSingleFileRecoveryFs, Ori2ProjectArchive,
+        PROJECT_REPLACE_SAVE_FAILED_MESSAGE, ProjectDocument, SINGLE_FILE_JOURNAL_SCHEMA_V1,
+        SingleFileJournalPayloadV1, SingleFileJournalPhaseV1, SingleFileRecoveryFs,
+        SingleFileRecoveryObject, acquire_project_file_operation, decode_single_file_journal_v1,
+        encode_single_file_journal_v1, journal_path_for_target, load_project_archive_from_path,
+        persist_project_archive_to_destination, project_directory_identity,
+        recover_authenticated_single_file_v1, recover_single_file_journal_for_target,
+        sha256_hex_bytes, target_path_fingerprint, write_complete_staged_payload,
+        write_project_archive_ori2,
     };
     use ori_core::{Command, EditorState};
     use ori_domain::{CreasePattern, ProjectId};
@@ -1872,6 +1875,33 @@ mod staged_payload_adapter_tests {
             return;
         };
         let path = std::path::PathBuf::from(path);
+        #[cfg(target_os = "windows")]
+        if std::env::var_os("ORIGAMI2_TEST_SINGLE_FILE_SAVE_MODE").as_deref()
+            == Some(std::ffi::OsStr::new("hold_lock"))
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let ready = std::path::PathBuf::from(
+                std::env::var_os("ORIGAMI2_TEST_SINGLE_FILE_SAVE_READY")
+                    .expect("ready marker path"),
+            );
+            let release = std::path::PathBuf::from(
+                std::env::var_os("ORIGAMI2_TEST_SINGLE_FILE_SAVE_RELEASE")
+                    .expect("release marker path"),
+            );
+            let _locked = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(super::FILE_SHARE_READ)
+                .open(&path)
+                .expect("cross-process non-delete-sharing handle");
+            fs::write(&ready, b"ready").expect("publish ready marker");
+            for _ in 0..1_000 {
+                if release.exists() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("lock helper timed out");
+        }
         if std::env::var_os("ORIGAMI2_TEST_SINGLE_FILE_SAVE_MODE").as_deref()
             == Some(std::ffi::OsStr::new("recover"))
         {
@@ -1883,6 +1913,91 @@ mod staged_payload_adapter_tests {
         persist_project_archive_to_destination(&DialogSaveDestination::confirmed(path), &archive)
             .expect("the configured failpoint must abort before save returns");
         panic!("configured save failpoint did not abort");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn separate_process_sharing_violation_preserves_old_archive_and_allows_retry() {
+        let directory = journal_test_directory("cross-process-sharing");
+        let target = directory.join("project.ori2");
+        let ready = directory.join("lock-ready");
+        let release = directory.join("lock-release");
+        let old_archive = Ori2ProjectArchive::document_only(ProjectDocument::new(
+            "old archive under lock",
+            CreasePattern::empty(),
+        ));
+        let mut new_archive = old_archive.clone();
+        new_archive.document.name = "new archive after retry".to_owned();
+        let old_bytes = write_project_archive_ori2(&old_archive).expect("old archive bytes");
+        fs::write(&target, &old_bytes).expect("old target");
+
+        let mut lock_child = ProcessCommand::new(std::env::current_exe().expect("test executable"))
+            .arg("--exact")
+            .arg("project_persistence::staged_payload_adapter_tests::subprocess_crash_save_helper")
+            .env("ORIGAMI2_TEST_SINGLE_FILE_SAVE_PATH", &target)
+            .env("ORIGAMI2_TEST_SINGLE_FILE_SAVE_MODE", "hold_lock")
+            .env("ORIGAMI2_TEST_SINGLE_FILE_SAVE_READY", &ready)
+            .env("ORIGAMI2_TEST_SINGLE_FILE_SAVE_RELEASE", &release)
+            .spawn()
+            .expect("spawn cross-process lock holder");
+        for _ in 0..1_000 {
+            if ready.exists() {
+                break;
+            }
+            assert!(lock_child.try_wait().expect("poll lock child").is_none());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(ready.exists(), "lock child must publish readiness");
+
+        let error = persist_project_archive_to_destination(
+            &DialogSaveDestination::confirmed(target.clone()),
+            &new_archive,
+        )
+        .expect_err("cross-process sharing violation must fail closed");
+        assert_eq!(error, PROJECT_REPLACE_SAVE_FAILED_MESSAGE);
+        assert!(!error.contains(&directory.to_string_lossy().to_string()));
+        assert!(!error.contains("project.ori2"));
+        assert_eq!(
+            fs::read(&target).expect("old target remains complete"),
+            old_bytes
+        );
+        let fingerprint = target_path_fingerprint(&target).expect("target fingerprint");
+        let journal = journal_path_for_target(&target, &fingerprint).expect("journal path");
+        let entries_after_failure = fs::read_dir(&directory)
+            .expect("failure directory")
+            .map(|entry| entry.expect("failure entry").path())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            entries_after_failure,
+            [target.clone(), ready.clone(), journal]
+                .into_iter()
+                .collect(),
+            "only the complete old target, readiness marker, and authenticated retry journal may remain"
+        );
+
+        fs::write(&release, b"release").expect("release lock child");
+        assert!(lock_child.wait().expect("join lock child").success());
+        persist_project_archive_to_destination(
+            &DialogSaveDestination::confirmed(target.clone()),
+            &new_archive,
+        )
+        .expect("retry after cross-process lock release");
+        assert_eq!(
+            load_project_archive_from_path(&target).expect("load retried archive"),
+            new_archive
+        );
+        let entries_after_retry = fs::read_dir(&directory)
+            .expect("retry directory")
+            .map(|entry| entry.expect("retry entry").file_name())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            entries_after_retry,
+            ["project.ori2", "lock-ready", "lock-release"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect()
+        );
+        fs::remove_dir_all(directory).expect("cleanup test directory");
     }
 
     #[test]

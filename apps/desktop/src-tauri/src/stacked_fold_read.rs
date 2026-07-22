@@ -322,6 +322,25 @@ struct DyadicAuxiliaryEdgeV1 {
 }
 
 impl DyadicPathNativeAuthorityV1 {
+    /// Stronger authority boundary for the dormant regular-quad petal path.
+    ///
+    /// A petal preview must never accept the Tree fallback or infer continuous
+    /// layer transport from the endpoint capability.  Every one of its three
+    /// segments must carry the graph positive-thickness and cell-transport
+    /// certificates minted for that exact schedule.
+    fn revalidates_exact_three_graph_segments_v1(
+        &self,
+        record_target: [u8; 32],
+        record_path_binding: &str,
+    ) -> bool {
+        self.edges.len() == 3
+            && self
+                .edges
+                .iter()
+                .all(|edge| matches!(&edge.auxiliary, DyadicAuxiliaryProofV1::Graph { .. }))
+            && self.revalidates_private_proofs_v1(record_target, record_path_binding)
+    }
+
     fn revalidates_private_proofs_v1(
         &self,
         record_target: [u8; 32],

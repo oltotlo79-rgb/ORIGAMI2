@@ -7528,7 +7528,7 @@ mod tests {
     }
 
     #[test]
-    fn eight_hinge_generic_grid_fails_before_allocation_and_collective_route_mints() {
+    fn eight_hinge_collective_proof_applies_and_persists_atomically() {
         let _generation_guard = lock_stacked_fold_read_generation_test();
         let mut project = eight_hinge_tree_project();
         let topology = project
@@ -7548,6 +7548,7 @@ mod tests {
             hinges.clone(),
             snapshot.faces[0].id,
         );
+        assert!(project.editor.paper().thickness_mm > 0.0);
         let layer_state = GlobalFlatFoldabilityState::default();
         super::super::global_flat_foldability::tests::install_possible_layer_order(
             &layer_state,
@@ -7598,6 +7599,8 @@ mod tests {
         assert_eq!((observed.state_count, observed.transition_count), (3, 4));
         assert_eq!(observed.status, "certified");
         assert!(observed.mutation_candidate_ready);
+        assert!(observed.positive_thickness_certified);
+        assert!(observed.layer_transport_certified);
         let preview_state = DyadicPathPreviewState::default();
         let preview = mint_dyadic_pose_path_preview_inner_v1(
             &state,
@@ -7626,6 +7629,78 @@ mod tests {
         let project = super::super::lock_project(&state).unwrap();
         assert_eq!(project.editor.revision(), revision);
         assert!(project.editor.instruction_timeline().steps.is_empty());
+        drop(project);
+        let apply_request = |path_binding: String| ApplyDyadicPathPreviewRequestV1 {
+            preview_token: preview.preview_token,
+            expected_project_instance_id: instance,
+            expected_project_id: project_id,
+            expected_revision: revision,
+            expected_target_binding_sha256: preview.target_binding_sha256.clone(),
+            expected_path_binding_sha256: path_binding,
+            expected_positive_thickness_binding_sha256: preview
+                .positive_thickness_binding_sha256
+                .clone(),
+            expected_layer_transport_binding_sha256: preview.layer_transport_binding_sha256.clone(),
+        };
+        assert!(
+            apply_dyadic_pose_path_preview_inner_v1(
+                &state,
+                &layer_state,
+                &preview_state,
+                apply_request("00".repeat(32)),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            super::super::lock_project(&state)
+                .unwrap()
+                .editor
+                .revision(),
+            revision,
+            "tampered eight-hinge proof is an atomic no-op"
+        );
+        let applied = apply_dyadic_pose_path_preview_inner_v1(
+            &state,
+            &layer_state,
+            &preview_state,
+            apply_request(preview.path_binding_sha256.clone()),
+        )
+        .expect("issuer-bound eight-hinge collective proof applies atomically");
+        assert!(
+            apply_dyadic_pose_path_preview_inner_v1(
+                &state,
+                &layer_state,
+                &preview_state,
+                apply_request(preview.path_binding_sha256.clone()),
+            )
+            .is_err(),
+            "consumed eight-hinge preview must be one-shot"
+        );
+        let mut project = super::super::lock_project(&state).unwrap();
+        assert_eq!(applied, revision + 1);
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
+        assert!(
+            project.editor.instruction_timeline().steps[1..]
+                .iter()
+                .all(|step| step.visual.path_certificate_reference_v1.is_some())
+        );
+        project.editor.undo(applied).unwrap();
+        assert!(project.editor.instruction_timeline().steps.is_empty());
+        let undone = project.editor.revision();
+        project.editor.redo(undone).unwrap();
+        assert_eq!(project.editor.instruction_timeline().steps.len(), 2);
+        let archive = project.project_archive().unwrap();
+        let reopened = super::super::ProjectState::from_project_archive(
+            archive,
+            std::path::PathBuf::from("eight-hinge-collective-positive-thickness.ori2"),
+        )
+        .unwrap();
+        assert_eq!(reopened.editor.instruction_timeline().steps.len(), 2);
+        assert!(
+            reopened.editor.instruction_timeline().steps[1..]
+                .iter()
+                .all(|step| step.visual.path_certificate_reference_v1.is_some())
+        );
     }
 
     #[test]

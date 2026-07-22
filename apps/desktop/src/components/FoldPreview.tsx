@@ -4224,8 +4224,8 @@ export function FoldPreview({
       )
     : foldPreviewText(
         locale,
-        '閉路拘束のため平面確認のみ',
-        'planar inspection only because of cycle constraints',
+        '閉路拘束のためここでは平面確認のみ。下の積層折りパネルで閉路姿勢をプレビュー・適用できます',
+        'planar inspection only here because of cycle constraints; preview and apply the cycle pose in the stacked-fold panel below',
       )
   const previewPoseNote = model?.kind === 'fold_graph' && model.kinematics.kind === 'tree'
     ? foldPreviewText(

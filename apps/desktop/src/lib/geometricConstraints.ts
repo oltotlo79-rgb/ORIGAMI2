@@ -9,7 +9,7 @@ export const GEOMETRIC_CONSTRAINT_SCHEMA_VERSION = 1 as const
 export const MAX_GEOMETRIC_CONSTRAINT_RECORDS = 10_000
 export const MAX_GEOMETRIC_CONSTRAINT_REFERENCES = 40_000
 export const MAX_GEOMETRIC_CONSTRAINT_DIRECT_CONFLICTS = 10_000
-export const MAX_DIRECT_CONFLICT_WITNESS_IDS = 3
+export const MAX_DIRECT_CONFLICT_WITNESS_IDS = 4
 
 export type GeometricConstraintKindV1 =
   | Readonly<{
@@ -123,6 +123,13 @@ export type DirectConstraintConflictKindV1 =
       kind: 'length_ratio_with_incompatible_fixed_lengths'
       numerator_edge: string
       denominator_edge: string
+    }>
+  | Readonly<{
+      kind: 'non_unit_length_ratio_cycle_with_fixed_length'
+      first_edge: string
+      second_edge: string
+      third_edge: string
+      fixed_edge: string
     }>
   | Readonly<{
       kind: 'parallel_with_fixed_non_parallel_angle'
@@ -741,7 +748,7 @@ function parseDirectConflictKind(
   value: unknown,
 ): Readonly<{
   conflict: DirectConstraintConflictKindV1
-  witnessSize: 2 | 3
+  witnessSize: 2 | 3 | 4
 }> | null {
   const record = snapshotDataRecord(value)
   if (!record || typeof record.kind !== 'string') return null
@@ -836,6 +843,40 @@ function parseDirectConflictKind(
         }),
         witnessSize: 3,
       }
+    case 'non_unit_length_ratio_cycle_with_fixed_length':
+      if (
+        !hasExactKeys(record, [
+          'kind',
+          'first_edge',
+          'second_edge',
+          'third_edge',
+          'fixed_edge',
+        ])
+        || !isCanonicalUuid(record.first_edge)
+        || !isCanonicalUuid(record.second_edge)
+        || !isCanonicalUuid(record.third_edge)
+        || !isCanonicalUuid(record.fixed_edge)
+        || new Set([
+          record.first_edge,
+          record.second_edge,
+          record.third_edge,
+        ]).size !== 3
+        || ![
+          record.first_edge,
+          record.second_edge,
+          record.third_edge,
+        ].includes(record.fixed_edge)
+      ) return null
+      return {
+        conflict: Object.freeze({
+          kind: record.kind,
+          first_edge: record.first_edge,
+          second_edge: record.second_edge,
+          third_edge: record.third_edge,
+          fixed_edge: record.fixed_edge,
+        }),
+        witnessSize: 4,
+      }
     case 'parallel_with_fixed_non_parallel_angle':
       if (
         !hasExactKeys(record, ['kind', 'first_edge', 'second_edge'])
@@ -913,6 +954,15 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
     case 'different_length_ratios':
     case 'length_ratio_with_incompatible_fixed_lengths':
       target = [kind.kind, kind.numerator_edge, kind.denominator_edge]
+      break
+    case 'non_unit_length_ratio_cycle_with_fixed_length':
+      target = [
+        kind.kind,
+        kind.first_edge,
+        kind.second_edge,
+        kind.third_edge,
+        kind.fixed_edge,
+      ]
       break
     case 'equal_length_with_different_fixed_lengths':
     case 'equal_length_with_non_unit_ratio_and_fixed_length':

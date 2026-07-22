@@ -812,6 +812,12 @@ function directConflictLabel(
         '2辺の固定長が、指定された長さ比と厳密に一致しません',
         'The two fixed lengths do not exactly satisfy the specified length ratio',
       )
+    case 'non_unit_length_ratio_cycle_with_fixed_length':
+      return localized(
+        locale,
+        '正の固定長を含む3辺の長さ比の循環積が1ではありません',
+        'The cyclic product of three length ratios is not one for edges with a positive fixed length',
+      )
     case 'parallel_with_fixed_non_parallel_angle':
       return localized(
         locale,

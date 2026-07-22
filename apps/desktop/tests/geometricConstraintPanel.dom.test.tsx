@@ -281,6 +281,17 @@ describe('GeometricConstraintPanel', () => {
       },
       {
         conflict: {
+          kind: 'non_unit_length_ratio_cycle_with_fixed_length' as const,
+          first_edge: IDS[0]!,
+          second_edge: IDS[1]!,
+          third_edge: IDS[2]!,
+          fixed_edge: IDS[0]!,
+        },
+        expected:
+          'The cyclic product of three length ratios is not one for edges with a positive fixed length',
+      },
+      {
+        conflict: {
           kind: 'parallel_with_fixed_non_parallel_angle' as const,
           first_edge: IDS[0]!,
           second_edge: IDS[1]!,

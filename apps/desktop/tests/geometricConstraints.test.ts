@@ -30,6 +30,7 @@ const EDGE_6 = uuid(26)
 const CONSTRAINT_1 = uuid(101)
 const CONSTRAINT_2 = uuid(102)
 const CONSTRAINT_3 = uuid(103)
+const CONSTRAINT_4 = uuid(104)
 
 const BINDING = {
   project_instance_id: INSTANCE_ID,
@@ -182,6 +183,16 @@ const DIRECT_CONFLICTS = [
       denominator_edge: EDGE_2,
     },
     constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+  },
+  {
+    conflict: {
+      kind: 'non_unit_length_ratio_cycle_with_fixed_length',
+      first_edge: EDGE_1,
+      second_edge: EDGE_2,
+      third_edge: EDGE_3,
+      fixed_edge: EDGE_1,
+    },
+    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3, CONSTRAINT_4],
   },
   {
     conflict: {
@@ -593,7 +604,7 @@ test('presentation also fails closed for malformed or hostile records', () => {
   assert.equal(getterCalls, 0)
 })
 
-test('normalizes all ten direct-conflict kinds with bounded frozen witnesses', () => {
+test('normalizes all eleven direct-conflict kinds with bounded frozen witnesses', () => {
   const raw = response({
     status: 'direct_conflict',
     conflicts: DIRECT_CONFLICTS,
@@ -609,9 +620,9 @@ test('normalizes all ten direct-conflict kinds with bounded frozen witnesses', (
     normalized?.result.status === 'direct_conflict'
       ? normalized.result.conflicts.length
       : 0,
-    10,
+    11,
   )
-  assert.equal(MAX_DIRECT_CONFLICT_WITNESS_IDS, 3)
+  assert.equal(MAX_DIRECT_CONFLICT_WITNESS_IDS, 4)
 })
 
 test('normalizes no-conflict and all three closed unknown reasons', () => {
@@ -766,7 +777,7 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
   }
 })
 
-test('preflight witnesses are canonical, duplicate-free, and bounded to three IDs', () => {
+test('preflight witnesses are canonical, duplicate-free, and bounded to four IDs', () => {
   const invalidWitnesses = [
     [],
     [CONSTRAINT_1],

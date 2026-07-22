@@ -42,7 +42,7 @@ pub const GEOMETRIC_CONSTRAINT_MODEL_ID_V1: &str = "geometric_constraints_v1";
 /// Default and non-relaxable V1 preflight-record-count ceiling.
 pub const DEFAULT_MAX_CONSTRAINT_PRECHECKS: usize = 10_000;
 /// Maximum size of one deterministic direct-conflict cause witness.
-pub const MAX_DIRECT_CONFLICT_CAUSE_IDS_V1: usize = 3;
+pub const MAX_DIRECT_CONFLICT_CAUSE_IDS_V1: usize = 4;
 
 type CanonicalId = [u8; 16];
 
@@ -339,6 +339,12 @@ pub enum DirectConstraintConflictKindV1 {
     LengthRatioWithIncompatibleFixedLengths {
         numerator_edge: EdgeId,
         denominator_edge: EdgeId,
+    },
+    NonUnitLengthRatioCycleWithFixedLength {
+        first_edge: EdgeId,
+        second_edge: EdgeId,
+        third_edge: EdgeId,
+        fixed_edge: EdgeId,
     },
     ParallelWithFixedNonParallelAngle {
         first_edge: EdgeId,
@@ -1428,9 +1434,10 @@ fn finish_fixed_length_summary_visit_count() -> usize {
 
 /// Exhaustively scans the finite set of direct contradiction rules.
 ///
-/// With `N` prepared records, total time is `O(N log N + output)` and storage
-/// is `O(N + output)`. The deterministic output sort is absorbed by the
-/// `O(N log N)` term because conflict output is itself linear in `N`.
+/// With `N` prepared records, total time is `O(N² + output)` and storage is
+/// `O(N + output)`. The quadratic bound comes from joining two directed ratio
+/// steps while looking up a closing third step; the prepared-record work limit
+/// bounds that finite scan.
 /// Fixed-length assignments are summarized during the single canonical record
 /// pass, so reusing one edge from many equal-length constraints never causes a
 /// cross-product rescan of fixed-length groups and equal-length pairs.
@@ -1673,7 +1680,7 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
         let Some(reverse) = consistent_scalar_assignment(reverse_assignments) else {
             continue;
         };
-        if (forward.value * reverse.value).to_bits() == 1.0_f64.to_bits() {
+        if positive_binary64_product_is_one_v1(&[forward.value, reverse.value]) {
             continue;
         }
         let fixed = fixed_lengths
@@ -1693,6 +1700,64 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                 },
                 [forward.id, reverse.id, fixed.id],
             );
+        }
+    }
+    // A directed three-ratio cycle admits the all-zero solution. One positive
+    // fixed length is therefore necessary and included in every sound witness.
+    let mut consistent_outgoing: BTreeMap<CanonicalId, Vec<(CanonicalId, ScalarAssignment)>> =
+        BTreeMap::new();
+    for ((numerator, denominator), assignments) in &ratios {
+        if let Some(assignment) = consistent_scalar_assignment(assignments) {
+            consistent_outgoing
+                .entry(*numerator)
+                .or_default()
+                .push((*denominator, assignment));
+        }
+    }
+    for (first, first_steps) in &consistent_outgoing {
+        for (second, first_ratio) in first_steps {
+            let Some(second_steps) = consistent_outgoing.get(second) else {
+                continue;
+            };
+            for (third, second_ratio) in second_steps {
+                if third == first || third == second || first >= second || first >= third {
+                    continue;
+                }
+                let Some(third_ratio) = ratios
+                    .get(&(*third, *first))
+                    .and_then(|items| consistent_scalar_assignment(items))
+                else {
+                    continue;
+                };
+                if positive_binary64_product_is_one_v1(&[
+                    first_ratio.value,
+                    second_ratio.value,
+                    third_ratio.value,
+                ]) {
+                    continue;
+                }
+                let fixed = [*first, *second, *third]
+                    .into_iter()
+                    .filter_map(|edge| {
+                        fixed_lengths
+                            .get(&edge)
+                            .and_then(ScalarGroupSummary::consistent_assignment)
+                            .map(|assignment| (edge, assignment))
+                    })
+                    .min_by_key(|(_, assignment)| assignment.id.canonical_bytes());
+                if let Some((fixed_edge, fixed)) = fixed {
+                    push_conflict(
+                        &mut conflicts,
+                        DirectConstraintConflictKindV1::NonUnitLengthRatioCycleWithFixedLength {
+                            first_edge: edge_ids[first],
+                            second_edge: edge_ids[second],
+                            third_edge: edge_ids[third],
+                            fixed_edge: edge_ids[&fixed_edge],
+                        },
+                        [first_ratio.id, second_ratio.id, third_ratio.id, fixed.id],
+                    );
+                }
+            }
         }
     }
     for (pair, equal_ids) in &equal_lengths {
@@ -1834,6 +1899,17 @@ fn positive_binary64_equals_product_v1(left: f64, first: f64, second: f64) -> bo
     left_exponent == first_exponent + second_exponent
         && BigUint::from(left_significand)
             == BigUint::from(first_significand) * BigUint::from(second_significand)
+}
+
+fn positive_binary64_product_is_one_v1(values: &[f64]) -> bool {
+    let mut exponent = 0_i32;
+    let mut significand = BigUint::from(1_u8);
+    for value in values {
+        let (part_significand, part_exponent) = positive_binary64_odd_parts_v1(*value);
+        exponent += i32::from(part_exponent);
+        significand *= BigUint::from(part_significand);
+    }
+    exponent == 0 && significand == BigUint::from(1_u8)
 }
 
 fn canonicalize_constraint_ids(ids: &mut Vec<ConstraintId>) {
@@ -2022,11 +2098,22 @@ fn conflict_sort_key(
             denominator_edge.canonical_bytes(),
             zero,
         ),
+        DirectConstraintConflictKindV1::NonUnitLengthRatioCycleWithFixedLength {
+            first_edge,
+            second_edge,
+            third_edge,
+            fixed_edge: _,
+        } => (
+            8,
+            first_edge.canonical_bytes(),
+            second_edge.canonical_bytes(),
+            third_edge.canonical_bytes(),
+        ),
         DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
             first_edge,
             second_edge,
         } => (
-            8,
+            9,
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
             zero,
@@ -2035,7 +2122,7 @@ fn conflict_sort_key(
             horizontal_edge,
             vertical_edge,
         } => (
-            9,
+            10,
             horizontal_edge.canonical_bytes(),
             vertical_edge.canonical_bytes(),
             zero,
@@ -3084,15 +3171,17 @@ mod tests {
             "each fixed-length assignment must be summarized exactly once regardless of how many equal-length pairs reuse its edge"
         );
         assert_eq!(conflicts.len(), PAIR_COUNT);
-        assert!(conflicts.iter().all(|conflict| {
-            conflict.constraint_ids().len() == MAX_DIRECT_CONFLICT_CAUSE_IDS_V1
-        }));
+        assert!(
+            conflicts
+                .iter()
+                .all(|conflict| conflict.constraint_ids().len() == 3)
+        );
         assert_eq!(
             conflicts
                 .iter()
                 .map(|conflict| conflict.constraint_ids().len())
                 .sum::<usize>(),
-            MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 * PAIR_COUNT
+            3 * PAIR_COUNT
         );
 
         let one_short = prepare_geometric_constraints_v1(
@@ -3298,6 +3387,27 @@ mod tests {
                     ratio: 2.0,
                 }),
             ],
+            vec![
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[0],
+                    length_mm: 1.0,
+                }),
+                record(GeometricConstraintKindV1::LengthRatio {
+                    numerator_edge: fixture.edges[0],
+                    denominator_edge: fixture.edges[1],
+                    ratio: 2.0,
+                }),
+                record(GeometricConstraintKindV1::LengthRatio {
+                    numerator_edge: fixture.edges[1],
+                    denominator_edge: fixture.edges[2],
+                    ratio: 3.0,
+                }),
+                record(GeometricConstraintKindV1::LengthRatio {
+                    numerator_edge: fixture.edges[2],
+                    denominator_edge: fixture.edges[0],
+                    ratio: 0.25,
+                }),
+            ],
         ];
 
         for records in cases {
@@ -3407,6 +3517,98 @@ mod tests {
         let mut expected_ids = vec![numerator.id, denominator.id, incompatible_ratio.id];
         canonicalize_constraint_ids(&mut expected_ids);
         assert_eq!(conflicts[0].constraint_ids(), expected_ids);
+    }
+
+    #[test]
+    fn three_ratio_cycle_requires_a_positive_fixed_length_and_exact_unit_product() {
+        assert!(positive_binary64_product_is_one_v1(&[2.0, 4.0, 0.125]));
+        assert!(positive_binary64_product_is_one_v1(&[
+            f64::from_bits(1),
+            f64::from_bits(0x7fe0_0000_0000_0000),
+            2_f64.powi(51),
+        ]));
+        assert!(!positive_binary64_product_is_one_v1(&[2.0, 3.0, 0.25]));
+
+        let fixture = Fixture::new();
+        let fixed = record(GeometricConstraintKindV1::FixedLength {
+            edge: fixture.edges[0],
+            length_mm: 1.0,
+        });
+        let first = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[0],
+            denominator_edge: fixture.edges[1],
+            ratio: 2.0,
+        });
+        let second = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[1],
+            denominator_edge: fixture.edges[2],
+            ratio: 3.0,
+        });
+        let third = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[2],
+            denominator_edge: fixture.edges[0],
+            ratio: 0.25,
+        });
+        let conflict = prepare(
+            &fixture,
+            &document([fixed.clone(), first.clone(), second.clone(), third.clone()]),
+        )
+        .expect("incompatible directed ratio cycle")
+        .preflight();
+        let ConstraintPreflightV1::DirectConflict { conflicts } = conflict else {
+            panic!("a non-unit cycle with a positive fixed length must conflict");
+        };
+        let cycle = conflicts
+            .iter()
+            .find(|conflict| {
+                matches!(
+                    conflict.conflict(),
+                    DirectConstraintConflictKindV1::NonUnitLengthRatioCycleWithFixedLength { .. }
+                )
+            })
+            .expect("cycle conflict");
+        let mut expected_ids = vec![fixed.id, first.id, second.id, third.id];
+        canonicalize_constraint_ids(&mut expected_ids);
+        assert_eq!(cycle.constraint_ids(), expected_ids);
+
+        let without_fixed = prepare(&fixture, &document([first, second, third]))
+            .expect("zero-length solution remains admissible")
+            .preflight();
+        assert!(!matches!(
+            without_fixed,
+            ConstraintPreflightV1::DirectConflict { .. }
+        ));
+
+        let compatible = prepare(
+            &fixture,
+            &document([
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[0],
+                    length_mm: 1.0,
+                }),
+                record(GeometricConstraintKindV1::LengthRatio {
+                    numerator_edge: fixture.edges[0],
+                    denominator_edge: fixture.edges[1],
+                    ratio: 2.0,
+                }),
+                record(GeometricConstraintKindV1::LengthRatio {
+                    numerator_edge: fixture.edges[1],
+                    denominator_edge: fixture.edges[2],
+                    ratio: 4.0,
+                }),
+                record(GeometricConstraintKindV1::LengthRatio {
+                    numerator_edge: fixture.edges[2],
+                    denominator_edge: fixture.edges[0],
+                    ratio: 0.125,
+                }),
+            ]),
+        )
+        .expect("exactly reciprocal cycle")
+        .preflight();
+        assert!(!matches!(
+            compatible,
+            ConstraintPreflightV1::DirectConflict { .. }
+        ));
     }
 
     #[test]

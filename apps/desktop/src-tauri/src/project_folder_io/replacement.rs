@@ -2283,6 +2283,7 @@ mod tests {
             PreparedReplacementProjectFolder::prepare(&registry, &parent, TARGET_NAME, new.clone())
                 .expect("unrelated entries are outside the recovery namespace budget");
         prepared.publish().expect("publish replacement");
+        drop(prepared);
         assert_target(&parent, &new);
     }
 

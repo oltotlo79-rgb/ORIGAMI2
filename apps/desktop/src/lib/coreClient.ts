@@ -240,6 +240,7 @@ export type BeginnerGenerationConstraintsV1 = {
   generic_body_outline_tenths_mm?: Array<[number, number]>
   generic_body_outline_mode?: 'symmetric' | 'general'
   target_category: 'animal' | 'insect' | 'custom_object' | null
+  custom_object_display_name?: string
   target_parts: Array<{
     kind: 'head' | 'torso' | 'leg' | 'horn' | 'ear' | 'wing' | 'fin' | 'antenna' | 'tail'
     count: number
@@ -397,6 +398,18 @@ function isCanonicalGenericBodyOutline(
   return true
 }
 
+export function normalizeCustomObjectDisplayName(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().normalize('NFC')
+  const scalarCount = Array.from(normalized).length
+  if (scalarCount < 1 || scalarCount > 64 || /[\\/\p{Cc}\u202A-\u202E\u2066-\u2069]/u.test(normalized)) return null
+  return normalized
+}
+
+function isCustomObjectDisplayName(value: unknown): value is string {
+  return typeof value === 'string' && normalizeCustomObjectDisplayName(value) === value
+}
+
 function normalizeBeginnerGenerationConstraints(
   value: unknown,
 ): BeginnerGenerationConstraintsV1 | null {
@@ -407,7 +420,7 @@ function normalizeBeginnerGenerationConstraints(
     'generic_body_size_tenths_mm',
     'generic_body_outline_tenths_mm',
     'generic_body_outline_mode',
-    'target_category',
+    'target_category', 'custom_object_display_name',
     'target_parts',
     'skeleton_segments',
     'protrusions',
@@ -418,6 +431,7 @@ function normalizeBeginnerGenerationConstraints(
   const requiredKeys = currentKeys.filter(
     (key) => key !== 'generic_body_size_tenths_mm'
       && key !== 'generic_body_outline_tenths_mm' && key !== 'generic_body_outline_mode'
+      && key !== 'custom_object_display_name'
       && key !== 'protrusions' && key !== 'bulge_targets',
   )
   const snapshot = snapshotCoreDataRecord(value)
@@ -449,6 +463,9 @@ function normalizeBeginnerGenerationConstraints(
       && record.target_category !== 'animal'
       && record.target_category !== 'insect'
       && record.target_category !== 'custom_object')
+    || (record.custom_object_display_name !== undefined
+      && (record.target_category !== 'custom_object'
+        || !isCustomObjectDisplayName(record.custom_object_display_name)))
     || !Array.isArray(record.target_parts)
     || record.target_parts.length > 8
     || (record.generic_body_size_tenths_mm !== undefined
@@ -652,6 +669,9 @@ function normalizeBeginnerGenerationConstraints(
     }),
     generic_body_outline_mode: record.generic_body_outline_mode === 'general' ? 'general' : 'symmetric',
     target_category: record.target_category,
+    ...(record.custom_object_display_name === undefined ? {} : {
+      custom_object_display_name: record.custom_object_display_name,
+    }),
     target_parts: targetParts,
     skeleton_segments: skeletonSegments,
     ...(hadProtrusions ? { protrusions } : {}),

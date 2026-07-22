@@ -69,6 +69,12 @@ test('custom object is versioned, bounded, and routed only to the generic tree c
   assert.match(generator, /target_category == BeginnerTargetCategoryV1::CustomObject[\s\S]*return Ok\(vec!\[template\]\)/u)
   assert.match(app, /<option value="custom_object">/u)
   assert.match(app, /Custom object is routed only to the bounded generic-tree candidate/u)
+  assert.match(client, /normalizeCustomObjectDisplayName/u)
+  assert.match(client, /\.trim\(\)\.normalize\('NFC'\)/u)
+  assert.match(client, /\\u202A-\\u202E\\u2066-\\u2069/u)
+  assert.match(app, /name="custom_object_display_name"/u)
+  assert.match(app, /does not affect generator authority or candidate scoring/u)
+  assert.match(native, /custom_object_display_name_v1\(profile\)/u)
 })
 
 test('AUT-002 composes a bounded explicit target from supported parts', () => {

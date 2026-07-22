@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::{AssetId, FaceId, UnderlayId};
 pub const BEGINNER_GENERATION_CONSTRAINTS_SCHEMA_VERSION_V1: u32 = 1;
@@ -187,6 +188,8 @@ pub struct BeginnerGenerationConstraintsV1 {
     pub generic_body_outline_mode: BeginnerBodyOutlineModeV1,
     #[serde(default)]
     pub target_category: Option<BeginnerTargetCategoryV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_object_display_name: Option<String>,
     #[serde(default)]
     pub target_parts: Vec<BeginnerTargetPartRecordV1>,
     #[serde(default)]
@@ -210,6 +213,7 @@ impl Default for BeginnerGenerationConstraintsV1 {
             generic_body_outline_tenths_mm: None,
             generic_body_outline_mode: BeginnerBodyOutlineModeV1::Symmetric,
             target_category: None,
+            custom_object_display_name: None,
             target_parts: Vec::new(),
             skeleton_segments: Vec::new(),
             protrusions: Vec::new(),
@@ -247,6 +251,12 @@ pub fn validate_beginner_generation_constraints_v1(
         || constraints.protrusions.len() > MAX_BEGINNER_PROTRUSIONS_V1
         || constraints.bulge_targets.len() > MAX_BEGINNER_BULGE_TARGETS_V1
     {
+        return false;
+    }
+    if !validate_custom_object_display_name_v1(
+        constraints.target_category,
+        constraints.custom_object_display_name.as_deref(),
+    ) {
         return false;
     }
     if !constraints.target_parts.is_empty() && constraints.target_category.is_none() {
@@ -370,6 +380,42 @@ pub fn validate_beginner_generation_constraints_v1(
                     })
                 && bulge_ids.insert(target.id)
         })
+}
+
+#[must_use]
+pub fn validate_custom_object_display_name_v1(
+    category: Option<BeginnerTargetCategoryV1>,
+    name: Option<&str>,
+) -> bool {
+    match (category, name) {
+        (Some(BeginnerTargetCategoryV1::CustomObject), None) => true,
+        (Some(BeginnerTargetCategoryV1::CustomObject), Some(value)) => {
+            let count = value.chars().count();
+            count >= 1
+                && count <= MAX_BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_CHARS_V1
+                && value.trim() == value
+                && value.nfc().eq(value.chars())
+                && !value.chars().any(|character| {
+                    character.is_control()
+                        || matches!(character, '/' | '\\')
+                        || matches!(character as u32, 0x202A..=0x202E | 0x2066..=0x2069)
+                })
+        }
+        (_, None) => true,
+        (_, Some(_)) => false,
+    }
+}
+
+#[must_use]
+pub fn custom_object_display_name_v1(
+    constraints: &BeginnerGenerationConstraintsV1,
+) -> Option<&str> {
+    (constraints.target_category == Some(BeginnerTargetCategoryV1::CustomObject)).then(|| {
+        constraints
+            .custom_object_display_name
+            .as_deref()
+            .unwrap_or(BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_V1)
+    })
 }
 
 fn valid_generic_body_outline_v1(points: &[[i32; 2]], mode: BeginnerBodyOutlineModeV1) -> bool {
@@ -536,6 +582,11 @@ mod tests {
             target_category: Some(BeginnerTargetCategoryV1::CustomObject),
             ..Default::default()
         };
+        assert!(validate_beginner_generation_constraints_v1(&custom));
+        assert_eq!(
+            custom_object_display_name_v1(&custom),
+            Some("Custom object")
+        );
         let json = serde_json::to_string(&custom).unwrap();
         assert!(json.contains("\"target_category\":\"custom_object\""));
         assert!(
@@ -545,6 +596,23 @@ mod tests {
         let mut unknown = serde_json::to_value(custom).unwrap();
         unknown["target_category"] = serde_json::json!("custom_object_v2");
         assert!(serde_json::from_value::<BeginnerGenerationConstraintsV1>(unknown).is_err());
+        for invalid in [
+            "",
+            " padded",
+            "path/name",
+            "path\\name",
+            "safe\u{202e}name",
+            "e\u{301}",
+        ] {
+            assert!(!validate_custom_object_display_name_v1(
+                Some(BeginnerTargetCategoryV1::CustomObject),
+                Some(invalid),
+            ));
+        }
+        assert!(validate_custom_object_display_name_v1(
+            Some(BeginnerTargetCategoryV1::CustomObject),
+            Some("折り紙 オブジェクト"),
+        ));
     }
 
     #[test]

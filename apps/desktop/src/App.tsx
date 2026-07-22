@@ -170,6 +170,7 @@ import {
   type ElementMetadataTarget,
   type ValidationSnapshot,
   validateSvgImportSettings,
+  normalizeCustomObjectDisplayName,
   validateProject,
   proveCurrentAssignedLocalSufficiencyV1,
   type AssignedLocalSufficiencyResponseV1,
@@ -3675,6 +3676,9 @@ function App() {
     const maximumSteps = Number(data.get('maximum_steps'))
     const detailLevel = String(data.get('detail_level'))
     const targetCategory = String(data.get('target_category'))
+    const customObjectDisplayName = targetCategory === 'custom_object'
+      ? normalizeCustomObjectDisplayName(String(data.get('custom_object_display_name') ?? ''))
+      : null
     const bodyWidthRaw = String(data.get('generic_body_width_mm') ?? '').trim()
     const bodyHeightRaw = String(data.get('generic_body_height_mm') ?? '').trim()
     const bodySize = bodyWidthRaw === '' && bodyHeightRaw === ''
@@ -3709,6 +3713,8 @@ function App() {
       }),
       generic_body_outline_mode: beginnerBodyOutlineMode,
       target_category: targetCategory as 'animal' | 'insect' | 'custom_object',
+      ...(targetCategory === 'custom_object' && customObjectDisplayName !== null
+        ? { custom_object_display_name: customObjectDisplayName } : {}),
       target_parts: targetParts,
       skeleton_segments: beginnerSkeletonSegments,
       protrusions: beginnerProtrusions,
@@ -3731,6 +3737,7 @@ function App() {
       || maximumSteps > 500
       || !['simple', 'standard', 'detailed'].includes(detailLevel)
       || !['animal', 'insect', 'custom_object'].includes(targetCategory)
+      || (targetCategory === 'custom_object' && customObjectDisplayName === null)
       || (bodySize !== undefined && bodySize.some((axis) =>
         !Number.isInteger(axis) || axis < 1 || axis > 1_000_000))
       || (beginnerBodyOutline.length !== 0
@@ -8509,9 +8516,10 @@ function App() {
                 )}
                 {nativeSnapshot.beginner_design_profile.generation_provenance?.generic_tree && (
                   <div role="status"><p>{formattedText({
-                    ja: '保存済み一般木候補の由来: {source}・{orientation}向き・generator v{version}・表示専用（再適用権限なし）',
-                    en: 'Saved generic-tree origin: {source} · {orientation} orientation · generator v{version} · display only; no apply authority',
+                    ja: '保存済み一般木候補「{name}」の由来: {source}・{orientation}向き・generator v{version}・表示専用（再適用権限なし）',
+                    en: 'Saved generic-tree “{name}” origin: {source} · {orientation} orientation · generator v{version} · display only; no apply authority',
                   }, {
+                    name: nativeSnapshot.beginner_design_profile.generation_constraints.custom_object_display_name ?? 'Custom object',
                     source: nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.source,
                     orientation: nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.orientation,
                     version: nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.generator_version,
@@ -8580,6 +8588,23 @@ function App() {
                     <option value="custom_object">{text({ ja: 'カスタム対象', en: 'Custom object' })}</option>
                   </select>
                 </label>
+                <label className="field">
+                  <span>{text({ ja: 'カスタム対象の表示名', en: 'Custom object display name' })}</span>
+                  <input
+                    name="custom_object_display_name"
+                    type="text"
+                    maxLength={64}
+                    defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints.custom_object_display_name ?? 'Custom object'}
+                    disabled={coreBusy || recoveryBlocking}
+                    aria-describedby="beginner-custom-object-name-help"
+                  />
+                </label>
+                <p id="beginner-custom-object-name-help" className="muted">
+                  {text({
+                    ja: '表示専用です。生成権限や候補スコアには影響しません。1〜64文字で入力してください。',
+                    en: 'Display metadata only; it does not affect generator authority or candidate scoring. Enter 1–64 characters.',
+                  })}
+                </p>
                 <p id="beginner-target-category-help" className="muted">
                   {text({
                     ja: '初版で対応する目標形状は動物と昆虫だけです。未対応カテゴリは推測しません。',

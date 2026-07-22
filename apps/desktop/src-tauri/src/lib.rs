@@ -10033,12 +10033,18 @@ fn append_generic_tree_instruction_proposal(
         return Err("generic_tree_instruction_proposal_stale".to_owned());
     }
     let fingerprint = project.editor.fold_model_fingerprint_v1();
+    let display_name = ori_domain::custom_object_display_name_v1(profile)
+        .unwrap_or(ori_domain::BEGINNER_CUSTOM_OBJECT_DISPLAY_NAME_V1)
+        .to_owned();
     let steps = proposal
         .steps
         .iter()
         .map(|step| InstructionStep {
             id: InstructionStepId::new(),
-            title: format!("{} {}", step.assignment, step.canonical_crease_id),
+            title: format!(
+                "{display_name}: {} {}",
+                step.assignment, step.canonical_crease_id
+            ),
             description: format!(
                 "Fold {} at tree depth {} toward {}; keep the {} side fixed.",
                 step.target_branch, step.tree_depth, step.assignment, step.fixed_side

@@ -46,7 +46,8 @@ pub use beginner_generation::{
     MAX_BEGINNER_SKELETON_COORDINATE_TENTHS_MM_V1, MAX_BEGINNER_SKELETON_SEGMENTS_V1,
     MAX_BEGINNER_SKELETON_THICKNESS_TENTHS_MM_V1, MAX_BEGINNER_TARGET_PART_COUNT_V1,
     MAX_BEGINNER_TARGET_PART_RECORDS_V1, MAX_BEGINNER_TARGET_PARTS_TOTAL_V1,
-    MIN_BEGINNER_GENERATION_STEPS_V1, validate_beginner_generation_constraints_v1,
+    MIN_BEGINNER_GENERATION_STEPS_V1, custom_object_display_name_v1,
+    validate_beginner_generation_constraints_v1, validate_custom_object_display_name_v1,
 };
 pub use beginner_generator::{
     BEGINNER_GENERATOR_SCHEMA_VERSION_V1, BEGINNER_PARAMETER_GRID_SIZE_V1,

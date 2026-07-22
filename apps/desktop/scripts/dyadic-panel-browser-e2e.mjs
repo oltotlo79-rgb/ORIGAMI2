@@ -103,13 +103,15 @@ try {
   if (overLimitEvidence.reads !== 0 || await overLimit.getByTestId('dyadic-pose-graph-status').count() || await overLimit.getByRole('button', { name: 'Apply authenticated path' }).count()) throw new Error(`C65 must fail before IPC: ${JSON.stringify(overLimitEvidence)}`)
   await overLimit.close()
 
-  const concave = await openScenario('concave', 6)
-  await concave.getByRole('button', { name: 'Search bounded dyadic paths' }).click()
-  await concave.getByText(/reason no_certified_path/).waitFor()
-  if (await concave.getByRole('button', { name: 'Issue read-only preview' }).count() || await concave.getByRole('button', { name: 'Apply authenticated path' }).count()) throw new Error('concave no-path exposed mutation controls')
-  const concaveEvidence = await concave.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)
-  if (concaveEvidence.reads !== 1 || concaveEvidence.mints !== 0 || concaveEvidence.mutations !== 0 || concaveEvidence.timelineDtos !== 0) throw new Error(`concave no-op: ${JSON.stringify(concaveEvidence)}`)
-  await concave.close()
+  for (const scenario of ['concave', 'cut']) {
+    const unsupportedGeometry = await openScenario(scenario, 6)
+    await unsupportedGeometry.getByRole('button', { name: 'Search bounded dyadic paths' }).click()
+    await unsupportedGeometry.getByText(/reason no_certified_path/).waitFor()
+    if (await unsupportedGeometry.getByRole('button', { name: 'Issue read-only preview' }).count() || await unsupportedGeometry.getByRole('button', { name: 'Apply authenticated path' }).count()) throw new Error(`${scenario} no-path exposed mutation controls`)
+    const evidence = await unsupportedGeometry.evaluate(() => window.__ORIGAMI2_DYADIC_PANEL_EVIDENCE__)
+    if (evidence.reads !== 1 || evidence.mints !== 0 || evidence.mutations !== 0 || evidence.timelineDtos !== 0) throw new Error(`${scenario} no-op: ${JSON.stringify(evidence)}`)
+    await unsupportedGeometry.close()
+  }
 
   for (const scenario of ['stale', 'aba', 'tamper']) {
     const page = await openScenario(scenario)

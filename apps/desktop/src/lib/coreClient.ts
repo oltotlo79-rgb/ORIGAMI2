@@ -2222,6 +2222,26 @@ export function updateBeginnerDesignProfile(
   })
 }
 
+export function updateBeginnerReferenceConsensus(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+  selections: ReadonlyArray<Readonly<{ kind: 'image' | 'reference_model'; asset_id: string }>>,
+) {
+  if (selections.length < 2 || selections.length > 4
+    || new Set(selections.map((selection) => selection.asset_id)).size !== selections.length
+    || selections.some((selection) => !['image', 'reference_model'].includes(selection.kind)
+      || !isCanonicalNonNilUuid(selection.asset_id))) {
+    return Promise.reject(new Error('invalid reference consensus selection'))
+  }
+  return invoke<ProjectSnapshot>('update_beginner_reference_consensus', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    selections: selections.map((selection) => ({ kind: selection.kind, asset_id: selection.asset_id })),
+  })
+}
+
 export function importBeginnerReferenceModel(
   expectedProjectId: string,
   expectedRevision: number,

@@ -136,6 +136,7 @@ import {
   updateProjectLayerPresentation,
   updateProjectMemo,
   updateBeginnerDesignProfile,
+  updateBeginnerReferenceConsensus,
   importBeginnerReferenceModel,
   activateBeginnerReferenceModelAsset,
   archiveBeginnerReferenceModelAsset,
@@ -728,6 +729,7 @@ function App() {
     useState<BeginnerCandidateResponseV1 | null>(null)
   const [beginnerCandidateBusy, setBeginnerCandidateBusy] = useState(false)
   const [selectedConsensusPair, setSelectedConsensusPair] = useState<string | null>(null)
+  const [consensusSelectionDraft, setConsensusSelectionDraft] = useState<Array<{ kind: 'image' | 'reference_model'; asset_id: string }>>([])
   const [beginnerGrid, setBeginnerGrid] = useState<BeginnerGridEvaluationResponse | null>(null)
   const [beginnerGridSelectedPointId, setBeginnerGridSelectedPointId] = useState<number | null>(null)
   const [beginnerGridBusy, setBeginnerGridBusy] = useState(false)
@@ -817,6 +819,8 @@ function App() {
   useEffect(() => {
     setBeginnerCandidates(null)
     setSelectedConsensusPair(null)
+    setConsensusSelectionDraft((nativeSnapshot?.beginner_design_profile.reference_consensus_v1?.bindings ?? [])
+      .map((binding) => ({ kind: binding.kind, asset_id: binding.asset_id })))
     setBeginnerSymmetricEstimate(null)
     beginnerRecognitionRequestRef.current += 1
     setBeginnerRecognitionBusy(false)
@@ -3857,6 +3861,22 @@ function App() {
     }
     void runNativeEdit((projectId, revision, projectInstanceId) =>
       updateBeginnerDesignProfile(projectId, revision, projectInstanceId, profile))
+  }
+
+  function toggleConsensusReference(kind: 'image' | 'reference_model', assetId: string) {
+    setConsensusSelectionDraft((current) => {
+      const exists = current.some((selection) => selection.asset_id === assetId)
+      if (exists) return current.filter((selection) => selection.asset_id !== assetId)
+      if (current.length >= 4) return current
+      return [...current, { kind, asset_id: assetId }]
+    })
+  }
+
+  function saveConsensusReferences() {
+    if (consensusSelectionDraft.length < 2 || consensusSelectionDraft.length > 4) return
+    const canonical = [...consensusSelectionDraft].sort((left, right) => left.asset_id.localeCompare(right.asset_id))
+    void runNativeEdit((projectId, revision, projectInstanceId) =>
+      updateBeginnerReferenceConsensus(projectId, revision, projectInstanceId, canonical))
   }
 
   function toggleBeginnerReferenceModelPreview() {
@@ -8797,6 +8817,24 @@ function App() {
                       en: 'A GLB 2.0 model is a read-only visual reference. It grants no automatic recognition or fold-generation authority.',
                     })}
                   </p>
+                  <fieldset aria-describedby="reference-consensus-selection-help">
+                    <legend>References for consensus</legend>
+                    <p id="reference-consensus-selection-help" className="muted">Select two to four project references. Content hashes are read only by the native core.</p>
+                    {[...(nativeSnapshot.underlays?.underlays ?? []).map((underlay, index) => ({
+                      kind: 'image' as const, asset_id: underlay.asset, label: `Underlay image ${index + 1} (image)`,
+                    })), ...(nativeSnapshot.reference_model_assets ?? []).map((asset, index) => ({
+                      kind: 'reference_model' as const, asset_id: asset.asset_id, label: `3D reference ${index + 1} (GLB)`,
+                    }))].filter((asset, index, all) => all.findIndex((candidate) => candidate.asset_id === asset.asset_id) === index)
+                      .map((asset) => {
+                        const checked = consensusSelectionDraft.some((selection) => selection.asset_id === asset.asset_id)
+                        return <label key={asset.asset_id}><input type="checkbox" checked={checked}
+                          disabled={!checked && consensusSelectionDraft.length >= 4}
+                          onChange={() => toggleConsensusReference(asset.kind, asset.asset_id)} />{asset.label}</label>
+                      })}
+                    <p role="status" aria-live="polite">{`${consensusSelectionDraft.length} of 2–4 references selected.`}</p>
+                    <button type="button" disabled={consensusSelectionDraft.length < 2 || consensusSelectionDraft.length > 4 || coreBusy || recoveryBlocking}
+                      onClick={saveConsensusReferences}>Save consensus references</button>
+                  </fieldset>
                   {(nativeSnapshot.reference_model_assets ?? []).length > 0 && <ul aria-label="Project 3D reference assets">
                     {(nativeSnapshot.reference_model_assets ?? []).map((asset, index) => {
                       const active = nativeSnapshot.beginner_design_profile.generation_constraints.target_asset

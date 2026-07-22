@@ -6167,6 +6167,89 @@ fn update_beginner_design_profile(
     )
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BeginnerReferenceConsensusSelectionV1 {
+    kind: ori_domain::BeginnerReferenceBindingKindV1,
+    asset_id: AssetId,
+}
+
+#[tauri::command]
+fn update_beginner_reference_consensus(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    selections: Vec<BeginnerReferenceConsensusSelectionV1>,
+) -> Result<ProjectSnapshot, String> {
+    if !(2..=4).contains(&selections.len()) {
+        return Err("reference_consensus_selection_count".to_owned());
+    }
+    let mut project = lock_project(&state)?;
+    ensure_expected_project(
+        &project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    )?;
+    let mut canonical = selections;
+    canonical.sort_by_key(|selection| selection.asset_id.canonical_bytes());
+    if canonical
+        .windows(2)
+        .any(|pair| pair[0].asset_id == pair[1].asset_id)
+    {
+        return Err("reference_consensus_duplicate_asset".to_owned());
+    }
+    let mut bindings = Vec::with_capacity(canonical.len());
+    for selection in canonical {
+        let bytes = match selection.kind {
+            ori_domain::BeginnerReferenceBindingKindV1::Image => {
+                if !project
+                    .editor
+                    .underlays()
+                    .underlays
+                    .iter()
+                    .any(|underlay| underlay.asset == selection.asset_id)
+                {
+                    return Err("reference_consensus_asset_stale".to_owned());
+                }
+                project
+                    .texture_assets
+                    .iter()
+                    .find(|asset| asset.id == selection.asset_id)
+                    .map(|asset| asset.bytes.as_slice())
+            }
+            ori_domain::BeginnerReferenceBindingKindV1::ReferenceModel => project
+                .reference_model_assets
+                .iter()
+                .find(|asset| asset.id == selection.asset_id)
+                .map(|asset| asset.bytes.as_slice()),
+        }
+        .ok_or_else(|| "reference_consensus_asset_stale".to_owned())?;
+        bindings.push(ori_domain::BeginnerReferenceBindingV1 {
+            kind: selection.kind,
+            asset_id: selection.asset_id,
+            sha256: sha2::Sha256::digest(bytes).into(),
+            quality: 100,
+        });
+    }
+    let mut profile = project.editor.beginner_design_profile().clone();
+    profile.reference_consensus_v1 = Some(ori_domain::BeginnerReferenceConsensusV1 {
+        schema_version: 1,
+        bindings,
+        excluded_asset_id: None,
+    });
+    execute_command(
+        &mut project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        Command::UpdateBeginnerDesignProfile {
+            profile: Box::new(profile),
+        },
+    )
+}
+
 fn reference_consensus_is_live_v1(
     project: &ProjectState,
     profile: &ori_domain::BeginnerDesignProfileV1,
@@ -14646,6 +14729,7 @@ pub fn run() {
             apply_beginner_generated_plan,
             update_project_memo,
             update_beginner_design_profile,
+            update_beginner_reference_consensus,
             import_beginner_reference_model,
             activate_beginner_reference_model_asset,
             archive_beginner_reference_model_asset,

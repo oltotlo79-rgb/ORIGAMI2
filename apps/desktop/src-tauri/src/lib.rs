@@ -4878,6 +4878,7 @@ fn apply_beginner_generated_plan_document(
                 .target_asset
                 .map_or_else(|| "none".to_owned(), |asset| format!("{asset:?}")),
             semantic_landmark_provenance,
+            generic_tree: None,
         });
     execute_command(
         &mut project,
@@ -5258,6 +5259,47 @@ fn apply_grid_plan_document(
                 .target_asset
                 .map_or_else(|| "none".to_owned(), |asset| format!("{asset:?}"))
         });
+    let generic_tree = if selected_kind
+        == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+    {
+        let source = match beginner_design_profile.generation_constraints.target_asset {
+            Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage { .. }) =>
+                ori_domain::BeginnerGenericTreeSourceV1::ImageSilhouette,
+            Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { .. }) =>
+                ori_domain::BeginnerGenericTreeSourceV1::GlbGeometry,
+            None => ori_domain::BeginnerGenericTreeSourceV1::ManualSkeleton,
+        };
+        let asset_content_sha256 = match beginner_design_profile.generation_constraints.target_asset {
+            Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceImage { asset_id, .. }) =>
+                project.texture_assets.iter().find(|asset| asset.id == asset_id)
+                    .map(|asset| <[u8; 32]>::from(sha2::Sha256::digest(&asset.bytes))),
+            Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id }) =>
+                project.reference_model_assets.iter().find(|asset| asset.id == asset_id)
+                    .map(|asset| <[u8; 32]>::from(sha2::Sha256::digest(&asset.bytes))),
+            None => None,
+        };
+        let ratios = selected_instruction_codes.iter()
+            .find_map(|code| code.strip_prefix("bounded_tree_river_axial_v1:"))
+            .and_then(|encoded| encoded.split(',').map(str::parse::<u32>)
+                .collect::<Result<Vec<_>, _>>().ok())
+            .filter(|ratios| !ratios.is_empty() && ratios.len() <= 16)
+            .ok_or("grid_candidate_tree_ratio_provenance_invalid")?;
+        let orientation = if selected_instruction_codes.iter()
+            .any(|code| code == "bounded_tree_paper_orientation_v1:vertical") {
+            ori_domain::BeginnerGenericTreeOrientationV1::Vertical
+        } else if selected_instruction_codes.iter()
+            .any(|code| code == "bounded_tree_paper_orientation_v1:horizontal") {
+            ori_domain::BeginnerGenericTreeOrientationV1::Horizontal
+        } else { return Err("grid_candidate_tree_orientation_provenance_invalid".to_owned()); };
+        Some(ori_domain::BeginnerGenericTreeProvenanceV1 {
+            schema_version: 1, source, asset_content_sha256,
+            tree_topology_sha256: sha2::Sha256::digest(serde_json::to_vec(
+                &beginner_design_profile.generation_constraints.skeleton_segments)
+                .map_err(|_| "grid_candidate_tree_provenance_invalid")?).into(),
+            normalized_length_ratios: ratios, orientation, generator_version: 1,
+            authorizes_apply: false,
+        })
+    } else { None };
     beginner_design_profile.generation_provenance =
         Some(ori_domain::BeginnerGenerationProvenanceV1 {
             schema_version: 1,
@@ -5283,6 +5325,7 @@ fn apply_grid_plan_document(
             explicit_override: false,
             source_asset_fingerprint,
             semantic_landmark_provenance,
+            generic_tree,
         });
     execute_command(
         project,

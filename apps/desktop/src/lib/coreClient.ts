@@ -212,6 +212,12 @@ export type BeginnerDesignProfileV1 = {
     schema_version: 1; topology_authority_sha256: ReadonlyArray<number>
     fold_path_certificate_sha256?: ReadonlyArray<number>; confidence_score: number
     confidence_reasons: ReadonlyArray<string>; explicit_override: boolean; source_asset_fingerprint: string
+    generic_tree?: Readonly<{
+      schema_version: 1; source: 'image_silhouette' | 'glb_geometry' | 'manual_skeleton'
+      asset_content_sha256?: ReadonlyArray<number>; tree_topology_sha256: ReadonlyArray<number>
+      normalized_length_ratios: ReadonlyArray<number>; orientation: 'horizontal' | 'vertical'
+      generator_version: 1; authorizes_apply: false
+    }>
   }>
   reference_surface_landmarks_tenths_mm?: ReadonlyArray<readonly [number, number, number]>
   outline_edit_authority?: Readonly<{
@@ -1184,7 +1190,10 @@ export function normalizeBeginnerDesignProfile(
   if (!generationConstraints) return null
   const provenance = record.generation_provenance === undefined ? null : exactCoreDataRecord(
     record.generation_provenance, ['schema_version', 'topology_authority_sha256', 'fold_path_certificate_sha256', 'confidence_score',
-      'confidence_reasons', 'explicit_override', 'source_asset_fingerprint'] as const)
+      'confidence_reasons', 'explicit_override', 'source_asset_fingerprint', 'generic_tree'] as const)
+  const genericTree = provenance?.generic_tree === undefined ? null : exactCoreDataRecord(
+    provenance.generic_tree, ['schema_version', 'source', 'asset_content_sha256', 'tree_topology_sha256',
+      'normalized_length_ratios', 'orientation', 'generator_version', 'authorizes_apply'] as const)
   if (record.generation_provenance !== undefined && (!provenance || provenance.schema_version !== 1
     || !Array.isArray(provenance.topology_authority_sha256) || provenance.topology_authority_sha256.length !== 32
     || provenance.topology_authority_sha256.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)
@@ -1195,7 +1204,16 @@ export function normalizeBeginnerDesignProfile(
     || !Array.isArray(provenance.confidence_reasons) || provenance.confidence_reasons.length > 8
     || provenance.confidence_reasons.some((reason) => typeof reason !== 'string' || reason.length < 1 || reason.length > 64)
     || typeof provenance.explicit_override !== 'boolean' || typeof provenance.source_asset_fingerprint !== 'string'
-    || provenance.source_asset_fingerprint.length < 1 || provenance.source_asset_fingerprint.length > 128)) return null
+    || provenance.source_asset_fingerprint.length < 1 || provenance.source_asset_fingerprint.length > 128
+    || (provenance.generic_tree !== undefined && (!genericTree || genericTree.schema_version !== 1
+      || !['image_silhouette', 'glb_geometry', 'manual_skeleton'].includes(String(genericTree.source))
+      || (genericTree.asset_content_sha256 !== undefined && !isBoundedIntegerTuple(genericTree.asset_content_sha256, 32, 255))
+      || !isBoundedIntegerTuple(genericTree.tree_topology_sha256, 32, 255)
+      || !Array.isArray(genericTree.normalized_length_ratios) || genericTree.normalized_length_ratios.length < 1
+      || genericTree.normalized_length_ratios.length > 16 || genericTree.normalized_length_ratios.some(
+        (ratio) => !Number.isSafeInteger(ratio) || Number(ratio) < 1_000_000)
+      || !['horizontal', 'vertical'].includes(String(genericTree.orientation))
+      || genericTree.generator_version !== 1 || genericTree.authorizes_apply !== false)))) return null
   const landmarks = record.reference_surface_landmarks_tenths_mm
   if (landmarks !== undefined && (!Array.isArray(landmarks) || landmarks.length < 1 || landmarks.length > 256
     || landmarks.some((point) => !isBoundedIntegerTuple(point, 3, 2_147_483_648)))) return null
@@ -1272,6 +1290,17 @@ export function normalizeBeginnerDesignProfile(
       confidence_reasons: Object.freeze((provenance.confidence_reasons as string[]).slice()),
       explicit_override: provenance.explicit_override as boolean,
       source_asset_fingerprint: provenance.source_asset_fingerprint as string,
+      ...(genericTree === null ? {} : { generic_tree: Object.freeze({
+        schema_version: 1 as const,
+        source: genericTree.source as 'image_silhouette' | 'glb_geometry' | 'manual_skeleton',
+        ...(genericTree.asset_content_sha256 === undefined ? {} : {
+          asset_content_sha256: Object.freeze((genericTree.asset_content_sha256 as number[]).slice()),
+        }),
+        tree_topology_sha256: Object.freeze((genericTree.tree_topology_sha256 as number[]).slice()),
+        normalized_length_ratios: Object.freeze((genericTree.normalized_length_ratios as number[]).slice()),
+        orientation: genericTree.orientation as 'horizontal' | 'vertical', generator_version: 1 as const,
+        authorizes_apply: false as const,
+      }) }),
     }) }),
   }) as BeginnerDesignProfileV1
 }

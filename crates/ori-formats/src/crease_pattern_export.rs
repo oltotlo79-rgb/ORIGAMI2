@@ -1569,6 +1569,7 @@ mod tests {
             explicit_override: false,
             source_asset_fingerprint: "asset:test".to_owned(),
             semantic_landmark_provenance: None,
+            generic_tree: None,
         };
         for format in [
             CreasePatternExportFormat::Fold12,
@@ -1629,6 +1630,7 @@ mod tests {
             explicit_override: true,
             source_asset_fingerprint: "sha256:0123456789abcdef".to_owned(),
             semantic_landmark_provenance: None,
+            generic_tree: None,
         };
         for format in [
             CreasePatternExportFormat::Fold12,

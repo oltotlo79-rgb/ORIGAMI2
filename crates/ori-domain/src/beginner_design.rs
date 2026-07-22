@@ -73,6 +73,37 @@ pub struct BeginnerGenerationProvenanceV1 {
     pub source_asset_fingerprint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_landmark_provenance: Option<BeginnerSemanticLandmarkProvenanceV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generic_tree: Option<BeginnerGenericTreeProvenanceV1>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeginnerGenericTreeSourceV1 {
+    ImageSilhouette,
+    GlbGeometry,
+    ManualSkeleton,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeginnerGenericTreeOrientationV1 {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginnerGenericTreeProvenanceV1 {
+    pub schema_version: u32,
+    pub source: BeginnerGenericTreeSourceV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_content_sha256: Option<[u8; 32]>,
+    pub tree_topology_sha256: [u8; 32],
+    pub normalized_length_ratios: Vec<u32>,
+    pub orientation: BeginnerGenericTreeOrientationV1,
+    pub generator_version: u16,
+    pub authorizes_apply: bool,
 }
 
 impl Default for BeginnerDesignProfileV1 {
@@ -211,11 +242,43 @@ pub fn validate_beginner_generation_provenance_v1(
                         },
                     )
             })
+        && provenance.generic_tree.as_ref().is_none_or(|tree| {
+            tree.schema_version == 1 && tree.generator_version == 1 && !tree.authorizes_apply
+                && !tree.normalized_length_ratios.is_empty()
+                && tree.normalized_length_ratios.len() <= 16
+                && tree.normalized_length_ratios.iter().all(|ratio| *ratio >= 1_000_000)
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn profile_with_generic_tree() -> BeginnerDesignProfileV1 {
+        BeginnerDesignProfileV1 {
+            generation_provenance: Some(BeginnerGenerationProvenanceV1 {
+                schema_version: 1,
+                topology_authority_sha256: [1; 32],
+                fold_path_certificate_sha256: None,
+                confidence_score: 80,
+                confidence_reasons: vec!["bounded_tree".into()],
+                explicit_override: false,
+                source_asset_fingerprint: "asset:version".into(),
+                semantic_landmark_provenance: None,
+                generic_tree: Some(BeginnerGenericTreeProvenanceV1 {
+                    schema_version: 1,
+                    source: BeginnerGenericTreeSourceV1::ImageSilhouette,
+                    asset_content_sha256: Some([2; 32]),
+                    tree_topology_sha256: [3; 32],
+                    normalized_length_ratios: vec![1_000_000, 1_500_000],
+                    orientation: BeginnerGenericTreeOrientationV1::Horizontal,
+                    generator_version: 1,
+                    authorizes_apply: false,
+                }),
+            }),
+            ..BeginnerDesignProfileV1::default()
+        }
+    }
 
     fn profile_with_edit(edit: BeginnerOutlineEditRecordV1) -> BeginnerDesignProfileV1 {
         BeginnerDesignProfileV1 {
@@ -264,5 +327,57 @@ mod tests {
             merged_kind: BeginnerTargetPartKindV1::Wing,
         });
         assert!(!validate_beginner_design_profile_v1(&unordered));
+    }
+
+    #[test]
+    fn generic_tree_provenance_round_trips_without_apply_authority() {
+        let profile = profile_with_generic_tree();
+        assert!(validate_beginner_design_profile_v1(&profile));
+        let json = serde_json::to_string(&profile).expect("serialize profile");
+        let decoded: BeginnerDesignProfileV1 =
+            serde_json::from_str(&json).expect("deserialize profile");
+        assert_eq!(decoded, profile);
+        assert!(!decoded
+            .generation_provenance
+            .and_then(|value| value.generic_tree)
+            .expect("generic tree provenance")
+            .authorizes_apply);
+    }
+
+    #[test]
+    fn generic_tree_provenance_strictly_rejects_tampering() {
+        for mutate in [
+            |tree: &mut BeginnerGenericTreeProvenanceV1| tree.schema_version = 2,
+            |tree: &mut BeginnerGenericTreeProvenanceV1| tree.generator_version = 2,
+            |tree: &mut BeginnerGenericTreeProvenanceV1| tree.authorizes_apply = true,
+            |tree: &mut BeginnerGenericTreeProvenanceV1| tree.normalized_length_ratios[0] = 0,
+        ] {
+            let mut profile = profile_with_generic_tree();
+            mutate(
+                profile
+                    .generation_provenance
+                    .as_mut()
+                    .and_then(|value| value.generic_tree.as_mut())
+                    .expect("generic tree provenance"),
+            );
+            assert!(!validate_beginner_design_profile_v1(&profile));
+        }
+    }
+
+    #[test]
+    fn legacy_generation_provenance_without_generic_tree_remains_compatible() {
+        let mut json = serde_json::to_value(profile_with_generic_tree()).expect("serialize profile");
+        json["generation_provenance"]
+            .as_object_mut()
+            .expect("generation provenance")
+            .remove("generic_tree");
+        let decoded: BeginnerDesignProfileV1 =
+            serde_json::from_value(json).expect("deserialize legacy profile");
+        assert!(validate_beginner_design_profile_v1(&decoded));
+        assert!(decoded
+            .generation_provenance
+            .expect("generation provenance")
+            .generic_tree
+            .is_none());
     }
 }

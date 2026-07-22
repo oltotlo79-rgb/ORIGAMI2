@@ -102,3 +102,17 @@ test('image and GLB skeletons admit only bounded acyclic river-axial proposals',
   assert.match(native, /\.take\(MAX_BEGINNER_GENERIC_TREE_ORIENTATIONS_V1\)/u)
   assert.match(app, /beginnerSkeletonTree\.status !== 'tree'/u)
 })
+
+test('applied generic trees persist inert versioned source provenance', () => {
+  assert.match(native, /BeginnerGenericTreeSourceV1::ImageSilhouette/u)
+  assert.match(native, /BeginnerGenericTreeSourceV1::GlbGeometry/u)
+  assert.match(native, /BeginnerGenericTreeSourceV1::ManualSkeleton/u)
+  assert.match(native, /asset_content_sha256/u)
+  assert.match(native, /grid_candidate_tree_ratio_provenance_invalid/u)
+  assert.match(native, /generator_version: 1/u)
+  assert.match(native, /authorizes_apply: false/u)
+  assert.match(client, /generic_tree/u)
+  assert.match(client, /genericTree\.generator_version !== 1 \|\| genericTree\.authorizes_apply !== false/u)
+  assert.match(app, /display only; no apply authority/u)
+  assert.doesNotMatch(app, /asset_content_sha256.*slice/u)
+})

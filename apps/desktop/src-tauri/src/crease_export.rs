@@ -878,6 +878,7 @@ mod tests {
             explicit_override: true,
             source_asset_fingerprint: "asset:desktop-test".to_owned(),
             semantic_landmark_provenance: None,
+            generic_tree: None,
         };
         for format in [
             CreaseExportFormatRequest::Fold,

@@ -907,8 +907,8 @@ mod tests {
             proposal.target_parts[1].kind,
             BeginnerTargetPartKindV1::Torso
         );
-        assert!((1..=MAX_BEGINNER_MEDIAL_AXIS_BARS_V1).contains(&proposal.skeleton_segments.len()));
-        assert_eq!(proposal.skeleton_quality.as_ref().unwrap().bar_limit, 32);
+        assert_eq!(proposal.skeleton_segments.len(), 1);
+        assert!(proposal.skeleton_quality.is_none());
         assert_eq!(proposal.source_sha256, [7; 32]);
         assert_eq!(
             proposal.generic_body_outline_mode,
@@ -986,7 +986,8 @@ mod tests {
             BeginnerRecognitionFormatV1::SilhouettePngV1
         );
         assert!(proposal.target_parts.is_empty());
-        assert_eq!(proposal.skeleton_segments.len(), 1);
+        assert!((1..=MAX_BEGINNER_MEDIAL_AXIS_BARS_V1).contains(&proposal.skeleton_segments.len()));
+        assert_eq!(proposal.skeleton_quality.as_ref().unwrap().bar_limit, 32);
         assert_eq!(proposal.shape_bounds.min_y, 1);
         assert_eq!(proposal.protrusions.len(), 2);
         assert!(proposal.protrusions.iter().all(|target| {

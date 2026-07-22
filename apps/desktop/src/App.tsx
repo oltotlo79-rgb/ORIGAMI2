@@ -8496,6 +8496,16 @@ function App() {
                       .slice(0, 4).map((byte) => byte.toString(16).padStart(2, '0')).join(''),
                   })}</p>
                 )}
+                {nativeSnapshot.beginner_design_profile.generation_provenance?.generic_tree && (
+                  <p role="status">{formattedText({
+                    ja: '保存済み一般木候補の由来: {source}・{orientation}向き・generator v{version}・表示専用（再適用権限なし）',
+                    en: 'Saved generic-tree origin: {source} · {orientation} orientation · generator v{version} · display only; no apply authority',
+                  }, {
+                    source: nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.source,
+                    orientation: nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.orientation,
+                    version: nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.generator_version,
+                  })}</p>
+                )}
                 <label className="field">
                   <span>{text({ ja: '評価プリセット', en: 'Evaluation preset' })}</span>
                   <select

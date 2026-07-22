@@ -15268,7 +15268,25 @@ mod tests {
                 id: model,
                 bytes: glb,
             });
-        let layer = project.editor.project_layers().layers[0].id;
+        let project_id = project.project_id;
+        let layer = ori_domain::LayerId::new();
+        execute_command(
+            &mut project,
+            project_id,
+            0,
+            Command::CreateLayer {
+                layer: LayerRecordV1 {
+                    id: layer,
+                    name: "Reference image".to_owned(),
+                    content_kind: LayerContentKindV1::Underlay,
+                    visible: true,
+                    locked: false,
+                    opacity: 1.0,
+                },
+                target_index: 1,
+            },
+        )
+        .unwrap();
         let underlay = ori_domain::UnderlayId::new();
         let record = |asset| ori_domain::UnderlayRecordV1 {
             id: underlay,
@@ -15282,7 +15300,6 @@ mod tests {
             opacity: 1.0,
             layer,
         };
-        let project_id = project.project_id;
         let stale_revision = project.editor.revision();
         let added = execute_command(
             &mut project,

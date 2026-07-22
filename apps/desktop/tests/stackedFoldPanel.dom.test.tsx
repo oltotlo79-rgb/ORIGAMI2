@@ -5,6 +5,7 @@ import type { ProjectSnapshot } from '../src/lib/coreClient'
 
 const transport = vi.hoisted(() => ({
   preview: vi.fn(),
+  basicPreview: vi.fn(),
   cyclePreview: vi.fn(),
   apply: vi.fn(),
   namedApply: vi.fn(),
@@ -22,6 +23,7 @@ const transport = vi.hoisted(() => ({
 vi.mock('../src/lib/coreClient', async (importOriginal) => ({
   ...await importOriginal<typeof import('../src/lib/coreClient')>(),
   proposeCurrentStackedFoldRead: transport.preview,
+  previewNamedBasicFoldTimeline: transport.basicPreview,
   proposeCurrentCyclePoseV1: transport.cyclePreview,
   applyStackedFoldTransaction: transport.apply,
   applyNamedBookFoldTransaction: transport.namedApply,
@@ -49,6 +51,19 @@ vi.mock('../src/lib/coreClient', async (importOriginal) => ({
 const instance = '018f47a2-4b7a-7cc1-8abc-112233445566'
 const project = '018f47a2-4b7a-7cc1-8abc-665544332211'
 const token = '018f47a2-4b7a-7cc1-8abc-778899aabbcc'
+const basicTimelinePreview = {
+  schemaVersion: 1 as const,
+  transactionToken: token,
+  projectInstanceId: instance,
+  projectId: project,
+  revision: 3,
+  sourceModelFingerprint: 'a'.repeat(64),
+  fixedFace: project,
+  foldEdge: 'edge',
+  assignment: 'mountain' as const,
+  previewBindingSha256: 'b'.repeat(64),
+  timeline: { steps: [] },
+}
 
 const snapshot = {
   project_instance_id: instance,
@@ -477,6 +492,7 @@ describe('StackedFoldPanel', () => {
 
   it('applies a selected named book fold through the proof-bound native transaction', async () => {
     transport.preview.mockResolvedValue(ready)
+    transport.basicPreview.mockResolvedValue(basicTimelinePreview)
     transport.namedApply.mockResolvedValue(4)
     const refreshed = { ...snapshot, revision: 4 } as ProjectSnapshot
     const document = {
@@ -499,10 +515,12 @@ describe('StackedFoldPanel', () => {
     const apply = await screen.findByRole('button', { name: '名前付き二つ折りを適用' })
     expect(screen.getByRole('note').textContent).toContain('PDF/SVG折り図')
     expect(apply).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: /preview/i }))
+    await waitFor(() => expect(transport.basicPreview).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(apply)
     await waitFor(() => expect(transport.namedApply).toHaveBeenCalledWith(
-      token, document, 'book-fold',
+      token, document, 'book-fold', basicTimelinePreview,
     ))
     expect(transport.apply).not.toHaveBeenCalled()
     await waitFor(() => expect(onApplied).toHaveBeenCalledWith(refreshed))
@@ -510,6 +528,7 @@ describe('StackedFoldPanel', () => {
 
   it('keeps the project unchanged when named proof apply rejects stale or tampered authority', async () => {
     transport.preview.mockResolvedValue(ready)
+    transport.basicPreview.mockResolvedValue(basicTimelinePreview)
     transport.namedApply.mockRejectedValue(new Error('stale or tampered'))
     const onApplied = vi.fn()
     render(
@@ -529,6 +548,8 @@ describe('StackedFoldPanel', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'Verify safety' }))
     const apply = await screen.findByRole('button', { name: 'Apply named book fold' })
+    fireEvent.click(screen.getByRole('button', { name: 'Preview certified timeline' }))
+    await waitFor(() => expect(transport.basicPreview).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(apply)
     expect((await screen.findByRole('alert')).textContent).toContain(

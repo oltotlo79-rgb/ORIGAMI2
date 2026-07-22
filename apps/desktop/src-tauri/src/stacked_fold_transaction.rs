@@ -27,6 +27,7 @@ pub(super) struct BasicFoldTimelinePreviewResponse {
     fixed_face: ori_domain::FaceId,
     fold_edge: ori_domain::EdgeId,
     assignment: String,
+    preview_binding_sha256: String,
     timeline: ori_domain::InstructionTimeline,
 }
 
@@ -718,6 +719,37 @@ pub(super) fn preview_named_basic_fold_timeline(
     technique_document_json: String,
     technique_id: String,
 ) -> Result<BasicFoldTimelinePreviewResponse, String> {
+    compile_named_basic_fold_preview(
+        &app_state,
+        &foldability_state,
+        &transaction_state,
+        token,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        expected_source_model_fingerprint,
+        fold_edge,
+        assignment,
+        technique_document_json,
+        technique_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_named_basic_fold_preview(
+    app_state: &AppState,
+    foldability_state: &GlobalFlatFoldabilityState,
+    transaction_state: &StackedFoldTransactionState,
+    token: ProjectId,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    expected_source_model_fingerprint: String,
+    fold_edge: ori_domain::EdgeId,
+    assignment: String,
+    technique_document_json: String,
+    technique_id: String,
+) -> Result<BasicFoldTimelinePreviewResponse, String> {
     let kind = match assignment.as_str() {
         "mountain" => ori_instructions::BasicFoldKindV1::Mountain,
         "valley" => ori_instructions::BasicFoldKindV1::Valley,
@@ -825,6 +857,13 @@ pub(super) fn preview_named_basic_fold_timeline(
         other => Err(other),
     })
     .map_err(|_| "The named basic-fold compiler rejected the preview.".to_owned())?;
+    let preview_binding_sha256 = basic_fold_preview_binding_v1(
+        token,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        &timeline,
+    )?;
     Ok(BasicFoldTimelinePreviewResponse {
         schema_version: 1,
         transaction_token: token,
@@ -835,8 +874,29 @@ pub(super) fn preview_named_basic_fold_timeline(
         fixed_face,
         fold_edge,
         assignment,
+        preview_binding_sha256,
         timeline,
     })
+}
+
+fn basic_fold_preview_binding_v1(
+    token: ProjectId,
+    instance: ProjectId,
+    project: ProjectId,
+    revision: u64,
+    timeline: &ori_domain::InstructionTimeline,
+) -> Result<String, String> {
+    let bytes = serde_json::to_vec(timeline)
+        .map_err(|_| "The basic-fold preview could not be bound.".to_owned())?;
+    let mut hash = Sha256::new();
+    hash.update(b"named_basic_fold_timeline_preview_binding_v1");
+    hash.update(token.canonical_bytes());
+    hash.update(instance.canonical_bytes());
+    hash.update(project.canonical_bytes());
+    hash.update(revision.to_be_bytes());
+    hash.update((bytes.len() as u64).to_be_bytes());
+    hash.update(bytes);
+    Ok(lowercase_hex(hash.finalize().into()))
 }
 
 #[tauri::command]
@@ -845,6 +905,13 @@ pub(super) fn apply_named_book_fold_transaction(
     foldability_state: State<'_, GlobalFlatFoldabilityState>,
     transaction_state: State<'_, StackedFoldTransactionState>,
     token: ProjectId,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    expected_source_model_fingerprint: String,
+    fold_edge: ori_domain::EdgeId,
+    assignment: String,
+    expected_preview_binding_sha256: String,
     technique_document_json: String,
     technique_id: String,
 ) -> Result<u64, String> {
@@ -878,19 +945,30 @@ pub(super) fn apply_named_book_fold_transaction(
     }) {
         return Err("Only one proven straight-line book fold can be applied.".to_owned());
     }
-    let title = technique
-        .names
-        .iter()
-        .find(|text| text.locale == "ja")
-        .or_else(|| technique.names.first())
-        .map(|text| text.text.clone())
-        .ok_or_else(|| "The named book-fold title is unavailable.".to_owned())?;
+    let compiled = compile_named_basic_fold_preview(
+        &app_state,
+        &foldability_state,
+        &transaction_state,
+        token,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        expected_source_model_fingerprint,
+        fold_edge,
+        assignment,
+        technique_document_json,
+        technique_id,
+    )?;
+    if compiled.preview_binding_sha256 != expected_preview_binding_sha256 {
+        return Err("The named basic-fold preview binding is stale or tampered.".to_owned());
+    }
     apply_stacked_fold_transaction_with_title(
         &app_state,
         &foldability_state,
         &transaction_state,
         token,
-        Some(&title),
+        None,
+        Some(compiled.timeline),
     )
 }
 
@@ -955,6 +1033,7 @@ pub(super) fn apply_named_reverse_fold_transaction(
         &transaction_state,
         token,
         Some(&title),
+        None,
     )
 }
 
@@ -1018,6 +1097,7 @@ pub(super) fn apply_named_accordion_fold_transaction(
         &transaction_state,
         token,
         Some(&title),
+        None,
     )
 }
 
@@ -1082,6 +1162,7 @@ pub(super) fn apply_named_sink_fold_transaction(
         &transaction_state,
         token,
         Some(&title),
+        None,
     )
 }
 
@@ -1141,6 +1222,7 @@ pub(super) fn apply_named_layer_selective_transaction(
         &transaction_state,
         token,
         Some(&title),
+        None,
     )
 }
 
@@ -1156,6 +1238,7 @@ pub(crate) fn apply_stacked_fold_transaction_inner(
         transaction_state,
         token,
         None,
+        None,
     )
 }
 
@@ -1165,6 +1248,7 @@ fn apply_stacked_fold_transaction_with_title(
     transaction_state: &StackedFoldTransactionState,
     token: ProjectId,
     named_title: Option<&str>,
+    compiled_timeline: Option<ori_domain::InstructionTimeline>,
 ) -> Result<u64, String> {
     let mut transaction_slot = lock_slot(transaction_state)?;
     let pending = transaction_slot
@@ -1264,6 +1348,7 @@ fn apply_stacked_fold_transaction_with_title(
     }
     .map_err(|_| "The target pose is inconsistent.".to_owned())?;
     let mut timeline = project.editor.instruction_timeline().clone();
+    let existing_timeline_step_count = timeline.steps.len();
     let certified_path_angles = requested.ordered_timeline_angles();
     let persisted_layer_proof = requested.persisted_cycle_layer_order_proof();
     if certified_path_angles.is_empty()
@@ -1368,6 +1453,10 @@ fn apply_stacked_fold_transaction_with_title(
                     .collect(),
             },
         });
+    }
+    if let Some(compiled_timeline) = compiled_timeline {
+        timeline.steps.truncate(existing_timeline_step_count);
+        timeline.steps.extend(compiled_timeline.steps);
     }
     let layers = project.editor.project_layers().clone();
     let applied_layer_order = pending.layer_order.clone();
@@ -1605,6 +1694,7 @@ mod tests {
             fixed_face: ori_domain::FaceId::new(),
             fold_edge: ori_domain::EdgeId::new(),
             assignment: "mountain".to_owned(),
+            preview_binding_sha256: "cd".repeat(32),
             timeline: ori_domain::InstructionTimeline { steps: Vec::new() },
         };
         let value = serde_json::to_value(response).expect("serialize read-only preview");
@@ -1618,6 +1708,7 @@ mod tests {
                 "assignment",
                 "fixedFace",
                 "foldEdge",
+                "previewBindingSha256",
                 "projectId",
                 "projectInstanceId",
                 "revision",
@@ -1632,5 +1723,29 @@ mod tests {
         let serialized = serde_json::to_string(&value).unwrap();
         assert!(!serialized.contains("certificate"));
         assert!(!serialized.contains("authorizesProjectMutation"));
+    }
+
+    #[test]
+    fn basic_fold_preview_binding_covers_authority_and_timeline() {
+        let token = ProjectId::new();
+        let instance = ProjectId::new();
+        let project = ProjectId::new();
+        let timeline = ori_domain::InstructionTimeline { steps: Vec::new() };
+        let expected =
+            basic_fold_preview_binding_v1(token, instance, project, 7, &timeline).unwrap();
+        assert_eq!(expected.len(), 64);
+        assert_eq!(
+            expected,
+            basic_fold_preview_binding_v1(token, instance, project, 7, &timeline).unwrap()
+        );
+        assert_ne!(
+            expected,
+            basic_fold_preview_binding_v1(ProjectId::new(), instance, project, 7, &timeline)
+                .unwrap()
+        );
+        assert_ne!(
+            expected,
+            basic_fold_preview_binding_v1(token, instance, project, 8, &timeline).unwrap()
+        );
     }
 }

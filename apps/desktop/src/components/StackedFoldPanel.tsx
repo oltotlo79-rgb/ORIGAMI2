@@ -139,6 +139,8 @@ export function StackedFoldPanel({
   const [basicFoldTimelinePreview, setBasicFoldTimelinePreview] =
     useState<BasicFoldTimelinePreviewResponseV1 | null>(null)
   const [basicFoldTimelinePreviewError, setBasicFoldTimelinePreviewError] = useState(false)
+  const namedBasicFold = namedBookFold != null
+    && (namedBookFold.kind == null || namedBookFold.kind === 'book')
   useEffect(() => {
     setBasicFoldTimelinePreview(null)
     setBasicFoldTimelinePreviewError(false)
@@ -197,6 +199,8 @@ export function StackedFoldPanel({
 
   const cancelToken = (token: string | null) => {
     if (!token) return
+    setBasicFoldTimelinePreview(null)
+    setBasicFoldTimelinePreviewError(false)
     void cancelStackedFoldTransactionPreview(token).catch(() => undefined)
   }
 
@@ -453,7 +457,8 @@ export function StackedFoldPanel({
       view.kind !== 'ready' ||
       !view.response.transactionProposal.readyForAtomicApply ||
       !confirmed ||
-      applying
+      applying || (namedBasicFold
+        && basicFoldTimelinePreview?.transactionToken !== view.response.transactionProposal.transactionToken)
     ) return
     const token = view.response.transactionProposal.transactionToken
     if (!token || token !== tokenRef.current) return
@@ -463,6 +468,8 @@ export function StackedFoldPanel({
       await applyTransaction(token)
       committed = true
       tokenRef.current = null
+      setBasicFoldTimelinePreview(null)
+      setBasicFoldTimelinePreviewError(false)
       const next = await refreshSnapshot()
       onApplied(next)
       setView({ kind: 'idle' })
@@ -477,7 +484,7 @@ export function StackedFoldPanel({
   }
 
   async function previewNamedBasicFold() {
-    if (view.kind !== 'ready' || !namedBookFold || namedBookFold.kind !== 'book'
+    if (view.kind !== 'ready' || !namedBookFold || !namedBasicFold
       || !selectedLine || disabled || applying) return
     const token = view.response.transactionProposal.transactionToken
     const segment = view.response.materialSegments.find((item) =>
@@ -521,11 +528,13 @@ export function StackedFoldPanel({
           namedBookFold.techniqueId,
         )
       : namedBookFold
-        ? applyNamedBookFoldTransaction(
+        ? basicFoldTimelinePreview?.transactionToken === token
+          ? applyNamedBookFoldTransaction(
           token,
           namedBookFold.document,
           namedBookFold.techniqueId,
-        )
+          basicFoldTimelinePreview,
+        ) : Promise.reject(new Error('certified basic-fold timeline preview required'))
         : applyStackedFoldTransaction(token)
   }
 
@@ -545,8 +554,8 @@ export function StackedFoldPanel({
           edge: hinge.edge,
           angleDegrees: requestedHingeAngles[hinge.edge] ?? hinge.initialAngleDegrees,
         })),
-        maxStates: dyadicLevelCount === 3 ? 243 : dyadicLevelCount === 5 ? 125 : 128,
-        maxTransitions: dyadicLevelCount === 3 ? 1620 : dyadicLevelCount === 5 ? 600 : 512,
+        maxStates: dyadicLevelCount === 3 ? 729 : dyadicLevelCount === 5 ? 125 : 128,
+        maxTransitions: dyadicLevelCount === 3 ? 5832 : dyadicLevelCount === 5 ? 600 : 512,
         levelCount: dyadicLevelCount,
         ...(authoredCycleSchedule ? { cycleScheduleV1: authoredCycleSchedule } : {}),
       })
@@ -578,8 +587,8 @@ export function StackedFoldPanel({
           edge: hinge.edge,
           angleDegrees: requestedHingeAngles[hinge.edge] ?? hinge.initialAngleDegrees,
         })),
-        maxStates: dyadicLevelCount === 3 ? 243 : dyadicLevelCount === 5 ? 125 : 128,
-        maxTransitions: dyadicLevelCount === 3 ? 1620 : dyadicLevelCount === 5 ? 600 : 512,
+        maxStates: dyadicLevelCount === 3 ? 729 : dyadicLevelCount === 5 ? 125 : 128,
+        maxTransitions: dyadicLevelCount === 3 ? 5832 : dyadicLevelCount === 5 ? 600 : 512,
         levelCount: dyadicLevelCount,
         ...(authoredCycleSchedule ? { cycleScheduleV1: authoredCycleSchedule } : {}),
         expectedPathBindingSha256: graph.certificateBindingSha256,
@@ -1243,7 +1252,7 @@ export function StackedFoldPanel({
               )}
             </p>
           )}
-          {namedBookFold?.kind === 'book' && (
+          {namedBasicFold && (
             <section aria-label={t('名前付き基本折りの手順preview', 'Named basic-fold timeline preview')}>
               <button type="button" onClick={() => void previewNamedBasicFold()} disabled={!ready || applying}>
                 {t('認証済み手順をpreview', 'Preview certified timeline')}
@@ -1260,10 +1269,10 @@ export function StackedFoldPanel({
             </section>
           )}
           <label>
-            <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={!ready || applying} />
+            <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={!ready || applying || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)} />
             {t('証明済みの変更内容を確認しました。', 'I reviewed the certified changes.')}
           </label>
-          <button type="button" onClick={() => void apply()} disabled={!ready || !confirmed || applying}>
+          <button type="button" onClick={() => void apply()} disabled={!ready || !confirmed || applying || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)}>
             {applying
               ? t('適用中…', 'Applying…')
               : namedBookFold

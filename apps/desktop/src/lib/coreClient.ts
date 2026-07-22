@@ -3102,8 +3102,8 @@ export function readBoundedDyadicPoseGraphV1(request: Readonly<{
   if (!isCanonicalNonNilUuid(request.expectedProjectInstanceId)
     || !isCanonicalNonNilUuid(request.expectedProjectId)
     || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
-    || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1 || request.maxStates > 243
-    || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1 || request.maxTransitions > 1620
+    || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1 || request.maxStates > 729
+    || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1 || request.maxTransitions > 5832
     || ![3, 5, 9].includes(request.levelCount)
     || !Array.isArray(request.targetAngles) || request.targetAngles.length === 0 || request.targetAngles.length > 64
     || request.targetAngles.some((entry) => !isCanonicalNonNilUuid(entry.edge)
@@ -3166,8 +3166,8 @@ export function mintDyadicPosePathPreviewV1(request: Readonly<{
   if (!isCanonicalNonNilUuid(request.expectedProjectInstanceId)
     || !isCanonicalNonNilUuid(request.expectedProjectId)
     || !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0
-    || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1 || request.maxStates > 243
-    || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1 || request.maxTransitions > 1620
+    || !Number.isSafeInteger(request.maxStates) || request.maxStates < 1 || request.maxStates > 729
+    || !Number.isSafeInteger(request.maxTransitions) || request.maxTransitions < 1 || request.maxTransitions > 5832
     || ![3, 5, 9].includes(request.levelCount)
     || !Array.isArray(request.targetAngles) || request.targetAngles.length === 0 || request.targetAngles.length > 64
     || request.targetAngles.some((entry) => !isCanonicalNonNilUuid(entry.edge) || !Number.isFinite(entry.angleDegrees) || entry.angleDegrees < 0 || entry.angleDegrees > 180)
@@ -3432,6 +3432,7 @@ export type BasicFoldTimelinePreviewResponseV1 = Readonly<{
   fixedFace: string
   foldEdge: string
   assignment: 'mountain' | 'valley'
+  previewBindingSha256: string
   timeline: InstructionTimeline
 }>
 
@@ -3459,13 +3460,15 @@ export function previewNamedBasicFoldTimeline(
   }).then((value) => {
     if (!value || typeof value !== 'object') throw new Error('invalid basic-fold preview response')
     const response = value as Record<string, unknown>
-    if (Object.keys(response).sort().join(',') !== 'assignment,fixedFace,foldEdge,projectId,projectInstanceId,revision,schemaVersion,sourceModelFingerprint,timeline,transactionToken'
+    if (Object.keys(response).sort().join(',') !== 'assignment,fixedFace,foldEdge,previewBindingSha256,projectId,projectInstanceId,revision,schemaVersion,sourceModelFingerprint,timeline,transactionToken'
       || response.schemaVersion !== 1 || response.transactionToken !== request.token
       || response.projectInstanceId !== request.expectedProjectInstanceId
       || response.projectId !== request.expectedProjectId || response.revision !== request.expectedRevision
       || response.sourceModelFingerprint !== request.expectedSourceModelFingerprint
       || !isCanonicalNonNilUuid(response.fixedFace) || response.foldEdge !== request.foldEdge
-      || response.assignment !== request.assignment || !response.timeline
+      || response.assignment !== request.assignment
+      || typeof response.previewBindingSha256 !== 'string'
+      || !/^[0-9a-f]{64}$/u.test(response.previewBindingSha256) || !response.timeline
       || typeof response.timeline !== 'object' || !Array.isArray((response.timeline as { steps?: unknown }).steps)) {
       throw new Error('invalid basic-fold preview response')
     }
@@ -3500,8 +3503,10 @@ export function applyNamedBookFoldTransaction(
   token: string,
   techniqueDocument: unknown,
   techniqueId: string,
+  preview: BasicFoldTimelinePreviewResponseV1,
 ): Promise<number> {
-  if (!isCanonicalNonNilUuid(token) || typeof techniqueId !== 'string') {
+  if (!isCanonicalNonNilUuid(token) || typeof techniqueId !== 'string'
+    || preview.transactionToken !== token || !/^[0-9a-f]{64}$/u.test(preview.previewBindingSha256)) {
     return Promise.reject(new Error('invalid named book-fold request'))
   }
   let techniqueDocumentJson: string
@@ -3515,6 +3520,13 @@ export function applyNamedBookFoldTransaction(
   }
   return invoke<unknown>('apply_named_book_fold_transaction', {
     token,
+    expectedProjectInstanceId: preview.projectInstanceId,
+    expectedProjectId: preview.projectId,
+    expectedRevision: preview.revision,
+    expectedSourceModelFingerprint: preview.sourceModelFingerprint,
+    foldEdge: preview.foldEdge,
+    assignment: preview.assignment,
+    expectedPreviewBindingSha256: preview.previewBindingSha256,
     techniqueDocumentJson,
     techniqueId,
   }).then((value) => {

@@ -4214,6 +4214,19 @@ export function FoldPreview({
     collisionPathDisclosure,
     locale,
   )
+  const staticGraphReasonNote = model?.kind === 'fold_graph'
+    && model.kinematics.kind !== 'tree'
+    && model.kinematics.reason === 'cut_material_components'
+    ? foldPreviewText(
+        locale,
+        '切断により紙が複数の部品へ分離しているため平面確認のみ',
+        'planar inspection only because cuts separated the paper into multiple components',
+      )
+    : foldPreviewText(
+        locale,
+        '閉路拘束のため平面確認のみ',
+        'planar inspection only because of cycle constraints',
+      )
   const previewPoseNote = model?.kind === 'fold_graph' && model.kinematics.kind === 'tree'
     ? foldPreviewText(
         locale,
@@ -4223,8 +4236,8 @@ export function FoldPreview({
     : model?.kind === 'fold_graph'
       ? foldPreviewText(
           locale,
-          `${model.faces.length}面・${model.hinges.length}ヒンジは閉路拘束の平面確認段階`,
-          `${model.faces.length} faces · ${model.hinges.length} hinges · planar inspection stage because of cycle constraints`,
+          `${model.faces.length}面・${model.hinges.length}ヒンジ・${staticGraphReasonNote}`,
+          `${model.faces.length} faces · ${model.hinges.length} hinges · ${staticGraphReasonNote}`,
         )
       : model?.kind === 'single_fold' && fixedFaceLabel
         ? fixedFaceLabel
@@ -4323,8 +4336,8 @@ export function FoldPreview({
       : model?.kind === 'fold_graph' && !renderError
         ? foldPreviewText(
             locale,
-            `実展開図の複数面3D平面確認、${model.faces.length}面・${model.hinges.length}ヒンジ、閉路拘束のため折り動作は未適用、${collisionDescription}、${thicknessNote}`,
-            `Multi-face planar 3D inspection of the actual crease pattern. ${model.faces.length} faces and ${model.hinges.length} hinges. Folding motion is not applied because of cycle constraints. ${collisionDescription}. ${thicknessNote}.`,
+            `実展開図の複数面3D平面確認、${model.faces.length}面・${model.hinges.length}ヒンジ、${staticGraphReasonNote}、${collisionDescription}、${thicknessNote}`,
+            `Multi-face planar 3D inspection of the actual crease pattern. ${model.faces.length} faces and ${model.hinges.length} hinges. ${staticGraphReasonNote}. ${collisionDescription}. ${thicknessNote}.`,
           )
     : model?.kind === 'planar' && !renderError
       ? foldPreviewText(

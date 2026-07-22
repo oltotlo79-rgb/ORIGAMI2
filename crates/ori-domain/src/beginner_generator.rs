@@ -2159,8 +2159,8 @@ fn append_bounded_radial_tree_graph(
         let x_ratio = f64::from(source.0.checked_sub(source_min_x)?) / source_width;
         let y_ratio = f64::from(source.1.checked_sub(source_min_y)?) / source_height;
         Some(Point2::new(
-            min_x + (max_x - min_x) * (0.2 + x_ratio * 0.6),
-            min_y + (max_y - min_y) * (0.2 + y_ratio * 0.6),
+            min_x + (max_x - min_x) * (0.05 + x_ratio * 0.1),
+            min_y + (max_y - min_y) * (0.05 + y_ratio * 0.1),
         ))
     };
     let mut vertex_ids = std::collections::BTreeMap::new();

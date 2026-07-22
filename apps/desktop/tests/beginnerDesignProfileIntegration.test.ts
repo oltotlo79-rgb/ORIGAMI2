@@ -209,6 +209,16 @@ test('disconnected GLB components form only one bounded custom tree proposal', (
   assert.match(app, /category\.value = 'custom_object'/u)
 })
 
+test('GLB node transforms and instancing fail closed before component inference', () => {
+  const referenceGlb = source('../../../crates/ori-formats/src/reference_glb.rs')
+  assert.match(referenceGlb, /fn validate_identity_node_mesh_usage/u)
+  for (const member of ['matrix', 'translation', 'rotation', 'scale', 'skin', 'weights']) {
+    assert.match(referenceGlb, new RegExp(`"${member}"`, 'u'))
+  }
+  assert.match(referenceGlb, /std::mem::replace\(&mut referenced\[mesh\], true\)/u)
+  assert.match(referenceGlb, /validate_identity_node_mesh_usage\(object\)\?/u)
+})
+
 test('AUT-006 stores every bounded protrusion target attribute in profile history', () => {
   assert.match(generation, /struct BeginnerProtrusionTargetV1/u)
   for (const field of [

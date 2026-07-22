@@ -76,6 +76,52 @@ pub fn validate_reference_glb_v1(bytes: &[u8]) -> Result<(), ReferenceGlbErrorV1
     {
         return Err(ReferenceGlbErrorV1::UnsupportedContent);
     }
+    validate_identity_node_mesh_usage(object)?;
+    Ok(())
+}
+
+fn validate_identity_node_mesh_usage(
+    root: &serde_json::Map<String, Value>,
+) -> Result<(), ReferenceGlbErrorV1> {
+    let Some(nodes) = root.get("nodes") else {
+        return Ok(());
+    };
+    let nodes = nodes
+        .as_array()
+        .ok_or(ReferenceGlbErrorV1::UnsupportedContent)?;
+    let mesh_count = root
+        .get("meshes")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let mut referenced = vec![false; mesh_count];
+    for node in nodes {
+        let node = node
+            .as_object()
+            .ok_or(ReferenceGlbErrorV1::UnsupportedContent)?;
+        if [
+            "matrix",
+            "translation",
+            "rotation",
+            "scale",
+            "skin",
+            "weights",
+        ]
+        .into_iter()
+        .any(|key| node.contains_key(key))
+        {
+            return Err(ReferenceGlbErrorV1::UnsupportedContent);
+        }
+        if let Some(mesh) = node.get("mesh") {
+            let mesh = mesh
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|index| *index < mesh_count)
+                .ok_or(ReferenceGlbErrorV1::UnsupportedContent)?;
+            if std::mem::replace(&mut referenced[mesh], true) {
+                return Err(ReferenceGlbErrorV1::UnsupportedContent);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -275,6 +321,36 @@ mod tests {
                 Err(ReferenceGlbErrorV1::UnsupportedContent)
             );
         }
+    }
+
+    #[test]
+    fn node_transforms_and_mesh_instancing_fail_closed() {
+        for member in [
+            r#""translation":[1,0,0]"#,
+            r#""rotation":[0,0,0,1]"#,
+            r#""scale":[-1,1,1]"#,
+            r#""matrix":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]"#,
+        ] {
+            let json = format!(
+                r#"{{"asset":{{"version":"2.0"}},"meshes":[{{"primitives":[]}}],"nodes":[{{"mesh":0,{member}}}]}}"#
+            );
+            assert_eq!(
+                validate_reference_glb_v1(&glb(&json)),
+                Err(ReferenceGlbErrorV1::UnsupportedContent)
+            );
+        }
+        assert_eq!(
+            validate_reference_glb_v1(&glb(
+                r#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[]}],"nodes":[{"mesh":0},{"mesh":0}]}"#
+            )),
+            Err(ReferenceGlbErrorV1::UnsupportedContent)
+        );
+        assert_eq!(
+            validate_reference_glb_v1(&glb(
+                r#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[]},{"primitives":[]}],"nodes":[{"mesh":0},{"mesh":1}]}"#
+            )),
+            Ok(())
+        );
     }
 
     #[test]

@@ -1413,13 +1413,11 @@ fn commit_windows_staged_project_file_with_journal(
     if project_directory_identity(parent).ok() != Some(directory_identity) {
         return Err("the save directory changed before commit".to_owned());
     }
-    if let Err(error) = super::rename_windows_staged_file_with_policy(
+    super::rename_windows_staged_file_with_policy(
         staged.file(),
         destination,
         ExistingDestinationPolicy::ReplaceConfirmed,
-    ) {
-        return Err(error);
-    }
+    )?;
     staged.committed = true;
     let journal = journal_path_for_target(destination, &payload.target_path_sha256)
         .map_err(|()| "failed to locate the save journal".to_owned())?;
@@ -2258,6 +2256,144 @@ mod staged_payload_adapter_tests {
             }
 
             drop(blocker);
+            recover_single_file_journal_for_target(&target, project_id).expect("retry recovery");
+            let expected: &[u8] = if phase == SingleFileJournalPhaseV1::Prepared {
+                old
+            } else {
+                new
+            };
+            assert_eq!(fs::read(&target).expect("complete target"), expected);
+            assert!(!journal.exists());
+            assert_eq!(fs::read(&sentinel).expect("sentinel"), b"unowned");
+            fs::remove_dir_all(directory).expect("cleanup test directory");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_read_only_parent_redacts_errors_and_retries_after_permission_restore() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = journal_test_directory("unix-permission-save");
+        let target = directory.join("project.ori2");
+        let sentinel = directory.join("sentinel");
+        let old_archive = Ori2ProjectArchive::document_only(ProjectDocument::new(
+            "old complete",
+            CreasePattern::empty(),
+        ));
+        let new_archive = Ori2ProjectArchive::document_only(ProjectDocument::new(
+            "new complete",
+            CreasePattern::empty(),
+        ));
+        let old_bytes = write_project_archive_ori2(&old_archive).expect("old archive");
+        fs::write(&target, &old_bytes).expect("old target");
+        fs::write(&sentinel, b"unowned").expect("sentinel");
+
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o555))
+            .expect("read-only parent");
+        let read_only_error = persist_project_archive_to_destination(
+            &DialogSaveDestination::confirmed(target.clone()),
+            &new_archive,
+        )
+        .expect_err("read-only parent must reject save");
+        assert_eq!(fs::read(&target).expect("old target"), old_bytes);
+        assert_eq!(fs::read(&sentinel).expect("sentinel"), b"unowned");
+
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o500))
+            .expect("owner-only parent");
+        let denied_error = persist_project_archive_to_destination(
+            &DialogSaveDestination::confirmed(target.clone()),
+            &new_archive,
+        )
+        .expect_err("permission denied must reject save");
+        assert_eq!(
+            denied_error, read_only_error,
+            "raw reasons must be redacted"
+        );
+        assert_eq!(fs::read(&target).expect("old target"), old_bytes);
+
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).expect("restore parent");
+        persist_project_archive_to_destination(
+            &DialogSaveDestination::confirmed(target.clone()),
+            &new_archive,
+        )
+        .expect("retry after permission restore");
+        assert_eq!(
+            load_project_archive_from_path(&target).expect("new complete target"),
+            new_archive
+        );
+        assert_eq!(fs::read(&sentinel).expect("sentinel"), b"unowned");
+        fs::remove_dir_all(directory).expect("cleanup test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_recovery_permission_fault_matrix_remains_retryable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let old = b"old complete bytes";
+        let new = b"new complete bytes";
+        for phase in [
+            SingleFileJournalPhaseV1::Prepared,
+            SingleFileJournalPhaseV1::OldMoved,
+            SingleFileJournalPhaseV1::NewPublished,
+        ] {
+            let directory = journal_test_directory("unix-phase-permission");
+            let target = directory.join("project.ori2");
+            let temp = directory.join("temp-phase-permission");
+            let backup = directory.join("backup-phase-permission");
+            let sentinel = directory.join("sentinel");
+            fs::write(&sentinel, b"unowned").expect("sentinel");
+            match phase {
+                SingleFileJournalPhaseV1::Prepared => {
+                    fs::write(&target, old).expect("target");
+                    fs::write(&temp, new).expect("temp");
+                }
+                SingleFileJournalPhaseV1::OldMoved => {
+                    fs::write(&temp, new).expect("temp");
+                    fs::write(&backup, old).expect("backup");
+                }
+                SingleFileJournalPhaseV1::NewPublished => {
+                    fs::write(&target, new).expect("target");
+                    fs::write(&backup, old).expect("backup");
+                }
+            }
+            let project_id = ProjectId::new();
+            let fingerprint = target_path_fingerprint(&target).expect("fingerprint");
+            let payload = SingleFileJournalPayloadV1 {
+                schema_version: SINGLE_FILE_JOURNAL_SCHEMA_V1,
+                project_id,
+                target_path_sha256: fingerprint.clone(),
+                transaction_id: "phase-permission".to_owned(),
+                temp_object_id: "temp-phase-permission".to_owned(),
+                temp_sha256: sha256_hex_bytes(new),
+                backup_object_id: "backup-phase-permission".to_owned(),
+                old_sha256: Some(sha256_hex_bytes(old)),
+                phase,
+            };
+            let journal = journal_path_for_target(&target, &fingerprint).expect("journal");
+            fs::write(
+                &journal,
+                encode_single_file_journal_v1(payload).expect("journal bytes"),
+            )
+            .expect("journal");
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o555))
+                .expect("read-only parent");
+
+            assert!(recover_single_file_journal_for_target(&target, project_id).is_err());
+            assert!(journal.exists());
+            assert_eq!(fs::read(&sentinel).expect("sentinel"), b"unowned");
+            if phase == SingleFileJournalPhaseV1::Prepared {
+                assert_eq!(fs::read(&target).expect("old target"), old);
+            } else if phase == SingleFileJournalPhaseV1::NewPublished {
+                assert_eq!(fs::read(&target).expect("new target"), new);
+            } else {
+                assert!(!target.exists());
+                assert_eq!(fs::read(&backup).expect("old backup"), old);
+            }
+
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+                .expect("restore parent");
             recover_single_file_journal_for_target(&target, project_id).expect("retry recovery");
             let expected: &[u8] = if phase == SingleFileJournalPhaseV1::Prepared {
                 old

@@ -321,6 +321,17 @@ describe('GeometricConstraintPanel', () => {
       },
       {
         conflict: {
+          kind: 'non_parallel_fixed_angle_in_parallel_component' as const,
+          vertex: IDS[3]!,
+          first_edge: IDS[0]!,
+          second_edge: IDS[2]!,
+          parallel_constraint_count: 2,
+        },
+        expected:
+          'Edges connected by parallel constraints have a fixed angle that is neither 0 nor 180 degrees',
+      },
+      {
+        conflict: {
           kind: 'parallel_with_fixed_non_parallel_angle' as const,
           first_edge: IDS[0]!,
           second_edge: IDS[1]!,

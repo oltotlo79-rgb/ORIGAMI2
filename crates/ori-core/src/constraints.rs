@@ -364,6 +364,12 @@ pub enum DirectConstraintConflictKindV1 {
         vertical_edge: EdgeId,
         parallel_constraint_count: u16,
     },
+    NonParallelFixedAngleInParallelComponent {
+        vertex: VertexId,
+        first_edge: EdgeId,
+        second_edge: EdgeId,
+        parallel_constraint_count: u16,
+    },
     ParallelWithFixedNonParallelAngle {
         first_edge: EdgeId,
         second_edge: EdgeId,
@@ -1884,7 +1890,14 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
     }
 
     if conflicts.is_empty() {
-        match general_parallel_graph_conflict_v1(&parallels, &horizontal, &vertical, &edge_ids) {
+        match general_parallel_graph_conflict_v1(
+            &parallels,
+            &horizontal,
+            &vertical,
+            &fixed_angles,
+            &vertex_ids,
+            &edge_ids,
+        ) {
             Ok(Some(conflict)) => conflicts.push(conflict),
             Ok(None) => {}
             Err(()) => {
@@ -2311,6 +2324,8 @@ fn general_parallel_graph_conflict_v1(
     parallels: &BTreeMap<EdgePairKey, Vec<ConstraintId>>,
     horizontal: &BTreeMap<CanonicalId, Vec<ConstraintId>>,
     vertical: &BTreeMap<CanonicalId, Vec<ConstraintId>>,
+    fixed_angles: &BTreeMap<AngleKey, Vec<ScalarAssignment>>,
+    vertex_ids: &BTreeMap<CanonicalId, VertexId>,
     edge_ids: &BTreeMap<CanonicalId, EdgeId>,
 ) -> Result<Option<DirectConstraintConflictV1>, ()> {
     #[cfg(test)]
@@ -2509,18 +2524,179 @@ fn general_parallel_graph_conflict_v1(
             }
         }
     }
-    let Some((constraint_ids, horizontal_edge, vertical_edge, parallel_constraint_count)) = best
-    else {
-        return if oversized { Err(()) } else { Ok(None) };
+    let mut result = best
+        .map(
+            |(constraint_ids, horizontal_edge, vertical_edge, parallel_constraint_count)| {
+                Ok(DirectConstraintConflictV1 {
+                conflict:
+                    DirectConstraintConflictKindV1::PerpendicularOrientationsInParallelComponent {
+                        horizontal_edge: edge_ids[&horizontal_edge],
+                        vertical_edge: edge_ids[&vertical_edge],
+                        parallel_constraint_count: u16::try_from(parallel_constraint_count)
+                            .map_err(|_| ())?,
+                    },
+                constraint_ids,
+            })
+            },
+        )
+        .transpose()?;
+
+    for (key, assignments) in fixed_angles {
+        charge_general_parallel_work_v1(
+            &mut work,
+            max_work,
+            u64::try_from(assignments.len()).map_err(|_| ())?,
+        )?;
+        let Some(angle) = consistent_scalar_assignment(assignments) else {
+            continue;
+        };
+        if angle.value == 0.0 || angle.value == 180.0 {
+            continue;
+        }
+        let (path, path_oversized) = canonical_shortest_parallel_path_v1(
+            key.edges.first,
+            key.edges.second,
+            &graph,
+            &mut work,
+            max_work,
+        )?;
+        oversized |= path_oversized;
+        let Some(mut ids) = path else {
+            continue;
+        };
+        if ids.is_empty() {
+            continue;
+        }
+        let parallel_constraint_count = ids.len();
+        ids.push(angle.id);
+        if ids.len() > MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 {
+            oversized = true;
+            continue;
+        }
+        let factor = usize::BITS - ids.len().leading_zeros();
+        charge_general_parallel_work_v1(
+            &mut work,
+            max_work,
+            u64::try_from(ids.len()).map_err(|_| ())? * (u64::from(factor) + 1),
+        )?;
+        canonicalize_constraint_ids(&mut ids);
+        if let Some(current) = &result {
+            charge_general_parallel_work_v1(
+                &mut work,
+                max_work,
+                u64::try_from(ids.len().min(current.constraint_ids.len())).map_err(|_| ())?,
+            )?;
+        }
+        if result.as_ref().is_none_or(|current| {
+            ids.len() < current.constraint_ids.len()
+                || (ids.len() == current.constraint_ids.len()
+                    && canonical_id_slice_cmp(&ids, &current.constraint_ids).is_lt())
+        }) {
+            result = Some(DirectConstraintConflictV1 {
+                conflict:
+                    DirectConstraintConflictKindV1::NonParallelFixedAngleInParallelComponent {
+                        vertex: vertex_ids[&key.vertex],
+                        first_edge: edge_ids[&key.edges.first],
+                        second_edge: edge_ids[&key.edges.second],
+                        parallel_constraint_count: u16::try_from(parallel_constraint_count)
+                            .map_err(|_| ())?,
+                    },
+                constraint_ids: ids,
+            });
+        }
+    }
+    if result.is_none() && oversized {
+        Err(())
+    } else {
+        Ok(result)
+    }
+}
+
+fn canonical_shortest_parallel_path_v1(
+    start: CanonicalId,
+    target: CanonicalId,
+    graph: &BTreeMap<CanonicalId, Vec<(CanonicalId, ConstraintId)>>,
+    work: &mut u64,
+    max_work: u64,
+) -> Result<(Option<Vec<ConstraintId>>, bool), ()> {
+    if start == target {
+        return Ok((None, false));
+    }
+    let mut distances = BTreeMap::from([(start, 0_usize)]);
+    let mut queue = VecDeque::from([start]);
+    while let Some(node) = queue.pop_front() {
+        charge_general_parallel_work_v1(work, max_work, 1)?;
+        let distance = distances[&node];
+        for (neighbor, _) in graph.get(&node).into_iter().flatten() {
+            charge_general_parallel_work_v1(work, max_work, 1)?;
+            if let std::collections::btree_map::Entry::Vacant(entry) = distances.entry(*neighbor) {
+                entry.insert(distance + 1);
+                queue.push_back(*neighbor);
+                charge_general_parallel_work_v1(work, max_work, 2)?;
+            }
+        }
+    }
+    let Some(&target_distance) = distances.get(&target) else {
+        return Ok((None, false));
     };
-    Ok(Some(DirectConstraintConflictV1 {
-        conflict: DirectConstraintConflictKindV1::PerpendicularOrientationsInParallelComponent {
-            horizontal_edge: edge_ids[&horizontal_edge],
-            vertical_edge: edge_ids[&vertical_edge],
-            parallel_constraint_count: u16::try_from(parallel_constraint_count).map_err(|_| ())?,
-        },
-        constraint_ids,
-    }))
+    if target_distance > MAX_DIRECT_CONFLICT_CAUSE_IDS_V1 - 1 {
+        return Ok((None, true));
+    }
+    #[derive(Clone)]
+    struct PathLink {
+        id: ConstraintId,
+        previous: Option<std::rc::Rc<PathLink>>,
+    }
+    let mut queue = VecDeque::from([(start, None::<std::rc::Rc<PathLink>>)]);
+    let mut best: Option<Vec<ConstraintId>> = None;
+    while let Some((node, path)) = queue.pop_front() {
+        charge_general_parallel_work_v1(work, max_work, 1)?;
+        let distance = distances[&node];
+        for (neighbor, id) in graph.get(&node).into_iter().flatten() {
+            charge_general_parallel_work_v1(work, max_work, 1)?;
+            if distances.get(neighbor) != Some(&(distance + 1)) {
+                continue;
+            }
+            let next_path = std::rc::Rc::new(PathLink {
+                id: *id,
+                previous: path.clone(),
+            });
+            charge_general_parallel_work_v1(work, max_work, 2)?;
+            if *neighbor == target {
+                let mut ids = Vec::with_capacity(target_distance);
+                let mut cursor = Some(next_path);
+                while let Some(link) = cursor {
+                    charge_general_parallel_work_v1(work, max_work, 1)?;
+                    ids.push(link.id);
+                    cursor = link.previous.clone();
+                }
+                let factor = usize::BITS - ids.len().max(1).leading_zeros();
+                charge_general_parallel_work_v1(
+                    work,
+                    max_work,
+                    u64::try_from(ids.len()).map_err(|_| ())? * (u64::from(factor) + 1),
+                )?;
+                canonicalize_constraint_ids(&mut ids);
+                if let Some(current) = &best {
+                    charge_general_parallel_work_v1(
+                        work,
+                        max_work,
+                        u64::try_from(ids.len().min(current.len())).map_err(|_| ())?,
+                    )?;
+                }
+                if best
+                    .as_ref()
+                    .is_none_or(|current| canonical_id_slice_cmp(&ids, current).is_lt())
+                {
+                    best = Some(ids);
+                }
+                continue;
+            }
+            queue.push_back((*neighbor, Some(next_path)));
+            charge_general_parallel_work_v1(work, max_work, 1)?;
+        }
+    }
+    Ok((best, false))
 }
 
 fn charge_general_parallel_work_v1(work: &mut u64, max_work: u64, amount: u64) -> Result<(), ()> {
@@ -2929,11 +3105,22 @@ fn conflict_sort_key(
             vertical_edge.canonical_bytes(),
             u128::from(*parallel_constraint_count).to_be_bytes(),
         ),
+        DirectConstraintConflictKindV1::NonParallelFixedAngleInParallelComponent {
+            vertex,
+            first_edge,
+            second_edge,
+            parallel_constraint_count: _,
+        } => (
+            12,
+            vertex.canonical_bytes(),
+            first_edge.canonical_bytes(),
+            second_edge.canonical_bytes(),
+        ),
         DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
             first_edge,
             second_edge,
         } => (
-            12,
+            13,
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
             zero,
@@ -2942,7 +3129,7 @@ fn conflict_sort_key(
             horizontal_edge,
             vertical_edge,
         } => (
-            13,
+            14,
             horizontal_edge.canonical_bytes(),
             vertical_edge.canonical_bytes(),
             zero,
@@ -5291,7 +5478,14 @@ mod tests {
                 .iter()
                 .map(|edge| (edge.canonical_bytes(), *edge))
                 .collect::<BTreeMap<_, _>>();
-            general_parallel_graph_conflict_v1(&parallels, &horizontal, &vertical, &edge_ids)
+            general_parallel_graph_conflict_v1(
+                &parallels,
+                &horizontal,
+                &vertical,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &edge_ids,
+            )
         };
         assert_eq!(
             scan(254, false).unwrap().unwrap().constraint_ids().len(),
@@ -5350,6 +5544,264 @@ mod tests {
             parallel_records[0].id,
             parallel_records[1].id,
         ];
+        canonicalize_constraint_ids(&mut expected);
+        assert_eq!(conflicts[0].constraint_ids(), expected);
+    }
+
+    #[test]
+    fn fixed_angle_parallel_graph_requires_a_nonempty_path_and_excludes_zero_and_180() {
+        let fixture = Fixture::new();
+        let first_parallel = record(GeometricConstraintKindV1::Parallel {
+            first_edge: fixture.edges[0],
+            second_edge: fixture.edges[1],
+        });
+        let second_parallel = record(GeometricConstraintKindV1::Parallel {
+            first_edge: fixture.edges[1],
+            second_edge: fixture.edges[2],
+        });
+        let angle = record(GeometricConstraintKindV1::FixedAngle {
+            vertex: fixture.vertices[0],
+            first_edge: fixture.edges[0],
+            second_edge: fixture.edges[2],
+            angle_degrees: 90.0,
+        });
+        let records = vec![
+            first_parallel.clone(),
+            second_parallel.clone(),
+            angle.clone(),
+        ];
+        let ConstraintPreflightV1::DirectConflict { conflicts } =
+            prepare(&fixture, &document(records.clone()))
+                .expect("nonparallel fixed angle inside a parallel component")
+                .preflight()
+        else {
+            panic!("parallel path forces angle 0 or 180");
+        };
+        assert!(matches!(
+            conflicts[0].conflict(),
+            DirectConstraintConflictKindV1::NonParallelFixedAngleInParallelComponent {
+                parallel_constraint_count: 2,
+                ..
+            }
+        ));
+        let mut reversed_angle = angle.clone();
+        reversed_angle.constraint = GeometricConstraintKindV1::FixedAngle {
+            vertex: fixture.vertices[0],
+            first_edge: fixture.edges[2],
+            second_edge: fixture.edges[0],
+            angle_degrees: 90.0,
+        };
+        assert_eq!(
+            prepare(
+                &fixture,
+                &document([
+                    first_parallel.clone(),
+                    second_parallel.clone(),
+                    reversed_angle,
+                ]),
+            )
+            .expect("operand-reversed fixed angle")
+            .preflight(),
+            ConstraintPreflightV1::DirectConflict {
+                conflicts: conflicts.clone(),
+            }
+        );
+        for removed in conflicts[0].constraint_ids() {
+            let subset = records
+                .iter()
+                .filter(|record| record.id != *removed)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert!(!matches!(
+                prepare(&fixture, &document(subset))
+                    .expect("proper fixed-angle parallel witness subset")
+                    .preflight(),
+                ConstraintPreflightV1::DirectConflict { .. }
+            ));
+        }
+
+        for allowed in [0.0, -0.0, 180.0] {
+            let outcome = prepare(
+                &fixture,
+                &document([
+                    first_parallel.clone(),
+                    second_parallel.clone(),
+                    record(GeometricConstraintKindV1::FixedAngle {
+                        vertex: fixture.vertices[0],
+                        first_edge: fixture.edges[0],
+                        second_edge: fixture.edges[2],
+                        angle_degrees: allowed,
+                    }),
+                ]),
+            )
+            .expect("allowed parallel fixed angle")
+            .preflight();
+            assert!(!matches!(
+                outcome,
+                ConstraintPreflightV1::DirectConflict { .. }
+            ));
+        }
+        let signed_zero_duplicates = prepare(
+            &fixture,
+            &document([
+                first_parallel.clone(),
+                second_parallel.clone(),
+                record(GeometricConstraintKindV1::FixedAngle {
+                    vertex: fixture.vertices[0],
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[2],
+                    angle_degrees: 0.0,
+                }),
+                record(GeometricConstraintKindV1::FixedAngle {
+                    vertex: fixture.vertices[0],
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[2],
+                    angle_degrees: -0.0,
+                }),
+            ]),
+        )
+        .expect("signed zero fixed-angle duplicates")
+        .preflight();
+        assert!(!matches!(
+            signed_zero_duplicates,
+            ConstraintPreflightV1::DirectConflict { .. }
+        ));
+        for incompatible in [f64::from_bits(1), f64::from_bits(180.0_f64.to_bits() - 1)] {
+            assert!(matches!(
+                prepare(
+                    &fixture,
+                    &document([
+                        first_parallel.clone(),
+                        second_parallel.clone(),
+                        record(GeometricConstraintKindV1::FixedAngle {
+                            vertex: fixture.vertices[0],
+                            first_edge: fixture.edges[0],
+                            second_edge: fixture.edges[2],
+                            angle_degrees: incompatible,
+                        }),
+                    ]),
+                )
+                .expect("one-ULP incompatible angle")
+                .preflight(),
+                ConstraintPreflightV1::DirectConflict { .. }
+            ));
+        }
+
+        let no_path = prepare(
+            &fixture,
+            &document([
+                record(GeometricConstraintKindV1::Parallel {
+                    first_edge: fixture.edges[3],
+                    second_edge: fixture.edges[4],
+                }),
+                angle,
+            ]),
+        )
+        .expect("fixed-angle operands do not participate in the parallel component")
+        .preflight();
+        assert!(!matches!(
+            no_path,
+            ConstraintPreflightV1::DirectConflict { .. }
+        ));
+    }
+
+    #[test]
+    fn fixed_angle_parallel_graph_has_canonical_path_cap_and_work_boundary() {
+        let scan = |path_edges: usize| {
+            let edges = (0..=path_edges).map(|_| EdgeId::new()).collect::<Vec<_>>();
+            let vertex = VertexId::new();
+            let angle_id = ConstraintId::new();
+            let mut parallels = BTreeMap::new();
+            for index in 0..path_edges {
+                parallels.insert(
+                    EdgePairKey::unordered(edges[index], edges[index + 1]),
+                    vec![ConstraintId::new()],
+                );
+            }
+            let fixed_angles = BTreeMap::from([(
+                AngleKey {
+                    vertex: vertex.canonical_bytes(),
+                    edges: EdgePairKey::unordered(edges[0], edges[path_edges]),
+                },
+                vec![ScalarAssignment {
+                    id: angle_id,
+                    value: 90.0,
+                }],
+            )]);
+            let vertex_ids = BTreeMap::from([(vertex.canonical_bytes(), vertex)]);
+            let edge_ids = edges
+                .iter()
+                .map(|edge| (edge.canonical_bytes(), *edge))
+                .collect::<BTreeMap<_, _>>();
+            let result = general_parallel_graph_conflict_v1(
+                &parallels,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &fixed_angles,
+                &vertex_ids,
+                &edge_ids,
+            );
+            (result, angle_id)
+        };
+
+        let (bounded, _) = scan(255);
+        assert_eq!(bounded.unwrap().unwrap().constraint_ids().len(), 256);
+        assert_eq!(scan(256).0, Err(()));
+
+        GENERAL_PARALLEL_TEST_WORK_LIMIT.with(|limit| limit.set(None));
+        let (baseline, _) = scan(3);
+        assert!(baseline.is_ok());
+        let exact_work = GENERAL_PARALLEL_TEST_WORK_OBSERVED.with(std::cell::Cell::get);
+        GENERAL_PARALLEL_TEST_WORK_LIMIT.with(|limit| limit.set(Some(exact_work)));
+        assert!(scan(3).0.is_ok());
+        GENERAL_PARALLEL_TEST_WORK_LIMIT.with(|limit| limit.set(Some(exact_work - 1)));
+        assert_eq!(scan(3).0, Err(()));
+        GENERAL_PARALLEL_TEST_WORK_LIMIT.with(|limit| limit.set(None));
+    }
+
+    #[test]
+    fn fixed_angle_parallel_diamond_uses_minimum_constraint_ids() {
+        let fixture = Fixture::new();
+        let angle = record(GeometricConstraintKindV1::FixedAngle {
+            vertex: fixture.vertices[0],
+            first_edge: fixture.edges[0],
+            second_edge: fixture.edges[3],
+            angle_degrees: 90.0,
+        });
+        let mut parallels = (0..4)
+            .map(|_| {
+                record(GeometricConstraintKindV1::Parallel {
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[1],
+                })
+            })
+            .collect::<Vec<_>>();
+        parallels.sort_unstable_by_key(|record| record.id.canonical_bytes());
+        for (record, (first_edge, second_edge)) in parallels.iter_mut().zip([
+            (fixture.edges[0], fixture.edges[2]),
+            (fixture.edges[2], fixture.edges[3]),
+            (fixture.edges[0], fixture.edges[1]),
+            (fixture.edges[1], fixture.edges[3]),
+        ]) {
+            record.constraint = GeometricConstraintKindV1::Parallel {
+                first_edge,
+                second_edge,
+            };
+        }
+        let mut records = vec![angle.clone()];
+        records.extend(parallels.clone());
+        let forward = prepare(&fixture, &document(records.clone()))
+            .expect("fixed-angle parallel diamond")
+            .preflight();
+        records.reverse();
+        let reverse = prepare(&fixture, &document(records))
+            .expect("reordered fixed-angle parallel diamond")
+            .preflight();
+        assert_eq!(forward, reverse);
+        let ConstraintPreflightV1::DirectConflict { conflicts } = forward else {
+            panic!("fixed-angle parallel diamond must conflict");
+        };
+        let mut expected = vec![angle.id, parallels[0].id, parallels[1].id];
         canonicalize_constraint_ids(&mut expected);
         assert_eq!(conflicts[0].constraint_ids(), expected);
     }

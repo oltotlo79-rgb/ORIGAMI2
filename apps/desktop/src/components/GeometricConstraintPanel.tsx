@@ -836,6 +836,12 @@ function directConflictLabel(
         '平行制約でつながった辺に、水平と垂直の向きが同時に指定されています',
         'Edges connected by parallel constraints are constrained to horizontal and vertical orientations',
       )
+    case 'non_parallel_fixed_angle_in_parallel_component':
+      return localized(
+        locale,
+        '平行制約でつながる辺に、平行でない固定角が指定されています',
+        'Edges connected by parallel constraints have a fixed angle that is neither 0 nor 180 degrees',
+      )
     case 'parallel_with_fixed_non_parallel_angle':
       return localized(
         locale,

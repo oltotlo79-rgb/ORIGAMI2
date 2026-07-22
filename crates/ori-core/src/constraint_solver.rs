@@ -582,6 +582,7 @@ fn residuals(
                     let first = outward_vector(first_edge, vertex);
                     let second = outward_vector(second_edge, vertex);
                     let actual = (first.0 * second.1 - first.1 * second.0)
+                        .abs()
                         .atan2(first.0 * second.0 + first.1 * second.1);
                     vec![wrap_angle(actual - angle_degrees.to_radians())]
                 }
@@ -909,6 +910,33 @@ mod tests {
             .collect();
 
         assert!(maximum_absolute(&residuals(&pattern, &document, &positions).unwrap()) < 1e-12);
+
+        let mut reversed_document = document.clone();
+        reversed_document.constraints[0].constraint = GeometricConstraintKindV1::FixedAngle {
+            vertex: center,
+            first_edge: forward_y,
+            second_edge: reversed_x,
+            angle_degrees: 90.0,
+        };
+        assert!(
+            maximum_absolute(&residuals(&pattern, &reversed_document, &positions).unwrap()) < 1e-12
+        );
+
+        for (point, angle) in [
+            (Point2::new(0.0, -1.0), 90.0),
+            (Point2::new(-1.0, 0.0), 180.0),
+            (Point2::new(2.0, 0.0), 0.0),
+        ] {
+            let mut moved = positions.clone();
+            moved.insert(y, point);
+            let mut angled = document.clone();
+            if let GeometricConstraintKindV1::FixedAngle { angle_degrees, .. } =
+                &mut angled.constraints[0].constraint
+            {
+                *angle_degrees = angle;
+            }
+            assert!(maximum_absolute(&residuals(&pattern, &angled, &moved).unwrap()) < 1e-12);
+        }
     }
 
     #[test]

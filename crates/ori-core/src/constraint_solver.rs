@@ -493,6 +493,16 @@ fn residuals(
         let end = positions[&edge.end];
         (end.x - start.x, end.y - start.y)
     };
+    let outward_vector = |edge_id, vertex_id| {
+        let edge = edges[&edge_id];
+        let vertex = positions[&vertex_id];
+        let opposite = if edge.start == vertex_id {
+            positions[&edge.end]
+        } else {
+            positions[&edge.start]
+        };
+        (opposite.x - vertex.x, opposite.y - vertex.y)
+    };
     let length = |edge_id| {
         let (x, y) = vector(edge_id);
         x.hypot(y)
@@ -538,13 +548,13 @@ fn residuals(
                     ratio,
                 } => vec![length(numerator_edge) - ratio * length(denominator_edge)],
                 GeometricConstraintKindV1::FixedAngle {
+                    vertex,
                     first_edge,
                     second_edge,
                     angle_degrees,
-                    ..
                 } => {
-                    let first = vector(first_edge);
-                    let second = vector(second_edge);
+                    let first = outward_vector(first_edge, vertex);
+                    let second = outward_vector(second_edge, vertex);
                     let actual = (first.0 * second.1 - first.1 * second.0)
                         .atan2(first.0 * second.0 + first.1 * second.1);
                     vec![wrap_angle(actual - angle_degrees.to_radians())]
@@ -587,14 +597,14 @@ fn residuals(
                     ]
                 }
                 GeometricConstraintKindV1::AngleBisector {
+                    vertex,
                     first_edge,
                     second_edge,
                     bisector_edge,
-                    ..
                 } => {
-                    let first = vector(first_edge);
-                    let second = vector(second_edge);
-                    let bisector = vector(bisector_edge);
+                    let first = outward_vector(first_edge, vertex);
+                    let second = outward_vector(second_edge, vertex);
+                    let bisector = outward_vector(bisector_edge, vertex);
                     let sum_x =
                         first.0 / first.0.hypot(first.1) + second.0 / second.0.hypot(second.1);
                     let sum_y =
@@ -716,6 +726,64 @@ mod tests {
                 .collect(),
         };
         (pattern, document, start_id)
+    }
+
+    #[test]
+    fn fixed_angle_uses_vectors_pointing_outward_from_the_declared_vertex() {
+        let center = VertexId::new();
+        let x = VertexId::new();
+        let y = VertexId::new();
+        let reversed_x = EdgeId::new();
+        let forward_y = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: center,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: x,
+                    position: Point2::new(1.0, 0.0),
+                },
+                Vertex {
+                    id: y,
+                    position: Point2::new(0.0, 1.0),
+                },
+            ],
+            edges: vec![
+                Edge {
+                    id: reversed_x,
+                    start: x,
+                    end: center,
+                    kind: EdgeKind::Auxiliary,
+                },
+                Edge {
+                    id: forward_y,
+                    start: center,
+                    end: y,
+                    kind: EdgeKind::Auxiliary,
+                },
+            ],
+        };
+        let document = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint: GeometricConstraintKindV1::FixedAngle {
+                    vertex: center,
+                    first_edge: reversed_x,
+                    second_edge: forward_y,
+                    angle_degrees: 90.0,
+                },
+            }],
+        };
+        let positions = pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, vertex.position))
+            .collect();
+
+        assert!(maximum_absolute(&residuals(&pattern, &document, &positions).unwrap()) < 1e-12);
     }
 
     #[test]

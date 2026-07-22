@@ -8775,6 +8775,127 @@ mod tests {
             },
         )
         .unwrap();
+        let mut continuation_entries = hinge_edges
+            .iter()
+            .map(|edge| ori_kinematics::HalfAngleRationalEntryInputV1 {
+                edge: *edge,
+                u_domain: [
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    },
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    },
+                ],
+                numerator_power_coefficients: vec![
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: i64::from(active.contains(edge)),
+                        denominator: 1,
+                    },
+                    ori_kinematics::RationalCoefficientV1 {
+                        numerator: i64::from(active.contains(edge)),
+                        denominator: 1,
+                    },
+                ],
+                denominator_power_coefficients: vec![ori_kinematics::RationalCoefficientV1 {
+                    numerator: if active.contains(edge) { 100 } else { 1 },
+                    denominator: 1,
+                }],
+            })
+            .collect::<Vec<_>>();
+        continuation_entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
+        let continuation = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            continuation_entries,
+            CycleScheduleLimitsV1::default(),
+        )
+        .unwrap();
+        assert_eq!(schedule.evaluate(1.0), continuation.evaluate(0.0));
+        let continuation_closure = geometry
+            .prove_dyadic_schedule_closure_v1(
+                &audit,
+                fixed,
+                &continuation,
+                1.0e-9,
+                DyadicIntervalClosureLimitsV1 {
+                    max_depth: 8,
+                    max_leaves: 256,
+                    max_work: 1_000_000,
+                    schedule_limits: CycleScheduleLimitsV1::default(),
+                },
+            )
+            .unwrap();
+        let continuation_positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+            &geometry,
+            &audit,
+            fixed,
+            &continuation,
+            &continuation_closure,
+            0.1,
+            1,
+        )
+        .unwrap();
+        let continuation_work = source
+            .overlap_cells
+            .iter()
+            .map(|cell| cell.exact_boundary.len() * cell.bottom_to_top_faces.len())
+            .sum::<usize>()
+            * (continuation_closure.leaves().len() + 1);
+        let continuation_limits = crate::GeneralCellTransportLimitsV1 {
+            max_transitions: continuation_closure.leaves().len() + 1,
+            max_boundary_samples: continuation_work,
+            ..cell_limits
+        };
+        let first_input = || crate::GeneralCellTransportInputV1 {
+            geometry: &geometry,
+            audit: &audit,
+            source,
+            schedule: &schedule,
+            closure: &closure,
+            positive_continuous: &bound_certificate,
+            paper_thickness_mm: 0.1,
+            tolerance: 1.0e-9,
+            limits: cell_limits,
+        };
+        let continuation_input = |limits| crate::GeneralCellTransportInputV1 {
+            geometry: &geometry,
+            audit: &audit,
+            source,
+            schedule: &continuation,
+            closure: &continuation_closure,
+            positive_continuous: &continuation_positive,
+            paper_thickness_mm: 0.1,
+            tolerance: 1.0e-9,
+            limits,
+        };
+        let chained =
+            crate::general_cell_transport::ChainedGeneralCellTransportAuthorityV1::issue(vec![
+                first_input(),
+                continuation_input(continuation_limits),
+            ])
+            .unwrap();
+        assert_eq!(chained.proofs().len(), 2);
+        assert!(matches!(
+            crate::general_cell_transport::ChainedGeneralCellTransportAuthorityV1::issue(vec![
+                continuation_input(continuation_limits),
+                first_input(),
+            ]),
+            Err(crate::GeneralCellTransportErrorV1::BindingMismatch)
+        ));
+        assert!(matches!(
+            crate::general_cell_transport::ChainedGeneralCellTransportAuthorityV1::issue(vec![
+                first_input(),
+                continuation_input(crate::GeneralCellTransportLimitsV1 {
+                    max_transitions: 0,
+                    ..continuation_limits
+                }),
+            ]),
+            Err(crate::GeneralCellTransportErrorV1::ResourceLimit)
+        ));
         assert_eq!(
             bound_cell_proof.checkpoint_hashes().len(),
             closure.leaves().len() + 1,

@@ -6415,9 +6415,7 @@ mod tests {
     fn physical_four_vertex_cycle_schedule(
         hinges: &[ori_domain::EdgeId],
     ) -> CycleScheduleRequestV1 {
-        let mut ordered_hinges = hinges.to_vec();
-        ordered_hinges.sort_unstable_by_key(ori_domain::EdgeId::canonical_bytes);
-        let entries = ordered_hinges
+        let mut entries = hinges
             .iter()
             .copied()
             .enumerate()
@@ -6453,6 +6451,7 @@ mod tests {
                 }
             })
             .collect::<Vec<_>>();
+        entries.sort_unstable_by_key(|entry| entry.edge.canonical_bytes());
         CycleScheduleRequestV1 {
             version: 1,
             entries,

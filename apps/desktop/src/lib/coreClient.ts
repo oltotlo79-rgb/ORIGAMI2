@@ -1993,6 +1993,12 @@ export type BeginnerReferenceModelSuggestionV1 = Readonly<{
     digest_sha256: readonly number[]
   }>[]
   protrusions: readonly NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number][]
+  general_protrusion_candidates: readonly NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number][]
+  stick_bars: readonly Readonly<{ id: number; start_tenths_mm: readonly [number, number, number]; end_tenths_mm: readonly [number, number, number]; thickness_tenths_mm: number }>[]
+  principal_axis_extents_tenths_mm: readonly [number, number, number]
+  quality_score: number
+  quality_reasons: readonly string[]
+  insufficiency_reasons: readonly string[]
   generic_body_outline_tenths_mm?: readonly (readonly [number, number])[]
   generic_body_outline_mode?: 'symmetric' | 'general'
   pair_bindings: readonly Readonly<{ pair_index: number; protrusion_id: number; center_y_tenths_mm: number }>[]
@@ -2011,7 +2017,9 @@ export async function suggestBeginnerReferenceModelFeatures(
   ] as const)
   const suggestionKeys = [
     'asset_id', 'bbox_min_tenths_mm', 'bbox_max_tenths_mm', 'dominant_normal_milli',
-    'surface_area_milli', 'surface_landmarks_tenths_mm', 'surface_ranges', 'protrusions', 'pair_bindings', 'method', 'suggested_part_kind',
+    'surface_area_milli', 'surface_landmarks_tenths_mm', 'surface_ranges', 'protrusions',
+    'general_protrusion_candidates', 'stick_bars', 'principal_axis_extents_tenths_mm',
+    'quality_score', 'quality_reasons', 'insufficiency_reasons', 'pair_bindings', 'method', 'suggested_part_kind',
   ] as const
   const suggestion = snapshotCoreDataRecord(response?.suggestion)
   if (!suggestion || suggestionKeys.some((key) => !Object.hasOwn(suggestion, key))
@@ -2064,13 +2072,35 @@ export async function suggestBeginnerReferenceModelFeatures(
     }),
     bulge_targets: [], target_asset: null, allowed_techniques: ['valley_fold'],
   })
+  const generalConstraints = normalizeBeginnerGenerationConstraints({
+    schema_version: 1, maximum_steps: 1, detail_level: 'simple', target_category: 'animal',
+    target_parts: [], skeleton_segments: [], protrusions: suggestion.general_protrusion_candidates,
+    bulge_targets: [], target_asset: null, allowed_techniques: ['valley_fold'],
+  })
+  const stickBars = Array.isArray(suggestion.stick_bars) ? suggestion.stick_bars.map((value, index) => {
+    const bar = exactCoreDataRecord(value, ['id', 'start_tenths_mm', 'end_tenths_mm', 'thickness_tenths_mm'] as const)
+    if (!bar || bar.id !== index || !isBoundedIntegerTuple(bar.start_tenths_mm, 3, 2_147_483_648)
+      || !isBoundedIntegerTuple(bar.end_tenths_mm, 3, 2_147_483_648)
+      || !Number.isInteger(bar.thickness_tenths_mm) || Number(bar.thickness_tenths_mm) < 1
+      || Number(bar.thickness_tenths_mm) > 65_535) return null
+    return Object.freeze({ ...bar })
+  }) : []
   const protrusions = constraints?.protrusions ?? []
   const bilateralProtrusions = protrusions.filter((target) => target.symmetry === 'bilateral')
   // Native may generalize an explicitly authored generic target to at most
   // eight bounded features. Geometry supplies measurements only; semantic
   // kinds remain the user's current target_parts and apply still requires
   // exact live-suggestion revalidation plus confirmation.
-  if (!constraints || protrusions.length < 1 || protrusions.length > 8
+  if (!constraints || !generalConstraints || generalConstraints.protrusions.length < 1
+    || generalConstraints.protrusions.length > 32 || stickBars.length !== 3 || stickBars.some((bar) => !bar)
+    || !isBoundedIntegerTuple(suggestion.principal_axis_extents_tenths_mm, 3, 2_147_483_647)
+    || suggestion.principal_axis_extents_tenths_mm.some((extent) => extent < 1)
+    || !Number.isInteger(suggestion.quality_score) || Number(suggestion.quality_score) < 0 || Number(suggestion.quality_score) > 100
+    || !Array.isArray(suggestion.quality_reasons) || suggestion.quality_reasons.length < 1 || suggestion.quality_reasons.length > 8
+    || suggestion.quality_reasons.some((reason) => !['strict_glb_vertex_index_bounds', 'deterministic_aabb_principal_axes'].includes(String(reason)))
+    || !Array.isArray(suggestion.insufficiency_reasons) || suggestion.insufficiency_reasons.length > 8
+    || suggestion.insufficiency_reasons.some((reason) => !['insufficient_distinct_vertices', 'protrusion_candidate_limit_reached'].includes(String(reason)))
+    || protrusions.length < 1 || protrusions.length > 8
     || !Array.isArray(suggestion.pair_bindings)
     || suggestion.pair_bindings.length !== bilateralProtrusions.length
     || suggestion.pair_bindings.some((binding, index) => {
@@ -2090,7 +2120,10 @@ export async function suggestBeginnerReferenceModelFeatures(
       generic_body_outline_tenths_mm: constraints.generic_body_outline_tenths_mm,
       generic_body_outline_mode: constraints.generic_body_outline_mode,
     }),
-    protrusions: Object.freeze(protrusions.slice()), pair_bindings: Object.freeze(suggestion.pair_bindings.slice()) }) as BeginnerReferenceModelSuggestionV1
+    protrusions: Object.freeze(protrusions.slice()),
+    general_protrusion_candidates: Object.freeze(generalConstraints.protrusions.slice()),
+    stick_bars: Object.freeze(stickBars as NonNullable<(typeof stickBars)[number]>[]),
+    pair_bindings: Object.freeze(suggestion.pair_bindings.slice()) }) as BeginnerReferenceModelSuggestionV1
 }
 
 export function applyBeginnerReferenceModelFeatures(

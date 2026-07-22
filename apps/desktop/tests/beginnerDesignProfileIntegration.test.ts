@@ -160,6 +160,20 @@ test('AUT-004 proposes only deterministic safe GLB geometry ranges and applies a
   assert.match(app, /Triangle indices \(add\/remove adjacent faces only\)/u)
 })
 
+test('general GLB target proposal is offline bounded read-only and explicitly copied', () => {
+  assert.match(native, /general_protrusion_candidates: Vec<ori_domain::BeginnerProtrusionTargetV1>/u)
+  assert.match(native, /candidate_points[\s\S]*?\.into_iter\(\)[\s\S]*?\.take\(32\)/u)
+  assert.match(native, /principal_axis_extents_tenths_mm/u)
+  assert.match(native, /struct BeginnerReferenceStickBarV1/u)
+  assert.match(native, /strict_glb_vertex_index_bounds/u)
+  assert.match(client, /generalConstraints\.protrusions\.length > 32/u)
+  assert.match(client, /stickBars\.length !== 3/u)
+  assert.match(app, /General 3D proposal: quality/u)
+  assert.match(app, /Review and copy general 3D proposal to editor/u)
+  assert.match(app, /setBeginnerSkeletonSegments\(suggestion\.stick_bars/u)
+  assert.match(app, /setBeginnerProtrusions\(suggestion\.general_protrusion_candidates/u)
+})
+
 test('AUT-006 stores every bounded protrusion target attribute in profile history', () => {
   assert.match(generation, /struct BeginnerProtrusionTargetV1/u)
   for (const field of [

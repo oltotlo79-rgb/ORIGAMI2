@@ -5578,9 +5578,24 @@ struct BeginnerReferenceModelSuggestionV1 {
     surface_landmarks_tenths_mm: Vec<[i32; 3]>,
     surface_ranges: Vec<BeginnerReferenceSurfaceRangeV1>,
     protrusions: Vec<ori_domain::BeginnerProtrusionTargetV1>,
+    general_protrusion_candidates: Vec<ori_domain::BeginnerProtrusionTargetV1>,
+    stick_bars: Vec<BeginnerReferenceStickBarV1>,
+    principal_axis_extents_tenths_mm: [u32; 3],
+    quality_score: u8,
+    quality_reasons: Vec<String>,
+    insufficiency_reasons: Vec<String>,
     pair_bindings: Vec<ori_domain::BeginnerBilateralPairBindingV1>,
     method: String,
     suggested_part_kind: Option<ori_domain::BeginnerTargetPartKindV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BeginnerReferenceStickBarV1 {
+    id: u8,
+    start_tenths_mm: [i32; 3],
+    end_tenths_mm: [i32; 3],
+    thickness_tenths_mm: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -5726,6 +5741,99 @@ fn derive_reference_model_suggestion_v1(
         bbox_max_tenths_mm[1].saturating_sub(bbox_min_tenths_mm[1]),
         bbox_max_tenths_mm[2].saturating_sub(bbox_min_tenths_mm[2]),
     ];
+    if extents.iter().any(|extent| *extent <= 0) {
+        return Err("reference_model_feature_range".to_owned());
+    }
+    let principal_axis_extents_tenths_mm = extents.map(|extent| {
+        u32::try_from(extent).map_err(|_| "reference_model_feature_range".to_owned())
+    });
+    let principal_axis_extents_tenths_mm = [
+        principal_axis_extents_tenths_mm[0].clone()?,
+        principal_axis_extents_tenths_mm[1].clone()?,
+        principal_axis_extents_tenths_mm[2].clone()?,
+    ];
+    let center = std::array::from_fn::<_, 3, _>(|axis| {
+        bbox_min_tenths_mm[axis].saturating_add(bbox_max_tenths_mm[axis]) / 2
+    });
+    let stick_bars = (0..3)
+        .map(|axis| {
+            let mut start = center;
+            let mut end = center;
+            start[axis] = bbox_min_tenths_mm[axis];
+            end[axis] = bbox_max_tenths_mm[axis];
+            let thickness = extents
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != axis)
+                .map(|(_, extent)| *extent)
+                .min()
+                .unwrap_or(1)
+                .max(1);
+            BeginnerReferenceStickBarV1 {
+                id: axis as u8,
+                start_tenths_mm: start,
+                end_tenths_mm: end,
+                thickness_tenths_mm: u16::try_from(thickness.clamp(1, i32::from(u16::MAX)))
+                    .unwrap_or(u16::MAX),
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut candidate_points = surface_landmarks_tenths_mm.clone();
+    candidate_points.sort_unstable_by_key(|point| {
+        let delta =
+            std::array::from_fn::<_, 3, _>(|axis| i64::from(point[axis]) - i64::from(center[axis]));
+        (
+            std::cmp::Reverse(
+                delta
+                    .iter()
+                    .map(|value| value.saturating_mul(*value))
+                    .sum::<i64>(),
+            ),
+            *point,
+        )
+    });
+    candidate_points.dedup();
+    let general_protrusion_candidates = candidate_points
+        .into_iter()
+        .take(32)
+        .enumerate()
+        .map(|(index, point)| {
+            let delta = std::array::from_fn::<_, 3, _>(|axis| {
+                i64::from(point[axis]) - i64::from(center[axis])
+            });
+            let axis = (0..3)
+                .max_by_key(|axis| delta[*axis].unsigned_abs())
+                .unwrap_or(0);
+            let mut direction = [0_i16; 3];
+            direction[axis] = if delta[axis] < 0 { -1000 } else { 1000 };
+            ori_domain::BeginnerProtrusionTargetV1 {
+                id: index as u16 + 1,
+                count: 1,
+                length_tenths_mm: u32::try_from(delta[axis].unsigned_abs())
+                    .unwrap_or(u32::MAX)
+                    .max(1),
+                thickness_tenths_mm: 1,
+                root_width_tenths_mm: None,
+                tip_width_tenths_mm: None,
+                local_outline_tenths_mm: None,
+                position_tenths_mm: point,
+                direction_milli: direction,
+                symmetry: ori_domain::BeginnerProtrusionSymmetryV1::None,
+                curvature_degrees: 0,
+                joint: ori_domain::BeginnerProtrusionJointV1::Fixed,
+                motion_degrees: [0, 0],
+                side: ori_domain::BeginnerProtrusionSideV1::Either,
+                priority: 50,
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut insufficiency_reasons = Vec::new();
+    if general_protrusion_candidates.len() < 2 {
+        insufficiency_reasons.push("insufficient_distinct_vertices".to_owned());
+    }
+    if general_protrusion_candidates.len() == 32 {
+        insufficiency_reasons.push("protrusion_candidate_limit_reached".to_owned());
+    }
     let quantized = geometry
         .positions
         .iter()
@@ -6037,6 +6145,19 @@ fn derive_reference_model_suggestion_v1(
         surface_landmarks_tenths_mm,
         surface_ranges,
         protrusions,
+        general_protrusion_candidates,
+        stick_bars,
+        principal_axis_extents_tenths_mm,
+        quality_score: if insufficiency_reasons.is_empty() {
+            86
+        } else {
+            64
+        },
+        quality_reasons: vec![
+            "strict_glb_vertex_index_bounds".to_owned(),
+            "deterministic_aabb_principal_axes".to_owned(),
+        ],
+        insufficiency_reasons,
         pair_bindings,
         method: "bounded_bbox_area_normal_v1".to_owned(),
         suggested_part_kind,

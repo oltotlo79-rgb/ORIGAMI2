@@ -3879,6 +3879,21 @@ function App() {
     })))
   }
 
+  function copyBeginnerGeneralReferenceTarget() {
+    const suggestion = beginnerReferenceSuggestion
+    const targetAsset = latestSnapshotRef.current?.beginner_design_profile.generation_constraints.target_asset
+    if (!suggestion || targetAsset?.kind !== 'reference_model' || targetAsset.asset_id !== suggestion.asset_id) return
+    setBeginnerProtrusions(suggestion.general_protrusion_candidates.map((target) => ({ ...target })))
+    setBeginnerSkeletonSegments(suggestion.stick_bars.filter((bar) =>
+      bar.start_tenths_mm[0] !== bar.end_tenths_mm[0]
+        || bar.start_tenths_mm[1] !== bar.end_tenths_mm[1]).map((bar, index) => ({
+      id: index,
+      start: { x_tenths_mm: bar.start_tenths_mm[0], y_tenths_mm: bar.start_tenths_mm[1] },
+      end: { x_tenths_mm: bar.end_tenths_mm[0], y_tenths_mm: bar.end_tenths_mm[1] },
+      thickness_tenths_mm: bar.thickness_tenths_mm,
+    })))
+  }
+
   function requestBeginnerRecognition(mode: 'marker' | 'silhouette' = 'marker') {
     const current = latestSnapshotRef.current
     const form = beginnerDesignFormRef.current
@@ -8631,6 +8646,20 @@ function App() {
                             length: beginnerReferenceSuggestion.protrusions[0]?.length_tenths_mm ? beginnerReferenceSuggestion.protrusions[0].length_tenths_mm / 10 : 0,
                             thickness: beginnerReferenceSuggestion.protrusions[0]?.thickness_tenths_mm ? beginnerReferenceSuggestion.protrusions[0].thickness_tenths_mm / 10 : 0,
                           })}</p>
+                          <p>{formattedText({
+                            ja: '一般3D候補: 品質 {score}/100・主軸 {x}/{y}/{z}・突起候補 {protrusions}/32・簡略骨格 {bars} 本',
+                            en: 'General 3D proposal: quality {score}/100 · principal extents {x}/{y}/{z} · {protrusions}/32 protrusion candidates · {bars} simplified bars',
+                          }, {
+                            score: beginnerReferenceSuggestion.quality_score,
+                            x: beginnerReferenceSuggestion.principal_axis_extents_tenths_mm[0],
+                            y: beginnerReferenceSuggestion.principal_axis_extents_tenths_mm[1],
+                            z: beginnerReferenceSuggestion.principal_axis_extents_tenths_mm[2],
+                            protrusions: beginnerReferenceSuggestion.general_protrusion_candidates.length,
+                            bars: beginnerReferenceSuggestion.stick_bars.length,
+                          })}</p>
+                          {beginnerReferenceSuggestion.insufficiency_reasons.length > 0 && <p>{formattedText({
+                            ja: '一般3D候補の不足理由: {reasons}', en: 'General 3D proposal insufficiency: {reasons}',
+                          }, { reasons: beginnerReferenceSuggestion.insufficiency_reasons.join(', ') })}</p>}
                           <fieldset>
                             <legend>{text({
                               ja: '測定済みsurface範囲を2〜8部位へ明示割当',
@@ -8732,6 +8761,9 @@ function App() {
                             localContourCount={beginnerReferenceSuggestion.protrusions.filter(
                               (target) => target.local_outline_tenths_mm).length}
                             onCopy={copyBeginnerReferenceContours} />
+                          <button type="button" onClick={copyBeginnerGeneralReferenceTarget}>
+                            {text({ ja: '確認して一般3D候補を編集欄へコピー', en: 'Review and copy general 3D proposal to editor' })}
+                          </button>
                         </div>
                       )}
                       {beginnerReferenceGeometry && (

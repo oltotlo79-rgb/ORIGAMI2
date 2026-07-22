@@ -299,8 +299,18 @@ struct DyadicPathEdgeAuthorityV1 {
     target: ori_collision::PoseFingerprintV1,
     schedule: ori_kinematics::CanonicalCycleScheduleV1,
     closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
-    positive: ori_collision::PositiveThicknessContinuousCertificateV1,
-    layer: ori_collision::GeneralMultiFaceCellTransportProofV1,
+    auxiliary: DyadicAuxiliaryProofV1,
+}
+
+enum DyadicAuxiliaryProofV1 {
+    Graph {
+        positive: ori_collision::PositiveThicknessContinuousCertificateV1,
+        layer: ori_collision::GeneralMultiFaceCellTransportProofV1,
+    },
+    Tree {
+        positive: ori_collision::PositiveThicknessTreeContinuousCertificateV1,
+        layer: ori_collision::SharedVertexTreeLayerTransportProofV1,
+    },
 }
 
 struct DyadicAuxiliaryEdgeV1 {
@@ -308,8 +318,7 @@ struct DyadicAuxiliaryEdgeV1 {
     layer_binding: Option<[u8; 32]>,
     schedule: ori_kinematics::CanonicalCycleScheduleV1,
     closure: ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
-    positive: Option<ori_collision::PositiveThicknessContinuousCertificateV1>,
-    layer: Option<ori_collision::GeneralMultiFaceCellTransportProofV1>,
+    proof: Option<DyadicAuxiliaryProofV1>,
 }
 
 impl DyadicPathNativeAuthorityV1 {
@@ -341,20 +350,48 @@ impl DyadicPathNativeAuthorityV1 {
             .all(|(path_edge, edge)| {
                 path_edge.source() == edge.source
                     && path_edge.target() == edge.target
-                    && edge.positive.is_for(
-                        geometry,
-                        edge.closure.fixed_face(),
-                        &edge.schedule,
-                        &edge.closure,
-                        self.paper_thickness_mm,
-                    )
-                    && edge.layer.is_for(
-                        geometry,
-                        self.layer_capability.snapshot(),
-                        &edge.schedule,
-                        &edge.closure,
-                        self.paper_thickness_mm,
-                    )
+                    && match &edge.auxiliary {
+                        DyadicAuxiliaryProofV1::Graph { positive, layer } => {
+                            positive.is_for(
+                                geometry,
+                                edge.closure.fixed_face(),
+                                &edge.schedule,
+                                &edge.closure,
+                                self.paper_thickness_mm,
+                            ) && layer.is_for(
+                                geometry,
+                                self.layer_capability.snapshot(),
+                                &edge.schedule,
+                                &edge.closure,
+                                self.paper_thickness_mm,
+                            )
+                        }
+                        DyadicAuxiliaryProofV1::Tree { positive, layer } => self
+                            .pose_capability
+                            .tree()
+                            .and_then(|(model, _)| {
+                                let source = edge.schedule.evaluate(0.0)?;
+                                let target = edge.schedule.evaluate(1.0)?;
+                                let source_pose =
+                                    model.solve(Some(edge.closure.fixed_face()), &source).ok()?;
+                                Some(
+                                    positive.is_for(
+                                        model,
+                                        &source_pose,
+                                        &target,
+                                        self.paper_thickness_mm,
+                                    ) && layer.is_for(
+                                        model,
+                                        &source_pose,
+                                        self.layer_capability.snapshot(),
+                                        &target,
+                                        self.paper_thickness_mm,
+                                        positive,
+                                    ),
+                                )
+                            })
+                            .unwrap_or(false),
+                    }
             })
     }
 }
@@ -1061,7 +1098,7 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 paper_thickness_mm,
                 32,
             );
-            let positive_binding = positive.as_ref().map(|certificate| {
+            let mut positive_binding = positive.as_ref().map(|certificate| {
                 let mut hash = Sha256::new();
                 hash.update(b"dyadic_positive_thickness_transition_v1");
                 hash.update(edge.source);
@@ -1115,15 +1152,56 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                 }
                 Some((<[u8; 32]>::from(hash.finalize()), proof))
             });
+            let mut layer_binding = layer.as_ref().map(|value| value.0);
+            let mut proof = positive.zip(layer.as_ref()).map(|(positive, (_, layer))| {
+                DyadicAuxiliaryProofV1::Graph {
+                    positive,
+                    layer: layer.clone(),
+                }
+            });
+            if proof.is_none() && edge.source == pose_state_fingerprint_v1(pose.hinge_angles()) {
+                proof = capability
+                    .tree()
+                    .and_then(|(tree_model, tree_source_pose)| {
+                        let target = generated.schedule().evaluate(1.0)?;
+                        let positive =
+                            ori_collision::certify_positive_thickness_tree_continuous_path_v1(
+                                tree_model,
+                                tree_source_pose,
+                                &target,
+                                paper_thickness_mm,
+                            )?;
+                        let layer = ori_collision::prepare_shared_vertex_tree_layer_transport_v1(
+                            tree_model,
+                            tree_source_pose,
+                            layer_capability.as_ref()?.snapshot(),
+                            &target,
+                            paper_thickness_mm,
+                            &positive,
+                        )?;
+                        let mut positive_hash = Sha256::new();
+                        positive_hash.update(b"dyadic_tree_positive_thickness_transition_v1");
+                        positive_hash.update(edge.source);
+                        positive_hash.update(edge.target);
+                        positive_hash.update(paper_thickness_mm.to_bits().to_be_bytes());
+                        positive_binding = Some(positive_hash.finalize().into());
+                        let mut layer_hash = Sha256::new();
+                        layer_hash.update(b"dyadic_tree_shared_vertex_layer_transition_v1");
+                        layer_hash.update(edge.source);
+                        layer_hash.update(edge.target);
+                        layer_hash.update(paper_thickness_mm.to_bits().to_be_bytes());
+                        layer_binding = Some(layer_hash.finalize().into());
+                        Some(DyadicAuxiliaryProofV1::Tree { positive, layer })
+                    });
+            }
             auxiliary_certificates.insert(
                 (edge.source, edge.target),
                 DyadicAuxiliaryEdgeV1 {
                     positive_binding,
-                    layer_binding: layer.as_ref().map(|value| value.0),
+                    layer_binding,
                     schedule: generated.schedule().clone(),
                     closure,
-                    positive,
-                    layer: layer.map(|value| value.1),
+                    proof,
                 },
             );
             Some(evidence)
@@ -1199,12 +1277,8 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
                         target: certified_edge.target(),
                         schedule: edge.schedule,
                         closure: edge.closure,
-                        positive: edge
-                            .positive
-                            .take()
-                            .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?,
-                        layer: edge
-                            .layer
+                        auxiliary: edge
+                            .proof
                             .take()
                             .ok_or_else(|| CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned())?,
                     });
@@ -4770,11 +4844,7 @@ mod tests {
             .map(|hinge| hinge.edge)
             .collect::<Vec<_>>();
         assert_eq!(hinges.len(), 4);
-        super::super::applied_pose::tests::install_flat_graph_pose_authority_on_face(
-            &mut project,
-            hinges.clone(),
-            snapshot.faces[0].id,
-        );
+        super::super::applied_pose::tests::install_flat_pose_authority(&mut project);
         let layer_state = GlobalFlatFoldabilityState::default();
         super::super::global_flat_foldability::tests::install_possible_layer_order(
             &layer_state,

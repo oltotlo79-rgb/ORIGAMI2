@@ -355,7 +355,7 @@ pub fn certify_positive_thickness_tree_continuous_path_v1(
     )
 }
 
-/// Read-only proof that an empty source ply order remains empty at a Tree
+/// Read-only proof that a source ply order can be transported to a Tree
 /// endpoint: every broad-phase candidate is authenticated by the endpoint
 /// topology memo as shared-vertex-only contact.
 #[derive(Debug, Clone, PartialEq)]
@@ -406,10 +406,7 @@ pub fn prepare_shared_vertex_tree_layer_transport_v1(
     paper_thickness_mm: f64,
     positive: &PositiveThicknessTreeContinuousCertificateV1,
 ) -> Option<SharedVertexTreeLayerTransportProofV1> {
-    if !source.overlap_cells.is_empty()
-        || !source.face_pair_orders.is_empty()
-        || !positive.is_for(model, source_pose, target_absolute, paper_thickness_mm)
-    {
+    if !positive.is_for(model, source_pose, target_absolute, paper_thickness_mm) {
         return None;
     }
     let target_pose = model

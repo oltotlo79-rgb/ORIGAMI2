@@ -285,6 +285,48 @@ struct DyadicPathPreviewRecordV1 {
     authority: Option<DyadicPathNativeAuthorityV1>,
 }
 
+/// Native-only holder for the future regular-quad petal transaction.
+///
+/// This deliberately has no command/state registration yet.  Keeping the
+/// authority private prevents a DTO from becoming mutation authority before
+/// the dedicated issuer and atomic commit path are complete.
+#[allow(dead_code)]
+struct RegularQuadPetalPreviewRecordV1 {
+    token: ProjectId,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    target_binding: [u8; 32],
+    path_binding: String,
+    authority: DyadicPathNativeAuthorityV1,
+}
+
+#[allow(dead_code)]
+impl RegularQuadPetalPreviewRecordV1 {
+    /// The apply boundary rechecks both the immutable preview envelope and all
+    /// issuer-bound per-segment proofs.  A caller-provided binding can never
+    /// substitute for the native certificate retained in this record.
+    fn revalidates_for_apply_v1(
+        &self,
+        token: ProjectId,
+        project_instance_id: ProjectId,
+        project_id: ProjectId,
+        revision: u64,
+        target_binding: [u8; 32],
+        path_binding: &str,
+    ) -> bool {
+        self.token == token
+            && self.project_instance_id == project_instance_id
+            && self.project_id == project_id
+            && self.revision == revision
+            && self.target_binding == target_binding
+            && self.path_binding == path_binding
+            && self
+                .authority
+                .revalidates_exact_three_graph_segments_v1(target_binding, path_binding)
+    }
+}
+
 struct DyadicPathNativeAuthorityV1 {
     pose_capability: CurrentAppliedPoseCapability,
     layer_capability: CurrentLayerOrderCapability,
@@ -333,12 +375,13 @@ impl DyadicPathNativeAuthorityV1 {
         record_target: [u8; 32],
         record_path_binding: &str,
     ) -> bool {
-        self.edges.len() == 3
-            && self
-                .edges
+        exact_three_graph_segment_shape_v1(
+            self.edges.len(),
+            self.edges
                 .iter()
-                .all(|edge| matches!(&edge.auxiliary, DyadicAuxiliaryProofV1::Graph { .. }))
-            && self.revalidates_private_proofs_v1(record_target, record_path_binding)
+                .filter(|edge| matches!(&edge.auxiliary, DyadicAuxiliaryProofV1::Graph { .. }))
+                .count(),
+        ) && self.revalidates_private_proofs_v1(record_target, record_path_binding)
     }
 
     fn revalidates_private_proofs_v1(
@@ -416,6 +459,13 @@ impl DyadicPathNativeAuthorityV1 {
                     }
             })
     }
+}
+
+const fn exact_three_graph_segment_shape_v1(
+    segment_count: usize,
+    graph_segment_count: usize,
+) -> bool {
+    segment_count == 3 && graph_segment_count == 3
 }
 
 #[derive(Debug, Deserialize)]
@@ -4353,6 +4403,15 @@ mod theta_cycle_test_support;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn regular_quad_petal_authority_shape_rejects_wrong_counts_and_tree_substitution() {
+        assert!(exact_three_graph_segment_shape_v1(3, 3));
+        assert!(!exact_three_graph_segment_shape_v1(2, 2));
+        assert!(!exact_three_graph_segment_shape_v1(4, 4));
+        assert!(!exact_three_graph_segment_shape_v1(3, 2));
+        assert!(!exact_three_graph_segment_shape_v1(3, 0));
+    }
 
     // The production cancellation generation is intentionally process-wide.
     // Serialize tests that advance it so parallel test scheduling cannot make

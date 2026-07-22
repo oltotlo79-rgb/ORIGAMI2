@@ -2921,6 +2921,23 @@ fn propose_current_cycle_pose_inner_with_layers(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn certified_blockwise_layer_pairs_v1(
+    sources: &[Box<ori_foldability::LayerOrderSnapshot>; 2],
+    certified_pair_count: usize,
+) -> Result<Vec<(FaceId, FaceId)>, String> {
+    let mut pairs = sources
+        .iter()
+        .flat_map(|source| source.face_pair_orders.iter())
+        .map(|pair| (pair.lower_face.face_id, pair.upper_face.face_id))
+        .collect::<Vec<_>>();
+    pairs.sort_unstable_by_key(|(lower, upper)| (lower.canonical_bytes(), upper.canonical_bytes()));
+    pairs.dedup();
+    if pairs.len() != certified_pair_count {
+        return Err(CYCLE_NONCLOSING_MESSAGE.to_owned());
+    }
+    Ok(pairs)
+}
+
 fn prepare_blockwise_current_cycle_fallback_v1(
     app: Option<&AppHandle>,
     transaction_state: &super::stacked_fold_transaction::StackedFoldTransactionState,
@@ -3208,17 +3225,7 @@ fn prepare_blockwise_current_cycle_fallback_v1(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    let mut layer_pairs = sources
-        .iter()
-        .flat_map(|source| source.face_pair_orders.iter())
-        .map(|pair| (pair.lower_face.face_id, pair.upper_face.face_id))
-        .collect::<Vec<_>>();
-    layer_pairs
-        .sort_unstable_by_key(|(lower, upper)| (lower.canonical_bytes(), upper.canonical_bytes()));
-    layer_pairs.dedup();
-    if layer_pairs.len() != pair_count {
-        return Err(CYCLE_NONCLOSING_MESSAGE.to_owned());
-    }
+    let layer_pairs = certified_blockwise_layer_pairs_v1(&sources, pair_count)?;
     let response_pairs = layer_pairs
         .iter()
         .map(|(lower_face, upper_face)| LayerOrderPairDtoV1 {
@@ -6149,6 +6156,27 @@ mod tests {
             layer_fingerprint,
         )
         .unwrap();
+
+        let sources = [first_source, second_source];
+        let mut restricted_union = sources
+            .iter()
+            .flat_map(|source| source.face_pair_orders.iter())
+            .map(|pair| (pair.lower_face.face_id, pair.upper_face.face_id))
+            .collect::<Vec<_>>();
+        restricted_union.sort_unstable_by_key(|(lower, upper)| {
+            (lower.canonical_bytes(), upper.canonical_bytes())
+        });
+        restricted_union.dedup();
+        let persisted_pairs =
+            certified_blockwise_layer_pairs_v1(&sources, authority.pair_order_count_v1())
+                .expect("certified restricted pair union");
+        assert_eq!(persisted_pairs, restricted_union);
+        assert_eq!(persisted_pairs.len(), authority.pair_order_count_v1());
+        assert_eq!(
+            certified_blockwise_layer_pairs_v1(&sources, authority.pair_order_count_v1() + 1,),
+            Err(CYCLE_NONCLOSING_MESSAGE.to_owned())
+        );
+        let [first_source, second_source] = sources;
 
         let context = issuer_context;
         let token = ProjectId::new();

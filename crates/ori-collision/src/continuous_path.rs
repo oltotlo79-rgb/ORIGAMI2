@@ -4045,6 +4045,17 @@ mod tests {
             [0x71; 32],
         )
         .unwrap();
+        let mut target_angles = first_schedule
+            .evaluate(1.0)
+            .unwrap()
+            .as_slice()
+            .iter()
+            .chain(second_schedule.evaluate(1.0).unwrap().as_slice().iter())
+            .map(|angle| (angle.edge(), angle.angle_degrees()))
+            .collect::<Vec<_>>();
+        assert!(composed.target_angles_match_v1(&target_angles));
+        target_angles[0].1 = f64::from_bits(target_angles[0].1.to_bits() ^ 1);
+        assert!(!composed.target_angles_match_v1(&target_angles));
         assert!(composed.revalidates_v1(
             [&first_source, &second_source],
             articulation,

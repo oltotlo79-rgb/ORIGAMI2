@@ -99,6 +99,32 @@ impl BlockwisePositiveLayerAuthorityV1 {
     }
 
     #[must_use]
+    pub fn target_angles_match_v1(&self, actual: &[(EdgeId, f64)]) -> bool {
+        let mut expected = Vec::new();
+        for (_, schedule, _) in &self.parent.blocks {
+            let Some(endpoint) = schedule.evaluate(1.0) else {
+                return false;
+            };
+            expected.extend(
+                endpoint
+                    .as_slice()
+                    .iter()
+                    .map(|angle| (angle.edge(), angle.angle_degrees())),
+            );
+        }
+        expected.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+        if expected.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return false;
+        }
+        let mut actual = actual.to_vec();
+        actual.sort_unstable_by_key(|(edge, _)| edge.canonical_bytes());
+        expected.len() == actual.len()
+            && expected.iter().zip(actual).all(|(expected, actual)| {
+                expected.0 == actual.0 && expected.1.to_bits() == actual.1.to_bits()
+            })
+    }
+
+    #[must_use]
     pub fn revalidates_v1(
         &self,
         sources: [&LayerOrderSnapshot; 2],
@@ -309,6 +335,51 @@ struct CanonicalBlockBindingV1 {
     faces: Vec<FaceId>,
 }
 
+fn block_intersection_is_tree_v1(blocks: &[CanonicalBlockBindingV1]) -> bool {
+    if blocks.len() < 2 {
+        return false;
+    }
+    let mut adjacency = vec![Vec::new(); blocks.len()];
+    let mut edge_count = 0usize;
+    for first in 0..blocks.len() {
+        for second in first + 1..blocks.len() {
+            let shared = blocks[first]
+                .faces
+                .iter()
+                .filter(|face| {
+                    blocks[second]
+                        .faces
+                        .binary_search_by_key(&face.canonical_bytes(), FaceId::canonical_bytes)
+                        .is_ok()
+                })
+                .count();
+            if shared > 1 {
+                return false;
+            }
+            if shared == 1 {
+                adjacency[first].push(second);
+                adjacency[second].push(first);
+                edge_count += 1;
+            }
+        }
+    }
+    if edge_count != blocks.len() - 1 {
+        return false;
+    }
+    let mut visited = vec![false; blocks.len()];
+    let mut pending = vec![0usize];
+    visited[0] = true;
+    while let Some(block) = pending.pop() {
+        for &neighbor in &adjacency[block] {
+            if !visited[neighbor] {
+                visited[neighbor] = true;
+                pending.push(neighbor);
+            }
+        }
+    }
+    visited.into_iter().all(|seen| seen)
+}
+
 /// Owns the already-issued whole-graph proofs and binds them to one canonical
 /// edge partition. Callers can neither manufacture a partial block proof nor
 /// substitute a pose/layer snapshot after issuance.
@@ -450,26 +521,7 @@ pub fn issue_block_composed_path_authority_v1(
         return None;
     }
     canonical.sort_unstable_by_key(|block| block.edges[0].canonical_bytes());
-    let mut has_articulation = false;
-    for first in 0..canonical.len() {
-        for second in first + 1..canonical.len() {
-            let shared = canonical[first]
-                .faces
-                .iter()
-                .filter(|face| {
-                    canonical[second]
-                        .faces
-                        .binary_search_by_key(&face.canonical_bytes(), FaceId::canonical_bytes)
-                        .is_ok()
-                })
-                .count();
-            if shared > 1 {
-                return None;
-            }
-            has_articulation |= shared == 1;
-        }
-    }
-    if !has_articulation {
+    if !block_intersection_is_tree_v1(&canonical) {
         return None;
     }
     let binding = block_binding_v1(
@@ -485,4 +537,49 @@ pub fn issue_block_composed_path_authority_v1(
         positive,
         layer,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CanonicalBlockBindingV1, block_intersection_is_tree_v1};
+    use ori_domain::FaceId;
+
+    fn block(faces: &[FaceId]) -> CanonicalBlockBindingV1 {
+        let mut faces = faces.to_vec();
+        faces.sort_unstable_by_key(FaceId::canonical_bytes);
+        CanonicalBlockBindingV1 {
+            edges: Vec::new(),
+            faces,
+        }
+    }
+
+    #[test]
+    fn block_intersection_requires_one_connected_articulation_tree() {
+        let [a, b, c, d] = std::array::from_fn(|_| FaceId::new());
+        assert!(block_intersection_is_tree_v1(&[
+            block(&[a, b]),
+            block(&[b, c]),
+            block(&[c, d]),
+        ]));
+    }
+
+    #[test]
+    fn block_intersection_rejects_an_isolated_block() {
+        let [a, b, c, d] = std::array::from_fn(|_| FaceId::new());
+        assert!(!block_intersection_is_tree_v1(&[
+            block(&[a, b]),
+            block(&[b, c]),
+            block(&[d]),
+        ]));
+    }
+
+    #[test]
+    fn block_intersection_rejects_an_articulation_cycle() {
+        let [a, b, c] = std::array::from_fn(|_| FaceId::new());
+        assert!(!block_intersection_is_tree_v1(&[
+            block(&[a, b]),
+            block(&[b, c]),
+            block(&[c, a]),
+        ]));
+    }
 }

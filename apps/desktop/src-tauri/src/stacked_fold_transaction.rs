@@ -265,14 +265,18 @@ impl PendingStackedFoldRequestedPose {
                 thickness,
                 issuer_context,
                 articulation_layer_fingerprint,
+                target_angles,
                 ..
-            } => authority.revalidates_v1(
-                [&sources[0], &sources[1]],
-                *articulation,
-                *thickness,
-                *issuer_context,
-                *articulation_layer_fingerprint,
-            ),
+            } => {
+                authority.target_angles_match_v1(target_angles)
+                    && authority.revalidates_v1(
+                        [&sources[0], &sources[1]],
+                        *articulation,
+                        *thickness,
+                        *issuer_context,
+                        *articulation_layer_fingerprint,
+                    )
+            }
         }
     }
 

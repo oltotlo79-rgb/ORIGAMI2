@@ -25,6 +25,7 @@ const COOPERATIVE_CHECK_INTERVAL: usize = 64;
 #[allow(dead_code)]
 mod admission;
 mod closed_cut;
+mod closed_cut_topology;
 #[allow(dead_code)]
 mod dcel;
 mod fold_graph;
@@ -41,6 +42,10 @@ pub use closed_cut::{
     DEFAULT_CLOSED_CUT_DIAGNOSTIC_INTERSECTION_TESTS_V1, MAX_CLOSED_CUT_DIAGNOSTIC_EDGES_V1,
     MAX_CLOSED_CUT_DIAGNOSTIC_INTERSECTION_TESTS_V1, MAX_CLOSED_CUT_DIAGNOSTIC_VERTICES_V1,
     diagnose_closed_cut_loops_v1,
+};
+pub use closed_cut_topology::{
+    CLOSED_CUT_TOPOLOGY_SNAPSHOT_MODEL_ID_V1, ClosedCutTopologySnapshotDiagnosticV1,
+    ClosedCutTopologySnapshotErrorV1, diagnose_closed_cut_topology_snapshot_v1,
 };
 
 pub use local_flat_foldability::{

@@ -1,8 +1,13 @@
 use ori_collision::{
-    EffectiveCutStaticThicknessLimitsV1, prepare_effective_cut_static_thickness_prerequisite_v1,
+    EffectiveCutStaticThicknessLimitsV1, prepare_effective_cut_static_pair_registry_bridge_v1,
+    prepare_effective_cut_static_thickness_prerequisite_v1,
 };
 use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, ProjectId, Vertex};
-use ori_kinematics::{TreeKinematicsLimits, prepare_effective_cut_kinematics_diagnostic_v1};
+use ori_kinematics::{
+    EffectiveCutRetainedFacePairRegistryLimitsV1, TreeKinematicsLimits,
+    prepare_effective_cut_kinematics_diagnostic_v1,
+    prepare_effective_cut_retained_face_pair_registry_v1,
+};
 use ori_topology::{
     FaceExtractionInput, diagnose_cut_material_component_selection_v1,
     diagnose_effective_cut_material_snapshot_v1,
@@ -101,6 +106,82 @@ fn source_flat_thickness_prerequisite_reports_planned_pair_cardinality_only() {
         Default::default(),
     )
     .unwrap();
+    let registry_limits = EffectiveCutRetainedFacePairRegistryLimitsV1 {
+        max_pairs: 1_000_000,
+        max_shared_hinge_memberships: 2,
+    };
+    let registry = prepare_effective_cut_retained_face_pair_registry_v1(
+        &kinematics,
+        &effective,
+        source,
+        Default::default(),
+        registry_limits,
+    )
+    .unwrap();
+    let bridge = prepare_effective_cut_static_pair_registry_bridge_v1(
+        &diagnostic,
+        &registry,
+        &kinematics,
+        &effective,
+        source,
+        Default::default(),
+        Default::default(),
+        registry_limits,
+    )
+    .unwrap();
+    assert_eq!(bridge.pair_count(), 1);
+    assert!(!bridge.authorizes_pair_classification());
+    assert!(!bridge.authorizes_collision_free_classification());
+    assert!(!bridge.authorizes_simulation_admission());
+    assert!(!bridge.authorizes_project_mutation());
+    assert!(!bridge.authorizes_material_removal());
+    assert!(!bridge.authorizes_persistence());
+    assert!(bridge.is_for(
+        &diagnostic,
+        &registry,
+        &kinematics,
+        &effective,
+        source,
+        Default::default(),
+        Default::default(),
+        registry_limits,
+    ));
+    assert!(
+        prepare_effective_cut_static_pair_registry_bridge_v1(
+            &diagnostic,
+            &registry,
+            &kinematics,
+            &effective,
+            source,
+            Default::default(),
+            EffectiveCutStaticThicknessLimitsV1 { max_face_pairs: 1 },
+            registry_limits,
+        )
+        .is_err()
+    );
+    assert!(!bridge.is_for(
+        &diagnostic,
+        &registry,
+        &kinematics,
+        &effective,
+        input(namespace, 10, &paper, &pattern),
+        Default::default(),
+        Default::default(),
+        registry_limits,
+    ));
+    assert!(!bridge.is_for(
+        &diagnostic,
+        &registry,
+        &kinematics,
+        &effective,
+        source,
+        Default::default(),
+        Default::default(),
+        EffectiveCutRetainedFacePairRegistryLimitsV1 {
+            max_pairs: 1_000_000,
+            max_shared_hinge_memberships: 3,
+        },
+    ));
     assert_eq!(diagnostic.face_count(), 2);
     assert_eq!(diagnostic.hinge_count(), 2);
     assert_eq!(diagnostic.planned_unordered_face_pair_count(), 1);
@@ -186,4 +267,17 @@ fn source_flat_thickness_prerequisite_reports_planned_pair_cardinality_only() {
     )
     .unwrap();
     assert_ne!(diagnostic.fingerprint_v1(), wider.fingerprint_v1());
+    assert!(
+        prepare_effective_cut_static_pair_registry_bridge_v1(
+            &wider,
+            &registry,
+            &kinematics,
+            &effective,
+            source,
+            Default::default(),
+            Default::default(),
+            registry_limits,
+        )
+        .is_err()
+    );
 }

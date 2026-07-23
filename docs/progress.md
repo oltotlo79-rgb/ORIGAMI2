@@ -1,5 +1,7 @@
 # ORIGAMI2 開発進捗
 
+2026-07-23 SIM-010静的遷移列証拠: `469cbf9`は正厚みのboundedな離散sample列を非認可opaque chainへ封印した。各sampleのnative静的proofだけを保持し、連続運動・project mutationを認可しない。一般continuous collisionとlayer transportは未達のためSIM-010は部分実装、全体完成度は79.3%据え置き。
+
 ## 完成率
 
 **全体完成率: 約79.3%（2026-07-21、暫定の重み付き概算）**

@@ -22,6 +22,8 @@
 
 2026-07-23 SIM-010限定証拠: `9f6053f`は、正の紙厚、全三角形の`MaterialTree`、有限かつ90度未満の全hinge角、単一の静的exact poseに限り、全face pairのclosed-prism分類とcanonical shared-hinge単位のwhole-tree coverage完全性を固定した。4/8/16-face Treeと資源preflightを検証済みである。一方、連続経路、layer transport、current mutation、非三角形・一般姿勢は未証明であり、SIM-010は部分実装、全体完成度は79.32%（表示79.3%）を維持する。
 
+2026-07-23 SIM-010静的遷移列証拠: `469cbf9`は、正厚みの1..=64遷移（N+1姿勢）の各離散姿勢がnative静的衝突proofを持つことだけを、issuer・exact pose identity・canonical hinge角bit列・厚さbit・face/pair/triangle/hinge件数へ封印する非直列化opaque chainとして追加した。Cloneは同一Arc identityを保ち、連続運動およびproject mutationのauthorityを常に与えない。4/8/16遷移と不一致・資源上限拒否を検証済みである。姿勢間のopen interval、一般continuous collision、layer transport、production Applyは未証明であり、SIM-010は部分実装、全体完成度は79.32%（表示79.3%）を維持する。
+
 2026-07-19追記: SIM-010行で未実装としていた`deep-chain stress`のうち、非平行
 H8/H16のwatertight成功、H64の構造確認後の資源preflight即時拒否、subnormalの
 GCD fallback exact/one-short、400 mm V、巨大平行移動、共有頂点fan、

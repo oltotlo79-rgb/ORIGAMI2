@@ -66,6 +66,8 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 
 `9f6053f`は、正の紙厚、全材料面が三角形、検証済み`MaterialTree`、全hinge角が有限かつ90度未満という限定入力について、単一の静的exact poseにおける全unordered face pairのclosed-prism分類と、canonical shared-hingeごとのwhole-tree coverage vectorが完全一致することを証明する。4/8/16-face Treeの成功と資源上限超過のpreflight拒否を回帰した。これは連続運動経路、layer orderの搬送、current mutationの安全性、非三角形または一般姿勢のadmissionを証明せず、一般SIM-010の完成根拠には用いない。
 
+`469cbf9`は、正厚みの1..=64遷移についてN+1個のexact poseと各native静的衝突proofを、issuer・pose/proof identity・canonical angle bits・厚さbits・完全件数へ束縛する非認可opaque chainを追加した。これは有限個の静的sampleが個別に安全であることだけを記録し、sample間のopen interval、連続運動、layer transport、project mutationを認可しない。4/8/16遷移matrixと不一致・上限拒否は実装証拠だが、general continuous pathの完成根拠には用いず、SIM-010 partialと全体79.3%を維持する。
+
 `195508d`はこの適用済みtimeline proofを読み取り専用viewerへ接続した。frontendでproof全field、32-byte hash、正のtransition数、v5を含むcanonical FaceId、自己pair禁止、canonical tuple順、50,000 pair上限を再検証し、先頭200 pairと省略数だけを表示する。pair endpointはbuttonとして選択でき、日英ARIAを持つ。最新proofが改ざんされている場合に古いvalid proofへfallbackせずviewerを閉じる。これは17-face・二block経路の保存証拠を観察可能にしたものであり、三block以上のpositive経路、一般layer transport、一般cycleの実装証拠には用いない。
 
 後続の多block compositionは、呼出側が提出した2..=8 block集合について、各blockのclosure・正厚連続性・layer transportと、block交差グラフがtreeであることを再検証するunit-level基盤に限定する。このauthorityは包含元の完全なlive graphを入力に持たず、提出hinge和集合がproject全体を尽くすことを証明しないため、whole-graph mutation authorityではない。本番routeは引き続き二blockだけであり、三block fixtureはpreviewが`stacked_fold_cycle_nonclosing`へfail closedし、pending tokenを発行せずrevisionを変更しないnegative回帰だけを固定した。従って三block以上のpositive Apply・Undo/Redo・archive、4..8 block、cross-block layer order成功を実装済みとは扱わず、A-1/A-2・B-6・SIM-010・85/2/0の判定を変更しない。

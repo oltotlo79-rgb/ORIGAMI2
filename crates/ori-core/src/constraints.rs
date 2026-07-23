@@ -6242,4 +6242,74 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn same_exact_orientation_conflict_is_symmetric_deterministic_and_keeps_parallel_angles() {
+        let fixture = Fixture::new();
+        for orientation in [
+            GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[0],
+            },
+            GeometricConstraintKindV1::Vertical {
+                edge: fixture.edges[0],
+            },
+        ] {
+            let second_orientation = match orientation {
+                GeometricConstraintKindV1::Horizontal { .. } => {
+                    GeometricConstraintKindV1::Horizontal {
+                        edge: fixture.edges[1],
+                    }
+                }
+                GeometricConstraintKindV1::Vertical { .. } => GeometricConstraintKindV1::Vertical {
+                    edge: fixture.edges[1],
+                },
+                _ => unreachable!(),
+            };
+            let mut records = vec![
+                record(orientation.clone()),
+                record(second_orientation),
+                record(GeometricConstraintKindV1::FixedAngle {
+                    vertex: fixture.vertices[0],
+                    first_edge: fixture.edges[1],
+                    second_edge: fixture.edges[0],
+                    angle_degrees: 90.0,
+                }),
+            ];
+            let prepared = prepare(&fixture, &document(records.clone())).unwrap();
+            let expected = prepared.preflight();
+            assert!(matches!(
+                expected,
+                ConstraintPreflightV1::DirectConflict { .. }
+            ));
+
+            records.reverse();
+            let permuted = prepare(&fixture, &document(records)).unwrap();
+            assert_eq!(permuted.preflight(), expected);
+        }
+
+        for compatible_angle in [0.0, 180.0] {
+            let prepared = prepare(
+                &fixture,
+                &document([
+                    record(GeometricConstraintKindV1::Horizontal {
+                        edge: fixture.edges[0],
+                    }),
+                    record(GeometricConstraintKindV1::Horizontal {
+                        edge: fixture.edges[1],
+                    }),
+                    record(GeometricConstraintKindV1::FixedAngle {
+                        vertex: fixture.vertices[0],
+                        first_edge: fixture.edges[0],
+                        second_edge: fixture.edges[1],
+                        angle_degrees: compatible_angle,
+                    }),
+                ]),
+            )
+            .unwrap();
+            assert!(!matches!(
+                prepared.preflight(),
+                ConstraintPreflightV1::DirectConflict { .. }
+            ));
+        }
+    }
 }

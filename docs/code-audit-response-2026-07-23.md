@@ -117,6 +117,10 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 
 これは監査が提案した新規利便機能であり、VAL-001の「不正入力を検出して場所と内容を示す」既存MUSTの状態根拠とは分離する。そのため`requirements-status.md`と`requirements-evidence.v1.json`の87要件判定・traceabilityは変更せず、進捗数値も変更しない。
 
+CI #660（run `29969256032`）では、macOS job `89087453025` step 8の`stacked_fold_read::tests::rank4_cycle_transports_layer_order_and_applies_atomically`がremote file line 11882の`.unwrap()`で`AmbiguousProjectedOverlap`を返し、614件成功・1件失敗となった。Windows Rust jobは成功し、bundleはskipされた。原因は、非平坦層順cellの凸多角形clipがbinary64の局所的な積・除算の可逆性を交点証明として用いており、真の有理交点を保存しないため、architectureごとの丸め差をfail closed判定へ混入させたことだった。
+
+`006974f`は、入力binary64を正確な`BigRational`へsnapshotし、凸入力の向き、half-plane分類、線交点、面積、canonical開始点をbounded exact arithmeticだけで求めるkernelへ置換した。入力・出力頂点、算術operation、整数bit、一時演算を含む累積bit workをhard capで制限し、全演算をpreflightして超過時はfail closedとする。exact overlap boundaryをそのままcore archiveへ格納し、正面積判定からfloat epsilon fallbackを除去した。f64変換は表示用boundaryだけでありauthorityには使わない。4/8/16頂点work matrix、operation/bit-work/integer/output各one-short、開始点・向き、共線頂点、重複拒否を回帰し、`ori-geometry` focused 3/3、format、Clippy `-D warnings`、`ori-core --all-targets` checkが成功した。この修正は非平坦層順の数値正本を限定的に強化するもので、一般SIM-010完成や進捗数値変更の根拠にはしない。
+
 SIM-010の後続診断である`c258daa`（全face pairの連続被覆gap registry）、`faad237`（共有hinge連続回廊の未証明入力report）、`f99f4d0`（block集合のlive graph union report）は、いずれもcontinuous motionまたはproject mutationを認可しない。`469cbf9`の静的sample列と同様、未証明範囲を可視化し入力を厳密に束縛するための証拠であり、sample間のopen interval、一般共有hinge corridor、一般multi-block composition、一般layer transport、SIM-010全体の完成根拠には用いない。
 - Windows desktop SIM-010 positive-thickness 4-hinge Tree永続化回帰: 1/1（615件filter）。既存の狭い証明済みrouteの受入強化であり、部分実装を維持する。
 - Windows desktop SIM-010 positive-thickness 5-hinge Tree永続化回帰: 1/1（615件filter）、workspace fmt: 成功。同じく部分実装を維持する。

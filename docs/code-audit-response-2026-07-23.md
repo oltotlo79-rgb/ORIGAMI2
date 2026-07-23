@@ -111,7 +111,11 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 |F-6/F-10/F-11|新規UX提案・実装済み|`57ee8e5`, `818d9f6`, `70c4c7f`, `7a5cc1b`, `f563fd1`|pose-bound camera取得、安全確認を保つ技法palette、3D距離・面法線角計測を接続した。|
 |F-4/F-9|新規UX提案・実装済み|`c084313`, `30517c3`, `05a4522`, `47bb40a`, `6938122`|線形・放射配列をpreview/confirmと原子的履歴へ、隣接step ghostを読み取り専用表示へ接続した。|
 |EDT-009一般MUS|groundedな残件|`a626dae`, `3b3a916`, `fb0fd23`ほか限定矛盾証拠|soundな限定直接矛盾だけを返し、一般MUSは未実装。`NonConvergent`やrank不足をunsat oracleとして扱わない。|
-|交差一括修復|新規仕様・未実装|既存の個別`ConnectEdgeIntersection`/`ConnectIntersectionCluster`のみ|複数clusterのID予約、順序独立性、constraint・layer lock、単一原子履歴を備えたbulk commandは残る。|
+|交差一括修復|新規仕様・実装済み（bounded point intersection）|`0da782e`, `be8fd86`, `78bf51c`, `a39261e`, `0a4670c`, `aa07fa9`, `2c7e6c7`, `7417b9b`, `eb88c15`|全検出point clusterを正規化し、original edgeごとのbinary64 exact parameter順、決定的junction/segment ID予約、layer assignment継承、constraint・layer lock、source/revision再認証を経て、一つの原子的Editor履歴として修復する。Tauri IPC、typed client、件数・確認・pending・成功/失敗表示、Undo/Redoまで接続した。collinear overlapとendpoint identity coalescingは不正deltaを発行せずfail closedする。|
+
+交差一括修復の受入では、同一edge上4/8/16交点、水平・垂直・対角、同一点cluster、方向反転、ID不足・重複・既存衝突、resource cap、stale source、delta改ざん、layer lock、constraint参照、失敗無変更、単一Undo/Redoをnative回帰した。`ori-core` focused 10件、production Editor 4/8/16回帰、desktop Rust check、frontend production build、DOM全366件および専用control 2件が成功した。
+
+これは監査が提案した新規利便機能であり、VAL-001の「不正入力を検出して場所と内容を示す」既存MUSTの状態根拠とは分離する。そのため`requirements-status.md`と`requirements-evidence.v1.json`の87要件判定・traceabilityは変更せず、進捗数値も変更しない。
 
 SIM-010の後続診断である`c258daa`（全face pairの連続被覆gap registry）、`faad237`（共有hinge連続回廊の未証明入力report）、`f99f4d0`（block集合のlive graph union report）は、いずれもcontinuous motionまたはproject mutationを認可しない。`469cbf9`の静的sample列と同様、未証明範囲を可視化し入力を厳密に束縛するための証拠であり、sample間のopen interval、一般共有hinge corridor、一般multi-block composition、一般layer transport、SIM-010全体の完成根拠には用いない。
 - Windows desktop SIM-010 positive-thickness 4-hinge Tree永続化回帰: 1/1（615件filter）。既存の狭い証明済みrouteの受入強化であり、部分実装を維持する。

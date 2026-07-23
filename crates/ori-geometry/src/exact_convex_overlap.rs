@@ -246,8 +246,11 @@ fn prepare(
     points: &[Point2],
     meter: &mut Meter,
 ) -> Result<Vec<ExactPoint2V1>, ExactConvexOverlapErrorV1> {
-    if points.len() < 3 || points.len() > meter.limits.max_input_vertices {
+    if points.len() < 3 {
         return Err(ExactConvexOverlapErrorV1::InvalidInput);
+    }
+    if points.len() > meter.limits.max_input_vertices {
+        return Err(ExactConvexOverlapErrorV1::ResourceLimit);
     }
     let mut exact = points
         .iter()
@@ -281,6 +284,21 @@ fn prepare(
         }
     }
     Ok(exact)
+}
+
+fn push_unique(
+    output: &mut Vec<ExactPoint2V1>,
+    point: ExactPoint2V1,
+    max_output_vertices: usize,
+) -> Result<(), ExactConvexOverlapErrorV1> {
+    if output.last() == Some(&point) || (output.len() > 1 && output.first() == Some(&point)) {
+        return Ok(());
+    }
+    if output.len() >= max_output_vertices {
+        return Err(ExactConvexOverlapErrorV1::ResourceLimit);
+    }
+    output.push(point);
+    Ok(())
 }
 
 fn line_intersection(
@@ -349,19 +367,15 @@ pub fn exact_convex_polygon_overlap_v1(
             let previous_inside = !cross(start, end, previous, &mut meter)?.is_negative();
             let current_inside = !cross(start, end, current, &mut meter)?.is_negative();
             if previous_inside != current_inside {
-                if output.len() >= limits.max_output_vertices {
-                    return Err(ExactConvexOverlapErrorV1::ResourceLimit);
-                }
-                output.push(line_intersection(
-                    previous, current, start, end, &mut meter,
-                )?);
+                let intersection = line_intersection(previous, current, start, end, &mut meter)?;
+                push_unique(&mut output, intersection, limits.max_output_vertices)?;
             }
             if current_inside {
-                if output.len() >= limits.max_output_vertices {
-                    return Err(ExactConvexOverlapErrorV1::ResourceLimit);
-                }
-                output.push(current.clone());
+                push_unique(&mut output, current.clone(), limits.max_output_vertices)?;
             }
+        }
+        if output.len() > 1 && output.first() == output.last() {
+            output.pop();
         }
     }
     let signed_double_area = if output.len() >= 3 {
@@ -442,6 +456,10 @@ mod tests {
         let result = exact_convex_polygon_overlap_v1(&subject, &clip, Default::default()).unwrap();
         for limits in [
             ExactConvexOverlapLimitsV1 {
+                max_input_vertices: subject.len() - 1,
+                ..Default::default()
+            },
+            ExactConvexOverlapLimitsV1 {
                 max_operations: result.operations() - 1,
                 ..Default::default()
             },
@@ -503,5 +521,42 @@ mod tests {
             exact_convex_polygon_overlap_v1(&triangle, &triangle, limits),
             Err(ExactConvexOverlapErrorV1::ResourceLimit)
         );
+    }
+
+    #[test]
+    fn boundary_entry_deduplicates_only_identical_adjacent_vertices() {
+        let subject = [
+            Point2::new(-1.0, -1.0),
+            Point2::new(0.0, -1.0),
+            Point2::new(1.0, -1.0),
+            Point2::new(1.0, 1.0),
+            Point2::new(-1.0, 1.0),
+        ];
+        let clip = [
+            Point2::new(0.0, -2.0),
+            Point2::new(2.0, -2.0),
+            Point2::new(2.0, 2.0),
+            Point2::new(0.0, 2.0),
+        ];
+        let overlap = exact_convex_polygon_overlap_v1(&subject, &clip, Default::default()).unwrap();
+        assert_eq!(overlap.points().len(), 4);
+        assert!(
+            overlap
+                .points()
+                .iter()
+                .enumerate()
+                .all(|(index, point)| point
+                    != &overlap.points()[(index + 1) % overlap.points().len()])
+        );
+        let mut at_cap = overlap.points().to_vec();
+        let cap = at_cap.len();
+        push_unique(&mut at_cap, overlap.points()[0].clone(), cap).unwrap();
+        assert_eq!(at_cap, overlap.points());
+
+        // Distinct collinear vertices remain part of the documented polygon boundary.
+        let collinear = rectangle_with_vertices(8);
+        let preserved =
+            exact_convex_polygon_overlap_v1(&collinear, &collinear, Default::default()).unwrap();
+        assert_eq!(preserved.points().len(), 8);
     }
 }

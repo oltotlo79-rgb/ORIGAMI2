@@ -1923,6 +1923,10 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
             first_horizontal.and_then(|ids| ids.first()),
             second_vertical.and_then(|ids| ids.first()),
         ) {
+            // Parallel uses a length-normalized cross product in the solver.
+            // A collapsed edge makes that residual non-finite rather than
+            // satisfying it, while non-collapsed horizontal/vertical vectors
+            // have normalized cross magnitude one.
             push_conflict(
                 &mut conflicts,
                 DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations {
@@ -1937,6 +1941,8 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
             first_vertical.and_then(|ids| ids.first()),
             second_horizontal.and_then(|ids| ids.first()),
         ) {
+            // The same soundness argument applies with the canonical pair's
+            // horizontal and vertical roles reversed.
             push_conflict(
                 &mut conflicts,
                 DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations {
@@ -6478,5 +6484,54 @@ mod tests {
         records.reverse();
         let permuted = prepare(&fixture, &document(records)).unwrap().preflight();
         assert_eq!(permuted, expected);
+    }
+
+    #[test]
+    fn parallel_with_perpendicular_orientations_feeds_the_bounded_mus_oracle() {
+        for count in [4, 8, 16] {
+            let fixture = Fixture::new();
+            let mut records = vec![
+                record(GeometricConstraintKindV1::Parallel {
+                    first_edge: fixture.edges[1],
+                    second_edge: fixture.edges[0],
+                }),
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[0],
+                }),
+                record(GeometricConstraintKindV1::Vertical {
+                    edge: fixture.edges[1],
+                }),
+            ];
+            records.extend((3..count).map(|index| {
+                record(GeometricConstraintKindV1::EqualLength {
+                    first_edge: fixture.edges[index % 6],
+                    second_edge: fixture.edges[(index + 1) % 6],
+                })
+            }));
+            let prepared = prepare(&fixture, &document(records)).unwrap();
+            let BoundedDirectMusV1::ProvenUnsatisfiable { constraint_ids, .. } =
+                find_bounded_direct_mus_v1(&prepared)
+            else {
+                panic!("normalized parallel residual cannot accept perpendicular directions")
+            };
+            assert_eq!(constraint_ids.len(), 3);
+            for removed in &constraint_ids {
+                let constraints = prepared
+                    .constraints
+                    .iter()
+                    .filter(|record| constraint_ids.contains(&record.id) && record.id != *removed)
+                    .cloned()
+                    .collect();
+                let subset = GeometricConstraintSetV1 {
+                    source_pattern: &fixture.pattern,
+                    constraints,
+                    max_preflight_checks: prepared.max_preflight_checks,
+                };
+                assert!(!matches!(
+                    subset.preflight(),
+                    ConstraintPreflightV1::DirectConflict { .. }
+                ));
+            }
+        }
     }
 }

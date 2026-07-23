@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ori_domain::FaceId;
+use ori_domain::{EdgeId, FaceId};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -17,6 +17,8 @@ use crate::{
 
 pub const CUT_MATERIAL_COMPONENT_SELECTION_DIAGNOSTIC_MODEL_ID_V1: &str =
     "cut_material_component_selection_diagnostic_v1";
+pub const CUT_MATERIAL_REMOVAL_PLAN_DIAGNOSTIC_MODEL_ID_V1: &str =
+    "cut_material_removal_plan_diagnostic_v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CutMaterialComponentSelectionErrorV1 {
@@ -24,6 +26,100 @@ pub enum CutMaterialComponentSelectionErrorV1 {
     Topology(#[from] ClosedCutTopologySnapshotErrorV1),
     #[error("material-component selection classification failed closed")]
     InvalidClassification,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum CutMaterialRemovalPlanErrorV1 {
+    #[error("material-component selection prerequisite failed: {0}")]
+    Selection(#[from] CutMaterialComponentSelectionErrorV1),
+    #[error("requested component keys must be non-empty and strictly canonical")]
+    InvalidRequest,
+    #[error("requested component does not exist")]
+    UnknownComponent,
+    #[error("the original-boundary component cannot be removed")]
+    BoundaryComponentRequested,
+    #[error("cut-incidence component graph is not a rooted tree")]
+    InvalidComponentGraph,
+    #[error("material removal partition failed closed")]
+    InvalidPartition,
+}
+
+/// A read-only plan for a future material-removal transaction.
+///
+/// This diagnostic deliberately cannot be converted into a mutation. Removing
+/// a component implies removing its complete descendant closure away from the
+/// unique original-boundary owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CutMaterialRemovalPlanDiagnosticV1 {
+    requested_components: Vec<MaterialComponentKey>,
+    removed_components: Vec<MaterialComponentKey>,
+    retained_components: Vec<MaterialComponentKey>,
+    boundary_component: MaterialComponentKey,
+    removed_faces: Vec<FaceId>,
+    retained_faces: Vec<FaceId>,
+    crossing_cut_boundaries: Vec<EdgeId>,
+    fingerprint: [u8; 32],
+    limits: ClosedCutLoopDiagnosticLimitsV1,
+}
+
+impl CutMaterialRemovalPlanDiagnosticV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        CUT_MATERIAL_REMOVAL_PLAN_DIAGNOSTIC_MODEL_ID_V1
+    }
+    #[must_use]
+    pub fn requested_components(&self) -> &[MaterialComponentKey] {
+        &self.requested_components
+    }
+    #[must_use]
+    pub fn removed_components(&self) -> &[MaterialComponentKey] {
+        &self.removed_components
+    }
+    #[must_use]
+    pub fn retained_components(&self) -> &[MaterialComponentKey] {
+        &self.retained_components
+    }
+    #[must_use]
+    pub const fn boundary_component(&self) -> MaterialComponentKey {
+        self.boundary_component
+    }
+    #[must_use]
+    pub fn removed_faces(&self) -> &[FaceId] {
+        &self.removed_faces
+    }
+    #[must_use]
+    pub fn retained_faces(&self) -> &[FaceId] {
+        &self.retained_faces
+    }
+    #[must_use]
+    pub fn crossing_cut_boundaries(&self) -> &[EdgeId] {
+        &self.crossing_cut_boundaries
+    }
+    #[must_use]
+    pub const fn fingerprint_v1(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_material_removal(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_simulation_admission(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn is_for(
+        &self,
+        input: FaceExtractionInput<'_>,
+        requested_components: &[MaterialComponentKey],
+    ) -> bool {
+        diagnose_cut_material_removal_plan_v1(input, requested_components, self.limits)
+            .is_ok_and(|current| current.fingerprint == self.fingerprint)
+    }
 }
 
 /// Canonical, non-authoritative classification of one material component.
@@ -186,6 +282,211 @@ pub fn diagnose_cut_material_component_selection_v1(
     }
     Ok(CutMaterialComponentSelectionDiagnosticV1 {
         selections,
+        fingerprint: hash.finalize().into(),
+        limits,
+    })
+}
+
+pub fn diagnose_cut_material_removal_plan_v1(
+    input: FaceExtractionInput<'_>,
+    requested_components: &[MaterialComponentKey],
+    limits: ClosedCutLoopDiagnosticLimitsV1,
+) -> Result<CutMaterialRemovalPlanDiagnosticV1, CutMaterialRemovalPlanErrorV1> {
+    if requested_components.is_empty()
+        || requested_components
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+    {
+        return Err(CutMaterialRemovalPlanErrorV1::InvalidRequest);
+    }
+
+    let selection = diagnose_cut_material_component_selection_v1(input, limits)?;
+    let topology = diagnose_closed_cut_topology_snapshot_v1(input, limits)
+        .map_err(CutMaterialComponentSelectionErrorV1::from)
+        .map_err(CutMaterialRemovalPlanErrorV1::from)?;
+    let snapshot = topology.snapshot();
+    let boundary_components = selection
+        .selections()
+        .iter()
+        .filter(|entry| entry.owns_original_boundary)
+        .map(|entry| entry.component)
+        .collect::<Vec<_>>();
+    if boundary_components.len() != 1 {
+        return Err(CutMaterialRemovalPlanErrorV1::InvalidComponentGraph);
+    }
+    let root = boundary_components[0];
+    let known = selection
+        .selections()
+        .iter()
+        .map(|entry| entry.component)
+        .collect::<HashSet<_>>();
+    for requested in requested_components {
+        if !known.contains(requested) {
+            return Err(CutMaterialRemovalPlanErrorV1::UnknownComponent);
+        }
+        if *requested == root {
+            return Err(CutMaterialRemovalPlanErrorV1::BoundaryComponentRequested);
+        }
+    }
+
+    let component_by_face = selection
+        .selections()
+        .iter()
+        .flat_map(|entry| entry.faces.iter().map(move |face| (*face, entry.component)))
+        .collect::<HashMap<_, _>>();
+    let mut cut_pairs = HashSet::new();
+    let mut cut_incidence = Vec::new();
+    for (edge, incidence) in &snapshot.edge_incidence {
+        if let EdgeIncidence::Cut { left, right } = incidence {
+            let left = *component_by_face
+                .get(left)
+                .ok_or(CutMaterialRemovalPlanErrorV1::InvalidComponentGraph)?;
+            let right = *component_by_face
+                .get(right)
+                .ok_or(CutMaterialRemovalPlanErrorV1::InvalidComponentGraph)?;
+            if left == right {
+                return Err(CutMaterialRemovalPlanErrorV1::InvalidComponentGraph);
+            }
+            let pair = if left < right {
+                (left, right)
+            } else {
+                (right, left)
+            };
+            cut_pairs.insert(pair);
+            cut_incidence.push((*edge, left, right));
+        }
+    }
+    if cut_pairs.len() != known.len().saturating_sub(1) {
+        return Err(CutMaterialRemovalPlanErrorV1::InvalidComponentGraph);
+    }
+    let mut adjacency = HashMap::<MaterialComponentKey, Vec<MaterialComponentKey>>::new();
+    for component in &known {
+        adjacency.insert(*component, Vec::new());
+    }
+    for (left, right) in cut_pairs {
+        adjacency.get_mut(&left).unwrap().push(right);
+        adjacency.get_mut(&right).unwrap().push(left);
+    }
+    for neighbors in adjacency.values_mut() {
+        neighbors.sort_unstable();
+    }
+
+    let mut parent = HashMap::with_capacity(known.len());
+    parent.insert(root, root);
+    let mut queue = std::collections::VecDeque::from([root]);
+    while let Some(component) = queue.pop_front() {
+        for neighbor in &adjacency[&component] {
+            if !parent.contains_key(neighbor) {
+                parent.insert(*neighbor, component);
+                queue.push_back(*neighbor);
+            }
+        }
+    }
+    if parent.len() != known.len() {
+        return Err(CutMaterialRemovalPlanErrorV1::InvalidComponentGraph);
+    }
+
+    let requested = requested_components.iter().copied().collect::<HashSet<_>>();
+    let mut removed = HashSet::new();
+    for component in known.iter().copied().filter(|component| *component != root) {
+        let mut cursor = component;
+        loop {
+            if requested.contains(&cursor) {
+                removed.insert(component);
+                break;
+            }
+            let next = parent[&cursor];
+            if next == cursor {
+                break;
+            }
+            cursor = next;
+        }
+    }
+    if removed.is_empty() || removed.contains(&root) {
+        return Err(CutMaterialRemovalPlanErrorV1::InvalidPartition);
+    }
+    let mut removed_components = removed.iter().copied().collect::<Vec<_>>();
+    removed_components.sort_unstable();
+    let mut retained_components = known
+        .iter()
+        .copied()
+        .filter(|component| !removed.contains(component))
+        .collect::<Vec<_>>();
+    retained_components.sort_unstable();
+    if retained_components.len() + removed_components.len() != known.len()
+        || !retained_components.contains(&root)
+    {
+        return Err(CutMaterialRemovalPlanErrorV1::InvalidPartition);
+    }
+    let mut removed_faces = Vec::new();
+    let mut retained_faces = Vec::new();
+    for entry in selection.selections() {
+        if removed.contains(&entry.component) {
+            removed_faces.extend_from_slice(&entry.faces);
+        } else {
+            retained_faces.extend_from_slice(&entry.faces);
+        }
+    }
+    removed_faces.sort_unstable_by_key(FaceId::canonical_bytes);
+    retained_faces.sort_unstable_by_key(FaceId::canonical_bytes);
+    if removed_faces.is_empty()
+        || retained_faces.is_empty()
+        || removed_faces.iter().any(|face| {
+            retained_faces
+                .binary_search_by_key(&face.canonical_bytes(), FaceId::canonical_bytes)
+                .is_ok()
+        })
+        || removed_faces.len() + retained_faces.len() != snapshot.faces.len()
+    {
+        return Err(CutMaterialRemovalPlanErrorV1::InvalidPartition);
+    }
+    let mut crossing_cut_boundaries = cut_incidence
+        .into_iter()
+        .filter_map(|(edge, left, right)| {
+            (removed.contains(&left) != removed.contains(&right)).then_some(edge)
+        })
+        .collect::<Vec<_>>();
+    crossing_cut_boundaries.sort_unstable_by_key(EdgeId::canonical_bytes);
+    if crossing_cut_boundaries.is_empty() {
+        return Err(CutMaterialRemovalPlanErrorV1::InvalidPartition);
+    }
+
+    let mut hash = Sha256::new();
+    hash.update(CUT_MATERIAL_REMOVAL_PLAN_DIAGNOSTIC_MODEL_ID_V1.as_bytes());
+    hash.update(selection.fingerprint_v1());
+    hash.update(root.0);
+    hash.update((requested_components.len() as u64).to_be_bytes());
+    for component in requested_components {
+        hash.update(component.0);
+    }
+    hash.update((removed_components.len() as u64).to_be_bytes());
+    for component in &removed_components {
+        hash.update(component.0);
+    }
+    hash.update((retained_components.len() as u64).to_be_bytes());
+    for component in &retained_components {
+        hash.update(component.0);
+    }
+    hash.update((removed_faces.len() as u64).to_be_bytes());
+    for face in &removed_faces {
+        hash.update(face.canonical_bytes());
+    }
+    hash.update((retained_faces.len() as u64).to_be_bytes());
+    for face in &retained_faces {
+        hash.update(face.canonical_bytes());
+    }
+    hash.update((crossing_cut_boundaries.len() as u64).to_be_bytes());
+    for edge in &crossing_cut_boundaries {
+        hash.update(edge.canonical_bytes());
+    }
+    Ok(CutMaterialRemovalPlanDiagnosticV1 {
+        requested_components: requested_components.to_vec(),
+        removed_components,
+        retained_components,
+        boundary_component: root,
+        removed_faces,
+        retained_faces,
+        crossing_cut_boundaries,
         fingerprint: hash.finalize().into(),
         limits,
     })
@@ -383,5 +684,153 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn component_keys(
+        source: FaceExtractionInput<'_>,
+    ) -> (MaterialComponentKey, Vec<MaterialComponentKey>) {
+        let selection =
+            diagnose_cut_material_component_selection_v1(source, Default::default()).unwrap();
+        let root = selection
+            .selections()
+            .iter()
+            .find(|entry| entry.owns_original_boundary)
+            .unwrap()
+            .component;
+        let candidates = selection
+            .selections()
+            .iter()
+            .filter(|entry| !entry.owns_original_boundary)
+            .map(|entry| entry.component)
+            .collect();
+        (root, candidates)
+    }
+
+    #[test]
+    fn disjoint_requests_make_a_canonical_read_only_partition() {
+        let (namespace, paper, pattern) = fixture(true);
+        let source = input(namespace, 7, &paper, &pattern);
+        let (root, candidates) = component_keys(source);
+        let plan =
+            diagnose_cut_material_removal_plan_v1(source, &candidates, Default::default()).unwrap();
+        assert_eq!(plan.requested_components(), candidates);
+        assert_eq!(plan.removed_components(), candidates);
+        assert_eq!(plan.boundary_component(), root);
+        assert_eq!(plan.retained_components(), &[root]);
+        assert_eq!(plan.crossing_cut_boundaries().len(), 6);
+        assert!(!plan.removed_faces().is_empty());
+        assert!(!plan.retained_faces().is_empty());
+        assert!(!plan.authorizes_project_mutation());
+        assert!(!plan.authorizes_material_removal());
+        assert!(!plan.authorizes_simulation_admission());
+        assert!(plan.is_for(source, &candidates));
+        assert!(!plan.is_for(input(namespace, 8, &paper, &pattern), &candidates));
+    }
+
+    #[test]
+    fn disjoint_unrequested_sibling_remains_explicitly_retained() {
+        let (namespace, paper, pattern) = fixture(true);
+        let source = input(namespace, 7, &paper, &pattern);
+        let (root, candidates) = component_keys(source);
+        let plan =
+            diagnose_cut_material_removal_plan_v1(source, &candidates[0..1], Default::default())
+                .unwrap();
+        assert_eq!(plan.removed_components(), &candidates[0..1]);
+        assert_eq!(plan.retained_components().len(), 2);
+        assert!(plan.retained_components().contains(&root));
+        assert!(plan.retained_components().contains(&candidates[1]));
+        assert_eq!(plan.crossing_cut_boundaries().len(), 3);
+    }
+
+    #[test]
+    fn nested_parent_request_closes_over_its_descendant() {
+        let (namespace, paper, mut pattern) = fixture(true);
+        pattern.vertices[7].position = Point2::new(3.0, 2.5);
+        pattern.vertices[8].position = Point2::new(4.0, 2.5);
+        pattern.vertices[9].position = Point2::new(3.5, 3.5);
+        let source = input(namespace, 7, &paper, &pattern);
+        let (_, candidates) = component_keys(source);
+        let first =
+            diagnose_cut_material_removal_plan_v1(source, &candidates[0..1], Default::default())
+                .unwrap();
+        let second =
+            diagnose_cut_material_removal_plan_v1(source, &candidates[1..2], Default::default())
+                .unwrap();
+        let parent = if first.removed_components().len() == 2 {
+            &first
+        } else {
+            &second
+        };
+        assert_eq!(parent.removed_components().len(), 2);
+        assert_eq!(parent.crossing_cut_boundaries().len(), 3);
+
+        let both =
+            diagnose_cut_material_removal_plan_v1(source, &candidates, Default::default()).unwrap();
+        assert_eq!(both.removed_components(), parent.removed_components());
+        assert_ne!(both.fingerprint_v1(), parent.fingerprint_v1());
+    }
+
+    #[test]
+    fn removal_request_validation_and_resource_caps_fail_closed() {
+        let (namespace, paper, pattern) = fixture(true);
+        let source = input(namespace, 7, &paper, &pattern);
+        let (root, candidates) = component_keys(source);
+        assert_eq!(
+            diagnose_cut_material_removal_plan_v1(source, &[], Default::default()),
+            Err(CutMaterialRemovalPlanErrorV1::InvalidRequest)
+        );
+        assert_eq!(
+            diagnose_cut_material_removal_plan_v1(source, &[root], Default::default()),
+            Err(CutMaterialRemovalPlanErrorV1::BoundaryComponentRequested)
+        );
+        assert_eq!(
+            diagnose_cut_material_removal_plan_v1(
+                source,
+                &[MaterialComponentKey([0xff; 32])],
+                Default::default()
+            ),
+            Err(CutMaterialRemovalPlanErrorV1::UnknownComponent)
+        );
+        assert_eq!(
+            diagnose_cut_material_removal_plan_v1(
+                source,
+                &[candidates[0], candidates[0]],
+                Default::default()
+            ),
+            Err(CutMaterialRemovalPlanErrorV1::InvalidRequest)
+        );
+        let mut reversed = candidates.clone();
+        reversed.reverse();
+        assert_eq!(
+            diagnose_cut_material_removal_plan_v1(source, &reversed, Default::default()),
+            Err(CutMaterialRemovalPlanErrorV1::InvalidRequest)
+        );
+        assert!(matches!(
+            diagnose_cut_material_removal_plan_v1(
+                source,
+                &candidates[0..1],
+                ClosedCutLoopDiagnosticLimitsV1 {
+                    max_edges: pattern.edges.len() - 1,
+                    ..Default::default()
+                }
+            ),
+            Err(CutMaterialRemovalPlanErrorV1::Selection(_))
+        ));
+    }
+
+    #[test]
+    fn plan_binds_complete_topology_selection_and_request() {
+        let (namespace, paper, pattern) = fixture(false);
+        let source = input(namespace, 7, &paper, &pattern);
+        let (_, candidates) = component_keys(source);
+        let plan =
+            diagnose_cut_material_removal_plan_v1(source, &candidates, Default::default()).unwrap();
+        let mut changed_pattern = pattern.clone();
+        changed_pattern.vertices[4].position.x += 0.125;
+        assert!(!plan.is_for(input(namespace, 7, &paper, &changed_pattern), &candidates));
+        let mut changed_paper = paper.clone();
+        changed_paper.thickness_mm = 0.2;
+        assert!(!plan.is_for(input(namespace, 7, &changed_paper, &pattern), &candidates));
+        assert!(!plan.is_for(source, &[MaterialComponentKey([0xfe; 32])]));
     }
 }

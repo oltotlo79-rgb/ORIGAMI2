@@ -50,8 +50,10 @@ pub use closed_cut_topology::{
 };
 pub use cut_material_selection::{
     CUT_MATERIAL_COMPONENT_SELECTION_DIAGNOSTIC_MODEL_ID_V1,
-    CutMaterialComponentSelectionDiagnosticV1, CutMaterialComponentSelectionErrorV1,
-    CutMaterialComponentSelectionV1, diagnose_cut_material_component_selection_v1,
+    CUT_MATERIAL_REMOVAL_PLAN_DIAGNOSTIC_MODEL_ID_V1, CutMaterialComponentSelectionDiagnosticV1,
+    CutMaterialComponentSelectionErrorV1, CutMaterialComponentSelectionV1,
+    CutMaterialRemovalPlanDiagnosticV1, CutMaterialRemovalPlanErrorV1,
+    diagnose_cut_material_component_selection_v1, diagnose_cut_material_removal_plan_v1,
 };
 
 pub use local_flat_foldability::{

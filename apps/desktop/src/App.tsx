@@ -90,6 +90,7 @@ import {
   cancelSvgImport,
   connectEdgeIntersection,
   connectIntersectionCluster,
+  repairAllUnsplitIntersections,
   connectTJunction,
   createProjectLayer,
   deleteProjectLayer,
@@ -983,6 +984,7 @@ function App() {
     | null
   >(null)
   const [coreBusy, setCoreBusy] = useState(false)
+  const [bulkIntersectionRepairPending, setBulkIntersectionRepairPending] = useState(false)
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [newProjectErrorMessage, setNewProjectError] =
     useState<AppMessage | null>(null)
@@ -2485,6 +2487,26 @@ function App() {
       setCoreBusy(false)
     }
   }, [applySnapshot])
+
+  const repairAllIntersections = useCallback(async () => {
+    const count = validation?.issues.filter((issue) => issue.code === 'unsplit_intersection').length ?? 0
+    if (count === 0 || bulkIntersectionRepairPending) return
+    if (!window.confirm(text({
+      ja: `${count}件の未分割交差を一括修復しますか？`,
+      en: `Repair ${count} unsplit intersections as one undoable edit?`,
+    }))) return
+    setBulkIntersectionRepairPending(true)
+    try {
+      const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
+        repairAllUnsplitIntersections(projectId, revision, projectInstanceId))
+      if (succeeded) setCoreStatus(appMessage({
+        ja: '交差を一括修復しました。元に戻す／やり直すを利用できます。',
+        en: 'Intersections repaired. Undo and redo are available.',
+      }))
+    } finally {
+      setBulkIntersectionRepairPending(false)
+    }
+  }, [bulkIntersectionRepairPending, runNativeEdit, text, validation])
 
   function addCurrentToMirrorSelection() {
     setMirrorPreview(null)
@@ -10433,6 +10455,21 @@ function App() {
                       en: '{count} issues were found.',
                     }, { count: validation.issues.length })}
                   </p>
+                  {validation.issues.some((issue) => issue.code === 'unsplit_intersection') && (
+                    <button
+                      type="button"
+                      data-testid="repair-all-unsplit-intersections"
+                      disabled={coreBusy || fileOperation !== null || bulkIntersectionRepairPending}
+                      onClick={() => void repairAllIntersections()}
+                    >
+                      {bulkIntersectionRepairPending
+                        ? text({ ja: '一括修復中…', en: 'Repairing…' })
+                        : text({
+                            ja: `交差を一括修復（${validation.issues.filter((issue) => issue.code === 'unsplit_intersection').length}件）`,
+                            en: `Repair all intersections (${validation.issues.filter((issue) => issue.code === 'unsplit_intersection').length})`,
+                          })}
+                    </button>
+                  )}
                   <ul>
                     {validation.issues.slice(0, 20).map((issue, index) => {
                       const edgeId = issue.edges.find((id) =>

@@ -10,7 +10,11 @@ pub const MAX_HINGE_RELIEF_RECORDS_V1: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HingeReliefPolicyRecordV1 {
     pub edge: EdgeId,
+    /// Full material removed normal to the hinge axis on each incident face.
     pub cutout_width_mm: f64,
+    /// Included bevel angle in material cross-section, in degrees. V1 records
+    /// it in binary64 but deliberately uses the conservative width>=thickness
+    /// envelope below instead of a platform libm tangent threshold.
     pub bevel_angle_degrees: f64,
     pub material_thickness_mm: f64,
 }
@@ -89,6 +93,7 @@ pub fn prepare_hinge_relief_prerequisite_v1(
     records: &[HingeReliefPolicyRecordV1],
     limits: HingeReliefPolicyLimitsV1,
 ) -> Result<NativeHingeReliefPrerequisiteV1, HingeReliefPolicyErrorV1> {
+    preflight_graph_work(graph, records, limits)?;
     let hinge_edges = graph.hinges().iter().map(|hinge| hinge.edge());
     validate_policy(hinge_edges, material_thickness_mm, records, limits)?;
     Ok(NativeHingeReliefPrerequisiteV1 {
@@ -105,6 +110,7 @@ pub fn revalidate_hinge_relief_prerequisite_v1(
     records: &[HingeReliefPolicyRecordV1],
     limits: HingeReliefPolicyLimitsV1,
 ) -> Result<(), HingeReliefPolicyErrorV1> {
+    preflight_graph_work(graph, records, limits)?;
     validate_policy(
         graph.hinges().iter().map(|hinge| hinge.edge()),
         material_thickness_mm,
@@ -116,6 +122,20 @@ pub fn revalidate_hinge_relief_prerequisite_v1(
         || prerequisite.records != records
     {
         return Err(HingeReliefPolicyErrorV1::BindingMismatch);
+    }
+    Ok(())
+}
+
+fn preflight_graph_work(
+    graph: &MaterialHingeGraphGeometry,
+    records: &[HingeReliefPolicyRecordV1],
+    limits: HingeReliefPolicyLimitsV1,
+) -> Result<(), HingeReliefPolicyErrorV1> {
+    if limits.max_records > MAX_HINGE_RELIEF_RECORDS_V1 {
+        return Err(HingeReliefPolicyErrorV1::InvalidLimit);
+    }
+    if graph.hinges().len() > limits.max_records || records.len() > limits.max_records {
+        return Err(HingeReliefPolicyErrorV1::ResourceLimit);
     }
     Ok(())
 }
@@ -168,9 +188,10 @@ fn validate_policy(
         {
             return Err(HingeReliefPolicyErrorV1::InvalidBevelAngle);
         }
-        let half_angle = (record.bevel_angle_degrees * 0.5).to_radians();
-        let required_width = record.material_thickness_mm / (2.0 * half_angle.tan());
-        if !required_width.is_finite() || record.cutout_width_mm < required_width {
+        // A full-thickness cutout is a deterministic conservative prerequisite
+        // for every admitted bevel. Comparing the original positive binary64
+        // values is exact and avoids a platform-dependent libm boundary.
+        if record.cutout_width_mm < record.material_thickness_mm {
             return Err(HingeReliefPolicyErrorV1::InsufficientCutout);
         }
     }
@@ -251,5 +272,30 @@ mod tests {
             validate_policy(edges, 0.1, &input, HingeReliefPolicyLimitsV1::default()),
             Err(HingeReliefPolicyErrorV1::ThicknessMismatch)
         );
+    }
+
+    #[test]
+    fn conservative_cutout_boundary_accepts_equal_and_rejects_the_previous_float() {
+        let edges = sorted_edges(1);
+        let mut input = records(&edges);
+        validate_policy(
+            edges.clone(),
+            0.1,
+            &input,
+            HingeReliefPolicyLimitsV1::default(),
+        )
+        .unwrap();
+        input[0].cutout_width_mm = f64::from_bits(0.1_f64.to_bits() - 1);
+        assert_eq!(
+            validate_policy(
+                edges.clone(),
+                0.1,
+                &input,
+                HingeReliefPolicyLimitsV1::default()
+            ),
+            Err(HingeReliefPolicyErrorV1::InsufficientCutout)
+        );
+        input[0].cutout_width_mm = f64::from_bits(0.1_f64.to_bits() + 1);
+        validate_policy(edges, 0.1, &input, HingeReliefPolicyLimitsV1::default()).unwrap();
     }
 }

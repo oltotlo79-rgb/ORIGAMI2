@@ -26,6 +26,7 @@ mod cell_order_transport;
 mod certified_path_graph;
 mod continuous_layer_transport;
 mod continuous_path;
+mod effective_cut_static;
 mod exact_dyadic_intersection;
 mod flat_endpoint_layer_order;
 mod general_cell_transport;
@@ -127,6 +128,12 @@ pub use continuous_path::{
     diagnose_shared_vertex_continuous_corridor_gaps_v1, enumerate_uniform_cycle_closure_roots_v1,
     prepare_dyadic_face_transform_interval_registry_v1,
     prepare_shared_vertex_tree_layer_transport_v1, supports_scheduled_positive_thickness_path_v1,
+};
+pub use effective_cut_static::{
+    EFFECTIVE_CUT_STATIC_THICKNESS_PREREQUISITE_MODEL_ID_V1, EffectiveCutStaticThicknessLimitsV1,
+    EffectiveCutStaticThicknessPrerequisiteDiagnosticV1,
+    EffectiveCutStaticThicknessPrerequisiteErrorV1,
+    prepare_effective_cut_static_thickness_prerequisite_v1,
 };
 pub use exact_dyadic_intersection::{
     DyadicPointV1, DyadicSegmentV1, ExactDyadicIntersectionErrorV1,

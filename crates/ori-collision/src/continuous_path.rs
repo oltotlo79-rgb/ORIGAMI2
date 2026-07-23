@@ -335,6 +335,95 @@ pub struct DyadicSharedVertexSectorBoundaryDiagnosticV1 {
     radius_binding: Vec<(ori_domain::VertexId, u64)>,
     leaves: Vec<(u32, u64, Vec<SharedVertexSectorBoundaryV1>)>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SharedVertexBoundaryPointDistanceLowerV1 {
+    pair: [FaceId; 2],
+    vertex: ori_domain::VertexId,
+    lower_mm: f64,
+}
+impl SharedVertexBoundaryPointDistanceLowerV1 {
+    #[must_use]
+    pub const fn pair(&self) -> [FaceId; 2] {
+        self.pair
+    }
+    #[must_use]
+    pub const fn vertex(&self) -> ori_domain::VertexId {
+        self.vertex
+    }
+    #[must_use]
+    pub const fn lower_mm(&self) -> f64 {
+        self.lower_mm
+    }
+}
+
+/// Lower bounds only for the finite predecessor/successor by two-side point
+/// boxes. This does not enclose a cutout arc or offset surface.
+#[derive(Debug, Clone)]
+pub struct DyadicSharedVertexBoundaryPointDistanceDiagnosticV1 {
+    issuer: MaterialHingeGraphGeometry,
+    schedule_hash: [u8; 32],
+    closure_hash: [u8; 32],
+    thickness_bits: u64,
+    max_work: usize,
+    sector_content_hash: [u8; 32],
+    leaves: Vec<(u32, u64, Vec<SharedVertexBoundaryPointDistanceLowerV1>)>,
+}
+impl DyadicSharedVertexBoundaryPointDistanceDiagnosticV1 {
+    #[must_use]
+    pub fn leaves(&self) -> &[(u32, u64, Vec<SharedVertexBoundaryPointDistanceLowerV1>)] {
+        &self.leaves
+    }
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn is_for(
+        &self,
+        sectors: &DyadicSharedVertexSectorBoundaryDiagnosticV1,
+        gaps: &SharedVertexContinuousCorridorGapReportV1,
+        input: DyadicFaceTransformBindingInputV1<'_>,
+        max_work: usize,
+    ) -> bool {
+        self.issuer.same_instance(input.geometry)
+            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v1()
+            && self.closure_hash == input.closure.partition_binding_fingerprint_v1()
+            && self.thickness_bits == input.thickness_mm.to_bits()
+            && self.max_work == max_work
+            && sector_boundary_content_hash_v1(sectors)
+                .is_ok_and(|hash| self.sector_content_hash == hash)
+            && sectors.issuer.same_instance(input.geometry)
+            && sectors.schedule_hash == input.schedule.certificate_binding_fingerprint_v1()
+            && sectors.closure_hash == input.closure.partition_binding_fingerprint_v1()
+            && sectors.thickness_bits == input.thickness_mm.to_bits()
+            && gaps.is_for(
+                input.geometry,
+                input.audit,
+                input.fixed_face,
+                input.schedule,
+                input.thickness_mm,
+            )
+            && self.leaves.len() == sectors.leaves.len()
+            && self.leaves.iter().zip(&sectors.leaves).all(
+                |((depth, index, bounds), (sector_depth, sector_index, _))| {
+                    depth == sector_depth
+                        && index == sector_index
+                        && bounds.len() == gaps.gaps.len()
+                        && bounds.iter().zip(&gaps.gaps).all(|(bound, gap)| {
+                            bound.pair == gap.pair
+                                && bound.vertex == gap.vertex
+                                && bound.lower_mm.is_finite()
+                                && bound.lower_mm >= 0.0
+                        })
+                },
+            )
+    }
+}
 impl DyadicSharedVertexSectorBoundaryDiagnosticV1 {
     #[must_use]
     pub fn leaves(&self) -> &[(u32, u64, Vec<SharedVertexSectorBoundaryV1>)] {
@@ -1197,6 +1286,152 @@ fn sector_boundary_local_point(
         .add(half)
         .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)?;
     Ok([lower, upper])
+}
+
+pub fn diagnose_dyadic_shared_vertex_boundary_point_distances_v1(
+    sectors: &DyadicSharedVertexSectorBoundaryDiagnosticV1,
+    gaps: &SharedVertexContinuousCorridorGapReportV1,
+    input: DyadicFaceTransformBindingInputV1<'_>,
+    max_work: usize,
+) -> Result<DyadicSharedVertexBoundaryPointDistanceDiagnosticV1, DyadicFaceTransformIntervalErrorV1>
+{
+    let work = sectors
+        .leaves
+        .len()
+        .checked_mul(gaps.gaps.len())
+        .and_then(|value| value.checked_mul(16))
+        .ok_or(DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    if max_work == 0 || work > max_work || work > MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1 {
+        return Err(if max_work == 0 {
+            DyadicFaceTransformIntervalErrorV1::InvalidBinding
+        } else {
+            DyadicFaceTransformIntervalErrorV1::ResourceLimit
+        });
+    }
+    if !sectors.issuer.same_instance(input.geometry)
+        || sectors.schedule_hash != input.schedule.certificate_binding_fingerprint_v1()
+        || sectors.closure_hash != input.closure.partition_binding_fingerprint_v1()
+        || sectors.thickness_bits != input.thickness_mm.to_bits()
+        || !gaps.is_for(
+            input.geometry,
+            input.audit,
+            input.fixed_face,
+            input.schedule,
+            input.thickness_mm,
+        )
+    {
+        return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+    }
+    let mut leaves = Vec::new();
+    leaves
+        .try_reserve_exact(sectors.leaves.len())
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    for (depth, index, entries) in &sectors.leaves {
+        let mut bounds = Vec::new();
+        bounds
+            .try_reserve_exact(gaps.gaps.len())
+            .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+        for gap in &gaps.gaps {
+            let first = entries
+                .iter()
+                .find(|entry| {
+                    entry.pair == gap.pair
+                        && entry.vertex == gap.vertex
+                        && entry.face == gap.pair[0]
+                })
+                .ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding)?;
+            let second = entries
+                .iter()
+                .find(|entry| {
+                    entry.pair == gap.pair
+                        && entry.vertex == gap.vertex
+                        && entry.face == gap.pair[1]
+                })
+                .ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding)?;
+            let mut minimum = f64::INFINITY;
+            for left in first.boundary.iter().flatten() {
+                for right in second.boundary.iter().flatten() {
+                    minimum = minimum.min(interval_point_distance_lower_v1(*left, *right)?);
+                }
+            }
+            if !minimum.is_finite() {
+                return Err(DyadicFaceTransformIntervalErrorV1::Unproven);
+            }
+            bounds.push(SharedVertexBoundaryPointDistanceLowerV1 {
+                pair: gap.pair,
+                vertex: gap.vertex,
+                lower_mm: minimum,
+            });
+        }
+        leaves.push((*depth, *index, bounds));
+    }
+    Ok(DyadicSharedVertexBoundaryPointDistanceDiagnosticV1 {
+        issuer: input.geometry.clone(),
+        schedule_hash: input.schedule.certificate_binding_fingerprint_v1(),
+        closure_hash: input.closure.partition_binding_fingerprint_v1(),
+        thickness_bits: input.thickness_mm.to_bits(),
+        max_work,
+        sector_content_hash: sector_boundary_content_hash_v1(sectors)?,
+        leaves,
+    })
+}
+
+fn sector_boundary_content_hash_v1(
+    sectors: &DyadicSharedVertexSectorBoundaryDiagnosticV1,
+) -> Result<[u8; 32], DyadicFaceTransformIntervalErrorV1> {
+    use sha2::Digest as _;
+    let mut hash = sha2::Sha256::new();
+    let canonical_usize = |value: usize| {
+        u64::try_from(value)
+            .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+            .map(u64::to_le_bytes)
+    };
+    hash.update(b"origami2:shared-vertex-sector-boundary-content:v1");
+    hash.update(canonical_usize(sectors.max_work_per_point)?);
+    hash.update(canonical_usize(sectors.radius_binding.len())?);
+    for (vertex, radius) in &sectors.radius_binding {
+        hash.update(vertex.canonical_bytes());
+        hash.update(radius.to_le_bytes());
+    }
+    hash.update(canonical_usize(sectors.leaves.len())?);
+    for (depth, index, entries) in &sectors.leaves {
+        hash.update(depth.to_le_bytes());
+        hash.update(index.to_le_bytes());
+        hash.update(canonical_usize(entries.len())?);
+        for entry in entries {
+            hash.update(entry.pair[0].canonical_bytes());
+            hash.update(entry.pair[1].canonical_bytes());
+            hash.update(entry.vertex.canonical_bytes());
+            hash.update(entry.face.canonical_bytes());
+            for value in entry.boundary.iter().flatten().flatten() {
+                hash.update(value.lower().to_bits().to_le_bytes());
+                hash.update(value.upper().to_bits().to_le_bytes());
+            }
+        }
+    }
+    Ok(hash.finalize().into())
+}
+
+fn interval_point_distance_lower_v1(
+    left: [ori_kinematics::OutwardIntervalV1; 3],
+    right: [ori_kinematics::OutwardIntervalV1; 3],
+) -> Result<f64, DyadicFaceTransformIntervalErrorV1> {
+    let exact =
+        |value| BigRational::from_f64(value).ok_or(DyadicFaceTransformIntervalErrorV1::Unproven);
+    let zero = BigRational::from_integer(0.into());
+    let mut squared = zero.clone();
+    for axis in 0..3 {
+        let first = exact(left[axis].lower())? - exact(right[axis].upper())?;
+        let second = exact(right[axis].lower())? - exact(left[axis].upper())?;
+        let separation = std::cmp::max(zero.clone(), std::cmp::max(first, second));
+        squared += &separation * &separation;
+    }
+    let (lower, _) =
+        ori_numeric::rational_sqrt_bounds(&squared, ori_numeric::ExpressionLimits::default())
+            .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)?;
+    ori_numeric::rational_interval_to_f64_outward(&lower, &lower)
+        .map(|interval| interval.lower().max(0.0))
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)
 }
 
 fn classify_continuous_pair_v1(
@@ -5441,6 +5676,62 @@ mod tests {
                     ),
                     Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding)
                 ));
+                let point_distances = diagnose_dyadic_shared_vertex_boundary_point_distances_v1(
+                    &sector_boundaries,
+                    &vertex_gaps,
+                    binding(),
+                    2_048,
+                )
+                .unwrap();
+                assert!(!point_distances.authorizes_continuous_motion());
+                assert!(!point_distances.authorizes_project_mutation());
+                assert!(
+                    point_distances.is_for(&sector_boundaries, &vertex_gaps, binding(), 2_048,)
+                );
+                let mut foreign_sector = sector_boundaries.clone();
+                foreign_sector.schedule_hash[0] ^= 1;
+                assert!(!point_distances.is_for(&foreign_sector, &vertex_gaps, binding(), 2_048,));
+                let mut foreign_sector = sector_boundaries.clone();
+                foreign_sector.closure_hash[0] ^= 1;
+                assert!(!point_distances.is_for(&foreign_sector, &vertex_gaps, binding(), 2_048,));
+                let mut foreign_sector = sector_boundaries.clone();
+                foreign_sector.thickness_bits ^= 1;
+                assert!(!point_distances.is_for(&foreign_sector, &vertex_gaps, binding(), 2_048,));
+                let mut foreign_sector = sector_boundaries.clone();
+                foreign_sector.radius_binding[0].1 ^= 1;
+                assert!(!point_distances.is_for(&foreign_sector, &vertex_gaps, binding(), 2_048,));
+                let mut foreign_sector = sector_boundaries.clone();
+                foreign_sector.max_work_per_point -= 1;
+                assert!(!point_distances.is_for(&foreign_sector, &vertex_gaps, binding(), 2_048,));
+                let mut foreign_sector = sector_boundaries.clone();
+                foreign_sector.leaves[0].2[0].boundary[0][0][0] =
+                    ori_kinematics::OutwardIntervalV1::new(0.0, 0.0).unwrap();
+                assert!(!point_distances.is_for(&foreign_sector, &vertex_gaps, binding(), 2_048,));
+                assert!(point_distances.leaves().iter().all(|(_, _, bounds)| {
+                    bounds
+                        .iter()
+                        .all(|bound| bound.lower_mm().is_finite() && bound.lower_mm() >= 0.0)
+                }));
+                assert!(matches!(
+                    diagnose_dyadic_shared_vertex_boundary_point_distances_v1(
+                        &sector_boundaries,
+                        &vertex_gaps,
+                        binding(),
+                        0,
+                    ),
+                    Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding)
+                ));
+                if transforms.leaves().len() * vertex_gaps.gaps().len() * 16 > 1 {
+                    assert!(matches!(
+                        diagnose_dyadic_shared_vertex_boundary_point_distances_v1(
+                            &sector_boundaries,
+                            &vertex_gaps,
+                            binding(),
+                            1,
+                        ),
+                        Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+                    ));
+                }
                 assert_eq!(sector_boundaries.leaves().len(), transforms.leaves().len());
                 assert!(sector_boundaries.leaves().iter().all(|(_, _, entries)| {
                     entries.iter().all(|entry| {

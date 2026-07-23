@@ -30,6 +30,7 @@ mod exact_dyadic_intersection;
 mod flat_endpoint_layer_order;
 mod general_cell_transport;
 mod graph_positive_thickness;
+mod hinge_relief;
 mod non_flat_cell_transport;
 mod stacked_fold_read;
 mod static_collision;
@@ -136,6 +137,11 @@ pub use graph_positive_thickness::{
     NativePositiveThicknessGraphGeometryProofV1, POSITIVE_THICKNESS_GRAPH_GEOMETRY_PROOF_V1,
     PositiveThicknessGraphLimitsV1, PositiveThicknessGraphProofErrorV1,
     prove_positive_thickness_graph_geometry_v1,
+};
+pub use hinge_relief::{
+    HINGE_RELIEF_POLICY_MODEL_ID_V1, HingeReliefPolicyErrorV1, HingeReliefPolicyLimitsV1,
+    HingeReliefPolicyRecordV1, MAX_HINGE_RELIEF_RECORDS_V1, NativeHingeReliefPrerequisiteV1,
+    prepare_hinge_relief_prerequisite_v1, revalidate_hinge_relief_prerequisite_v1,
 };
 pub use non_flat_cell_transport::{
     NON_FLAT_CELL_TRANSPORT_MODEL_ID_V1, NonFlatCellTransportErrorV1, NonFlatCellTransportLimitsV1,

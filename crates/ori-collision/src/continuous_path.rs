@@ -465,6 +465,117 @@ impl DyadicSharedVertexWedgeDiagnosticV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SharedVertexWedgeSeparationLowerV1 {
+    pair: [FaceId; 2],
+    vertex: ori_domain::VertexId,
+    lower_mm: f64,
+}
+impl SharedVertexWedgeSeparationLowerV1 {
+    #[must_use]
+    pub const fn pair(&self) -> [FaceId; 2] {
+        self.pair
+    }
+    #[must_use]
+    pub const fn vertex(&self) -> ori_domain::VertexId {
+        self.vertex
+    }
+    #[must_use]
+    pub const fn lower_mm(&self) -> f64 {
+        self.lower_mm
+    }
+}
+
+/// Sound common-axis separation bounds for the complete convex prisms stored
+/// by [`DyadicSharedVertexWedgeDiagnosticV1`]. This remains diagnostic:
+/// common-axis separation is sufficient, but not complete, for disjointness.
+#[derive(Debug, Clone)]
+pub struct DyadicSharedVertexWedgeSeparationDiagnosticV1 {
+    issuer: MaterialHingeGraphGeometry,
+    schedule_hash: [u8; 32],
+    closure_hash: [u8; 32],
+    thickness_bits: u64,
+    max_work_per_pair: usize,
+    wedge_content_hash: [u8; 32],
+    leaves: Vec<(u32, u64, Vec<SharedVertexWedgeSeparationLowerV1>)>,
+    content_hash: [u8; 32],
+}
+impl DyadicSharedVertexWedgeSeparationDiagnosticV1 {
+    #[must_use]
+    pub fn leaves(&self) -> &[(u32, u64, Vec<SharedVertexWedgeSeparationLowerV1>)] {
+        &self.leaves
+    }
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn is_for(
+        &self,
+        wedges: &DyadicSharedVertexWedgeDiagnosticV1,
+        input: DyadicFaceTransformBindingInputV1<'_>,
+        max_work_per_pair: usize,
+    ) -> bool {
+        self.issuer.same_instance(input.geometry)
+            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v1()
+            && self.closure_hash == input.closure.partition_binding_fingerprint_v1()
+            && self.thickness_bits == input.thickness_mm.to_bits()
+            && wedges.issuer.same_instance(input.geometry)
+            && wedges.schedule_hash == input.schedule.certificate_binding_fingerprint_v1()
+            && wedges.closure_hash == input.closure.partition_binding_fingerprint_v1()
+            && wedges.thickness_bits == input.thickness_mm.to_bits()
+            && self.max_work_per_pair == max_work_per_pair
+            && self.wedge_content_hash == wedges.content_hash
+            && wedge_separation_content_hash_v1(
+                &self.leaves,
+                self.max_work_per_pair,
+                self.wedge_content_hash,
+            )
+            .is_ok_and(|hash| hash == self.content_hash)
+            && self.leaves.len() == wedges.leaves.len()
+            && self.leaves.iter().zip(&wedges.leaves).all(
+                |((depth, index, bounds), (wedge_depth, wedge_index, cells))| {
+                    let Ok(expected) = wedge_pair_keys_v1(cells) else {
+                        return false;
+                    };
+                    depth == wedge_depth
+                        && index == wedge_index
+                        && !bounds.is_empty()
+                        && bounds.len() == expected.len()
+                        && bounds.iter().zip(expected).all(|(bound, expected)| {
+                            (bound.pair, bound.vertex) == expected
+                                && bound.lower_mm.is_finite()
+                                && bound.lower_mm > 0.0
+                                && cells.iter().any(|cell| {
+                                    cell.pair == bound.pair
+                                        && cell.vertex == bound.vertex
+                                        && cell.face == bound.pair[0]
+                                })
+                                && cells.iter().any(|cell| {
+                                    cell.pair == bound.pair
+                                        && cell.vertex == bound.vertex
+                                        && cell.face == bound.pair[1]
+                                })
+                                && cells
+                                    .iter()
+                                    .filter(|cell| {
+                                        cell.pair == bound.pair
+                                            && cell.vertex == bound.vertex
+                                            && (cell.face == bound.pair[0]
+                                                || cell.face == bound.pair[1])
+                                    })
+                                    .count()
+                                    == 2
+                        })
+                },
+            )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SharedVertexBoundaryPointDistanceLowerV1 {
     pair: [FaceId; 2],
     vertex: ori_domain::VertexId,
@@ -2090,6 +2201,213 @@ fn wedge_content_hash_v1(
         }
     }
     Ok(h.finalize().into())
+}
+
+const MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1: usize = 4_000_000;
+
+/// Proves a positive lower bound between every cross-face pair of complete
+/// convex wedge prisms using their world-coordinate AABBs. Because a convex
+/// prism is the convex hull of its two rings, coordinate extrema of all ring
+/// vertices enclose every point of the prism, rather than only samples.
+pub fn diagnose_dyadic_shared_vertex_wedge_separation_v1(
+    wedges: &DyadicSharedVertexWedgeDiagnosticV1,
+    input: DyadicFaceTransformBindingInputV1<'_>,
+    max_work_per_pair: usize,
+) -> Result<DyadicSharedVertexWedgeSeparationDiagnosticV1, DyadicFaceTransformIntervalErrorV1> {
+    if max_work_per_pair == 0
+        || max_work_per_pair > MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1
+        || !wedges.issuer.same_instance(input.geometry)
+        || wedges.schedule_hash != input.schedule.certificate_binding_fingerprint_v1()
+        || wedges.closure_hash != input.closure.partition_binding_fingerprint_v1()
+        || wedges.thickness_bits != input.thickness_mm.to_bits()
+        || !wedge_content_hash_v1(
+            &wedges.leaves,
+            wedges.max_work_per_cell,
+            &wedges.radius_binding,
+            wedges.sector_content_hash,
+        )
+        .is_ok_and(|hash| hash == wedges.content_hash)
+        || wedges.leaves.is_empty()
+    {
+        return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+    }
+    let mut leaves = Vec::new();
+    leaves
+        .try_reserve_exact(wedges.leaves.len())
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    for (depth, index, cells) in &wedges.leaves {
+        let keys = wedge_pair_keys_v1(cells)?;
+        let mut bounds = Vec::new();
+        bounds
+            .try_reserve_exact(keys.len())
+            .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+        for (pair, vertex) in keys {
+            let mut work = 0usize;
+            let mut left = None;
+            let mut right = None;
+            for cell in cells
+                .iter()
+                .filter(|cell| cell.pair == pair && cell.vertex == vertex)
+            {
+                let slot = if cell.face == pair[0] {
+                    &mut left
+                } else if cell.face == pair[1] {
+                    &mut right
+                } else {
+                    continue;
+                };
+                if slot.replace(cell).is_some() {
+                    return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+                }
+            }
+            let (Some(a), Some(b)) = (left, right) else {
+                return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+            };
+            let aa = wedge_cell_aabb_v1(a, &mut work, max_work_per_pair)?;
+            let bb = wedge_cell_aabb_v1(b, &mut work, max_work_per_pair)?;
+            charge_wedge_separation_work_v1(&mut work, 3, max_work_per_pair)?;
+            let lower = exact_common_axis_gap_lower_v1(&aa, &bb)?;
+            if !lower.is_finite() || lower <= 0.0 {
+                return Err(DyadicFaceTransformIntervalErrorV1::Unproven);
+            }
+            bounds.push(SharedVertexWedgeSeparationLowerV1 {
+                pair,
+                vertex,
+                lower_mm: lower,
+            });
+        }
+        leaves.push((*depth, *index, bounds));
+    }
+    let wedge_content_hash = wedges.content_hash;
+    let content_hash =
+        wedge_separation_content_hash_v1(&leaves, max_work_per_pair, wedge_content_hash)?;
+    Ok(DyadicSharedVertexWedgeSeparationDiagnosticV1 {
+        issuer: input.geometry.clone(),
+        schedule_hash: input.schedule.certificate_binding_fingerprint_v1(),
+        closure_hash: input.closure.partition_binding_fingerprint_v1(),
+        thickness_bits: input.thickness_mm.to_bits(),
+        max_work_per_pair,
+        wedge_content_hash,
+        leaves,
+        content_hash,
+    })
+}
+
+fn exact_common_axis_gap_lower_v1(
+    a: &[[f64; 2]; 3],
+    b: &[[f64; 2]; 3],
+) -> Result<f64, DyadicFaceTransformIntervalErrorV1> {
+    let exact =
+        |value| BigRational::from_f64(value).ok_or(DyadicFaceTransformIntervalErrorV1::Unproven);
+    let mut best: Option<BigRational> = None;
+    for axis in 0..3 {
+        let forward = exact(b[axis][0])? - exact(a[axis][1])?;
+        let reverse = exact(a[axis][0])? - exact(b[axis][1])?;
+        let gap = forward.max(reverse);
+        best = Some(best.map_or(gap.clone(), |current| current.max(gap)));
+    }
+    let best = best.ok_or(DyadicFaceTransformIntervalErrorV1::Unproven)?;
+    let interval = ori_numeric::rational_interval_to_f64_outward(&best, &best)
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)?;
+    Ok(interval.lower())
+}
+
+fn wedge_pair_keys_v1(
+    cells: &[SharedVertexWedgeCellV1],
+) -> Result<Vec<([FaceId; 2], ori_domain::VertexId)>, DyadicFaceTransformIntervalErrorV1> {
+    if cells.is_empty() {
+        return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+    }
+    let mut keys = Vec::new();
+    keys.try_reserve_exact(cells.len())
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    for cell in cells {
+        if cell.pair[0] == cell.pair[1]
+            || cell.pair[0].canonical_bytes() >= cell.pair[1].canonical_bytes()
+        {
+            return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+        }
+        keys.push((cell.pair, cell.vertex));
+    }
+    keys.sort_by(|a, b| {
+        a.0[0]
+            .canonical_bytes()
+            .cmp(&b.0[0].canonical_bytes())
+            .then_with(|| a.0[1].canonical_bytes().cmp(&b.0[1].canonical_bytes()))
+            .then_with(|| a.1.canonical_bytes().cmp(&b.1.canonical_bytes()))
+    });
+    keys.dedup();
+    Ok(keys)
+}
+
+fn wedge_cell_aabb_v1(
+    cell: &SharedVertexWedgeCellV1,
+    work: &mut usize,
+    limit: usize,
+) -> Result<[[f64; 2]; 3], DyadicFaceTransformIntervalErrorV1> {
+    if cell.top_ring.len() < 3 || cell.top_ring.len() != cell.bottom_ring.len() {
+        return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+    }
+    let mut out = [[f64::INFINITY, f64::NEG_INFINITY]; 3];
+    for point in cell.top_ring.iter().chain(&cell.bottom_ring) {
+        charge_wedge_separation_work_v1(work, 3, limit)?;
+        for axis in 0..3 {
+            out[axis][0] = out[axis][0].min(point[axis].lower());
+            out[axis][1] = out[axis][1].max(point[axis].upper());
+        }
+    }
+    if out.iter().flatten().any(|value| !value.is_finite()) {
+        Err(DyadicFaceTransformIntervalErrorV1::Unproven)
+    } else {
+        Ok(out)
+    }
+}
+
+fn charge_wedge_separation_work_v1(
+    work: &mut usize,
+    amount: usize,
+    limit: usize,
+) -> Result<(), DyadicFaceTransformIntervalErrorV1> {
+    *work = work
+        .checked_add(amount)
+        .ok_or(DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    if *work > limit {
+        Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+    } else {
+        Ok(())
+    }
+}
+
+fn wedge_separation_content_hash_v1(
+    leaves: &[(u32, u64, Vec<SharedVertexWedgeSeparationLowerV1>)],
+    max_work: usize,
+    wedge_hash: [u8; 32],
+) -> Result<[u8; 32], DyadicFaceTransformIntervalErrorV1> {
+    use sha2::Digest as _;
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"origami2:shared-vertex-wedge-separation:v1");
+    hash.update(
+        u64::try_from(max_work)
+            .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?
+            .to_le_bytes(),
+    );
+    hash.update(wedge_hash);
+    for (depth, index, bounds) in leaves {
+        hash.update(depth.to_le_bytes());
+        hash.update(index.to_le_bytes());
+        hash.update(
+            u64::try_from(bounds.len())
+                .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?
+                .to_le_bytes(),
+        );
+        for bound in bounds {
+            hash.update(bound.pair[0].canonical_bytes());
+            hash.update(bound.pair[1].canonical_bytes());
+            hash.update(bound.vertex.canonical_bytes());
+            hash.update(bound.lower_mm.to_bits().to_le_bytes());
+        }
+    }
+    Ok(hash.finalize().into())
 }
 
 fn interval_point_distance_lower_v1(
@@ -5467,6 +5785,69 @@ mod tests {
         serde_json::from_str(&format!("\"00000000-0000-4000-{prefix}-{index:012x}\"")).unwrap()
     }
 
+    #[test]
+    fn wedge_prism_aabb_encloses_both_complete_rings_and_has_sound_exact_gap() {
+        let iv = |lower, upper| ori_kinematics::OutwardIntervalV1::new(lower, upper).unwrap();
+        let cell = SharedVertexWedgeCellV1 {
+            pair: [fixed_id("8000", 1), fixed_id("8000", 2)],
+            vertex: fixed_id("8000", 3),
+            face: fixed_id("8000", 1),
+            top_ring: vec![
+                [iv(0.0, 0.1), iv(2.0, 2.1), iv(-1.0, -0.9)],
+                [iv(1.0, 1.1), iv(2.0, 2.1), iv(0.0, 0.1)],
+                [iv(0.0, 0.1), iv(2.0, 2.1), iv(1.0, 1.1)],
+            ],
+            bottom_ring: vec![
+                [iv(0.0, 0.1), iv(-2.1, -2.0), iv(1.0, 1.1)],
+                [iv(1.0, 1.1), iv(-2.1, -2.0), iv(0.0, 0.1)],
+                [iv(0.0, 0.1), iv(-2.1, -2.0), iv(-1.0, -0.9)],
+            ],
+        };
+        let mut work = 0;
+        let bounds = wedge_cell_aabb_v1(&cell, &mut work, 18).unwrap();
+        assert_eq!(work, 18);
+        assert_eq!(
+            wedge_cell_aabb_v1(&cell, &mut 0, 17),
+            Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+        );
+        assert_eq!(bounds, [[0.0, 1.1], [-2.1, 2.1], [-1.0, 1.1]]);
+        let shifted = [[1.2, 2.0], [-2.1, 2.1], [-1.0, 1.1]];
+        let lower = exact_common_axis_gap_lower_v1(&bounds, &shifted).unwrap();
+        assert!(lower > 0.0);
+        assert!(lower <= 0.1);
+        let exact_gap = BigRational::from_f64(1.2).unwrap() - BigRational::from_f64(1.1).unwrap();
+        assert!(BigRational::from_f64(lower).unwrap() <= exact_gap);
+    }
+
+    #[test]
+    fn wedge_pair_keys_are_unique_and_canonical() {
+        let iv = ori_kinematics::OutwardIntervalV1::new(0.0, 0.0).unwrap();
+        let ring = vec![[iv; 3]; 3];
+        let face_a: FaceId = fixed_id("8000", 1);
+        let face_b: FaceId = fixed_id("8000", 2);
+        let vertex = fixed_id("8000", 3);
+        let cells = [face_b, face_a]
+            .into_iter()
+            .map(|face| SharedVertexWedgeCellV1 {
+                pair: [face_a, face_b],
+                vertex,
+                face,
+                top_ring: ring.clone(),
+                bottom_ring: ring.clone(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            wedge_pair_keys_v1(&cells).unwrap(),
+            vec![([face_a, face_b], vertex)]
+        );
+        let mut invalid = cells;
+        invalid[0].pair = [face_b, face_a];
+        assert_eq!(
+            wedge_pair_keys_v1(&invalid),
+            Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding)
+        );
+    }
+
     fn rational_cycle_bay_geometry(
         group_count: usize,
         reverse_hinges: bool,
@@ -8508,6 +8889,129 @@ mod tests {
                 binding(),
                 1,
             ),
+            Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+        ));
+        // The two opposite face pairs are separated on a world coordinate
+        // axis for the complete transformed prisms, not just ring samples.
+        let separation = diagnose_dyadic_shared_vertex_wedge_separation_v1(
+            &wedges,
+            binding(),
+            MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1,
+        )
+        .unwrap();
+        assert!(!separation.authorizes_continuous_motion());
+        assert!(!separation.authorizes_project_mutation());
+        assert!(separation.is_for(
+            &wedges,
+            binding(),
+            MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1,
+        ));
+        assert!(
+            separation
+                .leaves()
+                .iter()
+                .all(|(_, _, bounds)| !bounds.is_empty()
+                    && bounds.iter().all(|bound| bound.lower_mm() > 0.0))
+        );
+        let mut tampered = separation.clone();
+        tampered.leaves[0].2.pop();
+        assert!(!tampered.is_for(
+            &wedges,
+            binding(),
+            MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1,
+        ));
+        let mut tampered = separation.clone();
+        let duplicate = tampered.leaves[0].2[0];
+        tampered.leaves[0].2.push(duplicate);
+        assert!(!tampered.is_for(
+            &wedges,
+            binding(),
+            MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1,
+        ));
+        macro_rules! rejects_separation {
+            ($change:expr) => {{
+                let mut foreign = separation.clone();
+                $change(&mut foreign);
+                assert!(!foreign.is_for(
+                    &wedges,
+                    binding(),
+                    MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1,
+                ));
+            }};
+        }
+        rejects_separation!(|d: &mut DyadicSharedVertexWedgeSeparationDiagnosticV1| d
+            .schedule_hash[0] ^=
+            1);
+        rejects_separation!(|d: &mut DyadicSharedVertexWedgeSeparationDiagnosticV1| d
+            .closure_hash[0] ^=
+            1);
+        rejects_separation!(|d: &mut DyadicSharedVertexWedgeSeparationDiagnosticV1| d
+            .thickness_bits ^=
+            1);
+        rejects_separation!(|d: &mut DyadicSharedVertexWedgeSeparationDiagnosticV1| d
+            .max_work_per_pair -=
+            1);
+        rejects_separation!(|d: &mut DyadicSharedVertexWedgeSeparationDiagnosticV1| d
+            .wedge_content_hash[0] ^=
+            1);
+        rejects_separation!(|d: &mut DyadicSharedVertexWedgeSeparationDiagnosticV1| d
+            .content_hash[0] ^=
+            1);
+        rejects_separation!(
+            |d: &mut DyadicSharedVertexWedgeSeparationDiagnosticV1| d.leaves[0].0 ^= 1
+        );
+        rejects_separation!(
+            |d: &mut DyadicSharedVertexWedgeSeparationDiagnosticV1| d.leaves[0].1 ^= 1
+        );
+        rejects_separation!(
+            |d: &mut DyadicSharedVertexWedgeSeparationDiagnosticV1| d.leaves[0].2[0].lower_mm =
+                f64::NAN
+        );
+        rejects_separation!(
+            |d: &mut DyadicSharedVertexWedgeSeparationDiagnosticV1| d.leaves[0].2[0].pair[0] =
+                fixed_id("dd00", 4)
+        );
+        rejects_separation!(
+            |d: &mut DyadicSharedVertexWedgeSeparationDiagnosticV1| d.leaves[0].2[0].vertex =
+                fixed_id("dd00", 5)
+        );
+        for change in 0..4 {
+            let mut foreign_wedges = wedges.clone();
+            match change {
+                0 => foreign_wedges.schedule_hash[0] ^= 1,
+                1 => foreign_wedges.closure_hash[0] ^= 1,
+                2 => foreign_wedges.thickness_bits ^= 1,
+                _ => foreign_wedges.content_hash[0] ^= 1,
+            }
+            assert!(!separation.is_for(
+                &foreign_wedges,
+                binding(),
+                MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1,
+            ));
+        }
+        assert!(!separation.is_for(
+            &wedges,
+            DyadicFaceTransformBindingInputV1 {
+                thickness_mm: 0.2,
+                ..binding()
+            },
+            MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1,
+        ));
+        let mut foreign_wedges = wedges.clone();
+        foreign_wedges.issuer = foreign_geometry.clone();
+        assert!(!separation.is_for(
+            &foreign_wedges,
+            binding(),
+            MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1,
+        ));
+        for invalid in [0, MAX_SHARED_VERTEX_WEDGE_SEPARATION_WORK_V1 + 1] {
+            assert!(matches!(
+                diagnose_dyadic_shared_vertex_wedge_separation_v1(&wedges, binding(), invalid),
+                Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding)
+            ));
+        }
+        assert!(matches!(
+            diagnose_dyadic_shared_vertex_wedge_separation_v1(&wedges, binding(), 1),
             Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
         ));
     }

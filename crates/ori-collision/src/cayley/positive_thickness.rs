@@ -1795,6 +1795,180 @@ pub(crate) enum PositiveThicknessPrismPairDispositionV1 {
     Indeterminate,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SourceFlatPrismFeatureV1 {
+    None,
+    SingleVertex([f64; 3]),
+    SingleHinge([[f64; 3]; 2]),
+    Unsupported,
+}
+
+/// Reuses the exact closed-prism SAT kernel for one already-authenticated
+/// source-flat triangular pair. Feature authentication remains the caller's
+/// responsibility; unsupported/multi-hinge relations stay indeterminate.
+pub(crate) fn diagnose_source_flat_prism_pair_v1(
+    first: &[[f64; 3]],
+    second: &[[f64; 3]],
+    paper_thickness_mm: f64,
+    feature: SourceFlatPrismFeatureV1,
+) -> Result<PositiveThicknessPrismPairDispositionV1, SharedHingeSolidDiagnosticErrorV1> {
+    use exact_prism::{
+        ExactPrismIntersectionKind, ExactPrismLimits, ExactTriangularPrismInput,
+        analyze_exact_prism_pair_v1,
+    };
+    if !positive_finite_binary64(paper_thickness_mm)
+        || match feature {
+            SourceFlatPrismFeatureV1::SingleVertex(point) => {
+                point.iter().any(|value| !value.is_finite())
+            }
+            SourceFlatPrismFeatureV1::SingleHinge([start, end]) => {
+                start == end || start.iter().chain(&end).any(|value| !value.is_finite())
+            }
+            SourceFlatPrismFeatureV1::None | SourceFlatPrismFeatureV1::Unsupported => false,
+        }
+    {
+        return Err(SharedHingeSolidDiagnosticErrorV1::InconsistentPose);
+    }
+    if first.len() != 3
+        || second.len() != 3
+        || matches!(feature, SourceFlatPrismFeatureV1::Unsupported)
+    {
+        return Ok(PositiveThicknessPrismPairDispositionV1::Indeterminate);
+    }
+    let exact_point = |point: [f64; 3]| -> Option<ExactPoint3> {
+        Some(ExactPoint3 {
+            coordinates: [
+                BigRational::from_float(point[0])?,
+                BigRational::from_float(point[1])?,
+                BigRational::from_float(point[2])?,
+            ],
+        })
+    };
+    let first_points = [
+        exact_point(first[0]).ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?,
+        exact_point(first[1]).ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?,
+        exact_point(first[2]).ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?,
+    ];
+    let second_points = [
+        exact_point(second[0]).ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?,
+        exact_point(second[1]).ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?,
+        exact_point(second[2]).ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?,
+    ];
+    let half_thickness = BigRational::from_float(paper_thickness_mm)
+        .ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?
+        / BigRational::from_integer(2.into());
+    let prism = |mid_surface| ExactTriangularPrismInput {
+        mid_surface,
+        material_normal: ExactVector3 {
+            coordinates: [BigRational::zero(), BigRational::one(), BigRational::zero()],
+        },
+        half_thickness: half_thickness.clone(),
+    };
+    let intersection = analyze_exact_prism_pair_v1(
+        &prism(first_points),
+        &prism(second_points),
+        ExactPrismLimits::default(),
+    )
+    .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?
+    .intersection
+    .ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?;
+    let radius = &half_thickness
+        * BigRational::from_integer(SHARED_FEATURE_CORRIDOR_HALF_EXTENT_MULTIPLIER_V1.into());
+    let corridor = match feature {
+        SourceFlatPrismFeatureV1::SingleVertex(point) => exact_point(point).is_some_and(|center| {
+            intersection.canonical_vertices().iter().all(|point| {
+                point
+                    .coordinates
+                    .iter()
+                    .zip(&center.coordinates)
+                    .all(|(coordinate, origin)| (coordinate - origin).abs() <= radius)
+            })
+        }),
+        SourceFlatPrismFeatureV1::SingleHinge(points) => exact_point(points[0])
+            .zip(exact_point(points[1]))
+            .is_some_and(|(start, end)| {
+                intersection.canonical_vertices().iter().all(|point| {
+                    (0..3).all(|axis| {
+                        let (lower_endpoint, upper_endpoint) =
+                            if start.coordinates[axis] <= end.coordinates[axis] {
+                                (&start.coordinates[axis], &end.coordinates[axis])
+                            } else {
+                                (&end.coordinates[axis], &start.coordinates[axis])
+                            };
+                        let lower = lower_endpoint - &radius;
+                        let upper = upper_endpoint + &radius;
+                        point.coordinates[axis] >= lower && point.coordinates[axis] <= upper
+                    })
+                })
+            }),
+        SourceFlatPrismFeatureV1::None | SourceFlatPrismFeatureV1::Unsupported => false,
+    };
+    Ok(match intersection.kind() {
+        ExactPrismIntersectionKind::Empty => PositiveThicknessPrismPairDispositionV1::Separated,
+        ExactPrismIntersectionKind::Point
+        | ExactPrismIntersectionKind::Line
+        | ExactPrismIntersectionKind::CoplanarArea => {
+            PositiveThicknessPrismPairDispositionV1::Touching
+        }
+        ExactPrismIntersectionKind::PositiveVolume if corridor => match feature {
+            SourceFlatPrismFeatureV1::SingleHinge(_) => {
+                PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed
+            }
+            SourceFlatPrismFeatureV1::SingleVertex(_) => {
+                PositiveThicknessPrismPairDispositionV1::SharedVertexCorridorAllowed
+            }
+            _ => PositiveThicknessPrismPairDispositionV1::Indeterminate,
+        },
+        ExactPrismIntersectionKind::PositiveVolume => {
+            PositiveThicknessPrismPairDispositionV1::Penetrating
+        }
+        ExactPrismIntersectionKind::Planar => {
+            PositiveThicknessPrismPairDispositionV1::Indeterminate
+        }
+    })
+}
+
+#[cfg(test)]
+mod source_flat_prism_pair_tests {
+    use super::*;
+
+    const FIRST: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 2.0]];
+    const SEPARATED: [[f64; 3]; 3] = [[4.0, 0.0, 0.0], [6.0, 0.0, 0.0], [4.0, 0.0, 2.0]];
+
+    #[test]
+    fn source_flat_core_is_strict_positive_and_keeps_unsupported_indeterminate() {
+        assert_eq!(
+            diagnose_source_flat_prism_pair_v1(
+                &FIRST,
+                &SEPARATED,
+                0.1,
+                SourceFlatPrismFeatureV1::None,
+            )
+            .unwrap(),
+            PositiveThicknessPrismPairDispositionV1::Separated
+        );
+        assert_eq!(
+            diagnose_source_flat_prism_pair_v1(
+                &FIRST,
+                &FIRST,
+                0.1,
+                SourceFlatPrismFeatureV1::Unsupported,
+            )
+            .unwrap(),
+            PositiveThicknessPrismPairDispositionV1::Indeterminate
+        );
+        assert!(
+            diagnose_source_flat_prism_pair_v1(
+                &FIRST,
+                &SEPARATED,
+                0.0,
+                SourceFlatPrismFeatureV1::None,
+            )
+            .is_err()
+        );
+    }
+}
+
 // Version-fixed finite joint envelope. Exact SAT overlap may be admitted only
 // when every intersection vertex stays inside this bounded expansion of the
 // authenticated shared vertex or hinge segment. It is deliberately small

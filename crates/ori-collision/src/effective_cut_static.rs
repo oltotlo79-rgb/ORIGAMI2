@@ -4,6 +4,10 @@
 //! This module binds prerequisites only. It neither reconstructs the opaque
 //! kinematics geometry nor claims that any face pair is collision-free.
 
+use crate::cayley::{
+    PositiveThicknessPrismPairDispositionV1, SourceFlatPrismFeatureV1,
+    diagnose_source_flat_prism_pair_v1,
+};
 use ori_kinematics::{
     EffectiveCutKinematicsDiagnosticV1, EffectiveCutRetainedFacePairRegistryLimitsV1,
     EffectiveCutRetainedFacePairRegistryV1, TreeKinematicsLimits,
@@ -22,6 +26,8 @@ pub const EFFECTIVE_CUT_STATIC_PAIR_REGISTRY_BRIDGE_MODEL_ID_V1: &str =
     "effective_cut_static_pair_registry_bridge_v1";
 pub const EFFECTIVE_CUT_COLLISION_GEOMETRY_MODEL_ID_V1: &str =
     "effective_cut_collision_geometry_v1";
+pub const EFFECTIVE_CUT_SOURCE_FLAT_PAIR_OBSERVATION_MODEL_ID_V1: &str =
+    "effective_cut_source_flat_pair_observation_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum EffectiveCutStaticThicknessPrerequisiteErrorV1 {
@@ -154,6 +160,114 @@ pub struct EffectiveCutCollisionGeometryLimitsV1 {
     pub max_hinge_memberships: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveCutSourceFlatPairObservationLimitsV1 {
+    pub max_pairs: usize,
+    pub max_shared_vertex_work: usize,
+}
+
+impl Default for EffectiveCutSourceFlatPairObservationLimitsV1 {
+    fn default() -> Self {
+        Self {
+            max_pairs: 50_000,
+            max_shared_vertex_work: 10_000_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveCutSourceFlatPairObservationV1 {
+    geometry_fingerprint: [u8; 32],
+    fingerprint: [u8; 32],
+    pair_count: usize,
+    separated: usize,
+    touching: usize,
+    shared_hinge_allowed: usize,
+    shared_vertex_allowed: usize,
+    penetrating: usize,
+    indeterminate: usize,
+    limits: EffectiveCutSourceFlatPairObservationLimitsV1,
+}
+
+impl EffectiveCutSourceFlatPairObservationV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        EFFECTIVE_CUT_SOURCE_FLAT_PAIR_OBSERVATION_MODEL_ID_V1
+    }
+    #[must_use]
+    pub const fn fingerprint_v1(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+    #[must_use]
+    pub const fn pair_count(&self) -> usize {
+        self.pair_count
+    }
+    #[must_use]
+    pub const fn separated_pairs(&self) -> usize {
+        self.separated
+    }
+    #[must_use]
+    pub const fn touching_pairs(&self) -> usize {
+        self.touching
+    }
+    #[must_use]
+    pub const fn shared_hinge_allowed_pairs(&self) -> usize {
+        self.shared_hinge_allowed
+    }
+    #[must_use]
+    pub const fn shared_vertex_allowed_pairs(&self) -> usize {
+        self.shared_vertex_allowed
+    }
+    #[must_use]
+    pub const fn penetrating_pairs(&self) -> usize {
+        self.penetrating
+    }
+    #[must_use]
+    pub const fn indeterminate_pairs(&self) -> usize {
+        self.indeterminate
+    }
+    #[must_use]
+    pub const fn authorizes_collision_free_classification(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_pair_classification(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_pose_solving(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_simulation_admission(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_material_removal(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_persistence(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn is_for(
+        &self,
+        geometry: &EffectiveCutCollisionGeometryV1,
+        input: EffectiveCutCollisionGeometryInputV1<'_>,
+        limits: EffectiveCutSourceFlatPairObservationLimitsV1,
+    ) -> bool {
+        self.geometry_fingerprint == geometry.fingerprint_v1()
+            && self.limits == limits
+            && diagnose_effective_cut_source_flat_pairs_v1(geometry, input, limits)
+                .is_ok_and(|current| current.fingerprint == self.fingerprint)
+    }
+}
+
 impl Default for EffectiveCutCollisionGeometryLimitsV1 {
     fn default() -> Self {
         Self {
@@ -174,6 +288,7 @@ struct EffectiveCutCollisionGeometryDataV1 {
 struct EffectiveCutCollisionFaceV1 {
     face: ori_domain::FaceId,
     boundary: Vec<EffectiveCutCollisionBoundaryOccurrenceV1>,
+    canonical_vertices: Vec<(ori_domain::VertexId, [f64; 3])>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -439,9 +554,24 @@ pub fn prepare_effective_cut_collision_geometry_v1(
                 converted_cut_boundary,
             });
         }
+        let mut canonical_vertices = Vec::new();
+        canonical_vertices
+            .try_reserve_exact(boundary.len())
+            .map_err(|_| EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit)?;
+        for occurrence in &boundary {
+            canonical_vertices.push((occurrence.origin, occurrence.point));
+        }
+        canonical_vertices.sort_unstable_by_key(|(vertex, _)| vertex.canonical_bytes());
+        if canonical_vertices
+            .windows(2)
+            .any(|pair| pair[0].0 == pair[1].0)
+        {
+            return Err(EffectiveCutStaticThicknessPrerequisiteErrorV1::InvalidBinding);
+        }
         faces.push(EffectiveCutCollisionFaceV1 {
             face: face.id,
             boundary,
+            canonical_vertices,
         });
     }
     if consumed_converted != converted {
@@ -573,6 +703,177 @@ fn source_flat_point_v1(point: ori_domain::Point2) -> [f64; 3] {
     let x = if point.x == 0.0 { 0.0 } else { point.x };
     let z = if point.y == 0.0 { 0.0 } else { -point.y };
     [x, 0.0, z]
+}
+
+pub fn diagnose_effective_cut_source_flat_pairs_v1(
+    geometry: &EffectiveCutCollisionGeometryV1,
+    input: EffectiveCutCollisionGeometryInputV1<'_>,
+    limits: EffectiveCutSourceFlatPairObservationLimitsV1,
+) -> Result<EffectiveCutSourceFlatPairObservationV1, EffectiveCutStaticThicknessPrerequisiteErrorV1>
+{
+    if limits.max_pairs > 50_000 || limits.max_shared_vertex_work > 10_000_000 {
+        return Err(EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit);
+    }
+    let pair_count = geometry
+        .face_count()
+        .checked_mul(geometry.face_count().saturating_sub(1))
+        .and_then(|count| count.checked_div(2))
+        .filter(|count| *count <= limits.max_pairs && *count <= 50_000)
+        .ok_or(EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit)?;
+    let expected_shared_vertex_work = geometry
+        .boundary_occurrence_count()
+        .checked_mul(geometry.face_count().saturating_sub(1))
+        .filter(|work| *work <= limits.max_shared_vertex_work)
+        .ok_or(EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit)?;
+    if !geometry.is_for(input) || pair_count != input.registry.pair_count() {
+        return Err(EffectiveCutStaticThicknessPrerequisiteErrorV1::InvalidBinding);
+    }
+    let mut counts = [0_usize; 6];
+    let mut analyzed = 0_usize;
+    let mut hinge_index = 0_usize;
+    let mut shared_vertex_work = 0_usize;
+    let mut hash = Sha256::new();
+    hash.update(EFFECTIVE_CUT_SOURCE_FLAT_PAIR_OBSERVATION_MODEL_ID_V1.as_bytes());
+    hash.update(geometry.fingerprint_v1());
+    hash.update((limits.max_pairs as u64).to_be_bytes());
+    hash.update((limits.max_shared_vertex_work as u64).to_be_bytes());
+    for first_index in 0..geometry.data.faces.len() {
+        for second_index in first_index + 1..geometry.data.faces.len() {
+            analyzed = analyzed
+                .checked_add(1)
+                .ok_or(EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit)?;
+            let first = &geometry.data.faces[first_index];
+            let second = &geometry.data.faces[second_index];
+            let hinge_start = hinge_index;
+            while geometry
+                .data
+                .hinges
+                .get(hinge_index)
+                .is_some_and(|hinge| hinge.first == first.face && hinge.second == second.face)
+            {
+                hinge_index += 1;
+            }
+            let shared_hinges = &geometry.data.hinges[hinge_start..hinge_index];
+            shared_vertex_work = shared_vertex_work
+                .checked_add(first.canonical_vertices.len())
+                .and_then(|work| work.checked_add(second.canonical_vertices.len()))
+                .filter(|work| *work <= limits.max_shared_vertex_work)
+                .ok_or(EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit)?;
+            let mut left = 0_usize;
+            let mut right = 0_usize;
+            let mut shared = [None; 3];
+            let mut shared_count = 0_usize;
+            while left < first.canonical_vertices.len() && right < second.canonical_vertices.len() {
+                match first.canonical_vertices[left]
+                    .0
+                    .canonical_bytes()
+                    .cmp(&second.canonical_vertices[right].0.canonical_bytes())
+                {
+                    std::cmp::Ordering::Less => left += 1,
+                    std::cmp::Ordering::Greater => right += 1,
+                    std::cmp::Ordering::Equal => {
+                        if shared_count < shared.len() {
+                            shared[shared_count] = Some(first.canonical_vertices[left]);
+                        }
+                        shared_count += 1;
+                        left += 1;
+                        right += 1;
+                    }
+                }
+            }
+            let feature = if shared_hinges.len() > 1 || shared_count > 2 {
+                SourceFlatPrismFeatureV1::Unsupported
+            } else if let Some(hinge) = shared_hinges.first() {
+                let endpoint_match = shared_count == 2
+                    && shared[..2].iter().flatten().all(|(vertex, _)| {
+                        *vertex == hinge.start_vertex || *vertex == hinge.end_vertex
+                    });
+                if endpoint_match {
+                    SourceFlatPrismFeatureV1::SingleHinge([hinge.start, hinge.end])
+                } else {
+                    SourceFlatPrismFeatureV1::Unsupported
+                }
+            } else if shared_count == 1 {
+                SourceFlatPrismFeatureV1::SingleVertex(
+                    shared[0]
+                        .ok_or(EffectiveCutStaticThicknessPrerequisiteErrorV1::InvalidBinding)?
+                        .1,
+                )
+            } else if shared_count == 0 {
+                SourceFlatPrismFeatureV1::None
+            } else {
+                SourceFlatPrismFeatureV1::Unsupported
+            };
+            let first_points = (first.boundary.len() == 3).then(|| {
+                [
+                    first.boundary[0].point,
+                    first.boundary[1].point,
+                    first.boundary[2].point,
+                ]
+            });
+            let second_points = (second.boundary.len() == 3).then(|| {
+                [
+                    second.boundary[0].point,
+                    second.boundary[1].point,
+                    second.boundary[2].point,
+                ]
+            });
+            let disposition = diagnose_source_flat_prism_pair_v1(
+                first_points
+                    .as_ref()
+                    .map_or(&[], |points| points.as_slice()),
+                second_points
+                    .as_ref()
+                    .map_or(&[], |points| points.as_slice()),
+                input.prerequisite.paper_thickness_mm(),
+                feature,
+            )
+            .map_err(|error| match error {
+                crate::cayley::SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded => {
+                    EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit
+                }
+                crate::cayley::SharedHingeSolidDiagnosticErrorV1::InconsistentPose => {
+                    EffectiveCutStaticThicknessPrerequisiteErrorV1::InvalidBinding
+                }
+            })?;
+            let index = match disposition {
+                PositiveThicknessPrismPairDispositionV1::Separated => 0,
+                PositiveThicknessPrismPairDispositionV1::Touching => 1,
+                PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed => 2,
+                PositiveThicknessPrismPairDispositionV1::SharedVertexCorridorAllowed => 3,
+                PositiveThicknessPrismPairDispositionV1::Penetrating => 4,
+                PositiveThicknessPrismPairDispositionV1::Indeterminate => 5,
+            };
+            counts[index] += 1;
+            hash.update(first.face.canonical_bytes());
+            hash.update(second.face.canonical_bytes());
+            hash.update([index as u8]);
+        }
+    }
+    if analyzed != pair_count
+        || counts.iter().sum::<usize>() != pair_count
+        || hinge_index != geometry.data.hinges.len()
+        || shared_vertex_work != expected_shared_vertex_work
+    {
+        return Err(EffectiveCutStaticThicknessPrerequisiteErrorV1::InvalidBinding);
+    }
+    for count in [
+        pair_count, counts[0], counts[1], counts[2], counts[3], counts[4], counts[5],
+    ] {
+        hash.update((count as u64).to_be_bytes());
+    }
+    Ok(EffectiveCutSourceFlatPairObservationV1 {
+        geometry_fingerprint: geometry.fingerprint_v1(),
+        fingerprint: hash.finalize().into(),
+        pair_count,
+        separated: counts[0],
+        touching: counts[1],
+        shared_hinge_allowed: counts[2],
+        shared_vertex_allowed: counts[3],
+        penetrating: counts[4],
+        indeterminate: counts[5],
+        limits,
+    })
 }
 
 impl EffectiveCutStaticPairRegistryBridgeV1 {

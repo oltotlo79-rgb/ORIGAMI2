@@ -1,6 +1,7 @@
 use ori_collision::{
     EffectiveCutCollisionGeometryInputV1, EffectiveCutCollisionGeometryLimitsV1,
-    EffectiveCutStaticThicknessLimitsV1, prepare_effective_cut_collision_geometry_v1,
+    EffectiveCutSourceFlatPairObservationLimitsV1, EffectiveCutStaticThicknessLimitsV1,
+    diagnose_effective_cut_source_flat_pairs_v1, prepare_effective_cut_collision_geometry_v1,
     prepare_effective_cut_static_pair_registry_bridge_v1,
     prepare_effective_cut_static_thickness_prerequisite_v1,
 };
@@ -212,6 +213,72 @@ fn source_flat_thickness_prerequisite_reports_planned_pair_cardinality_only() {
         geometry_limits: exact_geometry_limits,
         ..geometry_input
     }));
+    let observation =
+        diagnose_effective_cut_source_flat_pairs_v1(&geometry, geometry_input, Default::default())
+            .unwrap();
+    assert_eq!(observation.pair_count(), 1);
+    assert_eq!(observation.indeterminate_pairs(), 1);
+    assert_eq!(observation.penetrating_pairs(), 0);
+    assert_eq!(observation.shared_hinge_allowed_pairs(), 0);
+    assert_eq!(observation.shared_vertex_allowed_pairs(), 0);
+    assert_eq!(
+        observation.separated_pairs()
+            + observation.touching_pairs()
+            + observation.shared_hinge_allowed_pairs()
+            + observation.shared_vertex_allowed_pairs()
+            + observation.penetrating_pairs()
+            + observation.indeterminate_pairs(),
+        observation.pair_count()
+    );
+    assert!(!observation.authorizes_pair_classification());
+    assert!(!observation.authorizes_collision_free_classification());
+    assert!(!observation.authorizes_pose_solving());
+    assert!(!observation.authorizes_simulation_admission());
+    assert!(!observation.authorizes_project_mutation());
+    assert!(!observation.authorizes_material_removal());
+    assert!(!observation.authorizes_persistence());
+    assert!(observation.is_for(&geometry, geometry_input, Default::default()));
+    assert!(
+        diagnose_effective_cut_source_flat_pairs_v1(
+            &geometry,
+            geometry_input,
+            EffectiveCutSourceFlatPairObservationLimitsV1 {
+                max_pairs: 0,
+                max_shared_vertex_work: 10_000_000,
+            },
+        )
+        .is_err()
+    );
+    let exact_work = geometry
+        .boundary_occurrence_count()
+        .checked_mul(geometry.face_count() - 1)
+        .unwrap();
+    let exact_observation_limits = EffectiveCutSourceFlatPairObservationLimitsV1 {
+        max_pairs: 1,
+        max_shared_vertex_work: exact_work,
+    };
+    let exact_observation = diagnose_effective_cut_source_flat_pairs_v1(
+        &geometry,
+        geometry_input,
+        exact_observation_limits,
+    )
+    .unwrap();
+    assert_ne!(
+        observation.fingerprint_v1(),
+        exact_observation.fingerprint_v1()
+    );
+    assert!(!observation.is_for(&geometry, geometry_input, exact_observation_limits));
+    assert!(
+        diagnose_effective_cut_source_flat_pairs_v1(
+            &geometry,
+            geometry_input,
+            EffectiveCutSourceFlatPairObservationLimitsV1 {
+                max_pairs: 1,
+                max_shared_vertex_work: exact_work - 1,
+            },
+        )
+        .is_err()
+    );
     assert!(
         prepare_effective_cut_static_pair_registry_bridge_v1(
             &diagnostic,

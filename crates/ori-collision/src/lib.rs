@@ -84,10 +84,13 @@ pub use continuous_layer_transport::{
 };
 pub use continuous_path::{
     ContinuousPairCoverageEntryV1, ContinuousPairCoverageKindV1, ContinuousPairCoverageRegistryV1,
+    DyadicFaceTransformBindingInputV1, DyadicFaceTransformIntervalErrorV1,
+    DyadicFaceTransformIntervalLeafV1, DyadicFaceTransformIntervalRegistryV1,
     ExactDyadicPathIntersectionErrorV1, MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1,
-    MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1, MAX_STACKED_FOLD_PATH_SAMPLES_V1,
-    PositiveThicknessContinuousCertificateV1, PositiveThicknessTreeContinuousCertificateV1,
-    ReliefCoveredSharedHingePairV1, STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1,
+    MAX_DYADIC_FACE_TRANSFORM_LEAVES_V1, MAX_STACKED_FOLD_INTERVAL_TREE_HINGES_V1,
+    MAX_STACKED_FOLD_PATH_SAMPLES_V1, PositiveThicknessContinuousCertificateV1,
+    PositiveThicknessTreeContinuousCertificateV1, ReliefCoveredSharedHingePairV1,
+    STACKED_FOLD_BOUNDED_PATH_DIAGNOSTIC_MODEL_ID_V1,
     STACKED_FOLD_CACTUS_POSITIVE_THICKNESS_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_COLLINEAR_TREE_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
     STACKED_FOLD_CYCLE_INTERVAL_CONTINUOUS_CERTIFICATE_MODEL_ID_V1,
@@ -113,6 +116,7 @@ pub use continuous_path::{
     diagnose_scheduled_cycle_path_v1, diagnose_scheduled_positive_thickness_cycle_path_v1,
     diagnose_shared_hinge_continuous_corridor_gaps_v1,
     diagnose_shared_vertex_continuous_corridor_gaps_v1, enumerate_uniform_cycle_closure_roots_v1,
+    prepare_dyadic_face_transform_interval_registry_v1,
     prepare_shared_vertex_tree_layer_transport_v1, supports_scheduled_positive_thickness_path_v1,
 };
 pub use exact_dyadic_intersection::{

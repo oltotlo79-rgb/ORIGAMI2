@@ -112,6 +112,65 @@ pub struct DyadicMaterialHingeIntervalClosureCertificateV1 {
     leaves: Vec<(u32, u64, MaterialHingeIntervalClosureCertificateV1)>,
 }
 
+#[derive(Debug, Clone)]
+pub struct MaterialFaceTransformIntervalRegistryV1 {
+    issuer_geometry: MaterialHingeGraphGeometry,
+    fixed_face: FaceId,
+    transforms: Vec<(FaceId, IntervalRigidTransformV1)>,
+    angle_box_bits: Vec<(EdgeId, [u64; 2])>,
+    tolerance_bits: u64,
+    max_work: usize,
+}
+
+impl MaterialFaceTransformIntervalRegistryV1 {
+    #[must_use]
+    pub const fn fixed_face(&self) -> FaceId {
+        self.fixed_face
+    }
+    #[must_use]
+    pub fn transforms(&self) -> &[(FaceId, IntervalRigidTransformV1)] {
+        &self.transforms
+    }
+    #[must_use]
+    pub fn is_for_geometry(&self, geometry: &MaterialHingeGraphGeometry) -> bool {
+        self.issuer_geometry.same_instance(geometry)
+    }
+    #[must_use]
+    pub fn is_for(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        angle_boxes: &[(EdgeId, OutwardIntervalV1)],
+        tolerance: f64,
+        max_work: usize,
+    ) -> bool {
+        let bits = angle_boxes
+            .iter()
+            .map(|(edge, interval)| {
+                (
+                    *edge,
+                    [interval.lower().to_bits(), interval.upper().to_bits()],
+                )
+            })
+            .collect::<Vec<_>>();
+        self.issuer_geometry.same_instance(geometry)
+            && self.fixed_face == fixed_face
+            && geometry.face_ids() == audit.faces()
+            && self.angle_box_bits == bits
+            && self.tolerance_bits == tolerance.to_bits()
+            && self.max_work == max_work
+    }
+    #[must_use]
+    pub const fn authorizes_motion(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+}
+
 impl PartialEq for DyadicMaterialHingeIntervalClosureCertificateV1 {
     fn eq(&self, other: &Self) -> bool {
         self.issuer_geometry.same_instance(&other.issuer_geometry)
@@ -807,6 +866,151 @@ impl MaterialHingeGraphGeometry {
             version: MATERIAL_HINGE_INTERVAL_CLOSURE_CERTIFICATE_VERSION_V1,
             fixed_face,
             checked_hinges,
+        })
+    }
+
+    /// Reuses the authenticated interval-closure path to retain every
+    /// canonical face transform enclosure. The returned registry is
+    /// observation-only and carries no motion authority.
+    pub fn prepare_interval_face_transform_registry_v1(
+        &self,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        angle_boxes: &[(EdgeId, OutwardIntervalV1)],
+        proven_closure: Option<&MaterialHingeIntervalClosureCertificateV1>,
+        tolerance: f64,
+        max_work: usize,
+    ) -> Result<MaterialFaceTransformIntervalRegistryV1, KinematicsError> {
+        if max_work == 0 {
+            return Err(KinematicsError::ResourceLimitExceeded);
+        }
+        let transform_work = if let Some(closure) = proven_closure {
+            let mut expected = self
+                .hinges()
+                .iter()
+                .map(TreeHinge::edge)
+                .collect::<Vec<_>>();
+            expected.sort_unstable_by_key(EdgeId::canonical_bytes);
+            if closure.fixed_face != fixed_face || closure.checked_hinges != expected {
+                return Err(KinematicsError::UnsupportedTopology);
+            }
+            max_work
+        } else {
+            if max_work < 2 {
+                return Err(KinematicsError::ResourceLimitExceeded);
+            }
+            let closure_work = max_work / 2;
+            self.prove_interval_closure_v1(
+                audit,
+                fixed_face,
+                angle_boxes,
+                tolerance,
+                closure_work,
+            )?;
+            max_work - closure_work
+        };
+        let boxes = angle_boxes.iter().copied().collect::<HashMap<_, _>>();
+        let spanning = audit
+            .spanning_hinges()
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let mut adjacency = HashMap::<FaceId, Vec<(FaceId, usize, bool)>>::new();
+        for face in audit.faces() {
+            adjacency.insert(*face, Vec::new());
+        }
+        for (index, hinge) in self.hinges().iter().enumerate() {
+            if spanning.contains(&hinge.edge()) {
+                adjacency
+                    .get_mut(&hinge.left_face())
+                    .ok_or(KinematicsError::UnsupportedTopology)?
+                    .push((hinge.right_face(), index, false));
+                adjacency
+                    .get_mut(&hinge.right_face())
+                    .ok_or(KinematicsError::UnsupportedTopology)?
+                    .push((hinge.left_face(), index, true));
+            }
+        }
+        for neighbors in adjacency.values_mut() {
+            neighbors.sort_unstable_by_key(|(_, index, _)| {
+                self.hinges()[*index].edge().canonical_bytes()
+            });
+        }
+        let interval_error = |error| match error {
+            crate::OutwardIntervalErrorV1::ResourceLimit => KinematicsError::ResourceLimitExceeded,
+            crate::OutwardIntervalErrorV1::InvalidEndpoint
+            | crate::OutwardIntervalErrorV1::DivisionByZeroInterval => {
+                KinematicsError::UnrepresentableGeometry
+            }
+        };
+        let mut poses = HashMap::new();
+        poses.insert(
+            fixed_face,
+            IntervalRigidTransformV1::identity().map_err(interval_error)?,
+        );
+        let mut queue = VecDeque::from([fixed_face]);
+        let mut charged = 0usize;
+        while let Some(parent_face) = queue.pop_front() {
+            let parent = *poses
+                .get(&parent_face)
+                .ok_or(KinematicsError::UnsupportedTopology)?;
+            for &(child_face, hinge_index, reverse) in adjacency
+                .get(&parent_face)
+                .ok_or(KinematicsError::UnsupportedTopology)?
+            {
+                if poses.contains_key(&child_face) {
+                    continue;
+                }
+                charged = charged
+                    .checked_add(1)
+                    .filter(|value| *value <= transform_work)
+                    .ok_or(KinematicsError::ResourceLimitExceeded)?;
+                let hinge = &self.hinges()[hinge_index];
+                let degrees = *boxes
+                    .get(&hinge.edge())
+                    .ok_or(KinematicsError::UnsupportedTopology)?;
+                let mountain = hinge.assignment() == ori_topology::FoldAssignment::Mountain;
+                let sign = if reverse ^ !mountain { -1.0 } else { 1.0 };
+                let local = IntervalRigidTransformV1::about_axis(
+                    [
+                        sign * hinge.axis().x(),
+                        sign * hinge.axis().y(),
+                        sign * hinge.axis().z(),
+                    ],
+                    [hinge.start().x(), hinge.start().y(), hinge.start().z()],
+                    degrees,
+                    transform_work,
+                )
+                .map_err(interval_error)?;
+                poses.insert(
+                    child_face,
+                    parent
+                        .compose(local, transform_work)
+                        .map_err(interval_error)?,
+                );
+                queue.push_back(child_face);
+            }
+        }
+        if poses.len() != audit.faces().len() {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+        let mut transforms = poses.into_iter().collect::<Vec<_>>();
+        transforms.sort_unstable_by_key(|(face, _)| face.canonical_bytes());
+        Ok(MaterialFaceTransformIntervalRegistryV1 {
+            issuer_geometry: self.clone(),
+            fixed_face,
+            transforms,
+            angle_box_bits: angle_boxes
+                .iter()
+                .map(|(edge, interval)| {
+                    (
+                        *edge,
+                        [interval.lower().to_bits(), interval.upper().to_bits()],
+                    )
+                })
+                .collect(),
+            tolerance_bits: tolerance.to_bits(),
+            max_work,
         })
     }
 

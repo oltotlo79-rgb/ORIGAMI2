@@ -125,6 +125,114 @@ const MAX_STACKED_FOLD_INTERVAL_DEPTH_V1: usize = 7;
 const MAX_STACKED_FOLD_INTERVAL_WORK_V1: usize =
     MAX_STACKED_FOLD_INTERVAL_LEAVES_V1 * MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1;
 pub const MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1: usize = 2_080;
+pub const MAX_DYADIC_FACE_TRANSFORM_LEAVES_V1: usize = 128;
+
+#[derive(Debug, Clone)]
+pub struct DyadicFaceTransformIntervalLeafV1 {
+    depth: u32,
+    index: u64,
+    transforms: ori_kinematics::MaterialFaceTransformIntervalRegistryV1,
+}
+impl DyadicFaceTransformIntervalLeafV1 {
+    #[must_use]
+    pub const fn depth(&self) -> u32 {
+        self.depth
+    }
+    #[must_use]
+    pub const fn index(&self) -> u64 {
+        self.index
+    }
+    #[must_use]
+    pub fn transforms(&self) -> &ori_kinematics::MaterialFaceTransformIntervalRegistryV1 {
+        &self.transforms
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DyadicFaceTransformIntervalRegistryV1 {
+    issuer: MaterialHingeGraphGeometry,
+    fixed_face: FaceId,
+    schedule_hash: [u8; 32],
+    closure_hash: [u8; 32],
+    thickness_bits: u64,
+    tolerance_bits: u64,
+    schedule_limits: ori_kinematics::CycleScheduleLimitsV1,
+    max_work_per_leaf: usize,
+    leaves: Vec<DyadicFaceTransformIntervalLeafV1>,
+}
+pub struct DyadicFaceTransformBindingInputV1<'a> {
+    pub geometry: &'a MaterialHingeGraphGeometry,
+    pub audit: &'a MaterialHingeGraphAudit,
+    pub fixed_face: FaceId,
+    pub schedule: &'a ori_kinematics::CanonicalCycleScheduleV1,
+    pub closure: &'a ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+    pub thickness_mm: f64,
+    pub tolerance: f64,
+    pub schedule_limits: ori_kinematics::CycleScheduleLimitsV1,
+    pub max_work_per_leaf: usize,
+}
+impl DyadicFaceTransformIntervalRegistryV1 {
+    #[must_use]
+    pub fn leaves(&self) -> &[DyadicFaceTransformIntervalLeafV1] {
+        &self.leaves
+    }
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn is_for(&self, input: DyadicFaceTransformBindingInputV1<'_>) -> bool {
+        let DyadicFaceTransformBindingInputV1 {
+            geometry,
+            audit,
+            fixed_face,
+            schedule,
+            closure,
+            thickness_mm,
+            tolerance,
+            schedule_limits,
+            max_work_per_leaf,
+        } = input;
+        self.issuer.same_instance(geometry)
+            && self.fixed_face == fixed_face
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
+            && self.closure_hash == closure.partition_binding_fingerprint_v1()
+            && self.thickness_bits == thickness_mm.to_bits()
+            && self.tolerance_bits == tolerance.to_bits()
+            && self.schedule_limits == schedule_limits
+            && self.max_work_per_leaf == max_work_per_leaf
+            && schedule.matches_binding(geometry, audit, fixed_face)
+            && closure.every_leaf_covers_graph_v1(geometry)
+            && self.leaves.iter().all(|leaf| {
+                schedule
+                    .evaluate_angle_box_dyadic(leaf.depth, leaf.index, schedule_limits)
+                    .is_ok_and(|boxes| {
+                        leaf.transforms.is_for(
+                            geometry,
+                            audit,
+                            fixed_face,
+                            &boxes,
+                            tolerance,
+                            max_work_per_leaf,
+                        )
+                    })
+            })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum DyadicFaceTransformIntervalErrorV1 {
+    #[error("dyadic face transform binding is invalid")]
+    InvalidBinding,
+    #[error("dyadic face transform work exceeds its hard limit")]
+    ResourceLimit,
+    #[error("dyadic face transform interval could not be proven")]
+    Unproven,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContinuousPairCoverageKindV1 {
@@ -430,6 +538,83 @@ fn checked_unordered_pair_count_v1(face_count: usize) -> Option<usize> {
     face_count
         .checked_mul(face_count.checked_sub(1)?)
         .map(|n| n / 2)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_dyadic_face_transform_interval_registry_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    closure: &ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+    paper_thickness_mm: f64,
+    tolerance: f64,
+    schedule_limits: ori_kinematics::CycleScheduleLimitsV1,
+    max_work_per_leaf: usize,
+) -> Result<DyadicFaceTransformIntervalRegistryV1, DyadicFaceTransformIntervalErrorV1> {
+    if !paper_thickness_mm.is_finite()
+        || paper_thickness_mm <= 0.0
+        || !tolerance.is_finite()
+        || tolerance < 0.0
+        || max_work_per_leaf == 0
+        || !schedule.matches_binding(geometry, audit, fixed_face)
+        || closure.fixed_face() != fixed_face
+        || closure.schedule_binding_fingerprint_v1()
+            != schedule.certificate_binding_fingerprint_v1()
+        || closure.graph_binding_fingerprint_v1() != schedule.graph_binding_fingerprint_v1()
+        || !closure.every_leaf_covers_graph_v1(geometry)
+        || closure.leaves().len() > MAX_DYADIC_FACE_TRANSFORM_LEAVES_V1
+    {
+        return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+    }
+    let mut leaves = Vec::new();
+    leaves
+        .try_reserve_exact(closure.leaves().len())
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    for (depth, index, leaf_closure) in closure.leaves() {
+        let boxes = schedule
+            .evaluate_angle_box_dyadic(*depth, *index, schedule_limits)
+            .map_err(|error| match error {
+                ori_kinematics::CycleSchedulePrepareErrorV1::ResourceLimit => {
+                    DyadicFaceTransformIntervalErrorV1::ResourceLimit
+                }
+                _ => DyadicFaceTransformIntervalErrorV1::Unproven,
+            })?;
+        let transforms = geometry
+            .prepare_interval_face_transform_registry_v1(
+                audit,
+                fixed_face,
+                &boxes,
+                Some(leaf_closure),
+                tolerance,
+                max_work_per_leaf,
+            )
+            .map_err(|error| match error {
+                ori_kinematics::KinematicsError::ResourceLimitExceeded => {
+                    DyadicFaceTransformIntervalErrorV1::ResourceLimit
+                }
+                _ => DyadicFaceTransformIntervalErrorV1::Unproven,
+            })?;
+        if transforms.transforms().len() != geometry.face_ids().len() {
+            return Err(DyadicFaceTransformIntervalErrorV1::Unproven);
+        }
+        leaves.push(DyadicFaceTransformIntervalLeafV1 {
+            depth: *depth,
+            index: *index,
+            transforms,
+        });
+    }
+    Ok(DyadicFaceTransformIntervalRegistryV1 {
+        issuer: geometry.clone(),
+        fixed_face,
+        schedule_hash: schedule.certificate_binding_fingerprint_v1(),
+        closure_hash: closure.partition_binding_fingerprint_v1(),
+        thickness_bits: paper_thickness_mm.to_bits(),
+        tolerance_bits: tolerance.to_bits(),
+        schedule_limits,
+        max_work_per_leaf,
+        leaves,
+    })
 }
 
 fn classify_continuous_pair_v1(
@@ -4410,6 +4595,85 @@ mod tests {
                 .map(|item| (item.pair(), item.hinge()))
                 .collect::<Vec<_>>();
             assert_eq!(actual_covered, expected_covered);
+
+            if bay_count == 8 {
+                let (geometry, audit, schedule, fixed) =
+                    rational_cycle_bay_geometry(bay_count, false);
+                let schedule_limits = ori_kinematics::CycleScheduleLimitsV1::default();
+                let closure = geometry
+                    .prove_dyadic_schedule_closure_v1(
+                        &audit,
+                        fixed,
+                        &schedule,
+                        1.0e-8,
+                        ori_kinematics::DyadicIntervalClosureLimitsV1 {
+                            max_depth: 3,
+                            max_leaves: 8,
+                            max_work: 1_000_000,
+                            schedule_limits,
+                        },
+                    )
+                    .unwrap();
+                let transforms = prepare_dyadic_face_transform_interval_registry_v1(
+                    &geometry,
+                    &audit,
+                    fixed,
+                    &schedule,
+                    &closure,
+                    0.1,
+                    1.0e-8,
+                    schedule_limits,
+                    16_777_216,
+                )
+                .unwrap_or_else(|error| panic!("bay {bay_count} transform registry: {error:?}"));
+                assert!(!transforms.authorizes_continuous_motion());
+                assert!(!transforms.authorizes_project_mutation());
+                assert!(transforms.is_for(DyadicFaceTransformBindingInputV1 {
+                    geometry: &geometry,
+                    audit: &audit,
+                    fixed_face: fixed,
+                    schedule: &schedule,
+                    closure: &closure,
+                    thickness_mm: 0.1,
+                    tolerance: 1.0e-8,
+                    schedule_limits,
+                    max_work_per_leaf: 16_777_216,
+                }));
+                assert_eq!(transforms.leaves().len(), closure.leaves().len());
+                assert!(transforms.leaves().iter().all(|leaf| {
+                    leaf.transforms().transforms().len() == geometry.face_ids().len()
+                        && leaf
+                            .transforms()
+                            .transforms()
+                            .windows(2)
+                            .all(|pair| pair[0].0.canonical_bytes() < pair[1].0.canonical_bytes())
+                }));
+                assert!(!transforms.is_for(DyadicFaceTransformBindingInputV1 {
+                    geometry: &geometry,
+                    audit: &audit,
+                    fixed_face: fixed,
+                    schedule: &schedule,
+                    closure: &closure,
+                    thickness_mm: 0.2,
+                    tolerance: 1.0e-8,
+                    schedule_limits,
+                    max_work_per_leaf: 16_777_216,
+                }));
+                assert!(matches!(
+                    prepare_dyadic_face_transform_interval_registry_v1(
+                        &geometry,
+                        &audit,
+                        fixed,
+                        &schedule,
+                        &closure,
+                        0.1,
+                        1.0e-8,
+                        schedule_limits,
+                        1,
+                    ),
+                    Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+                ));
+            }
 
             let mut tampered = schedules.clone();
             tampered[0].source_angle_degrees =

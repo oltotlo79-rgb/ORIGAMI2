@@ -42,6 +42,11 @@ pub use cycle_fold_transaction::{
     CycleFoldTransactionErrorV1, ReadyCycleFoldTransactionV1,
     apply_ready_cycle_fold_transaction_v1, prepare_cycle_fold_transaction_v1,
 };
+pub use editor::bulk_intersection_plan::{
+    BulkIntersectionClusterV1, BulkIntersectionGapV1, BulkIntersectionPlanRegistryV1,
+    MAX_BULK_INTERSECTION_ITEMS_V1, MAX_BULK_INTERSECTION_PAIR_WORK_V1,
+    normalize_bulk_intersections_v1,
+};
 pub use editor::{
     Command, CommandError, CommandResult, EDITOR_HISTORY_SCHEMA_VERSION_V1, EditorHistoryErrorV1,
     EditorHistoryV1, EditorState, ElementMetadataTargetV1, HistoryEntryLimitError,

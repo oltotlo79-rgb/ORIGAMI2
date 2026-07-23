@@ -27,6 +27,8 @@ use ori_geometry::{
 };
 use thiserror::Error;
 
+pub mod bulk_intersection_plan;
+
 mod history_persistence;
 
 pub use history_persistence::{

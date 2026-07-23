@@ -12,13 +12,16 @@ use thiserror::Error;
 
 use crate::{
     ClosedCutLoopDiagnosticLimitsV1, ClosedCutTopologySnapshotErrorV1, EdgeIncidence,
-    FaceExtractionInput, MaterialComponentKey, diagnose_closed_cut_topology_snapshot_v1,
+    FaceExtractionInput, MaterialComponentKey, TopologySnapshot,
+    diagnose_closed_cut_topology_snapshot_v1,
 };
 
 pub const CUT_MATERIAL_COMPONENT_SELECTION_DIAGNOSTIC_MODEL_ID_V1: &str =
     "cut_material_component_selection_diagnostic_v1";
 pub const CUT_MATERIAL_REMOVAL_PLAN_DIAGNOSTIC_MODEL_ID_V1: &str =
     "cut_material_removal_plan_diagnostic_v1";
+pub const EFFECTIVE_CUT_MATERIAL_SNAPSHOT_DIAGNOSTIC_MODEL_ID_V1: &str =
+    "effective_cut_material_snapshot_diagnostic_v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CutMaterialComponentSelectionErrorV1 {
@@ -42,6 +45,68 @@ pub enum CutMaterialRemovalPlanErrorV1 {
     InvalidComponentGraph,
     #[error("material removal partition failed closed")]
     InvalidPartition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum EffectiveCutMaterialSnapshotErrorV1 {
+    #[error("material-removal plan prerequisite failed: {0}")]
+    Plan(#[from] CutMaterialRemovalPlanErrorV1),
+    #[error("effective material snapshot failed closed")]
+    InvalidSnapshot,
+}
+
+/// A read-only view of the topology that would remain after applying a removal plan.
+///
+/// Crossing cut edges are represented as boundaries in this view. The source
+/// pattern remains unchanged, so this is not an admitted `TopologySnapshot` for
+/// persistence, kinematics, collision, or simulation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectiveCutMaterialSnapshotDiagnosticV1 {
+    snapshot: TopologySnapshot,
+    converted_crossing_cut_boundaries: Vec<EdgeId>,
+    fingerprint: [u8; 32],
+    requested_components: Vec<MaterialComponentKey>,
+    limits: ClosedCutLoopDiagnosticLimitsV1,
+}
+
+impl EffectiveCutMaterialSnapshotDiagnosticV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        EFFECTIVE_CUT_MATERIAL_SNAPSHOT_DIAGNOSTIC_MODEL_ID_V1
+    }
+    #[must_use]
+    pub const fn snapshot(&self) -> &TopologySnapshot {
+        &self.snapshot
+    }
+    #[must_use]
+    pub const fn fingerprint_v1(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+    #[must_use]
+    pub fn converted_crossing_cut_boundaries(&self) -> &[EdgeId] {
+        &self.converted_crossing_cut_boundaries
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_material_removal(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_persistence(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_simulation_admission(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn is_for(&self, input: FaceExtractionInput<'_>) -> bool {
+        diagnose_effective_cut_material_snapshot_v1(input, &self.requested_components, self.limits)
+            .is_ok_and(|current| current.fingerprint == self.fingerprint)
+    }
 }
 
 /// A read-only plan for a future material-removal transaction.
@@ -492,6 +557,295 @@ pub fn diagnose_cut_material_removal_plan_v1(
     })
 }
 
+pub fn diagnose_effective_cut_material_snapshot_v1(
+    input: FaceExtractionInput<'_>,
+    requested_components: &[MaterialComponentKey],
+    limits: ClosedCutLoopDiagnosticLimitsV1,
+) -> Result<EffectiveCutMaterialSnapshotDiagnosticV1, EffectiveCutMaterialSnapshotErrorV1> {
+    let plan = diagnose_cut_material_removal_plan_v1(input, requested_components, limits)?;
+    let topology = diagnose_closed_cut_topology_snapshot_v1(input, limits)
+        .map_err(CutMaterialComponentSelectionErrorV1::from)
+        .map_err(CutMaterialRemovalPlanErrorV1::from)?;
+    let source = topology.snapshot();
+    let retained = plan.retained_faces.iter().copied().collect::<HashSet<_>>();
+    let removed = plan.removed_faces.iter().copied().collect::<HashSet<_>>();
+    let crossing = plan
+        .crossing_cut_boundaries
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+
+    let faces = source
+        .faces
+        .iter()
+        .filter(|face| retained.contains(&face.id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut edge_incidence = Vec::new();
+    for (edge, incidence) in &source.edge_incidence {
+        let effective = match *incidence {
+            EdgeIncidence::Boundary { material } => {
+                retained.contains(&material).then_some(*incidence)
+            }
+            EdgeIncidence::Hinge {
+                left,
+                right,
+                assignment: _,
+            } => match (retained.contains(&left), retained.contains(&right)) {
+                (true, true) => Some(*incidence),
+                (false, false) => None,
+                _ => return Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot),
+            },
+            EdgeIncidence::Cut { left, right } => {
+                match (retained.contains(&left), retained.contains(&right)) {
+                    (true, true) => Some(*incidence),
+                    (false, false) => None,
+                    (true, false) if crossing.contains(edge) => {
+                        Some(EdgeIncidence::Boundary { material: left })
+                    }
+                    (false, true) if crossing.contains(edge) => {
+                        Some(EdgeIncidence::Boundary { material: right })
+                    }
+                    _ => return Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot),
+                }
+            }
+            EdgeIncidence::AuxiliaryIgnored => Some(*incidence),
+        };
+        if let Some(incidence) = effective {
+            edge_incidence.push((*edge, incidence));
+        }
+    }
+    let hinge_adjacency = source
+        .hinge_adjacency
+        .iter()
+        .filter(|entry| retained.contains(&entry.first) && retained.contains(&entry.second))
+        .copied()
+        .collect::<Vec<_>>();
+    let material_components = source
+        .material_components
+        .iter()
+        .filter(|component| plan.retained_components.contains(&component.key))
+        .cloned()
+        .collect::<Vec<_>>();
+    let snapshot = TopologySnapshot {
+        source_revision: source.source_revision,
+        faces,
+        edge_incidence,
+        hinge_adjacency,
+        material_components,
+    };
+
+    validate_effective_snapshot(&snapshot, &retained, &removed, &crossing)?;
+    let mut hash = Sha256::new();
+    hash.update(EFFECTIVE_CUT_MATERIAL_SNAPSHOT_DIAGNOSTIC_MODEL_ID_V1.as_bytes());
+    hash.update(topology.fingerprint_v1());
+    hash.update(plan.fingerprint_v1());
+    hash_effective_snapshot(&mut hash, &snapshot);
+    Ok(EffectiveCutMaterialSnapshotDiagnosticV1 {
+        snapshot,
+        converted_crossing_cut_boundaries: plan.crossing_cut_boundaries.clone(),
+        fingerprint: hash.finalize().into(),
+        requested_components: requested_components.to_vec(),
+        limits,
+    })
+}
+
+fn validate_effective_snapshot(
+    snapshot: &TopologySnapshot,
+    retained: &HashSet<FaceId>,
+    removed: &HashSet<FaceId>,
+    crossing: &HashSet<EdgeId>,
+) -> Result<(), EffectiveCutMaterialSnapshotErrorV1> {
+    if snapshot.faces.len() != retained.len()
+        || snapshot
+            .faces
+            .iter()
+            .any(|face| !retained.contains(&face.id) || removed.contains(&face.id))
+    {
+        return Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot);
+    }
+    let incidences = snapshot
+        .edge_incidence
+        .iter()
+        .map(|(edge, incidence)| (*edge, *incidence))
+        .collect::<HashMap<_, _>>();
+    if incidences.len() != snapshot.edge_incidence.len() {
+        return Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot);
+    }
+    let mut occurrences = HashMap::<EdgeId, Vec<FaceId>>::new();
+    for face in &snapshot.faces {
+        for walk in std::iter::once(&face.outer)
+            .chain(face.holes.iter())
+            .chain(face.seams.iter())
+        {
+            for half_edge in &walk.half_edges {
+                occurrences.entry(half_edge.edge).or_default().push(face.id);
+                let Some(incidence) = incidences.get(&half_edge.edge) else {
+                    return Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot);
+                };
+                let owns = match incidence {
+                    EdgeIncidence::Boundary { material } => *material == face.id,
+                    EdgeIncidence::Hinge { left, right, .. }
+                    | EdgeIncidence::Cut { left, right } => *left == face.id || *right == face.id,
+                    EdgeIncidence::AuxiliaryIgnored => false,
+                };
+                if !owns {
+                    return Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot);
+                }
+            }
+        }
+    }
+    for (edge, incidence) in &snapshot.edge_incidence {
+        let observed = occurrences.get(edge).map(Vec::as_slice).unwrap_or(&[]);
+        match incidence {
+            EdgeIncidence::Boundary { material } => {
+                if !retained.contains(material)
+                    || (crossing.contains(edge)
+                        && !snapshot.faces.iter().any(|face| face.id == *material))
+                    || observed != [*material]
+                {
+                    return Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot);
+                }
+            }
+            EdgeIncidence::Hinge { left, right, .. } | EdgeIncidence::Cut { left, right } => {
+                if left == right
+                    || !retained.contains(left)
+                    || !retained.contains(right)
+                    || observed.len() != 2
+                    || observed.iter().filter(|face| **face == *left).count() != 1
+                    || observed.iter().filter(|face| **face == *right).count() != 1
+                {
+                    return Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot);
+                }
+            }
+            EdgeIncidence::AuxiliaryIgnored if observed.is_empty() => {}
+            EdgeIncidence::AuxiliaryIgnored => {
+                return Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot);
+            }
+        }
+    }
+    if crossing.iter().any(|edge| {
+        !matches!(
+            incidences.get(edge),
+            Some(EdgeIncidence::Boundary { material }) if retained.contains(material)
+        )
+    }) {
+        return Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot);
+    }
+    let mut owners = HashSet::new();
+    for component in &snapshot.material_components {
+        if component.faces.is_empty()
+            || component
+                .faces
+                .iter()
+                .any(|face| !retained.contains(face) || !owners.insert(*face))
+        {
+            return Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot);
+        }
+    }
+    let adjacency_edges = snapshot
+        .hinge_adjacency
+        .iter()
+        .map(|entry| entry.edge)
+        .collect::<HashSet<_>>();
+    let hinge_edges = snapshot
+        .edge_incidence
+        .iter()
+        .filter_map(|(edge, incidence)| {
+            matches!(incidence, EdgeIncidence::Hinge { .. }).then_some(*edge)
+        })
+        .collect::<HashSet<_>>();
+    if owners != *retained
+        || adjacency_edges.len() != snapshot.hinge_adjacency.len()
+        || adjacency_edges != hinge_edges
+        || snapshot.hinge_adjacency.iter().any(|entry| {
+            !retained.contains(&entry.first)
+                || !retained.contains(&entry.second)
+                || !matches!(
+                    incidences.get(&entry.edge),
+                    Some(EdgeIncidence::Hinge { left, right, assignment })
+                        if *assignment == entry.assignment
+                            && ((*left == entry.first && *right == entry.second)
+                                || (*left == entry.second && *right == entry.first))
+                )
+        })
+    {
+        return Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot);
+    }
+    Ok(())
+}
+
+fn hash_effective_snapshot(hash: &mut Sha256, snapshot: &TopologySnapshot) {
+    hash.update(b"source_revision");
+    hash.update(snapshot.source_revision.to_be_bytes());
+    hash.update(b"faces");
+    hash.update((snapshot.faces.len() as u64).to_be_bytes());
+    for face in &snapshot.faces {
+        hash.update(face.id.canonical_bytes());
+        hash.update(face.key.0);
+        hash.update((face.holes.len() as u64).to_be_bytes());
+        hash.update((face.seams.len() as u64).to_be_bytes());
+        for (tag, walk) in std::iter::once((0_u8, &face.outer))
+            .chain(face.holes.iter().map(|walk| (1, walk)))
+            .chain(face.seams.iter().map(|walk| (2, walk)))
+        {
+            hash.update([tag]);
+            hash.update((walk.half_edges.len() as u64).to_be_bytes());
+            hash.update(walk.signed_double_area.to_bits().to_be_bytes());
+            for half_edge in &walk.half_edges {
+                hash.update(half_edge.edge.canonical_bytes());
+                hash.update(half_edge.origin.canonical_bytes());
+                hash.update(half_edge.destination.canonical_bytes());
+            }
+        }
+        hash.update(face.area.to_bits().to_be_bytes());
+    }
+    hash.update(b"edge_incidence");
+    hash.update((snapshot.edge_incidence.len() as u64).to_be_bytes());
+    for (edge, incidence) in &snapshot.edge_incidence {
+        hash.update(edge.canonical_bytes());
+        match incidence {
+            EdgeIncidence::Boundary { material } => {
+                hash.update([0]);
+                hash.update(material.canonical_bytes());
+            }
+            EdgeIncidence::Hinge {
+                left,
+                right,
+                assignment,
+            } => {
+                hash.update([1, *assignment as u8]);
+                hash.update(left.canonical_bytes());
+                hash.update(right.canonical_bytes());
+            }
+            EdgeIncidence::Cut { left, right } => {
+                hash.update([2]);
+                hash.update(left.canonical_bytes());
+                hash.update(right.canonical_bytes());
+            }
+            EdgeIncidence::AuxiliaryIgnored => hash.update([3]),
+        }
+    }
+    hash.update(b"hinge_adjacency");
+    hash.update((snapshot.hinge_adjacency.len() as u64).to_be_bytes());
+    for entry in &snapshot.hinge_adjacency {
+        hash.update(entry.edge.canonical_bytes());
+        hash.update(entry.first.canonical_bytes());
+        hash.update(entry.second.canonical_bytes());
+        hash.update([entry.assignment as u8]);
+    }
+    hash.update(b"material_components");
+    hash.update((snapshot.material_components.len() as u64).to_be_bytes());
+    for component in &snapshot.material_components {
+        hash.update(component.key.0);
+        hash.update(component.sheet_origin.canonical_bytes());
+        hash.update((component.faces.len() as u64).to_be_bytes());
+        for face in &component.faces {
+            hash.update(face.canonical_bytes());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, ProjectId, Vertex};
@@ -832,5 +1186,254 @@ mod tests {
         changed_paper.thickness_mm = 0.2;
         assert!(!plan.is_for(input(namespace, 7, &changed_paper, &pattern), &candidates));
         assert!(!plan.is_for(source, &[MaterialComponentKey([0xfe; 32])]));
+    }
+
+    #[test]
+    fn effective_snapshot_removes_isolated_inner_material_and_closes_crossing_cuts() {
+        let (namespace, paper, pattern) = fixture(false);
+        let source = input(namespace, 7, &paper, &pattern);
+        let (_, candidates) = component_keys(source);
+        let diagnostic =
+            diagnose_effective_cut_material_snapshot_v1(source, &candidates, Default::default())
+                .unwrap();
+        let snapshot = diagnostic.snapshot();
+        assert_eq!(snapshot.faces.len(), 1);
+        assert_eq!(snapshot.material_components.len(), 1);
+        assert!(snapshot.hinge_adjacency.is_empty());
+        assert_eq!(
+            snapshot
+                .edge_incidence
+                .iter()
+                .filter(|(_, incidence)| matches!(incidence, EdgeIncidence::Boundary { .. }))
+                .count(),
+            7
+        );
+        assert!(
+            snapshot
+                .edge_incidence
+                .iter()
+                .all(|(_, incidence)| !matches!(incidence, EdgeIncidence::Cut { .. }))
+        );
+        assert!(!diagnostic.authorizes_project_mutation());
+        assert!(!diagnostic.authorizes_material_removal());
+        assert!(!diagnostic.authorizes_persistence());
+        assert!(!diagnostic.authorizes_simulation_admission());
+        assert!(diagnostic.is_for(source));
+    }
+
+    #[test]
+    fn effective_snapshot_removes_inner_material_but_retains_two_radial_sector_hinges() {
+        let (namespace, paper, mut pattern) = fixture(false);
+        pattern.edges.extend([
+            edge(
+                40,
+                &pattern.vertices[4],
+                &pattern.vertices[0],
+                EdgeKind::Mountain,
+            ),
+            edge(
+                41,
+                &pattern.vertices[5],
+                &pattern.vertices[1],
+                EdgeKind::Valley,
+            ),
+        ]);
+        let source = input(namespace, 9, &paper, &pattern);
+        let (_, candidates) = component_keys(source);
+        let diagnostic =
+            diagnose_effective_cut_material_snapshot_v1(source, &candidates, Default::default())
+                .unwrap();
+        let snapshot = diagnostic.snapshot();
+        assert_eq!(snapshot.faces.len(), 2);
+        assert_eq!(snapshot.material_components.len(), 1);
+        assert_eq!(snapshot.hinge_adjacency.len(), 2);
+        assert!(
+            snapshot
+                .faces
+                .iter()
+                .all(|face| face.holes.is_empty() && face.seams.is_empty())
+        );
+        assert_eq!(diagnostic.converted_crossing_cut_boundaries().len(), 3);
+        for edge in diagnostic.converted_crossing_cut_boundaries() {
+            assert!(matches!(
+                snapshot
+                    .edge_incidence
+                    .iter()
+                    .find(|(candidate, _)| candidate == edge),
+                Some((_, EdgeIncidence::Boundary { material }))
+                    if snapshot.faces.iter().any(|face| face.id == *material)
+            ));
+        }
+        assert!(
+            snapshot
+                .edge_incidence
+                .iter()
+                .all(|(_, incidence)| !matches!(incidence, EdgeIncidence::Cut { .. }))
+        );
+        assert!(!diagnostic.authorizes_project_mutation());
+        assert!(!diagnostic.authorizes_persistence());
+        assert!(!diagnostic.authorizes_simulation_admission());
+    }
+
+    #[test]
+    fn effective_snapshot_keeps_disjoint_sibling_cut_and_nested_parent_closure() {
+        let (namespace, paper, pattern) = fixture(true);
+        let source = input(namespace, 7, &paper, &pattern);
+        let (_, candidates) = component_keys(source);
+        let sibling = diagnose_effective_cut_material_snapshot_v1(
+            source,
+            &candidates[0..1],
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(sibling.snapshot().material_components.len(), 2);
+        assert_eq!(
+            sibling
+                .snapshot()
+                .edge_incidence
+                .iter()
+                .filter(|(_, incidence)| matches!(incidence, EdgeIncidence::Cut { .. }))
+                .count(),
+            3
+        );
+
+        let (namespace, paper, mut nested) = fixture(true);
+        nested.vertices[7].position = Point2::new(3.0, 2.5);
+        nested.vertices[8].position = Point2::new(4.0, 2.5);
+        nested.vertices[9].position = Point2::new(3.5, 3.5);
+        let source = input(namespace, 7, &paper, &nested);
+        let (_, candidates) = component_keys(source);
+        let alternatives = candidates
+            .iter()
+            .map(|candidate| {
+                diagnose_cut_material_removal_plan_v1(source, &[*candidate], Default::default())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let parent = alternatives
+            .iter()
+            .find(|plan| plan.removed_components().len() == 2)
+            .unwrap();
+        let effective = diagnose_effective_cut_material_snapshot_v1(
+            source,
+            parent.requested_components(),
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            effective.snapshot().faces.len(),
+            parent.retained_faces().len()
+        );
+        assert_eq!(effective.snapshot().material_components.len(), 1);
+        assert_eq!(
+            effective
+                .snapshot()
+                .edge_incidence
+                .iter()
+                .filter(|(_, incidence)| matches!(incidence, EdgeIncidence::Boundary { .. }))
+                .count(),
+            7
+        );
+    }
+
+    #[test]
+    fn effective_snapshot_binds_full_input_request_and_caps() {
+        let (namespace, paper, pattern) = fixture(true);
+        let source = input(namespace, 7, &paper, &pattern);
+        let (_, candidates) = component_keys(source);
+        let diagnostic = diagnose_effective_cut_material_snapshot_v1(
+            source,
+            &candidates[0..1],
+            Default::default(),
+        )
+        .unwrap();
+        assert!(!diagnostic.is_for(input(namespace, 8, &paper, &pattern)));
+        let mut changed = pattern.clone();
+        changed.vertices[4].position.x += 0.125;
+        assert!(!diagnostic.is_for(input(namespace, 7, &paper, &changed)));
+        assert!(matches!(
+            diagnose_effective_cut_material_snapshot_v1(
+                source,
+                &candidates[0..1],
+                ClosedCutLoopDiagnosticLimitsV1 {
+                    max_edges: pattern.edges.len() - 1,
+                    ..Default::default()
+                }
+            ),
+            Err(EffectiveCutMaterialSnapshotErrorV1::Plan(_))
+        ));
+    }
+
+    #[test]
+    fn effective_snapshot_is_canonical_under_source_storage_reordering() {
+        let (namespace, paper, pattern) = fixture(true);
+        let source = input(namespace, 7, &paper, &pattern);
+        let (_, candidates) = component_keys(source);
+        let first = diagnose_effective_cut_material_snapshot_v1(
+            source,
+            &candidates[0..1],
+            Default::default(),
+        )
+        .unwrap();
+        let mut reordered = pattern.clone();
+        reordered.vertices.reverse();
+        reordered.edges.reverse();
+        let reordered_input = input(namespace, 7, &paper, &reordered);
+        let (_, reordered_candidates) = component_keys(reordered_input);
+        let second = diagnose_effective_cut_material_snapshot_v1(
+            reordered_input,
+            &reordered_candidates[0..1],
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(first.fingerprint_v1(), second.fingerprint_v1());
+        assert_eq!(first.snapshot(), second.snapshot());
+        assert_eq!(
+            first.converted_crossing_cut_boundaries(),
+            second.converted_crossing_cut_boundaries()
+        );
+    }
+
+    #[test]
+    fn effective_snapshot_internal_consistency_rejects_missing_duplicate_and_dangling_entries() {
+        let (namespace, paper, pattern) = fixture(false);
+        let source = input(namespace, 7, &paper, &pattern);
+        let (_, candidates) = component_keys(source);
+        let plan =
+            diagnose_cut_material_removal_plan_v1(source, &candidates, Default::default()).unwrap();
+        let effective =
+            diagnose_effective_cut_material_snapshot_v1(source, &candidates, Default::default())
+                .unwrap();
+        let retained = plan.retained_faces.iter().copied().collect::<HashSet<_>>();
+        let removed = plan.removed_faces.iter().copied().collect::<HashSet<_>>();
+        let crossing = plan
+            .crossing_cut_boundaries
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+
+        let mut missing = effective.snapshot().clone();
+        missing.edge_incidence.pop();
+        assert_eq!(
+            validate_effective_snapshot(&missing, &retained, &removed, &crossing),
+            Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot)
+        );
+        let mut duplicate = effective.snapshot().clone();
+        duplicate.edge_incidence.push(duplicate.edge_incidence[0]);
+        assert_eq!(
+            validate_effective_snapshot(&duplicate, &retained, &removed, &crossing),
+            Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot)
+        );
+        let mut dangling = effective.snapshot().clone();
+        dangling.edge_incidence.push((
+            id(999),
+            EdgeIncidence::Boundary {
+                material: dangling.faces[0].id,
+            },
+        ));
+        assert_eq!(
+            validate_effective_snapshot(&dangling, &retained, &removed, &crossing),
+            Err(EffectiveCutMaterialSnapshotErrorV1::InvalidSnapshot)
+        );
     }
 }

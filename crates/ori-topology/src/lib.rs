@@ -53,7 +53,10 @@ pub use cut_material_selection::{
     CUT_MATERIAL_REMOVAL_PLAN_DIAGNOSTIC_MODEL_ID_V1, CutMaterialComponentSelectionDiagnosticV1,
     CutMaterialComponentSelectionErrorV1, CutMaterialComponentSelectionV1,
     CutMaterialRemovalPlanDiagnosticV1, CutMaterialRemovalPlanErrorV1,
+    EFFECTIVE_CUT_MATERIAL_SNAPSHOT_DIAGNOSTIC_MODEL_ID_V1,
+    EffectiveCutMaterialSnapshotDiagnosticV1, EffectiveCutMaterialSnapshotErrorV1,
     diagnose_cut_material_component_selection_v1, diagnose_cut_material_removal_plan_v1,
+    diagnose_effective_cut_material_snapshot_v1,
 };
 
 pub use local_flat_foldability::{

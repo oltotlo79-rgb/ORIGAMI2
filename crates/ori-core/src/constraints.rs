@@ -5390,7 +5390,7 @@ mod tests {
             vertex: fixture.vertices[0],
             first_edge: fixture.edges[0],
             second_edge: fixture.edges[1],
-            angle_degrees: 90.0,
+            angle_degrees: 0.0,
         });
         let both_horizontal = prepare(
             &fixture,
@@ -6442,5 +6442,41 @@ mod tests {
                 ConstraintPreflightV1::DirectConflict { .. }
             ));
         }
+    }
+
+    #[test]
+    fn perpendicular_fixed_angle_conflict_is_symmetric_deterministic_and_covers_180() {
+        let fixture = Fixture::new();
+        let mut records = vec![
+            record(GeometricConstraintKindV1::Vertical {
+                edge: fixture.edges[0],
+            }),
+            record(GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[1],
+            }),
+            record(GeometricConstraintKindV1::FixedAngle {
+                vertex: fixture.vertices[0],
+                first_edge: fixture.edges[0],
+                second_edge: fixture.edges[1],
+                angle_degrees: 180.0,
+            }),
+        ];
+        let expected = prepare(&fixture, &document(records.clone()))
+            .unwrap()
+            .preflight();
+        let ConstraintPreflightV1::DirectConflict { conflicts } = &expected else {
+            panic!("180 degrees is neither the degenerate zero nor the non-degenerate right angle")
+        };
+        assert!(conflicts.iter().any(|conflict| matches!(
+            conflict.conflict(),
+            DirectConstraintConflictKindV1::PerpendicularOrientationsWithFixedNonRightAngle {
+                horizontal_edge,
+                vertical_edge,
+            } if *horizontal_edge == fixture.edges[1] && *vertical_edge == fixture.edges[0]
+        )));
+
+        records.reverse();
+        let permuted = prepare(&fixture, &document(records)).unwrap().preflight();
+        assert_eq!(permuted, expected);
     }
 }

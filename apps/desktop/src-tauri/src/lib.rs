@@ -12185,6 +12185,30 @@ fn connect_intersection_cluster(
     )
 }
 
+#[tauri::command]
+fn repair_all_unsplit_intersections(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<ProjectSnapshot, String> {
+    let mut project = lock_project(&state)?;
+    ensure_project_instance_identity(&project, expected_project_instance_id, expected_project_id)?;
+    let authority = project.applied_pose_authority.clone();
+    let invalidation = authority
+        .begin_invalidation()
+        .map_err(|error| error.to_string())?;
+    project
+        .editor
+        .repair_all_unsplit_intersections(expected_revision)
+        .map_err(|error| error.to_string())?;
+    project.record_numeric_expression_edit();
+    project.reconcile_vertex_coordinate_expressions();
+    project.current_layer_evidence = None;
+    invalidation.commit();
+    Ok(snapshot(&project))
+}
+
 fn execute_intersection_cluster_connection(
     project: &mut ProjectState,
     expected_project_instance_id: ProjectId,
@@ -15337,6 +15361,7 @@ pub fn run() {
             split_edge,
             connect_edge_intersection,
             connect_intersection_cluster,
+            repair_all_unsplit_intersections,
             connect_t_junction,
             split_boundary_edge,
             remove_boundary_vertex,

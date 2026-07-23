@@ -5618,6 +5618,18 @@ export function connectIntersectionCluster(
   })
 }
 
+export function repairAllUnsplitIntersections(
+  expectedProjectId: string,
+  expectedRevision: number,
+  expectedProjectInstanceId: string,
+) {
+  return invoke<ProjectSnapshot>('repair_all_unsplit_intersections', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+  })
+}
+
 export function connectTJunction(
   expectedProjectId: string,
   expectedRevision: number,

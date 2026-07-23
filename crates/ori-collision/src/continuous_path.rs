@@ -121,6 +121,112 @@ const MAX_STACKED_FOLD_INTERVAL_LEAVES_V1: usize = 128;
 const MAX_STACKED_FOLD_INTERVAL_DEPTH_V1: usize = 7;
 const MAX_STACKED_FOLD_INTERVAL_WORK_V1: usize =
     MAX_STACKED_FOLD_INTERVAL_LEAVES_V1 * MAX_STACKED_FOLD_INTERVAL_CANDIDATES_V1;
+pub const MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1: usize = 2_080;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinuousPairCoverageKindV1 {
+    ExistingNonhingeIntervalCandidate,
+    SharedHingeNeedsCorridor,
+    SharedVertexNeedsCorridor,
+    SameGroupSkipped,
+    MetadataMissing,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinuousPairCoverageEntryV1 {
+    pair: [FaceId; 2],
+    kind: ContinuousPairCoverageKindV1,
+}
+
+impl ContinuousPairCoverageEntryV1 {
+    #[must_use]
+    pub const fn pair(&self) -> [FaceId; 2] {
+        self.pair
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> ContinuousPairCoverageKindV1 {
+        self.kind
+    }
+}
+
+/// Read-only exact registry of the pair classes encountered by the existing
+/// continuous-path implementation. It deliberately grants no authority: the
+/// `NeedsCorridor` and `Skipped` entries make current proof gaps explicit.
+#[derive(Debug, Clone)]
+pub struct ContinuousPairCoverageRegistryV1 {
+    issuer: MaterialHingeGraphGeometry,
+    fixed_face: FaceId,
+    schedule_hash: [u8; 32],
+    entries: Vec<ContinuousPairCoverageEntryV1>,
+}
+
+impl ContinuousPairCoverageRegistryV1 {
+    #[must_use]
+    pub fn entries(&self) -> &[ContinuousPairCoverageEntryV1] {
+        &self.entries
+    }
+
+    #[must_use]
+    pub fn is_for(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    ) -> bool {
+        self.issuer.same_instance(geometry)
+            && self.fixed_face == fixed_face
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
+            && schedule.matches_binding(geometry, audit, fixed_face)
+            && checked_unordered_pair_count_v1(geometry.face_ids().len())
+                == Some(self.entries.len())
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub fn gap_count(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+fn checked_unordered_pair_count_v1(face_count: usize) -> Option<usize> {
+    face_count
+        .checked_mul(face_count.checked_sub(1)?)
+        .map(|n| n / 2)
+}
+
+fn classify_continuous_pair_v1(
+    shared_hinges: usize,
+    shared_vertex: Option<bool>,
+    group_membership: Option<(Option<usize>, Option<usize>)>,
+) -> ContinuousPairCoverageKindV1 {
+    if shared_hinges == 1 {
+        ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor
+    } else if shared_hinges > 1 || shared_vertex.is_none() {
+        ContinuousPairCoverageKindV1::Unsupported
+    } else if shared_vertex == Some(true) {
+        ContinuousPairCoverageKindV1::SharedVertexNeedsCorridor
+    } else if group_membership.is_none()
+        || group_membership.is_some_and(|(first, second)| first.is_none() || second.is_none())
+    {
+        ContinuousPairCoverageKindV1::MetadataMissing
+    } else if group_membership.is_some_and(|(first, second)| first == second) {
+        ContinuousPairCoverageKindV1::SameGroupSkipped
+    } else {
+        ContinuousPairCoverageKindV1::ExistingNonhingeIntervalCandidate
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackedFoldPathDiagnosticLimitsV1 {
@@ -2500,6 +2606,61 @@ fn rational_cactus_star_local_groups_v1(
     None
 }
 
+/// Enumerates every canonical unordered face pair and reports how the current
+/// continuous classifier treats it. This is diagnostic evidence only.
+#[must_use]
+pub fn diagnose_continuous_pair_coverage_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+) -> Option<ContinuousPairCoverageRegistryV1> {
+    if !schedule.matches_binding(geometry, audit, fixed_face) {
+        return None;
+    }
+    let pair_count = checked_unordered_pair_count_v1(geometry.face_ids().len())?;
+    if pair_count > MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1 {
+        return None;
+    }
+    let mut faces = geometry.face_ids().to_vec();
+    faces.sort_by_key(FaceId::canonical_bytes);
+    if faces.windows(2).any(|pair| pair[0] == pair[1]) {
+        return None;
+    }
+    let groups = composed_symmetric_rational_local_groups_v1(geometry, audit, fixed_face, schedule)
+        .or_else(|| rational_cactus_star_local_groups_v1(geometry, audit, fixed_face, schedule));
+    let mut entries = Vec::with_capacity(pair_count);
+    for first in 0..faces.len() {
+        for second in first + 1..faces.len() {
+            let pair = [faces[first], faces[second]];
+            let shared_hinges = geometry
+                .hinges()
+                .iter()
+                .filter(|hinge| {
+                    (hinge.left_face() == pair[0] && hinge.right_face() == pair[1])
+                        || (hinge.left_face() == pair[1] && hinge.right_face() == pair[0])
+                })
+                .count();
+            let first_boundary = geometry.face_boundary_vertices(pair[0]);
+            let second_boundary = geometry.face_boundary_vertices(pair[1]);
+            let shared_vertex = first_boundary
+                .zip(second_boundary)
+                .map(|(first, second)| first.iter().any(|vertex| second.contains(vertex)));
+            let membership = groups
+                .as_ref()
+                .map(|groups| (groups.get(&pair[0]).copied(), groups.get(&pair[1]).copied()));
+            let kind = classify_continuous_pair_v1(shared_hinges, shared_vertex, membership);
+            entries.push(ContinuousPairCoverageEntryV1 { pair, kind });
+        }
+    }
+    (entries.len() == pair_count).then(|| ContinuousPairCoverageRegistryV1 {
+        issuer: geometry.clone(),
+        fixed_face,
+        schedule_hash: schedule.certificate_binding_fingerprint_v1(),
+        entries,
+    })
+}
+
 fn symmetric_groups_have_disjoint_swept_balls_v1(
     geometry: &MaterialHingeGraphGeometry,
     groups: &HashMap<FaceId, usize>,
@@ -3476,6 +3637,72 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn continuous_pair_gap_registry_exactly_enumerates_four_eight_sixteen_bays() {
+        for bay_count in [4_usize, 8, 16] {
+            let (geometry, audit, schedule, fixed) = rational_cycle_bay_geometry(bay_count, false);
+            let registry =
+                diagnose_continuous_pair_coverage_v1(&geometry, &audit, fixed, &schedule)
+                    .expect("bounded pair registry");
+            assert!(registry.is_for(&geometry, &audit, fixed, &schedule));
+            let foreign_fixed = geometry
+                .face_ids()
+                .iter()
+                .copied()
+                .find(|face| *face != fixed)
+                .unwrap();
+            assert!(!registry.is_for(&geometry, &audit, foreign_fixed, &schedule));
+            let (foreign_geometry, foreign_audit, foreign_schedule, foreign_fixed) =
+                rational_cycle_bay_geometry(bay_count, true);
+            assert!(!registry.is_for(
+                &foreign_geometry,
+                &foreign_audit,
+                foreign_fixed,
+                &foreign_schedule,
+            ));
+            assert!(!registry.authorizes_project_mutation());
+            assert!(!registry.authorizes_continuous_motion());
+            let face_count = geometry.face_ids().len();
+            assert_eq!(registry.entries().len(), face_count * (face_count - 1) / 2);
+            assert!(registry.entries().windows(2).all(|entries| {
+                let left = entries[0].pair();
+                let right = entries[1].pair();
+                (left[0].canonical_bytes(), left[1].canonical_bytes())
+                    < (right[0].canonical_bytes(), right[1].canonical_bytes())
+            }));
+            assert!(registry.entries().iter().any(|entry| {
+                entry.kind() == ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor
+            }));
+            assert!(registry.entries().iter().any(|entry| {
+                matches!(
+                    entry.kind(),
+                    ContinuousPairCoverageKindV1::SameGroupSkipped
+                        | ContinuousPairCoverageKindV1::SharedVertexNeedsCorridor
+                )
+            }));
+            assert!(registry.gap_count() > 0);
+        }
+    }
+
+    #[test]
+    fn continuous_pair_gap_classifier_fails_closed_without_metadata_and_at_cap() {
+        assert_eq!(
+            classify_continuous_pair_v1(0, Some(false), None),
+            ContinuousPairCoverageKindV1::MetadataMissing
+        );
+        assert_eq!(
+            classify_continuous_pair_v1(0, Some(false), Some((Some(3), Some(3)))),
+            ContinuousPairCoverageKindV1::SameGroupSkipped
+        );
+        assert_eq!(
+            classify_continuous_pair_v1(0, Some(false), Some((Some(3), Some(4)))),
+            ContinuousPairCoverageKindV1::ExistingNonhingeIntervalCandidate
+        );
+        assert_eq!(checked_unordered_pair_count_v1(65), Some(2_080));
+        assert_eq!(checked_unordered_pair_count_v1(66), Some(2_145));
+        assert!(checked_unordered_pair_count_v1(usize::MAX).is_none());
     }
 
     #[test]

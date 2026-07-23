@@ -79,6 +79,39 @@ impl ExpressionLimits {
     }
 }
 
+/// Returns certified outward rational bounds for the principal square root.
+///
+/// This bounded primitive lets geometry consumers retain the same irrational
+/// enclosure contract as parsed scalar expressions without formatting an
+/// exact rational through decimal text.
+pub fn rational_sqrt_bounds(
+    value: &BigRational,
+    limits: ExpressionLimits,
+) -> Result<(BigRational, BigRational), ExpressionError> {
+    let limits = limits.validate()?;
+    let mut meter = EvaluationMeter::new(limits);
+    sqrt_bounds(value, &mut meter)
+}
+
+/// Converts exact rational interval endpoints to an outward finite binary64 enclosure.
+pub fn rational_interval_to_f64_outward(
+    lower: &BigRational,
+    upper: &BigRational,
+) -> Result<CertifiedF64Interval, F64IntervalError> {
+    if lower > upper {
+        return Err(F64IntervalError::NonFinite);
+    }
+    let lower = rational_to_f64_outward(lower, F64Direction::Down)?;
+    let upper = rational_to_f64_outward(upper, F64Direction::Up)?;
+    if lower > upper {
+        return Err(F64IntervalError::NonFinite);
+    }
+    Ok(CertifiedF64Interval {
+        lower: normalize_f64_zero(lower),
+        upper: normalize_f64_zero(upper),
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExpressionResource {
     SourceBytes,
@@ -1350,6 +1383,56 @@ fn nonnegative_biguint(value: &BigInt) -> Result<BigUint, ExpressionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rational_sqrt_bounds_are_outward_and_bounded() {
+        let limits = ExpressionLimits::default();
+        let zero = BigRational::zero();
+        assert_eq!(
+            rational_sqrt_bounds(&zero, limits),
+            Ok((zero.clone(), zero))
+        );
+        let four = BigRational::from_integer(4.into());
+        let two = BigRational::from_integer(2.into());
+        assert_eq!(
+            rational_sqrt_bounds(&four, limits),
+            Ok((two.clone(), two.clone()))
+        );
+        let (lower, upper) = rational_sqrt_bounds(&two, limits).unwrap();
+        assert!(lower.clone() * &lower <= two && upper.clone() * &upper >= two);
+        assert!(matches!(
+            rational_sqrt_bounds(&BigRational::from_integer((-1).into()), limits),
+            Err(ExpressionError::NegativeSquareRoot)
+        ));
+        assert!(matches!(
+            rational_sqrt_bounds(
+                &BigRational::from_integer(BigInt::from(1_u8) << 128),
+                ExpressionLimits {
+                    max_value_bits: 8,
+                    ..limits
+                }
+            ),
+            Err(ExpressionError::ResourceLimit(_))
+        ));
+    }
+
+    #[test]
+    fn rational_interval_binary64_conversion_rounds_each_endpoint_outward() {
+        let tenth = BigRational::new(1.into(), 10.into());
+        let interval = rational_interval_to_f64_outward(&tenth, &tenth).unwrap();
+        let nearest = 0.1_f64;
+        assert!(BigRational::from_float(interval.lower()).unwrap() <= tenth);
+        assert!(BigRational::from_float(interval.upper()).unwrap() >= tenth);
+        assert_eq!(interval.lower(), f64::from_bits(nearest.to_bits() - 1));
+        assert_eq!(interval.upper(), nearest);
+        assert_eq!(
+            rational_interval_to_f64_outward(
+                &BigRational::from_integer(2.into()),
+                &BigRational::from_integer(1.into())
+            ),
+            Err(F64IntervalError::NonFinite)
+        );
+    }
 
     fn rational(numerator: i64, denominator: i64) -> BigRational {
         BigRational::new(numerator.into(), denominator.into())

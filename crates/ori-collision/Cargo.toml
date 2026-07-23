@@ -18,6 +18,7 @@ ori-domain = { path = "../ori-domain" }
 ori-core = { path = "../ori-core" }
 ori-foldability = { path = "../ori-foldability" }
 ori-kinematics = { path = "../ori-kinematics" }
+ori-numeric = { path = "../ori-numeric" }
 ori-topology = { path = "../ori-topology" }
 sha2 = "0.10.9"
 thiserror.workspace = true

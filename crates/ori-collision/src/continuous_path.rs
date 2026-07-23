@@ -4166,6 +4166,36 @@ mod tests {
                 report.covered().len() + report.remaining().len(),
                 registry.entries().len()
             );
+            let expected_remaining = registry
+                .entries()
+                .iter()
+                .filter(|entry| {
+                    entry.kind() != ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor
+                })
+                .copied()
+                .collect::<Vec<_>>();
+            assert_eq!(report.remaining(), expected_remaining);
+            assert!(report.remaining().iter().all(|entry| {
+                entry.kind() != ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor
+            }));
+            let mut expected_covered = gaps
+                .gaps()
+                .iter()
+                .map(|gap| (gap.pair(), gap.hinge()))
+                .collect::<Vec<_>>();
+            expected_covered.sort_unstable_by_key(|(pair, hinge)| {
+                (
+                    pair[0].canonical_bytes(),
+                    pair[1].canonical_bytes(),
+                    hinge.canonical_bytes(),
+                )
+            });
+            let actual_covered = report
+                .covered()
+                .iter()
+                .map(|item| (item.pair(), item.hinge()))
+                .collect::<Vec<_>>();
+            assert_eq!(actual_covered, expected_covered);
 
             let mut tampered = schedules.clone();
             tampered[0].source_angle_degrees =

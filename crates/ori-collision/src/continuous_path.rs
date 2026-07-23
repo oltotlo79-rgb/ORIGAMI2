@@ -214,6 +214,62 @@ pub struct SharedHingeContinuousCorridorGapReportV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedVertexContinuousCorridorGapV1 {
+    pair: [FaceId; 2],
+    vertex: ori_domain::VertexId,
+}
+impl SharedVertexContinuousCorridorGapV1 {
+    #[must_use]
+    pub const fn pair(&self) -> [FaceId; 2] {
+        self.pair
+    }
+    #[must_use]
+    pub const fn vertex(&self) -> ori_domain::VertexId {
+        self.vertex
+    }
+}
+
+/// Pure geometry gap classification. This is not layer-order evidence and
+/// must never be promoted to motion or mutation authority.
+#[derive(Debug, Clone)]
+pub struct SharedVertexContinuousCorridorGapReportV1 {
+    issuer: MaterialHingeGraphGeometry,
+    fixed_face: FaceId,
+    schedule_hash: [u8; 32],
+    thickness_bits: u64,
+    gaps: Vec<SharedVertexContinuousCorridorGapV1>,
+}
+impl SharedVertexContinuousCorridorGapReportV1 {
+    #[must_use]
+    pub fn gaps(&self) -> &[SharedVertexContinuousCorridorGapV1] {
+        &self.gaps
+    }
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn is_for(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+        thickness_mm: f64,
+    ) -> bool {
+        self.issuer.same_instance(geometry)
+            && self.fixed_face == fixed_face
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
+            && self.thickness_bits == thickness_mm.to_bits()
+            && schedule.matches_binding(geometry, audit, fixed_face)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReliefCoveredSharedHingePairV1 {
     pair: [FaceId; 2],
     hinge: EdgeId,
@@ -2910,6 +2966,66 @@ pub fn diagnose_shared_hinge_continuous_corridor_gaps_v1(
     })
 }
 
+#[must_use]
+pub fn diagnose_shared_vertex_continuous_corridor_gaps_v1(
+    registry: &ContinuousPairCoverageRegistryV1,
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    paper_thickness_mm: f64,
+) -> Option<SharedVertexContinuousCorridorGapReportV1> {
+    if !registry.is_for(geometry, audit, fixed_face, schedule)
+        || !paper_thickness_mm.is_finite()
+        || paper_thickness_mm <= 0.0
+    {
+        return None;
+    }
+    let expected = registry
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == ContinuousPairCoverageKindV1::SharedVertexNeedsCorridor)
+        .count();
+    if expected > MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1 {
+        return None;
+    }
+    let mut gaps = Vec::new();
+    gaps.try_reserve_exact(expected).ok()?;
+    for entry in registry
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == ContinuousPairCoverageKindV1::SharedVertexNeedsCorridor)
+    {
+        if geometry.hinges().iter().any(|hinge| {
+            [hinge.left_face(), hinge.right_face()] == entry.pair
+                || [hinge.right_face(), hinge.left_face()] == entry.pair
+        }) {
+            return None;
+        }
+        let first = geometry.face_boundary_vertices(entry.pair[0])?;
+        let second = geometry.face_boundary_vertices(entry.pair[1])?;
+        let shared = first
+            .iter()
+            .copied()
+            .filter(|vertex| second.contains(vertex))
+            .collect::<Vec<_>>();
+        let [vertex] = shared.as_slice() else {
+            return None;
+        };
+        gaps.push(SharedVertexContinuousCorridorGapV1 {
+            pair: entry.pair,
+            vertex: *vertex,
+        });
+    }
+    (gaps.len() == expected).then(|| SharedVertexContinuousCorridorGapReportV1 {
+        issuer: geometry.clone(),
+        fixed_face,
+        schedule_hash: schedule.certificate_binding_fingerprint_v1(),
+        thickness_bits: paper_thickness_mm.to_bits(),
+        gaps,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn compose_shared_hinge_relief_coverage_v1(
     registry: &ContinuousPairCoverageRegistryV1,
@@ -4089,6 +4205,37 @@ mod tests {
                 )
                 .is_none()
             );
+            let shared_vertices = diagnose_shared_vertex_continuous_corridor_gaps_v1(
+                &registry, &geometry, &audit, fixed, &schedule, 0.1,
+            )
+            .expect("exact shared-vertex gap report");
+            assert!(shared_vertices.is_for(&geometry, &audit, fixed, &schedule, 0.1));
+            assert!(!shared_vertices.is_for(&geometry, &audit, fixed, &schedule, 0.2));
+            assert!(!shared_vertices.authorizes_continuous_motion());
+            assert!(!shared_vertices.authorizes_project_mutation());
+            let expected_shared_vertices = registry
+                .entries()
+                .iter()
+                .filter(|entry| {
+                    entry.kind() == ContinuousPairCoverageKindV1::SharedVertexNeedsCorridor
+                })
+                .count();
+            assert_eq!(shared_vertices.gaps().len(), expected_shared_vertices);
+            assert!(shared_vertices.gaps().iter().all(|gap| {
+                let first = geometry.face_boundary_vertices(gap.pair()[0]).unwrap();
+                let second = geometry.face_boundary_vertices(gap.pair()[1]).unwrap();
+                first
+                    .iter()
+                    .filter(|vertex| second.contains(vertex))
+                    .count()
+                    == 1
+                    && first.contains(&gap.vertex())
+                    && second.contains(&gap.vertex())
+                    && !geometry.hinges().iter().any(|hinge| {
+                        [hinge.left_face(), hinge.right_face()] == gap.pair()
+                            || [hinge.right_face(), hinge.left_face()] == gap.pair()
+                    })
+            }));
         }
     }
 

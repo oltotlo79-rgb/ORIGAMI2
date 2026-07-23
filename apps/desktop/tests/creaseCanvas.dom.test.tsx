@@ -289,6 +289,60 @@ describe('CreaseCanvas vertex dragging', () => {
     expect(onMoveVertex).toHaveBeenCalledOnce()
     expect(onMoveVertex).not.toHaveBeenCalledWith('moving', 200, 200)
   })
+
+  it('does not silently snap a moved vertex onto an unsplit proper intersection', () => {
+    const onMoveVertex = vi.fn()
+    renderCanvas({
+      localeStore: localeFixture('en'),
+      tool: 'select',
+      vertices: [
+        { id: 'moving', x: 100, y: 100 },
+        { id: 'a', x: 0, y: 0 },
+        { id: 'b', x: 400, y: 400 },
+        { id: 'c', x: 0, y: 400 },
+        { id: 'd', x: 400, y: 0 },
+      ],
+      lines: [
+        {
+          id: 'ascending', startVertexId: 'a', endVertexId: 'b',
+          x1: 0, y1: 0, x2: 400, y2: 400, kind: 'mountain',
+        },
+        {
+          id: 'descending', startVertexId: 'c', endVertexId: 'd',
+          x1: 0, y1: 400, x2: 400, y2: 0, kind: 'valley',
+        },
+      ],
+      selectedVertexId: 'moving',
+      onSelectVertex: () => undefined,
+      onMoveVertex,
+    })
+    const canvas = screen.getByLabelText('Crease-pattern editing canvas')
+    fireEvent.pointerDown(canvas, { clientX: 138, clientY: 138, pointerId: 8, button: 0 })
+    fireEvent.pointerMove(canvas, { clientX: 246, clientY: 246, pointerId: 8 })
+    fireEvent.pointerUp(canvas, { clientX: 246, clientY: 246, pointerId: 8 })
+
+    expect(onMoveVertex).toHaveBeenCalledOnce()
+    expect(onMoveVertex).not.toHaveBeenCalledWith('moving', 200, 200)
+  })
+
+  it('keeps grid snapping available for a moved vertex away from topology', () => {
+    const onMoveVertex = vi.fn()
+    renderCanvas({
+      localeStore: localeFixture('en'),
+      tool: 'select',
+      vertices: [{ id: 'moving', x: 100, y: 100 }],
+      gridDivisions: 4,
+      selectedVertexId: 'moving',
+      onSelectVertex: () => undefined,
+      onMoveVertex,
+    })
+    const canvas = screen.getByLabelText('Crease-pattern editing canvas')
+    fireEvent.pointerDown(canvas, { clientX: 138, clientY: 138, pointerId: 9, button: 0 })
+    fireEvent.pointerMove(canvas, { clientX: 246, clientY: 246, pointerId: 9 })
+    fireEvent.pointerUp(canvas, { clientX: 246, clientY: 246, pointerId: 9 })
+
+    expect(onMoveVertex).toHaveBeenCalledWith('moving', 200, 200)
+  })
 })
 
 describe('CreaseCanvas compass intersection placement', () => {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   isEffectiveCutReadOnlyRequestV1,
+  normalizeEffectiveCutCandidateListResponseV1,
   normalizeEffectiveCutReadOnlyResponseV1,
   type EffectiveCutReadOnlyRequestV1,
 } from '../src/lib/coreClient.ts'
@@ -95,4 +96,50 @@ test('effective-cut request validator rejects malformed and ambiguous selections
     response,
     { ...request, expectedRevision: Number.NaN },
   ), null)
+})
+
+test('effective-cut candidate parser admits only canonical non-authoritative aggregates', () => {
+  const candidateResponse = {
+    version: 1,
+    projectInstanceId: request.expectedProjectInstanceId,
+    projectId: request.expectedProjectId,
+    revision: request.expectedRevision,
+    foldModelFingerprint: request.expectedFoldModelFingerprint,
+    modelId: 'cut_material_component_selection_diagnostic_v1',
+    diagnosticFingerprint: Array(32).fill(4),
+    totalComponentCount: 2,
+    boundaryComponentCount: 1,
+    candidates: [{
+      componentKey: Array(32).fill(2),
+      ownsOriginalBoundary: false,
+      faceCount: 1,
+      areaSquareMm: 10,
+      closureComponentCount: 1,
+      closureFaceCount: 1,
+      nestedDependencyCount: 0,
+    }],
+    authorizesProjectMutation: false,
+    authorizesPersistence: false,
+    authorizesSimulationAdmission: false,
+    authorizesMaterialRemoval: false,
+  }
+  const candidateRequest = {
+    expectedProjectInstanceId: request.expectedProjectInstanceId,
+    expectedProjectId: request.expectedProjectId,
+    expectedRevision: request.expectedRevision,
+    expectedFoldModelFingerprint: request.expectedFoldModelFingerprint,
+  }
+  assert.ok(normalizeEffectiveCutCandidateListResponseV1(candidateResponse, candidateRequest))
+  assert.equal(normalizeEffectiveCutCandidateListResponseV1({
+    ...candidateResponse,
+    authorizesMaterialRemoval: true,
+  }, candidateRequest), null)
+  assert.equal(normalizeEffectiveCutCandidateListResponseV1({
+    ...candidateResponse,
+    candidates: [{ ...candidateResponse.candidates[0], componentKey: Array(31).fill(2) }],
+  }, candidateRequest), null)
+  assert.equal(normalizeEffectiveCutCandidateListResponseV1({
+    ...candidateResponse,
+    candidates: [{ ...candidateResponse.candidates[0], nestedDependencyCount: 1 }],
+  }, candidateRequest), null)
 })

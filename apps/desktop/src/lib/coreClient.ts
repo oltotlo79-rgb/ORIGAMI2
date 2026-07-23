@@ -2145,6 +2145,40 @@ export type EffectiveCutReadOnlyResponseV1 = Readonly<{
   authorizesMaterialRemoval: false
 }>
 
+export type EffectiveCutCandidateListRequestV1 = Readonly<{
+  expectedProjectInstanceId: string
+  expectedProjectId: string
+  expectedRevision: number
+  expectedFoldModelFingerprint: string
+}>
+
+export type EffectiveCutCandidateV1 = Readonly<{
+  componentKey: readonly number[]
+  ownsOriginalBoundary: false
+  faceCount: number
+  areaSquareMm: number
+  closureComponentCount: number
+  closureFaceCount: number
+  nestedDependencyCount: number
+}>
+
+export type EffectiveCutCandidateListResponseV1 = Readonly<{
+  version: 1
+  projectInstanceId: string
+  projectId: string
+  revision: number
+  foldModelFingerprint: string
+  modelId: 'cut_material_component_selection_diagnostic_v1'
+  diagnosticFingerprint: readonly number[]
+  totalComponentCount: number
+  boundaryComponentCount: 1
+  candidates: readonly EffectiveCutCandidateV1[]
+  authorizesProjectMutation: false
+  authorizesPersistence: false
+  authorizesSimulationAdmission: false
+  authorizesMaterialRemoval: false
+}>
+
 export function isNativeCoreAvailable() {
   return '__TAURI_INTERNALS__' in window
 }
@@ -3460,6 +3494,13 @@ const EFFECTIVE_CUT_RESPONSE_KEYS = [
   'authorizesMaterialRemoval',
 ] as const
 
+const EFFECTIVE_CUT_CANDIDATE_RESPONSE_KEYS = [
+  'version', 'projectInstanceId', 'projectId', 'revision', 'foldModelFingerprint',
+  'modelId', 'diagnosticFingerprint', 'totalComponentCount', 'boundaryComponentCount',
+  'candidates', 'authorizesProjectMutation', 'authorizesPersistence',
+  'authorizesSimulationAdmission', 'authorizesMaterialRemoval',
+] as const
+
 function isSha256Bytes(value: unknown): value is readonly number[] {
   return Array.isArray(value)
     && value.length === 32
@@ -3499,6 +3540,102 @@ export function isEffectiveCutReadOnlyRequestV1(
       }
       return false
     })
+}
+
+export function normalizeEffectiveCutCandidateListResponseV1(
+  value: unknown,
+  request: EffectiveCutCandidateListRequestV1,
+): EffectiveCutCandidateListResponseV1 | null {
+  if (!isEffectiveCutCandidateListRequestV1(request)) return null
+  const record = exactCoreDataRecord(value, EFFECTIVE_CUT_CANDIDATE_RESPONSE_KEYS)
+  if (!record
+    || record.version !== 1
+    || record.projectInstanceId !== request.expectedProjectInstanceId
+    || record.projectId !== request.expectedProjectId
+    || record.revision !== request.expectedRevision
+    || record.foldModelFingerprint !== request.expectedFoldModelFingerprint
+    || record.modelId !== 'cut_material_component_selection_diagnostic_v1'
+    || !isSha256Bytes(record.diagnosticFingerprint)
+    || !isSafeCount(record.totalComponentCount)
+    || record.totalComponentCount < 2
+    || record.totalComponentCount > 64
+    || record.boundaryComponentCount !== 1
+    || !Array.isArray(record.candidates)
+    || record.candidates.length + 1 !== record.totalComponentCount
+    || record.authorizesProjectMutation !== false
+    || record.authorizesPersistence !== false
+    || record.authorizesSimulationAdmission !== false
+    || record.authorizesMaterialRemoval !== false
+  ) return null
+  const candidates: EffectiveCutCandidateV1[] = []
+  for (const value of record.candidates) {
+    const candidate = exactCoreDataRecord(value, [
+      'componentKey', 'ownsOriginalBoundary', 'faceCount', 'areaSquareMm',
+      'closureComponentCount', 'closureFaceCount', 'nestedDependencyCount',
+    ] as const)
+    if (!candidate
+      || !isSha256Bytes(candidate.componentKey)
+      || candidate.ownsOriginalBoundary !== false
+      || !isSafeCount(candidate.faceCount)
+      || candidate.faceCount < 1
+      || candidate.faceCount > 50_000
+      || typeof candidate.areaSquareMm !== 'number'
+      || !Number.isFinite(candidate.areaSquareMm)
+      || candidate.areaSquareMm < 0
+      || !isSafeCount(candidate.closureComponentCount)
+      || candidate.closureComponentCount < 1
+      || candidate.closureComponentCount > 64
+      || !isSafeCount(candidate.closureFaceCount)
+      || candidate.closureFaceCount < candidate.faceCount
+      || candidate.closureFaceCount > 50_000
+      || candidate.nestedDependencyCount !== candidate.closureComponentCount - 1
+    ) return null
+    candidates.push(Object.freeze({
+      ...candidate,
+      componentKey: Object.freeze([...candidate.componentKey]),
+    }) as EffectiveCutCandidateV1)
+  }
+  if (candidates.slice(1).some((candidate, index) => {
+    const previous = candidates[index].componentKey
+    for (let byte = 0; byte < 32; byte += 1) {
+      if (previous[byte] < candidate.componentKey[byte]) return false
+      if (previous[byte] > candidate.componentKey[byte]) return true
+    }
+    return true
+  })) return null
+  return Object.freeze({
+    ...record,
+    diagnosticFingerprint: Object.freeze([...record.diagnosticFingerprint]),
+    candidates: Object.freeze(candidates),
+  }) as EffectiveCutCandidateListResponseV1
+}
+
+export function isEffectiveCutCandidateListRequestV1(
+  value: unknown,
+): value is EffectiveCutCandidateListRequestV1 {
+  const request = exactCoreDataRecord(value, [
+    'expectedProjectInstanceId', 'expectedProjectId', 'expectedRevision',
+    'expectedFoldModelFingerprint',
+  ] as const)
+  return request !== null
+    && isCanonicalNonNilUuid(request.expectedProjectInstanceId)
+    && isCanonicalNonNilUuid(request.expectedProjectId)
+    && isSafeCount(request.expectedRevision)
+    && isCanonicalSha256Hex(request.expectedFoldModelFingerprint)
+}
+
+export function listEffectiveCutCandidatesV1(
+  request: EffectiveCutCandidateListRequestV1,
+): Promise<EffectiveCutCandidateListResponseV1> {
+  if (!isEffectiveCutCandidateListRequestV1(request)) {
+    return Promise.reject(new Error('invalid effective-cut candidate request'))
+  }
+  const snapshot = { ...request }
+  return invoke<unknown>('list_effective_cut_candidates_v1', { request: snapshot }).then((value) => {
+    const response = normalizeEffectiveCutCandidateListResponseV1(value, snapshot)
+    if (!response) throw new Error('invalid effective-cut candidate response')
+    return response
+  })
 }
 
 export function normalizeEffectiveCutReadOnlyResponseV1(

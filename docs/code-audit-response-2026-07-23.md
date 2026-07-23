@@ -88,6 +88,32 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 - requirements design evidence: 3/3（正本85/2/0）。
 - WSL `ori-core` EDT-009 direct witness回帰: 等長・非1比率1/1（302件filter）、非相反な双方向比率1/1（303件filter）。各3-ID witnessについて任意の1制約を除くと直接矛盾でなくなること、ゼロ長逃げを正の固定長でだけ排除すること、正確な相反比率を誤検出しないことを固定する。一般MUSの要件昇格証拠には用いない。
 - EDT-009 frontend strict DTO・表示: Node 18/18、DOM 12/12、`tsc -b`成功。9種すべてをexact-key・canonical UUID・最大3-ID witnessで検証し、追加2種も日英のblocking原因表示へ接続した。
+
+## 最終HEAD照合（2026-07-23）
+
+監査原文の各指摘を最終HEADへ再照合した。下表の「修正済み」は指摘された具体的な不具合または不足の範囲だけを指し、右欄の一般仕様まで完成したことを意味しない。
+
+|項目|最終判定|根拠commit|残存する一般仕様・境界|
+|---|---|---|---|
+|A-1/A-2|指摘はgrounded。具体的不具合は修正済み|`1863da8`, `0391d91`, `f99f4d0`|二block本番経路では証明済みpairだけを保存する。`f99f4d0`は2..=8 submitted blockについてlive faceのexact union、live hingeのexactかつ一意な被覆、共有faceによるblock交差treeを観測するだけの非認可reportであり、三block以上のproduction mutation、一般cross-block continuous collision、一般layer transportを認可しない。|
+|A-3|grounded・修正済み|`b1efa98`, `8f37596`|頂点dragは未分割edge・midpoint・proper intersectionへのsnapを拒否し、位相と無関係なgrid snapを維持する。移動と分割・併合を一体化するdragは新規仕様。|
+|A-4/A-5|grounded・修正済み|`209ef1f`|反対向きangle bisectorと不正underlay writerを拒否する。|
+|A-6|grounded・修正済み|`372a38a`|180度終端の分岐を固定したが、一般正厚連続経路の完成を意味しない。|
+|A-7/A-8/A-9|grounded・修正済み|`3911bf2`|専用transaction routing、技法切替時の旧確認破棄、schedule無し操作の無効化を固定した。|
+|A-10/A-11|grounded・修正済み|`4c28d50`, `d65de35`, `5ee7774`|declarative step編集を遮断し、指摘されたlock保持panicをfallible errorへ変更した。|
+|B-1/B-2/B-3/B-4/B-9|groundedな文書不整合。正本の意味と履歴を分離済み|`13b1772`, `09c2e52`|全体完成度79.3%は利用者指示とCI gateにより維持する。領域別概算、MUST行数、全体加重完成度は異なる指標であり同率として扱わない。|
+|B-5/B-6/B-7/B-8|grounded・修正済み|`657f902`, `c1e342d`, `ecc1dd3`, `4c28d50`, `77e8f1d`, `9d20cde`, `ed0ace0`|技法identityは表示名でなく明示kind/assignmentへ束縛した。block graphはtreeを要求するが、一般multi-block production authorityは残る。|
+|C-1/C-3/C-4/C-7|grounded・修正済み|`4314420`, `b7a8a53`, `4c28d50`|距離+bias snap、分数grid、file-operation gate、visual構造検証とanimation export gateを固定した。|
+|C-2|一部grounded・妥当範囲を修正済み|`322e5a7`|新規edgeは既存孤立頂点を原子的に経由する。用紙境界は専用boundary不変条件のため一般crease交差正規化から除外したまま。|
+|C-5/C-6|grounded・修正済み|`6c3f972`, `c1e342d`, `ecc1dd3`|production技法文は日英併記し、block authorityは保存target angle bitsを再照合する。一般multi-block mutationは認可しない。|
+|F-D/F-E/F-A|新規利便性提案・実装済み|`6deff12`, `02b700f`, `11f1fcd`|証拠を剥離したstep複製、先頭・末尾移動とDnD、2頂点距離・2辺角度計測を接続した。|
+|F-1/F-2/F-3|新規作図提案・実装済み|`44d199f`, `77e8f1d`, `9d20cde`, `ed0ace0`, `b7a8a53`|ray-to-first-target、円交点snap、分数/N分割gridを原子的編集経路へ接続した。|
+|F-6/F-10/F-11|新規UX提案・実装済み|`57ee8e5`, `818d9f6`, `70c4c7f`, `7a5cc1b`, `f563fd1`|pose-bound camera取得、安全確認を保つ技法palette、3D距離・面法線角計測を接続した。|
+|F-4/F-9|新規UX提案・実装済み|`c084313`, `30517c3`, `05a4522`, `47bb40a`, `6938122`|線形・放射配列をpreview/confirmと原子的履歴へ、隣接step ghostを読み取り専用表示へ接続した。|
+|EDT-009一般MUS|groundedな残件|`a626dae`, `3b3a916`, `fb0fd23`ほか限定矛盾証拠|soundな限定直接矛盾だけを返し、一般MUSは未実装。`NonConvergent`やrank不足をunsat oracleとして扱わない。|
+|交差一括修復|新規仕様・未実装|既存の個別`ConnectEdgeIntersection`/`ConnectIntersectionCluster`のみ|複数clusterのID予約、順序独立性、constraint・layer lock、単一原子履歴を備えたbulk commandは残る。|
+
+SIM-010の後続診断である`c258daa`（全face pairの連続被覆gap registry）、`faad237`（共有hinge連続回廊の未証明入力report）、`f99f4d0`（block集合のlive graph union report）は、いずれもcontinuous motionまたはproject mutationを認可しない。`469cbf9`の静的sample列と同様、未証明範囲を可視化し入力を厳密に束縛するための証拠であり、sample間のopen interval、一般共有hinge corridor、一般multi-block composition、一般layer transport、SIM-010全体の完成根拠には用いない。
 - Windows desktop SIM-010 positive-thickness 4-hinge Tree永続化回帰: 1/1（615件filter）。既存の狭い証明済みrouteの受入強化であり、部分実装を維持する。
 - Windows desktop SIM-010 positive-thickness 5-hinge Tree永続化回帰: 1/1（615件filter）、workspace fmt: 成功。同じく部分実装を維持する。
 - Windows desktop SIM-010 positive-thickness 6-hinge Tree永続化回帰: 1/1（615件filter）、WSL Clippy `-D warnings`・workspace fmt: 成功。同じく部分実装を維持する。

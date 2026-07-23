@@ -382,6 +382,10 @@ pub enum DirectConstraintConflictKindV1 {
         first_edge: EdgeId,
         second_edge: EdgeId,
     },
+    PerpendicularOrientationsWithFixedNonRightAngle {
+        horizontal_edge: EdgeId,
+        vertical_edge: EdgeId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1964,6 +1968,44 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                 [angle.id, *first_id, *second_id],
             );
         }
+
+        // The solver measures FixedAngle as abs(cross).atan2(dot), so an
+        // exactly horizontal/vertical pair is 90 degrees while both edges
+        // are non-degenerate. If either edge collapses, atan2(0, 0) is zero.
+        // Consequently every admitted angle other than 0 or 90 is impossible
+        // even though edge collapse itself is not forbidden here.
+        let angle = angles.iter().find(|assignment| {
+            assignment.value.to_bits() != 0.0_f64.to_bits()
+                && assignment.value.to_bits() != 90.0_f64.to_bits()
+        });
+        let perpendicular_orientation = horizontal
+            .get(&pair.first)
+            .zip(vertical.get(&pair.second))
+            .map(|(horizontal, vertical)| (horizontal, vertical, false))
+            .or_else(|| {
+                horizontal
+                    .get(&pair.second)
+                    .zip(vertical.get(&pair.first))
+                    .map(|(horizontal, vertical)| (horizontal, vertical, true))
+            });
+        if let (Some(angle), Some((horizontal, vertical, reversed))) =
+            (angle, perpendicular_orientation)
+            && let (Some(horizontal_id), Some(vertical_id)) = (horizontal.first(), vertical.first())
+        {
+            let (horizontal_edge, vertical_edge) = if reversed {
+                (edge_ids[&pair.second], edge_ids[&pair.first])
+            } else {
+                (edge_ids[&pair.first], edge_ids[&pair.second])
+            };
+            push_conflict(
+                &mut conflicts,
+                DirectConstraintConflictKindV1::PerpendicularOrientationsWithFixedNonRightAngle {
+                    horizontal_edge,
+                    vertical_edge,
+                },
+                [angle.id, *horizontal_id, *vertical_id],
+            );
+        }
     }
 
     if conflicts.is_empty() {
@@ -3231,6 +3273,15 @@ fn conflict_sort_key(
             15,
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
+            zero,
+        ),
+        DirectConstraintConflictKindV1::PerpendicularOrientationsWithFixedNonRightAngle {
+            horizontal_edge,
+            vertical_edge,
+        } => (
+            16,
+            horizontal_edge.canonical_bytes(),
+            vertical_edge.canonical_bytes(),
             zero,
         ),
     }
@@ -6295,6 +6346,86 @@ mod tests {
                         edge: fixture.edges[0],
                     }),
                     record(GeometricConstraintKindV1::Horizontal {
+                        edge: fixture.edges[1],
+                    }),
+                    record(GeometricConstraintKindV1::FixedAngle {
+                        vertex: fixture.vertices[0],
+                        first_edge: fixture.edges[0],
+                        second_edge: fixture.edges[1],
+                        angle_degrees: compatible_angle,
+                    }),
+                ]),
+            )
+            .unwrap();
+            assert!(!matches!(
+                prepared.preflight(),
+                ConstraintPreflightV1::DirectConflict { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn perpendicular_exact_orientations_and_nonright_angle_feed_the_bounded_mus_oracle() {
+        for count in [4, 8, 16] {
+            let fixture = Fixture::new();
+            let mut records = vec![
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[0],
+                }),
+                record(GeometricConstraintKindV1::Vertical {
+                    edge: fixture.edges[1],
+                }),
+                record(GeometricConstraintKindV1::FixedAngle {
+                    vertex: fixture.vertices[0],
+                    first_edge: fixture.edges[1],
+                    second_edge: fixture.edges[0],
+                    angle_degrees: 45.0,
+                }),
+            ];
+            records.extend((3..count).map(|index| {
+                record(GeometricConstraintKindV1::EqualLength {
+                    first_edge: fixture.edges[index % 6],
+                    second_edge: fixture.edges[(index + 1) % 6],
+                })
+            }));
+            let prepared = prepare(&fixture, &document(records)).unwrap();
+            let BoundedDirectMusV1::ProvenUnsatisfiable { constraint_ids, .. } =
+                find_bounded_direct_mus_v1(&prepared)
+            else {
+                panic!("an exact horizontal/vertical pair can only measure zero or 90 degrees")
+            };
+            assert_eq!(constraint_ids.len(), 3);
+            for removed in &constraint_ids {
+                let constraints = prepared
+                    .constraints
+                    .iter()
+                    .filter(|record| constraint_ids.contains(&record.id) && record.id != *removed)
+                    .cloned()
+                    .collect();
+                let subset = GeometricConstraintSetV1 {
+                    source_pattern: &fixture.pattern,
+                    constraints,
+                    max_preflight_checks: prepared.max_preflight_checks,
+                };
+                assert!(!matches!(
+                    subset.preflight(),
+                    ConstraintPreflightV1::DirectConflict { .. }
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn perpendicular_exact_orientations_allow_collapse_zero_and_nonzero_right_angle() {
+        let fixture = Fixture::new();
+        for compatible_angle in [0.0, 90.0] {
+            let prepared = prepare(
+                &fixture,
+                &document([
+                    record(GeometricConstraintKindV1::Horizontal {
+                        edge: fixture.edges[0],
+                    }),
+                    record(GeometricConstraintKindV1::Vertical {
                         edge: fixture.edges[1],
                     }),
                     record(GeometricConstraintKindV1::FixedAngle {

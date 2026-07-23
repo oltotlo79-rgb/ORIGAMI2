@@ -43,10 +43,11 @@ pub use cycle_fold_transaction::{
     apply_ready_cycle_fold_transaction_v1, prepare_cycle_fold_transaction_v1,
 };
 pub use editor::bulk_intersection_plan::{
-    BulkAtomicDeltaPrerequisiteV1, BulkEdgeSubdivisionPlanV1, BulkIntersectionClusterV1,
-    BulkIntersectionGapV1, BulkIntersectionPlanRegistryV1, BulkSubdivisionParameterV1,
-    BulkSubdivisionPlanV1, BulkSubdivisionPointV1, MAX_BULK_INTERSECTION_ITEMS_V1,
-    MAX_BULK_INTERSECTION_PAIR_WORK_V1, MAX_BULK_SUBDIVISION_RECORDS_V1,
+    AtomicBulkIntersectionDeltaV1, BulkAtomicDeltaPrerequisiteV1, BulkEdgeSubdivisionPlanV1,
+    BulkIntersectionClusterV1, BulkIntersectionGapV1, BulkIntersectionPlanRegistryV1,
+    BulkSubdivisionParameterV1, BulkSubdivisionPlanV1, BulkSubdivisionPointV1,
+    MAX_BULK_INTERSECTION_ITEMS_V1, MAX_BULK_INTERSECTION_PAIR_WORK_V1,
+    MAX_BULK_SUBDIVISION_RECORDS_V1, build_atomic_bulk_intersection_delta_v1,
     normalize_bulk_intersections_v1, plan_bulk_edge_subdivisions_v1,
     seal_bulk_atomic_delta_prerequisite_v1,
 };

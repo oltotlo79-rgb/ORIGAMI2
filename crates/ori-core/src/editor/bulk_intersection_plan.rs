@@ -130,6 +130,39 @@ pub struct BulkAtomicDeltaPrerequisiteV1 {
     explicit_layer_assignment_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct AtomicBulkIntersectionDeltaV1 {
+    source_pattern: CreasePattern,
+    target_pattern: CreasePattern,
+    source_layers: ProjectLayerDocumentV1,
+    target_layers: ProjectLayerDocumentV1,
+    constraint_affected_edges: Vec<EdgeId>,
+}
+
+impl AtomicBulkIntersectionDeltaV1 {
+    pub const fn authorizes_execution(&self) -> bool {
+        false
+    }
+    pub fn is_for(&self, pattern: &CreasePattern, layers: &ProjectLayerDocumentV1) -> bool {
+        &self.source_pattern == pattern && &self.source_layers == layers
+    }
+    pub fn target_pattern(&self) -> &CreasePattern {
+        &self.target_pattern
+    }
+    pub fn target_layers(&self) -> &ProjectLayerDocumentV1 {
+        &self.target_layers
+    }
+    pub fn inverse_pattern(&self) -> &CreasePattern {
+        &self.source_pattern
+    }
+    pub fn inverse_layers(&self) -> &ProjectLayerDocumentV1 {
+        &self.source_layers
+    }
+    pub fn constraint_affected_edges(&self) -> &[EdgeId] {
+        &self.constraint_affected_edges
+    }
+}
+
 impl BulkAtomicDeltaPrerequisiteV1 {
     pub const fn authorizes_execution(&self) -> bool {
         false
@@ -391,6 +424,157 @@ pub fn seal_bulk_atomic_delta_prerequisite_v1(
         reserved_segments: reserved_segments.to_vec(),
         layer_inheritance_count: required_segments,
         explicit_layer_assignment_count,
+    })
+}
+
+pub fn build_atomic_bulk_intersection_delta_v1(
+    pattern: &CreasePattern,
+    layers: &ProjectLayerDocumentV1,
+    plan: &BulkSubdivisionPlanV1,
+    prerequisite: &BulkAtomicDeltaPrerequisiteV1,
+) -> Option<AtomicBulkIntersectionDeltaV1> {
+    let resealed = seal_bulk_atomic_delta_prerequisite_v1(
+        pattern,
+        layers,
+        plan,
+        prerequisite.reserved_junctions(),
+        prerequisite.reserved_segments(),
+    )?;
+    if !plan.is_for(pattern) || &resealed != prerequisite || prerequisite.authorizes_execution() {
+        return None;
+    }
+    // Endpoint identity coalescing is a distinct topology operation. Emitting
+    // an n+1 replacement here would create a zero-length segment, so this
+    // bounded delta fails closed until that inverse can be represented.
+    if plan
+        .edges()
+        .iter()
+        .flat_map(BulkEdgeSubdivisionPlanV1::points)
+        .any(|point| {
+            point.parameter().numerator() == &BigInt::from(0_u8)
+                || point.parameter().numerator() == point.parameter().denominator()
+        })
+    {
+        return None;
+    }
+    let changed = prerequisite
+        .changed_edges()
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    if changed.len() != prerequisite.changed_edges().len()
+        || changed
+            != plan
+                .edges()
+                .iter()
+                .map(BulkEdgeSubdivisionPlanV1::edge)
+                .collect()
+    {
+        return None;
+    }
+
+    let mut point_bits = plan
+        .edges()
+        .iter()
+        .flat_map(BulkEdgeSubdivisionPlanV1::points)
+        .map(BulkSubdivisionPointV1::point_bits)
+        .collect::<Vec<_>>();
+    point_bits.sort_unstable();
+    point_bits.dedup();
+    let mut junction_ids = prerequisite.reserved_junctions().to_vec();
+    junction_ids.sort_unstable_by_key(VertexId::canonical_bytes);
+    if point_bits.len() != junction_ids.len() {
+        return None;
+    }
+    let junction_by_point = point_bits
+        .into_iter()
+        .zip(junction_ids.iter().copied())
+        .collect::<HashMap<_, _>>();
+
+    let mut segment_ids = prerequisite.reserved_segments().to_vec();
+    segment_ids.sort_unstable_by_key(EdgeId::canonical_bytes);
+    let mut segment_cursor = 0_usize;
+    let edge_by_id = pattern
+        .edges
+        .iter()
+        .map(|edge| (edge.id, edge))
+        .collect::<HashMap<_, _>>();
+    let mut new_edges = Vec::with_capacity(segment_ids.len());
+    let mut inherited = Vec::new();
+    let mut ordered_plans = plan.edges().iter().collect::<Vec<_>>();
+    ordered_plans.sort_unstable_by_key(|edge| edge.edge().canonical_bytes());
+    for edge_plan in ordered_plans {
+        let original = edge_by_id.get(&edge_plan.edge())?;
+        let mut vertices = Vec::with_capacity(edge_plan.points().len() + 2);
+        vertices.push(original.start);
+        for point in edge_plan.points() {
+            vertices.push(*junction_by_point.get(&point.point_bits())?);
+        }
+        vertices.push(original.end);
+        let explicit_layer = layers
+            .edge_assignments
+            .iter()
+            .find(|assignment| assignment.edge == original.id)
+            .map(|a| a.layer);
+        for pair in vertices.windows(2) {
+            let id = *segment_ids.get(segment_cursor)?;
+            segment_cursor += 1;
+            new_edges.push(ori_domain::Edge {
+                id,
+                start: pair[0],
+                end: pair[1],
+                kind: original.kind,
+            });
+            if let Some(layer) = explicit_layer {
+                inherited.push(ori_domain::EdgeLayerAssignmentV1 { edge: id, layer });
+            }
+        }
+    }
+    if segment_cursor != segment_ids.len() {
+        return None;
+    }
+    let mut target_pattern = pattern.clone();
+    target_pattern
+        .edges
+        .retain(|edge| !changed.contains(&edge.id));
+    target_pattern.edges.extend(new_edges);
+    target_pattern
+        .vertices
+        .extend(
+            junction_by_point
+                .into_iter()
+                .map(|(bits, id)| ori_domain::Vertex {
+                    id,
+                    position: Point2 {
+                        x: f64::from_bits(bits[0]),
+                        y: f64::from_bits(bits[1]),
+                    },
+                }),
+        );
+    target_pattern
+        .vertices
+        .sort_unstable_by_key(|vertex| vertex.id.canonical_bytes());
+    target_pattern
+        .edges
+        .sort_unstable_by_key(|edge| edge.id.canonical_bytes());
+    let mut target_layers = layers.clone();
+    target_layers
+        .edge_assignments
+        .retain(|assignment| !changed.contains(&assignment.edge));
+    target_layers.edge_assignments.extend(inherited);
+    target_layers
+        .edge_assignments
+        .sort_unstable_by_key(|assignment| assignment.edge.canonical_bytes());
+    if validate_project_layer_document_against_pattern_v1(&target_layers, &target_pattern).is_err()
+    {
+        return None;
+    }
+    Some(AtomicBulkIntersectionDeltaV1 {
+        source_pattern: pattern.clone(),
+        target_pattern,
+        source_layers: layers.clone(),
+        target_layers,
+        constraint_affected_edges: prerequisite.changed_edges().to_vec(),
     })
 }
 
@@ -699,6 +883,16 @@ mod tests {
             endpoint_plan.points()[0].parameter().numerator(),
             &BigInt::from(0_u8)
         );
+        let layers = ProjectLayerDocumentV1::default();
+        let junctions = [ori_domain::VertexId::new()];
+        let segments = (0..10).map(|_| EdgeId::new()).collect::<Vec<_>>();
+        let prerequisite =
+            seal_bulk_atomic_delta_prerequisite_v1(&pattern, &layers, &plan, &junctions, &segments)
+                .unwrap();
+        assert!(
+            build_atomic_bulk_intersection_delta_v1(&pattern, &layers, &plan, &prerequisite)
+                .is_none()
+        );
     }
 
     #[test]
@@ -819,6 +1013,92 @@ mod tests {
                 &pattern, &layers, &excessive, &junctions, &segments
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn builds_four_eight_sixteen_complete_delta_and_inverse_without_authority() {
+        for count in [4, 8, 16] {
+            let (pattern, carrier) = one_edge_many_points(count, count == 8);
+            let original = pattern.clone();
+            let layers = layers_with_explicit_edge(carrier);
+            let registry = normalize_bulk_intersections_v1(&pattern).unwrap();
+            let plan = plan_bulk_edge_subdivisions_v1(&pattern, &registry).unwrap();
+            let junctions = (0..count)
+                .map(|_| ori_domain::VertexId::new())
+                .collect::<Vec<_>>();
+            let segments = (0..(count * 3 + 1))
+                .map(|_| EdgeId::new())
+                .collect::<Vec<_>>();
+            let prerequisite = seal_bulk_atomic_delta_prerequisite_v1(
+                &pattern, &layers, &plan, &junctions, &segments,
+            )
+            .unwrap();
+            let delta =
+                build_atomic_bulk_intersection_delta_v1(&pattern, &layers, &plan, &prerequisite)
+                    .unwrap();
+            assert_eq!(pattern, original);
+            assert!(delta.is_for(&pattern, &layers));
+            assert!(!delta.authorizes_execution());
+            assert_eq!(delta.inverse_pattern(), &pattern);
+            assert_eq!(delta.inverse_layers(), &layers);
+            assert_eq!(
+                delta.target_pattern().vertices.len(),
+                pattern.vertices.len() + count
+            );
+            assert_eq!(delta.target_pattern().edges.len(), count * 3 + 1);
+            assert_eq!(delta.target_layers().edge_assignments.len(), count + 1);
+            assert_eq!(delta.constraint_affected_edges().len(), count + 1);
+            assert!(delta.constraint_affected_edges().iter().all(|id| {
+                !delta
+                    .target_pattern()
+                    .edges
+                    .iter()
+                    .any(|edge| edge.id == *id)
+            }));
+        }
+    }
+
+    #[test]
+    fn delta_revalidates_source_reservations_and_tamper() {
+        let (pattern, _) = one_edge_many_points(4, false);
+        let layers = ProjectLayerDocumentV1::default();
+        let registry = normalize_bulk_intersections_v1(&pattern).unwrap();
+        let plan = plan_bulk_edge_subdivisions_v1(&pattern, &registry).unwrap();
+        let junctions = (0..4)
+            .map(|_| ori_domain::VertexId::new())
+            .collect::<Vec<_>>();
+        let segments = (0..13).map(|_| EdgeId::new()).collect::<Vec<_>>();
+        let prerequisite =
+            seal_bulk_atomic_delta_prerequisite_v1(&pattern, &layers, &plan, &junctions, &segments)
+                .unwrap();
+        let mut tampered_source = pattern.clone();
+        tampered_source.vertices[0].position.x = -9.0;
+        assert!(
+            build_atomic_bulk_intersection_delta_v1(
+                &tampered_source,
+                &layers,
+                &plan,
+                &prerequisite
+            )
+            .is_none()
+        );
+        let mut tampered_reservation = prerequisite.clone();
+        tampered_reservation.reserved_segments[0] = pattern.edges[0].id;
+        assert!(
+            build_atomic_bulk_intersection_delta_v1(
+                &pattern,
+                &layers,
+                &plan,
+                &tampered_reservation
+            )
+            .is_none()
+        );
+        let mut tampered_changed = prerequisite.clone();
+        tampered_changed.changed_edges.pop();
+        assert!(
+            build_atomic_bulk_intersection_delta_v1(&pattern, &layers, &plan, &tampered_changed)
+                .is_none()
         );
     }
 }

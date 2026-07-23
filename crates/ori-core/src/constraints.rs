@@ -378,6 +378,10 @@ pub enum DirectConstraintConflictKindV1 {
         horizontal_edge: EdgeId,
         vertical_edge: EdgeId,
     },
+    SameOrientationWithFixedNonParallelAngle {
+        first_edge: EdgeId,
+        second_edge: EdgeId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1939,6 +1943,28 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
             );
         }
     }
+    for (pair, angles) in &fixed_angles_by_pair {
+        let angle = angles.iter().find(|assignment| {
+            assignment.value.to_bits() != 0.0_f64.to_bits()
+                && assignment.value.to_bits() != 180.0_f64.to_bits()
+        });
+        let same_orientation = horizontal
+            .get(&pair.first)
+            .zip(horizontal.get(&pair.second))
+            .or_else(|| vertical.get(&pair.first).zip(vertical.get(&pair.second)));
+        if let (Some(angle), Some((first, second))) = (angle, same_orientation)
+            && let (Some(first_id), Some(second_id)) = (first.first(), second.first())
+        {
+            push_conflict(
+                &mut conflicts,
+                DirectConstraintConflictKindV1::SameOrientationWithFixedNonParallelAngle {
+                    first_edge: edge_ids[&pair.first],
+                    second_edge: edge_ids[&pair.second],
+                },
+                [angle.id, *first_id, *second_id],
+            );
+        }
+    }
 
     if conflicts.is_empty() {
         match general_equal_length_graph_conflict_v1(&equal_lengths, &fixed_lengths, &edge_ids) {
@@ -3196,6 +3222,15 @@ fn conflict_sort_key(
             14,
             horizontal_edge.canonical_bytes(),
             vertical_edge.canonical_bytes(),
+            zero,
+        ),
+        DirectConstraintConflictKindV1::SameOrientationWithFixedNonParallelAngle {
+            first_edge,
+            second_edge,
+        } => (
+            15,
+            first_edge.canonical_bytes(),
+            second_edge.canonical_bytes(),
             zero,
         ),
     }
@@ -6155,5 +6190,56 @@ mod tests {
             find_bounded_direct_mus_v1(&prepared),
             BoundedDirectMusV1::Unknown { oracle_calls: 0 }
         );
+    }
+
+    #[test]
+    fn same_exact_orientation_and_nonparallel_angle_feed_the_bounded_mus_oracle() {
+        for count in [4, 8, 16] {
+            let fixture = Fixture::new();
+            let mut records = vec![
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[0],
+                }),
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[1],
+                }),
+                record(GeometricConstraintKindV1::FixedAngle {
+                    vertex: fixture.vertices[0],
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[1],
+                    angle_degrees: 90.0,
+                }),
+            ];
+            records.extend((3..count).map(|index| {
+                record(GeometricConstraintKindV1::EqualLength {
+                    first_edge: fixture.edges[index % 6],
+                    second_edge: fixture.edges[(index + 1) % 6],
+                })
+            }));
+            let prepared = prepare(&fixture, &document(records)).unwrap();
+            let BoundedDirectMusV1::ProvenUnsatisfiable { constraint_ids, .. } =
+                find_bounded_direct_mus_v1(&prepared)
+            else {
+                panic!("same orientation has exact angle zero or pi only")
+            };
+            assert_eq!(constraint_ids.len(), 3);
+            for removed in &constraint_ids {
+                let constraints = prepared
+                    .constraints
+                    .iter()
+                    .filter(|record| constraint_ids.contains(&record.id) && record.id != *removed)
+                    .cloned()
+                    .collect();
+                let subset = GeometricConstraintSetV1 {
+                    source_pattern: &fixture.pattern,
+                    constraints,
+                    max_preflight_checks: prepared.max_preflight_checks,
+                };
+                assert!(!matches!(
+                    subset.preflight(),
+                    ConstraintPreflightV1::DirectConflict { .. }
+                ));
+            }
+        }
     }
 }

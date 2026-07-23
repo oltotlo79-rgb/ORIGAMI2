@@ -578,6 +578,98 @@ pub fn build_atomic_bulk_intersection_delta_v1(
     })
 }
 
+#[cfg(test)]
+#[derive(Clone)]
+struct InternalBulkDeltaCommandV1 {
+    delta: AtomicBulkIntersectionDeltaV1,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct InternalBulkDeltaSessionV1 {
+    pattern: CreasePattern,
+    layers: ProjectLayerDocumentV1,
+    constraint_edges: Vec<EdgeId>,
+    undo: Vec<InternalBulkDeltaCommandV1>,
+    redo: Vec<InternalBulkDeltaCommandV1>,
+}
+
+#[cfg(test)]
+impl InternalBulkDeltaSessionV1 {
+    fn apply(
+        &mut self,
+        plan: &BulkSubdivisionPlanV1,
+        prerequisite: &BulkAtomicDeltaPrerequisiteV1,
+        command: InternalBulkDeltaCommandV1,
+    ) -> bool {
+        let Some(rebuilt) = build_atomic_bulk_intersection_delta_v1(
+            &self.pattern,
+            &self.layers,
+            plan,
+            prerequisite,
+        ) else {
+            return false;
+        };
+        if rebuilt != command.delta
+            || command
+                .delta
+                .constraint_affected_edges()
+                .iter()
+                .any(|edge| self.constraint_edges.contains(edge))
+            || command
+                .delta
+                .constraint_affected_edges()
+                .iter()
+                .any(|edge| {
+                    let layer = self.layers.layer_for_edge(*edge);
+                    self.layers
+                        .layers
+                        .iter()
+                        .any(|entry| entry.id == layer && entry.locked)
+                })
+        {
+            return false;
+        }
+        self.pattern = command.delta.target_pattern.clone();
+        self.layers = command.delta.target_layers.clone();
+        self.undo.push(command);
+        self.redo.clear();
+        true
+    }
+
+    fn undo(&mut self) -> bool {
+        let Some(command) = self.undo.pop() else {
+            return false;
+        };
+        if self.pattern != command.delta.target_pattern
+            || self.layers != command.delta.target_layers
+        {
+            self.undo.push(command);
+            return false;
+        }
+        self.pattern = command.delta.source_pattern.clone();
+        self.layers = command.delta.source_layers.clone();
+        self.redo.push(command);
+        true
+    }
+
+    fn redo(&mut self) -> bool {
+        let Some(command) = self.redo.pop() else {
+            return false;
+        };
+        if self.pattern != command.delta.source_pattern
+            || self.layers != command.delta.source_layers
+        {
+            self.redo.push(command);
+            return false;
+        }
+        self.pattern = command.delta.target_pattern.clone();
+        self.layers = command.delta.target_layers.clone();
+        self.undo.push(command);
+        true
+    }
+}
+
 impl BulkIntersectionPlanRegistryV1 {
     pub const fn authorizes_execution(&self) -> bool {
         false
@@ -1100,5 +1192,91 @@ mod tests {
             build_atomic_bulk_intersection_delta_v1(&pattern, &layers, &plan, &tampered_changed)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn internal_command_is_atomic_and_undo_redo_exact_at_four_eight_sixteen() {
+        for count in [4, 8, 16] {
+            let (pattern, carrier) = one_edge_many_points(count, false);
+            let layers = layers_with_explicit_edge(carrier);
+            let plan = plan_bulk_edge_subdivisions_v1(
+                &pattern,
+                &normalize_bulk_intersections_v1(&pattern).unwrap(),
+            )
+            .unwrap();
+            let junctions = (0..count)
+                .map(|_| ori_domain::VertexId::new())
+                .collect::<Vec<_>>();
+            let segments = (0..(count * 3 + 1))
+                .map(|_| EdgeId::new())
+                .collect::<Vec<_>>();
+            let prerequisite = seal_bulk_atomic_delta_prerequisite_v1(
+                &pattern, &layers, &plan, &junctions, &segments,
+            )
+            .unwrap();
+            let delta =
+                build_atomic_bulk_intersection_delta_v1(&pattern, &layers, &plan, &prerequisite)
+                    .unwrap();
+            let target = (delta.target_pattern.clone(), delta.target_layers.clone());
+            let mut session = InternalBulkDeltaSessionV1 {
+                pattern: pattern.clone(),
+                layers: layers.clone(),
+                constraint_edges: vec![],
+                undo: vec![],
+                redo: vec![],
+            };
+            assert!(session.apply(
+                &plan,
+                &prerequisite,
+                InternalBulkDeltaCommandV1 {
+                    delta: delta.clone()
+                }
+            ));
+            assert_eq!((&session.pattern, &session.layers), (&target.0, &target.1));
+            assert!(session.undo());
+            assert_eq!((&session.pattern, &session.layers), (&pattern, &layers));
+            assert!(session.redo());
+            assert_eq!((&session.pattern, &session.layers), (&target.0, &target.1));
+
+            let mut blocked = InternalBulkDeltaSessionV1 {
+                pattern: pattern.clone(),
+                layers: layers.clone(),
+                constraint_edges: vec![carrier],
+                undo: vec![],
+                redo: vec![],
+            };
+            assert!(!blocked.apply(
+                &plan,
+                &prerequisite,
+                InternalBulkDeltaCommandV1 {
+                    delta: delta.clone()
+                }
+            ));
+            assert_eq!((&blocked.pattern, &blocked.layers), (&pattern, &layers));
+            let mut tampered = delta.clone();
+            tampered.target_pattern.edges.pop();
+            blocked.constraint_edges.clear();
+            assert!(!blocked.apply(
+                &plan,
+                &prerequisite,
+                InternalBulkDeltaCommandV1 { delta: tampered }
+            ));
+            assert_eq!((&blocked.pattern, &blocked.layers), (&pattern, &layers));
+
+            let mut locked_layers = layers.clone();
+            locked_layers.layers[1].locked = true;
+            let mut locked = InternalBulkDeltaSessionV1 {
+                pattern: pattern.clone(),
+                layers: locked_layers.clone(),
+                constraint_edges: vec![],
+                undo: vec![],
+                redo: vec![],
+            };
+            assert!(!locked.apply(&plan, &prerequisite, InternalBulkDeltaCommandV1 { delta }));
+            assert_eq!(
+                (&locked.pattern, &locked.layers),
+                (&pattern, &locked_layers)
+            );
+        }
     }
 }

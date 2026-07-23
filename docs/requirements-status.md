@@ -20,6 +20,8 @@
 
 2026-07-23監査訂正: `7c7134d`以前の「soundな13種」という記録には、固定長なしの同一辺Horizontal+Verticalを矛盾とするzero-length偽陽性が含まれていた。現在は正のFixedLengthを含む3-ID原因だけへ限定し、固定長なしは`Unknown`へ訂正した。過去時点のsound主張は過大であり、本訂正後の限定境界だけを正本とする。
 
+2026-07-23 SIM-010限定証拠: `9f6053f`は、正の紙厚、全三角形の`MaterialTree`、有限かつ90度未満の全hinge角、単一の静的exact poseに限り、全face pairのclosed-prism分類とcanonical shared-hinge単位のwhole-tree coverage完全性を固定した。4/8/16-face Treeと資源preflightを検証済みである。一方、連続経路、layer transport、current mutation、非三角形・一般姿勢は未証明であり、SIM-010は部分実装、全体完成度は79.32%（表示79.3%）を維持する。
+
 2026-07-19追記: SIM-010行で未実装としていた`deep-chain stress`のうち、非平行
 H8/H16のwatertight成功、H64の構造確認後の資源preflight即時拒否、subnormalの
 GCD fallback exact/one-short、400 mm V、巨大平行移動、共有頂点fan、

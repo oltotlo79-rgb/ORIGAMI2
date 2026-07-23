@@ -25,6 +25,7 @@
 | **合計** | **100%** | — | **79.32%** | — |
 
 ## 完了
+- `9f6053f`で、正の紙厚・全三角形`MaterialTree`・全hinge角が有限かつ90度未満という限定入力について、単一の静的exact poseにおける全unordered face pairのclosed-prism分類と、canonical shared-hingeごとのwhole-tree coverage vectorの完全一致を証明した。4/8/16-face Treeの成功と資源上限超過のpreflight拒否を固定した。連続経路、layer transport、current mutation、非三角形・一般姿勢は未証明であり、SIM-010は部分実装、全体完成度は79.32%（表示79.3%）を維持する
 
 - EDT-009の既存`horizontal_and_vertical` 2制約原因を再監査し、水平残差`dy=0`と垂直残差`dx=0`は同一辺を長さ0へ潰す解を共有するため、直接矛盾という従来判定が偽陽性だったことを確認した。実residual回帰でzero-length escapeを固定し、同じ辺へ正の固定長がある3制約の場合だけ直接矛盾とし、それ以外は判定保留へ閉じるよう修正した。旧2-ID DTOは拒否、新3-ID DTOだけを受理し、削除最小原因も再検証した。WSL focused 2件、削除最小1件、Clippy all-targets、Node 18件、DOM 12件、production buildが成功した。`7c7134d`後から本修正`6b00ed0`前までの文書にある「13種のsoundな矛盾」はこの1種について過大な記載であり、本修正後に初めて13種すべてがsoundとなる。EDT-009は一般MUS未実装の部分実装、全体完成率は79.32%（表示79.3%）を維持する
 - Windowsの単一`.ori2`既存保存先でも、認証済み`Prepared` journalの永続化直後と、atomic replacement完了後のnew-published状態（journal自体は`Prepared`のまま）の2境界をtest限定で子process停止へ接続した。別の新規processによる通常read/recovery、非空Undo/Redo各1件・履歴上限7・project IDの一致、親processの二度目のstrict read、private残骸0をWindows native focused 2 caseで確認し、Windows native desktop lib Clippy `-D warnings`、format、diff-checkも成功した。直前のUnix 3-phase証拠はそのまま維持する。これはWindows上のprocess中断自動回帰であり、正式bundleのnative file dialog、実ACL、同期software・virus対策softwareによるfile lockの実機受入を代替しないため、「プロジェクト・保存・履歴」は78%、全体完成率は79.32%（表示79.3%）を維持する

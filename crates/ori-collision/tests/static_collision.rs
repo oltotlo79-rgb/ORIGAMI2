@@ -1100,6 +1100,8 @@ fn positive_thickness_exact_prism_safe_proof_admits_shared_hinge_with_finite_bou
         assert_eq!(proof.analyzed_unordered_face_pairs(), 1);
         assert_eq!(proof.expected_triangle_pairs(), 1);
         assert_eq!(proof.analyzed_triangle_pairs(), 1);
+        assert_eq!(proof.expected_shared_hinges(), 1);
+        assert_eq!(proof.analyzed_shared_hinges(), 1);
     }
     let (model, hinge) = triangular_shared_hinge_400mm_fixture(EdgeKind::Mountain, false, false);
     let root = model.face_ids()[0];
@@ -1169,6 +1171,8 @@ fn three_face_positive_thickness_proof_admits_the_finite_vertex_corridor() {
         assert!(proof.is_for_geometry(&fixture.model, &pose, thickness));
         assert_eq!(proof.expected_unordered_face_pairs(), 3);
         assert_eq!(proof.analyzed_unordered_face_pairs(), 3);
+        assert_eq!(proof.expected_shared_hinges(), 2);
+        assert_eq!(proof.analyzed_shared_hinges(), 2);
         if thickness == 0.1 {
             assert!(matches!(
                 prove_static_collision_geometry(
@@ -1219,6 +1223,8 @@ fn four_to_sixteen_face_positive_thickness_fans_scan_every_pair() {
         .expect("bounded fan proof");
         assert_eq!(proof.expected_unordered_face_pairs(), expected_pairs);
         assert_eq!(proof.analyzed_unordered_face_pairs(), expected_pairs);
+        assert_eq!(proof.expected_shared_hinges(), face_count - 1);
+        assert_eq!(proof.analyzed_shared_hinges(), face_count - 1);
         assert!(proof.is_for_geometry(&fixture.model, &pose, thickness));
         if face_count == 16 {
             assert!(matches!(
@@ -1235,6 +1241,36 @@ fn four_to_sixteen_face_positive_thickness_fans_scan_every_pair() {
             ));
         }
     }
+}
+
+#[test]
+fn shared_hinge_registry_one_over_limit_fails_before_pair_classification() {
+    let fixture = triangle_fan_fixture(16, false);
+    let angles = CanonicalHingeAngles::new(
+        fixture
+            .hinges
+            .iter()
+            .copied()
+            .map(|hinge| HingeAngle::new(hinge, 0.0).unwrap())
+            .collect(),
+    )
+    .unwrap();
+    let pose = fixture
+        .model
+        .solve(Some(fixture.model.face_ids()[0]), &angles)
+        .unwrap();
+    assert!(matches!(
+        prove_static_collision_geometry(
+            &fixture.model,
+            &pose,
+            0.1,
+            StaticCollisionLimits {
+                max_shared_hinge_solid_diagnostics: 14,
+                ..StaticCollisionLimits::default()
+            },
+        ),
+        Err(StaticCollisionError::ResourceLimitExceeded)
+    ));
 }
 
 #[test]

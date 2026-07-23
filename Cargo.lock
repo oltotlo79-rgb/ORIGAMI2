@@ -2405,6 +2405,7 @@ name = "ori-core"
 version = "0.1.0"
 dependencies = [
  "num-bigint",
+ "num-rational",
  "ori-domain",
  "ori-foldability",
  "ori-geometry",
@@ -2469,6 +2470,8 @@ name = "ori-geometry"
 version = "0.1.0"
 dependencies = [
  "num-bigint",
+ "num-rational",
+ "num-traits",
  "ori-domain",
 ]
 

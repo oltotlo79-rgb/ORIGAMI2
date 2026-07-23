@@ -2061,8 +2061,9 @@ pub fn revalidate_current_non_flat_layer_order_v1(
             if normal_cross > 1.0e-9 {
                 continue;
             }
-            let overlap = projected_convex_overlap(&planes[first], &planes[second])?;
-            if overlap.len() < 3 || polygon_double_area(&overlap).abs() <= 1.0e-12 {
+            let (overlap, exact_overlap, positive_area) =
+                projected_convex_overlap(&planes[first], &planes[second])?;
+            if overlap.len() < 3 || !positive_area {
                 continue;
             }
             let separation = point_dot(
@@ -2090,7 +2091,7 @@ pub fn revalidate_current_non_flat_layer_order_v1(
                 )?
             };
             overlap_cells.push(StackedFoldNonFlatOverlapCellV1 {
-                exact_boundary: overlap.iter().copied().map(exact_point_from_f64).collect(),
+                exact_boundary: exact_overlap,
                 boundary: overlap,
                 lower_face,
                 upper_face,
@@ -2219,8 +2220,9 @@ pub fn revalidate_current_graph_non_flat_layer_order_v1(
             if cross > 1.0e-9 {
                 continue;
             }
-            let overlap = projected_convex_overlap(&planes[first], &planes[second])?;
-            if overlap.len() < 3 || polygon_double_area(&overlap).abs() <= 1.0e-12 {
+            let (overlap, exact_overlap, positive_area) =
+                projected_convex_overlap(&planes[first], &planes[second])?;
+            if overlap.len() < 3 || !positive_area {
                 continue;
             }
             let separation = point_dot(
@@ -2248,7 +2250,7 @@ pub fn revalidate_current_graph_non_flat_layer_order_v1(
                 )?
             };
             overlap_cells.push(StackedFoldNonFlatOverlapCellV1 {
-                exact_boundary: overlap.iter().copied().map(exact_point_from_f64).collect(),
+                exact_boundary: exact_overlap,
                 boundary: overlap,
                 lower_face,
                 upper_face,
@@ -2501,8 +2503,9 @@ fn prepare_stacked_fold_non_flat_layer_order_from_source_v1(
             if normal_cross > 1.0e-9 {
                 continue;
             }
-            let overlap = projected_convex_overlap(&planes[first], &planes[second])?;
-            if overlap.len() < 3 || polygon_double_area(&overlap).abs() <= 1.0e-12 {
+            let (overlap, exact_overlap, positive_area) =
+                projected_convex_overlap(&planes[first], &planes[second])?;
+            if overlap.len() < 3 || !positive_area {
                 continue;
             }
             let separation = point_dot(
@@ -2530,7 +2533,7 @@ fn prepare_stacked_fold_non_flat_layer_order_from_source_v1(
                 )?
             };
             overlap_cells.push(StackedFoldNonFlatOverlapCellV1 {
-                exact_boundary: overlap.iter().copied().map(exact_point_from_f64).collect(),
+                exact_boundary: exact_overlap,
                 boundary: overlap,
                 lower_face,
                 upper_face,
@@ -2690,8 +2693,9 @@ fn prepare_stacked_fold_graph_non_flat_layer_order_from_source_v1(
             if normal_cross > 1.0e-9 {
                 continue;
             }
-            let overlap = projected_convex_overlap(&planes[first], &planes[second])?;
-            if overlap.len() < 3 || polygon_double_area(&overlap).abs() <= 1.0e-12 {
+            let (overlap, exact_overlap, positive_area) =
+                projected_convex_overlap(&planes[first], &planes[second])?;
+            if overlap.len() < 3 || !positive_area {
                 continue;
             }
             let separation = point_dot(
@@ -2719,7 +2723,7 @@ fn prepare_stacked_fold_graph_non_flat_layer_order_from_source_v1(
                 )?
             };
             overlap_cells.push(StackedFoldNonFlatOverlapCellV1 {
-                exact_boundary: overlap.iter().copied().map(exact_point_from_f64).collect(),
+                exact_boundary: exact_overlap,
                 boundary: overlap,
                 lower_face,
                 upper_face,
@@ -2850,7 +2854,7 @@ fn inherited_source_order(
 fn projected_convex_overlap(
     first: &(Point3, Point3, Vec<Point3>),
     second: &(Point3, Point3, Vec<Point3>),
-) -> Result<Vec<Point2>, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+) -> Result<(Vec<Point2>, Vec<ExactPointValue>, bool), PrepareStackedFoldNonFlatLayerOrderErrorV1> {
     let normal = point_values(first.1);
     let drop = if normal[0].abs() >= normal[1].abs() && normal[0].abs() >= normal[2].abs() {
         0
@@ -2878,78 +2882,56 @@ fn projected_convex_overlap(
     };
     let subject = project(&first.2);
     let clip = project(&second.2);
-    if !convex_ccw(&subject) || !convex_ccw(&clip) {
-        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap);
-    }
-    let mut output = subject;
-    for index in 0..clip.len() {
-        let clip_start = clip[index];
-        let clip_end = clip[(index + 1) % clip.len()];
-        let input = std::mem::take(&mut output);
-        if input.is_empty() {
-            break;
+    let exact = ori_geometry::exact_convex_polygon_overlap_v1(
+        &subject,
+        &clip,
+        ori_geometry::ExactConvexOverlapLimitsV1::default(),
+    )
+    .map_err(|error| match error {
+        ori_geometry::ExactConvexOverlapErrorV1::InvalidInput => {
+            PrepareStackedFoldNonFlatLayerOrderErrorV1::UnrepresentableFacePlane
         }
-        for edge in 0..input.len() {
-            let previous = input[(edge + input.len() - 1) % input.len()];
-            let current = input[edge];
-            let previous_side = planar_side(clip_start, clip_end, previous);
-            let current_side = planar_side(clip_start, clip_end, current);
-            let previous_inside =
-                exact_orientation(clip_start, clip_end, previous)? != Orientation::Clockwise;
-            let current_inside =
-                exact_orientation(clip_start, clip_end, current)? != Orientation::Clockwise;
-            if previous_inside != current_inside {
-                let denominator = previous_side - current_side;
-                if denominator.abs() <= f64::EPSILON {
-                    return Err(
-                        PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap,
-                    );
-                }
-                let ratio = previous_side / denominator;
-                // Version 1 retains only bit-exact endpoint intersections.
-                // A newly rounded rational vertex would not be auditable.
-                if ratio.to_bits() == 0.0_f64.to_bits() {
-                    output.push(previous);
-                } else if ratio.to_bits() == 1.0_f64.to_bits() {
-                    output.push(current);
-                } else if ratio.is_finite()
-                    && (ratio * denominator).to_bits() == previous_side.to_bits()
-                {
-                    let x_delta = current.x - previous.x;
-                    let y_delta = current.y - previous.y;
-                    let x_step = x_delta * ratio;
-                    let y_step = y_delta * ratio;
-                    let point = Point2::new(previous.x + x_step, previous.y + y_step);
-                    if point.x - previous.x != x_step || point.y - previous.y != y_step {
-                        return Err(
-                            PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap,
-                        );
-                    }
-                    output.push(point);
-                } else {
-                    return Err(
-                        PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap,
-                    );
-                }
-            }
-            if current_inside {
-                output.push(current);
-            }
+        ori_geometry::ExactConvexOverlapErrorV1::ResourceLimit => {
+            PrepareStackedFoldNonFlatLayerOrderErrorV1::ResourceLimit
         }
-    }
-    if output
+        ori_geometry::ExactConvexOverlapErrorV1::Unrepresentable => {
+            PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap
+        }
+    })?;
+    let output = exact
+        .points()
         .iter()
-        .any(|point| !point.x.is_finite() || !point.y.is_finite())
-    {
-        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap);
-    }
-    Ok(output)
+        .map(|point| {
+            point
+                .rounded()
+                .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let exact_output = exact
+        .points()
+        .iter()
+        .map(exact_point_from_rational)
+        .collect();
+    Ok((output, exact_output, exact.has_positive_area()))
 }
 
-fn exact_point_from_f64(point: Point2) -> ExactPointValue {
+fn exact_point_from_rational(point: &ori_geometry::ExactPoint2V1) -> ExactPointValue {
+    let value = |rational: &num_rational::BigRational| {
+        let (sign, numerator_magnitude_be) = rational.numer().to_bytes_be();
+        let (_, denominator_be) = rational.denom().to_bytes_be();
+        ExactRationalValue {
+            sign: match sign {
+                Sign::Minus => ExactSign::Negative,
+                Sign::NoSign => ExactSign::Zero,
+                Sign::Plus => ExactSign::Positive,
+            },
+            numerator_magnitude_be,
+            denominator_be,
+        }
+    };
     ExactPointValue {
-        x: exact_rational_from_f64(point.x),
-        y: exact_rational_from_f64(point.y),
+        x: value(point.x()),
+        y: value(point.y()),
     }
 }
 
@@ -3037,21 +3019,6 @@ fn exact_rational_from_f64(value: f64) -> ExactRationalValue {
         numerator_magnitude_be,
         denominator_be,
     }
-}
-
-fn convex_ccw(polygon: &[Point2]) -> bool {
-    polygon.len() >= 3
-        && (0..polygon.len()).all(|index| {
-            planar_side(
-                polygon[index],
-                polygon[(index + 1) % polygon.len()],
-                polygon[(index + 2) % polygon.len()],
-            ) >= -1.0e-12
-        })
-}
-
-fn planar_side(start: Point2, end: Point2, point: Point2) -> f64 {
-    (end.x - start.x) * (point.y - start.y) - (end.y - start.y) * (point.x - start.x)
 }
 
 fn polygon_double_area(polygon: &[Point2]) -> f64 {
@@ -4890,12 +4857,14 @@ mod tests {
                 point(1.0, 3.0, -3.0),
             ],
         );
-        let overlap = projected_convex_overlap(&first, &offset).expect("bounded overlap");
+        let (overlap, exact_overlap, positive_area) =
+            projected_convex_overlap(&first, &offset).expect("bounded overlap");
         assert_eq!(overlap.len(), 4);
+        assert_eq!(exact_overlap.len(), overlap.len());
+        assert!(positive_area);
         assert!((polygon_double_area(&overlap).abs() - 2.0).abs() <= 1.0e-12);
         assert_eq!(point_dot(point_delta(offset.0, first.0), first.1), 3.0);
-        for point in overlap {
-            let exact = exact_point_from_f64(point);
+        for (point, exact) in overlap.into_iter().zip(exact_overlap) {
             assert_eq!(exact.x.to_f64().unwrap().to_bits(), point.x.to_bits());
             assert_eq!(exact.y.to_f64().unwrap().to_bits(), point.y.to_bits());
         }

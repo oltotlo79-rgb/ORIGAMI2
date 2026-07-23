@@ -7,4 +7,6 @@ repository.workspace = true
 
 [dependencies]
 num-bigint.workspace = true
+num-rational = "=0.4.2"
+num-traits = "0.2.19"
 ori-domain = { path = "../ori-domain" }

@@ -5,7 +5,13 @@ use std::fmt;
 
 use ori_domain::Point2;
 
+mod exact_convex_overlap;
 mod validation;
+
+pub use exact_convex_overlap::{
+    ExactConvexOverlapErrorV1, ExactConvexOverlapLimitsV1, ExactConvexOverlapV1, ExactPoint2V1,
+    exact_convex_polygon_overlap_v1,
+};
 
 pub use validation::{
     BoundaryEdgeRef, CreasePatternValidation, EdgeEndpoint, PaperValidation, PaperValidationIssue,

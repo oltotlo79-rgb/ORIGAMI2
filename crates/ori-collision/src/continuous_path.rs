@@ -162,6 +162,7 @@ pub struct DyadicFaceTransformIntervalRegistryV1 {
     max_work_per_leaf: usize,
     leaves: Vec<DyadicFaceTransformIntervalLeafV1>,
 }
+#[derive(Clone, Copy)]
 pub struct DyadicFaceTransformBindingInputV1<'a> {
     pub geometry: &'a MaterialHingeGraphGeometry,
     pub audit: &'a MaterialHingeGraphAudit,
@@ -334,6 +335,133 @@ pub struct DyadicSharedVertexSectorBoundaryDiagnosticV1 {
     max_work_per_point: usize,
     radius_binding: Vec<(ori_domain::VertexId, u64)>,
     leaves: Vec<(u32, u64, Vec<SharedVertexSectorBoundaryV1>)>,
+}
+
+/// One exact convex remainder of a face after clipping away the circular
+/// vertex-relief neighbourhood by a conservative supporting half-plane.
+///
+/// `vertices` contains every polygon corner on both material surfaces after
+/// the dyadic face transform.  It is diagnostic evidence only: the supporting
+/// half-plane contains the whole limited convex wedge, but does not by itself
+/// prove separation from another moving face.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedVertexWedgeCellV1 {
+    pair: [FaceId; 2],
+    vertex: ori_domain::VertexId,
+    face: FaceId,
+    top_ring: Vec<[ori_kinematics::OutwardIntervalV1; 3]>,
+    bottom_ring: Vec<[ori_kinematics::OutwardIntervalV1; 3]>,
+}
+impl SharedVertexWedgeCellV1 {
+    #[must_use]
+    pub const fn pair(&self) -> [FaceId; 2] {
+        self.pair
+    }
+    #[must_use]
+    pub const fn vertex(&self) -> ori_domain::VertexId {
+        self.vertex
+    }
+    #[must_use]
+    pub const fn face(&self) -> FaceId {
+        self.face
+    }
+    #[must_use]
+    pub fn top_ring(&self) -> &[[ori_kinematics::OutwardIntervalV1; 3]] {
+        &self.top_ring
+    }
+    #[must_use]
+    pub fn bottom_ring(&self) -> &[[ori_kinematics::OutwardIntervalV1; 3]] {
+        &self.bottom_ring
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DyadicSharedVertexWedgeDiagnosticV1 {
+    issuer: MaterialHingeGraphGeometry,
+    schedule_hash: [u8; 32],
+    closure_hash: [u8; 32],
+    thickness_bits: u64,
+    max_work_per_cell: usize,
+    radius_binding: Vec<(ori_domain::VertexId, u64)>,
+    sector_content_hash: [u8; 32],
+    leaves: Vec<(u32, u64, Vec<SharedVertexWedgeCellV1>)>,
+    content_hash: [u8; 32],
+}
+impl DyadicSharedVertexWedgeDiagnosticV1 {
+    #[must_use]
+    pub fn leaves(&self) -> &[(u32, u64, Vec<SharedVertexWedgeCellV1>)] {
+        &self.leaves
+    }
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn is_for(
+        &self,
+        sectors: &DyadicSharedVertexSectorBoundaryDiagnosticV1,
+        transforms: &DyadicFaceTransformIntervalRegistryV1,
+        gaps: &SharedVertexContinuousCorridorGapReportV1,
+        prerequisite: &crate::NativeVertexReliefPrerequisiteV1,
+        records: &[crate::VertexReliefPolicyRecordV1],
+        input: DyadicFaceTransformBindingInputV1<'_>,
+        max_work_per_cell: usize,
+    ) -> bool {
+        self.issuer.same_instance(input.geometry)
+            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v1()
+            && self.closure_hash == input.closure.partition_binding_fingerprint_v1()
+            && self.thickness_bits == input.thickness_mm.to_bits()
+            && self.max_work_per_cell == max_work_per_cell
+            && self.radius_binding
+                == records
+                    .iter()
+                    .map(|r| (r.vertex, r.cutout_radius_mm.to_bits()))
+                    .collect::<Vec<_>>()
+            && sector_boundary_content_hash_v1(sectors).is_ok_and(|h| h == self.sector_content_hash)
+            && sectors.is_for(
+                transforms,
+                gaps,
+                prerequisite,
+                records,
+                input,
+                sectors.max_work_per_point,
+            )
+            && transforms.is_for(input)
+            && wedge_content_hash_v1(
+                &self.leaves,
+                self.max_work_per_cell,
+                &self.radius_binding,
+                self.sector_content_hash,
+            )
+            .is_ok_and(|h| h == self.content_hash)
+            && self.leaves.len() == transforms.leaves.len()
+            && self.leaves.len() == sectors.leaves.len()
+            && self
+                .leaves
+                .iter()
+                .zip(&transforms.leaves)
+                .zip(&sectors.leaves)
+                .all(
+                    |(((d, i, cells), leaf), (sector_d, sector_i, sector_entries))| {
+                        *d == leaf.depth
+                            && *i == leaf.index
+                            && *d == *sector_d
+                            && *i == *sector_i
+                            && cells.len() == sector_entries.len()
+                            && cells.iter().zip(sector_entries).all(|(cell, sector)| {
+                                (cell.pair, cell.vertex, cell.face)
+                                    == (sector.pair, sector.vertex, sector.face)
+                                    && cell.top_ring.len() >= 3
+                                    && cell.top_ring.len() == cell.bottom_ring.len()
+                            })
+                    },
+                )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1410,6 +1538,558 @@ fn sector_boundary_content_hash_v1(
         }
     }
     Ok(hash.finalize().into())
+}
+
+const MAX_SHARED_VERTEX_WEDGE_VERTICES_V1: usize = 256;
+const MAX_SHARED_VERTEX_WEDGE_INTERSECTIONS_V1: usize = 512;
+const MAX_SHARED_VERTEX_WEDGE_BITS_V1: usize = 8192;
+const MAX_SHARED_VERTEX_WEDGE_WORK_V1: usize = 4_000_000;
+
+#[derive(Clone)]
+struct ExactWedgeCellV1 {
+    pair: [FaceId; 2],
+    vertex: ori_domain::VertexId,
+    face: FaceId,
+    polygon: Vec<[BigRational; 2]>,
+}
+
+/// Constructs a bounded, exact convex half-plane clipping diagnostic for every
+/// limited shared-vertex wedge. No sampled point participates in the result.
+#[allow(clippy::too_many_arguments)]
+pub fn diagnose_dyadic_shared_vertex_wedges_v1(
+    sectors: &DyadicSharedVertexSectorBoundaryDiagnosticV1,
+    transforms: &DyadicFaceTransformIntervalRegistryV1,
+    gaps: &SharedVertexContinuousCorridorGapReportV1,
+    prerequisite: &crate::NativeVertexReliefPrerequisiteV1,
+    records: &[crate::VertexReliefPolicyRecordV1],
+    input: DyadicFaceTransformBindingInputV1<'_>,
+    max_work_per_cell: usize,
+) -> Result<DyadicSharedVertexWedgeDiagnosticV1, DyadicFaceTransformIntervalErrorV1> {
+    if max_work_per_cell == 0
+        || max_work_per_cell > MAX_SHARED_VERTEX_WEDGE_WORK_V1
+        || !sectors.is_for(
+            transforms,
+            gaps,
+            prerequisite,
+            records,
+            input,
+            sectors.max_work_per_point,
+        )
+        || !transforms.is_for(input)
+    {
+        return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+    }
+    let exact =
+        |v: f64| BigRational::from_f64(v).ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+    let mut local = Vec::new();
+    let count = records
+        .iter()
+        .try_fold(0usize, |n, r| n.checked_add(r.incident_faces.len()))
+        .ok_or(DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    local
+        .try_reserve_exact(count)
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    for gap in &gaps.gaps {
+        let record = records
+            .binary_search_by_key(&gap.vertex.canonical_bytes(), |r| {
+                r.vertex.canonical_bytes()
+            })
+            .ok()
+            .map(|i| &records[i])
+            .ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding)?;
+        let origin = input
+            .geometry
+            .vertex_position(gap.vertex)
+            .ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding)?;
+        let o = [exact(origin.x())?, exact(origin.z())?];
+        let radius = exact(record.cutout_radius_mm)?;
+        if radius <= BigRational::from_integer(0.into()) {
+            return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+        }
+        for &face in &record.incident_faces {
+            let boundary = input
+                .geometry
+                .face_boundary_vertices(face)
+                .ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding)?;
+            if boundary.len() < 3 || boundary.len() > MAX_SHARED_VERTEX_WEDGE_VERTICES_V1 {
+                return Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit);
+            }
+            let positions = boundary
+                .iter()
+                .map(|id| {
+                    let p = input
+                        .geometry
+                        .vertex_position(*id)
+                        .ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding)?;
+                    Ok([exact(p.x())?, exact(p.z())?])
+                })
+                .collect::<Result<Vec<_>, DyadicFaceTransformIntervalErrorV1>>()?;
+            let indices = boundary
+                .iter()
+                .enumerate()
+                .filter(|(_, id)| **id == gap.vertex)
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>();
+            if indices.len() != 1 {
+                return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+            }
+            let mut meter = WedgeExactMeterV1::new(max_work_per_cell)?;
+            for p in &positions {
+                meter.charge(WedgeExactMeterV1::bits(&p[0]))?;
+                meter.charge(WedgeExactMeterV1::bits(&p[1]))?;
+            }
+            let pivot = indices[0];
+            let prev = &positions[(pivot + positions.len() - 1) % positions.len()];
+            let next = &positions[(pivot + 1) % positions.len()];
+            let dprev = [meter.sub(&prev[0], &o[0])?, meter.sub(&prev[1], &o[1])?];
+            let dnext = [meter.sub(&next[0], &o[0])?, meter.sub(&next[1], &o[1])?];
+            let p0 = meter.mul(&dprev[0], &dprev[0])?;
+            let p1 = meter.mul(&dprev[1], &dprev[1])?;
+            let q0 = meter.mul(&dnext[0], &dnext[0])?;
+            let q1 = meter.mul(&dnext[1], &dnext[1])?;
+            let lp = meter.add(&p0, &p1)?;
+            let ln = meter.add(&q0, &q1)?;
+            if lp <= BigRational::from_integer(0.into())
+                || ln <= BigRational::from_integer(0.into())
+            {
+                return Err(DyadicFaceTransformIntervalErrorV1::Unproven);
+            }
+            let wedge_sqrt_limits = ori_numeric::ExpressionLimits {
+                max_operations: max_work_per_cell.min(ori_numeric::HARD_MAX_OPERATIONS),
+                max_value_bits: MAX_SHARED_VERTEX_WEDGE_BITS_V1,
+                ..ori_numeric::ExpressionLimits::default()
+            };
+            let (lp_lower, lp_upper) = ori_numeric::rational_sqrt_bounds(&lp, wedge_sqrt_limits)
+                .map_err(|error| match error {
+                    ori_numeric::ExpressionError::ResourceLimit(_) => {
+                        DyadicFaceTransformIntervalErrorV1::ResourceLimit
+                    }
+                    _ => DyadicFaceTransformIntervalErrorV1::Unproven,
+                })?;
+            let (ln_lower, ln_upper) = ori_numeric::rational_sqrt_bounds(&ln, wedge_sqrt_limits)
+                .map_err(|error| match error {
+                    ori_numeric::ExpressionError::ResourceLimit(_) => {
+                        DyadicFaceTransformIntervalErrorV1::ResourceLimit
+                    }
+                    _ => DyadicFaceTransformIntervalErrorV1::Unproven,
+                })?;
+            for bound in [&lp_lower, &lp_upper, &ln_lower, &ln_upper] {
+                meter.charge(WedgeExactMeterV1::bits(bound))?;
+            }
+            if radius >= lp_lower || radius >= ln_lower {
+                return Err(DyadicFaceTransformIntervalErrorV1::Unproven);
+            }
+            let a0 = meter.div(&dprev[0], &lp)?;
+            let b0 = meter.div(&dnext[0], &ln)?;
+            let a1 = meter.div(&dprev[1], &lp)?;
+            let b1 = meter.div(&dnext[1], &ln)?;
+            let n = [meter.add(&a0, &b0)?, meter.add(&a1, &b1)?];
+            let a0 = meter.mul(&n[0], &dprev[0])?;
+            let a1 = meter.mul(&n[1], &dprev[1])?;
+            let b0 = meter.mul(&n[0], &dnext[0])?;
+            let b1 = meter.mul(&n[1], &dnext[1])?;
+            let dotp = meter.add(&a0, &a1)?;
+            let dotn = meter.add(&b0, &b1)?;
+            if dotp <= BigRational::from_integer(0.into())
+                || dotn <= BigRational::from_integer(0.into())
+            {
+                return Err(DyadicFaceTransformIntervalErrorV1::Unproven);
+            }
+            // Dividing by an upper sqrt bound is directed downward.
+            let rp = meter.mul(&radius, &dotp)?;
+            let rn = meter.mul(&radius, &dotn)?;
+            let mp = meter.div(&rp, &lp_upper)?;
+            let mn = meter.div(&rn, &ln_upper)?;
+            let m = std::cmp::min(mp, mn);
+            let mut orientation = None;
+            for i in 0..positions.len() {
+                let a = &positions[i];
+                let b = &positions[(i + 1) % positions.len()];
+                let c = &positions[(i + 2) % positions.len()];
+                let x0 = meter.sub(&b[0], &a[0])?;
+                let y1 = meter.sub(&c[1], &b[1])?;
+                let y0 = meter.sub(&b[1], &a[1])?;
+                let x1 = meter.sub(&c[0], &b[0])?;
+                let left = meter.mul(&x0, &y1)?;
+                let right = meter.mul(&y0, &x1)?;
+                let cross = meter.sub(&left, &right)?;
+                if cross == BigRational::from_integer(0.into()) {
+                    continue;
+                }
+                if orientation.is_some_and(|positive| {
+                    positive != (cross > BigRational::from_integer(0.into()))
+                }) {
+                    return Err(DyadicFaceTransformIntervalErrorV1::Unproven);
+                }
+                orientation = Some(cross > BigRational::from_integer(0.into()));
+            }
+            if orientation.is_none() {
+                return Err(DyadicFaceTransformIntervalErrorV1::Unproven);
+            }
+            let mut work = 0usize;
+            let polygon = exact_clip_wedge_v1(
+                &positions,
+                &o,
+                &n,
+                &m,
+                &mut work,
+                max_work_per_cell,
+                &mut meter,
+            )?;
+            if polygon.len() < 3 || polygon.len() > MAX_SHARED_VERTEX_WEDGE_VERTICES_V1 {
+                return Err(DyadicFaceTransformIntervalErrorV1::Unproven);
+            }
+            for p in &polygon {
+                wedge_check_point_bits_v1(p)?;
+            }
+            local.push(ExactWedgeCellV1 {
+                pair: gap.pair,
+                vertex: gap.vertex,
+                face,
+                polygon,
+            });
+        }
+    }
+    let total = local
+        .len()
+        .checked_mul(transforms.leaves.len())
+        .ok_or(DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    let total_vertices = local
+        .iter()
+        .try_fold(0usize, |n, cell| {
+            cell.polygon
+                .len()
+                .checked_mul(2)
+                .and_then(|count| n.checked_add(count))
+        })
+        .and_then(|count| count.checked_mul(transforms.leaves.len()))
+        .ok_or(DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    if total > MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1
+        || total_vertices > MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1
+    {
+        return Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit);
+    }
+    let half = ori_kinematics::OutwardIntervalV1::from_rounded(input.thickness_mm / 2.0)
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)?;
+    let zero = ori_kinematics::OutwardIntervalV1::new(0.0, 0.0)
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)?;
+    let mut leaves = Vec::new();
+    leaves
+        .try_reserve_exact(transforms.leaves.len())
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    for leaf in &transforms.leaves {
+        let mut cells = Vec::new();
+        cells
+            .try_reserve_exact(local.len())
+            .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+        for cell in &local {
+            let transform = leaf
+                .transforms
+                .transform_for(cell.face)
+                .ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding)?;
+            let mut top_ring = Vec::new();
+            let mut bottom_ring = Vec::new();
+            top_ring
+                .try_reserve_exact(cell.polygon.len())
+                .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+            bottom_ring
+                .try_reserve_exact(cell.polygon.len())
+                .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+            for point in &cell.polygon {
+                let x = exact_rational_interval_v1(&point[0])?;
+                let z = exact_rational_interval_v1(&point[1])?;
+                for (ring, y) in [
+                    (&mut bottom_ring, zero.sub(half)),
+                    (&mut top_ring, zero.add(half)),
+                ] {
+                    let local_point = [
+                        x,
+                        y.map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)?,
+                        z,
+                    ];
+                    ring.push(transform.apply(local_point, max_work_per_cell).map_err(
+                        |e| match e {
+                            ori_kinematics::OutwardIntervalErrorV1::ResourceLimit => {
+                                DyadicFaceTransformIntervalErrorV1::ResourceLimit
+                            }
+                            _ => DyadicFaceTransformIntervalErrorV1::Unproven,
+                        },
+                    )?);
+                }
+            }
+            // Opposite winding makes the two rings a closed oriented prism;
+            // equal indices before reversal define every complete side quad.
+            bottom_ring.reverse();
+            cells.push(SharedVertexWedgeCellV1 {
+                pair: cell.pair,
+                vertex: cell.vertex,
+                face: cell.face,
+                top_ring,
+                bottom_ring,
+            });
+        }
+        leaves.push((leaf.depth, leaf.index, cells));
+    }
+    let radius_binding = records
+        .iter()
+        .map(|r| (r.vertex, r.cutout_radius_mm.to_bits()))
+        .collect::<Vec<_>>();
+    let sector_content_hash = sector_boundary_content_hash_v1(sectors)?;
+    let content_hash = wedge_content_hash_v1(
+        &leaves,
+        max_work_per_cell,
+        &radius_binding,
+        sector_content_hash,
+    )?;
+    Ok(DyadicSharedVertexWedgeDiagnosticV1 {
+        issuer: input.geometry.clone(),
+        schedule_hash: input.schedule.certificate_binding_fingerprint_v1(),
+        closure_hash: input.closure.partition_binding_fingerprint_v1(),
+        thickness_bits: input.thickness_mm.to_bits(),
+        max_work_per_cell,
+        radius_binding,
+        sector_content_hash,
+        leaves,
+        content_hash,
+    })
+}
+
+fn exact_clip_wedge_v1(
+    polygon: &[[BigRational; 2]],
+    origin: &[BigRational; 2],
+    normal: &[BigRational; 2],
+    m: &BigRational,
+    work: &mut usize,
+    limit: usize,
+    meter: &mut WedgeExactMeterV1,
+) -> Result<Vec<[BigRational; 2]>, DyadicFaceTransformIntervalErrorV1> {
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(
+            polygon
+                .len()
+                .checked_add(2)
+                .ok_or(DyadicFaceTransformIntervalErrorV1::ResourceLimit)?,
+        )
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    let mut intersections = 0usize;
+    for i in 0..polygon.len() {
+        *work = work
+            .checked_add(1)
+            .ok_or(DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+        if *work > limit {
+            return Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit);
+        }
+        let a = &polygon[i];
+        let b = &polygon[(i + 1) % polygon.len()];
+        let sa = meter.side(a, origin, normal, m)?;
+        let sb = meter.side(b, origin, normal, m)?;
+        let ina = sa >= BigRational::from_integer(0.into());
+        let inb = sb >= BigRational::from_integer(0.into());
+        if ina {
+            output.push(a.clone());
+        }
+        if ina != inb {
+            intersections = intersections
+                .checked_add(1)
+                .ok_or(DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+            if intersections > MAX_SHARED_VERTEX_WEDGE_INTERSECTIONS_V1 {
+                return Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit);
+            }
+            let denominator = meter.sub(&sa, &sb)?;
+            if denominator == BigRational::from_integer(0.into()) {
+                return Err(DyadicFaceTransformIntervalErrorV1::Unproven);
+            }
+            let t = meter.div(&sa, &denominator)?;
+            let dx = meter.sub(&b[0], &a[0])?;
+            let dy = meter.sub(&b[1], &a[1])?;
+            let mx = meter.mul(&dx, &t)?;
+            let my = meter.mul(&dy, &t)?;
+            output.push([meter.add(&a[0], &mx)?, meter.add(&a[1], &my)?]);
+        }
+        if output.len() > MAX_SHARED_VERTEX_WEDGE_VERTICES_V1 {
+            return Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit);
+        }
+    }
+    Ok(output)
+}
+
+struct WedgeExactMeterV1 {
+    bit_work: usize,
+    max_bit_work: usize,
+}
+impl WedgeExactMeterV1 {
+    fn new(limit: usize) -> Result<Self, DyadicFaceTransformIntervalErrorV1> {
+        Ok(Self {
+            bit_work: 0,
+            max_bit_work: limit
+                .checked_mul(MAX_SHARED_VERTEX_WEDGE_BITS_V1)
+                .ok_or(DyadicFaceTransformIntervalErrorV1::ResourceLimit)?,
+        })
+    }
+    #[cfg(test)]
+    fn with_bit_limit(max_bit_work: usize) -> Self {
+        Self {
+            bit_work: 0,
+            max_bit_work,
+        }
+    }
+    #[cfg(test)]
+    const fn bit_work(&self) -> usize {
+        self.bit_work
+    }
+    fn bits(v: &BigRational) -> usize {
+        v.numer()
+            .to_signed_bytes_le()
+            .len()
+            .max(v.denom().to_signed_bytes_le().len())
+            .saturating_mul(8)
+    }
+    fn charge(&mut self, bits: usize) -> Result<(), DyadicFaceTransformIntervalErrorV1> {
+        if bits > MAX_SHARED_VERTEX_WEDGE_BITS_V1 {
+            return Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit);
+        }
+        self.bit_work = self
+            .bit_work
+            .checked_add(bits)
+            .ok_or(DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+        if self.bit_work > self.max_bit_work {
+            Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+        } else {
+            Ok(())
+        }
+    }
+    fn binary<F>(
+        &mut self,
+        a: &BigRational,
+        b: &BigRational,
+        op: F,
+    ) -> Result<BigRational, DyadicFaceTransformIntervalErrorV1>
+    where
+        F: FnOnce(&BigRational, &BigRational) -> BigRational,
+    {
+        self.charge(
+            Self::bits(a)
+                .checked_add(Self::bits(b))
+                .ok_or(DyadicFaceTransformIntervalErrorV1::ResourceLimit)?,
+        )?;
+        let result = op(a, b);
+        self.charge(Self::bits(&result))?;
+        Ok(result)
+    }
+    fn add(
+        &mut self,
+        a: &BigRational,
+        b: &BigRational,
+    ) -> Result<BigRational, DyadicFaceTransformIntervalErrorV1> {
+        self.binary(a, b, |x, y| x + y)
+    }
+    fn sub(
+        &mut self,
+        a: &BigRational,
+        b: &BigRational,
+    ) -> Result<BigRational, DyadicFaceTransformIntervalErrorV1> {
+        self.binary(a, b, |x, y| x - y)
+    }
+    fn mul(
+        &mut self,
+        a: &BigRational,
+        b: &BigRational,
+    ) -> Result<BigRational, DyadicFaceTransformIntervalErrorV1> {
+        self.binary(a, b, |x, y| x * y)
+    }
+    fn div(
+        &mut self,
+        a: &BigRational,
+        b: &BigRational,
+    ) -> Result<BigRational, DyadicFaceTransformIntervalErrorV1> {
+        if b == &BigRational::from_integer(0.into()) {
+            return Err(DyadicFaceTransformIntervalErrorV1::Unproven);
+        }
+        self.binary(a, b, |x, y| x / y)
+    }
+    fn side(
+        &mut self,
+        p: &[BigRational; 2],
+        o: &[BigRational; 2],
+        n: &[BigRational; 2],
+        m: &BigRational,
+    ) -> Result<BigRational, DyadicFaceTransformIntervalErrorV1> {
+        let x = self.sub(&p[0], &o[0])?;
+        let y = self.sub(&p[1], &o[1])?;
+        let nx = self.mul(&n[0], &x)?;
+        let ny = self.mul(&n[1], &y)?;
+        let sum = self.add(&nx, &ny)?;
+        self.sub(&sum, m)
+    }
+}
+
+fn wedge_check_point_bits_v1(
+    point: &[BigRational; 2],
+) -> Result<(), DyadicFaceTransformIntervalErrorV1> {
+    if point.iter().any(|v| {
+        v.numer().to_signed_bytes_le().len().saturating_mul(8) > MAX_SHARED_VERTEX_WEDGE_BITS_V1
+            || v.denom().to_signed_bytes_le().len().saturating_mul(8)
+                > MAX_SHARED_VERTEX_WEDGE_BITS_V1
+    }) {
+        Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+    } else {
+        Ok(())
+    }
+}
+
+fn exact_rational_interval_v1(
+    value: &BigRational,
+) -> Result<ori_kinematics::OutwardIntervalV1, DyadicFaceTransformIntervalErrorV1> {
+    let out = ori_numeric::rational_interval_to_f64_outward(value, value)
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)?;
+    ori_kinematics::OutwardIntervalV1::new(out.lower(), out.upper())
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)
+}
+
+fn wedge_content_hash_v1(
+    leaves: &[(u32, u64, Vec<SharedVertexWedgeCellV1>)],
+    max_work: usize,
+    radii: &[(ori_domain::VertexId, u64)],
+    sector_hash: [u8; 32],
+) -> Result<[u8; 32], DyadicFaceTransformIntervalErrorV1> {
+    use sha2::Digest as _;
+    let usize64 = |v| {
+        u64::try_from(v)
+            .map(u64::to_le_bytes)
+            .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+    };
+    let mut h = sha2::Sha256::new();
+    h.update(b"origami2:shared-vertex-limited-convex-wedge:v1");
+    h.update(usize64(max_work)?);
+    h.update(sector_hash);
+    h.update(usize64(radii.len())?);
+    for (v, r) in radii {
+        h.update(v.canonical_bytes());
+        h.update(r.to_le_bytes());
+    }
+    h.update(usize64(leaves.len())?);
+    for (d, i, cells) in leaves {
+        h.update(d.to_le_bytes());
+        h.update(i.to_le_bytes());
+        h.update(usize64(cells.len())?);
+        for c in cells {
+            h.update(c.pair[0].canonical_bytes());
+            h.update(c.pair[1].canonical_bytes());
+            h.update(c.vertex.canonical_bytes());
+            h.update(c.face.canonical_bytes());
+            for ring in [&c.top_ring, &c.bottom_ring] {
+                h.update(usize64(ring.len())?);
+                for p in ring {
+                    for v in p {
+                        h.update(v.lower().to_bits().to_le_bytes());
+                        h.update(v.upper().to_bits().to_le_bytes());
+                    }
+                }
+            }
+        }
+    }
+    Ok(h.finalize().into())
 }
 
 fn interval_point_distance_lower_v1(
@@ -5357,6 +6037,100 @@ mod tests {
     }
 
     #[test]
+    fn exact_wedge_clip_covers_full_half_plane_and_enforces_one_short_work() {
+        let r = |n: i64| BigRational::from_integer(n.into());
+        let polygon = vec![[r(0), r(0)], [r(4), r(0)], [r(4), r(4)], [r(0), r(4)]];
+        let mut work = 0;
+        let mut meter = WedgeExactMeterV1::new(4).unwrap();
+        let clipped = exact_clip_wedge_v1(
+            &polygon,
+            &[r(0), r(0)],
+            &[r(1), r(1)],
+            &r(2),
+            &mut work,
+            4,
+            &mut meter,
+        )
+        .unwrap();
+        assert_eq!(clipped.len(), 5);
+        assert!(
+            clipped
+                .iter()
+                .all(|p| &p[0] + &p[1] >= BigRational::from_integer(2.into()))
+        );
+        let mut one_short = 0;
+        let mut meter = WedgeExactMeterV1::new(4).unwrap();
+        assert!(matches!(
+            exact_clip_wedge_v1(
+                &polygon,
+                &[r(0), r(0)],
+                &[r(1), r(1)],
+                &r(2),
+                &mut one_short,
+                3,
+                &mut meter
+            ),
+            Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+        ));
+        let mut measured_work = 0;
+        let mut measured = WedgeExactMeterV1::with_bit_limit(usize::MAX);
+        exact_clip_wedge_v1(
+            &polygon,
+            &[r(0), r(0)],
+            &[r(1), r(1)],
+            &r(2),
+            &mut measured_work,
+            4,
+            &mut measured,
+        )
+        .unwrap();
+        let exact_bit_work = measured.bit_work();
+        let mut at_boundary_work = 0;
+        let mut at_boundary = WedgeExactMeterV1::with_bit_limit(exact_bit_work);
+        assert!(
+            exact_clip_wedge_v1(
+                &polygon,
+                &[r(0), r(0)],
+                &[r(1), r(1)],
+                &r(2),
+                &mut at_boundary_work,
+                4,
+                &mut at_boundary,
+            )
+            .is_ok()
+        );
+        let mut one_bit_short_work = 0;
+        let mut one_bit_short = WedgeExactMeterV1::with_bit_limit(exact_bit_work - 1);
+        assert!(matches!(
+            exact_clip_wedge_v1(
+                &polygon,
+                &[r(0), r(0)],
+                &[r(1), r(1)],
+                &r(2),
+                &mut one_bit_short_work,
+                4,
+                &mut one_bit_short,
+            ),
+            Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+        ));
+        let huge = BigRational::new(num_bigint::BigInt::from(1_u8) << 8_193, 1.into());
+        let mut bounded = 0;
+        let mut meter = WedgeExactMeterV1::new(4).unwrap();
+        assert!(matches!(
+            exact_clip_wedge_v1(
+                &polygon,
+                &[r(0), r(0)],
+                &[huge, r(1)],
+                &r(2),
+                &mut bounded,
+                4,
+                &mut meter
+            ),
+            Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+        ));
+    }
+
+    #[test]
     fn positive_constant_actual_registries_compose_all_shared_hinge_relief_gaps() {
         for bay_count in [4_usize, 8, 16] {
             let (geometry, audit, schedule, fixed) =
@@ -5675,6 +6449,18 @@ mod tests {
                         0,
                     ),
                     Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding)
+                ));
+                assert!(matches!(
+                    diagnose_dyadic_shared_vertex_wedges_v1(
+                        &sector_boundaries,
+                        &transforms,
+                        &vertex_gaps,
+                        &vertex_relief,
+                        &vertex_records,
+                        binding(),
+                        1_000_000,
+                    ),
+                    Err(DyadicFaceTransformIntervalErrorV1::Unproven)
                 ));
                 let point_distances = diagnose_dyadic_shared_vertex_boundary_point_distances_v1(
                     &sector_boundaries,
@@ -7407,6 +8193,323 @@ mod tests {
             )
             .is_some()
         );
+    }
+
+    #[test]
+    fn strict_convex_four_vertex_wedges_bind_every_input_and_fail_closed() {
+        let points = [
+            (100.0, 100.0),
+            (-100.0, 100.0),
+            (-100.0, -100.0),
+            (100.0, -100.0),
+            (0.0, 0.0),
+        ];
+        let vertices = points
+            .iter()
+            .enumerate()
+            .map(|(index, &(x, y))| Vertex {
+                id: fixed_id("de00", index as u64 + 1),
+                position: Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let boundary = vertices[..4].iter().map(|v| v.id).collect::<Vec<_>>();
+        let center = vertices[4].id;
+        let hinges = (0..4)
+            .map(|index| fixed_id("df00", index as u64 + 10))
+            .collect::<Vec<_>>();
+        let mut edges = (0..4)
+            .map(|index| Edge {
+                id: fixed_id("df00", index as u64 + 1),
+                start: boundary[index],
+                end: boundary[(index + 1) % 4],
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        edges.extend((0..4).map(|index| Edge {
+            id: hinges[index],
+            start: boundary[index],
+            end: center,
+            kind: if index == 3 {
+                EdgeKind::Mountain
+            } else {
+                EdgeKind::Valley
+            },
+        }));
+        let pattern = CreasePattern { vertices, edges };
+        let paper = Paper {
+            boundary_vertices: boundary,
+            ..Paper::default()
+        };
+        let topology = analyze_faces(FaceExtractionInput {
+            identity_namespace: fixed_id("dc00", 1),
+            source_revision: 1,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .snapshot
+        .unwrap();
+        let geometry = MaterialHingeGraphGeometry::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        let audit =
+            MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default()).unwrap();
+        let fixed = audit.faces()[0];
+        let schedule_limits = ori_kinematics::CycleScheduleLimitsV1::default();
+        let closure_limits = ori_kinematics::DyadicIntervalClosureLimitsV1 {
+            max_depth: 2,
+            max_leaves: 4,
+            max_work: 1_000_000,
+            schedule_limits,
+        };
+        let schedule = ori_kinematics::CanonicalCycleScheduleV1::prepare_half_angle_rational(
+            &geometry,
+            &audit,
+            fixed,
+            hinges
+                .iter()
+                .map(|edge| ori_kinematics::HalfAngleRationalEntryInputV1 {
+                    edge: *edge,
+                    u_domain: [
+                        ori_kinematics::RationalCoefficientV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        },
+                        ori_kinematics::RationalCoefficientV1 {
+                            numerator: 1,
+                            denominator: 1,
+                        },
+                    ],
+                    numerator_power_coefficients: vec![ori_kinematics::RationalCoefficientV1 {
+                        numerator: 0,
+                        denominator: 1,
+                    }],
+                    denominator_power_coefficients: vec![ori_kinematics::RationalCoefficientV1 {
+                        numerator: 1,
+                        denominator: 1,
+                    }],
+                })
+                .collect(),
+            schedule_limits,
+        )
+        .unwrap();
+        let closure = geometry
+            .prove_dyadic_schedule_closure_v1(&audit, fixed, &schedule, 1.0e-8, closure_limits)
+            .expect("constant strict-convex cardinal schedule closes exactly");
+        let max_leaf_work = 16_777_216;
+        let binding = || DyadicFaceTransformBindingInputV1 {
+            geometry: &geometry,
+            audit: &audit,
+            fixed_face: fixed,
+            schedule: &schedule,
+            closure: &closure,
+            thickness_mm: 0.1,
+            tolerance: 1.0e-8,
+            schedule_limits,
+            max_work_per_leaf: max_leaf_work,
+        };
+        let transforms = prepare_dyadic_face_transform_interval_registry_v1(
+            &geometry,
+            &audit,
+            fixed,
+            &schedule,
+            &closure,
+            0.1,
+            1.0e-8,
+            schedule_limits,
+            max_leaf_work,
+        )
+        .unwrap();
+        let pairs =
+            diagnose_continuous_pair_coverage_v1(&geometry, &audit, fixed, &schedule).unwrap();
+        assert!(pairs.entries().iter().any(|entry| {
+            entry.kind() == ContinuousPairCoverageKindV1::SharedVertexNeedsCorridor
+        }));
+        let gaps = diagnose_shared_vertex_continuous_corridor_gaps_v1(
+            &pairs, &geometry, &audit, fixed, &schedule, 0.1,
+        )
+        .unwrap();
+        assert!(!gaps.gaps().is_empty());
+        let mut records = gaps
+            .gaps()
+            .iter()
+            .map(|gap| {
+                let mut incident_faces = geometry
+                    .face_ids()
+                    .iter()
+                    .copied()
+                    .filter(|face| {
+                        geometry
+                            .face_boundary_vertices(*face)
+                            .is_some_and(|vertices| vertices.contains(&gap.vertex()))
+                    })
+                    .collect::<Vec<_>>();
+                incident_faces.sort_unstable_by_key(FaceId::canonical_bytes);
+                crate::VertexReliefPolicyRecordV1 {
+                    vertex: gap.vertex(),
+                    cutout_radius_mm: 0.1,
+                    material_thickness_mm: 0.1,
+                    incident_faces,
+                }
+            })
+            .collect::<Vec<_>>();
+        records.sort_unstable_by_key(|record| record.vertex.canonical_bytes());
+        records.dedup_by_key(|record| record.vertex);
+        assert!(!records.is_empty());
+        let relief =
+            crate::prepare_vertex_relief_prerequisite_v1(&geometry, 0.1, &records).unwrap();
+        let sectors = diagnose_dyadic_shared_vertex_sector_boundaries_v1(
+            &transforms,
+            &gaps,
+            &relief,
+            &records,
+            binding(),
+            max_leaf_work,
+        )
+        .unwrap();
+        let cell_work = 1_000_000;
+        let wedges = diagnose_dyadic_shared_vertex_wedges_v1(
+            &sectors,
+            &transforms,
+            &gaps,
+            &relief,
+            &records,
+            binding(),
+            cell_work,
+        )
+        .unwrap();
+        assert!(!wedges.authorizes_continuous_motion());
+        assert!(!wedges.authorizes_project_mutation());
+        assert!(wedges.is_for(
+            &sectors,
+            &transforms,
+            &gaps,
+            &relief,
+            &records,
+            binding(),
+            cell_work,
+        ));
+        assert!(wedges.leaves().iter().all(|(_, _, cells)| {
+            !cells.is_empty()
+                && cells.iter().all(|cell| {
+                    !cell.top_ring().is_empty() && cell.top_ring().len() == cell.bottom_ring().len()
+                })
+        }));
+
+        macro_rules! rejects_wedge {
+            ($change:expr) => {{
+                let mut foreign = wedges.clone();
+                $change(&mut foreign);
+                assert!(!foreign.is_for(
+                    &sectors,
+                    &transforms,
+                    &gaps,
+                    &relief,
+                    &records,
+                    binding(),
+                    cell_work,
+                ));
+            }};
+        }
+        rejects_wedge!(|w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.schedule_hash[0] ^= 1);
+        rejects_wedge!(|w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.closure_hash[0] ^= 1);
+        rejects_wedge!(|w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.thickness_bits ^= 1);
+        rejects_wedge!(|w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.max_work_per_cell -= 1);
+        rejects_wedge!(|w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.radius_binding[0].1 ^= 1);
+        rejects_wedge!(|w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.sector_content_hash[0] ^= 1);
+        rejects_wedge!(|w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.content_hash[0] ^= 1);
+        rejects_wedge!(|w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.leaves[0].0 ^= 1);
+        rejects_wedge!(|w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.leaves[0].1 ^= 1);
+        rejects_wedge!(
+            |w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.leaves[0].2[0].pair[0] =
+                fixed_id("dd00", 1)
+        );
+        rejects_wedge!(
+            |w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.leaves[0].2[0].vertex =
+                fixed_id("dd00", 2)
+        );
+        rejects_wedge!(
+            |w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.leaves[0].2[0].face =
+                fixed_id("dd00", 3)
+        );
+        rejects_wedge!(
+            |w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.leaves[0].2[0].top_ring[0][0] =
+                ori_kinematics::OutwardIntervalV1::new(0.0, 0.0).unwrap()
+        );
+        rejects_wedge!(
+            |w: &mut DyadicSharedVertexWedgeDiagnosticV1| w.leaves[0].2[0].bottom_ring[0][0] =
+                ori_kinematics::OutwardIntervalV1::new(0.0, 0.0).unwrap()
+        );
+        assert!(!wedges.is_for(
+            &sectors,
+            &transforms,
+            &gaps,
+            &relief,
+            &records,
+            DyadicFaceTransformBindingInputV1 {
+                thickness_mm: 0.2,
+                ..binding()
+            },
+            cell_work,
+        ));
+        let foreign_geometry = MaterialHingeGraphGeometry::prepare(
+            &pattern,
+            &paper,
+            &topology,
+            TreeKinematicsLimits::default(),
+        )
+        .unwrap();
+        assert!(!wedges.is_for(
+            &sectors,
+            &transforms,
+            &gaps,
+            &relief,
+            &records,
+            DyadicFaceTransformBindingInputV1 {
+                geometry: &foreign_geometry,
+                ..binding()
+            },
+            cell_work,
+        ));
+        assert!(matches!(
+            diagnose_dyadic_shared_vertex_wedges_v1(
+                &sectors,
+                &transforms,
+                &gaps,
+                &relief,
+                &records,
+                binding(),
+                0,
+            ),
+            Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding)
+        ));
+        assert!(matches!(
+            diagnose_dyadic_shared_vertex_wedges_v1(
+                &sectors,
+                &transforms,
+                &gaps,
+                &relief,
+                &records,
+                binding(),
+                MAX_SHARED_VERTEX_WEDGE_WORK_V1 + 1,
+            ),
+            Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding)
+        ));
+        assert!(matches!(
+            diagnose_dyadic_shared_vertex_wedges_v1(
+                &sectors,
+                &transforms,
+                &gaps,
+                &relief,
+                &records,
+                binding(),
+                1,
+            ),
+            Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+        ));
     }
 
     #[test]

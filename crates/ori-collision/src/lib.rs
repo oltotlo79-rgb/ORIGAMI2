@@ -131,14 +131,17 @@ pub use continuous_path::{
 };
 pub use effective_cut_static::{
     EFFECTIVE_CUT_COLLISION_GEOMETRY_MODEL_ID_V1,
+    EFFECTIVE_CUT_MULTI_HINGE_UNION_GAP_DIAGNOSTIC_MODEL_ID_V1,
     EFFECTIVE_CUT_SOURCE_FLAT_PAIR_OBSERVATION_MODEL_ID_V1,
     EFFECTIVE_CUT_STATIC_PAIR_REGISTRY_BRIDGE_MODEL_ID_V1,
     EFFECTIVE_CUT_STATIC_THICKNESS_PREREQUISITE_MODEL_ID_V1, EffectiveCutCollisionGeometryInputV1,
     EffectiveCutCollisionGeometryLimitsV1, EffectiveCutCollisionGeometryV1,
+    EffectiveCutMultiHingeUnionGapDiagnosticV1, EffectiveCutMultiHingeUnionGapLimitsV1,
     EffectiveCutSourceFlatPairObservationLimitsV1, EffectiveCutSourceFlatPairObservationV1,
     EffectiveCutStaticPairRegistryBridgeV1, EffectiveCutStaticThicknessLimitsV1,
     EffectiveCutStaticThicknessPrerequisiteDiagnosticV1,
-    EffectiveCutStaticThicknessPrerequisiteErrorV1, diagnose_effective_cut_source_flat_pairs_v1,
+    EffectiveCutStaticThicknessPrerequisiteErrorV1,
+    diagnose_effective_cut_multi_hinge_union_gaps_v1, diagnose_effective_cut_source_flat_pairs_v1,
     prepare_effective_cut_collision_geometry_v1,
     prepare_effective_cut_static_pair_registry_bridge_v1,
     prepare_effective_cut_static_thickness_prerequisite_v1,

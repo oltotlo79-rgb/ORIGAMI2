@@ -1,6 +1,7 @@
 use ori_collision::{
     EffectiveCutCollisionGeometryInputV1, EffectiveCutCollisionGeometryLimitsV1,
-    EffectiveCutSourceFlatPairObservationLimitsV1, EffectiveCutStaticThicknessLimitsV1,
+    EffectiveCutMultiHingeUnionGapLimitsV1, EffectiveCutSourceFlatPairObservationLimitsV1,
+    EffectiveCutStaticThicknessLimitsV1, diagnose_effective_cut_multi_hinge_union_gaps_v1,
     diagnose_effective_cut_source_flat_pairs_v1, prepare_effective_cut_collision_geometry_v1,
     prepare_effective_cut_static_pair_registry_bridge_v1,
     prepare_effective_cut_static_thickness_prerequisite_v1,
@@ -213,6 +214,53 @@ fn source_flat_thickness_prerequisite_reports_planned_pair_cardinality_only() {
         geometry_limits: exact_geometry_limits,
         ..geometry_input
     }));
+    let gap = diagnose_effective_cut_multi_hinge_union_gaps_v1(
+        &geometry,
+        geometry_input,
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(gap.multi_hinge_pairs(), 1);
+    assert_eq!(gap.union_corridor_unproved_pairs(), 1);
+    assert!(!gap.authorizes_pair_classification());
+    assert!(!gap.authorizes_collision_free_classification());
+    assert!(!gap.authorizes_pose_solving());
+    assert!(!gap.authorizes_simulation_admission());
+    assert!(!gap.authorizes_project_mutation());
+    assert!(!gap.authorizes_material_removal());
+    assert!(!gap.authorizes_persistence());
+    assert!(gap.is_for(&geometry, geometry_input, Default::default()));
+    let exact_gap_limits = EffectiveCutMultiHingeUnionGapLimitsV1 {
+        max_multi_hinge_pairs: 1,
+    };
+    let exact_gap = diagnose_effective_cut_multi_hinge_union_gaps_v1(
+        &geometry,
+        geometry_input,
+        exact_gap_limits,
+    )
+    .unwrap();
+    assert_ne!(gap.fingerprint_v1(), exact_gap.fingerprint_v1());
+    assert!(!gap.is_for(&geometry, geometry_input, exact_gap_limits));
+    assert!(
+        diagnose_effective_cut_multi_hinge_union_gaps_v1(
+            &geometry,
+            geometry_input,
+            EffectiveCutMultiHingeUnionGapLimitsV1 {
+                max_multi_hinge_pairs: 0,
+            },
+        )
+        .is_err()
+    );
+    assert!(
+        diagnose_effective_cut_multi_hinge_union_gaps_v1(
+            &geometry,
+            geometry_input,
+            EffectiveCutMultiHingeUnionGapLimitsV1 {
+                max_multi_hinge_pairs: 65,
+            },
+        )
+        .is_err()
+    );
     let observation =
         diagnose_effective_cut_source_flat_pairs_v1(&geometry, geometry_input, Default::default())
             .unwrap();

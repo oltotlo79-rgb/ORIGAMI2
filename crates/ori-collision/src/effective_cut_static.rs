@@ -28,6 +28,8 @@ pub const EFFECTIVE_CUT_COLLISION_GEOMETRY_MODEL_ID_V1: &str =
     "effective_cut_collision_geometry_v1";
 pub const EFFECTIVE_CUT_SOURCE_FLAT_PAIR_OBSERVATION_MODEL_ID_V1: &str =
     "effective_cut_source_flat_pair_observation_v1";
+pub const EFFECTIVE_CUT_MULTI_HINGE_UNION_GAP_DIAGNOSTIC_MODEL_ID_V1: &str =
+    "effective_cut_multi_hinge_union_gap_diagnostic_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum EffectiveCutStaticThicknessPrerequisiteErrorV1 {
@@ -264,6 +266,87 @@ impl EffectiveCutSourceFlatPairObservationV1 {
         self.geometry_fingerprint == geometry.fingerprint_v1()
             && self.limits == limits
             && diagnose_effective_cut_source_flat_pairs_v1(geometry, input, limits)
+                .is_ok_and(|current| current.fingerprint == self.fingerprint)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveCutMultiHingeUnionGapLimitsV1 {
+    pub max_multi_hinge_pairs: usize,
+}
+
+impl Default for EffectiveCutMultiHingeUnionGapLimitsV1 {
+    fn default() -> Self {
+        Self {
+            max_multi_hinge_pairs: 64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveCutMultiHingeUnionGapDiagnosticV1 {
+    geometry_fingerprint: [u8; 32],
+    fingerprint: [u8; 32],
+    multi_hinge_pairs: usize,
+    union_corridor_unproved: usize,
+    limits: EffectiveCutMultiHingeUnionGapLimitsV1,
+}
+
+impl EffectiveCutMultiHingeUnionGapDiagnosticV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        EFFECTIVE_CUT_MULTI_HINGE_UNION_GAP_DIAGNOSTIC_MODEL_ID_V1
+    }
+    #[must_use]
+    pub const fn fingerprint_v1(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+    #[must_use]
+    pub const fn multi_hinge_pairs(&self) -> usize {
+        self.multi_hinge_pairs
+    }
+    #[must_use]
+    pub const fn union_corridor_unproved_pairs(&self) -> usize {
+        self.union_corridor_unproved
+    }
+    #[must_use]
+    pub const fn authorizes_pair_classification(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_pose_solving(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_collision_free_classification(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_simulation_admission(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_material_removal(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_persistence(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn is_for(
+        &self,
+        geometry: &EffectiveCutCollisionGeometryV1,
+        input: EffectiveCutCollisionGeometryInputV1<'_>,
+        limits: EffectiveCutMultiHingeUnionGapLimitsV1,
+    ) -> bool {
+        self.geometry_fingerprint == geometry.fingerprint_v1()
+            && self.limits == limits
+            && diagnose_effective_cut_multi_hinge_union_gaps_v1(geometry, input, limits)
                 .is_ok_and(|current| current.fingerprint == self.fingerprint)
     }
 }
@@ -872,6 +955,88 @@ pub fn diagnose_effective_cut_source_flat_pairs_v1(
         shared_vertex_allowed: counts[3],
         penetrating: counts[4],
         indeterminate: counts[5],
+        limits,
+    })
+}
+
+pub fn diagnose_effective_cut_multi_hinge_union_gaps_v1(
+    geometry: &EffectiveCutCollisionGeometryV1,
+    input: EffectiveCutCollisionGeometryInputV1<'_>,
+    limits: EffectiveCutMultiHingeUnionGapLimitsV1,
+) -> Result<
+    EffectiveCutMultiHingeUnionGapDiagnosticV1,
+    EffectiveCutStaticThicknessPrerequisiteErrorV1,
+> {
+    if limits.max_multi_hinge_pairs > 64 {
+        return Err(EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit);
+    }
+    let mut group_start = 0_usize;
+    let mut multi_hinge_pairs = 0_usize;
+    while group_start < geometry.data.hinges.len() {
+        let first = geometry.data.hinges[group_start].first;
+        let second = geometry.data.hinges[group_start].second;
+        let mut group_end = group_start + 1;
+        while geometry
+            .data
+            .hinges
+            .get(group_end)
+            .is_some_and(|hinge| hinge.first == first && hinge.second == second)
+        {
+            group_end += 1;
+        }
+        let count = group_end - group_start;
+        if count > 1 {
+            multi_hinge_pairs = multi_hinge_pairs
+                .checked_add(1)
+                .filter(|value| *value <= limits.max_multi_hinge_pairs)
+                .ok_or(EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit)?;
+        }
+        group_start = group_end;
+    }
+    if !geometry.is_for(input) {
+        return Err(EffectiveCutStaticThicknessPrerequisiteErrorV1::InvalidBinding);
+    }
+    let mut union_corridor_unproved = 0_usize;
+    let mut hash = Sha256::new();
+    hash.update(EFFECTIVE_CUT_MULTI_HINGE_UNION_GAP_DIAGNOSTIC_MODEL_ID_V1.as_bytes());
+    hash.update(geometry.fingerprint_v1());
+    hash.update((limits.max_multi_hinge_pairs as u64).to_be_bytes());
+    group_start = 0;
+    while group_start < geometry.data.hinges.len() {
+        let first_id = geometry.data.hinges[group_start].first;
+        let second_id = geometry.data.hinges[group_start].second;
+        let mut group_end = group_start + 1;
+        while geometry
+            .data
+            .hinges
+            .get(group_end)
+            .is_some_and(|hinge| hinge.first == first_id && hinge.second == second_id)
+        {
+            group_end += 1;
+        }
+        let hinges = &geometry.data.hinges[group_start..group_end];
+        if hinges.len() > 1 {
+            union_corridor_unproved += 1;
+            hash.update(first_id.canonical_bytes());
+            hash.update(second_id.canonical_bytes());
+            hash.update((hinges.len() as u64).to_be_bytes());
+            for hinge in hinges {
+                hash.update(hinge.edge.canonical_bytes());
+            }
+            hash.update([0xff]);
+        }
+        group_start = group_end;
+    }
+    if union_corridor_unproved != multi_hinge_pairs {
+        return Err(EffectiveCutStaticThicknessPrerequisiteErrorV1::InvalidBinding);
+    }
+    hash.update((multi_hinge_pairs as u64).to_be_bytes());
+    hash.update((union_corridor_unproved as u64).to_be_bytes());
+    Ok(EffectiveCutMultiHingeUnionGapDiagnosticV1 {
+        geometry_fingerprint: geometry.fingerprint_v1(),
+        fingerprint: hash.finalize().into(),
+        multi_hinge_pairs,
+        union_corridor_unproved,
         limits,
     })
 }

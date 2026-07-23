@@ -1,5 +1,7 @@
 use ori_collision::{
-    EffectiveCutStaticThicknessLimitsV1, prepare_effective_cut_static_pair_registry_bridge_v1,
+    EffectiveCutCollisionGeometryInputV1, EffectiveCutCollisionGeometryLimitsV1,
+    EffectiveCutStaticThicknessLimitsV1, prepare_effective_cut_collision_geometry_v1,
+    prepare_effective_cut_static_pair_registry_bridge_v1,
     prepare_effective_cut_static_thickness_prerequisite_v1,
 };
 use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, ProjectId, Vertex};
@@ -146,6 +148,70 @@ fn source_flat_thickness_prerequisite_reports_planned_pair_cardinality_only() {
         Default::default(),
         registry_limits,
     ));
+    let geometry_input = EffectiveCutCollisionGeometryInputV1 {
+        bridge: &bridge,
+        prerequisite: &diagnostic,
+        registry: &registry,
+        kinematics: &kinematics,
+        effective: &effective,
+        source,
+        kinematics_limits: Default::default(),
+        prerequisite_limits: Default::default(),
+        registry_limits,
+        geometry_limits: Default::default(),
+    };
+    let geometry = prepare_effective_cut_collision_geometry_v1(geometry_input).unwrap();
+    assert_eq!(geometry.face_count(), 2);
+    assert_eq!(geometry.hinge_membership_count(), 2);
+    assert!(geometry.boundary_occurrence_count() > 0);
+    assert!(geometry.converted_cut_boundary_occurrence_count() > 0);
+    assert!(geometry.observes_source_flat_identity_only());
+    assert!(!geometry.authorizes_pair_classification());
+    assert!(!geometry.authorizes_collision_free_classification());
+    assert!(!geometry.authorizes_pose_solving());
+    assert!(!geometry.authorizes_simulation_admission());
+    assert!(!geometry.authorizes_project_mutation());
+    assert!(!geometry.authorizes_material_removal());
+    assert!(!geometry.authorizes_persistence());
+    assert!(geometry.is_for(geometry_input));
+    assert!(!format!("{geometry:?}").contains("00000000-0000"));
+    for limits in [
+        EffectiveCutCollisionGeometryLimitsV1 {
+            max_faces: 1,
+            ..Default::default()
+        },
+        EffectiveCutCollisionGeometryLimitsV1 {
+            max_boundary_vertices: geometry.boundary_occurrence_count() - 1,
+            ..Default::default()
+        },
+        EffectiveCutCollisionGeometryLimitsV1 {
+            max_hinge_memberships: 1,
+            ..Default::default()
+        },
+    ] {
+        assert!(
+            prepare_effective_cut_collision_geometry_v1(EffectiveCutCollisionGeometryInputV1 {
+                geometry_limits: limits,
+                ..geometry_input
+            })
+            .is_err()
+        );
+    }
+    let exact_geometry_limits = EffectiveCutCollisionGeometryLimitsV1 {
+        max_faces: geometry.face_count(),
+        max_boundary_vertices: geometry.boundary_occurrence_count(),
+        max_hinge_memberships: geometry.hinge_membership_count(),
+    };
+    let exact = prepare_effective_cut_collision_geometry_v1(EffectiveCutCollisionGeometryInputV1 {
+        geometry_limits: exact_geometry_limits,
+        ..geometry_input
+    })
+    .unwrap();
+    assert_ne!(geometry.fingerprint_v1(), exact.fingerprint_v1());
+    assert!(!geometry.is_for(EffectiveCutCollisionGeometryInputV1 {
+        geometry_limits: exact_geometry_limits,
+        ..geometry_input
+    }));
     assert!(
         prepare_effective_cut_static_pair_registry_bridge_v1(
             &diagnostic,

@@ -130,11 +130,13 @@ pub use continuous_path::{
     prepare_shared_vertex_tree_layer_transport_v1, supports_scheduled_positive_thickness_path_v1,
 };
 pub use effective_cut_static::{
+    EFFECTIVE_CUT_COLLISION_GEOMETRY_MODEL_ID_V1,
     EFFECTIVE_CUT_STATIC_PAIR_REGISTRY_BRIDGE_MODEL_ID_V1,
-    EFFECTIVE_CUT_STATIC_THICKNESS_PREREQUISITE_MODEL_ID_V1,
+    EFFECTIVE_CUT_STATIC_THICKNESS_PREREQUISITE_MODEL_ID_V1, EffectiveCutCollisionGeometryInputV1,
+    EffectiveCutCollisionGeometryLimitsV1, EffectiveCutCollisionGeometryV1,
     EffectiveCutStaticPairRegistryBridgeV1, EffectiveCutStaticThicknessLimitsV1,
     EffectiveCutStaticThicknessPrerequisiteDiagnosticV1,
-    EffectiveCutStaticThicknessPrerequisiteErrorV1,
+    EffectiveCutStaticThicknessPrerequisiteErrorV1, prepare_effective_cut_collision_geometry_v1,
     prepare_effective_cut_static_pair_registry_bridge_v1,
     prepare_effective_cut_static_thickness_prerequisite_v1,
 };

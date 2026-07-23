@@ -11,17 +11,21 @@ mod project_folder;
 mod reference_glb;
 mod svg;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use ori_domain::{
     AnnotationDocumentV1, AssetId, ConstraintId, CreasePattern, EdgeId,
     GeometricConstraintDocumentV1, GeometricConstraintDocumentValidationErrorV1,
     GeometricConstraintKindV1, InstructionPose, InstructionTimeline,
-    InstructionTimelineValidationError, Paper, ProjectId, ProjectLayerDocumentV1,
-    ProjectLayerDocumentValidationErrorV1, UnderlayDocumentV1, VertexId,
+    InstructionTimelineValidationError, MaterialVoidEvidenceDocumentV1, Paper, Point2, ProjectId,
+    ProjectLayerDocumentV1, ProjectLayerDocumentValidationErrorV1, UnderlayDocumentV1, VertexId,
     validate_annotation_document_v1, validate_geometric_constraint_document_v1,
-    validate_instruction_timeline, validate_project_layer_document_against_pattern_v1,
-    validate_underlay_document_v1,
+    validate_instruction_timeline, validate_material_void_evidence_v1,
+    validate_project_layer_document_against_pattern_v1, validate_underlay_document_v1,
+};
+use ori_geometry::{
+    Orientation, PointPolygonRelation, SegmentIntersection, exact_polygon_orientation,
+    point_polygon_relation, segment_intersection,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -312,6 +316,11 @@ pub struct ProjectDocument {
     #[serde(default)]
     pub paper: Paper,
     pub crease_pattern: CreasePattern,
+    #[serde(
+        default,
+        skip_serializing_if = "MaterialVoidEvidenceDocumentV1::is_default"
+    )]
+    pub material_void_evidence: MaterialVoidEvidenceDocumentV1,
     #[serde(default)]
     pub instruction_timeline: InstructionTimeline,
     #[serde(default, skip_serializing_if = "ProjectNumericExpressions::is_empty")]
@@ -360,6 +369,7 @@ impl ProjectDocument {
             current_pose: None,
             paper: Paper::default(),
             crease_pattern,
+            material_void_evidence: MaterialVoidEvidenceDocumentV1::default(),
             instruction_timeline: InstructionTimeline::default(),
             numeric_expressions: ProjectNumericExpressions::default(),
             geometric_constraints: GeometricConstraintDocumentV1::default(),
@@ -394,6 +404,8 @@ pub enum FormatError {
     InvalidProjectThumbnail,
     #[error("project current pose is invalid")]
     InvalidCurrentPose,
+    #[error("project material-void evidence is invalid")]
+    InvalidMaterialVoidEvidence,
     #[error(".ori2 manifest JSON is invalid: {0}")]
     InvalidManifestJson(#[source] serde_json::Error),
     #[error(".ori2 editor-history JSON is invalid: {0}")]
@@ -694,6 +706,7 @@ fn validate_project_envelope(document: &ProjectDocument) -> Result<(), FormatErr
     }
     ori_domain::validate_element_metadata_document_v1(&document.element_metadata)
         .map_err(|_| FormatError::InvalidElementMetadata)?;
+    validate_project_material_void_evidence(document)?;
     validate_texture_assets(document)?;
     validate_reference_model_assets(document)?;
     if document.format_version != CURRENT_FORMAT_VERSION {
@@ -704,6 +717,230 @@ fn validate_project_envelope(document: &ProjectDocument) -> Result<(), FormatErr
     }
     if document.project_id.canonical_bytes() == [0; 16] {
         return Err(FormatError::NilProjectId);
+    }
+    Ok(())
+}
+
+fn validate_project_material_void_evidence(document: &ProjectDocument) -> Result<(), FormatError> {
+    const MAX_MATERIAL_VOID_INTERSECTION_TESTS_V1: usize = 2_000_000;
+    let evidence = &document.material_void_evidence;
+    validate_material_void_evidence_v1(evidence, &document.crease_pattern)
+        .map_err(|_| FormatError::InvalidMaterialVoidEvidence)?;
+    if evidence.is_default() {
+        return Ok(());
+    }
+    if evidence.source_project_id != Some(document.project_id)
+        || evidence.post_fold_model_fingerprint
+            != ori_core::fold_model_fingerprint_v1(&document.crease_pattern, &document.paper)
+    {
+        return Err(FormatError::InvalidMaterialVoidEvidence);
+    }
+
+    if document.crease_pattern.vertices.len() > ori_domain::MAX_MATERIAL_VOID_PATTERN_EDGES_V1 {
+        return Err(FormatError::InvalidMaterialVoidEvidence);
+    }
+    let mut vertex_by_id = HashMap::new();
+    vertex_by_id
+        .try_reserve(document.crease_pattern.vertices.len())
+        .map_err(|_| FormatError::InvalidMaterialVoidEvidence)?;
+    for vertex in &document.crease_pattern.vertices {
+        if vertex_by_id.insert(vertex.id, vertex.position).is_some() {
+            return Err(FormatError::InvalidMaterialVoidEvidence);
+        }
+    }
+    let mut edge_by_id = HashMap::new();
+    edge_by_id
+        .try_reserve(document.crease_pattern.edges.len())
+        .map_err(|_| FormatError::InvalidMaterialVoidEvidence)?;
+    for edge in &document.crease_pattern.edges {
+        if edge_by_id.insert(edge.id, edge).is_some() {
+            return Err(FormatError::InvalidMaterialVoidEvidence);
+        }
+    }
+    if document.paper.boundary_vertices.len() > ori_domain::MAX_MATERIAL_VOID_PATTERN_EDGES_V1 {
+        return Err(FormatError::InvalidMaterialVoidEvidence);
+    }
+    let mut outer = Vec::new();
+    outer
+        .try_reserve_exact(document.paper.boundary_vertices.len())
+        .map_err(|_| FormatError::InvalidMaterialVoidEvidence)?;
+    for id in &document.paper.boundary_vertices {
+        outer.push(
+            vertex_by_id
+                .get(id)
+                .copied()
+                .ok_or(FormatError::InvalidMaterialVoidEvidence)?,
+        );
+    }
+    if outer.len() < 3
+        || exact_polygon_orientation(&outer)
+            .map_err(|_| FormatError::InvalidMaterialVoidEvidence)?
+            == Orientation::Collinear
+    {
+        return Err(FormatError::InvalidMaterialVoidEvidence);
+    }
+    let mut intersection_work = outer
+        .len()
+        .checked_mul(outer.len().saturating_sub(1))
+        .ok_or(FormatError::InvalidMaterialVoidEvidence)?
+        / 2;
+    for (index, region) in evidence.regions.iter().enumerate() {
+        let length = region.boundary_edge_loop.len();
+        intersection_work = intersection_work
+            .checked_add(
+                length
+                    .checked_mul(length.saturating_sub(1))
+                    .ok_or(FormatError::InvalidMaterialVoidEvidence)?
+                    / 2,
+            )
+            .and_then(|work| work.checked_add(length.checked_mul(outer.len())?))
+            .ok_or(FormatError::InvalidMaterialVoidEvidence)?;
+        for other in evidence.regions.iter().skip(index + 1) {
+            intersection_work = intersection_work
+                .checked_add(
+                    length
+                        .checked_mul(other.boundary_edge_loop.len())
+                        .ok_or(FormatError::InvalidMaterialVoidEvidence)?,
+                )
+                .ok_or(FormatError::InvalidMaterialVoidEvidence)?;
+        }
+    }
+    if intersection_work > MAX_MATERIAL_VOID_INTERSECTION_TESTS_V1 {
+        return Err(FormatError::InvalidMaterialVoidEvidence);
+    }
+    validate_simple_material_void_loop(&outer)?;
+
+    let mut loops = Vec::new();
+    loops
+        .try_reserve_exact(evidence.regions.len())
+        .map_err(|_| FormatError::InvalidMaterialVoidEvidence)?;
+    for region in &evidence.regions {
+        let points =
+            material_void_loop_points(&region.boundary_edge_loop, &edge_by_id, &vertex_by_id)?;
+        validate_simple_material_void_loop(&points)?;
+        for point in &points {
+            if point_polygon_relation(*point, &outer)
+                .map_err(|_| FormatError::InvalidMaterialVoidEvidence)?
+                != PointPolygonRelation::Inside
+            {
+                return Err(FormatError::InvalidMaterialVoidEvidence);
+            }
+        }
+        reject_polygon_intersections(&points, &outer)?;
+        loops.push(points);
+    }
+    for first in 0..loops.len() {
+        for second in first + 1..loops.len() {
+            reject_polygon_intersections(&loops[first], &loops[second])?;
+            if point_polygon_relation(loops[first][0], &loops[second])
+                .map_err(|_| FormatError::InvalidMaterialVoidEvidence)?
+                != PointPolygonRelation::Outside
+                || point_polygon_relation(loops[second][0], &loops[first])
+                    .map_err(|_| FormatError::InvalidMaterialVoidEvidence)?
+                    != PointPolygonRelation::Outside
+            {
+                return Err(FormatError::InvalidMaterialVoidEvidence);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn material_void_loop_points(
+    loop_edges: &[EdgeId],
+    edge_by_id: &HashMap<EdgeId, &ori_domain::Edge>,
+    vertex_by_id: &HashMap<VertexId, Point2>,
+) -> Result<Vec<Point2>, FormatError> {
+    let first = edge_by_id
+        .get(&loop_edges[0])
+        .ok_or(FormatError::InvalidMaterialVoidEvidence)?;
+    let second = edge_by_id
+        .get(&loop_edges[1])
+        .ok_or(FormatError::InvalidMaterialVoidEvidence)?;
+    let shared = [first.start, first.end]
+        .into_iter()
+        .find(|vertex| *vertex == second.start || *vertex == second.end)
+        .ok_or(FormatError::InvalidMaterialVoidEvidence)?;
+    let mut current = if first.start == shared {
+        first.end
+    } else {
+        first.start
+    };
+    let mut points = Vec::new();
+    points
+        .try_reserve_exact(loop_edges.len())
+        .map_err(|_| FormatError::InvalidMaterialVoidEvidence)?;
+    for edge_id in loop_edges {
+        let edge = edge_by_id
+            .get(edge_id)
+            .ok_or(FormatError::InvalidMaterialVoidEvidence)?;
+        points.push(
+            *vertex_by_id
+                .get(&current)
+                .ok_or(FormatError::InvalidMaterialVoidEvidence)?,
+        );
+        current = if edge.start == current {
+            edge.end
+        } else if edge.end == current {
+            edge.start
+        } else {
+            return Err(FormatError::InvalidMaterialVoidEvidence);
+        };
+    }
+    let first_edge = edge_by_id
+        .get(&loop_edges[0])
+        .ok_or(FormatError::InvalidMaterialVoidEvidence)?;
+    let start = if first_edge.start == shared {
+        first_edge.end
+    } else {
+        first_edge.start
+    };
+    if current != start {
+        return Err(FormatError::InvalidMaterialVoidEvidence);
+    }
+    Ok(points)
+}
+
+fn validate_simple_material_void_loop(points: &[Point2]) -> Result<(), FormatError> {
+    if exact_polygon_orientation(points).map_err(|_| FormatError::InvalidMaterialVoidEvidence)?
+        == Orientation::Collinear
+    {
+        return Err(FormatError::InvalidMaterialVoidEvidence);
+    }
+    for first in 0..points.len() {
+        for second in first + 1..points.len() {
+            let adjacent = second == first + 1 || (first == 0 && second + 1 == points.len());
+            let relation = segment_intersection(
+                points[first],
+                points[(first + 1) % points.len()],
+                points[second],
+                points[(second + 1) % points.len()],
+            )
+            .map_err(|_| FormatError::InvalidMaterialVoidEvidence)?;
+            match (adjacent, relation) {
+                (true, SegmentIntersection::Point(_)) | (false, SegmentIntersection::None) => {}
+                _ => return Err(FormatError::InvalidMaterialVoidEvidence),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn reject_polygon_intersections(first: &[Point2], second: &[Point2]) -> Result<(), FormatError> {
+    for first_index in 0..first.len() {
+        for second_index in 0..second.len() {
+            if segment_intersection(
+                first[first_index],
+                first[(first_index + 1) % first.len()],
+                second[second_index],
+                second[(second_index + 1) % second.len()],
+            )
+            .map_err(|_| FormatError::InvalidMaterialVoidEvidence)?
+                != SegmentIntersection::None
+            {
+                return Err(FormatError::InvalidMaterialVoidEvidence);
+            }
+        }
     }
     Ok(())
 }
@@ -1117,10 +1354,272 @@ mod tests {
         AssetId, Edge, EdgeId, EdgeKind, EdgeLayerAssignmentV1, FaceId,
         GeometricConstraintRecordV1, InstructionHingeAngle, InstructionPose, InstructionPoseModel,
         InstructionStep, InstructionStepId, LayerContentKindV1, LayerId, LayerRecordV1,
-        LengthDisplayUnit, PaperAppearance, Point2, RgbaColor, Vertex, VertexId,
+        LengthDisplayUnit, MaterialVoidRegionEvidenceV1, PaperAppearance, Point2, RgbaColor,
+        Vertex, VertexId, material_void_region_id_sha256_v1,
     };
 
     use super::*;
+
+    fn add_material_void_evidence(document: &mut ProjectDocument) {
+        let outer_vertices = [
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+        ];
+        for (id, position) in outer_vertices.into_iter().zip([
+            Point2::new(-10.0, -10.0),
+            Point2::new(100.0, -10.0),
+            Point2::new(100.0, 100.0),
+            Point2::new(-10.0, 100.0),
+        ]) {
+            document
+                .crease_pattern
+                .vertices
+                .push(Vertex { id, position });
+        }
+        for index in 0..outer_vertices.len() {
+            document.crease_pattern.edges.push(Edge {
+                id: EdgeId::new(),
+                start: outer_vertices[index],
+                end: outer_vertices[(index + 1) % outer_vertices.len()],
+                kind: EdgeKind::Boundary,
+            });
+        }
+        document.paper.boundary_vertices = outer_vertices.to_vec();
+        let vertices = [
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+        ];
+        let mut edges = [EdgeId::new(), EdgeId::new(), EdgeId::new(), EdgeId::new()];
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        for (id, position) in vertices.into_iter().zip([
+            Point2::new(20.0, 20.0),
+            Point2::new(30.0, 20.0),
+            Point2::new(30.0, 30.0),
+            Point2::new(20.0, 30.0),
+        ]) {
+            document
+                .crease_pattern
+                .vertices
+                .push(Vertex { id, position });
+        }
+        for (index, id) in edges.into_iter().enumerate() {
+            document.crease_pattern.edges.push(Edge {
+                id,
+                start: vertices[index],
+                end: vertices[(index + 1) % vertices.len()],
+                kind: EdgeKind::Cut,
+            });
+        }
+        document.paper.cutting_allowed = true;
+        let removal_plan_sha256 = [0x31; 32];
+        let removed_component_keys = vec![[0x41; 32]];
+        let boundary_edge_loop = edges.to_vec();
+        let region_id_sha256 = material_void_region_id_sha256_v1(
+            removal_plan_sha256,
+            &removed_component_keys,
+            &boundary_edge_loop,
+        );
+        let fold_model_fingerprint =
+            ori_core::fold_model_fingerprint_v1(&document.crease_pattern, &document.paper);
+        document.material_void_evidence = MaterialVoidEvidenceDocumentV1 {
+            version: 1,
+            source_project_id: Some(document.project_id),
+            source_revision: 9,
+            source_fold_model_fingerprint: "c".repeat(64),
+            post_fold_model_fingerprint: fold_model_fingerprint,
+            regions: vec![MaterialVoidRegionEvidenceV1 {
+                region_id_sha256,
+                removal_plan_sha256,
+                removed_component_keys,
+                boundary_edge_loop,
+            }],
+        };
+    }
+
+    fn append_material_void_region(
+        document: &mut ProjectDocument,
+        points: [Point2; 4],
+        marker: u8,
+    ) {
+        let vertices = [
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+        ];
+        let mut edges = [EdgeId::new(), EdgeId::new(), EdgeId::new(), EdgeId::new()];
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        for (id, position) in vertices.into_iter().zip(points) {
+            document
+                .crease_pattern
+                .vertices
+                .push(Vertex { id, position });
+        }
+        for (index, id) in edges.into_iter().enumerate() {
+            document.crease_pattern.edges.push(Edge {
+                id,
+                start: vertices[index],
+                end: vertices[(index + 1) % vertices.len()],
+                kind: EdgeKind::Cut,
+            });
+        }
+        let removal_plan_sha256 = [marker; 32];
+        let removed_component_keys = vec![[marker.wrapping_add(1); 32]];
+        let boundary_edge_loop = edges.to_vec();
+        let region_id_sha256 = material_void_region_id_sha256_v1(
+            removal_plan_sha256,
+            &removed_component_keys,
+            &boundary_edge_loop,
+        );
+        document
+            .material_void_evidence
+            .regions
+            .push(MaterialVoidRegionEvidenceV1 {
+                region_id_sha256,
+                removal_plan_sha256,
+                removed_component_keys,
+                boundary_edge_loop,
+            });
+        document
+            .material_void_evidence
+            .regions
+            .sort_unstable_by_key(|region| region.region_id_sha256);
+        document.material_void_evidence.post_fold_model_fingerprint =
+            ori_core::fold_model_fingerprint_v1(&document.crease_pattern, &document.paper);
+    }
+
+    #[test]
+    fn passive_material_void_evidence_round_trips_and_defaults_byte_stably() {
+        let default = sample_document();
+        let default_json = write_project_json(&default).unwrap();
+        assert!(
+            !String::from_utf8(default_json.clone())
+                .unwrap()
+                .contains("material_void_evidence")
+        );
+        let legacy = read_project_json(&default_json).unwrap();
+        assert!(legacy.material_void_evidence.is_default());
+        assert_eq!(write_project_json(&legacy).unwrap(), default_json);
+
+        let mut document = sample_document();
+        add_material_void_evidence(&mut document);
+        let json = write_project_json(&document).unwrap();
+        assert_eq!(read_project_json(&json).unwrap(), document);
+        let ori2 = write_project_ori2(&document).unwrap();
+        assert_eq!(read_project_ori2(&ori2).unwrap(), document);
+        let folder =
+            write_project_folder_v1(&Ori2ProjectArchive::document_only(document.clone())).unwrap();
+        let restored_folder = read_project_folder_v1(folder.entries()).unwrap();
+        assert_eq!(&restored_folder.archive().document, &document);
+
+        let mut stale = document.clone();
+        stale.crease_pattern.vertices.last_mut().unwrap().position.x += 1.0;
+        assert!(matches!(
+            write_project_json(&stale),
+            Err(FormatError::InvalidMaterialVoidEvidence)
+        ));
+        stale.crease_pattern.vertices.last_mut().unwrap().position.x -= 1.0;
+        assert_eq!(write_project_json(&stale).unwrap(), json);
+
+        let mut non_cut = document.clone();
+        let cut = non_cut.material_void_evidence.regions[0].boundary_edge_loop[0];
+        non_cut
+            .crease_pattern
+            .edges
+            .iter_mut()
+            .find(|edge| edge.id == cut)
+            .unwrap()
+            .kind = EdgeKind::Mountain;
+        non_cut.material_void_evidence.post_fold_model_fingerprint =
+            ori_core::fold_model_fingerprint_v1(&non_cut.crease_pattern, &non_cut.paper);
+        assert!(matches!(
+            write_project_json(&non_cut),
+            Err(FormatError::InvalidMaterialVoidEvidence)
+        ));
+
+        let mut unknown: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        unknown["material_void_evidence"]["regions"][0]["unknown"] = serde_json::json!(true);
+        assert!(matches!(
+            read_project_json(&serde_json::to_vec(&unknown).unwrap()),
+            Err(FormatError::InvalidJson(_))
+        ));
+        let mut nondefault_empty = sample_document();
+        nondefault_empty.material_void_evidence.source_project_id =
+            Some(nondefault_empty.project_id);
+        assert!(matches!(
+            write_project_json(&nondefault_empty),
+            Err(FormatError::InvalidMaterialVoidEvidence)
+        ));
+
+        let mut unsupported = document.clone();
+        unsupported.material_void_evidence.version = 2;
+        assert!(matches!(
+            write_project_json(&unsupported),
+            Err(FormatError::InvalidMaterialVoidEvidence)
+        ));
+    }
+
+    #[test]
+    fn passive_material_void_geometry_accepts_only_strictly_disjoint_simple_regions() {
+        let mut disjoint = sample_document();
+        add_material_void_evidence(&mut disjoint);
+        append_material_void_region(
+            &mut disjoint,
+            [
+                Point2::new(40.0, 40.0),
+                Point2::new(50.0, 40.0),
+                Point2::new(50.0, 50.0),
+                Point2::new(40.0, 50.0),
+            ],
+            0x51,
+        );
+        write_project_json(&disjoint).unwrap();
+
+        for points in [
+            [
+                Point2::new(22.0, 22.0),
+                Point2::new(24.0, 22.0),
+                Point2::new(24.0, 24.0),
+                Point2::new(22.0, 24.0),
+            ],
+            [
+                Point2::new(30.0, 22.0),
+                Point2::new(35.0, 22.0),
+                Point2::new(35.0, 28.0),
+                Point2::new(30.0, 28.0),
+            ],
+            [
+                Point2::new(25.0, 25.0),
+                Point2::new(35.0, 25.0),
+                Point2::new(35.0, 35.0),
+                Point2::new(25.0, 35.0),
+            ],
+            [
+                Point2::new(40.0, 40.0),
+                Point2::new(50.0, 50.0),
+                Point2::new(40.0, 50.0),
+                Point2::new(50.0, 40.0),
+            ],
+            [
+                Point2::new(40.0, 40.0),
+                Point2::new(45.0, 40.0),
+                Point2::new(50.0, 40.0),
+                Point2::new(55.0, 40.0),
+            ],
+        ] {
+            let mut invalid = sample_document();
+            add_material_void_evidence(&mut invalid);
+            append_material_void_region(&mut invalid, points, 0x61);
+            assert!(matches!(
+                write_project_json(&invalid),
+                Err(FormatError::InvalidMaterialVoidEvidence)
+            ));
+        }
+    }
 
     #[test]
     fn json_and_ori2_writers_reject_invalid_underlay_documents() {

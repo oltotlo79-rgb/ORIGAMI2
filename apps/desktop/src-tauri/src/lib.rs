@@ -539,6 +539,7 @@ struct ProjectState {
     numeric_expressions: ProjectNumericExpressions,
     texture_assets: Vec<ori_formats::ProjectTextureAssetV1>,
     reference_model_assets: Vec<ori_formats::ProjectReferenceModelAssetV1>,
+    material_void_evidence: ori_domain::MaterialVoidEvidenceDocumentV1,
     saved_revision: Option<u64>,
     saved_document: Option<ProjectDocument>,
 }
@@ -562,6 +563,7 @@ impl ProjectState {
             numeric_expressions: ProjectNumericExpressions::default(),
             texture_assets: Vec::new(),
             reference_model_assets: Vec::new(),
+            material_void_evidence: Default::default(),
             saved_revision: None,
             saved_document: None,
         };
@@ -585,6 +587,7 @@ impl ProjectState {
             numeric_expressions: ProjectNumericExpressions::default(),
             texture_assets: Vec::new(),
             reference_model_assets: Vec::new(),
+            material_void_evidence: Default::default(),
             saved_revision: None,
             saved_document: None,
         }
@@ -602,6 +605,7 @@ impl ProjectState {
         let numeric_expressions = document.numeric_expressions;
         let texture_assets = document.texture_assets;
         let reference_model_assets = document.reference_model_assets;
+        let material_void_evidence = document.material_void_evidence;
         let mut editor = EditorState::with_all_document_parts_annotations_underlays_and_memo(
             document.crease_pattern,
             document.paper,
@@ -627,6 +631,7 @@ impl ProjectState {
             numeric_expressions,
             texture_assets,
             reference_model_assets,
+            material_void_evidence,
             saved_document: Some(saved_document),
             editor,
         }
@@ -661,6 +666,7 @@ impl ProjectState {
         saved_document.numeric_expressions.vertex_redo_stack.clear();
         let texture_assets = document.texture_assets.clone();
         let reference_model_assets = document.reference_model_assets.clone();
+        let material_void_evidence = document.material_void_evidence.clone();
         let archived_layer_evidence = project.layer_evidence.clone();
         let mut restored = Self {
             instance_id: ProjectId::new(),
@@ -673,6 +679,7 @@ impl ProjectState {
             numeric_expressions: document.numeric_expressions,
             texture_assets,
             reference_model_assets,
+            material_void_evidence,
             saved_document: Some(saved_document),
             editor,
         };
@@ -707,6 +714,7 @@ impl ProjectState {
         )?;
         let texture_assets = document.texture_assets.clone();
         let reference_model_assets = document.reference_model_assets.clone();
+        let material_void_evidence = document.material_void_evidence.clone();
         let mut restored = Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
@@ -718,6 +726,7 @@ impl ProjectState {
             numeric_expressions: document.numeric_expressions,
             texture_assets,
             reference_model_assets,
+            material_void_evidence,
             saved_document: None,
             editor,
         };
@@ -746,6 +755,7 @@ impl ProjectState {
             current_pose: current_pose_document(&self.editor),
             paper: self.editor.paper().clone(),
             crease_pattern: self.editor.pattern().clone(),
+            material_void_evidence: self.material_void_evidence.clone(),
             instruction_timeline: self.editor.instruction_timeline().clone(),
             numeric_expressions,
             geometric_constraints: self.editor.geometric_constraints().clone(),
@@ -16319,6 +16329,65 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn project_state_preserves_passive_material_void_evidence_from_document() {
+        let sheet = create_rectangular_sheet(100.0, 100.0, true).unwrap();
+        let (mut pattern, paper) = sheet.into_parts();
+        let vertices = [
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+            VertexId::new(),
+        ];
+        let mut edges = [EdgeId::new(), EdgeId::new(), EdgeId::new(), EdgeId::new()];
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        for (id, position) in vertices.into_iter().zip([
+            Point2::new(20.0, 20.0),
+            Point2::new(30.0, 20.0),
+            Point2::new(30.0, 30.0),
+            Point2::new(20.0, 30.0),
+        ]) {
+            pattern.vertices.push(Vertex { id, position });
+        }
+        for (index, id) in edges.into_iter().enumerate() {
+            pattern.edges.push(Edge {
+                id,
+                start: vertices[index],
+                end: vertices[(index + 1) % vertices.len()],
+                kind: EdgeKind::Cut,
+            });
+        }
+        let mut document = ProjectDocument::new("Passive void", pattern);
+        document.paper = paper;
+        let removal_plan_sha256 = [0x31; 32];
+        let removed_component_keys = vec![[0x41; 32]];
+        let boundary_edge_loop = edges.to_vec();
+        let region_id_sha256 = ori_domain::material_void_region_id_sha256_v1(
+            removal_plan_sha256,
+            &removed_component_keys,
+            &boundary_edge_loop,
+        );
+        let fingerprint =
+            ori_core::fold_model_fingerprint_v1(&document.crease_pattern, &document.paper);
+        document.material_void_evidence = ori_domain::MaterialVoidEvidenceDocumentV1 {
+            version: 1,
+            source_project_id: Some(document.project_id),
+            source_revision: 8,
+            source_fold_model_fingerprint: "c".repeat(64),
+            post_fold_model_fingerprint: fingerprint,
+            regions: vec![ori_domain::MaterialVoidRegionEvidenceV1 {
+                region_id_sha256,
+                removal_plan_sha256,
+                removed_component_keys,
+                boundary_edge_loop,
+            }],
+        };
+        let expected = document.material_void_evidence.clone();
+        let project = ProjectState::from_document(document, PathBuf::from("passive-void.ori2"));
+        assert_eq!(project.material_void_evidence, expected);
+        assert_eq!(project.document().material_void_evidence, expected);
     }
 
     #[test]

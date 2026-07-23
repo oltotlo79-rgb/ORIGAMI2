@@ -52,6 +52,7 @@ import { ThemeControl } from './components/ThemeControl'
 import { UpdateCheckPopover } from './components/UpdateCheckControl'
 import { WorkspaceLayoutControl } from './components/WorkspaceLayoutControl'
 import { WorkspaceLayoutSeparator } from './components/WorkspaceLayoutSeparator'
+import { BulkIntersectionRepairControl } from './components/BulkIntersectionRepairControl'
 import { PairMeasurementStatus } from './components/PairMeasurementStatus'
 import type { InstructionOnionSkinRequest } from './lib/instructionOnionSkin'
 import {
@@ -2491,10 +2492,6 @@ function App() {
   const repairAllIntersections = useCallback(async () => {
     const count = validation?.issues.filter((issue) => issue.code === 'unsplit_intersection').length ?? 0
     if (count === 0 || bulkIntersectionRepairPending) return
-    if (!window.confirm(text({
-      ja: `${count}件の未分割交差を一括修復しますか？`,
-      en: `Repair ${count} unsplit intersections as one undoable edit?`,
-    }))) return
     setBulkIntersectionRepairPending(true)
     try {
       const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
@@ -10455,21 +10452,13 @@ function App() {
                       en: '{count} issues were found.',
                     }, { count: validation.issues.length })}
                   </p>
-                  {validation.issues.some((issue) => issue.code === 'unsplit_intersection') && (
-                    <button
-                      type="button"
-                      data-testid="repair-all-unsplit-intersections"
-                      disabled={coreBusy || fileOperation !== null || bulkIntersectionRepairPending}
-                      onClick={() => void repairAllIntersections()}
-                    >
-                      {bulkIntersectionRepairPending
-                        ? text({ ja: '一括修復中…', en: 'Repairing…' })
-                        : text({
-                            ja: `交差を一括修復（${validation.issues.filter((issue) => issue.code === 'unsplit_intersection').length}件）`,
-                            en: `Repair all intersections (${validation.issues.filter((issue) => issue.code === 'unsplit_intersection').length})`,
-                          })}
-                    </button>
-                  )}
+                  <BulkIntersectionRepairControl
+                    count={validation.issues.filter((issue) => issue.code === 'unsplit_intersection').length}
+                    pending={bulkIntersectionRepairPending}
+                    disabled={coreBusy || fileOperation !== null}
+                    locale={locale}
+                    onConfirm={() => void repairAllIntersections()}
+                  />
                   <ul>
                     {validation.issues.slice(0, 20).map((issue, index) => {
                       const edgeId = issue.edges.find((id) =>

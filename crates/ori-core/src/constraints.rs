@@ -432,6 +432,70 @@ pub enum ConstraintPreflightV1 {
     },
 }
 
+pub const MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1: usize = 16;
+pub const MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1: usize = 65_535;
+
+/// Sound but intentionally incomplete subset oracle over the exact direct
+/// contradiction theorems. `Unknown` never means satisfiable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum BoundedDirectMusV1 {
+    ProvenUnsatisfiable {
+        constraint_ids: Vec<ConstraintId>,
+        oracle_calls: usize,
+    },
+    Unknown {
+        oracle_calls: usize,
+    },
+}
+
+pub fn find_bounded_direct_mus_v1(set: &GeometricConstraintSetV1<'_>) -> BoundedDirectMusV1 {
+    let count = set.constraints.len();
+    if count == 0 || count > MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1 {
+        return BoundedDirectMusV1::Unknown { oracle_calls: 0 };
+    }
+    let mut oracle_calls = 0_usize;
+    for size in 1..=count {
+        for mask in 1_u64..(1_u64 << count) {
+            if mask.count_ones() as usize != size {
+                continue;
+            }
+            oracle_calls += 1;
+            if oracle_calls > MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1 {
+                return BoundedDirectMusV1::Unknown {
+                    oracle_calls: oracle_calls - 1,
+                };
+            }
+            let constraints = set
+                .constraints
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1_u64 << index) != 0)
+                .map(|(_, record)| record.clone())
+                .collect::<Vec<_>>();
+            let candidate = GeometricConstraintSetV1 {
+                source_pattern: set.source_pattern,
+                constraints,
+                max_preflight_checks: set.max_preflight_checks,
+            };
+            if matches!(
+                preflight_direct_conflicts_v1(&candidate),
+                ConstraintPreflightV1::DirectConflict { .. }
+            ) {
+                return BoundedDirectMusV1::ProvenUnsatisfiable {
+                    constraint_ids: candidate
+                        .constraints
+                        .iter()
+                        .map(|record| record.id)
+                        .collect(),
+                    oracle_calls,
+                };
+            }
+        }
+    }
+    BoundedDirectMusV1::Unknown { oracle_calls }
+}
+
 #[derive(Clone, Copy)]
 struct GeometryRegistry<'a> {
     vertices: &'a BTreeMap<CanonicalId, &'a Vertex>,
@@ -6029,5 +6093,67 @@ mod tests {
             | GeometricConstraintKindV1::RotationalSymmetry { .. }
             | GeometricConstraintKindV1::LengthRatio { .. } => {}
         }
+    }
+
+    #[test]
+    fn bounded_direct_oracle_returns_deletion_minimal_sound_mus_at_four_eight_sixteen() {
+        for count in [4, 8, 16] {
+            let fixture = Fixture::new();
+            let mut records = vec![
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[0],
+                }),
+                record(GeometricConstraintKindV1::Vertical {
+                    edge: fixture.edges[0],
+                }),
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[0],
+                    length_mm: 1.0,
+                }),
+            ];
+            records.extend((3..count).map(|index| {
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[index % 6],
+                })
+            }));
+            let prepared = prepare(&fixture, &document(records)).unwrap();
+            let BoundedDirectMusV1::ProvenUnsatisfiable {
+                constraint_ids,
+                oracle_calls,
+            } = find_bounded_direct_mus_v1(&prepared)
+            else {
+                panic!("the exact direct theorem must prove a bounded MUS")
+            };
+            assert_eq!(constraint_ids.len(), 3);
+            assert!(oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1);
+            for removed in &constraint_ids {
+                let subset = prepared
+                    .constraints
+                    .iter()
+                    .filter(|record| constraint_ids.contains(&record.id) && record.id != *removed)
+                    .cloned()
+                    .collect();
+                let candidate = GeometricConstraintSetV1 {
+                    source_pattern: &fixture.pattern,
+                    constraints: subset,
+                    max_preflight_checks: prepared.max_preflight_checks,
+                };
+                assert!(!matches!(
+                    preflight_direct_conflicts_v1(&candidate),
+                    ConstraintPreflightV1::DirectConflict { .. }
+                ));
+            }
+        }
+        let fixture = Fixture::new();
+        let records = (0..17).map(|index| {
+            record(GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[index % 6],
+            })
+        });
+        let prepared = prepare(&fixture, &document(records)).unwrap();
+        assert_eq!(
+            find_bounded_direct_mus_v1(&prepared),
+            BoundedDirectMusV1::Unknown { oracle_calls: 0 }
+        );
     }
 }

@@ -115,11 +115,13 @@ pub use schedule::{
 };
 pub use transform::{Point3, RigidTransform, deterministic_sin_cos_degrees};
 pub use tree::{
-    BoundMaterialTreePose, CALLER_EMBEDDING_OBSERVATION_MODEL_ID, CanonicalHingeAngles, HingeAngle,
-    MATERIAL_TREE_KINEMATICS_MODEL_ID, MaterialFaceBoundary, MaterialHingeGraphGeometry,
-    MaterialHingePairCanonicalInputV1, MaterialHingePairProjectionV1, MaterialTreeKinematicsModel,
-    MaterialTreePose, ObservationTreeKinematicsModel, ObservationTreePose, TreeHinge,
-    TreeKinematicsLimits, VertexPosition3, assignment_signed_angle_degrees_v1,
+    BoundMaterialTreePose, CALLER_EMBEDDING_OBSERVATION_MODEL_ID, CanonicalHingeAngles,
+    EFFECTIVE_CUT_KINEMATICS_DIAGNOSTIC_MODEL_ID_V1, EffectiveCutKinematicsDiagnosticV1,
+    HingeAngle, MATERIAL_TREE_KINEMATICS_MODEL_ID, MaterialFaceBoundary,
+    MaterialHingeGraphGeometry, MaterialHingePairCanonicalInputV1, MaterialHingePairProjectionV1,
+    MaterialTreeKinematicsModel, MaterialTreePose, ObservationTreeKinematicsModel,
+    ObservationTreePose, TreeHinge, TreeKinematicsLimits, VertexPosition3,
+    assignment_signed_angle_degrees_v1, prepare_effective_cut_kinematics_diagnostic_v1,
     prepare_material_hinge_pair_projection_v1, revalidate_material_hinge_pair_projection_v1,
 };
 

@@ -6,9 +6,10 @@ use std::{
 use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, VertexId};
 use ori_geometry::{SegmentIntersection, polygon_signed_double_area, segment_intersection};
 use ori_topology::{
-    CanonicalFaceKeyError, EdgeIncidence, FaceAdjacency, FaceKey, FoldAssignment, TopologySnapshot,
-    canonical_face_key,
+    CanonicalFaceKeyError, EdgeIncidence, EffectiveCutMaterialSnapshotDiagnosticV1, FaceAdjacency,
+    FaceExtractionInput, FaceKey, FoldAssignment, TopologySnapshot, canonical_face_key,
 };
+use sha2::{Digest, Sha256};
 
 use crate::{
     KinematicsError,
@@ -18,6 +19,8 @@ use crate::{
 pub const MATERIAL_TREE_KINEMATICS_MODEL_ID: &str = "material_tree_kinematics_mm_v1";
 pub const CALLER_EMBEDDING_OBSERVATION_MODEL_ID: &str =
     "caller_embedding_tree_kinematics_observation_v1";
+pub const EFFECTIVE_CUT_KINEMATICS_DIAGNOSTIC_MODEL_ID_V1: &str =
+    "effective_cut_kinematics_diagnostic_v1";
 const MAX_SIMPLE_BOUNDARY_EXACT_INTERSECTION_TESTS: usize = 10_000_000;
 
 /// Hard work bounds checked before model allocations.
@@ -289,6 +292,148 @@ pub struct MaterialHingeGraphGeometry {
     hinges: Vec<TreeHinge>,
     positions: HashMap<VertexId, Point3>,
     face_boundaries: Vec<PreparedFaceBoundary>,
+}
+
+/// Opaque, observation-only kinematics geometry for one authenticated
+/// effective-cut material snapshot.
+///
+/// This type intentionally exposes no geometry or pose-model conversion.
+#[derive(Debug, Clone)]
+pub struct EffectiveCutKinematicsDiagnosticV1 {
+    face_count: usize,
+    hinge_count: usize,
+    source_fingerprint: [u8; 32],
+    fingerprint: [u8; 32],
+    limits: TreeKinematicsLimits,
+}
+
+impl EffectiveCutKinematicsDiagnosticV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        EFFECTIVE_CUT_KINEMATICS_DIAGNOSTIC_MODEL_ID_V1
+    }
+    #[must_use]
+    pub fn face_count(&self) -> usize {
+        self.face_count
+    }
+    #[must_use]
+    pub fn hinge_count(&self) -> usize {
+        self.hinge_count
+    }
+    #[must_use]
+    pub const fn fingerprint_v1(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+    #[must_use]
+    pub const fn authorizes_simulation_admission(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_pose_solving(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_persistence(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn is_for(
+        &self,
+        effective: &EffectiveCutMaterialSnapshotDiagnosticV1,
+        input: FaceExtractionInput<'_>,
+        limits: TreeKinematicsLimits,
+    ) -> bool {
+        limits == self.limits
+            && effective.fingerprint_v1() == self.source_fingerprint
+            && prepare_effective_cut_kinematics_diagnostic_v1(effective, input, limits)
+                .is_ok_and(|current| current.fingerprint == self.fingerprint)
+    }
+}
+
+/// Revalidates an effective-cut diagnostic and prepares an opaque kinematics
+/// observation. Raw kinematics preparation continues to reject every cut.
+pub fn prepare_effective_cut_kinematics_diagnostic_v1(
+    effective: &EffectiveCutMaterialSnapshotDiagnosticV1,
+    input: FaceExtractionInput<'_>,
+    limits: TreeKinematicsLimits,
+) -> Result<EffectiveCutKinematicsDiagnosticV1, KinematicsError> {
+    if !effective.is_for(input) {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    let converted = effective
+        .converted_crossing_cut_boundaries()
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    if converted.len() != effective.converted_crossing_cut_boundaries().len()
+        || effective
+            .snapshot()
+            .edge_incidence
+            .iter()
+            .any(|(_, incidence)| matches!(incidence, EdgeIncidence::Cut { .. }))
+    {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    for edge in &converted {
+        if !effective
+            .snapshot()
+            .edge_incidence
+            .iter()
+            .any(|(candidate, incidence)| {
+                candidate == edge && matches!(incidence, EdgeIncidence::Boundary { .. })
+            })
+        {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+    }
+    let positions = input
+        .pattern
+        .vertices
+        .iter()
+        .filter(|vertex| vertex.position.x.is_finite() && vertex.position.y.is_finite())
+        .map(|vertex| {
+            Ok(VertexPosition3::new(
+                vertex.id,
+                Point3::new(vertex.position.x, 0.0, -vertex.position.y)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, KinematicsError>>()?;
+    let prepared = prepare_material_graph_effective(
+        input.pattern,
+        input.paper,
+        effective.snapshot(),
+        &positions,
+        limits,
+        &converted,
+    )?;
+    let face_ids = prepared.face_ids;
+    let hinge_edges = prepared
+        .hinges
+        .iter()
+        .map(|hinge| hinge.edge)
+        .collect::<Vec<_>>();
+    let mut hash = Sha256::new();
+    hash.update(EFFECTIVE_CUT_KINEMATICS_DIAGNOSTIC_MODEL_ID_V1.as_bytes());
+    hash.update(effective.fingerprint_v1());
+    hash.update((face_ids.len() as u64).to_be_bytes());
+    for face in &face_ids {
+        hash.update(face.canonical_bytes());
+    }
+    hash.update((hinge_edges.len() as u64).to_be_bytes());
+    for hinge in &hinge_edges {
+        hash.update(hinge.canonical_bytes());
+    }
+    Ok(EffectiveCutKinematicsDiagnosticV1 {
+        face_count: face_ids.len(),
+        hinge_count: hinge_edges.len(),
+        source_fingerprint: effective.fingerprint_v1(),
+        fingerprint: hash.finalize().into(),
+        limits,
+    })
 }
 
 impl MaterialHingeGraphGeometry {
@@ -947,6 +1092,8 @@ fn prepare_tree(
         &positions,
         &source_positions,
         &mut simple_boundary_budget,
+        None,
+        None,
     )?;
     let incidences = unique_incidences(topology, &edges)?;
     let (face_ids, face_boundaries, face_keys, occurrences) = validate_faces(
@@ -956,7 +1103,7 @@ fn prepare_tree(
         &source_positions,
         &mut simple_boundary_budget,
     )?;
-    validate_incidences(&edges, &incidences, &face_ids, &occurrences)?;
+    validate_incidences(&edges, &incidences, &face_ids, &occurrences, None)?;
     validate_adjacency_registry(topology, &incidences, &face_keys)?;
     retain_material_positions(&mut positions, &edges)?;
 
@@ -1179,6 +1326,8 @@ fn unique_edges<'a>(
     positions: &HashMap<VertexId, Point3>,
     source_positions: &HashMap<VertexId, Point2>,
     simple_boundary_budget: &mut SimpleBoundaryValidationBudget,
+    effective_edge_ids: Option<&HashSet<EdgeId>>,
+    effective_cut_boundaries: Option<&HashSet<EdgeId>>,
 ) -> Result<HashMap<EdgeId, &'a Edge>, KinematicsError> {
     let mut boundary_vertices = HashSet::new();
     boundary_vertices
@@ -1235,13 +1384,18 @@ fn unique_edges<'a>(
         .try_reserve(positions.len())
         .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
     for edge in &pattern.edges {
+        if effective_edge_ids.is_some_and(|active| !active.contains(&edge.id)) {
+            continue;
+        }
         if edges.insert(edge.id, edge).is_some() {
             return Err(KinematicsError::UnsupportedTopology);
         }
         if edge.kind == EdgeKind::Auxiliary {
             continue;
         }
-        if edge.kind == EdgeKind::Cut {
+        if edge.kind == EdgeKind::Cut
+            && !effective_cut_boundaries.is_some_and(|allowed| allowed.contains(&edge.id))
+        {
             return Err(KinematicsError::UnsupportedTopology);
         }
         if edge.start == edge.end {
@@ -1605,6 +1759,7 @@ fn validate_incidences(
     incidences: &HashMap<EdgeId, EdgeIncidence>,
     face_ids: &[FaceId],
     occurrences: &HashMap<EdgeId, Vec<EdgeOccurrence>>,
+    effective_cut_boundaries: Option<&HashSet<EdgeId>>,
 ) -> Result<(), KinematicsError> {
     let mut faces = HashSet::new();
     faces
@@ -1619,7 +1774,10 @@ fn validate_incidences(
         let edge_occurrences = occurrences.get(edge_id).map(Vec::as_slice).unwrap_or(&[]);
         match incidence {
             EdgeIncidence::Boundary { material } => {
-                if source.kind != EdgeKind::Boundary
+                if !(source.kind == EdgeKind::Boundary
+                    || (source.kind == EdgeKind::Cut
+                        && effective_cut_boundaries
+                            .is_some_and(|allowed| allowed.contains(edge_id))))
                     || !faces.contains(&material)
                     || edge_occurrences.len() != 1
                     || edge_occurrences[0].0 != material
@@ -1794,6 +1952,8 @@ fn prepare_material_graph(
         &positions,
         &source_positions,
         &mut simple_boundary_budget,
+        None,
+        None,
     )?;
     let incidences = unique_incidences(topology, &edges)?;
     let (face_ids, face_boundaries, face_keys, occurrences) = validate_faces(
@@ -1803,7 +1963,7 @@ fn prepare_material_graph(
         &source_positions,
         &mut simple_boundary_budget,
     )?;
-    validate_incidences(&edges, &incidences, &face_ids, &occurrences)?;
+    validate_incidences(&edges, &incidences, &face_ids, &occurrences, None)?;
     validate_adjacency_registry(topology, &incidences, &face_keys)?;
     retain_material_positions(&mut positions, &edges)?;
 
@@ -1852,6 +2012,97 @@ fn prepare_material_graph(
     if hinges.windows(2).any(|pair| pair[0].edge == pair[1].edge) {
         return Err(KinematicsError::UnsupportedTopology);
     }
+    Ok(PreparedMaterialGraph {
+        face_ids,
+        hinges,
+        positions,
+        face_boundaries,
+    })
+}
+
+fn prepare_material_graph_effective(
+    pattern: &CreasePattern,
+    paper: &Paper,
+    topology: &TopologySnapshot,
+    supplied_positions: &[VertexPosition3],
+    limits: TreeKinematicsLimits,
+    converted_cut_boundaries: &HashSet<EdgeId>,
+) -> Result<PreparedMaterialGraph, KinematicsError> {
+    check_raw_resource_counts(pattern, paper, topology, supplied_positions.len(), limits)?;
+    validate_paper_scalar_fields(paper)?;
+    if topology.faces.is_empty() || paper.boundary_vertices.len() < 3 {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    let active_edges = topology
+        .edge_incidence
+        .iter()
+        .map(|(edge, _)| *edge)
+        .collect::<HashSet<_>>();
+    let (mut positions, source_positions) = unique_positions(pattern, supplied_positions)?;
+    let mut budget = SimpleBoundaryValidationBudget::production();
+    let edges = unique_edges(
+        pattern,
+        paper,
+        &positions,
+        &source_positions,
+        &mut budget,
+        Some(&active_edges),
+        Some(converted_cut_boundaries),
+    )?;
+    let incidences = unique_incidences(topology, &edges)?;
+    let (face_ids, face_boundaries, face_keys, occurrences) =
+        validate_faces(topology, &edges, &positions, &source_positions, &mut budget)?;
+    validate_incidences(
+        &edges,
+        &incidences,
+        &face_ids,
+        &occurrences,
+        Some(converted_cut_boundaries),
+    )?;
+    validate_adjacency_registry(topology, &incidences, &face_keys)?;
+    retain_material_positions(&mut positions, &edges)?;
+
+    let mut hinges = Vec::new();
+    hinges
+        .try_reserve_exact(topology.hinge_adjacency.len())
+        .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+    for adjacent in &topology.hinge_adjacency {
+        let EdgeIncidence::Hinge {
+            left,
+            right,
+            assignment,
+        } = incidences
+            .get(&adjacent.edge)
+            .copied()
+            .ok_or(KinematicsError::UnsupportedTopology)?
+        else {
+            return Err(KinematicsError::UnsupportedTopology);
+        };
+        let source = edges
+            .get(&adjacent.edge)
+            .copied()
+            .ok_or(KinematicsError::UnsupportedTopology)?;
+        let (start_id, end_id) = canonical_endpoints(source.start, source.end);
+        let start = positions
+            .get(&start_id)
+            .copied()
+            .ok_or(KinematicsError::UnsupportedTopology)?;
+        let end = positions
+            .get(&end_id)
+            .copied()
+            .ok_or(KinematicsError::UnsupportedTopology)?;
+        let delta = subtract(end, start)?;
+        hinges.push(TreeHinge {
+            edge: adjacent.edge,
+            assignment,
+            left_face: left,
+            right_face: right,
+            start,
+            end,
+            axis: scale(delta, 1.0 / length(delta)?)?,
+        });
+    }
+    hinges.sort_unstable_by_key(|hinge| hinge.edge.canonical_bytes());
     Ok(PreparedMaterialGraph {
         face_ids,
         hinges,

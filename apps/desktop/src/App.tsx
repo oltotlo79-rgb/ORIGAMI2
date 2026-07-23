@@ -29,6 +29,7 @@ import { DiagnosticsDialog } from './components/DiagnosticsDialog'
 import { FoldImportDialog } from './components/FoldImportDialog'
 import { Fold3dFramesLauncher } from './components/Fold3dFramesLauncher'
 import { FoldPreview } from './components/FoldPreview'
+import { EffectiveCutDiagnosticPanel } from './components/EffectiveCutDiagnosticPanel'
 import { FoldTechniqueEditorDialog } from './components/FoldTechniqueEditorDialog'
 import { FoldTechniqueTimelinePreviewDialog } from './components/FoldTechniqueTimelinePreviewDialog'
 import { GeometricConstraintPanel } from './components/GeometricConstraintPanel'
@@ -7240,6 +7241,12 @@ function App() {
               thicknessMm={nativeSnapshot?.paper.thickness_mm}
               lengthDisplayUnit={lengthDisplayUnit}
             />
+            {nativeSnapshot?.crease_pattern.edges.some((edge) => edge.kind === 'cut') && (
+              <EffectiveCutDiagnosticPanel
+                key={`${nativeSnapshot.project_instance_id}:${nativeSnapshot.project_id}:${nativeSnapshot.revision}:${nativeSnapshot.fold_model_fingerprint}`}
+                snapshot={nativeSnapshot}
+              />
+            )}
             {topologyResponse && !topologyResponse.simulation_ready && (
               <section className="validation-report invalid topology-blockers">
                 <h2>{text({

@@ -6534,4 +6534,78 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn equal_length_with_different_positive_fixed_lengths_feeds_the_bounded_mus_oracle() {
+        for count in [4, 8, 16] {
+            let fixture = Fixture::new();
+            let mut records = vec![
+                record(GeometricConstraintKindV1::EqualLength {
+                    first_edge: fixture.edges[1],
+                    second_edge: fixture.edges[0],
+                }),
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[0],
+                    length_mm: 1.0,
+                }),
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[1],
+                    length_mm: 2.0,
+                }),
+            ];
+            records.extend((3..count).map(|index| {
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[index % 6],
+                })
+            }));
+            let prepared = prepare(&fixture, &document(records)).unwrap();
+            let BoundedDirectMusV1::ProvenUnsatisfiable { constraint_ids, .. } =
+                find_bounded_direct_mus_v1(&prepared)
+            else {
+                panic!("equal positive lengths cannot have different fixed values")
+            };
+            assert_eq!(constraint_ids.len(), 3);
+            for removed in &constraint_ids {
+                let constraints = prepared
+                    .constraints
+                    .iter()
+                    .filter(|record| constraint_ids.contains(&record.id) && record.id != *removed)
+                    .cloned()
+                    .collect();
+                let subset = GeometricConstraintSetV1 {
+                    source_pattern: &fixture.pattern,
+                    constraints,
+                    max_preflight_checks: prepared.max_preflight_checks,
+                };
+                assert!(!matches!(
+                    subset.preflight(),
+                    ConstraintPreflightV1::DirectConflict { .. }
+                ));
+            }
+        }
+
+        let fixture = Fixture::new();
+        let compatible = prepare(
+            &fixture,
+            &document([
+                record(GeometricConstraintKindV1::EqualLength {
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[1],
+                }),
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[0],
+                    length_mm: 1.0,
+                }),
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[1],
+                    length_mm: 1.0,
+                }),
+            ]),
+        )
+        .unwrap();
+        assert!(!matches!(
+            compatible.preflight(),
+            ConstraintPreflightV1::DirectConflict { .. }
+        ));
+    }
 }

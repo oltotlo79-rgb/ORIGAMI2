@@ -33,6 +33,7 @@ mod graph_positive_thickness;
 mod non_flat_cell_transport;
 mod stacked_fold_read;
 mod static_collision;
+mod static_transition_chain;
 mod zero_thickness;
 
 pub use cayley::{
@@ -156,6 +157,12 @@ pub use static_collision::{
     diagnose_static_collision_geometry_with_flat_layer_order_v1,
     prepare_positive_thickness_pair_separation_v1, prove_static_collision_geometry,
     revalidate_positive_thickness_pair_separation_v1,
+};
+pub use static_transition_chain::{
+    MAX_POSITIVE_THICKNESS_STATIC_CHAIN_TRANSITIONS_V1,
+    POSITIVE_THICKNESS_TRANSITION_STATIC_CHAIN_MODEL_ID_V1,
+    PositiveThicknessTransitionStaticChainErrorV1, PositiveThicknessTransitionStaticChainV1,
+    issue_positive_thickness_transition_static_chain_v1,
 };
 
 /// Immutable identifier for the first native topology/contact policy.

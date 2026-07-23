@@ -1,10 +1,11 @@
 use ori_collision::{
     CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, IntersectionEvidenceV2,
     NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1, NativeStaticCollisionGeometryProof,
-    StaticCollisionError, StaticCollisionLimits, StaticCollisionPairDisposition,
-    TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision, TopologyRelation,
-    classify_runtime_topology_contact_v2, classify_static_collision_pair_disposition,
-    diagnose_static_collision_geometry, prove_static_collision_geometry,
+    PositiveThicknessTransitionStaticChainErrorV1, StaticCollisionError, StaticCollisionLimits,
+    StaticCollisionPairDisposition, TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision,
+    TopologyRelation, classify_runtime_topology_contact_v2,
+    classify_static_collision_pair_disposition, diagnose_static_collision_geometry,
+    issue_positive_thickness_transition_static_chain_v1, prove_static_collision_geometry,
 };
 use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, Vertex, VertexId,
@@ -463,6 +464,148 @@ fn assert_error(
         Ok(_) => panic!("unexpected static collision geometry proof"),
         Err(actual) => assert_eq!(actual, expected),
     }
+}
+
+#[test]
+fn positive_thickness_static_chains_bind_exact_4_8_and_16_transition_sequences() {
+    for transition_count in [4_usize, 8, 16] {
+        let fixture = fixture(false);
+        let model = model(&fixture);
+        let thickness = fixture.paper.thickness_mm;
+        let poses = (0..=transition_count)
+            .map(|_| model.solve(None, &no_angles()).expect("static pose"))
+            .collect::<Vec<_>>();
+        let proofs = poses
+            .iter()
+            .map(|pose| {
+                prove_static_collision_geometry(
+                    &model,
+                    pose,
+                    thickness,
+                    StaticCollisionLimits::default(),
+                )
+                .expect("static proof")
+            })
+            .collect::<Vec<_>>();
+        let chain = issue_positive_thickness_transition_static_chain_v1(
+            &model, &poses[0], thickness, &poses, &proofs,
+        )
+        .expect("bounded static chain");
+
+        assert_eq!(chain.transition_count(), transition_count);
+        assert_eq!(chain.pose_count(), transition_count + 1);
+        assert_eq!(chain.face_count(), 1);
+        assert_eq!(chain.hinge_count(), 0);
+        assert!(chain.is_for(
+            &model,
+            &poses[0],
+            poses.last().expect("target"),
+            thickness,
+            &poses,
+            &proofs,
+        ));
+        assert!(chain.same_chain(&chain.clone()));
+        assert!(!chain.authorizes_continuous_motion());
+        assert!(!chain.authorizes_project_mutation());
+
+        let mut wrong_order = poses.clone();
+        wrong_order.swap(1, 2);
+        assert!(!chain.is_for(
+            &model,
+            &poses[0],
+            poses.last().expect("target"),
+            thickness,
+            &wrong_order,
+            &proofs,
+        ));
+        let mut wrong_proof = proofs.clone();
+        wrong_proof.swap(1, 2);
+        assert!(!chain.is_for(
+            &model,
+            &poses[0],
+            poses.last().expect("target"),
+            thickness,
+            &poses,
+            &wrong_proof,
+        ));
+        assert!(!chain.is_for(
+            &model,
+            &poses[0],
+            &poses[transition_count - 1],
+            thickness,
+            &poses,
+            &proofs,
+        ));
+        assert!(!chain.is_for(
+            &model,
+            &poses[0],
+            poses.last().expect("target"),
+            thickness + f64::EPSILON,
+            &poses,
+            &proofs,
+        ));
+    }
+}
+
+#[test]
+fn positive_thickness_static_chain_rejects_count_issuer_and_resource_tampering() {
+    let fixture = fixture(false);
+    let other_model = model(&fixture);
+    let model = model(&fixture);
+    let thickness = fixture.paper.thickness_mm;
+    let poses = (0..=65)
+        .map(|_| model.solve(None, &no_angles()).expect("static pose"))
+        .collect::<Vec<_>>();
+    let one_proof = prove_static_collision_geometry(
+        &model,
+        &poses[0],
+        thickness,
+        StaticCollisionLimits::default(),
+    )
+    .expect("proof");
+    let oversized_proofs = vec![one_proof; poses.len()];
+    assert_eq!(
+        issue_positive_thickness_transition_static_chain_v1(
+            &model,
+            &poses[0],
+            thickness,
+            &poses,
+            &oversized_proofs,
+        )
+        .expect_err("65 transitions rejected before proof scan"),
+        PositiveThicknessTransitionStaticChainErrorV1::ResourceLimitExceeded,
+    );
+
+    let foreign = other_model.solve(None, &no_angles()).expect("foreign pose");
+    let foreign_proof = prove_static_collision_geometry(
+        &other_model,
+        &foreign,
+        thickness,
+        StaticCollisionLimits::default(),
+    )
+    .expect("foreign proof");
+    assert_eq!(
+        issue_positive_thickness_transition_static_chain_v1(
+            &model,
+            &poses[0],
+            thickness,
+            &[poses[0].clone(), foreign],
+            &[oversized_proofs[0].clone(), foreign_proof],
+        )
+        .expect_err("mixed issuer rejected"),
+        PositiveThicknessTransitionStaticChainErrorV1::InputMismatch,
+    );
+    assert_eq!(
+        issue_positive_thickness_transition_static_chain_v1(
+            &model,
+            &poses[0],
+            thickness,
+            &poses[..2],
+            &oversized_proofs[..1],
+        )
+        .expect_err("count mismatch rejected"),
+        PositiveThicknessTransitionStaticChainErrorV1::InputMismatch,
+    );
 }
 
 #[test]

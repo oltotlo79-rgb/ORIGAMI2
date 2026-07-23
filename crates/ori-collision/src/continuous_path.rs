@@ -234,6 +234,119 @@ pub enum DyadicFaceTransformIntervalErrorV1 {
     Unproven,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SharedVertexIntervalPositionV1 {
+    pair: [FaceId; 2],
+    vertex: ori_domain::VertexId,
+    positions: [[ori_kinematics::OutwardIntervalV1; 3]; 2],
+}
+impl SharedVertexIntervalPositionV1 {
+    #[must_use]
+    pub const fn pair(&self) -> [FaceId; 2] {
+        self.pair
+    }
+    #[must_use]
+    pub const fn vertex(&self) -> ori_domain::VertexId {
+        self.vertex
+    }
+    #[must_use]
+    pub const fn positions(&self) -> [[ori_kinematics::OutwardIntervalV1; 3]; 2] {
+        self.positions
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DyadicSharedVertexIntervalDiagnosticLeafV1 {
+    depth: u32,
+    index: u64,
+    positions: Vec<SharedVertexIntervalPositionV1>,
+}
+impl DyadicSharedVertexIntervalDiagnosticLeafV1 {
+    #[must_use]
+    pub const fn depth(&self) -> u32 {
+        self.depth
+    }
+    #[must_use]
+    pub const fn index(&self) -> u64 {
+        self.index
+    }
+    #[must_use]
+    pub fn positions(&self) -> &[SharedVertexIntervalPositionV1] {
+        &self.positions
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DyadicSharedVertexIntervalDiagnosticV1 {
+    issuer: MaterialHingeGraphGeometry,
+    fixed_face: FaceId,
+    schedule_hash: [u8; 32],
+    closure_hash: [u8; 32],
+    thickness_bits: u64,
+    tolerance_bits: u64,
+    schedule_limits: ori_kinematics::CycleScheduleLimitsV1,
+    transform_max_work_per_leaf: usize,
+    max_work_per_position: usize,
+    leaves: Vec<DyadicSharedVertexIntervalDiagnosticLeafV1>,
+}
+impl DyadicSharedVertexIntervalDiagnosticV1 {
+    #[must_use]
+    pub fn leaves(&self) -> &[DyadicSharedVertexIntervalDiagnosticLeafV1] {
+        &self.leaves
+    }
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn is_for(
+        &self,
+        transforms: &DyadicFaceTransformIntervalRegistryV1,
+        gaps: &SharedVertexContinuousCorridorGapReportV1,
+        input: DyadicFaceTransformBindingInputV1<'_>,
+        max_work_per_position: usize,
+    ) -> bool {
+        self.issuer.same_instance(input.geometry)
+            && self.fixed_face == input.fixed_face
+            && self.schedule_hash == input.schedule.certificate_binding_fingerprint_v1()
+            && self.closure_hash == input.closure.partition_binding_fingerprint_v1()
+            && self.thickness_bits == input.thickness_mm.to_bits()
+            && self.tolerance_bits == input.tolerance.to_bits()
+            && self.schedule_limits == input.schedule_limits
+            && self.transform_max_work_per_leaf == input.max_work_per_leaf
+            && self.max_work_per_position == max_work_per_position
+            && gaps.is_for(
+                input.geometry,
+                input.audit,
+                input.fixed_face,
+                input.schedule,
+                input.thickness_mm,
+            )
+            && transforms.is_for(input)
+            && self.leaves.len() == transforms.leaves.len()
+            && self
+                .leaves
+                .iter()
+                .zip(&transforms.leaves)
+                .all(|(diagnostic, transform)| {
+                    diagnostic.depth == transform.depth
+                        && diagnostic.index == transform.index
+                        && diagnostic.positions.len() == gaps.gaps.len()
+                        && diagnostic
+                            .positions
+                            .iter()
+                            .zip(&gaps.gaps)
+                            .all(|(position, gap)| {
+                                position.pair == gap.pair && position.vertex == gap.vertex
+                            })
+                })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContinuousPairCoverageKindV1 {
     ExistingNonhingeIntervalCandidate,
@@ -613,6 +726,107 @@ pub fn prepare_dyadic_face_transform_interval_registry_v1(
         tolerance_bits: tolerance.to_bits(),
         schedule_limits,
         max_work_per_leaf,
+        leaves,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn diagnose_dyadic_shared_vertex_interval_positions_v1(
+    transforms: &DyadicFaceTransformIntervalRegistryV1,
+    gaps: &SharedVertexContinuousCorridorGapReportV1,
+    input: DyadicFaceTransformBindingInputV1<'_>,
+    max_work_per_position: usize,
+) -> Result<DyadicSharedVertexIntervalDiagnosticV1, DyadicFaceTransformIntervalErrorV1> {
+    if max_work_per_position == 0
+        || !transforms.is_for(DyadicFaceTransformBindingInputV1 {
+            geometry: input.geometry,
+            audit: input.audit,
+            fixed_face: input.fixed_face,
+            schedule: input.schedule,
+            closure: input.closure,
+            thickness_mm: input.thickness_mm,
+            tolerance: input.tolerance,
+            schedule_limits: input.schedule_limits,
+            max_work_per_leaf: input.max_work_per_leaf,
+        })
+        || !gaps.is_for(
+            input.geometry,
+            input.audit,
+            input.fixed_face,
+            input.schedule,
+            input.thickness_mm,
+        )
+        || transforms
+            .leaves
+            .len()
+            .checked_mul(gaps.gaps.len())
+            .is_none_or(|count| count > MAX_CONTINUOUS_PAIR_COVERAGE_PAIRS_V1)
+    {
+        return Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding);
+    }
+    let mut leaves = Vec::new();
+    leaves
+        .try_reserve_exact(transforms.leaves.len())
+        .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+    for leaf in &transforms.leaves {
+        let mut positions = Vec::new();
+        positions
+            .try_reserve_exact(gaps.gaps.len())
+            .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+        for gap in &gaps.gaps {
+            let source = input
+                .geometry
+                .vertex_position(gap.vertex)
+                .ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding)?;
+            let point = [source.x(), source.y(), source.z()]
+                .map(ori_kinematics::OutwardIntervalV1::from_rounded)
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)?
+                .try_into()
+                .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)?;
+            let mut transformed = Vec::new();
+            transformed
+                .try_reserve_exact(2)
+                .map_err(|_| DyadicFaceTransformIntervalErrorV1::ResourceLimit)?;
+            for face in gap.pair {
+                let transform = leaf
+                    .transforms
+                    .transform_for(face)
+                    .ok_or(DyadicFaceTransformIntervalErrorV1::InvalidBinding)?;
+                transformed.push(transform.apply(point, max_work_per_position).map_err(
+                    |error| match error {
+                        ori_kinematics::OutwardIntervalErrorV1::ResourceLimit => {
+                            DyadicFaceTransformIntervalErrorV1::ResourceLimit
+                        }
+                        _ => DyadicFaceTransformIntervalErrorV1::Unproven,
+                    },
+                )?);
+            }
+            positions.push(SharedVertexIntervalPositionV1 {
+                pair: gap.pair,
+                vertex: gap.vertex,
+                positions: transformed
+                    .try_into()
+                    .map_err(|_| DyadicFaceTransformIntervalErrorV1::Unproven)?,
+            });
+        }
+        leaves.push(DyadicSharedVertexIntervalDiagnosticLeafV1 {
+            depth: leaf.depth,
+            index: leaf.index,
+            positions,
+        });
+    }
+    Ok(DyadicSharedVertexIntervalDiagnosticV1 {
+        issuer: input.geometry.clone(),
+        fixed_face: input.fixed_face,
+        schedule_hash: input.schedule.certificate_binding_fingerprint_v1(),
+        closure_hash: input.closure.partition_binding_fingerprint_v1(),
+        thickness_bits: input.thickness_mm.to_bits(),
+        tolerance_bits: input.tolerance.to_bits(),
+        schedule_limits: input.schedule_limits,
+        transform_max_work_per_leaf: input.max_work_per_leaf,
+        max_work_per_position,
         leaves,
     })
 }
@@ -4669,6 +4883,110 @@ mod tests {
                         0.1,
                         1.0e-8,
                         schedule_limits,
+                        1,
+                    ),
+                    Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)
+                ));
+                let pair_registry =
+                    diagnose_continuous_pair_coverage_v1(&geometry, &audit, fixed, &schedule)
+                        .unwrap();
+                let vertex_gaps = diagnose_shared_vertex_continuous_corridor_gaps_v1(
+                    &pair_registry,
+                    &geometry,
+                    &audit,
+                    fixed,
+                    &schedule,
+                    0.1,
+                )
+                .unwrap();
+                let binding = || DyadicFaceTransformBindingInputV1 {
+                    geometry: &geometry,
+                    audit: &audit,
+                    fixed_face: fixed,
+                    schedule: &schedule,
+                    closure: &closure,
+                    thickness_mm: 0.1,
+                    tolerance: 1.0e-8,
+                    schedule_limits,
+                    max_work_per_leaf: 16_777_216,
+                };
+                let vertex_positions = diagnose_dyadic_shared_vertex_interval_positions_v1(
+                    &transforms,
+                    &vertex_gaps,
+                    binding(),
+                    16_777_216,
+                )
+                .unwrap();
+                assert!(!vertex_positions.authorizes_continuous_motion());
+                assert!(!vertex_positions.authorizes_project_mutation());
+                assert!(vertex_positions.is_for(&transforms, &vertex_gaps, binding(), 16_777_216,));
+                assert!(!vertex_positions.is_for(
+                    &transforms,
+                    &vertex_gaps,
+                    DyadicFaceTransformBindingInputV1 {
+                        thickness_mm: 0.2,
+                        ..binding()
+                    },
+                    16_777_216,
+                ));
+                assert!(!vertex_positions.is_for(
+                    &transforms,
+                    &vertex_gaps,
+                    DyadicFaceTransformBindingInputV1 {
+                        tolerance: f64::from_bits(1.0e-8_f64.to_bits() + 1),
+                        ..binding()
+                    },
+                    16_777_216,
+                ));
+                assert!(!vertex_positions.is_for(
+                    &transforms,
+                    &vertex_gaps,
+                    DyadicFaceTransformBindingInputV1 {
+                        schedule_limits: ori_kinematics::CycleScheduleLimitsV1 {
+                            max_hinges: schedule_limits.max_hinges - 1,
+                            ..schedule_limits
+                        },
+                        ..binding()
+                    },
+                    16_777_216,
+                ));
+                assert!(!vertex_positions.is_for(
+                    &transforms,
+                    &vertex_gaps,
+                    DyadicFaceTransformBindingInputV1 {
+                        max_work_per_leaf: 16_777_215,
+                        ..binding()
+                    },
+                    16_777_216,
+                ));
+                assert!(
+                    !vertex_positions.is_for(&transforms, &vertex_gaps, binding(), 16_777_215,)
+                );
+                assert_eq!(vertex_positions.leaves().len(), transforms.leaves().len());
+                assert!(vertex_positions.leaves().iter().all(|leaf| {
+                    leaf.positions().len() == vertex_gaps.gaps().len()
+                        && leaf
+                            .positions()
+                            .iter()
+                            .zip(vertex_gaps.gaps())
+                            .all(|(position, gap)| {
+                                position.pair() == gap.pair() && position.vertex() == gap.vertex()
+                            })
+                }));
+                assert!(matches!(
+                    diagnose_dyadic_shared_vertex_interval_positions_v1(
+                        &transforms,
+                        &vertex_gaps,
+                        binding(),
+                        0,
+                    ),
+                    Err(DyadicFaceTransformIntervalErrorV1::InvalidBinding)
+                ));
+                assert!(matches!(
+                    diagnose_dyadic_shared_vertex_interval_positions_v1(
+                        &transforms,
+                        &vertex_gaps,
+                        binding(),
                         1,
                     ),
                     Err(DyadicFaceTransformIntervalErrorV1::ResourceLimit)

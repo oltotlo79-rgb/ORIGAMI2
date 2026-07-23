@@ -131,6 +131,14 @@ impl MaterialFaceTransformIntervalRegistryV1 {
     pub fn transforms(&self) -> &[(FaceId, IntervalRigidTransformV1)] {
         &self.transforms
     }
+
+    #[must_use]
+    pub fn transform_for(&self, face: FaceId) -> Option<IntervalRigidTransformV1> {
+        self.transforms
+            .binary_search_by_key(&face.canonical_bytes(), |(id, _)| id.canonical_bytes())
+            .ok()
+            .map(|index| self.transforms[index].1)
+    }
     #[must_use]
     pub fn is_for_geometry(&self, geometry: &MaterialHingeGraphGeometry) -> bool {
         self.issuer_geometry.same_instance(geometry)

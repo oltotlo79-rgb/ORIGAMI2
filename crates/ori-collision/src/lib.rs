@@ -140,7 +140,8 @@ pub use graph_positive_thickness::{
 };
 pub use hinge_relief::{
     HINGE_RELIEF_POLICY_MODEL_ID_V1, HingeReliefPolicyErrorV1, HingeReliefPolicyLimitsV1,
-    HingeReliefPolicyRecordV1, MAX_HINGE_RELIEF_RECORDS_V1, NativeHingeReliefPrerequisiteV1,
+    HingeReliefPolicyRecordV1, MAX_HINGE_RELIEF_EXACT_BITS_PER_RECORD_V1,
+    MAX_HINGE_RELIEF_RECORDS_V1, NativeHingeReliefPrerequisiteV1,
     prepare_hinge_relief_prerequisite_v1, revalidate_hinge_relief_prerequisite_v1,
 };
 pub use non_flat_cell_transport::{

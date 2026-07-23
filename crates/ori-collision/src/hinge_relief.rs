@@ -1,11 +1,14 @@
 use std::collections::HashSet;
 
+use num_rational::BigRational;
+use num_traits::FromPrimitive;
 use ori_domain::EdgeId;
 use ori_kinematics::MaterialHingeGraphGeometry;
 use thiserror::Error;
 
 pub const HINGE_RELIEF_POLICY_MODEL_ID_V1: &str = "explicit_hinge_relief_prerequisite_v1";
 pub const MAX_HINGE_RELIEF_RECORDS_V1: usize = 256;
+pub const MAX_HINGE_RELIEF_EXACT_BITS_PER_RECORD_V1: u64 = 8_192;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HingeReliefPolicyRecordV1 {
@@ -13,8 +16,8 @@ pub struct HingeReliefPolicyRecordV1 {
     /// Full material removed normal to the hinge axis on each incident face.
     pub cutout_width_mm: f64,
     /// Included bevel angle in material cross-section, in degrees. V1 records
-    /// it in binary64 but deliberately uses the conservative width>=thickness
-    /// envelope below instead of a platform libm tangent threshold.
+    /// it in binary64 but evaluates a rational conservative bound below
+    /// instead of a platform libm tangent threshold.
     pub bevel_angle_degrees: f64,
     pub material_thickness_mm: f64,
 }
@@ -188,10 +191,28 @@ fn validate_policy(
         {
             return Err(HingeReliefPolicyErrorV1::InvalidBevelAngle);
         }
-        // A full-thickness cutout is a deterministic conservative prerequisite
-        // for every admitted bevel. Comparing the original positive binary64
-        // values is exact and avoids a platform-dependent libm boundary.
-        if record.cutout_width_mm < record.material_thickness_mm {
+        // Let x=theta*pi/360. On (0, pi/2), tan(x)>=x and pi>=3, hence
+        // t/(2*tan(x)) <= 60*t/theta. Proving w*theta>=60*t using exact
+        // rationals is therefore conservative and platform deterministic.
+        let width = BigRational::from_f64(record.cutout_width_mm)
+            .ok_or(HingeReliefPolicyErrorV1::InvalidDimension)?;
+        let angle = BigRational::from_f64(record.bevel_angle_degrees)
+            .ok_or(HingeReliefPolicyErrorV1::InvalidBevelAngle)?;
+        let thickness = BigRational::from_f64(record.material_thickness_mm)
+            .ok_or(HingeReliefPolicyErrorV1::InvalidDimension)?;
+        let left = width * angle;
+        let right = thickness * BigRational::from_integer(60.into());
+        let exact_bits = left
+            .numer()
+            .bits()
+            .checked_add(left.denom().bits())
+            .and_then(|bits| bits.checked_add(right.numer().bits()))
+            .and_then(|bits| bits.checked_add(right.denom().bits()))
+            .ok_or(HingeReliefPolicyErrorV1::ResourceLimit)?;
+        if exact_bits > MAX_HINGE_RELIEF_EXACT_BITS_PER_RECORD_V1 {
+            return Err(HingeReliefPolicyErrorV1::ResourceLimit);
+        }
+        if left < right {
             return Err(HingeReliefPolicyErrorV1::InsufficientCutout);
         }
     }
@@ -278,6 +299,7 @@ mod tests {
     fn conservative_cutout_boundary_accepts_equal_and_rejects_the_previous_float() {
         let edges = sorted_edges(1);
         let mut input = records(&edges);
+        input[0].bevel_angle_degrees = 60.0;
         validate_policy(
             edges.clone(),
             0.1,
@@ -296,6 +318,48 @@ mod tests {
             Err(HingeReliefPolicyErrorV1::InsufficientCutout)
         );
         input[0].cutout_width_mm = f64::from_bits(0.1_f64.to_bits() + 1);
+        validate_policy(
+            edges.clone(),
+            0.1,
+            &input,
+            HingeReliefPolicyLimitsV1::default(),
+        )
+        .unwrap();
+
+        input[0].bevel_angle_degrees = 10.0;
+        input[0].cutout_width_mm = 0.1;
+        assert_eq!(
+            validate_policy(
+                edges.clone(),
+                0.1,
+                &input,
+                HingeReliefPolicyLimitsV1::default()
+            ),
+            Err(HingeReliefPolicyErrorV1::InsufficientCutout)
+        );
+        for angle in [1.0, 10.0, 90.0, 179.0] {
+            input[0].bevel_angle_degrees = angle;
+            input[0].cutout_width_mm = 7.0;
+            validate_policy(
+                edges.clone(),
+                0.1,
+                &input,
+                HingeReliefPolicyLimitsV1::default(),
+            )
+            .unwrap();
+        }
+        input[0].bevel_angle_degrees = 1.0;
+        input[0].cutout_width_mm = 6.0;
+        assert_eq!(
+            validate_policy(
+                edges.clone(),
+                0.1,
+                &input,
+                HingeReliefPolicyLimitsV1::default()
+            ),
+            Err(HingeReliefPolicyErrorV1::InsufficientCutout)
+        );
+        input[0].cutout_width_mm = f64::from_bits(6.0_f64.to_bits() + 1);
         validate_policy(edges, 0.1, &input, HingeReliefPolicyLimitsV1::default()).unwrap();
     }
 }

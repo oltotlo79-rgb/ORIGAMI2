@@ -24,6 +24,7 @@ const COOPERATIVE_CHECK_INTERVAL: usize = 64;
 // stable diagnostics cross the public analysis boundary.
 #[allow(dead_code)]
 mod admission;
+mod closed_cut;
 #[allow(dead_code)]
 mod dcel;
 mod fold_graph;
@@ -33,6 +34,14 @@ mod single_fold;
 use admission::PaperGraphAdmissionError;
 use fold_graph::{FoldGraphError, extract_fold_graph_snapshot_with_checkpoint};
 use single_fold::{SingleFoldError, extract_single_fold_faces};
+
+pub use closed_cut::{
+    CLOSED_CUT_LOOP_DIAGNOSTIC_MODEL_ID_V1, ClosedCutLoopDiagnosticErrorV1,
+    ClosedCutLoopDiagnosticLimitsV1, ClosedCutLoopDiagnosticV1,
+    DEFAULT_CLOSED_CUT_DIAGNOSTIC_INTERSECTION_TESTS_V1, MAX_CLOSED_CUT_DIAGNOSTIC_EDGES_V1,
+    MAX_CLOSED_CUT_DIAGNOSTIC_INTERSECTION_TESTS_V1, MAX_CLOSED_CUT_DIAGNOSTIC_VERTICES_V1,
+    diagnose_closed_cut_loops_v1,
+};
 
 pub use local_flat_foldability::{
     ASSIGNED_LOCAL_SUFFICIENCY_MODEL_ID_V1, AssignedCrimpReductionV1,

@@ -26,6 +26,7 @@ const COOPERATIVE_CHECK_INTERVAL: usize = 64;
 mod admission;
 mod closed_cut;
 mod closed_cut_topology;
+mod cut_material_selection;
 #[allow(dead_code)]
 mod dcel;
 mod fold_graph;
@@ -46,6 +47,11 @@ pub use closed_cut::{
 pub use closed_cut_topology::{
     CLOSED_CUT_TOPOLOGY_SNAPSHOT_MODEL_ID_V1, ClosedCutTopologySnapshotDiagnosticV1,
     ClosedCutTopologySnapshotErrorV1, diagnose_closed_cut_topology_snapshot_v1,
+};
+pub use cut_material_selection::{
+    CUT_MATERIAL_COMPONENT_SELECTION_DIAGNOSTIC_MODEL_ID_V1,
+    CutMaterialComponentSelectionDiagnosticV1, CutMaterialComponentSelectionErrorV1,
+    CutMaterialComponentSelectionV1, diagnose_cut_material_component_selection_v1,
 };
 
 pub use local_flat_foldability::{

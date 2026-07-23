@@ -3,10 +3,13 @@
 //! This module grants no edit authority. It exists to seal the exact set of
 //! point clusters and fail-closed gaps before an atomic editor delta exists.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use num_bigint::BigInt;
-use ori_domain::{CreasePattern, EdgeId, Point2};
+use ori_domain::{
+    CreasePattern, EdgeId, MAX_LAYER_EDGE_ASSIGNMENTS, Point2, ProjectLayerDocumentV1, VertexId,
+    validate_project_layer_document_against_pattern_v1,
+};
 use ori_geometry::{SegmentIntersection, ValidationIssue, validate_crease_pattern};
 
 pub const MAX_BULK_INTERSECTION_PAIR_WORK_V1: usize = 4_096;
@@ -115,6 +118,40 @@ impl BulkEdgeSubdivisionPlanV1 {
 pub struct BulkSubdivisionPlanV1 {
     source: CreasePattern,
     edges: Vec<BulkEdgeSubdivisionPlanV1>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BulkAtomicDeltaPrerequisiteV1 {
+    source: CreasePattern,
+    changed_edges: Vec<EdgeId>,
+    reserved_junctions: Vec<VertexId>,
+    reserved_segments: Vec<EdgeId>,
+    layer_inheritance_count: usize,
+    explicit_layer_assignment_count: usize,
+}
+
+impl BulkAtomicDeltaPrerequisiteV1 {
+    pub const fn authorizes_execution(&self) -> bool {
+        false
+    }
+    pub fn is_for(&self, pattern: &CreasePattern) -> bool {
+        &self.source == pattern
+    }
+    pub fn changed_edges(&self) -> &[EdgeId] {
+        &self.changed_edges
+    }
+    pub fn reserved_junctions(&self) -> &[VertexId] {
+        &self.reserved_junctions
+    }
+    pub fn reserved_segments(&self) -> &[EdgeId] {
+        &self.reserved_segments
+    }
+    pub const fn layer_inheritance_count(&self) -> usize {
+        self.layer_inheritance_count
+    }
+    pub const fn explicit_layer_assignment_count(&self) -> usize {
+        self.explicit_layer_assignment_count
+    }
 }
 
 impl BulkSubdivisionPlanV1 {
@@ -241,6 +278,122 @@ pub fn plan_bulk_edge_subdivisions_v1(
     })
 }
 
+/// Seals the exact ID reservation and explicit layer-inheritance budget an
+/// eventual atomic delta would require. This is a prerequisite only: no
+/// command, history entry, or mutation authority is produced.
+pub fn seal_bulk_atomic_delta_prerequisite_v1(
+    pattern: &CreasePattern,
+    layers: &ProjectLayerDocumentV1,
+    plan: &BulkSubdivisionPlanV1,
+    reserved_junctions: &[VertexId],
+    reserved_segments: &[EdgeId],
+) -> Option<BulkAtomicDeltaPrerequisiteV1> {
+    if !plan.is_for(pattern)
+        || validate_project_layer_document_against_pattern_v1(layers, pattern).is_err()
+    {
+        return None;
+    }
+    let required_junctions = plan
+        .edges()
+        .iter()
+        .flat_map(BulkEdgeSubdivisionPlanV1::points)
+        .map(BulkSubdivisionPointV1::point_bits)
+        .collect::<HashSet<_>>()
+        .len();
+    let required_segments = plan.edges().iter().try_fold(0_usize, |count, edge| {
+        count.checked_add(edge.points().len().checked_add(1)?)
+    })?;
+    if required_junctions != reserved_junctions.len()
+        || required_segments != reserved_segments.len()
+        || required_junctions > MAX_BULK_SUBDIVISION_RECORDS_V1
+        || required_segments > MAX_BULK_SUBDIVISION_RECORDS_V1
+    {
+        return None;
+    }
+    let existing_vertex_ids = pattern
+        .vertices
+        .iter()
+        .map(|vertex| vertex.id)
+        .collect::<HashSet<_>>();
+    let existing_edge_ids = pattern
+        .edges
+        .iter()
+        .map(|edge| edge.id)
+        .collect::<HashSet<_>>();
+    if existing_vertex_ids.len() != pattern.vertices.len()
+        || existing_edge_ids.len() != pattern.edges.len()
+        || reserved_junctions
+            .iter()
+            .any(|id| id.canonical_bytes() == [0; 16] || existing_vertex_ids.contains(id))
+        || reserved_segments
+            .iter()
+            .any(|id| id.canonical_bytes() == [0; 16] || existing_edge_ids.contains(id))
+        || reserved_junctions
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .len()
+            != reserved_junctions.len()
+        || reserved_segments
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .len()
+            != reserved_segments.len()
+    {
+        return None;
+    }
+    let mut changed_edges = plan
+        .edges()
+        .iter()
+        .map(BulkEdgeSubdivisionPlanV1::edge)
+        .collect::<Vec<_>>();
+    changed_edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+    if changed_edges.windows(2).any(|pair| pair[0] == pair[1]) {
+        return None;
+    }
+    let explicit_layer_assignment_count =
+        plan.edges().iter().try_fold(0_usize, |count, edge| {
+            let inherited = layers
+                .edge_assignments
+                .binary_search_by_key(&edge.edge().canonical_bytes(), |assignment| {
+                    assignment.edge.canonical_bytes()
+                })
+                .ok()
+                .map_or(0, |_| edge.points().len() + 1);
+            count.checked_add(inherited)
+        })?;
+    let removed_assignment_count = plan
+        .edges()
+        .iter()
+        .filter(|edge| {
+            layers
+                .edge_assignments
+                .binary_search_by_key(&edge.edge().canonical_bytes(), |assignment| {
+                    assignment.edge.canonical_bytes()
+                })
+                .is_ok()
+        })
+        .count();
+    if layers
+        .edge_assignments
+        .len()
+        .checked_sub(removed_assignment_count)?
+        .checked_add(explicit_layer_assignment_count)?
+        > MAX_LAYER_EDGE_ASSIGNMENTS
+    {
+        return None;
+    }
+    Some(BulkAtomicDeltaPrerequisiteV1 {
+        source: pattern.clone(),
+        changed_edges,
+        reserved_junctions: reserved_junctions.to_vec(),
+        reserved_segments: reserved_segments.to_vec(),
+        layer_inheritance_count: required_segments,
+        explicit_layer_assignment_count,
+    })
+}
+
 impl BulkIntersectionPlanRegistryV1 {
     pub const fn authorizes_execution(&self) -> bool {
         false
@@ -318,7 +471,9 @@ pub fn normalize_bulk_intersections_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ori_domain::{Edge, EdgeKind, Vertex};
+    use ori_domain::{
+        Edge, EdgeKind, EdgeLayerAssignmentV1, LayerContentKindV1, LayerId, LayerRecordV1, Vertex,
+    };
 
     fn crossing_pattern(count: usize) -> CreasePattern {
         let mut pattern = CreasePattern::empty();
@@ -562,5 +717,108 @@ mod tests {
         let mut excessive = registry.clone();
         excessive.clusters = vec![cluster; MAX_BULK_SUBDIVISION_RECORDS_V1 + 1];
         assert!(plan_bulk_edge_subdivisions_v1(&pattern, &excessive).is_none());
+    }
+
+    fn layers_with_explicit_edge(edge: EdgeId) -> ProjectLayerDocumentV1 {
+        let layer = LayerId::new();
+        let mut document = ProjectLayerDocumentV1::default();
+        document.layers.push(LayerRecordV1 {
+            id: layer,
+            name: "repair inheritance".into(),
+            content_kind: LayerContentKindV1::CreasePattern,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+        });
+        document
+            .edge_assignments
+            .push(EdgeLayerAssignmentV1 { edge, layer });
+        document
+    }
+
+    #[test]
+    fn seals_four_eight_sixteen_atomic_reservations_and_layer_inheritance() {
+        for count in [4, 8, 16] {
+            let (pattern, carrier) = one_edge_many_points(count, false);
+            let registry = normalize_bulk_intersections_v1(&pattern).unwrap();
+            let plan = plan_bulk_edge_subdivisions_v1(&pattern, &registry).unwrap();
+            let junctions = (0..count)
+                .map(|_| ori_domain::VertexId::new())
+                .collect::<Vec<_>>();
+            let segments = (0..(count * 3 + 1))
+                .map(|_| EdgeId::new())
+                .collect::<Vec<_>>();
+            let prerequisite = seal_bulk_atomic_delta_prerequisite_v1(
+                &pattern,
+                &layers_with_explicit_edge(carrier),
+                &plan,
+                &junctions,
+                &segments,
+            )
+            .unwrap();
+            assert!(prerequisite.is_for(&pattern));
+            assert!(!prerequisite.authorizes_execution());
+            assert_eq!(prerequisite.changed_edges().len(), count + 1);
+            assert_eq!(prerequisite.reserved_junctions(), junctions);
+            assert_eq!(prerequisite.reserved_segments(), segments);
+            assert_eq!(prerequisite.layer_inheritance_count(), count * 3 + 1);
+            assert_eq!(prerequisite.explicit_layer_assignment_count(), count + 1);
+        }
+    }
+
+    #[test]
+    fn atomic_reservation_rejects_missing_duplicate_existing_and_caps() {
+        let (pattern, _) = one_edge_many_points(4, false);
+        let registry = normalize_bulk_intersections_v1(&pattern).unwrap();
+        let plan = plan_bulk_edge_subdivisions_v1(&pattern, &registry).unwrap();
+        let junctions = (0..4)
+            .map(|_| ori_domain::VertexId::new())
+            .collect::<Vec<_>>();
+        let segments = (0..13).map(|_| EdgeId::new()).collect::<Vec<_>>();
+        let layers = ProjectLayerDocumentV1::default();
+        assert!(
+            seal_bulk_atomic_delta_prerequisite_v1(
+                &pattern,
+                &layers,
+                &plan,
+                &junctions[..3],
+                &segments
+            )
+            .is_none()
+        );
+        let mut duplicate_junctions = junctions.clone();
+        duplicate_junctions[1] = duplicate_junctions[0];
+        assert!(
+            seal_bulk_atomic_delta_prerequisite_v1(
+                &pattern,
+                &layers,
+                &plan,
+                &duplicate_junctions,
+                &segments
+            )
+            .is_none()
+        );
+        let mut colliding_segments = segments.clone();
+        colliding_segments[0] = pattern.edges[0].id;
+        assert!(
+            seal_bulk_atomic_delta_prerequisite_v1(
+                &pattern,
+                &layers,
+                &plan,
+                &junctions,
+                &colliding_segments
+            )
+            .is_none()
+        );
+
+        let mut excessive = plan.clone();
+        excessive.edges[0].points =
+            vec![excessive.edges[0].points[0].clone(); MAX_BULK_SUBDIVISION_RECORDS_V1 + 1];
+        assert!(
+            seal_bulk_atomic_delta_prerequisite_v1(
+                &pattern, &layers, &excessive, &junctions, &segments
+            )
+            .is_none()
+        );
     }
 }

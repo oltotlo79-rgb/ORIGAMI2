@@ -3,9 +3,10 @@ use ori_domain::{
 };
 use ori_kinematics::{
     CALLER_EMBEDDING_OBSERVATION_MODEL_ID, CanonicalHingeAngles, HingeAngle, KinematicsError,
-    MATERIAL_TREE_KINEMATICS_MODEL_ID, MaterialTreeKinematicsModel, ObservationTreeKinematicsModel,
-    Point3, TreeKinematicsLimits, VertexPosition3, deterministic_sin_cos_degrees,
-    prepare_material_hinge_pair_projection_v1, revalidate_material_hinge_pair_projection_v1,
+    MATERIAL_TREE_KINEMATICS_MODEL_ID, MaterialHingeGraphGeometry, MaterialTreeKinematicsModel,
+    ObservationTreeKinematicsModel, Point3, TreeKinematicsLimits, VertexPosition3,
+    deterministic_sin_cos_degrees, prepare_material_hinge_pair_projection_v1,
+    revalidate_material_hinge_pair_projection_v1,
 };
 use ori_topology::{
     BoundaryWalk, EdgeIncidence, Face, FaceExtractionInput, FoldAssignment, HalfEdgeRef,
@@ -281,6 +282,55 @@ fn model(fixture: &FoldFixture) -> MaterialTreeKinematicsModel {
         TreeKinematicsLimits::default(),
     )
     .expect("tree model")
+}
+
+#[test]
+fn material_kinematics_rejects_unmodeled_holes_and_seams_but_accepts_outer_only() {
+    let fixture = planar_fixture();
+    assert!(
+        MaterialHingeGraphGeometry::prepare(
+            &fixture.pattern,
+            &fixture.paper,
+            &fixture.topology,
+            TreeKinematicsLimits::default(),
+        )
+        .is_ok()
+    );
+    assert!(
+        MaterialTreeKinematicsModel::prepare(
+            &fixture.pattern,
+            &fixture.paper,
+            &fixture.topology,
+            TreeKinematicsLimits::default(),
+        )
+        .is_ok()
+    );
+
+    for mutate in [
+        |face: &mut Face| face.holes.push(face.outer.clone()),
+        |face: &mut Face| face.seams.push(face.outer.clone()),
+    ] {
+        let mut topology = fixture.topology.clone();
+        mutate(&mut topology.faces[0]);
+        assert_eq!(
+            MaterialHingeGraphGeometry::prepare(
+                &fixture.pattern,
+                &fixture.paper,
+                &topology,
+                TreeKinematicsLimits::default(),
+            ),
+            Err(KinematicsError::UnsupportedTopology)
+        );
+        assert_eq!(
+            MaterialTreeKinematicsModel::prepare(
+                &fixture.pattern,
+                &fixture.paper,
+                &topology,
+                TreeKinematicsLimits::default(),
+            ),
+            Err(KinematicsError::UnsupportedTopology)
+        );
+    }
 }
 
 fn material_position_records(pattern: &CreasePattern) -> Vec<VertexPosition3> {

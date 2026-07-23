@@ -1355,6 +1355,13 @@ fn validate_faces(
         .try_reserve_exact(topology.faces.len())
         .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
     for face in &topology.faces {
+        // The prepared kinematics geometry currently models one outer material
+        // boundary per face.  Silently dropping holes or seam walks would turn
+        // absent material back into a solid face and could issue pose authority
+        // for geometry different from the topology supplied by the caller.
+        if !face.holes.is_empty() || !face.seams.is_empty() {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
         let walk = &face.outer.half_edges;
         if walk.len() < 3 || !face_ids_set.insert(face.id) || !face_keys_set.insert(face.key) {
             return Err(KinematicsError::UnsupportedTopology);

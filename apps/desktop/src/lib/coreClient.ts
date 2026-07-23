@@ -2106,6 +2106,45 @@ export type ProjectTopologyResponse = {
   }>
 }
 
+export type EffectiveCutReadOnlyRequestV1 = Readonly<{
+  expectedProjectInstanceId: string
+  expectedProjectId: string
+  expectedRevision: number
+  expectedFoldModelFingerprint: string
+  requestedComponentKeys: readonly (readonly number[])[]
+}>
+
+export type EffectiveCutReadOnlyResponseV1 = Readonly<{
+  version: 1
+  projectInstanceId: string
+  projectId: string
+  revision: number
+  foldModelFingerprint: string
+  effectiveSnapshotFingerprint: readonly number[]
+  geometryModelId: 'effective_cut_collision_geometry_v1'
+  geometryFingerprint: readonly number[]
+  pairObservationModelId: 'effective_cut_source_flat_pair_observation_v1'
+  pairObservationFingerprint: readonly number[]
+  multiHingeGapModelId: 'effective_cut_multi_hinge_union_gap_diagnostic_v1'
+  multiHingeGapFingerprint: readonly number[]
+  sourceFlatPairCount: number
+  separatedPairs: number
+  touchingPairs: number
+  sharedHingeCorridorObservedPairs: number
+  sharedVertexCorridorObservedPairs: number
+  penetratingPairs: number
+  indeterminatePairs: number
+  multiHingePairs: number
+  multiHingeUnionCorridorUnprovedPairs: number
+  authorizesProjectMutation: false
+  authorizesPersistence: false
+  authorizesSimulationAdmission: false
+  authorizesPairClassification: false
+  authorizesCollisionFreeClassification: false
+  authorizesPoseSolving: false
+  authorizesMaterialRemoval: false
+}>
+
 export function isNativeCoreAvailable() {
   return '__TAURI_INTERNALS__' in window
 }
@@ -3405,6 +3444,132 @@ export function analyzeProjectTopology(expectedProjectId: string, expectedRevisi
   return invoke<ProjectTopologyResponse>('analyze_project_topology', {
     expectedProjectId,
     expectedRevision,
+  })
+}
+
+const EFFECTIVE_CUT_RESPONSE_KEYS = [
+  'version', 'projectInstanceId', 'projectId', 'revision', 'foldModelFingerprint',
+  'effectiveSnapshotFingerprint', 'geometryModelId', 'geometryFingerprint',
+  'pairObservationModelId', 'pairObservationFingerprint', 'multiHingeGapModelId',
+  'multiHingeGapFingerprint', 'sourceFlatPairCount', 'separatedPairs', 'touchingPairs',
+  'sharedHingeCorridorObservedPairs', 'sharedVertexCorridorObservedPairs',
+  'penetratingPairs', 'indeterminatePairs', 'multiHingePairs',
+  'multiHingeUnionCorridorUnprovedPairs', 'authorizesProjectMutation',
+  'authorizesPersistence', 'authorizesSimulationAdmission', 'authorizesPairClassification',
+  'authorizesCollisionFreeClassification', 'authorizesPoseSolving',
+  'authorizesMaterialRemoval',
+] as const
+
+function isSha256Bytes(value: unknown): value is readonly number[] {
+  return Array.isArray(value)
+    && value.length === 32
+    && value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)
+}
+
+function isCanonicalSha256Hex(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+}
+
+function isSafeCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0
+}
+
+export function isEffectiveCutReadOnlyRequestV1(
+  value: unknown,
+): value is EffectiveCutReadOnlyRequestV1 {
+  const request = exactCoreDataRecord(value, [
+    'expectedProjectInstanceId', 'expectedProjectId', 'expectedRevision',
+    'expectedFoldModelFingerprint', 'requestedComponentKeys',
+  ] as const)
+  if (!request) return false
+  const keys = request.requestedComponentKeys
+  return isCanonicalNonNilUuid(request.expectedProjectInstanceId)
+    && isCanonicalNonNilUuid(request.expectedProjectId)
+    && isSafeCount(request.expectedRevision)
+    && isCanonicalSha256Hex(request.expectedFoldModelFingerprint)
+    && Array.isArray(keys)
+    && keys.length > 0
+    && keys.length <= 64
+    && keys.every(isSha256Bytes)
+    && keys.slice(1).every((key, index) => {
+      const previous = keys[index]
+      for (let byte = 0; byte < 32; byte += 1) {
+        if (previous[byte] < key[byte]) return true
+        if (previous[byte] > key[byte]) return false
+      }
+      return false
+    })
+}
+
+export function normalizeEffectiveCutReadOnlyResponseV1(
+  value: unknown,
+  request: EffectiveCutReadOnlyRequestV1,
+): EffectiveCutReadOnlyResponseV1 | null {
+  if (!isEffectiveCutReadOnlyRequestV1(request)) return null
+  const record = exactCoreDataRecord(value, EFFECTIVE_CUT_RESPONSE_KEYS)
+  if (!record
+    || record.version !== 1
+    || record.projectInstanceId !== request.expectedProjectInstanceId
+    || record.projectId !== request.expectedProjectId
+    || record.revision !== request.expectedRevision
+    || record.foldModelFingerprint !== request.expectedFoldModelFingerprint
+    || !isCanonicalNonNilUuid(record.projectInstanceId)
+    || !isCanonicalNonNilUuid(record.projectId)
+    || !isCanonicalSha256Hex(record.foldModelFingerprint)
+    || !isSha256Bytes(record.effectiveSnapshotFingerprint)
+    || record.geometryModelId !== 'effective_cut_collision_geometry_v1'
+    || !isSha256Bytes(record.geometryFingerprint)
+    || record.pairObservationModelId !== 'effective_cut_source_flat_pair_observation_v1'
+    || !isSha256Bytes(record.pairObservationFingerprint)
+    || record.multiHingeGapModelId !== 'effective_cut_multi_hinge_union_gap_diagnostic_v1'
+    || !isSha256Bytes(record.multiHingeGapFingerprint)
+  ) return null
+  const counts = [
+    record.sourceFlatPairCount, record.separatedPairs, record.touchingPairs,
+    record.sharedHingeCorridorObservedPairs, record.sharedVertexCorridorObservedPairs,
+    record.penetratingPairs, record.indeterminatePairs, record.multiHingePairs,
+    record.multiHingeUnionCorridorUnprovedPairs,
+  ]
+  if (!counts.every(isSafeCount)
+    || Number(record.sourceFlatPairCount) > 50_000
+    || Number(record.multiHingePairs) > 64
+    || counts.slice(1, 7).some((count) => count > Number(record.sourceFlatPairCount))
+    || counts.slice(1, 7).reduce((sum, count) => sum + count, 0) !== counts[0]
+    || record.multiHingePairs !== record.multiHingeUnionCorridorUnprovedPairs
+    || record.authorizesProjectMutation !== false
+    || record.authorizesPersistence !== false
+    || record.authorizesSimulationAdmission !== false
+    || record.authorizesPairClassification !== false
+    || record.authorizesCollisionFreeClassification !== false
+    || record.authorizesPoseSolving !== false
+    || record.authorizesMaterialRemoval !== false
+  ) return null
+  return Object.freeze({
+    ...record,
+    effectiveSnapshotFingerprint: Object.freeze([...record.effectiveSnapshotFingerprint]),
+    geometryFingerprint: Object.freeze([...record.geometryFingerprint]),
+    pairObservationFingerprint: Object.freeze([...record.pairObservationFingerprint]),
+    multiHingeGapFingerprint: Object.freeze([...record.multiHingeGapFingerprint]),
+  }) as EffectiveCutReadOnlyResponseV1
+}
+
+export function inspectEffectiveCutReadOnlyV1(
+  request: EffectiveCutReadOnlyRequestV1,
+): Promise<EffectiveCutReadOnlyResponseV1> {
+  if (!isEffectiveCutReadOnlyRequestV1(request)) {
+    return Promise.reject(new Error('invalid effective-cut read-only request'))
+  }
+  const snapshot: EffectiveCutReadOnlyRequestV1 = {
+    expectedProjectInstanceId: request.expectedProjectInstanceId,
+    expectedProjectId: request.expectedProjectId,
+    expectedRevision: request.expectedRevision,
+    expectedFoldModelFingerprint: request.expectedFoldModelFingerprint,
+    requestedComponentKeys: request.requestedComponentKeys.map((key) => [...key]),
+  }
+  return invoke<unknown>('inspect_effective_cut_read_only_v1', { request: snapshot }).then((value) => {
+    const response = normalizeEffectiveCutReadOnlyResponseV1(value, snapshot)
+    if (!response) throw new Error('invalid effective-cut read-only response')
+    return response
   })
 }
 

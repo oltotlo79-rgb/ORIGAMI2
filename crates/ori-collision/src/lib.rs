@@ -139,10 +139,13 @@ pub use graph_positive_thickness::{
     prove_positive_thickness_graph_geometry_v1,
 };
 pub use hinge_relief::{
-    HINGE_RELIEF_POLICY_MODEL_ID_V1, HingeReliefPolicyErrorV1, HingeReliefPolicyLimitsV1,
+    HINGE_RELIEF_LOCAL_INTERVAL_MODEL_ID_V1, HINGE_RELIEF_POLICY_MODEL_ID_V1,
+    HingeReliefLinearAngleScheduleV1, HingeReliefPolicyErrorV1, HingeReliefPolicyLimitsV1,
     HingeReliefPolicyRecordV1, MAX_HINGE_RELIEF_EXACT_BITS_PER_RECORD_V1,
-    MAX_HINGE_RELIEF_RECORDS_V1, NativeHingeReliefPrerequisiteV1,
-    prepare_hinge_relief_prerequisite_v1, revalidate_hinge_relief_prerequisite_v1,
+    MAX_HINGE_RELIEF_RECORDS_V1, NativeHingeReliefLocalIntervalCertificateV1,
+    NativeHingeReliefPrerequisiteV1, certify_hinge_relief_local_intervals_v1,
+    prepare_hinge_relief_prerequisite_v1, revalidate_hinge_relief_local_intervals_v1,
+    revalidate_hinge_relief_prerequisite_v1,
 };
 pub use non_flat_cell_transport::{
     NON_FLAT_CELL_TRANSPORT_MODEL_ID_V1, NonFlatCellTransportErrorV1, NonFlatCellTransportLimitsV1,

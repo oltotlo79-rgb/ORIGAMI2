@@ -1,6 +1,8 @@
 use ori_collision::{
-    HingeReliefPolicyErrorV1, HingeReliefPolicyLimitsV1, HingeReliefPolicyRecordV1,
-    prepare_hinge_relief_prerequisite_v1, revalidate_hinge_relief_prerequisite_v1,
+    HingeReliefLinearAngleScheduleV1, HingeReliefPolicyErrorV1, HingeReliefPolicyLimitsV1,
+    HingeReliefPolicyRecordV1, certify_hinge_relief_local_intervals_v1,
+    prepare_hinge_relief_prerequisite_v1, revalidate_hinge_relief_local_intervals_v1,
+    revalidate_hinge_relief_prerequisite_v1,
 };
 use ori_domain::{
     CreasePattern, Edge, EdgeId, EdgeKind, Paper, Point2, ProjectId, Vertex, VertexId,
@@ -94,6 +96,17 @@ fn records(edges: &[EdgeId]) -> Vec<HingeReliefPolicyRecordV1> {
         .collect()
 }
 
+fn schedules(edges: &[EdgeId]) -> Vec<HingeReliefLinearAngleScheduleV1> {
+    edges
+        .iter()
+        .map(|&edge| HingeReliefLinearAngleScheduleV1 {
+            edge,
+            source_angle_degrees: 90.0,
+            target_angle_degrees: 120.0,
+        })
+        .collect()
+}
+
 #[test]
 fn actual_material_graph_binding_is_complete_at_four_eight_sixteen() {
     for count in [4, 8, 16] {
@@ -114,6 +127,56 @@ fn actual_material_graph_binding_is_complete_at_four_eight_sixteen() {
             HingeReliefPolicyLimitsV1::default(),
         )
         .unwrap();
+        let schedules = schedules(&edges);
+        let certificate = certify_hinge_relief_local_intervals_v1(
+            &proof,
+            &graph,
+            0.1,
+            &records,
+            &schedules,
+            HingeReliefPolicyLimitsV1::default(),
+        )
+        .unwrap();
+        assert!(!certificate.authorizes_whole_path());
+        assert!(!certificate.authorizes_project_mutation());
+        assert!(!certificate.authorizes_shared_hinge_admission());
+        assert_eq!(certificate.schedule_count(), count);
+        revalidate_hinge_relief_local_intervals_v1(
+            &certificate,
+            &proof,
+            &graph,
+            0.1,
+            &records,
+            &schedules,
+            HingeReliefPolicyLimitsV1::default(),
+        )
+        .unwrap();
+
+        let mut tampered = schedules.clone();
+        tampered[0].source_angle_degrees = 91.0;
+        assert_eq!(
+            revalidate_hinge_relief_local_intervals_v1(
+                &certificate,
+                &proof,
+                &graph,
+                0.1,
+                &records,
+                &tampered,
+                HingeReliefPolicyLimitsV1::default(),
+            ),
+            Err(HingeReliefPolicyErrorV1::BindingMismatch)
+        );
+        assert!(matches!(
+            certify_hinge_relief_local_intervals_v1(
+                &proof,
+                &graph,
+                0.1,
+                &records,
+                &schedules[..schedules.len() - 1],
+                HingeReliefPolicyLimitsV1::default(),
+            ),
+            Err(HingeReliefPolicyErrorV1::ScheduleBindingMismatch)
+        ));
     }
 }
 

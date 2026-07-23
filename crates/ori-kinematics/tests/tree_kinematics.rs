@@ -10,7 +10,7 @@ use ori_kinematics::{
 };
 use ori_topology::{
     BoundaryWalk, EdgeIncidence, Face, FaceExtractionInput, FoldAssignment, HalfEdgeRef,
-    TopologySnapshot, analyze_faces, canonical_face_key,
+    TopologySnapshot, analyze_faces, canonical_face_key, diagnose_closed_cut_topology_snapshot_v1,
 };
 
 struct FoldFixture {
@@ -331,6 +331,68 @@ fn material_kinematics_rejects_unmodeled_holes_and_seams_but_accepts_outer_only(
             Err(KinematicsError::UnsupportedTopology)
         );
     }
+}
+
+#[test]
+fn material_kinematics_rejects_radial_cut_snapshot_even_when_faces_have_no_holes() {
+    let mut fixture = planar_fixture();
+    fixture.paper.cutting_allowed = true;
+    let p = vertex(20, 2.0, 2.0);
+    let q = vertex(21, 8.0, 2.0);
+    let r = vertex(22, 5.0, 7.0);
+    fixture.pattern.edges.extend([
+        edge(20, p.id, q.id, EdgeKind::Cut),
+        edge(21, q.id, r.id, EdgeKind::Cut),
+        edge(22, r.id, p.id, EdgeKind::Cut),
+        edge(
+            23,
+            p.id,
+            fixture.paper.boundary_vertices[0],
+            EdgeKind::Mountain,
+        ),
+        edge(
+            24,
+            q.id,
+            fixture.paper.boundary_vertices[1],
+            EdgeKind::Valley,
+        ),
+    ]);
+    fixture.pattern.vertices.extend([p, q, r]);
+    let diagnostic = diagnose_closed_cut_topology_snapshot_v1(
+        FaceExtractionInput {
+            identity_namespace: fixture_project_id(),
+            source_revision: 19,
+            paper: &fixture.paper,
+            pattern: &fixture.pattern,
+        },
+        Default::default(),
+    )
+    .expect("read-only radial cut topology");
+    assert!(
+        diagnostic
+            .snapshot()
+            .faces
+            .iter()
+            .all(|face| face.holes.is_empty())
+    );
+    assert_eq!(
+        MaterialHingeGraphGeometry::prepare(
+            &fixture.pattern,
+            &fixture.paper,
+            diagnostic.snapshot(),
+            TreeKinematicsLimits::default(),
+        ),
+        Err(KinematicsError::UnsupportedTopology)
+    );
+    assert_eq!(
+        MaterialTreeKinematicsModel::prepare(
+            &fixture.pattern,
+            &fixture.paper,
+            diagnostic.snapshot(),
+            TreeKinematicsLimits::default(),
+        ),
+        Err(KinematicsError::UnsupportedTopology)
+    );
 }
 
 fn material_position_records(pattern: &CreasePattern) -> Vec<VertexPosition3> {

@@ -225,6 +225,105 @@ mod tests {
             Err(ClosedCutTopologySnapshotErrorV1::InvalidTopology)
         );
     }
+
+    #[test]
+    fn two_radial_folds_between_cut_and_outer_boundaries_subdivide_the_annulus() {
+        let (namespace, paper, mut pattern) = fixture();
+        pattern.edges.extend([
+            edge(
+                40,
+                &pattern.vertices[4],
+                &pattern.vertices[0],
+                EdgeKind::Mountain,
+            ),
+            edge(
+                41,
+                &pattern.vertices[5],
+                &pattern.vertices[1],
+                EdgeKind::Valley,
+            ),
+        ]);
+        let diagnostic = diagnose_closed_cut_topology_snapshot_v1(
+            input(namespace, 9, &paper, &pattern),
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(diagnostic.snapshot().faces.len(), 3);
+        assert_eq!(diagnostic.snapshot().material_components.len(), 2);
+        assert_eq!(diagnostic.snapshot().hinge_adjacency.len(), 2);
+        let mut component_sizes = diagnostic
+            .snapshot()
+            .material_components
+            .iter()
+            .map(|component| component.faces.len())
+            .collect::<Vec<_>>();
+        component_sizes.sort_unstable();
+        assert_eq!(component_sizes, [1, 2]);
+        assert!(
+            diagnostic
+                .snapshot()
+                .faces
+                .iter()
+                .all(|face| face.holes.is_empty())
+        );
+        assert!(
+            diagnostic
+                .snapshot()
+                .edge_incidence
+                .iter()
+                .filter(|(_, incidence)| matches!(incidence, crate::EdgeIncidence::Cut { .. }))
+                .all(|(_, incidence)| matches!(
+                    incidence,
+                    crate::EdgeIncidence::Cut { left, right } if left != right
+                ))
+        );
+        assert!(!diagnostic.authorizes_simulation_admission());
+        assert!(!diagnostic.authorizes_project_mutation());
+        assert!(
+            crate::analyze_faces(input(namespace, 9, &paper, &pattern))
+                .snapshot
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn radial_t_junction_and_coordinate_only_endpoint_identity_fail_closed() {
+        let (namespace, paper, pattern) = fixture();
+
+        let mut t_junction = pattern.clone();
+        let midpoint = vertex(50, 4.0, 2.0);
+        t_junction.vertices.push(midpoint.clone());
+        t_junction.edges.push(edge(
+            51,
+            &t_junction.vertices[0],
+            &midpoint,
+            EdgeKind::Mountain,
+        ));
+        assert!(
+            diagnose_closed_cut_topology_snapshot_v1(
+                input(namespace, 9, &paper, &t_junction),
+                Default::default(),
+            )
+            .is_err()
+        );
+
+        let mut coordinate_only = pattern.clone();
+        let duplicate = vertex(52, 2.0, 2.0);
+        coordinate_only.vertices.push(duplicate.clone());
+        coordinate_only.edges.push(edge(
+            53,
+            &coordinate_only.vertices[0],
+            &duplicate,
+            EdgeKind::Mountain,
+        ));
+        assert!(
+            diagnose_closed_cut_topology_snapshot_v1(
+                input(namespace, 9, &paper, &coordinate_only),
+                Default::default(),
+            )
+            .is_err()
+        );
+    }
 }
 
 /// Read-only view of face subdivision behind the closed-cut-loop prerequisite.
@@ -232,8 +331,11 @@ mod tests {
 /// This object deliberately carries no admission authority. In particular,
 /// the inner face is still a detached material piece: a hole in the outer face
 /// does not prove that material was removed or that a relief exists. Downstream
-/// kinematics must continue to reject faces containing holes. A radial hinge
-/// ending at a cut-loop vertex remains unsupported and fails closed.
+/// kinematics must continue to reject every source pattern containing `Cut`
+/// edges, including radial snapshots whose sector faces no longer contain a
+/// hole. A single radial hinge ending at a cut-loop vertex is non-separating
+/// and remains rejected; two or more radial hinges are observed only when the
+/// embedding actually partitions the annulus into distinct faces.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClosedCutTopologySnapshotDiagnosticV1 {
     snapshot: TopologySnapshot,
@@ -294,15 +396,30 @@ pub fn diagnose_closed_cut_topology_snapshot_v1(
             return Err(ClosedCutTopologySnapshotErrorV1::InvalidTopology);
         }
     };
-    // A successful closed-loop prerequisite must be reflected completely as a face
-    // subdivision: an outer component with a hole plus the detached inner
-    // material component. This is not a cutout/removal certificate.
+    // A successful closed-loop prerequisite must be reflected completely as
+    // distinct inner and outer material components. With no radial folds the
+    // outer component carries a hole; separating radial folds open that hole
+    // walk into sector boundaries. Requiring every cut twice and across
+    // components covers both representations. This is not a removal certificate.
     let loop_count = closed.loops().len();
-    let hole_count = snapshot
+    let snapshot_face_ids = snapshot
         .faces
         .iter()
-        .map(|face| face.holes.len())
+        .map(|face| face.id)
+        .collect::<std::collections::HashSet<_>>();
+    let component_face_count = snapshot
+        .material_components
+        .iter()
+        .map(|component| component.faces.len())
         .sum::<usize>();
+    let mut components_by_face = HashMap::with_capacity(component_face_count);
+    let mut component_membership_is_exact = component_face_count == snapshot.faces.len();
+    for (component, material) in snapshot.material_components.iter().enumerate() {
+        for face in &material.faces {
+            component_membership_is_exact &= snapshot_face_ids.contains(face)
+                && components_by_face.insert(*face, component).is_none();
+        }
+    }
     let mut cut_boundary_occurrences = HashMap::new();
     for face in &snapshot.faces {
         for boundary in std::iter::once(&face.outer).chain(&face.holes) {
@@ -322,12 +439,16 @@ pub fn diagnose_closed_cut_topology_snapshot_v1(
                     candidate == edge
                         && matches!(
                             incidence,
-                            crate::EdgeIncidence::Cut { left, right } if left != right
+                            crate::EdgeIncidence::Cut { left, right }
+                                if left != right
+                                    && components_by_face.get(left)
+                                        != components_by_face.get(right)
                         )
                 })
     });
     if loop_count == 0
-        || hole_count != loop_count
+        || !component_membership_is_exact
+        || components_by_face.len() != snapshot.faces.len()
         || snapshot.material_components.len() != loop_count.saturating_add(1)
         || snapshot.faces.len() < loop_count.saturating_add(1)
         || snapshot.faces.iter().any(|face| !face.seams.is_empty())

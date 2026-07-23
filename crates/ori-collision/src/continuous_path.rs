@@ -18,9 +18,12 @@ use thiserror::Error;
 
 use crate::cayley::prepare_swept_tree_hinge_thickness_boundaries_v1;
 use crate::{
+    HingeReliefLinearAngleScheduleV1, HingeReliefPolicyLimitsV1, HingeReliefPolicyRecordV1,
+    NativeHingeReliefLocalIntervalCertificateV1, NativeHingeReliefPrerequisiteV1,
     PositiveThicknessGraphLimitsV1, StaticCollisionLimits, diagnose_static_collision_geometry,
     prepare_positive_thickness_pair_separation_v1, prepare_single_hinge_thickness_boundary_v1,
-    prove_positive_thickness_graph_geometry_v1, revalidate_positive_thickness_pair_separation_v1,
+    prove_positive_thickness_graph_geometry_v1, revalidate_hinge_relief_local_intervals_v1,
+    revalidate_positive_thickness_pair_separation_v1,
     revalidate_single_hinge_thickness_boundary_v1, revalidate_tree_hinge_thickness_boundaries_v1,
     static_collision::prepare_positive_thickness_tree_endpoint_topology_memo_v1,
 };
@@ -208,6 +211,83 @@ pub struct SharedHingeContinuousCorridorGapReportV1 {
     schedule_hash: [u8; 32],
     thickness_bits: u64,
     gaps: Vec<SharedHingeContinuousCorridorGapV1>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReliefCoveredSharedHingePairV1 {
+    pair: [FaceId; 2],
+    hinge: EdgeId,
+}
+
+impl ReliefCoveredSharedHingePairV1 {
+    #[must_use]
+    pub const fn pair(&self) -> [FaceId; 2] {
+        self.pair
+    }
+    #[must_use]
+    pub const fn hinge(&self) -> EdgeId {
+        self.hinge
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SharedHingeReliefCoverageReportV1 {
+    issuer: MaterialHingeGraphGeometry,
+    fixed_face: FaceId,
+    schedule_hash: [u8; 32],
+    thickness_bits: u64,
+    covered: Vec<ReliefCoveredSharedHingePairV1>,
+    remaining: Vec<ContinuousPairCoverageEntryV1>,
+}
+
+impl SharedHingeReliefCoverageReportV1 {
+    #[must_use]
+    pub fn is_for_geometry(&self, geometry: &MaterialHingeGraphGeometry) -> bool {
+        self.issuer.same_instance(geometry)
+    }
+    #[must_use]
+    pub fn is_for(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+        thickness_mm: f64,
+    ) -> bool {
+        self.issuer.same_instance(geometry)
+            && self.fixed_face == fixed_face
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
+            && self.thickness_bits == thickness_mm.to_bits()
+            && schedule.matches_binding(geometry, audit, fixed_face)
+    }
+    #[must_use]
+    pub fn covered(&self) -> &[ReliefCoveredSharedHingePairV1] {
+        &self.covered
+    }
+    #[must_use]
+    pub fn remaining(&self) -> &[ContinuousPairCoverageEntryV1] {
+        &self.remaining
+    }
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum SharedHingeReliefCoverageErrorV1 {
+    #[error("continuous pair registry or gap report binding mismatch")]
+    ForeignCoverage,
+    #[error("local hinge relief certificate binding mismatch")]
+    ForeignRelief,
+    #[error("shared hinge relief pair coverage is incomplete or duplicated")]
+    IncompleteCoverage,
+    #[error("shared hinge relief coverage exceeds its hard bound")]
+    ResourceLimit,
 }
 
 impl SharedHingeContinuousCorridorGapReportV1 {
@@ -2830,6 +2910,123 @@ pub fn diagnose_shared_hinge_continuous_corridor_gaps_v1(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn compose_shared_hinge_relief_coverage_v1(
+    registry: &ContinuousPairCoverageRegistryV1,
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    paper_thickness_mm: f64,
+    prerequisite: &NativeHingeReliefPrerequisiteV1,
+    local: &NativeHingeReliefLocalIntervalCertificateV1,
+    policies: &[HingeReliefPolicyRecordV1],
+    local_schedules: &[HingeReliefLinearAngleScheduleV1],
+    limits: HingeReliefPolicyLimitsV1,
+) -> Result<SharedHingeReliefCoverageReportV1, SharedHingeReliefCoverageErrorV1> {
+    if !registry.is_for(geometry, audit, fixed_face, schedule) {
+        return Err(SharedHingeReliefCoverageErrorV1::ForeignCoverage);
+    }
+    let gaps = diagnose_shared_hinge_continuous_corridor_gaps_v1(
+        registry,
+        geometry,
+        audit,
+        fixed_face,
+        schedule,
+        paper_thickness_mm,
+    )
+    .ok_or(SharedHingeReliefCoverageErrorV1::ForeignCoverage)?;
+    revalidate_hinge_relief_local_intervals_v1(
+        local,
+        prerequisite,
+        geometry,
+        paper_thickness_mm,
+        policies,
+        local_schedules,
+        limits,
+    )
+    .map_err(|_| SharedHingeReliefCoverageErrorV1::ForeignRelief)?;
+    if gaps.gaps.len() > crate::MAX_HINGE_RELIEF_RECORDS_V1 {
+        return Err(SharedHingeReliefCoverageErrorV1::ResourceLimit);
+    }
+    let policy_edges = policies
+        .iter()
+        .map(|record| record.edge)
+        .collect::<HashSet<_>>();
+    if policy_edges.len() != policies.len() || policy_edges.len() != gaps.gaps.len() {
+        return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
+    }
+    let mut covered = match_relief_gap_schedules(&gaps.gaps, local_schedules, |edge| {
+        schedule.is_exact_constant_profile_v1(edge)
+    })?;
+    if covered
+        .iter()
+        .any(|item| !policy_edges.contains(&item.hinge))
+    {
+        return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
+    }
+    covered.sort_unstable_by_key(|item| {
+        (
+            item.pair[0].canonical_bytes(),
+            item.pair[1].canonical_bytes(),
+        )
+    });
+    if covered.windows(2).any(|pair| pair[0].pair == pair[1].pair) {
+        return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
+    }
+    let remaining = registry
+        .entries
+        .iter()
+        .filter(|entry| entry.kind != ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor)
+        .copied()
+        .collect();
+    Ok(SharedHingeReliefCoverageReportV1 {
+        issuer: geometry.clone(),
+        fixed_face,
+        schedule_hash: schedule.certificate_binding_fingerprint_v1(),
+        thickness_bits: paper_thickness_mm.to_bits(),
+        covered,
+        remaining,
+    })
+}
+
+fn match_relief_gap_schedules(
+    gaps: &[SharedHingeContinuousCorridorGapV1],
+    local_schedules: &[HingeReliefLinearAngleScheduleV1],
+    is_exact_constant: impl Fn(EdgeId) -> bool,
+) -> Result<Vec<ReliefCoveredSharedHingePairV1>, SharedHingeReliefCoverageErrorV1> {
+    if gaps.len() != local_schedules.len() || gaps.len() > crate::MAX_HINGE_RELIEF_RECORDS_V1 {
+        return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
+    }
+    let mut covered = Vec::new();
+    covered
+        .try_reserve_exact(gaps.len())
+        .map_err(|_| SharedHingeReliefCoverageErrorV1::ResourceLimit)?;
+    for gap in gaps {
+        let matching = local_schedules
+            .iter()
+            .filter(|item| item.edge == gap.hinge)
+            .collect::<Vec<_>>();
+        let [local_schedule] = matching.as_slice() else {
+            return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
+        };
+        let derivative_bound =
+            (local_schedule.target_angle_degrees - local_schedule.source_angle_degrees).abs();
+        let exact_constant = derivative_bound == 0.0 && is_exact_constant(gap.hinge);
+        if local_schedule.source_angle_degrees.to_bits() != gap.source_angle_bits
+            || local_schedule.target_angle_degrees.to_bits() != gap.target_angle_bits
+            || (!exact_constant && derivative_bound.to_bits() != gap.derivative_bound_bits)
+        {
+            return Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage);
+        }
+        covered.push(ReliefCoveredSharedHingePairV1 {
+            pair: gap.pair,
+            hinge: gap.hinge,
+        });
+    }
+    Ok(covered)
+}
+
 fn symmetric_groups_have_disjoint_swept_balls_v1(
     geometry: &MaterialHingeGraphGeometry,
     groups: &HashMap<FaceId, usize>,
@@ -3481,6 +3678,19 @@ mod tests {
         ori_kinematics::CanonicalCycleScheduleV1,
         FaceId,
     ) {
+        rational_cycle_bay_geometry_with_positive_constant(group_count, reverse_hinges, false)
+    }
+
+    fn rational_cycle_bay_geometry_with_positive_constant(
+        group_count: usize,
+        reverse_hinges: bool,
+        positive_constant: bool,
+    ) -> (
+        MaterialHingeGraphGeometry,
+        MaterialHingeGraphAudit,
+        ori_kinematics::CanonicalCycleScheduleV1,
+        FaceId,
+    ) {
         let triples = [
             (3.0, 5.0, 4.0),
             (5.0, 13.0, 12.0),
@@ -3562,16 +3772,23 @@ mod tests {
                             denominator: 1,
                         },
                     ],
-                    numerator_power_coefficients: vec![
-                        ori_kinematics::RationalCoefficientV1 {
-                            numerator: 0,
+                    numerator_power_coefficients: if positive_constant {
+                        vec![ori_kinematics::RationalCoefficientV1 {
+                            numerator: 1,
                             denominator: 1,
-                        },
-                        ori_kinematics::RationalCoefficientV1 {
-                            numerator: if index % 2 == 0 { 1 } else { p as i64 },
-                            denominator: 1,
-                        },
-                    ],
+                        }]
+                    } else {
+                        vec![
+                            ori_kinematics::RationalCoefficientV1 {
+                                numerator: 0,
+                                denominator: 1,
+                            },
+                            ori_kinematics::RationalCoefficientV1 {
+                                numerator: if index % 2 == 0 { 1 } else { p as i64 },
+                                denominator: 1,
+                            },
+                        ]
+                    },
                     denominator_power_coefficients: vec![ori_kinematics::RationalCoefficientV1 {
                         numerator: if index % 2 == 0 { 1 } else { q as i64 },
                         denominator: 1,
@@ -3876,6 +4093,103 @@ mod tests {
     }
 
     #[test]
+    fn positive_constant_actual_registries_compose_all_shared_hinge_relief_gaps() {
+        for bay_count in [4_usize, 8, 16] {
+            let (geometry, audit, schedule, fixed) =
+                rational_cycle_bay_geometry_with_positive_constant(bay_count, false, true);
+            let registry =
+                diagnose_continuous_pair_coverage_v1(&geometry, &audit, fixed, &schedule).unwrap();
+            let gaps = diagnose_shared_hinge_continuous_corridor_gaps_v1(
+                &registry, &geometry, &audit, fixed, &schedule, 0.1,
+            )
+            .unwrap();
+            let mut policies = gaps
+                .gaps()
+                .iter()
+                .map(|gap| HingeReliefPolicyRecordV1 {
+                    edge: gap.hinge(),
+                    cutout_width_mm: 7.0,
+                    bevel_angle_degrees: 1.0,
+                    material_thickness_mm: 0.1,
+                })
+                .collect::<Vec<_>>();
+            policies.sort_unstable_by_key(|record| record.edge.canonical_bytes());
+            let schedules = policies
+                .iter()
+                .map(|policy| {
+                    let gap = gaps
+                        .gaps()
+                        .iter()
+                        .find(|gap| gap.hinge() == policy.edge)
+                        .unwrap();
+                    HingeReliefLinearAngleScheduleV1 {
+                        edge: policy.edge,
+                        source_angle_degrees: f64::from_bits(gap.source_angle_bits()),
+                        target_angle_degrees: f64::from_bits(gap.target_angle_bits()),
+                    }
+                })
+                .collect::<Vec<_>>();
+            let limits = HingeReliefPolicyLimitsV1::default();
+            let prerequisite =
+                crate::prepare_hinge_relief_prerequisite_v1(&geometry, 0.1, &policies, limits)
+                    .unwrap();
+            let local = crate::certify_hinge_relief_local_intervals_v1(
+                &prerequisite,
+                &geometry,
+                0.1,
+                &policies,
+                &schedules,
+                limits,
+            )
+            .unwrap();
+            let report = compose_shared_hinge_relief_coverage_v1(
+                &registry,
+                &geometry,
+                &audit,
+                fixed,
+                &schedule,
+                0.1,
+                &prerequisite,
+                &local,
+                &policies,
+                &schedules,
+                limits,
+            )
+            .unwrap();
+            assert!(report.is_for_geometry(&geometry));
+            assert!(report.is_for(&geometry, &audit, fixed, &schedule, 0.1));
+            assert!(!report.is_for(&geometry, &audit, fixed, &schedule, 0.2));
+            assert!(!report.authorizes_continuous_motion());
+            assert!(!report.authorizes_project_mutation());
+            assert_eq!(report.covered().len(), gaps.gaps().len());
+            assert_eq!(
+                report.covered().len() + report.remaining().len(),
+                registry.entries().len()
+            );
+
+            let mut tampered = schedules.clone();
+            tampered[0].source_angle_degrees =
+                f64::from_bits(tampered[0].source_angle_degrees.to_bits() + 1);
+            assert!(matches!(
+                compose_shared_hinge_relief_coverage_v1(
+                    &registry,
+                    &geometry,
+                    &audit,
+                    fixed,
+                    &schedule,
+                    0.1,
+                    &prerequisite,
+                    &local,
+                    &policies,
+                    &tampered,
+                    limits,
+                ),
+                Err(SharedHingeReliefCoverageErrorV1::ForeignRelief)
+            ));
+        }
+    }
+
+    #[test]
     fn continuous_pair_gap_classifier_fails_closed_without_metadata_and_at_cap() {
         assert_eq!(
             classify_continuous_pair_v1(0, Some(false), None),
@@ -3892,6 +4206,56 @@ mod tests {
         assert_eq!(checked_unordered_pair_count_v1(65), Some(2_080));
         assert_eq!(checked_unordered_pair_count_v1(66), Some(2_145));
         assert!(checked_unordered_pair_count_v1(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn relief_gap_schedule_matching_is_complete_at_four_eight_sixteen() {
+        for count in [4_usize, 8, 16] {
+            let gaps = (0..count)
+                .map(|index| SharedHingeContinuousCorridorGapV1 {
+                    pair: [
+                        fixed_id("b601", index as u64 * 2 + 1),
+                        fixed_id("b601", index as u64 * 2 + 2),
+                    ],
+                    hinge: fixed_id("9601", index as u64 + 1),
+                    source_angle_bits: 90.0_f64.to_bits(),
+                    target_angle_bits: 120.0_f64.to_bits(),
+                    derivative_bound_bits: 30.0_f64.to_bits(),
+                    triangular_prerequisite: true,
+                })
+                .collect::<Vec<_>>();
+            let schedules = gaps
+                .iter()
+                .map(|gap| HingeReliefLinearAngleScheduleV1 {
+                    edge: gap.hinge,
+                    source_angle_degrees: 90.0,
+                    target_angle_degrees: 120.0,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                match_relief_gap_schedules(&gaps, &schedules, |_| false)
+                    .unwrap()
+                    .len(),
+                count
+            );
+
+            let mut tampered = schedules.clone();
+            tampered[0].source_angle_degrees = f64::from_bits(90.0_f64.to_bits() + 1);
+            assert_eq!(
+                match_relief_gap_schedules(&gaps, &tampered, |_| false),
+                Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage)
+            );
+            assert_eq!(
+                match_relief_gap_schedules(&gaps, &schedules[..count - 1], |_| false),
+                Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage)
+            );
+            let mut duplicate = schedules.clone();
+            duplicate[1].edge = duplicate[0].edge;
+            assert_eq!(
+                match_relief_gap_schedules(&gaps, &duplicate, |_| false),
+                Err(SharedHingeReliefCoverageErrorV1::IncompleteCoverage)
+            );
+        }
     }
 
     #[test]

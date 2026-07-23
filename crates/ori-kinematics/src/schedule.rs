@@ -1791,6 +1791,22 @@ impl CanonicalCycleScheduleV1 {
             .map(|entry| entry.derivative_bound)
     }
 
+    /// Returns true only when the prepared native representation proves that
+    /// the selected hinge profile is exactly constant over the whole domain.
+    #[must_use]
+    pub fn is_exact_constant_profile_v1(&self, edge: EdgeId) -> bool {
+        if !self.half_angle_entries.is_empty() {
+            return self.half_angle_entries.iter().any(|entry| {
+                entry.edge() == edge
+                    && entry.numerator_power_coefficients.len() == 1
+                    && entry.denominator_power_coefficients.len() == 1
+            });
+        }
+        self.entries
+            .iter()
+            .any(|entry| entry.edge == edge && entry.coefficients.iter().all(|value| *value == 0.0))
+    }
+
     /// Returns the hinges carrying one bit-identical non-constant projective
     /// profile when every other hinge is an exact constant profile.
     /// This is intentionally narrower than comparing sampled angles.

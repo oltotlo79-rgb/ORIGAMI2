@@ -162,6 +162,96 @@ pub struct ContinuousPairCoverageRegistryV1 {
     entries: Vec<ContinuousPairCoverageEntryV1>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedHingeContinuousCorridorGapV1 {
+    pair: [FaceId; 2],
+    hinge: EdgeId,
+    source_angle_bits: u64,
+    target_angle_bits: u64,
+    derivative_bound_bits: u64,
+    triangular_prerequisite: bool,
+}
+
+impl SharedHingeContinuousCorridorGapV1 {
+    #[must_use]
+    pub const fn pair(&self) -> [FaceId; 2] {
+        self.pair
+    }
+    #[must_use]
+    pub const fn hinge(&self) -> EdgeId {
+        self.hinge
+    }
+    #[must_use]
+    pub const fn source_angle_bits(&self) -> u64 {
+        self.source_angle_bits
+    }
+    #[must_use]
+    pub const fn target_angle_bits(&self) -> u64 {
+        self.target_angle_bits
+    }
+    #[must_use]
+    pub const fn derivative_bound_bits(&self) -> u64 {
+        self.derivative_bound_bits
+    }
+    #[must_use]
+    pub const fn triangular_prerequisite(&self) -> bool {
+        self.triangular_prerequisite
+    }
+}
+
+/// Exact inputs still lacking an open-interval Cayley corridor theorem.
+/// Endpoint static capabilities are intentionally not accepted as a substitute.
+#[derive(Debug, Clone)]
+pub struct SharedHingeContinuousCorridorGapReportV1 {
+    issuer: MaterialHingeGraphGeometry,
+    fixed_face: FaceId,
+    schedule_hash: [u8; 32],
+    thickness_bits: u64,
+    gaps: Vec<SharedHingeContinuousCorridorGapV1>,
+}
+
+impl SharedHingeContinuousCorridorGapReportV1 {
+    #[must_use]
+    pub fn gaps(&self) -> &[SharedHingeContinuousCorridorGapV1] {
+        &self.gaps
+    }
+    #[must_use]
+    pub const fn authorizes_continuous_motion(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn is_for(
+        &self,
+        geometry: &MaterialHingeGraphGeometry,
+        audit: &MaterialHingeGraphAudit,
+        fixed_face: FaceId,
+        schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+        paper_thickness_mm: f64,
+    ) -> bool {
+        self.issuer.same_instance(geometry)
+            && self.fixed_face == fixed_face
+            && self.schedule_hash == schedule.certificate_binding_fingerprint_v1()
+            && self.thickness_bits == paper_thickness_mm.to_bits()
+            && schedule.matches_binding(geometry, audit, fixed_face)
+            && diagnose_continuous_pair_coverage_v1(geometry, audit, fixed_face, schedule)
+                .and_then(|registry| {
+                    diagnose_shared_hinge_continuous_corridor_gaps_v1(
+                        &registry,
+                        geometry,
+                        audit,
+                        fixed_face,
+                        schedule,
+                        paper_thickness_mm,
+                    )
+                })
+                .is_some_and(|fresh| fresh.gaps == self.gaps)
+    }
+}
+
 impl ContinuousPairCoverageRegistryV1 {
     #[must_use]
     pub fn entries(&self) -> &[ContinuousPairCoverageEntryV1] {
@@ -2661,6 +2751,85 @@ pub fn diagnose_continuous_pair_coverage_v1(
     })
 }
 
+/// Consumes the exact gap registry and seals the bounded inputs required by a
+/// future shared-hinge open-interval theorem. This remains a gap report.
+#[must_use]
+pub fn diagnose_shared_hinge_continuous_corridor_gaps_v1(
+    registry: &ContinuousPairCoverageRegistryV1,
+    geometry: &MaterialHingeGraphGeometry,
+    audit: &MaterialHingeGraphAudit,
+    fixed_face: FaceId,
+    schedule: &ori_kinematics::CanonicalCycleScheduleV1,
+    paper_thickness_mm: f64,
+) -> Option<SharedHingeContinuousCorridorGapReportV1> {
+    if !registry.is_for(geometry, audit, fixed_face, schedule)
+        || !paper_thickness_mm.is_finite()
+        || paper_thickness_mm <= 0.0
+    {
+        return None;
+    }
+    let source = schedule.evaluate(0.0)?;
+    let target = schedule.evaluate(1.0)?;
+    let source = source
+        .as_slice()
+        .iter()
+        .map(|angle| (angle.edge(), angle.angle_degrees().to_bits()))
+        .collect::<HashMap<_, _>>();
+    let target = target
+        .as_slice()
+        .iter()
+        .map(|angle| (angle.edge(), angle.angle_degrees().to_bits()))
+        .collect::<HashMap<_, _>>();
+    let expected = registry
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor)
+        .count();
+    let mut gaps = Vec::with_capacity(expected);
+    for entry in registry
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor)
+    {
+        let hinges = geometry
+            .hinges()
+            .iter()
+            .filter(|hinge| {
+                (hinge.left_face() == entry.pair[0] && hinge.right_face() == entry.pair[1])
+                    || (hinge.left_face() == entry.pair[1] && hinge.right_face() == entry.pair[0])
+            })
+            .collect::<Vec<_>>();
+        let [hinge] = hinges.as_slice() else {
+            return None;
+        };
+        let triangular_prerequisite = geometry
+            .face_boundary_vertices(entry.pair[0])
+            .is_some_and(|v| v.len() == 3)
+            && geometry
+                .face_boundary_vertices(entry.pair[1])
+                .is_some_and(|v| v.len() == 3);
+        let derivative = schedule.derivative_bound(hinge.edge())?;
+        if !derivative.is_finite() || derivative < 0.0 {
+            return None;
+        }
+        gaps.push(SharedHingeContinuousCorridorGapV1 {
+            pair: entry.pair,
+            hinge: hinge.edge(),
+            source_angle_bits: *source.get(&hinge.edge())?,
+            target_angle_bits: *target.get(&hinge.edge())?,
+            derivative_bound_bits: derivative.to_bits(),
+            triangular_prerequisite,
+        });
+    }
+    (gaps.len() == expected).then(|| SharedHingeContinuousCorridorGapReportV1 {
+        issuer: geometry.clone(),
+        fixed_face,
+        schedule_hash: schedule.certificate_binding_fingerprint_v1(),
+        thickness_bits: paper_thickness_mm.to_bits(),
+        gaps,
+    })
+}
+
 fn symmetric_groups_have_disjoint_swept_balls_v1(
     geometry: &MaterialHingeGraphGeometry,
     groups: &HashMap<FaceId, usize>,
@@ -3683,6 +3852,26 @@ mod tests {
                 )
             }));
             assert!(registry.gap_count() > 0);
+            let corridor = diagnose_shared_hinge_continuous_corridor_gaps_v1(
+                &registry, &geometry, &audit, fixed, &schedule, 0.1,
+            )
+            .expect("shared-hinge prerequisite gap report");
+            assert!(corridor.is_for(&geometry, &audit, fixed, &schedule, 0.1));
+            assert!(!corridor.authorizes_continuous_motion());
+            assert!(!corridor.authorizes_project_mutation());
+            assert_eq!(corridor.gaps().len(), geometry.hinges().len());
+            assert!(corridor.gaps().iter().all(|gap| {
+                registry.entries().iter().any(|entry| {
+                    entry.pair() == gap.pair()
+                        && entry.kind() == ContinuousPairCoverageKindV1::SharedHingeNeedsCorridor
+                })
+            }));
+            assert!(
+                diagnose_shared_hinge_continuous_corridor_gaps_v1(
+                    &registry, &geometry, &audit, fixed, &schedule, 0.0,
+                )
+                .is_none()
+            );
         }
     }
 

@@ -138,6 +138,12 @@ use numeric_expression::{
     PositiveMillimetrePairError, evaluate_finite_millimetre_pair, evaluate_numeric_expression,
     evaluate_positive_millimetre_pair, evaluate_positive_millimetre_pair_in_worker,
 };
+use ori_collision::{
+    EffectiveCutCollisionGeometryInputV1, diagnose_effective_cut_multi_hinge_union_gaps_v1,
+    diagnose_effective_cut_source_flat_pairs_v1, prepare_effective_cut_collision_geometry_v1,
+    prepare_effective_cut_static_pair_registry_bridge_v1,
+    prepare_effective_cut_static_thickness_prerequisite_v1,
+};
 use ori_core::{
     BoundaryEdgeRef, Command, ConstraintPreflightV1, ConstraintSolveLimitsV1,
     DirectConstraintConflictV1, EditorState, EditorTopology, GeometricConstraintLimitsV1,
@@ -174,7 +180,13 @@ use ori_formats::{
     VertexCoordinateExpressions, generate_project_thumbnail_svg, read_fold_preview,
     read_svg_preview,
 };
-use ori_kinematics::{CanonicalHingeAngles, HingeAngle};
+use ori_kinematics::{
+    CanonicalHingeAngles, HingeAngle, prepare_effective_cut_kinematics_diagnostic_v1,
+    prepare_effective_cut_retained_face_pair_registry_v1,
+};
+use ori_topology::{
+    FaceExtractionInput, MaterialComponentKey, diagnose_effective_cut_material_snapshot_v1,
+};
 use project_folder_io::{ProjectFolderIoState, open_project_folder, save_project_folder_as};
 #[cfg(test)]
 use project_persistence::{
@@ -3048,6 +3060,49 @@ struct ProjectTopologyResponse {
     simulation_ready: bool,
     snapshot: Option<TopologySnapshot>,
     issues: Vec<TopologyIssue>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct EffectiveCutReadOnlyRequestV1 {
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    expected_fold_model_fingerprint: String,
+    requested_component_keys: Vec<[u8; 32]>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EffectiveCutReadOnlyResponseV1 {
+    version: u8,
+    project_instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+    fold_model_fingerprint: String,
+    effective_snapshot_fingerprint: [u8; 32],
+    geometry_model_id: &'static str,
+    geometry_fingerprint: [u8; 32],
+    pair_observation_model_id: &'static str,
+    pair_observation_fingerprint: [u8; 32],
+    multi_hinge_gap_model_id: &'static str,
+    multi_hinge_gap_fingerprint: [u8; 32],
+    source_flat_pair_count: usize,
+    separated_pairs: usize,
+    touching_pairs: usize,
+    shared_hinge_corridor_observed_pairs: usize,
+    shared_vertex_corridor_observed_pairs: usize,
+    penetrating_pairs: usize,
+    indeterminate_pairs: usize,
+    multi_hinge_pairs: usize,
+    multi_hinge_union_corridor_unproved_pairs: usize,
+    authorizes_project_mutation: bool,
+    authorizes_persistence: bool,
+    authorizes_simulation_admission: bool,
+    authorizes_pair_classification: bool,
+    authorizes_collision_free_classification: bool,
+    authorizes_pose_solving: bool,
+    authorizes_material_removal: bool,
 }
 
 struct NewProjectParameters {
@@ -8208,6 +8263,250 @@ async fn analyze_project_topology(
 
     let project = lock_project(&state)?;
     finish_topology_response(&project, &input, topology)
+}
+
+#[tauri::command]
+async fn inspect_effective_cut_read_only_v1(
+    state: State<'_, AppState>,
+    request: EffectiveCutReadOnlyRequestV1,
+) -> Result<EffectiveCutReadOnlyResponseV1, String> {
+    validate_effective_cut_read_only_request_v1(&request)?;
+    let input = {
+        let project = lock_project(&state)?;
+        ensure_expected_project(
+            &project,
+            request.expected_project_instance_id,
+            request.expected_project_id,
+            request.expected_revision,
+        )?;
+        if project.editor.fold_model_fingerprint_v1() != request.expected_fold_model_fingerprint {
+            return Err("The effective-cut request fingerprint is stale.".into());
+        }
+        project
+            .editor
+            .topology_analysis_input(request.expected_project_id)
+    };
+    inspect_effective_cut_read_only_v1_with_input(state, request, input).await
+}
+
+fn validate_effective_cut_read_only_request_v1(
+    request: &EffectiveCutReadOnlyRequestV1,
+) -> Result<(), String> {
+    const MAX_REQUESTED_COMPONENTS: usize = 64;
+    if !valid_fold_model_fingerprint(&request.expected_fold_model_fingerprint) {
+        return Err("The fold-model fingerprint must be canonical lowercase SHA-256.".into());
+    }
+    if request.requested_component_keys.is_empty()
+        || request.requested_component_keys.len() > MAX_REQUESTED_COMPONENTS
+        || request
+            .requested_component_keys
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+    {
+        return Err(
+            "Effective-cut component keys must be non-empty, bounded, and canonical.".into(),
+        );
+    }
+    Ok(())
+}
+
+async fn inspect_effective_cut_read_only_v1_with_input(
+    state: State<'_, AppState>,
+    request: EffectiveCutReadOnlyRequestV1,
+    input: TopologyAnalysisInput,
+) -> Result<EffectiveCutReadOnlyResponseV1, String> {
+    let mut requested = Vec::new();
+    requested
+        .try_reserve_exact(request.requested_component_keys.len())
+        .map_err(|_| "Effective-cut request is too large.".to_owned())?;
+    requested.extend(
+        request
+            .requested_component_keys
+            .iter()
+            .copied()
+            .map(MaterialComponentKey),
+    );
+    let worker_request = request.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let source = FaceExtractionInput {
+            identity_namespace: worker_request.expected_project_id,
+            source_revision: worker_request.expected_revision,
+            paper: input.paper(),
+            pattern: input.pattern(),
+        };
+        let effective =
+            diagnose_effective_cut_material_snapshot_v1(source, &requested, Default::default())
+                .map_err(|_| "Effective-cut material selection is unsupported.".to_owned())?;
+        let kinematics =
+            prepare_effective_cut_kinematics_diagnostic_v1(&effective, source, Default::default())
+                .map_err(|_| "Effective-cut kinematics is unsupported.".to_owned())?;
+        let registry_limits = Default::default();
+        let registry = prepare_effective_cut_retained_face_pair_registry_v1(
+            &kinematics,
+            &effective,
+            source,
+            Default::default(),
+            registry_limits,
+        )
+        .map_err(|_| "Effective-cut pair registry is unsupported.".to_owned())?;
+        let prerequisite_limits = Default::default();
+        let prerequisite = prepare_effective_cut_static_thickness_prerequisite_v1(
+            &kinematics,
+            &effective,
+            source,
+            Default::default(),
+            prerequisite_limits,
+        )
+        .map_err(|_| "Effective-cut positive thickness is unsupported.".to_owned())?;
+        let bridge = prepare_effective_cut_static_pair_registry_bridge_v1(
+            &prerequisite,
+            &registry,
+            &kinematics,
+            &effective,
+            source,
+            Default::default(),
+            prerequisite_limits,
+            registry_limits,
+        )
+        .map_err(|_| "Effective-cut pair binding is unsupported.".to_owned())?;
+        let geometry_input = EffectiveCutCollisionGeometryInputV1 {
+            bridge: &bridge,
+            prerequisite: &prerequisite,
+            registry: &registry,
+            kinematics: &kinematics,
+            effective: &effective,
+            source,
+            kinematics_limits: Default::default(),
+            prerequisite_limits,
+            registry_limits,
+            geometry_limits: Default::default(),
+        };
+        let geometry = prepare_effective_cut_collision_geometry_v1(geometry_input)
+            .map_err(|_| "Effective-cut source-flat geometry is unsupported.".to_owned())?;
+        let observation = diagnose_effective_cut_source_flat_pairs_v1(
+            &geometry,
+            geometry_input,
+            Default::default(),
+        )
+        .map_err(|_| "Effective-cut source-flat pair scan is unsupported.".to_owned())?;
+        let gap = diagnose_effective_cut_multi_hinge_union_gaps_v1(
+            &geometry,
+            geometry_input,
+            Default::default(),
+        )
+        .map_err(|_| "Effective-cut multi-hinge gap scan is unsupported.".to_owned())?;
+        let counted_pairs = [
+            observation.separated_pairs(),
+            observation.touching_pairs(),
+            observation.shared_hinge_allowed_pairs(),
+            observation.shared_vertex_allowed_pairs(),
+            observation.penetrating_pairs(),
+            observation.indeterminate_pairs(),
+        ]
+        .into_iter()
+        .try_fold(0_usize, usize::checked_add)
+        .ok_or_else(|| "Effective-cut pair counts overflowed.".to_owned())?;
+        if counted_pairs != observation.pair_count()
+            || gap.multi_hinge_pairs() != gap.union_corridor_unproved_pairs()
+            || effective.authorizes_project_mutation()
+            || effective.authorizes_material_removal()
+            || effective.authorizes_persistence()
+            || effective.authorizes_simulation_admission()
+            || kinematics.authorizes_simulation_admission()
+            || kinematics.authorizes_pose_solving()
+            || kinematics.authorizes_project_mutation()
+            || kinematics.authorizes_persistence()
+            || registry.authorizes_pair_classification()
+            || registry.authorizes_collision_free_classification()
+            || registry.authorizes_simulation_admission()
+            || registry.authorizes_project_mutation()
+            || registry.authorizes_material_removal()
+            || registry.authorizes_persistence()
+            || prerequisite.authorizes_collision_free_classification()
+            || prerequisite.authorizes_simulation_admission()
+            || prerequisite.authorizes_project_mutation()
+            || prerequisite.authorizes_material_removal()
+            || prerequisite.authorizes_persistence()
+            || bridge.authorizes_pair_classification()
+            || bridge.authorizes_collision_free_classification()
+            || bridge.authorizes_simulation_admission()
+            || bridge.authorizes_project_mutation()
+            || bridge.authorizes_material_removal()
+            || bridge.authorizes_persistence()
+            || geometry.authorizes_pair_classification()
+            || geometry.authorizes_collision_free_classification()
+            || geometry.authorizes_pose_solving()
+            || geometry.authorizes_simulation_admission()
+            || geometry.authorizes_project_mutation()
+            || geometry.authorizes_material_removal()
+            || geometry.authorizes_persistence()
+            || observation.authorizes_pair_classification()
+            || observation.authorizes_collision_free_classification()
+            || observation.authorizes_pose_solving()
+            || observation.authorizes_simulation_admission()
+            || observation.authorizes_project_mutation()
+            || observation.authorizes_material_removal()
+            || observation.authorizes_persistence()
+            || gap.authorizes_pair_classification()
+            || gap.authorizes_collision_free_classification()
+            || gap.authorizes_pose_solving()
+            || gap.authorizes_simulation_admission()
+            || gap.authorizes_project_mutation()
+            || gap.authorizes_material_removal()
+            || gap.authorizes_persistence()
+        {
+            return Err("Effective-cut diagnostic invariants failed closed.".to_owned());
+        }
+        Ok::<_, String>((
+            effective.fingerprint_v1(),
+            geometry.model_id(),
+            geometry.fingerprint_v1(),
+            observation,
+            gap,
+            input,
+        ))
+    })
+    .await
+    .map_err(|_| "Effective-cut read-only analysis failed.".to_owned())??;
+    let project = lock_project(&state)?;
+    if project.instance_id != request.expected_project_instance_id
+        || project.project_id != request.expected_project_id
+        || project.editor.revision() != request.expected_revision
+        || project.editor.fold_model_fingerprint_v1() != request.expected_fold_model_fingerprint
+        || !result.5.is_current_for(project.project_id, &project.editor)
+    {
+        return Err("The project changed while effective-cut geometry was analyzed.".into());
+    }
+    Ok(EffectiveCutReadOnlyResponseV1 {
+        version: 1,
+        project_instance_id: request.expected_project_instance_id,
+        project_id: request.expected_project_id,
+        revision: request.expected_revision,
+        fold_model_fingerprint: request.expected_fold_model_fingerprint,
+        effective_snapshot_fingerprint: result.0,
+        geometry_model_id: result.1,
+        geometry_fingerprint: result.2,
+        pair_observation_model_id: result.3.model_id(),
+        pair_observation_fingerprint: result.3.fingerprint_v1(),
+        multi_hinge_gap_model_id: result.4.model_id(),
+        multi_hinge_gap_fingerprint: result.4.fingerprint_v1(),
+        source_flat_pair_count: result.3.pair_count(),
+        separated_pairs: result.3.separated_pairs(),
+        touching_pairs: result.3.touching_pairs(),
+        shared_hinge_corridor_observed_pairs: result.3.shared_hinge_allowed_pairs(),
+        shared_vertex_corridor_observed_pairs: result.3.shared_vertex_allowed_pairs(),
+        penetrating_pairs: result.3.penetrating_pairs(),
+        indeterminate_pairs: result.3.indeterminate_pairs(),
+        multi_hinge_pairs: result.4.multi_hinge_pairs(),
+        multi_hinge_union_corridor_unproved_pairs: result.4.union_corridor_unproved_pairs(),
+        authorizes_project_mutation: false,
+        authorizes_persistence: false,
+        authorizes_simulation_admission: false,
+        authorizes_pair_classification: false,
+        authorizes_collision_free_classification: false,
+        authorizes_pose_solving: false,
+        authorizes_material_removal: false,
+    })
 }
 
 #[tauri::command]
@@ -15242,6 +15541,7 @@ pub fn run() {
             analyze_geometric_constraints,
             evaluate_numeric_expression,
             analyze_project_topology,
+            inspect_effective_cut_read_only_v1,
             begin_global_flat_foldability,
             get_current_layer_order_view,
             get_global_flat_foldability_progress,
@@ -15537,6 +15837,96 @@ mod tests {
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
     static BEGINNER_GRID_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn effective_cut_request(keys: Vec<[u8; 32]>) -> EffectiveCutReadOnlyRequestV1 {
+        EffectiveCutReadOnlyRequestV1 {
+            expected_project_instance_id: ProjectId::new(),
+            expected_project_id: ProjectId::new(),
+            expected_revision: 7,
+            expected_fold_model_fingerprint: "a".repeat(64),
+            requested_component_keys: keys,
+        }
+    }
+
+    #[test]
+    fn effective_cut_read_only_request_requires_canonical_bounded_selection() {
+        assert!(
+            validate_effective_cut_read_only_request_v1(&effective_cut_request(vec![])).is_err()
+        );
+        assert!(
+            validate_effective_cut_read_only_request_v1(&effective_cut_request(vec![[1; 32]; 65]))
+                .is_err()
+        );
+        assert!(
+            validate_effective_cut_read_only_request_v1(&effective_cut_request(vec![
+                [1; 32], [1; 32]
+            ]))
+            .is_err()
+        );
+        assert!(
+            validate_effective_cut_read_only_request_v1(&effective_cut_request(vec![
+                [2; 32], [1; 32]
+            ]))
+            .is_err()
+        );
+        let mut malformed = effective_cut_request(vec![[1; 32]]);
+        malformed.expected_fold_model_fingerprint = "A".repeat(64);
+        assert!(validate_effective_cut_read_only_request_v1(&malformed).is_err());
+        assert!(
+            validate_effective_cut_read_only_request_v1(&effective_cut_request(vec![
+                [1; 32], [2; 32]
+            ]))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn effective_cut_read_only_response_serializes_only_aggregate_diagnostics() {
+        let response = EffectiveCutReadOnlyResponseV1 {
+            version: 1,
+            project_instance_id: ProjectId::new(),
+            project_id: ProjectId::new(),
+            revision: 7,
+            fold_model_fingerprint: "a".repeat(64),
+            effective_snapshot_fingerprint: [1; 32],
+            geometry_model_id: "test-geometry",
+            geometry_fingerprint: [2; 32],
+            pair_observation_model_id: "test-observation",
+            pair_observation_fingerprint: [3; 32],
+            multi_hinge_gap_model_id: "test-gap",
+            multi_hinge_gap_fingerprint: [4; 32],
+            source_flat_pair_count: 1,
+            separated_pairs: 1,
+            touching_pairs: 0,
+            shared_hinge_corridor_observed_pairs: 0,
+            shared_vertex_corridor_observed_pairs: 0,
+            penetrating_pairs: 0,
+            indeterminate_pairs: 0,
+            multi_hinge_pairs: 0,
+            multi_hinge_union_corridor_unproved_pairs: 0,
+            authorizes_project_mutation: false,
+            authorizes_persistence: false,
+            authorizes_simulation_admission: false,
+            authorizes_pair_classification: false,
+            authorizes_collision_free_classification: false,
+            authorizes_pose_solving: false,
+            authorizes_material_removal: false,
+        };
+        let value = serde_json::to_value(response).expect("serialize diagnostic DTO");
+        let object = value.as_object().expect("object DTO");
+        assert_eq!(object.len(), 28);
+        for forbidden in [
+            "faceId",
+            "edgeId",
+            "vertexId",
+            "coordinates",
+            "boundary",
+            "geometry",
+        ] {
+            assert!(!object.contains_key(forbidden));
+        }
+        assert!(object.values().all(|value| !value.is_object()));
+    }
 
     #[test]
     fn bounded_beginner_asset_import_reads_real_regular_file_without_following_aliases() {

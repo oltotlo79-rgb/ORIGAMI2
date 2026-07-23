@@ -21,6 +21,8 @@ pub const CALLER_EMBEDDING_OBSERVATION_MODEL_ID: &str =
     "caller_embedding_tree_kinematics_observation_v1";
 pub const EFFECTIVE_CUT_KINEMATICS_DIAGNOSTIC_MODEL_ID_V1: &str =
     "effective_cut_kinematics_diagnostic_v1";
+pub const EFFECTIVE_CUT_RETAINED_FACE_PAIR_REGISTRY_MODEL_ID_V1: &str =
+    "effective_cut_retained_face_pair_registry_v1";
 const MAX_SIMPLE_BOUNDARY_EXACT_INTERSECTION_TESTS: usize = 10_000_000;
 
 /// Hard work bounds checked before model allocations.
@@ -300,11 +302,219 @@ pub struct MaterialHingeGraphGeometry {
 /// This type intentionally exposes no geometry or pose-model conversion.
 #[derive(Debug, Clone)]
 pub struct EffectiveCutKinematicsDiagnosticV1 {
+    face_ids: Vec<FaceId>,
+    hinge_pairs: Vec<(EdgeId, FaceId, FaceId)>,
     face_count: usize,
     hinge_count: usize,
     source_fingerprint: [u8; 32],
     fingerprint: [u8; 32],
     limits: TreeKinematicsLimits,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveCutRetainedFacePairRegistryLimitsV1 {
+    pub max_pairs: usize,
+    pub max_shared_hinge_memberships: usize,
+}
+
+impl Default for EffectiveCutRetainedFacePairRegistryLimitsV1 {
+    fn default() -> Self {
+        Self {
+            max_pairs: 1_000_000,
+            max_shared_hinge_memberships: ori_domain::MAX_INSTRUCTION_HINGES_PER_STEP,
+        }
+    }
+}
+
+/// Opaque canonical registry of every unordered retained-face pair.
+///
+/// Face identities and pair entries remain private. This registry classifies
+/// no pair and grants no collision, pose, simulation, or mutation authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveCutRetainedFacePairRegistryV1 {
+    source_fingerprint: [u8; 32],
+    fingerprint: [u8; 32],
+    pair_count: usize,
+    shared_hinge_membership_count: usize,
+    kinematics_limits: TreeKinematicsLimits,
+    limits: EffectiveCutRetainedFacePairRegistryLimitsV1,
+}
+
+impl EffectiveCutRetainedFacePairRegistryV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        EFFECTIVE_CUT_RETAINED_FACE_PAIR_REGISTRY_MODEL_ID_V1
+    }
+    #[must_use]
+    pub const fn fingerprint_v1(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+    #[must_use]
+    pub const fn pair_count(&self) -> usize {
+        self.pair_count
+    }
+    #[must_use]
+    pub const fn shared_hinge_membership_count(&self) -> usize {
+        self.shared_hinge_membership_count
+    }
+    #[must_use]
+    pub const fn authorizes_pair_classification(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_collision_free_classification(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_simulation_admission(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_material_removal(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_persistence(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn is_for(
+        &self,
+        kinematics: &EffectiveCutKinematicsDiagnosticV1,
+        effective: &EffectiveCutMaterialSnapshotDiagnosticV1,
+        input: FaceExtractionInput<'_>,
+        kinematics_limits: TreeKinematicsLimits,
+        limits: EffectiveCutRetainedFacePairRegistryLimitsV1,
+    ) -> bool {
+        self.source_fingerprint == kinematics.fingerprint_v1()
+            && self.kinematics_limits == kinematics_limits
+            && self.limits == limits
+            && prepare_effective_cut_retained_face_pair_registry_v1(
+                kinematics,
+                effective,
+                input,
+                kinematics_limits,
+                limits,
+            )
+            .is_ok_and(|current| current.fingerprint == self.fingerprint)
+    }
+}
+
+pub fn prepare_effective_cut_retained_face_pair_registry_v1(
+    kinematics: &EffectiveCutKinematicsDiagnosticV1,
+    effective: &EffectiveCutMaterialSnapshotDiagnosticV1,
+    input: FaceExtractionInput<'_>,
+    kinematics_limits: TreeKinematicsLimits,
+    limits: EffectiveCutRetainedFacePairRegistryLimitsV1,
+) -> Result<EffectiveCutRetainedFacePairRegistryV1, KinematicsError> {
+    if !kinematics.is_for(effective, input, kinematics_limits) {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    let pair_count = kinematics
+        .face_ids
+        .len()
+        .checked_sub(1)
+        .and_then(|less| kinematics.face_ids.len().checked_mul(less))
+        .and_then(|twice| twice.checked_div(2))
+        .filter(|count| *count <= limits.max_pairs)
+        .ok_or(KinematicsError::ResourceLimitExceeded)?;
+    if limits.max_pairs > 1_000_000
+        || limits.max_shared_hinge_memberships > ori_domain::MAX_INSTRUCTION_HINGES_PER_STEP
+        || kinematics.hinge_pairs.len() > limits.max_shared_hinge_memberships
+        || kinematics
+            .face_ids
+            .windows(2)
+            .any(|pair| pair[0].canonical_bytes() >= pair[1].canonical_bytes())
+    {
+        return Err(KinematicsError::ResourceLimitExceeded);
+    }
+    let mut hinge_edges = HashSet::new();
+    hinge_edges
+        .try_reserve(kinematics.hinge_pairs.len())
+        .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+    let mut memberships = Vec::new();
+    memberships
+        .try_reserve_exact(kinematics.hinge_pairs.len())
+        .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+    for (edge, left, right) in &kinematics.hinge_pairs {
+        if left == right
+            || kinematics
+                .face_ids
+                .binary_search_by_key(&left.canonical_bytes(), FaceId::canonical_bytes)
+                .is_err()
+            || kinematics
+                .face_ids
+                .binary_search_by_key(&right.canonical_bytes(), FaceId::canonical_bytes)
+                .is_err()
+            || !hinge_edges.insert(*edge)
+        {
+            return Err(KinematicsError::UnsupportedTopology);
+        }
+        let (first, second) = if left.canonical_bytes() < right.canonical_bytes() {
+            (*left, *right)
+        } else {
+            (*right, *left)
+        };
+        memberships.push((first, second, *edge));
+    }
+    memberships.sort_unstable_by_key(|(first, second, edge)| {
+        (
+            first.canonical_bytes(),
+            second.canonical_bytes(),
+            edge.canonical_bytes(),
+        )
+    });
+    if memberships.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    let mut hash = Sha256::new();
+    hash.update(EFFECTIVE_CUT_RETAINED_FACE_PAIR_REGISTRY_MODEL_ID_V1.as_bytes());
+    hash.update(kinematics.fingerprint_v1());
+    hash.update((limits.max_pairs as u64).to_be_bytes());
+    hash.update((limits.max_shared_hinge_memberships as u64).to_be_bytes());
+    hash.update((pair_count as u64).to_be_bytes());
+    let mut shared_hinge_membership_count = 0_usize;
+    let mut membership_index = 0_usize;
+    for (left_index, left) in kinematics.face_ids.iter().enumerate() {
+        for right in kinematics.face_ids.iter().skip(left_index + 1) {
+            hash.update(left.canonical_bytes());
+            hash.update(right.canonical_bytes());
+            let start = membership_index;
+            while memberships
+                .get(membership_index)
+                .is_some_and(|(hinge_left, hinge_right, _)| {
+                    hinge_left == left && hinge_right == right
+                })
+            {
+                membership_index += 1;
+            }
+            let shared = &memberships[start..membership_index];
+            shared_hinge_membership_count = shared_hinge_membership_count
+                .checked_add(shared.len())
+                .ok_or(KinematicsError::ResourceLimitExceeded)?;
+            hash.update((shared.len() as u64).to_be_bytes());
+            for (_, _, edge) in shared {
+                hash.update(edge.canonical_bytes());
+            }
+        }
+    }
+    if membership_index != memberships.len()
+        || shared_hinge_membership_count != kinematics.hinge_pairs.len()
+    {
+        return Err(KinematicsError::UnsupportedTopology);
+    }
+    Ok(EffectiveCutRetainedFacePairRegistryV1 {
+        source_fingerprint: kinematics.fingerprint_v1(),
+        fingerprint: hash.finalize().into(),
+        pair_count,
+        shared_hinge_membership_count,
+        kinematics_limits,
+        limits,
+    })
 }
 
 impl EffectiveCutKinematicsDiagnosticV1 {
@@ -411,11 +621,15 @@ pub fn prepare_effective_cut_kinematics_diagnostic_v1(
         &converted,
     )?;
     let face_ids = prepared.face_ids;
-    let hinge_edges = prepared
-        .hinges
-        .iter()
-        .map(|hinge| hinge.edge)
-        .collect::<Vec<_>>();
+    let mut hinge_pairs = Vec::new();
+    hinge_pairs
+        .try_reserve_exact(prepared.hinges.len())
+        .map_err(|_| KinematicsError::ResourceLimitExceeded)?;
+    for hinge in &prepared.hinges {
+        hinge_pairs.push((hinge.edge, hinge.left_face, hinge.right_face));
+    }
+    let face_count = face_ids.len();
+    let hinge_count = hinge_pairs.len();
     let mut hash = Sha256::new();
     hash.update(EFFECTIVE_CUT_KINEMATICS_DIAGNOSTIC_MODEL_ID_V1.as_bytes());
     hash.update(effective.fingerprint_v1());
@@ -423,13 +637,20 @@ pub fn prepare_effective_cut_kinematics_diagnostic_v1(
     for face in &face_ids {
         hash.update(face.canonical_bytes());
     }
-    hash.update((hinge_edges.len() as u64).to_be_bytes());
-    for hinge in &hinge_edges {
-        hash.update(hinge.canonical_bytes());
+    hash.update((hinge_count as u64).to_be_bytes());
+    for (edge, _, _) in &hinge_pairs {
+        hash.update(edge.canonical_bytes());
+    }
+    for (edge, left, right) in &hinge_pairs {
+        hash.update(edge.canonical_bytes());
+        hash.update(left.canonical_bytes());
+        hash.update(right.canonical_bytes());
     }
     Ok(EffectiveCutKinematicsDiagnosticV1 {
-        face_count: face_ids.len(),
-        hinge_count: hinge_edges.len(),
+        face_ids,
+        hinge_pairs,
+        face_count,
+        hinge_count,
         source_fingerprint: effective.fingerprint_v1(),
         fingerprint: hash.finalize().into(),
         limits,

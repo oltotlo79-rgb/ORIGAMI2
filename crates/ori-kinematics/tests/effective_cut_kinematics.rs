@@ -1,7 +1,9 @@
 use ori_domain::{CreasePattern, Edge, EdgeKind, Paper, Point2, ProjectId, Vertex};
 use ori_kinematics::{
-    MaterialHingeGraphGeometry, MaterialTreeKinematicsModel, TreeKinematicsLimits,
+    EffectiveCutRetainedFacePairRegistryLimitsV1, MaterialHingeGraphGeometry,
+    MaterialTreeKinematicsModel, TreeKinematicsLimits,
     prepare_effective_cut_kinematics_diagnostic_v1,
+    prepare_effective_cut_retained_face_pair_registry_v1,
 };
 use ori_topology::{
     FaceExtractionInput, diagnose_cut_material_component_selection_v1,
@@ -121,6 +123,83 @@ fn retained_radial_hinges_are_counted_but_raw_cut_prepare_still_fails() {
     assert!(!diagnostic.authorizes_project_mutation());
     assert!(!diagnostic.authorizes_persistence());
     assert!(diagnostic.is_for(&token, source, Default::default()));
+    let registry = prepare_effective_cut_retained_face_pair_registry_v1(
+        &diagnostic,
+        &token,
+        source,
+        Default::default(),
+        EffectiveCutRetainedFacePairRegistryLimitsV1 {
+            max_pairs: 1,
+            max_shared_hinge_memberships: 2,
+        },
+    )
+    .unwrap();
+    assert_eq!(registry.pair_count(), 1);
+    assert_eq!(registry.shared_hinge_membership_count(), 2);
+    assert!(!registry.authorizes_pair_classification());
+    assert!(!registry.authorizes_collision_free_classification());
+    assert!(!registry.authorizes_simulation_admission());
+    assert!(!registry.authorizes_project_mutation());
+    assert!(registry.is_for(
+        &diagnostic,
+        &token,
+        source,
+        Default::default(),
+        EffectiveCutRetainedFacePairRegistryLimitsV1 {
+            max_pairs: 1,
+            max_shared_hinge_memberships: 2,
+        },
+    ));
+    assert!(
+        prepare_effective_cut_retained_face_pair_registry_v1(
+            &diagnostic,
+            &token,
+            source,
+            Default::default(),
+            EffectiveCutRetainedFacePairRegistryLimitsV1 {
+                max_pairs: 0,
+                max_shared_hinge_memberships: 2,
+            },
+        )
+        .is_err()
+    );
+    assert!(
+        prepare_effective_cut_retained_face_pair_registry_v1(
+            &diagnostic,
+            &token,
+            source,
+            Default::default(),
+            EffectiveCutRetainedFacePairRegistryLimitsV1 {
+                max_pairs: 1,
+                max_shared_hinge_memberships: 1,
+            },
+        )
+        .is_err()
+    );
+    assert!(!registry.authorizes_material_removal());
+    assert!(!registry.authorizes_persistence());
+    let wider = prepare_effective_cut_retained_face_pair_registry_v1(
+        &diagnostic,
+        &token,
+        source,
+        Default::default(),
+        EffectiveCutRetainedFacePairRegistryLimitsV1 {
+            max_pairs: 2,
+            max_shared_hinge_memberships: 2,
+        },
+    )
+    .unwrap();
+    assert_ne!(registry.fingerprint_v1(), wider.fingerprint_v1());
+    assert!(!registry.is_for(
+        &diagnostic,
+        &token,
+        source,
+        Default::default(),
+        EffectiveCutRetainedFacePairRegistryLimitsV1 {
+            max_pairs: 2,
+            max_shared_hinge_memberships: 2,
+        },
+    ));
     assert!(
         MaterialHingeGraphGeometry::prepare(&pattern, &paper, token.snapshot(), Default::default())
             .is_err()

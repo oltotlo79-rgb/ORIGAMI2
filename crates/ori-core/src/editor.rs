@@ -13,7 +13,7 @@ use ori_domain::{
     GeometricConstraintKindV1, GeometricConstraintRecordV1, InstructionPose, InstructionStep,
     InstructionStepId, InstructionTimeline, InstructionTimelineValidationError, InstructionVisual,
     LayerId, LayerRecordV1, LengthDisplayUnit, MAX_LAYER_EDGE_ASSIGNMENTS,
-    MAX_PROJECT_LAYER_INDEX_EDGES, Paper, Point2, ProjectLayerDocumentV1,
+    MAX_PROJECT_LAYER_INDEX_EDGES, Paper, Point2, ProjectId, ProjectLayerDocumentV1,
     ProjectLayerDocumentValidationErrorV1, RgbaColor, UnderlayDocumentV1, UnderlayId,
     UnderlayRecordV1, Vertex, VertexId, validate_beginner_design_profile_v1,
     validate_element_metadata_v1, validate_geometric_constraint_document_v1,
@@ -2081,6 +2081,74 @@ pub struct EditorState {
 }
 
 impl EditorState {
+    /// Repairs every currently reported point intersection as one history
+    /// entry. The internal delta is fully revalidated before this existing
+    /// serialized document-replacement command is executed.
+    pub fn repair_all_unsplit_intersections(
+        &mut self,
+        expected_revision: Revision,
+    ) -> Result<CommandResult, CommandError> {
+        let registry = bulk_intersection_plan::normalize_bulk_intersections_v1(&self.pattern)
+            .ok_or(CommandError::InvalidStackedFoldDocument)?;
+        let plan = bulk_intersection_plan::plan_bulk_edge_subdivisions_v1(&self.pattern, &registry)
+            .ok_or(CommandError::InvalidStackedFoldDocument)?;
+        let junction_count = plan
+            .edges()
+            .iter()
+            .flat_map(|edge| edge.points())
+            .map(|point| point.point_bits())
+            .collect::<HashSet<_>>()
+            .len();
+        let segment_count = plan
+            .edges()
+            .iter()
+            .try_fold(0_usize, |count, edge| {
+                count.checked_add(edge.points().len().checked_add(1)?)
+            })
+            .ok_or(CommandError::InvalidStackedFoldDocument)?;
+        let namespace = ProjectId::schema_namespace([
+            0x2a, 0xd4, 0xa3, 0x51, 0x57, 0xcf, 0x4f, 0x77, 0x91, 0x8a, 0xe2, 0x4c, 0x40, 0x99,
+            0x5b, 0x18,
+        ]);
+        let source = serde_json::to_vec(&self.pattern)
+            .map_err(|_| CommandError::InvalidStackedFoldDocument)?;
+        let derive_name = |kind: u8, index: usize| {
+            let mut name = Vec::with_capacity(source.len() + 9);
+            name.extend_from_slice(&source);
+            name.push(kind);
+            name.extend_from_slice(&(index as u64).to_be_bytes());
+            name
+        };
+        let junctions = (0..junction_count)
+            .map(|index| VertexId::derive_v5(namespace, &derive_name(b'v', index)))
+            .collect::<Vec<_>>();
+        let segments = (0..segment_count)
+            .map(|index| EdgeId::derive_v5(namespace, &derive_name(b'e', index)))
+            .collect::<Vec<_>>();
+        let prerequisite = bulk_intersection_plan::seal_bulk_atomic_delta_prerequisite_v1(
+            &self.pattern,
+            &self.project_layers,
+            &plan,
+            &junctions,
+            &segments,
+        )
+        .ok_or(CommandError::InvalidStackedFoldDocument)?;
+        let delta = bulk_intersection_plan::build_atomic_bulk_intersection_delta_v1(
+            &self.pattern,
+            &self.project_layers,
+            &plan,
+            &prerequisite,
+        )
+        .ok_or(CommandError::InvalidStackedFoldDocument)?;
+        self.execute(
+            expected_revision,
+            Command::ApplyNormalizedEdgeDocument {
+                pattern: delta.target_pattern().clone(),
+                project_layers: delta.target_layers().clone(),
+            },
+        )
+    }
+
     #[must_use]
     pub fn new(pattern: CreasePattern) -> Self {
         Self::with_paper(pattern, Paper::default())
@@ -23043,5 +23111,64 @@ mod tests {
             Err(CommandError::InvalidBeginnerDesignProfile)
         );
         assert_eq!(editor.beginner_design_profile(), &profile);
+    }
+
+    #[test]
+    fn bulk_intersection_repair_is_one_atomic_undoable_command_at_four_eight_sixteen() {
+        for count in [4, 8, 16] {
+            let mut pattern = CreasePattern::empty();
+            let carrier = [VertexId::new(), VertexId::new()];
+            pattern.vertices.extend([
+                Vertex {
+                    id: carrier[0],
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: carrier[1],
+                    position: Point2::new((count + 1) as f64, 0.0),
+                },
+            ]);
+            pattern.edges.push(Edge {
+                id: EdgeId::new(),
+                start: carrier[0],
+                end: carrier[1],
+                kind: EdgeKind::Mountain,
+            });
+            for index in 1..=count {
+                let vertices = [VertexId::new(), VertexId::new()];
+                pattern.vertices.extend([
+                    Vertex {
+                        id: vertices[0],
+                        position: Point2::new(index as f64, -2.0),
+                    },
+                    Vertex {
+                        id: vertices[1],
+                        position: Point2::new(index as f64, 2.0),
+                    },
+                ]);
+                pattern.edges.push(Edge {
+                    id: EdgeId::new(),
+                    start: vertices[0],
+                    end: vertices[1],
+                    kind: EdgeKind::Valley,
+                });
+            }
+            let source = pattern.clone();
+            let mut editor = EditorState::new(pattern);
+            editor.repair_all_unsplit_intersections(0).unwrap();
+            let target = editor.pattern().clone();
+            assert_eq!(target.vertices.len(), source.vertices.len() + count);
+            assert_eq!(target.edges.len(), count * 3 + 1);
+            editor.undo(1).unwrap();
+            assert_eq!(editor.pattern(), &source);
+            editor.redo(2).unwrap();
+            assert_eq!(editor.pattern(), &target);
+            let before = editor.pattern().clone();
+            assert!(matches!(
+                editor.repair_all_unsplit_intersections(2),
+                Err(CommandError::RevisionConflict { .. })
+            ));
+            assert_eq!(editor.pattern(), &before);
+        }
     }
 }

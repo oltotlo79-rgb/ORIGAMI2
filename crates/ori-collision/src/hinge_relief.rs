@@ -2,13 +2,15 @@ use std::collections::HashSet;
 
 use num_rational::BigRational;
 use num_traits::FromPrimitive;
-use ori_domain::EdgeId;
+use ori_domain::{EdgeId, FaceId, VertexId};
 use ori_kinematics::MaterialHingeGraphGeometry;
 use thiserror::Error;
 
 pub const HINGE_RELIEF_POLICY_MODEL_ID_V1: &str = "explicit_hinge_relief_prerequisite_v1";
 pub const MAX_HINGE_RELIEF_RECORDS_V1: usize = 256;
 pub const MAX_HINGE_RELIEF_EXACT_BITS_PER_RECORD_V1: u64 = 8_192;
+pub const MAX_VERTEX_RELIEF_RECORDS_V1: usize = 256;
+pub const VERTEX_RELIEF_POLICY_MODEL_ID_V1: &str = "explicit_vertex_relief_prerequisite_v1";
 pub const HINGE_RELIEF_LOCAL_INTERVAL_MODEL_ID_V1: &str =
     "linear_shared_hinge_local_open_interval_v1";
 
@@ -29,6 +31,14 @@ pub struct HingeReliefLinearAngleScheduleV1 {
     pub edge: EdgeId,
     pub source_angle_degrees: f64,
     pub target_angle_degrees: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VertexReliefPolicyRecordV1 {
+    pub vertex: VertexId,
+    pub cutout_radius_mm: f64,
+    pub material_thickness_mm: f64,
+    pub incident_faces: Vec<FaceId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +80,10 @@ pub enum HingeReliefPolicyErrorV1 {
     ScheduleBindingMismatch,
     #[error("hinge relief schedule angle is invalid")]
     InvalidSchedule,
+    #[error("vertex relief record is invalid or noncanonical")]
+    InvalidVertexRelief,
+    #[error("vertex relief is not bound to the actual incident material faces")]
+    VertexIncidentFacesMismatch,
 }
 
 /// Opaque, observation-only prerequisite for a future shared-hinge corridor
@@ -79,6 +93,115 @@ pub struct NativeHingeReliefPrerequisiteV1 {
     graph: MaterialHingeGraphGeometry,
     material_thickness_bits: u64,
     records: Vec<HingeReliefPolicyRecordV1>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeVertexReliefPrerequisiteV1 {
+    graph: MaterialHingeGraphGeometry,
+    material_thickness_bits: u64,
+    records: Vec<VertexReliefPolicyRecordV1>,
+}
+
+impl NativeVertexReliefPrerequisiteV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        VERTEX_RELIEF_POLICY_MODEL_ID_V1
+    }
+    #[must_use]
+    pub const fn authorizes_shared_vertex_admission(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn records(&self) -> &[VertexReliefPolicyRecordV1] {
+        &self.records
+    }
+}
+
+pub fn prepare_vertex_relief_prerequisite_v1(
+    graph: &MaterialHingeGraphGeometry,
+    material_thickness_mm: f64,
+    records: &[VertexReliefPolicyRecordV1],
+) -> Result<NativeVertexReliefPrerequisiteV1, HingeReliefPolicyErrorV1> {
+    validate_vertex_relief(graph, material_thickness_mm, records)?;
+    Ok(NativeVertexReliefPrerequisiteV1 {
+        graph: graph.clone(),
+        material_thickness_bits: material_thickness_mm.to_bits(),
+        records: records.to_vec(),
+    })
+}
+
+pub fn revalidate_vertex_relief_prerequisite_v1(
+    prerequisite: &NativeVertexReliefPrerequisiteV1,
+    graph: &MaterialHingeGraphGeometry,
+    material_thickness_mm: f64,
+    records: &[VertexReliefPolicyRecordV1],
+) -> Result<(), HingeReliefPolicyErrorV1> {
+    validate_vertex_relief(graph, material_thickness_mm, records)?;
+    if !prerequisite.graph.same_instance(graph)
+        || prerequisite.material_thickness_bits != material_thickness_mm.to_bits()
+        || prerequisite.records != records
+    {
+        return Err(HingeReliefPolicyErrorV1::BindingMismatch);
+    }
+    Ok(())
+}
+
+fn validate_vertex_relief(
+    graph: &MaterialHingeGraphGeometry,
+    material_thickness_mm: f64,
+    records: &[VertexReliefPolicyRecordV1],
+) -> Result<(), HingeReliefPolicyErrorV1> {
+    if records.len() > MAX_VERTEX_RELIEF_RECORDS_V1 {
+        return Err(HingeReliefPolicyErrorV1::ResourceLimit);
+    }
+    if !material_thickness_mm.is_finite() || material_thickness_mm <= 0.0 {
+        return Err(HingeReliefPolicyErrorV1::InvalidDimension);
+    }
+    for pair in records.windows(2) {
+        if pair[0].vertex.canonical_bytes() >= pair[1].vertex.canonical_bytes() {
+            return Err(HingeReliefPolicyErrorV1::InvalidVertexRelief);
+        }
+    }
+    for record in records {
+        if graph.vertex_position(record.vertex).is_none()
+            || !record.cutout_radius_mm.is_finite()
+            || record.cutout_radius_mm <= 0.0
+            || record.material_thickness_mm.to_bits() != material_thickness_mm.to_bits()
+            || record.incident_faces.len() < 2
+            || record
+                .incident_faces
+                .windows(2)
+                .any(|pair| pair[0].canonical_bytes() >= pair[1].canonical_bytes())
+        {
+            return Err(HingeReliefPolicyErrorV1::InvalidVertexRelief);
+        }
+        let mut actual = graph
+            .face_ids()
+            .iter()
+            .copied()
+            .filter(|face| {
+                graph
+                    .face_boundary_vertices(*face)
+                    .is_some_and(|v| v.contains(&record.vertex))
+            })
+            .collect::<Vec<_>>();
+        actual.sort_unstable_by_key(FaceId::canonical_bytes);
+        if actual != record.incident_faces {
+            return Err(HingeReliefPolicyErrorV1::VertexIncidentFacesMismatch);
+        }
+        let radius = BigRational::from_f64(record.cutout_radius_mm)
+            .ok_or(HingeReliefPolicyErrorV1::InvalidDimension)?;
+        let thickness = BigRational::from_f64(record.material_thickness_mm)
+            .ok_or(HingeReliefPolicyErrorV1::InvalidDimension)?;
+        if radius < thickness {
+            return Err(HingeReliefPolicyErrorV1::InsufficientCutout);
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]

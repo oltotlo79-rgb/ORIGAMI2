@@ -4221,6 +4221,7 @@ mod tests {
                 })
                 .count();
             assert_eq!(shared_vertices.gaps().len(), expected_shared_vertices);
+            assert!(expected_shared_vertices > 0);
             assert!(shared_vertices.gaps().iter().all(|gap| {
                 let first = geometry.face_boundary_vertices(gap.pair()[0]).unwrap();
                 let second = geometry.face_boundary_vertices(gap.pair()[1]).unwrap();
@@ -4236,6 +4237,72 @@ mod tests {
                             || [hinge.right_face(), hinge.left_face()] == gap.pair()
                     })
             }));
+            let mut vertex_policies = shared_vertices
+                .gaps()
+                .iter()
+                .map(|gap| {
+                    let mut incident_faces = geometry
+                        .face_ids()
+                        .iter()
+                        .copied()
+                        .filter(|face| {
+                            geometry
+                                .face_boundary_vertices(*face)
+                                .is_some_and(|vertices| vertices.contains(&gap.vertex()))
+                        })
+                        .collect::<Vec<_>>();
+                    incident_faces.sort_unstable_by_key(FaceId::canonical_bytes);
+                    crate::VertexReliefPolicyRecordV1 {
+                        vertex: gap.vertex(),
+                        cutout_radius_mm: 0.1,
+                        material_thickness_mm: 0.1,
+                        incident_faces,
+                    }
+                })
+                .collect::<Vec<_>>();
+            vertex_policies.sort_unstable_by_key(|record| record.vertex.canonical_bytes());
+            vertex_policies.dedup_by_key(|record| record.vertex);
+            assert!(!vertex_policies.is_empty());
+            assert!(shared_vertices.gaps().iter().all(|gap| {
+                vertex_policies
+                    .iter()
+                    .any(|record| record.vertex == gap.vertex())
+            }));
+            let vertex_relief =
+                crate::prepare_vertex_relief_prerequisite_v1(&geometry, 0.1, &vertex_policies)
+                    .expect("actual shared material vertex relief prerequisite");
+            assert!(!vertex_relief.authorizes_shared_vertex_admission());
+            assert!(!vertex_relief.authorizes_project_mutation());
+            crate::revalidate_vertex_relief_prerequisite_v1(
+                &vertex_relief,
+                &geometry,
+                0.1,
+                &vertex_policies,
+            )
+            .unwrap();
+            if !vertex_policies.is_empty() {
+                vertex_policies[0].cutout_radius_mm = f64::from_bits(0.1_f64.to_bits() + 1);
+                assert_eq!(
+                    crate::revalidate_vertex_relief_prerequisite_v1(
+                        &vertex_relief,
+                        &geometry,
+                        0.1,
+                        &vertex_policies,
+                    ),
+                    Err(crate::HingeReliefPolicyErrorV1::BindingMismatch)
+                );
+                vertex_policies[0].cutout_radius_mm = 0.1;
+                vertex_policies[0].incident_faces.pop();
+                assert_eq!(
+                    crate::revalidate_vertex_relief_prerequisite_v1(
+                        &vertex_relief,
+                        &geometry,
+                        0.1,
+                        &vertex_policies,
+                    ),
+                    Err(crate::HingeReliefPolicyErrorV1::VertexIncidentFacesMismatch)
+                );
+            }
         }
     }
 

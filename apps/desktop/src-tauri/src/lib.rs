@@ -3116,7 +3116,7 @@ struct EffectiveCutCandidateListRequestV1 {
     expected_fold_model_fingerprint: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EffectiveCutCandidateV1 {
     component_key: [u8; 32],
@@ -3145,6 +3145,14 @@ struct EffectiveCutCandidateListResponseV1 {
     authorizes_persistence: bool,
     authorizes_simulation_admission: bool,
     authorizes_material_removal: bool,
+}
+
+struct AnalyzedEffectiveCutCandidatesV1 {
+    model_id: &'static str,
+    diagnostic_fingerprint: [u8; 32],
+    total_component_count: usize,
+    boundary_component_count: usize,
+    candidates: Vec<EffectiveCutCandidateV1>,
 }
 
 struct NewProjectParameters {
@@ -8307,6 +8315,128 @@ async fn analyze_project_topology(
     finish_topology_response(&project, &input, topology)
 }
 
+fn analyze_effective_cut_candidates_v1(
+    source: FaceExtractionInput<'_>,
+) -> Result<AnalyzedEffectiveCutCandidatesV1, String> {
+    const MAX_COMPONENTS: usize = 64;
+    const MAX_FACES: usize = 50_000;
+    let limits = Default::default();
+    let selection = diagnose_cut_material_component_selection_v1(source, limits)
+        .map_err(|_| "Cut material components are unsupported.".to_owned())?;
+    if selection.selections().len() > MAX_COMPONENTS
+        || selection
+            .selections()
+            .iter()
+            .map(|entry| entry.faces.len())
+            .try_fold(0_usize, usize::checked_add)
+            .is_none_or(|count| count > MAX_FACES)
+        || selection.authorizes_project_mutation()
+        || selection.authorizes_material_removal()
+        || selection.authorizes_simulation_admission()
+    {
+        return Err("Cut material candidate invariants failed closed.".to_owned());
+    }
+    let topology = diagnose_closed_cut_topology_snapshot_v1(source, limits)
+        .map_err(|_| "Cut topology is unsupported.".to_owned())?;
+    let mut areas = HashMap::new();
+    areas
+        .try_reserve(topology.snapshot().faces.len())
+        .map_err(|_| "Cut material face list is too large.".to_owned())?;
+    for face in &topology.snapshot().faces {
+        if areas.insert(face.id, face.area).is_some() {
+            return Err("Cut material face identities are ambiguous.".to_owned());
+        }
+    }
+    if areas.len() > MAX_FACES {
+        return Err("Cut material face list is too large.".to_owned());
+    }
+    let boundary_component_count = selection
+        .selections()
+        .iter()
+        .filter(|entry| entry.owns_original_boundary)
+        .count();
+    if boundary_component_count != 1 {
+        return Err("Cut material boundary ownership is ambiguous.".to_owned());
+    }
+    let boundary_component = selection
+        .selections()
+        .iter()
+        .find(|entry| entry.owns_original_boundary)
+        .map(|entry| entry.component)
+        .ok_or_else(|| "Cut material boundary ownership is missing.".to_owned())?;
+    if selection
+        .selections()
+        .windows(2)
+        .any(|pair| pair[0].component >= pair[1].component)
+    {
+        return Err("Cut material candidate ordering is non-canonical.".to_owned());
+    }
+    let mut candidates = Vec::new();
+    candidates
+        .try_reserve_exact(selection.selections().len().saturating_sub(1))
+        .map_err(|_| "Cut material candidate list is too large.".to_owned())?;
+    for entry in selection
+        .selections()
+        .iter()
+        .filter(|entry| !entry.owns_original_boundary)
+    {
+        if entry.faces.is_empty() {
+            return Err("Cut material candidate has no material faces.".to_owned());
+        }
+        let plan = diagnose_cut_material_removal_plan_v1(source, &[entry.component], limits)
+            .map_err(|_| "Cut material dependency closure is unsupported.".to_owned())?;
+        if plan.authorizes_project_mutation()
+            || plan.authorizes_material_removal()
+            || plan.authorizes_simulation_admission()
+            || plan.requested_components() != [entry.component]
+            || plan.boundary_component() != boundary_component
+            || plan.removed_components().is_empty()
+            || plan.removed_components().len() > MAX_COMPONENTS
+            || plan.removed_faces().len() > MAX_FACES
+            || !plan.removed_components().contains(&entry.component)
+            || plan.removed_components().contains(&boundary_component)
+            || !plan.retained_components().contains(&boundary_component)
+            || plan
+                .removed_components()
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || plan
+                .removed_faces()
+                .windows(2)
+                .any(|pair| pair[0].canonical_bytes() >= pair[1].canonical_bytes())
+        {
+            return Err("Cut material dependency closure failed closed.".to_owned());
+        }
+        let area_square_mm = entry.faces.iter().try_fold(0.0_f64, |sum, face| {
+            let area = *areas.get(face)?;
+            let next = sum + area;
+            (area.is_finite() && area >= 0.0 && next.is_finite()).then_some(next)
+        });
+        let Some(area_square_mm) = area_square_mm else {
+            return Err("Cut material candidate area is invalid.".to_owned());
+        };
+        candidates.push(EffectiveCutCandidateV1 {
+            component_key: entry.component.0,
+            owns_original_boundary: false,
+            face_count: entry.faces.len(),
+            area_square_mm,
+            closure_component_count: plan.removed_components().len(),
+            closure_face_count: plan.removed_faces().len(),
+            nested_dependency_count: plan.removed_components().len().saturating_sub(1),
+        });
+    }
+    if candidates.len() + boundary_component_count != selection.selections().len() {
+        return Err("Cut material candidate partition is incomplete.".to_owned());
+    }
+    Ok(AnalyzedEffectiveCutCandidatesV1 {
+        model_id: selection.model_id(),
+        diagnostic_fingerprint: selection.fingerprint_v1(),
+        total_component_count: selection.selections().len(),
+        boundary_component_count,
+        candidates,
+    })
+}
+
 #[tauri::command]
 async fn list_effective_cut_candidates_v1(
     state: State<'_, AppState>,
@@ -8331,131 +8461,15 @@ async fn list_effective_cut_candidates_v1(
             .topology_analysis_input(request.expected_project_id)
     };
     let worker_request = request.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        const MAX_COMPONENTS: usize = 64;
-        const MAX_FACES: usize = 50_000;
+    let (analyzed, analyzed_input) = tauri::async_runtime::spawn_blocking(move || {
         let source = FaceExtractionInput {
             identity_namespace: worker_request.expected_project_id,
             source_revision: worker_request.expected_revision,
             paper: input.paper(),
             pattern: input.pattern(),
         };
-        let limits = Default::default();
-        let selection = diagnose_cut_material_component_selection_v1(source, limits)
-            .map_err(|_| "Cut material components are unsupported.".to_owned())?;
-        if selection.selections().len() > MAX_COMPONENTS
-            || selection
-                .selections()
-                .iter()
-                .map(|entry| entry.faces.len())
-                .try_fold(0_usize, usize::checked_add)
-                .is_none_or(|count| count > MAX_FACES)
-            || selection.authorizes_project_mutation()
-            || selection.authorizes_material_removal()
-            || selection.authorizes_simulation_admission()
-        {
-            return Err("Cut material candidate invariants failed closed.".to_owned());
-        }
-        let topology = diagnose_closed_cut_topology_snapshot_v1(source, limits)
-            .map_err(|_| "Cut topology is unsupported.".to_owned())?;
-        let mut areas = HashMap::new();
-        areas
-            .try_reserve(topology.snapshot().faces.len())
-            .map_err(|_| "Cut material face list is too large.".to_owned())?;
-        for face in &topology.snapshot().faces {
-            if areas.insert(face.id, face.area).is_some() {
-                return Err("Cut material face identities are ambiguous.".to_owned());
-            }
-        }
-        if areas.len() > MAX_FACES {
-            return Err("Cut material face list is too large.".to_owned());
-        }
-        let boundary_component_count = selection
-            .selections()
-            .iter()
-            .filter(|entry| entry.owns_original_boundary)
-            .count();
-        if boundary_component_count != 1 {
-            return Err("Cut material boundary ownership is ambiguous.".to_owned());
-        }
-        let boundary_component = selection
-            .selections()
-            .iter()
-            .find(|entry| entry.owns_original_boundary)
-            .map(|entry| entry.component)
-            .ok_or_else(|| "Cut material boundary ownership is missing.".to_owned())?;
-        if selection
-            .selections()
-            .windows(2)
-            .any(|pair| pair[0].component >= pair[1].component)
-        {
-            return Err("Cut material candidate ordering is non-canonical.".to_owned());
-        }
-        let mut candidates = Vec::new();
-        candidates
-            .try_reserve_exact(selection.selections().len().saturating_sub(1))
-            .map_err(|_| "Cut material candidate list is too large.".to_owned())?;
-        for entry in selection
-            .selections()
-            .iter()
-            .filter(|entry| !entry.owns_original_boundary)
-        {
-            if entry.faces.is_empty() {
-                return Err("Cut material candidate has no material faces.".to_owned());
-            }
-            let plan = diagnose_cut_material_removal_plan_v1(source, &[entry.component], limits)
-                .map_err(|_| "Cut material dependency closure is unsupported.".to_owned())?;
-            if plan.authorizes_project_mutation()
-                || plan.authorizes_material_removal()
-                || plan.authorizes_simulation_admission()
-                || plan.requested_components() != [entry.component]
-                || plan.boundary_component() != boundary_component
-                || plan.removed_components().is_empty()
-                || plan.removed_components().len() > MAX_COMPONENTS
-                || plan.removed_faces().len() > MAX_FACES
-                || !plan.removed_components().contains(&entry.component)
-                || plan.removed_components().contains(&boundary_component)
-                || !plan.retained_components().contains(&boundary_component)
-                || plan
-                    .removed_components()
-                    .windows(2)
-                    .any(|pair| pair[0] >= pair[1])
-                || plan
-                    .removed_faces()
-                    .windows(2)
-                    .any(|pair| pair[0].canonical_bytes() >= pair[1].canonical_bytes())
-            {
-                return Err("Cut material dependency closure failed closed.".to_owned());
-            }
-            let area_square_mm = entry.faces.iter().try_fold(0.0_f64, |sum, face| {
-                let area = *areas.get(face)?;
-                let next = sum + area;
-                (area.is_finite() && area >= 0.0 && next.is_finite()).then_some(next)
-            });
-            let Some(area_square_mm) = area_square_mm else {
-                return Err("Cut material candidate area is invalid.".to_owned());
-            };
-            candidates.push(EffectiveCutCandidateV1 {
-                component_key: entry.component.0,
-                owns_original_boundary: false,
-                face_count: entry.faces.len(),
-                area_square_mm,
-                closure_component_count: plan.removed_components().len(),
-                closure_face_count: plan.removed_faces().len(),
-                nested_dependency_count: plan.removed_components().len().saturating_sub(1),
-            });
-        }
-        if candidates.len() + boundary_component_count != selection.selections().len() {
-            return Err("Cut material candidate partition is incomplete.".to_owned());
-        }
-        Ok::<_, String>((
-            selection.model_id(),
-            selection.fingerprint_v1(),
-            selection.selections().len(),
-            boundary_component_count,
-            candidates,
-            input,
-        ))
+        let analyzed = analyze_effective_cut_candidates_v1(source)?;
+        Ok::<_, String>((analyzed, input))
     })
     .await
     .map_err(|_| "Cut material candidate listing failed.".to_owned())??;
@@ -8464,7 +8478,7 @@ async fn list_effective_cut_candidates_v1(
         || project.project_id != request.expected_project_id
         || project.editor.revision() != request.expected_revision
         || project.editor.fold_model_fingerprint_v1() != request.expected_fold_model_fingerprint
-        || !result.5.is_current_for(project.project_id, &project.editor)
+        || !analyzed_input.is_current_for(project.project_id, &project.editor)
     {
         return Err("The project changed while cut candidates were analyzed.".into());
     }
@@ -8474,11 +8488,11 @@ async fn list_effective_cut_candidates_v1(
         project_id: request.expected_project_id,
         revision: request.expected_revision,
         fold_model_fingerprint: request.expected_fold_model_fingerprint,
-        model_id: result.0,
-        diagnostic_fingerprint: result.1,
-        total_component_count: result.2,
-        boundary_component_count: result.3,
-        candidates: result.4,
+        model_id: analyzed.model_id,
+        diagnostic_fingerprint: analyzed.diagnostic_fingerprint,
+        total_component_count: analyzed.total_component_count,
+        boundary_component_count: analyzed.boundary_component_count,
+        candidates: analyzed.candidates,
         authorizes_project_mutation: false,
         authorizes_persistence: false,
         authorizes_simulation_admission: false,
@@ -16202,6 +16216,108 @@ mod tests {
             .into_iter()
             .map(str::to_owned)
             .collect()
+        );
+    }
+
+    #[test]
+    fn effective_cut_candidate_fixture_has_stable_nested_read_only_closures() {
+        let sheet = create_rectangular_sheet(100.0, 100.0, true).expect("cut-enabled sheet");
+        let (mut pattern, paper) = sheet.into_parts();
+        for coordinates in [
+            (20.0, 20.0),
+            (80.0, 20.0),
+            (80.0, 80.0),
+            (20.0, 80.0),
+            (40.0, 40.0),
+            (60.0, 40.0),
+            (60.0, 60.0),
+            (40.0, 60.0),
+        ] {
+            pattern.vertices.push(Vertex {
+                id: VertexId::new(),
+                position: Point2::new(coordinates.0, coordinates.1),
+            });
+        }
+        let loop_ids = pattern.vertices[pattern.vertices.len() - 8..]
+            .iter()
+            .map(|vertex| vertex.id)
+            .collect::<Vec<_>>();
+        for base in [0, 4] {
+            for offset in 0..4 {
+                pattern.edges.push(Edge {
+                    id: EdgeId::new(),
+                    start: loop_ids[base + offset],
+                    end: loop_ids[base + (offset + 1) % 4],
+                    kind: EdgeKind::Cut,
+                });
+            }
+        }
+        let editor = EditorState::with_paper(pattern, paper);
+        let project_id = ProjectId::new();
+        let source = FaceExtractionInput {
+            identity_namespace: project_id,
+            source_revision: editor.revision(),
+            paper: editor.paper(),
+            pattern: editor.pattern(),
+        };
+        let before = editor.fold_model_fingerprint_v1();
+        let first = analyze_effective_cut_candidates_v1(source).unwrap();
+        let second = analyze_effective_cut_candidates_v1(source).unwrap();
+        let mut reordered_pattern = editor.pattern().clone();
+        reordered_pattern.vertices.reverse();
+        reordered_pattern.edges.reverse();
+        let reordered_paper = editor.paper().clone();
+        let reordered = analyze_effective_cut_candidates_v1(FaceExtractionInput {
+            identity_namespace: project_id,
+            source_revision: editor.revision(),
+            paper: &reordered_paper,
+            pattern: &reordered_pattern,
+        })
+        .unwrap();
+        assert_eq!(first.diagnostic_fingerprint, second.diagnostic_fingerprint);
+        assert_eq!(first.model_id, second.model_id);
+        assert_eq!(first.total_component_count, second.total_component_count);
+        assert_eq!(
+            first.boundary_component_count,
+            second.boundary_component_count
+        );
+        assert_eq!(first.candidates, second.candidates);
+        assert_eq!(first.model_id, reordered.model_id);
+        assert_eq!(
+            first.diagnostic_fingerprint,
+            reordered.diagnostic_fingerprint
+        );
+        assert_eq!(first.total_component_count, reordered.total_component_count);
+        assert_eq!(
+            first.boundary_component_count,
+            reordered.boundary_component_count
+        );
+        assert_eq!(first.candidates, reordered.candidates);
+        assert_eq!(first.total_component_count, 3);
+        assert_eq!(first.boundary_component_count, 1);
+        assert_eq!(first.candidates.len(), 2);
+        assert!(
+            first
+                .candidates
+                .iter()
+                .all(|candidate| !candidate.owns_original_boundary)
+        );
+        assert!(
+            first
+                .candidates
+                .iter()
+                .any(|candidate| candidate.closure_component_count == 2
+                    && candidate.nested_dependency_count == 1),
+            "outer nested candidate must explain its dependent inner component"
+        );
+        assert_eq!(editor.fold_model_fingerprint_v1(), before);
+        assert!(
+            diagnose_cut_material_removal_plan_v1(
+                source,
+                &[MaterialComponentKey([0xff; 32])],
+                Default::default(),
+            )
+            .is_err()
         );
     }
 

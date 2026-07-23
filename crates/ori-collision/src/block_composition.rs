@@ -19,6 +19,142 @@ pub const MULTI_BLOCK_MIN_BLOCKS_V1: usize = 2;
 pub const MULTI_BLOCK_MAX_BLOCKS_V1: usize = 8;
 pub const MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1: &str =
     "bounded_multi_block_positive_layer_authority_v1";
+pub const BLOCK_UNION_COMPLETENESS_MAX_ITEMS_V1: usize = 4_096;
+
+pub struct BlockUnionCompletenessInputV1<'a> {
+    pub faces: &'a [FaceId],
+    pub hinges: &'a [EdgeId],
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockUnionCompletenessGapReportV1 {
+    issuer: MaterialHingeGraphGeometry,
+    live_faces: Vec<FaceId>,
+    live_hinges: Vec<EdgeId>,
+    submitted_faces: Vec<FaceId>,
+    submitted_hinges: Vec<EdgeId>,
+    complete: bool,
+}
+
+impl BlockUnionCompletenessGapReportV1 {
+    #[must_use]
+    pub fn live_faces(&self) -> &[FaceId] {
+        &self.live_faces
+    }
+    #[must_use]
+    pub fn live_hinges(&self) -> &[EdgeId] {
+        &self.live_hinges
+    }
+    #[must_use]
+    pub fn submitted_faces(&self) -> &[FaceId] {
+        &self.submitted_faces
+    }
+    #[must_use]
+    pub fn submitted_hinges(&self) -> &[EdgeId] {
+        &self.submitted_hinges
+    }
+    #[must_use]
+    pub const fn exact_live_union_observed(&self) -> bool {
+        self.complete
+    }
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub const fn authorizes_multi_block_composition(&self) -> bool {
+        false
+    }
+    #[must_use]
+    pub fn is_for(&self, geometry: &MaterialHingeGraphGeometry) -> bool {
+        self.issuer.same_instance(geometry)
+            && self.live_faces == canonical_faces_v1(geometry)
+            && self.live_hinges == canonical_hinges_v1(geometry)
+    }
+}
+
+fn canonical_faces_v1(geometry: &MaterialHingeGraphGeometry) -> Vec<FaceId> {
+    let mut ids = geometry.face_ids().to_vec();
+    ids.sort_unstable_by_key(FaceId::canonical_bytes);
+    ids
+}
+
+fn canonical_hinges_v1(geometry: &MaterialHingeGraphGeometry) -> Vec<EdgeId> {
+    let mut ids = geometry
+        .hinges()
+        .iter()
+        .map(|hinge| hinge.edge())
+        .collect::<Vec<_>>();
+    ids.sort_unstable_by_key(EdgeId::canonical_bytes);
+    ids
+}
+
+#[must_use]
+pub fn diagnose_block_union_completeness_v1(
+    geometry: &MaterialHingeGraphGeometry,
+    blocks: &[BlockUnionCompletenessInputV1<'_>],
+) -> Option<BlockUnionCompletenessGapReportV1> {
+    let live_item_count = geometry
+        .face_ids()
+        .len()
+        .checked_add(geometry.hinges().len())?;
+    if !(2..=MULTI_BLOCK_MAX_BLOCKS_V1).contains(&blocks.len())
+        || blocks
+            .iter()
+            .any(|block| block.faces.is_empty() || block.hinges.is_empty())
+        || live_item_count > BLOCK_UNION_COMPLETENESS_MAX_ITEMS_V1
+    {
+        return None;
+    }
+    let live_faces = canonical_faces_v1(geometry);
+    let live_hinges = canonical_hinges_v1(geometry);
+    let submitted_count = blocks.iter().try_fold(0usize, |count, block| {
+        count
+            .checked_add(block.faces.len())?
+            .checked_add(block.hinges.len())
+    })?;
+    if submitted_count > BLOCK_UNION_COMPLETENESS_MAX_ITEMS_V1 {
+        return None;
+    }
+    let mut canonical_blocks = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let mut faces = block.faces.to_vec();
+        let mut edges = block.hinges.to_vec();
+        faces.sort_unstable_by_key(FaceId::canonical_bytes);
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        if faces.windows(2).any(|pair| pair[0] == pair[1])
+            || edges.windows(2).any(|pair| pair[0] == pair[1])
+        {
+            return None;
+        }
+        canonical_blocks.push(CanonicalBlockBindingV1 { edges, faces });
+    }
+    let mut submitted_faces = blocks
+        .iter()
+        .flat_map(|block| block.faces.iter().copied())
+        .collect::<Vec<_>>();
+    let mut submitted_hinges = blocks
+        .iter()
+        .flat_map(|block| block.hinges.iter().copied())
+        .collect::<Vec<_>>();
+    submitted_faces.sort_unstable_by_key(FaceId::canonical_bytes);
+    submitted_hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
+    let mut face_union = submitted_faces.clone();
+    face_union.dedup();
+    let hinge_duplicates = submitted_hinges.windows(2).any(|pair| pair[0] == pair[1]);
+    let complete = face_union == live_faces
+        && submitted_hinges == live_hinges
+        && !hinge_duplicates
+        && block_intersection_is_tree_v1(&canonical_blocks);
+    Some(BlockUnionCompletenessGapReportV1 {
+        issuer: geometry.clone(),
+        live_faces,
+        live_hinges,
+        submitted_faces,
+        submitted_hinges,
+        complete,
+    })
+}
 
 #[must_use]
 pub const fn multi_block_count_supported_v1(count: usize) -> bool {
@@ -1073,6 +1209,115 @@ mod tests {
                 .min()
                 .expect("non-empty block")
         });
+        for block_count in [4_usize, 8] {
+            let geometry = &prepared[0].1;
+            let mut face_blocks = vec![Vec::new(); block_count];
+            let mut hinge_blocks = vec![Vec::new(); block_count];
+            for (index, face) in geometry.face_ids().iter().copied().enumerate() {
+                face_blocks[index % block_count].push(face);
+            }
+            for (index, hinge) in geometry.hinges().iter().enumerate() {
+                hinge_blocks[index % block_count].push(hinge.edge());
+            }
+            for index in 1..block_count {
+                let articulation = face_blocks[index - 1][0];
+                face_blocks[index].push(articulation);
+            }
+            let inputs = (0..block_count)
+                .map(|index| super::BlockUnionCompletenessInputV1 {
+                    faces: &face_blocks[index],
+                    hinges: &hinge_blocks[index],
+                })
+                .collect::<Vec<_>>();
+            let report = super::diagnose_block_union_completeness_v1(geometry, &inputs)
+                .expect("bounded completeness report");
+            assert!(report.is_for(geometry));
+            assert!(report.exact_live_union_observed());
+            assert!(!report.authorizes_multi_block_composition());
+            assert!(!report.authorizes_project_mutation());
+            let mut omitted_faces = face_blocks.clone();
+            let omitted = omitted_faces[block_count - 1]
+                .iter()
+                .position(|face| {
+                    !omitted_faces[..block_count - 1]
+                        .iter()
+                        .any(|b| b.contains(face))
+                })
+                .unwrap();
+            omitted_faces[block_count - 1].remove(omitted);
+            let omitted_inputs = (0..block_count)
+                .map(|index| super::BlockUnionCompletenessInputV1 {
+                    faces: &omitted_faces[index],
+                    hinges: &hinge_blocks[index],
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                !super::diagnose_block_union_completeness_v1(geometry, &omitted_inputs)
+                    .unwrap()
+                    .exact_live_union_observed()
+            );
+            let mut extra_faces = face_blocks.clone();
+            extra_faces[0].push(FaceId::new());
+            let extra_inputs = (0..block_count)
+                .map(|index| super::BlockUnionCompletenessInputV1 {
+                    faces: &extra_faces[index],
+                    hinges: &hinge_blocks[index],
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                !super::diagnose_block_union_completeness_v1(geometry, &extra_inputs)
+                    .unwrap()
+                    .exact_live_union_observed()
+            );
+            let mut duplicate_hinges = hinge_blocks.clone();
+            let duplicate_hinge = duplicate_hinges[1][0];
+            duplicate_hinges[0].push(duplicate_hinge);
+            let hinge_inputs = (0..block_count)
+                .map(|index| super::BlockUnionCompletenessInputV1 {
+                    faces: &face_blocks[index],
+                    hinges: &duplicate_hinges[index],
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                !super::diagnose_block_union_completeness_v1(geometry, &hinge_inputs)
+                    .unwrap()
+                    .exact_live_union_observed()
+            );
+            let duplicate = face_blocks[2][0];
+            face_blocks[0].push(duplicate);
+            let tampered = (0..block_count)
+                .map(|index| super::BlockUnionCompletenessInputV1 {
+                    faces: &face_blocks[index],
+                    hinges: &hinge_blocks[index],
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                !super::diagnose_block_union_completeness_v1(geometry, &tampered)
+                    .expect("tamper gap report")
+                    .exact_live_union_observed()
+            );
+        }
+        let empty = Vec::<super::BlockUnionCompletenessInputV1<'_>>::new();
+        assert!(super::diagnose_block_union_completeness_v1(&prepared[0].1, &empty).is_none());
+        let sixteen = (0..16)
+            .map(|_| super::BlockUnionCompletenessInputV1 {
+                faces: &[],
+                hinges: &[],
+            })
+            .collect::<Vec<_>>();
+        assert!(super::diagnose_block_union_completeness_v1(&prepared[0].1, &sixteen).is_none());
+        let oversized_faces = vec![FaceId::new(); super::BLOCK_UNION_COMPLETENESS_MAX_ITEMS_V1];
+        let oversized = [
+            super::BlockUnionCompletenessInputV1 {
+                faces: &oversized_faces,
+                hinges: &[EdgeId::new()],
+            },
+            super::BlockUnionCompletenessInputV1 {
+                faces: &[FaceId::new()],
+                hinges: &[EdgeId::new()],
+            },
+        ];
+        assert!(super::diagnose_block_union_completeness_v1(&prepared[0].1, &oversized).is_none());
         let block_faces = prepared
             .iter()
             .map(|(_, geometry, _, _, _)| geometry.face_ids().to_vec());

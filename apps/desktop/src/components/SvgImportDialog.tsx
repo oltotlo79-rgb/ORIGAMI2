@@ -19,13 +19,17 @@ import {
   type SvgImportSettingsValidation,
   type SvgImportTarget,
 } from '../lib/svgImport'
-import { SVG_IMPORT_DIALOG_TEXT as TEXT } from '../lib/svgImportDialogText.ts'
+import {
+  formatSvgImportCount,
+  formatSvgImportNumber,
+  formatSvgImportSourceFileLabel,
+  SVG_IMPORT_DIALOG_TEXT as TEXT,
+} from '../lib/svgImportDialogText.ts'
 import {
   formatLocalizedText,
   selectLocalizedText,
   useLocale,
   type Locale,
-  type LocalizedText,
 } from '../lib/i18n'
 
 type SvgImportDialogProps = Readonly<{
@@ -324,20 +328,38 @@ export function SvgImportDialog({
             <dl className="svg-import-metadata">
               <div>
                 <dt>{selectLocalizedText(locale, TEXT.fileLabel)}</dt>
-                <dd>{formatSvgSourceFileLabel(preview.file_name, locale)}</dd>
+                <dd>
+                  {formatSvgImportSourceFileLabel(preview.file_name, locale)}
+                </dd>
               </div>
               <div>
                 <dt>{selectLocalizedText(locale, TEXT.segmentsLabel)}</dt>
-                <dd>{formatSegmentCount(preview.source_segment_count, locale)}</dd>
+                <dd>
+                  {formatSvgImportCount(
+                    preview.source_segment_count,
+                    'segment',
+                    locale,
+                  )}
+                </dd>
               </div>
               <div>
                 <dt>{selectLocalizedText(locale, TEXT.styleGroupsLabel)}</dt>
-                <dd>{formatStyleGroupCount(preview.style_groups.length, locale)}</dd>
+                <dd>
+                  {formatSvgImportCount(
+                    preview.style_groups.length,
+                    'styleGroup',
+                    locale,
+                  )}
+                </dd>
               </div>
               <div>
                 <dt>{selectLocalizedText(locale, TEXT.boundaryCandidatesLabel)}</dt>
                 <dd>
-                  {formatCandidateCount(preview.boundary_candidates.length, locale)}
+                  {formatSvgImportCount(
+                    preview.boundary_candidates.length,
+                    'candidate',
+                    locale,
+                  )}
                 </dd>
               </div>
               <div>
@@ -437,8 +459,8 @@ export function SvgImportDialog({
             {validationMatches && (
               <p className="dialog-note">
                 {formatLocalizedText(locale, TEXT.validatedDimensions, {
-                  width: formatSvgNumber(validation.width_mm, locale),
-                  height: formatSvgNumber(validation.height_mm, locale),
+                  width: formatSvgImportNumber(validation.width_mm, locale),
+                  height: formatSvgImportNumber(validation.height_mm, locale),
                 })}
               </p>
             )}
@@ -509,8 +531,16 @@ export function SvgImportDialog({
                         <b>
                           {formatLocalizedText(locale, TEXT.styleGroupSummary, {
                             index: index + 1,
-                            elements: formatElementCount(group.element_count, locale),
-                            segments: formatSegmentCount(group.segment_count, locale),
+                            elements: formatSvgImportCount(
+                              group.element_count,
+                              'element',
+                              locale,
+                            ),
+                            segments: formatSvgImportCount(
+                              group.segment_count,
+                              'segment',
+                              locale,
+                            ),
                           })}
                         </b>
                         <small>{svgImportStyleLabel(group, locale)}</small>
@@ -637,11 +667,11 @@ function boundaryCandidateLabel(
         kind: svgBoundaryCandidateKindLabel(candidate.kind, locale),
         index: index + 1,
       })
-  const width = formatSvgNumber(candidate.width, locale)
-  const height = formatSvgNumber(candidate.height, locale)
+  const width = formatSvgImportNumber(candidate.width, locale)
+  const height = formatSvgImportNumber(candidate.height, locale)
   return formatLocalizedText(locale, TEXT.boundaryCandidateSummary, {
     source,
-    edges: formatEdgeCount(candidate.segment_count, locale),
+    edges: formatSvgImportCount(candidate.segment_count, 'edge', locale),
     width,
     height,
   })
@@ -669,10 +699,10 @@ function formatSvgViewBox(
 ) {
   if (!viewBox) return selectLocalizedText(locale, TEXT.notSpecified)
   return [
-    formatSvgNumber(viewBox.x, locale),
-    formatSvgNumber(viewBox.y, locale),
-    formatSvgNumber(viewBox.width, locale),
-    formatSvgNumber(viewBox.height, locale),
+    formatSvgImportNumber(viewBox.x, locale),
+    formatSvgImportNumber(viewBox.y, locale),
+    formatSvgImportNumber(viewBox.width, locale),
+    formatSvgImportNumber(viewBox.height, locale),
   ].join(' ')
 }
 
@@ -700,7 +730,7 @@ function formatSvgRootLength(
 ) {
   const value = millimetres === null
     ? '?'
-    : `${formatSvgNumber(millimetres, locale)} ${
+    : `${formatSvgImportNumber(millimetres, locale)} ${
       selectLocalizedText(locale, TEXT.millimetresUnit)
     }`
   return unit === null
@@ -720,54 +750,4 @@ function svgRootUnitLabel(
     : unit === 'percent'
       ? '%'
       : unit
-}
-
-function formatSvgNumber(value: number, locale: Locale) {
-  return Number.isFinite(value)
-    ? value.toLocaleString(
-        locale === 'en' ? 'en-US' : 'ja-JP',
-        { maximumSignificantDigits: 12 },
-      )
-    : '?'
-}
-
-function formatSvgSourceFileLabel(value: string, locale: Locale) {
-  return locale === 'en' && value === TEXT.selectedFileFallback.ja
-    ? TEXT.selectedFileFallback.en
-    : value
-}
-
-function formatSegmentCount(count: number, locale: Locale) {
-  return formatLocalizedCount(count, locale, TEXT.segmentCount, TEXT.segmentCountOne)
-}
-
-function formatStyleGroupCount(count: number, locale: Locale) {
-  return formatLocalizedCount(count, locale, TEXT.styleGroupCount, TEXT.styleGroupCountOne)
-}
-
-function formatCandidateCount(count: number, locale: Locale) {
-  return formatLocalizedCount(count, locale, TEXT.candidateCount, TEXT.candidateCountOne)
-}
-
-function formatElementCount(count: number, locale: Locale) {
-  return formatLocalizedCount(count, locale, TEXT.elementCount, TEXT.elementCountOne)
-}
-
-function formatEdgeCount(count: number, locale: Locale) {
-  return formatLocalizedCount(count, locale, TEXT.edgeCount, TEXT.edgeCountOne)
-}
-
-function formatLocalizedCount(
-  count: number,
-  locale: Locale,
-  many: LocalizedText,
-  one: LocalizedText,
-) {
-  return formatLocalizedText(
-    locale,
-    locale === 'en' && count === 1 ? one : many,
-    {
-      count: count.toLocaleString(locale === 'en' ? 'en-US' : 'ja-JP'),
-    },
-  )
 }

@@ -1,4 +1,9 @@
-import type { LocalizedText } from './i18n.ts'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+  type Locale,
+  type LocalizedText,
+} from './i18n.ts'
 
 function localized(ja: string, en: string): LocalizedText {
   return Object.freeze({ ja, en })
@@ -202,3 +207,72 @@ export const SVG_IMPORT_DIALOG_TEXT: Readonly<Record<
   edgeCount: localized('{count}辺', '{count} edges'),
   edgeCountOne: localized('{count}辺', '{count} edge'),
 })
+
+export type SvgImportCountKind =
+  | 'segment'
+  | 'styleGroup'
+  | 'candidate'
+  | 'element'
+  | 'edge'
+
+type SvgImportCountText = Readonly<{
+  one: LocalizedText
+  other: LocalizedText
+}>
+
+const SVG_IMPORT_NUMBER_LOCALES = Object.freeze({
+  ja: 'ja-JP',
+  en: 'en-US',
+}) satisfies Readonly<Record<Locale, string>>
+
+const SVG_IMPORT_COUNT_TEXT = Object.freeze({
+  segment: Object.freeze({
+    one: SVG_IMPORT_DIALOG_TEXT.segmentCountOne,
+    other: SVG_IMPORT_DIALOG_TEXT.segmentCount,
+  }),
+  styleGroup: Object.freeze({
+    one: SVG_IMPORT_DIALOG_TEXT.styleGroupCountOne,
+    other: SVG_IMPORT_DIALOG_TEXT.styleGroupCount,
+  }),
+  candidate: Object.freeze({
+    one: SVG_IMPORT_DIALOG_TEXT.candidateCountOne,
+    other: SVG_IMPORT_DIALOG_TEXT.candidateCount,
+  }),
+  element: Object.freeze({
+    one: SVG_IMPORT_DIALOG_TEXT.elementCountOne,
+    other: SVG_IMPORT_DIALOG_TEXT.elementCount,
+  }),
+  edge: Object.freeze({
+    one: SVG_IMPORT_DIALOG_TEXT.edgeCountOne,
+    other: SVG_IMPORT_DIALOG_TEXT.edgeCount,
+  }),
+}) satisfies Readonly<Record<SvgImportCountKind, SvgImportCountText>>
+
+export function formatSvgImportNumber(value: number, locale: Locale) {
+  return Number.isFinite(value)
+    ? value.toLocaleString(
+        SVG_IMPORT_NUMBER_LOCALES[locale],
+        { maximumSignificantDigits: 12 },
+      )
+    : '?'
+}
+
+export function formatSvgImportSourceFileLabel(
+  value: string,
+  locale: Locale,
+) {
+  return value === SVG_IMPORT_DIALOG_TEXT.selectedFileFallback.ja
+    ? selectLocalizedText(locale, SVG_IMPORT_DIALOG_TEXT.selectedFileFallback)
+    : value
+}
+
+export function formatSvgImportCount(
+  count: number,
+  kind: SvgImportCountKind,
+  locale: Locale,
+) {
+  const copy = SVG_IMPORT_COUNT_TEXT[kind]
+  return formatLocalizedText(locale, count === 1 ? copy.one : copy.other, {
+    count: count.toLocaleString(SVG_IMPORT_NUMBER_LOCALES[locale]),
+  })
+}

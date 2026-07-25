@@ -301,16 +301,29 @@ test('the SVG dialog requires native geometry validation, every mapping, and exp
   )
   assert.match(
     dialogSource,
-    /import \{ SVG_IMPORT_DIALOG_TEXT as TEXT \} from '\.\.\/lib\/svgImportDialogText\.ts'/u,
+    /import \{[\s\S]*?formatSvgImportCount,[\s\S]*?formatSvgImportNumber,[\s\S]*?formatSvgImportSourceFileLabel,[\s\S]*?SVG_IMPORT_DIALOG_TEXT as TEXT,[\s\S]*?\} from '\.\.\/lib\/svgImportDialogText\.ts'/u,
   )
   assert.doesNotMatch(dialogSource, /const TEXT = Object\.freeze|function localized/u)
+  assert.doesNotMatch(dialogSource, /\blocale\s*(?:===|!==)|\.toLocaleString\(/u)
+  assert.match(
+    dialogTextSource,
+    /const SVG_IMPORT_NUMBER_LOCALES = Object\.freeze\(\{\s*ja: 'ja-JP',\s*en: 'en-US',\s*\}\)/u,
+  )
+  assert.match(
+    dialogTextSource,
+    /export function formatSvgImportSourceFileLabel\([\s\S]*?value === SVG_IMPORT_DIALOG_TEXT\.selectedFileFallback\.ja/u,
+  )
+  assert.match(
+    dialogTextSource,
+    /export function formatSvgImportCount\([\s\S]*?count === 1 \? copy\.one : copy\.other/u,
+  )
   assert.match(dialogTextSource, /最大の輪郭を自動採用せず/u)
   assert.match(dialogSource, /const locale = useLocale\(\)/u)
   assert.match(dialogSource, /formatSvgViewBox\(preview\.root_view_box, locale\)/u)
   assert.match(dialogSource, /formatSvgPhysicalSize\(preview\.root_physical_size, locale\)/u)
   assert.match(dialogTextSource, /Rust検証済みの用紙寸法:/u)
-  assert.match(dialogSource, /formatSvgNumber\(validation\.width_mm, locale\)/u)
-  assert.match(dialogSource, /formatSvgNumber\(validation\.height_mm, locale\)/u)
+  assert.match(dialogSource, /formatSvgImportNumber\(validation\.width_mm, locale\)/u)
+  assert.match(dialogSource, /formatSvgImportNumber\(validation\.height_mm, locale\)/u)
   assert.match(
     dialogSource,
     /<option value="">[\s\S]*?selectLocalizedText\(locale, TEXT\.selectPrompt\)[\s\S]*?<\/option>/u,

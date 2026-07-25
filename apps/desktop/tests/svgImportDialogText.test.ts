@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { formatLocalizedText } from '../src/lib/i18n.ts'
-import { SVG_IMPORT_DIALOG_TEXT as TEXT } from '../src/lib/svgImportDialogText.ts'
+import {
+  formatSvgImportCount,
+  formatSvgImportNumber,
+  formatSvgImportSourceFileLabel,
+  SVG_IMPORT_DIALOG_TEXT as TEXT,
+} from '../src/lib/svgImportDialogText.ts'
 
 const EXPECTED_CATALOG = [
   ['eyebrow', 'SVG 1.1 / 2 静的線図取込', 'SVG 1.1 / 2 static line import'],
@@ -260,4 +265,73 @@ test('SVG import dialog placeholders are closed and preserve formatting', () => 
     }),
     '100 mm（元: px）',
   )
+})
+
+test('SVG import dialog formatters own number locales and English plural rules', () => {
+  assert.equal(formatSvgImportNumber(1_234_567.89, 'ja'), '1,234,567.89')
+  assert.equal(formatSvgImportNumber(1_234_567.89, 'en'), '1,234,567.89')
+  assert.equal(
+    formatSvgImportNumber(1_234_567_890_123, 'en'),
+    '1,234,567,890,120',
+  )
+  assert.equal(formatSvgImportNumber(Number.NaN, 'ja'), '?')
+  assert.equal(formatSvgImportNumber(Number.POSITIVE_INFINITY, 'en'), '?')
+
+  assert.deepEqual(
+    [
+      formatSvgImportCount(1, 'segment', 'en'),
+      formatSvgImportCount(2, 'segment', 'en'),
+      formatSvgImportCount(1, 'styleGroup', 'en'),
+      formatSvgImportCount(2, 'styleGroup', 'en'),
+      formatSvgImportCount(1, 'candidate', 'en'),
+      formatSvgImportCount(2, 'candidate', 'en'),
+      formatSvgImportCount(1, 'element', 'en'),
+      formatSvgImportCount(2, 'element', 'en'),
+      formatSvgImportCount(1, 'edge', 'en'),
+      formatSvgImportCount(2, 'edge', 'en'),
+    ],
+    [
+      '1 segment',
+      '2 segments',
+      '1 group',
+      '2 groups',
+      '1 candidate',
+      '2 candidates',
+      '1 element',
+      '2 elements',
+      '1 edge',
+      '2 edges',
+    ],
+  )
+  assert.deepEqual(
+    [
+      formatSvgImportCount(1, 'segment', 'ja'),
+      formatSvgImportCount(1_234, 'styleGroup', 'ja'),
+      formatSvgImportCount(0, 'candidate', 'ja'),
+      formatSvgImportCount(2, 'element', 'ja'),
+      formatSvgImportCount(3, 'edge', 'ja'),
+    ],
+    ['1本', '1,234組', '0件', '2要素', '3辺'],
+  )
+})
+
+test('SVG import source-file fallback translation is exact and preserves wire values', () => {
+  assert.equal(
+    formatSvgImportSourceFileLabel(TEXT.selectedFileFallback.ja, 'ja'),
+    '選択したSVGファイル',
+  )
+  assert.equal(
+    formatSvgImportSourceFileLabel(TEXT.selectedFileFallback.ja, 'en'),
+    'Selected SVG file',
+  )
+  for (const value of [
+    '',
+    'diagram.svg',
+    '選択したSVGファイル ',
+    'prefix-選択したSVGファイル',
+    TEXT.selectedFileFallback.en,
+  ]) {
+    assert.equal(formatSvgImportSourceFileLabel(value, 'ja'), value)
+    assert.equal(formatSvgImportSourceFileLabel(value, 'en'), value)
+  }
 })

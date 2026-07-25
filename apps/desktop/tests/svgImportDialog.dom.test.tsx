@@ -101,9 +101,10 @@ describe('SvgImportDialog DOM interactions', () => {
       onImport,
     })
 
-    expect(screen.getByRole('dialog', {
+    const dialog = screen.getByRole('dialog', {
       name: 'Review boundary, line types, and scale',
-    })).toBeTruthy()
+    })
+    expect(dialog).toBeTruthy()
     expect(screen.getByRole('img', {
       name: 'Preview of the SVG line drawing to import',
     })).toBeTruthy()
@@ -111,13 +112,12 @@ describe('SvgImportDialog DOM interactions', () => {
     expect(screen.getByText('4 segments')).toBeTruthy()
     expect(screen.getByText('1 group')).toBeTruthy()
     expect(screen.getByText('0 candidates')).toBeTruthy()
-    expect(screen.getByRole('textbox', { name: 'Project name' })).toHaveProperty(
+    const nameInput = screen.getByRole('textbox', { name: 'Project name' })
+    expect(nameInput).toHaveProperty(
       'value',
       'テスト作品',
     )
-    fireEvent.change(screen.getByRole('textbox', {
-      name: 'Project name',
-    }), { target: { value: 'State preserved' } })
+    fireEvent.change(nameInput, { target: { value: 'State preserved' } })
     expect(screen.getByRole('combobox', {
       name: 'Boundary selection method',
     })).toBeTruthy()
@@ -143,12 +143,13 @@ describe('SvgImportDialog DOM interactions', () => {
     })
     expect(screen.getByRole('dialog', {
       name: '外周・線種・縮尺を確認',
-    })).toBeTruthy()
+    })).toBe(dialog)
     expect(screen.getByText('4本')).toBeTruthy()
     expect(screen.getByRole('combobox', {
       name: '外周の指定方法',
     })).toBeTruthy()
-    expect(screen.getByRole('textbox', { name: '作品名' })).toHaveProperty(
+    expect(screen.getByRole('textbox', { name: '作品名' })).toBe(nameInput)
+    expect(nameInput).toHaveProperty(
       'value',
       'State preserved',
     )

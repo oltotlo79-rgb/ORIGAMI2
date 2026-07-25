@@ -5704,7 +5704,7 @@ mod tests {
             },
         ));
         assert_eq!(
-            tree_only_result.err().expect("graph pose must fail closed"),
+            tree_only_result.expect_err("graph pose must fail closed"),
             ANALYSIS_FAILED_MESSAGE
         );
         let transactions =

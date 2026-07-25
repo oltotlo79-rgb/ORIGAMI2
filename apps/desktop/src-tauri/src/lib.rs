@@ -145,16 +145,17 @@ use ori_collision::{
     prepare_effective_cut_static_thickness_prerequisite_v1,
 };
 use ori_core::{
-    BoundaryEdgeRef, Command, ConstraintPreflightV1, ConstraintSolveLimitsV1,
+    BoundaryEdgeRef, BoundedDirectMusV1, Command, ConstraintPreflightV1, ConstraintSolveLimitsV1,
     DirectConstraintConflictV1, EditorState, EditorTopology, GeometricConstraintLimitsV1,
     GeometricConstraintUnknownReasonV1, GlobalFlatFoldabilityCheckpoint,
     GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, GlobalFlatFoldabilityObserver,
     GlobalFlatFoldabilityOutcome, GlobalFlatFoldabilityUnknownReason, IntersectionEdgeTarget,
     JunctionVertexIntent, LocalFlatFoldabilityReport, LocalFlatFoldabilityReportStatus,
-    MAX_EDITOR_HISTORY_ENTRIES, MirrorAxisV1, MirrorSelectionModeV1, PaperValidationIssue,
-    PointPolygonRelation, TopologyAnalysisInput, TopologyIssue, TopologySnapshot, ValidationIssue,
-    VertexPositionUpdate, analyze_global_flat_foldability_with_observer,
-    analyze_local_flat_foldability, create_rectangular_sheet, prepare_geometric_constraints_v1,
+    MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1, MAX_EDITOR_HISTORY_ENTRIES, MirrorAxisV1,
+    MirrorSelectionModeV1, PaperValidationIssue, PointPolygonRelation, TopologyAnalysisInput,
+    TopologyIssue, TopologySnapshot, ValidationIssue, VertexPositionUpdate,
+    analyze_global_flat_foldability_with_observer, analyze_local_flat_foldability,
+    create_rectangular_sheet, find_bounded_direct_mus_v1, prepare_geometric_constraints_v1,
     segment_midpoint_polygon_relation, solve_geometric_constraints_v1,
     solve_geometric_constraints_with_drivers_v1, validate_crease_pattern, validate_paper,
 };
@@ -1476,6 +1477,7 @@ struct GeometricConstraintPreflightResponse {
 enum GeometricConstraintPreflightResult {
     DirectConflict {
         conflicts: Vec<DirectConstraintConflictV1>,
+        bounded_direct_mus: BoundedDirectMusResult,
     },
     NoDirectConflict,
     Unknown {
@@ -1490,6 +1492,27 @@ enum GeometricConstraintUnknownReason {
     WorkLimitExceeded,
     SolverRequiredConstraintKinds,
     InvalidDocumentOrGeometry,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum BoundedDirectMusResult {
+    ProvenUnsatisfiable {
+        constraint_ids: Vec<ConstraintId>,
+        oracle_calls: usize,
+    },
+    Unknown {
+        reason: BoundedDirectMusUnknownReason,
+        oracle_calls: usize,
+        max_constraints: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum BoundedDirectMusUnknownReason {
+    ConstraintLimitExceeded,
+    OracleIncomplete,
 }
 
 #[derive(Debug, Serialize)]
@@ -3458,12 +3481,13 @@ fn get_beginner_symmetric_parameter_estimate(
     expected_project_id: ProjectId,
     expected_revision: u64,
 ) -> Result<BeginnerSymmetricEstimateResponse, String> {
-    let project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let estimate = ori_domain::estimate_symmetric_parameters_v1(
         &project
@@ -4711,12 +4735,13 @@ fn evaluate_beginner_parameter_grid(
     expected_revision: u64,
     request_generation_id: ProjectId,
 ) -> Result<BeginnerGridEvaluationResponse, String> {
-    let project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let profile = project.editor.beginner_design_profile();
     if !target_asset_reference_is_live(&project, profile.generation_constraints.target_asset) {
@@ -7577,12 +7602,13 @@ fn get_beginner_reference_model_geometry(
     expected_project_id: ProjectId,
     expected_revision: u64,
 ) -> Result<BeginnerReferenceModelGeometryResponse, String> {
-    let project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id }) = project
         .editor
@@ -7623,12 +7649,13 @@ fn suggest_beginner_reference_model_features(
     expected_project_id: ProjectId,
     expected_revision: u64,
 ) -> Result<BeginnerReferenceModelSuggestionResponseV1, String> {
-    let project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let profile = project.editor.beginner_design_profile();
     let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id }) =
@@ -8257,7 +8284,35 @@ fn analyze_geometric_constraint_document(
 
     match prepared.preflight() {
         ConstraintPreflightV1::DirectConflict { conflicts } => {
-            GeometricConstraintPreflightResult::DirectConflict { conflicts }
+            let bounded_direct_mus =
+                if prepared.constraints().len() > MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1 {
+                    BoundedDirectMusResult::Unknown {
+                        reason: BoundedDirectMusUnknownReason::ConstraintLimitExceeded,
+                        oracle_calls: 0,
+                        max_constraints: MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1,
+                    }
+                } else {
+                    match find_bounded_direct_mus_v1(&prepared) {
+                        BoundedDirectMusV1::ProvenUnsatisfiable {
+                            constraint_ids,
+                            oracle_calls,
+                        } => BoundedDirectMusResult::ProvenUnsatisfiable {
+                            constraint_ids,
+                            oracle_calls,
+                        },
+                        BoundedDirectMusV1::Unknown { oracle_calls } => {
+                            BoundedDirectMusResult::Unknown {
+                                reason: BoundedDirectMusUnknownReason::OracleIncomplete,
+                                oracle_calls,
+                                max_constraints: MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1,
+                            }
+                        }
+                    }
+                };
+            GeometricConstraintPreflightResult::DirectConflict {
+                conflicts,
+                bounded_direct_mus,
+            }
         }
         ConstraintPreflightV1::NoDirectConflict => {
             GeometricConstraintPreflightResult::NoDirectConflict
@@ -9594,12 +9649,13 @@ fn preflight_mirror_selection(
     expected_revision: u64,
     request: MirrorSelectionRequestV1,
 ) -> Result<MirrorSelectionPreflightV1, String> {
-    let project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let mut result = validate_mirror_selection_request_v1(&request);
     if result.allowed {
@@ -9633,12 +9689,13 @@ fn apply_mirror_selection(
     expected_revision: u64,
     request: MirrorSelectionRequestV1,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     execute_command(
         &mut project,
@@ -9699,8 +9756,15 @@ fn preview_linear_array(
     expected_revision: u64,
     request: LinearArrayRequestV1,
 ) -> Result<LinearArrayPreviewV1, String> {
-    let project = lock_project(&state)?;
-    preview_linear_array_inner(
+    let project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
+    )?;
+    preview_linear_array_verified(
         &project,
         expected_project_instance_id,
         expected_project_id,
@@ -9709,6 +9773,7 @@ fn preview_linear_array(
     )
 }
 
+#[cfg(test)]
 fn preview_linear_array_inner(
     project: &ProjectState,
     expected_project_instance_id: ProjectId,
@@ -9717,11 +9782,27 @@ fn preview_linear_array_inner(
     request: LinearArrayRequestV1,
 ) -> Result<LinearArrayPreviewV1, String> {
     ensure_expected_project(
-        &project,
+        project,
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
     )?;
+    preview_linear_array_verified(
+        project,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        request,
+    )
+}
+
+fn preview_linear_array_verified(
+    project: &ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    request: LinearArrayRequestV1,
+) -> Result<LinearArrayPreviewV1, String> {
     project
         .editor
         .plan_linear_array(
@@ -9856,6 +9937,7 @@ fn radial_array_request_sha256(
     );
     Ok(lowercase_hex(&digest.finalize()))
 }
+#[cfg(test)]
 fn preview_radial_array_inner(
     project: &ProjectState,
     instance: ProjectId,
@@ -9864,6 +9946,15 @@ fn preview_radial_array_inner(
     request: RadialArrayRequestV1,
 ) -> Result<RadialArrayPreviewV1, String> {
     ensure_expected_project(project, instance, id, revision)?;
+    preview_radial_array_verified(project, instance, id, revision, request)
+}
+fn preview_radial_array_verified(
+    project: &ProjectState,
+    instance: ProjectId,
+    id: ProjectId,
+    revision: u64,
+    request: RadialArrayRequestV1,
+) -> Result<RadialArrayPreviewV1, String> {
     project
         .editor
         .plan_radial_array(
@@ -9896,8 +9987,15 @@ fn preview_radial_array(
     expected_revision: u64,
     request: RadialArrayRequestV1,
 ) -> Result<RadialArrayPreviewV1, String> {
-    let project = lock_project(&state)?;
-    preview_radial_array_inner(
+    let project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
+    )?;
+    preview_radial_array_verified(
         &project,
         expected_project_instance_id,
         expected_project_id,
@@ -11130,12 +11228,13 @@ fn add_edge_orientation_constraint(
     edge: EdgeId,
     orientation: EdgeOrientationConstraint,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let constraint = match orientation {
         EdgeOrientationConstraint::Horizontal => GeometricConstraintKindV1::Horizontal { edge },
@@ -11163,12 +11262,13 @@ fn add_geometric_constraint(
     expected_revision: u64,
     constraint: GeometricConstraintKindV1,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     execute_command(
         &mut project,
@@ -11192,12 +11292,13 @@ fn remove_geometric_constraint(
     expected_revision: u64,
     constraint: ConstraintId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     execute_command(
         &mut project,
@@ -11549,12 +11650,13 @@ fn read_underlay_asset_data_url(
     expected_revision: u64,
     asset: AssetId,
 ) -> Result<String, String> {
-    let project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     if !project
         .editor
@@ -13437,6 +13539,37 @@ fn ensure_expected_project(
     } else {
         Err("the project changed while the file dialog was open".to_owned())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProjectExpectation {
+    instance_id: ProjectId,
+    project_id: ProjectId,
+    revision: u64,
+}
+
+impl ProjectExpectation {
+    const fn new(instance_id: ProjectId, project_id: ProjectId, revision: u64) -> Self {
+        Self {
+            instance_id,
+            project_id,
+            revision,
+        }
+    }
+}
+
+fn lock_and_expect(
+    state: &AppState,
+    expectation: ProjectExpectation,
+) -> Result<MutexGuard<'_, ProjectState>, String> {
+    let project = lock_project(state)?;
+    ensure_expected_project(
+        &project,
+        expectation.instance_id,
+        expectation.project_id,
+        expectation.revision,
+    )?;
+    Ok(project)
 }
 
 fn capture_topology_input(
@@ -19936,13 +20069,37 @@ mod tests {
                 },
             ],
         };
-        let GeometricConstraintPreflightResult::DirectConflict { conflicts } =
-            analyze_geometric_constraint_document(pattern, &direct)
+        let mut expected_mus_ids = direct
+            .constraints
+            .iter()
+            .map(|record| record.id)
+            .collect::<Vec<_>>();
+        expected_mus_ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
+        let GeometricConstraintPreflightResult::DirectConflict {
+            conflicts,
+            bounded_direct_mus,
+        } = analyze_geometric_constraint_document(pattern, &direct)
         else {
             panic!("horizontal plus vertical must be a direct conflict");
         };
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].constraint_ids().len(), 3);
+        assert_eq!(
+            bounded_direct_mus,
+            BoundedDirectMusResult::ProvenUnsatisfiable {
+                constraint_ids: expected_mus_ids.clone(),
+                oracle_calls: 7,
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&bounded_direct_mus)
+                .expect("serialize the bounded direct-conflict result"),
+            serde_json::json!({
+                "status": "proven_unsatisfiable",
+                "constraint_ids": expected_mus_ids,
+                "oracle_calls": 7,
+            })
+        );
 
         let solver_required = GeometricConstraintDocumentV1 {
             schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
@@ -19962,6 +20119,86 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn geometric_constraint_direct_mus_honors_the_sixteen_constraint_boundary() {
+        let project = initial_project_state();
+        let pattern = project.editor.pattern();
+        let first_edge = pattern.edges[0].id;
+
+        for count in [16_usize, 17] {
+            let mut constraints = vec![
+                GeometricConstraintRecordV1 {
+                    id: ConstraintId::new(),
+                    constraint: GeometricConstraintKindV1::Horizontal { edge: first_edge },
+                },
+                GeometricConstraintRecordV1 {
+                    id: ConstraintId::new(),
+                    constraint: GeometricConstraintKindV1::Vertical { edge: first_edge },
+                },
+                GeometricConstraintRecordV1 {
+                    id: ConstraintId::new(),
+                    constraint: GeometricConstraintKindV1::FixedLength {
+                        edge: first_edge,
+                        length_mm: 1.0,
+                    },
+                },
+            ];
+            constraints.extend((3..count).map(|_| GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint: GeometricConstraintKindV1::FixedLength {
+                    edge: first_edge,
+                    length_mm: 1.0,
+                },
+            }));
+            let document = GeometricConstraintDocumentV1 {
+                schema_version: ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+                constraints,
+            };
+
+            let GeometricConstraintPreflightResult::DirectConflict {
+                conflicts,
+                bounded_direct_mus,
+            } = analyze_geometric_constraint_document(pattern, &document)
+            else {
+                panic!("the direct conflict must remain visible at the MUS size boundary");
+            };
+
+            assert!(!conflicts.is_empty());
+            if count == MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1 {
+                let BoundedDirectMusResult::ProvenUnsatisfiable {
+                    constraint_ids,
+                    oracle_calls,
+                } = bounded_direct_mus
+                else {
+                    panic!("sixteen constraints must still run the bounded direct oracle");
+                };
+                assert_eq!(constraint_ids.len(), 3);
+                assert!(
+                    (1..=ori_core::MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1).contains(&oracle_calls)
+                );
+            } else {
+                assert_eq!(
+                    bounded_direct_mus,
+                    BoundedDirectMusResult::Unknown {
+                        reason: BoundedDirectMusUnknownReason::ConstraintLimitExceeded,
+                        oracle_calls: 0,
+                        max_constraints: MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1,
+                    }
+                );
+                assert_eq!(
+                    serde_json::to_value(&bounded_direct_mus)
+                        .expect("serialize the skipped bounded direct-conflict result"),
+                    serde_json::json!({
+                        "status": "unknown",
+                        "reason": "constraint_limit_exceeded",
+                        "oracle_calls": 0,
+                        "max_constraints": MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1,
+                    })
+                );
+            }
+        }
     }
 
     fn oversized_geometric_constraint_vertex_pattern() -> CreasePattern {
@@ -20370,6 +20607,62 @@ mod tests {
         assert_eq!(response.revision, binding.2);
         assert!(!state.geometric_constraint_worker_is_busy());
         assert_eq!(geometric_constraint_project_signature(&state), before);
+    }
+
+    #[test]
+    fn lock_and_expect_preserves_project_expectation_order_and_errors() {
+        let state = AppState::new(initial_project_state());
+        let binding = {
+            let project = lock_project(&state).expect("project lock");
+            ProjectExpectation::new(
+                project.instance_id,
+                project.project_id,
+                project.editor.revision(),
+            )
+        };
+
+        let project = lock_and_expect(&state, binding).expect("matching expectation");
+        assert_eq!(project.instance_id, binding.instance_id);
+        assert_eq!(project.project_id, binding.project_id);
+        assert_eq!(project.editor.revision(), binding.revision);
+        drop(project);
+
+        let Err(instance_error) = lock_and_expect(
+            &state,
+            ProjectExpectation::new(ProjectId::new(), binding.project_id, binding.revision),
+        ) else {
+            panic!("instance mismatch must fail");
+        };
+        assert_eq!(
+            instance_error,
+            "the open project instance changed while the file dialog was open"
+        );
+
+        let Err(project_error) = lock_and_expect(
+            &state,
+            ProjectExpectation::new(binding.instance_id, ProjectId::new(), binding.revision),
+        ) else {
+            panic!("project mismatch must fail");
+        };
+        assert_eq!(
+            project_error,
+            "the active project changed before the command was applied"
+        );
+
+        let Err(revision_error) = lock_and_expect(
+            &state,
+            ProjectExpectation::new(
+                binding.instance_id,
+                binding.project_id,
+                binding.revision + 1,
+            ),
+        ) else {
+            panic!("revision mismatch must fail");
+        };
+        assert_eq!(
+            revision_error,
+            "the project changed while the file dialog was open"
+        );
     }
 
     #[test]

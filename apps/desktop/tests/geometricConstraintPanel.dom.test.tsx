@@ -20,6 +20,11 @@ const IDS = Array.from(
   { length: 24 },
   (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
 )
+const PROVEN_BOUNDED_DIRECT_MUS = {
+  status: 'proven_unsatisfiable',
+  constraint_ids: [IDS[12]!, IDS[13]!, IDS[14]!],
+  oracle_calls: 7,
+} as const
 
 afterEach(cleanup)
 
@@ -152,6 +157,7 @@ describe('GeometricConstraintPanel', () => {
         conflict: { kind: 'horizontal_and_vertical', edge: IDS[0]! },
         constraint_ids: [IDS[12]!, IDS[13]!],
       }],
+      bounded_direct_mus: PROVEN_BOUNDED_DIRECT_MUS,
     }
     const { rerender } = renderPanel({
       document: allKinds(),
@@ -213,6 +219,9 @@ describe('GeometricConstraintPanel', () => {
     )
     expect(alert.textContent).toContain(
       'Causing constraints: 00000000…0013, 00000000…0014',
+    )
+    expect(alert.textContent).toContain(
+      'Smallest subset proven by the bounded direct-conflict oracle (3 constraints, 7 calls)',
     )
     fireEvent.click(screen.getByRole('button', { name: 'Analyze again' }))
     expect(onRetryAnalysis).toHaveBeenCalledTimes(1)
@@ -347,6 +356,24 @@ describe('GeometricConstraintPanel', () => {
         expected:
           'Parallel edges are separately constrained as horizontal and vertical',
       },
+      {
+        conflict: {
+          kind: 'same_orientation_with_fixed_non_parallel_angle' as const,
+          first_edge: IDS[0]!,
+          second_edge: IDS[1]!,
+        },
+        expected:
+          'Edges with the same fixed orientation have a non-parallel fixed angle',
+      },
+      {
+        conflict: {
+          kind: 'perpendicular_orientations_with_fixed_non_right_angle' as const,
+          horizontal_edge: IDS[0]!,
+          vertical_edge: IDS[1]!,
+        },
+        expected:
+          'Horizontally and vertically oriented edges have a non-right fixed angle',
+      },
     ]
     for (const { conflict, expected } of conflictCases) {
       rerender(panel({
@@ -357,6 +384,7 @@ describe('GeometricConstraintPanel', () => {
             conflict,
             constraint_ids: [IDS[12]!, IDS[13]!],
           }],
+          bounded_direct_mus: PROVEN_BOUNDED_DIRECT_MUS,
         },
       }))
       expect(screen.getByRole('alert').textContent).toContain(expected)
@@ -430,6 +458,7 @@ describe('GeometricConstraintPanel', () => {
         conflict: { kind: 'horizontal_and_vertical', edge: IDS[0] },
         constraint_ids: [IDS[12], IDS[13]],
       }],
+      bounded_direct_mus: PROVEN_BOUNDED_DIRECT_MUS,
     }
     const { rerender } = renderPanel({ preflight: direct })
 
@@ -441,6 +470,58 @@ describe('GeometricConstraintPanel', () => {
     expect(alert.textContent).toContain('原因となる制約')
     expect(alert.textContent).toContain('00000000…0013')
     expect(alert.textContent).toContain('00000000…0014')
+    expect(alert.classList.contains('is-blocking')).toBe(true)
+
+    rerender(panel({
+      preflight: {
+        ...direct,
+        bounded_direct_mus: {
+          status: 'unknown',
+          reason: 'constraint_limit_exceeded',
+          oracle_calls: 0,
+          max_constraints: 16,
+        },
+      },
+    }))
+    alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain('直接矛盾は証明済みです')
+    expect(alert.textContent).toContain('制約が16件を超えるため')
+    expect(alert.classList.contains('is-blocking')).toBe(true)
+
+    rerender(panel({
+      localeStore: localeFixture('en'),
+      preflight: {
+        ...direct,
+        bounded_direct_mus: {
+          status: 'unknown',
+          reason: 'oracle_incomplete',
+          oracle_calls: 65_535,
+          max_constraints: 16,
+        },
+      },
+    }))
+    alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain(
+      'A direct conflict is proven, but bounded direct-conflict minimization did not complete.',
+    )
+    expect(alert.classList.contains('is-blocking')).toBe(true)
+
+    rerender(panel({
+      localeStore: localeFixture('ja'),
+      preflight: {
+        ...direct,
+        bounded_direct_mus: {
+          status: 'unknown',
+          reason: 'oracle_incomplete',
+          oracle_calls: 65_535,
+          max_constraints: 16,
+        },
+      },
+    }))
+    alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain(
+      '直接矛盾は証明済みですが、有界な直接矛盾の最小化は完了していません。',
+    )
     expect(alert.classList.contains('is-blocking')).toBe(true)
 
     rerender(panel({
@@ -546,11 +627,31 @@ describe('GeometricConstraintPanel', () => {
         },
         constraint_ids: [IDS[12]!, IDS[13]!, IDS[14]!],
       }, '平行にした辺へ水平と垂直'],
+      [{
+        conflict: {
+          kind: 'same_orientation_with_fixed_non_parallel_angle',
+          first_edge: IDS[0]!,
+          second_edge: IDS[1]!,
+        },
+        constraint_ids: [IDS[12]!, IDS[13]!, IDS[14]!],
+      }, '同じ向きに拘束した2辺'],
+      [{
+        conflict: {
+          kind: 'perpendicular_orientations_with_fixed_non_right_angle',
+          horizontal_edge: IDS[0]!,
+          vertical_edge: IDS[1]!,
+        },
+        constraint_ids: [IDS[12]!, IDS[13]!, IDS[14]!],
+      }, '水平・垂直に拘束した2辺'],
     ]
     const { rerender } = renderPanel()
     for (const [conflict, expected] of conflicts) {
       rerender(panel({
-        preflight: { status: 'direct_conflict', conflicts: [conflict] },
+        preflight: {
+          status: 'direct_conflict',
+          conflicts: [conflict],
+          bounded_direct_mus: PROVEN_BOUNDED_DIRECT_MUS,
+        },
       }))
       expect(screen.getByRole('alert').textContent).toContain(expected)
     }

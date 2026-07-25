@@ -4,6 +4,8 @@ import test from 'node:test'
 import {
   createGeometricConstraintPresentation,
   GEOMETRIC_CONSTRAINT_SCHEMA_VERSION,
+  MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS,
+  MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS,
   MAX_DIRECT_CONFLICT_WITNESS_IDS,
   MAX_GEOMETRIC_CONSTRAINT_RECORDS,
   MAX_GEOMETRIC_CONSTRAINT_REFERENCES,
@@ -250,6 +252,22 @@ const DIRECT_CONFLICTS = [
   {
     conflict: {
       kind: 'parallel_with_perpendicular_orientations',
+      horizontal_edge: EDGE_1,
+      vertical_edge: EDGE_2,
+    },
+    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+  },
+  {
+    conflict: {
+      kind: 'same_orientation_with_fixed_non_parallel_angle',
+      first_edge: EDGE_1,
+      second_edge: EDGE_2,
+    },
+    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+  },
+  {
+    conflict: {
+      kind: 'perpendicular_orientations_with_fixed_non_right_angle',
       horizontal_edge: EDGE_1,
       vertical_edge: EDGE_2,
     },
@@ -649,7 +667,7 @@ test('presentation also fails closed for malformed or hostile records', () => {
   assert.equal(getterCalls, 0)
 })
 
-test('normalizes all fifteen direct-conflict kinds with bounded frozen witnesses', () => {
+test('normalizes all seventeen direct-conflict kinds and the bounded direct MUS', () => {
   const raw = response({
     status: 'direct_conflict',
     conflicts: DIRECT_CONFLICTS,
@@ -665,9 +683,222 @@ test('normalizes all fifteen direct-conflict kinds with bounded frozen witnesses
     normalized?.result.status === 'direct_conflict'
       ? normalized.result.conflicts.length
       : 0,
-    15,
+    17,
+  )
+  assert.deepEqual(
+    normalized?.result.status === 'direct_conflict'
+      ? normalized.result.bounded_direct_mus
+      : null,
+    {
+      status: 'proven_unsatisfiable',
+      constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+      oracle_calls: 7,
+    },
   )
   assert.equal(MAX_DIRECT_CONFLICT_WITNESS_IDS, 256)
+  assert.equal(MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS, 16)
+  assert.equal(MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS, 65_535)
+})
+
+test('bounded direct MUS parser is strict, canonical, and distinguishes skipped minimization', () => {
+  const skipped = normalizeGeometricConstraintPreflightResponse(response({
+    status: 'direct_conflict',
+    conflicts: [DIRECT_CONFLICTS[0]],
+    bounded_direct_mus: {
+      status: 'unknown',
+      reason: 'constraint_limit_exceeded',
+      oracle_calls: 0,
+      max_constraints: 16,
+    },
+  }), BINDING)
+  assert.equal(
+    skipped?.result.status === 'direct_conflict'
+      ? skipped.result.bounded_direct_mus.status
+      : null,
+    'unknown',
+  )
+  assertDeepFrozen(skipped)
+
+  const completeOracleBudget = normalizeGeometricConstraintPreflightResponse(response({
+    status: 'direct_conflict',
+    conflicts: [DIRECT_CONFLICTS[0]],
+    bounded_direct_mus: {
+      status: 'proven_unsatisfiable',
+      constraint_ids: [CONSTRAINT_1],
+      oracle_calls: 65_535,
+    },
+  }), BINDING)
+  assert.equal(
+    completeOracleBudget?.result.status === 'direct_conflict'
+      ? completeOracleBudget.result.bounded_direct_mus.oracle_calls
+      : null,
+    65_535,
+  )
+
+  const incomplete = normalizeGeometricConstraintPreflightResponse(response({
+    status: 'direct_conflict',
+    conflicts: [DIRECT_CONFLICTS[0]],
+    bounded_direct_mus: {
+      status: 'unknown',
+      reason: 'oracle_incomplete',
+      oracle_calls: 65_535,
+      max_constraints: 16,
+    },
+  }), BINDING)
+  assert.deepEqual(
+    incomplete?.result.status === 'direct_conflict'
+      ? incomplete.result.bounded_direct_mus
+      : null,
+    {
+      status: 'unknown',
+      reason: 'oracle_incomplete',
+      oracle_calls: 65_535,
+      max_constraints: 16,
+    },
+  )
+  assertDeepFrozen(incomplete)
+
+  const invalidBoundedResults = [
+    undefined,
+    {
+      status: 'proven_unsatisfiable',
+      constraint_ids: [],
+      oracle_calls: 1,
+    },
+    {
+      status: 'proven_unsatisfiable',
+      constraint_ids: [CONSTRAINT_2, CONSTRAINT_1],
+      oracle_calls: 1,
+    },
+    {
+      status: 'proven_unsatisfiable',
+      constraint_ids: [CONSTRAINT_1, CONSTRAINT_1],
+      oracle_calls: 1,
+    },
+    {
+      status: 'proven_unsatisfiable',
+      constraint_ids: [CONSTRAINT_1],
+      oracle_calls: 0,
+    },
+    {
+      status: 'proven_unsatisfiable',
+      constraint_ids: [CONSTRAINT_1],
+      oracle_calls: 65_536,
+    },
+    {
+      status: 'proven_unsatisfiable',
+      constraint_ids: [CONSTRAINT_1],
+      oracle_calls: -1,
+    },
+    {
+      status: 'proven_unsatisfiable',
+      constraint_ids: [CONSTRAINT_1],
+      oracle_calls: 1.5,
+    },
+    {
+      status: 'proven_unsatisfiable',
+      constraint_ids: [CONSTRAINT_1],
+      oracle_calls: Number.NaN,
+    },
+    {
+      status: 'unknown',
+      reason: 'constraint_limit_exceeded',
+      oracle_calls: 1,
+      max_constraints: 16,
+    },
+    {
+      status: 'unknown',
+      reason: 'constraint_limit_exceeded',
+      oracle_calls: -0,
+      max_constraints: 16,
+    },
+    {
+      status: 'unknown',
+      reason: 'oracle_incomplete',
+      oracle_calls: 0,
+      max_constraints: 15,
+    },
+    {
+      status: 'unknown',
+      reason: 'oracle_incomplete',
+      oracle_calls: 0,
+      max_constraints: 16,
+    },
+    {
+      status: 'unknown',
+      reason: 'future',
+      oracle_calls: 0,
+      max_constraints: 16,
+    },
+  ]
+  for (const bounded_direct_mus of invalidBoundedResults) {
+    assert.equal(normalizeGeometricConstraintPreflightResponse({
+      ...BINDING,
+      result: {
+        status: 'direct_conflict',
+        conflicts: [DIRECT_CONFLICTS[0]],
+        ...(bounded_direct_mus === undefined ? {} : { bounded_direct_mus }),
+      },
+    }, BINDING), null)
+  }
+})
+
+test('bounded direct MUS rejects nested hostile records without invoking getters', () => {
+  let getterCalls = 0
+  const accessor = Object.create(null) as Record<string, unknown>
+  Object.defineProperties(accessor, {
+    status: {
+      enumerable: true,
+      value: 'proven_unsatisfiable',
+    },
+    constraint_ids: {
+      enumerable: true,
+      get() {
+        getterCalls += 1
+        throw new Error('private')
+      },
+    },
+    oracle_calls: {
+      enumerable: true,
+      value: 1,
+    },
+  })
+  const symbolRecord = {
+    status: 'proven_unsatisfiable',
+    constraint_ids: [CONSTRAINT_1],
+    oracle_calls: 1,
+    [Symbol('private')]: true,
+  }
+  const extraKeyRecord = {
+    status: 'proven_unsatisfiable',
+    constraint_ids: [CONSTRAINT_1],
+    oracle_calls: 1,
+    future: true,
+  }
+  const hostileProxy = new Proxy({}, {
+    ownKeys() {
+      throw new Error('private')
+    },
+  })
+
+  for (const bounded_direct_mus of [
+    accessor,
+    symbolRecord,
+    extraKeyRecord,
+    hostileProxy,
+  ]) {
+    assert.doesNotThrow(() => {
+      assert.equal(normalizeGeometricConstraintPreflightResponse({
+        ...BINDING,
+        result: {
+          status: 'direct_conflict',
+          conflicts: [DIRECT_CONFLICTS[0]],
+          bounded_direct_mus,
+        },
+      }, BINDING), null)
+    })
+  }
+  assert.equal(getterCalls, 0)
 })
 
 test('normalizes no-conflict and all three closed unknown reasons', () => {
@@ -1133,9 +1364,35 @@ function documentOf(constraint: unknown) {
 }
 
 function response(result: unknown) {
+  let detachedResult = result
+  try {
+    const status = result !== null && typeof result === 'object'
+      ? Object.getOwnPropertyDescriptor(result, 'status')
+      : undefined
+    const bounded = result !== null && typeof result === 'object'
+      ? Object.getOwnPropertyDescriptor(result, 'bounded_direct_mus')
+      : undefined
+    if (
+      status
+      && 'value' in status
+      && status.value === 'direct_conflict'
+      && bounded === undefined
+    ) {
+      detachedResult = {
+        ...(result as Record<string, unknown>),
+        bounded_direct_mus: {
+          status: 'proven_unsatisfiable',
+          constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+          oracle_calls: 7,
+        },
+      }
+    }
+  } catch {
+    detachedResult = result
+  }
   return {
     ...BINDING,
-    result,
+    result: detachedResult,
   }
 }
 

@@ -697,44 +697,50 @@ function ConstraintPreflightStatus({
     >
       <span>{message}</span>
       {!analyzing && preflight?.status === 'direct_conflict' && (
-        <ul
-          className="geometric-constraint-conflicts"
-          aria-label={localized(
-            locale,
-            '直接矛盾の原因',
-            'Direct conflict causes',
-          )}
-        >
-          {preflight.conflicts.slice(0, MAX_VISIBLE_DIRECT_CONFLICTS).map((conflict) => (
-            <li key={[
-              conflict.conflict.kind,
-              ...conflict.constraint_ids,
-            ].join(':')}>
-              <strong>{directConflictLabel(conflict.conflict, locale)}</strong>
-              <span>
+        <>
+          <ul
+            className="geometric-constraint-conflicts"
+            aria-label={localized(
+              locale,
+              '直接矛盾の原因',
+              'Direct conflict causes',
+            )}
+          >
+            {preflight.conflicts.slice(0, MAX_VISIBLE_DIRECT_CONFLICTS).map((conflict) => (
+              <li key={[
+                conflict.conflict.kind,
+                ...conflict.constraint_ids,
+              ].join(':')}>
+                <strong>{directConflictLabel(conflict.conflict, locale)}</strong>
+                <span>
+                  {formatLocalizedText(locale, {
+                    ja: '原因となる制約: {ids}',
+                    en: 'Causing constraints: {ids}',
+                  }, {
+                    ids: conflict.constraint_ids
+                      .map((id) => shortConstraintId(id, locale))
+                      .join(locale === 'ja' ? '、' : ', '),
+                  })}
+                </span>
+              </li>
+            ))}
+            {preflight.conflicts.length > MAX_VISIBLE_DIRECT_CONFLICTS && (
+              <li>
                 {formatLocalizedText(locale, {
-                  ja: '原因となる制約: {ids}',
-                  en: 'Causing constraints: {ids}',
+                  ja: 'ほか{count}件の直接矛盾',
+                  en: '{count} more direct conflicts',
                 }, {
-                  ids: conflict.constraint_ids
-                    .map((id) => shortConstraintId(id, locale))
-                    .join(locale === 'ja' ? '、' : ', '),
+                  count:
+                    preflight.conflicts.length - MAX_VISIBLE_DIRECT_CONFLICTS,
                 })}
-              </span>
-            </li>
-          ))}
-          {preflight.conflicts.length > MAX_VISIBLE_DIRECT_CONFLICTS && (
-            <li>
-              {formatLocalizedText(locale, {
-                ja: 'ほか{count}件の直接矛盾',
-                en: '{count} more direct conflicts',
-              }, {
-                count:
-                  preflight.conflicts.length - MAX_VISIBLE_DIRECT_CONFLICTS,
-              })}
-            </li>
-          )}
-        </ul>
+              </li>
+            )}
+          </ul>
+          <BoundedDirectMusStatus
+            result={preflight.bounded_direct_mus}
+            locale={locale}
+          />
+        </>
       )}
       {!analyzing
         && preflight?.status === 'unknown'
@@ -756,6 +762,49 @@ function ConstraintPreflightStatus({
         {localized(locale, '再診断', 'Analyze again')}
       </button>
     </div>
+  )
+}
+
+function BoundedDirectMusStatus({
+  result,
+  locale,
+}: {
+  result: Extract<
+    GeometricConstraintPreflightResult,
+    { status: 'direct_conflict' }
+  >['bounded_direct_mus']
+  locale: Locale
+}) {
+  if (result.status === 'proven_unsatisfiable') {
+    return (
+      <p className="geometric-constraint-bounded-mus">
+        {formatLocalizedText(locale, {
+          ja: '有界な直接矛盾オラクルで証明した最小部分集合（{count}件、呼び出し{calls}回）: {ids}',
+          en: 'Smallest subset proven by the bounded direct-conflict oracle ({count} constraints, {calls} calls): {ids}',
+        }, {
+          count: result.constraint_ids.length,
+          calls: result.oracle_calls,
+          ids: result.constraint_ids
+            .map((id) => shortConstraintId(id, locale))
+            .join(locale === 'ja' ? '、' : ', '),
+        })}
+      </p>
+    )
+  }
+  return (
+    <p className="geometric-constraint-bounded-mus">
+      {result.reason === 'constraint_limit_exceeded'
+        ? localized(
+            locale,
+            '直接矛盾は証明済みです。制約が16件を超えるため、有界な直接矛盾の最小化は実行していません。',
+            'A direct conflict is proven. Bounded direct-conflict minimization was skipped because more than 16 constraints are present.',
+          )
+        : localized(
+            locale,
+            '直接矛盾は証明済みですが、有界な直接矛盾の最小化は完了していません。',
+            'A direct conflict is proven, but bounded direct-conflict minimization did not complete.',
+          )}
+    </p>
   )
 }
 
@@ -853,6 +902,18 @@ function directConflictLabel(
         locale,
         '平行にした辺へ水平と垂直が別々に指定されています',
         'Parallel edges are separately constrained as horizontal and vertical',
+      )
+    case 'same_orientation_with_fixed_non_parallel_angle':
+      return localized(
+        locale,
+        '同じ向きに拘束した2辺へ、平行ではない固定角が指定されています',
+        'Edges with the same fixed orientation have a non-parallel fixed angle',
+      )
+    case 'perpendicular_orientations_with_fixed_non_right_angle':
+      return localized(
+        locale,
+        '水平・垂直に拘束した2辺へ、直角ではない固定角が指定されています',
+        'Horizontally and vertically oriented edges have a non-right fixed angle',
       )
   }
 }

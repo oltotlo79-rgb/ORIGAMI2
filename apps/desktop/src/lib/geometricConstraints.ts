@@ -10,6 +10,8 @@ export const MAX_GEOMETRIC_CONSTRAINT_RECORDS = 10_000
 export const MAX_GEOMETRIC_CONSTRAINT_REFERENCES = 40_000
 export const MAX_GEOMETRIC_CONSTRAINT_DIRECT_CONFLICTS = 10_000
 export const MAX_DIRECT_CONFLICT_WITNESS_IDS = 256
+export const MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS = 16
+export const MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS = 65_535
 
 export type GeometricConstraintKindV1 =
   | Readonly<{
@@ -165,6 +167,16 @@ export type DirectConstraintConflictKindV1 =
       horizontal_edge: string
       vertical_edge: string
     }>
+  | Readonly<{
+      kind: 'same_orientation_with_fixed_non_parallel_angle'
+      first_edge: string
+      second_edge: string
+    }>
+  | Readonly<{
+      kind: 'perpendicular_orientations_with_fixed_non_right_angle'
+      horizontal_edge: string
+      vertical_edge: string
+    }>
 
 export type DirectConstraintConflictV1 = Readonly<{
   conflict: DirectConstraintConflictKindV1
@@ -176,10 +188,24 @@ export type GeometricConstraintUnknownReasonV1 =
   | 'solver_required_constraint_kinds'
   | 'invalid_document_or_geometry'
 
+export type BoundedDirectMusV1 =
+  | Readonly<{
+      status: 'proven_unsatisfiable'
+      constraint_ids: readonly string[]
+      oracle_calls: number
+    }>
+  | Readonly<{
+      status: 'unknown'
+      reason: 'constraint_limit_exceeded' | 'oracle_incomplete'
+      oracle_calls: number
+      max_constraints: typeof MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS
+    }>
+
 export type GeometricConstraintPreflightResultV1 =
   | Readonly<{
       status: 'direct_conflict'
       conflicts: readonly DirectConstraintConflictV1[]
+      bounded_direct_mus: BoundedDirectMusV1
     }>
   | Readonly<{
       status: 'no_direct_conflict'
@@ -726,7 +752,11 @@ function parsePreflightResult(
       })
     }
     case 'direct_conflict': {
-      if (!hasExactKeys(record, ['status', 'conflicts'])) return null
+      if (!hasExactKeys(record, [
+        'status',
+        'conflicts',
+        'bounded_direct_mus',
+      ])) return null
       const source = snapshotExactArray(
         record.conflicts,
         MAX_GEOMETRIC_CONSTRAINT_DIRECT_CONFLICTS,
@@ -742,14 +772,90 @@ function parsePreflightResult(
         conflictKeys.add(key)
         conflicts.push(conflict)
       }
+      const boundedDirectMus = parseBoundedDirectMus(
+        record.bounded_direct_mus,
+      )
+      if (!boundedDirectMus) return null
       return Object.freeze({
         status: record.status,
         conflicts: Object.freeze(conflicts),
+        bounded_direct_mus: boundedDirectMus,
       })
     }
     default:
       return null
   }
+}
+
+function parseBoundedDirectMus(value: unknown): BoundedDirectMusV1 | null {
+  const record = snapshotDataRecord(value)
+  if (!record || typeof record.status !== 'string') return null
+  switch (record.status) {
+    case 'proven_unsatisfiable': {
+      if (!hasExactKeys(record, [
+        'status',
+        'constraint_ids',
+        'oracle_calls',
+      ])) return null
+      const constraintIds = parseSortedUniqueUuidArray(
+        record.constraint_ids,
+        MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS,
+      )
+      if (
+        !constraintIds
+        || constraintIds.length === 0
+        || !isBoundedDirectMusOracleCalls(record.oracle_calls, false)
+      ) return null
+      return Object.freeze({
+        status: record.status,
+        constraint_ids: constraintIds,
+        oracle_calls: record.oracle_calls,
+      })
+    }
+    case 'unknown': {
+      if (
+        !hasExactKeys(record, [
+          'status',
+          'reason',
+          'oracle_calls',
+          'max_constraints',
+        ])
+        || (
+          record.reason !== 'constraint_limit_exceeded'
+          && record.reason !== 'oracle_incomplete'
+        )
+        || record.max_constraints !== MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS
+      ) return null
+      if (record.reason === 'constraint_limit_exceeded') {
+        if (!Object.is(record.oracle_calls, 0)) return null
+        return Object.freeze({
+          status: record.status,
+          reason: record.reason,
+          oracle_calls: 0,
+          max_constraints: record.max_constraints,
+        })
+      }
+      if (!isBoundedDirectMusOracleCalls(record.oracle_calls, false)) return null
+      return Object.freeze({
+        status: record.status,
+        reason: record.reason,
+        oracle_calls: record.oracle_calls,
+        max_constraints: record.max_constraints,
+      })
+    }
+    default:
+      return null
+  }
+}
+
+function isBoundedDirectMusOracleCalls(
+  value: unknown,
+  allowZero: boolean,
+): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= (allowZero ? 0 : 1)
+    && value <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS
 }
 
 function parseDirectConflict(value: unknown): DirectConstraintConflictV1 | null {
@@ -1025,7 +1131,23 @@ function parseDirectConflictKind(
         }),
         witnessSize: 2,
       }
+    case 'same_orientation_with_fixed_non_parallel_angle':
+      if (
+        !hasExactKeys(record, ['kind', 'first_edge', 'second_edge'])
+        || !isCanonicalUuid(record.first_edge)
+        || !isCanonicalUuid(record.second_edge)
+        || record.first_edge === record.second_edge
+      ) return null
+      return {
+        conflict: Object.freeze({
+          kind: record.kind,
+          first_edge: record.first_edge,
+          second_edge: record.second_edge,
+        }),
+        witnessSize: 3,
+      }
     case 'parallel_with_perpendicular_orientations':
+    case 'perpendicular_orientations_with_fixed_non_right_angle':
       if (
         !hasExactKeys(record, [
           'kind',
@@ -1133,9 +1255,11 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
     case 'equal_length_with_non_unit_ratio_and_fixed_length':
     case 'non_reciprocal_length_ratios_with_fixed_length':
     case 'parallel_with_fixed_non_parallel_angle':
+    case 'same_orientation_with_fixed_non_parallel_angle':
       target = [kind.kind, kind.first_edge, kind.second_edge]
       break
     case 'parallel_with_perpendicular_orientations':
+    case 'perpendicular_orientations_with_fixed_non_right_angle':
       target = [kind.kind, kind.horizontal_edge, kind.vertical_edge]
       break
   }

@@ -1310,21 +1310,11 @@ fn reserve_output<T>(output: &mut Vec<T>, additional: usize) -> Result<(), Stack
         .map_err(|_| StackedFoldReadErrorV1::AllocationFailed)
 }
 
-fn check_limit(
-    resource: StackedFoldReadResourceV1,
-    actual: usize,
-    maximum: usize,
-) -> Result<(), StackedFoldReadErrorV1> {
-    if actual > maximum {
-        Err(StackedFoldReadErrorV1::ResourceLimitExceeded {
-            resource,
-            actual,
-            maximum,
-        })
-    } else {
-        Ok(())
-    }
-}
+define_resource_limit_check!(
+    StackedFoldReadResourceV1,
+    StackedFoldReadErrorV1,
+    StackedFoldReadResourceV1::ScannedCells
+);
 
 fn map_anchor_error(error: FlatEndpointLayerOrderAnchorErrorV1) -> StackedFoldReadErrorV1 {
     match error {

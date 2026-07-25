@@ -19,6 +19,41 @@
 
 #![forbid(unsafe_code)]
 
+macro_rules! define_resource_limit_check {
+    ($resource:ty, $error:ident, $sample_resource:expr) => {
+        fn check_limit(resource: $resource, actual: usize, maximum: usize) -> Result<(), $error> {
+            if actual > maximum {
+                Err($error::ResourceLimitExceeded {
+                    resource,
+                    actual,
+                    maximum,
+                })
+            } else {
+                Ok(())
+            }
+        }
+
+        #[cfg(test)]
+        mod check_limit_boundary_tests {
+            use super::*;
+
+            #[test]
+            fn admits_under_and_equal_but_rejects_over_with_exact_payload() {
+                assert_eq!(check_limit($sample_resource, 1, 2), Ok(()));
+                assert_eq!(check_limit($sample_resource, 2, 2), Ok(()));
+                assert_eq!(
+                    check_limit($sample_resource, 3, 2),
+                    Err($error::ResourceLimitExceeded {
+                        resource: $sample_resource,
+                        actual: 3,
+                        maximum: 2,
+                    })
+                );
+            }
+        }
+    };
+}
+
 mod block_composition;
 mod cayley;
 mod cell_order_transport;

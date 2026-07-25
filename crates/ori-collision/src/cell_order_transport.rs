@@ -462,21 +462,11 @@ fn analyze_single_face_cell_order(
     })
 }
 
-fn check_limit(
-    resource: CellOrderTransportResourceV1,
-    actual: usize,
-    maximum: usize,
-) -> Result<(), CellOrderTransportErrorV1> {
-    if actual > maximum {
-        Err(CellOrderTransportErrorV1::ResourceLimitExceeded {
-            resource,
-            actual,
-            maximum,
-        })
-    } else {
-        Ok(())
-    }
-}
+define_resource_limit_check!(
+    CellOrderTransportResourceV1,
+    CellOrderTransportErrorV1,
+    CellOrderTransportResourceV1::Cells
+);
 
 fn cells_bit_exact_equal(
     first: &[CurrentPoseLayerCellV1],

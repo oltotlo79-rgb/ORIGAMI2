@@ -1597,21 +1597,11 @@ fn append_len_prefixed(
     Ok(())
 }
 
-fn check_limit(
-    resource: FlatEndpointLayerOrderResourceV1,
-    actual: usize,
-    maximum: usize,
-) -> Result<(), FlatEndpointLayerOrderAnchorErrorV1> {
-    if actual > maximum {
-        Err(FlatEndpointLayerOrderAnchorErrorV1::ResourceLimitExceeded {
-            resource,
-            actual,
-            maximum,
-        })
-    } else {
-        Ok(())
-    }
-}
+define_resource_limit_check!(
+    FlatEndpointLayerOrderResourceV1,
+    FlatEndpointLayerOrderAnchorErrorV1,
+    FlatEndpointLayerOrderResourceV1::Faces
+);
 
 fn unordered_face_pair(first: FaceId, second: FaceId) -> ([u8; 16], [u8; 16]) {
     let first = first.canonical_bytes();

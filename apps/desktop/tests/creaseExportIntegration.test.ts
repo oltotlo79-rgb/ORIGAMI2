@@ -68,9 +68,17 @@ test('the dialog requires explicit loss acknowledgement and handles focus and IM
   assert.match(dialogSource, /preview\.warnings\.length === 0 \|\| warningsAcknowledged/u)
   assert.match(
     dialogSource,
-    /import \{ CREASE_EXPORT_COPY \} from '\.\.\/lib\/creaseExportDialogText\.ts'/u,
+    /import \{\s*CREASE_EXPORT_COPY,\s*formatCreaseExportInteger,\s*resolveCreaseExportFormatSummary,\s*\} from '\.\.\/lib\/creaseExportDialogText\.ts'/u,
   )
   assert.match(dialogTextSource, /上記の情報が出力に含まれないことを確認しました/u)
+  assert.match(dialogSource, /value=\{option\.value\}/u)
+  assert.match(
+    dialogSource,
+    /if \(isCreasePatternExportFormat\(next\)\) onFormatChange\(next\)/u,
+  )
+  assert.match(dialogSource, /onClick=\{\(\) => onSave\(warningsAcknowledged\)\}/u)
+  assert.match(dialogSource, /resolveCreaseExportFormatSummary\(/u)
+  assert.doesNotMatch(dialogSource, /\blocale\s*[!=]==?/u)
   assert.match(dialogSource, /event\.key !== 'Escape' \|\| event\.isComposing \|\| busy/u)
   assert.match(dialogSource, /event\.key !== 'Tab'/u)
   assert.match(dialogSource, /aria-modal="true"/u)

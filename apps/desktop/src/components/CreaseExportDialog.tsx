@@ -15,8 +15,12 @@ import {
   type CreasePatternExportFormat,
   type CreasePatternExportPreview,
 } from '../lib/creaseExport.ts'
-import { CREASE_EXPORT_COPY } from '../lib/creaseExportDialogText.ts'
-import { useLocale } from '../lib/i18n.ts'
+import {
+  CREASE_EXPORT_COPY,
+  formatCreaseExportInteger,
+  resolveCreaseExportFormatSummary,
+} from '../lib/creaseExportDialogText.ts'
+import { formatMessage, useLocale } from '../lib/i18n.ts'
 
 type CreaseExportDialogProps = Readonly<{
   format: CreasePatternExportFormat
@@ -51,7 +55,6 @@ export function CreaseExportDialog({
 }: CreaseExportDialogProps) {
   const locale = useLocale()
   const copy = CREASE_EXPORT_COPY[locale]
-  const numberLocale = locale === 'ja' ? 'ja-JP' : 'en-US'
   const [warningsAcknowledged, setWarningsAcknowledged] = useState(false)
   const dialogRef = useRef<HTMLElement>(null)
   const formatRef = useRef<HTMLSelectElement>(null)
@@ -178,7 +181,10 @@ export function CreaseExportDialog({
             >
               {CREASE_PATTERN_EXPORT_FORMATS.map((option) => (
                 <option key={option.value} value={option.value}>
-                  {option.label} — {copy.optionDetails[option.value]}
+                  {formatMessage(copy.formatOption, {
+                    label: option.label,
+                    detail: copy.optionDetails[option.value],
+                  })}
                 </option>
               ))}
             </select>
@@ -186,7 +192,9 @@ export function CreaseExportDialog({
 
           {busy && !preview && (
             <p className="crease-export-loading" role="status">
-              {creasePatternExportFormatLabel(format)}{copy.generating}
+              {formatMessage(copy.generating, {
+                format: creasePatternExportFormatLabel(format),
+              })}
             </p>
           )}
 
@@ -210,9 +218,13 @@ export function CreaseExportDialog({
                 </div>
                 <div>
                   <dt>{copy.metadata.specification}</dt>
-                  <dd>{locale === 'ja'
-                    ? preview.format_summary
-                    : copy.formatSummaries[preview.format]}</dd>
+                  <dd>
+                    {resolveCreaseExportFormatSummary(
+                      locale,
+                      preview.format,
+                      preview.format_summary,
+                    )}
+                  </dd>
                 </div>
                 <div>
                   <dt>{copy.metadata.suggestedName}</dt>
@@ -225,15 +237,28 @@ export function CreaseExportDialog({
                 <div>
                   <dt>{copy.metadata.geometry}</dt>
                   <dd>
-                    {preview.vertex_count.toLocaleString(numberLocale)}
-                    {locale === 'ja' ? `${copy.vertices}・` : ` ${copy.vertices} · `}
-                    {preview.edge_count.toLocaleString(numberLocale)}
-                    {locale === 'ja' ? copy.edges : ` ${copy.edges}`}
+                    {formatMessage(copy.geometryValue, {
+                      vertices: formatCreaseExportInteger(
+                        preview.vertex_count,
+                        locale,
+                      ),
+                      edges: formatCreaseExportInteger(
+                        preview.edge_count,
+                        locale,
+                      ),
+                    })}
                   </dd>
                 </div>
                 <div>
                   <dt>{copy.metadata.revision}</dt>
-                  <dd>revision {preview.expected_revision.toLocaleString(numberLocale)}</dd>
+                  <dd>
+                    {formatMessage(copy.revisionValue, {
+                      revision: formatCreaseExportInteger(
+                        preview.expected_revision,
+                        locale,
+                      ),
+                    })}
+                  </dd>
                 </div>
                 <div>
                   <dt>{copy.metadata.cuts}</dt>
@@ -248,12 +273,17 @@ export function CreaseExportDialog({
                     <li key={row.key}>
                       <span>{copy.assignmentLabels[row.key]}</span>
                       <strong>
-                        {row.count.toLocaleString(numberLocale)}
-                        {locale === 'ja'
-                          ? copy.lineUnit
-                          : row.count === 1
-                            ? ' line'
-                            : ` ${copy.lineUnit}`}
+                        {formatMessage(
+                          row.count === 1
+                            ? copy.lineCountOne
+                            : copy.lineCount,
+                          {
+                            count: formatCreaseExportInteger(
+                              row.count,
+                              locale,
+                            ),
+                          },
+                        )}
                       </strong>
                     </li>
                   ))}

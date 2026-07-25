@@ -92,10 +92,19 @@ describe('CreaseExportDialog DOM interactions', () => {
       },
     })
 
-    expect(screen.getByRole('dialog', {
+    const dialog = screen.getByRole('dialog', {
       name: 'Review format and information loss',
-    })).toBeTruthy()
-    expect(screen.getByRole('combobox', { name: 'Export format' })).toBeTruthy()
+    })
+    const format = screen.getByRole(
+      'combobox',
+      { name: 'Export format' },
+    ) as HTMLSelectElement
+    const close = screen.getByRole('button', { name: 'Close' })
+    const acknowledgement = screen.getByLabelText(
+      'I understand that the information above is not included',
+    ) as HTMLInputElement
+    const optionValues = Array.from(format.options, (option) => option.value)
+    expect(optionValues).toEqual(['fold', 'svg', 'pdf', 'dxf'])
     expect(screen.getByText(
       'JSON for exchanging data with other origami software',
       { exact: false },
@@ -120,6 +129,8 @@ describe('CreaseExportDialog DOM interactions', () => {
     expect(screen.getByRole('button', {
       name: 'Choose destination and export…',
     })).toBeTruthy()
+    fireEvent.click(acknowledgement)
+    expect(acknowledgement.checked).toBe(true)
 
     act(() => {
       localeStore.setLocale('ja')
@@ -127,7 +138,16 @@ describe('CreaseExportDialog DOM interactions', () => {
 
     expect(screen.getByRole('dialog', {
       name: '形式と情報損失を確認',
-    })).toBeTruthy()
+    })).toBe(dialog)
+    expect(screen.getByRole('combobox', { name: '出力形式' })).toBe(format)
+    expect(screen.getByRole('button', { name: '閉じる' })).toBe(close)
+    expect(screen.getByLabelText(
+      '上記の情報が出力に含まれないことを確認しました',
+    )).toBe(acknowledgement)
+    expect(acknowledgement.checked).toBe(true)
+    expect(Array.from(format.options, (option) => option.value)).toEqual(
+      optionValues,
+    )
     expect(screen.getByText('8頂点・12辺')).toBeTruthy()
     expect(screen.getByText('1本')).toBeTruthy()
   })

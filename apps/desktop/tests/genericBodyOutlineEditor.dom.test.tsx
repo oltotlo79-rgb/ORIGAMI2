@@ -50,4 +50,34 @@ describe('GenericBodyOutlineEditor', () => {
     fireEvent.change(screen.getByLabelText('Body outline mode'), { target: { value: 'symmetric' } })
     expect(modeChange).toHaveBeenCalledWith('symmetric')
   })
+
+  it('switches locale in the same instance without resetting edits or invoking callbacks', () => {
+    const change = vi.fn()
+    const modeChange = vi.fn()
+    const points: readonly [number, number][] = []
+    const { rerender } = render(
+      <GenericBodyOutlineEditor locale="en" points={points} mode="symmetric"
+        onModeChange={modeChange} onChange={change} />,
+    )
+    const editedSource = '-1,-1\n-1,1\n2,1\n2,-1'
+    fireEvent.change(screen.getByLabelText('Body outline points'), {
+      target: { value: editedSource },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply outline' }))
+    expect(screen.getByRole('alert').textContent).toBe(
+      'Enter 4 to 16 finite, left-right symmetric points.',
+    )
+
+    rerender(
+      <GenericBodyOutlineEditor locale="ja" points={points} mode="symmetric"
+        onModeChange={modeChange} onChange={change} />,
+    )
+
+    expect((screen.getByLabelText('胴体輪郭点') as HTMLTextAreaElement).value).toBe(editedSource)
+    expect(screen.getByRole('alert').textContent).toBe(
+      '4〜16点の左右対称な有限座標を入力してください。',
+    )
+    expect(change).not.toHaveBeenCalled()
+    expect(modeChange).not.toHaveBeenCalled()
+  })
 })

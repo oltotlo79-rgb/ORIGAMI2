@@ -1,4 +1,11 @@
 import { useEffect, useState } from 'react'
+import {
+  GENERIC_BODY_OUTLINE_EDITOR_TEXT as TEXT,
+} from '../lib/genericBodyOutlineEditorText.ts'
+import {
+  selectLocalizedText,
+  type LocalizedText,
+} from '../lib/i18n.ts'
 
 type Point = [number, number]
 
@@ -31,6 +38,7 @@ export function GenericBodyOutlineEditor({ locale, points, mode, onChange, onMod
 }) {
   const [source, setSource] = useState('')
   const [invalid, setInvalid] = useState(false)
+  const t = (value: LocalizedText) => selectLocalizedText(locale, value)
   useEffect(() => setSource(points.map(([x, y]) => `${x / 10}, ${y / 10}`).join('\n')), [points])
   const apply = () => {
     const parsed = source.split(/\r?\n/u).filter((line) => line.trim() !== '').map((line) => {
@@ -43,26 +51,26 @@ export function GenericBodyOutlineEditor({ locale, points, mode, onChange, onMod
     if (canonical) onChange(canonical)
   }
   return <fieldset>
-    <legend>{locale === 'ja' ? '左右対称の胴体輪郭' : 'Symmetric body outline'}</legend>
-    <label>{locale === 'ja' ? '輪郭モード' : 'Outline mode'}
-      <select aria-label={locale === 'ja' ? '胴体輪郭モード' : 'Body outline mode'} value={mode}
+    <legend>{t(TEXT.legend)}</legend>
+    <label>{t(TEXT.outlineMode)}
+      <select aria-label={t(TEXT.outlineModeAria)} value={mode}
         onChange={(event) => onModeChange(event.currentTarget.value as 'symmetric' | 'general')}>
-        <option value="symmetric">{locale === 'ja' ? '左右対称' : 'Left-right symmetric'}</option>
-        <option value="general">{locale === 'ja' ? '非対称一般' : 'General asymmetric'}</option>
+        <option value="symmetric">{t(TEXT.symmetricOption)}</option>
+        <option value="general">{t(TEXT.generalOption)}</option>
       </select>
     </label>
-    <label>{locale === 'ja' ? '輪郭点（1行に X, Y mm）' : 'Outline points (X, Y mm per line)'}
-      <textarea aria-label={locale === 'ja' ? '胴体輪郭点' : 'Body outline points'}
+    <label>{t(TEXT.outlinePoints)}
+      <textarea aria-label={t(TEXT.outlinePointsAria)}
         value={source} onChange={(event) => setSource(event.currentTarget.value)} />
     </label>
-    <button type="button" onClick={apply}>{locale === 'ja' ? '輪郭を反映' : 'Apply outline'}</button>
+    <button type="button" onClick={apply}>{t(TEXT.applyOutline)}</button>
     <button type="button" onClick={() => { setSource(''); setInvalid(false); onChange([]) }}>
-      {locale === 'ja' ? '輪郭指定を解除' : 'Clear outline'}
+      {t(TEXT.clearOutline)}
     </button>
-    {invalid && <p role="alert">{locale === 'ja'
-      ? mode === 'symmetric' ? '4〜16点の左右対称な有限座標を入力してください。'
-        : '4〜16点の有限座標を入力してください。'
-      : mode === 'symmetric' ? 'Enter 4 to 16 finite, left-right symmetric points.'
-        : 'Enter 4 to 16 finite points.'}</p>}
+    {invalid && <p role="alert">{t(
+      mode === 'symmetric'
+        ? TEXT.invalidSymmetricOutline
+        : TEXT.invalidGeneralOutline,
+    )}</p>}
   </fieldset>
 }

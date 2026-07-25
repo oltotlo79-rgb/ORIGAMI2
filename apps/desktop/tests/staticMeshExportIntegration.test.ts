@@ -5,6 +5,7 @@ import test from 'node:test'
 const appSource = readSource('../src/App.tsx')
 const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/StaticMeshExportDialog.tsx')
+const dialogTextSource = readSource('../src/lib/staticMeshExportDialogText.ts')
 const nativeSource = readSource('../src-tauri/src/lib.rs')
 const nativeExportSource = readSource('../src-tauri/src/mesh_export.rs')
 
@@ -50,9 +51,13 @@ test('save request binds project instance, revision, fingerprint, and pose gener
 })
 
 test('UI explicitly discloses mid-surface-only and all STL limitations', () => {
-  assert.match(dialogSource, /紙の「中央面」だけ/u)
-  assert.match(dialogSource, /閉じた多様体/u)
-  assert.match(dialogSource, /guaranteed printable model/u)
+  assert.match(
+    dialogSource,
+    /import \{ STATIC_MESH_EXPORT_COPY as COPY \} from '\.\.\/lib\/staticMeshExportDialogText\.ts'/u,
+  )
+  assert.match(dialogTextSource, /紙の「中央面」だけ/u)
+  assert.match(dialogTextSource, /閉じた多様体/u)
+  assert.match(dialogTextSource, /guaranteed printable model/u)
   assert.match(dialogSource, /staticMeshExportWarningMessage/u)
   assert.match(nativeExportSource, /StlTriangleSoupFacetNormals/u)
   assert.match(

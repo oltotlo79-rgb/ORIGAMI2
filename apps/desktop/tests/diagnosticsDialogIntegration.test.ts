@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const appSource = readSource('../src/App.tsx')
 const dialogSource = readSource('../src/components/DiagnosticsDialog.tsx')
+const dialogTextSource = readSource('../src/lib/diagnosticsDialogText.ts')
 const cssSource = readSource('../src/App.css')
 
 test('the native-only status action opens one modal that makes every background region inert', () => {
@@ -46,9 +47,13 @@ test('the dialog exposes exact read-only JSON and explicit manual actions', () =
   assert.match(dialogSource, /spellCheck=\{false\}/u)
   assert.match(dialogSource, /jsonRef\.current\?\.focus\(\)/u)
   assert.match(dialogSource, /jsonRef\.current\?\.select\(\)/u)
-  assert.match(dialogSource, /JSONファイルとして保存…/u)
-  assert.match(dialogSource, /この情報は自動送信されません/u)
-  assert.match(dialogSource, /表示されたJSONと保存されるJSONは同一/u)
+  assert.match(
+    dialogSource,
+    /import \{ DIAGNOSTICS_COPY \} from '\.\.\/lib\/diagnosticsDialogText\.ts'/u,
+  )
+  assert.match(dialogTextSource, /JSONファイルとして保存…/u)
+  assert.match(dialogTextSource, /この情報は自動送信されません/u)
+  assert.match(dialogTextSource, /表示されたJSONと保存されるJSONは同一/u)
 })
 
 test('dialog errors remain fixed and the UI has no automatic sharing capability', () => {
@@ -59,8 +64,8 @@ test('dialog errors remain fixed and the UI has no automatic sharing capability'
     dialogSource,
     /navigator\.clipboard|fetch\(|window\.open|JSON\.stringify|reportUnexpected/u,
   )
-  assert.match(dialogSource, /診断情報を準備できませんでした/u)
-  assert.match(dialogSource, /診断JSONを保存できませんでした/u)
+  assert.match(dialogTextSource, /診断情報を準備できませんでした/u)
+  assert.match(dialogTextSource, /診断JSONを保存できませんでした/u)
   assert.match(dialogSource, /notice: DiagnosticsNotice \| null/u)
   assert.match(
     dialogSource,
@@ -70,7 +75,7 @@ test('dialog errors remain fixed and the UI has no automatic sharing capability'
     dialogSource,
     /aria-live=\{state\.notice === 'save_failed' \? 'assertive' : 'polite'\}/u,
   )
-  assert.match(dialogSource, /Diagnostics JSON could not be saved/u)
+  assert.match(dialogTextSource, /Diagnostics JSON could not be saved/u)
 })
 
 test('focus, Escape, stale requests, and responsive overflow are explicitly bounded', () => {

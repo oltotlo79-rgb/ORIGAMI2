@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -18,6 +18,26 @@ afterEach(() => {
 })
 
 describe('NumericExpressionInput', () => {
+  it('retranslates idle status without changing the expression', () => {
+    const locales = localeFixture('ja')
+    render(
+      <NumericExpressionInput
+        id="translated-width"
+        name="width_expression"
+        defaultSource="200 * 2"
+        ariaLabel="width"
+        localeStore={locales}
+      />,
+    )
+    expect(screen.getByText(/式を入力できます/u)).toBeTruthy()
+    act(() => {
+      locales.setLocale('en')
+    })
+    expect(screen.getByText(/Enter an expression/u)).toBeTruthy()
+    expect((screen.getByRole('textbox', { name: 'width' }) as HTMLInputElement).value)
+      .toBe('200 * 2')
+  })
+
   it('localizes evaluation status and view controls in English', async () => {
     render(
       <NumericExpressionInput

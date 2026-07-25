@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { KeyboardShortcutControl } from '../src/components/KeyboardShortcutControl.tsx'
@@ -22,6 +22,19 @@ function store(): KeyboardShortcutStore {
 }
 
 describe('KeyboardShortcutControl', () => {
+  it('retranslates controls and ARIA without changing shortcuts', () => {
+    const target = store()
+    const locales = localeFixture('ja')
+    render(<KeyboardShortcutControl store={target} localeStore={locales} />)
+    expect(screen.getByRole('group', { name: 'ショートカット設定' })).toBeTruthy()
+    act(() => {
+      locales.setLocale('en')
+    })
+    expect(screen.getByRole('group', { name: 'Shortcut settings' })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Open key' })).toBeTruthy()
+    expect(target.getSnapshot()).toEqual(DEFAULT_KEYBOARD_SHORTCUTS)
+  })
+
   it('localizes command labels, ARIA names, status, and conflicts in English', () => {
     const target = store()
     render(

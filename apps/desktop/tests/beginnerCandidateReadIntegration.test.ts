@@ -2,6 +2,14 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+import {
+  COMPLETE_ANIMAL_BINDING_LIST_TEXT as COMPLETE_ANIMAL_TEXT,
+} from '../src/lib/completeAnimalBindingListText.ts'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+} from '../src/lib/i18n.ts'
+
 const client = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8')
 const app = [
   readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
@@ -97,12 +105,52 @@ test('AUT-101 admits only explicit symmetric animal and insect templates', () =>
   assert.match(app, /Complete composite insect base/)
   assert.match(app, /角・尾・耳・四脚の完全複合動物ベース/)
   assert.match(app, /Complete composite animal base/)
-  assert.match(completeAnimalBindingList, /protrusions\.length === 5 \? '五' : '四'/)
-  assert.match(completeAnimalBindingList, /'Five' : 'Four'/)
+  assert.match(
+    completeAnimalBindingList,
+    /COMPLETE_ANIMAL_BINDING_LIST_TEXT as TEXT/u,
+  )
+  assert.match(
+    completeAnimalBindingList,
+    /protrusions\.length === 5 \? TEXT\.fivePartCount : TEXT\.fourPartCount/u,
+  )
+  assert.match(
+    completeAnimalBindingList,
+    /formatLocalizedText\(locale, TEXT\.ariaLabel,\s*\{\s*partCount,\s*\}\)/u,
+  )
+  assert.equal(
+    formatLocalizedText('ja', COMPLETE_ANIMAL_TEXT.ariaLabel, {
+      partCount: selectLocalizedText(
+        'ja',
+        COMPLETE_ANIMAL_TEXT.fourPartCount,
+      ),
+    }),
+    '完全動物の四部位binding寸法',
+  )
+  assert.equal(
+    formatLocalizedText('en', COMPLETE_ANIMAL_TEXT.ariaLabel, {
+      partCount: selectLocalizedText(
+        'en',
+        COMPLETE_ANIMAL_TEXT.fivePartCount,
+      ),
+    }),
+    'Five complete-animal binding dimensions',
+  )
   assert.match(client, /protrusions\.length !== \(completeAnimalHasWings \? 5 : 4\)/)
   assert.match(client, /protrusions\[4\]\?\.count !== 2/)
   assert.match(client, /protrusions\[3\]\?\.count !== 4/)
-  assert.match(completeAnimalBindingList, /length \$\{target\.length_tenths_mm\} · thickness \$\{target\.thickness_tenths_mm\}/)
+  assert.match(
+    completeAnimalBindingList,
+    /formatLocalizedText\(locale, TEXT\.bindingRow,\s*\{[\s\S]*?id: target\.id,[\s\S]*?count: target\.count,[\s\S]*?length: target\.length_tenths_mm,[\s\S]*?thickness: target\.thickness_tenths_mm,[\s\S]*?\}\)/u,
+  )
+  assert.equal(
+    formatLocalizedText('en', COMPLETE_ANIMAL_TEXT.bindingRow, {
+      id: 5,
+      count: 2,
+      length: 500,
+      thickness: 50,
+    }),
+    'Binding 5 · count 2 · length 500 · thickness 50',
+  )
 })
 
 test('AUT-106 presents one recommendation first and adds bounded candidates on demand', () => {

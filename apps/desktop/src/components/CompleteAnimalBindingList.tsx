@@ -1,9 +1,17 @@
 import type { BeginnerGenerationConstraintsV1 } from '../lib/coreClient'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+  type Locale,
+} from '../lib/i18n.ts'
+import {
+  COMPLETE_ANIMAL_BINDING_LIST_TEXT as TEXT,
+} from '../lib/completeAnimalBindingListText.ts'
 
 type Protrusion = NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
 
 export function CompleteAnimalBindingList({ locale, protrusions }: {
-  locale: 'ja' | 'en'
+  locale: Locale
   protrusions: readonly Protrusion[]
 }) {
   const valid = (protrusions.length === 4 || protrusions.length === 5)
@@ -17,16 +25,23 @@ export function CompleteAnimalBindingList({ locale, protrusions }: {
     && (protrusions.length === 4
       || (protrusions[4]?.count === 2 && protrusions[4].symmetry === 'bilateral'))
   if (!valid) return null
+  const partCount = selectLocalizedText(
+    locale,
+    protrusions.length === 5 ? TEXT.fivePartCount : TEXT.fourPartCount,
+  )
 
   return (
-    <ol aria-label={locale === 'ja'
-      ? `完全動物の${protrusions.length === 5 ? '五' : '四'}部位binding寸法`
-      : `${protrusions.length === 5 ? 'Five' : 'Four'} complete-animal binding dimensions`}>
+    <ol aria-label={formatLocalizedText(locale, TEXT.ariaLabel, {
+      partCount,
+    })}>
       {protrusions.map((target) => (
         <li key={target.id}>
-          {locale === 'ja'
-            ? `binding ${target.id}・数 ${target.count}・長さ ${target.length_tenths_mm}・厚さ ${target.thickness_tenths_mm}`
-            : `Binding ${target.id} · count ${target.count} · length ${target.length_tenths_mm} · thickness ${target.thickness_tenths_mm}`}
+          {formatLocalizedText(locale, TEXT.bindingRow, {
+            id: target.id,
+            count: target.count,
+            length: target.length_tenths_mm,
+            thickness: target.thickness_tenths_mm,
+          })}
         </li>
       ))}
     </ol>

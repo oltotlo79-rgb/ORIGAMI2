@@ -17,9 +17,11 @@ test('App loads the history limit only for the exact current project binding', (
   assert.match(effect, /historyLimitClient\.get\(expected\)/u)
   assert.match(effect, /const requestId = \+\+historyLimitRequestSequenceRef\.current/u)
   assert.match(effect, /disposed\s*\|\| requestId !== historyLimitRequestSequenceRef\.current/u)
-  assert.match(effect, /current\.project_instance_id !== settings\.projectInstanceId/u)
-  assert.match(effect, /current\.project_id !== settings\.projectId/u)
-  assert.match(effect, /current\.revision !== settings\.revision/u)
+  assert.match(
+    effect,
+    /matchesProjectOccGuard\(\{\s*expectedProjectInstanceId: settings\.projectInstanceId,\s*expectedProjectId: settings\.projectId,\s*expectedRevision: settings\.revision,\s*\}, current\)/u,
+  )
+  assert.match(effect, /matchesProjectOccGuard\(expected, current\)/u)
   assert.match(effect, /\.catch\(\(\) => \{/u)
   assert.doesNotMatch(effect, /catch\s*\(\s*\w+|String\(|console\./u)
 })
@@ -32,9 +34,12 @@ test('App refreshes Undo/Redo availability after applying a limit', () => {
   )
 
   assert.match(apply, /const current = latestSnapshotRef\.current/u)
-  assert.match(apply, /current\.project_instance_id !== settings\.projectInstanceId/u)
-  assert.match(apply, /current\.project_id !== settings\.projectId/u)
-  assert.match(apply, /current\.revision !== settings\.revision/u)
+  assert.equal(
+    apply.match(
+      /matchesProjectOccGuard\(\{\s*expectedProjectInstanceId: settings\.projectInstanceId,\s*expectedProjectId: settings\.projectId,\s*expectedRevision: settings\.revision,\s*\}/gu,
+    )?.length,
+    2,
+  )
   assert.match(apply, /const refreshed = await requestProjectSnapshot\(\)/u)
   assert.match(apply, /latest !== current/u)
   assert.match(apply, /applySnapshot\(refreshed\)/u)

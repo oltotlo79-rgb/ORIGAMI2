@@ -93,13 +93,24 @@ test('the revision-changing mutation contract matrix remains complete', () => {
 for (const [clientFunction, nativeCommand] of mutationContracts) {
   test(`${clientFunction} carries the open-instance binding through its native payload`, () => {
     const clientFunctionSource = typescriptFunctionSection(client, clientFunction)
-    assert.match(
-      clientFunctionSource,
-      new RegExp(
-        String.raw`export function ${clientFunction}\(\s*expectedProjectId:\s*string,\s*expectedRevision:\s*number,\s*expectedProjectInstanceId:\s*string,?`,
-        'u',
-      ),
-    )
+    if (clientFunction === 'appendNamedTechniqueInstructionSteps') {
+      assert.match(
+        clientFunctionSource,
+        /export function appendNamedTechniqueInstructionSteps\(\s*guard:\s*ProjectOccGuard,/u,
+      )
+      assert.match(
+        clientFunctionSource,
+        /projectOccGuardField\(\s*guard,\s*'expectedProjectInstanceId',\s*\)[\s\S]*projectOccGuardField\(guard, 'expectedProjectId'\)[\s\S]*projectOccGuardField\(guard, 'expectedRevision'\)/u,
+      )
+    } else {
+      assert.match(
+        clientFunctionSource,
+        new RegExp(
+          String.raw`export function ${clientFunction}\(\s*expectedProjectId:\s*string,\s*expectedRevision:\s*number,\s*expectedProjectInstanceId:\s*string,?`,
+          'u',
+        ),
+      )
+    }
     assert.match(
       clientFunctionSource,
       new RegExp(String.raw`invoke(?:<[^>]+>)?\('${nativeCommand}'`, 'u'),

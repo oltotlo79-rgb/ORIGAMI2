@@ -3,11 +3,15 @@ import { invoke } from '@tauri-apps/api/core'
 import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
 import type {
   NumericExpressionBinding,
+  ProjectOccGuard,
   ProjectSnapshot,
   VertexCoordinateExpressionBinding,
   VertexCoordinateExpressionTransition,
 } from './coreClient.ts'
-import { normalizeBeginnerDesignProfile } from './coreClient.ts'
+import {
+  matchesProjectOccGuard,
+  normalizeBeginnerDesignProfile,
+} from './coreClient.ts'
 import { normalizeGeometricConstraintDocument } from './geometricConstraints.ts'
 import { parseInstructionVisual } from './instructionTimeline.ts'
 import { normalizeProjectLayerDocument } from './projectLayers.ts'
@@ -855,13 +859,19 @@ export function parsePreparedWindowCloseResponse(
   try {
     const parsedExpected = parseExpectedBinding(expected)
     const prepared = parsePreparedWindowCloseValue(value)
+    const guard: ProjectOccGuard | null = parsedExpected
+      ? {
+          expectedProjectInstanceId: parsedExpected.project_instance_id,
+          expectedProjectId: parsedExpected.project_id,
+          expectedRevision: parsedExpected.revision,
+        }
+      : null
     if (
       !parsedExpected
       || !isWindowCloseAuthorization(authorization)
       || !prepared
-      || prepared.project_instance_id !== parsedExpected.project_instance_id
-      || prepared.project_id !== parsedExpected.project_id
-      || prepared.revision !== parsedExpected.revision
+      || !guard
+      || !matchesProjectOccGuard(guard, prepared)
       || prepared.authorization !== authorization
     ) return null
     return prepared
@@ -922,15 +932,28 @@ export function parseCanceledWindowCloseResponse(
       'revision',
       'authorization',
     ])
+    const guard: ProjectOccGuard | null = parsedPrepared
+      ? {
+          expectedProjectInstanceId: parsedPrepared.project_instance_id,
+          expectedProjectId: parsedPrepared.project_id,
+          expectedRevision: parsedPrepared.revision,
+        }
+      : null
     if (
       !parsedPrepared
       || !record
       || record.schema_version !== RECOVERY_SCHEMA_VERSION
       || record.status !== 'canceled'
       || record.close_prepare_id !== parsedPrepared.close_prepare_id
-      || record.project_instance_id !== parsedPrepared.project_instance_id
-      || record.project_id !== parsedPrepared.project_id
-      || record.revision !== parsedPrepared.revision
+      || !guard
+      || !matchesProjectOccGuard(
+        guard,
+        record as Readonly<{
+          project_instance_id: string
+          project_id: string
+          revision: number
+        }>,
+      )
       || record.authorization !== parsedPrepared.authorization
     ) return null
     return Object.freeze({
@@ -1027,9 +1050,11 @@ function sameExpectedProject(
   current: WindowCloseProjectState,
   expected: RecoveryExpectedProjectBinding,
 ): boolean {
-  return current.project_instance_id === expected.project_instance_id
-    && current.project_id === expected.project_id
-    && current.revision === expected.revision
+  return matchesProjectOccGuard({
+    expectedProjectInstanceId: expected.project_instance_id,
+    expectedProjectId: expected.project_id,
+    expectedRevision: expected.revision,
+  }, current)
 }
 
 async function runWindowCloseAttempt(

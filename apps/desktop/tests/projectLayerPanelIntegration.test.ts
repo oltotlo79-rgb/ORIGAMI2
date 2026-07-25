@@ -37,7 +37,7 @@ test('App admits layer documents before rendering a fail-closed panel', () => {
 test('App supplies the exact admitted base snapshot to each layer mutation', () => {
   assert.match(
     app,
-    /const runProjectLayerEdit = useCallback\([\s\S]*?baseSnapshot:\s*ProjectSnapshot[\s\S]*?baseSnapshot\.project_instance_id !== projectInstanceId[\s\S]*?baseSnapshot\.project_id !== projectId[\s\S]*?baseSnapshot\.revision !== revision[\s\S]*?return action\(\s*projectId,\s*revision,\s*projectInstanceId,\s*baseSnapshot,\s*\)/u,
+    /const runProjectLayerEdit = useCallback\([\s\S]*?baseSnapshot:\s*ProjectSnapshot[\s\S]*?matchesProjectOccGuard\(\{\s*expectedProjectInstanceId: projectInstanceId,\s*expectedProjectId: projectId,\s*expectedRevision: revision,\s*\}, baseSnapshot\)[\s\S]*?return action\(\s*projectId,\s*revision,\s*projectInstanceId,\s*baseSnapshot,\s*\)/u,
   )
   for (const [clientFunction] of layerMutations) {
     const call = app.indexOf(`${clientFunction}(`)

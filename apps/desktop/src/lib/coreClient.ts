@@ -200,6 +200,65 @@ export type ProjectSnapshot = {
   reference_model_assets?: Array<{ asset_id: string; sha256: number[] }>
 }
 
+export type ProjectOccGuard = Readonly<{
+  expectedProjectInstanceId: string
+  expectedProjectId: string
+  expectedRevision: number
+}>
+
+const INVALID_PROJECT_OCC_GUARD_FIELD = Symbol('invalid project OCC guard field')
+
+function ownDataField(
+  value: unknown,
+  key: PropertyKey,
+): unknown | typeof INVALID_PROJECT_OCC_GUARD_FIELD {
+  if (
+    value === null
+    || (typeof value !== 'object' && typeof value !== 'function')
+  ) return INVALID_PROJECT_OCC_GUARD_FIELD
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    return descriptor && 'value' in descriptor
+      ? descriptor.value
+      : INVALID_PROJECT_OCC_GUARD_FIELD
+  } catch {
+    return INVALID_PROJECT_OCC_GUARD_FIELD
+  }
+}
+
+function projectOccGuardField(
+  guard: unknown,
+  key: keyof ProjectOccGuard,
+): unknown | typeof INVALID_PROJECT_OCC_GUARD_FIELD {
+  return ownDataField(guard, key)
+}
+
+export function matchesProjectOccGuard(
+  guard: ProjectOccGuard,
+  project: Readonly<{
+    project_instance_id: string
+    project_id: string
+    revision: number
+  }>,
+): boolean {
+  const expectedProjectInstanceId = projectOccGuardField(
+    guard,
+    'expectedProjectInstanceId',
+  )
+  if (
+    expectedProjectInstanceId === INVALID_PROJECT_OCC_GUARD_FIELD
+    || ownDataField(project, 'project_instance_id') !== expectedProjectInstanceId
+  ) return false
+  const expectedProjectId = projectOccGuardField(guard, 'expectedProjectId')
+  if (
+    expectedProjectId === INVALID_PROJECT_OCC_GUARD_FIELD
+    || ownDataField(project, 'project_id') !== expectedProjectId
+  ) return false
+  const expectedRevision = projectOccGuardField(guard, 'expectedRevision')
+  return expectedRevision !== INVALID_PROJECT_OCC_GUARD_FIELD
+    && ownDataField(project, 'revision') === expectedRevision
+}
+
 export type BeginnerDesignProfileV1 = {
   schema_version: 1
   preset: 'balanced' | 'shape_priority' | 'foldability_priority'
@@ -1065,9 +1124,15 @@ function normalizeBeginnerCandidateResponse(
   if (
     !response
     || response.schema_version !== 1
-    || response.project_instance_id !== expectedProjectInstanceId
-    || response.project_id !== expectedProjectId
-    || response.revision !== expectedRevision
+    || !matchesProjectOccGuard({
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    }, response as Readonly<{
+      project_instance_id: string
+      project_id: string
+      revision: number
+    }>)
     || response.requested_candidate_count !== requestedCandidateCount
     || response.bulge_treatment !== 'target_shape_approximation'
     || response.elasticity_model !== 'not_computed'
@@ -2372,9 +2437,15 @@ export async function getBeginnerReferenceModelGeometry(
     'positions', 'triangle_indices', 'material_color',
   ] as const)
   if (!record
-    || record.project_instance_id !== expectedProjectInstanceId
-    || record.project_id !== expectedProjectId
-    || record.revision !== expectedRevision
+    || !matchesProjectOccGuard({
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    }, record as Readonly<{
+      project_instance_id: string
+      project_id: string
+      revision: number
+    }>)
     || !isCanonicalNonNilUuid(record.asset_id)
     || !Array.isArray(record.positions) || record.positions.length < 1
     || record.positions.length > 20_000
@@ -4695,18 +4766,41 @@ export function duplicateInstructionStep(
 }
 
 export function appendNamedTechniqueInstructionSteps(
-  expectedProjectId: string,
-  expectedRevision: number,
-  expectedProjectInstanceId: string,
+  guard: ProjectOccGuard,
   proposal: NamedTechniqueTimelineProposalV1,
 ) {
+  const expectedProjectInstanceId = projectOccGuardField(
+    guard,
+    'expectedProjectInstanceId',
+  )
   if (
-    !isCanonicalNonNilUuid(expectedProjectInstanceId)
+    expectedProjectInstanceId === INVALID_PROJECT_OCC_GUARD_FIELD
+    || !isCanonicalNonNilUuid(expectedProjectInstanceId)
+  ) {
+    return Promise.reject(
+      new NamedTechniqueTimelineClientError('invalid_request'),
+    )
+  }
+  const expectedProjectId = projectOccGuardField(guard, 'expectedProjectId')
+  if (
+    expectedProjectId === INVALID_PROJECT_OCC_GUARD_FIELD
     || !isCanonicalNonNilUuid(expectedProjectId)
+  ) {
+    return Promise.reject(
+      new NamedTechniqueTimelineClientError('invalid_request'),
+    )
+  }
+  const expectedRevision = projectOccGuardField(guard, 'expectedRevision')
+  if (
+    expectedRevision === INVALID_PROJECT_OCC_GUARD_FIELD
     || !isProjectRevision(expectedRevision)
     || expectedRevision >= Number.MAX_SAFE_INTEGER
-    || !isNamedTechniqueTimelineProposalV1(proposal)
   ) {
+    return Promise.reject(
+      new NamedTechniqueTimelineClientError('invalid_request'),
+    )
+  }
+  if (!isNamedTechniqueTimelineProposalV1(proposal)) {
     return Promise.reject(
       new NamedTechniqueTimelineClientError('invalid_request'),
     )
@@ -6234,9 +6328,15 @@ function isStaleProjectLayerMutationResponse(
     || !isCanonicalNonNilUuid(record.project_id)
     || !isProjectRevision(record.revision)
   ) return false
-  return record.project_instance_id !== expectedProjectInstanceId
-    || record.project_id !== expectedProjectId
-    || record.revision !== previousRevision + 1
+  return !matchesProjectOccGuard({
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision: previousRevision + 1,
+  }, record as Readonly<{
+    project_instance_id: string
+    project_id: string
+    revision: number
+  }>)
 }
 
 function isProjectLayerMutationBaseSnapshot(
@@ -6247,9 +6347,11 @@ function isProjectLayerMutationBaseSnapshot(
 ): value is ProjectSnapshot {
   const snapshot = normalizeProjectLayerMutationBaseSnapshot(value)
   return snapshot !== null
-    && snapshot.project_instance_id === expectedProjectInstanceId
-    && snapshot.project_id === expectedProjectId
-    && snapshot.revision === expectedRevision
+    && matchesProjectOccGuard({
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    }, snapshot)
 }
 
 function rejectProjectLayerMutation(

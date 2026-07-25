@@ -8,6 +8,7 @@ import {
   cancelStackedFoldTransactionPreview,
   listenStackedFoldReadProgressV1,
   listenCurrentCyclePoseProgressV1,
+  matchesProjectOccGuard,
   proposeCurrentCyclePoseV1,
   proposeCurrentStackedFoldRead,
   readEvenCycleCandidatesV1,
@@ -582,9 +583,11 @@ export function StackedFoldPanel({
       const current = authorityRef.current
       const currentSelection = namedAuthorityRef.current
       if (sequence !== basicFoldTimelineSequenceRef.current
-        || current.project_instance_id !== authority.project_instance_id
-        || current.project_id !== authority.project_id
-        || current.revision !== authority.revision
+        || !matchesProjectOccGuard({
+          expectedProjectInstanceId: authority.project_instance_id,
+          expectedProjectId: authority.project_id,
+          expectedRevision: authority.revision,
+        }, current)
         || current.fold_model_fingerprint !== authority.fold_model_fingerprint
         || currentSelection.namedBookFold?.document !== selectedAuthority.namedBookFold?.document
         || currentSelection.namedBookFold?.techniqueId !== selectedAuthority.namedBookFold?.techniqueId
@@ -661,9 +664,11 @@ export function StackedFoldPanel({
       })
       const current = authorityRef.current
       if (sequence !== dyadicGraphSequenceRef.current
-        || current.project_instance_id !== authority.project_instance_id
-        || current.project_id !== authority.project_id
-        || current.revision !== authority.revision) return
+        || !matchesProjectOccGuard({
+          expectedProjectInstanceId: authority.project_instance_id,
+          expectedProjectId: authority.project_id,
+          expectedRevision: authority.revision,
+        }, current)) return
       setDyadicGraphRead(response)
     } catch {
       if (sequence === dyadicGraphSequenceRef.current) setDyadicGraphRead(null)
@@ -696,9 +701,11 @@ export function StackedFoldPanel({
         expectedLayerTransportBindingSha256: graph.layerTransportBindingSha256,
       })
       const current = authorityRef.current
-      if (current.project_instance_id === authority.project_instance_id
-        && current.project_id === authority.project_id
-        && current.revision === authority.revision) setDyadicPathPreview(response)
+      if (matchesProjectOccGuard({
+        expectedProjectInstanceId: authority.project_instance_id,
+        expectedProjectId: authority.project_id,
+        expectedRevision: authority.revision,
+      }, current)) setDyadicPathPreview(response)
     } catch {
       setDyadicPathPreview(null)
     }
@@ -756,9 +763,11 @@ export function StackedFoldPanel({
       const current = authorityRef.current
       if (
         sequence !== cyclePoseSequenceRef.current ||
-        current.project_instance_id !== snapshot.project_instance_id ||
-        current.project_id !== snapshot.project_id ||
-        current.revision !== snapshot.revision
+        !matchesProjectOccGuard({
+          expectedProjectInstanceId: snapshot.project_instance_id,
+          expectedProjectId: snapshot.project_id,
+          expectedRevision: snapshot.revision,
+        }, current)
       ) {
         cancelToken(response.transactionToken)
         return

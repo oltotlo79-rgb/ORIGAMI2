@@ -51,7 +51,7 @@ test('confirmation is one atomic native edit and never dispatches a pose or phys
   assert.match(confirm, /succeeded = await input\.runNativeEdit\(/u)
   assert.match(
     confirm,
-    /appendProposal\(\s*projectId,\s*revision,\s*projectInstanceId,\s*pending\.preview\.proposal,\s*\)/u,
+    /appendProposal\(\s*\{\s*expectedProjectInstanceId: projectInstanceId,\s*expectedProjectId: projectId,\s*expectedRevision: revision,\s*\},\s*pending\.preview\.proposal,\s*\)/u,
   )
   assert.match(confirm, /1回のUndoで戻せます/u)
   assert.match(confirm, /One Undo removes the complete addition/u)
@@ -111,6 +111,7 @@ test('proposal and IPC boundaries preserve source order under fixed hard limits'
     'export function updateInstructionStepMetadata(',
   )
   assert.match(clientFunction, /isNamedTechniqueTimelineProposalV1\(proposal\)/u)
+  assert.match(clientFunction, /guard: ProjectOccGuard/u)
   assert.match(clientFunction, /new TextEncoder\(\)\.encode\(proposalJson\)\.length > 2 \* 1024 \* 1024/u)
   assert.match(
     clientFunction,

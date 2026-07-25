@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 
 import {
   appendNamedTechniqueInstructionSteps,
+  matchesProjectOccGuard,
   type ProjectSnapshot,
 } from './coreClient.ts'
 import type { FoldTechniqueFileDocumentV1 } from './foldTechniqueEditor.ts'
@@ -164,11 +165,17 @@ export function useFoldTechniqueTimelineProposal(input: Readonly<{
       !pending
       || ownedRequestActive(requestGateRef.current)
     ) return
+    const guard = pending
+      ? {
+          expectedProjectInstanceId: pending.expectedProjectInstanceId,
+          expectedProjectId: pending.expectedProjectId,
+          expectedRevision: pending.expectedRevision,
+        }
+      : null
     if (
       !current
-      || current.project_instance_id !== pending.expectedProjectInstanceId
-      || current.project_id !== pending.expectedProjectId
-      || current.revision !== pending.expectedRevision
+      || !guard
+      || !matchesProjectOccGuard(guard, current)
       || input.getCurrentWorkspace()?.document !== pending.sourceDocument
       || input.selectedIndex !== pending.techniqueIndex
     ) {
@@ -196,9 +203,11 @@ export function useFoldTechniqueTimelineProposal(input: Readonly<{
           || revision !== pending.expectedRevision
         ) return Promise.reject(new Error('stale named-technique proposal'))
         return appendProposal(
-          projectId,
-          revision,
-          projectInstanceId,
+          {
+            expectedProjectInstanceId: projectInstanceId,
+            expectedProjectId: projectId,
+            expectedRevision: revision,
+          },
           pending.preview.proposal,
         )
       })

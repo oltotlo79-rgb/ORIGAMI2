@@ -32,7 +32,10 @@ test('recognition is bound to the project instance, revision, underlay, asset, a
 test('the read-only proposal is stale-safe, single-flight, and copied before normal save', () => {
   assert.match(app, /beginnerRecognitionRequestRef/u)
   assert.match(app, /beginnerRecognitionBusy/u)
-  assert.match(app, /latest\.revision !== binding\.revision/u)
+  assert.match(
+    app,
+    /matchesProjectOccGuard\(\{\s*expectedProjectInstanceId: binding\.instanceId,\s*expectedProjectId: binding\.projectId,\s*expectedRevision: binding\.revision,\s*\}, latest\)/u,
+  )
   assert.match(app, /Recognition proposal preview/u)
   assert.match(app, /Copy to editable fields/u)
   assert.match(app, /setBeginnerSkeletonSegments/u)
@@ -83,7 +86,10 @@ test('multiple silhouettes form one bounded custom tree only through inferred MS
 test('multiple outline candidates stay strict, stale-safe, and read-only', () => {
   assert.match(client, /record\.candidates\.length > 16/u)
   assert.match(client, /'id', 'bounds', 'area_pixels', 'confidence_reason'/u)
-  assert.match(client, /record\.project_instance_id !== expectedProjectInstanceId/u)
+  assert.match(
+    client,
+    /matchesProjectOccGuard\(\{\s*expectedProjectInstanceId,\s*expectedProjectId,\s*expectedRevision,\s*\}, response/u,
+  )
   assert.match(app, /Show outline candidates/u)
   assert.match(app, /Read-only outline candidates/u)
   assert.match(app, /They grant no generation authority/u)

@@ -104,6 +104,7 @@ import {
   getInstructionExportProgress,
   getProjectSnapshot as requestProjectSnapshot,
   isNativeCoreAvailable,
+  matchesProjectOccGuard,
   moveEdge,
   mirrorEdgeLeftRight,
   rotateEdgeAboutPoint,
@@ -1140,9 +1141,11 @@ function App() {
     const current = latestSnapshotRef.current
     if (
       !current
-      || current.project_instance_id !== response.project_instance_id
-      || current.project_id !== response.project_id
-      || current.revision !== response.revision
+      || !matchesProjectOccGuard({
+        expectedProjectInstanceId: response.project_instance_id,
+        expectedProjectId: response.project_id,
+        expectedRevision: response.revision,
+      }, current)
     ) {
       throw new Error('stale geometric-constraint preflight response')
     }
@@ -1223,9 +1226,11 @@ function App() {
     }
     topologyRequestIdRef.current += 1
     const priorSnapshot = latestSnapshotRef.current
-    if (priorSnapshot && (priorSnapshot.project_instance_id !== admittedSnapshot.project_instance_id
-      || priorSnapshot.project_id !== admittedSnapshot.project_id
-      || priorSnapshot.revision !== admittedSnapshot.revision)) {
+    if (priorSnapshot && !matchesProjectOccGuard({
+      expectedProjectInstanceId: admittedSnapshot.project_instance_id,
+      expectedProjectId: admittedSnapshot.project_id,
+      expectedRevision: admittedSnapshot.revision,
+    }, priorSnapshot)) {
       const gridGeneration = beginnerGridGenerationRef.current
       beginnerGridRequestRef.current += 1
       beginnerGridGenerationRef.current = null
@@ -1257,18 +1262,22 @@ function App() {
     const current = latestSnapshotRef.current
     if (
       !current
-      || current.project_instance_id !== settings.projectInstanceId
-      || current.project_id !== settings.projectId
-      || current.revision !== settings.revision
+      || !matchesProjectOccGuard({
+        expectedProjectInstanceId: settings.projectInstanceId,
+        expectedProjectId: settings.projectId,
+        expectedRevision: settings.revision,
+      }, current)
     ) return
 
     const refreshed = await requestProjectSnapshot()
     const latest = latestSnapshotRef.current
     if (
       latest !== current
-      || refreshed.project_instance_id !== settings.projectInstanceId
-      || refreshed.project_id !== settings.projectId
-      || refreshed.revision !== settings.revision
+      || !matchesProjectOccGuard({
+        expectedProjectInstanceId: settings.projectInstanceId,
+        expectedProjectId: settings.projectId,
+        expectedRevision: settings.revision,
+      }, refreshed)
     ) return
 
     applySnapshot(refreshed)
@@ -2121,9 +2130,11 @@ function App() {
         disposed
         || requestId !== historyLimitRequestSequenceRef.current
         || !current
-        || current.project_instance_id !== settings.projectInstanceId
-        || current.project_id !== settings.projectId
-        || current.revision !== settings.revision
+        || !matchesProjectOccGuard({
+          expectedProjectInstanceId: settings.projectInstanceId,
+          expectedProjectId: settings.projectId,
+          expectedRevision: settings.revision,
+        }, current)
       ) return
       setHistoryLimitLoadState({ kind: 'ready', settings })
     }).catch(() => {
@@ -2132,9 +2143,7 @@ function App() {
         disposed
         || requestId !== historyLimitRequestSequenceRef.current
         || !current
-        || current.project_instance_id !== expected.expectedProjectInstanceId
-        || current.project_id !== expected.expectedProjectId
-        || current.revision !== expected.expectedRevision
+        || !matchesProjectOccGuard(expected, current)
       ) return
       setHistoryLimitLoadState({ kind: 'failed' })
     })
@@ -2750,9 +2759,11 @@ function App() {
     const baseSnapshot = latestSnapshotRef.current
     if (
       !baseSnapshot
-      || baseSnapshot.project_instance_id !== projectInstanceId
-      || baseSnapshot.project_id !== projectId
-      || baseSnapshot.revision !== revision
+      || !matchesProjectOccGuard({
+        expectedProjectInstanceId: projectInstanceId,
+        expectedProjectId: projectId,
+        expectedRevision: revision,
+      }, baseSnapshot)
     ) return Promise.reject(new Error('stale layer mutation base'))
     return action(
       projectId,
@@ -4261,9 +4272,11 @@ function App() {
       const latest = latestSnapshotRef.current
       if (requestId !== beginnerRecognitionRequestRef.current
         || !latest
-        || latest.project_instance_id !== binding.instanceId
-        || latest.project_id !== binding.projectId
-        || latest.revision !== binding.revision) return
+        || !matchesProjectOccGuard({
+          expectedProjectInstanceId: binding.instanceId,
+          expectedProjectId: binding.projectId,
+          expectedRevision: binding.revision,
+        }, latest)) return
       setBeginnerRecognitionProposal(proposal)
       setAcceptedRecognitionProtrusionIds(new Set(proposal.protrusions?.map((target) => target.id) ?? []))
       setCoreStatus(appMessage({

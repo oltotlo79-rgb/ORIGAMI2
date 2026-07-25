@@ -15,6 +15,7 @@ use num_rational::BigRational;
 use num_traits::{One, Zero};
 use ori_kinematics::BoundMaterialTreePose;
 
+use super::counter::{charge_counter, set_fixed_counter};
 use super::ef_boundary::{
     AxisAlignedEfBoundaryCapabilityV1, revalidate_axis_aligned_ef_boundary_v1,
 };
@@ -256,14 +257,17 @@ impl ExactEFiniteHingeCorridorCapabilityV1<'_, '_, '_, '_> {
         self.interaction_kind
     }
 
+    #[cfg(test)]
     pub(super) fn length_squared(&self) -> &BigRational {
         &self.geometry.length_squared
     }
 
+    #[cfg(test)]
     pub(super) fn half_thickness(&self) -> &BigRational {
         &self.geometry.half_thickness
     }
 
+    #[cfg(test)]
     pub(super) fn cosine_half_squared(&self) -> &BigRational {
         &self.geometry.cosine_half_squared
     }
@@ -286,6 +290,10 @@ impl ExactEFiniteHingeCorridorCapabilityV1<'_, '_, '_, '_> {
 }
 
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "borrowed capability makes revalidation non-forgeable"
+)]
 pub(super) struct RevalidatedExactEFiniteHingeCorridorCapabilityV1<
     'capability,
     'prerequisite,
@@ -308,6 +316,10 @@ pub(super) struct ExactEFiniteHingeCorridorOutside {
 }
 
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "sealed result retains its outside diagnostic witness"
+)]
 pub(super) enum ExactEFiniteHingeCorridorResult<'prerequisite, 'ef, 'exact, 'pose> {
     Contained(Box<ExactEFiniteHingeCorridorCapabilityV1<'prerequisite, 'ef, 'exact, 'pose>>),
     Outside(ExactEFiniteHingeCorridorOutside),
@@ -892,46 +904,6 @@ fn charge_fixed_work(
     ] {
         set_fixed_counter(counter, required, maximum, resource)?;
     }
-    Ok(())
-}
-
-fn set_fixed_counter(
-    counter: &mut usize,
-    required: usize,
-    maximum: usize,
-    resource: &'static str,
-) -> Result<(), CayleyError> {
-    if *counter != 0 {
-        return Err(CayleyError::InvariantFailure { stage: STAGE });
-    }
-    if required > maximum {
-        return Err(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        });
-    }
-    *counter = required;
-    Ok(())
-}
-
-fn charge_counter(
-    counter: &mut usize,
-    maximum: usize,
-    resource: &'static str,
-) -> Result<(), CayleyError> {
-    let next = counter
-        .checked_add(1)
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        })?;
-    if next > maximum {
-        return Err(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        });
-    }
-    *counter = next;
     Ok(())
 }
 

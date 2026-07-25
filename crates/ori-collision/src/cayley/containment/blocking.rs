@@ -48,6 +48,10 @@ enum PairTopology {
         second_vertex: usize,
     },
     SharedHinge,
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "adversarial same-face classifier tests only")
+    )]
     SameFace,
 }
 
@@ -202,14 +206,26 @@ struct AuthenticatedTrianglePairDecision {
 /// and every unsupported or uncertain pair remains `Unresolved`.
 #[derive(Debug)]
 struct AuthenticatedTriangleBlockingScan<'scan, 'exact, 'pose> {
+    #[allow(dead_code, reason = "sealed scan retains exact-pose provenance")]
     exact: &'scan RationalCayleyTreePose<'pose>,
+    #[allow(dead_code, reason = "sealed scan retains measured-envelope provenance")]
     measured: &'scan MeasuredBinary64AffineEnvelope<'exact, 'pose>,
+    #[allow(dead_code, reason = "sealed scan retains bound pose provenance")]
     bound: BoundMaterialTreePose<'pose>,
+    #[allow(
+        dead_code,
+        reason = "sealed scan retains bit-exact thickness provenance"
+    )]
     paper_thickness_bits: u64,
     pairs: Vec<AuthenticatedTrianglePairDecision>,
+    #[allow(
+        dead_code,
+        reason = "sealed scan retains authenticated work provenance"
+    )]
     work: AuthenticatedTriangleBlockingWork,
 }
 
+#[cfg(test)]
 impl AuthenticatedTriangleBlockingScan<'_, '_, '_> {
     fn decision(&self, first: FaceId, second: FaceId) -> Option<BlockingOnlyDecision> {
         let (first, second) = canonical_face_pair(first, second)?;
@@ -1846,6 +1862,7 @@ fn bridge_increment(
     Ok(())
 }
 
+#[cfg(test)]
 fn classify_transversal_blocking_only(
     first: &ActualMillimetreTriangleEnvelope,
     second: &ActualMillimetreTriangleEnvelope,
@@ -1857,6 +1874,7 @@ fn classify_transversal_blocking_only(
         .unwrap_or(BlockingOnlyDecision::Unresolved)
 }
 
+#[cfg(test)]
 fn classify_transversal_metered(
     first: &ActualMillimetreTriangleEnvelope,
     second: &ActualMillimetreTriangleEnvelope,

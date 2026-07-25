@@ -14,6 +14,7 @@ use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
 
 use super::super::TotalTermLimits;
+use super::counter::{charge_counter, set_fixed_counter};
 use super::{
     CayleyError, CayleyLimits, CayleyWork, ExactPoint3, ExactVector3, STAGE, WorkMeter,
     canonical_point_eq, exact_between, exact_dot, project_cayley_limits, rational_bits,
@@ -285,6 +286,7 @@ impl ExactPrismIntersectionReport {
         self.opposing_support
     }
 
+    #[cfg(test)]
     pub(super) fn common_opposing_support(&self) -> bool {
         self.opposing_support.is_some()
     }
@@ -650,46 +652,6 @@ fn charge_fixed_geometry(
         limits.max_halfspaces,
         "exact_prism_halfspaces",
     )
-}
-
-fn set_fixed_counter(
-    counter: &mut usize,
-    required: usize,
-    maximum: usize,
-    resource: &'static str,
-) -> Result<(), CayleyError> {
-    if *counter != 0 {
-        return Err(CayleyError::InvariantFailure { stage: STAGE });
-    }
-    if required > maximum {
-        return Err(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        });
-    }
-    *counter = required;
-    Ok(())
-}
-
-fn charge_counter(
-    counter: &mut usize,
-    maximum: usize,
-    resource: &'static str,
-) -> Result<(), CayleyError> {
-    let next = counter
-        .checked_add(1)
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        })?;
-    if next > maximum {
-        return Err(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        });
-    }
-    *counter = next;
-    Ok(())
 }
 
 fn prepare_prism_input(

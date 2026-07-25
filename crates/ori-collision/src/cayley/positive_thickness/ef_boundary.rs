@@ -288,6 +288,10 @@ impl AxisAlignedEfBoundaryCapabilityV1<'_, '_, '_> {
 }
 
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "borrowed capability makes revalidation non-forgeable"
+)]
 pub(super) struct RevalidatedAxisAlignedEfBoundaryCapabilityV1<
     'capability,
     'prerequisite,
@@ -299,6 +303,7 @@ pub(super) struct RevalidatedAxisAlignedEfBoundaryCapabilityV1<
 }
 
 #[derive(Debug)]
+#[allow(dead_code, reason = "sealed work is retained for resource audits")]
 pub(super) struct AxisAlignedEfBoundaryAnalysis<'prerequisite, 'exact, 'pose> {
     pub(super) capability: Option<AxisAlignedEfBoundaryCapabilityV1<'prerequisite, 'exact, 'pose>>,
     pub(super) work: AxisAlignedEfBoundaryWork,

@@ -17,6 +17,7 @@ use num_rational::BigRational;
 use ori_domain::{EdgeId, FaceId, VertexId};
 use ori_kinematics::BoundMaterialTreePose;
 
+use super::counter::{charge_counter, set_fixed_counter};
 use super::direct_f_corridor::{
     DirectFFiniteHingeCorridorAnalysis, DirectFFiniteHingeCorridorBoundaryV1,
     DirectFFiniteHingeCorridorCapabilityV1, DirectFFiniteHingeCorridorResult,
@@ -243,6 +244,10 @@ impl SharedHingeCorridorAdmissionCapabilityV1<'_, '_, '_, '_, '_, '_> {
 }
 
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "borrowed capability makes revalidation non-forgeable"
+)]
 pub(super) struct RevalidatedSharedHingeCorridorAdmissionCapabilityV1<
     'capability,
     'prerequisite,
@@ -263,6 +268,10 @@ pub(super) struct RevalidatedSharedHingeCorridorAdmissionCapabilityV1<
 }
 
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "sealed result retains its boundary mismatch witness"
+)]
 pub(super) enum SharedHingeCorridorAdmissionResultV1<
     'prerequisite,
     'ef,
@@ -650,46 +659,6 @@ fn charge_fixed_work(
     ] {
         set_fixed_counter(counter, required, maximum, resource)?;
     }
-    Ok(())
-}
-
-fn set_fixed_counter(
-    counter: &mut usize,
-    required: usize,
-    maximum: usize,
-    resource: &'static str,
-) -> Result<(), CayleyError> {
-    if *counter != 0 {
-        return Err(CayleyError::InvariantFailure { stage: STAGE });
-    }
-    if required > maximum {
-        return Err(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        });
-    }
-    *counter = required;
-    Ok(())
-}
-
-fn charge_counter(
-    counter: &mut usize,
-    maximum: usize,
-    resource: &'static str,
-) -> Result<(), CayleyError> {
-    let next = counter
-        .checked_add(1)
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        })?;
-    if next > maximum {
-        return Err(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        });
-    }
-    *counter = next;
     Ok(())
 }
 

@@ -516,6 +516,10 @@ impl DirectFAffineHingeCorridorDiagnosticV1<'_, '_, '_, '_, '_> {
 
 /// A sealed private Outside diagnostic, never collision or admission authority.
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "sealed affine outside result retains authority and diagnostic counters"
+)]
 pub(super) struct DirectFAffineHingeCorridorOutsideV1<
     'prerequisite,
     'ef,

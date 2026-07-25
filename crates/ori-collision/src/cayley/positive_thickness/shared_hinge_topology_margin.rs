@@ -28,6 +28,7 @@ use num_traits::{One, Signed, Zero};
 use ori_domain::{EdgeId, FaceId, VertexId};
 use ori_kinematics::{BoundMaterialTreePose, RigidTransform};
 
+use super::counter::{charge_counter, set_fixed_counter};
 use super::ef_boundary::{
     AxisAlignedEfBoundaryCapabilityV1, AxisAlignedFaceEfErrorBounds,
     BoundBinary64FaceTransformBits, revalidate_axis_aligned_ef_boundary_v1,
@@ -387,10 +388,12 @@ impl SharedHingeNativeExactTopologyMarginCapabilityV1<'_, '_, '_, '_> {
         &self.geometry.corridor_component_error
     }
 
+    #[cfg(test)]
     pub(super) fn relative_margin(&self) -> &BigRational {
         &self.geometry.relative_margin
     }
 
+    #[cfg(test)]
     pub(super) fn point_margin_mm(&self) -> &BigRational {
         &self.geometry.point_margin_mm
     }
@@ -462,6 +465,10 @@ impl SharedHingeNativeExactTopologyMarginCapabilityV1<'_, '_, '_, '_> {
 }
 
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "borrowed capability makes revalidation non-forgeable"
+)]
 pub(super) struct RevalidatedSharedHingeNativeExactTopologyMarginCapabilityV1<
     'capability,
     'prerequisite,
@@ -478,6 +485,10 @@ pub(super) struct RevalidatedSharedHingeNativeExactTopologyMarginCapabilityV1<
 }
 
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "sealed result retains its margin violation witness"
+)]
 pub(super) enum SharedHingeNativeExactTopologyMarginResultV1<'prerequisite, 'ef, 'exact, 'pose> {
     Measured(
         Box<SharedHingeNativeExactTopologyMarginCapabilityV1<'prerequisite, 'ef, 'exact, 'pose>>,
@@ -2379,46 +2390,6 @@ fn charge_fixed_work(
     ] {
         set_fixed_counter(counter, required, maximum, resource)?;
     }
-    Ok(())
-}
-
-fn set_fixed_counter(
-    counter: &mut usize,
-    required: usize,
-    maximum: usize,
-    resource: &'static str,
-) -> Result<(), CayleyError> {
-    if *counter != 0 {
-        return Err(CayleyError::InvariantFailure { stage: STAGE });
-    }
-    if required > maximum {
-        return Err(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        });
-    }
-    *counter = required;
-    Ok(())
-}
-
-fn charge_counter(
-    counter: &mut usize,
-    maximum: usize,
-    resource: &'static str,
-) -> Result<(), CayleyError> {
-    let next = counter
-        .checked_add(1)
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        })?;
-    if next > maximum {
-        return Err(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        });
-    }
-    *counter = next;
     Ok(())
 }
 

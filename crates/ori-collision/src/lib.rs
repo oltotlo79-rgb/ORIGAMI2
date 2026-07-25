@@ -20,7 +20,6 @@
 #![forbid(unsafe_code)]
 
 mod block_composition;
-#[allow(dead_code)]
 mod cayley;
 mod cell_order_transport;
 mod certified_path_graph;

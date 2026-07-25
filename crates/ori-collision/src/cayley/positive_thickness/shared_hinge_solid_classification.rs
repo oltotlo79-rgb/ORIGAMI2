@@ -37,6 +37,7 @@ use crate::{
     classify_runtime_topology_contact_v2,
 };
 
+use super::counter::set_fixed_counter;
 use super::direct_f_corridor::{
     DirectFFiniteHingeCorridorAnalysis, DirectFFiniteHingeCorridorCapabilityV1,
     DirectFFiniteHingeCorridorResult, DirectFFiniteHingeCorridorWork,
@@ -298,7 +299,6 @@ pub(super) enum SharedHingePositiveThicknessPairClassV1 {
     AllowedFiniteCorridorOverlap,
     AllowedBoundaryContact,
     PositiveVolumeIntersection,
-    EvidenceUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,9 +334,6 @@ fn policy_contract(class: SharedHingePositiveThicknessPairClassV1) -> SharedHing
         }
         SharedHingePositiveThicknessPairClassV1::PositiveVolumeIntersection => {
             IntersectionEvidenceV2::PositiveVolumeOverlap
-        }
-        SharedHingePositiveThicknessPairClassV1::EvidenceUnavailable => {
-            IntersectionEvidenceV2::Indeterminate
         }
     };
     SharedHingePolicyContractV1 {
@@ -712,56 +709,6 @@ pub(super) struct IndependentSharedHingeSolidClassificationRecordV1<
     sealed_work: Option<SharedHingeSolidClassificationWorkV1>,
 }
 
-impl IndependentSharedHingeSolidClassificationRecordV1<'_, '_, '_, '_, '_> {
-    #[cfg(test)]
-    pub(super) fn class_for_test(&self) -> SharedHingePositiveThicknessPairClassV1 {
-        self.snapshot.class
-    }
-
-    #[cfg(test)]
-    pub(super) fn outside_counts_for_test(&self) -> (usize, usize) {
-        (
-            self.exact_corridor_scan.outside_vertex_count,
-            self.direct_corridor_scan.outside_vertex_count,
-        )
-    }
-
-    #[cfg(test)]
-    pub(super) fn policy_for_test(
-        &self,
-    ) -> (
-        IntersectionEvidenceV2,
-        IntersectionEvidenceV2,
-        TopologyContactDecision,
-    ) {
-        (
-            self.snapshot.raw_prism_evidence,
-            self.snapshot.semantic_evidence,
-            self.snapshot.baseline_decision,
-        )
-    }
-
-    #[cfg(test)]
-    pub(super) fn toggle_class_for_test(&mut self) {
-        self.snapshot.class = SharedHingePositiveThicknessPairClassV1::EvidenceUnavailable;
-    }
-
-    #[cfg(test)]
-    pub(super) fn restore_positive_volume_class_for_test(&mut self) {
-        self.snapshot.class = SharedHingePositiveThicknessPairClassV1::PositiveVolumeIntersection;
-    }
-
-    #[cfg(test)]
-    pub(super) fn increment_margin_work_for_test(&mut self) {
-        self.margin_work.authenticated_faces += 1;
-    }
-
-    #[cfg(test)]
-    pub(super) fn decrement_margin_work_for_test(&mut self) {
-        self.margin_work.authenticated_faces -= 1;
-    }
-}
-
 #[derive(Debug)]
 pub(super) struct RevalidatedIndependentSharedHingeSolidClassificationRecordV1<
     'record,
@@ -832,7 +779,13 @@ pub(super) enum SharedHingeSolidClassificationResultV1<
             >,
         >,
     ),
-    EvidenceUnavailable(SharedHingeEvidenceUnavailableReasonV1),
+    EvidenceUnavailable(
+        #[allow(
+            dead_code,
+            reason = "sealed fail-closed result retains its diagnostic reason"
+        )]
+        SharedHingeEvidenceUnavailableReasonV1,
+    ),
 }
 
 #[derive(Debug)]
@@ -856,6 +809,7 @@ pub(super) struct SharedHingeSolidClassificationAnalysisV1<
         'exact,
         'pose,
     >,
+    #[allow(dead_code, reason = "sealed work is retained for resource audits")]
     pub(super) work: SharedHingeSolidClassificationWorkV1,
 }
 
@@ -871,6 +825,7 @@ impl<'admission, 'margin, 'prerequisite, 'ef, 'exact_e_corridor, 'direct_f_corri
         'pose,
     >
 {
+    #[cfg(test)]
     pub(super) fn sealed_non_authoritative_record_and_work(
         &self,
     ) -> Option<(
@@ -893,37 +848,6 @@ impl<'admission, 'margin, 'prerequisite, 'ef, 'exact_e_corridor, 'direct_f_corri
             || record.sealed_work.as_ref() != Some(&record.work)
             || record.sealed_snapshot.as_ref() != Some(&record.snapshot)
             || record.sealed_prior_work.as_ref() != Some(&record.prior_work)
-        {
-            return None;
-        }
-        Some((record.as_ref(), &record.work))
-    }
-
-    pub(super) fn sealed_non_authoritative_independent_record_and_work(
-        &self,
-    ) -> Option<(
-        &IndependentSharedHingeSolidClassificationRecordV1<
-            'margin,
-            'prerequisite,
-            'ef,
-            'exact,
-            'pose,
-        >,
-        &SharedHingeSolidClassificationWorkV1,
-    )> {
-        let SharedHingeSolidClassificationResultV1::IndependentlyClassified(record) = &self.result
-        else {
-            return None;
-        };
-        let sealed_geometry = record.sealed_geometry.as_ref()?;
-        if record.work != self.work
-            || record.sealed_work.as_ref() != Some(&record.work)
-            || record.sealed_snapshot.as_ref() != Some(&record.snapshot)
-            || sealed_geometry.exact_report != record.exact_report
-            || sealed_geometry.direct_report != record.direct_report
-            || sealed_geometry.exact_corridor_scan != record.exact_corridor_scan
-            || sealed_geometry.direct_corridor_scan != record.direct_corridor_scan
-            || record.sealed_margin_work.as_ref() != Some(&record.margin_work)
         {
             return None;
         }
@@ -2032,25 +1956,6 @@ fn charge_common_fixed_work(
     ] {
         set_fixed_counter(counter, required, maximum, resource)?;
     }
-    Ok(())
-}
-
-fn set_fixed_counter(
-    counter: &mut usize,
-    required: usize,
-    maximum: usize,
-    resource: &'static str,
-) -> Result<(), CayleyError> {
-    if *counter != 0 {
-        return Err(CayleyError::InvariantFailure { stage: STAGE });
-    }
-    if required > maximum {
-        return Err(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        });
-    }
-    *counter = required;
     Ok(())
 }
 

@@ -1576,6 +1576,7 @@ fn coprime_rational_from_biguints(
     Ok(result)
 }
 
+#[cfg(test)]
 fn local_rotation_v1(
     pivot: [f64; 3],
     end: [f64; 3],

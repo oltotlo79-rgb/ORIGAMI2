@@ -52,6 +52,7 @@ use super::{
     try_array3, verify_exact_rotation,
 };
 
+mod counter;
 #[cfg(test)]
 mod direct_f_affine_corridor;
 mod direct_f_corridor;
@@ -172,6 +173,7 @@ enum FiniteRadiusScalarError {
 /// may borrow this token, but it must not be converted directly into a
 /// topology-policy decision.
 #[derive(Debug)]
+#[allow(dead_code, reason = "sealed analytic witness retains its exact inputs")]
 struct FiniteRadiusScalarFits<'a> {
     paper_thickness_bits: u64,
     hinge_start: &'a ExactPoint3,
@@ -181,6 +183,7 @@ struct FiniteRadiusScalarFits<'a> {
 }
 
 #[derive(Debug)]
+#[allow(dead_code, reason = "sealed result retains its diagnostic witness")]
 enum AnalyticFiniteRadiusResult<'a> {
     FitsFiniteSegment(FiniteRadiusScalarFits<'a>),
     LayerOffsetUnmodeled,
@@ -723,6 +726,10 @@ struct AuthenticatedSingleTriangularHingePrerequisitesV1<'exact, 'pose> {
 /// A private consumer-side view that can only be minted after rebinding the
 /// exact issuer, authenticated indexes, and the bit-exact thickness input.
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "borrowed capability makes revalidation non-forgeable"
+)]
 struct RevalidatedSingleTriangularHingePrerequisitesV1<'capability, 'exact, 'pose> {
     capability: &'capability AuthenticatedSingleTriangularHingePrerequisitesV1<'exact, 'pose>,
 }
@@ -735,6 +742,7 @@ enum SingleTriangularHingePrerequisiteResult<'exact, 'pose> {
 }
 
 #[derive(Debug)]
+#[allow(dead_code, reason = "sealed work is retained for resource audits")]
 struct SingleTriangularHingePrerequisiteAnalysis<'exact, 'pose> {
     result: SingleTriangularHingePrerequisiteResult<'exact, 'pose>,
     work: SingleTriangularHingePrerequisiteWork,
@@ -755,6 +763,7 @@ struct AuthenticatedTriangleIndexes {
 /// This remains private and is not connected to collision classification,
 /// the production safe set, or the UI.  In particular, it does not prove that
 /// a complete prism intersection is contained in the finite corridor.
+#[cfg(test)]
 fn analyze_single_triangular_hinge_prerequisites_v1<'exact, 'pose>(
     exact: &'exact RationalCayleyTreePose<'pose>,
     paper_thickness_mm: f64,
@@ -1758,7 +1767,7 @@ const fn map_zero_thickness_shared_hinge_boundary_error(
     }
 }
 
-/// Sanitized result of the strictly two-face/one-hinge positive-thickness
+/// Sanitized result for one authenticated shared-hinge positive-thickness
 /// diagnostic path.
 ///
 /// This result is deliberately diagnostic-only. `Allowed` means the complete
@@ -2218,13 +2227,13 @@ fn exact_hinge_binds_face_pair_vertices_v1(
         && hinge.endpoint_vertices.contains(&shared_vertices[1])
 }
 
-/// Runs the complete private solid classifier and exports only its sanitized
-/// semantic cell. The gate is structurally limited to one positive-thickness
-/// pair formed by exactly two triangular faces and their only hinge.
+/// Runs the complete private solid classifier for the sole hinge of a
+/// two-face pose and exports only its sanitized semantic cell.
 ///
-/// A three-face V-fold therefore cannot route its vertex-sharing outer pair
-/// through this function. Unsupported geometry returns `Ok(None)` and remains
-/// an explicit indeterminate pair at the caller.
+/// Multi-hinge callers must use
+/// [`diagnose_bound_shared_hinge_solid_for_edge_v1`] with an authenticated
+/// edge. Unsupported geometry returns `Ok(None)` and remains an explicit
+/// indeterminate pair at the caller.
 pub(crate) fn diagnose_bound_shared_hinge_solid_v1(
     bound: BoundMaterialTreePose<'_>,
     paper_thickness_mm: f64,
@@ -2477,9 +2486,6 @@ pub(crate) fn diagnose_bound_shared_hinge_solid_for_edge_v1(
         }
         SharedHingePositiveThicknessPairClassV1::PositiveVolumeIntersection => {
             SharedHingeSolidDiagnosticDispositionV1::Penetrating
-        }
-        SharedHingePositiveThicknessPairClassV1::EvidenceUnavailable => {
-            SharedHingeSolidDiagnosticDispositionV1::Indeterminate
         }
     };
     Ok(Some(SharedHingeSolidDiagnosticSummaryV1 {
@@ -10254,11 +10260,6 @@ mod tests {
                 SharedHingePositiveThicknessPairClassV1::PositiveVolumeIntersection,
                 IntersectionEvidenceV2::PositiveVolumeOverlap,
                 TopologyContactDecision::Penetrating,
-            ),
-            (
-                SharedHingePositiveThicknessPairClassV1::EvidenceUnavailable,
-                IntersectionEvidenceV2::Indeterminate,
-                TopologyContactDecision::Indeterminate,
             ),
         ] {
             assert_eq!(policy_contract_for_test(class), (evidence, decision));

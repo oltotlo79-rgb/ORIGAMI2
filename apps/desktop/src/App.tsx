@@ -56,12 +56,7 @@ import { WorkspaceLayoutSeparator } from './components/WorkspaceLayoutSeparator'
 import { BulkIntersectionRepairControl } from './components/BulkIntersectionRepairControl'
 import { PairMeasurementStatus } from './components/PairMeasurementStatus'
 import type { InstructionOnionSkinRequest } from './lib/instructionOnionSkin'
-import {
-  advanceMeasurementPair,
-  measureUnorientedEdgeAngle,
-  measureVertexPair,
-  retainMeasurementPair,
-} from './lib/pairMeasurement'
+import { useCreasePairMeasurement } from './lib/useCreasePairMeasurement'
 import {
   addEdge,
   addAnnotation,
@@ -643,8 +638,6 @@ function App() {
     request: InstructionOnionSkinRequest
     state: 'available' | 'unavailable'
   }> | null>(null)
-  const [measurementVertexIds, setMeasurementVertexIds] = useState<string[]>([])
-  const [measurementLineIds, setMeasurementLineIds] = useState<string[]>([])
   const [assignedLocalSufficiency, setAssignedLocalSufficiency] =
     useState<AssignedLocalSufficiencyResponseV1 | null>(null)
   const [assignedLocalSummary, setAssignedLocalSummary] =
@@ -1555,25 +1548,17 @@ function App() {
   ])
   const displayedLines = benchmarkRun?.lines ?? nativeLines
   const displayedVertices = benchmarkRun?.vertices ?? nativeVertices
-  useEffect(() => {
-    const lineIds = new Set(displayedLines.map(({ id }) => id))
-    const vertexIds = new Set(displayedVertices.map(({ id }) => id))
-    setMeasurementLineIds((current) => {
-      const next = retainMeasurementPair(current, lineIds)
-      return next.length === current.length
-        && next.every((id, index) => id === current[index]) ? current : next
-    })
-    setMeasurementVertexIds((current) => {
-      const next = retainMeasurementPair(current, vertexIds)
-      return next.length === current.length
-        && next.every((id, index) => id === current[index]) ? current : next
-    })
-  }, [displayedLines, displayedVertices])
-  useEffect(() => {
-    if (activeTool === 'measure') return
-    setMeasurementLineIds([])
-    setMeasurementVertexIds([])
-  }, [activeTool])
+  const {
+    measurementVertexIds,
+    measurementLineIds,
+    pairMeasurement,
+    selectMeasurementLine,
+    selectMeasurementVertex,
+  } = useCreasePairMeasurement({
+    active: activeTool === 'measure',
+    lines: displayedLines,
+    vertices: displayedVertices,
+  })
   const firstDisplayedLineById = useMemo(() => {
     const index = new Map<string, CreaseLine>()
     for (const line of displayedLines) {
@@ -1602,19 +1587,6 @@ function App() {
     ? String(parsedAngleInput)
     : 'custom'
   const selectedLineMeasurement = selectedLine ? measureCreaseLine(selectedLine) : null
-  const pairMeasurement = useMemo(() => {
-    if (measurementVertexIds.length === 2) {
-      const first = displayedVertices.find(({ id }) => id === measurementVertexIds[0])
-      const second = displayedVertices.find(({ id }) => id === measurementVertexIds[1])
-      if (first && second) return { kind: 'vertex' as const, value: measureVertexPair(first, second) }
-    }
-    if (measurementLineIds.length === 2) {
-      const first = displayedLines.find(({ id }) => id === measurementLineIds[0])
-      const second = displayedLines.find(({ id }) => id === measurementLineIds[1])
-      if (first && second) return { kind: 'line' as const, value: measureUnorientedEdgeAngle(first, second) }
-    }
-    return null
-  }, [displayedLines, displayedVertices, measurementLineIds, measurementVertexIds])
   const selectedVertex = useMemo(
     () => nativeLayerView.vertices.some(({ id }) => id === selectedVertexId)
       ? nativeSnapshot?.crease_pattern.vertices.find(
@@ -7028,12 +7000,10 @@ function App() {
                   setSelectedVertexId(null)
                   setSelectedFaceId(null)
                   if (activeTool === 'measure') {
-                    setMeasurementLineIds((current) => advanceMeasurementPair(current, lineId))
-                    setMeasurementVertexIds([])
+                    selectMeasurementLine(lineId)
                   }
                 } else if (activeTool === 'measure') {
-                  setMeasurementLineIds([])
-                  setMeasurementVertexIds([])
+                  selectMeasurementLine(null)
                 }
               }}
               onSelectFace={benchmarkRun
@@ -7068,8 +7038,7 @@ function App() {
                     setSelectedVertexId(vertexId)
                     setSelectedLineId(null)
                     setSelectedFaceId(null)
-                    setMeasurementVertexIds((current) => advanceMeasurementPair(current, vertexId))
-                    setMeasurementLineIds([])
+                    selectMeasurementVertex(vertexId)
                   }
                 : benchmarkRun
                 ? (vertexId) => {

@@ -58,7 +58,7 @@ macro_rules! clamp_to_hard {
             requested: $requested:ident,
             hard: $hard:ident;
             min: $($field:ident),+ $(,)?;
-            explicit: $($explicit_field:ident: $explicit_value:expr),+ $(,)?
+            $(explicit: $($explicit_field:ident: $explicit_value:expr),+ $(,)?)?
         }
     ) => {
         $limits {
@@ -66,8 +66,10 @@ macro_rules! clamp_to_hard {
                 $field: $requested.$field.min($hard.$field),
             )+
             $(
-                $explicit_field: $explicit_value,
-            )+
+                $(
+                    $explicit_field: $explicit_value,
+                )+
+            )?
         }
     };
 }
@@ -124,32 +126,23 @@ impl Default for FiniteRadiusScalarLimits {
 impl FiniteRadiusScalarLimits {
     fn projected(self) -> Self {
         let hard = Self::default();
-        Self {
-            max_input_rational_storage_bits: self
-                .max_input_rational_storage_bits
-                .min(hard.max_input_rational_storage_bits),
-            max_total_input_storage_bits: self
-                .max_total_input_storage_bits
-                .min(hard.max_total_input_storage_bits),
-            max_interval_operations: self
-                .max_interval_operations
-                .min(hard.max_interval_operations),
-            max_shift_bits: self.max_shift_bits.min(hard.max_shift_bits),
-            max_intermediate_bits: self.max_intermediate_bits.min(hard.max_intermediate_bits),
-            max_gcd_fallback_calls: self.max_gcd_fallback_calls.min(hard.max_gcd_fallback_calls),
-            max_gcd_fallback_input_bits: self
-                .max_gcd_fallback_input_bits
-                .min(hard.max_gcd_fallback_input_bits),
-            max_rational_allocations: self
-                .max_rational_allocations
-                .min(hard.max_rational_allocations),
-            max_rational_allocation_bits: self
-                .max_rational_allocation_bits
-                .min(hard.max_rational_allocation_bits),
-            max_total_rational_allocation_bits: self
-                .max_total_rational_allocation_bits
-                .min(hard.max_total_rational_allocation_bits),
-        }
+        clamp_to_hard!(
+            FiniteRadiusScalarLimits {
+                requested: self,
+                hard: hard;
+                min:
+                    max_input_rational_storage_bits,
+                    max_total_input_storage_bits,
+                    max_interval_operations,
+                    max_shift_bits,
+                    max_intermediate_bits,
+                    max_gcd_fallback_calls,
+                    max_gcd_fallback_input_bits,
+                    max_rational_allocations,
+                    max_rational_allocation_bits,
+                    max_total_rational_allocation_bits;
+            }
+        )
     }
 
     fn exact(self) -> CayleyLimits {
@@ -596,41 +589,27 @@ impl Default for SingleTriangularHingePrerequisiteLimits {
 impl SingleTriangularHingePrerequisiteLimits {
     fn projected(self) -> Self {
         let hard = Self::default();
-        Self {
-            max_authenticated_faces: self
-                .max_authenticated_faces
-                .min(hard.max_authenticated_faces),
-            max_authenticated_hinges: self
-                .max_authenticated_hinges
-                .min(hard.max_authenticated_hinges),
-            max_boundary_occurrences: self
-                .max_boundary_occurrences
-                .min(hard.max_boundary_occurrences),
-            max_source_coordinate_lifts: self
-                .max_source_coordinate_lifts
-                .min(hard.max_source_coordinate_lifts),
-            max_current_point_reconstructions: self
-                .max_current_point_reconstructions
-                .min(hard.max_current_point_reconstructions),
-            max_rotation_authentications: self
-                .max_rotation_authentications
-                .min(hard.max_rotation_authentications),
-            max_local_y_component_lifts: self
-                .max_local_y_component_lifts
-                .min(hard.max_local_y_component_lifts),
-            max_rest_orientation_tests: self
-                .max_rest_orientation_tests
-                .min(hard.max_rest_orientation_tests),
-            max_axial_vertex_tests: self.max_axial_vertex_tests.min(hard.max_axial_vertex_tests),
-            max_input_rational_storage_bits: self
-                .max_input_rational_storage_bits
-                .min(hard.max_input_rational_storage_bits),
-            max_total_input_storage_bits: self
-                .max_total_input_storage_bits
-                .min(hard.max_total_input_storage_bits),
-            exact: project_cayley_limits(self.exact, hard.exact),
-            scalar: self.scalar.projected(),
-        }
+        clamp_to_hard!(
+            SingleTriangularHingePrerequisiteLimits {
+                requested: self,
+                hard: hard;
+                min:
+                    max_authenticated_faces,
+                    max_authenticated_hinges,
+                    max_boundary_occurrences,
+                    max_source_coordinate_lifts,
+                    max_current_point_reconstructions,
+                    max_rotation_authentications,
+                    max_local_y_component_lifts,
+                    max_rest_orientation_tests,
+                    max_axial_vertex_tests,
+                    max_input_rational_storage_bits,
+                    max_total_input_storage_bits;
+                explicit:
+                    exact: project_cayley_limits(self.exact, hard.exact),
+                    scalar: self.scalar.projected(),
+            }
+        )
     }
 }
 
@@ -656,45 +635,28 @@ fn prerequisite_exact_hard_limits() -> CayleyLimits {
 }
 
 fn project_cayley_limits(requested: CayleyLimits, hard: CayleyLimits) -> CayleyLimits {
-    CayleyLimits {
-        max_precision_rounds: requested
-            .max_precision_rounds
-            .min(hard.max_precision_rounds),
-        max_guard_bits: requested.max_guard_bits.min(hard.max_guard_bits),
-        max_candidate_bits: requested.max_candidate_bits.min(hard.max_candidate_bits),
-        max_machin_terms_per_series: requested
-            .max_machin_terms_per_series
-            .min(hard.max_machin_terms_per_series),
-        max_trig_terms_per_series: requested
-            .max_trig_terms_per_series
-            .min(hard.max_trig_terms_per_series),
-        max_sqrt_refinements: requested
-            .max_sqrt_refinements
-            .min(hard.max_sqrt_refinements),
-        max_interval_operations: requested
-            .max_interval_operations
-            .min(hard.max_interval_operations),
-        max_shift_bits: requested.max_shift_bits.min(hard.max_shift_bits),
-        max_intermediate_bits: requested
-            .max_intermediate_bits
-            .min(hard.max_intermediate_bits),
-        max_gcd_fallback_calls: requested
-            .max_gcd_fallback_calls
-            .min(hard.max_gcd_fallback_calls),
-        max_gcd_fallback_input_bits: requested
-            .max_gcd_fallback_input_bits
-            .min(hard.max_gcd_fallback_input_bits),
-        max_rational_allocations: requested
-            .max_rational_allocations
-            .min(hard.max_rational_allocations),
-        max_rational_allocation_bits: requested
-            .max_rational_allocation_bits
-            .min(hard.max_rational_allocation_bits),
-        max_total_rational_allocation_bits: requested
-            .max_total_rational_allocation_bits
-            .min(hard.max_total_rational_allocation_bits),
-        max_output_bits: requested.max_output_bits.min(hard.max_output_bits),
-    }
+    clamp_to_hard!(
+        CayleyLimits {
+            requested: requested,
+            hard: hard;
+            min:
+                max_precision_rounds,
+                max_guard_bits,
+                max_candidate_bits,
+                max_machin_terms_per_series,
+                max_trig_terms_per_series,
+                max_sqrt_refinements,
+                max_interval_operations,
+                max_shift_bits,
+                max_intermediate_bits,
+                max_gcd_fallback_calls,
+                max_gcd_fallback_input_bits,
+                max_rational_allocations,
+                max_rational_allocation_bits,
+                max_total_rational_allocation_bits,
+                max_output_bits;
+        }
+    )
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

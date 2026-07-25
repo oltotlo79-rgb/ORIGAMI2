@@ -539,6 +539,59 @@ describe('UpdateCheckControl', () => {
     expect(screen.queryByRole('link')).toBeNull()
   })
 
+  it('retranslates an available release action and ARIA copy without another check', async () => {
+    const localeStore = localeFixture('en')
+    const getVersion = vi.fn(async () => '1.0.0')
+    const checkNow = vi.fn(async () => updateAvailable())
+    renderControl({
+      localeStore,
+      versionProvider: provider(getVersion),
+      client: client(checkNow),
+    })
+    const region = screen.getByRole('region', {
+      name: 'Software updates',
+    })
+    expect(region).toBe(control())
+    expect(region.getAttribute('aria-busy')).toBe('false')
+    expect(screen.getByRole('switch', {
+      name: 'Enable update checks',
+    })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check now' }))
+    const release = await screen.findByRole('link', {
+      name: 'Open release 1.2.3 on GitHub',
+    })
+    expect(release.getAttribute('href')).toBe(OFFICIAL_RELEASE_URL)
+    expect(screen.getByRole('status').textContent).toBe(
+      'An update is available. Installed 1.0.0; latest release 1.2.3.',
+    )
+
+    act(() => {
+      localeStore.setLocale('ja')
+    })
+
+    expect(screen.getByRole('region', {
+      name: 'ソフトウェア更新',
+    })).toBe(region)
+    expect(screen.getByRole('switch', {
+      name: '更新確認を有効にする',
+    })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '今すぐ確認' })).toBeTruthy()
+    expect(screen.getByRole('link', {
+      name: 'GitHubで 1.2.3 のリリースを開く',
+    }).getAttribute('href')).toBe(OFFICIAL_RELEASE_URL)
+    const status = screen.getByRole('status')
+    expect(status.getAttribute('aria-live')).toBe('polite')
+    expect(status.getAttribute('aria-atomic')).toBe('true')
+    expect(status.textContent).toBe(
+      '更新があります。現在 1.0.0、公開版 1.2.3。',
+    )
+    expect(control().dataset.updateState).toBe('update_available')
+    expect(region.getAttribute('aria-busy')).toBe('false')
+    expect(getVersion).toHaveBeenCalledTimes(1)
+    expect(checkNow).toHaveBeenCalledTimes(1)
+  })
+
   it('retranslates a completed semantic result without another check', async () => {
     const localeStore = localeFixture('en')
     const getVersion = vi.fn(async () => '1.0.0')

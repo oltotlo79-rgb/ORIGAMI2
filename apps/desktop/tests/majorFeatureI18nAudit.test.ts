@@ -27,7 +27,10 @@ test('major new features retain reviewed Japanese and English UI contracts', () 
   assert.doesNotMatch(stacked, /<dd>\{view\.response\.continuousPath\.continuousCertificateModelId/u)
   assert.doesNotMatch(stacked, /<title>\{`[^`]*\$\{face\}/u)
 
-  const release = readFileSync(join(componentDirectory, 'UpdateCheckControl.tsx'), 'utf8')
+  const release = readFileSync(
+    join(root, 'src', 'lib', 'updateCheckControlText.ts'),
+    'utf8',
+  )
   for (const key of ['popoverSummary', 'title', 'enabled', 'checkButton', 'openRelease']) {
     assert.match(release, new RegExp(`${key}: Object\\.freeze\\(\\{[\\s\\S]*?ja: '[^']+'[\\s\\S]*?en: '[^']+'`, 'u'))
   }

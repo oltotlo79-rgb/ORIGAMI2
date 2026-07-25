@@ -10,6 +10,10 @@ const controlSource = await readFile(
   new URL('../src/components/UpdateCheckControl.tsx', import.meta.url),
   'utf8',
 )
+const controlTextSource = await readFile(
+  new URL('../src/lib/updateCheckControlText.ts', import.meta.url),
+  'utf8',
+)
 const controlCss = await readFile(
   new URL('../src/components/UpdateCheckControl.css', import.meta.url),
   'utf8',
@@ -36,6 +40,10 @@ test('the statusbar mounts the localized native update popover beside display se
   )
   assert.match(
     controlSource,
+    /import \{ UPDATE_CHECK_TEXT \} from '\.\.\/lib\/updateCheckControlText\.ts'/u,
+  )
+  assert.match(
+    controlTextSource,
     /popoverSummary:\s*Object\.freeze\(\{\s*ja: '更新',\s*en: 'Updates'/u,
   )
 })

@@ -6,7 +6,10 @@ const app = [
   source('../src/App.tsx'),
   source('../src/lib/appText.ts'),
 ].join('\n')
-const protrusionEditor = source('../src/components/ProtrusionDimensionEditor.tsx')
+const protrusionEditor = [
+  source('../src/components/ProtrusionDimensionEditor.tsx'),
+  source('../src/lib/protrusionDimensionEditorText.ts'),
+].join('\n')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
 const recognitionNative = source('../src-tauri/src/beginner_recognition.rs')

@@ -18,4 +18,34 @@ describe('ProtrusionLocalOutlineEditor', () => {
       points={[[0, 0], [10, 0], [0, 10]]} onChange={change} />)
     fireEvent.click(screen.getByRole('button', { name: '局所輪郭を解除' }))
     expect(change).toHaveBeenCalledWith(undefined) })
+  it('switches locale in place without resetting invalid edits or invoking callbacks', () => {
+    const change = vi.fn()
+    const view = render(<ProtrusionLocalOutlineEditor locale="en" bindingId={5}
+      symmetry="bilateral" points={[]} onChange={change} />)
+    const editedSource = '-5,-5\n5,-5\n4,5\n-3,5'
+    const englishInput = screen.getByLabelText(
+      'Local outline points binding 5',
+    ) as HTMLTextAreaElement
+    fireEvent.change(englishInput, { target: { value: editedSource } })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply local outline' }))
+    const englishAlert = screen.getByRole('alert')
+    expect(englishAlert.textContent).toBe(
+      'Enter 3 to 8 bounded points. Bilateral bindings require mirrored points.',
+    )
+    expect(change).not.toHaveBeenCalled()
+
+    view.rerender(<ProtrusionLocalOutlineEditor locale="ja" bindingId={5}
+      symmetry="bilateral" points={[]} onChange={change} />)
+
+    const japaneseInput = screen.getByLabelText(
+      '局所輪郭点 binding 5',
+    ) as HTMLTextAreaElement
+    expect(japaneseInput).toBe(englishInput)
+    expect(japaneseInput.value).toBe(editedSource)
+    expect(screen.getByRole('alert')).toBe(englishAlert)
+    expect(screen.getByRole('alert').textContent).toBe(
+      '3〜8点の有界な輪郭を入力してください。左右対称bindingでは鏡像点が必要です。',
+    )
+    expect(change).not.toHaveBeenCalled()
+  })
 })

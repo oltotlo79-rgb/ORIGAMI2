@@ -1,4 +1,13 @@
 import { useEffect, useState } from 'react'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+  type LocalizedText,
+} from '../lib/i18n.ts'
+import {
+  PROTRUSION_LOCAL_OUTLINE_EDITOR_TEXT as TEXT,
+} from '../lib/protrusionLocalOutlineEditorText.ts'
+
 type Point = [number, number]
 
 function canonicalize(source: string, bilateral: boolean): Point[] | null {
@@ -27,18 +36,18 @@ export function ProtrusionLocalOutlineEditor({ locale, bindingId, symmetry, poin
 }) {
   const [source, setSource] = useState('')
   const [invalid, setInvalid] = useState(false)
-  useEffect(() => setSource(points.map(([x, y]) => `${x / 10}, ${y / 10}`).join('\n')), [points])
-  return <fieldset><legend>{locale === 'ja' ? '局所輪郭（任意）' : 'Local outline (optional)'}</legend>
-    <label>{locale === 'ja' ? '局所輪郭点（X, Y mm）' : 'Local outline points (X, Y mm)'}
-      <textarea aria-label={`${locale === 'ja' ? '局所輪郭点' : 'Local outline points'} binding ${bindingId}`}
+  const t = (value: LocalizedText) => selectLocalizedText(locale, value)
+  const savedSource = points.map(([x, y]) => `${x / 10}, ${y / 10}`).join('\n')
+  useEffect(() => setSource(savedSource), [savedSource])
+  return <fieldset><legend>{t(TEXT.legend)}</legend>
+    <label>{t(TEXT.outlinePoints)}
+      <textarea aria-label={formatLocalizedText(locale, TEXT.outlinePointsAria, { bindingId })}
         value={source} onChange={(event) => setSource(event.currentTarget.value)} /></label>
     <button type="button" onClick={() => { const result = canonicalize(source, symmetry === 'bilateral')
       setInvalid(result === null); if (result) onChange(result) }}>
-      {locale === 'ja' ? '局所輪郭を反映' : 'Apply local outline'}</button>
+      {t(TEXT.applyOutline)}</button>
     <button type="button" onClick={() => { setSource(''); setInvalid(false); onChange(undefined) }}>
-      {locale === 'ja' ? '局所輪郭を解除' : 'Clear local outline'}</button>
-    {invalid && <p role="alert">{locale === 'ja'
-      ? '3〜8点の有界な輪郭を入力してください。左右対称bindingでは鏡像点が必要です。'
-      : 'Enter 3 to 8 bounded points. Bilateral bindings require mirrored points.'}</p>}
+      {t(TEXT.clearOutline)}</button>
+    {invalid && <p role="alert">{t(TEXT.invalidOutline)}</p>}
   </fieldset>
 }

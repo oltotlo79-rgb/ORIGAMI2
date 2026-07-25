@@ -129,6 +129,57 @@ describe('InstructionExportDialog DOM interactions', () => {
     expect(screen.getByRole('button', { name: '生成を中止' })).toBeTruthy()
   })
 
+  it('keeps option wire values and singular metadata stable across live locale changes', () => {
+    localeStore.initialize()
+    localeStore.setLocale('en')
+    renderDialog({
+      preview: {
+        ...PREVIEW,
+        expected_revision: 1_234,
+        step_count: 1,
+        page_count: 1,
+        caution_count: 1,
+      },
+    })
+
+    const format = screen.getByRole('combobox', {
+      name: 'Export format',
+    }) as HTMLSelectElement
+    const options = [...format.options]
+    expect(options.map((option) => option.value)).toEqual(['pdf', 'svg_zip'])
+    expect(options.map((option) => option.textContent)).toEqual([
+      'PDF 1.7 — Combine fixed-isometric diagrams with authored camera and hand/regrip guide details into a multi-page PDF',
+      'SVG images ZIP — Package one vector SVG page with camera, fold directions, focus points, and hand positions into a ZIP',
+    ])
+    expect(screen.getByText('1 step')).toBeTruthy()
+    expect(screen.getByText('1 page')).toBeTruthy()
+    expect(screen.getByText('1 notice')).toBeTruthy()
+    expect(screen.getByText('revision 1,234')).toBeTruthy()
+    expect(screen.getByText(
+      'PDF 1.7 · A4 portrait · fixed isometric projection · multiple pages',
+    )).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Close' }).textContent).toBe('×')
+
+    act(() => {
+      localeStore.setLocale('ja')
+    })
+
+    expect(format.value).toBe('pdf')
+    expect([...format.options].map((option) => option.value))
+      .toEqual(['pdf', 'svg_zip'])
+    expect([...format.options].map((option) => option.textContent)).toEqual([
+      'PDF 1.7 — 固定アイソメトリック視点の折り図を、複数ページのPDFにまとめます',
+      'SVG画像 ZIP — 手順ごとのベクターSVG画像を、1つのZIPにまとめます',
+    ])
+    expect(screen.getByText('1手順')).toBeTruthy()
+    expect(screen.getByText('1ページ')).toBeTruthy()
+    expect(screen.getByText('1件')).toBeTruthy()
+    expect(screen.getByText('revision 1,234')).toBeTruthy()
+    expect(screen.getByText('PDF 1.7・固定アイソメトリック投影・A4縦'))
+      .toBeTruthy()
+    expect(screen.getByRole('button', { name: '閉じる' }).textContent).toBe('×')
+  })
+
   it('changes to every supported format and rejects unknown values', () => {
     const onFormatChange = vi.fn()
     renderDialog({ onFormatChange })

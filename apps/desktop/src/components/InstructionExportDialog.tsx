@@ -16,8 +16,19 @@ import {
   type InstructionExportPhase,
   type InstructionExportPreview,
 } from '../lib/instructionExport.ts'
-import { INSTRUCTION_EXPORT_COPY } from '../lib/instructionExportDialogText.ts'
-import { useLocale } from '../lib/i18n.ts'
+import {
+  formatInstructionExportDialogCount,
+  formatInstructionExportDialogOption,
+  formatInstructionExportDialogProgress,
+  formatInstructionExportDialogRevision,
+  INSTRUCTION_EXPORT_COPY as TEXT,
+  instructionExportDialogSummary,
+} from '../lib/instructionExportDialogText.ts'
+import {
+  selectLocalizedText,
+  type LocalizedText,
+  useLocale,
+} from '../lib/i18n.ts'
 
 type InstructionExportDialogProps = Readonly<{
   format: InstructionExportFormat
@@ -55,8 +66,7 @@ export function InstructionExportDialog({
   onCancel,
 }: InstructionExportDialogProps) {
   const locale = useLocale()
-  const copy = INSTRUCTION_EXPORT_COPY[locale]
-  const numberLocale = locale === 'ja' ? 'ja-JP' : 'en-US'
+  const localized = (text: LocalizedText) => selectLocalizedText(locale, text)
   const [warningsAcknowledged, setWarningsAcknowledged] = useState(false)
   const dialogRef = useRef<HTMLElement>(null)
   const formatRef = useRef<HTMLSelectElement>(null)
@@ -162,8 +172,8 @@ export function InstructionExportDialog({
       >
         <header>
           <div>
-            <span className="dialog-eyebrow">{copy.eyebrow}</span>
-            <h2 id="instruction-export-title">{copy.title}</h2>
+            <span className="dialog-eyebrow">{localized(TEXT.eyebrow)}</span>
+            <h2 id="instruction-export-title">{localized(TEXT.title)}</h2>
           </div>
           <button
             ref={closeRef}
@@ -171,19 +181,19 @@ export function InstructionExportDialog({
             className="dialog-close"
             disabled={busy && !generationActive}
             onClick={onCancel}
-            aria-label={copy.close}
+            aria-label={localized(TEXT.close)}
           >
-            ×
+            {localized(TEXT.closeGlyph)}
           </button>
         </header>
 
         <div className="crease-export-dialog-body">
           <p id="instruction-export-description" className="dialog-note">
-            {copy.description}
+            {localized(TEXT.description)}
           </p>
 
           <label className="crease-export-format">
-            <span>{copy.format}</span>
+            <span>{localized(TEXT.format)}</span>
             <select
               ref={formatRef}
               value={format}
@@ -195,9 +205,11 @@ export function InstructionExportDialog({
             >
               {INSTRUCTION_EXPORT_FORMATS.map((option) => (
                 <option key={option.value} value={option.value}>
-                  {instructionExportFormatLabel(option.value, locale)}
-                  {' — '}
-                  {copy.optionDetails[option.value]}
+                  {formatInstructionExportDialogOption(
+                    option.value,
+                    instructionExportFormatLabel(option.value, locale),
+                    locale,
+                  )}
                 </option>
               ))}
             </select>
@@ -205,8 +217,11 @@ export function InstructionExportDialog({
 
           {busy && !preview && (
             <p className="crease-export-loading" role="status">
-              {instructionExportFormatLabel(format, locale)}:{' '}
-              {instructionExportPhaseLabel(phase, locale)}…
+              {formatInstructionExportDialogProgress(
+                instructionExportFormatLabel(format, locale),
+                instructionExportPhaseLabel(phase, locale),
+                locale,
+              )}
             </p>
           )}
 
@@ -215,7 +230,7 @@ export function InstructionExportDialog({
               <p className="dialog-error" role="alert">{error}</p>
               {!busy && (
                 <button type="button" onClick={onRetry}>
-                  {preview ? copy.rebuild : copy.retry}
+                  {localized(preview ? TEXT.rebuild : TEXT.retry)}
                 </button>
               )}
             </div>
@@ -225,60 +240,73 @@ export function InstructionExportDialog({
             <>
               <dl className="crease-export-metadata">
                 <div>
-                  <dt>{copy.metadata.format}</dt>
+                  <dt>{localized(TEXT.metadata.format)}</dt>
                   <dd>{instructionExportFormatLabel(preview.format, locale)}</dd>
                 </div>
                 <div>
-                  <dt>{copy.metadata.specification}</dt>
-                  <dd>{locale === 'ja'
-                    ? preview.format_summary
-                    : copy.summaries[preview.format]}</dd>
-                </div>
-                <div>
-                  <dt>{copy.metadata.profile}</dt>
-                  <dd>{preview.profile}</dd>
-                </div>
-                <div>
-                  <dt>{copy.metadata.projection}</dt>
-                  <dd>{preview.projection_profile}</dd>
-                </div>
-                <div>
-                  <dt>{copy.metadata.suggestedName}</dt>
-                  <dd>{preview.suggested_file_name}</dd>
-                </div>
-                <div>
-                  <dt>{copy.metadata.size}</dt>
-                  <dd>{formatInstructionExportBytes(preview.byte_count, locale)}</dd>
-                </div>
-                <div>
-                  <dt>{copy.metadata.steps}</dt>
+                  <dt>{localized(TEXT.metadata.specification)}</dt>
                   <dd>
-                    {preview.step_count.toLocaleString(numberLocale)}
-                    {localizedCountUnit(locale, preview.step_count, copy.stepUnit, 'step')}
-                  </dd>
-                </div>
-                <div>
-                  <dt>{copy.metadata.pages}</dt>
-                  <dd>
-                    {preview.page_count.toLocaleString(numberLocale)}
-                    {localizedCountUnit(locale, preview.page_count, copy.pageUnit, 'page')}
-                  </dd>
-                </div>
-                <div>
-                  <dt>{copy.metadata.cautions}</dt>
-                  <dd>
-                    {preview.caution_count.toLocaleString(numberLocale)}
-                    {localizedCountUnit(
+                    {instructionExportDialogSummary(
+                      preview.format,
+                      preview.format_summary,
                       locale,
-                      preview.caution_count,
-                      copy.cautionUnit,
-                      'notice',
                     )}
                   </dd>
                 </div>
                 <div>
-                  <dt>{copy.metadata.revision}</dt>
-                  <dd>revision {preview.expected_revision.toLocaleString(numberLocale)}</dd>
+                  <dt>{localized(TEXT.metadata.profile)}</dt>
+                  <dd>{preview.profile}</dd>
+                </div>
+                <div>
+                  <dt>{localized(TEXT.metadata.projection)}</dt>
+                  <dd>{preview.projection_profile}</dd>
+                </div>
+                <div>
+                  <dt>{localized(TEXT.metadata.suggestedName)}</dt>
+                  <dd>{preview.suggested_file_name}</dd>
+                </div>
+                <div>
+                  <dt>{localized(TEXT.metadata.size)}</dt>
+                  <dd>{formatInstructionExportBytes(preview.byte_count, locale)}</dd>
+                </div>
+                <div>
+                  <dt>{localized(TEXT.metadata.steps)}</dt>
+                  <dd>
+                    {formatInstructionExportDialogCount(
+                      preview.step_count,
+                      'steps',
+                      locale,
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{localized(TEXT.metadata.pages)}</dt>
+                  <dd>
+                    {formatInstructionExportDialogCount(
+                      preview.page_count,
+                      'pages',
+                      locale,
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{localized(TEXT.metadata.cautions)}</dt>
+                  <dd>
+                    {formatInstructionExportDialogCount(
+                      preview.caution_count,
+                      'cautions',
+                      locale,
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{localized(TEXT.metadata.revision)}</dt>
+                  <dd>
+                    {formatInstructionExportDialogRevision(
+                      preview.expected_revision,
+                      locale,
+                    )}
+                  </dd>
                 </div>
               </dl>
 
@@ -286,7 +314,9 @@ export function InstructionExportDialog({
                 className="crease-export-warnings"
                 aria-labelledby="instruction-export-warnings-title"
               >
-                <h3 id="instruction-export-warnings-title">{copy.warningTitle}</h3>
+                <h3 id="instruction-export-warnings-title">
+                  {localized(TEXT.warningTitle)}
+                </h3>
                 {preview.warnings.length > 0 ? (
                   <>
                     <ul>
@@ -303,11 +333,11 @@ export function InstructionExportDialog({
                         disabled={busy}
                         onChange={(event) => setWarningsAcknowledged(event.currentTarget.checked)}
                       />
-                      {copy.acknowledge}
+                      {localized(TEXT.acknowledge)}
                     </label>
                   </>
                 ) : (
-                  <p>{copy.warningFree}</p>
+                  <p>{localized(TEXT.warningFree)}</p>
                 )}
               </section>
             </>
@@ -318,7 +348,7 @@ export function InstructionExportDialog({
             role="status"
             aria-live="polite"
           >
-            {notice ?? '\u00a0'}
+            {notice ?? localized(TEXT.emptyNotice)}
           </p>
         </div>
 
@@ -328,7 +358,7 @@ export function InstructionExportDialog({
             disabled={busy && !generationActive}
             onClick={onCancel}
           >
-            {generationActive ? copy.stop : copy.cancel}
+            {localized(generationActive ? TEXT.stop : TEXT.cancel)}
           </button>
           <button
             type="button"
@@ -336,20 +366,10 @@ export function InstructionExportDialog({
             disabled={!canSave}
             onClick={() => onSave(warningsAcknowledged)}
           >
-            {busy ? copy.processing : copy.save}
+            {localized(busy ? TEXT.processing : TEXT.save)}
           </button>
         </footer>
       </section>
     </div>
   )
-}
-
-function localizedCountUnit(
-  locale: 'ja' | 'en',
-  count: number,
-  japaneseOrPlural: string,
-  englishSingular: string,
-) {
-  if (locale === 'ja') return japaneseOrPlural
-  return count === 1 ? ` ${englishSingular}` : ` ${japaneseOrPlural}`
 }

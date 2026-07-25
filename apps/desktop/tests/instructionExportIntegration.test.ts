@@ -77,9 +77,13 @@ test('save remains bound to one project revision and requires warning acknowledg
   assert.match(dialogSource, /\(busy && !generationActive\)/u)
   assert.match(
     dialogSource,
-    /import \{ INSTRUCTION_EXPORT_COPY \} from '\.\.\/lib\/instructionExportDialogText\.ts'/u,
+    /INSTRUCTION_EXPORT_COPY as TEXT,[\s\S]*?from '\.\.\/lib\/instructionExportDialogText\.ts'/u,
   )
-  assert.match(dialogTextSource, /生成を中止/u)
+  assert.match(dialogSource, /localized\(generationActive \? TEXT\.stop : TEXT\.cancel\)/u)
+  assert.match(
+    dialogTextSource,
+    /stop: text\('生成を中止', 'Stop generation'\)/u,
+  )
   assert.match(dialogSource, /aria-modal="true"/u)
 })
 

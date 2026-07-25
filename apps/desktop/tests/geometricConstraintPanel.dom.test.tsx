@@ -115,6 +115,96 @@ describe('GeometricConstraintPanel', () => {
     })
   })
 
+  it('retranslates live without resetting drafts or invoking callbacks', () => {
+    const localeStore = localeFixture('ja')
+    const onAddOrientation = vi.fn()
+    const onAddConstraint = vi.fn()
+    const onRetryAnalysis = vi.fn()
+    const onPreviewSolve = vi.fn()
+    renderPanel({
+      edges: IDS.slice(0, 6).map((id) => ({ id })),
+      vertices: IDS.slice(6, 11).map((id) => ({ id })),
+      selectedEdgeId: IDS[0],
+      selectedVertexId: IDS[6],
+      selectedVertexPosition: { x: 1, y: 2 },
+      onAddOrientation,
+      onAddConstraint,
+      onRetryAnalysis,
+      onPreviewSolve,
+      localeStore,
+    })
+
+    fireEvent.change(screen.getByLabelText('制約ソルバー X座標'), {
+      target: { value: '12.5' },
+    })
+    fireEvent.change(screen.getByLabelText('制約ソルバー Y座標'), {
+      target: { value: '-4' },
+    })
+    fireEvent.change(screen.getByLabelText('制約種別'), {
+      target: { value: 'rotational_symmetry' },
+    })
+    fireEvent.change(screen.getByLabelText('元の点'), {
+      target: { value: IDS[9] },
+    })
+    fireEvent.change(screen.getByLabelText('角度 (度)'), {
+      target: { value: '75' },
+    })
+    const jsonDraft =
+      `{"kind":"horizontal","edge":"${IDS[1]}"}`
+    fireEvent.change(screen.getByLabelText('制約JSON'), {
+      target: { value: jsonDraft },
+    })
+
+    act(() => {
+      localeStore.setLocale('en')
+    })
+
+    expect(screen.getByRole('heading', {
+      name: 'Geometric constraints',
+    })).toBeTruthy()
+    expect(
+      (screen.getByLabelText(
+        'Constraint solver X coordinate',
+      ) as HTMLInputElement).value,
+    ).toBe('12.5')
+    expect(
+      (screen.getByLabelText(
+        'Constraint solver Y coordinate',
+      ) as HTMLInputElement).value,
+    ).toBe('-4')
+    expect(
+      (screen.getByLabelText(
+        'Constraint kind',
+      ) as HTMLSelectElement).value,
+    ).toBe('rotational_symmetry')
+    expect(
+      (screen.getByLabelText('Source point') as HTMLSelectElement).value,
+    ).toBe(IDS[9])
+    expect(
+      (screen.getByLabelText('Angle (degrees)') as HTMLInputElement).value,
+    ).toBe('75')
+    expect(
+      (screen.getByLabelText(
+        'Constraint JSON',
+      ) as HTMLTextAreaElement).value,
+    ).toBe(jsonDraft)
+    expect(onAddOrientation).not.toHaveBeenCalled()
+    expect(onAddConstraint).not.toHaveBeenCalled()
+    expect(onRetryAnalysis).not.toHaveBeenCalled()
+    expect(onPreviewSolve).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', {
+      name: 'Add form constraint',
+    }))
+    expect(onAddConstraint).toHaveBeenCalledWith({
+      kind: 'rotational_symmetry',
+      center_vertex: IDS[6],
+      source_vertex: IDS[9],
+      target_vertex: IDS[8],
+      angle_degrees: 75,
+    })
+  })
+
   it('lists and allows deleting every persisted V1 constraint kind', () => {
     const onRemove = vi.fn()
     const onSelectEdge = vi.fn()

@@ -11,8 +11,13 @@ import {
   normalizeGeometricConstraintKind,
 } from '../lib/geometricConstraints'
 import {
+  GEOMETRIC_CONSTRAINT_PANEL_TEXT as TEXT,
+  type GeometricConstraintCreationFieldLabel,
+} from '../lib/geometricConstraintPanelText.ts'
+import {
   formatLocalizedText,
   localeStore,
+  selectLocalizedText,
   useLocale,
   type Locale,
   type LocaleStore,
@@ -29,55 +34,58 @@ const CONSTRAINT_KINDS: readonly GeometricConstraintKind['kind'][] = [
 type CreationField = Readonly<{
   name: string
   resource: 'edge' | 'vertex'
-  ja: string
-  en: string
+  label: GeometricConstraintCreationFieldLabel
 }>
-const edgeField = (name: string, ja: string, en: string): CreationField =>
-  ({ name, resource: 'edge', ja, en })
-const vertexField = (name: string, ja: string, en: string): CreationField =>
-  ({ name, resource: 'vertex', ja, en })
+const edgeField = (
+  name: string,
+  label: GeometricConstraintCreationFieldLabel,
+): CreationField => ({ name, resource: 'edge', label })
+const vertexField = (
+  name: string,
+  label: GeometricConstraintCreationFieldLabel,
+): CreationField => ({ name, resource: 'vertex', label })
 const CONSTRAINT_CREATION_FIELDS: Readonly<
   Record<GeometricConstraintKind['kind'], readonly CreationField[]>
 > = {
-  fixed_length: [edgeField('edge', '対象線', 'Target line')],
+  fixed_length: [edgeField('edge', 'targetLine')],
   fixed_angle: [
-    vertexField('vertex', '角の頂点', 'Angle vertex'),
-    edgeField('first_edge', '1本目の線', 'First line'),
-    edgeField('second_edge', '2本目の線', 'Second line'),
+    vertexField('vertex', 'angleVertex'),
+    edgeField('first_edge', 'firstLine'),
+    edgeField('second_edge', 'secondLine'),
   ],
-  horizontal: [edgeField('edge', '対象線', 'Target line')],
-  vertical: [edgeField('edge', '対象線', 'Target line')],
+  horizontal: [edgeField('edge', 'targetLine')],
+  vertical: [edgeField('edge', 'targetLine')],
   equal_length: [
-    edgeField('first_edge', '1本目の線', 'First line'),
-    edgeField('second_edge', '2本目の線', 'Second line'),
+    edgeField('first_edge', 'firstLine'),
+    edgeField('second_edge', 'secondLine'),
   ],
   parallel: [
-    edgeField('first_edge', '1本目の線', 'First line'),
-    edgeField('second_edge', '2本目の線', 'Second line'),
+    edgeField('first_edge', 'firstLine'),
+    edgeField('second_edge', 'secondLine'),
   ],
   point_on_line: [
-    vertexField('vertex', '対象点', 'Target point'),
-    edgeField('line_edge', '基準線', 'Reference line'),
+    vertexField('vertex', 'targetPoint'),
+    edgeField('line_edge', 'referenceLine'),
   ],
   mirror_symmetry: [
-    vertexField('first_vertex', '1点目', 'First point'),
-    vertexField('second_vertex', '2点目', 'Second point'),
-    edgeField('axis_edge', '対称軸', 'Symmetry axis'),
+    vertexField('first_vertex', 'firstPoint'),
+    vertexField('second_vertex', 'secondPoint'),
+    edgeField('axis_edge', 'symmetryAxis'),
   ],
   rotational_symmetry: [
-    vertexField('center_vertex', '回転中心', 'Rotation center'),
-    vertexField('source_vertex', '元の点', 'Source point'),
-    vertexField('target_vertex', '対応点', 'Target point'),
+    vertexField('center_vertex', 'rotationCenter'),
+    vertexField('source_vertex', 'sourcePoint'),
+    vertexField('target_vertex', 'correspondingPoint'),
   ],
   angle_bisector: [
-    vertexField('vertex', '角の頂点', 'Angle vertex'),
-    edgeField('first_edge', '1本目の線', 'First line'),
-    edgeField('second_edge', '2本目の線', 'Second line'),
-    edgeField('bisector_edge', '二等分線', 'Bisector line'),
+    vertexField('vertex', 'angleVertex'),
+    edgeField('first_edge', 'firstLine'),
+    edgeField('second_edge', 'secondLine'),
+    edgeField('bisector_edge', 'bisectorLine'),
   ],
   length_ratio: [
-    edgeField('numerator_edge', '分子側の線', 'Numerator line'),
-    edgeField('denominator_edge', '分母側の線', 'Denominator line'),
+    edgeField('numerator_edge', 'numeratorLine'),
+    edgeField('denominator_edge', 'denominatorLine'),
   ],
 }
 
@@ -154,13 +162,14 @@ export function GeometricConstraintPanel({
     <section className="geometric-constraints" aria-labelledby="geometric-constraints-title">
       <div className="geometric-constraints-heading">
         <h2 id="geometric-constraints-title">
-          {localized(locale, '幾何制約', 'Geometric constraints')}
+          {selectLocalizedText(locale, TEXT.title)}
         </h2>
         <span>
-          {formatLocalizedText(locale, {
-            ja: '{count}件',
-            en: '{count} constraints',
-          }, { count: document.constraints.length })}
+          {formatLocalizedText(
+            locale,
+            TEXT.constraintCount,
+            { count: document.constraints.length },
+          )}
         </span>
       </div>
 
@@ -170,30 +179,22 @@ export function GeometricConstraintPanel({
           disabled={disabled || selectedEdgeId === null}
           onClick={() => onAddOrientation('horizontal')}
         >
-          {localized(
-            locale,
-            '選択線を水平に制約',
-            'Constrain selected line horizontally',
-          )}
+          {selectLocalizedText(locale, TEXT.addHorizontal)}
         </button>
         <button
           type="button"
           disabled={disabled || selectedEdgeId === null}
           onClick={() => onAddOrientation('vertical')}
         >
-          {localized(
-            locale,
-            '選択線を垂直に制約',
-            'Constrain selected line vertically',
-          )}
+          {selectLocalizedText(locale, TEXT.addVertical)}
         </button>
       </div>
       <fieldset disabled={disabled || solveBusy}>
-        <legend>{localized(locale, '拘束を保った移動', 'Constraint-preserving move')}</legend>
+        <legend>{selectLocalizedText(locale, TEXT.moveLegend)}</legend>
         <label className="field">
-          X (mm)
+          {selectLocalizedText(locale, TEXT.xAxis)}
           <input
-            aria-label={localized(locale, '制約ソルバー X座標', 'Constraint solver X coordinate')}
+            aria-label={selectLocalizedText(locale, TEXT.solveXAria)}
             inputMode="decimal"
             value={solveX}
             placeholder={selectedVertexPosition?.x.toString() ?? ''}
@@ -204,9 +205,9 @@ export function GeometricConstraintPanel({
           />
         </label>
         <label className="field">
-          Y (mm)
+          {selectLocalizedText(locale, TEXT.yAxis)}
           <input
-            aria-label={localized(locale, '制約ソルバー Y座標', 'Constraint solver Y coordinate')}
+            aria-label={selectLocalizedText(locale, TEXT.solveYAria)}
             inputMode="decimal"
             value={solveY}
             placeholder={selectedVertexPosition?.y.toString() ?? ''}
@@ -235,34 +236,45 @@ export function GeometricConstraintPanel({
               .finally(() => setSolveBusy(false))
           }}
         >
-          {localized(locale, 'プレビュー', 'Preview')}
+          {selectLocalizedText(locale, TEXT.preview)}
         </button>
         {solvePreview && (
           <div className="geometric-constraint-solve-preview" role="status">
             <p>
-              {localized(locale, '変更頂点', 'Changed vertices')}: {solvePreview.changedVertices.length}
-              {' · '}{localized(locale, '反復', 'Iterations')}: {solvePreview.iterations}
-              {' · '}residual: {solvePreview.maximumResidual.toExponential(2)}
+              {selectLocalizedText(locale, TEXT.changedVertices)}:{' '}
+              {solvePreview.changedVertices.length}
+              {selectLocalizedText(locale, TEXT.detailSeparator)}
+              {selectLocalizedText(locale, TEXT.iterations)}:{' '}
+              {solvePreview.iterations}
+              {selectLocalizedText(locale, TEXT.detailSeparator)}
+              {selectLocalizedText(locale, TEXT.residual)}:{' '}
+              {solvePreview.maximumResidual.toExponential(2)}
             </p>
             <p>
-              rank {solvePreview.rank}/{solvePreview.equationCount}
-              {' · '}DOF {solvePreview.degreesOfFreedom}
-              {' · '}condition {solvePreview.conditionEstimate.toExponential(2)}
-              {' · '}{localized(
+              {selectLocalizedText(locale, TEXT.rank)}{' '}
+              {solvePreview.rank}/{solvePreview.equationCount}
+              {selectLocalizedText(locale, TEXT.detailSeparator)}
+              {selectLocalizedText(locale, TEXT.degreesOfFreedom)}{' '}
+              {solvePreview.degreesOfFreedom}
+              {selectLocalizedText(locale, TEXT.detailSeparator)}
+              {selectLocalizedText(locale, TEXT.condition)}{' '}
+              {solvePreview.conditionEstimate.toExponential(2)}
+              {selectLocalizedText(locale, TEXT.detailSeparator)}
+              {selectLocalizedText(
                 locale,
-                solvePreview.systemClassification === 'under_constrained'
-                  ? '拘束不足'
-                  : solvePreview.systemClassification === 'over_constrained'
-                    ? '過剰拘束'
-                    : '完全拘束',
-                solvePreview.systemClassification === 'under_constrained'
-                  ? 'Under-constrained'
-                  : solvePreview.systemClassification === 'over_constrained'
-                    ? 'Over-constrained'
-                    : 'Well-constrained',
+                TEXT.systemClassifications[
+                  solvePreview.systemClassification === 'under_constrained'
+                    ? 'under_constrained'
+                    : solvePreview.systemClassification === 'over_constrained'
+                      ? 'over_constrained'
+                      : 'well_constrained'
+                ],
               )}
             </p>
-            <svg viewBox="-2 -2 4 4" aria-label={localized(locale, '移動プレビュー', 'Move preview')}>
+            <svg
+              viewBox="-2 -2 4 4"
+              aria-label={selectLocalizedText(locale, TEXT.movePreview)}
+            >
               {solvePreview.changedVertices.slice(0, 256).map((vertex) => (
                 <circle
                   key={vertex.vertexId}
@@ -287,37 +299,35 @@ export function GeometricConstraintPanel({
                   .finally(() => setSolveBusy(false))
               }}
             >
-              {localized(locale, '適用', 'Apply')}
+              {selectLocalizedText(locale, TEXT.apply)}
             </button>
             <button type="button" onClick={() => setSolvePreview(null)}>
-              {localized(locale, 'キャンセル', 'Cancel')}
+              {selectLocalizedText(locale, TEXT.cancel)}
             </button>
           </div>
         )}
         {solveError && (
           <p role="alert">
-            {localized(
-              locale,
-              '拘束を満たす解を安全に作成できませんでした。',
-              'A safe constraint solution could not be created.',
-            )}
+            {selectLocalizedText(locale, TEXT.solveError)}
           </p>
         )}
       </fieldset>
       <fieldset disabled={disabled || solveBusy || selectedEdgeGeometry === null}>
-        <legend>{localized(locale, '拘束を保った辺操作', 'Constraint-preserving edge transform')}</legend>
-        {[
-          ['Edge delta X', edgeDeltaX, setEdgeDeltaX],
-          ['Edge delta Y', edgeDeltaY, setEdgeDeltaY],
-          ['Edge rotation (degrees)', edgeRotation, setEdgeRotation],
-          ['Edge length scale', edgeScale, setEdgeScale],
-        ].map(([label, value, setter]) => (
-          <label className="field" key={label as string}>
-            {label as string}
+        <legend>
+          {selectLocalizedText(locale, TEXT.edgeTransformLegend)}
+        </legend>
+        {([
+          [TEXT.edgeDeltaX, edgeDeltaX, setEdgeDeltaX],
+          [TEXT.edgeDeltaY, edgeDeltaY, setEdgeDeltaY],
+          [TEXT.edgeRotation, edgeRotation, setEdgeRotation],
+          [TEXT.edgeLengthScale, edgeScale, setEdgeScale],
+        ] as const).map(([label, value, setter]) => (
+          <label className="field" key={label.en}>
+            {selectLocalizedText(locale, label)}
             <input
-              aria-label={label as string}
-              value={value as string}
-              onChange={(event) => (setter as (value: string) => void)(event.currentTarget.value)}
+              aria-label={selectLocalizedText(locale, label)}
+              value={value}
+              onChange={(event) => setter(event.currentTarget.value)}
             />
           </label>
         ))}
@@ -347,7 +357,7 @@ export function GeometricConstraintPanel({
             ).then(setSolvePreview).catch(() => setSolveError(true)).finally(() => setSolveBusy(false))
           }}
         >
-          {localized(locale, '辺をプレビュー', 'Preview edge transform')}
+          {selectLocalizedText(locale, TEXT.previewEdgeTransform)}
         </button>
       </fieldset>
       <button
@@ -363,28 +373,20 @@ export function GeometricConstraintPanel({
             .finally(() => setSolveBusy(false))
         }}
       >
-        {localized(locale, '保存式を再評価してプレビュー', 'Re-evaluate saved expressions')}
+        {selectLocalizedText(locale, TEXT.reevaluateSavedExpressions)}
       </button>
       <p className="muted">
-        {localized(
-          locale,
-          '参照: v.<正規UUID>.x/y、e.<正規UUID>.length/angle',
-          'References: v.<canonical-uuid>.x/y, e.<canonical-uuid>.length/angle',
-        )}
+        {selectLocalizedText(locale, TEXT.references)}
       </p>
       {selectedEdgeId === null && (
         <p className="muted">
-          {localized(
-            locale,
-            '水平・垂直制約を追加するには線を選択してください。',
-            'Select a line before adding a horizontal or vertical constraint.',
-          )}
+          {selectLocalizedText(locale, TEXT.selectEdgeHint)}
         </p>
       )}
       <fieldset disabled={disabled}>
-        <legend>{localized(locale, '制約をフォームから追加', 'Add constraint from form')}</legend>
+        <legend>{selectLocalizedText(locale, TEXT.creationLegend)}</legend>
         <label className="field">
-          {localized(locale, '制約種別', 'Constraint kind')}
+          {selectLocalizedText(locale, TEXT.constraintKind)}
           <select
             value={creationKind}
             onChange={(event) => {
@@ -395,10 +397,11 @@ export function GeometricConstraintPanel({
           >
             {CONSTRAINT_KINDS.map((kind) => (
               <option key={kind} value={kind}>
-                {formatLocalizedText(locale, {
-                  ja: '{name}を作成',
-                  en: 'Create {name}',
-                }, { name: constraintKindName(kind, locale) })}
+                {formatLocalizedText(
+                  locale,
+                  TEXT.createKind,
+                  { name: constraintKindName(kind, locale) },
+                )}
               </option>
             ))}
           </select>
@@ -416,19 +419,28 @@ export function GeometricConstraintPanel({
             ?? preferred ?? options[resourceIndex] ?? options[0] ?? ''
           return (
             <label className="field" key={field.name}>
-              {localized(locale, field.ja, field.en)}
+              {selectLocalizedText(
+                locale,
+                TEXT.creationFieldLabels[field.label],
+              )}
               <select
-                aria-label={localized(locale, field.ja, field.en)}
+                aria-label={selectLocalizedText(
+                  locale,
+                  TEXT.creationFieldLabels[field.label],
+                )}
                 value={value}
                 onChange={(event) => {
+                  const selected = event.currentTarget.value
                   setCreationTargets((current) => ({
                     ...current,
-                    [field.name]: event.currentTarget.value,
+                    [field.name]: selected,
                   }))
                   setCreationInvalid(false)
                 }}
               >
-                <option value="">{localized(locale, '選択してください', 'Select…')}</option>
+                <option value="">
+                  {selectLocalizedText(locale, TEXT.selectPrompt)}
+                </option>
                 {options.map((id) => <option key={id} value={id}>{shortId(id)}</option>)}
               </select>
             </label>
@@ -436,7 +448,7 @@ export function GeometricConstraintPanel({
         })}
         {constraintScalar(creationKind) && (
           <label className="field">
-            {localized(locale, constraintScalar(creationKind)!.ja, constraintScalar(creationKind)!.en)}
+            {selectLocalizedText(locale, constraintScalar(creationKind)!)}
             <input
               type="number"
               step="any"
@@ -478,20 +490,20 @@ export function GeometricConstraintPanel({
             setCreationInvalid(false)
           }}
         >
-          {localized(locale, 'フォームの制約を追加', 'Add form constraint')}
+          {selectLocalizedText(locale, TEXT.addFormConstraint)}
         </button>
         <p className={creationInvalid ? 'status-invalid' : 'muted'}>
           {creationInvalid
-            ? localized(locale, '必要な対象と有効な数値を指定してください。', 'Choose every required target and enter a valid value.')
-            : localized(locale, '対象は現在のproject要素から選択します。追加は一回のUndoで戻せます。', 'Targets come from the current project. One Undo removes the addition.')}
+            ? selectLocalizedText(locale, TEXT.creationInvalid)
+            : selectLocalizedText(locale, TEXT.creationHint)}
         </p>
       </fieldset>
       <fieldset disabled={disabled}>
         <legend>
-          {localized(locale, '全11種の制約を追加', 'Add any of the 11 constraint kinds')}
+          {selectLocalizedText(locale, TEXT.allKindsLegend)}
         </legend>
         <label className="field">
-          {localized(locale, '制約JSON', 'Constraint JSON')}
+          {selectLocalizedText(locale, TEXT.constraintJson)}
           <textarea
             value={constraintJson}
             rows={6}
@@ -503,7 +515,10 @@ export function GeometricConstraintPanel({
                   edge: selectedEdgeId,
                   length_mm: 100,
                 })
-              : '{"kind":"equal_length","first_edge":"UUID","second_edge":"UUID"}'}
+              : selectLocalizedText(
+                  locale,
+                  TEXT.constraintJsonPlaceholder,
+                )}
             onChange={(event) => {
               setConstraintJson(event.currentTarget.value)
               setConstraintJsonInvalid(false)
@@ -532,21 +547,13 @@ export function GeometricConstraintPanel({
               setConstraintJsonInvalid(false)
             }}
           >
-            {localized(locale, '制約を追加', 'Add constraint')}
+            {selectLocalizedText(locale, TEXT.addConstraint)}
           </button>
         </div>
         <p className={constraintJsonInvalid ? 'status-invalid' : 'muted'}>
           {constraintJsonInvalid
-            ? localized(
-                locale,
-                '制約JSONの種別、ID、値、またはfieldが不正です。',
-                'The constraint kind, IDs, values, or fields are invalid.',
-              )
-            : localized(
-                locale,
-                'fixed_length / fixed_angle / horizontal / vertical / equal_length / parallel / point_on_line / mirror_symmetry / rotational_symmetry / angle_bisector / length_ratio を厳格JSONで指定します。',
-                'Use strict JSON for fixed_length, fixed_angle, horizontal, vertical, equal_length, parallel, point_on_line, mirror_symmetry, rotational_symmetry, angle_bisector, or length_ratio.',
-              )}
+            ? selectLocalizedText(locale, TEXT.jsonInvalid)
+            : selectLocalizedText(locale, TEXT.jsonHint)}
         </p>
       </fieldset>
 
@@ -561,7 +568,7 @@ export function GeometricConstraintPanel({
 
       {document.constraints.length === 0 ? (
         <p className="muted">
-          {localized(locale, '制約はまだありません。', 'No constraints yet.')}
+          {selectLocalizedText(locale, TEXT.noConstraints)}
         </p>
       ) : (
         <>
@@ -573,10 +580,10 @@ export function GeometricConstraintPanel({
                 locale,
               )
               const displayName = presentation?.displayName
-                ?? localized(locale, '不明な制約', 'Unknown constraint')
+                ?? selectLocalizedText(locale, TEXT.unknownConstraint)
               const targetSummary = presentation?.targetSummary
                 ? shortenPresentationIds(presentation.targetSummary, locale)
-                : localized(locale, '対象を確認できません', 'Target unavailable')
+                : selectLocalizedText(locale, TEXT.targetUnavailable)
               return (
                 <li key={record.id}>
                   <div>
@@ -590,20 +597,21 @@ export function GeometricConstraintPanel({
                         disabled={disabled}
                         onClick={() => onSelectEdge(edge)}
                       >
-                        {localized(locale, '対象を選択', 'Select target')}
+                        {selectLocalizedText(locale, TEXT.selectTarget)}
                       </button>
                     )}
                     <button
                       type="button"
                       className="danger"
                       disabled={disabled}
-                      aria-label={formatLocalizedText(locale, {
-                        ja: '{name}制約を削除',
-                        en: 'Delete {name} constraint',
-                      }, { name: displayName })}
+                      aria-label={formatLocalizedText(
+                        locale,
+                        TEXT.deleteConstraint,
+                        { name: displayName },
+                      )}
                       onClick={() => onRemove(record.id)}
                     >
-                      {localized(locale, '削除', 'Delete')}
+                      {selectLocalizedText(locale, TEXT.delete)}
                     </button>
                   </div>
                 </li>
@@ -612,14 +620,15 @@ export function GeometricConstraintPanel({
           </ol>
           {document.constraints.length > MAX_VISIBLE_CONSTRAINTS && (
             <p className="muted">
-              {formatLocalizedText(locale, {
-                ja: '先頭{visible}件を表示しています。残り{remaining}件は、表示中の制約を削除すると順に表示されます。',
-                en: 'Showing the first {visible} constraints. The remaining {remaining} appear as displayed constraints are deleted.',
-              }, {
-                visible: MAX_VISIBLE_CONSTRAINTS,
-                remaining:
-                  document.constraints.length - MAX_VISIBLE_CONSTRAINTS,
-              })}
+              {formatLocalizedText(
+                locale,
+                TEXT.constraintListTruncated,
+                {
+                  visible: MAX_VISIBLE_CONSTRAINTS,
+                  remaining:
+                    document.constraints.length - MAX_VISIBLE_CONSTRAINTS,
+                },
+              )}
             </p>
           )}
         </>
@@ -645,47 +654,33 @@ function ConstraintPreflightStatus({
 }) {
   let className = 'is-pending'
   let role: 'status' | 'alert' = 'status'
-  let message = localized(
-    locale,
-    '制約を診断しています…',
-    'Analyzing constraints…',
-  )
+  let message = selectLocalizedText(locale, TEXT.analyzing)
 
   if (!analyzing && failed) {
     className = 'is-blocking'
     role = 'alert'
-    message = localized(
-      locale,
-      '制約診断を完了できませんでした。安全確認済みとして扱いません。',
-      'Constraint analysis could not be completed. Do not treat the constraints as safety-verified.',
-    )
+    message = selectLocalizedText(locale, TEXT.analysisFailed)
   } else if (!analyzing && preflight?.status === 'direct_conflict') {
     className = 'is-blocking'
     role = 'alert'
-    message = formatLocalizedText(locale, {
-      ja: '直接矛盾があります（{count}件）。',
-      en: '{count} direct conflicts found.',
-    }, { count: preflight.conflicts.length })
+    message = formatLocalizedText(
+      locale,
+      TEXT.directConflictCount,
+      { count: preflight.conflicts.length },
+    )
   } else if (!analyzing && preflight?.status === 'unknown') {
     className = 'is-blocking'
     role = 'alert'
-    message = formatLocalizedText(locale, {
-      ja: '{reason}。安全確認済みとして扱いません。',
-      en: '{reason} Do not treat the constraints as safety-verified.',
-    }, { reason: unknownReasonLabel(preflight.reason, locale) })
+    message = formatLocalizedText(
+      locale,
+      TEXT.unknownStatus,
+      { reason: unknownReasonLabel(preflight.reason, locale) },
+    )
   } else if (!analyzing && preflight?.status === 'no_direct_conflict') {
     className = 'is-clear'
-    message = localized(
-      locale,
-      '直接矛盾は見つかりません（全制約の充足可能性は未証明）',
-      'No direct conflicts found (satisfiability of all constraints is not proven)',
-    )
+    message = selectLocalizedText(locale, TEXT.noDirectConflict)
   } else if (!analyzing) {
-    message = localized(
-      locale,
-      '現在の制約は未診断です。',
-      'The current constraints have not been analyzed.',
-    )
+    message = selectLocalizedText(locale, TEXT.unanalyzed)
   }
 
   return (
@@ -700,10 +695,9 @@ function ConstraintPreflightStatus({
         <>
           <ul
             className="geometric-constraint-conflicts"
-            aria-label={localized(
+            aria-label={selectLocalizedText(
               locale,
-              '直接矛盾の原因',
-              'Direct conflict causes',
+              TEXT.directConflictCauses,
             )}
           >
             {preflight.conflicts.slice(0, MAX_VISIBLE_DIRECT_CONFLICTS).map((conflict) => (
@@ -713,26 +707,31 @@ function ConstraintPreflightStatus({
               ].join(':')}>
                 <strong>{directConflictLabel(conflict.conflict, locale)}</strong>
                 <span>
-                  {formatLocalizedText(locale, {
-                    ja: '原因となる制約: {ids}',
-                    en: 'Causing constraints: {ids}',
-                  }, {
-                    ids: conflict.constraint_ids
-                      .map((id) => shortConstraintId(id, locale))
-                      .join(locale === 'ja' ? '、' : ', '),
-                  })}
+                  {formatLocalizedText(
+                    locale,
+                    TEXT.causingConstraints,
+                    {
+                      ids: conflict.constraint_ids
+                        .map((id) => shortConstraintId(id, locale))
+                        .join(selectLocalizedText(
+                          locale,
+                          TEXT.idListSeparator,
+                        )),
+                    },
+                  )}
                 </span>
               </li>
             ))}
             {preflight.conflicts.length > MAX_VISIBLE_DIRECT_CONFLICTS && (
               <li>
-                {formatLocalizedText(locale, {
-                  ja: 'ほか{count}件の直接矛盾',
-                  en: '{count} more direct conflicts',
-                }, {
-                  count:
-                    preflight.conflicts.length - MAX_VISIBLE_DIRECT_CONFLICTS,
-                })}
+                {formatLocalizedText(
+                  locale,
+                  TEXT.additionalDirectConflicts,
+                  {
+                    count:
+                      preflight.conflicts.length - MAX_VISIBLE_DIRECT_CONFLICTS,
+                  },
+                )}
               </li>
             )}
           </ul>
@@ -746,20 +745,21 @@ function ConstraintPreflightStatus({
         && preflight?.status === 'unknown'
         && preflight.unchecked_constraint_ids.length > 0 && (
           <span>
-            {formatLocalizedText(locale, {
-              ja: '未確認の制約: {ids}',
-              en: 'Unchecked constraints: {ids}',
-            }, {
-              ids: formatConstraintIds(
-                preflight.unchecked_constraint_ids,
-                MAX_VISIBLE_UNCHECKED_CONSTRAINT_IDS,
-                locale,
-              ),
-            })}
+            {formatLocalizedText(
+              locale,
+              TEXT.uncheckedConstraints,
+              {
+                ids: formatConstraintIds(
+                  preflight.unchecked_constraint_ids,
+                  MAX_VISIBLE_UNCHECKED_CONSTRAINT_IDS,
+                  locale,
+                ),
+              },
+            )}
           </span>
       )}
       <button type="button" disabled={disabled || analyzing} onClick={onRetry}>
-        {localized(locale, '再診断', 'Analyze again')}
+        {selectLocalizedText(locale, TEXT.analyzeAgain)}
       </button>
     </div>
   )
@@ -778,32 +778,25 @@ function BoundedDirectMusStatus({
   if (result.status === 'proven_unsatisfiable') {
     return (
       <p className="geometric-constraint-bounded-mus">
-        {formatLocalizedText(locale, {
-          ja: '有界な直接矛盾オラクルで証明した最小部分集合（{count}件、呼び出し{calls}回）: {ids}',
-          en: 'Smallest subset proven by the bounded direct-conflict oracle ({count} constraints, {calls} calls): {ids}',
-        }, {
-          count: result.constraint_ids.length,
-          calls: result.oracle_calls,
-          ids: result.constraint_ids
-            .map((id) => shortConstraintId(id, locale))
-            .join(locale === 'ja' ? '、' : ', '),
-        })}
+        {formatLocalizedText(
+          locale,
+          TEXT.boundedMusProven,
+          {
+            count: result.constraint_ids.length,
+            calls: result.oracle_calls,
+            ids: result.constraint_ids
+              .map((id) => shortConstraintId(id, locale))
+              .join(selectLocalizedText(locale, TEXT.idListSeparator)),
+          },
+        )}
       </p>
     )
   }
   return (
     <p className="geometric-constraint-bounded-mus">
       {result.reason === 'constraint_limit_exceeded'
-        ? localized(
-            locale,
-            '直接矛盾は証明済みです。制約が16件を超えるため、有界な直接矛盾の最小化は実行していません。',
-            'A direct conflict is proven. Bounded direct-conflict minimization was skipped because more than 16 constraints are present.',
-          )
-        : localized(
-            locale,
-            '直接矛盾は証明済みですが、有界な直接矛盾の最小化は完了していません。',
-            'A direct conflict is proven, but bounded direct-conflict minimization did not complete.',
-          )}
+        ? selectLocalizedText(locale, TEXT.boundedMusConstraintLimit)
+        : selectLocalizedText(locale, TEXT.boundedMusIncomplete)}
     </p>
   )
 }
@@ -815,106 +808,23 @@ function directConflictLabel(
   >['conflicts'][number]['conflict'],
   locale: Locale,
 ) {
+  const label = TEXT.directConflictLabels[conflict.kind]
   switch (conflict.kind) {
     case 'different_fixed_lengths':
-      return formatLocalizedText(locale, {
-        ja: '同じ辺 {edge} に異なる長さが指定されています',
-        en: 'Different lengths are assigned to the same edge {edge}',
-      }, { edge: shortConstraintId(conflict.edge, locale) })
-    case 'different_fixed_angles':
-      return formatLocalizedText(locale, {
-        ja: '同じ角に異なる角度が指定されています（頂点 {vertex}）',
-        en: 'Different angles are assigned to the same angle (vertex {vertex})',
-      }, { vertex: shortConstraintId(conflict.vertex, locale) })
-    case 'different_length_ratios':
-      return localized(
-        locale,
-        '同じ辺の組に異なる長さ比が指定されています',
-        'Different length ratios are assigned to the same pair of edges',
-      )
     case 'horizontal_and_vertical':
-      return formatLocalizedText(locale, {
-        ja: '辺 {edge} に水平と垂直が同時に指定されています',
-        en: 'Edge {edge} is constrained as both horizontal and vertical',
-      }, { edge: shortConstraintId(conflict.edge, locale) })
-    case 'equal_length_with_different_fixed_lengths':
-      return localized(
+      return formatLocalizedText(
         locale,
-        '等長にした辺へ異なる固定長が指定されています',
-        'Edges constrained to equal length have different fixed lengths',
+        label,
+        { edge: shortConstraintId(conflict.edge, locale) },
       )
-    case 'equal_length_with_non_unit_ratio_and_fixed_length':
-      return localized(
+    case 'different_fixed_angles':
+      return formatLocalizedText(
         locale,
-        '等長な辺に1ではない長さ比と正の固定長が同時に指定されています',
-        'Equal-length edges have a non-unit ratio and a positive fixed length',
+        label,
+        { vertex: shortConstraintId(conflict.vertex, locale) },
       )
-    case 'non_reciprocal_length_ratios_with_fixed_length':
-      return localized(
-        locale,
-        '正の固定長を持つ辺の双方向の長さ比が互いに逆数ではありません',
-        'Opposite length ratios are not reciprocal for edges with a positive fixed length',
-      )
-    case 'length_ratio_with_incompatible_fixed_lengths':
-      return localized(
-        locale,
-        '2辺の固定長が、指定された長さ比と厳密に一致しません',
-        'The two fixed lengths do not exactly satisfy the specified length ratio',
-      )
-    case 'non_unit_length_ratio_cycle_with_fixed_length':
-      return localized(
-        locale,
-        '正の固定長を含む3辺の長さ比の循環積が1ではありません',
-        'The cyclic product of three length ratios is not one for edges with a positive fixed length',
-      )
-    case 'inconsistent_length_ratio_graph_with_fixed_length':
-      return localized(
-        locale,
-        '正の固定長につながる長さ比グラフに、厳密に両立しない循環があります',
-        'A length-ratio graph connected to a positive fixed length contains an exactly inconsistent cycle',
-      )
-    case 'different_fixed_lengths_in_equal_length_component':
-      return localized(
-        locale,
-        '等長制約でつながった辺に、厳密に異なる固定長が指定されています',
-        'Edges connected by equal-length constraints have exactly different fixed lengths',
-      )
-    case 'perpendicular_orientations_in_parallel_component':
-      return localized(
-        locale,
-        '平行制約でつながった辺に、水平と垂直の向きが同時に指定されています',
-        'Edges connected by parallel constraints are constrained to horizontal and vertical orientations',
-      )
-    case 'non_parallel_fixed_angle_in_parallel_component':
-      return localized(
-        locale,
-        '平行制約でつながる辺に、平行でない固定角が指定されています',
-        'Edges connected by parallel constraints have a fixed angle that is neither 0 nor 180 degrees',
-      )
-    case 'parallel_with_fixed_non_parallel_angle':
-      return localized(
-        locale,
-        '平行にした辺へ平行でない固定角が指定されています',
-        'Parallel edges have a fixed angle that is not parallel',
-      )
-    case 'parallel_with_perpendicular_orientations':
-      return localized(
-        locale,
-        '平行にした辺へ水平と垂直が別々に指定されています',
-        'Parallel edges are separately constrained as horizontal and vertical',
-      )
-    case 'same_orientation_with_fixed_non_parallel_angle':
-      return localized(
-        locale,
-        '同じ向きに拘束した2辺へ、平行ではない固定角が指定されています',
-        'Edges with the same fixed orientation have a non-parallel fixed angle',
-      )
-    case 'perpendicular_orientations_with_fixed_non_right_angle':
-      return localized(
-        locale,
-        '水平・垂直に拘束した2辺へ、直角ではない固定角が指定されています',
-        'Horizontally and vertically oriented edges have a non-right fixed angle',
-      )
+    default:
+      return selectLocalizedText(locale, label)
   }
 }
 
@@ -928,29 +838,16 @@ function shortId(id: string) {
 }
 
 function constraintKindName(kind: GeometricConstraintKind['kind'], locale: Locale) {
-  const names: Record<GeometricConstraintKind['kind'], readonly [string, string]> = {
-    fixed_length: ['長さ固定', 'Fixed length'],
-    fixed_angle: ['角度固定', 'Fixed angle'],
-    horizontal: ['水平', 'Horizontal'],
-    vertical: ['垂直', 'Vertical'],
-    equal_length: ['等長', 'Equal length'],
-    parallel: ['平行', 'Parallel'],
-    point_on_line: ['点を線上に配置', 'Point on line'],
-    mirror_symmetry: ['線対称', 'Mirror symmetry'],
-    rotational_symmetry: ['回転対称', 'Rotational symmetry'],
-    angle_bisector: ['角の二等分', 'Angle bisector'],
-    length_ratio: ['長さの比', 'Length ratio'],
-  }
-  return localized(locale, ...names[kind])
+  return selectLocalizedText(locale, TEXT.constraintKindNames[kind])
 }
 
 function constraintScalar(kind: GeometricConstraintKind['kind']) {
-  if (kind === 'fixed_length') return { ja: '長さ (mm)', en: 'Length (mm)' }
-  if (kind === 'fixed_angle' || kind === 'rotational_symmetry') {
-    return { ja: '角度 (度)', en: 'Angle (degrees)' }
-  }
-  if (kind === 'length_ratio') return { ja: '長さの比', en: 'Length ratio' }
-  return null
+  return kind === 'fixed_length'
+    || kind === 'fixed_angle'
+    || kind === 'rotational_symmetry'
+    || kind === 'length_ratio'
+    ? TEXT.scalarLabels[kind]
+    : null
 }
 
 function createConstraint(
@@ -1017,26 +914,7 @@ function unknownReasonLabel(
   reason: Extract<GeometricConstraintPreflightResult, { status: 'unknown' }>['reason'],
   locale: Locale,
 ) {
-  switch (reason) {
-    case 'work_limit_exceeded':
-      return localized(
-        locale,
-        '診断の処理上限に達したため判定保留です',
-        'Indeterminate because the analysis work limit was reached.',
-      )
-    case 'solver_required_constraint_kinds':
-      return localized(
-        locale,
-        '完全な制約ソルバーが必要なため判定保留です',
-        'Indeterminate because a complete constraint solver is required.',
-      )
-    case 'invalid_document_or_geometry':
-      return localized(
-        locale,
-        '制約または展開図を検証できないため判定保留です',
-        'Indeterminate because the constraints or crease pattern could not be validated.',
-      )
-  }
+  return selectLocalizedText(locale, TEXT.unknownReasonLabels[reason])
 }
 
 function shortenPresentationIds(summary: string, locale: Locale) {
@@ -1049,7 +927,7 @@ function shortenPresentationIds(summary: string, locale: Locale) {
 function shortConstraintId(id: string, locale: Locale) {
   return isCanonicalNonNilUuid(id)
     ? `${id.slice(0, 8)}…${id.slice(-4)}`
-    : localized(locale, '不正な識別子', 'invalid identifier')
+    : selectLocalizedText(locale, TEXT.invalidIdentifier)
 }
 
 function formatConstraintIds(
@@ -1060,16 +938,13 @@ function formatConstraintIds(
   const visible = ids
     .slice(0, maximum)
     .map((id) => shortConstraintId(id, locale))
-    .join(locale === 'ja' ? '、' : ', ')
+    .join(selectLocalizedText(locale, TEXT.idListSeparator))
   const remaining = ids.length - Math.min(ids.length, maximum)
   return remaining > 0
-    ? formatLocalizedText(locale, {
-      ja: '{visible}、ほか{remaining}件',
-      en: '{visible}, {remaining} more',
-    }, { visible, remaining })
+    ? formatLocalizedText(
+      locale,
+      TEXT.remainingIds,
+      { visible, remaining },
+    )
     : visible
-}
-
-function localized(locale: Locale, ja: string, en: string): string {
-  return locale === 'en' ? en : ja
 }

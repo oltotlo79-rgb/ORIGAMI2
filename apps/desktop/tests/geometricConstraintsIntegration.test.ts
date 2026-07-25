@@ -2,8 +2,13 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+import {
+  GEOMETRIC_CONSTRAINT_PANEL_TEXT,
+} from '../src/lib/geometricConstraintPanelText.ts'
+
 const app = source('../src/App.tsx')
 const panel = source('../src/components/GeometricConstraintPanel.tsx')
+const panelText = source('../src/lib/geometricConstraintPanelText.ts')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
 const editor = source('../../../crates/ori-core/src/editor.rs')
@@ -67,12 +72,30 @@ test('the visible panel never upgrades unknown or direct conflict to a safe resu
   assert.match(panel, /preflight\?\.status === 'direct_conflict'/u)
   assert.match(panel, /preflight\?\.status === 'unknown'/u)
   assert.match(panel, /className = 'is-blocking'/u)
-  assert.match(panel, /安全確認済みとして扱いません/u)
+  assert.match(panelText, /安全確認済みとして扱いません/u)
   assert.match(
-    panel,
+    panelText,
     /直接矛盾は見つかりません（全制約の充足可能性は未証明）/u,
   )
-  assert.doesNotMatch(panel, /制約を満たしています|安全です/u)
+  assert.doesNotMatch(panelText, /制約を満たしています|安全です/u)
+  assert.match(panel, /GEOMETRIC_CONSTRAINT_PANEL_TEXT as TEXT/u)
+  assert.doesNotMatch(panel, /[ぁ-んァ-ン一-龯]/u)
+  assert.doesNotMatch(panel, /\blocalized\s*\(/u)
+  assert.doesNotMatch(panel, /formatLocalizedText\(locale,\s*\{/u)
+  assert.doesNotMatch(
+    panel,
+    />\s*(?:X \(mm\)|Y \(mm\)|residual:|rank\s|DOF\s|condition\s)/u,
+  )
+  for (const displayText of collectStrings(
+    GEOMETRIC_CONSTRAINT_PANEL_TEXT,
+  )) {
+    if (displayText === ', ') continue
+    assert.equal(
+      panel.includes(`'${displayText}'`),
+      false,
+      `inline constraint-panel display text: ${displayText}`,
+    )
+  }
 })
 
 function functionSection(text: string, start: string, end: string) {
@@ -84,4 +107,10 @@ function functionSection(text: string, start: string, end: string) {
 
 function source(relativePath: string) {
   return readFileSync(new URL(relativePath, import.meta.url), 'utf8')
+}
+
+function collectStrings(value: unknown): string[] {
+  if (typeof value === 'string') return [value]
+  if (typeof value !== 'object' || value === null) return []
+  return Object.values(value).flatMap(collectStrings)
 }

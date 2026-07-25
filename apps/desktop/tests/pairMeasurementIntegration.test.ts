@@ -4,14 +4,26 @@ import test from 'node:test'
 
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const canvas = readFileSync(new URL('../src/components/CreaseCanvas.tsx', import.meta.url), 'utf8')
+const hook = readFileSync(
+  new URL('../src/lib/useCreasePairMeasurement.ts', import.meta.url),
+  'utf8',
+)
 
 test('pair measurement is wired through benchmark display and deterministic reset boundaries', () => {
   assert.match(app, /const displayedLines = benchmarkRun\?\.lines \?\? nativeLines/u)
   assert.match(app, /tool=\{activeTool === 'measure' \? 'measure' : benchmarkRun \? 'select'/u)
-  assert.match(app, /if \(activeTool === 'measure'\) return[\s\S]*setMeasurementLineIds\(\[\]\)[\s\S]*setMeasurementVertexIds\(\[\]\)/u)
-  assert.match(app, /else if \(activeTool === 'measure'\) \{[\s\S]*setMeasurementLineIds\(\[\]\)[\s\S]*setMeasurementVertexIds\(\[\]\)/u)
-  assert.match(app, /retainMeasurementPair\(current, lineIds\)/u)
-  assert.match(app, /retainMeasurementPair\(current, vertexIds\)/u)
+  assert.match(
+    app,
+    /useCreasePairMeasurement\(\{\s*active: activeTool === 'measure',\s*lines: displayedLines,\s*vertices: displayedVertices,\s*\}\)/u,
+  )
+  assert.match(app, /if \(activeTool === 'measure'\) \{\s*selectMeasurementLine\(lineId\)/u)
+  assert.match(app, /else if \(activeTool === 'measure'\) \{\s*selectMeasurementLine\(null\)/u)
+  assert.match(
+    hook,
+    /useEffect\(\(\) => \{\s*if \(input\.active\) return\s*setMeasurementLineIds\(\[\]\)\s*setMeasurementVertexIds\(\[\]\)\s*\}, \[input\.active\]\)/u,
+  )
+  assert.match(hook, /retainMeasurementPair\(current, lineIds\)/u)
+  assert.match(hook, /retainMeasurementPair\(current, vertexIds\)/u)
 })
 
 test('measure-mode hit testing keeps zoom-scaled vertex priority over edges', () => {

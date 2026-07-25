@@ -96,12 +96,10 @@ test('none, candidate, failure, and retry are closed startup transitions', () =>
 })
 
 test('every editor region stays inert behind checking, failure, or a candidate', () => {
-  const modal = section(
+  assert.match(
     appSource,
-    'const modalOpen = newProjectOpen',
-    'const closeDiagnosticsDialog',
+    /const modalOpen = newProjectOpen(?:\s*\|\| [^\r\n]+)*\s*\|\| recoveryBlocking/u,
   )
-  assert.match(modal, /\|\| recoveryBlocking/u)
   assert.equal(
     appSource.match(/inert=\{modalOpen\}/gu)?.length,
     5,

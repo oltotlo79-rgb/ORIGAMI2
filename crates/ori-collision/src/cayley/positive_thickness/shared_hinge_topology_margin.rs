@@ -572,13 +572,7 @@ type ComponentErrorTriplet = ([BigRational; 3], [BigRational; 3], [BigRational; 
 impl ViolationAccumulator {
     fn record(&mut self, relation: SharedHingeTopologyMarginRelationV1) -> Result<(), CayleyError> {
         self.first_relation.get_or_insert(relation);
-        self.count = self
-            .count
-            .checked_add(1)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage: STAGE,
-                resource: "topology_margin_violations",
-            })?;
+        self.count = checked_work_sum(self.count, 1, STAGE, "topology_margin_violations")?;
         Ok(())
     }
 
@@ -1442,13 +1436,12 @@ fn scan_material_frame(
             if meter.compare_rational(&coordinates[1], &BigRational::zero(), STAGE)?
                 == Ordering::Less
             {
-                summary.halfspace_violation_count = summary
-                    .halfspace_violation_count
-                    .checked_add(1)
-                    .ok_or(CayleyError::ResourceLimitExceeded {
-                        stage: STAGE,
-                        resource: "topology_margin_halfspace_violations",
-                    })?;
+                summary.halfspace_violation_count = checked_work_sum(
+                    summary.halfspace_violation_count,
+                    1,
+                    STAGE,
+                    "topology_margin_halfspace_violations",
+                )?;
             }
             let expected_beta = if !solid_kind {
                 BigRational::zero()
@@ -1458,13 +1451,12 @@ fn scan_material_frame(
                 meter.negate_rational(half_thickness, STAGE)?
             };
             if meter.compare_rational(&coordinates[2], &expected_beta, STAGE)? != Ordering::Equal {
-                summary.normal_solid_violation_count = summary
-                    .normal_solid_violation_count
-                    .checked_add(1)
-                    .ok_or(CayleyError::ResourceLimitExceeded {
-                        stage: STAGE,
-                        resource: "topology_margin_normal_solid_violations",
-                    })?;
+                summary.normal_solid_violation_count = checked_work_sum(
+                    summary.normal_solid_violation_count,
+                    1,
+                    STAGE,
+                    "topology_margin_normal_solid_violations",
+                )?;
             }
         }
     }

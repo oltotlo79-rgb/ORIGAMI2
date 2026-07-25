@@ -1554,13 +1554,12 @@ fn scan_independent_intersection_against_corridor(
     let mut outside_vertex_count = 0_usize;
     let mut every_vertex_on_finite_axis = true;
     for (vertex_index, vertex) in report.canonical_vertices().iter().enumerate() {
-        *cumulative_vertex_checks =
-            cumulative_vertex_checks
-                .checked_add(1)
-                .ok_or(CayleyError::ResourceLimitExceeded {
-                    stage: STAGE,
-                    resource: "shared_hinge_independent_corridor_vertices",
-                })?;
+        *cumulative_vertex_checks = checked_work_sum(
+            *cumulative_vertex_checks,
+            1,
+            STAGE,
+            "shared_hinge_independent_corridor_vertices",
+        )?;
         if *cumulative_vertex_checks > max_vertex_checks {
             return Err(CayleyError::ResourceLimitExceeded {
                 stage: STAGE,
@@ -1579,13 +1578,12 @@ fn scan_independent_intersection_against_corridor(
             meter.compare_rational(&radial_left, radial_limit_product, STAGE)? == Ordering::Greater;
         if axial_before || axial_after || radial_outside {
             first_outside_vertex_index.get_or_insert(vertex_index);
-            outside_vertex_count =
-                outside_vertex_count
-                    .checked_add(1)
-                    .ok_or(CayleyError::ResourceLimitExceeded {
-                        stage: STAGE,
-                        resource: "shared_hinge_independent_outside_vertices",
-                    })?;
+            outside_vertex_count = checked_work_sum(
+                outside_vertex_count,
+                1,
+                STAGE,
+                "shared_hinge_independent_outside_vertices",
+            )?;
         }
         every_vertex_on_finite_axis &= !axial_before && !axial_after && radial_squared.is_zero();
     }

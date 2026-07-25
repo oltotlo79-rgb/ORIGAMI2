@@ -9249,12 +9249,13 @@ async fn validate_svg_import_settings(
         let group_mappings = svg_import_group_mappings(style_mappings)?;
         let boundary_candidate = boundary_candidate_id.map(SvgBoundaryCandidateId);
         {
-            let project = lock_project(&state)?;
-            ensure_expected_project(
-                &project,
-                pending.expected_instance_id,
-                pending.expected_project_id,
-                pending.expected_revision,
+            let _project = lock_and_expect(
+                &state,
+                ProjectExpectation::new(
+                    pending.expected_instance_id,
+                    pending.expected_project_id,
+                    pending.expected_revision,
+                ),
             )?;
         }
 
@@ -12441,12 +12442,13 @@ fn import_front_paper_texture(
     expected_revision: u64,
 ) -> Result<ProjectSnapshot, String> {
     {
-        let project = lock_project(&state)?;
-        ensure_expected_project(
-            &project,
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
+        let _project = lock_and_expect(
+            &state,
+            ProjectExpectation::new(
+                expected_project_instance_id,
+                expected_project_id,
+                expected_revision,
+            ),
         )?;
     }
 
@@ -12556,12 +12558,13 @@ fn import_back_paper_texture(
     expected_revision: u64,
 ) -> Result<ProjectSnapshot, String> {
     {
-        let project = lock_project(&state)?;
-        ensure_expected_project(
-            &project,
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
+        let _project = lock_and_expect(
+            &state,
+            ProjectExpectation::new(
+                expected_project_instance_id,
+                expected_project_id,
+                expected_revision,
+            ),
         )?;
     }
     let selected = app
@@ -13624,12 +13627,13 @@ async fn analyze_instruction_pose(
     }
     validate_instruction_hinge_angle_values(&hinge_angles)?;
     let (project_instance_id, input) = {
-        let project = lock_project(state)?;
-        ensure_expected_project(
-            &project,
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
+        let project = lock_and_expect(
+            state,
+            ProjectExpectation::new(
+                expected_project_instance_id,
+                expected_project_id,
+                expected_revision,
+            ),
         )?;
         (
             project.instance_id,

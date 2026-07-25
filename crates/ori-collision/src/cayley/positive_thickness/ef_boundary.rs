@@ -82,44 +82,28 @@ impl Default for AxisAlignedEfBoundaryLimits {
 impl AxisAlignedEfBoundaryLimits {
     fn projected(self) -> Self {
         let hard = Self::default();
-        Self {
-            max_authenticated_faces: self
-                .max_authenticated_faces
-                .min(hard.max_authenticated_faces),
-            max_authenticated_hinges: self
-                .max_authenticated_hinges
-                .min(hard.max_authenticated_hinges),
-            max_boundary_occurrences: self
-                .max_boundary_occurrences
-                .min(hard.max_boundary_occurrences),
-            max_transform_scalar_lifts: self
-                .max_transform_scalar_lifts
-                .min(hard.max_transform_scalar_lifts),
-            max_transform_bit_bindings: self
-                .max_transform_bit_bindings
-                .min(hard.max_transform_bit_bindings),
-            max_source_coordinate_lifts: self
-                .max_source_coordinate_lifts
-                .min(hard.max_source_coordinate_lifts),
-            max_current_point_reconstructions: self
-                .max_current_point_reconstructions
-                .min(hard.max_current_point_reconstructions),
-            max_point_component_bounds: self
-                .max_point_component_bounds
-                .min(hard.max_point_component_bounds),
-            max_normal_component_bounds: self
-                .max_normal_component_bounds
-                .min(hard.max_normal_component_bounds),
-            max_solid_component_bounds: self
-                .max_solid_component_bounds
-                .min(hard.max_solid_component_bounds),
-            max_face_error_records: self.max_face_error_records.min(hard.max_face_error_records),
-            max_thickness_lifts: self.max_thickness_lifts.min(hard.max_thickness_lifts),
-            max_half_thickness_divisions: self
-                .max_half_thickness_divisions
-                .min(hard.max_half_thickness_divisions),
-            exact: project_cayley_limits(self.exact, hard.exact),
-        }
+        clamp_to_hard!(
+            AxisAlignedEfBoundaryLimits {
+                requested: self,
+                hard: hard;
+                min:
+                    max_authenticated_faces,
+                    max_authenticated_hinges,
+                    max_boundary_occurrences,
+                    max_transform_scalar_lifts,
+                    max_transform_bit_bindings,
+                    max_source_coordinate_lifts,
+                    max_current_point_reconstructions,
+                    max_point_component_bounds,
+                    max_normal_component_bounds,
+                    max_solid_component_bounds,
+                    max_face_error_records,
+                    max_thickness_lifts,
+                    max_half_thickness_divisions;
+                explicit:
+                    exact: project_cayley_limits(self.exact, hard.exact),
+            }
+        )
     }
 }
 

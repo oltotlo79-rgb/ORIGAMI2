@@ -205,48 +205,30 @@ impl Default for DirectFFiniteHingeCorridorLimits {
 impl DirectFFiniteHingeCorridorLimits {
     fn projected(self) -> Self {
         let hard = Self::default();
-        Self {
-            max_authenticated_faces: self
-                .max_authenticated_faces
-                .min(hard.max_authenticated_faces),
-            max_authenticated_hinges: self
-                .max_authenticated_hinges
-                .min(hard.max_authenticated_hinges),
-            max_face_transform_bit_bindings: self
-                .max_face_transform_bit_bindings
-                .min(hard.max_face_transform_bit_bindings),
-            max_hinge_parent_transform_bit_bindings: self
-                .max_hinge_parent_transform_bit_bindings
-                .min(hard.max_hinge_parent_transform_bit_bindings),
-            max_transform_scalar_lifts: self
-                .max_transform_scalar_lifts
-                .min(hard.max_transform_scalar_lifts),
-            max_source_coordinate_lifts: self
-                .max_source_coordinate_lifts
-                .min(hard.max_source_coordinate_lifts),
-            max_affine_point_reconstructions: self
-                .max_affine_point_reconstructions
-                .min(hard.max_affine_point_reconstructions),
-            max_material_normal_component_lifts: self
-                .max_material_normal_component_lifts
-                .min(hard.max_material_normal_component_lifts),
-            max_solid_vertex_constructions: self
-                .max_solid_vertex_constructions
-                .min(hard.max_solid_vertex_constructions),
-            max_thickness_lifts: self.max_thickness_lifts.min(hard.max_thickness_lifts),
-            max_half_thickness_divisions: self
-                .max_half_thickness_divisions
-                .min(hard.max_half_thickness_divisions),
-            max_scalar_reconstructions: self
-                .max_scalar_reconstructions
-                .min(hard.max_scalar_reconstructions),
-            max_corridor_vertex_tests: self
-                .max_corridor_vertex_tests
-                .min(hard.max_corridor_vertex_tests),
-            prism: self.prism.projected(),
-            local_exact: project_cayley_limits(self.local_exact, hard.local_exact),
-            exact: project_cayley_limits(self.exact, hard.exact),
-        }
+        clamp_to_hard!(
+            DirectFFiniteHingeCorridorLimits {
+                requested: self,
+                hard: hard;
+                min:
+                    max_authenticated_faces,
+                    max_authenticated_hinges,
+                    max_face_transform_bit_bindings,
+                    max_hinge_parent_transform_bit_bindings,
+                    max_transform_scalar_lifts,
+                    max_source_coordinate_lifts,
+                    max_affine_point_reconstructions,
+                    max_material_normal_component_lifts,
+                    max_solid_vertex_constructions,
+                    max_thickness_lifts,
+                    max_half_thickness_divisions,
+                    max_scalar_reconstructions,
+                    max_corridor_vertex_tests;
+                explicit:
+                    prism: self.prism.projected(),
+                    local_exact: project_cayley_limits(self.local_exact, hard.local_exact),
+                    exact: project_cayley_limits(self.exact, hard.exact),
+            }
+        )
     }
 }
 

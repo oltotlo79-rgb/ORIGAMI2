@@ -20,4 +20,31 @@ describe('PairMeasurementStatus', () => {
     expect(status.dataset.measurementKind).toBe('line')
     expect(status.textContent).toBe('Unoriented edge angle: 90°')
   })
+
+  it('retranslates the same pending measurement after a locale rerender', () => {
+    const view = render(
+      <PairMeasurementStatus
+        locale="en"
+        kind="pending"
+        vertexCount={1}
+        lineCount={2}
+      />,
+    )
+    const status = screen.getByRole('status')
+    expect(status.textContent).toBe(
+      'Measure: select two vertices or two edges (vertices 1/2, edges 2/2)',
+    )
+
+    view.rerender(
+      <PairMeasurementStatus
+        locale="ja"
+        kind="pending"
+        vertexCount={1}
+        lineCount={2}
+      />,
+    )
+    expect(status.textContent).toBe(
+      '計測: 同じ種類の頂点または辺を2つ選択（頂点 1/2、辺 2/2）',
+    )
+  })
 })

@@ -65,6 +65,29 @@ describe('ThemeControl', () => {
     }).textContent).toBe('Current: Dark')
   })
 
+  it('retranslates every label when the locale store changes', () => {
+    const target = createFixture(false)
+    const locales = localeFixture('ja')
+    render(
+      <ThemeControl
+        store={target.store}
+        localeStore={locales}
+      />,
+    )
+    expect(screen.getByRole('combobox', { name: '表示テーマ' })).toBeTruthy()
+    expect(screen.getByRole('status', {
+      name: '現在の実効テーマ',
+    }).textContent).toBe('現在: ライト')
+
+    act(() => {
+      locales.setLocale('en')
+    })
+    expect(screen.getByRole('combobox', { name: 'Display theme' })).toBeTruthy()
+    expect(screen.getByRole('status', {
+      name: 'Current effective theme',
+    }).textContent).toBe('Current: Light')
+  })
+
   it('exposes an accessible native select and the current effective theme', () => {
     const target = createFixture(false)
     render(<ThemeControl store={target.store} />)

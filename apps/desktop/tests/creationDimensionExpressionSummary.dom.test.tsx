@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { CreationDimensionExpressionSummary } from '../src/components/CreationDimensionExpressionSummary.tsx'
@@ -53,6 +53,30 @@ describe('CreationDimensionExpressionSummary', () => {
     expect(screen.getByText(/282\.842712474619 × 133\.333333333333 mm/u)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '式を表示' }))
     expect(screen.getByText(/200 \* sqrt\(2\) × 400 \/ 3 mm/u)).toBeTruthy()
+  })
+
+  it('retranslates the same summary when the locale store changes', () => {
+    const store = localeFixture('ja')
+    render(
+      <CreationDimensionExpressionSummary
+        localeStore={store}
+        binding={{
+          schema_version: 1,
+          width_source: '200',
+          height_source: '300',
+          adopted_width_mm: 200,
+          adopted_height_mm: 300,
+        }}
+      />,
+    )
+    expect(screen.getByText(/作成時サイズ:/u)).toBeTruthy()
+    expect(screen.getByRole('button', { name: '評価値を表示' })).toBeTruthy()
+
+    act(() => {
+      store.setLocale('en')
+    })
+    expect(screen.getByText(/Creation size:/u)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Show values' })).toBeTruthy()
   })
 
   it('fails closed for absent or non-finite persisted metadata', () => {

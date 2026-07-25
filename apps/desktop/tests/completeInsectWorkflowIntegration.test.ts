@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const component = readFileSync(new URL('../src/components/CompleteInsectBindingList.tsx', import.meta.url), 'utf8')
+const componentText = readFileSync(new URL('../src/lib/completeInsectBindingListText.ts', import.meta.url), 'utf8')
 const native = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8')
 const recognition = readFileSync(new URL('../src-tauri/src/beginner_recognition.rs', import.meta.url), 'utf8')
 
@@ -12,9 +13,11 @@ test('complete insect recognition and candidate UI share five canonical pair bin
   assert.match(native, /insect_complete_bindings_v1/)
   assert.match(component, /protrusions\.length === 5/)
   assert.match(component, /target\.id === index \+ 1/)
-  assert.match(component, /Wing pair/)
-  assert.match(component, /Antenna pair/)
-  assert.match(component, /Leg pair 3/)
+  assert.match(component, /COMPLETE_INSECT_BINDING_LIST_TEXT as TEXT/)
+  assert.match(component, /formatLocalizedText\(locale, TEXT\.bindingRow/)
+  assert.match(componentText, /Wing pair/)
+  assert.match(componentText, /Antenna pair/)
+  assert.match(componentText, /Leg pair 3/)
   assert.match(app, /plan\.kind === 'composite_complete_insect_base'/)
   assert.match(app, /<CompleteInsectBindingList/)
 })

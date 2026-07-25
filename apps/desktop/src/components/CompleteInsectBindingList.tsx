@@ -1,9 +1,18 @@
 import type { BeginnerGenerationConstraintsV1 } from '../lib/coreClient'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+  type Locale,
+  type LocalizedText,
+} from '../lib/i18n.ts'
+import {
+  COMPLETE_INSECT_BINDING_LIST_TEXT as TEXT,
+} from '../lib/completeInsectBindingListText.ts'
 
 type Protrusion = NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
 
 export function CompleteInsectBindingList({ locale, protrusions }: {
-  locale: 'ja' | 'en'
+  locale: Locale
   protrusions: readonly Protrusion[]
 }) {
   const valid = protrusions.length === 5
@@ -18,16 +27,21 @@ export function CompleteInsectBindingList({ locale, protrusions }: {
       || legs[index - 1]!.position_tenths_mm[1] < target.position_tenths_mm[1])
   if (!valid) return null
 
-  const labels = locale === 'ja'
-    ? ['翼の組', '触角の組', '脚の組1', '脚の組2', '脚の組3']
-    : ['Wing pair', 'Antenna pair', 'Leg pair 1', 'Leg pair 2', 'Leg pair 3']
-  return <ol aria-label={locale === 'ja'
-    ? '完全昆虫の五組binding寸法'
-    : 'Five complete-insect binding dimensions'}>
+  const labels: readonly LocalizedText[] = [
+    TEXT.wingPair,
+    TEXT.antennaPair,
+    TEXT.legPair1,
+    TEXT.legPair2,
+    TEXT.legPair3,
+  ]
+  return <ol aria-label={selectLocalizedText(locale, TEXT.listAriaLabel)}>
     {protrusions.map((target, index) => <li key={target.id}>
-      {locale === 'ja'
-        ? `${labels[index]}・binding ${target.id}・長さ ${target.length_tenths_mm}・厚さ ${target.thickness_tenths_mm}`
-        : `${labels[index]} · binding ${target.id} · length ${target.length_tenths_mm} · thickness ${target.thickness_tenths_mm}`}
+      {formatLocalizedText(locale, TEXT.bindingRow, {
+        label: selectLocalizedText(locale, labels[index]!),
+        bindingId: target.id,
+        length: target.length_tenths_mm,
+        thickness: target.thickness_tenths_mm,
+      })}
     </li>)}
   </ol>
 }

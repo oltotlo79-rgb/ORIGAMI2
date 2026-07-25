@@ -2474,12 +2474,7 @@ fn set_fixed_counter(
     maximum: usize,
     resource: &'static str,
 ) -> Result<(), CayleyError> {
-    if required > maximum {
-        return Err(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        });
-    }
+    super::counter::check_resource_limit(required, maximum, resource)?;
     *counter = required;
     Ok(())
 }
@@ -2490,12 +2485,7 @@ fn charge_counter(
     resource: &'static str,
 ) -> Result<(), CayleyError> {
     *counter = checked_work_sum(*counter, 1, STAGE, resource)?;
-    if *counter > maximum {
-        return Err(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        });
-    }
+    super::counter::check_resource_limit(*counter, maximum, resource)?;
     Ok(())
 }
 
@@ -2845,5 +2835,22 @@ mod tests {
             Err(CayleyError::ResourceLimitExceeded { .. })
         ));
         assert_eq!(counter, usize::MAX);
+    }
+
+    #[test]
+    fn local_counter_preserves_its_distinct_post_charge_and_reinitialization_behavior() {
+        let mut over_limit = 0;
+        assert_eq!(
+            charge_counter(&mut over_limit, 0, "post_charge"),
+            Err(CayleyError::ResourceLimitExceeded {
+                stage: STAGE,
+                resource: "post_charge",
+            })
+        );
+        assert_eq!(over_limit, 1);
+
+        let mut initialized = 7;
+        set_fixed_counter(&mut initialized, 2, 2, "reinitialize").unwrap();
+        assert_eq!(initialized, 2);
     }
 }

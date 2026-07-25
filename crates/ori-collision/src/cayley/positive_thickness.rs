@@ -1147,12 +1147,7 @@ fn charge_fixed_prerequisite_work(
         ),
         (6, limits.max_axial_vertex_tests, "axial_vertex_tests"),
     ] {
-        if required > maximum {
-            return Err(CayleyError::ResourceLimitExceeded {
-                stage: STAGE,
-                resource,
-            });
-        }
+        counter::check_resource_limit(required, maximum, resource)?;
     }
     work.authenticated_faces = 2;
     work.authenticated_hinges = 1;
@@ -1164,6 +1159,36 @@ fn charge_fixed_prerequisite_work(
     work.rest_orientation_tests = 2;
     work.axial_vertex_tests = 6;
     Ok(())
+}
+
+#[cfg(test)]
+mod fixed_prerequisite_work_tests {
+    use super::*;
+
+    #[test]
+    fn preflight_accepts_boundary_and_is_failure_atomic() {
+        let limits = SingleTriangularHingePrerequisiteLimits::default();
+        let mut accepted = SingleTriangularHingePrerequisiteWork::default();
+        charge_fixed_prerequisite_work(&mut accepted, &limits).unwrap();
+        assert_eq!(accepted.authenticated_faces, 2);
+        assert_eq!(accepted.axial_vertex_tests, 6);
+
+        let mut rejected = SingleTriangularHingePrerequisiteWork {
+            authenticated_faces: 101,
+            ..SingleTriangularHingePrerequisiteWork::default()
+        };
+        let before = rejected.clone();
+        let mut one_short = limits;
+        one_short.max_axial_vertex_tests = 5;
+        assert_eq!(
+            charge_fixed_prerequisite_work(&mut rejected, &one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                stage: STAGE,
+                resource: "axial_vertex_tests",
+            })
+        );
+        assert_eq!(rejected, before);
+    }
 }
 
 fn validate_exact_pose_rational_inputs(

@@ -676,12 +676,7 @@ fn charge_fixed_work(
             "ef_half_thickness_divisions",
         ),
     ] {
-        if required > maximum {
-            return Err(CayleyError::ResourceLimitExceeded {
-                stage: STAGE,
-                resource,
-            });
-        }
+        super::counter::check_resource_limit(required, maximum, resource)?;
     }
     *work = AxisAlignedEfBoundaryWork {
         authenticated_faces: FACE_COUNT,
@@ -744,4 +739,34 @@ pub(super) fn revalidate_axis_aligned_ef_boundary_v1<'capability, 'prerequisite,
         }
     }
     Some(RevalidatedAxisAlignedEfBoundaryCapabilityV1 { capability })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_work_preflight_accepts_boundary_and_is_failure_atomic() {
+        let limits = AxisAlignedEfBoundaryLimits::default();
+        let mut accepted = AxisAlignedEfBoundaryWork::default();
+        charge_fixed_work(&mut accepted, &limits).unwrap();
+        assert_eq!(accepted.authenticated_faces, FACE_COUNT);
+        assert_eq!(accepted.half_thickness_divisions, HALF_THICKNESS_DIVISIONS);
+
+        let mut rejected = AxisAlignedEfBoundaryWork {
+            authenticated_faces: 101,
+            ..AxisAlignedEfBoundaryWork::default()
+        };
+        let before = rejected.clone();
+        let mut one_short = limits;
+        one_short.max_half_thickness_divisions = HALF_THICKNESS_DIVISIONS - 1;
+        assert_eq!(
+            charge_fixed_work(&mut rejected, &one_short),
+            Err(CayleyError::ResourceLimitExceeded {
+                stage: STAGE,
+                resource: "ef_half_thickness_divisions",
+            })
+        );
+        assert_eq!(rejected, before);
+    }
 }

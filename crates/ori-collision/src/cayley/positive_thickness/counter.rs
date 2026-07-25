@@ -1,4 +1,19 @@
-use super::{CayleyError, STAGE};
+use super::{CayleyError, STAGE, checked_work_sum};
+
+pub(super) fn check_resource_limit(
+    actual: usize,
+    maximum: usize,
+    resource: &'static str,
+) -> Result<(), CayleyError> {
+    if actual > maximum {
+        Err(CayleyError::ResourceLimitExceeded {
+            stage: STAGE,
+            resource,
+        })
+    } else {
+        Ok(())
+    }
+}
 
 pub(super) fn set_fixed_counter(
     counter: &mut usize,
@@ -9,12 +24,7 @@ pub(super) fn set_fixed_counter(
     if *counter != 0 {
         return Err(CayleyError::InvariantFailure { stage: STAGE });
     }
-    if required > maximum {
-        return Err(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        });
-    }
+    check_resource_limit(required, maximum, resource)?;
     *counter = required;
     Ok(())
 }
@@ -24,26 +34,29 @@ pub(super) fn charge_counter(
     maximum: usize,
     resource: &'static str,
 ) -> Result<(), CayleyError> {
-    let next = counter
-        .checked_add(1)
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        })?;
-    if next > maximum {
-        return Err(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        });
-    }
+    let next = checked_work_sum(*counter, 1, STAGE, resource)?;
+    check_resource_limit(next, maximum, resource)?;
     *counter = next;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{charge_counter, set_fixed_counter};
+    use super::{charge_counter, check_resource_limit, set_fixed_counter};
     use crate::cayley::{CayleyError, CayleyStage};
+
+    #[test]
+    fn resource_limit_and_counters_accept_the_exact_boundary() {
+        assert_eq!(check_resource_limit(2, 2, "boundary"), Ok(()));
+
+        let mut fixed = 0;
+        set_fixed_counter(&mut fixed, 2, 2, "fixed").unwrap();
+        assert_eq!(fixed, 2);
+
+        let mut charged = 1;
+        charge_counter(&mut charged, 2, "charged").unwrap();
+        assert_eq!(charged, 2);
+    }
 
     #[test]
     fn fixed_counter_rejects_nonzero_before_resource_limit_without_mutation() {

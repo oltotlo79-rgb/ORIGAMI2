@@ -385,11 +385,11 @@ impl<'a> WorkMeter<'a> {
     }
 
     fn operation(&mut self, stage: CayleyStage) -> Result<(), CayleyError> {
-        let next = self.work.interval_operations.checked_add(1).ok_or(
-            CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "interval_operations",
-            },
+        let next = checked_work_sum(
+            self.work.interval_operations,
+            1,
+            stage,
+            "interval_operations",
         )?;
         if next > self.limits.max_interval_operations {
             return Err(CayleyError::ResourceLimitExceeded {
@@ -408,14 +408,7 @@ impl<'a> WorkMeter<'a> {
                 resource: "machin_terms",
             });
         }
-        let next =
-            self.work
-                .machin_terms
-                .checked_add(1)
-                .ok_or(CayleyError::ResourceLimitExceeded {
-                    stage,
-                    resource: "machin_terms",
-                })?;
+        let next = checked_work_sum(self.work.machin_terms, 1, stage, "machin_terms")?;
         if self
             .total_term_limits
             .is_some_and(|limits| next > limits.machin_terms)
@@ -438,14 +431,7 @@ impl<'a> WorkMeter<'a> {
                 resource: "trig_terms",
             });
         }
-        let next =
-            self.work
-                .trig_terms
-                .checked_add(1)
-                .ok_or(CayleyError::ResourceLimitExceeded {
-                    stage,
-                    resource: "trig_terms",
-                })?;
+        let next = checked_work_sum(self.work.trig_terms, 1, stage, "trig_terms")?;
         if self
             .total_term_limits
             .is_some_and(|limits| next > limits.trig_terms)
@@ -472,12 +458,7 @@ impl<'a> WorkMeter<'a> {
                 resource: "sqrt_refinements",
             });
         }
-        let next = self.work.sqrt_refinements.checked_add(1).ok_or(
-            CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "sqrt_refinements",
-            },
-        )?;
+        let next = checked_work_sum(self.work.sqrt_refinements, 1, stage, "sqrt_refinements")?;
         if self
             .total_term_limits
             .is_some_and(|limits| next > limits.sqrt_refinements)
@@ -5951,6 +5932,22 @@ mod tests {
             sqrt_refinements: expected.sqrt_refinements,
         };
         (limits, totals)
+    }
+
+    #[test]
+    fn checked_work_sum_overflow_preserves_stage_and_resource() {
+        assert_eq!(
+            checked_work_sum(
+                usize::MAX,
+                1,
+                CayleyStage::Containment,
+                "test_work_resource",
+            ),
+            Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Containment,
+                resource: "test_work_resource",
+            })
+        );
     }
 
     #[test]

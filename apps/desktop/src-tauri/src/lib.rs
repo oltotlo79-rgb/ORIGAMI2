@@ -5176,14 +5176,12 @@ fn apply_beginner_symmetric_parameters(
     if !confirmed || !(10..=45).contains(&scale_percent) || !(20..=80).contains(&spacing_percent) {
         return Err("symmetric_parameter_confirmation_required".to_owned());
     }
-    let mut project = lock_and_expect(
-        &state,
-        ProjectExpectation::new(
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-        ),
-    )?;
+    let expectation = ProjectExpectation::new(
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    );
+    let mut project = lock_and_expect(&state, expectation)?;
     let mut profile = project.editor.beginner_design_profile().clone();
     let live = ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints)
         .ok_or_else(|| "symmetric_parameter_estimate_stale".to_owned())?;
@@ -5191,11 +5189,9 @@ fn apply_beginner_symmetric_parameters(
         return Err("symmetric_parameter_estimate_stale".to_owned());
     }
     configure_symmetric_profile(&mut profile, live, scale_percent, spacing_percent);
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        expectation,
         Command::UpdateBeginnerDesignProfile {
             profile: Box::new(profile),
         },
@@ -5211,14 +5207,12 @@ fn archive_beginner_reference_model_asset(
     asset_id: AssetId,
     archived: bool,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_and_expect(
-        &state,
-        ProjectExpectation::new(
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-        ),
-    )?;
+    let expectation = ProjectExpectation::new(
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    );
+    let mut project = lock_and_expect(&state, expectation)?;
     if !project
         .reference_model_assets
         .iter()
@@ -5238,11 +5232,9 @@ fn archive_beginner_reference_model_asset(
             profile.generation_constraints.target_asset = None;
         }
     }
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        expectation,
         Command::UpdateBeginnerDesignProfile {
             profile: Box::new(profile),
         },
@@ -6362,6 +6354,11 @@ fn update_beginner_design_profile(
     if !ori_domain::validate_beginner_design_profile_v1(&profile) {
         return Err("invalid beginner design profile".to_owned());
     }
+    let expectation = ProjectExpectation::new(
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    );
     let mut project = lock_project(&state)?;
     if !target_asset_reference_is_live(&project, profile.generation_constraints.target_asset) {
         return Err("the target reference image is unavailable".to_owned());
@@ -6381,11 +6378,9 @@ fn update_beginner_design_profile(
     {
         return Err("the 3D bulge target fold-model binding is stale".to_owned());
     }
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        expectation,
         Command::UpdateBeginnerDesignProfile {
             profile: Box::new(profile),
         },
@@ -6410,14 +6405,12 @@ fn update_beginner_reference_consensus(
     if !(2..=4).contains(&selections.len()) {
         return Err("reference_consensus_selection_count".to_owned());
     }
-    let mut project = lock_and_expect(
-        &state,
-        ProjectExpectation::new(
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-        ),
-    )?;
+    let expectation = ProjectExpectation::new(
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    );
+    let mut project = lock_and_expect(&state, expectation)?;
     let mut canonical = selections;
     canonical.sort_by_key(|selection| selection.asset_id.canonical_bytes());
     if canonical
@@ -6465,11 +6458,9 @@ fn update_beginner_reference_consensus(
         bindings,
         excluded_asset_id: None,
     });
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        expectation,
         Command::UpdateBeginnerDesignProfile {
             profile: Box::new(profile),
         },
@@ -6626,14 +6617,12 @@ fn activate_beginner_reference_model_asset(
     expected_revision: u64,
     asset_id: AssetId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_and_expect(
-        &state,
-        ProjectExpectation::new(
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-        ),
-    )?;
+    let expectation = ProjectExpectation::new(
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    );
+    let mut project = lock_and_expect(&state, expectation)?;
     if !project
         .reference_model_assets
         .iter()
@@ -6644,11 +6633,9 @@ fn activate_beginner_reference_model_asset(
     let mut profile = project.editor.beginner_design_profile().clone();
     profile.generation_constraints.target_asset =
         Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id });
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        expectation,
         Command::UpdateBeginnerDesignProfile {
             profile: Box::new(profile),
         },
@@ -7711,14 +7698,12 @@ fn apply_beginner_reference_model_features(
     if !confirmed {
         return Err("reference_model_suggestion_confirmation_required".to_owned());
     }
-    let mut project = lock_and_expect(
-        &state,
-        ProjectExpectation::new(
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-        ),
-    )?;
+    let expectation = ProjectExpectation::new(
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    );
+    let mut project = lock_and_expect(&state, expectation)?;
     let mut profile = project.editor.beginner_design_profile().clone();
     let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id }) =
         profile.generation_constraints.target_asset
@@ -7914,11 +7899,9 @@ fn apply_beginner_reference_model_features(
     if !ori_domain::validate_beginner_design_profile_v1(&profile) {
         return Err("reference_model_suggestion_invalid".to_owned());
     }
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        expectation,
         Command::UpdateBeginnerDesignProfile {
             profile: Box::new(profile),
         },
@@ -9411,14 +9394,17 @@ fn add_vertex(
     x_expression: String,
     y_expression: String,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    validate_coordinate_expression_pair(&x_expression, &y_expression, x, y)?;
-    let id = VertexId::new();
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_project(&state)?;
+    validate_coordinate_expression_pair(&x_expression, &y_expression, x, y)?;
+    let id = VertexId::new();
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::AddVertex {
             id,
             position: Point2::new(x, y),
@@ -9446,13 +9432,16 @@ fn move_vertex(
     x_expression: String,
     y_expression: String,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    validate_coordinate_expression_pair(&x_expression, &y_expression, x, y)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_project(&state)?;
+    validate_coordinate_expression_pair(&x_expression, &y_expression, x, y)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::MoveVertex {
             id,
             position: Point2::new(x, y),
@@ -9516,11 +9505,13 @@ fn move_edge(
     {
         return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
     }
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::MoveEdge {
             id,
             start_position,
@@ -9699,19 +9690,15 @@ fn apply_mirror_selection(
     expected_revision: u64,
     request: MirrorSelectionRequestV1,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_and_expect(
-        &state,
-        ProjectExpectation::new(
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-        ),
-    )?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_and_expect(&state, expectation)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::MirrorSelection {
             vertices: request.vertices,
             edges: request.edges,
@@ -10170,11 +10157,13 @@ fn transform_edge_points(
     {
         return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
     }
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::MoveEdge {
             id,
             start_position,
@@ -10235,11 +10224,13 @@ fn move_vertices(
         }
         planned.push((vertex, previous, position));
     }
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::MoveVertices {
             updates: planned
                 .iter()

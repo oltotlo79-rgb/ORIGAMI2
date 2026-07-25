@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const app = source('../src/App.tsx')
+const timelineHook = source('../src/lib/useFoldTechniqueTimelineProposal.ts')
 const dialog = source('../src/components/FoldTechniqueTimelinePreviewDialog.tsx')
 const proposal = source('../src/lib/foldTechniqueTimelineProposal.ts')
 const client = source('../src/lib/coreClient.ts')
@@ -10,13 +11,13 @@ const native = source('../src-tauri/src/lib.rs')
 
 test('App binds the proposal to the exact project instance, revision, document, and selection', () => {
   const preview = section(
-    app,
-    'function previewSelectedFoldTechniqueTimeline(',
-    'function closeFoldTechniqueTimelinePreview(',
+    timelineHook,
+    'function previewSelected(',
+    'function closePreview(',
   )
   assert.match(
     preview,
-    /createFoldTechniqueTimelineProposalV1\(\s*workspace\.document,\s*foldTechniqueSelectedIndex,\s*locale,\s*current\.instruction_timeline\.steps\.length,\s*\)/u,
+    /createFoldTechniqueTimelineProposalV1\(\s*workspace\.document,\s*input\.selectedIndex,\s*input\.locale,\s*current\.instruction_timeline\.steps\.length,\s*\)/u,
   )
   assert.match(preview, /sourceDocument: workspace\.document/u)
   assert.match(preview, /expectedProjectInstanceId: current\.project_instance_id/u)
@@ -24,9 +25,9 @@ test('App binds the proposal to the exact project instance, revision, document, 
   assert.match(preview, /expectedRevision: current\.revision/u)
 
   const stale = section(
-    app,
-    'const foldTechniqueTimelinePreviewStale = Boolean(',
-    'const modalOpen = newProjectOpen',
+    timelineHook,
+    'const stale = useMemo(() => Boolean(',
+    'function previewSelected(',
   )
   for (const binding of [
     'expectedProjectInstanceId',
@@ -43,14 +44,14 @@ test('App binds the proposal to the exact project instance, revision, document, 
 
 test('confirmation is one atomic native edit and never dispatches a pose or physical fold', () => {
   const confirm = section(
-    app,
-    'async function confirmFoldTechniqueTimelineProposal()',
-    'async function beginFoldImport()',
+    timelineHook,
+    'async function confirmProposal()',
+    'return {',
   )
-  assert.match(confirm, /succeeded = await runNativeEdit\(/u)
+  assert.match(confirm, /succeeded = await input\.runNativeEdit\(/u)
   assert.match(
     confirm,
-    /appendNamedTechniqueInstructionSteps\(\s*projectId,\s*revision,\s*projectInstanceId,\s*pending\.preview\.proposal,\s*\)/u,
+    /appendProposal\(\s*projectId,\s*revision,\s*projectInstanceId,\s*pending\.preview\.proposal,\s*\)/u,
   )
   assert.match(confirm, /1回のUndoで戻せます/u)
   assert.match(confirm, /One Undo removes the complete addition/u)
@@ -58,14 +59,14 @@ test('confirmation is one atomic native edit and never dispatches a pose or phys
     confirm,
     /addInstructionStep|replaceInstructionStepPose|applyInstructionStepPose|straightLineStackedFold/u,
   )
-  assert.match(confirm, /ownedRequestActive\(foldTechniqueTimelineRequestGateRef\.current\)/u)
+  assert.match(confirm, /ownedRequestActive\(requestGateRef\.current\)/u)
   assert.match(
     confirm,
-    /const requestId = tryBeginOwnedRequest\(\s*foldTechniqueTimelineRequestGateRef\.current,\s*\)/u,
+    /const requestId = tryBeginOwnedRequest\(requestGateRef\.current\)/u,
   )
   assert.match(
     confirm,
-    /if \(!completeOwnedRequest\(\s*foldTechniqueTimelineRequestGateRef\.current,\s*requestId,\s*\)\) return[\s\S]*?setFoldTechniqueTimelineBusy\(false\)/u,
+    /if \(!completeOwnedRequest\(requestGateRef\.current, requestId\)\) return[\s\S]*?setBusy\(false\)/u,
   )
 
   const nativeCommand = section(

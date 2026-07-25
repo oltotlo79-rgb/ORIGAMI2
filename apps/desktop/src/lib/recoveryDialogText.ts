@@ -1,4 +1,8 @@
-import type { LocalizedText } from './i18n.ts'
+import {
+  selectLocalizedText,
+  type Locale,
+  type LocalizedText,
+} from './i18n.ts'
 
 export const RECOVERY_DIALOG_TEXT: Readonly<Record<
   | 'eyebrow' | 'availableTitle' | 'invalidTitle' | 'availableDescription'
@@ -36,3 +40,29 @@ export const RECOVERY_DIALOG_TEXT: Readonly<Record<
   noTimestamp: Object.freeze({ ja: '記録なし', en: 'No record' }),
   unavailable: Object.freeze({ ja: '確認できません', en: 'Unavailable' }),
 })
+
+const RECOVERY_TIMESTAMP_LOCALES = Object.freeze({
+  ja: 'ja-JP',
+  en: 'en-US',
+}) satisfies Readonly<Record<Locale, string>>
+
+export function formatRecoveryTimestamp(
+  timestamp: number | null,
+  locale: Locale,
+): string {
+  if (timestamp === null) {
+    return selectLocalizedText(locale, RECOVERY_DIALOG_TEXT.noTimestamp)
+  }
+  try {
+    const date = new Date(timestamp)
+    if (!Number.isFinite(date.getTime())) {
+      return selectLocalizedText(locale, RECOVERY_DIALOG_TEXT.unavailable)
+    }
+    return new Intl.DateTimeFormat(RECOVERY_TIMESTAMP_LOCALES[locale], {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(date)
+  } catch {
+    return selectLocalizedText(locale, RECOVERY_DIALOG_TEXT.unavailable)
+  }
+}

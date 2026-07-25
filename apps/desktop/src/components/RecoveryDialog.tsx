@@ -8,11 +8,13 @@ import {
   localeStore,
   selectLocalizedText,
   useLocale,
-  type Locale,
   type LocaleStore,
   type LocalizedText,
 } from '../lib/i18n.ts'
-import { RECOVERY_DIALOG_TEXT } from '../lib/recoveryDialogText.ts'
+import {
+  formatRecoveryTimestamp,
+  RECOVERY_DIALOG_TEXT,
+} from '../lib/recoveryDialogText.ts'
 import './RecoveryDialog.css'
 
 export type RecoveryDialogProps = Readonly<{
@@ -316,25 +318,4 @@ export function RecoveryDialog({
       </section>
     </div>
   )
-}
-
-function formatRecoveryTimestamp(
-  timestamp: number | null,
-  locale: Locale,
-): string {
-  if (timestamp === null) {
-    return selectLocalizedText(locale, RECOVERY_DIALOG_TEXT.noTimestamp)
-  }
-  try {
-    const date = new Date(timestamp)
-    if (!Number.isFinite(date.getTime())) {
-      return selectLocalizedText(locale, RECOVERY_DIALOG_TEXT.unavailable)
-    }
-    return new Intl.DateTimeFormat(locale === 'ja' ? 'ja-JP' : 'en-US', {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    }).format(date)
-  } catch {
-    return selectLocalizedText(locale, RECOVERY_DIALOG_TEXT.unavailable)
-  }
 }

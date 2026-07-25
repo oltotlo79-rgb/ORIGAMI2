@@ -555,7 +555,6 @@ struct StaticCollisionProof {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SharedHingeCoverageDispositionV1 {
-    FiniteCorridorAllowed,
     IndependentSolidAllowed,
 }
 
@@ -647,9 +646,10 @@ impl NativeStaticCollisionGeometryProof {
         self.proof.analyzed_unordered_face_pairs
     }
 
-    /// Number of authenticated triangle pairs required by the complete
-    /// face-pair analysis. The current public multi-face proof remains
-    /// blocking at every tree hinge until the finite hinge model exists.
+    /// Number of authenticated triangular-prism pairs required by the complete
+    /// face-pair analysis. The independent exact E/F finite-solid classifier
+    /// currently admits only a two-face/one-hinge pose; multi-face hinges stay
+    /// unresolved and block proof issuance.
     #[must_use]
     pub fn expected_triangle_pairs(&self) -> usize {
         self.proof.expected_triangle_pairs
@@ -1000,20 +1000,6 @@ pub fn prove_static_collision_geometry(
                             ],
                         });
                     }
-                    _ if matches!(
-                        pair.disposition,
-                        PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed
-                    ) && pose.hinge_angles().iter().any(|angle| {
-                        angle.edge() == hinge.edge()
-                            && angle.angle_degrees().to_bits() != 90.0_f64.to_bits()
-                            && angle.angle_degrees().to_bits() != 180.0_f64.to_bits()
-                    }) =>
-                    {
-                        shared_hinge_coverage.push(SharedHingeCoverageV1 {
-                            hinge: hinge.clone(),
-                            disposition: SharedHingeCoverageDispositionV1::FiniteCorridorAllowed,
-                        });
-                    }
                     _ => {
                         return Err(StaticCollisionError::PairEvidenceUnavailable {
                             expected_unordered_face_pairs,
@@ -1113,11 +1099,12 @@ pub fn prove_static_collision_geometry(
     // aggregate is for this exact pose instance, that face identity/order is
     // the pose's canonical registry, and that every unordered face pair and
     // every constituent triangle pair was covered.
-    // Multi-face public geometry proofs are issued only by the positive-
-    // thickness all-triangle branch above, after complete shared-hinge
-    // corridor coverage and absence of penetration have both been proved.
-    // This zero-thickness fall-through does not construct a proof; unless it
-    // proves a blocking penetration below, it fail-closes with
+    // The positive-thickness all-triangle branch above completes its prism
+    // scan before asking the independent exact E/F classifier to admit every
+    // hinge. That classifier currently supports only two faces/one hinge, so
+    // every multi-face proof attempt fail-closes on unresolved hinge evidence.
+    // This zero-thickness fall-through also does not construct a proof; unless
+    // it proves a blocking penetration below, it returns
     // `PairEvidenceUnavailable`.
     if scan.blocking_unordered_face_pairs > scan.enumerated_unordered_face_pairs {
         return Err(StaticCollisionError::InconsistentMaterialPose);

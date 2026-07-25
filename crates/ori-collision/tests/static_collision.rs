@@ -1426,7 +1426,7 @@ fn positive_thickness_exact_prism_safe_proof_admits_shared_hinge_with_finite_bou
 }
 
 #[test]
-fn three_face_positive_thickness_proof_admits_the_finite_vertex_corridor() {
+fn three_face_positive_thickness_proof_rejects_unresolved_hinge_solids() {
     for (reverse_source, reverse_root, thickness) in
         [(false, false, 0.1), (true, true, 1.0), (false, true, 3.0)]
     {
@@ -1446,18 +1446,41 @@ fn three_face_positive_thickness_proof_admits_the_finite_vertex_corridor() {
         )
         .unwrap();
         let pose = fixture.model.solve(Some(root), &angles).unwrap();
-        let proof = prove_static_collision_geometry(
-            &fixture.model,
-            &pose,
-            thickness,
-            StaticCollisionLimits::default(),
-        )
-        .expect("two hinge corridors and one vertex corridor");
-        assert!(proof.is_for_geometry(&fixture.model, &pose, thickness));
-        assert_eq!(proof.expected_unordered_face_pairs(), 3);
-        assert_eq!(proof.analyzed_unordered_face_pairs(), 3);
-        assert_eq!(proof.expected_shared_hinges(), 2);
-        assert_eq!(proof.analyzed_shared_hinges(), 2);
+        if thickness == 0.1 {
+            let diagnostic = diagnose_static_collision_geometry(
+                &fixture.model,
+                &pose,
+                thickness,
+                StaticCollisionLimits::default(),
+            )
+            .expect("complete three-face diagnostic");
+            let hinge_pairs = diagnostic
+                .pairs()
+                .iter()
+                .filter(|pair| matches!(pair.topology(), TopologyRelation::SharedHingeEdge))
+                .collect::<Vec<_>>();
+            assert_eq!(hinge_pairs.len(), 2);
+            assert!(hinge_pairs.iter().all(|pair| {
+                pair.shared_hinge_solid_classified()
+                    && pair.evidence() == IntersectionEvidenceV2::Indeterminate
+                    && pair.policy_decision() == TopologyContactDecision::Indeterminate
+                    && pair.disposition() == StaticCollisionPairDisposition::Indeterminate
+            }));
+        }
+        assert!(
+            matches!(
+                prove_static_collision_geometry(
+                    &fixture.model,
+                    &pose,
+                    thickness,
+                    StaticCollisionLimits::default(),
+                ),
+                Err(StaticCollisionError::PairEvidenceUnavailable {
+                    expected_unordered_face_pairs: 3,
+                })
+            ),
+            "strict shared-hinge solid evidence is required at {thickness} mm",
+        );
         if thickness == 0.1 {
             assert!(matches!(
                 prove_static_collision_geometry(
@@ -1476,7 +1499,7 @@ fn three_face_positive_thickness_proof_admits_the_finite_vertex_corridor() {
 }
 
 #[test]
-fn four_to_sixteen_face_positive_thickness_fans_scan_every_pair() {
+fn four_to_sixteen_face_positive_thickness_fans_fail_closed_after_scanning_every_pair() {
     for (face_count, reverse_source, reverse_root, thickness) in [
         (4, false, false, 0.1),
         (8, true, true, 1.0),
@@ -1499,32 +1522,38 @@ fn four_to_sixteen_face_positive_thickness_fans_scan_every_pair() {
         .unwrap();
         let pose = fixture.model.solve(Some(root), &angles).unwrap();
         let expected_pairs = face_count * (face_count - 1) / 2;
-        let proof = prove_static_collision_geometry(
+        let diagnostic = diagnose_static_collision_geometry(
             &fixture.model,
             &pose,
             thickness,
             StaticCollisionLimits::default(),
         )
-        .expect("bounded fan proof");
-        assert_eq!(proof.expected_unordered_face_pairs(), expected_pairs);
-        assert_eq!(proof.analyzed_unordered_face_pairs(), expected_pairs);
-        assert_eq!(proof.expected_shared_hinges(), face_count - 1);
-        assert_eq!(proof.analyzed_shared_hinges(), face_count - 1);
-        assert!(proof.is_for_geometry(&fixture.model, &pose, thickness));
-        if face_count == 16 {
-            assert!(matches!(
-                prove_static_collision_geometry(
-                    &fixture.model,
-                    &pose,
-                    thickness,
-                    StaticCollisionLimits {
-                        max_shared_hinge_solid_diagnostics: expected_pairs - 1,
-                        ..StaticCollisionLimits::default()
-                    },
-                ),
-                Err(StaticCollisionError::ResourceLimitExceeded)
-            ));
-        }
+        .expect("complete bounded fan diagnostic");
+        assert_eq!(diagnostic.expected_unordered_face_pairs(), expected_pairs);
+        assert_eq!(diagnostic.pairs().len(), expected_pairs);
+        let hinge_pairs = diagnostic
+            .pairs()
+            .iter()
+            .filter(|pair| matches!(pair.topology(), TopologyRelation::SharedHingeEdge))
+            .collect::<Vec<_>>();
+        assert_eq!(hinge_pairs.len(), face_count - 1);
+        assert!(hinge_pairs.iter().all(|pair| {
+            pair.shared_hinge_solid_classified()
+                && pair.evidence() == IntersectionEvidenceV2::Indeterminate
+                && pair.policy_decision() == TopologyContactDecision::Indeterminate
+                && pair.disposition() == StaticCollisionPairDisposition::Indeterminate
+        }));
+        assert!(matches!(
+            prove_static_collision_geometry(
+                &fixture.model,
+                &pose,
+                thickness,
+                StaticCollisionLimits::default(),
+            ),
+            Err(StaticCollisionError::PairEvidenceUnavailable {
+                expected_unordered_face_pairs,
+            }) if expected_unordered_face_pairs == expected_pairs
+        ));
     }
 }
 

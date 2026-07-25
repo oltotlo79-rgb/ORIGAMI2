@@ -6506,12 +6506,13 @@ fn import_beginner_reference_model(
     expected_revision: u64,
 ) -> Result<ProjectSnapshot, String> {
     {
-        let project = lock_project(&state)?;
-        ensure_expected_project(
-            &project,
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
+        let _project = lock_and_expect(
+            &state,
+            ProjectExpectation::new(
+                expected_project_instance_id,
+                expected_project_id,
+                expected_revision,
+            ),
         )?;
     }
     let selected = app
@@ -6521,12 +6522,13 @@ fn import_beginner_reference_model(
         .add_filter("GLB 2.0", &["glb"])
         .blocking_pick_file();
     let Some(selected) = selected else {
-        let project = lock_project(&state)?;
-        ensure_expected_project(
-            &project,
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
+        let project = lock_and_expect(
+            &state,
+            ProjectExpectation::new(
+                expected_project_instance_id,
+                expected_project_id,
+                expected_revision,
+            ),
         )?;
         return Ok(snapshot(&project));
     };
@@ -8524,12 +8526,13 @@ async fn list_effective_cut_candidates_v1(
         return Err("The fold-model fingerprint must be canonical lowercase SHA-256.".into());
     }
     let input = {
-        let project = lock_project(&state)?;
-        ensure_expected_project(
-            &project,
-            request.expected_project_instance_id,
-            request.expected_project_id,
-            request.expected_revision,
+        let project = lock_and_expect(
+            &state,
+            ProjectExpectation::new(
+                request.expected_project_instance_id,
+                request.expected_project_id,
+                request.expected_revision,
+            ),
         )?;
         if project.editor.fold_model_fingerprint_v1() != request.expected_fold_model_fingerprint {
             return Err("The effective-cut candidate request fingerprint is stale.".into());
@@ -8585,12 +8588,13 @@ async fn inspect_effective_cut_read_only_v1(
 ) -> Result<EffectiveCutReadOnlyResponseV1, String> {
     validate_effective_cut_read_only_request_v1(&request)?;
     let input = {
-        let project = lock_project(&state)?;
-        ensure_expected_project(
-            &project,
-            request.expected_project_instance_id,
-            request.expected_project_id,
-            request.expected_revision,
+        let project = lock_and_expect(
+            &state,
+            ProjectExpectation::new(
+                request.expected_project_instance_id,
+                request.expected_project_id,
+                request.expected_revision,
+            ),
         )?;
         if project.editor.fold_model_fingerprint_v1() != request.expected_fold_model_fingerprint {
             return Err("The effective-cut request fingerprint is stale.".into());
@@ -9062,12 +9066,9 @@ async fn preview_fold_import(
             .map_err(fold_import_task_error)??;
 
     {
-        let project = lock_project(&state)?;
-        ensure_expected_project(
-            &project,
-            expected_instance_id,
-            expected_project_id,
-            expected_revision,
+        let _project = lock_and_expect(
+            &state,
+            ProjectExpectation::new(expected_instance_id, expected_project_id, expected_revision),
         )?;
     }
     let import_id = stage_pending_fold_import(
@@ -9197,12 +9198,9 @@ async fn preview_svg_import(
             .map_err(|_| "SVG import task failed".to_owned())??;
 
     {
-        let project = lock_project(&state)?;
-        ensure_expected_project(
-            &project,
-            expected_instance_id,
-            expected_project_id,
-            expected_revision,
+        let _project = lock_and_expect(
+            &state,
+            ProjectExpectation::new(expected_instance_id, expected_project_id, expected_revision),
         )?;
     }
     let import_id = stage_pending_svg_import(
@@ -11481,12 +11479,13 @@ fn import_underlay_image(
     draft: UnderlayImportDraft,
 ) -> Result<ProjectSnapshot, String> {
     {
-        let project = lock_project(&state)?;
-        ensure_expected_project(
-            &project,
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
+        let _project = lock_and_expect(
+            &state,
+            ProjectExpectation::new(
+                expected_project_instance_id,
+                expected_project_id,
+                expected_revision,
+            ),
         )?;
     }
     let selected = app
@@ -11496,12 +11495,13 @@ fn import_underlay_image(
         .add_filter("PNG or JPEG image", &["png", "jpg", "jpeg"])
         .blocking_pick_file();
     let Some(selected) = selected else {
-        let project = lock_project(&state)?;
-        ensure_expected_project(
-            &project,
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
+        let project = lock_and_expect(
+            &state,
+            ProjectExpectation::new(
+                expected_project_instance_id,
+                expected_project_id,
+                expected_revision,
+            ),
         )?;
         return Ok(snapshot(&project));
     };
@@ -12298,12 +12298,13 @@ fn split_instruction_step(
     expected_revision: u64,
     step_id: InstructionStepId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let mut timeline = project.editor.instruction_timeline().clone();
     let index = timeline
@@ -12342,12 +12343,13 @@ fn merge_adjacent_instruction_steps(
     first_step_id: InstructionStepId,
     second_step_id: InstructionStepId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let mut timeline = project.editor.instruction_timeline().clone();
     let index = timeline

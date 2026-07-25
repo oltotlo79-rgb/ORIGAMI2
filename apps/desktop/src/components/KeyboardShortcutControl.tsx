@@ -20,7 +20,10 @@ import {
   type PortableKeyboardShortcut,
   type SetKeyboardShortcutResult,
 } from '../lib/keyboardShortcutSettings'
-import { KEYBOARD_SHORTCUT_TEXT } from '../lib/keyboardShortcutControlText.ts'
+import {
+  KEYBOARD_SHORTCUT_COMMAND_LABELS,
+  KEYBOARD_SHORTCUT_TEXT,
+} from '../lib/keyboardShortcutControlText.ts'
 
 type KeyboardShortcutControlProps = Readonly<{
   store?: KeyboardShortcutStore
@@ -179,14 +182,3 @@ function shortcutResultError(
     platforms,
   })
 }
-
-const KEYBOARD_SHORTCUT_COMMAND_LABELS: Readonly<
-  Record<KeyboardShortcutCommand, LocalizedText>
-> = Object.freeze({
-  new: Object.freeze({ ja: '新規', en: 'New' }),
-  open: Object.freeze({ ja: '開く', en: 'Open' }),
-  save: Object.freeze({ ja: '保存', en: 'Save' }),
-  save_as: Object.freeze({ ja: '別名保存', en: 'Save as' }),
-  undo: Object.freeze({ ja: '元に戻す', en: 'Undo' }),
-  redo: Object.freeze({ ja: 'やり直す', en: 'Redo' }),
-})

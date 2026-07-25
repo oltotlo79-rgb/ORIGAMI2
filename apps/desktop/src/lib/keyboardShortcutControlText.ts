@@ -1,4 +1,5 @@
 import type { LocalizedText } from './i18n.ts'
+import type { KeyboardShortcutCommand } from './keyboardShortcutSettings.ts'
 
 export const KEYBOARD_SHORTCUT_TEXT: Readonly<Record<
   | 'summary' | 'groupAriaLabel' | 'description' | 'keyAriaLabel'
@@ -29,4 +30,15 @@ export const KEYBOARD_SHORTCUT_TEXT: Readonly<Record<
     en: '{command} conflicts with {conflictingCommand} ({platforms}).',
   }),
   platformJoin: Object.freeze({ ja: '・', en: ' / ' }),
+})
+
+export const KEYBOARD_SHORTCUT_COMMAND_LABELS: Readonly<
+  Record<KeyboardShortcutCommand, LocalizedText>
+> = Object.freeze({
+  new: Object.freeze({ ja: '新規', en: 'New' }),
+  open: Object.freeze({ ja: '開く', en: 'Open' }),
+  save: Object.freeze({ ja: '保存', en: 'Save' }),
+  save_as: Object.freeze({ ja: '別名保存', en: 'Save as' }),
+  undo: Object.freeze({ ja: '元に戻す', en: 'Undo' }),
+  redo: Object.freeze({ ja: 'やり直す', en: 'Redo' }),
 })

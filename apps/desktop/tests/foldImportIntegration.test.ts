@@ -5,6 +5,7 @@ import test from 'node:test'
 const appSource = readSource('../src/App.tsx')
 const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/FoldImportDialog.tsx')
+const dialogTextSource = readSource('../src/lib/foldImportDialogText.ts')
 const foldImportSource = readSource('../src/lib/foldImport.ts')
 const appMessagesSource = readSource('../src/lib/appMessages.ts')
 
@@ -71,6 +72,13 @@ test('the toolbar performs file selection before opening one explicit mapping mo
   )
   assert.match(dialogSource, /role="dialog"/u)
   assert.match(dialogSource, /aria-modal="true"/u)
+  assert.match(
+    dialogSource,
+    /import \{ FOLD_IMPORT_DIALOG_TEXT as FOLD_IMPORT_COPY \} from '\.\.\/lib\/foldImportDialogText\.ts'/u,
+  )
+  assert.doesNotMatch(dialogSource, /const FOLD_IMPORT_COPY\s*=/u)
+  assert.match(dialogTextSource, /線種と縮尺を確認/u)
+  assert.match(dialogTextSource, /Review line types and scale/u)
   assert.match(dialogSource, /initialFoldImportMapping\(preview\.assignments\)/u)
   assert.match(dialogSource, /unresolvedFoldAssignments\(preview\.assignments, mapping\)/u)
   assert.match(

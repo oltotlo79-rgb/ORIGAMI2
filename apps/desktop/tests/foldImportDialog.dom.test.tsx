@@ -91,6 +91,8 @@ describe('FoldImportDialog', () => {
   it('translates labels, mapping options, counts, and actions live', () => {
     localeStore.initialize()
     localeStore.setLocale('en')
+    const onCancel = vi.fn()
+    const onImport = vi.fn<(settings: FoldImportSettings) => void>()
     renderDialog({
       preview: {
         ...PREVIEW,
@@ -101,6 +103,8 @@ describe('FoldImportDialog', () => {
           String.raw`C:\Users\alice\private.fold`,
         ],
       },
+      onCancel,
+      onImport,
     })
 
     expect(screen.getByRole('dialog', {
@@ -130,6 +134,10 @@ describe('FoldImportDialog', () => {
     expect([...flatMapping.options].map((option) => option.textContent))
       .toEqual(['Select a mapping', 'Auxiliary line', 'Do not import'])
     expect(screen.getByRole('button', { name: 'Import' })).toBeTruthy()
+    fireEvent.change(flatMapping, { target: { value: 'auxiliary' } })
+    fireEvent.click(screen.getByLabelText(
+      'I have reviewed the above and want to import the crease pattern',
+    ))
 
     act(() => {
       localeStore.setLocale('ja')
@@ -140,6 +148,14 @@ describe('FoldImportDialog', () => {
     expect(screen.getByRole('button', { name: '取り込む' })).toBeTruthy()
     expect(screen.getByRole('textbox', { name: '作品名' }))
       .toHaveProperty('value', 'FOLDインポート')
+    expect(screen.getByRole('combobox', {
+      name: 'F · 平らな折り筋の割当',
+    })).toHaveProperty('value', 'auxiliary')
+    expect(screen.getByLabelText(
+      '上記を確認し、展開図として取り込む',
+    )).toHaveProperty('checked', true)
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(onImport).not.toHaveBeenCalled()
   })
 
   it('keeps invalid fields blocking and protects a busy import from Escape', () => {

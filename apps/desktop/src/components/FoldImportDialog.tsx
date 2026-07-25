@@ -21,6 +21,7 @@ import {
   type FoldImportSettings,
   type FoldImportTarget,
 } from '../lib/foldImport'
+import { FOLD_IMPORT_DIALOG_TEXT as FOLD_IMPORT_COPY } from '../lib/foldImportDialogText.ts'
 import { useLocale } from '../lib/i18n.ts'
 
 type FoldImportDialogProps = Readonly<{
@@ -37,102 +38,6 @@ const FOCUSABLE_SELECTOR = [
   'select:not([disabled])',
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
-
-const FOLD_IMPORT_COPY = {
-  ja: {
-    eyebrow: 'FOLD 1.0–1.2 取込',
-    title: '線種と縮尺を確認',
-    close: '閉じる',
-    description:
-      '元のFOLDファイルは変更しません。確認後、編集可能な未保存プロジェクトとして取り込みます。',
-    preview: '取り込む展開図のプレビュー',
-    previewUnavailable: 'プレビューを表示できません。',
-    previewTruncated: '表示用に一部の線だけを描画しています。',
-    metadata: {
-      file: 'ファイル',
-      specification: '仕様',
-      unit: '単位',
-      geometry: '形状',
-      boundary: '境界',
-    },
-    unspecified: '記載なし',
-    vertexUnit: '頂点',
-    edgeUnit: '辺',
-    name: '作品名',
-    invalidName: '制御文字を含まない120文字以内の名前が必要です。',
-    scale: '1 FOLD単位の長さ',
-    missingScale: '単位情報がないため、実寸への換算値を指定してください。',
-    sourceUnit: '元の単位',
-    convertedScale: 'から換算した値です。必要なら変更できます。',
-    mappingTitle: '線種の割当',
-    mappingDescription:
-      'F・U・JはORIGAMI2に同じ意味の線種がないため、用途を明示的に選んでください。',
-    boundaryTitle: '用紙外周',
-    boundaryDescription:
-      '検証済み候補から、この作品で使う一枚紙の外周を明示してください。候補外のB線は取り込みません。',
-    boundaryAssigned: '元のB線が単一の有効な外周を構成しています。',
-    boundarySelect: '外周候補を選択してください',
-    boundaryUnavailable:
-      '安全に使える外周候補がありません。このファイルは取り込めません。',
-    lineUnit: '本',
-    boundaryFixed: '用紙境界（固定）',
-    assignmentSuffix: 'の割当',
-    select: '選択してください',
-    unresolved: '未選択',
-    warningTitle: '取り込まれない情報',
-    acknowledge: '上記を確認し、展開図として取り込む',
-    cancel: 'キャンセル',
-    importing: '取込中…',
-    import: '取り込む',
-  },
-  en: {
-    eyebrow: 'Import FOLD 1.0–1.2',
-    title: 'Review line types and scale',
-    close: 'Close',
-    description:
-      'The source FOLD file is not modified. After review, it is imported as an editable unsaved project.',
-    preview: 'Preview of the crease pattern to import',
-    previewUnavailable: 'The preview is unavailable.',
-    previewTruncated: 'Only a subset of lines is drawn in this preview.',
-    metadata: {
-      file: 'File',
-      specification: 'Specification',
-      unit: 'Unit',
-      geometry: 'Geometry',
-      boundary: 'Boundary',
-    },
-    unspecified: 'Not specified',
-    vertexUnit: 'vertices',
-    edgeUnit: 'edges',
-    name: 'Work name',
-    invalidName: 'Enter a name of at most 120 characters without control characters.',
-    scale: 'Length of 1 FOLD unit',
-    missingScale:
-      'No unit metadata is available. Enter a conversion to real-world size.',
-    sourceUnit: 'source unit',
-    convertedScale: ' conversion. Change it if needed.',
-    mappingTitle: 'Line type mapping',
-    mappingDescription:
-      'F, U, and J have no directly equivalent ORIGAMI2 line type. Explicitly choose how to use them.',
-    boundaryTitle: 'Paper boundary',
-    boundaryDescription:
-      'Explicitly select the validated outline of the single sheet. Source B lines outside the selected candidate are not imported.',
-    boundaryAssigned: 'The source B lines form one valid paper boundary.',
-    boundarySelect: 'Select a boundary candidate',
-    boundaryUnavailable:
-      'No boundary candidate can be used safely. This file cannot be imported.',
-    lineUnit: 'lines',
-    boundaryFixed: 'Paper boundary (fixed)',
-    assignmentSuffix: ' mapping',
-    select: 'Select a mapping',
-    unresolved: 'Not selected',
-    warningTitle: 'Information that will not be imported',
-    acknowledge: 'I have reviewed the above and want to import the crease pattern',
-    cancel: 'Cancel',
-    importing: 'Importing…',
-    import: 'Import',
-  },
-} as const
 
 export function FoldImportDialog({
   preview,
@@ -318,9 +223,12 @@ export function FoldImportDialog({
                 <dt>{copy.metadata.geometry}</dt>
                 <dd>
                   {preview.vertex_count.toLocaleString(numberLocale)}
-                  {locale === 'ja' ? `${copy.vertexUnit}・` : ` ${copy.vertexUnit} · `}
+                  {copy.unitPrefix}
+                  {copy.vertexUnit}
+                  {copy.geometrySeparator}
                   {preview.edge_count.toLocaleString(numberLocale)}
-                  {locale === 'ja' ? copy.edgeUnit : ` ${copy.edgeUnit}`}
+                  {copy.unitPrefix}
+                  {copy.edgeUnit}
                 </dd>
               </div>
               <div>
@@ -328,12 +236,11 @@ export function FoldImportDialog({
                 <dd>
                   {(selectedBoundary?.edge_indices.length ?? preview.boundary_edge_count)
                     .toLocaleString(numberLocale)}
-                  {locale === 'ja'
-                    ? copy.edgeUnit
-                    : (selectedBoundary?.edge_indices.length
-                        ?? preview.boundary_edge_count) === 1
-                      ? ' edge'
-                      : ` ${copy.edgeUnit}`}
+                  {copy.unitPrefix}
+                  {(selectedBoundary?.edge_indices.length
+                    ?? preview.boundary_edge_count) === 1
+                    ? copy.edgeUnitOne
+                    : copy.edgeUnit}
                 </dd>
               </div>
             </dl>
@@ -374,7 +281,7 @@ export function FoldImportDialog({
                   aria-describedby="fold-import-scale-help"
                   onChange={(event) => setScaleInput(event.target.value)}
                 />
-                mm
+                {copy.millimetresUnit}
               </span>
               <small id="fold-import-scale-help">
                 {preview.default_mm_per_unit === null
@@ -432,11 +339,8 @@ export function FoldImportDialog({
                     {foldAssignmentLabel(assignment, locale)}{' '}
                     <b>
                       {count.toLocaleString(numberLocale)}
-                      {locale === 'ja'
-                        ? copy.lineUnit
-                        : count === 1
-                          ? ' line'
-                          : ` ${copy.lineUnit}`}
+                      {copy.unitPrefix}
+                      {count === 1 ? copy.lineUnitOne : copy.lineUnit}
                     </b>
                   </span>
                   {assignment === 'B' ? (
@@ -474,7 +378,7 @@ export function FoldImportDialog({
                 {copy.unresolved}:{' '}
                 {unresolved
                   .map((assignment) => foldAssignmentLabel(assignment, locale))
-                  .join(locale === 'ja' ? '、' : ', ')}
+                  .join(copy.listSeparator)}
               </p>
             )}
           </section>

@@ -5,6 +5,7 @@ import test from 'node:test'
 const appSource = read('../src/App.tsx')
 const coordinatorSource = read('../src/lib/globalFlatFoldabilityCoordinator.ts')
 const panelSource = read('../src/components/GlobalFlatFoldabilityPanel.tsx')
+const panelTextSource = read('../src/lib/globalFlatFoldabilityPanelText.ts')
 
 test('App owns one native coordinator and disposes it with the mounted observer', () => {
   assert.match(
@@ -112,6 +113,12 @@ test('the global panel is controlled by coordinator state and exposes start and 
   assert.match(panelSource, /role="status"/u)
   assert.match(panelSource, /aria-live="polite"/u)
   assert.match(panelSource, /ref=\{cancelButtonRef\}/u)
+  assert.match(
+    panelSource,
+    /import \{ GLOBAL_FLAT_FOLDABILITY_PANEL_TEXT as TEXT \} from '\.\.\/lib\/globalFlatFoldabilityPanelText\.ts'/u,
+  )
+  assert.doesNotMatch(panelSource, /function localized\(/u)
+  assert.match(panelTextSource, /全体平坦折り判定/u)
 })
 
 test('opaque transport identity stays inside the coordinator boundary', () => {

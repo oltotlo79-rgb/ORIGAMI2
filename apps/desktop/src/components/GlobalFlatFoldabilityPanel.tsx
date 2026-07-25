@@ -21,10 +21,12 @@ import {
   createGlobalFlatFoldabilityPresentation,
   type GlobalFlatFoldabilityPresentationKind,
 } from '../lib/globalFlatFoldabilityPresentation.ts'
+import { GLOBAL_FLAT_FOLDABILITY_PANEL_TEXT as TEXT } from '../lib/globalFlatFoldabilityPanelText.ts'
 import {
+  formatLocalizedText,
   localeStore,
+  selectLocalizedText,
   useLocale,
-  type Locale,
   type LocaleStore,
 } from '../lib/i18n.ts'
 
@@ -152,25 +154,17 @@ export function GlobalFlatFoldabilityPanel({
       <header className="global-flat-foldability-header">
         <div>
           <span className="global-flat-foldability-eyebrow">
-            {localized(
-              locale,
-              '時間制限つき・3値判定',
-              'Time-limited three-way result',
-            )}
+            {selectLocalizedText(locale, TEXT.eyebrow)}
           </span>
           <h3 id={titleId}>
-            {localized(
-              locale,
-              '全体平坦折り判定',
-              'Global flat-foldability check',
-            )}
+            {selectLocalizedText(locale, TEXT.title)}
           </h3>
         </div>
       </header>
 
       <div className="global-flat-foldability-controls">
         <label>
-          <span>{localized(locale, '時間制限', 'Time limit')}</span>
+          <span>{selectLocalizedText(locale, TEXT.timeLimit)}</span>
           <select
             value={selectedTimeLimit}
             disabled={presentation.active}
@@ -182,11 +176,7 @@ export function GlobalFlatFoldabilityPanel({
           >
             {GLOBAL_FLAT_FOLDABILITY_TIME_PRESETS.map((seconds) => (
               <option key={seconds} value={seconds}>
-                {localized(
-                  locale,
-                  `${seconds}秒`,
-                  `${seconds} seconds`,
-                )}
+                {formatLocalizedText(locale, TEXT.seconds, { seconds })}
               </option>
             ))}
           </select>
@@ -199,10 +189,10 @@ export function GlobalFlatFoldabilityPanel({
           onClick={() => onStart(selectedTimeLimit)}
         >
           {presentation.active
-            ? localized(locale, '判定中…', 'Checking…')
+            ? selectLocalizedText(locale, TEXT.checking)
             : hasTerminalResult
-              ? localized(locale, '再判定', 'Run again')
-              : localized(locale, '判定を開始', 'Start check')}
+              ? selectLocalizedText(locale, TEXT.runAgain)
+              : selectLocalizedText(locale, TEXT.start)}
         </button>
       </div>
 
@@ -237,12 +227,8 @@ export function GlobalFlatFoldabilityPanel({
               onClick={onCancel}
             >
               {presentation.cancelRequested
-                ? localized(
-                  locale,
-                  '中止（要求済み）',
-                  'Cancel requested',
-                )
-                : localized(locale, '判定を中止', 'Cancel check')}
+                ? selectLocalizedText(locale, TEXT.cancelRequested)
+                : selectLocalizedText(locale, TEXT.cancel)}
             </button>
           </div>
         )}
@@ -296,36 +282,20 @@ export function GlobalFlatFoldabilityPanel({
       )}
       {presentation.kind === 'possible' && layerViewStatus === 'failed' && (
         <p role="alert" className="global-flat-foldability-layer-unavailable">
-          {localized(
-            locale,
-            '認証済みの層順序表示を取得できませんでした。この状態を「重なりなし」と解釈しないでください。',
-            'The certified layer-order view is unavailable. Do not interpret this as having no overlaps.',
-          )}
+          {selectLocalizedText(locale, TEXT.layerUnavailable)}
         </p>
       )}
 
       <aside
         id={cautionId}
         className="global-flat-foldability-caution"
-        aria-label={localized(
-          locale,
-          '判定結果の重要な制約',
-          'Important limitations of the result',
-        )}
+        aria-label={selectLocalizedText(locale, TEXT.limitationsLabel)}
       >
         <strong>
-          {localized(
-            locale,
-            '「可」が保証しないこと',
-            'What “Possible” does not guarantee',
-          )}
+          {selectLocalizedText(locale, TEXT.limitationsTitle)}
         </strong>
         <p>
-          {localized(
-            locale,
-            '理想的な厚さ0の判定です。紙厚や層ずれを含めて折れること、手で折りやすいこと、平坦状態まで安全にたどれる連続した折り経路があることは保証しません。',
-            'This check uses an ideal zero-thickness model. It does not guarantee foldability with paper thickness or layer offsets, ease of folding by hand, or a continuous collision-safe path to the flat state.',
-          )}
+          {selectLocalizedText(locale, TEXT.limitationsDetail)}
         </p>
       </aside>
 
@@ -344,8 +314,4 @@ export function GlobalFlatFoldabilityPanel({
 
 function isActiveKind(kind: GlobalFlatFoldabilityPresentationKind) {
   return kind === 'queued' || kind === 'running'
-}
-
-function localized(locale: Locale, ja: string, en: string): string {
-  return locale === 'en' ? en : ja
 }

@@ -77,13 +77,35 @@ test('the toolbar performs file selection before opening one explicit mapping mo
   assert.match(dialogSource, /aria-modal="true"/u)
   assert.match(
     dialogSource,
-    /import \{ FOLD_IMPORT_DIALOG_TEXT as FOLD_IMPORT_COPY \} from '\.\.\/lib\/foldImportDialogText\.ts'/u,
+    /import \{[\s\S]*?FOLD_IMPORT_DIALOG_TEXT as FOLD_IMPORT_COPY,[\s\S]*?formatFoldImportGeometry,[\s\S]*?\} from '\.\.\/lib\/foldImportDialogText\.ts'/u,
   )
   assert.doesNotMatch(dialogSource, /const FOLD_IMPORT_COPY\s*=/u)
   assert.match(dialogTextSource, /線種と縮尺を確認/u)
   assert.match(dialogTextSource, /Review line types and scale/u)
+  for (const formatter of [
+    'formatFoldImportGeometry',
+    'formatFoldImportBoundaryEdgeCount',
+    'formatFoldImportLineCount',
+    'formatFoldImportConvertedScale',
+    'formatFoldImportBoundaryAssigned',
+    'formatFoldImportAssignmentLabel',
+    'formatFoldImportUnresolvedAssignments',
+  ]) {
+    assert.match(dialogSource, new RegExp(`${formatter}\\(`, 'u'), formatter)
+  }
+  assert.match(dialogSource, /\{copy\.closeGlyph\}/u)
+  assert.doesNotMatch(dialogSource, /\blocale\s*[!=]==?/u)
+  assert.doesNotMatch(dialogSource, /\.toLocaleString\(/u)
   assert.match(dialogSource, /initialFoldImportMapping\(preview\.assignments\)/u)
   assert.match(dialogSource, /unresolvedFoldAssignments\(preview\.assignments, mapping\)/u)
+  assert.match(
+    dialogSource,
+    /<option key=\{option\.value\} value=\{option\.value\}>/u,
+  )
+  assert.match(
+    dialogSource,
+    /const value = event\.target\.value as FoldImportTarget \| ''[\s\S]*?\[assignment\]: value \|\| undefined/u,
+  )
   assert.match(
     dialogSource,
     /onImport\(\{\s*importId: preview\.import_id,\s*name: displayedName\.trim\(\),\s*mmPerUnit: scale,\s*mappings: mapping,\s*boundaryCandidateId: selectedBoundary\.id,\s*\}\)/u,

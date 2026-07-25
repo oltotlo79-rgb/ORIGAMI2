@@ -107,18 +107,27 @@ describe('FoldImportDialog', () => {
       onImport,
     })
 
-    expect(screen.getByRole('dialog', {
+    const dialog = screen.getByRole('dialog', {
       name: 'Review line types and scale',
-    })).toBeTruthy()
-    expect(screen.getByRole('img', {
+    })
+    const previewImage = screen.getByRole('img', {
       name: 'Preview of the crease pattern to import',
-    })).toBeTruthy()
+    })
+    const close = screen.getByRole('button', { name: 'Close' })
+    const nameInput = screen.getByRole('textbox', { name: 'Work name' })
+    const acknowledgement = screen.getByLabelText(
+      'I have reviewed the above and want to import the crease pattern',
+    ) as HTMLInputElement
+    expect(document.activeElement).toBe(nameInput)
+    expect(nameInput.getAttribute('aria-invalid')).toBe('false')
     expect(screen.getByText('3 vertices · 3 edges')).toBeTruthy()
+    expect(screen.getByText('2 edges')).toBeTruthy()
+    expect(screen.getAllByText('1 line')).toHaveLength(2)
+    expect(screen.getByText('cm conversion. Change it if needed.')).toBeTruthy()
     expect(screen.getByText('B · Paper boundary')).toBeTruthy()
     expect(screen.getByText('Paper boundary (fixed)')).toBeTruthy()
     expect(screen.getByText('Selected FOLD file')).toBeTruthy()
-    expect(screen.getByRole('textbox', { name: 'Work name' }))
-      .toHaveProperty('value', 'FOLD import')
+    expect(nameInput).toHaveProperty('value', 'FOLD import')
     expect(screen.getByText(
       'F (flat crease) has no equivalent line type and must be converted to an auxiliary line or excluded.',
     )).toBeTruthy()
@@ -133,27 +142,36 @@ describe('FoldImportDialog', () => {
     }) as HTMLSelectElement
     expect([...flatMapping.options].map((option) => option.textContent))
       .toEqual(['Select a mapping', 'Auxiliary line', 'Do not import'])
-    expect(screen.getByRole('button', { name: 'Import' })).toBeTruthy()
+    const submit = screen.getByRole('button', { name: 'Import' })
     fireEvent.change(flatMapping, { target: { value: 'auxiliary' } })
-    fireEvent.click(screen.getByLabelText(
-      'I have reviewed the above and want to import the crease pattern',
-    ))
+    fireEvent.click(acknowledgement)
 
     act(() => {
       localeStore.setLocale('ja')
     })
     expect(screen.getByRole('dialog', {
       name: '線種と縮尺を確認',
-    })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '取り込む' })).toBeTruthy()
-    expect(screen.getByRole('textbox', { name: '作品名' }))
-      .toHaveProperty('value', 'FOLDインポート')
+    })).toBe(dialog)
+    expect(screen.getByRole('img', {
+      name: '取り込む展開図のプレビュー',
+    })).toBe(previewImage)
+    expect(screen.getByRole('button', { name: '閉じる' })).toBe(close)
+    expect(screen.getByRole('button', { name: '取り込む' })).toBe(submit)
+    expect(screen.getByRole('textbox', { name: '作品名' })).toBe(nameInput)
+    expect(nameInput).toHaveProperty('value', 'FOLDインポート')
     expect(screen.getByRole('combobox', {
       name: 'F · 平らな折り筋の割当',
-    })).toHaveProperty('value', 'auxiliary')
+    })).toBe(flatMapping)
+    expect(flatMapping).toHaveProperty('value', 'auxiliary')
     expect(screen.getByLabelText(
       '上記を確認し、展開図として取り込む',
-    )).toHaveProperty('checked', true)
+    )).toBe(acknowledgement)
+    expect(acknowledgement).toHaveProperty('checked', true)
+    expect(screen.getByText('3頂点・3辺')).toBeTruthy()
+    expect(screen.getByText('2辺')).toBeTruthy()
+    expect(screen.getAllByText('1本')).toHaveLength(2)
+    expect(screen.getByText('cmから換算した値です。必要なら変更できます。'))
+      .toBeTruthy()
     expect(onCancel).not.toHaveBeenCalled()
     expect(onImport).not.toHaveBeenCalled()
   })
@@ -162,12 +180,18 @@ describe('FoldImportDialog', () => {
     const onCancel = vi.fn()
     const { rerender } = renderDialog({ onCancel })
 
-    fireEvent.change(screen.getByRole('textbox', { name: '作品名' }), {
+    const nameInput = screen.getByRole('textbox', { name: '作品名' })
+    const scaleInput = screen.getByRole('spinbutton', {
+      name: /^1 FOLD単位の長さ/u,
+    })
+    fireEvent.change(nameInput, {
       target: { value: '' },
     })
-    fireEvent.change(screen.getByRole('spinbutton', {
-      name: /^1 FOLD単位の長さ/u,
-    }), { target: { value: '0' } })
+    fireEvent.change(scaleInput, { target: { value: '0' } })
+    expect(nameInput.getAttribute('aria-invalid')).toBe('true')
+    expect(nameInput.getAttribute('aria-describedby')).toBe('fold-import-name-help')
+    expect(scaleInput.getAttribute('aria-invalid')).toBe('true')
+    expect(scaleInput.getAttribute('aria-describedby')).toBe('fold-import-scale-help')
     expect(screen.getByText(/120文字以内/u)).toBeTruthy()
     expect(screen.getByRole('button', { name: '取り込む' }))
       .toHaveProperty('disabled', true)

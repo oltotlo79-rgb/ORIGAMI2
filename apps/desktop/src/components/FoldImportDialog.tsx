@@ -21,7 +21,16 @@ import {
   type FoldImportSettings,
   type FoldImportTarget,
 } from '../lib/foldImport'
-import { FOLD_IMPORT_DIALOG_TEXT as FOLD_IMPORT_COPY } from '../lib/foldImportDialogText.ts'
+import {
+  FOLD_IMPORT_DIALOG_TEXT as FOLD_IMPORT_COPY,
+  formatFoldImportAssignmentLabel,
+  formatFoldImportBoundaryAssigned,
+  formatFoldImportBoundaryEdgeCount,
+  formatFoldImportConvertedScale,
+  formatFoldImportGeometry,
+  formatFoldImportLineCount,
+  formatFoldImportUnresolvedAssignments,
+} from '../lib/foldImportDialogText.ts'
 import { useLocale } from '../lib/i18n.ts'
 
 type FoldImportDialogProps = Readonly<{
@@ -48,7 +57,6 @@ export function FoldImportDialog({
 }: FoldImportDialogProps) {
   const locale = useLocale()
   const copy = FOLD_IMPORT_COPY[locale]
-  const numberLocale = locale === 'ja' ? 'ja-JP' : 'en-US'
   const [name, setName] = useState(preview.suggested_name)
   const [usesFallbackName, setUsesFallbackName] = useState(
     () => isFoldImportFallbackName(preview.suggested_name),
@@ -158,7 +166,7 @@ export function FoldImportDialog({
             onClick={onCancel}
             aria-label={copy.close}
           >
-            ×
+            {copy.closeGlyph}
           </button>
         </header>
 
@@ -221,27 +229,19 @@ export function FoldImportDialog({
               </div>
               <div>
                 <dt>{copy.metadata.geometry}</dt>
-                <dd>
-                  {preview.vertex_count.toLocaleString(numberLocale)}
-                  {copy.unitPrefix}
-                  {copy.vertexUnit}
-                  {copy.geometrySeparator}
-                  {preview.edge_count.toLocaleString(numberLocale)}
-                  {copy.unitPrefix}
-                  {copy.edgeUnit}
-                </dd>
+                <dd>{formatFoldImportGeometry(
+                  preview.vertex_count,
+                  preview.edge_count,
+                  locale,
+                )}</dd>
               </div>
               <div>
                 <dt>{copy.metadata.boundary}</dt>
-                <dd>
-                  {(selectedBoundary?.edge_indices.length ?? preview.boundary_edge_count)
-                    .toLocaleString(numberLocale)}
-                  {copy.unitPrefix}
-                  {(selectedBoundary?.edge_indices.length
-                    ?? preview.boundary_edge_count) === 1
-                    ? copy.edgeUnitOne
-                    : copy.edgeUnit}
-                </dd>
+                <dd>{formatFoldImportBoundaryEdgeCount(
+                  selectedBoundary?.edge_indices.length
+                    ?? preview.boundary_edge_count,
+                  locale,
+                )}</dd>
               </div>
             </dl>
           </div>
@@ -286,7 +286,7 @@ export function FoldImportDialog({
               <small id="fold-import-scale-help">
                 {preview.default_mm_per_unit === null
                   ? copy.missingScale
-                  : `${preview.frame_unit ?? copy.sourceUnit}${copy.convertedScale}`}
+                  : formatFoldImportConvertedScale(preview.frame_unit, locale)}
               </small>
             </label>
           </div>
@@ -303,9 +303,11 @@ export function FoldImportDialog({
               </p>
             ) : preview.fixed_boundary_candidate_id !== null ? (
               <p className="fold-import-fixed-mapping">
-                {copy.boundaryAssigned}{' '}
                 {selectedBoundary
-                  ? foldBoundaryCandidateLabel(selectedBoundary, locale)
+                  ? formatFoldImportBoundaryAssigned(
+                      foldBoundaryCandidateLabel(selectedBoundary, locale),
+                      locale,
+                    )
                   : copy.boundaryUnavailable}
               </p>
             ) : (
@@ -336,11 +338,10 @@ export function FoldImportDialog({
               {preview.assignments.map(({ assignment, count }) => (
                 <label key={assignment}>
                   <span>
-                    {foldAssignmentLabel(assignment, locale)}{' '}
+                    {foldAssignmentLabel(assignment, locale)}
+                    {copy.assignmentCountSeparator}
                     <b>
-                      {count.toLocaleString(numberLocale)}
-                      {copy.unitPrefix}
-                      {count === 1 ? copy.lineUnitOne : copy.lineUnit}
+                      {formatFoldImportLineCount(count, locale)}
                     </b>
                   </span>
                   {assignment === 'B' ? (
@@ -352,7 +353,10 @@ export function FoldImportDialog({
                       value={mapping[assignment] ?? ''}
                       disabled={busy}
                       aria-label={
-                        `${foldAssignmentLabel(assignment, locale)}${copy.assignmentSuffix}`
+                        formatFoldImportAssignmentLabel(
+                          foldAssignmentLabel(assignment, locale),
+                          locale,
+                        )
                       }
                       onChange={(event) => {
                         const value = event.target.value as FoldImportTarget | ''
@@ -375,10 +379,12 @@ export function FoldImportDialog({
             </div>
             {unresolved.length > 0 && (
               <p className="fold-import-attention" role="status">
-                {copy.unresolved}:{' '}
-                {unresolved
-                  .map((assignment) => foldAssignmentLabel(assignment, locale))
-                  .join(copy.listSeparator)}
+                {formatFoldImportUnresolvedAssignments(
+                  unresolved.map(
+                    (assignment) => foldAssignmentLabel(assignment, locale),
+                  ),
+                  locale,
+                )}
               </p>
             )}
           </section>

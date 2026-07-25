@@ -1,23 +1,35 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { FOLD_IMPORT_DIALOG_TEXT as TEXT } from '../src/lib/foldImportDialogText.ts'
+import {
+  FOLD_IMPORT_DIALOG_TEXT as TEXT,
+  formatFoldImportAssignmentLabel,
+  formatFoldImportBoundaryAssigned,
+  formatFoldImportBoundaryEdgeCount,
+  formatFoldImportConvertedScale,
+  formatFoldImportGeometry,
+  formatFoldImportLineCount,
+  formatFoldImportUnresolvedAssignments,
+} from '../src/lib/foldImportDialogText.ts'
 
 const EXPECTED_KEYS = [
   'eyebrow',
   'title',
   'close',
+  'closeGlyph',
   'description',
   'preview',
   'previewUnavailable',
   'previewTruncated',
   'metadata',
   'unspecified',
-  'vertexUnit',
-  'edgeUnit',
-  'edgeUnitOne',
-  'unitPrefix',
-  'geometrySeparator',
+  'geometryValue',
+  'boundaryEdgeCount',
+  'boundaryEdgeCountOne',
+  'lineCount',
+  'lineCountOne',
+  'assignmentCountSeparator',
   'listSeparator',
   'millimetresUnit',
   'name',
@@ -25,20 +37,18 @@ const EXPECTED_KEYS = [
   'scale',
   'missingScale',
   'sourceUnit',
-  'convertedScale',
+  'convertedScaleValue',
   'mappingTitle',
   'mappingDescription',
   'boundaryTitle',
   'boundaryDescription',
-  'boundaryAssigned',
+  'boundaryAssignedValue',
   'boundarySelect',
   'boundaryUnavailable',
-  'lineUnit',
-  'lineUnitOne',
   'boundaryFixed',
-  'assignmentSuffix',
+  'assignmentLabel',
   'select',
-  'unresolved',
+  'unresolvedValue',
   'warningTitle',
   'acknowledge',
   'cancel',
@@ -50,6 +60,7 @@ const EXPECTED_TEXT = [
   ['eyebrow', 'FOLD 1.0–1.2 取込', 'Import FOLD 1.0–1.2'],
   ['title', '線種と縮尺を確認', 'Review line types and scale'],
   ['close', '閉じる', 'Close'],
+  ['closeGlyph', '×', '×'],
   [
     'description',
     '元のFOLDファイルは変更しません。確認後、編集可能な未保存プロジェクトとして取り込みます。',
@@ -63,11 +74,12 @@ const EXPECTED_TEXT = [
     'Only a subset of lines is drawn in this preview.',
   ],
   ['unspecified', '記載なし', 'Not specified'],
-  ['vertexUnit', '頂点', 'vertices'],
-  ['edgeUnit', '辺', 'edges'],
-  ['edgeUnitOne', '辺', 'edge'],
-  ['unitPrefix', '', ' '],
-  ['geometrySeparator', '・', ' · '],
+  ['geometryValue', '{vertices}頂点・{edges}辺', '{vertices} vertices · {edges} edges'],
+  ['boundaryEdgeCount', '{count}辺', '{count} edges'],
+  ['boundaryEdgeCountOne', '{count}辺', '{count} edge'],
+  ['lineCount', '{count}本', '{count} lines'],
+  ['lineCountOne', '{count}本', '{count} line'],
+  ['assignmentCountSeparator', ' ', ' '],
   ['listSeparator', '、', ', '],
   ['millimetresUnit', 'mm', 'mm'],
   ['name', '作品名', 'Work name'],
@@ -84,9 +96,9 @@ const EXPECTED_TEXT = [
   ],
   ['sourceUnit', '元の単位', 'source unit'],
   [
-    'convertedScale',
-    'から換算した値です。必要なら変更できます。',
-    ' conversion. Change it if needed.',
+    'convertedScaleValue',
+    '{sourceUnit}から換算した値です。必要なら変更できます。',
+    '{sourceUnit} conversion. Change it if needed.',
   ],
   ['mappingTitle', '線種の割当', 'Line type mapping'],
   [
@@ -101,9 +113,9 @@ const EXPECTED_TEXT = [
     'Explicitly select the validated outline of the single sheet. Source B lines outside the selected candidate are not imported.',
   ],
   [
-    'boundaryAssigned',
-    '元のB線が単一の有効な外周を構成しています。',
-    'The source B lines form one valid paper boundary.',
+    'boundaryAssignedValue',
+    '元のB線が単一の有効な外周を構成しています。 {candidate}',
+    'The source B lines form one valid paper boundary. {candidate}',
   ],
   ['boundarySelect', '外周候補を選択してください', 'Select a boundary candidate'],
   [
@@ -111,12 +123,10 @@ const EXPECTED_TEXT = [
     '安全に使える外周候補がありません。このファイルは取り込めません。',
     'No boundary candidate can be used safely. This file cannot be imported.',
   ],
-  ['lineUnit', '本', 'lines'],
-  ['lineUnitOne', '本', 'line'],
   ['boundaryFixed', '用紙境界（固定）', 'Paper boundary (fixed)'],
-  ['assignmentSuffix', 'の割当', ' mapping'],
+  ['assignmentLabel', '{assignment}の割当', '{assignment} mapping'],
   ['select', '選択してください', 'Select a mapping'],
-  ['unresolved', '未選択', 'Not selected'],
+  ['unresolvedValue', '未選択: {assignments}', 'Not selected: {assignments}'],
   ['warningTitle', '取り込まれない情報', 'Information that will not be imported'],
   [
     'acknowledge',
@@ -159,37 +169,120 @@ test('FOLD import dialog catalog preserves locale shape and exact copy', () => {
   )
 })
 
-test('FOLD import dialog catalog is deeply frozen with no placeholders', () => {
-  assert.equal(Object.isFrozen(TEXT), true)
-  assert.equal(Object.isFrozen(TEXT.ja), true)
-  assert.equal(Object.isFrozen(TEXT.en), true)
-  assert.equal(Object.isFrozen(TEXT.ja.metadata), true)
-  assert.equal(Object.isFrozen(TEXT.en.metadata), true)
-
-  const placeholders: Array<readonly [string, string, string[]]> = []
-  for (const locale of ['ja', 'en'] as const) {
-    for (const [key, value] of Object.entries(TEXT[locale])) {
-      if (typeof value === 'string') {
-        placeholders.push([
-          locale,
-          key,
-          [...value.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/gu)]
-            .map((match) => match[1]),
-        ])
-        continue
-      }
-      for (const [metadataKey, metadataValue] of Object.entries(value)) {
-        placeholders.push([
-          locale,
-          `metadata.${metadataKey}`,
-          [...metadataValue.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/gu)]
-            .map((match) => match[1]),
-        ])
-      }
+test('FOLD import dialog catalog is deeply frozen with matching placeholders', () => {
+  assertDeeplyFrozen(TEXT)
+  for (const key of EXPECTED_KEYS) {
+    const ja = TEXT.ja[key]
+    const en = TEXT.en[key]
+    if (typeof ja === 'string' && typeof en === 'string') {
+      assert.deepEqual(placeholders(ja), placeholders(en), key)
+      continue
+    }
+    assert.deepEqual(Object.keys(ja), Object.keys(en), key)
+    for (const nestedKey of Object.keys(ja)) {
+      assert.deepEqual(
+        placeholders(ja[nestedKey as keyof typeof ja]),
+        placeholders(en[nestedKey as keyof typeof en]),
+        `${key}.${nestedKey}`,
+      )
     }
   }
+
   assert.deepEqual(
-    placeholders.filter(([, , keys]) => keys.length > 0),
-    [],
+    EXPECTED_KEYS.flatMap((key) => {
+      const value = TEXT.ja[key]
+      return typeof value === 'string' && placeholders(value).length > 0
+        ? [[key, placeholders(value)]]
+        : []
+    }),
+    [
+      ['geometryValue', ['vertices', 'edges']],
+      ['boundaryEdgeCount', ['count']],
+      ['boundaryEdgeCountOne', ['count']],
+      ['lineCount', ['count']],
+      ['lineCountOne', ['count']],
+      ['convertedScaleValue', ['sourceUnit']],
+      ['boundaryAssignedValue', ['candidate']],
+      ['assignmentLabel', ['assignment']],
+      ['unresolvedValue', ['assignments']],
+    ],
   )
 })
+
+test('FOLD import dialog formatters preserve locale, singulars, and fallback copy', () => {
+  assert.equal(formatFoldImportGeometry(12_345, 67_890, 'ja'), '12,345頂点・67,890辺')
+  assert.equal(
+    formatFoldImportGeometry(12_345, 67_890, 'en'),
+    '12,345 vertices · 67,890 edges',
+  )
+  assert.equal(formatFoldImportBoundaryEdgeCount(1, 'en'), '1 edge')
+  assert.equal(formatFoldImportBoundaryEdgeCount(2, 'en'), '2 edges')
+  assert.equal(formatFoldImportBoundaryEdgeCount(1_234, 'ja'), '1,234辺')
+  assert.equal(formatFoldImportLineCount(1, 'en'), '1 line')
+  assert.equal(formatFoldImportLineCount(2, 'en'), '2 lines')
+  assert.equal(formatFoldImportLineCount(1_234, 'ja'), '1,234本')
+  assert.equal(
+    formatFoldImportConvertedScale('cm', 'en'),
+    'cm conversion. Change it if needed.',
+  )
+  assert.equal(
+    formatFoldImportConvertedScale(null, 'ja'),
+    '元の単位から換算した値です。必要なら変更できます。',
+  )
+  assert.equal(
+    formatFoldImportBoundaryAssigned('元のB線による外周（2辺）', 'ja'),
+    '元のB線が単一の有効な外周を構成しています。 元のB線による外周（2辺）',
+  )
+  assert.equal(
+    formatFoldImportAssignmentLabel('F · Flat crease', 'en'),
+    'F · Flat crease mapping',
+  )
+  assert.equal(
+    formatFoldImportUnresolvedAssignments(
+      ['F · Flat crease', 'J · Face join'],
+      'en',
+    ),
+    'Not selected: F · Flat crease, J · Face join',
+  )
+})
+
+test('FOLD import dialog delegates display formatting and native copy boundaries', () => {
+  const source = readFileSync(
+    new URL('../src/components/FoldImportDialog.tsx', import.meta.url),
+    'utf8',
+  )
+
+  for (const formatter of [
+    'formatFoldImportGeometry',
+    'formatFoldImportBoundaryEdgeCount',
+    'formatFoldImportLineCount',
+    'formatFoldImportConvertedScale',
+    'formatFoldImportBoundaryAssigned',
+    'formatFoldImportAssignmentLabel',
+    'formatFoldImportUnresolvedAssignments',
+  ]) {
+    assert.match(source, new RegExp(`${formatter}\\(`, 'u'), formatter)
+  }
+  assert.match(source, /\{copy\.closeGlyph\}/u)
+  assert.match(source, /foldImportPreviewFileName\(preview\.file_name, locale\)/u)
+  assert.match(source, /foldImportSuggestedName\(preview\.suggested_name, locale\)/u)
+  assert.match(source, /foldImportWarningMessage\(warning, locale\)/u)
+  assert.match(source, /foldImportTargetLabel\(option\.value, locale\)/u)
+  assert.doesNotMatch(source, /\blocale\s*[!=]==?/u)
+  assert.doesNotMatch(source, /\.toLocaleString\(/u)
+  assert.doesNotMatch(source, /[ぁ-んァ-ン一-龯]/u)
+  assert.doesNotMatch(source, />\s*×\s*</u)
+})
+
+function assertDeeplyFrozen(value: unknown) {
+  if (typeof value !== 'object' || value === null) return
+  assert.equal(Object.isFrozen(value), true)
+  for (const child of Object.values(value)) {
+    assertDeeplyFrozen(child)
+  }
+}
+
+function placeholders(value: string) {
+  return [...value.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/gu)]
+    .map((match) => match[1])
+}

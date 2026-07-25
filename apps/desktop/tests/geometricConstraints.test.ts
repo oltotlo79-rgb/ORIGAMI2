@@ -273,6 +273,16 @@ const DIRECT_CONFLICTS = [
     },
     constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
   },
+  {
+    conflict: {
+      kind: 'different_rotational_symmetry_angles_with_fixed_radius',
+      center_vertex: VERTEX_1,
+      source_vertex: VERTEX_2,
+      target_vertex: VERTEX_3,
+      fixed_radius_edge: EDGE_1,
+    },
+    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+  },
 ] as const
 
 test('normalizes, detaches, and deeply freezes all eleven document kinds', () => {
@@ -667,7 +677,7 @@ test('presentation also fails closed for malformed or hostile records', () => {
   assert.equal(getterCalls, 0)
 })
 
-test('normalizes all seventeen direct-conflict kinds and the bounded direct MUS', () => {
+test('normalizes all eighteen direct-conflict kinds and the bounded direct MUS', () => {
   const raw = response({
     status: 'direct_conflict',
     conflicts: DIRECT_CONFLICTS,
@@ -683,7 +693,7 @@ test('normalizes all seventeen direct-conflict kinds and the bounded direct MUS'
     normalized?.result.status === 'direct_conflict'
       ? normalized.result.conflicts.length
       : 0,
-    17,
+    18,
   )
   assert.deepEqual(
     normalized?.result.status === 'direct_conflict'
@@ -988,6 +998,109 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
       conflicts: [{
         conflict: { kind: 'future_conflict', edge: EDGE_1 },
         constraint_ids: [CONSTRAINT_1, CONSTRAINT_2],
+      }],
+    }),
+    ...[
+      // A missing role, an extra field, a non-canonical UUID, and every
+      // pairwise-equal role must all be refused for the rotation witness.
+      {
+        kind: 'different_rotational_symmetry_angles_with_fixed_radius',
+        center_vertex: VERTEX_1,
+        source_vertex: VERTEX_2,
+        target_vertex: VERTEX_3,
+      },
+      {
+        kind: 'different_rotational_symmetry_angles_with_fixed_radius',
+        center_vertex: VERTEX_1,
+        source_vertex: VERTEX_2,
+        target_vertex: VERTEX_3,
+        fixed_radius_edge: EDGE_1,
+        future: true,
+      },
+      {
+        kind: 'different_rotational_symmetry_angles_with_fixed_radius',
+        center_vertex: VERTEX_1.toUpperCase(),
+        source_vertex: VERTEX_2,
+        target_vertex: VERTEX_3,
+        fixed_radius_edge: EDGE_1,
+      },
+      {
+        kind: 'different_rotational_symmetry_angles_with_fixed_radius',
+        center_vertex: VERTEX_1,
+        source_vertex: VERTEX_2,
+        target_vertex: VERTEX_3,
+        fixed_radius_edge: 'not-a-uuid',
+      },
+      {
+        kind: 'different_rotational_symmetry_angles_with_fixed_radius',
+        center_vertex: VERTEX_1,
+        source_vertex: VERTEX_1,
+        target_vertex: VERTEX_3,
+        fixed_radius_edge: EDGE_1,
+      },
+      {
+        kind: 'different_rotational_symmetry_angles_with_fixed_radius',
+        center_vertex: VERTEX_1,
+        source_vertex: VERTEX_2,
+        target_vertex: VERTEX_1,
+        fixed_radius_edge: EDGE_1,
+      },
+      {
+        kind: 'different_rotational_symmetry_angles_with_fixed_radius',
+        center_vertex: VERTEX_1,
+        source_vertex: VERTEX_2,
+        target_vertex: VERTEX_2,
+        fixed_radius_edge: EDGE_1,
+      },
+    ].map((conflict) => response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict,
+        constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+      }],
+    })),
+    response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: {
+          kind: 'different_rotational_symmetry_angles_with_fixed_radius',
+          center_vertex: VERTEX_1,
+          source_vertex: VERTEX_2,
+          target_vertex: VERTEX_3,
+          fixed_radius_edge: EDGE_1,
+        },
+        constraint_ids: [CONSTRAINT_1, CONSTRAINT_1, CONSTRAINT_2],
+      }],
+    }),
+    response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: Object.defineProperty(
+          {
+            kind: 'different_rotational_symmetry_angles_with_fixed_radius',
+            center_vertex: VERTEX_1,
+            source_vertex: VERTEX_2,
+            target_vertex: VERTEX_3,
+          },
+          'fixed_radius_edge',
+          { enumerable: true, get: () => EDGE_1 },
+        ),
+        constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+      }],
+    }),
+    response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: Object.assign(
+          Object.create({ fixed_radius_edge: EDGE_1 }),
+          {
+            kind: 'different_rotational_symmetry_angles_with_fixed_radius',
+            center_vertex: VERTEX_1,
+            source_vertex: VERTEX_2,
+            target_vertex: VERTEX_3,
+          },
+        ),
+        constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
       }],
     }),
     ...[0, 256, 1.5].map((parallel_constraint_count) => response({

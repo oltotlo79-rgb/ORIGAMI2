@@ -405,6 +405,10 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
       '水平・垂直に拘束した2辺へ、直角ではない固定角が指定されています',
       'Horizontally and vertically oriented edges have a non-right fixed angle',
     ),
+    different_rotational_symmetry_angles_with_fixed_radius: text(
+      '同じ回転対称対象へ異なる角度が指定され、正の固定半径と両立しません',
+      'Different angles target the same rotational-symmetry relation and conflict with a positive fixed radius',
+    ),
   }),
   unknownReasonLabels: Object.freeze({
     work_limit_exceeded: text(

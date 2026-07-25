@@ -386,6 +386,21 @@ pub enum DirectConstraintConflictKindV1 {
         horizontal_edge: EdgeId,
         vertical_edge: EdgeId,
     },
+    /// Two rotational-symmetry constraints assign different angles to the same
+    /// role-ordered `center/source/target` triple while a real radius edge of
+    /// that triple carries a consistent positive [`GeometricConstraintKindV1::FixedLength`].
+    ///
+    /// Only the collapsed solution `source == center == target` satisfies both
+    /// rotations, because `det(Rot(alpha) - Rot(beta)) = 4 sin²((alpha - beta) / 2)`
+    /// is non-zero for `0 < alpha, beta < 360` with `alpha != beta`. The positive
+    /// fixed radius forbids that collapse, so the three constraints are jointly
+    /// unsatisfiable. Without such a radius witness the pair stays unchecked.
+    DifferentRotationalSymmetryAnglesWithFixedRadius {
+        center_vertex: VertexId,
+        source_vertex: VertexId,
+        target_vertex: VertexId,
+        fixed_radius_edge: EdgeId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1447,6 +1462,53 @@ struct AngleKey {
     edges: EdgePairKey,
 }
 
+/// Role-ordered rotational-symmetry identity.
+///
+/// The three roles are kept in place, so a swapped `source`/`target` or any
+/// other role permutation is a different relation and never joins the same
+/// angle group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct RotationRoleKey {
+    center: CanonicalId,
+    source: CanonicalId,
+    target: CanonicalId,
+}
+
+impl RotationRoleKey {
+    fn roles(center: VertexId, source: VertexId, target: VertexId) -> Self {
+        Self {
+            center: center.canonical_bytes(),
+            source: source.canonical_bytes(),
+            target: target.canonical_bytes(),
+        }
+    }
+}
+
+/// Canonical unordered vertex pair used to find a real radius edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct VertexPairKey {
+    first: CanonicalId,
+    second: CanonicalId,
+}
+
+impl VertexPairKey {
+    fn unordered(first: VertexId, second: VertexId) -> Self {
+        let first_bytes = first.canonical_bytes();
+        let second_bytes = second.canonical_bytes();
+        if first_bytes < second_bytes {
+            Self {
+                first: first_bytes,
+                second: second_bytes,
+            }
+        } else {
+            Self {
+                first: second_bytes,
+                second: first_bytes,
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ScalarAssignment {
     id: ConstraintId,
@@ -1561,6 +1623,8 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
     let mut vertical: BTreeMap<CanonicalId, Vec<ConstraintId>> = BTreeMap::new();
     let mut equal_lengths: BTreeMap<EdgePairKey, Vec<ConstraintId>> = BTreeMap::new();
     let mut parallels: BTreeMap<EdgePairKey, Vec<ConstraintId>> = BTreeMap::new();
+    let mut rotations: BTreeMap<RotationRoleKey, ScalarGroupSummary> = BTreeMap::new();
+    let mut rotation_roles: BTreeMap<RotationRoleKey, [VertexId; 3]> = BTreeMap::new();
     let mut unchecked = Vec::new();
 
     for record in &set.constraints {
@@ -1650,9 +1714,30 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                     });
                 unchecked.push(record.id);
             }
+            GeometricConstraintKindV1::RotationalSymmetry {
+                center_vertex,
+                source_vertex,
+                target_vertex,
+                angle_degrees,
+            } => {
+                let key = RotationRoleKey::roles(*center_vertex, *source_vertex, *target_vertex);
+                let assignment = ScalarAssignment {
+                    id: record.id,
+                    value: *angle_degrees,
+                };
+                rotations
+                    .entry(key)
+                    .and_modify(|summary| summary.observe(assignment))
+                    .or_insert_with(|| ScalarGroupSummary::new(assignment));
+                rotation_roles.entry(key).or_insert([
+                    *center_vertex,
+                    *source_vertex,
+                    *target_vertex,
+                ]);
+                unchecked.push(record.id);
+            }
             GeometricConstraintKindV1::PointOnLine { .. }
             | GeometricConstraintKindV1::MirrorSymmetry { .. }
-            | GeometricConstraintKindV1::RotationalSymmetry { .. }
             | GeometricConstraintKindV1::AngleBisector { .. } => {
                 unchecked.push(record.id);
             }
@@ -2011,6 +2096,38 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                     vertical_edge,
                 },
                 [angle.id, *horizontal_id, *vertical_id],
+            );
+        }
+    }
+
+    if rotations
+        .values()
+        .any(|summary| summary.different_witness().is_some())
+    {
+        let radius_edges = pattern_edges_by_vertex_pair(set.source_pattern);
+        for (key, summary) in &rotations {
+            let Some(witness) = summary.different_witness() else {
+                continue;
+            };
+            let [center_vertex, source_vertex, target_vertex] = rotation_roles[key];
+            let Some((fixed_id, fixed_radius_edge)) = canonical_positive_radius_witness(
+                &radius_edges,
+                &fixed_lengths,
+                center_vertex,
+                source_vertex,
+                target_vertex,
+            ) else {
+                continue;
+            };
+            push_conflict(
+                &mut conflicts,
+                DirectConstraintConflictKindV1::DifferentRotationalSymmetryAnglesWithFixedRadius {
+                    center_vertex,
+                    source_vertex,
+                    target_vertex,
+                    fixed_radius_edge,
+                },
+                [witness[0], witness[1], fixed_id],
             );
         }
     }
@@ -3045,6 +3162,65 @@ fn push_conflict(
     });
 }
 
+/// Indexes real pattern edges by their canonical unordered endpoint pair.
+///
+/// Constraint records only name edge IDs, so [`edge_id_lookup`] cannot prove
+/// that an edge actually joins two vertices. The endpoint relation that makes
+/// an edge a radius of a rotation triple is read once from the source pattern,
+/// linearly in the pattern edge count.
+fn pattern_edges_by_vertex_pair(pattern: &CreasePattern) -> BTreeMap<VertexPairKey, Vec<EdgeId>> {
+    let mut result: BTreeMap<VertexPairKey, Vec<EdgeId>> = BTreeMap::new();
+    for edge in &pattern.edges {
+        result
+            .entry(VertexPairKey::unordered(edge.start, edge.end))
+            .or_default()
+            .push(edge.id);
+    }
+    result
+}
+
+/// Selects the canonical positive radius witness for one rotation triple.
+///
+/// Both `{center, source}` and `{center, target}` radii are candidates and the
+/// smallest `(fixed constraint ID, edge ID)` pair wins, so neither side is
+/// preferred. Only edges whose fixed lengths agree on a single positive value
+/// are admitted; inconsistent groups stay with
+/// [`DirectConstraintConflictKindV1::DifferentFixedLengths`] instead of being
+/// mined for a convenient radius.
+fn canonical_positive_radius_witness(
+    radius_edges: &BTreeMap<VertexPairKey, Vec<EdgeId>>,
+    fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
+    center_vertex: VertexId,
+    source_vertex: VertexId,
+    target_vertex: VertexId,
+) -> Option<(ConstraintId, EdgeId)> {
+    let mut best: Option<(ConstraintId, EdgeId)> = None;
+    for pair in [
+        VertexPairKey::unordered(center_vertex, source_vertex),
+        VertexPairKey::unordered(center_vertex, target_vertex),
+    ] {
+        for edge in radius_edges.get(&pair).into_iter().flatten() {
+            let Some(assignment) = fixed_lengths
+                .get(&edge.canonical_bytes())
+                .and_then(ScalarGroupSummary::consistent_assignment)
+            else {
+                continue;
+            };
+            if !assignment.value.is_finite() || assignment.value <= 0.0 {
+                continue;
+            }
+            let candidate = (assignment.id, *edge);
+            if best.is_none_or(|current| {
+                (candidate.0.canonical_bytes(), candidate.1.canonical_bytes())
+                    < (current.0.canonical_bytes(), current.1.canonical_bytes())
+            }) {
+                best = Some(candidate);
+            }
+        }
+    }
+    best
+}
+
 fn edge_id_lookup(records: &[GeometricConstraintRecordV1]) -> BTreeMap<CanonicalId, EdgeId> {
     let mut result = BTreeMap::new();
     for record in records {
@@ -3138,13 +3314,17 @@ fn vertex_id_lookup(records: &[GeometricConstraintRecordV1]) -> BTreeMap<Canonic
     result
 }
 
+/// Total order over conflict kinds.
+///
+/// The fourth entity slot keeps kinds that name four entities fully ordered;
+/// every kind that names at most three pads it with zero.
 fn conflict_sort_key(
     conflict: &DirectConstraintConflictKindV1,
-) -> (u8, CanonicalId, CanonicalId, CanonicalId) {
+) -> (u8, CanonicalId, CanonicalId, CanonicalId, CanonicalId) {
     let zero = [0; 16];
     match conflict {
         DirectConstraintConflictKindV1::DifferentFixedLengths { edge } => {
-            (0, edge.canonical_bytes(), zero, zero)
+            (0, edge.canonical_bytes(), zero, zero, zero)
         }
         DirectConstraintConflictKindV1::DifferentFixedAngles {
             vertex,
@@ -3155,6 +3335,7 @@ fn conflict_sort_key(
             vertex.canonical_bytes(),
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
+            zero,
         ),
         DirectConstraintConflictKindV1::DifferentLengthRatios {
             numerator_edge,
@@ -3164,9 +3345,10 @@ fn conflict_sort_key(
             numerator_edge.canonical_bytes(),
             denominator_edge.canonical_bytes(),
             zero,
+            zero,
         ),
         DirectConstraintConflictKindV1::HorizontalAndVertical { edge } => {
-            (3, edge.canonical_bytes(), zero, zero)
+            (3, edge.canonical_bytes(), zero, zero, zero)
         }
         DirectConstraintConflictKindV1::EqualLengthWithDifferentFixedLengths {
             first_edge,
@@ -3175,6 +3357,7 @@ fn conflict_sort_key(
             4,
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
+            zero,
             zero,
         ),
         DirectConstraintConflictKindV1::EqualLengthWithNonUnitRatioAndFixedLength {
@@ -3185,6 +3368,7 @@ fn conflict_sort_key(
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
             zero,
+            zero,
         ),
         DirectConstraintConflictKindV1::NonReciprocalLengthRatiosWithFixedLength {
             first_edge,
@@ -3194,6 +3378,7 @@ fn conflict_sort_key(
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
             zero,
+            zero,
         ),
         DirectConstraintConflictKindV1::LengthRatioWithIncompatibleFixedLengths {
             numerator_edge,
@@ -3202,6 +3387,7 @@ fn conflict_sort_key(
             7,
             numerator_edge.canonical_bytes(),
             denominator_edge.canonical_bytes(),
+            zero,
             zero,
         ),
         DirectConstraintConflictKindV1::NonUnitLengthRatioCycleWithFixedLength {
@@ -3214,6 +3400,7 @@ fn conflict_sort_key(
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
             third_edge.canonical_bytes(),
+            zero,
         ),
         DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength {
             fixed_edge,
@@ -3223,6 +3410,7 @@ fn conflict_sort_key(
             fixed_edge.canonical_bytes(),
             [0; 16],
             u128::from(*ratio_constraint_count).to_be_bytes(),
+            zero,
         ),
         DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent {
             first_edge,
@@ -3233,6 +3421,7 @@ fn conflict_sort_key(
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
             u128::from(*equal_constraint_count).to_be_bytes(),
+            zero,
         ),
         DirectConstraintConflictKindV1::PerpendicularOrientationsInParallelComponent {
             horizontal_edge,
@@ -3243,6 +3432,7 @@ fn conflict_sort_key(
             horizontal_edge.canonical_bytes(),
             vertical_edge.canonical_bytes(),
             u128::from(*parallel_constraint_count).to_be_bytes(),
+            zero,
         ),
         DirectConstraintConflictKindV1::NonParallelFixedAngleInParallelComponent {
             vertex,
@@ -3254,6 +3444,7 @@ fn conflict_sort_key(
             vertex.canonical_bytes(),
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
+            zero,
         ),
         DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle {
             first_edge,
@@ -3262,6 +3453,7 @@ fn conflict_sort_key(
             13,
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
+            zero,
             zero,
         ),
         DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations {
@@ -3272,6 +3464,7 @@ fn conflict_sort_key(
             horizontal_edge.canonical_bytes(),
             vertical_edge.canonical_bytes(),
             zero,
+            zero,
         ),
         DirectConstraintConflictKindV1::SameOrientationWithFixedNonParallelAngle {
             first_edge,
@@ -3280,6 +3473,7 @@ fn conflict_sort_key(
             15,
             first_edge.canonical_bytes(),
             second_edge.canonical_bytes(),
+            zero,
             zero,
         ),
         DirectConstraintConflictKindV1::PerpendicularOrientationsWithFixedNonRightAngle {
@@ -3290,6 +3484,19 @@ fn conflict_sort_key(
             horizontal_edge.canonical_bytes(),
             vertical_edge.canonical_bytes(),
             zero,
+            zero,
+        ),
+        DirectConstraintConflictKindV1::DifferentRotationalSymmetryAnglesWithFixedRadius {
+            center_vertex,
+            source_vertex,
+            target_vertex,
+            fixed_radius_edge,
+        } => (
+            17,
+            center_vertex.canonical_bytes(),
+            source_vertex.canonical_bytes(),
+            target_vertex.canonical_bytes(),
+            fixed_radius_edge.canonical_bytes(),
         ),
     }
 }
@@ -3440,6 +3647,423 @@ mod tests {
             document,
             GeometricConstraintLimitsV1::default(),
         )
+    }
+
+    fn rotation(
+        fixture: &Fixture,
+        center: usize,
+        source: usize,
+        target: usize,
+        angle_degrees: f64,
+    ) -> GeometricConstraintKindV1 {
+        GeometricConstraintKindV1::RotationalSymmetry {
+            center_vertex: fixture.vertices[center],
+            source_vertex: fixture.vertices[source],
+            target_vertex: fixture.vertices[target],
+            angle_degrees,
+        }
+    }
+
+    fn fixed_length(fixture: &Fixture, edge: usize, length_mm: f64) -> GeometricConstraintKindV1 {
+        GeometricConstraintKindV1::FixedLength {
+            edge: fixture.edges[edge],
+            length_mm,
+        }
+    }
+
+    fn radius_padding(fixture: &Fixture) -> GeometricConstraintKindV1 {
+        GeometricConstraintKindV1::Horizontal {
+            edge: fixture.edges[0],
+        }
+    }
+
+    fn rotation_conflicts(preflight: &ConstraintPreflightV1) -> Vec<DirectConstraintConflictV1> {
+        match preflight {
+            ConstraintPreflightV1::DirectConflict { conflicts } => conflicts
+                .iter()
+                .filter(|conflict| {
+                    matches!(
+                        conflict.conflict(),
+                        DirectConstraintConflictKindV1::
+                            DifferentRotationalSymmetryAnglesWithFixedRadius { .. }
+                    )
+                })
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn only_rotation_conflict(
+        fixture: &Fixture,
+        raw: &GeometricConstraintDocumentV1,
+    ) -> Option<DirectConstraintConflictV1> {
+        let prepared = prepare(fixture, raw).expect("rotation fixture prepares");
+        let mut found = rotation_conflicts(&prepared.preflight());
+        (found.len() == 1).then(|| found.remove(0))
+    }
+
+    #[test]
+    fn different_rotation_angles_conflict_with_a_center_source_radius() {
+        let fixture = Fixture::new();
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+            record(fixed_length(&fixture, 0, 5.0)),
+        ]);
+        let conflict =
+            only_rotation_conflict(&fixture, &raw).expect("a positive radius forbids the collapse");
+        assert_eq!(
+            *conflict.conflict(),
+            DirectConstraintConflictKindV1::DifferentRotationalSymmetryAnglesWithFixedRadius {
+                center_vertex: fixture.vertices[0],
+                source_vertex: fixture.vertices[1],
+                target_vertex: fixture.vertices[2],
+                fixed_radius_edge: fixture.edges[0],
+            }
+        );
+        assert_eq!(conflict.constraint_ids().len(), 3);
+    }
+
+    #[test]
+    fn different_rotation_angles_conflict_with_a_center_target_radius() {
+        let fixture = Fixture::new();
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+            record(fixed_length(&fixture, 1, 5.0)),
+        ]);
+        let conflict =
+            only_rotation_conflict(&fixture, &raw).expect("either radius proves the same collapse");
+        assert_eq!(
+            *conflict.conflict(),
+            DirectConstraintConflictKindV1::DifferentRotationalSymmetryAnglesWithFixedRadius {
+                center_vertex: fixture.vertices[0],
+                source_vertex: fixture.vertices[1],
+                target_vertex: fixture.vertices[2],
+                fixed_radius_edge: fixture.edges[1],
+            }
+        );
+    }
+
+    #[test]
+    fn different_rotation_angles_alone_keep_the_zero_radius_escape() {
+        let fixture = Fixture::new();
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+        ]);
+        let prepared = prepare(&fixture, &raw).expect("two rotations prepare");
+        assert!(matches!(
+            prepared.preflight(),
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn distant_current_coordinates_are_never_radius_evidence() {
+        let fixture = Fixture::new();
+        let center = fixture.pattern.vertices[0].position;
+        let source = fixture.pattern.vertices[1].position;
+        assert_ne!((center.x, center.y), (source.x, source.y));
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 270.0)),
+        ]);
+        let prepared = prepare(&fixture, &raw).expect("distant vertices prepare");
+        assert!(rotation_conflicts(&prepared.preflight()).is_empty());
+    }
+
+    #[test]
+    fn identical_rotation_angles_with_a_radius_do_not_conflict() {
+        let fixture = Fixture::new();
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(fixed_length(&fixture, 0, 5.0)),
+        ]);
+        let prepared = prepare(&fixture, &raw).expect("equal angles prepare");
+        assert!(rotation_conflicts(&prepared.preflight()).is_empty());
+    }
+
+    #[test]
+    fn a_fixed_length_on_an_unrelated_edge_is_not_a_radius() {
+        let fixture = Fixture::new();
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+            record(fixed_length(&fixture, 4, 5.0)),
+        ]);
+        let prepared = prepare(&fixture, &raw).expect("unrelated fixed length prepares");
+        assert!(rotation_conflicts(&prepared.preflight()).is_empty());
+    }
+
+    #[test]
+    fn rotation_roles_must_match_exactly() {
+        let fixture = Fixture::new();
+        for second in [
+            rotation(&fixture, 0, 2, 1, 180.0),
+            rotation(&fixture, 3, 1, 2, 180.0),
+            rotation(&fixture, 1, 0, 2, 180.0),
+        ] {
+            let raw = document([
+                record(rotation(&fixture, 0, 1, 2, 90.0)),
+                record(second),
+                record(fixed_length(&fixture, 0, 5.0)),
+            ]);
+            let prepared = prepare(&fixture, &raw).expect("role permutations prepare");
+            assert!(
+                rotation_conflicts(&prepared.preflight()).is_empty(),
+                "a different role order is a different relation"
+            );
+        }
+    }
+
+    #[test]
+    fn rotation_conflict_is_record_and_edge_order_independent() {
+        let fixture = Fixture::new();
+        let forward = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+            record(fixed_length(&fixture, 0, 5.0)),
+        ]);
+        let mut reversed_records = forward.constraints.clone();
+        reversed_records.reverse();
+        let reversed = document(reversed_records);
+        let mut reversed_pattern = fixture.pattern.clone();
+        reversed_pattern.edges.reverse();
+        let forward_preflight = prepare(&fixture, &forward)
+            .expect("forward order prepares")
+            .preflight();
+        let reversed_preflight = prepare_geometric_constraints_v1(
+            &reversed_pattern,
+            &reversed,
+            GeometricConstraintLimitsV1::default(),
+        )
+        .expect("reversed order prepares")
+        .preflight();
+        assert_eq!(
+            serde_json::to_value(&forward_preflight).expect("serialize forward"),
+            serde_json::to_value(&reversed_preflight).expect("serialize reversed"),
+        );
+    }
+
+    #[test]
+    fn rotation_conflict_selects_the_global_canonical_radius_witness() {
+        let fixture = Fixture::new();
+        let source_radius = record(fixed_length(&fixture, 0, 5.0));
+        let target_radius = record(fixed_length(&fixture, 1, 7.0));
+        let (expected_id, expected_edge) =
+            if source_radius.id.canonical_bytes() < target_radius.id.canonical_bytes() {
+                (source_radius.id, fixture.edges[0])
+            } else {
+                (target_radius.id, fixture.edges[1])
+            };
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+            source_radius.clone(),
+            target_radius.clone(),
+        ]);
+        let conflict = only_rotation_conflict(&fixture, &raw).expect("both radii are candidates");
+        let DirectConstraintConflictKindV1::DifferentRotationalSymmetryAnglesWithFixedRadius {
+            fixed_radius_edge,
+            ..
+        } = *conflict.conflict()
+        else {
+            panic!("the rotation conflict kind is filtered above");
+        };
+        assert_eq!(fixed_radius_edge, expected_edge);
+        assert!(conflict.constraint_ids().contains(&expected_id));
+    }
+
+    #[test]
+    fn duplicate_equal_fixed_lengths_use_the_canonical_minimum_id() {
+        let fixture = Fixture::new();
+        let first = record(fixed_length(&fixture, 0, 5.0));
+        let second = record(fixed_length(&fixture, 0, 5.0));
+        let expected = if first.id.canonical_bytes() < second.id.canonical_bytes() {
+            first.id
+        } else {
+            second.id
+        };
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+            first.clone(),
+            second.clone(),
+        ]);
+        let conflict =
+            only_rotation_conflict(&fixture, &raw).expect("equal values stay consistent");
+        assert!(conflict.constraint_ids().contains(&expected));
+    }
+
+    #[test]
+    fn an_inconsistent_fixed_length_group_is_not_radius_evidence() {
+        let fixture = Fixture::new();
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+            record(fixed_length(&fixture, 0, 5.0)),
+            record(fixed_length(&fixture, 0, 6.0)),
+        ]);
+        let prepared = prepare(&fixture, &raw).expect("inconsistent lengths prepare");
+        let preflight = prepared.preflight();
+        assert!(rotation_conflicts(&preflight).is_empty());
+        let ConstraintPreflightV1::DirectConflict { conflicts } = preflight else {
+            panic!("the inconsistent fixed lengths still conflict");
+        };
+        assert!(conflicts.iter().all(|conflict| matches!(
+            conflict.conflict(),
+            DirectConstraintConflictKindV1::DifferentFixedLengths { .. }
+        )));
+    }
+
+    #[test]
+    fn the_rotation_witness_is_deletion_minimal() {
+        let fixture = Fixture::new();
+        let records = [
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+            record(fixed_length(&fixture, 0, 5.0)),
+        ];
+        for omitted in 0..records.len() {
+            let kept = records
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != omitted)
+                .map(|(_, value)| value.clone());
+            let raw = document(kept);
+            let prepared = prepare(&fixture, &raw).expect("each pair prepares");
+            assert!(
+                rotation_conflicts(&prepared.preflight()).is_empty(),
+                "removing witness {omitted} must withdraw the affirmation"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_mus_returns_the_same_rotation_witness_for_growing_documents() {
+        let fixture = Fixture::new();
+        let witness_records = [
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+            record(fixed_length(&fixture, 0, 5.0)),
+        ];
+        let mut expected: Option<Vec<ConstraintId>> = None;
+        for total in [4_usize, 8, 16] {
+            let mut records = witness_records.to_vec();
+            while records.len() < total {
+                records.push(record(radius_padding(&fixture)));
+            }
+            let raw = document(records);
+            let prepared = prepare(&fixture, &raw).expect("padded documents prepare");
+            let conflict = only_rotation_conflict(&fixture, &raw)
+                .expect("padding never hides the rotation witness");
+            let BoundedDirectMusV1::ProvenUnsatisfiable {
+                constraint_ids,
+                oracle_calls,
+            } = find_bounded_direct_mus_v1(&prepared)
+            else {
+                panic!("a direct conflict is minimizable within the bounded oracle");
+            };
+            assert_eq!(constraint_ids.len(), 3);
+            assert_eq!(constraint_ids, conflict.constraint_ids().to_vec());
+            assert!(oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1);
+            if let Some(previous) = &expected {
+                assert_eq!(&constraint_ids, previous);
+            } else {
+                expected = Some(constraint_ids);
+            }
+        }
+    }
+
+    #[test]
+    fn seventeen_records_keep_the_direct_conflict_without_mus_minimization() {
+        let fixture = Fixture::new();
+        let mut records = vec![
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+            record(fixed_length(&fixture, 0, 5.0)),
+        ];
+        while records.len() < MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1 + 1 {
+            records.push(record(radius_padding(&fixture)));
+        }
+        let raw = document(records);
+        let prepared = prepare(&fixture, &raw).expect("seventeen records prepare");
+        assert!(only_rotation_conflict(&fixture, &raw).is_some());
+        assert_eq!(
+            find_bounded_direct_mus_v1(&prepared),
+            BoundedDirectMusV1::Unknown { oracle_calls: 0 }
+        );
+    }
+
+    #[test]
+    fn collapsing_every_role_zeroes_both_rotation_residuals() {
+        use crate::constraint_solver::{
+            ConstraintSolveLimitsV1, solve_geometric_constraints_with_drivers_v1,
+        };
+        let fixture = Fixture::new();
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+        ]);
+        let collapsed = Point2::new(0.0, 0.0);
+        let preview = solve_geometric_constraints_with_drivers_v1(
+            &fixture.pattern,
+            &raw,
+            &[
+                (fixture.vertices[0], collapsed),
+                (fixture.vertices[1], collapsed),
+                (fixture.vertices[2], collapsed),
+            ],
+            ConstraintSolveLimitsV1::default(),
+        )
+        .expect("the collapsed assignment satisfies both rotation angles at once");
+        assert_eq!(preview.maximum_residual, 0.0);
+
+        // The escape above is exactly why the preflight stays silent until a
+        // positive radius rules the collapse out. The affirmation below is
+        // never derived from these solver numbers.
+        let prepared = prepare(&fixture, &raw).expect("the same document prepares");
+        assert!(rotation_conflicts(&prepared.preflight()).is_empty());
+    }
+
+    #[test]
+    fn the_rotation_conflict_serializes_its_kind_and_four_entities() {
+        let fixture = Fixture::new();
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 180.0)),
+            record(fixed_length(&fixture, 0, 5.0)),
+        ]);
+        let conflict = only_rotation_conflict(&fixture, &raw).expect("the witness exists");
+        let value = serde_json::to_value(&conflict).expect("serialize the rotation conflict");
+        assert_eq!(
+            value["conflict"],
+            json!({
+                "kind": "different_rotational_symmetry_angles_with_fixed_radius",
+                "center_vertex": fixture.vertices[0],
+                "source_vertex": fixture.vertices[1],
+                "target_vertex": fixture.vertices[2],
+                "fixed_radius_edge": fixture.edges[0],
+            })
+        );
+        let Value::Array(ids) = &value["constraint_ids"] else {
+            panic!("the witness serializes an ID array");
+        };
+        assert_eq!(ids.len(), 3);
+        assert_eq!(
+            ids.clone(),
+            serde_json::to_value(conflict.constraint_ids())
+                .expect("serialize witness ids")
+                .as_array()
+                .expect("witness ids are an array")
+                .clone()
+        );
     }
 
     #[test]

@@ -177,6 +177,13 @@ export type DirectConstraintConflictKindV1 =
       horizontal_edge: string
       vertical_edge: string
     }>
+  | Readonly<{
+      kind: 'different_rotational_symmetry_angles_with_fixed_radius'
+      center_vertex: string
+      source_vertex: string
+      target_vertex: string
+      fixed_radius_edge: string
+    }>
 
 export type DirectConstraintConflictV1 = Readonly<{
   conflict: DirectConstraintConflictKindV1
@@ -1166,6 +1173,33 @@ function parseDirectConflictKind(
         }),
         witnessSize: 3,
       }
+    case 'different_rotational_symmetry_angles_with_fixed_radius':
+      if (
+        !hasExactKeys(record, [
+          'kind',
+          'center_vertex',
+          'source_vertex',
+          'target_vertex',
+          'fixed_radius_edge',
+        ])
+        || !isCanonicalUuid(record.center_vertex)
+        || !isCanonicalUuid(record.source_vertex)
+        || !isCanonicalUuid(record.target_vertex)
+        || !isCanonicalUuid(record.fixed_radius_edge)
+        || record.center_vertex === record.source_vertex
+        || record.center_vertex === record.target_vertex
+        || record.source_vertex === record.target_vertex
+      ) return null
+      return {
+        conflict: Object.freeze({
+          kind: record.kind,
+          center_vertex: record.center_vertex,
+          source_vertex: record.source_vertex,
+          target_vertex: record.target_vertex,
+          fixed_radius_edge: record.fixed_radius_edge,
+        }),
+        witnessSize: 3,
+      }
     default:
       return null
   }
@@ -1261,6 +1295,15 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
     case 'parallel_with_perpendicular_orientations':
     case 'perpendicular_orientations_with_fixed_non_right_angle':
       target = [kind.kind, kind.horizontal_edge, kind.vertical_edge]
+      break
+    case 'different_rotational_symmetry_angles_with_fixed_radius':
+      target = [
+        kind.kind,
+        kind.center_vertex,
+        kind.source_vertex,
+        kind.target_vertex,
+        kind.fixed_radius_edge,
+      ]
       break
   }
   return `${target.join('\u0000')}\u0001${conflict.constraint_ids.join('\u0000')}`

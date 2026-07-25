@@ -11985,11 +11985,13 @@ fn append_named_technique_instruction_steps(
             },
         })
         .collect();
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::AppendInstructionSteps { steps },
     )
 }
@@ -12084,11 +12086,13 @@ fn append_generic_tree_instruction_proposal(
             },
         })
         .collect();
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::AppendInstructionSteps { steps },
     )
 }
@@ -12124,11 +12128,13 @@ async fn add_instruction_step(
         expected_revision,
         analyzed,
     )?;
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::AddInstructionStep {
             step: InstructionStep {
                 id: InstructionStepId::new(),
@@ -12204,11 +12210,13 @@ async fn replace_instruction_step_pose(
         expected_revision,
         analyzed,
     )?;
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::ReplaceInstructionStepPose { step_id, pose },
     )
 }
@@ -12267,20 +12275,16 @@ fn duplicate_instruction_step(
     expected_revision: u64,
     step_id: InstructionStepId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_and_expect(
-        &state,
-        ProjectExpectation::new(
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-        ),
-    )?;
-    let step = duplicate_instruction_step_record(project.editor.instruction_timeline(), step_id)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_and_expect(&state, expectation)?;
+    let step = duplicate_instruction_step_record(project.editor.instruction_timeline(), step_id)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::AddInstructionStep { step },
     )
 }
@@ -12313,14 +12317,12 @@ fn split_instruction_step(
     expected_revision: u64,
     step_id: InstructionStepId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_and_expect(
-        &state,
-        ProjectExpectation::new(
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-        ),
-    )?;
+    let expectation = ProjectExpectation::new(
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    );
+    let mut project = lock_and_expect(&state, expectation)?;
     let mut timeline = project.editor.instruction_timeline().clone();
     let index = timeline
         .steps
@@ -12340,11 +12342,9 @@ fn split_instruction_step(
     added.id = InstructionStepId::new();
     added.duration_ms = second;
     timeline.steps.insert(index + 1, added);
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        expectation,
         Command::RewriteInstructionTimelineSplitMerge { timeline },
     )
 }
@@ -12358,14 +12358,12 @@ fn merge_adjacent_instruction_steps(
     first_step_id: InstructionStepId,
     second_step_id: InstructionStepId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_and_expect(
-        &state,
-        ProjectExpectation::new(
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-        ),
-    )?;
+    let expectation = ProjectExpectation::new(
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    );
+    let mut project = lock_and_expect(&state, expectation)?;
     let mut timeline = project.editor.instruction_timeline().clone();
     let index = timeline
         .steps
@@ -12384,11 +12382,9 @@ fn merge_adjacent_instruction_steps(
         .duration_ms
         .checked_add(second.duration_ms)
         .ok_or_else(|| "The merged instruction duration is invalid.".to_owned())?;
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        expectation,
         Command::RewriteInstructionTimelineSplitMerge { timeline },
     )
 }
@@ -12549,11 +12545,13 @@ fn register_front_texture(
         bytes,
     });
     let paper = project.editor.paper().clone();
-    let result = execute_command(
+    let result = execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::UpdatePaperProperties {
             thickness_mm: paper.thickness_mm,
             front_color: paper.front.color,
@@ -12665,11 +12663,13 @@ fn register_back_texture(
         bytes,
     });
     let paper = project.editor.paper().clone();
-    let result = execute_command(
+    let result = execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::UpdatePaperProperties {
             thickness_mm: paper.thickness_mm,
             front_color: paper.front.color,
@@ -12748,11 +12748,13 @@ fn resize_rectangular_paper(
     {
         return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
     }
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::ResizeRectangularPaper {
             width_mm,
             height_mm,
@@ -12796,11 +12798,13 @@ fn execute_edge_split(
     edge: EdgeId,
     fraction: f64,
 ) -> Result<ProjectSnapshot, String> {
-    execute_command(
+    execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::SplitEdge {
             edge,
             new_vertex: VertexId::new(),
@@ -12839,11 +12843,13 @@ fn execute_edge_intersection_connection(
     second_edge: EdgeId,
 ) -> Result<EdgeIntersectionResponse, String> {
     let vertex_id = VertexId::new();
-    let snapshot = execute_command(
+    let snapshot = execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::ConnectEdgeIntersection {
             first_edge,
             second_edge,
@@ -12929,11 +12935,13 @@ fn execute_intersection_cluster_connection(
             },
         })
         .collect();
-    let snapshot = execute_command(
+    let snapshot = execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::ConnectIntersectionCluster { junction, targets },
     )?;
     Ok(EdgeIntersectionResponse {
@@ -12985,11 +12993,13 @@ fn execute_t_junction_connection(
     second_edge: EdgeId,
 ) -> Result<TJunctionResponse, String> {
     let new_edge = EdgeId::new();
-    let snapshot = execute_command(
+    let snapshot = execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::ConnectTJunction {
             first_edge,
             second_edge,
@@ -13037,11 +13047,13 @@ fn execute_boundary_split(
     edge: EdgeId,
     fraction: f64,
 ) -> Result<ProjectSnapshot, String> {
-    execute_command(
+    execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::SplitBoundaryEdge {
             edge,
             new_vertex: VertexId::new(),

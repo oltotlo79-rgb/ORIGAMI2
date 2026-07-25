@@ -2941,7 +2941,7 @@ pub(super) mod tests {
     fn stale_capture_after_same_content_reopen_preserves_new_authority() {
         let original = initial_project_state();
         let old_source = source_for(&original, GlobalFlatFoldabilityJobId::new());
-        let reopened = ProjectState::from_document(
+        let reopened = ProjectState::from_valid_document(
             original.document(),
             PathBuf::from("same-content-reopen.ori2"),
         );
@@ -4168,7 +4168,7 @@ pub(super) mod tests {
             .expect("capture before reopen")
             .expect("layer authority before reopen");
         let reopened =
-            ProjectState::from_document(original.document(), PathBuf::from("reopened.ori2"));
+            ProjectState::from_valid_document(original.document(), PathBuf::from("reopened.ori2"));
 
         assert_eq!(reopened.project_id, original.project_id);
         assert_eq!(reopened.editor.revision(), original.editor.revision());

@@ -4085,6 +4085,9 @@ async fn read_live_hinge_registry_inner(
     let expected_revision = request.expected_revision;
     let (capability, layer_capability, source_fingerprint, fingerprint, entries) =
         tauri::async_runtime::spawn_blocking(move || {
+            let (model, pose) = capability
+                .tree()
+                .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
             let first = Point3::new(request.first[0], request.first[1], request.first[2])
                 .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
             let second = Point3::new(request.second[0], request.second[1], request.second[2])
@@ -4109,8 +4112,8 @@ async fn read_live_hinge_registry_inner(
                 source_revision: binding.source_revision(),
                 paper: &paper,
                 pattern: &pattern,
-                model: capability.model(),
-                pose: capability.pose(),
+                model,
+                pose,
                 layer_order: layer_capability.snapshot(),
             };
             let limits = StackedFoldReadLimitsV1::default();
@@ -4155,12 +4158,8 @@ async fn read_live_hinge_registry_inner(
                 TreeKinematicsLimits::default(),
             )
             .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            let initial = prepare_stacked_fold_initial_graph_pose_v1(
-                audited,
-                capability.model(),
-                capability.pose(),
-            )
-            .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
+            let initial = prepare_stacked_fold_initial_graph_pose_v1(audited, model, pose)
+                .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
             let entries = live_hinge_registry(initial.pose().hinge_angles().as_slice());
             if entries.len() > 64 {
                 return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
@@ -4317,13 +4316,16 @@ async fn propose_current_stacked_fold_read_inner(
     let paper_thickness_mm = paper.thickness_mm;
     let progress_app = app.cloned();
     let analysis = tauri::async_runtime::spawn_blocking(move || {
+        let (model, pose) = pose_capability
+            .tree()
+            .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
         let input = FlatEndpointLayerOrderInputV1 {
             identity_namespace: binding.project_id(),
             source_revision: binding.source_revision(),
             paper: &paper,
             pattern: &pattern,
-            model: pose_capability.model(),
-            pose: pose_capability.pose(),
+            model,
+            pose,
             layer_order: layer_capability.snapshot(),
         };
         let limits = StackedFoldReadLimitsV1::default();
@@ -4373,8 +4375,8 @@ async fn propose_current_stacked_fold_read_inner(
         ) {
             let initial = prepare_stacked_fold_initial_graph_pose_v1(
                 audited_target,
-                pose_capability.model(),
-                pose_capability.pose(),
+                model,
+                pose,
             )
             .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
             let path_variant_count = usize::from(request.cycle_schedule_v1.is_some())
@@ -5012,8 +5014,8 @@ async fn propose_current_stacked_fold_read_inner(
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
         let prepared_initial_pose = prepare_stacked_fold_initial_pose_v1(
             prepared_target,
-            pose_capability.model(),
-            pose_capability.pose(),
+            model,
+            pose,
         )
         .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
         let moving_hinges = prepared_initial_pose
@@ -5679,6 +5681,32 @@ mod tests {
         let instance = project.instance_id;
         let revision = project.editor.revision();
         let state = AppState::new(project);
+        let layer_state = GlobalFlatFoldabilityState::default();
+        {
+            let project = super::super::lock_project(&state).unwrap();
+            super::super::global_flat_foldability::tests::install_possible_layer_order(
+                &layer_state,
+                &project,
+            );
+        }
+        let tree_only_result = tauri::async_runtime::block_on(read_live_hinge_registry_inner(
+            &state,
+            &layer_state,
+            LiveHingeRegistryRequestV1 {
+                expected_project_instance_id: instance,
+                expected_project_id: project_id,
+                expected_revision: revision,
+                first: [0.0, 0.0, 0.0],
+                second: [1.0, 0.0, 0.0],
+                fixed_side: FixedSideRequest::Left,
+                rotation_direction: RotationDirectionRequest::Positive,
+                requested_angle_degrees: 1.0,
+            },
+        ));
+        assert_eq!(
+            tree_only_result.err().expect("graph pose must fail closed"),
+            ANALYSIS_FAILED_MESSAGE
+        );
         let transactions =
             super::super::stacked_fold_transaction::StackedFoldTransactionState::default();
         let request = |expected_revision, schedule| CurrentCyclePosePreviewRequestV1 {
@@ -6989,10 +7017,11 @@ mod tests {
             .unwrap();
         tree_target_entries.sort_unstable_by_key(|entry| entry.edge().canonical_bytes());
         let tree_target = ori_kinematics::CanonicalHingeAngles::new(tree_target_entries).unwrap();
+        let (tree_model, tree_pose) = tree_capability.tree().expect("tree pose capability");
         let tree_diagnostic = ori_collision::diagnose_collective_hinge_path_from_pose_v1(
-            tree_capability.model(),
-            tree_capability.pose(),
-            tree_capability.pose().hinge_angles(),
+            tree_model,
+            tree_pose,
+            tree_pose.hinge_angles(),
             tree_target.as_slice(),
             project.editor.paper().thickness_mm,
             ori_collision::StackedFoldPathDiagnosticLimitsV1::default(),
@@ -11929,7 +11958,7 @@ mod tests {
                     .cycle_layer_order_proof_v1
                     .is_some()
             );
-            let reopened = super::super::ProjectState::from_document(
+            let reopened = super::super::ProjectState::from_valid_document(
                 project.document(),
                 std::path::PathBuf::from("miura-cell-transport-reopened.ori2"),
             );

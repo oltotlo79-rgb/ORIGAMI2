@@ -593,7 +593,7 @@ impl ProjectState {
         }
     }
 
-    fn from_document(mut document: ProjectDocument, current_path: PathBuf) -> Self {
+    fn from_document(mut document: ProjectDocument, current_path: PathBuf) -> Result<Self, String> {
         if document.thumbnail_svg.is_none() {
             document.thumbnail_svg = generate_project_thumbnail_svg(&document).ok();
         }
@@ -619,8 +619,8 @@ impl ProjectState {
         );
         editor
             .restore_beginner_design_profile(document.beginner_design_profile)
-            .expect("validated project document profile");
-        Self {
+            .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+        Ok(Self {
             instance_id: ProjectId::new(),
             project_id: document.project_id,
             name: document.name,
@@ -634,7 +634,12 @@ impl ProjectState {
             material_void_evidence,
             saved_document: Some(saved_document),
             editor,
-        }
+        })
+    }
+
+    #[cfg(test)]
+    fn from_valid_document(document: ProjectDocument, current_path: PathBuf) -> Self {
+        Self::from_document(document, current_path).expect("valid project document")
     }
 
     fn from_project_archive(
@@ -13963,7 +13968,7 @@ fn validate_loaded_numeric_expression_bindings(document: &ProjectDocument) -> Re
                 || contains_geometry_reference(&binding.y_source)
         })
     {
-        let staged = ProjectState::from_document(document.clone(), PathBuf::new());
+        let staged = ProjectState::from_document(document.clone(), PathBuf::new())?;
         let resolved = reevaluate_saved_vertex_expressions(&staged)
             .map_err(|_| PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned())?;
         for binding in &document.numeric_expressions.vertex_coordinates {
@@ -16385,9 +16390,23 @@ mod tests {
             }],
         };
         let expected = document.material_void_evidence.clone();
-        let project = ProjectState::from_document(document, PathBuf::from("passive-void.ori2"));
+        let project =
+            ProjectState::from_valid_document(document, PathBuf::from("passive-void.ori2"));
         assert_eq!(project.material_void_evidence, expected);
         assert_eq!(project.document().material_void_evidence, expected);
+    }
+
+    #[test]
+    fn project_state_rejects_invalid_beginner_profile_without_panicking() {
+        let mut document = ProjectState::new(CreasePattern::empty()).document();
+        document.beginner_design_profile.schema_version = 0;
+
+        let result = ProjectState::from_document(document, PathBuf::from("invalid-profile.ori2"));
+
+        assert_eq!(
+            result.err().expect("invalid profile must fail closed"),
+            PROJECT_ARCHIVE_INVALID_MESSAGE
+        );
     }
 
     #[test]
@@ -17478,7 +17497,7 @@ mod tests {
         let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default())
             .expect("restore complete insect grid apply");
         let reopened =
-            ProjectState::from_document(restored, PathBuf::from("complete-insect-grid.ori2"));
+            ProjectState::from_valid_document(restored, PathBuf::from("complete-insect-grid.ori2"));
         assert_eq!(reopened.document(), saved);
         assert!(
             ori_domain::insect_complete_bindings_v1(
@@ -17880,7 +17899,8 @@ mod tests {
         saved.thumbnail_svg = None;
         let bytes = write_project_ori2(&saved).unwrap();
         let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default()).unwrap();
-        let reopened = ProjectState::from_document(restored, PathBuf::from("generic-target.ori2"));
+        let reopened =
+            ProjectState::from_valid_document(restored, PathBuf::from("generic-target.ori2"));
         assert_eq!(
             reopened.editor.beginner_design_profile(),
             &saved.beginner_design_profile
@@ -18313,7 +18333,7 @@ mod tests {
             let document = project.document();
             let bytes = write_project_ori2(&document).unwrap();
             let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default()).unwrap();
-            let reopened = ProjectState::from_document(restored, PathBuf::from(archive_name));
+            let reopened = ProjectState::from_valid_document(restored, PathBuf::from(archive_name));
             assert_eq!(reopened.document(), document);
             assert!(
                 reopened
@@ -18970,7 +18990,8 @@ mod tests {
         let saved = project.document();
         let bytes = write_project_ori2(&saved).unwrap();
         let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default()).unwrap();
-        let reopened = ProjectState::from_document(restored, PathBuf::from("complete-animal.ori2"));
+        let reopened =
+            ProjectState::from_valid_document(restored, PathBuf::from("complete-animal.ori2"));
         assert_eq!(reopened.document(), saved);
         assert!(
             ori_domain::animal_complete_bindings_v1(
@@ -19079,7 +19100,8 @@ mod tests {
         saved.thumbnail_svg = None;
         let bytes = write_project_ori2(&saved).unwrap();
         let restored = read_project_ori2_with_limits(&bytes, Ori2Limits::default()).unwrap();
-        let reopened = ProjectState::from_document(restored, PathBuf::from("winged-animal.ori2"));
+        let reopened =
+            ProjectState::from_valid_document(restored, PathBuf::from("winged-animal.ori2"));
         assert_eq!(
             reopened.editor.beginner_design_profile(),
             &saved.beginner_design_profile
@@ -19541,7 +19563,7 @@ mod tests {
 
         let document = project.document();
         let loaded =
-            ProjectState::from_document(document.clone(), PathBuf::from("constraint.ori2"));
+            ProjectState::from_valid_document(document.clone(), PathBuf::from("constraint.ori2"));
         assert_eq!(loaded.document(), document);
         assert_eq!(
             loaded.editor.geometric_constraints().constraints,
@@ -19613,7 +19635,7 @@ mod tests {
 
         let document = project.document();
         let loaded_without_history =
-            ProjectState::from_document(document.clone(), PathBuf::from("layers.ori2"));
+            ProjectState::from_valid_document(document.clone(), PathBuf::from("layers.ori2"));
         assert_eq!(
             loaded_without_history.editor.project_layers(),
             &document.layers
@@ -20215,7 +20237,7 @@ mod tests {
                 panic!("the project lock must be released during constraint analysis");
             };
             *project =
-                ProjectState::from_document(document, PathBuf::from("same-constraints.ori2"));
+                ProjectState::from_valid_document(document, PathBuf::from("same-constraints.ori2"));
             assert_eq!(project.project_id, stale_binding.1);
             assert_eq!(project.editor.revision(), stale_binding.2);
             assert_ne!(project.instance_id, stale_binding.0);
@@ -21048,8 +21070,10 @@ mod tests {
             hinge_angles: Vec::new(),
         };
 
-        let reopened =
-            ProjectState::from_document(project.document(), PathBuf::from("same-project.ori2"));
+        let reopened = ProjectState::from_valid_document(
+            project.document(),
+            PathBuf::from("same-project.ori2"),
+        );
         assert_eq!(reopened.project_id, project_id);
         assert_eq!(reopened.editor.revision(), 0);
         assert_eq!(reopened.editor.pattern(), project.editor.pattern());
@@ -21077,8 +21101,10 @@ mod tests {
         let stale_instance_id = project.instance_id;
         let expected_project_id = project.project_id;
         let expected_revision = project.editor.revision();
-        let reopened =
-            ProjectState::from_document(project.document(), PathBuf::from("same-project.ori2"));
+        let reopened = ProjectState::from_valid_document(
+            project.document(),
+            PathBuf::from("same-project.ori2"),
+        );
         assert_eq!(reopened.project_id, expected_project_id);
         assert_eq!(reopened.editor.revision(), expected_revision);
         assert_ne!(reopened.instance_id, stale_instance_id);
@@ -23658,7 +23684,7 @@ mod tests {
         let expected_project_id = project.project_id;
         let expected_revision = project.editor.revision();
         let document = project.document();
-        project = ProjectState::from_document(document, PathBuf::from("same-project.ori2"));
+        project = ProjectState::from_valid_document(document, PathBuf::from("same-project.ori2"));
         assert_eq!(project.project_id, expected_project_id);
         assert_eq!(project.editor.revision(), expected_revision);
         assert_ne!(project.instance_id, stale_instance_id);
@@ -23686,8 +23712,10 @@ mod tests {
         let stale_instance_id = project.instance_id;
         let expected_project_id = project.project_id;
         let expected_revision = project.editor.revision();
-        let mut reopened =
-            ProjectState::from_document(project.document(), PathBuf::from("same-project.ori2"));
+        let mut reopened = ProjectState::from_valid_document(
+            project.document(),
+            PathBuf::from("same-project.ori2"),
+        );
         assert_eq!(reopened.project_id, expected_project_id);
         assert_eq!(reopened.editor.revision(), expected_revision);
         assert_ne!(reopened.instance_id, stale_instance_id);
@@ -23726,7 +23754,7 @@ mod tests {
         let stale_instance_id = stale_project.instance_id;
         let expected_revision = stale_project.editor.revision();
 
-        let mut reopened = ProjectState::from_document(
+        let mut reopened = ProjectState::from_valid_document(
             stale_project.document(),
             PathBuf::from("same-project.ori2"),
         );
@@ -23778,7 +23806,7 @@ mod tests {
         let stale_instance_id = stale_project.instance_id;
         let expected_revision = stale_project.editor.revision();
 
-        let mut reopened = ProjectState::from_document(
+        let mut reopened = ProjectState::from_valid_document(
             stale_project.document(),
             PathBuf::from("same-project.ori2"),
         );
@@ -25025,13 +25053,13 @@ mod tests {
         persist_document(&opened_path, &file_document("Other document", 34.0))
             .expect("write other-document fixture");
 
-        let mut project = ProjectState::from_document(document.clone(), current_path.clone());
+        let mut project = ProjectState::from_valid_document(document.clone(), current_path.clone());
         let stale_instance_id = project.instance_id;
         let expected_project_id = project.project_id;
         let expected_revision = project.editor.revision();
         let loaded = load_project_file(opened_path).expect("load delayed open result");
 
-        project = ProjectState::from_document(document, current_path);
+        project = ProjectState::from_valid_document(document, current_path);
         assert_eq!(project.project_id, expected_project_id);
         assert_eq!(project.editor.revision(), expected_revision);
         assert_ne!(project.instance_id, stale_instance_id);
@@ -25314,7 +25342,8 @@ mod tests {
         let mut document = ProjectDocument::new("Loaded bird", CreasePattern::empty());
         document.memo = "Check the reverse side.".to_owned();
         document.paper.cutting_allowed = true;
-        let project = ProjectState::from_document(document.clone(), PathBuf::from("bird.ori2"));
+        let project =
+            ProjectState::from_valid_document(document.clone(), PathBuf::from("bird.ori2"));
         let response = snapshot(&project);
 
         assert_eq!(response.project_id, document.project_id);
@@ -25392,7 +25421,7 @@ mod tests {
                 edges: Vec::new(),
             },
         );
-        let mut project = ProjectState::from_document(document, PathBuf::from("bird.ori2"));
+        let mut project = ProjectState::from_valid_document(document, PathBuf::from("bird.ori2"));
         let project_id = project.project_id;
 
         execute_command(
@@ -25434,7 +25463,7 @@ mod tests {
                 edges: Vec::new(),
             },
         );
-        let mut project = ProjectState::from_document(document, PathBuf::from("bird.ori2"));
+        let mut project = ProjectState::from_valid_document(document, PathBuf::from("bird.ori2"));
         let project_id = project.project_id;
 
         execute_command(
@@ -26201,7 +26230,7 @@ mod tests {
         assert!(pending.is_some());
 
         let document = project.document();
-        project = ProjectState::from_document(document, PathBuf::from("same.ori2"));
+        project = ProjectState::from_valid_document(document, PathBuf::from("same.ori2"));
         project.project_id = expected_project_id;
         assert_ne!(project.instance_id, stale_instance_id);
         let instance_before = project_state_signature(&project);
@@ -26265,7 +26294,7 @@ mod tests {
         assert!(pending.is_some());
 
         let document = project.document();
-        project = ProjectState::from_document(document, PathBuf::from("same.ori2"));
+        project = ProjectState::from_valid_document(document, PathBuf::from("same.ori2"));
         project.project_id = expected_project_id;
         assert_ne!(project.instance_id, stale_instance_id);
         let instance_before = project_state_signature(&project);
@@ -27732,7 +27761,7 @@ mod tests {
         project.numeric_expressions.vertex_coordinates = vec![VertexCoordinateExpressions::new(
             vertex, "6/2", "sqrt(16)", 3.0, 4.0,
         )];
-        let reopened = ProjectState::from_document(
+        let reopened = ProjectState::from_valid_document(
             project.document(),
             PathBuf::from("expression-round-trip.ori2"),
         );

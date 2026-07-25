@@ -1505,7 +1505,7 @@ mod tests {
             let mut project = reopened_state.0.lock().expect("project lock");
             let document = project.document();
             let replacement =
-                ProjectState::from_document(document, PathBuf::from("same-project.ori2"));
+                ProjectState::from_valid_document(document, PathBuf::from("same-project.ori2"));
             commit_project_replacement(&mut project, replacement).expect("reopen");
         }
         assert_eq!(
@@ -1534,8 +1534,13 @@ mod tests {
 
         let observed =
             with_revalidated_current_static_collision_certificate(&state, &certificate, |view| {
-                assert_eq!(view.model().face_ids().len(), 1);
-                assert!(view.pose().hinges().is_empty());
+                let (model, pose) = view
+                    .certificate
+                    .pose_capability
+                    .tree()
+                    .expect("tree pose view");
+                assert_eq!(model.face_ids().len(), 1);
+                assert!(pose.hinges().is_empty());
                 assert_eq!(view.pose_generation(), 1);
                 assert_eq!(view.paper_thickness_bits(), 0.1_f64.to_bits());
                 assert_eq!(view.policy_id(), TOPOLOGY_CONTACT_POLICY_V2);
@@ -1674,7 +1679,7 @@ mod tests {
             let mut project = state.0.lock().expect("project lock");
             let document = project.document();
             let replacement =
-                ProjectState::from_document(document, PathBuf::from("same-project.ori2"));
+                ProjectState::from_valid_document(document, PathBuf::from("same-project.ori2"));
             commit_project_replacement(&mut project, replacement).expect("reopen");
         }
         assert!(

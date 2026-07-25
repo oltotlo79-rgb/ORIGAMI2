@@ -390,27 +390,6 @@ impl CurrentAppliedPoseCapability {
         self.claims.native_pose.tree()
     }
 
-    /// Observation-only access for detached native analysis. The caller must
-    /// revalidate this capability against the live project before publishing
-    /// any result.
-    #[must_use]
-    pub(super) fn model(&self) -> &MaterialTreeKinematicsModel {
-        self.claims
-            .native_pose
-            .tree()
-            .expect("tree pose capability")
-            .0
-    }
-
-    #[must_use]
-    pub(super) fn pose(&self) -> &MaterialTreePose {
-        self.claims
-            .native_pose
-            .tree()
-            .expect("tree pose capability")
-            .1
-    }
-
     #[must_use]
     pub(super) fn graph(
         &self,
@@ -442,26 +421,6 @@ impl CurrentAppliedPoseView<'_> {
     #[must_use]
     pub(super) fn tree(&self) -> Option<(&MaterialTreeKinematicsModel, &MaterialTreePose)> {
         self.certificate.claims.native_pose.tree()
-    }
-
-    #[must_use]
-    pub(super) fn model(&self) -> &MaterialTreeKinematicsModel {
-        self.certificate
-            .claims
-            .native_pose
-            .tree()
-            .expect("tree pose view")
-            .0
-    }
-
-    #[must_use]
-    pub(super) fn pose(&self) -> &MaterialTreePose {
-        self.certificate
-            .claims
-            .native_pose
-            .tree()
-            .expect("tree pose view")
-            .1
     }
 
     #[must_use]
@@ -1885,7 +1844,7 @@ pub(super) mod tests {
             let mut project = state.0.lock().expect("project lock");
             let document = project.document();
             let replacement =
-                ProjectState::from_document(document, std::path::PathBuf::from("same.ori2"));
+                ProjectState::from_valid_document(document, std::path::PathBuf::from("same.ori2"));
             commit_project_replacement(&mut project, replacement).expect("replacement");
         }
         assert!(
@@ -2025,8 +1984,9 @@ pub(super) mod tests {
             .expect("revalidate")
             .expect("current");
         assert_eq!(view.generation(), 1);
-        assert_eq!(view.model().face_ids().len(), 1);
-        assert!(view.pose().hinge_angles().is_empty());
+        let (model, pose) = view.tree().expect("tree pose view");
+        assert_eq!(model.face_ids().len(), 1);
+        assert!(pose.hinge_angles().is_empty());
         assert!(view.semantic_pose().hinge_angles().is_empty());
         assert_eq!(
             view.thickness_model_id(),

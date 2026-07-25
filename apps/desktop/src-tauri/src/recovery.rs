@@ -2328,7 +2328,7 @@ mod tests {
         fs::write(&original_path, b"original sentinel").unwrap();
         let original_bytes = fs::read(&original_path).unwrap();
         let expected = document("recover me");
-        let opened = ProjectState::from_document(expected.clone(), original_path.clone());
+        let opened = ProjectState::from_valid_document(expected.clone(), original_path.clone());
         let old_instance = opened.instance_id;
 
         let restored = RecoveryStartupCandidate {

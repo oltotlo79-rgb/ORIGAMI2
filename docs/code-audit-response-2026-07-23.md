@@ -43,7 +43,7 @@
 |---|---|---|
 |F-2 コンパス円交点snap|EDT-007 MUST|指摘は妥当。`77e8f1d`で円×線・円×円交点を既存snap契約と頂点追加・辺分割へ接続し、接線・重複円・非有限値・同一点候補・紙面外境界を追加回帰した。既存native commandを共有するためUndo/Redo・履歴永続化も同じ経路となる。|
 |F-6 step camera取得|INS-004 MUST|`57ee8e5`, `818d9f6`, `70c4c7f`。3D previewの現在cameraを取得して選択stepの認証済みvisual更新へ渡し、camera未取得時は操作を無効化する。取得cameraをexact preview model keyへ束縛し、project・revision・model切替後の古いcameraを別stepへ保存できない。DOMとApp統合回帰を追加した。|
-|EDT-009 最小不能部分集合|EDT-009 MUST|`a626dae`, `3b3a916`, `fb0fd23`および後続の双方向比率修正。当該commit時点ではsoundな直接矛盾を9種へ増やした。「Gauss-Newtonのrankから一般MUSを容易に抽出できる」という実装提案は根拠不足。局所solverの`NonConvergent`、`RankDeficient`、資源超過は不充足証明ではなく、これをoracleにしたsubset縮約は偽の矛盾原因を表示しうる。等長と非1比率、非相反な双方向比率は、正の固定長によりゼロ長解を排除できる場合だけcanonicalな3-ID削除最小原因として返す。それ以外は`Unknown`へ閉じ、一般MUSは未達のため実装済みへ昇格せず85/2/0を維持する。後続で17 variant（13 pairwise + 4 general-graph）まで増えたという数値も当該commit時点の履歴であり、以後の現行件数と証明境界は`docs/requirements-status.md`を正本とする。一般化にはsoundなunsat oracleを先に要する。|
+|EDT-009 最小不能部分集合|EDT-009 MUST|`a626dae`, `3b3a916`, `fb0fd23`および後続の双方向比率修正。当該commit時点ではsoundな直接矛盾を9種へ増やした。「Gauss-Newtonのrankから一般MUSを容易に抽出できる」という実装提案は根拠不足。局所solverの`NonConvergent`、`RankDeficient`、資源超過は不充足証明ではなく、これをoracleにしたsubset縮約は偽の矛盾原因を表示しうる。等長と非1比率、非相反な双方向比率は、正の固定長によりゼロ長解を排除できる場合だけcanonicalな3-ID削除最小原因として返す。それ以外は`Unknown`へ閉じ、一般MUSは未達のため実装済みへ昇格せず85/2/0を維持する。後続で17 variant（13 fixed-pattern + 4 general-graph）まで増えたという数値も当該commit時点の履歴であり、以後の現行件数と証明境界は`docs/requirements-status.md`を正本とする。一般化にはsoundなunsat oracleを先に要する。|
 |F-D/F-E|INS-001|作成・任意index移動は既に満たす。複製、先頭末尾button、DnDは新規shortcutでありMUST未達ではない。|
 |F-A/F-11|PRJ-008/SIM系|既存の単線・寸法表示を越える新規計測モード。新規スコープ。|
 |F-1|EDT-003|角度・長さ指定作図は実装済み。ray hit自動終端は新規スコープ。|
@@ -87,7 +87,7 @@ AUT-101/AUT-005/SIM-010の一般解は監査記載どおり研究課題であり
 - `ori-core` C-2既存interior頂点への原子的分節・Undo/Redo回帰: 1/1。Windowsでの独立再実行はApplication Control（OS error 4551）によりbinary起動前に遮断されたため、実装担当のfocused成功を記録しCIで再確認する。
 - requirements design evidence: 3/3（正本85/2/0）。
 - WSL `ori-core` EDT-009 direct witness回帰: 等長・非1比率1/1（302件filter）、非相反な双方向比率1/1（303件filter）。各3-ID witnessについて任意の1制約を除くと直接矛盾でなくなること、ゼロ長逃げを正の固定長でだけ排除すること、正確な相反比率を誤検出しないことを固定する。一般MUSの要件昇格証拠には用いない。
-- EDT-009 frontend strict DTO・表示: 当該commit時点のNode 18/18、DOM 12/12、`tsc -b`成功。9種すべてをexact-key・canonical UUID・当時の最大3-ID witnessで検証し、追加2種も日英のblocking原因表示へ接続した。後続で最大256-IDのgeneral-graph原因を含む17 variant（13 pairwise + 4 general-graph）まで増えたという数値も当該commit時点の履歴であり、以後の現行件数と証明境界は`docs/requirements-status.md`を正本とする。
+- EDT-009 frontend strict DTO・表示: 当該commit時点のNode 18/18、DOM 12/12、`tsc -b`成功。9種すべてをexact-key・canonical UUID・当時の最大3-ID witnessで検証し、追加2種も日英のblocking原因表示へ接続した。後続で最大256-IDのgeneral-graph原因を含む17 variant（13 fixed-pattern + 4 general-graph）まで増えたという数値も当該commit時点の履歴であり、以後の現行件数と証明境界は`docs/requirements-status.md`を正本とする。
 
 ## 最終HEAD照合（2026-07-23）
 

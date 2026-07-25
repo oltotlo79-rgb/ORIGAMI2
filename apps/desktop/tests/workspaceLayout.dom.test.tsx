@@ -127,6 +127,27 @@ describe('workspace layout integration', () => {
 })
 
 describe('WorkspaceLayoutControl', () => {
+  it('retranslates actions, status, and ARIA without changing layout', () => {
+    const target = store()
+    const locales = localeFixture('ja')
+    render(
+      <WorkspaceLayoutControl store={target} localeStore={locales} />,
+    )
+    expect(screen.getByRole('group', { name: '作業レイアウト' })).toBeTruthy()
+    expect(screen.getByRole('status', {
+      name: '現在の作業レイアウト',
+    })).toBeTruthy()
+    act(() => {
+      locales.setLocale('en')
+    })
+    expect(screen.getByRole('group', { name: 'Workspace layout' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Swap 2D and 3D' })).toBeTruthy()
+    expect(screen.getByRole('status', {
+      name: 'Current workspace layout',
+    })).toBeTruthy()
+    expect(target.getSnapshot()).toEqual(DEFAULT_WORKSPACE_LAYOUT)
+  })
+
   it('localizes layout actions, status, and separator labels in English', () => {
     const target = store()
     const english = localeFixture('en')

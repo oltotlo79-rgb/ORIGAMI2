@@ -10,6 +10,7 @@ import {
   useLocale,
   type LocaleStore,
 } from '../lib/i18n.ts'
+import { FOLD_PREVIEW_COLLISION_BADGE_TEXT } from '../lib/foldPreviewCollisionBadgeText.ts'
 
 export type FoldPreviewCollisionBadgeProps = Readonly<{
   summary: CollisionSummary | null
@@ -32,8 +33,8 @@ export function FoldPreviewCollisionBadge({
   const ariaLabel = formatLocalizedText(
     locale,
     requiresSafetyReview
-      ? COLLISION_BADGE_COMPONENT_TEXT.warningAriaLabel
-      : COLLISION_BADGE_COMPONENT_TEXT.informationAriaLabel,
+      ? FOLD_PREVIEW_COLLISION_BADGE_TEXT.warningAriaLabel
+      : FOLD_PREVIEW_COLLISION_BADGE_TEXT.informationAriaLabel,
     { text },
   )
   return (
@@ -49,24 +50,9 @@ export function FoldPreviewCollisionBadge({
     >
       {formatLocalizedText(
         locale,
-        COLLISION_BADGE_COMPONENT_TEXT.visible,
+        FOLD_PREVIEW_COLLISION_BADGE_TEXT.visible,
         { text },
       )}
     </span>
   )
 }
-
-const COLLISION_BADGE_COMPONENT_TEXT = Object.freeze({
-  warningAriaLabel: Object.freeze({
-    ja: '安全上の警告。表示姿勢。{text}',
-    en: 'Safety warning. Current pose. {text}',
-  }),
-  informationAriaLabel: Object.freeze({
-    ja: '衝突情報。表示姿勢。{text}',
-    en: 'Collision information. Current pose. {text}',
-  }),
-  visible: Object.freeze({
-    ja: '表示姿勢｜{text}',
-    en: 'Current pose | {text}',
-  }),
-})

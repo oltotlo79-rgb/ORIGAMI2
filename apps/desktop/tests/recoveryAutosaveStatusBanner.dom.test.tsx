@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
@@ -18,6 +18,24 @@ afterEach(() => {
 })
 
 describe('RecoveryAutosaveStatusBanner', () => {
+  it('retranslates the same assertive warning when locale changes', () => {
+    const locales = localeFixture('ja')
+    render(
+      <RecoveryAutosaveStatusBanner
+        view={{ kind: 'persistence_failed', transition_id: 7 }}
+        localeStore={locales}
+      />,
+    )
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toBe(RECOVERY_AUTOSAVE_PERSISTENCE_WARNING)
+    act(() => {
+      locales.setLocale('en')
+    })
+    expect(alert.textContent).toBe(RECOVERY_AUTOSAVE_PERSISTENCE_WARNING_EN)
+    expect(alert.getAttribute('aria-live')).toBe('assertive')
+    expect(alert.getAttribute('aria-atomic')).toBe('true')
+  })
+
   it('localizes every autosave transition announcement in English', () => {
     const english = localeFixture('en')
     const rendered = render(

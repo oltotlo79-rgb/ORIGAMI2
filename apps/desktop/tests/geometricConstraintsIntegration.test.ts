@@ -35,7 +35,7 @@ test('constraint commands use instance, document, and revision bindings end to e
   }
   assert.match(
     native,
-    /ensure_expected_project\(\s*&project,\s*expected_project_instance_id,\s*expected_project_id,\s*expected_revision,/u,
+    /ensure_project_expectation\(\s*project,\s*ProjectExpectation::new\(\s*expected_project_instance_id,\s*expected_project_id,\s*expected_revision,\s*\),\s*\)\?/u,
   )
   assert.match(app, /current\.project_instance_id[\s\S]*?response\.project_instance_id/u)
   assert.match(

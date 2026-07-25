@@ -9,7 +9,8 @@ use sha2::{Digest, Sha256};
 use tauri::State;
 
 use crate::{
-    AppState, ProjectSnapshot, ProjectState, ensure_expected_project, execute_command, lock_project,
+    AppState, ProjectExpectation, ProjectSnapshot, ProjectState, ensure_project_expectation,
+    execute_expected_command, lock_project,
 };
 
 const MAX_BEGINNER_RECOGNITION_ENCODED_BYTES_V1: usize = 16 * 1024 * 1024;
@@ -1411,11 +1412,13 @@ pub(crate) fn apply_beginner_part_assignments(
             source_sha256: request.source_sha256,
             edits: edit_records,
         });
-    execute_command(
+    execute_expected_command(
         &mut project,
-        request.expected_project_instance_id,
-        request.expected_project_id,
-        request.expected_revision,
+        ProjectExpectation::new(
+            request.expected_project_instance_id,
+            request.expected_project_id,
+            request.expected_revision,
+        ),
         ori_core::Command::UpdateBeginnerDesignProfile {
             profile: Box::new(profile),
         },
@@ -1525,11 +1528,13 @@ pub(crate) fn apply_beginner_outline_candidate(
             thickness_tenths_mm,
         },
     ];
-    execute_command(
+    execute_expected_command(
         &mut project,
-        request.expected_project_instance_id,
-        request.expected_project_id,
-        request.expected_revision,
+        ProjectExpectation::new(
+            request.expected_project_instance_id,
+            request.expected_project_id,
+            request.expected_revision,
+        ),
         ori_core::Command::UpdateBeginnerDesignProfile {
             profile: Box::new(profile),
         },
@@ -1583,11 +1588,13 @@ fn ensure_recognition_binding(
     project: &ProjectState,
     request: RecognizeBeginnerTargetRequest,
 ) -> Result<(), String> {
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        request.expected_project_instance_id,
-        request.expected_project_id,
-        request.expected_revision,
+        ProjectExpectation::new(
+            request.expected_project_instance_id,
+            request.expected_project_id,
+            request.expected_revision,
+        ),
     )?;
     project
         .editor

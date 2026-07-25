@@ -30,9 +30,9 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use super::{
-    AppState, ProjectSnapshot, ProjectState, commit_project_replacement, ensure_expected_project,
-    lock_project, recovery::RecoveryRuntime, snapshot, validate_document_instruction_poses,
-    validate_loaded_numeric_expression_bindings,
+    AppState, ProjectExpectation, ProjectSnapshot, ProjectState, commit_project_replacement,
+    ensure_project_expectation, lock_project, recovery::RecoveryRuntime, snapshot,
+    validate_document_instruction_poses, validate_loaded_numeric_expression_bindings,
 };
 
 #[cfg(unix)]
@@ -465,11 +465,9 @@ fn capture_binding(project: &ProjectState) -> FsResult<ProjectBinding> {
 }
 
 fn ensure_binding_current(project: &ProjectState, binding: &ProjectBinding) -> FsResult<()> {
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        binding.instance_id,
-        binding.project_id,
-        binding.revision,
+        ProjectExpectation::new(binding.instance_id, binding.project_id, binding.revision),
     )
     .map_err(|_| ProjectFolderFilesystemError::StaleProject)?;
     let current = project

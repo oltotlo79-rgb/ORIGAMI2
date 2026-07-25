@@ -23,7 +23,10 @@ test('AUT-005 recognizes only bounded CRC-checked RGBA marker PNG data', () => {
 })
 
 test('recognition is bound to the project instance, revision, underlay, asset, and bytes', () => {
-  assert.match(native, /ensure_expected_project/u)
+  assert.match(
+    native,
+    /ensure_project_expectation\(\s*project,\s*ProjectExpectation::new\(\s*request\.expected_project_instance_id,\s*request\.expected_project_id,\s*request\.expected_revision,\s*\),\s*\)\?/u,
+  )
   assert.match(native, /underlay\.id == request\.underlay_id && underlay\.asset == request\.asset_id/u)
   assert.match(native, /Sha256::digest\(&bytes\)/u)
   assert.match(native, /live_hash != source_sha256/u)

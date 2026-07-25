@@ -24,7 +24,8 @@ use super::crease_export::persist_export_bytes_atomically;
 use super::crease_export::persist_export_bytes_to_destination;
 use super::save_path::DialogSaveDestination;
 use super::{
-    AppState, ProjectState, ensure_expected_project, ensure_project_identity, lock_project,
+    AppState, ProjectExpectation, ProjectState, ensure_project_expectation,
+    ensure_project_identity, lock_project,
 };
 
 const PHASE_VALIDATING: u8 = 0;
@@ -823,11 +824,13 @@ fn ensure_pending_is_current(
     pending: &PendingInstructionExport,
     project: &ProjectState,
 ) -> InstructionExportResult<()> {
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        pending.expected_instance_id,
-        pending.expected_project_id,
-        pending.expected_revision,
+        ProjectExpectation::new(
+            pending.expected_instance_id,
+            pending.expected_project_id,
+            pending.expected_revision,
+        ),
     )
     .map_err(|_| InstructionExportErrorCategory::ProjectChanged)?;
     if !pending

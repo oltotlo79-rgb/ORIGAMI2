@@ -12,7 +12,10 @@ const native = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url),
 
 test('AUT-106 candidate reads bind instance, project, and revision without mutation', () => {
   assert.match(native, /fn evaluate_beginner_candidates/)
-  assert.match(native, /ensure_expected_project\([\s\S]*expected_project_instance_id[\s\S]*expected_project_id[\s\S]*expected_revision/)
+  assert.match(
+    native,
+    /ensure_project_expectation\(\s*&project,\s*ProjectExpectation::new\(\s*expected_project_instance_id,\s*expected_project_id,\s*expected_revision,\s*\),\s*\)\?/u,
+  )
   assert.match(client, /invoke<unknown>\('evaluate_beginner_candidates'/)
   assert.match(client, /response\.candidates\.length > 3/)
 })

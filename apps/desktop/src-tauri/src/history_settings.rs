@@ -2,7 +2,7 @@ use ori_domain::ProjectId;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use super::{AppState, ProjectState, ensure_expected_project, lock_project};
+use super::{AppState, ProjectExpectation, ProjectState, ensure_project_expectation, lock_project};
 
 const HISTORY_SETTINGS_SCHEMA_VERSION: u32 = 1;
 const MIN_HISTORY_ENTRY_LIMIT: usize = 1;
@@ -65,11 +65,13 @@ fn set_history_entry_limit_in_state(
     validate_request(request)?;
 
     let mut project = lock_project(state).map_err(|_| HISTORY_SETTINGS_UNAVAILABLE)?;
-    ensure_expected_project(
+    ensure_project_expectation(
         &project,
-        request.expected_project_instance_id,
-        request.expected_project_id,
-        request.expected_revision,
+        ProjectExpectation::new(
+            request.expected_project_instance_id,
+            request.expected_project_id,
+            request.expected_revision,
+        ),
     )
     .map_err(|_| HISTORY_SETTINGS_STALE_REQUEST)?;
 

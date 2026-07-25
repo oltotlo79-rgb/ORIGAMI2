@@ -18,8 +18,9 @@ use super::project_persistence::{containing_directory, publish_unix_staged_file}
 use super::rename_windows_staged_file_with_policy;
 use super::save_path::{DialogSaveDestination, ExistingDestinationPolicy};
 use super::{
-    AppState, ProjectState, StagedFile, create_staged_file, ensure_expected_project,
-    ensure_project_identity, lock_project, validate_import_active_edge_containment,
+    AppState, ProjectExpectation, ProjectState, StagedFile, create_staged_file,
+    ensure_project_expectation, ensure_project_identity, lock_project,
+    validate_import_active_edge_containment,
 };
 #[cfg(not(target_os = "windows"))]
 use std::fs::File;
@@ -207,11 +208,13 @@ pub(super) async fn preview_crease_pattern_export(
     let mut slot = lock_crease_export(&export_state)?;
     let project = lock_project(&state)?;
     ensure_generation_is_current(&slot, export_id)?;
-    if let Err(error) = ensure_expected_project(
+    if let Err(error) = ensure_project_expectation(
         &project,
-        pending.expected_instance_id,
-        pending.expected_project_id,
-        pending.expected_revision,
+        ProjectExpectation::new(
+            pending.expected_instance_id,
+            pending.expected_project_id,
+            pending.expected_revision,
+        ),
     ) {
         slot.active_generation_id = None;
         slot.pending = None;
@@ -550,11 +553,13 @@ fn checked_pending<'a>(
         return Err("書き出しプレビューは別の編集状態に属しています。".to_owned());
     }
     ensure_generation_is_current(slot, export_id)?;
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        pending.expected_instance_id,
-        pending.expected_project_id,
-        pending.expected_revision,
+        ProjectExpectation::new(
+            pending.expected_instance_id,
+            pending.expected_project_id,
+            pending.expected_revision,
+        ),
     )?;
     Ok(pending)
 }

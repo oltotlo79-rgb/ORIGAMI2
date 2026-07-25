@@ -15,7 +15,8 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
 use super::{
-    AppState, ProjectSnapshot, ProjectState, commit_project_replacement, ensure_expected_project,
+    AppState, ProjectExpectation, ProjectSnapshot, ProjectState, commit_project_replacement,
+    ensure_project_expectation,
     project_persistence::{
         FRONTEND_MAX_SAFE_INTEGER_U64, RecoveryPersistenceError, RecoveryProjectLoad,
         clear_recovery_document, inspect_recovery_project, persist_recovery_project,
@@ -1183,11 +1184,13 @@ impl RecoveryRuntime {
         request: &RestoreRecoveryRequest,
         prepared: PreparedRecoveryRestore,
     ) -> Result<ProjectSnapshot, RecoveryStorageError> {
-        ensure_expected_project(
+        ensure_project_expectation(
             project,
-            request.expected_instance_id,
-            request.expected_project_id,
-            request.expected_revision,
+            ProjectExpectation::new(
+                request.expected_instance_id,
+                request.expected_project_id,
+                request.expected_revision,
+            ),
         )
         .map_err(|_| RecoveryStorageError::StateUnavailable)?;
 

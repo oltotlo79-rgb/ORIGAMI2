@@ -21,11 +21,11 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use super::{
-    AppState, ProjectSnapshot, ProjectState,
+    AppState, ProjectExpectation, ProjectSnapshot, ProjectState,
     applied_pose::{
         ApplyCurrentNativePoseResponse, NativePoseHingeAngleRequest, NativePoseRequest,
     },
-    execute_command, lock_project,
+    execute_expected_command, lock_project,
 };
 
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
@@ -320,11 +320,9 @@ pub(super) fn apply_fold_3d_instruction_timeline(
             },
         })
         .collect();
-    let snapshot = execute_command(
+    let snapshot = execute_expected_command(
         project,
-        pending.instance_id,
-        pending.project_id,
-        pending.revision,
+        ProjectExpectation::new(pending.instance_id, pending.project_id, pending.revision),
         Command::AppendInstructionSteps { steps },
     )?;
     slot.pending = None;

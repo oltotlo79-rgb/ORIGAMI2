@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import test from 'node:test'
 
-const app = source('../src/App.tsx')
+const app = [
+  source('../src/App.tsx'),
+  source('../src/lib/appText.ts'),
+].join('\n')
 const instructionPanel = source('../src/components/InstructionTimelinePanel.tsx')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
+const formats = source('../../../crates/ori-formats/src/lib.rs')
+const nativeRustSources = rustSources(new URL('../src-tauri/src/', import.meta.url))
 const nativeHandler = rustInvokeHandlerSection(native)
 
 const mutationContracts = [
@@ -161,16 +166,76 @@ test('all central edit history paths reject a foreign instance before state acce
   assert.doesNotMatch(identityGuard, /format!\s*\(/u)
 })
 
+test('ProjectExpectation is the only production command and project-expectation funnel', () => {
+  assert.match(
+    native,
+    /struct ProjectExpectation\s*\{\s*instance_id:\s*ProjectId,\s*project_id:\s*ProjectId,\s*revision:\s*u64,\s*\}/u,
+  )
+
+  const commandFunnel = rustFunctionSection(native, 'execute_expected_command')
+  assert.match(
+    commandFunnel,
+    /execute_command\(\s*project,\s*expectation\.instance_id,\s*expectation\.project_id,\s*expectation\.revision,\s*command,\s*\)/u,
+  )
+  const expectationFunnel = rustFunctionSection(native, 'ensure_project_expectation')
+  assert.match(
+    expectationFunnel,
+    /ensure_expected_project\(\s*project,\s*expectation\.instance_id,\s*expectation\.project_id,\s*expectation\.revision,\s*\)/u,
+  )
+  const lockFunnel = rustFunctionSection(native, 'lock_and_expect')
+  assert.match(
+    lockFunnel,
+    /let project = lock_project\(state\)\?;[\s\S]*ensure_project_expectation\(&project, expectation\)\?;[\s\S]*Ok\(project\)/u,
+  )
+
+  for (const [path, text] of nativeRustSources) {
+    const production = rustCodeWithoutLineComments(rustProductionSection(text))
+    const isRoot = path.endsWith('/src-tauri/src/lib.rs')
+    assert.equal(
+      [...production.matchAll(/\bexecute_command\s*\(/gu)].length,
+      isRoot ? 2 : 0,
+      `${path} must use execute_expected_command outside the root definition and its delegation`,
+    )
+    assert.equal(
+      [...production.matchAll(/\bensure_expected_project\s*\(/gu)].length,
+      isRoot ? 2 : 0,
+      `${path} must use ensure_project_expectation outside the root definition and its delegation`,
+    )
+  }
+})
+
+test('project JSON read and write share one ordered document validator', () => {
+  const writer = rustFunctionSection(formats, 'write_project_json_with_size_limit')
+  const reader = rustFunctionSection(formats, 'read_project_json_with_limits')
+  const validator = rustFunctionSection(formats, 'validate_project_document')
+  assert.match(
+    writer,
+    /validate_project_document\(document\)\?;[\s\S]*serde_json::to_vec_pretty\(document\)\?/u,
+  )
+  assert.match(
+    reader,
+    /ensure_project_json_size\(bytes\.len\(\), limits\.max_input_size\)\?;[\s\S]*serde_json::from_slice\(bytes\)\?;[\s\S]*validate_project_document\(&document\)\?;/u,
+  )
+  assert.match(
+    validator,
+    /validate_project_envelope\(document\)\?;\s*validate_project_geometry_finiteness\(document\)\?;\s*validate_instruction_timeline\(&document\.instruction_timeline\)\?;\s*validate_numeric_expressions\(&document\.numeric_expressions\)\?;\s*validate_current_vertex_expression_bindings\(document\)\?;\s*validate_project_geometric_constraints\(document\)\?;\s*validate_project_layer_document_against_pattern_v1\(&document\.layers, &document\.crease_pattern\)\?;\s*validate_project_annotations\(document\)\?;\s*validate_project_underlays\(document\)\?;/u,
+  )
+  assert.equal(
+    occurrences(rustProductionSection(formats), 'validate_project_document('),
+    3,
+  )
+})
+
 test('instruction pose analysis binds both capture and commit to the open instance', () => {
   const analysis = rustFunctionSection(native, 'analyze_instruction_pose')
   assert.match(
     analysis,
-    /ensure_expected_project\(\s*&project,\s*expected_project_instance_id,\s*expected_project_id,\s*expected_revision,\s*\)\?/u,
+    /lock_and_expect\(\s*state,\s*ProjectExpectation::new\(\s*expected_project_instance_id,\s*expected_project_id,\s*expected_revision,\s*\),\s*\)\?/u,
   )
   const finish = rustFunctionSection(native, 'finish_instruction_pose')
   assert.match(
     finish,
-    /ensure_expected_project\(\s*project,\s*expected_project_instance_id,\s*expected_project_id,\s*expected_revision,\s*\)\?/u,
+    /ensure_project_expectation\(\s*project,\s*ProjectExpectation::new\(\s*expected_project_instance_id,\s*expected_project_id,\s*expected_revision,\s*\),\s*\)\?/u,
   )
   assert.match(
     finish,
@@ -286,7 +351,10 @@ function rustInvokeHandlerSection(text: string) {
 }
 
 function rustFunctionSection(text: string, name: string) {
-  const match = new RegExp(String.raw`\n(?:async\s+)?fn ${name}\(`, 'u').exec(text)
+  const match = new RegExp(
+    String.raw`\n(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn ${name}\(`,
+    'u',
+  ).exec(text)
   assert.ok(match, `${name} native function`)
   const start = match.index + 1
   const openingBrace = text.indexOf('{', start)
@@ -300,6 +368,28 @@ function rustFunctionSection(text: string, name: string) {
     }
   }
   assert.fail(`${name} closing brace`)
+}
+
+function rustProductionSection(text: string) {
+  const testModule = /\n#\[cfg\(test\)\]\n(?:pub(?:\([^)]*\))?\s+)?mod tests\s*\{/u.exec(text)
+  return testModule ? text.slice(0, testModule.index) : text
+}
+
+function rustCodeWithoutLineComments(text: string) {
+  return text.replace(/\/\/[^\r\n]*/gu, '')
+}
+
+function rustSources(directory: URL): Array<readonly [string, string]> {
+  const result: Array<readonly [string, string]> = []
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const child = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory)
+    if (entry.isDirectory()) {
+      result.push(...rustSources(child))
+    } else if (entry.isFile() && entry.name.endsWith('.rs')) {
+      result.push([child.pathname, readFileSync(child, 'utf8')])
+    }
+  }
+  return result
 }
 
 function typescriptFunctionSection(text: string, name: string) {

@@ -492,12 +492,7 @@ impl<'a> WorkMeter<'a> {
         first: usize,
         second: usize,
     ) -> Result<(), CayleyError> {
-        let bits = first
-            .checked_add(second)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "intermediate_bits",
-            })?;
+        let bits = checked_work_sum(first, second, stage, "intermediate_bits")?;
         self.work.max_preflight_bits = self.work.max_preflight_bits.max(bits);
         if bits > self.limits.max_intermediate_bits {
             return Err(CayleyError::ResourceLimitExceeded {
@@ -526,13 +521,7 @@ impl<'a> WorkMeter<'a> {
         shift: usize,
     ) -> Result<(), CayleyError> {
         self.shift(stage, shift)?;
-        let shifted_bits =
-            value_bits
-                .checked_add(shift)
-                .ok_or(CayleyError::ResourceLimitExceeded {
-                    stage,
-                    resource: "intermediate_bits",
-                })?;
+        let shifted_bits = checked_work_sum(value_bits, shift, stage, "intermediate_bits")?;
         self.preflight_value_bits(stage, shifted_bits)
     }
 
@@ -642,13 +631,7 @@ impl<'a> WorkMeter<'a> {
         self.operation(stage)?;
         let value_bits = value.bits() as usize;
         self.preflight_shifted_value(stage, value_bits, shift)?;
-        let result_bits =
-            value_bits
-                .checked_add(shift)
-                .ok_or(CayleyError::ResourceLimitExceeded {
-                    stage,
-                    resource: "intermediate_bits",
-                })?;
+        let result_bits = checked_work_sum(value_bits, shift, stage, "intermediate_bits")?;
         self.charge_rational_allocations(&[result_bits], stage)?;
         Ok(value << shift)
     }
@@ -675,13 +658,12 @@ impl<'a> WorkMeter<'a> {
         stage: CayleyStage,
     ) -> Result<BigUint, CayleyError> {
         self.operation(stage)?;
-        let result_bits = (left.bits() as usize)
-            .max(right.bits() as usize)
-            .checked_add(1)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "intermediate_bits",
-            })?;
+        let result_bits = checked_work_sum(
+            (left.bits() as usize).max(right.bits() as usize),
+            1,
+            stage,
+            "intermediate_bits",
+        )?;
         self.preflight_value_bits(stage, result_bits)?;
         self.charge_rational_allocations(&[result_bits], stage)?;
         Ok(left + right)
@@ -693,13 +675,7 @@ impl<'a> WorkMeter<'a> {
         stage: CayleyStage,
     ) -> Result<BigUint, CayleyError> {
         self.operation(stage)?;
-        let result_bits =
-            (value.bits() as usize)
-                .checked_add(1)
-                .ok_or(CayleyError::ResourceLimitExceeded {
-                    stage,
-                    resource: "intermediate_bits",
-                })?;
+        let result_bits = checked_work_sum(value.bits() as usize, 1, stage, "intermediate_bits")?;
         self.preflight_value_bits(stage, result_bits)?;
         self.charge_rational_allocations(&[result_bits], stage)?;
         Ok(value + BigUint::one())
@@ -788,12 +764,7 @@ impl<'a> WorkMeter<'a> {
         let right_bits = bigint_bits(right);
         self.preflight_value_bits(stage, left_bits.max(right_bits))?;
         let call_input_bits =
-            left_bits
-                .checked_add(right_bits)
-                .ok_or(CayleyError::ResourceLimitExceeded {
-                    stage,
-                    resource: "gcd_fallback_input_bits",
-                })?;
+            checked_work_sum(left_bits, right_bits, stage, "gcd_fallback_input_bits")?;
         let next_calls =
             checked_work_sum(self.work.gcd_fallback_calls, 1, stage, "gcd_fallback_calls")?;
         let next_input_bits = checked_work_sum(
@@ -868,31 +839,30 @@ impl<'a> WorkMeter<'a> {
         stage: CayleyStage,
     ) -> Result<BigRational, CayleyError> {
         self.operation(stage)?;
-        let raw_left_product = bigint_bits(left.numer())
-            .checked_add(bigint_bits(right.denom()))
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "intermediate_bits",
-            })?;
-        let raw_right_product = bigint_bits(right.numer())
-            .checked_add(bigint_bits(left.denom()))
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "intermediate_bits",
-            })?;
-        let raw_denominator = bigint_bits(left.denom())
-            .checked_add(bigint_bits(right.denom()))
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "intermediate_bits",
-            })?;
-        let raw_numerator = raw_left_product
-            .max(raw_right_product)
-            .checked_add(1)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "intermediate_bits",
-            })?;
+        let raw_left_product = checked_work_sum(
+            bigint_bits(left.numer()),
+            bigint_bits(right.denom()),
+            stage,
+            "intermediate_bits",
+        )?;
+        let raw_right_product = checked_work_sum(
+            bigint_bits(right.numer()),
+            bigint_bits(left.denom()),
+            stage,
+            "intermediate_bits",
+        )?;
+        let raw_denominator = checked_work_sum(
+            bigint_bits(left.denom()),
+            bigint_bits(right.denom()),
+            stage,
+            "intermediate_bits",
+        )?;
+        let raw_numerator = checked_work_sum(
+            raw_left_product.max(raw_right_product),
+            1,
+            stage,
+            "intermediate_bits",
+        )?;
         if raw_numerator.max(raw_denominator) <= self.limits.max_intermediate_bits {
             self.preflight_value_bits(stage, raw_numerator)?;
             self.preflight_value_bits(stage, raw_denominator)?;
@@ -913,11 +883,11 @@ impl<'a> WorkMeter<'a> {
         let left_product = refined_product_bits(left.numer(), &left_multiplier, stage)?;
         let right_product = refined_product_bits(right.numer(), &right_multiplier, stage)?;
         let denominator = refined_product_bits(left.denom(), &left_multiplier, stage)?;
-        let numerator = left_product.max(right_product).checked_add(1).ok_or(
-            CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "intermediate_bits",
-            },
+        let numerator = checked_work_sum(
+            left_product.max(right_product),
+            1,
+            stage,
+            "intermediate_bits",
         )?;
         self.preflight_value_bits(stage, numerator)?;
         self.preflight_value_bits(stage, denominator)?;
@@ -941,18 +911,18 @@ impl<'a> WorkMeter<'a> {
         stage: CayleyStage,
     ) -> Result<BigRational, CayleyError> {
         self.operation(stage)?;
-        let raw_numerator = bigint_bits(left.numer())
-            .checked_add(bigint_bits(right.numer()))
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "intermediate_bits",
-            })?;
-        let raw_denominator = bigint_bits(left.denom())
-            .checked_add(bigint_bits(right.denom()))
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "intermediate_bits",
-            })?;
+        let raw_numerator = checked_work_sum(
+            bigint_bits(left.numer()),
+            bigint_bits(right.numer()),
+            stage,
+            "intermediate_bits",
+        )?;
+        let raw_denominator = checked_work_sum(
+            bigint_bits(left.denom()),
+            bigint_bits(right.denom()),
+            stage,
+            "intermediate_bits",
+        )?;
         if raw_numerator.max(raw_denominator) <= self.limits.max_intermediate_bits {
             self.preflight_value_bits(stage, raw_numerator)?;
             self.preflight_value_bits(stage, raw_denominator)?;
@@ -996,18 +966,18 @@ impl<'a> WorkMeter<'a> {
             return Err(CayleyError::CertificateUnavailable { stage });
         }
         self.operation(stage)?;
-        let raw_numerator = bigint_bits(left.numer())
-            .checked_add(bigint_bits(right.denom()))
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "intermediate_bits",
-            })?;
-        let raw_denominator = bigint_bits(left.denom())
-            .checked_add(bigint_bits(right.numer()))
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "intermediate_bits",
-            })?;
+        let raw_numerator = checked_work_sum(
+            bigint_bits(left.numer()),
+            bigint_bits(right.denom()),
+            stage,
+            "intermediate_bits",
+        )?;
+        let raw_denominator = checked_work_sum(
+            bigint_bits(left.denom()),
+            bigint_bits(right.numer()),
+            stage,
+            "intermediate_bits",
+        )?;
         if raw_numerator.max(raw_denominator) <= self.limits.max_intermediate_bits {
             self.preflight_value_bits(stage, raw_numerator)?;
             self.preflight_value_bits(stage, raw_denominator)?;
@@ -1464,13 +1434,12 @@ fn dyadic_rational_from_bigint(
     let numerator_bits = bigint_bits(value).saturating_sub(removable);
     let denominator_bits = denominator_shift.saturating_add(1);
     meter.preflight_value_bits(stage, numerator_bits)?;
-    let storage_bits =
-        numerator_bits
-            .checked_add(denominator_bits)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "rational_allocation_bits",
-            })?;
+    let storage_bits = checked_work_sum(
+        numerator_bits,
+        denominator_bits,
+        stage,
+        "rational_allocation_bits",
+    )?;
     meter.charge_rational_allocations(&[storage_bits], stage)?;
     let numerator = value >> removable;
     let denominator = BigInt::one() << denominator_shift;
@@ -1498,13 +1467,12 @@ fn dyadic_rational_from_biguint(
     meter.preflight_shifted_value(stage, 1, denominator_shift)?;
     let numerator_bits = value_bits.saturating_sub(removable);
     let denominator_bits = denominator_shift.saturating_add(1);
-    let storage_bits =
-        numerator_bits
-            .checked_add(denominator_bits)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "rational_allocation_bits",
-            })?;
+    let storage_bits = checked_work_sum(
+        numerator_bits,
+        denominator_bits,
+        stage,
+        "rational_allocation_bits",
+    )?;
     meter.preflight_value_bits(stage, numerator_bits)?;
     meter.charge_rational_allocations(&[storage_bits], stage)?;
     let numerator = BigInt::from_biguint(Sign::Plus, value >> removable);
@@ -1528,13 +1496,12 @@ fn coprime_rational_from_biguints(
     let denominator_bits = denominator.bits() as usize;
     meter.preflight_value_bits(stage, numerator_bits)?;
     meter.preflight_value_bits(stage, denominator_bits)?;
-    let storage_bits =
-        numerator_bits
-            .checked_add(denominator_bits)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "rational_allocation_bits",
-            })?;
+    let storage_bits = checked_work_sum(
+        numerator_bits,
+        denominator_bits,
+        stage,
+        "rational_allocation_bits",
+    )?;
     meter.charge_rational_allocations(&[storage_bits], stage)?;
     let result = BigRational::new_raw(
         BigInt::from_biguint(Sign::Plus, numerator),
@@ -2345,11 +2312,11 @@ fn build_authenticated_boundary_edge_index(
             });
         }
 
-        let next_boundary_occurrences = boundary_occurrences.checked_add(occurrence_count).ok_or(
-            CayleyError::ResourceLimitExceeded {
-                stage: CayleyStage::Tree,
-                resource: "boundary_occurrences",
-            },
+        let next_boundary_occurrences = checked_work_sum(
+            boundary_occurrences,
+            occurrence_count,
+            CayleyStage::Tree,
+            "boundary_occurrences",
         )?;
         if next_boundary_occurrences > limits.max_boundary_occurrences {
             return Err(CayleyError::ResourceLimitExceeded {
@@ -2357,11 +2324,11 @@ fn build_authenticated_boundary_edge_index(
                 resource: "boundary_occurrences",
             });
         }
-        let next_entries = entries.len().checked_add(occurrence_count).ok_or(
-            CayleyError::ResourceLimitExceeded {
-                stage: CayleyStage::Tree,
-                resource: "boundary_edge_index_entries",
-            },
+        let next_entries = checked_work_sum(
+            entries.len(),
+            occurrence_count,
+            CayleyStage::Tree,
+            "boundary_edge_index_entries",
         )?;
         if next_entries > limits.max_boundary_edge_index_entries {
             return Err(CayleyError::ResourceLimitExceeded {
@@ -2369,13 +2336,12 @@ fn build_authenticated_boundary_edge_index(
                 resource: "boundary_edge_index_entries",
             });
         }
-        let next_operations =
-            operations
-                .checked_add(occurrence_count)
-                .ok_or(CayleyError::ResourceLimitExceeded {
-                    stage: CayleyStage::Tree,
-                    resource: "boundary_edge_index_operations",
-                })?;
+        let next_operations = checked_work_sum(
+            operations,
+            occurrence_count,
+            CayleyStage::Tree,
+            "boundary_edge_index_operations",
+        )?;
         if next_operations > limits.max_boundary_edge_index_operations {
             return Err(CayleyError::ResourceLimitExceeded {
                 stage: CayleyStage::Tree,
@@ -2585,18 +2551,14 @@ fn charge_rational_output(
             resource: "output_bits",
         });
     }
-    let storage_bits = bigint_bits(value.numer())
-        .checked_add(bigint_bits(value.denom()))
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage: CayleyStage::Tree,
-            resource: "total_output_bits",
-        })?;
-    let next_total = total
-        .checked_add(storage_bits)
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage: CayleyStage::Tree,
-            resource: "total_output_bits",
-        })?;
+    let storage_bits = checked_work_sum(
+        bigint_bits(value.numer()),
+        bigint_bits(value.denom()),
+        CayleyStage::Tree,
+        "total_output_bits",
+    )?;
+    let next_total =
+        checked_work_sum(*total, storage_bits, CayleyStage::Tree, "total_output_bits")?;
     if next_total > maximum {
         return Err(CayleyError::ResourceLimitExceeded {
             stage: CayleyStage::Tree,
@@ -2923,19 +2885,8 @@ fn machin_pi_interval(
         });
     }
     let work_precision =
-        precision
-            .checked_add(DEFAULT_GUARD_BITS)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage: CayleyStage::Pi,
-                resource: "shift_bits",
-            })?;
-    let tolerance_precision =
-        work_precision
-            .checked_add(8)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage: CayleyStage::Pi,
-                resource: "shift_bits",
-            })?;
+        checked_work_sum(precision, DEFAULT_GUARD_BITS, CayleyStage::Pi, "shift_bits")?;
+    let tolerance_precision = checked_work_sum(work_precision, 8, CayleyStage::Pi, "shift_bits")?;
     meter.preflight_shifted_value(CayleyStage::Pi, 1, tolerance_precision)?;
     let tolerance = BigRational::new(BigInt::one(), BigInt::one() << tolerance_precision);
     let first = atan_inverse_interval(5, &tolerance, meter)?;
@@ -2983,12 +2934,7 @@ fn atan_inverse_interval(
     let mut sum = BigRational::zero();
     let mut index = 0_usize;
     loop {
-        let local_terms = index
-            .checked_add(1)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage: CayleyStage::Pi,
-                resource: "machin_terms",
-            })?;
+        let local_terms = checked_work_sum(index, 1, CayleyStage::Pi, "machin_terms")?;
         meter.machin_term(CayleyStage::Pi, local_terms)?;
         if index.is_multiple_of(2) {
             sum = meter.add_rational(&sum, &term, CayleyStage::Pi)?;
@@ -2998,18 +2944,14 @@ fn atan_inverse_interval(
 
         let numerator_factor = index
             .checked_mul(2)
-            .and_then(|value| value.checked_add(1))
             .ok_or(CayleyError::ResourceLimitExceeded {
                 stage: CayleyStage::Pi,
                 resource: "machin_terms",
             })?;
+        let numerator_factor =
+            checked_work_sum(numerator_factor, 1, CayleyStage::Pi, "machin_terms")?;
         let denominator_factor =
-            numerator_factor
-                .checked_add(2)
-                .ok_or(CayleyError::ResourceLimitExceeded {
-                    stage: CayleyStage::Pi,
-                    resource: "machin_terms",
-                })?;
+            checked_work_sum(numerator_factor, 2, CayleyStage::Pi, "machin_terms")?;
         let term_numerator = meter.multiply_rational(
             &term,
             &BigRational::from_integer(BigInt::from(numerator_factor)),
@@ -3035,12 +2977,7 @@ fn atan_inverse_interval(
                 RationalInterval::new(lower, upper, meter, CayleyStage::Pi)
             };
         }
-        index = index
-            .checked_add(1)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage: CayleyStage::Pi,
-                resource: "machin_terms",
-            })?;
+        index = checked_work_sum(index, 1, CayleyStage::Pi, "machin_terms")?;
     }
 }
 
@@ -3103,13 +3040,18 @@ fn sine_cosine_interval(
     } else {
         0
     };
-    let work_precision = precision
-        .checked_add(DEFAULT_GUARD_BITS)
-        .and_then(|value| value.checked_add(extra))
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage: CayleyStage::Trigonometry,
-            resource: "shift_bits",
-        })?;
+    let work_precision = checked_work_sum(
+        precision,
+        DEFAULT_GUARD_BITS,
+        CayleyStage::Trigonometry,
+        "shift_bits",
+    )?;
+    let work_precision = checked_work_sum(
+        work_precision,
+        extra,
+        CayleyStage::Trigonometry,
+        "shift_bits",
+    )?;
     meter.shift(CayleyStage::Trigonometry, work_precision)?;
 
     let lower_angle = RationalInterval::point(
@@ -3189,12 +3131,7 @@ fn taylor_point(
     let mut sum = DyadicInterval::zero(x.precision);
     let mut index = 0_usize;
     loop {
-        let local_terms = index
-            .checked_add(1)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage: CayleyStage::Trigonometry,
-                resource: "trig_terms",
-            })?;
+        let local_terms = checked_work_sum(index, 1, CayleyStage::Trigonometry, "trig_terms")?;
         meter.trig_term(CayleyStage::Trigonometry, local_terms)?;
         let positive = index.is_multiple_of(2);
         sum = if positive {
@@ -3250,12 +3187,7 @@ fn taylor_point(
             };
         }
         term = next;
-        index = index
-            .checked_add(1)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage: CayleyStage::Trigonometry,
-                resource: "trig_terms",
-            })?;
+        index = checked_work_sum(index, 1, CayleyStage::Trigonometry, "trig_terms")?;
     }
 }
 
@@ -3278,10 +3210,13 @@ fn square_root_interval(
     meter.shift(CayleyStage::SquareRoot, shift)?;
     let numerator = positive_biguint(value.numer(), CayleyStage::SquareRoot)?;
     let denominator = positive_biguint(value.denom(), CayleyStage::SquareRoot)?;
-    if bigint_bits(value.numer())
-        .checked_add(shift)
-        .is_none_or(|bits| bits > meter.limits.max_intermediate_bits)
-    {
+    let scaled_numerator_bits = checked_work_sum(
+        bigint_bits(value.numer()),
+        shift,
+        CayleyStage::SquareRoot,
+        "intermediate_bits",
+    )?;
+    if scaled_numerator_bits > meter.limits.max_intermediate_bits {
         return Err(CayleyError::ResourceLimitExceeded {
             stage: CayleyStage::SquareRoot,
             resource: "intermediate_bits",
@@ -3360,13 +3295,12 @@ fn integer_sqrt_floor(value: &BigUint, meter: &mut WorkMeter<'_>) -> Result<BigU
         meter.left_shift_biguint(&BigUint::one(), initial_shift, CayleyStage::SquareRoot)?;
     let mut local_refinements = 0_usize;
     loop {
-        local_refinements =
-            local_refinements
-                .checked_add(1)
-                .ok_or(CayleyError::ResourceLimitExceeded {
-                    stage: CayleyStage::SquareRoot,
-                    resource: "sqrt_refinements",
-                })?;
+        local_refinements = checked_work_sum(
+            local_refinements,
+            1,
+            CayleyStage::SquareRoot,
+            "sqrt_refinements",
+        )?;
         meter.sqrt_refinement(CayleyStage::SquareRoot, local_refinements)?;
         let quotient = meter.divide_biguint(value, &root, CayleyStage::SquareRoot)?;
         let sum = meter.add_biguint(&root, &quotient, CayleyStage::SquareRoot)?;
@@ -3828,12 +3762,12 @@ fn bigint_bits(value: &BigInt) -> usize {
 }
 
 fn rational_storage_bits(value: &BigRational, stage: CayleyStage) -> Result<usize, CayleyError> {
-    bigint_bits(value.numer())
-        .checked_add(bigint_bits(value.denom()))
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage,
-            resource: "rational_allocation_bits",
-        })
+    checked_work_sum(
+        bigint_bits(value.numer()),
+        bigint_bits(value.denom()),
+        stage,
+        "rational_allocation_bits",
+    )
 }
 
 fn checked_work_sum(
@@ -3869,12 +3803,7 @@ fn product_bits_upper_bound(
     if right_bits == 1 {
         return Ok(left_bits);
     }
-    left_bits
-        .checked_add(right_bits)
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage,
-            resource: "intermediate_bits",
-        })
+    checked_work_sum(left_bits, right_bits, stage, "intermediate_bits")
 }
 
 fn quotient_bits_upper_bound(
@@ -5935,6 +5864,67 @@ mod tests {
                 resource: "test_work_resource",
             })
         );
+    }
+
+    #[test]
+    fn checked_work_sum_accepts_under_and_exact_usize_boundaries() {
+        for (current, additional, expected) in [
+            (0, 0, 0),
+            (usize::MAX - 1, 0, usize::MAX - 1),
+            (usize::MAX - 1, 1, usize::MAX),
+            (usize::MAX, 0, usize::MAX),
+        ] {
+            assert_eq!(
+                checked_work_sum(
+                    current,
+                    additional,
+                    CayleyStage::Containment,
+                    "test_work_resource",
+                ),
+                Ok(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn migrated_checked_sums_preserve_failure_side_effect_order() {
+        let mut unbounded = limits();
+        unbounded.max_shift_bits = usize::MAX;
+        unbounded.max_intermediate_bits = usize::MAX;
+
+        let mut preflight_meter = WorkMeter::new(&unbounded);
+        assert_eq!(
+            preflight_meter.preflight_product_bits(CayleyStage::Matrix, usize::MAX, 1),
+            Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Matrix,
+                resource: "intermediate_bits",
+            })
+        );
+        assert_eq!(preflight_meter.work, CayleyWork::default());
+
+        let mut pi_meter = WorkMeter::new(&unbounded);
+        assert_eq!(
+            machin_pi_interval(usize::MAX, &mut pi_meter),
+            Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::Pi,
+                resource: "shift_bits",
+            })
+        );
+        assert_eq!(pi_meter.work, CayleyWork::default());
+
+        let precision = usize::MAX / 2;
+        let expected_shift = precision * 2;
+        let mut square_root_meter = WorkMeter::new(&unbounded);
+        assert_eq!(
+            square_root_interval(&rational(2), precision, &mut square_root_meter),
+            Err(CayleyError::ResourceLimitExceeded {
+                stage: CayleyStage::SquareRoot,
+                resource: "intermediate_bits",
+            })
+        );
+        assert_eq!(square_root_meter.work.max_shift_bits, expected_shift);
+        assert_eq!(square_root_meter.work.max_preflight_bits, 0);
+        assert_eq!(square_root_meter.work.interval_operations, 0);
     }
 
     #[test]

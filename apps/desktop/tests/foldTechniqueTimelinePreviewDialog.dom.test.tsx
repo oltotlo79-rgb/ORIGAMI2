@@ -111,13 +111,26 @@ describe('FoldTechniqueTimelinePreviewDialog', () => {
         onCancel={vi.fn()}
       />,
     )
+    const dialog = screen.getByRole('dialog', {
+      name: '折り手順タイムライン案',
+    })
+    const close = screen.getByRole('button', { name: '閉じる' })
+    const cancel = screen.getByRole('button', { name: 'キャンセル' })
+    const confirm = screen.getByRole('button', {
+      name: '説明専用手順を追加',
+    })
+    expect(document.activeElement).toBe(cancel)
+
     act(() => localeStore.setLocale('en'))
     expect(screen.getByRole('dialog', {
       name: 'Instruction timeline proposal',
-    })).toBeTruthy()
-    expect(screen.getByText(/one undoable edit/iu)).toBeTruthy()
+    })).toBe(dialog)
+    expect(screen.getByRole('button', { name: 'Close' })).toBe(close)
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBe(cancel)
     expect(screen.getByRole('button', {
       name: 'Add description-only steps',
-    })).toBeTruthy()
+    })).toBe(confirm)
+    expect(document.activeElement).toBe(cancel)
+    expect(screen.getByText(/one undoable edit/iu)).toBeTruthy()
   })
 })

@@ -1,4 +1,37 @@
-import type { LocalizedText } from './i18n.ts'
+import {
+  selectLocalizedText,
+  type LocalizedText,
+} from './i18n.ts'
+
+type FoldTechniqueTimelineSourceKind =
+  | 'technique'
+  | 'parameter'
+  | 'precondition'
+  | 'operation'
+
+type FoldTechniqueTimelinePreviewDialogText = Readonly<{
+  eyebrow: LocalizedText
+  title: LocalizedText
+  close: LocalizedText
+  closeGlyph: LocalizedText
+  safety: LocalizedText
+  technique: LocalizedText
+  operations: LocalizedText
+  steps: LocalizedText
+  unsupported: LocalizedText
+  unsupportedNote: LocalizedText
+  previewList: LocalizedText
+  inertStep: LocalizedText
+  sourceKinds: Readonly<Record<
+    FoldTechniqueTimelineSourceKind,
+    LocalizedText
+  >>
+  stale: LocalizedText
+  applying: LocalizedText
+  cancel: LocalizedText
+  confirm: LocalizedText
+  numberLocale: LocalizedText
+}>
 
 function localized(ja: string, en: string): LocalizedText {
   return Object.freeze({ ja, en })
@@ -7,6 +40,8 @@ function localized(ja: string, en: string): LocalizedText {
 export const FOLD_TECHNIQUE_TIMELINE_PREVIEW_DIALOG_TEXT = Object.freeze({
   eyebrow: localized('適用前の確認', 'Review before applying'),
   title: localized('折り手順タイムライン案', 'Instruction timeline proposal'),
+  close: localized('閉じる', 'Close'),
+  closeGlyph: localized('×', '×'),
   safety: localized(
     '追加する全項目は説明専用です。現在の3D姿勢を変えず、折り重ねを含む物理コマンドを実行しません。確定すると、一覧全体を1回のUndoで戻せる形で追加します。',
     'Every item is description-only. The current 3D pose is unchanged and no physical command, including stacked folding, is executed. Confirming adds the complete list as one undoable edit.',
@@ -40,4 +75,15 @@ export const FOLD_TECHNIQUE_TIMELINE_PREVIEW_DIALOG_TEXT = Object.freeze({
     '説明専用手順を追加',
     'Add description-only steps',
   ),
-})
+  numberLocale: localized('ja-JP', 'en-US'),
+}) satisfies FoldTechniqueTimelinePreviewDialogText
+
+export function formatFoldTechniqueTimelinePreviewCount(
+  count: number,
+  locale: unknown,
+) {
+  return count.toLocaleString(selectLocalizedText(
+    locale,
+    FOLD_TECHNIQUE_TIMELINE_PREVIEW_DIALOG_TEXT.numberLocale,
+  ))
+}

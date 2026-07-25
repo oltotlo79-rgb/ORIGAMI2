@@ -1,6 +1,9 @@
 import { useEffect, useRef } from 'react'
 import type { FoldTechniqueTimelineProposalPreview } from '../lib/foldTechniqueTimelineProposal.ts'
-import { FOLD_TECHNIQUE_TIMELINE_PREVIEW_DIALOG_TEXT as TEXT } from '../lib/foldTechniqueTimelinePreviewDialogText.ts'
+import {
+  FOLD_TECHNIQUE_TIMELINE_PREVIEW_DIALOG_TEXT as TEXT,
+  formatFoldTechniqueTimelinePreviewCount,
+} from '../lib/foldTechniqueTimelinePreviewDialogText.ts'
 import {
   formatLocalizedText,
   selectLocalizedText,
@@ -85,11 +88,11 @@ export function FoldTechniqueTimelinePreviewDialog({
           <button
             type="button"
             className="dialog-close"
-            aria-label={selectLocalizedText(locale, TEXT.cancel)}
+            aria-label={selectLocalizedText(locale, TEXT.close)}
             disabled={busy}
             onClick={onCancel}
           >
-            ×
+            {selectLocalizedText(locale, TEXT.closeGlyph)}
           </button>
         </header>
         <form onSubmit={(event) => {
@@ -106,15 +109,30 @@ export function FoldTechniqueTimelinePreviewDialog({
             </div>
             <div>
               <dt>{selectLocalizedText(locale, TEXT.operations)}</dt>
-              <dd>{preview.operationCount.toLocaleString(locale)}</dd>
+              <dd>
+                {formatFoldTechniqueTimelinePreviewCount(
+                  preview.operationCount,
+                  locale,
+                )}
+              </dd>
             </div>
             <div>
               <dt>{selectLocalizedText(locale, TEXT.steps)}</dt>
-              <dd>{preview.proposal.steps.length.toLocaleString(locale)}</dd>
+              <dd>
+                {formatFoldTechniqueTimelinePreviewCount(
+                  preview.proposal.steps.length,
+                  locale,
+                )}
+              </dd>
             </div>
             <div>
               <dt>{selectLocalizedText(locale, TEXT.unsupported)}</dt>
-              <dd>{preview.unsupportedOperationCount.toLocaleString(locale)}</dd>
+              <dd>
+                {formatFoldTechniqueTimelinePreviewCount(
+                  preview.unsupportedOperationCount,
+                  locale,
+                )}
+              </dd>
             </div>
           </dl>
           {preview.unsupportedOperationCount > 0 && (

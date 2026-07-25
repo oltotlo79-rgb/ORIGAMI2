@@ -93,6 +93,11 @@ test('the visible review is explicit, cancel-first, busy-safe, and non-physical'
   assert.match(dialog, /cancelRef\.current\?\.focus\(\)/u)
   assert.match(dialog, /if \(event\.key === 'Escape' && !busy\)/u)
   assert.match(dialog, /disabled=\{busy \|\| stale\}/u)
+  assert.match(dialog, /formatFoldTechniqueTimelinePreviewCount\(/u)
+  assert.doesNotMatch(
+    source('../src/components/FoldTechniqueTimelinePreviewDialog.tsx'),
+    /\.toLocaleString\(|>\s*×\s*</u,
+  )
   assert.match(dialog, /現在の3D姿勢を変えず/u)
   assert.match(dialog, /折り重ねを含む物理コマンドを実行しません/u)
   assert.match(dialog, /Every item is description-only/u)

@@ -464,6 +464,17 @@ describe('GeometricConstraintPanel', () => {
         expected:
           'Horizontally and vertically oriented edges have a non-right fixed angle',
       },
+      {
+        conflict: {
+          kind: 'non_complementary_inverse_rotational_symmetry_angles_with_fixed_radius' as const,
+          center_vertex: IDS[6]!,
+          source_vertex: IDS[7]!,
+          target_vertex: IDS[8]!,
+          fixed_radius_edge: IDS[0]!,
+        },
+        expected:
+          'Inverse rotational-symmetry angles do not sum to a full turn and conflict with a positive fixed radius',
+      },
     ]
     for (const { conflict, expected } of conflictCases) {
       rerender(panel({

@@ -48,9 +48,9 @@ test('EDT-009 documents the exact direct-conflict variant basis', () => {
     /pub enum DirectConstraintConflictKindV1 \{(?<body>[\s\S]*?)\n\}/u,
   )?.groups?.body
   assert.ok(enumBody)
-  assert.equal([...enumBody.matchAll(/^    [A-Z][A-Za-z0-9]+ \{/gmu)].length, 18)
+  assert.equal([...enumBody.matchAll(/^    [A-Z][A-Za-z0-9]+ \{/gmu)].length, 19)
   assert.match(
     status,
-    /^\| EDT-009 \| 部分実装 \| `DirectConstraintConflictKindV1`の18直接矛盾variant（14 pairwise \+ 4 general-graph）/mu,
+    /^\| EDT-009 \| 部分実装 \| `DirectConstraintConflictKindV1`の19直接矛盾variant（15 fixed-pattern \+ 4 general-graph）/mu,
   )
 })

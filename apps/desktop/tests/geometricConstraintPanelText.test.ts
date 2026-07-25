@@ -138,6 +138,7 @@ const NESTED_KEYS = {
     'same_orientation_with_fixed_non_parallel_angle',
     'perpendicular_orientations_with_fixed_non_right_angle',
     'different_rotational_symmetry_angles_with_fixed_radius',
+    'non_complementary_inverse_rotational_symmetry_angles_with_fixed_radius',
   ],
   unknownReasonLabels: [
     'work_limit_exceeded',
@@ -165,7 +166,7 @@ test('geometric constraint panel catalog is exact, closed, and deeply frozen', (
   }
   assert.equal(
     createHash('sha256').update(JSON.stringify(TEXT), 'utf8').digest('hex'),
-    'c3a75cc73f71addce89291d73ab3bc115df31495cf6489aef0097cd0f4b8e60d',
+    'a41864fd19bd9c07f9c195d832a0ecb73d9e320bb9bc982313fc73b7e78e7566',
   )
   assert.equal(Object.hasOwn(TEXT, 'ja'), false)
   assert.equal(TEXT.title.ja, '幾何制約')

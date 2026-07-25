@@ -184,6 +184,13 @@ export type DirectConstraintConflictKindV1 =
       target_vertex: string
       fixed_radius_edge: string
     }>
+  | Readonly<{
+      kind: 'non_complementary_inverse_rotational_symmetry_angles_with_fixed_radius'
+      center_vertex: string
+      source_vertex: string
+      target_vertex: string
+      fixed_radius_edge: string
+    }>
 
 export type DirectConstraintConflictV1 = Readonly<{
   conflict: DirectConstraintConflictKindV1
@@ -1174,6 +1181,7 @@ function parseDirectConflictKind(
         witnessSize: 3,
       }
     case 'different_rotational_symmetry_angles_with_fixed_radius':
+    case 'non_complementary_inverse_rotational_symmetry_angles_with_fixed_radius':
       if (
         !hasExactKeys(record, [
           'kind',
@@ -1297,6 +1305,7 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
       target = [kind.kind, kind.horizontal_edge, kind.vertical_edge]
       break
     case 'different_rotational_symmetry_angles_with_fixed_radius':
+    case 'non_complementary_inverse_rotational_symmetry_angles_with_fixed_radius':
       target = [
         kind.kind,
         kind.center_vertex,

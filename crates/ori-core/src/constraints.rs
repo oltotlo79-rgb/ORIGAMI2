@@ -401,6 +401,24 @@ pub enum DirectConstraintConflictKindV1 {
         target_vertex: VertexId,
         fixed_radius_edge: EdgeId,
     },
+    /// Two rotational-symmetry constraints use the same center with their
+    /// `source` and `target` roles reversed, but their stored binary64 angles
+    /// do not sum to one full turn. A real radius edge of that triple carries
+    /// a consistent positive [`GeometricConstraintKindV1::FixedLength`].
+    ///
+    /// If `target - center = Rot(alpha)(source - center)` and the inverse-role
+    /// constraint says `source - center = Rot(beta)(target - center)`, then
+    /// `source - center = Rot(alpha + beta)(source - center)`. Because both
+    /// angles are strictly between 0 and 360 degrees, a non-collapsed solution
+    /// exists only when their exact real sum is 360 degrees. The positive fixed
+    /// radius forbids the remaining collapse. A rounded sum of exactly 360 is
+    /// deliberately left unchecked, including nearby non-360 exact sums.
+    NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius {
+        center_vertex: VertexId,
+        source_vertex: VertexId,
+        target_vertex: VertexId,
+        fixed_radius_edge: EdgeId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1482,6 +1500,14 @@ impl RotationRoleKey {
             target: target.canonical_bytes(),
         }
     }
+
+    fn inverse(self) -> Self {
+        Self {
+            center: self.center,
+            source: self.target,
+            target: self.source,
+        }
+    }
 }
 
 /// Canonical unordered vertex pair used to find a real radius edge.
@@ -2100,35 +2126,88 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
         }
     }
 
-    if rotations
+    let has_same_role_rotation_candidate = rotations
         .values()
-        .any(|summary| summary.different_witness().is_some())
-    {
+        .any(|summary| summary.different_witness().is_some());
+    let has_inverse_role_rotation_candidate = rotations.iter().any(|(key, summary)| {
+        let inverse_key = key.inverse();
+        *key < inverse_key
+            && summary.consistent_assignment().is_some()
+            && rotations
+                .get(&inverse_key)
+                .and_then(ScalarGroupSummary::consistent_assignment)
+                .is_some()
+    });
+    if has_same_role_rotation_candidate || has_inverse_role_rotation_candidate {
         let radius_edges = pattern_edges_by_vertex_pair(set.source_pattern);
-        for (key, summary) in &rotations {
-            let Some(witness) = summary.different_witness() else {
-                continue;
-            };
-            let [center_vertex, source_vertex, target_vertex] = rotation_roles[key];
-            let Some((fixed_id, fixed_radius_edge)) = canonical_positive_radius_witness(
-                &radius_edges,
-                &fixed_lengths,
-                center_vertex,
-                source_vertex,
-                target_vertex,
-            ) else {
-                continue;
-            };
-            push_conflict(
-                &mut conflicts,
-                DirectConstraintConflictKindV1::DifferentRotationalSymmetryAnglesWithFixedRadius {
+        if has_same_role_rotation_candidate {
+            for (key, summary) in &rotations {
+                let Some(witness) = summary.different_witness() else {
+                    continue;
+                };
+                let [center_vertex, source_vertex, target_vertex] = rotation_roles[key];
+                let Some((fixed_id, fixed_radius_edge)) = canonical_positive_radius_witness(
+                    &radius_edges,
+                    &fixed_lengths,
                     center_vertex,
                     source_vertex,
                     target_vertex,
-                    fixed_radius_edge,
-                },
-                [witness[0], witness[1], fixed_id],
-            );
+                ) else {
+                    continue;
+                };
+                push_conflict(
+                    &mut conflicts,
+                    DirectConstraintConflictKindV1::
+                        DifferentRotationalSymmetryAnglesWithFixedRadius {
+                            center_vertex,
+                            source_vertex,
+                            target_vertex,
+                            fixed_radius_edge,
+                        },
+                    [witness[0], witness[1], fixed_id],
+                );
+            }
+        }
+        if has_inverse_role_rotation_candidate {
+            for (key, summary) in &rotations {
+                let inverse_key = key.inverse();
+                if *key >= inverse_key {
+                    continue;
+                }
+                let Some(forward) = summary.consistent_assignment() else {
+                    continue;
+                };
+                let Some(inverse) = rotations
+                    .get(&inverse_key)
+                    .and_then(ScalarGroupSummary::consistent_assignment)
+                else {
+                    continue;
+                };
+                if !binary64_angle_sum_is_proven_not_full_turn_v1(forward.value, inverse.value) {
+                    continue;
+                }
+                let [center_vertex, source_vertex, target_vertex] = rotation_roles[key];
+                let Some((fixed_id, fixed_radius_edge)) = canonical_positive_radius_witness(
+                    &radius_edges,
+                    &fixed_lengths,
+                    center_vertex,
+                    source_vertex,
+                    target_vertex,
+                ) else {
+                    continue;
+                };
+                push_conflict(
+                    &mut conflicts,
+                    DirectConstraintConflictKindV1::
+                        NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius {
+                            center_vertex,
+                            source_vertex,
+                            target_vertex,
+                            fixed_radius_edge,
+                        },
+                    [forward.id, inverse.id, fixed_id],
+                );
+            }
         }
     }
 
@@ -2216,6 +2295,20 @@ fn consistent_scalar_assignment(assignments: &[ScalarAssignment]) -> Option<Scal
                 .min_by_key(|assignment| assignment.id.canonical_bytes())
                 .expect("non-empty assignments have a minimum")
         })
+}
+
+/// One-sided proof that two stored binary64 degree values do not add to an
+/// exact real full turn.
+///
+/// IEEE-754 addition is correctly rounded. Because `360.0` is exactly
+/// representable, an exact real sum of 360 must round to the `360.0` bit
+/// pattern. Therefore a different rounded result proves the exact sum differs
+/// from 360. The converse is intentionally not used: a nearby non-360 exact
+/// sum may round to 360 and is left for the complete solver.
+fn binary64_angle_sum_is_proven_not_full_turn_v1(first: f64, second: f64) -> bool {
+    debug_assert!(first.is_finite() && first > 0.0 && first < 360.0);
+    debug_assert!(second.is_finite() && second > 0.0 && second < 360.0);
+    (first + second).to_bits() != 360.0_f64.to_bits()
 }
 
 fn positive_binary64_odd_parts_v1(value: f64) -> (u64, i16) {
@@ -3316,7 +3409,7 @@ fn vertex_id_lookup(records: &[GeometricConstraintRecordV1]) -> BTreeMap<Canonic
 
 /// Total order over conflict kinds.
 ///
-/// The final slot lets the rotational-symmetry variant include its fourth
+/// The final slot lets the rotational-symmetry variants include their fourth
 /// identity while preserving every pre-existing variant's ordering; shorter
 /// keys pad unused slots with zero.
 fn conflict_sort_key(
@@ -3499,6 +3592,19 @@ fn conflict_sort_key(
             target_vertex.canonical_bytes(),
             fixed_radius_edge.canonical_bytes(),
         ),
+        DirectConstraintConflictKindV1::
+            NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius {
+                center_vertex,
+                source_vertex,
+                target_vertex,
+                fixed_radius_edge,
+            } => (
+                18,
+                center_vertex.canonical_bytes(),
+                source_vertex.canonical_bytes(),
+                target_vertex.canonical_bytes(),
+                fixed_radius_edge.canonical_bytes(),
+            ),
     }
 }
 
@@ -3701,6 +3807,34 @@ mod tests {
     ) -> Option<DirectConstraintConflictV1> {
         let prepared = prepare(fixture, raw).expect("rotation fixture prepares");
         let mut found = rotation_conflicts(&prepared.preflight());
+        (found.len() == 1).then(|| found.remove(0))
+    }
+
+    fn inverse_rotation_conflicts(
+        preflight: &ConstraintPreflightV1,
+    ) -> Vec<DirectConstraintConflictV1> {
+        match preflight {
+            ConstraintPreflightV1::DirectConflict { conflicts } => conflicts
+                .iter()
+                .filter(|conflict| {
+                    matches!(
+                        conflict.conflict(),
+                        DirectConstraintConflictKindV1::
+                            NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius { .. }
+                    )
+                })
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn only_inverse_rotation_conflict(
+        fixture: &Fixture,
+        raw: &GeometricConstraintDocumentV1,
+    ) -> Option<DirectConstraintConflictV1> {
+        let prepared = prepare(fixture, raw).expect("inverse rotation fixture prepares");
+        let mut found = inverse_rotation_conflicts(&prepared.preflight());
         (found.len() == 1).then(|| found.remove(0))
     }
 
@@ -4078,6 +4212,250 @@ mod tests {
                 .as_array()
                 .expect("witness ids are an array")
                 .clone()
+        );
+    }
+
+    #[test]
+    fn inverse_rotation_angles_not_summing_to_a_full_turn_conflict_with_either_radius() {
+        let fixture = Fixture::new();
+        for radius_edge in [0, 1] {
+            let forward = record(rotation(&fixture, 0, 1, 2, 90.0));
+            let inverse = record(rotation(&fixture, 0, 2, 1, 180.0));
+            let fixed = record(fixed_length(&fixture, radius_edge, f64::MIN_POSITIVE));
+            let raw = document([forward.clone(), inverse.clone(), fixed.clone()]);
+            let conflict = only_inverse_rotation_conflict(&fixture, &raw)
+                .expect("a non-full-turn composition and positive radius are unsatisfiable");
+            let (source_vertex, target_vertex) =
+                if fixture.vertices[1].canonical_bytes() < fixture.vertices[2].canonical_bytes() {
+                    (fixture.vertices[1], fixture.vertices[2])
+                } else {
+                    (fixture.vertices[2], fixture.vertices[1])
+                };
+            assert_eq!(
+                *conflict.conflict(),
+                DirectConstraintConflictKindV1::
+                    NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius {
+                        center_vertex: fixture.vertices[0],
+                        source_vertex,
+                        target_vertex,
+                        fixed_radius_edge: fixture.edges[radius_edge],
+                    }
+            );
+            let mut expected_ids = vec![forward.id, inverse.id, fixed.id];
+            canonicalize_constraint_ids(&mut expected_ids);
+            assert_eq!(conflict.constraint_ids(), expected_ids);
+        }
+    }
+
+    #[test]
+    fn inverse_rotation_exact_full_turn_is_not_a_direct_conflict() {
+        let fixture = Fixture::new();
+        for (forward, inverse) in [(90.0, 270.0), (180.0, 180.0)] {
+            let raw = document([
+                record(rotation(&fixture, 0, 1, 2, forward)),
+                record(rotation(&fixture, 0, 2, 1, inverse)),
+                record(fixed_length(&fixture, 0, 5.0)),
+            ]);
+            assert!(!binary64_angle_sum_is_proven_not_full_turn_v1(
+                forward, inverse
+            ));
+            let prepared = prepare(&fixture, &raw).expect("complementary rotations prepare");
+            assert!(inverse_rotation_conflicts(&prepared.preflight()).is_empty());
+        }
+    }
+
+    #[test]
+    fn inverse_rotation_sum_rounded_to_full_turn_is_deliberately_left_unproven() {
+        let fixture = Fixture::new();
+        let adjacent = 90.0_f64.next_up();
+        assert_ne!(adjacent.to_bits(), 90.0_f64.to_bits());
+        assert_eq!(
+            (adjacent + 270.0).to_bits(),
+            360.0_f64.to_bits(),
+            "the exact non-360 dyadic sum is absorbed by binary64 rounding"
+        );
+        assert!(!binary64_angle_sum_is_proven_not_full_turn_v1(
+            adjacent, 270.0
+        ));
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, adjacent)),
+            record(rotation(&fixture, 0, 2, 1, 270.0)),
+            record(fixed_length(&fixture, 0, 5.0)),
+        ]);
+        let prepared = prepare(&fixture, &raw).expect("adjacent angles prepare");
+        assert!(
+            inverse_rotation_conflicts(&prepared.preflight()).is_empty(),
+            "a rounded 360 result must fail closed even when the exact sum differs"
+        );
+    }
+
+    #[test]
+    fn inverse_rotation_extreme_open_angle_boundary_remains_a_sound_proof() {
+        let fixture = Fixture::new();
+        let first = f64::from_bits(1);
+        let second = 360.0_f64.next_down();
+        assert!(binary64_angle_sum_is_proven_not_full_turn_v1(first, second));
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, first)),
+            record(rotation(&fixture, 0, 2, 1, second)),
+            record(fixed_length(&fixture, 0, f64::from_bits(1))),
+        ]);
+        assert!(only_inverse_rotation_conflict(&fixture, &raw).is_some());
+    }
+
+    #[test]
+    fn inverse_rotation_requires_radius_and_exactly_reversed_roles() {
+        let fixture = Fixture::new();
+        let cases = [
+            document([
+                record(rotation(&fixture, 0, 1, 2, 90.0)),
+                record(rotation(&fixture, 0, 2, 1, 180.0)),
+            ]),
+            document([
+                record(rotation(&fixture, 0, 1, 2, 90.0)),
+                record(rotation(&fixture, 0, 2, 1, 180.0)),
+                record(fixed_length(&fixture, 4, 5.0)),
+            ]),
+            document([
+                record(rotation(&fixture, 0, 1, 2, 90.0)),
+                record(rotation(&fixture, 3, 2, 1, 180.0)),
+                record(fixed_length(&fixture, 0, 5.0)),
+            ]),
+            document([
+                record(rotation(&fixture, 0, 1, 2, 90.0)),
+                record(rotation(&fixture, 0, 1, 2, 180.0)),
+                record(fixed_length(&fixture, 0, 5.0)),
+            ]),
+        ];
+        for raw in cases {
+            let prepared = prepare(&fixture, &raw).expect("negative case prepares");
+            assert!(
+                inverse_rotation_conflicts(&prepared.preflight()).is_empty(),
+                "missing radius, unrelated edge, different center, and same roles must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn inverse_rotation_zero_radius_is_rejected_before_preflight() {
+        let fixture = Fixture::new();
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 2, 1, 180.0)),
+            record(fixed_length(&fixture, 0, 0.0)),
+        ]);
+        assert!(matches!(
+            prepare(&fixture, &raw),
+            Err(GeometricConstraintErrorV1::NonPositiveLength { .. })
+        ));
+    }
+
+    #[test]
+    fn duplicate_equal_radius_constraints_choose_the_canonical_inverse_witness() {
+        let fixture = Fixture::new();
+        let first = record(fixed_length(&fixture, 0, 5.0));
+        let second = record(fixed_length(&fixture, 0, 5.0));
+        let expected = [first.id, second.id]
+            .into_iter()
+            .min_by_key(ConstraintId::canonical_bytes)
+            .expect("two radius constraints have a minimum");
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 2, 1, 180.0)),
+            first,
+            second,
+        ]);
+        let conflict = only_inverse_rotation_conflict(&fixture, &raw)
+            .expect("equal duplicate fixed lengths remain consistent evidence");
+        assert!(conflict.constraint_ids().contains(&expected));
+        assert_eq!(conflict.constraint_ids().len(), 3);
+    }
+
+    #[test]
+    fn contradictory_fixed_lengths_are_not_inverse_rotation_radius_evidence() {
+        let fixture = Fixture::new();
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 2, 1, 180.0)),
+            record(fixed_length(&fixture, 0, 5.0)),
+            record(fixed_length(&fixture, 0, 6.0)),
+        ]);
+        let prepared = prepare(&fixture, &raw).expect("contradictory lengths prepare");
+        let preflight = prepared.preflight();
+        assert!(inverse_rotation_conflicts(&preflight).is_empty());
+        let ConstraintPreflightV1::DirectConflict { conflicts } = preflight else {
+            panic!("the contradictory fixed lengths still have their own conflict");
+        };
+        assert!(conflicts.iter().all(|conflict| matches!(
+            conflict.conflict(),
+            DirectConstraintConflictKindV1::DifferentFixedLengths { .. }
+        )));
+    }
+
+    #[test]
+    fn inverse_rotation_witness_is_deletion_minimal_and_order_independent() {
+        let fixture = Fixture::new();
+        let records = [
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 2, 1, 180.0)),
+            record(fixed_length(&fixture, 0, 5.0)),
+        ];
+        let forward = document(records.clone());
+        let mut reversed_records = records.to_vec();
+        reversed_records.reverse();
+        let reversed = document(reversed_records);
+        assert_eq!(
+            serde_json::to_value(
+                prepare(&fixture, &forward)
+                    .expect("forward order prepares")
+                    .preflight()
+            )
+            .expect("serialize forward preflight"),
+            serde_json::to_value(
+                prepare(&fixture, &reversed)
+                    .expect("reverse order prepares")
+                    .preflight()
+            )
+            .expect("serialize reverse preflight")
+        );
+        for omitted in 0..records.len() {
+            let raw = document(
+                records
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != omitted)
+                    .map(|(_, value)| value.clone()),
+            );
+            let prepared = prepare(&fixture, &raw).expect("each pair prepares");
+            assert!(inverse_rotation_conflicts(&prepared.preflight()).is_empty());
+        }
+    }
+
+    #[test]
+    fn inverse_rotation_conflict_serializes_its_distinct_kind() {
+        let fixture = Fixture::new();
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 2, 1, 180.0)),
+            record(fixed_length(&fixture, 0, 5.0)),
+        ]);
+        let conflict =
+            only_inverse_rotation_conflict(&fixture, &raw).expect("inverse witness exists");
+        let value = serde_json::to_value(&conflict).expect("serialize inverse conflict");
+        assert_eq!(
+            value["conflict"]["kind"],
+            "non_complementary_inverse_rotational_symmetry_angles_with_fixed_radius"
+        );
+        assert_eq!(
+            value["conflict"]["fixed_radius_edge"],
+            serde_json::to_value(fixture.edges[0]).expect("serialize edge ID")
+        );
+        assert_eq!(
+            value["constraint_ids"]
+                .as_array()
+                .expect("witness IDs are an array")
+                .len(),
+            3
         );
     }
 

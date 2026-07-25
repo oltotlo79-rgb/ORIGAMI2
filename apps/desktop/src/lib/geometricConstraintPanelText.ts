@@ -409,6 +409,10 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
       '同じ回転対称対象へ異なる角度が指定され、正の固定半径と両立しません',
       'Different angles target the same rotational-symmetry relation and conflict with a positive fixed radius',
     ),
+    non_complementary_inverse_rotational_symmetry_angles_with_fixed_radius: text(
+      '向きを反転した回転対称の角度合計が360度にならず、正の固定半径と両立しません',
+      'Inverse rotational-symmetry angles do not sum to a full turn and conflict with a positive fixed radius',
+    ),
   }),
   unknownReasonLabels: Object.freeze({
     work_limit_exceeded: text(

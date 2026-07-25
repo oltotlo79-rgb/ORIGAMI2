@@ -2,6 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+import {
+  FOLD_PREVIEW_COMPONENT_TEXT as TEXT,
+} from '../src/lib/foldPreviewComponentText.ts'
+
 const source = readFileSync(new URL('../src/components/FoldPreview.tsx', import.meta.url), 'utf8')
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 
@@ -21,7 +25,16 @@ test('every topology kind registers real face groups and samples source midsurfa
 test('pose identity and disabled changes clear state with bilingual live status', () => {
   assert.match(source, /setMeasurementSelection\(null\)[\s\S]*if \(disabled\) setMeasurementMode\(false\)[\s\S]*\[disabled, model, renderError, renderedAppliedPose\]/u)
   assert.match(source, /role="status" aria-live="polite" data-measurement-kind/u)
-  assert.match(source, /'3D計測モード', '3D measurement mode'/u)
-  assert.match(source, /'2頂点間の距離', 'Vertex distance'/u)
-  assert.match(source, /'2面の法線角', 'Face-normal angle'/u)
+  assert.deepEqual(TEXT.measurementMode, {
+    ja: '3D計測モード',
+    en: '3D measurement mode',
+  })
+  assert.deepEqual(TEXT.vertexDistance, {
+    ja: '2頂点間の距離',
+    en: 'Vertex distance',
+  })
+  assert.deepEqual(TEXT.faceNormalAngle, {
+    ja: '2面の法線角',
+    en: 'Face-normal angle',
+  })
 })

@@ -22,12 +22,19 @@ describe('FoldPreview internationalization', () => {
     expect(screen.getByRole('group', {
       name: '3D折りプレビュー',
     })).toBeTruthy()
+    expect(screen.getByRole('region', {
+      name: '3D計測',
+    })).toBeTruthy()
+    expect((screen.getByRole('button', {
+      name: '3D計測モード',
+    }) as HTMLButtonElement).disabled).toBe(true)
     expect(screen.getByRole('img').getAttribute('aria-label')).toContain(
       '2面・3ヒンジ',
     )
-    expect(screen.getByRole('button', {
+    const resetButton = screen.getByRole('button', {
       name: '視点をリセット',
-    }).getAttribute('title')).toBe('カメラを初期位置へ戻す')
+    })
+    expect(resetButton.getAttribute('title')).toBe('カメラを初期位置へ戻す')
     expect(container.querySelector('.fold-preview-empty')?.textContent).toBe(
       '2面・3ヒンジ',
     )
@@ -48,9 +55,11 @@ describe('FoldPreview internationalization', () => {
     expect(screen.getByRole('img').getAttribute('aria-label')).toContain(
       '2 faces · 3 hinges',
     )
-    expect(screen.getByRole('button', {
+    const translatedResetButton = screen.getByRole('button', {
       name: 'Reset view',
-    }).getAttribute('title')).toBe(
+    })
+    expect(translatedResetButton).toBe(resetButton)
+    expect(translatedResetButton.getAttribute('title')).toBe(
       'Return the camera to its initial position',
     )
     expect(container.querySelector('.fold-preview-empty')?.textContent).toBe(

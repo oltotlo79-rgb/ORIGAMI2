@@ -6,6 +6,14 @@ import {
   type Locale,
   type LocalizedText,
 } from './i18n.ts'
+import {
+  NATIVE_STATIC_COLLISION_PAIR_DISPOSITION_TEXT,
+  NATIVE_STATIC_COLLISION_PAIR_EVIDENCE_TEXT,
+  NATIVE_STATIC_COLLISION_PAIR_POLICY_TEXT,
+  NATIVE_STATIC_COLLISION_PAIR_TOPOLOGY_TEXT,
+  NATIVE_STATIC_COLLISION_PROOF_MARKER_TEXT,
+  NATIVE_STATIC_COLLISION_VIEW_TEXT as NATIVE_COLLISION_TEXT,
+} from './nativeStaticCollisionViewText.ts'
 
 export type CurrentStaticCollisionDiagnosticReason =
   | 'proven_zero_thickness_penetration'
@@ -367,14 +375,25 @@ export function presentNativeStaticCollisionPairDiagnostics(
     displayedPairs.push(...nonblockingPairs.slice(0, remainingCapacity))
   }
   const omittedPairCount = pairs.length - displayedPairs.length
-  const localizedCounts = locale === 'ja'
-    ? `面ペア ${pairs.length}件: 分離 ${counts.separated} / 接触 ${counts.touching} / 許容 ${counts.allowed} / 貫通 ${counts.penetrating} / 判定保留 ${counts.indeterminate}`
-    : `Face pairs ${pairs.length}: separated ${counts.separated} / touching ${counts.touching} / allowed ${counts.allowed} / penetrating ${counts.penetrating} / indeterminate ${counts.indeterminate}`
+  const localizedCounts = formatLocalizedText(
+    locale,
+    NATIVE_COLLISION_TEXT.pairCounts,
+    {
+      total: pairs.length,
+      separated: counts.separated,
+      touching: counts.touching,
+      allowed: counts.allowed,
+      penetrating: counts.penetrating,
+      indeterminate: counts.indeterminate,
+    },
+  )
   const omittedText = omittedPairCount === 0
     ? null
-    : locale === 'ja'
-      ? `全${pairs.length}件中${displayedPairs.length}件を表示し、${omittedPairCount}件を省略しています。貫通・判定保留を優先表示しています。`
-      : `Showing ${displayedPairs.length} of ${pairs.length} pairs; ${omittedPairCount} omitted. Penetrating and indeterminate pairs are prioritized.`
+    : formatLocalizedText(locale, NATIVE_COLLISION_TEXT.omittedPairs, {
+      total: pairs.length,
+      displayed: displayedPairs.length,
+      omitted: omittedPairCount,
+    })
   const rows = displayedPairs.map((pair, index) => {
     const risk = pair.disposition === 'penetrating'
       || pair.disposition === 'indeterminate'
@@ -388,26 +407,42 @@ export function presentNativeStaticCollisionPairDiagnostics(
     const policy = pairPolicyLabel(pair.policyDecision, locale)
     const proofMarkers = [
       pair.strictTransversalDualGateProven
-        ? locale === 'ja' ? '横断交差の二重証明' : 'dual-gate transversal proof'
+        ? selectLocalizedText(
+          locale,
+          NATIVE_STATIC_COLLISION_PROOF_MARKER_TEXT.strictTransversalDualGate,
+        )
         : null,
       pair.wholeFaceOverlapProven
-        ? locale === 'ja' ? '面全体の重なり証明' : 'whole-face overlap proof'
+        ? selectLocalizedText(
+          locale,
+          NATIVE_STATIC_COLLISION_PROOF_MARKER_TEXT.wholeFaceOverlap,
+        )
         : null,
       pair.sharedHingeBoundaryContactProven
-        ? locale === 'ja'
-          ? '共有ヒンジ境界限定接触の証明'
-          : 'shared-hinge boundary-only contact proof'
+        ? selectLocalizedText(
+          locale,
+          NATIVE_STATIC_COLLISION_PROOF_MARKER_TEXT.sharedHingeBoundaryContact,
+        )
         : null,
       pair.sharedHingeSolidClassified
-        ? locale === 'ja' ? '共有ヒンジ実体分類' : 'shared-hinge solid classification'
+        ? selectLocalizedText(
+          locale,
+          NATIVE_STATIC_COLLISION_PROOF_MARKER_TEXT.sharedHingeSolidClassification,
+        )
         : null,
     ].filter((marker): marker is string => marker !== null)
     const markerText = proofMarkers.length === 0
       ? ''
-      : locale === 'ja'
-        ? ` / 根拠: ${proofMarkers.join('・')}`
-        : ` / basis: ${proofMarkers.join(', ')}`
-    const pairText = `${pair.firstFaceId} ↔ ${pair.secondFaceId}`
+      : formatLocalizedText(locale, NATIVE_COLLISION_TEXT.pairBasis, {
+        markers: proofMarkers.join(selectLocalizedText(
+          locale,
+          NATIVE_COLLISION_TEXT.proofMarkerSeparator,
+        )),
+      })
+    const pairText = [
+      pair.firstFaceId,
+      pair.secondFaceId,
+    ].join(selectLocalizedText(locale, NATIVE_COLLISION_TEXT.pairConnector))
     return Object.freeze({
       key: `${pair.firstFaceId}:${pair.secondFaceId}`,
       firstFaceId: pair.firstFaceId,
@@ -415,19 +450,44 @@ export function presentNativeStaticCollisionPairDiagnostics(
       disposition: pair.disposition,
       risk,
       rowClass: `is-${pair.disposition.replace('_', '-')}`,
-      text: locale === 'ja'
-        ? `${index + 1}. ${disposition} — ${pairText} — ${topology} / ${evidence} / 方針 ${policy}${markerText}`
-        : `${index + 1}. ${disposition} — ${pairText} — ${topology} / ${evidence} / policy ${policy}${markerText}`,
-      accessibleText: locale === 'ja'
-        ? `面ペア ${index + 1}、${pair.firstFaceId} と ${pair.secondFaceId}。分類 ${disposition}。位相 ${topology}。幾何根拠 ${evidence}。方針判定 ${policy}${markerText}。`
-        : `Face pair ${index + 1}, ${pair.firstFaceId} and ${pair.secondFaceId}. Classification ${disposition}. Topology ${topology}. Geometric evidence ${evidence}. Policy decision ${policy}${markerText}.`,
+      text: formatLocalizedText(locale, NATIVE_COLLISION_TEXT.pairText, {
+        index: index + 1,
+        disposition,
+        pair: pairText,
+        topology,
+        evidence,
+        policy,
+        markerText,
+      }),
+      accessibleText: formatLocalizedText(
+        locale,
+        NATIVE_COLLISION_TEXT.pairAccessibleText,
+        {
+          index: index + 1,
+          firstFaceId: pair.firstFaceId,
+          secondFaceId: pair.secondFaceId,
+          disposition,
+          topology,
+          evidence,
+          policy,
+          markerText,
+        },
+      ),
     })
   })
   return Object.freeze({
     countsText: localizedCounts,
-    accessibleCountsText: locale === 'ja'
-      ? `${localizedCounts}。判定保留は貫通と同じく安全確認を遮断します。${omittedText ?? '全ペアを表示しています。'}`
-      : `${localizedCounts}. Indeterminate pairs block safety confirmation with the same prominence as penetration. ${omittedText ?? 'All pairs are displayed.'}`,
+    accessibleCountsText: formatLocalizedText(
+      locale,
+      NATIVE_COLLISION_TEXT.pairAccessibleCounts,
+      {
+        counts: localizedCounts,
+        display: omittedText ?? selectLocalizedText(
+          locale,
+          NATIVE_COLLISION_TEXT.allPairsDisplayed,
+        ),
+      },
+    ),
     pairs: Object.freeze(rows),
     hasBlockingPair:
       counts.penetrating > 0 || counts.indeterminate > 0,
@@ -505,96 +565,40 @@ function pairDispositionLabel(
   disposition: CurrentStaticCollisionPairDisposition,
   locale: Locale,
 ): string {
-  const labels = locale === 'ja'
-    ? {
-      separated: '分離',
-      touching: '接触',
-      allowed: '許容',
-      penetrating: '貫通',
-      indeterminate: '判定保留',
-    }
-    : {
-      separated: 'separated',
-      touching: 'touching',
-      allowed: 'allowed',
-      penetrating: 'penetrating',
-      indeterminate: 'indeterminate',
-    }
-  return labels[disposition]
+  return selectLocalizedText(
+    locale,
+    NATIVE_STATIC_COLLISION_PAIR_DISPOSITION_TEXT[disposition],
+  )
 }
 
 function pairTopologyLabel(
   topology: CurrentStaticCollisionTopology,
   locale: Locale,
 ): string {
-  const labels = locale === 'ja'
-    ? {
-      no_shared_feature: '共有要素なし',
-      shared_vertex: '頂点共有',
-      shared_hinge_edge: 'ヒンジ辺共有',
-    }
-    : {
-      no_shared_feature: 'no shared feature',
-      shared_vertex: 'shared vertex',
-      shared_hinge_edge: 'shared hinge edge',
-    }
-  return labels[topology]
+  return selectLocalizedText(
+    locale,
+    NATIVE_STATIC_COLLISION_PAIR_TOPOLOGY_TEXT[topology],
+  )
 }
 
 function pairEvidenceLabel(
   evidence: CurrentStaticCollisionEvidence,
   locale: Locale,
 ): string {
-  const ja = {
-    separated: '離間',
-    point_contact: '点接触',
-    boundary_line_contact: '線接触',
-    boundary_area_contact: '境界面接触',
-    shared_feature_contact: '共有要素上の接触',
-    shared_feature_thickness_overlap: '共有要素の厚み重なり',
-    shared_feature_flat_stack: '共有要素の平坦積層（層順認証時のみ許容）',
-    coplanar_area_overlap: '同一平面の面積重なり',
-    transversal_crossing: '横断交差',
-    positive_volume_overlap: '正体積重なり',
-    indeterminate: '幾何判定保留',
-  } satisfies Record<CurrentStaticCollisionEvidence, string>
-  const en = {
-    separated: 'separated',
-    point_contact: 'point contact',
-    boundary_line_contact: 'boundary line contact',
-    boundary_area_contact: 'boundary area contact',
-    shared_feature_contact: 'shared-feature contact',
-    shared_feature_thickness_overlap: 'shared-feature thickness overlap',
-    shared_feature_flat_stack: 'shared-feature flat stack (allowed only with certified layer order)',
-    coplanar_area_overlap: 'coplanar area overlap',
-    transversal_crossing: 'transversal crossing',
-    positive_volume_overlap: 'positive-volume overlap',
-    indeterminate: 'geometric evidence indeterminate',
-  } satisfies Record<CurrentStaticCollisionEvidence, string>
-  return (locale === 'ja' ? ja : en)[evidence]
+  return selectLocalizedText(
+    locale,
+    NATIVE_STATIC_COLLISION_PAIR_EVIDENCE_TEXT[evidence],
+  )
 }
 
 function pairPolicyLabel(
   policy: CurrentStaticCollisionPolicyDecision,
   locale: Locale,
 ): string {
-  const ja = {
-    separated: '分離',
-    touching: '接触',
-    allowed_shared_vertex_contact: '共有頂点接触を許容',
-    requires_hinge_model: 'ヒンジモデル必須',
-    penetrating: '貫通',
-    indeterminate: '判定保留',
-  } satisfies Record<CurrentStaticCollisionPolicyDecision, string>
-  const en = {
-    separated: 'separated',
-    touching: 'touching',
-    allowed_shared_vertex_contact: 'allowed shared-vertex contact',
-    requires_hinge_model: 'hinge model required',
-    penetrating: 'penetrating',
-    indeterminate: 'indeterminate',
-  } satisfies Record<CurrentStaticCollisionPolicyDecision, string>
-  return (locale === 'ja' ? ja : en)[policy]
+  return selectLocalizedText(
+    locale,
+    NATIVE_STATIC_COLLISION_PAIR_POLICY_TEXT[policy],
+  )
 }
 
 function validPositiveThicknessPenetration(
@@ -617,106 +621,3 @@ function validPositiveThicknessPenetration(
     && isCanonicalNonNilUuid(pair.secondFaceId)
     && pair.firstFaceId < pair.secondFaceId
 }
-
-const NATIVE_COLLISION_TEXT = Object.freeze({
-  idleBadge: Object.freeze({
-    ja: '厳密判定｜姿勢待機',
-    en: 'Exact check | Waiting for pose',
-  }),
-  idleAccessible: Object.freeze({
-    ja: '厳密衝突判定は、安定した表示姿勢を待っています。',
-    en: 'The exact collision check is waiting for a stable displayed pose.',
-  }),
-  waitingBadge: Object.freeze({
-    ja: '厳密判定｜姿勢確定待ち',
-    en: 'Exact check | Waiting for stable pose',
-  }),
-  waitingAccessible: Object.freeze({
-    ja: '表示姿勢の移動が終わってから厳密判定します。',
-    en: 'The exact check will run after the displayed pose stops moving.',
-  }),
-  checkingBadge: Object.freeze({
-    ja: '厳密判定｜確認中',
-    en: 'Exact check | Checking',
-  }),
-  checkingAccessible: Object.freeze({
-    ja: '現在の表示姿勢を厳密判定しています。',
-    en: 'Running the exact check on the current displayed pose.',
-  }),
-  failedBadge: Object.freeze({
-    ja: '厳密判定｜実行失敗・安全確認が必要',
-    en: 'Exact check | Failed · safety review required',
-  }),
-  failedAccessible: Object.freeze({
-    ja: '厳密衝突判定を完了できませんでした。',
-    en: 'The exact collision check could not be completed.',
-  }),
-  certifiedBadge: Object.freeze({
-    ja: '厳密判定｜ゼロ厚み面貫通・重なりなし',
-    en: 'Exact check | No zero-thickness surface penetration or overlap',
-  }),
-  certifiedAccessible: Object.freeze({
-    ja: '現在の表示姿勢では、対象となる全ての面ペアについて、ゼロ厚み面の貫通または正の面積を持つ重なりがないことを証明しました。',
-    en: 'For the current displayed pose, every applicable face pair was proven to have no zero-thickness surface penetration or positive-area overlap.',
-  }),
-  zeroThicknessPenetrationBadge: Object.freeze({
-    ja: '厳密判定｜ゼロ厚み面貫通・重なり{countText}・安全認定不可',
-    en: 'Exact check | Zero-thickness surface penetration or overlap{countText} · safety certification denied',
-  }),
-  zeroThicknessPenetrationAccessible: Object.freeze({
-    ja: '現在の表示姿勢でゼロ厚み面の貫通または正の面積を持つ重なり{countText}件を証明したため、安全認定を遮断しました。',
-    en: 'Safety certification was blocked because zero-thickness surface penetration or positive-area overlap{countText} was proven in the current displayed pose.',
-  }),
-  positiveThicknessPenetrationBadge: Object.freeze({
-    ja: '厳密判定｜紙厚を含む材料貫通 {count}・安全認定不可',
-    en: 'Exact check | Material penetration including paper thickness {count} · safety certification denied',
-  }),
-  positiveThicknessPenetrationAccessible: Object.freeze({
-    ja: '現在の表示姿勢で紙厚を含む材料の貫通{count}件を厳密証明したため、安全認定を遮断しました。',
-    en: 'Safety certification was blocked because {count} material penetrations including paper thickness were exactly proven in the current displayed pose.',
-  }),
-  evidenceLabel: Object.freeze({
-    ja: '証拠不足',
-    en: 'Insufficient evidence',
-  }),
-  resourceLabel: Object.freeze({
-    ja: '資源上限',
-    en: 'Resource limit',
-  }),
-  inconsistentLabel: Object.freeze({
-    ja: '状態不整合',
-    en: 'Inconsistent state',
-  }),
-  evidenceAccessible: Object.freeze({
-    ja: '必要な面ペア証拠を取得できませんでした。',
-    en: 'The required face-pair evidence could not be obtained.',
-  }),
-  resourceAccessible: Object.freeze({
-    ja: '厳密判定の資源上限に達しました。',
-    en: 'The exact check reached its resource limit.',
-  }),
-  inconsistentAccessible: Object.freeze({
-    ja: '姿勢または判定状態の整合性を確認できませんでした。',
-    en: 'The pose or collision-check state could not be verified as consistent.',
-  }),
-  indeterminateBadge: Object.freeze({
-    ja: '厳密判定｜{reasonLabel}・交差の可能性・判定保留',
-    en: 'Exact check | {reasonLabel} · possible intersection / indeterminate',
-  }),
-  unavailableBadge: Object.freeze({
-    ja: '厳密判定｜利用不可・安全確認が必要',
-    en: 'Exact check | Unavailable · safety review required',
-  }),
-  unavailableAccessible: Object.freeze({
-    ja: '現在の表示姿勢に対する厳密衝突判定を利用できません。',
-    en: 'The exact collision check is unavailable for the current displayed pose.',
-  }),
-  safetyReview: Object.freeze({
-    ja: 'この姿勢を安全確認済みとして扱わないでください。',
-    en: 'Do not treat this pose as safety-verified.',
-  }),
-  withSafetyReview: Object.freeze({
-    ja: '{prefix}{safetyReview}',
-    en: '{prefix} {safetyReview}',
-  }),
-})

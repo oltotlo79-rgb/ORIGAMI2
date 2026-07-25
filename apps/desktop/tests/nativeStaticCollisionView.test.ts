@@ -380,6 +380,41 @@ test('English presents every exact-check outcome without changing wire status', 
   )
 })
 
+test('an unknown locale falls back to the complete Japanese aggregate and pair presentation', () => {
+  assert.deepEqual(
+    presentNativeStaticCollision({ kind: 'failed' }, 'unsupported' as never),
+    presentNativeStaticCollision({ kind: 'failed' }, 'ja'),
+  )
+
+  const pair = pairDiagnostic(2, 'penetrating')
+  const diagnostic: CurrentStaticCollisionDiagnostic = {
+    status: 'blocking',
+    reason: 'proven_zero_thickness_penetration',
+    expectedUnorderedFacePairs: 1,
+    provenPenetratingPairs: 1,
+    firstProvenPenetratingPair: {
+      firstFaceId: pair.firstFaceId,
+      secondFaceId: pair.secondFaceId,
+    },
+    pairClassificationCounts: {
+      separated: 0,
+      touching: 0,
+      allowed: 0,
+      penetrating: 1,
+      indeterminate: 0,
+      candidateExcluded: 0,
+    },
+    pairDiagnostics: [pair],
+  }
+  assert.deepEqual(
+    presentNativeStaticCollisionPairDiagnostics(
+      diagnostic,
+      'unsupported' as never,
+    ),
+    presentNativeStaticCollisionPairDiagnostics(diagnostic, 'ja'),
+  )
+})
+
 function pairDiagnostic(
   secondFaceNumber: number,
   disposition: CurrentStaticCollisionPairDiagnostic['disposition'],

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { afterEach, describe, it } from 'vitest'
+import { afterEach, describe, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import {
   NativeStaticCollisionBadge,
@@ -325,6 +325,74 @@ describe('NativeStaticCollisionBadge', () => {
       'indeterminate',
     )
     assert.equal(rows[1]?.getAttribute('data-collision-risk'), 'blocking')
+  })
+
+  it('live-translates pair details in place without reordering rows or firing retry', () => {
+    const localeStore = localeFixture('ja')
+    const retry = vi.fn()
+    const pairs = [
+      pairDiagnostic(2, 'separated'),
+      pairDiagnostic(3, 'indeterminate'),
+    ]
+    render(
+      <NativeStaticCollisionBadge
+        localeStore={localeStore}
+        onRetry={retry}
+        state={{
+          kind: 'ready',
+          diagnostic: {
+            status: 'blocking',
+            reason: 'evidence_unavailable',
+            expectedUnorderedFacePairs: 2,
+            provenPenetratingPairs: null,
+            firstProvenPenetratingPair: null,
+            pairClassificationCounts: {
+              separated: 1,
+              touching: 0,
+              allowed: 0,
+              penetrating: 0,
+              indeterminate: 1,
+              candidateExcluded: 0,
+            },
+            pairDiagnostics: pairs,
+          },
+        }}
+      />,
+    )
+
+    const region = screen.getByRole('region', {
+      name: '面ペアごとの衝突分類',
+    })
+    const rows = region.querySelectorAll(
+      '[data-native-collision-pair-disposition]',
+    )
+    const firstRow = rows[0]
+    const secondRow = rows[1]
+    assert.equal(
+      firstRow?.getAttribute('data-native-collision-pair-disposition'),
+      'indeterminate',
+    )
+    assert.equal(
+      secondRow?.getAttribute('data-native-collision-pair-disposition'),
+      'separated',
+    )
+
+    act(() => {
+      localeStore.setLocale('en')
+    })
+
+    const translatedRegion = screen.getByRole('region', {
+      name: 'Collision classification for each face pair',
+    })
+    const translatedRows = translatedRegion.querySelectorAll(
+      '[data-native-collision-pair-disposition]',
+    )
+    assert.equal(translatedRegion, region)
+    assert.equal(translatedRows[0], firstRow)
+    assert.equal(translatedRows[1], secondRow)
+    assert.match(translatedRows[0]?.textContent ?? '', /indeterminate/u)
+    assert.match(translatedRows[1]?.textContent ?? '', /separated/u)
+    assert.equal(retry.mock.calls.length, 0)
   })
 
   it('offers a keyboard-accessible explicit retry after an execution failure', () => {

@@ -17,8 +17,8 @@ use super::super::TotalTermLimits;
 use super::counter::{charge_counter, set_fixed_counter};
 use super::{
     CayleyError, CayleyLimits, CayleyWork, ExactPoint3, ExactVector3, STAGE, WorkMeter,
-    canonical_point_eq, exact_between, exact_dot, project_cayley_limits, rational_bits,
-    rational_storage_bits, try_array3,
+    canonical_point_eq, checked_work_sum, exact_between, exact_dot, project_cayley_limits,
+    rational_bits, rational_storage_bits, try_array3,
 };
 
 const PRISM_COUNT: usize = 2;
@@ -751,20 +751,18 @@ fn prepare_rational_input(
             resource: "exact_prism_input_rational_storage_bits",
         });
     }
-    let input_rationals =
-        work.input_rationals
-            .checked_add(1)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage: STAGE,
-                resource: "exact_prism_input_rationals",
-            })?;
-    let total_input_storage_bits = work
-        .total_input_storage_bits
-        .checked_add(storage_bits)
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource: "exact_prism_total_input_storage_bits",
-        })?;
+    let input_rationals = checked_work_sum(
+        work.input_rationals,
+        1,
+        STAGE,
+        "exact_prism_input_rationals",
+    )?;
+    let total_input_storage_bits = checked_work_sum(
+        work.total_input_storage_bits,
+        storage_bits,
+        STAGE,
+        "exact_prism_total_input_storage_bits",
+    )?;
     if input_rationals > limits.max_input_rationals {
         return Err(CayleyError::ResourceLimitExceeded {
             stage: STAGE,

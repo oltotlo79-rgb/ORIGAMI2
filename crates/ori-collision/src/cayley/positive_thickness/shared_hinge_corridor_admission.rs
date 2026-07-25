@@ -735,13 +735,12 @@ fn compare_corridor_boundaries(
         )?;
         if meter.compare_rational(exact_scalar, direct_scalar, STAGE)? != Ordering::Equal {
             first_component.get_or_insert(component);
-            mismatch_count =
-                mismatch_count
-                    .checked_add(1)
-                    .ok_or(CayleyError::ResourceLimitExceeded {
-                        stage: STAGE,
-                        resource: "shared_hinge_admission_boundary_mismatches",
-                    })?;
+            mismatch_count = checked_work_sum(
+                mismatch_count,
+                1,
+                STAGE,
+                "shared_hinge_admission_boundary_mismatches",
+            )?;
         }
     }
     if work.boundary_scalar_comparisons != BOUNDARY_SCALAR_COMPARISONS {

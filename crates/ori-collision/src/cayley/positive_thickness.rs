@@ -47,9 +47,9 @@ use self::exact_prism::ExactPrismIntersectionKind;
 use super::{
     CayleyError, CayleyLimits, CayleyStage, CayleyWork, ExactFacePose, ExactHingePose, ExactPoint3,
     ExactRigidTransform, ExactTreePoseLimits, ExactVector3, RATIONAL_CAYLEY_TREE_POSE_V1,
-    RationalCayleyTreePose, WorkMeter, apply_exact_transform, canonical_point_eq, exact_f64,
-    point3_array, prepare_rational_cayley_tree_pose_v1, rational_bits, rational_storage_bits,
-    try_array3, verify_exact_rotation,
+    RationalCayleyTreePose, WorkMeter, apply_exact_transform, canonical_point_eq, checked_work_sum,
+    exact_f64, point3_array, prepare_rational_cayley_tree_pose_v1, rational_bits,
+    rational_storage_bits, try_array3, verify_exact_rotation,
 };
 
 macro_rules! clamp_to_hard {
@@ -466,20 +466,13 @@ fn charge_input_storage(
             resource: "input_rational_storage_bits",
         });
     }
-    let input_rationals =
-        work.input_rationals
-            .checked_add(1)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage: STAGE,
-                resource: "input_rationals",
-            })?;
-    let total_input_storage_bits = work
-        .total_input_storage_bits
-        .checked_add(storage_bits)
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource: "total_input_storage_bits",
-        })?;
+    let input_rationals = checked_work_sum(work.input_rationals, 1, STAGE, "input_rationals")?;
+    let total_input_storage_bits = checked_work_sum(
+        work.total_input_storage_bits,
+        storage_bits,
+        STAGE,
+        "total_input_storage_bits",
+    )?;
     if input_rationals > SCALAR_INPUT_RATIONALS
         || total_input_storage_bits > limits.max_total_input_storage_bits
     {
@@ -1299,20 +1292,13 @@ fn validate_prerequisite_rational_input(
     meter: &mut WorkMeter<'_>,
 ) -> Result<(), CayleyError> {
     let storage_bits = rational_storage_bits(value, STAGE)?;
-    let next_count =
-        work.input_rationals
-            .checked_add(1)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage: STAGE,
-                resource: "input_rationals",
-            })?;
-    let next_total = work
-        .total_input_storage_bits
-        .checked_add(storage_bits)
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource: "total_input_storage_bits",
-        })?;
+    let next_count = checked_work_sum(work.input_rationals, 1, STAGE, "input_rationals")?;
+    let next_total = checked_work_sum(
+        work.total_input_storage_bits,
+        storage_bits,
+        STAGE,
+        "total_input_storage_bits",
+    )?;
     if next_count > TRIANGULAR_HINGE_INPUT_RATIONALS
         || storage_bits > limits.max_input_rational_storage_bits
         || next_total > limits.max_total_input_storage_bits

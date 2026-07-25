@@ -768,13 +768,12 @@ fn scan_vertices_against_corridor(
         )?;
         if violation.any() {
             first_outside_vertex_index.get_or_insert(vertex_index);
-            outside_vertex_count =
-                outside_vertex_count
-                    .checked_add(1)
-                    .ok_or(CayleyError::ResourceLimitExceeded {
-                        stage: STAGE,
-                        resource: "exact_e_corridor_outside_vertices",
-                    })?;
+            outside_vertex_count = checked_work_sum(
+                outside_vertex_count,
+                1,
+                STAGE,
+                "exact_e_corridor_outside_vertices",
+            )?;
             aggregate.axial_before_start |= violation.axial_before_start;
             aggregate.axial_after_end |= violation.axial_after_end;
             aggregate.radial_outside |= violation.radial_outside;

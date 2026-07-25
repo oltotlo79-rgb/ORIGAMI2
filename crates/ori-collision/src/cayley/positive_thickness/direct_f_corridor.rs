@@ -1265,13 +1265,12 @@ fn scan_complete_intersection_against_corridor(
                     STAGE,
                 )?);
             }
-            outside_vertex_count =
-                outside_vertex_count
-                    .checked_add(1)
-                    .ok_or(CayleyError::ResourceLimitExceeded {
-                        stage: STAGE,
-                        resource: "direct_f_corridor_outside_vertices",
-                    })?;
+            outside_vertex_count = checked_work_sum(
+                outside_vertex_count,
+                1,
+                STAGE,
+                "direct_f_corridor_outside_vertices",
+            )?;
             aggregate.axial_before_start |= violation.axial_before_start;
             aggregate.axial_after_end |= violation.axial_after_end;
             aggregate.radial_outside |= violation.radial_outside;

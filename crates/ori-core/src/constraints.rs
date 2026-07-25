@@ -441,7 +441,8 @@ pub enum ConstraintPreflightV1 {
 }
 
 pub const MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1: usize = 16;
-pub const MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1: usize = 65_535;
+pub const MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1: usize =
+    (1_usize << MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1) - 1;
 
 /// Sound but intentionally incomplete subset oracle over the exact direct
 /// contradiction theorems. `Unknown` never means satisfiable.
@@ -6185,6 +6186,16 @@ mod tests {
             | GeometricConstraintKindV1::RotationalSymmetry { .. }
             | GeometricConstraintKindV1::LengthRatio { .. } => {}
         }
+    }
+
+    #[test]
+    fn bounded_direct_oracle_limit_is_the_complete_nonempty_subset_count() {
+        assert_eq!(MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1, 16);
+        assert_eq!(MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1, 65_535);
+        assert_eq!(
+            MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1,
+            (1_usize << MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1) - 1
+        );
     }
 
     #[test]

@@ -157,15 +157,24 @@ pub enum StaticCollisionError {
     )]
     /// Blocking zero-thickness penetration diagnostic.
     ///
-    /// The historical public Rust variant and field names are retained for
-    /// crate API compatibility. In addition to the Cayley dual-gated transversal path,
-    /// this diagnostic now admits issuer-bound exact coplanar positive-area
-    /// overlap and exact transversal crossing involving a non-triangular
-    /// whole material face.
+    /// The historical public Rust variant and field identifiers are retained
+    /// for crate API compatibility. Despite those identifiers, this means
+    /// general zero-thickness penetration: in addition to the Cayley
+    /// dual-gated transversal path, it includes issuer-bound exact coplanar
+    /// positive-area overlap and exact transversal crossing involving a
+    /// non-triangular whole material face.
     ProvenTransversalPenetration {
         expected_unordered_face_pairs: usize,
+        /// Number of general zero-thickness penetrating pairs.
+        ///
+        /// The historical `transversal` field identifier is retained for
+        /// crate API compatibility.
         proven_transversal_pairs: usize,
         /// First proven pair in canonical `FaceId` byte order.
+        ///
+        /// The historical `transversal` field identifier is retained for
+        /// crate API compatibility; the pair may instead prove coplanar
+        /// positive-area overlap or non-triangular whole-face penetration.
         ///
         /// This is geometry identity only. It contains no coordinates,
         /// transforms, arithmetic evidence, or internal diagnostic text.
@@ -546,8 +555,6 @@ struct StaticCollisionProof {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SharedHingeCoverageDispositionV1 {
-    SeparatedWithoutCorridor,
-    TouchingWithoutCorridor,
     FiniteCorridorAllowed,
     IndependentSolidAllowed,
 }
@@ -970,39 +977,6 @@ pub fn prove_static_collision_geometry(
                         && hinge.right_face() == pair.first_face)
             });
             if let Some(hinge) = shared_hinge {
-                if face_count > 2 {
-                    let disposition = match pair.disposition {
-                        PositiveThicknessPrismPairDispositionV1::Separated => {
-                            SharedHingeCoverageDispositionV1::SeparatedWithoutCorridor
-                        }
-                        PositiveThicknessPrismPairDispositionV1::Touching => {
-                            SharedHingeCoverageDispositionV1::TouchingWithoutCorridor
-                        }
-                        PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed => {
-                            SharedHingeCoverageDispositionV1::FiniteCorridorAllowed
-                        }
-                        PositiveThicknessPrismPairDispositionV1::Penetrating => {
-                            return Err(StaticCollisionError::ProvenPositiveThicknessPenetration {
-                                expected_unordered_face_pairs,
-                                proven_positive_thickness_pairs: 1,
-                                first_proven_positive_thickness_pair: [
-                                    pair.first_face,
-                                    pair.second_face,
-                                ],
-                            });
-                        }
-                        _ => {
-                            return Err(StaticCollisionError::PairEvidenceUnavailable {
-                                expected_unordered_face_pairs,
-                            });
-                        }
-                    };
-                    shared_hinge_coverage.push(SharedHingeCoverageV1 {
-                        hinge: hinge.clone(),
-                        disposition,
-                    });
-                    continue;
-                }
                 let classified = diagnose_bound_shared_hinge_solid_for_edge_v1(
                     bound,
                     paper_thickness_mm,
@@ -1139,11 +1113,12 @@ pub fn prove_static_collision_geometry(
     // aggregate is for this exact pose instance, that face identity/order is
     // the pose's canonical registry, and that every unordered face pair and
     // every constituent triangle pair was covered.
-    // Multi-face diagnostics cannot issue the public geometry proof yet:
-    // every material tree contains at least one shared hinge and the finite
-    // hinge model remains mandatory. Keeping the only proof constructor in
-    // the zero-pair branch above makes that boundary structural instead of
-    // depending on today's decision mix.
+    // Multi-face public geometry proofs are issued only by the positive-
+    // thickness all-triangle branch above, after complete shared-hinge
+    // corridor coverage and absence of penetration have both been proved.
+    // This zero-thickness fall-through does not construct a proof; unless it
+    // proves a blocking penetration below, it fail-closes with
+    // `PairEvidenceUnavailable`.
     if scan.blocking_unordered_face_pairs > scan.enumerated_unordered_face_pairs {
         return Err(StaticCollisionError::InconsistentMaterialPose);
     }

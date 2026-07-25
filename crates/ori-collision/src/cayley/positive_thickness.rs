@@ -43,8 +43,9 @@ use ori_kinematics::{
 };
 use ori_topology::FoldAssignment;
 
+use self::exact_prism::ExactPrismIntersectionKind;
 use super::{
-    CayleyError, CayleyLimits, CayleyStage, CayleyWork, ExactFacePose, ExactPoint3,
+    CayleyError, CayleyLimits, CayleyStage, CayleyWork, ExactFacePose, ExactHingePose, ExactPoint3,
     ExactRigidTransform, ExactTreePoseLimits, ExactVector3, RATIONAL_CAYLEY_TREE_POSE_V1,
     RationalCayleyTreePose, WorkMeter, apply_exact_transform, canonical_point_eq, exact_f64,
     point3_array, prepare_rational_cayley_tree_pose_v1, rational_bits, rational_storage_bits,
@@ -1812,10 +1813,7 @@ pub(crate) fn diagnose_source_flat_prism_pair_v1(
     paper_thickness_mm: f64,
     feature: SourceFlatPrismFeatureV1,
 ) -> Result<PositiveThicknessPrismPairDispositionV1, SharedHingeSolidDiagnosticErrorV1> {
-    use exact_prism::{
-        ExactPrismIntersectionKind, ExactPrismLimits, ExactTriangularPrismInput,
-        analyze_exact_prism_pair_v1,
-    };
+    use exact_prism::{ExactPrismLimits, ExactTriangularPrismInput, analyze_exact_prism_pair_v1};
     if !positive_finite_binary64(paper_thickness_mm)
         || match feature {
             SourceFlatPrismFeatureV1::SingleVertex(point) => {
@@ -1989,10 +1987,7 @@ pub(crate) fn diagnose_bound_positive_thickness_prism_pairs_v1(
     paper_thickness_mm: f64,
     max_unordered_face_pairs: usize,
 ) -> Result<Vec<PositiveThicknessPrismPairDiagnosticV1>, SharedHingeSolidDiagnosticErrorV1> {
-    use exact_prism::{
-        ExactPrismIntersectionKind, ExactPrismLimits, ExactTriangularPrismInput,
-        analyze_exact_prism_pair_v1,
-    };
+    use exact_prism::{ExactPrismLimits, ExactTriangularPrismInput, analyze_exact_prism_pair_v1};
 
     if !positive_finite_binary64(paper_thickness_mm)
         || bound.model().face_ids() != bound.pose().face_ids()
@@ -2112,46 +2107,6 @@ pub(crate) fn diagnose_bound_positive_thickness_prism_pairs_v1(
                 });
                 continue;
             }
-            let radius = &half_thickness
-                * BigRational::from_integer(
-                    SHARED_FEATURE_CORRIDOR_HALF_EXTENT_MULTIPLIER_V1.into(),
-                );
-            let aabb_corridor_disposition = if shared_vertex_count == 1 {
-                let center = &shared_vertices[0].expect("one counted shared vertex").1;
-                (0..3)
-                    .all(|axis| {
-                        intersection_lower[axis] >= center.coordinates[axis].clone() - &radius
-                            && intersection_upper[axis]
-                                <= center.coordinates[axis].clone() + &radius
-                    })
-                    .then_some(PositiveThicknessPrismPairDispositionV1::SharedVertexCorridorAllowed)
-            } else if shared_vertex_count == 2 {
-                let first_shared = shared_vertices[0].expect("two counted shared vertices");
-                let second_shared = shared_vertices[1].expect("two counted shared vertices");
-                (0..3)
-                    .all(|axis| {
-                        let first_coordinate = &first_shared.1.coordinates[axis];
-                        let second_coordinate = &second_shared.1.coordinates[axis];
-                        let (lower, upper) = if first_coordinate <= second_coordinate {
-                            (first_coordinate, second_coordinate)
-                        } else {
-                            (second_coordinate, first_coordinate)
-                        };
-                        intersection_lower[axis] >= lower - &radius
-                            && intersection_upper[axis] <= upper + &radius
-                    })
-                    .then_some(PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed)
-            } else {
-                None
-            };
-            if let Some(disposition) = aabb_corridor_disposition {
-                result.push(PositiveThicknessPrismPairDiagnosticV1 {
-                    first_face: exact.faces[first].face,
-                    second_face: exact.faces[second].face,
-                    disposition,
-                });
-                continue;
-            }
             let intersection = analyze_exact_prism_pair_v1(
                 &first_prism,
                 &second_prism,
@@ -2175,7 +2130,23 @@ pub(crate) fn diagnose_bound_positive_thickness_prism_pairs_v1(
                         .all(|(coordinate, origin)| (coordinate - origin).abs() <= radius)
                 })
             }) == Some(true);
-            let shared_hinge_corridor = (shared_vertex_count == 2).then(|| {
+            let shared_vertex_ids = (shared_vertex_count == 2).then(|| {
+                [
+                    shared_vertices[0].expect("two counted shared vertices").0,
+                    shared_vertices[1].expect("two counted shared vertices").0,
+                ]
+            });
+            let has_bound_shared_hinge = shared_vertex_ids.is_some_and(|vertices| {
+                exact.hinges.iter().any(|hinge| {
+                    exact_hinge_binds_face_pair_vertices_v1(
+                        hinge,
+                        exact.faces[first].face,
+                        exact.faces[second].face,
+                        vertices,
+                    )
+                })
+            });
+            let shared_hinge_corridor = has_bound_shared_hinge.then(|| {
                 let first_shared = shared_vertices[0].expect("two counted shared vertices");
                 let second_shared = shared_vertices[1].expect("two counted shared vertices");
                 let radius = &half_thickness
@@ -2192,28 +2163,11 @@ pub(crate) fn diagnose_bound_positive_thickness_prism_pairs_v1(
                     })
                 })
             }) == Some(true);
-            let disposition = match intersection.kind() {
-                ExactPrismIntersectionKind::Empty => {
-                    PositiveThicknessPrismPairDispositionV1::Separated
-                }
-                ExactPrismIntersectionKind::Point
-                | ExactPrismIntersectionKind::Line
-                | ExactPrismIntersectionKind::CoplanarArea => {
-                    PositiveThicknessPrismPairDispositionV1::Touching
-                }
-                ExactPrismIntersectionKind::PositiveVolume if shared_hinge_corridor => {
-                    PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed
-                }
-                ExactPrismIntersectionKind::PositiveVolume if shared_vertex_corridor => {
-                    PositiveThicknessPrismPairDispositionV1::SharedVertexCorridorAllowed
-                }
-                ExactPrismIntersectionKind::PositiveVolume => {
-                    PositiveThicknessPrismPairDispositionV1::Penetrating
-                }
-                ExactPrismIntersectionKind::Planar => {
-                    PositiveThicknessPrismPairDispositionV1::Indeterminate
-                }
-            };
+            let disposition = classify_exact_prism_pair_disposition_v1(
+                intersection.kind(),
+                shared_hinge_corridor,
+                shared_vertex_corridor,
+            );
             result.push(PositiveThicknessPrismPairDiagnosticV1 {
                 first_face: exact.faces[first].face,
                 second_face: exact.faces[second].face,
@@ -2222,6 +2176,46 @@ pub(crate) fn diagnose_bound_positive_thickness_prism_pairs_v1(
         }
     }
     Ok(result)
+}
+
+const fn classify_exact_prism_pair_disposition_v1(
+    kind: ExactPrismIntersectionKind,
+    shared_hinge_corridor: bool,
+    shared_vertex_corridor: bool,
+) -> PositiveThicknessPrismPairDispositionV1 {
+    match kind {
+        ExactPrismIntersectionKind::Empty => PositiveThicknessPrismPairDispositionV1::Separated,
+        ExactPrismIntersectionKind::Point
+        | ExactPrismIntersectionKind::Line
+        | ExactPrismIntersectionKind::CoplanarArea => {
+            PositiveThicknessPrismPairDispositionV1::Touching
+        }
+        ExactPrismIntersectionKind::PositiveVolume if shared_hinge_corridor => {
+            PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed
+        }
+        ExactPrismIntersectionKind::PositiveVolume if shared_vertex_corridor => {
+            PositiveThicknessPrismPairDispositionV1::SharedVertexCorridorAllowed
+        }
+        ExactPrismIntersectionKind::PositiveVolume => {
+            PositiveThicknessPrismPairDispositionV1::Penetrating
+        }
+        ExactPrismIntersectionKind::Planar => {
+            PositiveThicknessPrismPairDispositionV1::Indeterminate
+        }
+    }
+}
+
+fn exact_hinge_binds_face_pair_vertices_v1(
+    hinge: &ExactHingePose,
+    first_face: FaceId,
+    second_face: FaceId,
+    shared_vertices: [VertexId; 2],
+) -> bool {
+    ((hinge.parent == first_face && hinge.child == second_face)
+        || (hinge.parent == second_face && hinge.child == first_face))
+        && shared_vertices[0] != shared_vertices[1]
+        && hinge.endpoint_vertices.contains(&shared_vertices[0])
+        && hinge.endpoint_vertices.contains(&shared_vertices[1])
 }
 
 /// Runs the complete private solid classifier and exports only its sanitized
@@ -3936,6 +3930,60 @@ mod tests {
                 "{label}"
             );
         }
+    }
+
+    #[test]
+    fn shared_vertices_require_the_same_exact_hinge_face_pair_and_endpoints() {
+        let model = two_triangle_model();
+        let pose = triangular_pose(&model, 120.0);
+        let mut exact = triangular_exact_pose(&model, &pose);
+        let hinge = &exact.hinges[0];
+        assert!(exact_hinge_binds_face_pair_vertices_v1(
+            hinge,
+            hinge.parent,
+            hinge.child,
+            hinge.endpoint_vertices,
+        ));
+
+        let foreign_face = exact.faces[0].face;
+        exact.hinges[0].parent = foreign_face;
+        exact.hinges[0].child = foreign_face;
+        let hinge = &exact.hinges[0];
+        assert!(!exact_hinge_binds_face_pair_vertices_v1(
+            hinge,
+            model.hinges()[0].left_face(),
+            model.hinges()[0].right_face(),
+            hinge.endpoint_vertices,
+        ));
+
+        let duplicate_endpoint = [hinge.endpoint_vertices[0]; 2];
+        assert!(!exact_hinge_binds_face_pair_vertices_v1(
+            hinge,
+            hinge.parent,
+            hinge.child,
+            duplicate_endpoint,
+        ));
+
+        assert_eq!(
+            classify_exact_prism_pair_disposition_v1(
+                ExactPrismIntersectionKind::PositiveVolume,
+                false,
+                false,
+            ),
+            PositiveThicknessPrismPairDispositionV1::Penetrating
+        );
+        assert_eq!(
+            classify_exact_prism_pair_disposition_v1(
+                ExactPrismIntersectionKind::PositiveVolume,
+                true,
+                false,
+            ),
+            PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed
+        );
+        assert_eq!(
+            classify_exact_prism_pair_disposition_v1(ExactPrismIntersectionKind::Empty, true, true,),
+            PositiveThicknessPrismPairDispositionV1::Separated
+        );
     }
 
     #[test]

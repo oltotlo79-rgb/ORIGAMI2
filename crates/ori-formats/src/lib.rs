@@ -572,15 +572,7 @@ fn write_project_json_with_size_limit(
     document: &ProjectDocument,
     requested_limit: usize,
 ) -> Result<Vec<u8>, FormatError> {
-    validate_project_envelope(document)?;
-    validate_project_geometry_finiteness(document)?;
-    validate_instruction_timeline(&document.instruction_timeline)?;
-    validate_numeric_expressions(&document.numeric_expressions)?;
-    validate_current_vertex_expression_bindings(document)?;
-    validate_project_geometric_constraints(document)?;
-    validate_project_layer_document_against_pattern_v1(&document.layers, &document.crease_pattern)?;
-    validate_project_annotations(document)?;
-    validate_project_underlays(document)?;
+    validate_project_document(document)?;
     let bytes = serde_json::to_vec_pretty(document)?;
     ensure_project_json_size(bytes.len(), requested_limit)?;
     Ok(bytes)
@@ -600,16 +592,24 @@ pub fn read_project_json_with_limits(
 ) -> Result<ProjectDocument, FormatError> {
     ensure_project_json_size(bytes.len(), limits.max_input_size)?;
     let document: ProjectDocument = serde_json::from_slice(bytes)?;
-    validate_project_envelope(&document)?;
-    validate_project_geometry_finiteness(&document)?;
+    validate_project_document(&document)?;
+    Ok(document)
+}
+
+/// Applies the complete persisted-project admission contract in one fixed
+/// order. Readers and writers deliberately share this function so adding a
+/// validator cannot create a writer-only state that the reader rejects.
+fn validate_project_document(document: &ProjectDocument) -> Result<(), FormatError> {
+    validate_project_envelope(document)?;
+    validate_project_geometry_finiteness(document)?;
     validate_instruction_timeline(&document.instruction_timeline)?;
     validate_numeric_expressions(&document.numeric_expressions)?;
-    validate_current_vertex_expression_bindings(&document)?;
-    validate_project_geometric_constraints(&document)?;
+    validate_current_vertex_expression_bindings(document)?;
+    validate_project_geometric_constraints(document)?;
     validate_project_layer_document_against_pattern_v1(&document.layers, &document.crease_pattern)?;
-    validate_project_annotations(&document)?;
-    validate_project_underlays(&document)?;
-    Ok(document)
+    validate_project_annotations(document)?;
+    validate_project_underlays(document)?;
+    Ok(())
 }
 
 fn validate_project_geometry_finiteness(document: &ProjectDocument) -> Result<(), FormatError> {

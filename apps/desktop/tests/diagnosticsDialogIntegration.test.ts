@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const appSource = readSource('../src/App.tsx')
+const appSource = [
+  readSource('../src/App.tsx'),
+  readSource('../src/lib/appText.ts'),
+].join('\n')
 const dialogSource = readSource('../src/components/DiagnosticsDialog.tsx')
 const dialogTextSource = readSource('../src/lib/diagnosticsDialogText.ts')
 const cssSource = readSource('../src/App.css')
@@ -15,7 +18,7 @@ test('the native-only status action opens one modal that makes every background 
   assert.match(appSource, /aria-haspopup="dialog"/u)
   assert.match(
     appSource,
-    /\{text\(\{\s*ja: '診断情報',\s*en: 'Diagnostics'\s*\}\)\}/u,
+    /\{text\(APP_TEXT\.diagnostics\)\}/u,
   )
   assert.equal(
     appSource.match(/inert=\{modalOpen\}/gu)?.length,

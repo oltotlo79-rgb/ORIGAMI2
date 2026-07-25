@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const appSource = readSource('../src/App.tsx')
+const appSource = [
+  readSource('../src/App.tsx'),
+  readSource('../src/lib/appText.ts'),
+].join('\n')
 const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/StaticMeshExportDialog.tsx')
 const dialogTextSource = readSource('../src/lib/staticMeshExportDialogText.ts')
@@ -14,7 +17,7 @@ test('toolbar exposes a completed-pose-only 3D export dialog', () => {
   assert.match(appSource, /appliedFoldPose\.state === 'running'/u)
   assert.match(appSource, /\|\| meshExportOpen/u)
   assert.match(appSource, /\{meshExportOpen && \(\s*<StaticMeshExportDialog/u)
-  assert.match(appSource, /ja: '3D書出し', en: 'Export 3D'/u)
+  assert.match(appSource, /text\(APP_TEXT\.export3D\)/u)
 })
 
 test('native IPC stages bytes privately and exposes no path or geometry arrays', () => {

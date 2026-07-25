@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const appSource = readSource('../src/App.tsx')
+const appSource = [
+  readSource('../src/App.tsx'),
+  readSource('../src/lib/appText.ts'),
+].join('\n')
 const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/FoldImportDialog.tsx')
 const dialogTextSource = readSource('../src/lib/foldImportDialogText.ts')
@@ -184,7 +187,7 @@ test('apply closes and resets editor state only after success while errors keep 
   }
   assert.match(
     tryBody,
-    /setBenchmarkStatus\(appMessage\(\{\s*ja: 'FOLD取込により通常の展開図へ戻りました',\s*en: 'Returned to the normal crease pattern after FOLD import',\s*\}\)\)/u,
+    /setBenchmarkStatus\(appMessage\(APP_TEXT\.returnedToTheNormalCreasePatternAfterFOLDImport\)\)/u,
   )
 
   assert.match(

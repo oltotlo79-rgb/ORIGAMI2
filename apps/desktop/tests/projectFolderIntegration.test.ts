@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const app = source('../src/App.tsx')
+const app = [
+  source('../src/App.tsx'),
+  source('../src/lib/appText.ts'),
+].join('\n')
 const client = source('../src/lib/projectFolderClient.ts')
 const coreClient = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/project_folder_io.rs')

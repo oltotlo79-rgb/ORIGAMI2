@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const app = source('../src/App.tsx')
+const app = [
+  source('../src/App.tsx'),
+  source('../src/lib/appText.ts'),
+].join('\n')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/beginner_recognition.rs')
 const domain = source('../../../crates/ori-domain/src/beginner_recognition.rs')
@@ -166,8 +169,10 @@ test('recognized skeleton bars remain directly correctable before save and synth
   assert.match(client, /'score', 'reasons', 'insufficiency_reasons', 'distance_metric', 'bar_limit'/u)
   assert.match(app, /骨格候補の品質/u)
   assert.match(app, /Insufficiency reasons/u)
-  assert.match(app, /ja: '骨格バー \{segmentId\} \{label\} \(mm\)'/u)
-  assert.match(app, /en: 'Skeleton bar \{segmentId\} \{label\} \(mm\)'/u)
+  assert.match(
+    app,
+    /skeletonBarSegmentIdLabelMm: localized\(\s*'骨格バー \{segmentId\} \{label\} \(mm\)',\s*'Skeleton bar \{segmentId\} \{label\} \(mm\)'/u,
+  )
   assert.match(app, /setBeginnerSkeletonSegments\(\(segments\) => segments\.map/u)
   assert.match(app, /changed\.start\.x_tenths_mm === changed\.end\.x_tenths_mm/u)
   assert.match(app, /field === 'thickness_tenths_mm'/u)

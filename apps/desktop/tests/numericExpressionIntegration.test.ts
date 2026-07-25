@@ -11,7 +11,10 @@ const nativeModule = source('../src-tauri/src/numeric_expression.rs')
 const nativeCargo = source('../src-tauri/Cargo.toml')
 const frontend = source('../src/lib/numericExpressionNative.ts')
 const coreClient = source('../src/lib/coreClient.ts')
-const app = source('../src/App.tsx')
+const app = [
+  source('../src/App.tsx'),
+  source('../src/lib/appText.ts'),
+].join('\n')
 const numericCore = source('../../../crates/ori-numeric/src/lib.rs')
 const formats = source('../../../crates/ori-formats/src/lib.rs')
 const recovery = source('../src/lib/recoveryClient.ts')
@@ -253,7 +256,7 @@ test('selected-face translation moves its complete bounded vertex set in one nat
   )
   assert.match(
     app,
-    /submitSplitSelectedFace[\s\S]*?non-adjacent face vertices[\s\S]*?addEdge\(/u,
+    /submitSplitSelectedFace[\s\S]*?APP_TEXT\.chooseTwoNonAdjacentFaceVerticesAndAnAvailableLine[\s\S]*?addEdge\(/u,
   )
   assert.match(
     app,

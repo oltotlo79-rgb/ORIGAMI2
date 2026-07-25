@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const appSource = readSource('../src/App.tsx')
+const appSource = [
+  readSource('../src/App.tsx'),
+  readSource('../src/lib/appText.ts'),
+].join('\n')
 const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/CreaseExportDialog.tsx')
 const dialogTextSource = readSource('../src/lib/creaseExportDialogText.ts')
@@ -13,7 +16,7 @@ test('the toolbar opens one background-blocking export confirmation dialog', () 
   assert.match(appSource, /ref=\{creaseExportButtonRef\}/u)
   assert.match(
     appSource,
-    /\{fileOperation === 'crease_export'\s*\?\s*text\(\{\s*ja: '生成中…',\s*en: 'Generating…'\s*\}\)\s*:\s*text\(\{\s*ja: '書出し',\s*en: 'Export'\s*\}\)\}/u,
+    /\{fileOperation === 'crease_export'\s*\?\s*text\(APP_TEXT\.generating\)\s*:\s*text\(APP_TEXT\.export\)\}/u,
   )
   assert.match(appSource, /\|\| creaseExportOpen/u)
   assert.match(appSource, /\{creaseExportOpen && \(\s*<CreaseExportDialog/u)

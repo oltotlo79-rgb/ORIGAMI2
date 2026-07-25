@@ -2,9 +2,15 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const app = source('../src/App.tsx')
+const app = [
+  source('../src/App.tsx'),
+  source('../src/lib/appText.ts'),
+].join('\n')
 const timelineHook = source('../src/lib/useFoldTechniqueTimelineProposal.ts')
-const dialog = source('../src/components/FoldTechniqueTimelinePreviewDialog.tsx')
+const dialog = [
+  source('../src/components/FoldTechniqueTimelinePreviewDialog.tsx'),
+  source('../src/lib/foldTechniqueTimelinePreviewDialogText.ts'),
+].join('\n')
 const proposal = source('../src/lib/foldTechniqueTimelineProposal.ts')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')

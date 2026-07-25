@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const app = source('../src/App.tsx')
+const app = [
+  source('../src/App.tsx'),
+  source('../src/lib/appText.ts'),
+].join('\n')
 const protrusionEditor = source('../src/components/ProtrusionDimensionEditor.tsx')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
@@ -117,8 +120,10 @@ test('AUT-004 binds passive image and GLB references without granting generation
 test('AUT-004 preview is bounded, project-bound, and stale-safe', () => {
   assert.match(client, /record\.positions\.length > 20_000/u)
   assert.match(client, /record\.triangle_indices\.length > 40_000/u)
-  assert.match(client, /record\.project_instance_id !== expectedProjectInstanceId/u)
-  assert.match(client, /record\.revision !== expectedRevision/u)
+  assert.match(
+    client,
+    /getBeginnerReferenceModelGeometry[\s\S]*?matchesProjectOccGuard\(\{\s*expectedProjectInstanceId,\s*expectedProjectId,\s*expectedRevision,\s*\}, record/u,
+  )
   assert.match(app, /beginnerReferenceRequestRef\.current/u)
   assert.match(app, /latest\.project_instance_id === geometry\.project_instance_id/u)
   assert.match(app, /Read-only 3D reference model/u)

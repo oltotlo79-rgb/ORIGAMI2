@@ -6,14 +6,20 @@ const previewSource = readFileSync(
   new URL('../src/components/FoldPreview.tsx', import.meta.url),
   'utf8',
 )
-const appSource = readFileSync(
-  new URL('../src/App.tsx', import.meta.url),
-  'utf8',
-)
-const timelineSource = readFileSync(
-  new URL('../src/components/InstructionTimelinePanel.tsx', import.meta.url),
-  'utf8',
-)
+const appSource = [
+  readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
+].join('\n')
+const timelineSource = [
+  readFileSync(
+    new URL('../src/components/InstructionTimelinePanel.tsx', import.meta.url),
+    'utf8',
+  ),
+  readFileSync(
+    new URL('../src/lib/instructionTimelinePanelText.ts', import.meta.url),
+    'utf8',
+  ),
+].join('\n')
 
 test('FoldPreview publishes rendered endpoints instead of requested controls', () => {
   assert.match(

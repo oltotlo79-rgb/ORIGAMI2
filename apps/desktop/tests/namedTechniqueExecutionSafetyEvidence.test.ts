@@ -4,7 +4,10 @@ import test from 'node:test'
 
 const technique = read('../../../crates/ori-instructions/src/fold_technique_file.rs')
 const native = read('../src-tauri/src/lib.rs')
-const dialog = read('../src/components/FoldTechniqueTimelinePreviewDialog.tsx')
+const dialog = [
+  read('../src/components/FoldTechniqueTimelinePreviewDialog.tsx'),
+  read('../src/lib/foldTechniqueTimelinePreviewDialogText.ts'),
+].join('\n')
 
 test('INS-008 keeps every unbound physical technique inert at the project boundary', () => {
   assert.match(technique, /pub const fn grants_project_mutation_authority\(&self\) -> bool \{\s*false/u)

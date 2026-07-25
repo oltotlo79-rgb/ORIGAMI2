@@ -3,7 +3,10 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const client = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8')
-const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const app = [
+  readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
+].join('\n')
 const completeAnimalBindingList = readFileSync(new URL('../src/components/CompleteAnimalBindingList.tsx', import.meta.url), 'utf8')
 const native = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8')
 

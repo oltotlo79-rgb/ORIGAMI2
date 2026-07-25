@@ -2,10 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const appSource = readFileSync(
-  new URL('../src/App.tsx', import.meta.url),
-  'utf8',
-)
+const appSource = [
+  readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
+].join('\n')
 
 const APP_FAILURE_CODES = [
   'window_close_status_invalid',
@@ -78,11 +78,11 @@ test('unknown display vocabularies fail closed and file paths stay out of UI', (
   assert.doesNotMatch(appSource, /nativeSnapshot\?\.current_path/u)
   assert.match(
     appSource,
-    /const label = labels\[tool\][\s\S]*ja: '不明なツール',[\s\S]*en: 'Unknown tool'/u,
+    /const label = labels\[tool\][\s\S]*selectLocalizedText\(locale, APP_TEXT\.unknownTool\)/u,
   )
   assert.match(
     appSource,
-    /const label = labels\[code\][\s\S]*ja: '不明な幾何検証問題',[\s\S]*en: 'Unknown geometry validation issue'/u,
+    /const label = labels\[code\][\s\S]*selectLocalizedText\(locale, APP_TEXT\.unknownGeometryValidationIssue\)/u,
   )
   assert.doesNotMatch(
     appSource,

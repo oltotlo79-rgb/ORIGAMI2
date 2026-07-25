@@ -14,10 +14,22 @@ test('production components do not use fixed literal ARIA labels', () => {
 })
 
 test('major new features retain reviewed Japanese and English UI contracts', () => {
-  const app = readFileSync(join(root, 'src', 'App.tsx'), 'utf8')
-  assert.match(app, /ja: '27案から上位3案を評価', en: 'Evaluate top 3 of 27 designs'/u)
-  assert.match(app, /ja: '27案探索の上位3案', en: 'Top 3 from the 27-design search'/u)
-  assert.match(app, /ja: 'GLB 2\.0モデルは読み取り専用の視覚参照です。[^']*'/u)
+  const app = [
+    readFileSync(join(root, 'src', 'App.tsx'), 'utf8'),
+    readFileSync(join(root, 'src', 'lib', 'appText.ts'), 'utf8'),
+  ].join('\n')
+  assert.match(
+    app,
+    /evaluateTop3Of27Designs: localized\('27案から上位3案を評価', 'Evaluate top 3 of 27 designs'\)/u,
+  )
+  assert.match(
+    app,
+    /top3FromThe27DesignSearch: localized\('27案探索の上位3案', 'Top 3 from the 27-design search'\)/u,
+  )
+  assert.match(
+    app,
+    /aGLB20ModelIsAReadOnlyVisual: localized\(\s*'GLB 2\.0モデルは読み取り専用の視覚参照です。[^']*'/u,
+  )
 
   const stacked = readFileSync(join(componentDirectory, 'StackedFoldPanel.tsx'), 'utf8')
   assert.match(stacked, /t\('スケジュール証明', 'Schedule certificate'\)/u)

@@ -3,7 +3,10 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 const client = readFileSync('src/lib/coreClient.ts', 'utf8')
-const app = readFileSync('src/App.tsx', 'utf8')
+const app = [
+  readFileSync('src/App.tsx', 'utf8'),
+  readFileSync('src/lib/appText.ts', 'utf8'),
+].join('\n')
 const native = readFileSync('src-tauri/src/lib.rs', 'utf8')
 const browser = readFileSync('scripts/generic-target-browser-e2e.mjs', 'utf8')
 const browserHarness = readFileSync('scripts/generic-target-browser-harness.tsx', 'utf8')

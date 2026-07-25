@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const appSource = readSource('../src/App.tsx')
+const appSource = [
+  readSource('../src/App.tsx'),
+  readSource('../src/lib/appText.ts'),
+].join('\n')
 const canvasSource = readSource('../src/components/CreaseCanvas.tsx')
 const clientSource = readSource('../src/lib/coreClient.ts')
 const presentationSource = readSource('../src/lib/localFlatFoldabilityPresentation.ts')
@@ -52,7 +55,7 @@ test('snapshot replacement, validation errors, and benchmark mode cannot retain 
 test('the inspector exposes bounded, selectable, non-color-only local results', () => {
   assert.match(
     appSource,
-    /\{text\(\{\s*ja: '局所平坦折り条件',\s*en: 'Local flat-foldability conditions',\s*\}\)\}/u,
+    /\{text\(APP_TEXT\.localFlatFoldabilityConditions\)\}/u,
   )
   assert.match(appSource, /role="status"/u)
   assert.match(appSource, /aria-live="polite"/u)

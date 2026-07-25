@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const appSource = readSource('../src/App.tsx')
+const appSource = [
+  readSource('../src/App.tsx'),
+  readSource('../src/lib/appText.ts'),
+].join('\n')
 const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/SvgImportDialog.tsx')
 const dialogTextSource = readSource('../src/lib/svgImportDialogText.ts')
@@ -215,7 +218,7 @@ test('successful SVG apply resets editor, benchmark, and fold state only after r
   }
   assert.match(
     tryBody,
-    /setBenchmarkStatus\(appMessage\(\{\s*ja: 'SVG取込により通常の展開図へ戻りました',\s*en: 'Returned to the normal crease pattern after SVG import',\s*\}\)\)/u,
+    /setBenchmarkStatus\(appMessage\(APP_TEXT\.returnedToTheNormalCreasePatternAfterSVGImport\)\)/u,
   )
 
   assert.match(

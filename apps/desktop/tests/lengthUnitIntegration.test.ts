@@ -2,9 +2,15 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const app = read('../src/App.tsx')
+const app = [
+  read('../src/App.tsx'),
+  read('../src/lib/appText.ts'),
+].join('\n')
 const preview = read('../src/components/FoldPreview.tsx')
-const thickness = read('../src/components/PaperThicknessInput.tsx')
+const thickness = [
+  read('../src/components/PaperThicknessInput.tsx'),
+  read('../src/lib/paperThicknessText.ts'),
+].join('\n')
 
 test('App applies one snapshot display unit to every authoring length surface', () => {
   assert.match(app, /<LengthUnitControl/u)
@@ -87,11 +93,11 @@ test('benchmark, expression-backed new-project, and import contracts remain expl
   assert.equal((app.match(/name="height_expression"/gu) ?? []).length, 1)
   assert.match(
     app,
-    /ariaLabel=\{text\(\{\s*ja: '用紙の幅の式 \(mm\)',\s*en: 'Paper width expression \(mm\)',\s*\}\)\}/u,
+    /ariaLabel=\{text\(APP_TEXT\.paperWidthExpressionMm\)\}/u,
   )
   assert.match(
     app,
-    /ariaLabel=\{text\(\{\s*ja: '用紙の高さの式 \(mm\)',\s*en: 'Paper height expression \(mm\)',\s*\}\)\}/u,
+    /ariaLabel=\{text\(APP_TEXT\.paperHeightExpressionMm\)\}/u,
   )
   assert.match(
     app,

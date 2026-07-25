@@ -4,7 +4,10 @@ import test from 'node:test'
 
 import { appConfirmationText } from '../src/lib/appMessages.ts'
 
-const app = source('../src/App.tsx')
+const app = [
+  source('../src/App.tsx'),
+  source('../src/lib/appText.ts'),
+].join('\n')
 const client = source('../src/lib/foldTechniqueFileClient.ts')
 const native = source('../src-tauri/src/fold_technique_file_io.rs')
 const nativeRoot = source('../src-tauri/src/lib.rs')

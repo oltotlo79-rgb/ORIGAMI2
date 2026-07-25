@@ -2,10 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const appSource = readFileSync(
-  new URL('../src/App.tsx', import.meta.url),
-  'utf8',
-)
+const appSource = [
+  readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
+].join('\n')
 
 test('App subscribes to persisted shortcuts and routes the configured resolver', () => {
   assert.match(
@@ -74,21 +74,29 @@ test('all configured action buttons expose dynamic title and ARIA mappings', () 
       `${command} title`,
     )
   }
-  for (const [ja, en] of [
-    ['新規 ({shortcut})', 'New ({shortcut})'],
-    ['開く ({shortcut})', 'Open ({shortcut})'],
-    ['保存 ({shortcut})', 'Save ({shortcut})'],
-    ['別名保存 ({shortcut})', 'Save as ({shortcut})'],
-    ['元に戻す ({shortcut})', 'Undo ({shortcut})'],
-    ['やり直す ({shortcut})', 'Redo ({shortcut})'],
+  for (const [key, ja, en] of [
+    ['newShortcut', '新規 ({shortcut})', 'New ({shortcut})'],
+    ['openShortcut', '開く ({shortcut})', 'Open ({shortcut})'],
+    ['saveShortcut', '保存 ({shortcut})', 'Save ({shortcut})'],
+    ['saveAsShortcut', '別名保存 ({shortcut})', 'Save as ({shortcut})'],
+    ['undoShortcut', '元に戻す ({shortcut})', 'Undo ({shortcut})'],
+    ['redoShortcut', 'やり直す ({shortcut})', 'Redo ({shortcut})'],
   ]) {
     assert.match(
       appSource,
       new RegExp(
-        `title=\\{formattedText\\(\\{\\s*ja: '${escapeRegExp(ja)}',\\s*en: '${escapeRegExp(en)}'`,
+        `title=\\{formattedText\\(APP_TEXT\\.${key}`,
         'u',
       ),
       `${ja} / ${en} localized title`,
+    )
+    assert.match(
+      appSource,
+      new RegExp(
+        `${key}: localized\\('${escapeRegExp(ja)}', '${escapeRegExp(en)}'\\)`,
+        'u',
+      ),
+      `${key} catalog entry`,
     )
   }
 })

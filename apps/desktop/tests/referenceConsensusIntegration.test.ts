@@ -5,7 +5,10 @@ import test from 'node:test'
 const client = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8')
 const native = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8')
 const domain = readFileSync(new URL('../../../crates/ori-domain/src/beginner_design.rs', import.meta.url), 'utf8')
-const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const app = [
+  readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
+].join('\n')
 
 test('reference consensus is versioned, bounded to four and strictly decoded', () => {
   assert.match(domain, /pub struct BeginnerReferenceConsensusV1/u)
@@ -20,10 +23,13 @@ test('native computes at most six component extent and branch pairs and gates ap
   assert.match(native, /component_error > 1 \|\| branch_error > 2 \|\| extent_error > 20/u)
   assert.match(native, /let apply_allowed = disagreement_count < 2/u)
   assert.match(native, /reference_consensus_multiple_disagreements/u)
-  assert.match(app, /ja: '参照資料の合意', en: 'Reference consensus'/u)
+  assert.match(app, /referenceConsensus: localized\('参照資料の合意', 'Reference consensus'\)/u)
   assert.match(app, /function excludeBeginnerConsensusAsset/u)
   assert.match(app, /Exclude one outlier/u)
-  assert.match(app, /ja: '部品別の参照資料比較', en: 'Component-aware reference comparisons'/u)
+  assert.match(
+    app,
+    /componentAwareReferenceComparisons: localized\(\s*'部品別の参照資料比較',\s*'Component-aware reference comparisons'/u,
+  )
   assert.match(app, /aria-selected=\{selectedConsensusPair === key\}/u)
   assert.match(app, /setSelectedConsensusPair\(null\)/u)
   assert.match(app, /Read-only component highlight/u)

@@ -5,6 +5,7 @@ import test from 'node:test'
 const appSource = readSource('../src/App.tsx')
 const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/SvgImportDialog.tsx')
+const dialogTextSource = readSource('../src/lib/svgImportDialogText.ts')
 const svgImportSource = readSource('../src/lib/svgImport.ts')
 const nativeSource = readSource('../src-tauri/src/lib.rs')
 const appMessagesSource = readSource('../src/lib/appMessages.ts')
@@ -295,11 +296,16 @@ test('the SVG dialog requires native geometry validation, every mapping, and exp
     dialogSource,
     /unresolved\.length === 0\s*&&\s*boundaryIsValid\s*&&\s*validationMatches\s*&&\s*boundaryConfirmed\s*&&\s*warningsAcknowledged\s*&&\s*\(!hasValidatedCuts \|\| cuttingAllowedConfirmed\)/u,
   )
-  assert.match(dialogSource, /最大の輪郭を自動採用せず/u)
+  assert.match(
+    dialogSource,
+    /import \{ SVG_IMPORT_DIALOG_TEXT as TEXT \} from '\.\.\/lib\/svgImportDialogText\.ts'/u,
+  )
+  assert.doesNotMatch(dialogSource, /const TEXT = Object\.freeze|function localized/u)
+  assert.match(dialogTextSource, /最大の輪郭を自動採用せず/u)
   assert.match(dialogSource, /const locale = useLocale\(\)/u)
   assert.match(dialogSource, /formatSvgViewBox\(preview\.root_view_box, locale\)/u)
   assert.match(dialogSource, /formatSvgPhysicalSize\(preview\.root_physical_size, locale\)/u)
-  assert.match(dialogSource, /Rust検証済みの用紙寸法:/u)
+  assert.match(dialogTextSource, /Rust検証済みの用紙寸法:/u)
   assert.match(dialogSource, /formatSvgNumber\(validation\.width_mm, locale\)/u)
   assert.match(dialogSource, /formatSvgNumber\(validation\.height_mm, locale\)/u)
   assert.match(

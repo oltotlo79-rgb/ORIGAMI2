@@ -84,6 +84,10 @@ describe('SvgImportDialog DOM interactions', () => {
   it('translates all review controls, source metadata labels, and warnings live', () => {
     localeStore.initialize()
     localeStore.setLocale('en')
+    const onInvalidateValidation = vi.fn()
+    const onValidate = vi.fn()
+    const onCancel = vi.fn()
+    const onImport = vi.fn()
     renderDialog({
       preview: {
         ...PREVIEW,
@@ -91,6 +95,10 @@ describe('SvgImportDialog DOM interactions', () => {
           'SVG内のタイトルは作品名の条件に合わないため、既定の作品名を使用します。',
         ],
       },
+      onInvalidateValidation,
+      onValidate,
+      onCancel,
+      onImport,
     })
 
     expect(screen.getByRole('dialog', {
@@ -107,6 +115,9 @@ describe('SvgImportDialog DOM interactions', () => {
       'value',
       'テスト作品',
     )
+    fireEvent.change(screen.getByRole('textbox', {
+      name: 'Project name',
+    }), { target: { value: 'State preserved' } })
     expect(screen.getByRole('combobox', {
       name: 'Boundary selection method',
     })).toBeTruthy()
@@ -137,7 +148,15 @@ describe('SvgImportDialog DOM interactions', () => {
     expect(screen.getByRole('combobox', {
       name: '外周の指定方法',
     })).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: '作品名' })).toHaveProperty(
+      'value',
+      'State preserved',
+    )
     expect(screen.getByRole('button', { name: '取り込む' })).toBeTruthy()
+    expect(onInvalidateValidation).not.toHaveBeenCalled()
+    expect(onValidate).not.toHaveBeenCalled()
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(onImport).not.toHaveBeenCalled()
   })
 
   it('renders the source dash sample with the native line-cap value', () => {

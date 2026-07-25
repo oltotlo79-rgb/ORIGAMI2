@@ -10842,11 +10842,13 @@ fn add_edge(
         .editor
         .plan_add_edge_with_intersections(expected_revision, EdgeId::new(), start, end, kind)
         .map_err(|error| error.to_string())?;
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         command,
     )
 }
@@ -10867,11 +10869,13 @@ fn add_ray_to_first_target(
         .editor
         .plan_add_ray_to_first_target(expected_revision, start, angle_microdegrees, kind)
         .map_err(|error| error.to_string())?;
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         command,
     )
 }
@@ -10920,11 +10924,13 @@ fn add_connected_vertex(
         return Err(PROJECT_NUMERIC_EXPRESSIONS_INVALID_MESSAGE.to_owned());
     }
     let vertex_id = VertexId::new();
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::AddConnectedVertex {
             vertex_id,
             position: Point2::new(x, y),
@@ -11001,11 +11007,13 @@ fn create_project_layer_in_project(
         expected_revision,
     )?;
     let target_index = project.editor.project_layers().layers.len();
-    execute_command(
+    execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::CreateLayer {
             layer: LayerRecordV1 {
                 id: LayerId::new(),
@@ -11048,11 +11056,13 @@ fn rename_project_layer_in_project(
     layer: LayerId,
     name: String,
 ) -> Result<ProjectSnapshot, String> {
-    execute_command(
+    execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::RenameLayer { layer, name },
     )
 }
@@ -11093,11 +11103,13 @@ fn update_project_layer_presentation_in_project(
     layer: LayerId,
     presentation: ProjectLayerPresentationInput,
 ) -> Result<ProjectSnapshot, String> {
-    execute_command(
+    execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::UpdateLayerPresentation {
             layer,
             visible: presentation.visible,
@@ -11135,11 +11147,13 @@ fn move_project_layer_in_project(
     layer: LayerId,
     target_index: usize,
 ) -> Result<ProjectSnapshot, String> {
-    execute_command(
+    execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::MoveLayer {
             layer,
             target_index,
@@ -11172,11 +11186,13 @@ fn delete_project_layer_in_project(
     expected_revision: u64,
     layer: LayerId,
 ) -> Result<ProjectSnapshot, String> {
-    execute_command(
+    execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::DeleteLayer { layer },
     )
 }
@@ -11209,11 +11225,13 @@ fn assign_edge_to_project_layer_in_project(
     edge: EdgeId,
     layer: LayerId,
 ) -> Result<ProjectSnapshot, String> {
-    execute_command(
+    execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::AssignEdgeToLayer { edge, layer },
     )
 }
@@ -11227,23 +11245,19 @@ fn add_edge_orientation_constraint(
     edge: EdgeId,
     orientation: EdgeOrientationConstraint,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_and_expect(
-        &state,
-        ProjectExpectation::new(
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-        ),
-    )?;
+    let expectation = ProjectExpectation::new(
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+    );
+    let mut project = lock_and_expect(&state, expectation)?;
     let constraint = match orientation {
         EdgeOrientationConstraint::Horizontal => GeometricConstraintKindV1::Horizontal { edge },
         EdgeOrientationConstraint::Vertical => GeometricConstraintKindV1::Vertical { edge },
     };
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        expectation,
         Command::AddGeometricConstraint {
             record: GeometricConstraintRecordV1 {
                 id: ConstraintId::new(),
@@ -11261,19 +11275,15 @@ fn add_geometric_constraint(
     expected_revision: u64,
     constraint: GeometricConstraintKindV1,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_and_expect(
-        &state,
-        ProjectExpectation::new(
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-        ),
-    )?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_and_expect(&state, expectation)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::AddGeometricConstraint {
             record: GeometricConstraintRecordV1 {
                 id: ConstraintId::new(),
@@ -11291,19 +11301,15 @@ fn remove_geometric_constraint(
     expected_revision: u64,
     constraint: ConstraintId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_and_expect(
-        &state,
-        ProjectExpectation::new(
-            expected_project_instance_id,
-            expected_project_id,
-            expected_revision,
-        ),
-    )?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_and_expect(&state, expectation)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::RemoveGeometricConstraint { id: constraint },
     )
 }
@@ -11373,11 +11379,13 @@ fn add_underlay(
 ) -> Result<ProjectSnapshot, String> {
     let mut project = lock_project(&state)?;
     ensure_underlay_asset_exists(&project, record.asset)?;
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::AddUnderlay { record },
     )
 }
@@ -11405,11 +11413,13 @@ fn update_underlay(
         return Err("the target reference image asset cannot be replaced".to_owned());
     }
     ensure_underlay_asset_exists(&project, record.asset)?;
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::UpdateUnderlay { record },
     )
 }
@@ -11445,11 +11455,13 @@ fn remove_underlay(
     ) {
         return Err("the underlay is the active beginner target reference image".to_owned());
     }
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::RemoveUnderlay { id },
     )
 }

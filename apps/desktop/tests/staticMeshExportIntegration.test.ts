@@ -69,6 +69,8 @@ test('UI explicitly discloses mid-surface-only and all STL limitations', () => {
   )
   assert.match(dialogSource, /warningsAcknowledged/u)
   assert.match(dialogSource, /aria-modal="true"/u)
+  assert.doesNotMatch(dialogSource, /locale\s*===|locale\s*!==/u)
+  assert.doesNotMatch(dialogSource, /'PASS'|'FAIL \/ UNKNOWN'|'\\u00a0'/u)
 })
 
 function readSource(relativePath: string) {

@@ -50,7 +50,6 @@ export function StaticMeshExportDialog({
 }: StaticMeshExportDialogProps) {
   const locale = useLocale()
   const copy = COPY[locale]
-  const numberLocale = locale === 'ja' ? 'ja-JP' : 'en-US'
   const [warningsAcknowledged, setWarningsAcknowledged] = useState(false)
   const dialogRef = useRef<HTMLElement>(null)
   const formatRef = useRef<HTMLSelectElement>(null)
@@ -118,7 +117,6 @@ export function StaticMeshExportDialog({
   }
 
   const canSave = Boolean(preview) && !busy && warningsAcknowledged
-  const unitLabel = (unit: 'millimeter' | 'meter') => unit === 'meter' ? 'm' : 'mm'
 
   return (
     <div className="dialog-backdrop">
@@ -146,7 +144,7 @@ export function StaticMeshExportDialog({
             onClick={onCancel}
             aria-label={copy.close}
           >
-            ×
+            {copy.closeGlyph}
           </button>
         </header>
 
@@ -168,7 +166,7 @@ export function StaticMeshExportDialog({
             >
               {STATIC_MESH_EXPORT_FORMATS.map((option) => (
                 <option key={option.value} value={option.value}>
-                  {option.label} — {copy.optionDetails[option.value]}
+                  {option.label}{copy.optionSeparator}{copy.optionDetails[option.value]}
                 </option>
               ))}
             </select>
@@ -205,9 +203,7 @@ export function StaticMeshExportDialog({
                 </div>
                 <div>
                   <dt>{copy.metadata.specification}</dt>
-                  <dd>{locale === 'ja'
-                    ? preview.formatSummary
-                    : copy.formatSummaries[preview.format]}</dd>
+                  <dd>{copy.formatSummaries[preview.format]}</dd>
                 </div>
                 <div>
                   <dt>{copy.metadata.suggestedName}</dt>
@@ -220,32 +216,36 @@ export function StaticMeshExportDialog({
                 <div>
                   <dt>{copy.metadata.geometry}</dt>
                   <dd>
-                    {preview.faceCount.toLocaleString(numberLocale)} {copy.faces} ·{' '}
-                    {preview.vertexCount.toLocaleString(numberLocale)} {copy.vertices} ·{' '}
-                    {preview.triangleCount.toLocaleString(numberLocale)} {copy.triangles}
+                    {preview.faceCount.toLocaleString(copy.numberLocale)} {copy.faces}
+                    {copy.metadataSeparator}
+                    {preview.vertexCount.toLocaleString(copy.numberLocale)} {copy.vertices}
+                    {copy.metadataSeparator}
+                    {preview.triangleCount.toLocaleString(copy.numberLocale)} {copy.triangles}
                   </dd>
                 </div>
                 <div>
                   <dt>{copy.metadata.source}</dt>
                   <dd>
-                    revision {preview.revision.toLocaleString(numberLocale)} · pose{' '}
+                    {copy.revision} {preview.revision.toLocaleString(copy.numberLocale)}
+                    {copy.metadataSeparator}{copy.pose}{' '}
                     {preview.poseGeneration}
                   </dd>
                 </div>
                 <div>
                   <dt>{copy.metadata.thickness}</dt>
                   <dd>
-                    {preview.paperThicknessMm.toLocaleString(numberLocale, {
+                    {preview.paperThicknessMm.toLocaleString(copy.numberLocale, {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2,
-                    })} mm
+                    })} {copy.millimetres}
                   </dd>
                 </div>
                 <div>
                   <dt>{copy.metadata.units}</dt>
                   <dd>
-                    {copy.sourceUnit}: {unitLabel(preview.sourceUnit)} ·{' '}
-                    {copy.encodedUnit}: {unitLabel(preview.encodedUnit)}
+                    {copy.sourceUnit}: {copy.unitLabels[preview.sourceUnit]}
+                    {copy.metadataSeparator}
+                    {copy.encodedUnit}: {copy.unitLabels[preview.encodedUnit]}
                   </dd>
                 </div>
                 <div>
@@ -272,15 +272,15 @@ export function StaticMeshExportDialog({
                     preview.printability.noDuplicateTriangles,
                     preview.printability.noDegenerateTriangles,
                     preview.printability.conservativeSelfIntersectionClear,
-                  ].every(Boolean) ? 'PASS' : 'FAIL / UNKNOWN'}
+                  ].every(Boolean) ? copy.pass : copy.failOrUnknown}
                 </p>
                 <p>
                   {copy.printabilityCounts}:{' '}
-                  {preview.printability.connectedComponentCount.toLocaleString(numberLocale)}
+                  {preview.printability.connectedComponentCount.toLocaleString(copy.numberLocale)}
                   {' / '}
-                  {preview.printability.checkedEdgeCount.toLocaleString(numberLocale)}
+                  {preview.printability.checkedEdgeCount.toLocaleString(copy.numberLocale)}
                   {' / '}
-                  {preview.printability.checkedTrianglePairCount.toLocaleString(numberLocale)}
+                  {preview.printability.checkedTrianglePairCount.toLocaleString(copy.numberLocale)}
                 </p>
                 <p>{copy.printabilityDisclaimer}</p>
               </section>
@@ -313,7 +313,7 @@ export function StaticMeshExportDialog({
           )}
 
           <p className="crease-export-notice" role="status" aria-live="polite">
-            {notice ?? '\u00a0'}
+            {notice ?? copy.noticePlaceholder}
           </p>
         </div>
 

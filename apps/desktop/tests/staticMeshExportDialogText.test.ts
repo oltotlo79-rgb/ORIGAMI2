@@ -9,6 +9,25 @@ test('static mesh export dialog catalog is locale-complete and deeply frozen', (
   assertDeeplyFrozen(STATIC_MESH_EXPORT_COPY)
 })
 
+test('static mesh export dialog keeps locale formatting and display tokens in the catalog', () => {
+  assert.equal(STATIC_MESH_EXPORT_COPY.ja.numberLocale, 'ja-JP')
+  assert.equal(STATIC_MESH_EXPORT_COPY.en.numberLocale, 'en-US')
+  assert.deepEqual(STATIC_MESH_EXPORT_COPY.ja.unitLabels, {
+    millimeter: 'mm',
+    meter: 'm',
+  })
+  assert.deepEqual(STATIC_MESH_EXPORT_COPY.en.unitLabels, {
+    millimeter: 'mm',
+    meter: 'm',
+  })
+  assert.equal(STATIC_MESH_EXPORT_COPY.ja.optionSeparator, ' — ')
+  assert.equal(STATIC_MESH_EXPORT_COPY.en.optionSeparator, ' — ')
+  assert.equal(STATIC_MESH_EXPORT_COPY.ja.metadataSeparator, ' · ')
+  assert.equal(STATIC_MESH_EXPORT_COPY.en.metadataSeparator, ' · ')
+  assert.equal(STATIC_MESH_EXPORT_COPY.ja.noticePlaceholder, '\u00a0')
+  assert.equal(STATIC_MESH_EXPORT_COPY.en.noticePlaceholder, '\u00a0')
+})
+
 test('static mesh export catalog preserves reviewed geometry limitations', () => {
   assert.equal(STATIC_MESH_EXPORT_COPY.ja.eyebrow, '現在姿勢の3D書き出し')
   assert.equal(

@@ -1,5 +1,6 @@
 import { StrictMode } from 'react'
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -9,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { StaticMeshExportDialog } from '../src/components/StaticMeshExportDialog'
 import { localeStore } from '../src/lib/i18n.ts'
+import { STATIC_MESH_EXPORT_COPY } from '../src/lib/staticMeshExportDialogText.ts'
 import type {
   StaticMeshExportFormat,
   StaticMeshExportPreview,
@@ -64,6 +66,26 @@ afterEach(() => {
 })
 
 describe('StaticMeshExportDialog DOM interactions', () => {
+  it('retranslates the mounted dialog when the locale changes', () => {
+    localeStore.setLocale('en')
+    renderDialog()
+    expect(screen.getByRole('heading', {
+      name: STATIC_MESH_EXPORT_COPY.en.title,
+    })).toBeTruthy()
+    expect(screen.getByText(STATIC_MESH_EXPORT_COPY.en.formatSummaries.stl)).toBeTruthy()
+    expect(screen.getByText(/3 faces · 12 vertices · 6 triangles/u)).toBeTruthy()
+
+    act(() => localeStore.setLocale('ja'))
+
+    expect(screen.getByRole('heading', {
+      name: STATIC_MESH_EXPORT_COPY.ja.title,
+    })).toBeTruthy()
+    expect(screen.getByText(STATIC_MESH_EXPORT_COPY.ja.formatSummaries.stl)).toBeTruthy()
+    expect(screen.queryByRole('heading', {
+      name: STATIC_MESH_EXPORT_COPY.en.title,
+    })).toBeNull()
+  })
+
   it('shows counts, units, axes, and requires explicit loss confirmation', () => {
     const onSave = vi.fn()
     renderDialog({ onSave })

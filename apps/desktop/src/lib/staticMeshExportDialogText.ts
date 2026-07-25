@@ -2,9 +2,13 @@ const JA_STATIC_MESH_EXPORT_COPY = Object.freeze({
   eyebrow: '現在姿勢の3D書き出し',
   title: '形式と中央面メッシュの制約を確認',
   close: '閉じる',
+  closeGlyph: '×',
   description:
     '3Dプレビューに現在表示されている認証済みの完成姿勢を、静的な三角形メッシュとして書き出します。編集履歴や保存状態は変わりません。',
   format: '出力形式',
+  optionSeparator: ' — ',
+  metadataSeparator: ' · ',
+  numberLocale: 'ja-JP',
   optionDetails: Object.freeze({
     obj: 'Blenderなどで扱いやすいテキスト形式・mm・Z-up',
     stl: 'スライサーで広く読めるバイナリ形式・mm・Z-up',
@@ -33,6 +37,16 @@ const JA_STATIC_MESH_EXPORT_COPY = Object.freeze({
   triangles: '三角形',
   sourceUnit: '生成元',
   encodedUnit: 'ファイル',
+  unitLabels: Object.freeze({
+    millimeter: 'mm',
+    meter: 'm',
+  }),
+  revision: 'revision',
+  pose: 'pose',
+  millimetres: 'mm',
+  pass: 'PASS',
+  failOrUnknown: 'FAIL / UNKNOWN',
+  noticePlaceholder: '\u00a0',
   lossTitle: '出力に含まれない情報・保証されない性質',
   printabilityTitle: 'プリント適性・マニフォールド検査',
   printabilityStatus: Object.freeze({
@@ -59,9 +73,13 @@ const EN_STATIC_MESH_EXPORT_COPY = Object.freeze({
   eyebrow: 'Export current 3D pose',
   title: 'Review format and mid-surface limitations',
   close: 'Close',
+  closeGlyph: '×',
   description:
     'Export the authenticated completed pose currently shown in the 3D preview as a static triangle mesh. Project history and save state are unchanged.',
   format: 'Export format',
+  optionSeparator: ' — ',
+  metadataSeparator: ' · ',
+  numberLocale: 'en-US',
   optionDetails: Object.freeze({
     obj: 'Text format for Blender and similar tools · mm · Z-up',
     stl: 'Widely supported binary slicer format · mm · Z-up',
@@ -90,6 +108,16 @@ const EN_STATIC_MESH_EXPORT_COPY = Object.freeze({
   triangles: 'triangles',
   sourceUnit: 'Source',
   encodedUnit: 'File',
+  unitLabels: Object.freeze({
+    millimeter: 'mm',
+    meter: 'm',
+  }),
+  revision: 'revision',
+  pose: 'pose',
+  millimetres: 'mm',
+  pass: 'PASS',
+  failOrUnknown: 'FAIL / UNKNOWN',
+  noticePlaceholder: '\u00a0',
   lossTitle: 'Information omitted and properties not guaranteed',
   printabilityTitle: 'Printability and manifold report',
   printabilityStatus: Object.freeze({

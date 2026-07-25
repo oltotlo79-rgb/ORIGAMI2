@@ -24,7 +24,14 @@ import {
   type DyadicPathPreviewResponseV1,
   type BasicFoldTimelinePreviewResponseV1,
 } from '../lib/coreClient'
-import { selectLocalizedText, type Locale } from '../lib/i18n'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+  type Locale,
+  type LocalizedText,
+  type MessageVariables,
+} from '../lib/i18n'
+import { STACKED_FOLD_PANEL_TEXT as TEXT } from '../lib/stackedFoldPanelText.ts'
 import {
   createStackedFoldReadCoordinator,
   type StackedFoldReadCoordinator,
@@ -106,7 +113,12 @@ export function StackedFoldPanel({
   namedTechniquePalette = [],
   onSelectNamedTechnique,
 }: Props) {
-  const t = (ja: string, en: string) => selectLocalizedText(locale, { ja, en })
+  const text = (localized: LocalizedText) =>
+    selectLocalizedText(locale, localized)
+  const formattedText = (
+    localized: LocalizedText,
+    variables: MessageVariables,
+  ) => formatLocalizedText(locale, localized, variables)
   const authorityRef = useRef(snapshot)
   authorityRef.current = snapshot
   const namedAuthorityRef = useRef({ namedBookFold, selectedLine })
@@ -830,20 +842,17 @@ export function StackedFoldPanel({
   const failureText = view.kind === 'ready'
     ? view.response.transactionProposal.failureClasses.map((failure) =>
         failure === 'continuous_path_uncertified'
-          ? t('連続経路の無衝突証明がありません。', 'The continuous path is not collision-certified.')
-          : t('折り後の層順序を証明できません。', 'The target layer order is not certified.'))
+          ? text(TEXT.theContinuousPathIsNotCollisionCertified)
+          : text(TEXT.theTargetLayerOrderIsNotCertified))
     : []
 
   return (
     <section className="property-section stacked-fold-panel" aria-busy={view.kind === 'reading' || applying}>
       {namedTechniquePalette.length > 0 && (
-        <fieldset aria-label={t('技法パレット', 'Technique palette')}>
-          <legend>{t('技法パレット', 'Technique palette')}</legend>
+        <fieldset aria-label={text(TEXT.techniquePalette)}>
+          <legend>{text(TEXT.techniquePalette)}</legend>
           <p id="technique-palette-help">
-            {t(
-              '技法を選び、安全プレビューを確認してから明示的に適用します。',
-              'Choose a technique, review its safety preview, then apply it explicitly.',
-            )}
+            {text(TEXT.chooseATechniqueReviewItsSafetyPreviewThenApplyIt)}
           </p>
           <div role="list" aria-describedby="technique-palette-help">
             {namedTechniquePalette.map((item) => (
@@ -859,7 +868,7 @@ export function StackedFoldPanel({
                 </button>
                 {!item.supported && (
                   <span id={`technique-reason-${item.techniqueId}`}>
-                    {item.reason ?? t('安全な物理操作として未対応です。', 'Unsupported as a certified physical operation.')}
+                    {item.reason ?? text(TEXT.unsupportedAsACertifiedPhysicalOperation)}
                   </span>
                 )}
               </div>
@@ -867,33 +876,33 @@ export function StackedFoldPanel({
           </div>
         </fieldset>
       )}
-      <h2>{t('一直線の折り重ね', 'Straight-line stacked fold')}</h2>
+      <h2>{text(TEXT.straightLineStackedFold)}</h2>
       <p className="muted">
         {selectedLine
-          ? t('選択中の線を折り軸としてnative証明を作成します。', 'The selected line is used as the axis for a native proof.')
-          : t('2Dキャンバスで折り軸にする線を選択してください。', 'Select a fold-axis line on the 2D canvas.')}
+          ? text(TEXT.theSelectedLineIsUsedAsTheAxisForA)
+          : text(TEXT.selectAFoldAxisLineOnThe2DCanvas)}
       </p>
       <p className="muted">
         {savedCompilerProvenance
-          ? t(
-            `保存済みcompiler provenance（読み取り専用）: ${savedCompilerProvenance.kind} / ${savedCompilerProvenance.segmentCount} steps`,
-            `Saved compiler provenance (read only): ${savedCompilerProvenance.kind} / ${savedCompilerProvenance.segmentCount} steps`,
-          )
-          : t('保存済みcompiler証明情報なし', 'No saved compiler proof information')}
+          ? formattedText(TEXT.savedCompilerProvenance, {
+            kind: savedCompilerProvenance.kind,
+            count: savedCompilerProvenance.segmentCount,
+          })
+          : text(TEXT.noSavedCompilerProofInformation)}
       </p>
       {liveHinges.length > 0 && view.kind !== 'ready' && (
         <fieldset>
-          <legend>{t('ヒンジ角度候補', 'Hinge angle candidate')}</legend>
+          <legend>{text(TEXT.hingeAngleCandidate)}</legend>
           {liveHinges.map((hinge, index) => (
             <div key={`${hinge.edge}:${index}`}>
               <label>
-                <span>{t('初期角度（読み取り専用）', 'Initial angle (read only)')}</span>
-                <input aria-label={`${t('初期角度', 'Initial angle')} ${hinge.edge}`} type="number" value={hinge.initialAngleDegrees} readOnly />
+                <span>{text(TEXT.initialAngleReadOnly)}</span>
+                <input aria-label={`${text(TEXT.initialAngle)} ${hinge.edge}`} type="number" value={hinge.initialAngleDegrees} readOnly />
               </label>
               <label>
-                <span>{t('要求角度', 'Requested angle')}</span>
+                <span>{text(TEXT.requestedAngle)}</span>
                 <input
-                  aria-label={`${t('要求角度', 'Requested angle')} ${hinge.edge}`}
+                  aria-label={`${text(TEXT.requestedAngle)} ${hinge.edge}`}
                   type="number"
                   min="0"
                   max="180"
@@ -912,8 +921,8 @@ export function StackedFoldPanel({
         </fieldset>
       )}
       {liveHinges.length > 0 && view.kind !== 'ready' && (
-        <section aria-label={t('偶数単頂点の自動候補', 'Automatic even-cycle candidates')}>
-          <h3>{t('偶数単頂点の自動候補', 'Automatic even-cycle candidates')}</h3>
+        <section aria-label={text(TEXT.automaticEvenCycleCandidates)}>
+          <h3>{text(TEXT.automaticEvenCycleCandidates)}</h3>
           {evenCycleCandidates.map((candidate) => (
             <button
               type="button"
@@ -929,74 +938,67 @@ export function StackedFoldPanel({
                 ])))
               }}
             >
-              {candidate.edges.join(' / ')} — {t('同一割当・反対軸', 'same assignment, opposite axes')}
+              {candidate.edges.join(' / ')} — {text(TEXT.sameAssignmentOppositeAxes)}
             </button>
           ))}
           {evenCycleCandidates.length === 0 && (
             <p data-even-cycle-status={evenCycleStatus}>
               {evenCycleStatus === 'resource_limit'
-                ? t('候補探索の上限を超えました。', 'Candidate search exceeded its resource bound.')
+                ? text(TEXT.candidateSearchExceededItsResourceBound)
                 : evenCycleStatus === 'none'
-                  ? t('適合する反対ヒンジ対はありません。', 'No matching opposite hinge pair exists.')
-                  : t('現在の形状は対応する偶数単頂点サイクルではありません。', 'The current shape is not a supported even single-vertex cycle.')}
+                  ? text(TEXT.noMatchingOppositeHingePairExists)
+                  : text(TEXT.theCurrentShapeIsNotASupportedEvenSingleVertex)}
             </p>
           )}
         </section>
       )}
       <form onSubmit={(event) => void preview(event)}>
         <label>
-          <span>{t('固定側', 'Fixed side')}</span>
+          <span>{text(TEXT.fixedSide)}</span>
           <select value={fixedSide} onChange={(event) => setFixedSide(event.target.value as StackedFoldFixedSide)} disabled={disabled || applying}>
-            <option value="left">{t('線の左側', 'Left of line')}</option>
-            <option value="right">{t('線の右側', 'Right of line')}</option>
+            <option value="left">{text(TEXT.leftOfLine)}</option>
+            <option value="right">{text(TEXT.rightOfLine)}</option>
           </select>
         </label>
         <label>
-          <span>{t('閉路経路定義（JSON、閉路パターンのみ）', 'Cycle path definition (JSON, cyclic patterns only)')}</span>
+          <span>{text(TEXT.cyclePathDefinitionJSONCyclicPatternsOnly)}</span>
           <textarea
             value={cycleScheduleText}
             onChange={(event) => setCycleScheduleText(event.target.value)}
             rows={4}
             maxLength={MAX_CYCLE_SCHEDULE_JSON_BYTES}
             spellCheck={false}
-            placeholder={t(
-              'version 1 の半角有理スケジュール。未入力の閉路は安全のため適用できません。',
-              'Version 1 half-angle rational schedule. Cycles without one cannot be applied.',
-            )}
+            placeholder={text(TEXT.version1HalfAngleRationalScheduleCyclesWithoutOneCannot)}
             disabled={disabled || applying}
           />
           {cycleScheduleText.trim() && (
             <small role="status">
               {authoredCycleSchedule
-                ? t(
-                    `有界schedule: ${authoredCycleSchedule.entries.length}/64 hinge、係数は各9以下`,
-                    `Bounded schedule: ${authoredCycleSchedule.entries.length}/64 hinges; at most 9 coefficients each`,
-                  )
-                : t(
-                    'scheduleが不正です。分母は正整数、係数は各1〜9個、角度は0〜180度です。',
-                    'Invalid schedule. Denominators must be positive integers, coefficients 1–9 each, and angles 0–180°.',
-                  )}
+                ? formattedText(TEXT.boundedSchedule, {
+                  count: authoredCycleSchedule.entries.length,
+                })
+                : text(TEXT.invalidScheduleDenominatorsMustBePositiveIntegersCoefficients19)}
             </small>
           )}
         </label>
         <label>
-          <span>{t('回転方向', 'Rotation direction')}</span>
+          <span>{text(TEXT.rotationDirection)}</span>
           <select value={rotationDirection} onChange={(event) => setRotationDirection(event.target.value as StackedFoldRotationDirection)} disabled={disabled || applying}>
-            <option value="positive">{t('正方向', 'Positive')}</option>
-            <option value="negative">{t('負方向', 'Negative')}</option>
+            <option value="positive">{text(TEXT.positive)}</option>
+            <option value="negative">{text(TEXT.negative)}</option>
           </select>
         </label>
         <label>
-          <span>{t('角度（度）', 'Angle (degrees)')}</span>
+          <span>{text(TEXT.angleDegrees)}</span>
           <input value={angle} onChange={(event) => setAngle(event.target.value)} type="number" min="0.000001" max="180" step="any" required disabled={disabled || applying} />
         </label>
         <button type="submit" disabled={!selectedLine || disabled || applying || view.kind === 'reading'}>
-          {view.kind === 'reading' ? t('証明中…', 'Proving…') : t('安全性を確認', 'Verify safety')}
+          {view.kind === 'reading' ? text(TEXT.proving) : text(TEXT.verifySafety)}
         </button>
       </form>
       {(authoredCycleSchedule || evenCycleCandidates.length > 0) && (
-        <section aria-label={t('現在姿勢の循環折りプレビュー', 'Current-pose cycle preview')}>
-          <h3>{t('現在姿勢の循環折り', 'Current-pose cycle')}</h3>
+        <section aria-label={text(TEXT.currentPoseCyclePreview)}>
+          <h3>{text(TEXT.currentPoseCycle)}</h3>
           <button
             ref={cyclePosePreviewButtonRef}
             type="button"
@@ -1004,8 +1006,8 @@ export function StackedFoldPanel({
             onClick={() => void previewCurrentCyclePose(false)}
           >
             {cyclePoseReading
-              ? t('経路を証明中…', 'Proving path…')
-              : t('現在姿勢から証明', 'Prove from current pose')}
+              ? text(TEXT.provingPath)
+              : text(TEXT.proveFromCurrentPose)}
           </button>
             {evenCycleCandidates.length > 0 && (
             <button
@@ -1014,7 +1016,7 @@ export function StackedFoldPanel({
               disabled={disabled || applying || cyclePoseReading}
               onClick={() => void previewCurrentCyclePose(true)}
             >
-              {t('川崎リンクを自動生成して証明', 'Generate and prove Kawasaki linkage')}
+              {text(TEXT.generateAndProveKawasakiLinkage)}
               </button>
             )}
             {kawasakiEndpoints.length > 0 && (
@@ -1026,10 +1028,10 @@ export function StackedFoldPanel({
                       aria-pressed={selectedKawasakiEndpoint === candidate.endpointDenominator}
                       onClick={() => setSelectedKawasakiEndpoint(candidate.endpointDenominator as 1 | 2 | 4 | 8 | 16)}
                     >
-                    1/{candidate.endpointDenominator}: {t('閉路証明済み', 'Closure certified')} /{' '}
+                    1/{candidate.endpointDenominator}: {text(TEXT.closureCertified)} /{' '}
                     {candidate.collisionStatus === 'certified'
-                      ? t('衝突証明済み', 'Collision certified')
-                      : t('衝突未認証', 'Collision uncertified')}
+                      ? text(TEXT.collisionCertified)
+                      : text(TEXT.collisionUncertified)}
                     </button>
                   </li>
                 ))}
@@ -1041,12 +1043,12 @@ export function StackedFoldPanel({
               disabled={disabled || applying || dyadicGraphReading || liveHinges.length === 0}
               onClick={() => void readDyadicPoseGraph()}
             >
-              {dyadicGraphReading ? t('経路探索中…', 'Searching paths…') : t('有界dyadic経路を探索', 'Search bounded dyadic paths')}
+              {dyadicGraphReading ? text(TEXT.searchingPaths) : text(TEXT.searchBoundedDyadicPaths)}
             </button>
             <label>
-              {t('dyadic段階数', 'Dyadic levels')}
+              {text(TEXT.dyadicLevels)}
               <select
-                aria-label={t('dyadic段階数', 'Dyadic levels')}
+                aria-label={text(TEXT.dyadicLevels)}
                 value={dyadicLevelCount}
                 disabled={disabled || applying || dyadicGraphReading}
                 onChange={(event) => setDyadicLevelCount(Number(event.target.value) as 3 | 5 | 9)}
@@ -1059,7 +1061,7 @@ export function StackedFoldPanel({
                 dyadicGraphSequenceRef.current += 1
                 setDyadicGraphReading(false)
                 void cancelCurrentStackedFoldReadV1().catch(() => undefined)
-              }}>{t('探索を中止', 'Cancel search')}</button>
+              }}>{text(TEXT.cancelSearch)}</button>
             )}
             {dyadicGraphRead && (
               <p data-testid="dyadic-pose-graph-status" role="status">
@@ -1069,7 +1071,7 @@ export function StackedFoldPanel({
             )}
             {dyadicGraphRead?.mutationCandidateReady && (
               <button type="button" data-testid="dyadic-path-preview" onClick={() => void mintDyadicPathPreview()}>
-                {t('読取専用プレビューを発行', 'Issue read-only preview')}
+                {text(TEXT.issueReadOnlyPreview)}
               </button>
             )}
             {dyadicPathPreview && (
@@ -1078,16 +1080,18 @@ export function StackedFoldPanel({
                   preview {dyadicPathPreview.previewToken}; target {dyadicPathPreview.targetBindingSha256}; authenticated one-shot
                 </p>
                 <button type="button" data-testid="dyadic-path-apply" disabled={disabled || applying} onClick={() => void applyDyadicPathPreview()}>
-                  {t('認証済み経路を適用', 'Apply authenticated path')}
+                  {text(TEXT.applyAuthenticatedPath)}
                 </button>
               </>
             )}
           {cyclePoseReading && pathProgress && (
             <p role="status">
-              {t(
-                `循環経路の状態 ${pathProgress.exploredStateCount}/${pathProgress.stateLimit}、遷移 ${pathProgress.evaluatedTransitionCount}/${pathProgress.transitionLimit}`,
-                `Cycle states ${pathProgress.exploredStateCount}/${pathProgress.stateLimit}; transitions ${pathProgress.evaluatedTransitionCount}/${pathProgress.transitionLimit}`,
-              )}
+              {formattedText(TEXT.cyclePathProgress, {
+                states: pathProgress.exploredStateCount,
+                stateLimit: pathProgress.stateLimit,
+                transitions: pathProgress.evaluatedTransitionCount,
+                transitionLimit: pathProgress.transitionLimit,
+              })}
             </p>
           )}
           {cyclePoseReading && (
@@ -1111,20 +1115,17 @@ export function StackedFoldPanel({
                 void cancelCurrentStackedFoldReadV1().catch(() => undefined)
               }}
             >
-              {t('循環経路の証明を中止', 'Cancel cycle proof')}
+              {text(TEXT.cancelCycleProof)}
             </button>
           )}
           {cyclePoseProgress?.status === 'cancelled' && (
             <p role="status">
-              {t('循環経路の証明を中止しました。再試行できます。', 'Cycle proof cancelled. You can retry.')}
+              {text(TEXT.cycleProofCancelledYouCanRetry)}
             </p>
           )}
           {cyclePoseError && (
             <p role="alert">
-              {t(
-                '循環経路を認証できませんでした。プロジェクトは変更されていません。',
-                'The cycle path could not be authenticated. The project was not changed.',
-              )}
+              {text(TEXT.theCyclePathCouldNotBeAuthenticatedTheProjectWas)}
             </p>
           )}
           {cyclePosePreview && (
@@ -1136,23 +1137,23 @@ export function StackedFoldPanel({
             >
               <dl>
                 <div>
-                  <dt>{t('閉包区間数', 'Closure intervals')}</dt>
+                  <dt>{text(TEXT.closureIntervals)}</dt>
                   <dd>{cyclePosePreview.closureLeafCount}</dd>
                 </div>
                 <div>
-                  <dt>{t('証明の最大深さ', 'Maximum proof depth')}</dt>
+                  <dt>{text(TEXT.maximumProofDepth)}</dt>
                   <dd>{cyclePosePreview.closureMaxDepth}</dd>
                 </div>
                 <div>
-                  <dt>{t('全ヒンジ検証', 'All hinges covered')}</dt>
+                  <dt>{text(TEXT.allHingesCovered)}</dt>
                   <dd>{cyclePosePreview.checkedHingeCount}/{cyclePosePreview.totalHingeCount}</dd>
                 </div>
                 <div>
-                  <dt>{t('連続経路', 'Continuous path')}</dt>
-                  <dd>{t('認証済み', 'Certified')}</dd>
+                  <dt>{text(TEXT.continuousPath)}</dt>
+                  <dd>{text(TEXT.certified)}</dd>
                 </div>
                 <div>
-                  <dt>{t('適用後リビジョン', 'Target revision')}</dt>
+                  <dt>{text(TEXT.targetRevision)}</dt>
                   <dd>{cyclePosePreview.targetRevision}</dd>
                 </div>
                 <div>
@@ -1183,17 +1184,14 @@ export function StackedFoldPanel({
                 </div>
               )}
               <p>
-                {t(
-                  'この表示は読み取り専用です。下の適用操作まで作品は変更されません。',
-                  'This preview is read-only. The project is unchanged until you explicitly apply it.',
-                )}
+                {text(TEXT.thisPreviewIsReadOnlyTheProjectIsUnchangedUntil)}
               </p>
               <button
                 type="button"
                 disabled={disabled || applying}
                 onClick={() => void applyCurrentCyclePose()}
               >
-                {t('認証済み循環折りを適用', 'Apply certified cycle fold')}
+                {text(TEXT.applyCertifiedCycleFold)}
               </button>
               <button
                 type="button"
@@ -1205,7 +1203,7 @@ export function StackedFoldPanel({
                   queueMicrotask(() => cyclePosePreviewButtonRef.current?.focus())
                 }}
               >
-                {t('プレビューを取り消す', 'Cancel preview')}
+                {text(TEXT.cancelPreview)}
               </button>
             </div>
           )}
@@ -1213,16 +1211,16 @@ export function StackedFoldPanel({
       )}
       {!cyclePosePreview && persistedCycleLayerProof && (
         <section
-          aria-label={t('適用済み層順ビューアー', 'Applied layer-order viewer')}
+          aria-label={text(TEXT.appliedLayerOrderViewer)}
           data-testid="persisted-cycle-layer-order-viewer"
           className="stacked-fold-proof"
         >
-          <h4>{t('適用済み層順証明', 'Applied layer-order proof')}</h4>
-          <p>{t('遷移数', 'Transitions')}: {persistedCycleLayerProof.transition_count}</p>
-          <p>{t('層順ペア数', 'Pairs')}: {persistedCycleLayerProof.pairs.length}</p>
-          <p>{t('証明ハッシュ', 'Proof hash')}: {persistedCycleLayerProof.target_order_sha256
+          <h4>{text(TEXT.appliedLayerOrderProof)}</h4>
+          <p>{text(TEXT.transitions)}: {persistedCycleLayerProof.transition_count}</p>
+          <p>{text(TEXT.pairs)}: {persistedCycleLayerProof.pairs.length}</p>
+          <p>{text(TEXT.proofHash)}: {persistedCycleLayerProof.target_order_sha256
             .map((byte) => byte.toString(16).padStart(2, '0')).join('')}</p>
-          <ol aria-label={t('正規順の証明ペア（下層から上層）', 'Canonical proof pairs (lower to upper)')}>
+          <ol aria-label={text(TEXT.canonicalProofPairsLowerToUpper)}>
             {persistedLayerPairs.map((pair) => (
               <li key={`${pair.lower_face}:${pair.upper_face}`}>
                 <button type="button" aria-pressed={selectedFace === pair.lower_face}
@@ -1238,52 +1236,49 @@ export function StackedFoldPanel({
             ))}
           </ol>
           {persistedCycleLayerProof.pairs.length > persistedLayerPairs.length && (
-            <p>{t(
-              `先頭${persistedLayerPairs.length}件を表示し、残り${persistedCycleLayerProof.pairs.length - persistedLayerPairs.length}件を省略しています。`,
-              `Showing the first ${persistedLayerPairs.length}; ${persistedCycleLayerProof.pairs.length - persistedLayerPairs.length} more are omitted.`,
-            )}</p>
+            <p>{formattedText(TEXT.persistedLayerPairsOmitted, {
+              visible: persistedLayerPairs.length,
+              remaining:
+                persistedCycleLayerProof.pairs.length - persistedLayerPairs.length,
+            })}</p>
           )}
-          <p>{t(
-            'これは適用済みタイムライン手順に保存された証明の読み取り専用表示です。',
-            'This is a read-only view of the proof persisted by the applied timeline step.',
-          )}</p>
-          <p>{t(
-            'この表示は保存された証明だけを示します。一般の多ブロック層搬送は保証しません。',
-            'This view shows only the persisted proof; it does not prove general multi-block layer transport.',
-          )}</p>
+          <p>{text(TEXT.thisIsAReadOnlyViewOfTheProofPersisted)}</p>
+          <p>{text(TEXT.thisViewShowsOnlyThePersistedProofItDoesNot)}</p>
         </section>
       )}
       {view.kind === 'failed' && (
         <p role="alert">
           {view.reason === 'stale'
-            ? t('編集内容が変わりました。もう一度確認してください。', 'The project changed. Verify again.')
+            ? text(TEXT.theProjectChangedVerifyAgain)
             : view.reason === 'cycle_nonclosing'
-              ? t('循環hingeの終端が閉じないため適用できません。', 'The cyclic hinge endpoint does not close, so apply is disabled.')
+              ? text(TEXT.theCyclicHingeEndpointDoesNotCloseSoApplyIs)
               : view.reason === 'cycle_path_uncertified'
-                ? t('循環hingeの終端は閉じますが、連続経路を証明できないため適用できません。', 'The cyclic endpoint closes, but its continuous path is uncertified, so apply is disabled.')
+                ? text(TEXT.theCyclicEndpointClosesButItsContinuousPathIsUncertified)
                 : view.reason === 'cycle_path_unsupported'
-                  ? t('静的理由: ヒンジグラフとスケジュールが、証明済みの格子・対称セクタ・対向軸直線折りクラスのいずれにも一致しません。適用は無効です。', 'Static reason: the hinge graph and schedule do not match a certified grid, symmetric-sector, or opposite-axis straight-fold class. Apply is disabled.')
+                  ? text(TEXT.staticReasonTheHingeGraphAndScheduleDoNotMatch)
                   : view.reason === 'cycle_path_resource_limit'
-                    ? t('有界証明の資源上限に達しました。安全または不可能とは判定せず、適用を無効にします。', 'The bounded proof reached its resource limit. This does not claim safety or impossibility, so apply is disabled.')
+                    ? text(TEXT.theBoundedProofReachedItsResourceLimitThisDoesNot)
                     : view.reason === 'cycle_path_no_certified_path'
-                      ? t('証明済み遷移だけでは目標への経路が見つかりませんでした。不可能とは判定しません。', 'No path to the target was found using certified transitions only. This does not claim impossibility.')
+                      ? text(TEXT.noPathToTheTargetWasFoundUsingCertifiedTransitions)
                       : view.reason === 'cycle_path_cancelled'
-                        ? t('有界経路解析を中止しました。部分的な証明は公開していません。', 'The bounded path analysis was cancelled. No partial certificate was published.')
+                        ? text(TEXT.theBoundedPathAnalysisWasCancelledNoPartialCertificateWas)
                     : view.reason === 'cycle_path_collision'
-                      ? t('予定された連続経路の衝突なし証明を取得できませんでした。適用は無効です。', 'The scheduled continuous path could not receive a collision-clearance certificate, so apply is disabled.')
+                      ? text(TEXT.theScheduledContinuousPathCouldNotReceiveACollisionClearance)
             : view.reason === 'apply'
-              ? t('適用できませんでした。プレビューは失効しました。', 'Apply failed; the preview is no longer trusted.')
-              : t('この入力ではnative証明を完成できませんでした。', 'A native proof could not be completed for this input.')}
+              ? text(TEXT.applyFailedThePreviewIsNoLongerTrusted)
+              : text(TEXT.aNativeProofCouldNotBeCompletedForThisInput)}
         </p>
       )}
       {view.kind === 'reading' && (
         <div>
           {pathProgress && (
             <p role="status">
-              {t(
-                `探索済み状態 ${pathProgress.exploredStateCount}/${pathProgress.stateLimit}、遷移 ${pathProgress.evaluatedTransitionCount}/${pathProgress.transitionLimit}`,
-                `Explored states ${pathProgress.exploredStateCount}/${pathProgress.stateLimit}; transitions ${pathProgress.evaluatedTransitionCount}/${pathProgress.transitionLimit}`,
-              )}
+              {formattedText(TEXT.searchPathProgress, {
+                states: pathProgress.exploredStateCount,
+                stateLimit: pathProgress.stateLimit,
+                transitions: pathProgress.evaluatedTransitionCount,
+                transitionLimit: pathProgress.transitionLimit,
+              })}
             </p>
           )}
         <button
@@ -1294,15 +1289,15 @@ export function StackedFoldPanel({
             void cancelCurrentStackedFoldReadV1().catch(() => undefined)
           }}
         >
-          {t('経路解析を中止', 'Cancel path analysis')}
+          {text(TEXT.cancelPathAnalysis)}
         </button>
         </div>
       )}
       {view.kind === 'refresh_failed' && (
         <div role="alert">
-          <p>{t('折り重ねは適用済みですが、最新表示を取得できませんでした。', 'The stacked fold was applied, but the refreshed project could not be loaded.')}</p>
+          <p>{text(TEXT.theStackedFoldWasAppliedButTheRefreshedProjectCould)}</p>
           <button type="button" disabled={applying} onClick={() => void retryRefresh()}>
-            {t('最新表示を再取得', 'Retry refresh')}
+            {text(TEXT.retryRefresh)}
           </button>
         </div>
       )}
@@ -1310,23 +1305,23 @@ export function StackedFoldPanel({
         <div className="stacked-fold-proof" data-ready={ready}>
           {liveHinges.length > 0 && (
             <fieldset>
-              <legend>{t('ヒンジ角度候補', 'Hinge angle candidate')}</legend>
+              <legend>{text(TEXT.hingeAngleCandidate)}</legend>
               {liveHinges.map((hinge, index) => (
                 <div key={`${hinge.edge}:${index}`}>
                   <label>
-                    <span>{t('初期角度（読み取り専用）', 'Initial angle (read only)')}</span>
+                    <span>{text(TEXT.initialAngleReadOnly)}</span>
                     <input
-                      aria-label={`${t('初期角度', 'Initial angle')} ${hinge.edge}`}
+                      aria-label={`${text(TEXT.initialAngle)} ${hinge.edge}`}
                       type="number"
                       value={hinge.initialAngleDegrees}
                       readOnly
                     />
                   </label>
                   <label>
-                    <span>{t('要求角度', 'Requested angle')}</span>
+                    <span>{text(TEXT.requestedAngle)}</span>
                     <input
                       id={`stacked-fold-proof-hinge-${hinge.edge}`}
-                      aria-label={`${t('要求角度', 'Requested angle')} ${hinge.edge}`}
+                      aria-label={`${text(TEXT.requestedAngle)} ${hinge.edge}`}
                       type="number"
                       min="0"
                       max="180"
@@ -1346,50 +1341,48 @@ export function StackedFoldPanel({
                 </div>
               ))}
               <p className="muted">
-                {t(
-                  '要求角度を変更すると、正規順序のlinearCandidateV1が内部で構築されます。初期角度はnative姿勢へbit単位で再検証されます。',
-                  'Editing a requested angle builds canonical linearCandidateV1 internally. Native revalidates initial angles bit-for-bit.',
-                )}
+                {text(TEXT.editingARequestedAngleBuildsCanonicalLinearCandidateV1InternallyNativeRe)}
               </p>
             </fieldset>
           )}
           <dl>
-            <div><dt>{t('対象面', 'Target faces')}</dt><dd>{view.response.targetFaces.length}</dd></div>
-            <div><dt>{t('折り線', 'Creases')}</dt><dd>{view.response.materialSegments.length}</dd></div>
-            <div><dt>{t('対象hinge', 'Target hinges')}</dt><dd>{view.response.topologyProof.targetHingeCount}</dd></div>
-            <div><dt>{t('終端衝突', 'Endpoint collision')}</dt><dd>{view.response.endpointCollision.hasBlockingHold ? t('停止', 'Blocked') : t('なし', 'Clear')}</dd></div>
-            <div><dt>{t('連続経路', 'Continuous path')}</dt><dd>{view.response.continuousPath.continuousClearanceCertified ? t('証明済み', 'Certified') : t('未証明', 'Uncertified')}</dd></div>
-            <div><dt>{t('最初の停止確認角', 'First proven blocking sample')}</dt><dd>{view.response.continuousPath.firstSampledBlockingAngleDegrees === null ? t('なし', 'None') : `${view.response.continuousPath.firstSampledBlockingAngleDegrees}°`}</dd></div>
-            <div><dt>{t('経路証明モデル', 'Path certificate model')}</dt><dd>{certificateModelText}</dd></div>
-            <div><dt>{t('区間leaf数', 'Interval leaves')}</dt><dd>{view.response.continuousPath.intervalLeafCount}</dd></div>
-            <div><dt>{t('区間pair work', 'Interval pair work')}</dt><dd>{view.response.continuousPath.intervalPairWork}</dd></div>
-            <div><dt>{t('正厚候補', 'Positive-thickness candidates')}</dt><dd>{view.response.continuousPath.positiveEndpointCandidateCount} / {view.response.continuousPath.positiveEndpointCandidateLimit}</dd></div>
-            <div><dt>{t('正厚exact呼出', 'Positive-thickness exact calls')}</dt><dd>{view.response.continuousPath.positiveEndpointExactPairCalls}</dd></div>
-            <div><dt>{t('候補上限', 'Candidate limit')}</dt><dd>{view.response.continuousPath.intervalCandidateLimit}</dd></div>
-            <div><dt>{t('閉路leaf数', 'Closure leaves')}</dt><dd>{view.response.continuousPath.closureLeafCount}</dd></div>
-            <div><dt>{t('閉路pair work', 'Closure pair work')}</dt><dd>{view.response.continuousPath.closurePairWork}</dd></div>
-            <div><dt>{t('最初の閉路失敗角', 'First closure failure angle')}</dt><dd>{view.response.continuousPath.firstClosureFailureAngleDegrees ?? t('なし', 'None')}</dd></div>
-            <div><dt>{t('証明済み紙厚', 'Certified thickness')}</dt><dd>{view.response.continuousPath.paperThicknessMm} mm</dd></div>
-            <div><dt>{t('層順序', 'Layer order')}</dt><dd>{view.response.flatEndpointLayerOrder.certified ? t('証明済み', 'Certified') : t('未証明', 'Uncertified')}</dd></div>
-            <div><dt>{t('追加頂点 / 辺', 'Added vertices / edges')}</dt><dd>{view.response.transactionProposal.addedVertexCount} / {view.response.transactionProposal.addedEdgeCount}</dd></div>
+            <div><dt>{text(TEXT.targetFaces)}</dt><dd>{view.response.targetFaces.length}</dd></div>
+            <div><dt>{text(TEXT.creases)}</dt><dd>{view.response.materialSegments.length}</dd></div>
+            <div><dt>{text(TEXT.targetHinges)}</dt><dd>{view.response.topologyProof.targetHingeCount}</dd></div>
+            <div><dt>{text(TEXT.endpointCollision)}</dt><dd>{view.response.endpointCollision.hasBlockingHold ? text(TEXT.blocked) : text(TEXT.clear)}</dd></div>
+            <div><dt>{text(TEXT.continuousPath)}</dt><dd>{view.response.continuousPath.continuousClearanceCertified ? text(TEXT.certified2) : text(TEXT.uncertified)}</dd></div>
+            <div><dt>{text(TEXT.firstProvenBlockingSample)}</dt><dd>{view.response.continuousPath.firstSampledBlockingAngleDegrees === null ? text(TEXT.none) : `${view.response.continuousPath.firstSampledBlockingAngleDegrees}°`}</dd></div>
+            <div><dt>{text(TEXT.pathCertificateModel)}</dt><dd>{certificateModelText}</dd></div>
+            <div><dt>{text(TEXT.intervalLeaves)}</dt><dd>{view.response.continuousPath.intervalLeafCount}</dd></div>
+            <div><dt>{text(TEXT.intervalPairWork)}</dt><dd>{view.response.continuousPath.intervalPairWork}</dd></div>
+            <div><dt>{text(TEXT.positiveThicknessCandidates)}</dt><dd>{view.response.continuousPath.positiveEndpointCandidateCount} / {view.response.continuousPath.positiveEndpointCandidateLimit}</dd></div>
+            <div><dt>{text(TEXT.positiveThicknessExactCalls)}</dt><dd>{view.response.continuousPath.positiveEndpointExactPairCalls}</dd></div>
+            <div><dt>{text(TEXT.candidateLimit)}</dt><dd>{view.response.continuousPath.intervalCandidateLimit}</dd></div>
+            <div><dt>{text(TEXT.closureLeaves)}</dt><dd>{view.response.continuousPath.closureLeafCount}</dd></div>
+            <div><dt>{text(TEXT.closurePairWork)}</dt><dd>{view.response.continuousPath.closurePairWork}</dd></div>
+            <div><dt>{text(TEXT.firstClosureFailureAngle)}</dt><dd>{view.response.continuousPath.firstClosureFailureAngleDegrees ?? text(TEXT.none)}</dd></div>
+            <div><dt>{text(TEXT.certifiedThickness)}</dt><dd>{view.response.continuousPath.paperThicknessMm} mm</dd></div>
+            <div><dt>{text(TEXT.layerOrder)}</dt><dd>{view.response.flatEndpointLayerOrder.certified ? text(TEXT.certified2) : text(TEXT.uncertified)}</dd></div>
+            <div><dt>{text(TEXT.addedVerticesEdges)}</dt><dd>{view.response.transactionProposal.addedVertexCount} / {view.response.transactionProposal.addedEdgeCount}</dd></div>
           </dl>
           {view.response.certifiedPathGraph && (
-            <section aria-label={t('証明済み候補経路', 'Certified candidate path')}>
-              <h4>{t('証明済み候補経路', 'Certified candidate path')}</h4>
+            <section aria-label={text(TEXT.certifiedCandidatePath)}>
+              <h4>{text(TEXT.certifiedCandidatePath)}</h4>
               <p>
-                {t(
-                  `${view.response.certifiedPathGraph.edges.length} 遷移。read-only previewであり、作品変更を許可しません。`,
-                  `${view.response.certifiedPathGraph.edges.length} transition(s). This read-only preview does not authorize project mutation.`,
-                )}
+                {formattedText(TEXT.certifiedPathTransitionCount, {
+                  count: view.response.certifiedPathGraph.edges.length,
+                })}
               </p>
               <ol>
                 {view.response.certifiedPathGraph.edges.map((edge, index) => (
                   <li key={`${edge.sourceFingerprintSha256}:${edge.targetFingerprintSha256}`}>
-                    <strong>{t(`遷移 ${index + 1}`, `Transition ${index + 1}`)}</strong>
+                    <strong>{formattedText(TEXT.transitionIndex, {
+                      index: index + 1,
+                    })}</strong>
                     <dl>
-                      <div><dt>{t('スケジュール証明', 'Schedule certificate')}</dt><dd>{edge.scheduleCertificateSha256}</dd></div>
-                      <div><dt>{t('衝突証明', 'Collision certificate')}</dt><dd>{edge.collisionCertificateSha256}</dd></div>
-                      <div><dt>{t('閉路証明', 'Closure certificate')}</dt><dd>{edge.closureCertificateSha256}</dd></div>
+                      <div><dt>{text(TEXT.scheduleCertificate)}</dt><dd>{edge.scheduleCertificateSha256}</dd></div>
+                      <div><dt>{text(TEXT.collisionCertificate)}</dt><dd>{edge.collisionCertificateSha256}</dd></div>
+                      <div><dt>{text(TEXT.closureCertificate)}</dt><dd>{edge.closureCertificateSha256}</dd></div>
                     </dl>
                     {edge.hinges.map((hinge, hingeIndex) => (
                       <button
@@ -1399,7 +1392,7 @@ export function StackedFoldPanel({
                           `stacked-fold-proof-hinge-${hinge}`,
                         )?.focus()}
                       >
-                        {t('関連ヒンジを選択', 'Select related hinge')} {hingeIndex + 1}
+                        {text(TEXT.selectRelatedHinge)} {hingeIndex + 1}
                       </button>
                     ))}
                   </li>
@@ -1407,10 +1400,7 @@ export function StackedFoldPanel({
               </ol>
             </section>
           )}
-          <p>{t(
-            'この証明は表示された紙厚・2三角形・1ヒンジ・90度以下だけを対象とします。一般の多面、別の紙厚、工作性は保証しません。',
-            'This certificate covers only the displayed thickness, two triangular faces, one hinge, and a path up to 90°. It does not guarantee general multi-face folds, another thickness, or physical manufacturability.',
-          )}</p>
+          <p>{text(TEXT.thisCertificateCoversOnlyTheDisplayedThicknessTwoTriangularFaces)}</p>
           <LayerOrderViewer
             locale={locale}
             cells={view.response.crossedCells}
@@ -1423,29 +1413,28 @@ export function StackedFoldPanel({
           />
           {failureText.map((failure) => <p role="status" key={failure}>{failure}</p>)}
           {view.applyFailed && (
-            <p role="alert">{t('適用できませんでした。同じ証明済みpreviewで再試行できます。', 'Apply failed. You can retry with the same certified preview.')}</p>
+            <p role="alert">{text(TEXT.applyFailedYouCanRetryWithTheSameCertifiedPreview)}</p>
           )}
           {namedBookFold && (
             <p role="note">
-              {t(
-                `名前付き技法「${namedBookFold.name}」として認証済み姿勢を手順へ保存します。PDF/SVG折り図にも同じ手順が使われます。`,
-                `The certified pose will be saved as the named technique “${namedBookFold.name}”. The same step is used by PDF/SVG instruction exports.`,
-              )}
+              {formattedText(TEXT.namedTechniqueWillBeSaved, {
+                name: namedBookFold.name,
+              })}
             </p>
           )}
           {namedBasicFold && (
-            <section aria-label={t('名前付き基本折りの手順preview', 'Named basic-fold timeline preview')}>
+            <section aria-label={text(TEXT.namedBasicFoldTimelinePreview)}>
               <button type="button" onClick={() => void previewNamedBasicFold()}
                 aria-busy={basicFoldTimelinePreviewReading}
                 disabled={!ready || applying || basicFoldTimelinePreviewReading}>
-                {t('認証済み手順をpreview', 'Preview certified timeline')}
+                {text(TEXT.previewCertifiedTimeline)}
               </button>
               {basicFoldTimelinePreviewReading && (
-                <p role="status" aria-live="polite">{t('認証済み手順を作成中…', 'Building certified timeline…')}</p>
+                <p role="status" aria-live="polite">{text(TEXT.buildingCertifiedTimeline)}</p>
               )}
               {basicFoldTimelinePreview && (
                 <div role="status" tabIndex={0}
-                  aria-label={t('認証済み手順step再生', 'Certified timeline step player')}
+                  aria-label={text(TEXT.certifiedTimelineStepPlayer)}
                   onKeyDown={(event) => {
                     const last = basicFoldTimelinePreview.timeline.steps.length - 1
                     if (event.key === 'ArrowLeft') setBasicFoldTimelineStepIndex((value) => Math.max(0, value - 1))
@@ -1455,20 +1444,20 @@ export function StackedFoldPanel({
                     else return
                     event.preventDefault()
                   }}>
-                  <p>{t('読取専用previewです。適用権限は含みません。', 'Read-only preview; no mutation authority is included.')}</p>
-                  <p aria-live="polite">{t('step', 'Step')} {basicFoldTimelineStepIndex + 1} / {basicFoldTimelinePreview.timeline.steps.length}</p>
+                  <p>{text(TEXT.readOnlyPreviewNoMutationAuthorityIsIncluded)}</p>
+                  <p aria-live="polite">{text(TEXT.step)} {basicFoldTimelineStepIndex + 1} / {basicFoldTimelinePreview.timeline.steps.length}</p>
                   <button type="button" disabled={basicFoldTimelineStepIndex === 0}
-                    onClick={() => setBasicFoldTimelineStepIndex((value) => Math.max(0, value - 1))}>{t('前のstep', 'Previous step')}</button>
+                    onClick={() => setBasicFoldTimelineStepIndex((value) => Math.max(0, value - 1))}>{text(TEXT.previousStep)}</button>
                   <button type="button" disabled={basicFoldTimelineStepIndex + 1 >= basicFoldTimelinePreview.timeline.steps.length}
-                    onClick={() => setBasicFoldTimelineStepIndex((value) => Math.min(basicFoldTimelinePreview.timeline.steps.length - 1, value + 1))}>{t('次のstep', 'Next step')}</button>
+                    onClick={() => setBasicFoldTimelineStepIndex((value) => Math.min(basicFoldTimelinePreview.timeline.steps.length - 1, value + 1))}>{text(TEXT.nextStep)}</button>
                   {basicFoldTimelineStep && (
-                    <section aria-label={t('step詳細preview', 'Step detail preview')}>
+                    <section aria-label={text(TEXT.stepDetailPreview)}>
                       <h4>{basicFoldTimelineStep.title}</h4>
                       <p>{basicFoldTimelineStep.description}</p>
                       <dl>
-                        <div><dt>{t('固定面', 'Fixed face')}</dt><dd>{basicFoldTimelineStep.pose.fixed_face ?? t('なし', 'None')}</dd></div>
-                        <div><dt>{t('ヒンジ数', 'Hinge count')}</dt><dd>{basicFoldTimelineStep.pose.hinge_angles.length}</dd></div>
-                        <div><dt>{t('経路証明', 'Path proof')}</dt><dd>{basicFoldTimelineStep.visual.path_certificate_reference_v1 ? t('参照あり', 'Referenced') : t('なし', 'None')}</dd></div>
+                        <div><dt>{text(TEXT.fixedFace)}</dt><dd>{basicFoldTimelineStep.pose.fixed_face ?? text(TEXT.none)}</dd></div>
+                        <div><dt>{text(TEXT.hingeCount)}</dt><dd>{basicFoldTimelineStep.pose.hinge_angles.length}</dd></div>
+                        <div><dt>{text(TEXT.pathProof)}</dt><dd>{basicFoldTimelineStep.visual.path_certificate_reference_v1 ? text(TEXT.referenced) : text(TEXT.none)}</dd></div>
                       </dl>
                       <ol>{basicFoldTimelineStep.pose.hinge_angles.map((hinge, index) => <li key={`${hinge.edge}:${index}`}>{hinge.edge}: {hinge.angle_degrees}°</li>)}</ol>
                     </section>
@@ -1476,55 +1465,52 @@ export function StackedFoldPanel({
                 </div>
               )}
               {basicFoldTimelinePreviewError && (
-                <p role="alert">{t('認証済み手順を作成できません。Tree・古い・取消済み・改変されたtokenは拒否されます。', 'Could not build a certified timeline. Tree, stale, cancelled, or tampered tokens are rejected.')}</p>
+                <p role="alert">{text(TEXT.couldNotBuildACertifiedTimelineTreeStaleCancelledOr)}</p>
               )}
             </section>
           )}
           {unsupportedNamedPhysicalFold && (
             <div role="alert">
-            <p>{t(
+            <p>{text(
               namedBookFold?.kind === 'petal'
-                ? '花弁折りは持ち上げ・隣接面の開き・最終平坦化を同時に証明できないため適用できません。'
-                : 'この基本折りには認証済みの山折り・谷折り種別がないため適用できません。',
-              namedBookFold?.kind === 'petal'
-                ? 'Petal fold remains unsupported because lift, adjacent-face opening, and final flattening are not jointly certified.'
-                : 'This basic fold has no certified mountain/valley kind and cannot be applied.',
+                ? TEXT.petalFoldUnsupported
+                : TEXT.basicFoldKindUnsupported,
             )}</p>
             {namedBookFold?.kind === 'petal' && (
-              <div aria-label={t('花弁折りの不足証明premise', 'Missing petal-fold proof premises')}>
-                <p>{t('必要Graph区間: 3以上（同一Graph chain）', 'Required Graph segments: at least 3 in one Graph chain')}</p>
+              <div aria-label={text(TEXT.missingPetalFoldProofPremises)}>
+                <p>{text(TEXT.requiredGraphSegmentsAtLeast3InOneGraphChain)}</p>
                 <ul>
-                  <li>{t('持ち上げるflapの位相権限', 'Lifted-flap topology authority')}</li>
-                  <li>{t('隣接面を開く経路権限', 'Adjacent-face opening path authority')}</li>
-                  <li>{t('最終平坦化のendpoint権限', 'Final-flattening endpoint authority')}</li>
-                  <li>{t('全区間を通したlayer順序権限', 'Continuous layer-order authority across every segment')}</li>
+                  <li>{text(TEXT.liftedFlapTopologyAuthority)}</li>
+                  <li>{text(TEXT.adjacentFaceOpeningPathAuthority)}</li>
+                  <li>{text(TEXT.finalFlatteningEndpointAuthority)}</li>
+                  <li>{text(TEXT.continuousLayerOrderAuthorityAcrossEverySegment)}</li>
                 </ul>
-                <p>{t('現V1 certificateはこれらを結合しないためpreview/apply tokenを発行しません。', 'V1 certificates do not bind these premises together, so no preview or apply token is issued.')}</p>
+                <p>{text(TEXT.v1CertificatesDoNotBindThesePremisesTogetherSoNo)}</p>
               </div>
             )}
             </div>
           )}
           <label>
             <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={!ready || applying || unsupportedNamedPhysicalFold || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)} />
-            {t('証明済みの変更内容を確認しました。', 'I reviewed the certified changes.')}
+            {text(TEXT.iReviewedTheCertifiedChanges)}
           </label>
           <button type="button" onClick={() => void apply()} disabled={!ready || !confirmed || applying || unsupportedNamedPhysicalFold || (namedBasicFold && basicFoldTimelinePreview?.transactionToken !== tokenRef.current)}>
             {applying
-              ? t('適用中…', 'Applying…')
+              ? text(TEXT.applying)
               : namedBookFold
                 ? namedBookFold.kind === 'layer' || namedBookFold.kind === 'layer_selective'
-                  ? t('名前付き層選択技法を適用', 'Apply named layer technique')
+                  ? text(TEXT.applyNamedLayerTechnique)
                   : namedBookFold.kind === 'sink'
-                  ? t('名前付き沈め折りを適用', 'Apply named sink fold')
+                  ? text(TEXT.applyNamedSinkFold)
                   : namedBookFold.kind === 'accordion'
-                  ? t('名前付き蛇腹折りを適用', 'Apply named accordion fold')
+                  ? text(TEXT.applyNamedAccordionFold)
                   : namedBookFold.kind === 'reverse' || namedBookFold.kind === 'inside_reverse'
                     || namedBookFold.kind === 'outside_reverse'
-                  ? t('名前付き逆折りを適用', 'Apply named reverse fold')
-                  : t('名前付き二つ折りを適用', 'Apply named book fold')
-                : t('折り重ねを適用', 'Apply stacked fold')}
+                  ? text(TEXT.applyNamedReverseFold)
+                  : text(TEXT.applyNamedBookFold)
+                : text(TEXT.applyStackedFold)}
           </button>
-          {!ready && <p className="muted">{t('未証明のため適用は無効です。', 'Apply is disabled because the case is not fully certified.')}</p>}
+          {!ready && <p className="muted">{text(TEXT.applyIsDisabledBecauseTheCaseIsNotFullyCertified)}</p>}
         </div>
       )}
     </section>
@@ -1550,7 +1536,12 @@ export function LayerOrderViewer({
   onSelectFace(value: string): void
   onHoverFace(value: string | null): void
 }>) {
-  const t = (ja: string, en: string) => selectLocalizedText(locale, { ja, en })
+  const text = (localized: LocalizedText) =>
+    selectLocalizedText(locale, localized)
+  const formattedText = (
+    localized: LocalizedText,
+    variables: MessageVariables,
+  ) => formatLocalizedText(locale, localized, variables)
   const active = cells.find((cell) => cell.cellKeySha256 === selectedCell) ?? cells[0]
   if (!active) return null
   const xs = active.boundaryWorld.map((point) => point[0])
@@ -1562,21 +1553,18 @@ export function LayerOrderViewer({
   const polygon = active.boundaryWorld.map((point) =>
     `${20 + ((point[0] - minX) / spanX) * 180},${20 + ((point[2] - minZ) / spanZ) * 110}`,
   ).join(' ')
-  return <section className="stacked-fold-layer-viewer" aria-label={t('3D層順ビューア', '3D layer-order viewer')}>
-    <h3>{t('重なりセルと層順', 'Overlap cells and layer order')}</h3>
-    <p className="muted">{t(
-      '認証済みの現在poseと層順を読み取り専用で表示します。',
-      'Read-only view of the authenticated current pose and layer order.',
-    )}</p>
+  return <section className="stacked-fold-layer-viewer" aria-label={text(TEXT.text3dLayerOrderViewer)}>
+    <h3>{text(TEXT.overlapCellsAndLayerOrder)}</h3>
+    <p className="muted">{text(TEXT.readOnlyViewOfTheAuthenticatedCurrentPoseAndLayer)}</p>
     <div className="stacked-fold-cell-tabs" role="list">
       {cells.map((cell, index) => <button type="button" role="listitem"
         aria-pressed={cell.cellKeySha256 === active.cellKeySha256}
         key={cell.cellKeySha256} onClick={() => onSelectCell(cell.cellKeySha256)}>
-        {t('セル', 'Cell')} {index + 1}
+        {text(TEXT.cell)} {index + 1}
       </button>)}
     </div>
     <svg viewBox="0 0 240 180" role="img"
-      aria-label={t('front/back層の分解表示', 'Exploded front/back layer stack')}>
+      aria-label={text(TEXT.explodedFrontBackLayerStack)}>
       {active.bottomToTopFaces.map((face, index) => {
         const offset = (active.bottomToTopFaces.length - 1 - index) * 9
         const highlighted = face === selectedFace || face === hoveredFace
@@ -1586,9 +1574,13 @@ export function LayerOrderViewer({
           tabIndex={0} onClick={() => onSelectFace(face)}
           onMouseEnter={() => onHoverFace(face)} onMouseLeave={() => onHoverFace(null)}
           onFocus={() => onHoverFace(face)} onBlur={() => onHoverFace(null)}>
-          <title>{t(
-            `${index === 0 ? '裏面・最下層' : index === active.bottomToTopFaces.length - 1 ? '表面・最上層' : '中間層'}、面 ${index + 1}`,
-            `${index === 0 ? 'Back, bottom' : index === active.bottomToTopFaces.length - 1 ? 'Front, top' : 'Middle layer'}, face ${index + 1}`,
+          <title>{formattedText(
+            index === 0
+              ? TEXT.backBottomFaceIndex
+              : index === active.bottomToTopFaces.length - 1
+                ? TEXT.frontTopFaceIndex
+                : TEXT.middleLayerFaceIndex,
+            { index: index + 1 },
           )}</title>
         </polygon>
       })}
@@ -1598,10 +1590,10 @@ export function LayerOrderViewer({
         <button type="button" aria-pressed={face === selectedFace}
           onMouseEnter={() => onHoverFace(face)} onMouseLeave={() => onHoverFace(null)}
           onClick={() => onSelectFace(face)}>
-          {index === 0 ? t('裏面 / 最下層', 'Back / bottom')
+          {index === 0 ? text(TEXT.backBottom)
             : index === active.bottomToTopFaces.length - 1
-              ? t('表面 / 最上層', 'Front / top')
-              : t('中間層', 'Middle')} · {t('面', 'Face')} {index + 1}
+              ? text(TEXT.frontTop)
+              : text(TEXT.middle)} · {text(TEXT.face)} {index + 1}
         </button>
       </li>)}
     </ol>
@@ -1613,16 +1605,10 @@ function describeCertificateModel(
   locale: Locale,
 ): string {
   if (modelId === null) {
-    return selectLocalizedText(locale, { ja: 'なし', en: 'None' })
+    return selectLocalizedText(locale, TEXT.none)
   }
   if (modelId.includes('positive_thickness')) {
-    return selectLocalizedText(locale, {
-      ja: '正厚の連続経路証明',
-      en: 'Positive-thickness continuous-path certificate',
-    })
+    return selectLocalizedText(locale, TEXT.positiveThicknessContinuousPathCertificate)
   }
-  return selectLocalizedText(locale, {
-    ja: '厚さゼロの連続経路証明',
-    en: 'Zero-thickness continuous-path certificate',
-  })
+  return selectLocalizedText(locale, TEXT.zeroThicknessContinuousPathCertificate)
 }

@@ -31,10 +31,13 @@ test('major new features retain reviewed Japanese and English UI contracts', () 
     /aGLB20ModelIsAReadOnlyVisual: localized\(\s*'GLB 2\.0モデルは読み取り専用の視覚参照です。[^']*'/u,
   )
 
-  const stacked = readFileSync(join(componentDirectory, 'StackedFoldPanel.tsx'), 'utf8')
-  assert.match(stacked, /t\('スケジュール証明', 'Schedule certificate'\)/u)
-  assert.match(stacked, /t\('衝突証明', 'Collision certificate'\)/u)
-  assert.match(stacked, /t\('閉路証明', 'Closure certificate'\)/u)
+  const stacked = [
+    readFileSync(join(componentDirectory, 'StackedFoldPanel.tsx'), 'utf8'),
+    readFileSync(join(root, 'src', 'lib', 'stackedFoldPanelText.ts'), 'utf8'),
+  ].join('\n')
+  assert.match(stacked, /text\(TEXT\.scheduleCertificate\)/u)
+  assert.match(stacked, /text\(TEXT\.collisionCertificate\)/u)
+  assert.match(stacked, /text\(TEXT\.closureCertificate\)/u)
   assert.doesNotMatch(stacked, /<dt>(?:schedule|collision|closure)<\/dt>/u)
   assert.doesNotMatch(stacked, /<dd>\{view\.response\.continuousPath\.continuousCertificateModelId/u)
   assert.doesNotMatch(stacked, /<title>\{`[^`]*\$\{face\}/u)

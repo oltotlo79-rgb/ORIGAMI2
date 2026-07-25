@@ -2083,7 +2083,7 @@ mod tests {
     }
 
     #[test]
-    fn positive_thickness_three_face_current_pose_mints_and_reports_safe_certificate() {
+    fn positive_thickness_three_face_current_pose_requires_complete_pair_evidence() {
         let (project, hinges) = midpoint_mountain_400mm_project_with_thickness(1.0);
         let topology = project
             .editor
@@ -2112,22 +2112,30 @@ mod tests {
             crate::applied_pose::apply_current_native_pose(&state, request),
         )
         .expect("production native-pose adoption");
-        let certificate =
-            certify_current_static_collision(&state, StaticCollisionLimits::default())
-                .expect("current proof preparation")
-                .expect("current positive-thickness certificate");
-        assert!(!certificate.authorizes_project_mutation());
-        assert!(!certificate.authorizes_sim_010());
+        assert!(matches!(
+            certify_current_static_collision(&state, StaticCollisionLimits::default()),
+            Err(CurrentStaticCollisionError::GeometryBlocking(
+                StaticCollisionError::PairEvidenceUnavailable {
+                    expected_unordered_face_pairs: 3,
+                },
+            ))
+        ));
         let diagnosis = tauri::async_runtime::block_on(
             inspect_current_static_collision_with_limits(&state, StaticCollisionLimits::default()),
         )
-        .expect("current safe diagnosis");
+        .expect("current evidence-unavailable diagnosis");
         assert_eq!(diagnosis.binding, Some(applied.binding));
         assert_eq!(
             diagnosis.status,
-            CurrentStaticCollisionDiagnosticStatus::CertifiedNonblocking
+            CurrentStaticCollisionDiagnosticStatus::Blocking
+        );
+        assert_eq!(
+            diagnosis.reason,
+            Some(CurrentStaticCollisionDiagnosticReason::EvidenceUnavailable)
         );
         assert_eq!(diagnosis.expected_unordered_face_pairs, Some(3));
+        assert_eq!(diagnosis.proven_transversal_pairs, None);
+        assert_eq!(diagnosis.first_proven_transversal_pair, None);
     }
 
     #[test]

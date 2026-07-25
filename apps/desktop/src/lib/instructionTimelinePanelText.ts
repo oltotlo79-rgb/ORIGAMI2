@@ -35,16 +35,29 @@ export const INSTRUCTION_TIMELINE_PANEL_TEXT = Object.freeze({
     '展開図が変わったため、要更新の手順を作り直してください。',
     'The crease pattern changed. Recreate every step that needs updating.',
   ),
+  certificateExportBlockedTitle: localized(
+    '構造化経路証明の再検証が完了していないため書き出せません。',
+    'Export is unavailable until structured path certificates are revalidated.',
+  ),
   exportTitle: localized(
     '現在の折り手順をPDFまたはSVG画像一式へ書き出します。',
     'Exports the current folding instructions as a PDF or a set of SVG images.',
   ),
   exportAction: localized('折り図を書き出す', 'Export diagrams'),
+  animationExportAction: localized('GLBアニメーション', 'GLB animation'),
   invalidTimeline: localized(
     '折り手順データを安全に読み取れないため、編集と再生を停止しました。',
     'Editing and playback were stopped because the folding-step data could not be read safely.',
   ),
   timelineList: localized('折り手順一覧', 'Folding-step list'),
+  reorderHelp: localized(
+    '手順はドラッグして移動できます。キーボードではAltキーと矢印キー、Home、Endを使います。',
+    'Drag steps to reorder. With the keyboard, use Alt plus an arrow key, Home, or End.',
+  ),
+  completedFormThumbnailSuffix: localized(
+    ' · 完成形サムネイル',
+    ' · Completed-form thumbnail',
+  ),
   needsUpdate: localized('要更新', 'Needs update'),
   descriptionOnly: localized('説明専用', 'Description only'),
   shownIn3d: localized('3D表示中', 'Shown in 3D'),
@@ -75,6 +88,8 @@ export const INSTRUCTION_TIMELINE_PANEL_TEXT = Object.freeze({
   moveLater: localized('次へ →', 'Later →'),
   moveFirst: localized('先頭へ', 'Move to first'),
   moveLast: localized('末尾へ', 'Move to last'),
+  splitAction: localized('手順を分割', 'Split step'),
+  mergeWithNextAction: localized('次の手順と結合', 'Merge with next'),
   duplicateAction: localized('手順を複製', 'Duplicate step'),
   deleteAction: localized('削除', 'Delete'),
   staleGuidance: localized(
@@ -114,4 +129,33 @@ export const INSTRUCTION_TIMELINE_PANEL_TEXT = Object.freeze({
     'Only the immediately adjacent eligible physical step is shown read-only.',
   ),
   onionPreparing: localized('ghostを準備しています。', 'Preparing ghost.'),
+  pathCertificateHeading: localized(
+    '構造化経路証明',
+    'Structured path certificate',
+  ),
+  pathCertificateReview: localized(
+    '出力前確認（読み取り専用）',
+    'Pre-export review (read-only)',
+  ),
+  certificateFingerprintLabel: localized('証明指紋', 'Certificate fingerprint'),
+  verifiedTransitionsLabel: localized('検証区間', 'Verified transitions'),
+  sourcePoseLabel: localized('始点姿勢', 'Source pose'),
+  targetPoseLabel: localized('終点姿勢', 'Target pose'),
+  sourceModelBindingLabel: localized('元モデル束縛', 'Source-model binding'),
+  pathCertificateIdentityHelp: localized(
+    '保存済みDTOの識別情報です。折り図出力時に直前姿勢・現在姿勢・元モデルへ再照合します。',
+    'Saved DTO identity; diagram export rechecks the previous pose, current pose, and source model.',
+  ),
+  pathCertificateEndpointMismatch: localized(
+    '証明の元モデルまたは姿勢端点が構造化データと一致しません。書き出しは拒否されます。',
+    'The source model or pose endpoints do not match the structured certificate. Export will be rejected.',
+  ),
+  pathCertificateDescriptionMismatch: localized(
+    '証明説明が構造化データと一致しません。書き出しは拒否されます。',
+    'The certificate description does not match the structured data. Export will be rejected.',
+  ),
+  pathCertificateTextOnly: localized(
+    '構造化証明データがないため、この説明文は証明として扱いません。',
+    'This description is not treated as proof because structured certificate data is absent.',
+  ),
 })

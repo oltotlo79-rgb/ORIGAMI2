@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { formatLocalizedText } from '../src/lib/i18n.ts'
 import { INSTRUCTION_TIMELINE_PANEL_TEXT as TEXT } from '../src/lib/instructionTimelinePanelText.ts'
 
+const panelSource = readFileSync(
+  new URL('../src/components/InstructionTimelinePanel.tsx', import.meta.url),
+  'utf8',
+)
+
 test('instruction timeline panel catalog is closed and deeply frozen', () => {
-  assert.equal(Object.keys(TEXT).length, 49)
+  assert.equal(Object.keys(TEXT).length, 66)
   assert.equal(Object.isFrozen(TEXT), true)
   for (const entry of Object.values(TEXT)) {
     assert.deepEqual(Object.keys(entry), ['ja', 'en'])
@@ -18,6 +24,35 @@ test('instruction timeline panel catalog is closed and deeply frozen', () => {
     TEXT.visualHelp.ja,
     'camera、arrows、focus_pointsに加え、hand_guidesへpinch/hold/push/regripとposition/direction/labelを指定します。',
   )
+})
+
+test('instruction timeline panel has no inline locale branches for display text', () => {
+  assert.doesNotMatch(panelSource, /\blocale\s*(?:===|!==)/u)
+  for (const key of [
+    'certificateExportBlockedTitle',
+    'animationExportAction',
+    'reorderHelp',
+    'completedFormThumbnailSuffix',
+    'pathCertificateHeading',
+    'pathCertificateReview',
+    'certificateFingerprintLabel',
+    'verifiedTransitionsLabel',
+    'sourcePoseLabel',
+    'targetPoseLabel',
+    'sourceModelBindingLabel',
+    'pathCertificateIdentityHelp',
+    'pathCertificateEndpointMismatch',
+    'pathCertificateDescriptionMismatch',
+    'pathCertificateTextOnly',
+    'splitAction',
+    'mergeWithNextAction',
+  ]) {
+    assert.match(panelSource, new RegExp(`TEXT\\.${key}\\b`, 'u'))
+  }
+  assert.equal(TEXT.completedFormThumbnailSuffix.ja, ' · 完成形サムネイル')
+  assert.equal(TEXT.completedFormThumbnailSuffix.en, ' · Completed-form thumbnail')
+  assert.equal(TEXT.pathCertificateHeading.ja, '構造化経路証明')
+  assert.equal(TEXT.pathCertificateHeading.en, 'Structured path certificate')
 })
 
 test('instruction timeline placeholders are locale-equivalent and preserve output', () => {

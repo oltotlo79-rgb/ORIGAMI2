@@ -455,7 +455,19 @@ describe('InstructionTimelinePanel localization', () => {
   })
 
   it('translates controls, counts, durations, editor fields, and an existing notice live', async () => {
-    renderPanel()
+    const runNativeEdit = vi.fn(async () => SNAPSHOT)
+    const applyStepPose = vi.fn(() => true)
+    const onExport = vi.fn()
+    const onAnimationExport = vi.fn()
+    const onOnionSkinChange = vi.fn()
+    render(<InstructionTimelinePanel
+      {...panelFor(SNAPSHOT).props}
+      runNativeEdit={runNativeEdit}
+      applyStepPose={applyStepPose}
+      onExport={onExport}
+      onAnimationExport={onAnimationExport}
+      onOnionSkinChange={onOnionSkinChange}
+    />)
 
     expect(screen.getByText('折り手順')).toBeTruthy()
     expect(screen.getByText('1手順・合計 1.5秒')).toBeTruthy()
@@ -466,11 +478,26 @@ describe('InstructionTimelinePanel localization', () => {
     expect(screen.getByRole('button', {
       name: '折り図を書き出す',
     })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'GLBアニメーション' })).toBeTruthy()
+    expect(screen.getByText(/手順はドラッグして移動できます/)).toBeTruthy()
 
-    fireEvent.click(screen.getByText('1. Fold crane · 完成形サムネイル').closest('button')!)
+    const selectedStep = screen.getByText('1. Fold crane · 完成形サムネイル').closest('button')!
+    fireEvent.click(selectedStep)
     expect(await screen.findByRole('textbox', { name: 'タイトル' })).toBeTruthy()
     expect(screen.getByRole('textbox', { name: '説明' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '現在の3D姿勢で更新' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '手順を分割' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '次の手順と結合' })).toBeTruthy()
+    fireEvent.change(screen.getByRole('textbox', { name: 'タイトル' }), {
+      target: { value: 'Unsaved locale draft' },
+    })
+    const callbackCounts = {
+      nativeEdit: runNativeEdit.mock.calls.length,
+      applyPose: applyStepPose.mock.calls.length,
+      export: onExport.mock.calls.length,
+      animationExport: onAnimationExport.mock.calls.length,
+      onionSkin: onOnionSkinChange.mock.calls.length,
+    }
 
     act(() => {
       localeStore.setLocale('en')
@@ -483,14 +510,28 @@ describe('InstructionTimelinePanel localization', () => {
       name: 'Show the first step in 3D',
     })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Export diagrams' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'GLB animation' })).toBeTruthy()
+    expect(screen.getByText(/Drag steps to reorder/)).toBeTruthy()
     expect(screen.getByRole('textbox', { name: 'Title' })).toHaveProperty(
       'value',
-      'Fold crane',
+      'Unsaved locale draft',
     )
     expect(screen.getByRole('textbox', { name: 'Description' })).toBeTruthy()
     expect(screen.getByRole('button', {
       name: 'Update with current 3D pose',
     })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Split step' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Merge with next' })).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: /1\. Fold crane/ }).getAttribute('aria-pressed'),
+    ).toBe('true')
+    expect({
+      nativeEdit: runNativeEdit.mock.calls.length,
+      applyPose: applyStepPose.mock.calls.length,
+      export: onExport.mock.calls.length,
+      animationExport: onAnimationExport.mock.calls.length,
+      onionSkin: onOnionSkinChange.mock.calls.length,
+    }).toEqual(callbackCounts)
   })
 
   it('retranslates validation and delete confirmation messages', async () => {
@@ -903,7 +944,8 @@ describe('InstructionTimelinePanel localization', () => {
       instruction_timeline: { steps: [previous, proofStep] },
     })) as ProjectSnapshot
     const onExport = vi.fn()
-    const view = renderPanel(reopened, vi.fn(() => true), APPLIED_POSE, onExport)
+    const applyStepPose = vi.fn(() => true)
+    const view = renderPanel(reopened, applyStepPose, APPLIED_POSE, onExport)
     fireEvent.click(screen.getByText('2. Fold crane · 完成形サムネイル').closest('button')!)
     const proofDetails = await screen.findByLabelText('構造化経路証明')
     expect(proofDetails.textContent).toContain('証明指紋: 7c7c7c7c7c7c…')
@@ -915,6 +957,34 @@ describe('InstructionTimelinePanel localization', () => {
       `元モデル束縛: ${shortBytes(reference.source_model_binding_sha256)}`,
     )
     expect(proofDetails.querySelector('input, textarea, button')).toBeNull()
+    const applyCount = applyStepPose.mock.calls.length
+    act(() => {
+      localeStore.setLocale('en')
+    })
+    const translatedProofDetails = screen.getByLabelText('Structured path certificate')
+    expect(translatedProofDetails.textContent).toContain('Certificate fingerprint: 7c7c7c7c7c7c…')
+    expect(translatedProofDetails.textContent).toContain('Verified transitions: 1')
+    expect(translatedProofDetails.textContent).toContain('Pre-export review (read-only)')
+    expect(translatedProofDetails.textContent).toContain(
+      `Source pose: ${shortBytes(reference.source_pose_sha256)}`,
+    )
+    expect(translatedProofDetails.textContent).toContain(
+      `Target pose: ${shortBytes(reference.target_pose_sha256)}`,
+    )
+    expect(translatedProofDetails.textContent).toContain(
+      `Source-model binding: ${shortBytes(reference.source_model_binding_sha256)}`,
+    )
+    expect((screen.getByRole('button', { name: 'Export diagrams' }) as HTMLButtonElement).disabled)
+      .toBe(false)
+    expect(
+      screen.getByRole('button', { name: /2\. Fold crane/ }).getAttribute('aria-pressed'),
+    ).toBe('true')
+    expect(applyStepPose).toHaveBeenCalledTimes(applyCount)
+    expect(onExport).toHaveBeenCalledTimes(0)
+    act(() => {
+      localeStore.setLocale('ja')
+    })
+    expect(screen.getByLabelText('構造化経路証明')).toBeTruthy()
     const exportButton = screen.getByRole('button', { name: '折り図を書き出す' }) as HTMLButtonElement
     expect(exportButton.disabled).toBe(false)
     fireEvent.click(exportButton)

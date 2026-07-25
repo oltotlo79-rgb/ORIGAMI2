@@ -1013,9 +1013,7 @@ export function InstructionTimelinePanel({
             steps.some((step) => step.stale)
               ? selectLocalizedText(locale, TEXT.exportStaleTitle)
               : certificateExportBlocked
-                ? (locale === 'ja'
-                    ? '構造化経路証明の再検証が完了していないため書き出せません。'
-                    : 'Export is unavailable until structured path certificates are revalidated.')
+                ? selectLocalizedText(locale, TEXT.certificateExportBlockedTitle)
                 : selectLocalizedText(locale, TEXT.exportTitle)
           }
           onClick={onExport}
@@ -1037,7 +1035,7 @@ export function InstructionTimelinePanel({
           }
           onClick={onAnimationExport}
         >
-          {locale === 'ja' ? 'GLBアニメーション' : 'GLB animation'}
+          {selectLocalizedText(locale, TEXT.animationExportAction)}
         </button>
       </div>
       <div className="instruction-timeline-body">
@@ -1053,9 +1051,7 @@ export function InstructionTimelinePanel({
               aria-describedby="instruction-reorder-help"
             >
               <span id="instruction-reorder-help" className="visually-hidden">
-                {locale === 'ja'
-                  ? '手順はドラッグして移動できます。キーボードではAltキーと矢印キー、Home、Endを使います。'
-                  : 'Drag steps to reorder. With the keyboard, use Alt plus an arrow key, Home, or End.'}
+                {selectLocalizedText(locale, TEXT.reorderHelp)}
               </span>
               {steps.map((step) => {
                 const selected = step.id === selectedStepId
@@ -1101,7 +1097,7 @@ export function InstructionTimelinePanel({
                     <span>
                       {step.index + 1}. {step.title}
                       {step.id === finalPhysicalStepId
-                        ? ` · ${locale === 'ja' ? '完成形サムネイル' : 'Completed-form thumbnail'}`
+                        ? selectLocalizedText(locale, TEXT.completedFormThumbnailSuffix)
                         : ''}
                     </span>
                     <small>
@@ -1199,42 +1195,35 @@ export function InstructionTimelinePanel({
                   {selectedProofDisplay?.kind === 'verified'
                     && proofEndpointValidation?.step === selectedStep
                     && proofEndpointValidation.status === 'valid' && (
-                    <aside className="instruction-notice" aria-label={locale === 'ja'
-                      ? '構造化経路証明'
-                      : 'Structured path certificate'}>
-                      <strong>{locale === 'ja' ? '構造化経路証明' : 'Structured path certificate'}</strong>
-                      <div>{locale === 'ja' ? '出力前確認（読み取り専用）' : 'Pre-export review (read-only)'}</div>
-                      <div>{locale === 'ja' ? '証明指紋' : 'Certificate fingerprint'}: {selectedProofDisplay.shortBinding}</div>
-                      <div>{locale === 'ja' ? '検証区間' : 'Verified transitions'}: {selectedProofDisplay.transitionCount}</div>
-                      <div>{locale === 'ja' ? '始点姿勢' : 'Source pose'}: {selectedProofDisplay.shortSource}</div>
-                      <div>{locale === 'ja' ? '終点姿勢' : 'Target pose'}: {selectedProofDisplay.shortTarget}</div>
-                      <div>{locale === 'ja' ? '元モデル束縛' : 'Source-model binding'}: {selectedProofDisplay.shortModelBinding}</div>
-                      <small>{locale === 'ja'
-                        ? '保存済みDTOの識別情報です。折り図出力時に直前姿勢・現在姿勢・元モデルへ再照合します。'
-                        : 'Saved DTO identity; diagram export rechecks the previous pose, current pose, and source model.'}</small>
+                    <aside
+                      className="instruction-notice"
+                      aria-label={selectLocalizedText(locale, TEXT.pathCertificateHeading)}
+                    >
+                      <strong>{selectLocalizedText(locale, TEXT.pathCertificateHeading)}</strong>
+                      <div>{selectLocalizedText(locale, TEXT.pathCertificateReview)}</div>
+                      <div>{selectLocalizedText(locale, TEXT.certificateFingerprintLabel)}: {selectedProofDisplay.shortBinding}</div>
+                      <div>{selectLocalizedText(locale, TEXT.verifiedTransitionsLabel)}: {selectedProofDisplay.transitionCount}</div>
+                      <div>{selectLocalizedText(locale, TEXT.sourcePoseLabel)}: {selectedProofDisplay.shortSource}</div>
+                      <div>{selectLocalizedText(locale, TEXT.targetPoseLabel)}: {selectedProofDisplay.shortTarget}</div>
+                      <div>{selectLocalizedText(locale, TEXT.sourceModelBindingLabel)}: {selectedProofDisplay.shortModelBinding}</div>
+                      <small>{selectLocalizedText(locale, TEXT.pathCertificateIdentityHelp)}</small>
                     </aside>
                   )}
                   {selectedProofDisplay?.kind === 'verified'
                     && proofEndpointValidation?.step === selectedStep
                     && proofEndpointValidation.status === 'invalid' && (
                     <p className="instruction-timeline-error" role="alert">
-                      {locale === 'ja'
-                        ? '証明の元モデルまたは姿勢端点が構造化データと一致しません。書き出しは拒否されます。'
-                        : 'The source model or pose endpoints do not match the structured certificate. Export will be rejected.'}
+                      {selectLocalizedText(locale, TEXT.pathCertificateEndpointMismatch)}
                     </p>
                   )}
                   {selectedProofDisplay?.kind === 'mismatch' && (
                     <p className="instruction-timeline-error" role="alert">
-                      {locale === 'ja'
-                        ? '証明説明が構造化データと一致しません。書き出しは拒否されます。'
-                        : 'The certificate description does not match the structured data. Export will be rejected.'}
+                      {selectLocalizedText(locale, TEXT.pathCertificateDescriptionMismatch)}
                     </p>
                   )}
                   {selectedProofDisplay?.kind === 'text-only' && (
                     <p className="instruction-timeline-error" role="alert">
-                      {locale === 'ja'
-                        ? '構造化証明データがないため、この説明文は証明として扱いません。'
-                        : 'This description is not treated as proof because structured certificate data is absent.'}
+                      {selectLocalizedText(locale, TEXT.pathCertificateTextOnly)}
                     </p>
                   )}
                   <label>
@@ -1348,11 +1337,11 @@ export function InstructionTimelinePanel({
                     </button>
                     <button type="button" disabled={editingDisabled || selectedStep.declarativeOnly || selectedStep.durationMs < 200}
                       onClick={() => void splitSelectedStep()}>
-                      {locale === 'ja' ? '手順を分割' : 'Split step'}
+                      {selectLocalizedText(locale, TEXT.splitAction)}
                     </button>
                     <button type="button" disabled={editingDisabled || selectedStep.declarativeOnly || selectedStep.index === steps.length - 1}
                       onClick={() => void mergeSelectedWithNext()}>
-                      {locale === 'ja' ? '次の手順と結合' : 'Merge with next'}
+                      {selectLocalizedText(locale, TEXT.mergeWithNextAction)}
                     </button>
                     <button
                       type="button"
@@ -1431,10 +1420,10 @@ function describeCaptureStatus(
 }
 
 function formatInstructionStepCount(count: number, locale: Locale) {
-  const formatted = count.toLocaleString(locale === 'en' ? 'en-US' : 'ja-JP')
+  const formatted = count.toLocaleString(locale)
   return formatLocalizedText(
     locale,
-    locale === 'en' && count === 1 ? TEXT.stepCountOne : TEXT.stepCount,
+    count === 1 ? TEXT.stepCountOne : TEXT.stepCount,
     { count: formatted },
   )
 }

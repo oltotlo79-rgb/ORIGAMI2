@@ -34,7 +34,7 @@ test('the current authored timeline opens one background-blocking instruction ex
 
 test('the last physical saved step is identified as the completed-form thumbnail', () => {
   assert.match(panelSource, /findLast\(\(step\) => !step\.declarativeOnly\)/u)
-  assert.match(panelSource, /Completed-form thumbnail/u)
+  assert.match(panelTextSource, /Completed-form thumbnail/u)
   assert.match(layoutSource, /rposition\(\|step\| !step\.declarative_only\)/u)
   assert.match(layoutSource, /"Completed-form thumbnail"/u)
 })

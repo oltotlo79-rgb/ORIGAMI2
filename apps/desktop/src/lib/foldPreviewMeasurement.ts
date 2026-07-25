@@ -1,4 +1,5 @@
 export type WorldPoint3 = Readonly<{ x: number; y: number; z: number }>
+export { advanceMeasurementPair as advanceFoldPreviewMeasurementIds } from './pairMeasurement.ts'
 export type MidsurfaceIncidence = Readonly<{
   x: number
   z: number
@@ -74,9 +75,4 @@ export function measureWorldFaceNormalAngleDegrees(
     + (first.z / firstLength) * (second.z / secondLength)
   const degrees = Math.acos(Math.min(1, Math.max(-1, dot))) * 180 / Math.PI
   return Number.isFinite(degrees) ? degrees : null
-}
-
-export function advanceFoldPreviewMeasurementIds(current: readonly string[], id: string) {
-  if (current.includes(id)) return current.filter((item) => item !== id)
-  return current.length < 2 ? [...current, id] : [id]
 }

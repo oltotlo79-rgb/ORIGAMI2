@@ -89,11 +89,11 @@ export function EffectiveCutDiagnosticPanel({ snapshot, localeStore }: Props) {
               disabled={status !== 'ready'}
               onChange={(event) => {
                 const checked = event.currentTarget.checked
+                setResult(null)
                 setSelected((previous) => {
                   const next = new Set(previous)
                   if (checked) next.add(key)
                   else next.delete(key)
-                  setResult(null)
                   return next
                 })
               }}

@@ -95,9 +95,9 @@ export function resolveInstructionOnionSkinTransforms(
     if (submitted[index - 1]!.edge >= submitted[index]!.edge) return null
   }
   if (model.kind === 'planar') {
-    return request.pose.fixed_face === null
-      ? new Map([[model.faces[0].id, new Matrix4()]])
-      : null
+    const face = model.faces[0]
+    if (!face || request.pose.fixed_face !== null) return null
+    return new Map([[face.id, new Matrix4()]])
   }
   const fixedFace = request.pose.fixed_face
   if (!fixedFace || !model.faces.some(({ id }) => id === fixedFace)) return null

@@ -23,5 +23,5 @@ test('pose identity and disabled changes clear state with bilingual live status'
   assert.match(source, /role="status" aria-live="polite" data-measurement-kind/u)
   assert.match(source, /'3D計測モード', '3D measurement mode'/u)
   assert.match(source, /'2頂点間の距離', 'Vertex distance'/u)
-  assert.match(source, /'2面の二面角', 'Face-normal angle'/u)
+  assert.match(source, /'2面の法線角', 'Face-normal angle'/u)
 })

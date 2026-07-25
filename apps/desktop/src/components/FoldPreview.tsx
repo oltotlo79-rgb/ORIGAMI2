@@ -4302,7 +4302,7 @@ export function FoldPreview({
     ? measurementSelection.kind === 'vertex'
       ? foldPreviewText(locale, '2頂点間の距離', 'Vertex distance')
         + `: ${formatLength(measurementValue, lengthDisplayUnit, locale)}`
-      : foldPreviewText(locale, '2面の二面角', 'Face-normal angle')
+      : foldPreviewText(locale, '2面の法線角', 'Face-normal angle')
         + `: ${measurementValue === null ? foldPreviewText(locale, '計測不能', 'Unavailable')
           : `${measurementValue.toLocaleString(locale === 'ja' ? 'ja-JP' : 'en-US', { maximumFractionDigits: 2 })}°`}`
     : foldPreviewText(

@@ -52,6 +52,9 @@ it('requires explicit candidate selection and exposes no mutation action', async
   await waitFor(() => expect(inspect).toHaveBeenCalledTimes(1))
   expect(inspect.mock.calls[0][0].requestedComponentKeys).toEqual([Array(32).fill(2)])
   await screen.findByText(/Source-flat pairs|平面ペア/)
+  fireEvent.click(screen.getByRole('checkbox'))
+  expect(screen.queryByText(/Source-flat pairs|平面ペア/)).toBeNull()
+  expect(run.hasAttribute('disabled')).toBe(true)
 })
 
 it('discards a cancelled late candidate response', async () => {

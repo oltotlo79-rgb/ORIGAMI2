@@ -958,6 +958,10 @@ function App() {
         }),
   )
   const [validation, setValidation] = useState<ValidationSnapshot | null>(null)
+  const unsplitIntersectionCount = useMemo(
+    () => validation?.issues.filter((issue) => issue.code === 'unsplit_intersection').length ?? 0,
+    [validation],
+  )
   const [globalFlatFoldabilityJob, setGlobalFlatFoldabilityJob] =
     useState<GlobalFlatFoldabilityJobDto | null>(null)
   const [globalFlatFoldabilityTimeLimit, setGlobalFlatFoldabilityTimeLimit] =
@@ -2491,8 +2495,7 @@ function App() {
   }, [applySnapshot])
 
   const repairAllIntersections = useCallback(async () => {
-    const count = validation?.issues.filter((issue) => issue.code === 'unsplit_intersection').length ?? 0
-    if (count === 0 || bulkIntersectionRepairPending) return
+    if (unsplitIntersectionCount === 0 || bulkIntersectionRepairPending) return
     setBulkIntersectionRepairPending(true)
     try {
       const succeeded = await runNativeEdit((projectId, revision, projectInstanceId) =>
@@ -2504,7 +2507,7 @@ function App() {
     } finally {
       setBulkIntersectionRepairPending(false)
     }
-  }, [bulkIntersectionRepairPending, runNativeEdit, text, validation])
+  }, [bulkIntersectionRepairPending, runNativeEdit, text, unsplitIntersectionCount])
 
   function addCurrentToMirrorSelection() {
     setMirrorPreview(null)
@@ -10460,7 +10463,7 @@ function App() {
                     }, { count: validation.issues.length })}
                   </p>
                   <BulkIntersectionRepairControl
-                    count={validation.issues.filter((issue) => issue.code === 'unsplit_intersection').length}
+                    count={unsplitIntersectionCount}
                     pending={bulkIntersectionRepairPending}
                     disabled={coreBusy || fileOperation !== null}
                     locale={locale}

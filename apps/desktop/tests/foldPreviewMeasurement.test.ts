@@ -6,6 +6,11 @@ import {
   measureWorldVertexDistanceMm,
   resolveMidsurfaceVertexSample,
 } from '../src/lib/foldPreviewMeasurement.ts'
+import { advanceMeasurementPair } from '../src/lib/pairMeasurement.ts'
+
+test('2D and 3D measurement selection share one transition primitive', () => {
+  assert.equal(advanceFoldPreviewMeasurementIds, advanceMeasurementPair)
+})
 
 test('current-world vertex distance converts back to millimetres', () => {
   assert.equal(measureWorldVertexDistanceMm(

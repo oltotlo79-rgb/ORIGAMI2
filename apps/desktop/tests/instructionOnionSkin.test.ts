@@ -162,3 +162,31 @@ test('does not skip declarative or stale adjacent steps and closes first/last bo
     ...base, steps: [step('a')], selectedStepId: 'a', direction: 'previous',
   }), null)
 })
+
+test('a malformed zero-face planar model fails closed without throwing', () => {
+  const request = {
+    ...base,
+    sourceStepId: 'source',
+    targetStepId: 'target',
+    direction: 'next' as const,
+    pose: {
+      model: 'absolute_hinge_angles_v1' as const,
+      source_model_fingerprint: fingerprint,
+      fixed_face: null,
+      hinge_angles: [],
+    },
+  }
+  const malformedPlanarModel = {
+    kind: 'planar',
+    projectId: 'project',
+    revision: 3,
+    faces: [],
+  }
+  assert.doesNotThrow(() => {
+    assert.equal(resolveInstructionOnionSkinTransforms(
+      request,
+      malformedPlanarModel as any,
+      { projectInstanceId: 'instance', foldModelFingerprint: fingerprint },
+    ), null)
+  })
+})

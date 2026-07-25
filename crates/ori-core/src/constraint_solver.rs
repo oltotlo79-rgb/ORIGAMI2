@@ -54,6 +54,9 @@ pub enum ConstraintSolveErrorV1 {
     NonFiniteDrivingPosition,
     #[error("the constraint document or geometry is invalid")]
     InvalidConstraintDocumentOrGeometry,
+    /// Reserved for V1 API compatibility. The current validator rejects an
+    /// unsupported/invalid kind as `InvalidConstraintDocumentOrGeometry`
+    /// before the solver runs, so production code does not emit this variant.
     #[error("the system contains a constraint kind not supported by this solver")]
     UnsupportedConstraintKind,
     #[error("the system does not constrain the driving component")]
@@ -1036,7 +1039,6 @@ mod tests {
                 ConstraintSolveLimitsV1::default()
             ),
             Err(ConstraintSolveErrorV1::InvalidConstraintDocumentOrGeometry)
-                | Err(ConstraintSolveErrorV1::UnsupportedConstraintKind)
         ));
 
         let (pattern, document, driving) = single_edge(

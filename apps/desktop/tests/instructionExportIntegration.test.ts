@@ -5,6 +5,7 @@ import test from 'node:test'
 const appSource = read('../src/App.tsx')
 const clientSource = read('../src/lib/coreClient.ts')
 const panelSource = read('../src/components/InstructionTimelinePanel.tsx')
+const panelTextSource = read('../src/lib/instructionTimelinePanelText.ts')
 const dialogSource = read('../src/components/InstructionExportDialog.tsx')
 const dialogTextSource = read('../src/lib/instructionExportDialogText.ts')
 const nativeSource = read('../src-tauri/src/lib.rs')
@@ -24,7 +25,11 @@ test('the current authored timeline opens one background-blocking instruction ex
     /requestAnimationFrame\(\(\) => instructionExportButtonRef\.current\?\.focus\(\)\)/u,
   )
   assert.match(panelSource, /steps\.some\(\(step\) => step\.stale\)/u)
-  assert.match(panelSource, /折り図を書き出す/u)
+  assert.match(
+    panelSource,
+    /import \{ INSTRUCTION_TIMELINE_PANEL_TEXT as TEXT \} from '\.\.\/lib\/instructionTimelinePanelText\.ts'/u,
+  )
+  assert.match(panelTextSource, /折り図を書き出す/u)
 })
 
 test('the last physical saved step is identified as the completed-form thumbnail', () => {

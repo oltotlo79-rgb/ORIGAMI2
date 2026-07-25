@@ -10,9 +10,17 @@ const panelSource = readFileSync(
   new URL('../src/components/InstructionTimelinePanel.tsx', import.meta.url),
   'utf8',
 )
+const panelTextSource = readFileSync(
+  new URL('../src/lib/instructionTimelinePanelText.ts', import.meta.url),
+  'utf8',
+)
 
 test('instruction hand guides are authored and rendered as a touch point plus direction', () => {
-  assert.match(panelSource, /hand_guides.*pinch\/hold\/push\/regrip/u)
+  assert.match(
+    panelSource,
+    /import \{ INSTRUCTION_TIMELINE_PANEL_TEXT as TEXT \} from '\.\.\/lib\/instructionTimelinePanelText\.ts'/u,
+  )
+  assert.match(panelTextSource, /hand_guides.*pinch\/hold\/push\/regrip/u)
   assert.match(previewSource, /for \(const guide of visual\.hand_guides\)/u)
   assert.match(previewSource, /new THREE\.TorusGeometry/u)
   assert.match(previewSource, /new THREE\.ArrowHelper/u)

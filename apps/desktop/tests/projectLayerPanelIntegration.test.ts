@@ -5,6 +5,7 @@ import test from 'node:test'
 const app = source('../src/App.tsx')
 const client = source('../src/lib/coreClient.ts')
 const panel = source('../src/components/ProjectLayerPanel.tsx')
+const panelText = source('../src/lib/projectLayerPanelText.ts')
 
 const layerMutations = [
   ['createProjectLayer', 'create_project_layer'],
@@ -68,9 +69,14 @@ test('strict clients admit only the layer delta into the current snapshot', () =
 })
 
 test('the panel describes drawing order without claiming physical layer order', () => {
-  assert.match(panel, /描画順/u)
-  assert.match(panel, /drawing order/u)
-  assert.doesNotMatch(panel, /積層順|stacking order/iu)
+  assert.match(
+    panel,
+    /import \{ PROJECT_LAYER_PANEL_TEXT as TEXT \} from '\.\.\/lib\/projectLayerPanelText\.ts'/u,
+  )
+  assert.doesNotMatch(panel, /const TEXT\s*=/u)
+  assert.match(panelText, /描画順/u)
+  assert.match(panelText, /drawing order/u)
+  assert.doesNotMatch(panelText, /積層順|stacking order/iu)
 })
 
 function typescriptFunctionSection(text: string, functionName: string) {

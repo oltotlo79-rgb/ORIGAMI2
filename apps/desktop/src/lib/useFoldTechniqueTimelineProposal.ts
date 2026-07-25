@@ -86,12 +86,11 @@ export function useFoldTechniqueTimelineProposal(input: Readonly<{
     preview
     && (
       !input.snapshot
-      || input.snapshot.project_instance_id
-        !== preview.expectedProjectInstanceId
-      || input.snapshot.project_id
-        !== preview.expectedProjectId
-      || input.snapshot.revision
-        !== preview.expectedRevision
+      || !matchesProjectOccGuard({
+        expectedProjectInstanceId: preview.expectedProjectInstanceId,
+        expectedProjectId: preview.expectedProjectId,
+        expectedRevision: preview.expectedRevision,
+      }, input.snapshot)
       || input.workspace?.document
         !== preview.sourceDocument
       || input.selectedIndex
@@ -197,11 +196,15 @@ export function useFoldTechniqueTimelineProposal(input: Readonly<{
         revision,
         projectInstanceId,
       ) => {
-        if (
-          projectInstanceId !== pending.expectedProjectInstanceId
-          || projectId !== pending.expectedProjectId
-          || revision !== pending.expectedRevision
-        ) return Promise.reject(new Error('stale named-technique proposal'))
+        if (!matchesProjectOccGuard({
+          expectedProjectInstanceId: pending.expectedProjectInstanceId,
+          expectedProjectId: pending.expectedProjectId,
+          expectedRevision: pending.expectedRevision,
+        }, {
+          project_instance_id: projectInstanceId,
+          project_id: projectId,
+          revision,
+        })) return Promise.reject(new Error('stale named-technique proposal'))
         return appendProposal(
           {
             expectedProjectInstanceId: projectInstanceId,

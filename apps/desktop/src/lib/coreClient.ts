@@ -236,9 +236,9 @@ function projectOccGuardField(
 export function matchesProjectOccGuard(
   guard: ProjectOccGuard,
   project: Readonly<{
-    project_instance_id: string
-    project_id: string
-    revision: number
+    project_instance_id: unknown
+    project_id: unknown
+    revision: unknown
   }>,
 ): boolean {
   const expectedProjectInstanceId = projectOccGuardField(
@@ -2535,8 +2535,11 @@ export async function suggestBeginnerReferenceModelFeatures(
       'generic_body_outline_tenths_mm', 'generic_body_outline_mode'].includes(key))) {
     throw new Error('invalid reference model suggestion')
   }
-  if (!response || response.project_instance_id !== expectedProjectInstanceId
-    || response.project_id !== expectedProjectId || response.revision !== expectedRevision
+  if (!response || !matchesProjectOccGuard({
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+  }, response)
     || !isBoundedIntegerTuple(response.source_asset_sha256, 32, 255)
     || !suggestion || !isCanonicalNonNilUuid(suggestion.asset_id)
     || suggestion.method !== 'bounded_bbox_area_normal_v1'
@@ -2788,8 +2791,11 @@ export async function evaluateBeginnerParameterGrid(
     'evaluated_grid_points', 'global_checked_candidates', 'refinement_iterations', 'candidates',
   ] as const)
   if (!response || response.request_generation_id !== requestGenerationId
-    || response.project_instance_id !== expectedProjectInstanceId
-    || response.project_id !== expectedProjectId || response.revision !== expectedRevision
+    || !matchesProjectOccGuard({
+      expectedProjectInstanceId,
+      expectedProjectId,
+      expectedRevision,
+    }, response)
     || response.evaluated_grid_points !== 27 || response.global_checked_candidates !== 3
     || !Number.isInteger(response.refinement_iterations) || Number(response.refinement_iterations) < 0
     || Number(response.refinement_iterations) > 24
@@ -3071,8 +3077,11 @@ export async function getBeginnerSymmetricParameterEstimate(
   })
   const record = exactCoreDataRecord(value, ['project_instance_id', 'project_id', 'revision', 'estimate', 'candidates'] as const)
   const estimate = exactCoreDataRecord(record?.estimate, ['protrusion_count', 'scale_percent', 'spacing_percent'] as const)
-  if (!record || record.project_instance_id !== projectInstanceId || record.project_id !== projectId
-    || record.revision !== revision || !estimate || ![1, 2, 3, 4, 6, 10].includes(Number(estimate.protrusion_count))
+  if (!record || !matchesProjectOccGuard({
+    expectedProjectInstanceId: projectInstanceId,
+    expectedProjectId: projectId,
+    expectedRevision: revision,
+  }, record) || !estimate || ![1, 2, 3, 4, 6, 10].includes(Number(estimate.protrusion_count))
     || !Number.isInteger(estimate.scale_percent) || Number(estimate.scale_percent) < 10 || Number(estimate.scale_percent) > 45
     || !Number.isInteger(estimate.spacing_percent) || Number(estimate.spacing_percent) < 20 || Number(estimate.spacing_percent) > 80
     || !Array.isArray(record.candidates) || record.candidates.length !== 3) {
@@ -3217,8 +3226,11 @@ export async function recognizeBeginnerOutlineCandidates(
   const record = exactCoreDataRecord(value, [
     'project_instance_id', 'project_id', 'revision', 'underlay_id', 'asset_id', 'source_sha256', 'candidates',
   ] as const)
-  if (!record || record.project_instance_id !== expectedProjectInstanceId
-    || record.project_id !== expectedProjectId || record.revision !== expectedRevision
+  if (!record || !matchesProjectOccGuard({
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+  }, record)
     || record.underlay_id !== underlayId || record.asset_id !== assetId
     || !isBoundedIntegerTuple(record.source_sha256, 32, 255)
     || record.source_sha256.some((byte) => byte < 0)
@@ -3301,8 +3313,11 @@ export async function recognizeBeginnerPartSuggestions(
     candidate, confirmed: false,
   } })
   const record = exactCoreDataRecord(value, ['project_instance_id', 'project_id', 'revision', 'underlay_id', 'asset_id', 'selected_outline_id', 'suggestions'] as const)
-  if (!record || record.project_instance_id !== proposal.project_instance_id
-    || record.project_id !== proposal.project_id || record.revision !== proposal.revision
+  if (!record || !matchesProjectOccGuard({
+    expectedProjectInstanceId: proposal.project_instance_id,
+    expectedProjectId: proposal.project_id,
+    expectedRevision: proposal.revision,
+  }, record)
     || record.underlay_id !== proposal.underlay_id || record.asset_id !== proposal.asset_id
     || record.selected_outline_id !== candidate.id || !Array.isArray(record.suggestions)
     || record.suggestions.length < 2 || record.suggestions.length > 8) throw new BeginnerRecognitionError('native_failure')

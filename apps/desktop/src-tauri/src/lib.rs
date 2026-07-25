@@ -3314,11 +3314,13 @@ fn evaluate_beginner_candidates(
         .lock()
         .map_err(|_| "reference_consensus_work_unavailable")?
         .insert(request_generation_id, Arc::clone(&work));
-    ensure_expected_project(
+    ensure_project_expectation(
         &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let pattern = project.editor.pattern();
     let crease_count = pattern
@@ -5645,11 +5647,13 @@ fn apply_beginner_generated_plan_document(
                 .map(|value| value.summary.clone()),
             reference_consensus: reference_consensus_provenance,
         });
-    execute_command(
+    execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::ApplyStackedFoldDocument {
             pattern,
             paper,
@@ -6090,11 +6094,13 @@ fn apply_grid_plan_document(
             reference_consensus: None,
             reference_consensus_summary: None,
         });
-    execute_command(
+    execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::ApplyStackedFoldDocument {
             pattern,
             paper,
@@ -6592,11 +6598,13 @@ fn import_beginner_reference_model(
         .retain(|id| *id != asset_id);
     profile.generation_constraints.target_asset =
         Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id });
-    let result = execute_command(
+    let result = execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::UpdateBeginnerDesignProfile {
             profile: Box::new(profile),
         },
@@ -8217,11 +8225,13 @@ fn capture_geometric_constraint_analysis(
     expected_project_id: ProjectId,
     expected_revision: u64,
 ) -> Result<GeometricConstraintAnalysisInput, String> {
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     Ok(GeometricConstraintAnalysisInput {
         binding: GeometricConstraintAnalysisBinding {
@@ -8239,11 +8249,13 @@ fn finish_geometric_constraint_analysis(
     binding: GeometricConstraintAnalysisBinding,
     result: GeometricConstraintPreflightResult,
 ) -> Result<GeometricConstraintPreflightResponse, String> {
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        binding.project_instance_id,
-        binding.project_id,
-        binding.revision,
+        ProjectExpectation::new(
+            binding.project_instance_id,
+            binding.project_id,
+            binding.revision,
+        ),
     )?;
     Ok(GeometricConstraintPreflightResponse {
         project_instance_id: binding.project_instance_id,
@@ -9778,11 +9790,13 @@ fn preview_linear_array_inner(
     expected_revision: u64,
     request: LinearArrayRequestV1,
 ) -> Result<LinearArrayPreviewV1, String> {
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     preview_linear_array_verified(
         project,
@@ -9864,11 +9878,13 @@ fn confirm_linear_array_inner(
     request: LinearArrayRequestV1,
     expected_request_sha256: String,
 ) -> Result<ProjectSnapshot, String> {
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    ensure_project_expectation(
+        project,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let live_digest = linear_array_request_sha256(
         expected_project_instance_id,
@@ -9889,11 +9905,13 @@ fn confirm_linear_array_inner(
             request.delta,
         )
         .map_err(|error| error.to_string())?;
-    execute_command(
+    execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         command,
     )
 }
@@ -9942,7 +9960,7 @@ fn preview_radial_array_inner(
     revision: u64,
     request: RadialArrayRequestV1,
 ) -> Result<RadialArrayPreviewV1, String> {
-    ensure_expected_project(project, instance, id, revision)?;
+    ensure_project_expectation(project, ProjectExpectation::new(instance, id, revision))?;
     preview_radial_array_verified(project, instance, id, revision, request)
 }
 fn preview_radial_array_verified(
@@ -10008,7 +10026,7 @@ fn confirm_radial_array_inner(
     request: RadialArrayRequestV1,
     expected_request_sha256: String,
 ) -> Result<ProjectSnapshot, String> {
-    ensure_expected_project(project, instance, id, revision)?;
+    ensure_project_expectation(project, ProjectExpectation::new(instance, id, revision))?;
     if radial_array_request_sha256(instance, id, revision, &request)? != expected_request_sha256 {
         return Err("radial_array_preview_stale".to_owned());
     }
@@ -10023,7 +10041,11 @@ fn confirm_radial_array_inner(
             request.angle_microdegrees,
         )
         .map_err(|e| e.to_string())?;
-    execute_command(project, instance, id, revision, command)
+    execute_expected_command(
+        project,
+        ProjectExpectation::new(instance, id, revision),
+        command,
+    )
 }
 #[tauri::command]
 fn confirm_radial_array(
@@ -10783,11 +10805,13 @@ fn apply_geometric_constraint_solve_stage(
     {
         return Err("geometric constraint preview is stale".to_owned());
     }
-    execute_command(
+    execute_expected_command(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::MoveVertices {
             updates: staged
                 .positions
@@ -11000,11 +11024,13 @@ fn create_project_layer_in_project(
     name: String,
     content_kind: LayerContentKindV1,
 ) -> Result<ProjectSnapshot, String> {
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let target_index = project.editor.project_layers().layers.len();
     execute_expected_command(
@@ -11552,11 +11578,13 @@ fn import_underlay_image(
         media_type,
         bytes,
     });
-    let result = execute_command(
+    let result = execute_expected_command(
         &mut project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
         Command::AddUnderlay {
             record: ori_domain::UnderlayRecordV1 {
                 id: draft.id,
@@ -12523,11 +12551,13 @@ fn register_front_texture(
     media_type: ProjectTextureMediaTypeV1,
     bytes: Vec<u8>,
 ) -> Result<ProjectSnapshot, String> {
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let asset_id = AssetId::new();
     let mut retained_total = bytes.len();
@@ -12638,11 +12668,13 @@ fn register_back_texture(
     media_type: ProjectTextureMediaTypeV1,
     bytes: Vec<u8>,
 ) -> Result<ProjectSnapshot, String> {
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let total = project
         .texture_assets
@@ -13179,11 +13211,13 @@ fn commit_fold_import_replacement(
     {
         return Err("the FOLD import preview belongs to a different project state".to_owned());
     }
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        pending.expected_instance_id,
-        pending.expected_project_id,
-        pending.expected_revision,
+        ProjectExpectation::new(
+            pending.expected_instance_id,
+            pending.expected_project_id,
+            pending.expected_revision,
+        ),
     )?;
     commit_project_replacement(project, replacement).map_err(|error| error.to_string())?;
     *pending_slot = None;
@@ -13321,11 +13355,13 @@ fn complete_svg_import_settings_validation(
     if current.expected_instance_id != validation.expected_instance_id {
         return Err("the SVG import preview was replaced by a newer preview".to_owned());
     }
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        validation.expected_instance_id,
-        validation.expected_project_id,
-        validation.expected_revision,
+        ProjectExpectation::new(
+            validation.expected_instance_id,
+            validation.expected_project_id,
+            validation.expected_revision,
+        ),
     )?;
 
     let response = SvgImportSettingsValidationResponse {
@@ -13379,11 +13415,13 @@ fn commit_svg_import_replacement(
     {
         return Err("the SVG import preview belongs to a different project state".to_owned());
     }
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        pending.expected_instance_id,
-        pending.expected_project_id,
-        pending.expected_revision,
+        ProjectExpectation::new(
+            pending.expected_instance_id,
+            pending.expected_project_id,
+            pending.expected_revision,
+        ),
     )?;
     if project.is_dirty() && !replace_dirty_project_confirmed {
         return Err("replacing a dirty project requires explicit confirmation".to_owned());
@@ -13450,11 +13488,9 @@ fn replace_with_new_project(
     expected_revision: u64,
     parameters: NewProjectParameters,
 ) -> Result<ProjectSnapshot, String> {
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        expected_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(expected_instance_id, expected_project_id, expected_revision),
     )?;
 
     let replacement = create_new_project_state(parameters)?;
@@ -13630,17 +13666,24 @@ impl ProjectExpectation {
     }
 }
 
+fn ensure_project_expectation(
+    project: &ProjectState,
+    expectation: ProjectExpectation,
+) -> Result<(), String> {
+    ensure_expected_project(
+        project,
+        expectation.instance_id,
+        expectation.project_id,
+        expectation.revision,
+    )
+}
+
 fn lock_and_expect(
     state: &AppState,
     expectation: ProjectExpectation,
 ) -> Result<MutexGuard<'_, ProjectState>, String> {
     let project = lock_project(state)?;
-    ensure_expected_project(
-        &project,
-        expectation.instance_id,
-        expectation.project_id,
-        expectation.revision,
-    )?;
+    ensure_project_expectation(&project, expectation)?;
     Ok(project)
 }
 
@@ -13718,11 +13761,13 @@ fn finish_instruction_pose(
     expected_revision: u64,
     analyzed: AnalyzedInstructionPose,
 ) -> Result<InstructionPose, String> {
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     if project.instance_id != analyzed.project_instance_id {
         return Err(
@@ -14075,11 +14120,9 @@ fn save_project_as_selected_path(
     expected_revision: u64,
     selected_path: PathBuf,
 ) -> Result<ProjectFileResponse, String> {
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        expected_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(expected_instance_id, expected_project_id, expected_revision),
     )?;
     save_project_to_destination(project, ensure_ori2_extension(selected_path)?)
 }
@@ -14279,11 +14322,9 @@ fn apply_loaded_project_file(
     expected_revision: u64,
     loaded: LoadedProjectFile,
 ) -> Result<ProjectFileResponse, String> {
-    ensure_expected_project(
+    ensure_project_expectation(
         project,
-        expected_instance_id,
-        expected_project_id,
-        expected_revision,
+        ProjectExpectation::new(expected_instance_id, expected_project_id, expected_revision),
     )?;
     commit_project_replacement(project, loaded.replacement).map_err(|error| error.to_string())?;
     Ok(ProjectFileResponse {

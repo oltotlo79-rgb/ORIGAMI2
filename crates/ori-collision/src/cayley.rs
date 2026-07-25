@@ -742,14 +742,12 @@ impl<'a> WorkMeter<'a> {
         allocation_bits: &[usize],
         stage: CayleyStage,
     ) -> Result<(), CayleyError> {
-        let count = self
-            .work
-            .rational_allocations
-            .checked_add(allocation_bits.len())
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "rational_allocations",
-            })?;
+        let count = checked_work_sum(
+            self.work.rational_allocations,
+            allocation_bits.len(),
+            stage,
+            "rational_allocations",
+        )?;
         if count > self.limits.max_rational_allocations {
             return Err(CayleyError::ResourceLimitExceeded {
                 stage,
@@ -765,12 +763,7 @@ impl<'a> WorkMeter<'a> {
                     resource: "rational_allocation_bits",
                 });
             }
-            total = total
-                .checked_add(*bits)
-                .ok_or(CayleyError::ResourceLimitExceeded {
-                    stage,
-                    resource: "total_rational_allocation_bits",
-                })?;
+            total = checked_work_sum(total, *bits, stage, "total_rational_allocation_bits")?;
             if total > self.limits.max_total_rational_allocation_bits {
                 return Err(CayleyError::ResourceLimitExceeded {
                     stage,
@@ -801,20 +794,14 @@ impl<'a> WorkMeter<'a> {
                     stage,
                     resource: "gcd_fallback_input_bits",
                 })?;
-        let next_calls = self.work.gcd_fallback_calls.checked_add(1).ok_or(
-            CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "gcd_fallback_calls",
-            },
+        let next_calls =
+            checked_work_sum(self.work.gcd_fallback_calls, 1, stage, "gcd_fallback_calls")?;
+        let next_input_bits = checked_work_sum(
+            self.work.gcd_fallback_input_bits,
+            call_input_bits,
+            stage,
+            "gcd_fallback_input_bits",
         )?;
-        let next_input_bits = self
-            .work
-            .gcd_fallback_input_bits
-            .checked_add(call_input_bits)
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage,
-                resource: "gcd_fallback_input_bits",
-            })?;
         if next_calls > self.limits.max_gcd_fallback_calls {
             return Err(CayleyError::ResourceLimitExceeded {
                 stage,

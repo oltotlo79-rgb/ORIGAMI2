@@ -491,6 +491,9 @@ describe('InstructionTimelinePanel localization', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'タイトル' }), {
       target: { value: 'Unsaved locale draft' },
     })
+    const panelHeading = screen.getByText('折り手順')
+    const titleInput = screen.getByRole('textbox', { name: 'タイトル' })
+    const selectedStepButton = screen.getByRole('button', { name: /1\. Fold crane/ })
     const callbackCounts = {
       nativeEdit: runNativeEdit.mock.calls.length,
       applyPose: applyStepPose.mock.calls.length,
@@ -503,7 +506,7 @@ describe('InstructionTimelinePanel localization', () => {
       localeStore.setLocale('en')
     })
 
-    expect(screen.getByText('Folding instructions')).toBeTruthy()
+    expect(screen.getByText('Folding instructions')).toBe(panelHeading)
     expect(screen.getByText('1 step · Total 1.5 seconds')).toBeTruthy()
     expect(screen.getAllByText('Playback stopped')).toHaveLength(2)
     expect(screen.getByRole('button', {
@@ -512,6 +515,7 @@ describe('InstructionTimelinePanel localization', () => {
     expect(screen.getByRole('button', { name: 'Export diagrams' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'GLB animation' })).toBeTruthy()
     expect(screen.getByText(/Drag steps to reorder/)).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: 'Title' })).toBe(titleInput)
     expect(screen.getByRole('textbox', { name: 'Title' })).toHaveProperty(
       'value',
       'Unsaved locale draft',
@@ -525,6 +529,9 @@ describe('InstructionTimelinePanel localization', () => {
     expect(
       screen.getByRole('button', { name: /1\. Fold crane/ }).getAttribute('aria-pressed'),
     ).toBe('true')
+    expect(screen.getByRole('button', { name: /1\. Fold crane/ })).toBe(
+      selectedStepButton,
+    )
     expect({
       nativeEdit: runNativeEdit.mock.calls.length,
       applyPose: applyStepPose.mock.calls.length,

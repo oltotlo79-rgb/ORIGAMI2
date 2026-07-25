@@ -60,9 +60,11 @@ import {
   formatLocalizedText,
   selectLocalizedText,
   useLocale,
-  type Locale,
 } from '../lib/i18n'
-import { INSTRUCTION_TIMELINE_PANEL_TEXT as TEXT } from '../lib/instructionTimelinePanelText.ts'
+import {
+  formatInstructionTimelineStepCount,
+  INSTRUCTION_TIMELINE_PANEL_TEXT as TEXT,
+} from '../lib/instructionTimelinePanelText.ts'
 
 type InstructionEditorState = {
   stepId: string
@@ -983,7 +985,7 @@ export function InstructionTimelinePanel({
         </button>
         <strong>{selectLocalizedText(locale, TEXT.heading)}</strong>
         <span>
-          {formatInstructionStepCount(steps.length, locale)}
+          {formatInstructionTimelineStepCount(steps.length, locale)}
           {presentation.kind === 'ready'
             ? formatLocalizedText(locale, TEXT.totalDuration, {
                 duration: formatInstructionDuration(
@@ -1417,13 +1419,4 @@ function describeCaptureStatus(
   if (appliedPose.state === 'blocked') return 'pose_blocked'
   if (appliedPose.state === 'indeterminate') return 'pose_indeterminate'
   return 'pose_ready'
-}
-
-function formatInstructionStepCount(count: number, locale: Locale) {
-  const formatted = count.toLocaleString(locale)
-  return formatLocalizedText(
-    locale,
-    count === 1 ? TEXT.stepCountOne : TEXT.stepCount,
-    { count: formatted },
-  )
 }

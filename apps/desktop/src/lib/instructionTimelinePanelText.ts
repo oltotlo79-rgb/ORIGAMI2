@@ -1,4 +1,8 @@
-import type { LocalizedText } from './i18n.ts'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+  type LocalizedText,
+} from './i18n.ts'
 
 function localized(ja: string, en: string): LocalizedText {
   return Object.freeze({ ja, en })
@@ -26,6 +30,7 @@ export const INSTRUCTION_TIMELINE_PANEL_TEXT = Object.freeze({
   heading: localized('折り手順', 'Folding instructions'),
   stepCount: localized('{count}手順', '{count} steps'),
   stepCountOne: localized('{count}手順', '{count} step'),
+  numberLocale: localized('ja-JP', 'en-US'),
   totalDuration: localized('・合計 {duration}', ' · Total {duration}'),
   endpointSafety: localized(
     '保存した姿勢を段階表示します。姿勢間の連続した折り経路の安全性は保証しません。',
@@ -159,3 +164,19 @@ export const INSTRUCTION_TIMELINE_PANEL_TEXT = Object.freeze({
     'This description is not treated as proof because structured certificate data is absent.',
   ),
 })
+
+export function formatInstructionTimelineStepCount(
+  count: number,
+  locale: unknown,
+) {
+  const template = count === 1
+    ? INSTRUCTION_TIMELINE_PANEL_TEXT.stepCountOne
+    : INSTRUCTION_TIMELINE_PANEL_TEXT.stepCount
+  const numberLocale = selectLocalizedText(
+    locale,
+    INSTRUCTION_TIMELINE_PANEL_TEXT.numberLocale,
+  )
+  return formatLocalizedText(locale, template, {
+    count: count.toLocaleString(numberLocale),
+  })
+}

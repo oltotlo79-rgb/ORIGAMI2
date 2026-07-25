@@ -1,3 +1,15 @@
+//! Low-level atomic document transaction for a caller-certified cycle fold.
+//!
+//! This V1 primitive binds one `EditorState` commit to a project ID, revision,
+//! source fold-model fingerprint, and previous persisted pose. It does not
+//! authenticate an open-project instance or any runtime pose/layer capability,
+//! and it is not the desktop application's mutation authority.
+//!
+//! The caller-supplied pattern, paper, timeline, layers, and applied pose are
+//! not derived from or cryptographically bound to the closure certificate.
+//! Callers must separately prove that this payload represents the certified
+//! schedule target before preparing a transaction.
+
 use ori_domain::{CreasePattern, InstructionTimeline, Paper, ProjectId, ProjectLayerDocumentV1};
 use ori_kinematics::{
     CanonicalCycleScheduleV1, DyadicMaterialHingeIntervalClosureCertificateV1,
@@ -16,7 +28,11 @@ struct CycleFoldPayloadV1 {
     applied_pose: AppliedPoseV1,
 }
 
-/// Single-use, non-persistable authority for one continuously certified fold.
+/// Single-use, non-persistable handle for one atomic document commit.
+///
+/// This handle is not a runtime pose, layer-order, open-instance, or desktop
+/// mutation authority. Its caller remains responsible for binding the
+/// caller-supplied payload to the certified schedule target.
 #[derive(Debug)]
 pub struct ReadyCycleFoldTransactionV1 {
     project: ProjectId,
@@ -45,6 +61,13 @@ pub enum CycleFoldTransactionErrorV1 {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Prepares a low-level atomic document transaction after validating the
+/// certificate, schedule, and material-graph binding.
+///
+/// This function does not establish that the caller-supplied document payload
+/// corresponds to the certificate's target. That relationship, along with any
+/// runtime pose/layer and open-instance authority, must be validated by the
+/// caller.
 pub fn prepare_cycle_fold_transaction_v1(
     project: ProjectId,
     editor: &EditorState,
@@ -92,6 +115,10 @@ pub fn prepare_cycle_fold_transaction_v1(
     })
 }
 
+/// Applies the prepared document payload as one `EditorState` history entry.
+///
+/// This revalidates the persisted project/revision/model/pose binding only. It
+/// neither installs nor authenticates desktop runtime pose or layer authority.
 pub fn apply_ready_cycle_fold_transaction_v1(
     project: ProjectId,
     editor: &mut EditorState,
@@ -179,6 +206,9 @@ mod tests {
     }
 
     fn ready(editor: &EditorState, project: ProjectId) -> ReadyCycleFoldTransactionV1 {
+        // Tests construct the low-level handle directly because this module
+        // verifies atomic EditorState behavior, not desktop runtime authority
+        // or a certificate-to-payload semantic binding.
         let face = FaceId::new();
         let pose = prepare_applied_pose_v1(&[face], &[], None, &[], AppliedPoseLimitsV1::default())
             .unwrap();

@@ -177,64 +177,39 @@ impl Default for SharedHingeSolidClassificationLimitsV1 {
 impl SharedHingeSolidClassificationLimitsV1 {
     fn projected(self) -> Self {
         let hard = Self::default();
-        Self {
-            max_authenticated_faces: self
-                .max_authenticated_faces
-                .min(hard.max_authenticated_faces),
-            max_authenticated_hinges: self
-                .max_authenticated_hinges
-                .min(hard.max_authenticated_hinges),
-            max_unordered_face_pair_count_calculations: self
-                .max_unordered_face_pair_count_calculations
-                .min(hard.max_unordered_face_pair_count_calculations),
-            max_unordered_face_pairs: self
-                .max_unordered_face_pairs
-                .min(hard.max_unordered_face_pairs),
-            max_triangle_pairs: self.max_triangle_pairs.min(hard.max_triangle_pairs),
-            max_prism_complete_scan_checks: self
-                .max_prism_complete_scan_checks
-                .min(hard.max_prism_complete_scan_checks),
-            max_upstream_capability_revalidations: self
-                .max_upstream_capability_revalidations
-                .min(hard.max_upstream_capability_revalidations),
-            max_sealed_prior_work_bindings: self
-                .max_sealed_prior_work_bindings
-                .min(hard.max_sealed_prior_work_bindings),
-            max_root_bindings: self.max_root_bindings.min(hard.max_root_bindings),
-            max_angle_bindings: self.max_angle_bindings.min(hard.max_angle_bindings),
-            max_face_identity_bindings: self
-                .max_face_identity_bindings
-                .min(hard.max_face_identity_bindings),
-            max_hinge_identity_bindings: self
-                .max_hinge_identity_bindings
-                .min(hard.max_hinge_identity_bindings),
-            max_endpoint_identity_bindings: self
-                .max_endpoint_identity_bindings
-                .min(hard.max_endpoint_identity_bindings),
-            max_face_transform_bit_bindings: self
-                .max_face_transform_bit_bindings
-                .min(hard.max_face_transform_bit_bindings),
-            max_hinge_parent_transform_bit_bindings: self
-                .max_hinge_parent_transform_bit_bindings
-                .min(hard.max_hinge_parent_transform_bit_bindings),
-            max_interaction_kind_bindings: self
-                .max_interaction_kind_bindings
-                .min(hard.max_interaction_kind_bindings),
-            max_policy_cell_bindings: self
-                .max_policy_cell_bindings
-                .min(hard.max_policy_cell_bindings),
-            max_classification_seal_bindings: self
-                .max_classification_seal_bindings
-                .min(hard.max_classification_seal_bindings),
-            max_margin_component_checks: self
-                .max_margin_component_checks
-                .min(hard.max_margin_component_checks),
-            max_independent_corridor_vertex_checks: self
-                .max_independent_corridor_vertex_checks
-                .min(hard.max_independent_corridor_vertex_checks),
-            prism: self.prism.projected(),
-            corridor_exact: project_cayley_limits(self.corridor_exact, hard.corridor_exact),
-        }
+        clamp_to_hard!(
+            SharedHingeSolidClassificationLimitsV1 {
+                requested: self,
+                hard: hard;
+                min:
+                    max_authenticated_faces,
+                    max_authenticated_hinges,
+                    max_unordered_face_pair_count_calculations,
+                    max_unordered_face_pairs,
+                    max_triangle_pairs,
+                    max_prism_complete_scan_checks,
+                    max_upstream_capability_revalidations,
+                    max_sealed_prior_work_bindings,
+                    max_root_bindings,
+                    max_angle_bindings,
+                    max_face_identity_bindings,
+                    max_hinge_identity_bindings,
+                    max_endpoint_identity_bindings,
+                    max_face_transform_bit_bindings,
+                    max_hinge_parent_transform_bit_bindings,
+                    max_interaction_kind_bindings,
+                    max_policy_cell_bindings,
+                    max_classification_seal_bindings,
+                    max_margin_component_checks,
+                    max_independent_corridor_vertex_checks;
+                explicit:
+                    prism: self.prism.projected(),
+                    corridor_exact: project_cayley_limits(
+                        self.corridor_exact,
+                        hard.corridor_exact,
+                    ),
+            }
+        )
     }
 }
 
@@ -2413,4 +2388,68 @@ pub(super) fn policy_contract_for_test(
 ) -> (IntersectionEvidenceV2, TopologyContactDecision) {
     let contract = policy_contract(class);
     (contract.semantic_evidence, contract.baseline_decision)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn limits_with_structural_value(
+        value: usize,
+        hard: SharedHingeSolidClassificationLimitsV1,
+    ) -> SharedHingeSolidClassificationLimitsV1 {
+        SharedHingeSolidClassificationLimitsV1 {
+            max_authenticated_faces: value,
+            max_authenticated_hinges: value,
+            max_unordered_face_pair_count_calculations: value,
+            max_unordered_face_pairs: value,
+            max_triangle_pairs: value,
+            max_prism_complete_scan_checks: value,
+            max_upstream_capability_revalidations: value,
+            max_sealed_prior_work_bindings: value,
+            max_root_bindings: value,
+            max_angle_bindings: value,
+            max_face_identity_bindings: value,
+            max_hinge_identity_bindings: value,
+            max_endpoint_identity_bindings: value,
+            max_face_transform_bit_bindings: value,
+            max_hinge_parent_transform_bit_bindings: value,
+            max_interaction_kind_bindings: value,
+            max_policy_cell_bindings: value,
+            max_classification_seal_bindings: value,
+            max_margin_component_checks: value,
+            max_independent_corridor_vertex_checks: value,
+            prism: hard.prism,
+            corridor_exact: hard.corridor_exact,
+        }
+    }
+
+    #[test]
+    fn projected_limits_cover_every_field_at_under_equal_and_over_hard_boundaries() {
+        let hard = SharedHingeSolidClassificationLimitsV1::default();
+        let under_hard = limits_with_structural_value(0, hard);
+        let over_hard = limits_with_structural_value(usize::MAX, hard);
+
+        assert_eq!(under_hard.projected(), under_hard);
+        assert_eq!(hard.projected(), hard);
+        assert_eq!(over_hard.projected(), hard);
+
+        let mut requested_explicit = hard;
+        requested_explicit.prism.max_prisms = usize::MAX;
+        requested_explicit.prism.max_solid_vertices = 0;
+        requested_explicit.prism.exact.max_interval_operations = usize::MAX;
+        requested_explicit.prism.exact.max_shift_bits = 0;
+        requested_explicit.corridor_exact.max_interval_operations = usize::MAX;
+        requested_explicit.corridor_exact.max_shift_bits = 0;
+        let projected_explicit = requested_explicit.projected();
+
+        assert_eq!(
+            projected_explicit.prism,
+            requested_explicit.prism.projected()
+        );
+        assert_eq!(
+            projected_explicit.corridor_exact,
+            project_cayley_limits(requested_explicit.corridor_exact, hard.corridor_exact)
+        );
+    }
 }

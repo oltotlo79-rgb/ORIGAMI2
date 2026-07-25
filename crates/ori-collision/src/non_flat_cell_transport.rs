@@ -104,7 +104,7 @@ pub fn certify_non_flat_cell_transport_with_limits_v1(
         boundary_points,
         limits,
     )?;
-    validate_complete(target)?;
+    validate_non_flat_layer_order_structure_v1(target)?;
     Ok(NonFlatCellTransportProofV1 {
         source: source.clone(),
         target: target.clone(),
@@ -256,10 +256,36 @@ mod tests {
         )
         .unwrap();
         assert!(!proof.is_for(&source, &different));
+
+        // The certification path and read-only callers must share one
+        // definition of structural completeness.
+        assert_eq!(validate_non_flat_layer_order_structure_v1(&source), Ok(()));
+        assert_eq!(validate_non_flat_layer_order_structure_v1(&target), Ok(()));
+        assert_eq!(
+            validate_non_flat_layer_order_structure_v1(proof.target()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn the_public_structure_validator_grants_no_transport_authority() {
+        // Structural validation alone must never behave like certification:
+        // it takes one value, returns no proof, and cannot compare revisions.
+        let accepts: fn(
+            &StackedFoldNonFlatLayerOrderV1,
+        ) -> Result<(), NonFlatCellTransportErrorV1> = validate_non_flat_layer_order_structure_v1;
+        let _ = accepts;
     }
 }
 
-fn validate_complete(
+/// Validates the structural completeness of one non-flat layer order.
+///
+/// This is the single definition consumed both by
+/// [`certify_non_flat_cell_transport_with_limits_v1`] and by read-only viewers
+/// that must not receive transport binding or transition authority. It performs
+/// validation only: it never issues a proof, a capability, or any mutation
+/// authority, and it does not compare two revisions.
+pub fn validate_non_flat_layer_order_structure_v1(
     value: &StackedFoldNonFlatLayerOrderV1,
 ) -> Result<(), NonFlatCellTransportErrorV1> {
     let faces = value

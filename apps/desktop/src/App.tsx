@@ -2636,8 +2636,11 @@ function App() {
     const current = latestSnapshotRef.current
     if (!preview || !current) return
     const result = preview.result
-    if (result.project_instance_id !== current.project_instance_id
-      || result.project_id !== current.project_id || result.revision !== current.revision) {
+    if (!matchesProjectOccGuard({
+      expectedProjectInstanceId: result.project_instance_id,
+      expectedProjectId: result.project_id,
+      expectedRevision: result.revision,
+    }, current)) {
       setLinearArrayPreview(null)
       return
     }
@@ -2671,8 +2674,11 @@ function App() {
       const result = await previewRadialArray(current.project_id, current.revision, current.project_instance_id, request)
       if (sequence !== radialArrayRequestSequenceRef.current
         || latestSnapshotRef.current !== current || result.authorizes_project_mutation
-        || result.project_instance_id !== current.project_instance_id
-        || result.project_id !== current.project_id || result.revision !== current.revision
+        || !matchesProjectOccGuard({
+          expectedProjectInstanceId: result.project_instance_id,
+          expectedProjectId: result.project_id,
+          expectedRevision: result.revision,
+        }, current)
         || result.additional_copies !== request.additional_copies
         || result.angle_microdegrees !== request.angle_microdegrees
         || result.source_vertex_count !== request.vertices.length
@@ -2686,8 +2692,11 @@ function App() {
     const current = latestSnapshotRef.current
     if (!preview || !current) return
     const result = preview.result
-    if (result.project_instance_id !== current.project_instance_id
-      || result.project_id !== current.project_id || result.revision !== current.revision) {
+    if (!matchesProjectOccGuard({
+      expectedProjectInstanceId: result.project_instance_id,
+      expectedProjectId: result.project_id,
+      expectedRevision: result.revision,
+    }, current)) {
       setRadialArrayPreview(null); return
     }
     const applied = await runNativeEdit((id, revision, instance) =>
@@ -4327,9 +4336,12 @@ function App() {
     ).then((proposal) => {
       const latest = latestSnapshotRef.current
       if (requestId === beginnerRecognitionRequestRef.current
-        && latest?.project_instance_id === proposal.project_instance_id
-        && latest.project_id === proposal.project_id
-        && latest.revision === proposal.revision) {
+        && latest
+        && matchesProjectOccGuard({
+          expectedProjectInstanceId: proposal.project_instance_id,
+          expectedProjectId: proposal.project_id,
+          expectedRevision: proposal.revision,
+        }, latest)) {
         setBeginnerOutlineCandidates(proposal)
       }
     }).catch(() => {
@@ -4356,8 +4368,11 @@ function App() {
     if (!outline) return
     void recognizeBeginnerPartSuggestions(outline, candidate).then((proposal) => {
       const latest = latestSnapshotRef.current
-      if (latest?.project_instance_id === proposal.project_instance_id
-        && latest.project_id === proposal.project_id && latest.revision === proposal.revision) {
+      if (latest && matchesProjectOccGuard({
+        expectedProjectInstanceId: proposal.project_instance_id,
+        expectedProjectId: proposal.project_id,
+        expectedRevision: proposal.revision,
+      }, latest)) {
         setBeginnerPartSuggestions(proposal)
         setBeginnerPartAssignments(proposal.suggestions.map((item) => ({
           candidate_id: item.candidate_id, kind: item.suggested_kind,
@@ -4386,8 +4401,11 @@ function App() {
       current.project_id, current.revision, current.project_instance_id,
     ).then((response) => {
       const latest = latestSnapshotRef.current
-      if (latest?.project_instance_id === response.project_instance_id
-        && latest.project_id === response.project_id && latest.revision === response.revision) {
+      if (latest && matchesProjectOccGuard({
+        expectedProjectInstanceId: response.project_instance_id,
+        expectedProjectId: response.project_id,
+        expectedRevision: response.revision,
+      }, latest)) {
         setBeginnerSymmetricEstimate(response)
         setBeginnerSymmetricScale(response.estimate.scale_percent)
         setBeginnerSymmetricSpacing(response.estimate.spacing_percent)
@@ -4657,8 +4675,12 @@ function App() {
     ).then((response) => {
       const latest = latestSnapshotRef.current
       if (requestId === beginnerGridRequestRef.current
-        && latest?.project_instance_id === response.project_instance_id
-        && latest.project_id === response.project_id && latest.revision === response.revision) {
+        && latest
+        && matchesProjectOccGuard({
+          expectedProjectInstanceId: response.project_instance_id,
+          expectedProjectId: response.project_id,
+          expectedRevision: response.revision,
+        }, latest)) {
         setBeginnerGrid(response)
         setBeginnerGridSelectedPointId(response.candidates[0]?.point.id ?? null)
         setBeginnerGridProgress({ enumerated: 27, globalChecked: 3, refined: response.refinement_iterations })
@@ -5843,12 +5865,16 @@ function App() {
       if (
         !latest
         || preview.format !== format
-        || preview.projectInstanceId !== current.project_instance_id
-        || preview.projectId !== current.project_id
-        || preview.revision !== current.revision
-        || latest.project_instance_id !== current.project_instance_id
-        || latest.project_id !== current.project_id
-        || latest.revision !== current.revision
+        || !matchesProjectOccGuard({
+          expectedProjectInstanceId: preview.projectInstanceId,
+          expectedProjectId: preview.projectId,
+          expectedRevision: preview.revision,
+        }, current)
+        || !matchesProjectOccGuard({
+          expectedProjectInstanceId: current.project_instance_id,
+          expectedProjectId: current.project_id,
+          expectedRevision: current.revision,
+        }, latest)
         || foldPreviewAppliedPoseKey(latestPose) !== sourcePoseKey
         || latestPose?.state === 'running'
       ) {
@@ -5945,9 +5971,11 @@ function App() {
     const preview = meshExportPreview
     if (!current || !preview || coreOperationRef.current) return
     if (
-      current.project_instance_id !== preview.projectInstanceId
-      || current.project_id !== preview.projectId
-      || current.revision !== preview.revision
+      !matchesProjectOccGuard({
+        expectedProjectInstanceId: preview.projectInstanceId,
+        expectedProjectId: preview.projectId,
+        expectedRevision: preview.revision,
+      }, current)
     ) {
       setMeshExportError(appMessage({
         ja: '編集内容が変わったため、現在姿勢から書き出しデータを作り直してください。',
@@ -6109,9 +6137,11 @@ function App() {
       const latest = latestSnapshotRef.current
       if (
         !latest
-        || latest.project_instance_id !== preview.projectInstanceId
-        || latest.project_id !== preview.projectId
-        || latest.revision !== preview.revision
+        || !matchesProjectOccGuard({
+          expectedProjectInstanceId: preview.projectInstanceId,
+          expectedProjectId: preview.projectId,
+          expectedRevision: preview.revision,
+        }, latest)
       ) {
         await cancelInstructionMeshAnimation(preview.exportId).catch(() => undefined)
         throw new Error('stale animation preview')
@@ -6173,9 +6203,11 @@ function App() {
     const current = latestSnapshotRef.current
     if (!preview || !current || coreOperationRef.current) return
     if (
-      current.project_instance_id !== preview.projectInstanceId
-      || current.project_id !== preview.projectId
-      || current.revision !== preview.revision
+      !matchesProjectOccGuard({
+        expectedProjectInstanceId: preview.projectInstanceId,
+        expectedProjectId: preview.projectId,
+        expectedRevision: preview.revision,
+      }, current)
     ) {
       setMeshAnimationExportError(appMessage({
         ja: 'プロジェクトが変更されました。現在の手順から再作成してください。',

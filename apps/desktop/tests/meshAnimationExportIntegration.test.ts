@@ -5,9 +5,10 @@ import test from 'node:test'
 const app = read('../src/App.tsx')
 
 test('animation export route revalidates binding and rejects stale responses', () => {
-  assert.match(app, /latest\.project_instance_id !== preview\.projectInstanceId/u)
-  assert.match(app, /latest\.project_id !== preview\.projectId/u)
-  assert.match(app, /latest\.revision !== preview\.revision/u)
+  assert.match(
+    app,
+    /!matchesProjectOccGuard\(\{\s*expectedProjectInstanceId: preview\.projectInstanceId,\s*expectedProjectId: preview\.projectId,\s*expectedRevision: preview\.revision,\s*\}, latest\)/u,
+  )
   assert.match(app, /cancelInstructionMeshAnimation\(preview\.exportId\)/u)
 })
 

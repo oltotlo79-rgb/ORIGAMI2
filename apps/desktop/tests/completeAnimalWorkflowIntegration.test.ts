@@ -32,7 +32,10 @@ test('grid cancellation and stale replacement stay generation and snapshot scope
   assert.match(native, /beginner_grid_progress_is_bounded_and_cancel_is_generation_scoped/)
   assert.match(client, /cancelBeginnerParameterGrid/)
   assert.match(app, /requestId !== beginnerGridRequestRef\.current/)
-  assert.match(app, /latest\?\.project_instance_id === response\.project_instance_id/)
+  assert.match(
+    app,
+    /matchesProjectOccGuard\(\{\s*expectedProjectInstanceId: response\.project_instance_id,\s*expectedProjectId: response\.project_id,\s*expectedRevision: response\.revision,\s*\}, latest\)/u,
+  )
   assert.match(app, /cancelBeginnerParameterGrid\(generationId\)/)
   assert.match(app, /beginnerGridGenerationRef\.current = null\s*setBeginnerGridBusy\(false\)/)
   assert.match(app, /finishBeginnerGridCancellation/)

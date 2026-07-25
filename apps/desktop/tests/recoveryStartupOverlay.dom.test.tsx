@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -17,6 +18,28 @@ afterEach(() => {
 })
 
 describe('RecoveryStartupOverlay DOM interactions', () => {
+  it('retranslates the same blocking dialog and its accessible name', () => {
+    const locales = localeFixture('ja')
+    render(
+      <RecoveryStartupOverlay
+        phase="failed"
+        busy={false}
+        onRetry={vi.fn()}
+        localeStore={locales}
+      />,
+    )
+    expect(screen.getByRole('dialog', {
+      name: '復旧データを確認できません',
+    })).toBeTruthy()
+    act(() => {
+      locales.setLocale('en')
+    })
+    expect(screen.getByRole('dialog', {
+      name: 'Recovery data could not be checked',
+    })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+  })
+
   it('localizes checking and failed startup gates in English', () => {
     const english = localeFixture('en')
     const rendered = render(

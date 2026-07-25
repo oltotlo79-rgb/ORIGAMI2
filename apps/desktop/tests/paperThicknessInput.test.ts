@@ -128,6 +128,10 @@ test('both paper thickness controls use exact custom steps and retain direct inp
     new URL('../src/components/PaperThicknessInput.tsx', import.meta.url),
     'utf8',
   )
+  const catalogSource = readFileSync(
+    new URL('../src/lib/paperThicknessText.ts', import.meta.url),
+    'utf8',
+  )
   const cssSource = readFileSync(
     new URL('../src/App.css', import.meta.url),
     'utf8',
@@ -136,8 +140,9 @@ test('both paper thickness controls use exact custom steps and retain direct inp
 
   assert.equal(controls.length, 2)
   assert.match(componentSource, /step="any"/u)
+  assert.match(componentSource, /import \{ PAPER_THICKNESS_TEXT \}/u)
   assert.match(
-    componentSource,
+    catalogSource,
     /ariaLabel: Object\.freeze\(\{ ja: '紙厚', en: 'Paper thickness' \}\)/u,
   )
   assert.match(

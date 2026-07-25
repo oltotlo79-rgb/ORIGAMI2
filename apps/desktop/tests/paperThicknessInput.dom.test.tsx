@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { PaperThicknessInput } from '../src/components/PaperThicknessInput.tsx'
@@ -28,6 +28,28 @@ const VERTICAL_RATIO = ratioUnit('vertical-edge', 200, {
 })
 
 describe('PaperThicknessInput', () => {
+  it('retranslates labels, title, and step ARIA in place', () => {
+    const locales = localeFixture('ja')
+    render(
+      <PaperThicknessInput
+        id="translated-thickness"
+        initialValue="0.1"
+        disabled={false}
+        localeStore={locales}
+      />,
+    )
+    expect(screen.getByRole('spinbutton', { name: '紙厚' })).toBeTruthy()
+    act(() => {
+      locales.setLocale('en')
+    })
+    expect(screen.getByRole('spinbutton', {
+      name: 'Paper thickness',
+    }).getAttribute('title')).toContain('physical value by 0.01 mm')
+    expect(screen.getByRole('button', {
+      name: 'Increase paper thickness by 0.01 mm',
+    })).toBeTruthy()
+  })
+
   it('localizes labels, help, and physical step actions in English', () => {
     render(
       <PaperThicknessInput

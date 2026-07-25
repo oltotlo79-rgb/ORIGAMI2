@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { LengthUnitControl } from '../src/components/LengthUnitControl.tsx'
@@ -37,6 +37,33 @@ const REFERENCES: readonly BoundaryLengthReference[] = Object.freeze([
 ])
 
 describe('LengthUnitControl', () => {
+  it('retranslates labels, options, and ARIA without changing the unit', () => {
+    const locales = localeFixture('ja')
+    const onChange = vi.fn()
+    render(
+      <LengthUnitControl
+        unit={MILLIMETRE_LENGTH_DISPLAY_UNIT}
+        references={REFERENCES}
+        disabled={false}
+        onChange={onChange}
+        localeStore={locales}
+      />,
+    )
+    expect(screen.getByRole('combobox', {
+      name: '長さの表示単位',
+    })).toBeTruthy()
+    act(() => {
+      locales.setLocale('en')
+    })
+    expect(screen.getByRole('combobox', {
+      name: 'Length display unit',
+    })).toBeTruthy()
+    expect(screen.getByRole('option', {
+      name: 'Paper-edge ratio',
+    })).toBeTruthy()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('localizes unit labels and accessible names in English', () => {
     render(
       <LengthUnitControl

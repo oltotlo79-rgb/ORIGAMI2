@@ -6148,12 +6148,13 @@ fn apply_beginner_parameter_grid_candidate(
     {
         return Err("grid_candidate_contract_stale".to_owned());
     }
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     if project.editor.beginner_design_profile() != &expected_profile {
         return Err("grid_candidate_profile_stale".to_owned());
@@ -6560,12 +6561,13 @@ fn import_beginner_reference_model(
             .to_owned()
     })?;
 
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let retained_total = project
         .reference_model_assets
@@ -11519,12 +11521,13 @@ fn import_underlay_image(
     } else {
         return Err("selected file is not a valid PNG/JPEG".to_owned());
     };
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let retained_total = project
         .texture_assets
@@ -11949,12 +11952,13 @@ fn append_named_technique_instruction_steps(
     proposal_json: String,
 ) -> Result<ProjectSnapshot, String> {
     let proposal = parse_named_technique_timeline_proposal(&proposal_json)?;
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let fingerprint = project.editor.fold_model_fingerprint_v1();
     let steps = proposal
@@ -11996,12 +12000,13 @@ fn append_generic_tree_instruction_proposal(
     if !confirmed {
         return Err("generic_tree_instruction_confirmation_required".to_owned());
     }
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let profile = project.editor.beginner_design_profile();
     if !ori_domain::validate_beginner_design_profile_v1(profile) {
@@ -12247,12 +12252,13 @@ fn duplicate_instruction_step(
     expected_revision: u64,
     step_id: InstructionStepId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let step = duplicate_instruction_step_record(project.editor.instruction_timeline(), step_id)?;
     execute_command(

@@ -73,7 +73,6 @@ export function MeshAnimationExportDialog({
     const frame = requestAnimationFrame(() => dialogRef.current?.focus())
     return () => cancelAnimationFrame(frame)
   }, [])
-  const numberLocale = locale === 'ja' ? 'ja-JP' : 'en-US'
   return (
     <div className="dialog-backdrop">
       <section
@@ -87,7 +86,9 @@ export function MeshAnimationExportDialog({
       >
         <header>
           <div><h2 id="mesh-animation-export-title">{copy.title}</h2></div>
-          <button type="button" disabled={busy} onClick={onCancel} aria-label={copy.cancel}>×</button>
+          <button type="button" disabled={busy} onClick={onCancel} aria-label={copy.cancel}>
+            {copy.closeGlyph}
+          </button>
         </header>
         <div className="crease-export-dialog-body">
           <p className="dialog-note">{copy.description}</p>
@@ -102,10 +103,28 @@ export function MeshAnimationExportDialog({
             <>
               <dl className="crease-export-metadata">
                 <div><dt>{copy.name}</dt><dd>{preview.suggestedFileName}</dd></div>
-                <div><dt>{copy.frames}</dt><dd>{preview.frameCount.toLocaleString(numberLocale)}</dd></div>
-                <div><dt>{copy.duration}</dt><dd>{preview.durationSeconds.toLocaleString(numberLocale)} s</dd></div>
-                <div><dt>{copy.geometry}</dt><dd>{preview.vertexCount.toLocaleString(numberLocale)} vertices · {preview.triangleCount.toLocaleString(numberLocale)} triangles</dd></div>
-                <div><dt>{copy.size}</dt><dd>{preview.byteCount.toLocaleString(numberLocale)} bytes</dd></div>
+                <div>
+                  <dt>{copy.frames}</dt>
+                  <dd>{preview.frameCount.toLocaleString(copy.numberLocale)}</dd>
+                </div>
+                <div>
+                  <dt>{copy.duration}</dt>
+                  <dd>
+                    {preview.durationSeconds.toLocaleString(copy.numberLocale)} {copy.seconds}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{copy.geometry}</dt>
+                  <dd>
+                    {preview.vertexCount.toLocaleString(copy.numberLocale)} {copy.vertices}
+                    {copy.metadataSeparator}
+                    {preview.triangleCount.toLocaleString(copy.numberLocale)} {copy.triangles}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{copy.size}</dt>
+                  <dd>{preview.byteCount.toLocaleString(copy.numberLocale)} {copy.bytes}</dd>
+                </div>
               </dl>
               <section className="crease-export-warnings">
                 <p>{copy.warning}</p>
@@ -121,7 +140,7 @@ export function MeshAnimationExportDialog({
               </section>
             </>
           )}
-          <p role="status" aria-live="polite">{notice ?? '\u00a0'}</p>
+          <p role="status" aria-live="polite">{notice ?? copy.noticePlaceholder}</p>
         </div>
         <footer>
           <button type="button" disabled={busy} onClick={onCancel}>{copy.cancel}</button>

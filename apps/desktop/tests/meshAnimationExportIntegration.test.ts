@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const app = read('../src/App.tsx')
+const dialog = read('../src/components/MeshAnimationExportDialog.tsx')
 
 test('animation export route revalidates binding and rejects stale responses', () => {
   assert.match(
@@ -17,6 +18,12 @@ test('animation export route closes reentry and disposal generations', () => {
   assert.match(app, /\+\+meshAnimationExportRequestIdRef\.current/u)
   assert.match(app, /requestId !== meshAnimationExportRequestIdRef\.current/u)
   assert.match(app, /\|\| meshAnimationExportOpen/u)
+})
+
+test('animation export dialog keeps locale copy and formatting out of the component', () => {
+  assert.match(dialog, /MESH_ANIMATION_EXPORT_DIALOG_TEXT as COPY/u)
+  assert.doesNotMatch(dialog, /locale\s*===|locale\s*!==/u)
+  assert.doesNotMatch(dialog, /'vertices'|'triangles'|'bytes'|'\\u00a0'/u)
 })
 
 function read(relativePath: string) {

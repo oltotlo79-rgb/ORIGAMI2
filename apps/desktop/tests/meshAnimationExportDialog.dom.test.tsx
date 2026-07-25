@@ -1,9 +1,10 @@
 import { StrictMode } from 'react'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MeshAnimationExportDialog } from '../src/components/MeshAnimationExportDialog'
 import { localeStore } from '../src/lib/i18n.ts'
+import { MESH_ANIMATION_EXPORT_DIALOG_TEXT as COPY } from '../src/lib/meshAnimationExportDialogText.ts'
 import type { MeshAnimationPreviewResponse } from '../src/lib/meshAnimationExport.ts'
 
 const PREVIEW: MeshAnimationPreviewResponse = {
@@ -29,6 +30,20 @@ afterEach(() => {
 })
 
 describe('MeshAnimationExportDialog', () => {
+  it('retranslates metadata without remounting when the locale changes', () => {
+    localeStore.setLocale('en')
+    render(<MeshAnimationExportDialog preview={PREVIEW} busy={false} error={null} notice={null} onRetry={vi.fn()} onSave={vi.fn()} onCancel={vi.fn()} />)
+    expect(screen.getByRole('heading', { name: COPY.en.title })).toBeTruthy()
+    expect(screen.getByText('12 vertices · 6 triangles')).toBeTruthy()
+    expect(screen.getByText('4,096 bytes')).toBeTruthy()
+
+    act(() => localeStore.setLocale('ja'))
+
+    expect(screen.getByRole('heading', { name: COPY.ja.title })).toBeTruthy()
+    expect(screen.getByText('12 頂点 · 6 三角形')).toBeTruthy()
+    expect(screen.getByText('4,096 バイト')).toBeTruthy()
+  })
+
   it('shows bounded metadata and requires explicit warning acknowledgement', () => {
     const onSave = vi.fn()
     render(<MeshAnimationExportDialog preview={PREVIEW} busy={false} error={null} notice={null} onRetry={vi.fn()} onSave={onSave} onCancel={vi.fn()} />)

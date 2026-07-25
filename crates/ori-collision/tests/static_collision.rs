@@ -1131,7 +1131,7 @@ fn public_diagnostic_freezes_every_topology_by_evidence_policy_cell() {
 }
 
 #[test]
-fn public_diagnostic_connects_shared_hinge_solid_only_for_two_triangular_faces() {
+fn public_diagnostic_preserves_two_face_shared_hinge_solid_results() {
     const CASES: [(f64, StaticCollisionPairDisposition, IntersectionEvidenceV2); 6] = [
         (
             0.0,
@@ -1211,6 +1211,148 @@ fn public_diagnostic_connects_shared_hinge_solid_only_for_two_triangular_faces()
             }
         }
     }
+}
+
+#[test]
+fn three_face_diagnostic_classifies_each_authenticated_hinge_pair() {
+    let fixture = midpoint_mountain_400mm_fixture(false);
+    let root = fixture.model.face_ids()[0];
+    let hinge_pairs = fixture
+        .model
+        .hinges()
+        .iter()
+        .map(|hinge| {
+            let mut pair = [hinge.left_face(), hinge.right_face()];
+            pair.sort_unstable_by_key(FaceId::canonical_bytes);
+            pair
+        })
+        .collect::<Vec<_>>();
+
+    for (
+        angle,
+        expected_hinge_disposition,
+        expected_hinge_evidence,
+        expected_hinge_decision,
+        expected_outer,
+        expected_outer_evidence,
+        expected_outer_decision,
+    ) in [
+        (
+            10.0,
+            StaticCollisionPairDisposition::Indeterminate,
+            IntersectionEvidenceV2::Indeterminate,
+            TopologyContactDecision::Indeterminate,
+            StaticCollisionPairDisposition::Indeterminate,
+            IntersectionEvidenceV2::Indeterminate,
+            TopologyContactDecision::Indeterminate,
+        ),
+        (
+            135.0,
+            StaticCollisionPairDisposition::Indeterminate,
+            IntersectionEvidenceV2::Indeterminate,
+            TopologyContactDecision::Indeterminate,
+            StaticCollisionPairDisposition::Penetrating,
+            IntersectionEvidenceV2::TransversalCrossing,
+            TopologyContactDecision::Penetrating,
+        ),
+    ] {
+        let angles = CanonicalHingeAngles::new(
+            fixture
+                .hinges
+                .iter()
+                .copied()
+                .map(|hinge| HingeAngle::new(hinge, angle).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        let pose = fixture.model.solve(Some(root), &angles).unwrap();
+        let snapshot = diagnose_static_collision_geometry(
+            &fixture.model,
+            &pose,
+            0.1,
+            StaticCollisionLimits::default(),
+        )
+        .expect("complete three-face diagnostic");
+        assert_eq!(snapshot.pairs().len(), 3);
+        let observed_hinges = snapshot
+            .pairs()
+            .iter()
+            .filter(|pair| hinge_pairs.contains(&[pair.first_face(), pair.second_face()]))
+            .map(|pair| {
+                (
+                    [pair.first_face(), pair.second_face()],
+                    pair.evidence(),
+                    pair.policy_decision(),
+                    pair.disposition(),
+                    pair.shared_hinge_solid_classified(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(observed_hinges.len(), hinge_pairs.len());
+        // The exact shared-hinge classifier is invoked and its summary is
+        // consumed for every authenticated edge. A multi-hinge pose does not
+        // inherit the isolated two-face allowance: when the complete tree
+        // cannot authenticate that allowance, each edge remains fail-closed.
+        assert!(
+            observed_hinges
+                .iter()
+                .all(|(_, evidence, decision, disposition, classified)| {
+                    *classified
+                        && *evidence == expected_hinge_evidence
+                        && *decision == expected_hinge_decision
+                        && *disposition == expected_hinge_disposition
+                }),
+            "angle={angle}, observed_hinges={observed_hinges:?}",
+        );
+        for pair in snapshot.pairs() {
+            let identity = [pair.first_face(), pair.second_face()];
+            if hinge_pairs.contains(&identity) {
+                assert!(
+                    pair.shared_hinge_solid_classified(),
+                    "angle={angle}, pair={identity:?}, evidence={:?}, decision={:?}, \
+                     disposition={:?}",
+                    pair.evidence(),
+                    pair.policy_decision(),
+                    pair.disposition(),
+                );
+            } else {
+                // In a three-triangle chain the two outer faces necessarily
+                // share the center triangle's common endpoint. At 10 degrees
+                // the exact scan finds no authenticated contact and remains
+                // Indeterminate; at 135 degrees it proves a transversal
+                // crossing. Neither hinge's exact solid result may promote
+                // this outer, non-hinge pair.
+                assert_eq!(pair.topology(), TopologyRelation::SharedVertex);
+                assert!(!pair.shared_hinge_solid_classified());
+                assert_eq!(pair.evidence(), expected_outer_evidence);
+                assert_eq!(pair.policy_decision(), expected_outer_decision);
+                assert_eq!(pair.disposition(), expected_outer);
+            }
+        }
+    }
+
+    let angles = CanonicalHingeAngles::new(
+        fixture
+            .hinges
+            .iter()
+            .copied()
+            .map(|hinge| HingeAngle::new(hinge, 10.0).unwrap())
+            .collect(),
+    )
+    .unwrap();
+    let pose = fixture.model.solve(Some(root), &angles).unwrap();
+    assert_eq!(
+        diagnose_static_collision_geometry(
+            &fixture.model,
+            &pose,
+            0.1,
+            StaticCollisionLimits {
+                max_shared_hinge_solid_diagnostics: 1,
+                ..StaticCollisionLimits::default()
+            },
+        ),
+        Err(StaticCollisionError::ResourceLimitExceeded)
+    );
 }
 
 #[test]

@@ -1283,22 +1283,46 @@ pub fn diagnose_static_collision_geometry(
             return Err(StaticCollisionError::InconsistentMaterialPose);
         }
     }
-    let shared_hinge_solid = if is_positive_thickness && face_count == 2 && pose.hinges().len() == 1
-    {
-        if limits.max_shared_hinge_solid_diagnostics < 1 {
-            return Err(StaticCollisionError::ResourceLimitExceeded);
+    let shared_hinge_solids = if is_positive_thickness {
+        let registry = preflight_shared_hinge_registry(pose, limits)?;
+        let mut summaries = Vec::new();
+        summaries
+            .try_reserve_exact(registry.hinges.len())
+            .map_err(|_| StaticCollisionError::ResourceLimitExceeded)?;
+        for hinge in &registry.hinges {
+            let summary = if registry.hinges.len() == 1 {
+                // Preserve the established two-face/one-hinge entry path.
+                diagnose_bound_shared_hinge_solid_v1(validated.bound, paper_thickness_mm)
+            } else {
+                diagnose_bound_shared_hinge_solid_for_edge_v1(
+                    validated.bound,
+                    paper_thickness_mm,
+                    Some(hinge.edge()),
+                )
+            }
+            .map_err(map_shared_hinge_solid_diagnostic_error)?;
+            if let Some(summary) = summary {
+                if canonical_face_pair(summary.first_face, summary.second_face)
+                    != canonical_face_pair(hinge.left_face(), hinge.right_face())
+                {
+                    return Err(StaticCollisionError::InconsistentMaterialPose);
+                }
+                summaries.push(summary);
+            }
         }
-        diagnose_bound_shared_hinge_solid_v1(validated.bound, paper_thickness_mm)
-            .map_err(map_shared_hinge_solid_diagnostic_error)?
+        summaries
     } else {
-        None
+        Vec::new()
     };
 
     let mut pairs = Vec::new();
     pairs
         .try_reserve_exact(expected_unordered_face_pairs)
         .map_err(|_| StaticCollisionError::ResourceLimitExceeded)?;
-    let mut shared_hinge_solid_consumed = false;
+    let mut shared_hinge_solids_consumed = HashSet::new();
+    shared_hinge_solids_consumed
+        .try_reserve(shared_hinge_solids.len())
+        .map_err(|_| StaticCollisionError::ResourceLimitExceeded)?;
     for pair in authenticated_pairs {
         let strict_transversal_dual_gate_proven = transversal
             .as_ref()
@@ -1385,11 +1409,12 @@ pub fn diagnose_static_collision_geometry(
             disposition = StaticCollisionPairDisposition::Allowed;
         }
         let mut shared_hinge_solid_classified = false;
-        if let Some(shared_hinge) = shared_hinge_solid.as_ref().filter(|shared_hinge| {
+        if let Some(shared_hinge) = shared_hinge_solids.iter().find(|shared_hinge| {
             shared_hinge.first_face == pair.first_face
                 && shared_hinge.second_face == pair.second_face
         }) {
-            if shared_hinge_solid_consumed
+            let pair_key = canonical_face_pair(pair.first_face, pair.second_face);
+            if !shared_hinge_solids_consumed.insert(pair_key)
                 || !matches!(pair.topology, TopologyRelation::SharedHingeEdge)
                 || strict_transversal_dual_gate_proven
                 || whole_face_overlap_proven
@@ -1397,7 +1422,6 @@ pub fn diagnose_static_collision_geometry(
             {
                 return Err(StaticCollisionError::InconsistentMaterialPose);
             }
-            shared_hinge_solid_consumed = true;
             shared_hinge_solid_classified = true;
             evidence = shared_hinge.evidence;
             policy_decision = shared_hinge.policy_decision;
@@ -1426,7 +1450,7 @@ pub fn diagnose_static_collision_geometry(
             shared_hinge_solid_classified,
         });
     }
-    if shared_hinge_solid.is_some() != shared_hinge_solid_consumed {
+    if shared_hinge_solids.len() != shared_hinge_solids_consumed.len() {
         return Err(StaticCollisionError::InconsistentMaterialPose);
     }
     build_static_collision_diagnostic_snapshot(face_count, expected_unordered_face_pairs, pairs)

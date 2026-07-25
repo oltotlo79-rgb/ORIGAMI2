@@ -1,5 +1,6 @@
 import { StrictMode } from 'react'
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -207,6 +208,70 @@ describe('FoldTechniqueEditorDialog', () => {
     expect(document.body.textContent).toContain(
       'stored only as descriptive metadata',
     )
+  })
+
+  it('switches locale without resetting edits, selection, or callbacks', async () => {
+    const initial = clone(createInitialFoldTechniqueDocumentV1())
+    const second = clone(initial.techniques[0])
+    second.id = 'user.second-technique'
+    second.names = [
+      { locale: 'ja', text: '二つ目の折り技法' },
+      { locale: 'en', text: 'Second folding technique' },
+    ]
+    initial.techniques.push(second)
+    const onConfirm = vi.fn()
+    const onCancel = vi.fn()
+    const onDirtyChange = vi.fn()
+    renderDialog({
+      mode: 'edit',
+      initialDocument: initial,
+      onConfirm,
+      onCancel,
+      onDirtyChange,
+    })
+    await waitFor(() =>
+      expect(onDirtyChange).toHaveBeenLastCalledWith(false))
+
+    fireEvent.change(screen.getByLabelText('編集する技法'), {
+      target: { value: '1' },
+    })
+    fireEvent.change(screen.getByLabelText('技法名（日本語）'), {
+      target: { value: 'ロケール切替後も保持' },
+    })
+    await waitFor(() =>
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true))
+    const dirtyCallsBeforeSwitch = onDirtyChange.mock.calls.map(
+      ([dirty]) => dirty,
+    )
+
+    act(() => {
+      localeStore.setLocale('en')
+    })
+
+    expect(screen.getByRole('heading', {
+      name: 'Edit the instruction template',
+    })).toBeTruthy()
+    expect((
+      screen.getByLabelText('Technique to edit') as HTMLSelectElement
+    ).value).toBe('1')
+    expect((
+      screen.getByLabelText('Technique name (Japanese)') as HTMLInputElement
+    ).value).toBe('ロケール切替後も保持')
+    expect(onDirtyChange.mock.calls.map(([dirty]) => dirty))
+      .toEqual(dirtyCallsBeforeSwitch)
+    expect(onConfirm).not.toHaveBeenCalled()
+    expect(onCancel).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply changes' }))
+    const confirmed =
+      onConfirm.mock.calls[0]?.[0] as FoldTechniqueFileDocumentV1
+    expect(confirmed.techniques[1]?.names).toContainEqual({
+      locale: 'ja',
+      text: 'ロケール切替後も保持',
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onConfirm).toHaveBeenCalledTimes(1)
+    expect(onCancel).toHaveBeenCalledTimes(1)
   })
 
   it('selects and edits every technique in a multi-technique package', () => {

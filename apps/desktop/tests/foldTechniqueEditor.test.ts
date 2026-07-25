@@ -13,6 +13,9 @@ import {
   validateFoldTechniqueDocumentV1,
   type FoldTechniqueActionKindV1,
 } from '../src/lib/foldTechniqueEditor.ts'
+import {
+  FOLD_TECHNIQUE_EDITOR_DIALOG_TEXT,
+} from '../src/lib/foldTechniqueEditorDialogText.ts'
 
 test('initial editor value is a deeply frozen strict V1 document', () => {
   const document = createInitialFoldTechniqueDocumentV1()
@@ -389,7 +392,11 @@ test('editor foundation has no execution, project mutation, or resource-fetch pa
     new URL('../src/components/FoldTechniqueEditorDialog.tsx', import.meta.url),
     'utf8',
   )
-  const implementation = `${modelSource}\n${dialogSource}`
+  const catalogSource = readFileSync(
+    new URL('../src/lib/foldTechniqueEditorDialogText.ts', import.meta.url),
+    'utf8',
+  )
+  const implementation = `${modelSource}\n${dialogSource}\n${catalogSource}`
   assert.doesNotMatch(
     implementation,
     /\b(?:eval|fetch|invoke|open|writeFile|readFile|Function)\s*\(/u,
@@ -397,6 +404,21 @@ test('editor foundation has no execution, project mutation, or resource-fetch pa
   assert.doesNotMatch(implementation, /@tauri-apps|coreClient|project_command/u)
   assert.match(implementation, /unsupported_physical_operation/u)
   assert.match(implementation, /inert plain text; never fetched/u)
+  assert.match(
+    dialogSource,
+    /FOLD_TECHNIQUE_EDITOR_DIALOG_TEXT as COPY/u,
+  )
+  assert.doesNotMatch(dialogSource, /\bconst COPY\s*=/u)
+  assert.doesNotMatch(dialogSource, /[ぁ-んァ-ン一-龯]/u)
+  for (const displayText of collectStrings(
+    FOLD_TECHNIQUE_EDITOR_DIALOG_TEXT,
+  )) {
+    assert.equal(
+      dialogSource.includes(`'${displayText}'`),
+      false,
+      `inline dialog display text: ${displayText}`,
+    )
+  }
 })
 
 type Mutable<Value> =
@@ -415,4 +437,10 @@ function localized(ja: string, en: string) {
     { locale: 'ja', text: ja },
     { locale: 'en', text: en },
   ]
+}
+
+function collectStrings(value: unknown): string[] {
+  if (typeof value === 'string') return [value]
+  if (typeof value !== 'object' || value === null) return []
+  return Object.values(value).flatMap(collectStrings)
 }

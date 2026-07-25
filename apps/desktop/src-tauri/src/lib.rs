@@ -6338,12 +6338,15 @@ fn update_project_memo(
     {
         return Err("project memo must contain at most 16000 printable characters".to_owned());
     }
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::UpdateProjectMemo { memo },
     )
 }
@@ -10821,14 +10824,13 @@ fn remove_vertex(
     expected_revision: u64,
     id: VertexId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
-        Command::RemoveVertex { id },
-    )?;
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(&mut project, expectation, Command::RemoveVertex { id })?;
     project.remove_vertex_coordinate_expression(id);
     Ok(snapshot(&project))
 }
@@ -10964,14 +10966,13 @@ fn remove_edge(
     expected_revision: u64,
     id: EdgeId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
-        Command::RemoveEdge { id },
-    )
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(&mut project, expectation, Command::RemoveEdge { id })
 }
 
 #[tauri::command]
@@ -11324,14 +11325,13 @@ fn add_annotation(
     expected_revision: u64,
     record: ori_domain::AnnotationRecordV1,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
-        Command::AddAnnotation { record },
-    )
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(&mut project, expectation, Command::AddAnnotation { record })
 }
 
 #[tauri::command]
@@ -11342,12 +11342,15 @@ fn update_annotation(
     expected_revision: u64,
     record: ori_domain::AnnotationRecordV1,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::UpdateAnnotation { record },
     )
 }
@@ -11360,14 +11363,13 @@ fn remove_annotation(
     expected_revision: u64,
     id: ori_domain::AnnotationId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
-        Command::RemoveAnnotation { id },
-    )
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(&mut project, expectation, Command::RemoveAnnotation { id })
 }
 
 #[tauri::command]
@@ -12152,12 +12154,15 @@ fn update_instruction_step_metadata(
     duration_ms: u32,
     visual: InstructionVisual,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::UpdateInstructionStepMetadata {
             step_id,
             title,
@@ -12213,12 +12218,15 @@ fn remove_instruction_step(
     expected_revision: u64,
     step_id: InstructionStepId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::RemoveInstructionStep { step_id },
     )
 }
@@ -12232,12 +12240,15 @@ fn move_instruction_step(
     step_id: InstructionStepId,
     target_index: usize,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::MoveInstructionStep {
             step_id,
             target_index,
@@ -12387,12 +12398,15 @@ fn set_cutting_allowed(
     expected_revision: u64,
     allowed: bool,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::SetCuttingAllowed { allowed },
     )
 }
@@ -12411,12 +12425,15 @@ fn update_paper_properties(
     back_texture_asset: Option<ori_domain::AssetId>,
     cutting_allowed: bool,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::UpdatePaperProperties {
             thickness_mm,
             front_color,
@@ -12674,12 +12691,15 @@ fn set_element_metadata(
     target: ori_core::ElementMetadataTargetV1,
     metadata: Option<ori_domain::ElementMetadataV1>,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::SetElementMetadata { target, metadata },
     )
 }
@@ -12692,12 +12712,15 @@ fn set_length_display_unit(
     expected_revision: u64,
     unit: LengthDisplayUnit,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::SetLengthDisplayUnit { unit },
     )
 }
@@ -13033,12 +13056,15 @@ fn remove_boundary_vertex(
     expected_revision: u64,
     vertex: VertexId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    execute_command(
-        &mut project,
+    let expectation = ProjectExpectation::new(
         expected_project_instance_id,
         expected_project_id,
         expected_revision,
+    );
+    let mut project = lock_project(&state)?;
+    execute_expected_command(
+        &mut project,
+        expectation,
         Command::RemoveBoundaryVertex { vertex },
     )?;
     project.remove_vertex_coordinate_expression(vertex);
@@ -13386,6 +13412,20 @@ fn execute_command(
     project.current_layer_evidence = None;
     invalidation.commit();
     Ok(snapshot(project))
+}
+
+fn execute_expected_command(
+    project: &mut ProjectState,
+    expectation: ProjectExpectation,
+    command: Command,
+) -> Result<ProjectSnapshot, String> {
+    execute_command(
+        project,
+        expectation.instance_id,
+        expectation.project_id,
+        expectation.revision,
+        command,
+    )
 }
 
 fn replace_with_new_project(

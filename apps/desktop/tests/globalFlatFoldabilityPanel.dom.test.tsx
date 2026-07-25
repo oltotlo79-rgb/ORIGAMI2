@@ -123,6 +123,25 @@ describe('GlobalFlatFoldabilityPanel DOM interactions', () => {
     expect(
       screen.getByRole('region', { name: '全体平坦折り判定' }),
     ).toBeTruthy()
+    const panelBeforeLocaleSwitch = screen.getByRole(
+      'region',
+      { name: '全体平坦折り判定' },
+    )
+    const timeLimitBeforeLocaleSwitch = screen.getByRole(
+      'combobox',
+      { name: '時間制限' },
+    ) as HTMLSelectElement
+    const startBeforeLocaleSwitch = screen.getByRole(
+      'button',
+      { name: '判定中…' },
+    )
+    const statusBeforeLocaleSwitch = screen.getByRole(
+      'group',
+      { name: '判定中' },
+    )
+    const liveBeforeLocaleSwitch = screen.getByRole('status')
+    const selectedTimeLimitBeforeLocaleSwitch =
+      timeLimitBeforeLocaleSwitch.value
 
     act(() => {
       localeStore.setLocale('en')
@@ -132,6 +151,7 @@ describe('GlobalFlatFoldabilityPanel DOM interactions', () => {
       'region',
       { name: 'Global flat-foldability check' },
     )
+    expect(panel).toBe(panelBeforeLocaleSwitch)
     expect(
       screen.getByText('Time-limited three-way result'),
     ).toBeTruthy()
@@ -139,16 +159,18 @@ describe('GlobalFlatFoldabilityPanel DOM interactions', () => {
       'combobox',
       { name: 'Time limit' },
     ) as HTMLSelectElement
+    expect(timeLimit).toBe(timeLimitBeforeLocaleSwitch)
+    expect(timeLimit.value).toBe(selectedTimeLimitBeforeLocaleSwitch)
     expect(timeLimit.disabled).toBe(true)
     expect(
       screen.getAllByRole('option').map((option) => option.textContent),
     ).toEqual(['5 seconds', '30 seconds', '120 seconds'])
-    expect(screen.getByRole('button', { name: 'Checking…' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Checking…' }))
+      .toBe(startBeforeLocaleSwitch)
     expect(screen.getByRole('button', { name: 'Cancel check' })).toBeTruthy()
-    expect(
-      screen.getByRole('group', { name: 'Checking' })
-        .getAttribute('aria-busy'),
-    ).toBe('true')
+    const status = screen.getByRole('group', { name: 'Checking' })
+    expect(status).toBe(statusBeforeLocaleSwitch)
+    expect(status.getAttribute('aria-busy')).toBe('true')
     expect(screen.getByText('Building overlap regions')).toBeTruthy()
     expect(
       screen.getByText('12,340 completed (total still being calculated)'),
@@ -157,6 +179,7 @@ describe('GlobalFlatFoldabilityPanel DOM interactions', () => {
     expect(panel.textContent).toContain('Overlap cells')
     expect(panel.textContent).toContain('Search nodes')
     const live = screen.getByRole('status')
+    expect(live).toBe(liveBeforeLocaleSwitch)
     expect(live.getAttribute('aria-live')).toBe('polite')
     expect(live.getAttribute('aria-atomic')).toBe('true')
     expect(live.textContent).toBe('Checking. Building overlap regions.')

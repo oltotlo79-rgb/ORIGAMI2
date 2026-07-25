@@ -63,4 +63,60 @@ describe('BeginnerShapeCanvasPreview', () => {
     fireEvent.pointerDown(canvas, { clientX: 20, clientY: 40 })
     expect(change).toHaveBeenCalled()
   })
+  it('switches locale in place without resetting selection or control point state', () => {
+    const bodyChange = vi.fn()
+    const protrusionChange = vi.fn()
+    const view = render(<BeginnerShapeCanvasPreview locale="en"
+      bodySize={undefined} bodyOutline={[]} bodyMode="general"
+      protrusions={[target]} onBodyOutlineChange={bodyChange}
+      onProtrusionChange={protrusionChange} />)
+    const englishSelect = screen.getByLabelText(
+      'Outline to preview',
+    ) as HTMLSelectElement
+    fireEvent.change(englishSelect, { target: { value: '2' } })
+    const englishCanvas = screen.getByLabelText('Binding 2 outline preview')
+    vi.spyOn(englishCanvas, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      top: 0,
+      width: 240,
+      height: 180,
+      right: 240,
+      bottom: 180,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+    fireEvent.pointerDown(englishCanvas, {
+      clientX: 120 + (20 * (100 / 30)),
+      clientY: 90 + (10 * (100 / 30)),
+    })
+    expect(protrusionChange).toHaveBeenCalledOnce()
+    protrusionChange.mockClear()
+
+    view.rerender(<BeginnerShapeCanvasPreview locale="ja"
+      bodySize={undefined} bodyOutline={[]} bodyMode="general"
+      protrusions={[target]} onBodyOutlineChange={bodyChange}
+      onProtrusionChange={protrusionChange} />)
+
+    const japaneseSelect = screen.getByLabelText(
+      '表示する輪郭',
+    ) as HTMLSelectElement
+    const japaneseCanvas = screen.getByLabelText(
+      'binding 2の輪郭プレビュー',
+    )
+    expect(japaneseSelect).toBe(englishSelect)
+    expect(japaneseSelect.value).toBe('2')
+    expect(japaneseCanvas).toBe(englishCanvas)
+    expect(screen.getByText(
+      'control pointをpointerで移動できます。矢印キーは0.1 mm、Shift+矢印は1 mm移動します。',
+    )).toBeTruthy()
+    expect(bodyChange).not.toHaveBeenCalled()
+    expect(protrusionChange).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(japaneseCanvas, { key: 'ArrowRight' })
+    expect(protrusionChange).toHaveBeenCalledWith(expect.objectContaining({
+      local_outline_tenths_mm: expect.arrayContaining([[11, -10]]),
+    }))
+    expect(bodyChange).not.toHaveBeenCalled()
+  })
 })

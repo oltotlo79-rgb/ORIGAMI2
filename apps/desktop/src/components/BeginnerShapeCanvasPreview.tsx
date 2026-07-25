@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
+import {
+  BEGINNER_SHAPE_CANVAS_PREVIEW_TEXT as TEXT,
+} from '../lib/beginnerShapeCanvasPreviewText.ts'
 import type { BeginnerGenerationConstraintsV1 } from '../lib/coreClient'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+  type LocalizedText,
+} from '../lib/i18n.ts'
 
 type Protrusion = NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
 type Point = readonly [number, number]
@@ -29,6 +37,7 @@ export function BeginnerShapeCanvasPreview({ locale, bodySize, bodyOutline, body
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [selection, setSelection] = useState('body')
   const [controlPoint, setControlPoint] = useState(0)
+  const t = (value: LocalizedText) => selectLocalizedText(locale, value)
   const selected = selection === 'body' ? null
     : protrusions.find((target) => String(target.id) === selection) ?? null
   useEffect(() => {
@@ -40,6 +49,11 @@ export function BeginnerShapeCanvasPreview({ locale, bodySize, bodyOutline, body
   ] as Point) : editable
   const maximum = Math.max(1, ...drawingPoints.flatMap(([x, y]) => [Math.abs(x), Math.abs(y)]))
   const scale = Math.min(100 / maximum, 1_000)
+  const selectionLabel = selection === 'body'
+    ? t(TEXT.bodyOption)
+    : formatLocalizedText(locale, TEXT.bindingOption, {
+      bindingId: selection,
+    })
   const commitPoint = (index: number, x: number, y: number) => {
     if (editable.length === 0 || index < 0 || index >= editable.length) return
     const limit = selected ? 10_000 : 100_000
@@ -90,12 +104,14 @@ export function BeginnerShapeCanvasPreview({ locale, bodySize, bodyOutline, body
     context.restore()
   }, [bodySize, drawingPoints, scale, controlPoint])
   return <section aria-labelledby="beginner-shape-preview-heading">
-    <h3 id="beginner-shape-preview-heading">{locale === 'ja' ? '目標形状2Dプレビュー' : '2D target-shape preview'}</h3>
-    <label>{locale === 'ja' ? '表示する輪郭' : 'Outline to preview'}
+    <h3 id="beginner-shape-preview-heading">{t(TEXT.heading)}</h3>
+    <label>{t(TEXT.outlineToPreview)}
       <select value={selection} onChange={(event) => setSelection(event.currentTarget.value)}>
-        <option value="body">{locale === 'ja' ? '胴体' : 'Body'}</option>
+        <option value="body">{t(TEXT.bodyOption)}</option>
         {protrusions.map((target) => <option key={target.id} value={target.id}>
-          {locale === 'ja' ? `binding ${target.id}` : `Binding ${target.id}`}
+          {formatLocalizedText(locale, TEXT.bindingOption, {
+            bindingId: target.id,
+          })}
         </option>)}
       </select>
     </label>
@@ -124,13 +140,11 @@ export function BeginnerShapeCanvasPreview({ locale, bodySize, bodyOutline, body
           point[1] + (event.key === 'ArrowUp' ? -delta : event.key === 'ArrowDown' ? delta : 0))
       }}
       aria-describedby="beginner-shape-canvas-help"
-      aria-label={locale === 'ja'
-        ? `${selection === 'body' ? '胴体' : `binding ${selection}`}の輪郭プレビュー`
-        : `${selection === 'body' ? 'Body' : `Binding ${selection}`} outline preview`} />
-    <p id="beginner-shape-canvas-help">{locale === 'ja'
-      ? 'control pointをpointerで移動できます。矢印キーは0.1 mm、Shift+矢印は1 mm移動します。'
-      : 'Move a control point with the pointer. Arrow keys move 0.1 mm; Shift+Arrow moves 1 mm.'}</p>
-    {selected && !selected.local_outline_tenths_mm && <p role="status">{locale === 'ja'
-      ? 'このbindingには局所輪郭がありません。' : 'This binding has no local outline.'}</p>}
+      aria-label={formatLocalizedText(locale, TEXT.canvasAriaLabel, {
+        selectionLabel,
+      })} />
+    <p id="beginner-shape-canvas-help">{t(TEXT.help)}</p>
+    {selected && !selected.local_outline_tenths_mm
+      && <p role="status">{t(TEXT.missingOutline)}</p>}
   </section>
 }

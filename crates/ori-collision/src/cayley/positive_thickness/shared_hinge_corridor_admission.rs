@@ -106,41 +106,27 @@ impl Default for SharedHingeCorridorAdmissionLimitsV1 {
 impl SharedHingeCorridorAdmissionLimitsV1 {
     fn projected(self) -> Self {
         let hard = Self::default();
-        Self {
-            max_authenticated_faces: self
-                .max_authenticated_faces
-                .min(hard.max_authenticated_faces),
-            max_authenticated_hinges: self
-                .max_authenticated_hinges
-                .min(hard.max_authenticated_hinges),
-            max_corridor_capability_revalidations: self
-                .max_corridor_capability_revalidations
-                .min(hard.max_corridor_capability_revalidations),
-            max_sealed_prior_work_bindings: self
-                .max_sealed_prior_work_bindings
-                .min(hard.max_sealed_prior_work_bindings),
-            max_root_bindings: self.max_root_bindings.min(hard.max_root_bindings),
-            max_angle_bindings: self.max_angle_bindings.min(hard.max_angle_bindings),
-            max_face_identity_bindings: self
-                .max_face_identity_bindings
-                .min(hard.max_face_identity_bindings),
-            max_hinge_identity_bindings: self
-                .max_hinge_identity_bindings
-                .min(hard.max_hinge_identity_bindings),
-            max_interaction_kind_bindings: self
-                .max_interaction_kind_bindings
-                .min(hard.max_interaction_kind_bindings),
-            max_face_transform_bit_bindings: self
-                .max_face_transform_bit_bindings
-                .min(hard.max_face_transform_bit_bindings),
-            max_hinge_parent_transform_bit_bindings: self
-                .max_hinge_parent_transform_bit_bindings
-                .min(hard.max_hinge_parent_transform_bit_bindings),
-            max_boundary_scalar_comparisons: self
-                .max_boundary_scalar_comparisons
-                .min(hard.max_boundary_scalar_comparisons),
-            exact: project_cayley_limits(self.exact, hard.exact),
-        }
+        clamp_to_hard!(
+            SharedHingeCorridorAdmissionLimitsV1 {
+                requested: self,
+                hard: hard;
+                min:
+                    max_authenticated_faces,
+                    max_authenticated_hinges,
+                    max_corridor_capability_revalidations,
+                    max_sealed_prior_work_bindings,
+                    max_root_bindings,
+                    max_angle_bindings,
+                    max_face_identity_bindings,
+                    max_hinge_identity_bindings,
+                    max_interaction_kind_bindings,
+                    max_face_transform_bit_bindings,
+                    max_hinge_parent_transform_bit_bindings,
+                    max_boundary_scalar_comparisons;
+                explicit:
+                    exact: project_cayley_limits(self.exact, hard.exact),
+            }
+        )
     }
 }
 
@@ -861,4 +847,49 @@ pub(super) fn revalidate_shared_hinge_corridor_admission_v1<
         return None;
     }
     Some(RevalidatedSharedHingeCorridorAdmissionCapabilityV1 { capability })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projected_limits_cover_every_field_at_under_hard_and_over_hard_boundaries() {
+        let hard = SharedHingeCorridorAdmissionLimitsV1::default();
+        let requested = SharedHingeCorridorAdmissionLimitsV1 {
+            max_authenticated_faces: 0,
+            max_authenticated_hinges: hard.max_authenticated_hinges,
+            max_corridor_capability_revalidations: usize::MAX,
+            max_sealed_prior_work_bindings: 0,
+            max_root_bindings: hard.max_root_bindings,
+            max_angle_bindings: usize::MAX,
+            max_face_identity_bindings: 0,
+            max_hinge_identity_bindings: hard.max_hinge_identity_bindings,
+            max_interaction_kind_bindings: usize::MAX,
+            max_face_transform_bit_bindings: 0,
+            max_hinge_parent_transform_bit_bindings: hard.max_hinge_parent_transform_bit_bindings,
+            max_boundary_scalar_comparisons: usize::MAX,
+            exact: hard.exact,
+        };
+
+        assert_eq!(
+            requested.projected(),
+            SharedHingeCorridorAdmissionLimitsV1 {
+                max_authenticated_faces: 0,
+                max_authenticated_hinges: hard.max_authenticated_hinges,
+                max_corridor_capability_revalidations: hard.max_corridor_capability_revalidations,
+                max_sealed_prior_work_bindings: 0,
+                max_root_bindings: hard.max_root_bindings,
+                max_angle_bindings: hard.max_angle_bindings,
+                max_face_identity_bindings: 0,
+                max_hinge_identity_bindings: hard.max_hinge_identity_bindings,
+                max_interaction_kind_bindings: hard.max_interaction_kind_bindings,
+                max_face_transform_bit_bindings: 0,
+                max_hinge_parent_transform_bit_bindings: hard
+                    .max_hinge_parent_transform_bit_bindings,
+                max_boundary_scalar_comparisons: hard.max_boundary_scalar_comparisons,
+                exact: project_cayley_limits(requested.exact, hard.exact),
+            }
+        );
+    }
 }

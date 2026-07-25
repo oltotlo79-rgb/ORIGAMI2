@@ -6,6 +6,7 @@ const appSource = read('../src/App.tsx')
 const clientSource = read('../src/lib/coreClient.ts')
 const panelSource = read('../src/components/InstructionTimelinePanel.tsx')
 const dialogSource = read('../src/components/InstructionExportDialog.tsx')
+const dialogTextSource = read('../src/lib/instructionExportDialogText.ts')
 const nativeSource = read('../src-tauri/src/lib.rs')
 const nativeExportSource = read('../src-tauri/src/instruction_export.rs')
 const layoutSource = read('../../../crates/ori-formats/src/instruction_export/layout.rs')
@@ -69,7 +70,11 @@ test('save remains bound to one project revision and requires warning acknowledg
   assert.match(appSource, /cancelInstructionExport\(preview\.export_id\)/u)
   assert.match(dialogSource, /preview\.warnings\.length === 0 \|\| warningsAcknowledged/u)
   assert.match(dialogSource, /\(busy && !generationActive\)/u)
-  assert.match(dialogSource, /生成を中止/u)
+  assert.match(
+    dialogSource,
+    /import \{ INSTRUCTION_EXPORT_COPY \} from '\.\.\/lib\/instructionExportDialogText\.ts'/u,
+  )
+  assert.match(dialogTextSource, /生成を中止/u)
   assert.match(dialogSource, /aria-modal="true"/u)
 })
 

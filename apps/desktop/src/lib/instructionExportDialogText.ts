@@ -1,0 +1,86 @@
+const JA_INSTRUCTION_EXPORT_COPY = Object.freeze({
+  eyebrow: '折り図の書き出し',
+  title: '形式と出力内容を確認',
+  close: '閉じる',
+  description:
+    '現在の編集リビジョンから折り図を生成します。書き出してもプロジェクトの保存状態や履歴は変わりません。',
+  format: '出力形式',
+  optionDetails: Object.freeze({
+    pdf: '固定アイソメトリック視点の折り図を、複数ページのPDFにまとめます',
+    svg_zip: '手順ごとのベクターSVG画像を、1つのZIPにまとめます',
+  }),
+  rebuild: '現在の編集内容から作り直す',
+  retry: '同じ形式で再試行',
+  metadata: Object.freeze({
+    format: '形式',
+    specification: '出力仕様',
+    profile: '出力プロファイル',
+    projection: '投影プロファイル',
+    suggestedName: '保存名候補',
+    size: 'サイズ',
+    steps: '折り手順',
+    pages: 'ページ',
+    cautions: '注意事項',
+    revision: '固定元',
+  }),
+  stepUnit: '手順',
+  pageUnit: 'ページ',
+  cautionUnit: '件',
+  warningTitle: '出力前の確認事項',
+  acknowledge: '上記の注意事項を確認しました',
+  warningFree: 'この折り図について追加確認が必要な注意事項はありません。',
+  stop: '生成を中止',
+  cancel: 'キャンセル',
+  processing: '処理中…',
+  save: '保存先を選んで書き出す…',
+  summaries: Object.freeze({
+    pdf: 'PDF 1.7・A4縦・固定アイソメトリック投影・複数ページ',
+    svg_zip: 'SVGページ画像・固定アイソメトリック投影・ZIPアーカイブ',
+  }),
+})
+
+const EN_INSTRUCTION_EXPORT_COPY = Object.freeze({
+  eyebrow: 'Export instructions',
+  title: 'Review format and output',
+  close: 'Close',
+  description:
+    'Generate instructions from the current edit revision. Exporting does not change the project save state or history.',
+  format: 'Export format',
+  optionDetails: Object.freeze({
+    pdf: 'Combine fixed-isometric diagrams with authored camera and hand/regrip guide details into a multi-page PDF',
+    svg_zip: 'Package one vector SVG page with camera, fold directions, focus points, and hand positions into a ZIP',
+  }),
+  rebuild: 'Rebuild from the current edits',
+  retry: 'Retry the same format',
+  metadata: Object.freeze({
+    format: 'Format',
+    specification: 'Specification',
+    profile: 'Export profile',
+    projection: 'Projection profile',
+    suggestedName: 'Suggested file name',
+    size: 'Size',
+    steps: 'Instruction steps',
+    pages: 'Pages',
+    cautions: 'Notices',
+    revision: 'Source',
+  }),
+  stepUnit: 'steps',
+  pageUnit: 'pages',
+  cautionUnit: 'notices',
+  warningTitle: 'Review before export',
+  acknowledge: 'I have reviewed the notices above',
+  warningFree: 'No additional notices require review for these instructions.',
+  stop: 'Stop generation',
+  cancel: 'Cancel',
+  processing: 'Processing…',
+  save: 'Choose destination and export…',
+  summaries: Object.freeze({
+    pdf: 'PDF 1.7 · A4 portrait · fixed isometric projection · multiple pages',
+    svg_zip: 'SVG page images · fixed isometric projection · ZIP archive',
+  }),
+})
+
+export const INSTRUCTION_EXPORT_COPY = Object.freeze({
+  ja: JA_INSTRUCTION_EXPORT_COPY,
+  en: EN_INSTRUCTION_EXPORT_COPY,
+})

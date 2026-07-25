@@ -7271,6 +7271,13 @@ mod tests {
         assert!(!first.revalidates_v1(
             &geometry, &source, fixed, &schedule, &closure, 0.1, [0x40; 32], [0x42; 32]
         ));
+        assert_eq!(first.block_count(), 4);
+        // The partition wrapper adds no independent motion or mutation
+        // authority: consuming it yields only the already-issued whole-graph
+        // parent proofs.
+        let (positive_parent, layer_parent) = first.into_parent_proofs();
+        assert!(positive_parent.is_for(&geometry, fixed, &schedule, &closure, 0.1));
+        assert!(layer_parent.is_for(&geometry, &source, &schedule, &closure, 0.1));
     }
 
     #[test]

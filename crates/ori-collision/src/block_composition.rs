@@ -920,8 +920,14 @@ fn multi_block_positive_layer_binding_v1(
     hash.finalize().into()
 }
 
-/// Owns the already-issued whole-graph proofs and binds them to one canonical
-/// edge partition. Callers can neither manufacture a partial block proof nor
+/// Research wrapper that binds already-issued whole-graph parent proofs to one
+/// canonical edge partition.
+///
+/// This wrapper does not independently prove clearance or layer transport and
+/// does not, by itself, authorize continuous motion or project mutation. The
+/// caller remains responsible for supplying a canonical partition and trusted
+/// articulation pose/layer fingerprints from an authority appropriate to its
+/// application. Callers can neither manufacture a partial block proof nor
 /// substitute a pose/layer snapshot after issuance.
 pub struct BlockComposedPathAuthorityV1 {
     binding: [u8; 32],
@@ -1005,6 +1011,15 @@ fn block_binding_v1(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Binds existing whole-graph parent proofs to a caller-supplied block
+/// partition for research and composition workflows.
+///
+/// Issuance authenticates the parent proofs and validates the submitted edge
+/// partition, but it does not establish the provenance of the two articulation
+/// fingerprints. Supplying trusted articulation fingerprints and choosing the
+/// canonical application partition remain caller responsibilities. The
+/// returned wrapper alone grants neither continuous-motion nor
+/// project-mutation authority.
 pub fn issue_block_composed_path_authority_v1(
     geometry: &MaterialHingeGraphGeometry,
     source: &LayerOrderSnapshot,

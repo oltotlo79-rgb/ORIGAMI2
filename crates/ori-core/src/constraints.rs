@@ -3316,8 +3316,9 @@ fn vertex_id_lookup(records: &[GeometricConstraintRecordV1]) -> BTreeMap<Canonic
 
 /// Total order over conflict kinds.
 ///
-/// The fourth entity slot keeps kinds that name four entities fully ordered;
-/// every kind that names at most three pads it with zero.
+/// The final slot lets the rotational-symmetry variant include its fourth
+/// identity while preserving every pre-existing variant's ordering; shorter
+/// keys pad unused slots with zero.
 fn conflict_sort_key(
     conflict: &DirectConstraintConflictKindV1,
 ) -> (u8, CanonicalId, CanonicalId, CanonicalId, CanonicalId) {
@@ -3787,6 +3788,20 @@ mod tests {
         ]);
         let prepared = prepare(&fixture, &raw).expect("equal angles prepare");
         assert!(rotation_conflicts(&prepared.preflight()).is_empty());
+    }
+
+    #[test]
+    fn adjacent_binary64_rotation_angles_remain_distinct_proof_values() {
+        let fixture = Fixture::new();
+        let raw = document([
+            record(rotation(&fixture, 0, 1, 2, 90.0)),
+            record(rotation(&fixture, 0, 1, 2, 90.0_f64.next_up())),
+            record(fixed_length(&fixture, 0, f64::MIN_POSITIVE)),
+        ]);
+        assert!(
+            only_rotation_conflict(&fixture, &raw).is_some(),
+            "the theorem uses the exact stored angle and positive-radius values"
+        );
     }
 
     #[test]

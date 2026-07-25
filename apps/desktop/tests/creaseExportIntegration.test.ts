@@ -5,6 +5,7 @@ import test from 'node:test'
 const appSource = readSource('../src/App.tsx')
 const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/CreaseExportDialog.tsx')
+const dialogTextSource = readSource('../src/lib/creaseExportDialogText.ts')
 const nativeSource = readSource('../src-tauri/src/lib.rs')
 const nativeExportSource = readSource('../src-tauri/src/crease_export.rs')
 
@@ -62,7 +63,11 @@ test('save is bound to the preview project and revision and native cancel remain
 
 test('the dialog requires explicit loss acknowledgement and handles focus and IME safely', () => {
   assert.match(dialogSource, /preview\.warnings\.length === 0 \|\| warningsAcknowledged/u)
-  assert.match(dialogSource, /上記の情報が出力に含まれないことを確認しました/u)
+  assert.match(
+    dialogSource,
+    /import \{ CREASE_EXPORT_COPY \} from '\.\.\/lib\/creaseExportDialogText\.ts'/u,
+  )
+  assert.match(dialogTextSource, /上記の情報が出力に含まれないことを確認しました/u)
   assert.match(dialogSource, /event\.key !== 'Escape' \|\| event\.isComposing \|\| busy/u)
   assert.match(dialogSource, /event\.key !== 'Tab'/u)
   assert.match(dialogSource, /aria-modal="true"/u)

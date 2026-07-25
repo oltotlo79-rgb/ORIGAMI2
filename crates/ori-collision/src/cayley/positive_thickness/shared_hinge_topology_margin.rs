@@ -156,80 +156,40 @@ impl Default for SharedHingeNativeExactTopologyMarginLimitsV1 {
 impl SharedHingeNativeExactTopologyMarginLimitsV1 {
     fn projected(self) -> Self {
         let hard = Self::default();
-        Self {
-            max_authenticated_faces: self
-                .max_authenticated_faces
-                .min(hard.max_authenticated_faces),
-            max_authenticated_hinges: self
-                .max_authenticated_hinges
-                .min(hard.max_authenticated_hinges),
-            max_prerequisite_revalidations: self
-                .max_prerequisite_revalidations
-                .min(hard.max_prerequisite_revalidations),
-            max_ef_boundary_revalidations: self
-                .max_ef_boundary_revalidations
-                .min(hard.max_ef_boundary_revalidations),
-            max_root_bindings: self.max_root_bindings.min(hard.max_root_bindings),
-            max_angle_bindings: self.max_angle_bindings.min(hard.max_angle_bindings),
-            max_face_identity_bindings: self
-                .max_face_identity_bindings
-                .min(hard.max_face_identity_bindings),
-            max_hinge_identity_bindings: self
-                .max_hinge_identity_bindings
-                .min(hard.max_hinge_identity_bindings),
-            max_endpoint_identity_bindings: self
-                .max_endpoint_identity_bindings
-                .min(hard.max_endpoint_identity_bindings),
-            max_source_boundary_occurrences: self
-                .max_source_boundary_occurrences
-                .min(hard.max_source_boundary_occurrences),
-            max_source_coordinate_lifts: self
-                .max_source_coordinate_lifts
-                .min(hard.max_source_coordinate_lifts),
-            max_transform_scalar_lifts: self
-                .max_transform_scalar_lifts
-                .min(hard.max_transform_scalar_lifts),
-            max_face_transform_bit_bindings: self
-                .max_face_transform_bit_bindings
-                .min(hard.max_face_transform_bit_bindings),
-            max_hinge_parent_transform_bit_bindings: self
-                .max_hinge_parent_transform_bit_bindings
-                .min(hard.max_hinge_parent_transform_bit_bindings),
-            max_mid_surface_reconstructions: self
-                .max_mid_surface_reconstructions
-                .min(hard.max_mid_surface_reconstructions),
-            max_normal_reconstructions: self
-                .max_normal_reconstructions
-                .min(hard.max_normal_reconstructions),
-            max_solid_vertex_constructions: self
-                .max_solid_vertex_constructions
-                .min(hard.max_solid_vertex_constructions),
-            max_topology_coordinate_tests: self
-                .max_topology_coordinate_tests
-                .min(hard.max_topology_coordinate_tests),
-            max_shared_endpoint_component_tests: self
-                .max_shared_endpoint_component_tests
-                .min(hard.max_shared_endpoint_component_tests),
-            max_point_component_error_tests: self
-                .max_point_component_error_tests
-                .min(hard.max_point_component_error_tests),
-            max_normal_component_error_tests: self
-                .max_normal_component_error_tests
-                .min(hard.max_normal_component_error_tests),
-            max_solid_component_error_tests: self
-                .max_solid_component_error_tests
-                .min(hard.max_solid_component_error_tests),
-            max_ef_scalar_reauthentications: self
-                .max_ef_scalar_reauthentications
-                .min(hard.max_ef_scalar_reauthentications),
-            max_local_scale_component_scans: self
-                .max_local_scale_component_scans
-                .min(hard.max_local_scale_component_scans),
-            max_corridor_component_scans: self
-                .max_corridor_component_scans
-                .min(hard.max_corridor_component_scans),
-            exact: project_cayley_limits(self.exact, hard.exact),
-        }
+        clamp_to_hard!(
+            SharedHingeNativeExactTopologyMarginLimitsV1 {
+                requested: self,
+                hard: hard;
+                min:
+                    max_authenticated_faces,
+                    max_authenticated_hinges,
+                    max_prerequisite_revalidations,
+                    max_ef_boundary_revalidations,
+                    max_root_bindings,
+                    max_angle_bindings,
+                    max_face_identity_bindings,
+                    max_hinge_identity_bindings,
+                    max_endpoint_identity_bindings,
+                    max_source_boundary_occurrences,
+                    max_source_coordinate_lifts,
+                    max_transform_scalar_lifts,
+                    max_face_transform_bit_bindings,
+                    max_hinge_parent_transform_bit_bindings,
+                    max_mid_surface_reconstructions,
+                    max_normal_reconstructions,
+                    max_solid_vertex_constructions,
+                    max_topology_coordinate_tests,
+                    max_shared_endpoint_component_tests,
+                    max_point_component_error_tests,
+                    max_normal_component_error_tests,
+                    max_solid_component_error_tests,
+                    max_ef_scalar_reauthentications,
+                    max_local_scale_component_scans,
+                    max_corridor_component_scans;
+                explicit:
+                    exact: project_cayley_limits(self.exact, hard.exact),
+            }
+        )
     }
 }
 
@@ -2637,5 +2597,76 @@ fn visit_geometry_scalars_mut(
     }
     for value in &mut geometry.direct_corridor_components {
         visit(value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projected_limits_cover_every_field_at_under_hard_and_over_hard_boundaries() {
+        let hard = SharedHingeNativeExactTopologyMarginLimitsV1::default();
+        let requested = SharedHingeNativeExactTopologyMarginLimitsV1 {
+            max_authenticated_faces: 0,
+            max_authenticated_hinges: hard.max_authenticated_hinges,
+            max_prerequisite_revalidations: usize::MAX,
+            max_ef_boundary_revalidations: 0,
+            max_root_bindings: hard.max_root_bindings,
+            max_angle_bindings: usize::MAX,
+            max_face_identity_bindings: 0,
+            max_hinge_identity_bindings: hard.max_hinge_identity_bindings,
+            max_endpoint_identity_bindings: usize::MAX,
+            max_source_boundary_occurrences: 0,
+            max_source_coordinate_lifts: hard.max_source_coordinate_lifts,
+            max_transform_scalar_lifts: usize::MAX,
+            max_face_transform_bit_bindings: 0,
+            max_hinge_parent_transform_bit_bindings: hard.max_hinge_parent_transform_bit_bindings,
+            max_mid_surface_reconstructions: usize::MAX,
+            max_normal_reconstructions: 0,
+            max_solid_vertex_constructions: hard.max_solid_vertex_constructions,
+            max_topology_coordinate_tests: usize::MAX,
+            max_shared_endpoint_component_tests: 0,
+            max_point_component_error_tests: hard.max_point_component_error_tests,
+            max_normal_component_error_tests: usize::MAX,
+            max_solid_component_error_tests: 0,
+            max_ef_scalar_reauthentications: hard.max_ef_scalar_reauthentications,
+            max_local_scale_component_scans: usize::MAX,
+            max_corridor_component_scans: 0,
+            exact: hard.exact,
+        };
+
+        assert_eq!(
+            requested.projected(),
+            SharedHingeNativeExactTopologyMarginLimitsV1 {
+                max_authenticated_faces: 0,
+                max_authenticated_hinges: hard.max_authenticated_hinges,
+                max_prerequisite_revalidations: hard.max_prerequisite_revalidations,
+                max_ef_boundary_revalidations: 0,
+                max_root_bindings: hard.max_root_bindings,
+                max_angle_bindings: hard.max_angle_bindings,
+                max_face_identity_bindings: 0,
+                max_hinge_identity_bindings: hard.max_hinge_identity_bindings,
+                max_endpoint_identity_bindings: hard.max_endpoint_identity_bindings,
+                max_source_boundary_occurrences: 0,
+                max_source_coordinate_lifts: hard.max_source_coordinate_lifts,
+                max_transform_scalar_lifts: hard.max_transform_scalar_lifts,
+                max_face_transform_bit_bindings: 0,
+                max_hinge_parent_transform_bit_bindings: hard
+                    .max_hinge_parent_transform_bit_bindings,
+                max_mid_surface_reconstructions: hard.max_mid_surface_reconstructions,
+                max_normal_reconstructions: 0,
+                max_solid_vertex_constructions: hard.max_solid_vertex_constructions,
+                max_topology_coordinate_tests: hard.max_topology_coordinate_tests,
+                max_shared_endpoint_component_tests: 0,
+                max_point_component_error_tests: hard.max_point_component_error_tests,
+                max_normal_component_error_tests: hard.max_normal_component_error_tests,
+                max_solid_component_error_tests: 0,
+                max_ef_scalar_reauthentications: hard.max_ef_scalar_reauthentications,
+                max_local_scale_component_scans: hard.max_local_scale_component_scans,
+                max_corridor_component_scans: 0,
+                exact: project_cayley_limits(requested.exact, hard.exact),
+            }
+        );
     }
 }

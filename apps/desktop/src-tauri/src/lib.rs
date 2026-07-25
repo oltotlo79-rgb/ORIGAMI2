@@ -5176,12 +5176,13 @@ fn apply_beginner_symmetric_parameters(
     if !confirmed || !(10..=45).contains(&scale_percent) || !(20..=80).contains(&spacing_percent) {
         return Err("symmetric_parameter_confirmation_required".to_owned());
     }
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let mut profile = project.editor.beginner_design_profile().clone();
     let live = ori_domain::estimate_symmetric_parameters_v1(&profile.generation_constraints)
@@ -5210,12 +5211,13 @@ fn archive_beginner_reference_model_asset(
     asset_id: AssetId,
     archived: bool,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     if !project
         .reference_model_assets
@@ -5308,12 +5310,13 @@ fn apply_beginner_generated_plan_document(
     ) {
         return Err("the selected generated plan is preview-only".to_owned());
     }
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     if project.editor.beginner_design_profile() != &expected_profile {
         return Err("the beginner design profile changed before apply".to_owned());
@@ -6403,12 +6406,13 @@ fn update_beginner_reference_consensus(
     if !(2..=4).contains(&selections.len()) {
         return Err("reference_consensus_selection_count".to_owned());
     }
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let mut canonical = selections;
     canonical.sort_by_key(|selection| selection.asset_id.canonical_bytes());
@@ -6615,12 +6619,13 @@ fn activate_beginner_reference_model_asset(
     expected_revision: u64,
     asset_id: AssetId,
 ) -> Result<ProjectSnapshot, String> {
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     if !project
         .reference_model_assets
@@ -7699,12 +7704,13 @@ fn apply_beginner_reference_model_features(
     if !confirmed {
         return Err("reference_model_suggestion_confirmation_required".to_owned());
     }
-    let mut project = lock_project(&state)?;
-    ensure_expected_project(
-        &project,
-        expected_project_instance_id,
-        expected_project_id,
-        expected_revision,
+    let mut project = lock_and_expect(
+        &state,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
     )?;
     let mut profile = project.editor.beginner_design_profile().clone();
     let Some(ori_domain::BeginnerTargetAssetReferenceV1::ReferenceModel { asset_id }) =

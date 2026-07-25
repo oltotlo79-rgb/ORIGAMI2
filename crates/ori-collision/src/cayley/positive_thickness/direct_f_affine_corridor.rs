@@ -287,83 +287,49 @@ impl Default for DirectFAffineHingeCorridorLimits {
 impl DirectFAffineHingeCorridorLimits {
     fn projected(self) -> Self {
         let hard = Self::default();
-        Self {
-            max_authenticated_faces: self
-                .max_authenticated_faces
-                .min(hard.max_authenticated_faces),
-            max_authenticated_hinges: self
-                .max_authenticated_hinges
-                .min(hard.max_authenticated_hinges),
-            max_face_transform_bit_bindings: self
-                .max_face_transform_bit_bindings
-                .min(hard.max_face_transform_bit_bindings),
-            max_hinge_parent_transform_bit_bindings: self
-                .max_hinge_parent_transform_bit_bindings
-                .min(hard.max_hinge_parent_transform_bit_bindings),
-            max_shared_endpoint_equality_tests: self
-                .max_shared_endpoint_equality_tests
-                .min(hard.max_shared_endpoint_equality_tests),
-            max_transform_scalar_lifts: self
-                .max_transform_scalar_lifts
-                .min(hard.max_transform_scalar_lifts),
-            max_source_coordinate_lifts: self
-                .max_source_coordinate_lifts
-                .min(hard.max_source_coordinate_lifts),
-            max_affine_point_reconstructions: self
-                .max_affine_point_reconstructions
-                .min(hard.max_affine_point_reconstructions),
-            max_solid_vertex_constructions: self
-                .max_solid_vertex_constructions
-                .min(hard.max_solid_vertex_constructions),
-            max_thickness_lifts: self.max_thickness_lifts.min(hard.max_thickness_lifts),
-            max_half_thickness_divisions: self
-                .max_half_thickness_divisions
-                .min(hard.max_half_thickness_divisions),
-            max_canonical_inward_directions: self
-                .max_canonical_inward_directions
-                .min(hard.max_canonical_inward_directions),
-            max_dual_basis_inversions: self
-                .max_dual_basis_inversions
-                .min(hard.max_dual_basis_inversions),
-            max_affine_half_prisms: self.max_affine_half_prisms.min(hard.max_affine_half_prisms),
-            max_halfspaces: self.max_halfspaces.min(hard.max_halfspaces),
-            max_plane_triples: self.max_plane_triples.min(hard.max_plane_triples),
-            max_singular_plane_triples: self
-                .max_singular_plane_triples
-                .min(hard.max_singular_plane_triples),
-            max_nonsingular_solves: self.max_nonsingular_solves.min(hard.max_nonsingular_solves),
-            max_membership_tests: self.max_membership_tests.min(hard.max_membership_tests),
-            max_corridor_vertices: self.max_corridor_vertices.min(hard.max_corridor_vertices),
-            max_dedup_comparisons: self.max_dedup_comparisons.min(hard.max_dedup_comparisons),
-            max_normal_rank_tests: self.max_normal_rank_tests.min(hard.max_normal_rank_tests),
-            max_recession_normal_pairs: self
-                .max_recession_normal_pairs
-                .min(hard.max_recession_normal_pairs),
-            max_signed_recession_tests: self
-                .max_signed_recession_tests
-                .min(hard.max_signed_recession_tests),
-            max_recession_membership_tests: self
-                .max_recession_membership_tests
-                .min(hard.max_recession_membership_tests),
-            max_prism_vertex_halfspace_tests: self
-                .max_prism_vertex_halfspace_tests
-                .min(hard.max_prism_vertex_halfspace_tests),
-            max_corridor_affine_rank_tests: self
-                .max_corridor_affine_rank_tests
-                .min(hard.max_corridor_affine_rank_tests),
-            max_gram_inversions: self.max_gram_inversions.min(hard.max_gram_inversions),
-            max_gram_positive_definite_tests: self
-                .max_gram_positive_definite_tests
-                .min(hard.max_gram_positive_definite_tests),
-            max_gram_quadratic_tests: self
-                .max_gram_quadratic_tests
-                .min(hard.max_gram_quadratic_tests),
-            max_axial_tests: self.max_axial_tests.min(hard.max_axial_tests),
-            prism: self.prism.projected(),
-            literal_exact: project_cayley_limits(self.literal_exact, hard.literal_exact),
-            local_exact: project_cayley_limits(self.local_exact, hard.local_exact),
-            exact: project_cayley_limits(self.exact, hard.exact),
-        }
+        clamp_to_hard!(
+            DirectFAffineHingeCorridorLimits {
+                requested: self,
+                hard: hard;
+                min:
+                    max_authenticated_faces,
+                    max_authenticated_hinges,
+                    max_face_transform_bit_bindings,
+                    max_hinge_parent_transform_bit_bindings,
+                    max_shared_endpoint_equality_tests,
+                    max_transform_scalar_lifts,
+                    max_source_coordinate_lifts,
+                    max_affine_point_reconstructions,
+                    max_solid_vertex_constructions,
+                    max_thickness_lifts,
+                    max_half_thickness_divisions,
+                    max_canonical_inward_directions,
+                    max_dual_basis_inversions,
+                    max_affine_half_prisms,
+                    max_halfspaces,
+                    max_plane_triples,
+                    max_singular_plane_triples,
+                    max_nonsingular_solves,
+                    max_membership_tests,
+                    max_corridor_vertices,
+                    max_dedup_comparisons,
+                    max_normal_rank_tests,
+                    max_recession_normal_pairs,
+                    max_signed_recession_tests,
+                    max_recession_membership_tests,
+                    max_prism_vertex_halfspace_tests,
+                    max_corridor_affine_rank_tests,
+                    max_gram_inversions,
+                    max_gram_positive_definite_tests,
+                    max_gram_quadratic_tests,
+                    max_axial_tests;
+                explicit:
+                    prism: self.prism.projected(),
+                    literal_exact: project_cayley_limits(self.literal_exact, hard.literal_exact),
+                    local_exact: project_cayley_limits(self.local_exact, hard.local_exact),
+                    exact: project_cayley_limits(self.exact, hard.exact),
+            }
+        )
     }
 }
 
@@ -720,14 +686,9 @@ fn preflight_affine_exact_capacity(
             "affine_reserved_total_rational_allocation_bits",
         ),
     ] {
-        let reserved = consumed
-            .checked_add(literal)
-            .and_then(|value| value.checked_add(prism))
-            .and_then(|value| value.checked_add(local))
-            .ok_or(CayleyError::ResourceLimitExceeded {
-                stage: STAGE,
-                resource,
-            })?;
+        let reserved = checked_work_sum(consumed, literal, STAGE, resource)?;
+        let reserved = checked_work_sum(reserved, prism, STAGE, resource)?;
+        let reserved = checked_work_sum(reserved, local, STAGE, resource)?;
         if reserved > outer {
             return Err(CayleyError::ResourceLimitExceeded {
                 stage: STAGE,
@@ -1464,13 +1425,12 @@ fn compare_literal_shared_hinge_endpoints(
             &faces[0].world_vertices[left_index],
             &faces[1].world_vertices[right_index],
         ) {
-            mismatch_count =
-                mismatch_count
-                    .checked_add(1)
-                    .ok_or(CayleyError::ResourceLimitExceeded {
-                        stage: STAGE,
-                        resource: "affine_corridor_shared_endpoint_mismatches",
-                    })?;
+            mismatch_count = checked_work_sum(
+                mismatch_count,
+                1,
+                STAGE,
+                "affine_corridor_shared_endpoint_mismatches",
+            )?;
         }
     }
     if checked_counter_delta(
@@ -1759,24 +1719,23 @@ fn scan_complete_prism_vertices_against_halfspaces(
             let value = exact_dot_point(&halfspace.normal, vertex, meter)?;
             if meter.compare_rational(&value, &halfspace.offset, STAGE)? == Ordering::Greater {
                 vertex_outside = true;
-                outside.violated_halfspace_count = outside
-                    .violated_halfspace_count
-                    .checked_add(1)
-                    .ok_or(CayleyError::ResourceLimitExceeded {
-                        stage: STAGE,
-                        resource: "affine_corridor_violated_halfspaces",
-                    })?;
+                outside.violated_halfspace_count = checked_work_sum(
+                    outside.violated_halfspace_count,
+                    1,
+                    STAGE,
+                    "affine_corridor_violated_halfspaces",
+                )?;
             }
         }
         if vertex_outside {
             outside
                 .first_outside_vertex_index
                 .get_or_insert(vertex_index);
-            outside.outside_vertex_count = outside.outside_vertex_count.checked_add(1).ok_or(
-                CayleyError::ResourceLimitExceeded {
-                    stage: STAGE,
-                    resource: "affine_corridor_outside_vertices",
-                },
+            outside.outside_vertex_count = checked_work_sum(
+                outside.outside_vertex_count,
+                1,
+                STAGE,
+                "affine_corridor_outside_vertices",
             )?;
         }
     }
@@ -1890,11 +1849,11 @@ fn enumerate_complete_corridor_vertices(
         membership_before,
         "affine_corridor_membership_tests",
     )?;
-    let accounted = singular_delta.checked_add(nonsingular_delta).ok_or(
-        CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource: "affine_corridor_plane_triples",
-        },
+    let accounted = checked_work_sum(
+        singular_delta,
+        nonsingular_delta,
+        STAGE,
+        "affine_corridor_plane_triples",
     )?;
     let expected_memberships = nonsingular_delta.checked_mul(HALFSPACE_COUNT).ok_or(
         CayleyError::ResourceLimitExceeded {
@@ -2307,13 +2266,12 @@ fn scan_complete_prism_axial_bounds(
             meter.compare_rational(&axial, &parent.length_squared, STAGE)? == Ordering::Greater;
         if before_start || after_end {
             first_outside.get_or_insert(vertex_index);
-            outside_count =
-                outside_count
-                    .checked_add(1)
-                    .ok_or(CayleyError::ResourceLimitExceeded {
-                        stage: STAGE,
-                        resource: "affine_corridor_axial_outside_vertices",
-                    })?;
+            outside_count = checked_work_sum(
+                outside_count,
+                1,
+                STAGE,
+                "affine_corridor_axial_outside_vertices",
+            )?;
         }
     }
     if checked_counter_delta(
@@ -2531,12 +2489,7 @@ fn charge_counter(
     maximum: usize,
     resource: &'static str,
 ) -> Result<(), CayleyError> {
-    *counter = counter
-        .checked_add(1)
-        .ok_or(CayleyError::ResourceLimitExceeded {
-            stage: STAGE,
-            resource,
-        })?;
+    *counter = checked_work_sum(*counter, 1, STAGE, resource)?;
     if *counter > maximum {
         return Err(CayleyError::ResourceLimitExceeded {
             stage: STAGE,

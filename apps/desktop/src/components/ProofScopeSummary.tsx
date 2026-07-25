@@ -1,5 +1,14 @@
 import type { AssignedLocalSufficiencySummaryResponseV1 } from '../lib/coreClient.ts'
-import { useLocale, type LocaleStore } from '../lib/i18n.ts'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+  useLocale,
+  type LocaleStore,
+  type LocalizedText,
+} from '../lib/i18n.ts'
+import {
+  PROOF_SCOPE_SUMMARY_TEXT as TEXT,
+} from '../lib/proofScopeSummaryText.ts'
 import { createProofScopePresentation } from '../lib/proofScopePresentation.ts'
 
 export function ProofScopeSummary({
@@ -18,44 +27,43 @@ export function ProofScopeSummary({
   const locale = useLocale(localeStore)
   const presentation = createProofScopePresentation(globalJob, localSummary)
   const { global, local } = presentation.diagnostics
+  const label = (value: LocalizedText) => selectLocalizedText(locale, value)
   return (
-    <section className="proof-scope-summary" aria-label={locale === 'ja' ? '証明範囲' : 'Proof coverage'}>
-      <h4>{locale === 'ja' ? '証明範囲' : 'Proof coverage'}</h4>
-      <p>
-        {locale === 'ja'
-          ? '全体判定・局所必要条件・局所十分性は、互いに別の証明です。'
-          : 'The global result, local necessary conditions, and local sufficiency are separate proofs.'}
-      </p>
+    <section className="proof-scope-summary" aria-label={label(TEXT.proofCoverage)}>
+      <h4>{label(TEXT.proofCoverage)}</h4>
+      <p>{label(TEXT.separateProofs)}</p>
       <dl>
         <div>
-          <dt>{locale === 'ja' ? '全体' : 'Global'}</dt>
-          <dd data-proof-global={global.status}>{globalStatus(global.status, locale)}</dd>
+          <dt>{label(TEXT.global)}</dt>
+          <dd data-proof-global={global.status}>{label(globalStatus(global.status))}</dd>
         </div>
         <div>
-          <dt>{locale === 'ja' ? '全体certificate' : 'Global certificate'}</dt>
+          <dt>{label(TEXT.globalCertificate)}</dt>
           <dd>{global.certificateModel} / v{global.certificateVersion}</dd>
         </div>
         <div>
-          <dt>{locale === 'ja' ? '対象範囲' : 'Target scope'}</dt>
-          <dd>{locale === 'ja' ? '対応対象クラス内の折り図全体' : 'Entire pattern within the supported target class'}</dd>
+          <dt>{label(TEXT.targetScope)}</dt>
+          <dd>{label(TEXT.targetScopeValue)}</dd>
         </div>
         <div>
-          <dt>{locale === 'ja' ? '局所summary' : 'Local summary'}</dt>
+          <dt>{label(TEXT.localSummary)}</dt>
           <dd>
             {local.status === 'unavailable'
-              ? locale === 'ja' ? '未取得' : 'Unavailable'
-              : locale === 'ja'
-                ? `必要条件不成立 ${local.necessaryFailed}・十分性証明 ${local.sufficientProven}・判定不能 ${local.indeterminate}`
-                : `Necessary failed ${local.necessaryFailed}; sufficiency proven ${local.sufficientProven}; indeterminate ${local.indeterminate}`}
+              ? label(TEXT.localUnavailable)
+              : formatLocalizedText(locale, TEXT.localCounts, {
+                necessaryFailed: local.necessaryFailed,
+                sufficientProven: local.sufficientProven,
+                indeterminate: local.indeterminate,
+              })}
           </dd>
         </div>
         <div>
-          <dt>{locale === 'ja' ? '局所certificate' : 'Local certificate'}</dt>
+          <dt>{label(TEXT.localCertificate)}</dt>
           <dd>{local.certificateModel} / v{local.certificateVersion}</dd>
         </div>
       </dl>
       {presentation.selectableVertices.length > 0 && (
-        <ul aria-label={locale === 'ja' ? '関連頂点' : 'Related vertices'}>
+        <ul aria-label={label(TEXT.relatedVertices)}>
           {presentation.selectableVertices.map((vertex, index) => (
             <li key={vertex.id}>
               <button
@@ -63,23 +71,23 @@ export function ProofScopeSummary({
                 aria-pressed={selectedVertexId === vertex.id}
                 onClick={() => onSelectVertex?.(vertex.id)}
               >
-                {locale === 'ja' ? `頂点 ${index + 1}` : `Vertex ${index + 1}`}
+                {formatLocalizedText(locale, TEXT.vertexLabel, { index: index + 1 })}
                 {' · '}
-                {localStatus(vertex.status, locale)}
+                {label(localStatus(vertex.status))}
               </button>
             </li>
           ))}
         </ul>
       )}
       {presentation.hiddenVertexCount > 0 && (
-        <p>{locale === 'ja'
-          ? `ほか ${presentation.hiddenVertexCount} 頂点`
-          : `${presentation.hiddenVertexCount} more vertices`}</p>
+        <p>{formatLocalizedText(locale, TEXT.hiddenVertices, {
+          count: presentation.hiddenVertexCount,
+        })}</p>
       )}
       <details>
-        <summary>{locale === 'ja' ? '決定的diagnostics summary' : 'Deterministic diagnostics summary'}</summary>
+        <summary>{label(TEXT.diagnosticsSummary)}</summary>
         <textarea
-          aria-label={locale === 'ja' ? '証明範囲diagnostics JSON' : 'Proof coverage diagnostics JSON'}
+          aria-label={label(TEXT.diagnosticsJson)}
           readOnly
           value={presentation.diagnosticsJson}
           rows={12}
@@ -89,21 +97,20 @@ export function ProofScopeSummary({
   )
 }
 
-function globalStatus(status: string, locale: 'ja' | 'en') {
+function globalStatus(status: string) {
   const labels = {
-    not_checked: ['未判定', 'Not checked'],
-    in_progress: ['判定中', 'In progress'],
-    possible: ['可能', 'Possible'],
-    impossible: ['不可能', 'Impossible'],
-    unknown: ['不明', 'Unknown'],
-    unavailable: ['利用不可', 'Unavailable'],
+    not_checked: TEXT.globalNotChecked,
+    in_progress: TEXT.globalInProgress,
+    possible: TEXT.globalPossible,
+    impossible: TEXT.globalImpossible,
+    unknown: TEXT.globalUnknown,
+    unavailable: TEXT.globalUnavailable,
   } as const
-  const label = labels[status as keyof typeof labels] ?? labels.unavailable
-  return label[locale === 'ja' ? 0 : 1]
+  return labels[status as keyof typeof labels] ?? labels.unavailable
 }
 
-function localStatus(status: string, locale: 'ja' | 'en') {
-  if (status === 'necessary_failed') return locale === 'ja' ? '必要条件不成立' : 'Necessary failed'
-  if (status === 'sufficient_proven') return locale === 'ja' ? '十分性証明' : 'Sufficiency proven'
-  return locale === 'ja' ? '判定不能' : 'Indeterminate'
+function localStatus(status: string) {
+  if (status === 'necessary_failed') return TEXT.localNecessaryFailed
+  if (status === 'sufficient_proven') return TEXT.localSufficientProven
+  return TEXT.localIndeterminate
 }

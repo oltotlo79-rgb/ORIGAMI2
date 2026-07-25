@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import type { AnnotationRecordV1 } from '../lib/coreClient'
 import type { LayerRecordV1 } from '../lib/projectLayers'
-import type { Locale } from '../lib/i18n'
+import { selectLocalizedText, type Locale } from '../lib/i18n'
+import { ANNOTATION_PANEL_TEXT } from '../lib/annotationPanelText.ts'
 
 type Props = {
   locale: Locale
@@ -31,7 +32,8 @@ function parseColor(value: string, alpha: number) {
 export function AnnotationPanel({
   locale, annotations, layers, vertices, disabled, onAdd, onUpdate, onRemove,
 }: Props) {
-  const text = (ja: string, en: string) => locale === 'ja' ? ja : en
+  const text = (key: keyof typeof ANNOTATION_PANEL_TEXT) =>
+    selectLocalizedText(locale, ANNOTATION_PANEL_TEXT[key])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [draft, setDraft] = useState<AnnotationRecordV1 | null>(null)
   const selected = annotations.find(({ id }) => id === selectedId) ?? null
@@ -70,15 +72,15 @@ export function AnnotationPanel({
   const annotationLayers = layers.filter(({ content_kind }) => content_kind === 'annotation')
   return <section className="panel" aria-labelledby="annotation-panel-title">
     <div className="panel-heading">
-      <span id="annotation-panel-title">{text('注釈', 'Annotations')}</span>
+      <span id="annotation-panel-title">{text('title')}</span>
       <button type="button" onClick={createDraft} disabled={disabled || annotationLayers.length === 0}>
-        {text('新規', 'New')}
+        {text('new')}
       </button>
     </div>
     {annotationLayers.length === 0 && <p role="status">
-      {text('注釈レイヤーを先に作成してください。', 'Create an annotation layer first.')}
+      {text('createLayer')}
     </p>}
-    <ul aria-label={text('注釈一覧', 'Annotation list')}>
+    <ul aria-label={text('list')}>
       {annotations.map((annotation) => <li key={annotation.id}>
         <button type="button" aria-pressed={annotation.id === selectedId}
           onClick={() => setSelectedId(annotation.id)}>
@@ -86,20 +88,20 @@ export function AnnotationPanel({
         </button>
       </li>)}
     </ul>
-    {draft && <form onSubmit={submit} aria-label={text('注釈編集', 'Edit annotation')}>
-      <label>{text('本文', 'Text')}
+    {draft && <form onSubmit={submit} aria-label={text('edit')}>
+      <label>{text('text')}
         <textarea value={draft.text} maxLength={4000} disabled={disabled || locked}
           onChange={(event) => setDraft({ ...draft, text: event.target.value })} required />
       </label>
-      <label>{text('レイヤー', 'Layer')}
+      <label>{text('layer')}
         <select value={draft.layer} disabled={disabled || locked}
           onChange={(event) => setDraft({ ...draft, layer: event.target.value })}>
           {annotationLayers.map((item) => <option key={item.id} value={item.id}>
-            {item.name}{item.locked ? ` (${text('ロック', 'locked')})` : ''}
+            {item.name}{item.locked ? ` (${text('lockedOption')})` : ''}
           </option>)}
         </select>
       </label>
-      <label>{text('基準', 'Anchor')}
+      <label>{text('anchor')}
         <select value={draft.anchor.kind} disabled={disabled || locked}
           onChange={(event) => setDraft({
             ...draft,
@@ -107,11 +109,11 @@ export function AnnotationPanel({
               ? { kind: 'vertex' as const, vertex: vertices[0].id, offset: { x: 0, y: 0 } }
               : { kind: 'absolute', position: { x: 0, y: 0 } },
           })}>
-          <option value="absolute">{text('座標', 'Position')}</option>
-          <option value="vertex" disabled={vertices.length === 0}>{text('頂点', 'Vertex')}</option>
+          <option value="absolute">{text('position')}</option>
+          <option value="vertex" disabled={vertices.length === 0}>{text('vertex')}</option>
         </select>
       </label>
-      {draft.anchor.kind === 'vertex' && <label>{text('頂点', 'Vertex')}
+      {draft.anchor.kind === 'vertex' && <label>{text('vertex')}
         <select value={draft.anchor.vertex} disabled={disabled || locked}
           onChange={(event) => {
             if (draft.anchor.kind !== 'vertex') return
@@ -131,19 +133,19 @@ export function AnnotationPanel({
               : { ...draft, anchor: { ...draft.anchor, offset: { ...draft.anchor.offset, [axis]: value } } })
           }} />
       </label>)}
-      <label>{text('文字サイズ', 'Font size')} (mm)
+      <label>{text('fontSize')} (mm)
         <input type="number" min="0.1" max="1000" step="0.1" required disabled={disabled || locked}
           value={draft.style.font_size_mm}
           onChange={(event) => setDraft({ ...draft, style: { ...draft.style, font_size_mm: Number(event.target.value) } })} />
       </label>
-      <label>{text('文字色', 'Text color')}
+      <label>{text('textColor')}
         <input type="color" value={colorHex(draft.style.color)} disabled={disabled || locked}
           onChange={(event) => {
             const color = parseColor(event.target.value, draft.style.color.alpha)
             if (color) setDraft({ ...draft, style: { ...draft.style, color } })
           }} />
       </label>
-      <label>{text('文字の不透明度', 'Text opacity')} (%)
+      <label>{text('textOpacity')} (%)
         <input type="number" min="0" max="100" step="1" disabled={disabled || locked}
           value={Math.round(draft.style.color.alpha / 255 * 100)}
           onChange={(event) => {
@@ -157,14 +159,14 @@ export function AnnotationPanel({
       </label>
       <label><input type="checkbox" checked={draft.style.bold} disabled={disabled || locked}
         onChange={(event) => setDraft({ ...draft, style: { ...draft.style, bold: event.target.checked } })} />
-        {text('太字', 'Bold')}</label>
+        {text('bold')}</label>
       <label><input type="checkbox" checked={draft.style.italic} disabled={disabled || locked}
         onChange={(event) => setDraft({ ...draft, style: { ...draft.style, italic: event.target.checked } })} />
-        {text('斜体', 'Italic')}</label>
-      {locked && <p role="status">{text('このレイヤーはロックされています。', 'This layer is locked.')}</p>}
-      <button type="submit" disabled={disabled || locked || !draft.text.trim()}>{text('保存', 'Save')}</button>
+        {text('italic')}</label>
+      {locked && <p role="status">{text('locked')}</p>}
+      <button type="submit" disabled={disabled || locked || !draft.text.trim()}>{text('save')}</button>
       {selected && <button type="button" disabled={disabled || locked}
-        onClick={() => onRemove(selected.id)}>{text('削除', 'Delete')}</button>}
+        onClick={() => onRemove(selected.id)}>{text('delete')}</button>}
     </form>}
   </section>
 }

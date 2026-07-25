@@ -1,5 +1,7 @@
 # Claudeコード監査 精査・対応表（2026-07-22）
 
+> 現在値の正本ではない。旧pending 83.96%（表示84.0%）と86/1/0集計は、2026-07-23再監査で81.96%（表示82.0%）と85/2/0へ訂正された。正本の全体完成度はCI gate中の79.3%であり、現在のMUST集計は`docs/requirements-status.md`、再評価案は`docs/progress-reassessment-pending-ci-2026-07-22.md`を参照する。
+
 対象: `docs/plans/code-audit-2026-07-22.md` の全26項目。分類は、監査文面だけでなく現行コード、履歴、focused testを照合した結果である。
 
 ## 不具合（A）

@@ -6,6 +6,7 @@ const status = readFileSync('../../docs/requirements-status.md', 'utf8')
 const evidence = readFileSync('../../docs/requirements-design-evidence-2026-07-21.md', 'utf8')
 const editor = readFileSync('../../crates/ori-core/src/editor.rs', 'utf8')
 const history = readFileSync('../../crates/ori-core/src/editor/history_persistence.rs', 'utf8')
+const constraints = readFileSync('../../crates/ori-core/src/constraints.rs', 'utf8')
 const native = readFileSync('src-tauri/src/lib.rs', 'utf8')
 const client = readFileSync('src/lib/coreClient.ts', 'utf8')
 const panel = readFileSync('src/components/InstructionTimelinePanel.tsx', 'utf8')
@@ -40,4 +41,16 @@ test('INS-007 design evidence is connected to every production boundary', () => 
 test('the evidence audit does not promote the remaining SIM-010 proof boundary', () => {
   assert.match(evidence, /初版MUST全体が完成したとは扱わない/u)
   assert.match(evidence, /SIM-010の未証明範囲を完成へ昇格させる証拠には使用しない/u)
+})
+
+test('EDT-009 documents the exact direct-conflict variant basis', () => {
+  const enumBody = constraints.match(
+    /pub enum DirectConstraintConflictKindV1 \{(?<body>[\s\S]*?)\n\}/u,
+  )?.groups?.body
+  assert.ok(enumBody)
+  assert.equal([...enumBody.matchAll(/^    [A-Z][A-Za-z0-9]+ \{/gmu)].length, 17)
+  assert.match(
+    status,
+    /^\| EDT-009 \| 部分実装 \| `DirectConstraintConflictKindV1`の17直接矛盾variant（13 pairwise \+ 4 general-graph）/mu,
+  )
 })

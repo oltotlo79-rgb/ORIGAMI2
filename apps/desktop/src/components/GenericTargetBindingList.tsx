@@ -1,4 +1,11 @@
 import type { BeginnerGenerationConstraintsV1 } from '../lib/coreClient'
+import {
+  GENERIC_TARGET_BINDING_LIST_TEXT as TEXT,
+} from '../lib/genericTargetBindingListText.ts'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+} from '../lib/i18n.ts'
 
 type Protrusion = NonNullable<BeginnerGenerationConstraintsV1['protrusions']>[number]
 
@@ -11,13 +18,17 @@ export function GenericTargetBindingList({ locale, protrusions }: {
       && (target.count === 1 && target.symmetry === 'none'
         || (target.count === 2 || target.count === 4) && target.symmetry === 'bilateral'))
   if (!valid) return null
-  return <ol aria-label={locale === 'ja'
-    ? '上限付き汎用対象binding寸法'
-    : 'Bounded generic target binding dimensions'}>
+  return <ol aria-label={selectLocalizedText(locale, TEXT.ariaLabel)}>
     {protrusions.map((target) => <li key={target.id}>
-      {locale === 'ja'
-        ? `binding ${target.id}・${target.symmetry === 'none' ? '非対称単独' : '左右対称'}・数 ${target.count}・長さ ${target.length_tenths_mm}・厚さ ${target.thickness_tenths_mm}`
-        : `Binding ${target.id} · ${target.symmetry === 'none' ? 'asymmetric single' : 'bilateral'} · count ${target.count} · length ${target.length_tenths_mm} · thickness ${target.thickness_tenths_mm}`}
+      {formatLocalizedText(locale, TEXT.bindingRow, {
+        id: target.id,
+        symmetry: selectLocalizedText(locale, target.symmetry === 'none'
+          ? TEXT.symmetryAsymmetric
+          : TEXT.symmetryBilateral),
+        count: target.count,
+        length: target.length_tenths_mm,
+        thickness: target.thickness_tenths_mm,
+      })}
     </li>)}
   </ol>
 }

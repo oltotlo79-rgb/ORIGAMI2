@@ -10,18 +10,49 @@ const target = (id: number, count: 1 | 2 | 4, symmetry: 'none' | 'bilateral') =>
   side: 'either' as const, priority: 50,
 })
 const valid = [target(1, 4, 'bilateral'), target(2, 2, 'bilateral')]
+const mixed = [target(1, 1, 'none'), target(2, 2, 'bilateral')]
 afterEach(cleanup)
 
 describe('GenericTargetBindingList', () => {
-  it('renders a bounded recognized combination in both locales', () => {
-    const { rerender } = render(<GenericTargetBindingList locale="ja" protrusions={valid} />)
-    expect(screen.getByRole('list', { name: '上限付き汎用対象binding寸法' }).children).toHaveLength(2)
-    rerender(<GenericTargetBindingList locale="en" protrusions={valid} />)
-    expect(screen.getByText('Binding 2 · bilateral · count 2 · length 200 · thickness 20')).toBeTruthy()
+  it('rerenders both status words and ARIA in place without changing row identity', () => {
+    const { rerender } = render(<GenericTargetBindingList locale="ja" protrusions={mixed} />)
+    const list = screen.getByRole('list', { name: '上限付き汎用対象binding寸法' })
+    const [firstRow, secondRow] = [...list.children]
+    expect(firstRow?.textContent).toBe('binding 1・非対称単独・数 1・長さ 100・厚さ 10')
+    expect(secondRow?.textContent).toBe('binding 2・左右対称・数 2・長さ 200・厚さ 20')
+
+    rerender(<GenericTargetBindingList locale="en" protrusions={mixed} />)
+
+    const rerenderedList = screen.getByRole('list', {
+      name: 'Bounded generic target binding dimensions',
+    })
+    expect(rerenderedList).toBe(list)
+    expect(rerenderedList.children[0]).toBe(firstRow)
+    expect(rerenderedList.children[1]).toBe(secondRow)
+    expect(firstRow?.textContent)
+      .toBe('Binding 1 · asymmetric single · count 1 · length 100 · thickness 10')
+    expect(secondRow?.textContent)
+      .toBe('Binding 2 · bilateral · count 2 · length 200 · thickness 20')
   })
+
+  it('accepts the inclusive upper bound with canonical bilateral quadruples', () => {
+    const maximum = Array.from(
+      { length: 8 },
+      (_, index) => target(index + 1, 4, 'bilateral'),
+    )
+    render(<GenericTargetBindingList locale="en" protrusions={maximum} />)
+    const list = screen.getByRole('list', {
+      name: 'Bounded generic target binding dimensions',
+    })
+    expect(list.children).toHaveLength(8)
+    expect(list.children[7]?.textContent)
+      .toBe('Binding 8 · bilateral · count 4 · length 800 · thickness 80')
+  })
+
   it('rejects singleton, overflow, noncanonical, and unsupported radial input', () => {
     for (const forged of [valid.slice(0, 1), Array.from({ length: 9 }, (_, i) => target(i + 1, 2, 'bilateral')),
-      [valid[1], valid[0]], [target(1, 2, 'none'), valid[1]]]) {
+      [valid[1], valid[0]], [target(1, 2, 'none'), valid[1]],
+      [target(1, 1, 'bilateral'), valid[1]], [target(1, 4, 'none'), valid[1]]]) {
       const { unmount } = render(<GenericTargetBindingList locale="en" protrusions={forged} />)
       expect(screen.queryByRole('list')).toBeNull(); unmount()
     }

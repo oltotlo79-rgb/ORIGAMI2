@@ -130,9 +130,14 @@ describe('WorkspaceLayoutControl', () => {
   it('retranslates actions, status, and ARIA without changing layout', () => {
     const target = store()
     const locales = localeFixture('ja')
-    render(
-      <WorkspaceLayoutControl store={target} localeStore={locales} />,
-    )
+    render(<>
+      <WorkspaceLayoutControl store={target} localeStore={locales} />
+      <WorkspaceLayoutSeparator
+        kind="editor"
+        store={target}
+        localeStore={locales}
+      />
+    </>)
     expect(screen.getByRole('group', { name: '作業レイアウト' })).toBeTruthy()
     expect(screen.getByRole('status', {
       name: '現在の作業レイアウト',
@@ -144,6 +149,9 @@ describe('WorkspaceLayoutControl', () => {
     expect(screen.getByRole('button', { name: 'Swap 2D and 3D' })).toBeTruthy()
     expect(screen.getByRole('status', {
       name: 'Current workspace layout',
+    })).toBeTruthy()
+    expect(screen.getByRole('separator', {
+      name: 'Resize 2D and 3D panels',
     })).toBeTruthy()
     expect(target.getSnapshot()).toEqual(DEFAULT_WORKSPACE_LAYOUT)
   })

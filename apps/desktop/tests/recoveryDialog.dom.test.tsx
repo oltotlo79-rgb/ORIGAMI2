@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -41,6 +42,22 @@ afterEach(() => {
 })
 
 describe('RecoveryDialog DOM interactions', () => {
+  it('retranslates the same mandatory dialog and actions', () => {
+    const locales = localeFixture('ja')
+    renderDialog({ localeStore: locales })
+    expect(screen.getByRole('dialog', {
+      name: '未保存の編集内容を復元しますか？',
+    })).toBeTruthy()
+    act(() => {
+      locales.setLocale('en')
+    })
+    expect(screen.getByRole('dialog', {
+      name: 'Restore unsaved edits?',
+    })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeTruthy()
+  })
+
   it('localizes the mandatory decision and metadata in English', () => {
     renderDialog({ localeStore: localeFixture('en') })
 

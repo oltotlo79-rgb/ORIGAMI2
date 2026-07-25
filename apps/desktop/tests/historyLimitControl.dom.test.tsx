@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -38,6 +39,23 @@ afterEach(() => {
 })
 
 describe('HistoryLimitControl', () => {
+  it('retranslates status and controls without changing the bound limit', () => {
+    const locales = localeFixture('ja')
+    renderControl({ localeStore: locales })
+    expect(screen.getByRole('status', {
+      name: '現在の履歴件数上限',
+    }).textContent).toBe('128件')
+    act(() => {
+      locales.setLocale('en')
+    })
+    expect(screen.getByRole('status', {
+      name: 'Current history entry limit',
+    }).textContent).toBe('128 entries')
+    expect(screen.getByRole('spinbutton', {
+      name: 'History entry limit',
+    })).toHaveProperty('value', '128')
+  })
+
   it('localizes the complete history contract in English', () => {
     renderControl({ localeStore: localeFixture('en') })
 

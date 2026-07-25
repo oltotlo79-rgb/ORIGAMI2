@@ -152,29 +152,23 @@ impl Default for ExactEFiniteHingeCorridorLimits {
 impl ExactEFiniteHingeCorridorLimits {
     fn projected(self) -> Self {
         let hard = Self::default();
-        Self {
-            max_authenticated_faces: self
-                .max_authenticated_faces
-                .min(hard.max_authenticated_faces),
-            max_authenticated_hinges: self
-                .max_authenticated_hinges
-                .min(hard.max_authenticated_hinges),
-            max_local_y_component_lifts: self
-                .max_local_y_component_lifts
-                .min(hard.max_local_y_component_lifts),
-            max_thickness_lifts: self.max_thickness_lifts.min(hard.max_thickness_lifts),
-            max_half_thickness_divisions: self
-                .max_half_thickness_divisions
-                .min(hard.max_half_thickness_divisions),
-            max_scalar_reconstructions: self
-                .max_scalar_reconstructions
-                .min(hard.max_scalar_reconstructions),
-            max_corridor_vertex_tests: self
-                .max_corridor_vertex_tests
-                .min(hard.max_corridor_vertex_tests),
-            prism: self.prism.projected(),
-            exact: project_cayley_limits(self.exact, hard.exact),
-        }
+        clamp_to_hard!(
+            ExactEFiniteHingeCorridorLimits {
+                requested: self,
+                hard: hard;
+                min:
+                    max_authenticated_faces,
+                    max_authenticated_hinges,
+                    max_local_y_component_lifts,
+                    max_thickness_lifts,
+                    max_half_thickness_divisions,
+                    max_scalar_reconstructions,
+                    max_corridor_vertex_tests;
+                explicit:
+                    prism: self.prism.projected(),
+                    exact: project_cayley_limits(self.exact, hard.exact),
+            }
+        )
     }
 }
 
@@ -989,6 +983,37 @@ mod tests {
         ExactVector3 {
             coordinates: [integer(x), integer(y), integer(z)],
         }
+    }
+
+    #[test]
+    fn projected_structural_limits_cover_every_field_at_under_hard_and_over_hard_boundaries() {
+        let hard = ExactEFiniteHingeCorridorLimits::default();
+        let requested = ExactEFiniteHingeCorridorLimits {
+            max_authenticated_faces: 0,
+            max_authenticated_hinges: hard.max_authenticated_hinges,
+            max_local_y_component_lifts: usize::MAX,
+            max_thickness_lifts: 0,
+            max_half_thickness_divisions: usize::MAX,
+            max_scalar_reconstructions: hard.max_scalar_reconstructions,
+            max_corridor_vertex_tests: hard.max_corridor_vertex_tests - 1,
+            prism: hard.prism,
+            exact: hard.exact,
+        };
+
+        assert_eq!(
+            requested.projected(),
+            ExactEFiniteHingeCorridorLimits {
+                max_authenticated_faces: 0,
+                max_authenticated_hinges: hard.max_authenticated_hinges,
+                max_local_y_component_lifts: hard.max_local_y_component_lifts,
+                max_thickness_lifts: 0,
+                max_half_thickness_divisions: hard.max_half_thickness_divisions,
+                max_scalar_reconstructions: hard.max_scalar_reconstructions,
+                max_corridor_vertex_tests: hard.max_corridor_vertex_tests - 1,
+                prism: requested.prism.projected(),
+                exact: project_cayley_limits(requested.exact, hard.exact),
+            }
+        );
     }
 
     #[test]

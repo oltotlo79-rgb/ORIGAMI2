@@ -144,37 +144,33 @@ impl Default for ExactPrismLimits {
 impl ExactPrismLimits {
     pub(super) fn projected(self) -> Self {
         let hard = Self::default();
-        Self {
-            max_prisms: self.max_prisms.min(hard.max_prisms),
-            max_solid_vertices: self.max_solid_vertices.min(hard.max_solid_vertices),
-            max_facets: self.max_facets.min(hard.max_facets),
-            max_halfspaces: self.max_halfspaces.min(hard.max_halfspaces),
-            max_prism_volume_tests: self.max_prism_volume_tests.min(hard.max_prism_volume_tests),
-            max_facet_vertex_checks: self
-                .max_facet_vertex_checks
-                .min(hard.max_facet_vertex_checks),
-            max_plane_triples: self.max_plane_triples.min(hard.max_plane_triples),
-            max_singular_plane_triples: self
-                .max_singular_plane_triples
-                .min(hard.max_singular_plane_triples),
-            max_nonsingular_solves: self.max_nonsingular_solves.min(hard.max_nonsingular_solves),
-            max_membership_tests: self.max_membership_tests.min(hard.max_membership_tests),
-            max_candidate_vertices: self.max_candidate_vertices.min(hard.max_candidate_vertices),
-            max_dedup_comparisons: self.max_dedup_comparisons.min(hard.max_dedup_comparisons),
-            max_affine_rank_tests: self.max_affine_rank_tests.min(hard.max_affine_rank_tests),
-            max_support_plane_vertex_tests: self
-                .max_support_plane_vertex_tests
-                .min(hard.max_support_plane_vertex_tests),
-            max_support_pair_tests: self.max_support_pair_tests.min(hard.max_support_pair_tests),
-            max_input_rationals: self.max_input_rationals.min(hard.max_input_rationals),
-            max_input_rational_storage_bits: self
-                .max_input_rational_storage_bits
-                .min(hard.max_input_rational_storage_bits),
-            max_total_input_storage_bits: self
-                .max_total_input_storage_bits
-                .min(hard.max_total_input_storage_bits),
-            exact: project_cayley_limits(self.exact, hard.exact),
-        }
+        clamp_to_hard!(
+            ExactPrismLimits {
+                requested: self,
+                hard: hard;
+                min:
+                    max_prisms,
+                    max_solid_vertices,
+                    max_facets,
+                    max_halfspaces,
+                    max_prism_volume_tests,
+                    max_facet_vertex_checks,
+                    max_plane_triples,
+                    max_singular_plane_triples,
+                    max_nonsingular_solves,
+                    max_membership_tests,
+                    max_candidate_vertices,
+                    max_dedup_comparisons,
+                    max_affine_rank_tests,
+                    max_support_plane_vertex_tests,
+                    max_support_pair_tests,
+                    max_input_rationals,
+                    max_input_rational_storage_bits,
+                    max_total_input_storage_bits;
+                explicit:
+                    exact: project_cayley_limits(self.exact, hard.exact),
+            }
+        )
     }
 }
 
@@ -1421,6 +1417,83 @@ mod tests {
         ExactVector3 {
             coordinates: [integer(x), integer(y), integer(z)],
         }
+    }
+
+    #[test]
+    fn projected_limits_cover_every_field_at_under_hard_and_over_hard_boundaries() {
+        let hard = ExactPrismLimits::default();
+        let requested = ExactPrismLimits {
+            max_prisms: 0,
+            max_solid_vertices: hard.max_solid_vertices,
+            max_facets: usize::MAX,
+            max_halfspaces: 0,
+            max_prism_volume_tests: hard.max_prism_volume_tests,
+            max_facet_vertex_checks: usize::MAX,
+            max_plane_triples: 0,
+            max_singular_plane_triples: hard.max_singular_plane_triples,
+            max_nonsingular_solves: usize::MAX,
+            max_membership_tests: 0,
+            max_candidate_vertices: hard.max_candidate_vertices,
+            max_dedup_comparisons: usize::MAX,
+            max_affine_rank_tests: 0,
+            max_support_plane_vertex_tests: hard.max_support_plane_vertex_tests,
+            max_support_pair_tests: usize::MAX,
+            max_input_rationals: 0,
+            max_input_rational_storage_bits: hard.max_input_rational_storage_bits,
+            max_total_input_storage_bits: usize::MAX,
+            exact: hard.exact,
+        };
+        let projected = requested.projected();
+
+        assert_eq!(projected.max_prisms, 0);
+        assert_eq!(projected.max_solid_vertices, hard.max_solid_vertices);
+        assert_eq!(projected.max_facets, hard.max_facets);
+        assert_eq!(projected.max_halfspaces, 0);
+        assert_eq!(
+            projected.max_prism_volume_tests,
+            hard.max_prism_volume_tests
+        );
+        assert_eq!(
+            projected.max_facet_vertex_checks,
+            hard.max_facet_vertex_checks
+        );
+        assert_eq!(projected.max_plane_triples, 0);
+        assert_eq!(
+            projected.max_singular_plane_triples,
+            hard.max_singular_plane_triples
+        );
+        assert_eq!(
+            projected.max_nonsingular_solves,
+            hard.max_nonsingular_solves
+        );
+        assert_eq!(projected.max_membership_tests, 0);
+        assert_eq!(
+            projected.max_candidate_vertices,
+            hard.max_candidate_vertices
+        );
+        assert_eq!(projected.max_dedup_comparisons, hard.max_dedup_comparisons);
+        assert_eq!(projected.max_affine_rank_tests, 0);
+        assert_eq!(
+            projected.max_support_plane_vertex_tests,
+            hard.max_support_plane_vertex_tests
+        );
+        assert_eq!(
+            projected.max_support_pair_tests,
+            hard.max_support_pair_tests
+        );
+        assert_eq!(projected.max_input_rationals, 0);
+        assert_eq!(
+            projected.max_input_rational_storage_bits,
+            hard.max_input_rational_storage_bits
+        );
+        assert_eq!(
+            projected.max_total_input_storage_bits,
+            hard.max_total_input_storage_bits
+        );
+        assert_eq!(
+            projected.exact,
+            project_cayley_limits(requested.exact, hard.exact)
+        );
     }
 
     fn prism(mid_surface: [[i64; 3]; 3]) -> ExactTriangularPrismInput {

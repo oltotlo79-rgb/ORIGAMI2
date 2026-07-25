@@ -52,6 +52,26 @@ use super::{
     try_array3, verify_exact_rotation,
 };
 
+macro_rules! clamp_to_hard {
+    (
+        $limits:ident {
+            requested: $requested:ident,
+            hard: $hard:ident;
+            min: $($field:ident),+ $(,)?;
+            explicit: $($explicit_field:ident: $explicit_value:expr),+ $(,)?
+        }
+    ) => {
+        $limits {
+            $(
+                $field: $requested.$field.min($hard.$field),
+            )+
+            $(
+                $explicit_field: $explicit_value,
+            )+
+        }
+    };
+}
+
 mod counter;
 #[cfg(test)]
 mod direct_f_affine_corridor;

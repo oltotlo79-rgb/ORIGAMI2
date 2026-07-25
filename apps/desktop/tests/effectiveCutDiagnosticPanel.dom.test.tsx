@@ -1,4 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 const { list, inspect } = vi.hoisted(() => ({
@@ -172,4 +179,49 @@ it('provides a Japanese accessible name and read-only explanation', async () => 
   expect(screen.getByText('有効カット診断（読み取り専用）')).toBeTruthy()
   expect(screen.getByText(/候補の面積はその成分単体/)).toBeTruthy()
   expect(await screen.findByText(/\+1 依存成分/)).toBeTruthy()
+})
+
+it('retranslates a completed diagnosis without restarting or clearing selection', async () => {
+  list.mockResolvedValue({
+    candidates: [{
+      componentKey: Array(32).fill(2),
+      faceCount: 1,
+      areaSquareMm: 10,
+      closureComponentCount: 2,
+      nestedDependencyCount: 1,
+    }],
+  })
+  inspect.mockResolvedValue({
+    sourceFlatPairCount: 3,
+    indeterminatePairs: 1,
+    multiHingeUnionCorridorUnprovedPairs: 1,
+  })
+  const snapshot = {
+    project_instance_id: '018f47a2-4b7a-7cc1-8abc-112233445566',
+    project_id: '018f47a2-4b7a-7cc1-8abc-665544332211',
+    revision: 3,
+    fold_model_fingerprint: 'a'.repeat(64),
+  } as ProjectSnapshot
+  const localeStore = localeFixture('ja')
+  render(
+    <EffectiveCutDiagnosticPanel
+      snapshot={snapshot}
+      localeStore={localeStore}
+    />,
+  )
+  fireEvent.click(await screen.findByRole('checkbox'))
+  fireEvent.click(screen.getByRole('button', { name: '選択を診断' }))
+  await screen.findByText(/平面ペア: 3/)
+
+  act(() => {
+    localeStore.setLocale('en')
+  })
+
+  expect(screen.getByRole('region', {
+    name: 'Effective-cut diagnostic',
+  })).toBeTruthy()
+  expect(screen.getByText(/Source-flat pairs: 3/)).toBeTruthy()
+  expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true)
+  expect(list).toHaveBeenCalledTimes(1)
+  expect(inspect).toHaveBeenCalledTimes(1)
 })

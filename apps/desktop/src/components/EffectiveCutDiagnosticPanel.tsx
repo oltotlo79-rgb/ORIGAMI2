@@ -6,13 +6,20 @@ import {
   type EffectiveCutReadOnlyResponseV1,
   type ProjectSnapshot,
 } from '../lib/coreClient.ts'
-import { useLocale, type LocaleStore } from '../lib/i18n.ts'
+import {
+  formatLocalizedText,
+  selectLocalizedText,
+  useLocale,
+  type LocaleStore,
+} from '../lib/i18n.ts'
+import {
+  EFFECTIVE_CUT_DIAGNOSTIC_PANEL_TEXT as TEXT,
+} from '../lib/effectiveCutDiagnosticPanelText.ts'
 
 type Props = Readonly<{ snapshot: ProjectSnapshot; localeStore?: LocaleStore }>
 
 export function EffectiveCutDiagnosticPanel({ snapshot, localeStore }: Props) {
   const locale = useLocale(localeStore)
-  const ja = locale === 'ja'
   const generation = useRef(0)
   const [listing, setListing] = useState<EffectiveCutCandidateListResponseV1 | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -64,19 +71,24 @@ export function EffectiveCutDiagnosticPanel({ snapshot, localeStore }: Props) {
     })
   }
   return (
-    <section aria-label={ja ? '有効カット診断' : 'Effective-cut diagnostic'}>
-      <h3>{ja ? '有効カット診断（読み取り専用）' : 'Effective-cut diagnostic (read-only)'}</h3>
-      <p>{ja
-        ? '候補の面積はその成分単体です。依存成分は閉包数として別に表示します。'
-        : 'Area is for the candidate component alone; dependent components are reported as closure counts.'}</p>
-      {status === 'loading' && <p role="status">{ja ? '候補を取得中…' : 'Loading candidates…'}</p>}
+    <section aria-label={selectLocalizedText(locale, TEXT.ariaLabel)}>
+      <h3>{selectLocalizedText(locale, TEXT.title)}</h3>
+      <p>{selectLocalizedText(locale, TEXT.explanation)}</p>
+      {status === 'loading' && (
+        <p role="status">{selectLocalizedText(locale, TEXT.loading)}</p>
+      )}
       {status === 'idle' && (
-        <button type="button" onClick={reload}>{ja ? '候補を再取得' : 'Reload candidates'}</button>
+        <button type="button" onClick={reload}>
+          {selectLocalizedText(locale, TEXT.reloadCandidates)}
+        </button>
       )}
       {status === 'error' && (
         <p role="alert">
-          {ja ? '現在の編集内容では診断できません。' : 'Diagnostics are unavailable for the current edit.'}
-          {' '}<button type="button" onClick={reload}>{ja ? '再取得' : 'Reload'}</button>
+          {selectLocalizedText(locale, TEXT.unavailable)}
+          {' '}
+          <button type="button" onClick={reload}>
+            {selectLocalizedText(locale, TEXT.reload)}
+          </button>
         </p>
       )}
       {listing?.candidates.map((candidate, index) => {
@@ -98,18 +110,30 @@ export function EffectiveCutDiagnosticPanel({ snapshot, localeStore }: Props) {
                 })
               }}
             />
-            {ja ? `候補 ${index + 1}` : `Candidate ${index + 1}`}
-            {' · '}{candidate.faceCount} {ja ? '面' : 'faces'}
+            {formatLocalizedText(locale, TEXT.candidate, {
+              index: index + 1,
+            })}
+            {' · '}
+            {formatLocalizedText(locale, TEXT.faceCount, {
+              count: candidate.faceCount,
+            })}
             {' · '}{candidate.areaSquareMm} mm²
-            {' · '}{ja ? '除去範囲' : 'removal closure'} {candidate.closureComponentCount}
+            {' · '}
+            {selectLocalizedText(locale, TEXT.removalClosure)}
+            {' '}{candidate.closureComponentCount}
             {candidate.nestedDependencyCount > 0
-              ? ` (+${candidate.nestedDependencyCount} ${ja ? '依存成分' : 'dependencies'})`
+              ? formatLocalizedText(locale, TEXT.dependencies, {
+                  count: candidate.nestedDependencyCount,
+                })
               : ''}
           </label>
         )
       })}
       <button type="button" disabled={!listing || selected.size === 0 || status !== 'ready'} onClick={run}>
-        {status === 'running' ? (ja ? '診断中…' : 'Running…') : (ja ? '選択を診断' : 'Diagnose selection')}
+        {selectLocalizedText(
+          locale,
+          status === 'running' ? TEXT.running : TEXT.diagnoseSelection,
+        )}
       </button>
       {(status === 'loading' || status === 'running') && (
         <button
@@ -120,14 +144,16 @@ export function EffectiveCutDiagnosticPanel({ snapshot, localeStore }: Props) {
             setStatus(listing ? 'ready' : 'idle')
           }}
         >
-          {ja ? 'キャンセル' : 'Cancel'}
+          {selectLocalizedText(locale, TEXT.cancel)}
         </button>
       )}
       {result && (
         <p role="status">
-          {ja ? '平面ペア' : 'Source-flat pairs'}: {result.sourceFlatPairCount};
-          {' '}{ja ? '未確定' : 'indeterminate'}: {result.indeterminatePairs};
-          {' '}{ja ? '複数ヒンジ経路未証明' : 'multi-hinge corridor unproved'}:
+          {selectLocalizedText(locale, TEXT.sourceFlatPairs)}:{' '}
+          {result.sourceFlatPairCount};
+          {' '}{selectLocalizedText(locale, TEXT.indeterminate)}:{' '}
+          {result.indeterminatePairs};
+          {' '}{selectLocalizedText(locale, TEXT.multiHingeCorridorUnproved)}:
           {' '}{result.multiHingeUnionCorridorUnprovedPairs}
         </p>
       )}

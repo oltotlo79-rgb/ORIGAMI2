@@ -1017,8 +1017,8 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_and_tiny_work_budget_fail_closed() {
-        let (pattern, unsupported, driving) = single_edge(
+    fn invalid_constraint_document_and_tiny_work_budget_fail_closed() {
+        let (pattern, invalid, driving) = single_edge(
             Point2 { x: 0.0, y: 0.0 },
             Point2 { x: 4.0, y: 0.0 },
             |edge| {
@@ -1033,7 +1033,7 @@ mod tests {
         assert!(matches!(
             solve_geometric_constraints_v1(
                 &pattern,
-                &unsupported,
+                &invalid,
                 driving,
                 Point2 { x: 1.0, y: 1.0 },
                 ConstraintSolveLimitsV1::default()

@@ -365,11 +365,8 @@ import {
   type LocalizedText,
   type MessageVariables,
 } from './lib/i18n'
-import {
-  loadGridDivisionPreferenceFromHost,
-  saveGridDivisionPreferenceToHost,
-  updateGridPreferenceInput,
-} from './lib/gridPreference'
+import { updateGridPreferenceInput } from './lib/gridPreference'
+import { useGridDivisionPreference } from './lib/useGridDivisionPreference'
 import {
   appConfirmationText,
   appErrorLocalizedText,
@@ -1065,32 +1062,14 @@ function App() {
   const [snapSettings, setSnapSettings] = useState<SnapSettings>(() => ({
     ...DEFAULT_SNAP_SETTINGS,
   }))
-  const [initialGridPreference] = useState(() => typeof window === 'undefined'
-    ? null
-    : loadGridDivisionPreferenceFromHost(window))
-  const [gridDivisionsInput, setGridDivisionsInput] = useState(
-    initialGridPreference?.divisions === null || !initialGridPreference
-      ? ''
-      : String(initialGridPreference.divisions),
-  )
-  const [gridDiagonals, setGridDiagonals] = useState(
-    initialGridPreference?.diagonals ?? false,
-  )
-  const parsedGridDivisions = Number(gridDivisionsInput)
-  const gridDivisions = gridDivisionsInput === ''
-    ? null
-    : parsedGridDivisions
-  const gridDivisionsValid = gridDivisions === null
-    || Number.isSafeInteger(gridDivisions)
-      && gridDivisions >= 2
-      && gridDivisions <= 63
-  useEffect(() => {
-    if (!gridDivisionsValid || typeof window === 'undefined') return
-    saveGridDivisionPreferenceToHost(window, {
-      divisions: gridDivisions,
-      diagonals: gridDiagonals,
-    })
-  }, [gridDiagonals, gridDivisions, gridDivisionsValid])
+  const {
+    gridDivisionsInput,
+    setGridDivisionsInput,
+    gridDiagonals,
+    setGridDiagonals,
+    gridDivisions,
+    gridDivisionsValid,
+  } = useGridDivisionPreference()
   const benchmarkStatus = appMessageText(
     locale,
     benchmarkStatusMessage,

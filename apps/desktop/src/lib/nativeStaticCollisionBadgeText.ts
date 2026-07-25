@@ -1,7 +1,12 @@
 import type { LocalizedText } from './i18n.ts'
 
 export const NATIVE_COLLISION_BADGE_TEXT: Readonly<Record<
-  'ariaLabel' | 'retryingAriaLabel' | 'retryAriaLabel' | 'retrying' | 'retry',
+  | 'ariaLabel'
+  | 'retryingAriaLabel'
+  | 'retryAriaLabel'
+  | 'retrying'
+  | 'retry'
+  | 'pairClassificationAriaLabel',
   LocalizedText
 >> = Object.freeze({
   ariaLabel: Object.freeze({
@@ -18,4 +23,8 @@ export const NATIVE_COLLISION_BADGE_TEXT: Readonly<Record<
   }),
   retrying: Object.freeze({ ja: '再判定中', en: 'Checking again' }),
   retry: Object.freeze({ ja: '再試行', en: 'Retry' }),
+  pairClassificationAriaLabel: Object.freeze({
+    ja: '面ペアごとの衝突分類',
+    en: 'Collision classification for each face pair',
+  }),
 })

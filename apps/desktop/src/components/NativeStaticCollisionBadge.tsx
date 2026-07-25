@@ -124,9 +124,10 @@ export function NativeStaticCollisionBadge({
           data-native-collision-pair-risk={
             pairDetails.hasBlockingPair ? 'blocking' : 'informational'
           }
-          aria-label={locale === 'ja'
-            ? '面ペアごとの衝突分類'
-            : 'Collision classification for each face pair'}
+          aria-label={selectLocalizedText(
+            locale,
+            NATIVE_COLLISION_BADGE_TEXT.pairClassificationAriaLabel,
+          )}
         >
           <div
             className="fold-preview-native-collision-pair-counts"

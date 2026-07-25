@@ -5,11 +5,20 @@ import { NATIVE_COLLISION_BADGE_TEXT } from '../src/lib/nativeStaticCollisionBad
 
 test('native collision badge catalog is closed, deeply frozen, and preserves description', () => {
   assert.deepEqual(Object.keys(NATIVE_COLLISION_BADGE_TEXT), [
-    'ariaLabel', 'retryingAriaLabel', 'retryAriaLabel', 'retrying', 'retry',
+    'ariaLabel',
+    'retryingAriaLabel',
+    'retryAriaLabel',
+    'retrying',
+    'retry',
+    'pairClassificationAriaLabel',
   ])
   assert.equal(Object.isFrozen(NATIVE_COLLISION_BADGE_TEXT), true)
   for (const text of Object.values(NATIVE_COLLISION_BADGE_TEXT)) assert.equal(Object.isFrozen(text), true)
   assert.equal(formatLocalizedText('ja', NATIVE_COLLISION_BADGE_TEXT.ariaLabel, {
     description: '貫通 1',
   }), 'native厳密衝突判定。貫通 1')
+  assert.deepEqual(NATIVE_COLLISION_BADGE_TEXT.pairClassificationAriaLabel, {
+    ja: '面ペアごとの衝突分類',
+    en: 'Collision classification for each face pair',
+  })
 })

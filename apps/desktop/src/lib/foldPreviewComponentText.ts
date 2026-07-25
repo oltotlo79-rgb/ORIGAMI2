@@ -1,4 +1,9 @@
-import type { LocalizedText } from './i18n.ts'
+import {
+  DEFAULT_LOCALE,
+  isLocale,
+  type Locale,
+  type LocalizedText,
+} from './i18n.ts'
 
 type FoldPreviewComponentTextKey =
   | 'preparingPose'
@@ -230,3 +235,50 @@ export const FOLD_PREVIEW_COMPONENT_TEXT = Object.freeze({
   ),
   resetView: text('視点をリセット', 'Reset view'),
 }) satisfies FoldPreviewComponentText
+
+type FoldPreviewComponentLocaleFormat = Readonly<{
+  numberLocale: string
+  descriptionActionCaseLocale: string | null
+}>
+
+export const FOLD_PREVIEW_COMPONENT_LOCALE_FORMATS: Readonly<
+  Record<Locale, FoldPreviewComponentLocaleFormat>
+> = Object.freeze({
+  ja: Object.freeze({
+    numberLocale: 'ja-JP',
+    descriptionActionCaseLocale: null,
+  }),
+  en: Object.freeze({
+    numberLocale: 'en-US',
+    descriptionActionCaseLocale: 'en-US',
+  }),
+})
+
+function selectFoldPreviewComponentLocaleFormat(
+  locale: unknown,
+): FoldPreviewComponentLocaleFormat {
+  return FOLD_PREVIEW_COMPONENT_LOCALE_FORMATS[
+    isLocale(locale) ? locale : DEFAULT_LOCALE
+  ]
+}
+
+export function formatFoldPreviewMeasurementAngle(
+  value: number,
+  locale: unknown,
+): string {
+  const { numberLocale } = selectFoldPreviewComponentLocaleFormat(locale)
+  return `${value.toLocaleString(numberLocale, {
+    maximumFractionDigits: 2,
+  })}°`
+}
+
+export function formatFoldPreviewDescriptionAction(
+  action: string,
+  locale: unknown,
+): string {
+  const { descriptionActionCaseLocale } =
+    selectFoldPreviewComponentLocaleFormat(locale)
+  return descriptionActionCaseLocale === null
+    ? action
+    : action.toLocaleLowerCase(descriptionActionCaseLocale)
+}

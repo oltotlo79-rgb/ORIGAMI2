@@ -4,7 +4,10 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import {
+  FOLD_PREVIEW_COMPONENT_LOCALE_FORMATS as LOCALE_FORMATS,
   FOLD_PREVIEW_COMPONENT_TEXT as TEXT,
+  formatFoldPreviewDescriptionAction,
+  formatFoldPreviewMeasurementAngle,
 } from '../src/lib/foldPreviewComponentText.ts'
 import {
   formatLocalizedText,
@@ -200,6 +203,33 @@ test('fold preview component catalog is exact, closed, and deeply frozen', () =>
   )
 })
 
+test('fold preview component locale formats are exact, symmetric, and deeply frozen', () => {
+  assert.deepEqual(LOCALE_FORMATS, {
+    ja: {
+      numberLocale: 'ja-JP',
+      descriptionActionCaseLocale: null,
+    },
+    en: {
+      numberLocale: 'en-US',
+      descriptionActionCaseLocale: 'en-US',
+    },
+  })
+  assertDeeplyFrozen(LOCALE_FORMATS)
+})
+
+test('fold preview component formatters preserve display rules and default unknown locales to Japanese', () => {
+  assert.equal(formatFoldPreviewMeasurementAngle(12_345.678, 'ja'), '12,345.68°')
+  assert.equal(formatFoldPreviewMeasurementAngle(12_345.678, 'en'), '12,345.68°')
+  assert.equal(formatFoldPreviewMeasurementAngle(12_345.678, 'unknown'), '12,345.68°')
+
+  assert.equal(formatFoldPreviewDescriptionAction('PAPER DRAG', 'ja'), 'PAPER DRAG')
+  assert.equal(formatFoldPreviewDescriptionAction('PAPER DRAG', 'en'), 'paper drag')
+  assert.equal(
+    formatFoldPreviewDescriptionAction('PAPER DRAG', 'unknown'),
+    'PAPER DRAG',
+  )
+})
+
 test('fold preview component placeholders preserve their exact set and order', () => {
   const actualPlaceholderKeys: string[] = []
   for (const [key, value] of Object.entries(TEXT)) {
@@ -252,4 +282,6 @@ test('FoldPreview consumes only the dedicated catalog for its fixed bilingual co
     source,
     /formatLocalizedText\s*\(\s*locale\s*,\s*\{/u,
   )
+  assert.doesNotMatch(source, /\blocale\s*===\s*['"](?:ja|en)['"]/u)
+  assert.doesNotMatch(source, /\.toLocale(?:String|LowerCase)\s*\(/u)
 })

@@ -102,6 +102,8 @@ import {
 } from '../lib/foldPreviewPresentation.ts'
 import {
   FOLD_PREVIEW_COMPONENT_TEXT as TEXT,
+  formatFoldPreviewDescriptionAction,
+  formatFoldPreviewMeasurementAngle,
 } from '../lib/foldPreviewComponentText.ts'
 import {
   createFoldPreviewKeyboardCoordinator,
@@ -4312,7 +4314,7 @@ export function FoldPreview({
       : selectLocalizedText(locale, TEXT.faceNormalAngle)
         + `: ${measurementValue === null
           ? selectLocalizedText(locale, TEXT.measurementUnavailable)
-          : `${measurementValue.toLocaleString(locale === 'ja' ? 'ja-JP' : 'en-US', { maximumFractionDigits: 2 })}°`}`
+          : formatFoldPreviewMeasurementAngle(measurementValue, locale)}`
     : formatLocalizedText(
         locale,
         TEXT.selectTwoSameKind,
@@ -4529,9 +4531,10 @@ export function FoldPreview({
         locale,
         TEXT.unverifiedTargetDescription,
         {
-          action: locale === 'en'
-            ? angleDragActionLabel.toLocaleLowerCase('en-US')
-            : angleDragActionLabel,
+          action: formatFoldPreviewDescriptionAction(
+            angleDragActionLabel,
+            locale,
+          ),
           target: angleDragTargetText,
         },
       )

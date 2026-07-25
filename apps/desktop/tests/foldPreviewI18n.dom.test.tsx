@@ -25,9 +25,10 @@ describe('FoldPreview internationalization', () => {
     expect(screen.getByRole('region', {
       name: '3D計測',
     })).toBeTruthy()
-    expect((screen.getByRole('button', {
+    const measurementButton = screen.getByRole('button', {
       name: '3D計測モード',
-    }) as HTMLButtonElement).disabled).toBe(true)
+    }) as HTMLButtonElement
+    expect(measurementButton.disabled).toBe(true)
     expect(screen.getByRole('img').getAttribute('aria-label')).toContain(
       '2面・3ヒンジ',
     )
@@ -49,9 +50,11 @@ describe('FoldPreview internationalization', () => {
     expect(screen.getByRole('region', {
       name: '3D measurement',
     })).toBeTruthy()
-    expect((screen.getByRole('button', {
+    const translatedMeasurementButton = screen.getByRole('button', {
       name: '3D measurement mode',
-    }) as HTMLButtonElement).disabled).toBe(true)
+    }) as HTMLButtonElement
+    expect(translatedMeasurementButton).toBe(measurementButton)
+    expect(translatedMeasurementButton.disabled).toBe(true)
     expect(screen.getByRole('img').getAttribute('aria-label')).toContain(
       '2 faces · 3 hinges',
     )

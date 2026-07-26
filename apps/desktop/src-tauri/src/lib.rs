@@ -13,6 +13,7 @@
 mod applied_pose;
 mod beginner_recognition;
 mod crease_export;
+mod current_non_flat_layer_order_view;
 mod diagnostics;
 mod fold_3d_frames_import;
 mod fold_technique_file_io;
@@ -16042,6 +16043,7 @@ pub fn run() {
             inspect_effective_cut_read_only_v1,
             begin_global_flat_foldability,
             get_current_layer_order_view,
+            current_non_flat_layer_order_view::get_current_non_flat_layer_order_view_v1,
             get_global_flat_foldability_progress,
             get_global_flat_foldability_result,
             cancel_global_flat_foldability,

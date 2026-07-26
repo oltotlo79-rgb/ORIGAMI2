@@ -2,7 +2,11 @@ import type {
   LengthDisplayUnit,
   ProjectSnapshot,
 } from './coreClient.ts'
-import type { Locale } from './i18n.ts'
+import {
+  selectLocalizedText,
+  type Locale,
+} from './i18n.ts'
+import { LENGTH_UNIT_PRESENTATION_TEXT } from './lengthUnitText.ts'
 
 export type AbsoluteLengthDisplayUnit = 'mm' | 'cm' | 'inch'
 
@@ -255,7 +259,7 @@ export function formatLengthValue(
   const displayed = lengthMillimetresToDisplay(valueMm, unit)
   if (!Number.isFinite(displayed)) return unavailableLengthText(locale)
   return normalizeNegativeZero(displayed).toLocaleString(
-    locale === 'en' ? 'en-US' : 'ja-JP',
+    selectLocalizedText(locale, LENGTH_UNIT_PRESENTATION_TEXT.numberLocale),
     {
     maximumFractionDigits,
     },
@@ -298,7 +302,10 @@ export function lengthDisplayUnitLabel(
   locale: Locale,
 ) {
   return unit.mode === 'paper_edge_ratio'
-    ? locale === 'en' ? 'paper-edge ratio' : '紙辺比'
+    ? selectLocalizedText(
+        locale,
+        LENGTH_UNIT_PRESENTATION_TEXT.paperEdgeRatio,
+      )
     : unit.label
 }
 
@@ -406,7 +413,7 @@ function defaultMaximumFractionDigits(unit: ResolvedLengthDisplayUnit) {
 }
 
 function unavailableLengthText(locale: Locale) {
-  return locale === 'en' ? 'Unavailable' : '計測不可'
+  return selectLocalizedText(locale, LENGTH_UNIT_PRESENTATION_TEXT.unavailable)
 }
 
 function canonicalEndpointPair(first: string, second: string) {

@@ -57,6 +57,14 @@ test('paper-edge ratio resolves only a unique valid cyclic boundary edge', () =>
   assert.equal(formatLengthValue(Number.NaN, unit, 'ja'), '計測不可')
   assert.equal(formatLengthValue(Number.NaN, unit, 'en'), 'Unavailable')
   assert.equal(formatLengthPoint(200, null, unit, 'en'), 'Unavailable')
+  assert.equal(
+    formatLengthValue(Number.NaN, unit, 'unsupported' as never),
+    '計測不可',
+  )
+  assert.equal(
+    lengthDisplayUnitLabel(unit, 'unsupported' as never),
+    '紙辺比',
+  )
 
   const vertical = resolveLengthDisplayUnit(
     project(makePaperEdgeRatioUnit('e-right')),

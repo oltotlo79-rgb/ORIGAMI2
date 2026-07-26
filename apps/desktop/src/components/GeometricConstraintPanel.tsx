@@ -4,6 +4,7 @@ import type {
   GeometricConstraintDocument,
   GeometricConstraintKind,
   GeometricConstraintPreflightResult,
+  GeometricConstraintSemanticMus,
 } from '../lib/coreClient'
 import { isCanonicalNonNilUuid } from '../lib/canonicalUuid.ts'
 import {
@@ -92,6 +93,7 @@ const CONSTRAINT_CREATION_FIELDS: Readonly<
 type GeometricConstraintPanelProps = {
   document: GeometricConstraintDocument
   preflight: GeometricConstraintPreflightResult | null
+  semanticMus?: GeometricConstraintSemanticMus | null
   analyzing: boolean
   analysisFailed: boolean
   selectedEdgeId: string | null
@@ -118,6 +120,7 @@ type GeometricConstraintPanelProps = {
 export function GeometricConstraintPanel({
   document,
   preflight,
+  semanticMus = null,
   analyzing,
   analysisFailed,
   selectedEdgeId,
@@ -573,6 +576,7 @@ export function GeometricConstraintPanel({
 
       <ConstraintPreflightStatus
         preflight={preflight}
+        semanticMus={semanticMus}
         analyzing={analyzing}
         failed={analysisFailed}
         disabled={disabled}
@@ -653,6 +657,7 @@ export function GeometricConstraintPanel({
 
 function ConstraintPreflightStatus({
   preflight,
+  semanticMus,
   analyzing,
   failed,
   disabled,
@@ -660,6 +665,7 @@ function ConstraintPreflightStatus({
   locale,
 }: {
   preflight: GeometricConstraintPreflightResult | null
+  semanticMus: GeometricConstraintSemanticMus | null
   analyzing: boolean
   failed: boolean
   disabled: boolean
@@ -763,6 +769,7 @@ function ConstraintPreflightStatus({
             result={preflight.bounded_direct_mus}
             locale={locale}
           />
+          <SemanticMusStatus result={semanticMus} locale={locale} />
         </>
       )}
       {!analyzing
@@ -827,6 +834,76 @@ function BoundedDirectMusStatus({
     <p className="geometric-constraint-bounded-mus">
       {selectLocalizedText(locale, label)}
     </p>
+  )
+}
+
+function SemanticMusStatus({
+  result,
+  locale,
+}: {
+  result: GeometricConstraintSemanticMus | null
+  locale: Locale
+}) {
+  let detail: string
+  if (result === null) {
+    detail = selectLocalizedText(locale, TEXT.semanticMusLegacyUnavailable)
+  } else if (result.status === 'certified') {
+    detail = formatLocalizedText(
+      locale,
+      TEXT.semanticMusCertified,
+      {
+        count: result.constraint_count,
+        calls: result.direct_oracle_calls,
+        checks: result.deletion_witness_checks,
+        work: result.deletion_witness_work,
+        current: result.current_assignment_witness_count,
+        axis: result.axis_exactification_witness_count,
+        constructive: result.single_constraint_constructive_witness_count,
+        ids: result.constraint_ids
+          .map((id) => shortConstraintId(id, locale))
+          .join(selectLocalizedText(locale, TEXT.idListSeparator)),
+      },
+    )
+  } else {
+    const reason = selectLocalizedText(
+      locale,
+      TEXT.semanticMusUnknownReasonLabels[result.reason],
+    )
+    detail = result.direct_core_constraint_ids.length > 0
+      ? formatLocalizedText(
+          locale,
+          TEXT.semanticMusUnknownWithCore,
+          {
+            count: result.direct_core_constraint_ids.length,
+            reason,
+            certified: result.certified_deletion_witnesses,
+            checks: result.deletion_witness_checks,
+            work: result.deletion_witness_work,
+            ids: result.direct_core_constraint_ids
+              .map((id) => shortConstraintId(id, locale))
+              .join(selectLocalizedText(locale, TEXT.idListSeparator)),
+          },
+        )
+      : formatLocalizedText(
+          locale,
+          TEXT.semanticMusUnknownWithoutCore,
+          {
+            reason,
+            calls: result.direct_oracle_calls,
+          },
+        )
+  }
+  return (
+    <section
+      className="geometric-constraint-semantic-mus"
+      aria-label={selectLocalizedText(locale, TEXT.semanticMusHeading)}
+    >
+      <strong>{selectLocalizedText(locale, TEXT.semanticMusHeading)}</strong>
+      <p>{detail}</p>
+      <p className="muted">
+        {selectLocalizedText(locale, TEXT.semanticMusNoAuthority)}
+      </p>
+    </section>
   )
 }
 

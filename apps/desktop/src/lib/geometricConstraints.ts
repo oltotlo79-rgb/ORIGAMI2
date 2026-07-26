@@ -4,6 +4,24 @@ import {
   formatLocalizedText,
   type Locale,
 } from './i18n.ts'
+import {
+  GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
+  MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_CHECKS,
+  MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK,
+  parseGeometricConstraintSemanticMus,
+  type GeometricConstraintSemanticMusUnknownReasonV1,
+  type GeometricConstraintSemanticMusV1,
+} from './geometricConstraintSemanticMus.ts'
+
+export {
+  GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
+  MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_CHECKS,
+  MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK,
+}
+export type {
+  GeometricConstraintSemanticMusUnknownReasonV1,
+  GeometricConstraintSemanticMusV1,
+}
 
 export const GEOMETRIC_CONSTRAINT_SCHEMA_VERSION = 1 as const
 export const MAX_GEOMETRIC_CONSTRAINT_RECORDS = 10_000
@@ -296,6 +314,11 @@ export type GeometricConstraintPreflightResponseV1 =
   GeometricConstraintPreflightBinding
   & Readonly<{
     result: GeometricConstraintPreflightResultV1
+    /**
+     * Absent only on the accepted legacy four-key response envelope. An
+     * absent value carries no semantic-minimality claim.
+     */
+    semantic_mus?: GeometricConstraintSemanticMusV1 | null
   }>
 
 export type GeometricConstraintPresentation = Readonly<{
@@ -369,15 +392,24 @@ export function normalizeGeometricConstraintPreflightResponse(
 ): GeometricConstraintPreflightResponseV1 | null {
   try {
     const expected = parsePreflightBinding(expectedBinding)
-    const response = exactDataRecord(value, [
+    const response = snapshotDataRecord(value)
+    const legacyEnvelope = response && hasExactKeys(response, [
       'project_instance_id',
       'project_id',
       'revision',
       'result',
     ])
+    const semanticEnvelope = response && hasExactKeys(response, [
+      'project_instance_id',
+      'project_id',
+      'revision',
+      'result',
+      'semantic_mus',
+    ])
     if (
       !expected
       || !response
+      || (!legacyEnvelope && !semanticEnvelope)
       || !isCanonicalUuid(response.project_instance_id)
       || !isCanonicalUuid(response.project_id)
       || !isRevision(response.revision)
@@ -388,11 +420,41 @@ export function normalizeGeometricConstraintPreflightResponse(
     const result = parsePreflightResult(response.result)
     if (!result) return null
 
+    if (legacyEnvelope) {
+      return Object.freeze({
+        project_instance_id: response.project_instance_id,
+        project_id: response.project_id,
+        revision: response.revision,
+        result,
+      })
+    }
+    if (result.status !== 'direct_conflict') {
+      if (response.semantic_mus !== null) return null
+      return Object.freeze({
+        project_instance_id: response.project_instance_id,
+        project_id: response.project_id,
+        revision: response.revision,
+        result,
+        semantic_mus: null,
+      })
+    }
+    const semanticMus = parseGeometricConstraintSemanticMus(
+      response.semantic_mus,
+      result,
+      {
+        snapshotDataRecord,
+        hasExactKeys,
+        parseSortedUniqueUuidArray,
+        isBoundedDirectMusOracleCalls,
+      },
+    )
+    if (!semanticMus) return null
     return Object.freeze({
       project_instance_id: response.project_instance_id,
       project_id: response.project_id,
       revision: response.revision,
       result,
+      semantic_mus: semanticMus,
     })
   } catch {
     return null

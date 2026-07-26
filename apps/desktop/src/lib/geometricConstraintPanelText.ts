@@ -1,6 +1,7 @@
 import type {
   GeometricConstraintKind,
   GeometricConstraintPreflightResult,
+  GeometricConstraintSemanticMus,
   GeometricConstraintSolvePreview,
 } from './coreClient.ts'
 import type { LocalizedText } from './i18n.ts'
@@ -12,6 +13,11 @@ type DirectConflictKind = Extract<
 
 type UnknownReason = Extract<
   GeometricConstraintPreflightResult,
+  { status: 'unknown' }
+>['reason']
+
+type SemanticMusUnknownReason = Extract<
+  GeometricConstraintSemanticMus,
   { status: 'unknown' }
 >['reason']
 
@@ -107,6 +113,12 @@ type GeometricConstraintPanelSimpleTextKey =
   | 'boundedMusIncomplete'
   | 'boundedMusCancelled'
   | 'boundedMusDeadlineReached'
+  | 'semanticMusHeading'
+  | 'semanticMusCertified'
+  | 'semanticMusUnknownWithCore'
+  | 'semanticMusUnknownWithoutCore'
+  | 'semanticMusLegacyUnavailable'
+  | 'semanticMusNoAuthority'
   | 'invalidIdentifier'
   | 'idListSeparator'
   | 'remainingIds'
@@ -129,6 +141,9 @@ export type GeometricConstraintPanelText = Readonly<
     >
     directConflictLabels: Readonly<Record<DirectConflictKind, LocalizedText>>
     unknownReasonLabels: Readonly<Record<UnknownReason, LocalizedText>>
+    semanticMusUnknownReasonLabels: Readonly<
+      Record<SemanticMusUnknownReason, LocalizedText>
+    >
   }
 >
 
@@ -309,6 +324,30 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
     '直接矛盾は証明済みですが、有界な直接矛盾の最小化は時間上限に達しました。',
     'A direct conflict is proven, but bounded direct-conflict minimization reached its time limit.',
   ),
+  semanticMusHeading: text(
+    '現在の実行環境で意味論的最小コア認証',
+    'Current-runtime semantic minimal-core certification',
+  ),
+  semanticMusCertified: text(
+    '現在の実行環境で意味論的最小コアを認証しました（{count}件、直接オラクル{calls}回、削除証人{checks}件、作業量{work}）。証人方式：現在配置{current}件、軸厳密化{axis}件、単一制約構成{constructive}件。コア：{ids}',
+    'Certified a semantic minimal core in the current runtime ({count} constraints, {calls} direct-oracle calls, {checks} deletion witnesses, work {work}). Witness methods: {current} current-assignment, {axis} axis-exactification, {constructive} single-constraint constructive. Core: {ids}',
+  ),
+  semanticMusUnknownWithCore: text(
+    '直接矛盾コア（{count}件）は得られましたが、意味論的最小性は認証されていません。理由：{reason}。進捗：削除証人{certified}/{checks}件、作業量{work}。コア：{ids}',
+    'A direct-conflict core ({count} constraints) was found, but semantic minimality is not certified. Reason: {reason} Progress: {certified}/{checks} deletion witnesses, work {work}. Core: {ids}',
+  ),
+  semanticMusUnknownWithoutCore: text(
+    '意味論的最小コアは認証されていません。直接コアの確定前に停止しました。理由：{reason}。直接オラクル{calls}回。',
+    'No semantic minimal core is certified. Analysis stopped before a direct core was established. Reason: {reason} Direct-oracle calls: {calls}.',
+  ),
+  semanticMusLegacyUnavailable: text(
+    'この応答には意味論的最小コア認証情報がありません。',
+    'This response does not contain semantic minimal-core certification information.',
+  ),
+  semanticMusNoAuthority: text(
+    'この結果はプロジェクト変更を許可せず、別の実行環境で再利用できません。',
+    'This result does not authorize project mutation and cannot be replayed across runtimes.',
+  ),
   invalidIdentifier: text('不正な識別子', 'invalid identifier'),
   idListSeparator: text('、', ', '),
   remainingIds: text(
@@ -478,6 +517,32 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
     invalid_document_or_geometry: text(
       '制約または展開図を検証できないため判定保留です',
       'Indeterminate because the constraints or crease pattern could not be validated.',
+    ),
+  }),
+  semanticMusUnknownReasonLabels: Object.freeze({
+    direct_oracle_incomplete: text(
+      '直接矛盾オラクルが完了していません。',
+      'The direct-conflict oracle did not complete.',
+    ),
+    deletion_witness_limit_exceeded: text(
+      '削除証人の検査件数上限に達しました。',
+      'The deletion-witness check limit was reached.',
+    ),
+    deletion_witness_work_limit_exceeded: text(
+      '削除証人の作業量上限に達しました。',
+      'The deletion-witness work limit was reached.',
+    ),
+    deletion_witness_unavailable: text(
+      '必要な削除証人を認証できませんでした。',
+      'A required deletion witness could not be certified.',
+    ),
+    cancelled: text(
+      '認証処理が取り消されました。',
+      'Certification was cancelled.',
+    ),
+    deadline_reached: text(
+      '認証処理が時間上限に達しました。',
+      'Certification reached its time limit.',
     ),
   }),
 }) satisfies GeometricConstraintPanelText

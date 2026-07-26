@@ -76,6 +76,12 @@ const SIMPLE_KEYS = [
   'boundedMusIncomplete',
   'boundedMusCancelled',
   'boundedMusDeadlineReached',
+  'semanticMusHeading',
+  'semanticMusCertified',
+  'semanticMusUnknownWithCore',
+  'semanticMusUnknownWithoutCore',
+  'semanticMusLegacyUnavailable',
+  'semanticMusNoAuthority',
   'invalidIdentifier',
   'idListSeparator',
   'remainingIds',
@@ -157,6 +163,14 @@ const NESTED_KEYS = {
     'solver_required_constraint_kinds',
     'invalid_document_or_geometry',
   ],
+  semanticMusUnknownReasonLabels: [
+    'direct_oracle_incomplete',
+    'deletion_witness_limit_exceeded',
+    'deletion_witness_work_limit_exceeded',
+    'deletion_witness_unavailable',
+    'cancelled',
+    'deadline_reached',
+  ],
 } as const
 
 test('geometric constraint panel catalog is exact, closed, and deeply frozen', () => {
@@ -178,7 +192,7 @@ test('geometric constraint panel catalog is exact, closed, and deeply frozen', (
   }
   assert.equal(
     createHash('sha256').update(JSON.stringify(TEXT), 'utf8').digest('hex'),
-    'b621f9ac5675b2fd43686669cf0eba433550d98397d7382a41bc70823e03381b',
+    'b7e4ccb4e13b48e2e4abd43e72ed7906abdbf8776de125a3d2d328a31dbcdadb',
   )
   assert.equal(Object.hasOwn(TEXT, 'ja'), false)
   assert.equal(TEXT.title.ja, '幾何制約')
@@ -215,6 +229,36 @@ test('geometric constraint placeholders preserve exact set, order, and output', 
     boundedMusProven: {
       ja: ['count', 'calls', 'ids'],
       en: ['count', 'calls', 'ids'],
+    },
+    semanticMusCertified: {
+      ja: [
+        'count',
+        'calls',
+        'checks',
+        'work',
+        'current',
+        'axis',
+        'constructive',
+        'ids',
+      ],
+      en: [
+        'count',
+        'calls',
+        'checks',
+        'work',
+        'current',
+        'axis',
+        'constructive',
+        'ids',
+      ],
+    },
+    semanticMusUnknownWithCore: {
+      ja: ['count', 'reason', 'certified', 'checks', 'work', 'ids'],
+      en: ['count', 'reason', 'certified', 'checks', 'work', 'ids'],
+    },
+    semanticMusUnknownWithoutCore: {
+      ja: ['reason', 'calls'],
+      en: ['reason', 'calls'],
     },
     remainingIds: {
       ja: ['visible', 'remaining'],

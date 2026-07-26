@@ -5223,6 +5223,7 @@ function App() {
                 constraints: [],
               }}
               preflight={geometricConstraintPreflight?.result ?? null}
+              semanticMus={geometricConstraintPreflight?.semantic_mus ?? null}
               analyzing={geometricConstraintAnalysisBusy}
               analysisFailed={
                 geometricConstraintAnalysisFailed || geometricConstraintDocumentInvalid

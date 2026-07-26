@@ -120,9 +120,16 @@ test('constraints are editor-owned, dirty-tracked, snapshotted, and persisted', 
 
 test('the visible panel never upgrades unknown or direct conflict to a safe result', () => {
   assert.match(app, /<GeometricConstraintPanel/u)
+  assert.match(
+    app,
+    /semanticMus=\{geometricConstraintPreflight\?\.semantic_mus \?\? null\}/u,
+  )
   assert.match(panel, /preflight\?\.status === 'direct_conflict'/u)
   assert.match(panel, /preflight\?\.status === 'unknown'/u)
+  assert.match(panel, /semanticMusUnknownWithCore/u)
   assert.match(panel, /className = 'is-blocking'/u)
+  assert.match(panelText, /現在の実行環境で意味論的最小コア認証/u)
+  assert.match(panelText, /does not authorize project mutation/u)
   assert.match(panelText, /安全確認済みとして扱いません/u)
   assert.match(
     panelText,

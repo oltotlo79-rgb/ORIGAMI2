@@ -36,6 +36,7 @@ import {
   type GeometricConstraintKindV1,
   type GeometricConstraintPreflightResponseV1,
   type GeometricConstraintPreflightResultV1,
+  type GeometricConstraintSemanticMusV1,
 } from './geometricConstraints.ts'
 import { isCanonicalNonNilUuid } from './canonicalUuid.ts'
 import { isExpectedNativeEditSnapshot } from './projectSnapshotBinding.ts'
@@ -171,6 +172,7 @@ export type GeometricConstraintKind = GeometricConstraintKindV1
 export type GeometricConstraintDocument = GeometricConstraintDocumentV1
 export type GeometricConstraintPreflightResult = GeometricConstraintPreflightResultV1
 export type GeometricConstraintPreflightResponse = GeometricConstraintPreflightResponseV1
+export type GeometricConstraintSemanticMus = GeometricConstraintSemanticMusV1
 
 export type ProjectSnapshot = {
   project_instance_id: string

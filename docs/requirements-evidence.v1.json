@@ -427,7 +427,8 @@
       "id": "HIS-001",
       "status": "実装済み",
       "commits": [
-        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db",
+        "1fc45042a9c310fb459d3f52e84be5608bcb0832"
       ],
       "evidence": [
         {
@@ -442,7 +443,7 @@
         },
         {
           "kind": "test",
-          "path": "crates/ori-core/src/editor.rs",
+          "path": "crates/ori-core/src/editor/tests/editor_history_limit_tests.rs",
           "selector": "fn execute_undo_and_redo_pushes_all_use_the_instance_history_limit()"
         }
       ],
@@ -479,7 +480,8 @@
       "id": "HIS-003",
       "status": "実装済み",
       "commits": [
-        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db",
+        "1fc45042a9c310fb459d3f52e84be5608bcb0832"
       ],
       "evidence": [
         {
@@ -494,7 +496,7 @@
         },
         {
           "kind": "test",
-          "path": "crates/ori-core/src/editor.rs",
+          "path": "crates/ori-core/src/editor/tests/editor_history_limit_tests.rs",
           "selector": "fn execute_undo_and_redo_pushes_all_use_the_instance_history_limit()"
         }
       ],

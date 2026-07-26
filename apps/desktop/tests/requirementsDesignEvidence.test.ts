@@ -3,6 +3,10 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 const status = readFileSync('../../docs/requirements-status.md', 'utf8')
+const progress = readFileSync('../../docs/progress.md', 'utf8')
+const evidenceManifest = JSON.parse(
+  readFileSync('../../docs/requirements-evidence.v1.json', 'utf8'),
+)
 const evidence = readFileSync('../../docs/requirements-design-evidence-2026-07-21.md', 'utf8')
 const editor = readFileSync('../../crates/ori-core/src/editor.rs', 'utf8')
 const history = readFileSync('../../crates/ori-core/src/editor/history_persistence.rs', 'utf8')
@@ -43,14 +47,73 @@ test('the evidence audit does not promote the remaining SIM-010 proof boundary',
   assert.match(evidence, /SIM-010の未証明範囲を完成へ昇格させる証拠には使用しない/u)
 })
 
-test('EDT-009 documents the exact direct-conflict variant basis', () => {
+test('EDT-009 keeps twenty-one wire variants but promotes only the five sound residual families', () => {
   const enumBody = constraints.match(
     /pub enum DirectConstraintConflictKindV1 \{(?<body>[\s\S]*?)\n\}/u,
   )?.groups?.body
   assert.ok(enumBody)
-  assert.equal([...enumBody.matchAll(/^    [A-Z][A-Za-z0-9]+ \{/gmu)].length, 21)
+  const enumVariants = [
+    ...enumBody.matchAll(/^    (?<name>[A-Z][A-Za-z0-9]+) \{/gmu),
+  ]
+    .map((match) => match.groups?.name)
+    .filter((name): name is string => name !== undefined)
+  assert.equal(enumVariants.length, 21)
+  assert.equal(new Set(enumVariants).size, 21)
+
+  const statusRow = status.match(/^\| EDT-009 \| 部分実装 \|.*$/mu)?.[0]
+  assert.ok(statusRow)
+  const allowlist = [
+    'DifferentFixedLengths',
+    'HorizontalAndVertical',
+    'EqualLengthWithDifferentFixedLengths',
+    'DifferentFixedLengthsInEqualLengthComponent',
+    'ParallelWithPerpendicularOrientations',
+  ]
+  const documentedVariants = [
+    ...statusRow.matchAll(/`(?<name>[A-Z][A-Za-z0-9]+)`/gu),
+  ]
+    .map((match) => match.groups?.name)
+    .filter((name): name is string => name !== undefined)
+    .filter((name) => enumVariants.includes(name))
+    .filter((name, index, names) => names.indexOf(name) === index)
+  assert.deepEqual(documentedVariants, allowlist)
+  assert.equal(
+    enumVariants.filter((name) => !allowlist.includes(name)).length,
+    16,
+  )
+  assert.match(statusRow, /enum 21 variantはwire互換/u)
+  assert.match(statusRow, /sound allowlist/u)
+  assert.match(statusRow, /残る16 variant/u)
+  assert.match(statusRow, /`Unknown`へfail-closed/u)
+  assert.match(statusRow, /一般充足可能性、一般矛盾原因、一般最小不能部分集合は未完成/u)
+
   assert.match(
     status,
-    /^\| EDT-009 \| 部分実装 \| `DirectConstraintConflictKindV1`の21直接矛盾variant（17 fixed-pattern \+ 4 general-graph）/mu,
+    /2026-07-26 EDT-009監査訂正:[^\n]+この5種allowlistが現在の正本/u,
   )
+  assert.match(
+    progress,
+    /2026-07-26 EDT-009後続監査訂正:[^\n]+残る16種[^\n]+`Unknown`へfail-closed/u,
+  )
+  assert.match(progress, /\*\*81\.96%（表示82\.0%）\*\*/u)
+  assert.match(status, /\*\*実装済み85 \/ 部分実装2 \/ 未着手0\*\*/u)
+
+  const edtEvidence = evidenceManifest.requirements.find(
+    (requirement: { id: string }) => requirement.id === 'EDT-009',
+  )
+  assert.ok(edtEvidence)
+  assert.deepEqual(edtEvidence.limitations, [
+    'only five of the twenty-one wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the other sixteen fail closed to Unknown',
+  ])
+  assert.deepEqual(edtEvidence.missingAcceptance, [
+    'sound general satisfiability and unsatisfiability oracle plus minimal unsatisfiable subsets beyond the five allowlisted direct-conflict variants',
+  ])
+  assert.ok(edtEvidence.evidence.some(
+    (item: { selector: string }) =>
+      item.selector === 'fn horizontal_and_vertical_require_an_exact_noncollapse_witness()',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { selector: string }) =>
+      item.selector === 'fn partially_checked_fixed_angle_and_ratio_kinds_return_unknown()',
+  ))
 })

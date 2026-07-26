@@ -229,14 +229,19 @@
         {
           "kind": "test",
           "path": "crates/ori-core/src/constraints.rs",
-          "selector": "fn fixed_angle_parallel_graph_has_canonical_path_cap_and_work_boundary()"
+          "selector": "fn horizontal_and_vertical_require_an_exact_noncollapse_witness()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "fn partially_checked_fixed_angle_and_ratio_kinds_return_unknown()"
         }
       ],
       "limitations": [
-        "sound direct and bounded ratio, equal-length, and parallel graph conflicts only"
+        "only five of the twenty-one wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the other sixteen fail closed to Unknown"
       ],
       "missingAcceptance": [
-        "sound general unsatisfiability oracle and minimal unsatisfiable subsets for every supported constraint kind"
+        "sound general satisfiability and unsatisfiability oracle plus minimal unsatisfiable subsets beyond the five allowlisted direct-conflict variants"
       ]
     },
     {

@@ -36,7 +36,7 @@
 
 ## 81.96%時点でも残る未完境界
 
-- EDT-009は21直接矛盾variantと16制約以下のbounded direct-oracle最小化までであり、全制約種の一般充足可能性、一般矛盾原因、一般MUSは未完成。
+- EDT-009はwire互換の`DirectConstraintConflictKindV1` enum 21 variantを維持する一方、実際のbinary64 residualに対して`DirectConflict`へ昇格できるsound allowlistは5 variantだけである。残る16 variantは`Unknown`へfail-closedであり、全制約種の一般充足可能性、一般矛盾原因、一般MUSは未完成。
 - 任意のnon-tree・dense・multi-cycle topologyに対する一般経路探索と安全なcycle mutation。
 - 任意角度・分岐・self-contactを含む一般正厚continuous motion、衝突回避、一般複数層transport、層順証明。
 - 摩擦、弾性、塑性、圧縮、手指把持を含む一般物理motion。
@@ -49,9 +49,11 @@
 ## 完了
 
 以下の個別完成度は各checkpoint時点の履歴値であり、冒頭の条件付き正本値を上書きしない。
+この節の旧checkpointにある「現行」「sound」「直接矛盾variant」という表現も記録当時の主張であり、後続の2026-07-26 EDT-009監査訂正が現在の正本境界である。
 - `9f6053f`で、正の紙厚・全三角形`MaterialTree`・全hinge角が有限かつ90度未満という限定入力について、単一の静的exact poseにおける全unordered face pairのclosed-prism分類と、canonical shared-hingeごとのwhole-tree coverage vectorの完全一致を証明した。4/8/16-face Treeの成功と資源上限超過のpreflight拒否を固定した。連続経路、layer transport、current mutation、非三角形・一般姿勢は未証明であり、SIM-010は部分実装、全体完成度は79.32%（表示79.3%）を維持する
 
 - EDT-009の既存`horizontal_and_vertical` 2制約原因を再監査し、水平残差`dy=0`と垂直残差`dx=0`は同一辺を長さ0へ潰す解を共有するため、直接矛盾という従来判定が偽陽性だったことを確認した。実residual回帰でzero-length escapeを固定し、同じ辺へ正の固定長がある3制約の場合だけ直接矛盾とし、それ以外は判定保留へ閉じるよう修正した。旧2-ID DTOは拒否、新3-ID DTOだけを受理し、削除最小原因も再検証した。WSL focused 2件、削除最小1件、Clippy all-targets、Node 18件、DOM 12件、production buildが成功した。`7c7134d`後から本修正`6b00ed0`前までの「soundな13種」という文書表現はこの1種について過大だった。現行の数え方は`DirectConstraintConflictKindV1`の21直接矛盾variant（17 fixed-pattern + 4 general-graph）へ統一する。19番目は同じcenterで`source/target`を逆にした2回転と実在半径辺のconsistentな正の固定長について、binary64加算結果が360度でない片側証拠がある場合だけcollapse矛盾を肯定し、丸め結果が360度なら判定保留へ閉じる。20番目は同じ対称軸上へ拘束された鏡映点と、その鏡映点対を結ぶ実在辺のconsistentな正の固定長を厳密IDで照合し、反射が強制するcollapseと正の間隔の矛盾を肯定する。21番目は180度ではない回転対称に対し、`source on line(center,target)`または`target on line(center,source)`を同一実在半径edgeの`PointOnLine`で指定する2制約を矛盾とする。PointOnLineの正規化残差はline edgeのcollapseを`NonConvergent`へ閉じ、非退化時は非零ベクトルとその非180度回転像が共線にならないため、固定長の追加証拠は不要である。solverとsolution verifierは直接矛盾preflightを数値toleranceより先に`NonConvergent`へ閉じる。初期座標、epsilon、近似値、別点・別辺は根拠にしない。EDT-009は一般MUS未実装の部分実装、全体完成率は79.32%（表示79.3%）を維持する
+- 2026-07-26 EDT-009後続監査訂正: enum 21 variantはwire互換のため維持するが、実際のbinary64 residualで`DirectConflict`へ昇格するsound allowlistは`DifferentFixedLengths`、正の非退化providerを同一edgeへ持つ`HorizontalAndVertical`、`EqualLengthWithDifferentFixedLengths`、`DifferentFixedLengthsInEqualLengthComponent`、direct `ParallelWithPerpendicularOrientations`の5種だけとする。残る16種にはcollapse、signed-zero、角度wrap、丸め、正規化residualの実反例があり、肯定せず`Unknown`へfail-closedとする。旧「soundな13種」および「21直接矛盾variant」という肯定範囲は過大であり、本項が正本境界である。16制約以下のbounded subset探索もこの5種のsound oracleだけを使い、一般充足可能性判定と全制約種の一般MUSは未完成である。これは安全側への訂正であり、数式・幾何制約85%、全体81.96%（表示82.0%）、MUST集計85 / 2 / 0は変更しない
 - Windowsの単一`.ori2`既存保存先でも、認証済み`Prepared` journalの永続化直後と、atomic replacement完了後のnew-published状態（journal自体は`Prepared`のまま）の2境界をtest限定で子process停止へ接続した。別の新規processによる通常read/recovery、非空Undo/Redo各1件・履歴上限7・project IDの一致、親processの二度目のstrict read、private残骸0をWindows native focused 2 caseで確認し、Windows native desktop lib Clippy `-D warnings`、format、diff-checkも成功した。直前のUnix 3-phase証拠はそのまま維持する。これはWindows上のprocess中断自動回帰であり、正式bundleのnative file dialog、実ACL、同期software・virus対策softwareによるfile lockの実機受入を代替しないため、「プロジェクト・保存・履歴」は78%、全体完成率は79.32%（表示79.3%）を維持する
 - 単一`.ori2`既存保存先の認証済みjournalについて、`Prepared`、`OldMoved`、`NewPublished`の各永続化直後にtest限定failpointで子processを強制終了し、別の新規processによる通常read/recoveryへ接続するUnix回帰を追加した。非空Undo/Redo各1件・履歴上限7・project IDを持つarchiveがoldまたはnewの完全な一方へ収束し、履歴認証、二度目のstrict read、private残骸0を確認した。focused 1件とdesktop lib Clippy `-D warnings`が成功した。これはUnix上のprocess中断証拠であり、Windows正式bundleのnative dialog、実ACL、同期software・virus対策softwareによるfile lockの実機受入を代替しないため、「プロジェクト・保存・履歴」は78%、全体完成率は79.32%（表示79.3%）を維持する
 - 17-face・二blockのSIM-010本番経路で適用済みtimelineへ保存した層順証明を、日英の読み取り専用viewerへ接続した。target-order SHA-256、transition数、canonicalな下層→上層pairを表示し、pair endpointの選択、最大50,000件のstrict検証、先頭200件の表示上限と省略件数を備える。productionのv5 FaceIdを受理する一方、非配列、未知field、同一face、重複・非canonical順、上限超過、最新proof改ざん時の古いproofへのfallbackをfail closedにした。DOM 45件、lint、production build、diff-checkが成功した。一般三block以上のpositive Apply、一般layer transport、一般cycleを証明しないためSIM-010は部分実装、全体完成率は79.32%（表示79.3%）を維持する

@@ -8,6 +8,8 @@
 
 この指示書の担当範囲: 適用済みの非平坦姿勢に現在結合されている native layer evidence を、専用の読取専用ビューアーで安全に表示する
 
+> **2026-07-26 追補（必読）:** §7.1 の不正 evidence fixture に関するブロッカーは、`ori-core` の公開境界を広げずに解消できる。実装を再開する前に [`sim010-viewer-blocker-resolution-2026-07-26.md`](sim010-viewer-blocker-resolution-2026-07-26.md) を最後まで読み、その private adapter / private test fixture 方式と禁止事項に従うこと。
+
 ## 0. この作業の位置付け
 
 この作業は、既存の平坦 layer-order viewer や persisted timeline proof の見た目を流用するだけの作業ではない。現在適用されている非平坦姿勢、現在の project instance、project ID、revision、fold-model fingerprint、および `CurrentLayerEvidence::NonFlat` を native 側で再結合し、その時点でのみ成立する読取専用 snapshot を新しい versioned DTO として返す。

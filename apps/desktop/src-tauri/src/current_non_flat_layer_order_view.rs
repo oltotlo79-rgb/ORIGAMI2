@@ -338,13 +338,12 @@ fn exact_rational_dto(
     {
         return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
     }
-    *magnitude_bytes = magnitude_bytes
-        .checked_add(numerator.len())
-        .and_then(|sum| sum.checked_add(denominator.len()))
+    let magnitude = numerator
+        .len()
+        .checked_add(denominator.len())
         .ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::resource)?;
-    if *magnitude_bytes > MAX_EXACT_MAGNITUDE_BYTES_V1 {
-        return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
-    }
+    *magnitude_bytes =
+        accumulate_bounded_total_v1(*magnitude_bytes, magnitude, MAX_EXACT_MAGNITUDE_BYTES_V1)?;
     Ok(ExactRationalDtoV1 {
         sign,
         numerator_magnitude_hex: hex_lower(numerator),
@@ -468,10 +467,143 @@ fn build_current_non_flat_layer_order_view_v1(
     verify_response_invariants(proof, &response)?;
     let bytes = serde_json::to_vec(&response)
         .map_err(|_| CurrentNonFlatLayerOrderViewErrorV1::internal())?;
-    if bytes.len() > MAX_SERIALIZED_JSON_BYTES_V1 {
+    validate_serialized_json_bytes_v1(bytes.len())?;
+    Ok(Some(response))
+}
+
+/// Numeric projection of one proof's bounded work.
+///
+/// The projection borrows nothing and owns no authority: it is a plain copy of
+/// the counts the viewer must bound. Production builds it once from the proof
+/// slices, and the validator below is the only place those numbers are judged,
+/// so the boundary values can be exercised without forging a proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ViewResourceCountsV1 {
+    material_faces: usize,
+    folded_faces: usize,
+    hinges: usize,
+    declared_cells: usize,
+    actual_cells: usize,
+    declared_pairs: usize,
+    actual_pairs: usize,
+    tested_face_pairs: usize,
+    source_overlap_cells_authenticated: usize,
+}
+
+impl ViewResourceCountsV1 {
+    /// Projects the bounded counts of one proof without allocating.
+    fn from_proof(proof: &StackedFoldNonFlatLayerOrderV1) -> Self {
+        Self {
+            material_faces: proof.material_faces().len(),
+            folded_faces: proof.folded_faces().len(),
+            hinges: proof.hinge_angles().len(),
+            declared_cells: proof.overlap_cell_count(),
+            actual_cells: proof.overlap_cells().len(),
+            declared_pairs: proof.face_pair_order_count(),
+            actual_pairs: proof.face_pair_orders().len(),
+            tested_face_pairs: proof.tested_face_pairs(),
+            source_overlap_cells_authenticated: proof.source_overlap_cells_authenticated(),
+        }
+    }
+}
+
+/// Judges the projected counts.
+///
+/// A cap overrun or a checked overflow is a resource failure; a count that
+/// contradicts another count is invalid evidence, never a resource limit.
+fn validate_view_resource_counts_v1(
+    counts: ViewResourceCountsV1,
+) -> Result<(), CurrentNonFlatLayerOrderViewErrorV1> {
+    if !(1..=MAX_FACES_V1).contains(&counts.material_faces) {
         return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
     }
-    Ok(Some(response))
+    if counts.folded_faces != counts.material_faces {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+    }
+    if !(1..=MAX_HINGES_V1).contains(&counts.hinges) {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
+    }
+    if counts.actual_cells > MAX_CELLS_V1 || counts.declared_cells > MAX_CELLS_V1 {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
+    }
+    if counts.actual_pairs > MAX_FACE_PAIR_ORDERS_V1
+        || counts.declared_pairs > MAX_FACE_PAIR_ORDERS_V1
+    {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
+    }
+    if counts.declared_cells != counts.actual_cells
+        || counts.actual_pairs != counts.actual_cells
+        || counts.declared_pairs != counts.actual_cells
+    {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+    }
+    for work in [
+        counts.tested_face_pairs,
+        counts.source_overlap_cells_authenticated,
+    ] {
+        validate_safe_wire_integer_v1(work)?;
+    }
+    Ok(())
+}
+
+/// Bounds one cell boundary: equal rounded/exact counts inside the cap.
+fn validate_cell_boundary_counts_v1(
+    rounded: usize,
+    exact: usize,
+) -> Result<(), CurrentNonFlatLayerOrderViewErrorV1> {
+    if rounded != exact || exact < 3 {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+    }
+    if exact > MAX_CELL_POLYGON_POINTS_V1 {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
+    }
+    Ok(())
+}
+
+/// Bounds one world polygon by its already known vertex count.
+fn validate_world_polygon_count_v1(
+    vertices: usize,
+) -> Result<(), CurrentNonFlatLayerOrderViewErrorV1> {
+    if vertices < 3 {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+    }
+    if vertices > MAX_WORLD_POLYGON_POINTS_V1 {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
+    }
+    Ok(())
+}
+
+/// Adds one bounded term to a running total, refusing overflow and overrun.
+fn accumulate_bounded_total_v1(
+    total: usize,
+    term: usize,
+    maximum: usize,
+) -> Result<usize, CurrentNonFlatLayerOrderViewErrorV1> {
+    let sum = total
+        .checked_add(term)
+        .ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::resource)?;
+    if sum > maximum {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
+    }
+    Ok(sum)
+}
+
+/// Every wire count must stay lossless in both `u64` and JSON.
+fn validate_safe_wire_integer_v1(value: usize) -> Result<(), CurrentNonFlatLayerOrderViewErrorV1> {
+    if u64::try_from(value).is_err() || value > MAX_SAFE_WIRE_INTEGER_V1 {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
+    }
+    Ok(())
+}
+
+/// The serialized response must fit the transport ceiling.
+fn validate_serialized_json_bytes_v1(
+    bytes: usize,
+) -> Result<(), CurrentNonFlatLayerOrderViewErrorV1> {
+    if bytes > MAX_SERIALIZED_JSON_BYTES_V1 {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
+    }
+    Ok(())
 }
 
 /// Cheap viewer-owned count preflight.
@@ -482,58 +614,22 @@ fn build_current_non_flat_layer_order_view_v1(
 fn preflight_view_resources(
     proof: &StackedFoldNonFlatLayerOrderV1,
 ) -> Result<(), CurrentNonFlatLayerOrderViewErrorV1> {
-    // Cap overruns and checked overflow are resource failures; a structural
-    // count contradiction is invalid evidence, never a resource limit.
-    let material_faces = proof.material_faces().len();
-    if !(1..=MAX_FACES_V1).contains(&material_faces) {
-        return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
-    }
-    if proof.folded_faces().len() != material_faces {
-        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
-    }
-    let hinges = proof.hinge_angles().len();
-    if !(1..=MAX_HINGES_V1).contains(&hinges) {
-        return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
-    }
-    let cells = proof.overlap_cells().len();
-    if cells > MAX_CELLS_V1 || proof.face_pair_orders().len() > MAX_FACE_PAIR_ORDERS_V1 {
-        return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
-    }
-    if proof.overlap_cell_count() != cells
-        || proof.face_pair_orders().len() != cells
-        || proof.face_pair_order_count() != cells
-    {
-        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
-    }
+    let counts = ViewResourceCountsV1::from_proof(proof);
+    validate_view_resource_counts_v1(counts)?;
     let mut boundary_points = 0usize;
     for cell in proof.overlap_cells() {
         let exact = cell.exact_boundary().len();
-        if exact != cell.boundary().len() || exact < 3 {
-            return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
-        }
-        if exact > MAX_CELL_POLYGON_POINTS_V1 {
-            return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
-        }
-        boundary_points = boundary_points
-            .checked_add(exact)
-            .ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::resource)?;
-        if boundary_points > MAX_TOTAL_EXACT_BOUNDARY_POINTS_V1 {
-            return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
-        }
-    }
-    // The core work bounds must also survive the frontend's safe-integer range.
-    for work in [
-        proof.tested_face_pairs(),
-        proof.source_overlap_cells_authenticated(),
-    ] {
-        if u64::try_from(work).is_err() || work > MAX_SAFE_WIRE_INTEGER_V1 {
-            return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
-        }
+        validate_cell_boundary_counts_v1(cell.boundary().len(), exact)?;
+        boundary_points = accumulate_bounded_total_v1(
+            boundary_points,
+            exact,
+            MAX_TOTAL_EXACT_BOUNDARY_POINTS_V1,
+        )?;
     }
     preflight_non_flat_cell_transport_v1(
-        material_faces,
-        cells,
-        cells,
+        counts.material_faces,
+        counts.actual_cells,
+        counts.actual_pairs,
         boundary_points,
         NonFlatCellTransportLimitsV1 {
             max_faces: MAX_FACES_V1,
@@ -704,24 +800,7 @@ fn build_faces(
             .0
             .face_ids(),
     };
-    if live.len() != face_ids.len() {
-        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
-    }
-    let mut live_face_ids: Vec<FaceId> = Vec::new();
-    live_face_ids
-        .try_reserve_exact(live.len())
-        .map_err(|_| CurrentNonFlatLayerOrderViewErrorV1::resource())?;
-    live_face_ids.extend_from_slice(live);
-    live_face_ids.sort_unstable_by_key(FaceId::canonical_bytes);
-    if live_face_ids
-        .windows(2)
-        .any(|pair| pair[0].canonical_bytes() == pair[1].canonical_bytes())
-    {
-        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
-    }
-    if live_face_ids != face_ids {
-        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
-    }
+    validate_live_face_registry_v1(&face_ids, live)?;
     let mut total_points = 0usize;
     let mut faces = Vec::with_capacity(face_ids.len());
     for face_id in face_ids {
@@ -731,12 +810,11 @@ fn build_faces(
             .find(|folded| folded.face().face_id == face_id)
             .ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::invalid)?;
         let world = world_boundary(view, face_id)?;
-        total_points = total_points
-            .checked_add(world.len())
-            .ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::resource)?;
-        if total_points > MAX_TOTAL_WORLD_BOUNDARY_POINTS_V1 {
-            return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
-        }
+        total_points = accumulate_bounded_total_v1(
+            total_points,
+            world.len(),
+            MAX_TOTAL_WORLD_BOUNDARY_POINTS_V1,
+        )?;
         let axis = axis_index(folded.dropped_world_axis())?;
         let (dropped, plane) = axis_tag(axis)?;
         let transform = folded.source_to_plane();
@@ -787,6 +865,86 @@ fn build_faces(
         });
     }
     Ok((faces, total_points))
+}
+
+/// Compares the proof material faces with the live model registry.
+///
+/// The live slice is only borrowed until its length is known, so an unbounded
+/// copy never happens. A duplicate is refused instead of being collapsed away:
+/// `dedup` would silently accept `[A, B, B]` against `[A, B]`.
+fn validate_live_face_registry_v1(
+    proof_faces: &[FaceId],
+    live: &[FaceId],
+) -> Result<(), CurrentNonFlatLayerOrderViewErrorV1> {
+    if live.len() != proof_faces.len() {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+    }
+    let mut live_face_ids: Vec<FaceId> = Vec::new();
+    live_face_ids
+        .try_reserve_exact(live.len())
+        .map_err(|_| CurrentNonFlatLayerOrderViewErrorV1::resource())?;
+    live_face_ids.extend_from_slice(live);
+    live_face_ids.sort_unstable_by_key(FaceId::canonical_bytes);
+    if live_face_ids
+        .windows(2)
+        .any(|pair| pair[0].canonical_bytes() == pair[1].canonical_bytes())
+    {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+    }
+    if live_face_ids != proof_faces {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+    }
+    Ok(())
+}
+
+/// Resolves the directed face pair of one overlap cell.
+///
+/// An unknown face, an equal pair, and a pair whose two faces disagree on the
+/// dropped world axis are all invalid evidence.
+fn resolve_cell_face_pair_v1<'a>(
+    faces: &'a [CurrentNonFlatLayerOrderFaceDtoV1],
+    lower_face_id: &str,
+    upper_face_id: &str,
+) -> Result<
+    (
+        &'a CurrentNonFlatLayerOrderFaceDtoV1,
+        &'a CurrentNonFlatLayerOrderFaceDtoV1,
+    ),
+    CurrentNonFlatLayerOrderViewErrorV1,
+> {
+    if lower_face_id == upper_face_id {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+    }
+    let lower = faces
+        .iter()
+        .find(|face| face.face_id == lower_face_id)
+        .ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::invalid)?;
+    let upper = faces
+        .iter()
+        .find(|face| face.face_id == upper_face_id)
+        .ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::invalid)?;
+    if lower.projection.dropped_world_axis != upper.projection.dropped_world_axis {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+    }
+    Ok((lower, upper))
+}
+
+/// Re-derives the plane axes from a dropped-axis tag and refuses a mismatch.
+fn validate_axis_derivation_v1(
+    dropped: &str,
+    plane: [&str; 2],
+) -> Result<u8, CurrentNonFlatLayerOrderViewErrorV1> {
+    let axis: u8 = match dropped {
+        "x" => 0,
+        "y" => 1,
+        "z" => 2,
+        _ => return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid()),
+    };
+    let (expected_dropped, expected_plane) = axis_tag(axis)?;
+    if expected_dropped != dropped || expected_plane != plane {
+        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
+    }
+    Ok(axis)
 }
 
 fn world_boundary(
@@ -857,12 +1015,7 @@ fn world_boundary(
 fn reserved_world_points(
     vertices: usize,
 ) -> Result<Vec<[f64; 3]>, CurrentNonFlatLayerOrderViewErrorV1> {
-    if vertices < 3 {
-        return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
-    }
-    if vertices > MAX_WORLD_POLYGON_POINTS_V1 {
-        return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
-    }
+    validate_world_polygon_count_v1(vertices)?;
     let mut points: Vec<[f64; 3]> = Vec::new();
     points
         .try_reserve_exact(vertices)
@@ -885,36 +1038,16 @@ fn build_cells(
             .map_err(|_| CurrentNonFlatLayerOrderViewErrorV1::internal())?;
         let upper_face_id = wire_id(&cell.upper_face())
             .map_err(|_| CurrentNonFlatLayerOrderViewErrorV1::internal())?;
-        let lower = faces
-            .iter()
-            .find(|face| face.face_id == lower_face_id)
-            .ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::invalid)?;
-        let upper = faces
-            .iter()
-            .find(|face| face.face_id == upper_face_id)
-            .ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::invalid)?;
-        if lower.projection.dropped_world_axis != upper.projection.dropped_world_axis {
-            return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
-        }
+        let (lower, _upper) = resolve_cell_face_pair_v1(faces, &lower_face_id, &upper_face_id)?;
         let dropped = lower.projection.dropped_world_axis;
         let plane = lower.projection.plane_axes;
-        let axis_byte: u8 = match dropped {
-            "x" => 0,
-            "y" => 1,
-            _ => 2,
-        };
-        if cell.boundary().len() < 3 || cell.exact_boundary().len() != cell.boundary().len() {
-            return Err(CurrentNonFlatLayerOrderViewErrorV1::invalid());
-        }
-        if cell.boundary().len() > MAX_CELL_POLYGON_POINTS_V1 {
-            return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
-        }
-        total_points = total_points
-            .checked_add(cell.exact_boundary().len())
-            .ok_or_else(CurrentNonFlatLayerOrderViewErrorV1::resource)?;
-        if total_points > MAX_TOTAL_EXACT_BOUNDARY_POINTS_V1 {
-            return Err(CurrentNonFlatLayerOrderViewErrorV1::resource());
-        }
+        let axis_byte = validate_axis_derivation_v1(dropped, plane)?;
+        validate_cell_boundary_counts_v1(cell.boundary().len(), cell.exact_boundary().len())?;
+        total_points = accumulate_bounded_total_v1(
+            total_points,
+            cell.exact_boundary().len(),
+            MAX_TOTAL_EXACT_BOUNDARY_POINTS_V1,
+        )?;
         let mut rounded = Vec::with_capacity(cell.boundary().len());
         let mut exact = Vec::with_capacity(cell.exact_boundary().len());
         for (point, value) in cell.boundary().iter().zip(cell.exact_boundary()) {
@@ -1771,5 +1904,563 @@ mod tests {
             category(error),
             CurrentNonFlatLayerOrderViewErrorCategoryV1::StaleAuthority
         );
+    }
+
+    // -- resource boundary matrix ------------------------------------------
+    //
+    // Every ceiling is fixed at `max - 1`, `max`, and `max + 1`. The counts are
+    // given to the same validator production uses, so no proof is forged and no
+    // oversized allocation happens.
+
+    /// A consistent baseline projection; every field can be overridden.
+    fn counts() -> ViewResourceCountsV1 {
+        ViewResourceCountsV1 {
+            material_faces: 2,
+            folded_faces: 2,
+            hinges: 1,
+            declared_cells: 1,
+            actual_cells: 1,
+            declared_pairs: 1,
+            actual_pairs: 1,
+            tested_face_pairs: 1,
+            source_overlap_cells_authenticated: 0,
+        }
+    }
+
+    fn resource(error: CurrentNonFlatLayerOrderViewErrorV1) {
+        assert_eq!(
+            category(error),
+            CurrentNonFlatLayerOrderViewErrorCategoryV1::ResourceLimit
+        );
+    }
+
+    fn invalid(error: CurrentNonFlatLayerOrderViewErrorV1) {
+        assert_eq!(
+            category(error),
+            CurrentNonFlatLayerOrderViewErrorCategoryV1::InvalidEvidence
+        );
+    }
+
+    #[test]
+    fn the_material_face_ceiling_is_inclusive() {
+        for faces in [1, MAX_FACES_V1 - 1, MAX_FACES_V1] {
+            let mut value = counts();
+            value.material_faces = faces;
+            value.folded_faces = faces;
+            validate_view_resource_counts_v1(value).expect("the ceiling is inclusive");
+        }
+        for faces in [0, MAX_FACES_V1 + 1] {
+            let mut value = counts();
+            value.material_faces = faces;
+            value.folded_faces = faces;
+            resource(validate_view_resource_counts_v1(value).expect_err("out of range"));
+        }
+    }
+
+    #[test]
+    fn the_hinge_ceiling_is_inclusive() {
+        for hinges in [1, MAX_HINGES_V1 - 1, MAX_HINGES_V1] {
+            let mut value = counts();
+            value.hinges = hinges;
+            validate_view_resource_counts_v1(value).expect("the ceiling is inclusive");
+        }
+        for hinges in [0, MAX_HINGES_V1 + 1] {
+            let mut value = counts();
+            value.hinges = hinges;
+            resource(validate_view_resource_counts_v1(value).expect_err("out of range"));
+        }
+    }
+
+    #[test]
+    fn the_overlap_cell_ceiling_is_inclusive() {
+        for cells in [0, MAX_CELLS_V1 - 1, MAX_CELLS_V1] {
+            let mut value = counts();
+            value.declared_cells = cells;
+            value.actual_cells = cells;
+            value.declared_pairs = cells;
+            value.actual_pairs = cells;
+            validate_view_resource_counts_v1(value).expect("the ceiling is inclusive");
+        }
+        let mut over = counts();
+        over.declared_cells = MAX_CELLS_V1 + 1;
+        over.actual_cells = MAX_CELLS_V1 + 1;
+        over.declared_pairs = MAX_CELLS_V1 + 1;
+        over.actual_pairs = MAX_CELLS_V1 + 1;
+        resource(validate_view_resource_counts_v1(over).expect_err("out of range"));
+    }
+
+    #[test]
+    fn the_face_pair_order_ceiling_is_inclusive() {
+        let mut boundary = counts();
+        boundary.declared_cells = MAX_FACE_PAIR_ORDERS_V1;
+        boundary.actual_cells = MAX_FACE_PAIR_ORDERS_V1;
+        boundary.declared_pairs = MAX_FACE_PAIR_ORDERS_V1;
+        boundary.actual_pairs = MAX_FACE_PAIR_ORDERS_V1;
+        validate_view_resource_counts_v1(boundary).expect("the ceiling is inclusive");
+        // The pair ceiling is judged before the pair/cell equality, so an
+        // oversized pair count is a resource limit even with bounded cells.
+        let mut over = counts();
+        over.actual_pairs = MAX_FACE_PAIR_ORDERS_V1 + 1;
+        resource(validate_view_resource_counts_v1(over).expect_err("out of range"));
+        let mut declared_over = counts();
+        declared_over.declared_pairs = MAX_FACE_PAIR_ORDERS_V1 + 1;
+        resource(validate_view_resource_counts_v1(declared_over).expect_err("out of range"));
+    }
+
+    #[test]
+    fn the_world_polygon_ceiling_is_inclusive() {
+        for vertices in [
+            3,
+            MAX_WORLD_POLYGON_POINTS_V1 - 1,
+            MAX_WORLD_POLYGON_POINTS_V1,
+        ] {
+            validate_world_polygon_count_v1(vertices).expect("the ceiling is inclusive");
+        }
+        resource(
+            validate_world_polygon_count_v1(MAX_WORLD_POLYGON_POINTS_V1 + 1)
+                .expect_err("out of range"),
+        );
+        for vertices in [0, 1, 2] {
+            invalid(validate_world_polygon_count_v1(vertices).expect_err("degenerate"));
+        }
+    }
+
+    #[test]
+    fn the_cell_polygon_ceiling_is_inclusive() {
+        for points in [
+            3,
+            MAX_CELL_POLYGON_POINTS_V1 - 1,
+            MAX_CELL_POLYGON_POINTS_V1,
+        ] {
+            validate_cell_boundary_counts_v1(points, points).expect("the ceiling is inclusive");
+        }
+        let over = MAX_CELL_POLYGON_POINTS_V1 + 1;
+        resource(validate_cell_boundary_counts_v1(over, over).expect_err("out of range"));
+        for points in [0, 1, 2] {
+            invalid(validate_cell_boundary_counts_v1(points, points).expect_err("degenerate"));
+        }
+    }
+
+    #[test]
+    fn a_rounded_and_exact_point_count_mismatch_is_invalid_evidence() {
+        invalid(validate_cell_boundary_counts_v1(3, 4).expect_err("mismatch"));
+        invalid(validate_cell_boundary_counts_v1(4, 3).expect_err("mismatch"));
+    }
+
+    #[test]
+    fn the_aggregate_world_point_ceiling_is_inclusive() {
+        let cap = MAX_TOTAL_WORLD_BOUNDARY_POINTS_V1;
+        assert_eq!(
+            accumulate_bounded_total_v1(cap - 2, 1, cap).unwrap(),
+            cap - 1
+        );
+        assert_eq!(accumulate_bounded_total_v1(cap - 1, 1, cap).unwrap(), cap);
+        resource(accumulate_bounded_total_v1(cap, 1, cap).expect_err("out of range"));
+    }
+
+    #[test]
+    fn the_aggregate_exact_point_ceiling_is_inclusive() {
+        let cap = MAX_TOTAL_EXACT_BOUNDARY_POINTS_V1;
+        assert_eq!(
+            accumulate_bounded_total_v1(cap - 2, 1, cap).unwrap(),
+            cap - 1
+        );
+        assert_eq!(accumulate_bounded_total_v1(cap - 1, 1, cap).unwrap(), cap);
+        resource(accumulate_bounded_total_v1(cap, 1, cap).expect_err("out of range"));
+    }
+
+    #[test]
+    fn the_aggregate_exact_magnitude_ceiling_is_inclusive() {
+        let cap = MAX_EXACT_MAGNITUDE_BYTES_V1;
+        assert_eq!(
+            accumulate_bounded_total_v1(cap - 2, 1, cap).unwrap(),
+            cap - 1
+        );
+        assert_eq!(accumulate_bounded_total_v1(cap - 1, 1, cap).unwrap(), cap);
+        resource(accumulate_bounded_total_v1(cap, 1, cap).expect_err("out of range"));
+    }
+
+    #[test]
+    fn a_bounded_accumulation_refuses_checked_add_overflow() {
+        resource(
+            accumulate_bounded_total_v1(usize::MAX, 1, usize::MAX)
+                .expect_err("the checked add overflows"),
+        );
+        resource(
+            accumulate_bounded_total_v1(usize::MAX - 1, 3, usize::MAX)
+                .expect_err("the checked add overflows"),
+        );
+    }
+
+    #[test]
+    fn the_serialized_json_ceiling_is_inclusive() {
+        let cap = MAX_SERIALIZED_JSON_BYTES_V1;
+        validate_serialized_json_bytes_v1(cap - 1).expect("the ceiling is inclusive");
+        validate_serialized_json_bytes_v1(cap).expect("the ceiling is inclusive");
+        resource(validate_serialized_json_bytes_v1(cap + 1).expect_err("out of range"));
+    }
+
+    #[test]
+    fn the_safe_wire_integer_ceiling_is_inclusive() {
+        let cap = MAX_SAFE_WIRE_INTEGER_V1;
+        validate_safe_wire_integer_v1(cap - 1).expect("the ceiling is inclusive");
+        validate_safe_wire_integer_v1(cap).expect("the ceiling is inclusive");
+        resource(validate_safe_wire_integer_v1(cap + 1).expect_err("out of range"));
+        let mut work = counts();
+        work.tested_face_pairs = cap + 1;
+        resource(validate_view_resource_counts_v1(work).expect_err("out of range"));
+        let mut authenticated = counts();
+        authenticated.source_overlap_cells_authenticated = cap + 1;
+        resource(validate_view_resource_counts_v1(authenticated).expect_err("out of range"));
+    }
+
+    // -- structural negative matrix ----------------------------------------
+
+    #[test]
+    fn a_material_and_folded_face_count_mismatch_is_invalid_evidence() {
+        let mut fewer = counts();
+        fewer.folded_faces = 1;
+        invalid(validate_view_resource_counts_v1(fewer).expect_err("coverage mismatch"));
+        let mut more = counts();
+        more.folded_faces = 3;
+        invalid(validate_view_resource_counts_v1(more).expect_err("coverage mismatch"));
+    }
+
+    #[test]
+    fn a_declared_and_actual_count_mismatch_is_invalid_evidence() {
+        let mut cells = counts();
+        cells.declared_cells = 2;
+        invalid(validate_view_resource_counts_v1(cells).expect_err("declared cell mismatch"));
+        let mut pairs = counts();
+        pairs.declared_pairs = 2;
+        invalid(validate_view_resource_counts_v1(pairs).expect_err("declared pair mismatch"));
+        let mut actual = counts();
+        actual.actual_pairs = 2;
+        invalid(validate_view_resource_counts_v1(actual).expect_err("actual pair mismatch"));
+    }
+
+    #[test]
+    fn the_live_face_registry_must_match_the_proof_exactly() {
+        let first = FaceId::new();
+        let second = FaceId::new();
+        let foreign = FaceId::new();
+        let mut proof_faces = vec![first, second];
+        proof_faces.sort_unstable_by_key(FaceId::canonical_bytes);
+
+        validate_live_face_registry_v1(&proof_faces, &[second, first])
+            .expect("the same set in any order is accepted");
+
+        invalid(
+            validate_live_face_registry_v1(&proof_faces, &[first])
+                .expect_err("a missing live face is refused"),
+        );
+        invalid(
+            validate_live_face_registry_v1(&proof_faces, &[first, second, foreign])
+                .expect_err("an extra live face is refused"),
+        );
+        invalid(
+            validate_live_face_registry_v1(&proof_faces, &[second, second])
+                .expect_err("a duplicate live face is never collapsed away"),
+        );
+        invalid(
+            validate_live_face_registry_v1(&proof_faces, &[first, foreign])
+                .expect_err("a foreign live face of the same count is refused"),
+        );
+    }
+
+    /// One face DTO with a chosen ID and dropped world axis.
+    fn face_dto(face_id: &str, dropped: &'static str) -> CurrentNonFlatLayerOrderFaceDtoV1 {
+        let (_, plane) = match dropped {
+            "x" => ("x", ["y", "z"]),
+            "y" => ("y", ["x", "z"]),
+            _ => ("z", ["x", "y"]),
+        };
+        let zero = || ExactRationalDtoV1 {
+            sign: "zero",
+            numerator_magnitude_hex: String::new(),
+            denominator_magnitude_hex: "01".to_owned(),
+        };
+        CurrentNonFlatLayerOrderFaceDtoV1 {
+            face_id: face_id.to_owned(),
+            face_key_sha256: "0".repeat(64),
+            world_outer_boundary_xyz_mm: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            projection: FaceProjectionDtoV1 {
+                dropped_world_axis: dropped,
+                plane_axes: plane,
+                source_to_plane_projection_exact: ExactAffineDtoV1 {
+                    m00: zero(),
+                    m01: zero(),
+                    m10: zero(),
+                    m11: zero(),
+                    tx: zero(),
+                    ty: zero(),
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn an_unknown_equal_or_disagreeing_face_pair_is_invalid_evidence() {
+        let lower = "11111111-1111-4111-8111-111111111111";
+        let upper = "22222222-2222-4222-8222-222222222222";
+        let faces = vec![face_dto(lower, "z"), face_dto(upper, "z")];
+        let (resolved_lower, resolved_upper) =
+            resolve_cell_face_pair_v1(&faces, lower, upper).expect("a known directed pair");
+        assert_eq!(resolved_lower.face_id, lower);
+        assert_eq!(resolved_upper.face_id, upper);
+        // The reversed direction still resolves; the ordering itself is the
+        // proof's own claim and is carried into the cell digest.
+        let (reversed_lower, reversed_upper) =
+            resolve_cell_face_pair_v1(&faces, upper, lower).expect("the reversed pair resolves");
+        assert_eq!(reversed_lower.face_id, upper);
+        assert_eq!(reversed_upper.face_id, lower);
+
+        invalid(
+            resolve_cell_face_pair_v1(&faces, lower, lower).expect_err("an equal pair is refused"),
+        );
+        invalid(
+            resolve_cell_face_pair_v1(&faces, "33333333-3333-4333-8333-333333333333", upper)
+                .expect_err("an unknown lower face is refused"),
+        );
+        invalid(
+            resolve_cell_face_pair_v1(&faces, lower, "33333333-3333-4333-8333-333333333333")
+                .expect_err("an unknown upper face is refused"),
+        );
+
+        let mixed = vec![face_dto(lower, "z"), face_dto(upper, "x")];
+        invalid(
+            resolve_cell_face_pair_v1(&mixed, lower, upper)
+                .expect_err("two faces must agree on the dropped world axis"),
+        );
+    }
+
+    #[test]
+    fn the_plane_axes_must_be_derived_from_the_dropped_axis() {
+        assert_eq!(validate_axis_derivation_v1("x", ["y", "z"]).unwrap(), 0);
+        assert_eq!(validate_axis_derivation_v1("y", ["x", "z"]).unwrap(), 1);
+        assert_eq!(validate_axis_derivation_v1("z", ["x", "y"]).unwrap(), 2);
+        for (dropped, plane) in [
+            ("z", ["y", "x"]),
+            ("z", ["y", "z"]),
+            ("x", ["x", "y"]),
+            ("y", ["y", "z"]),
+            ("w", ["x", "y"]),
+            ("", ["x", "y"]),
+        ] {
+            invalid(
+                validate_axis_derivation_v1(dropped, plane)
+                    .expect_err("a derivation mismatch is refused"),
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_finite_world_point_is_invalid_evidence() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            invalid(canonical_finite(value).expect_err("a non-finite world point is refused"));
+        }
+        assert_eq!(canonical_finite(-0.0).unwrap().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(canonical_finite(2.5).unwrap().to_bits(), 2.5_f64.to_bits());
+    }
+
+    #[test]
+    fn a_zero_face_or_hinge_count_is_a_resource_limit() {
+        let mut faces = counts();
+        faces.material_faces = 0;
+        faces.folded_faces = 0;
+        resource(validate_view_resource_counts_v1(faces).expect_err("zero faces"));
+        let mut hinges = counts();
+        hinges.hinges = 0;
+        resource(validate_view_resource_counts_v1(hinges).expect_err("zero hinges"));
+    }
+
+    #[test]
+    fn the_production_preflight_accepts_the_canonical_fixture() {
+        let project = non_flat_tree_project(90.0);
+        let proof = match project.current_layer_evidence.as_ref() {
+            Some(CurrentLayerEvidence::NonFlat(proof)) => proof,
+            _ => panic!("the fixture must own non-flat evidence"),
+        };
+        // The production projection and the validated projection are the same
+        // values, so the boundary tests above cover the production path.
+        let projected = ViewResourceCountsV1::from_proof(proof);
+        assert_eq!(projected.material_faces, proof.material_faces().len());
+        assert_eq!(projected.folded_faces, proof.folded_faces().len());
+        assert_eq!(projected.hinges, proof.hinge_angles().len());
+        assert_eq!(projected.actual_cells, proof.overlap_cells().len());
+        assert_eq!(projected.declared_cells, proof.overlap_cell_count());
+        assert_eq!(projected.actual_pairs, proof.face_pair_orders().len());
+        assert_eq!(projected.declared_pairs, proof.face_pair_order_count());
+        validate_view_resource_counts_v1(projected).expect("the canonical fixture is bounded");
+        preflight_view_resources(proof).expect("the canonical fixture passes the preflight");
+    }
+
+    // -- issuer and dropped-axis positive matrix ---------------------------
+
+    /// A two-face material tree whose single crease runs along world X.
+    ///
+    /// Folding about a crease parallel to world X carries one face into the
+    /// world XY plane, which is the only way to observe a dropped Z axis from a
+    /// canonical revalidation.
+    fn horizontal_single_hinge_project() -> ProjectState {
+        let positions = [
+            (0.0, 0.0),
+            (400.0, 0.0),
+            (400.0, 200.0),
+            (400.0, 400.0),
+            (0.0, 400.0),
+            (0.0, 200.0),
+        ];
+        let vertices = positions
+            .into_iter()
+            .map(|(x, y)| ori_domain::Vertex {
+                id: ori_domain::VertexId::new(),
+                position: ori_domain::Point2::new(x, y),
+            })
+            .collect::<Vec<_>>();
+        let mut edges = (0..vertices.len())
+            .map(|index| ori_domain::Edge {
+                id: EdgeId::new(),
+                start: vertices[index].id,
+                end: vertices[(index + 1) % vertices.len()].id,
+                kind: ori_domain::EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        edges.push(ori_domain::Edge {
+            id: EdgeId::new(),
+            start: vertices[2].id,
+            end: vertices[5].id,
+            kind: ori_domain::EdgeKind::Mountain,
+        });
+        let paper = ori_domain::Paper {
+            boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
+            ..ori_domain::Paper::default()
+        };
+        ProjectState::new_with_paper(ori_domain::CreasePattern { vertices, edges }, paper)
+    }
+
+    /// Installs a non-flat pose and freshly solved evidence on any project.
+    fn install_non_flat_evidence(mut project: ProjectState, angle_degrees: f64) -> ProjectState {
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let simulation = topology
+            .simulation_snapshot()
+            .expect("a simulation snapshot");
+        let fixed = simulation.faces[0].id;
+        let hinges = simulation
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| hinge.edge)
+            .collect::<Vec<_>>();
+        crate::applied_pose::tests::install_tree_pose_authority_at_angle_on_face(
+            &mut project,
+            hinges.clone(),
+            fixed,
+            angle_degrees,
+        );
+        let angles = CanonicalHingeAngles::new(
+            hinges
+                .iter()
+                .map(|edge| HingeAngle::new(*edge, angle_degrees).unwrap())
+                .collect::<Vec<_>>(),
+        )
+        .expect("canonical hinge angles");
+        let flat = crate::global_flat_foldability::reanalyze_current_flat_layer_order(&project)
+            .expect("the current flat layer order");
+        let proof = ori_core::revalidate_current_non_flat_layer_order_v1(
+            project.project_id,
+            project.editor.revision(),
+            project.editor.pattern(),
+            project.editor.paper(),
+            Some(fixed),
+            &angles,
+            &flat,
+            ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+        )
+        .expect("a freshly solved non-flat layer order");
+        project.current_layer_evidence = Some(CurrentLayerEvidence::NonFlat(proof));
+        project
+    }
+
+    /// The dropped world axes a fixture actually produces.
+    fn dropped_axes(project: &ProjectState) -> Vec<&'static str> {
+        let response = view(project);
+        let mut axes = response
+            .faces
+            .iter()
+            .map(|face| face.projection.dropped_world_axis)
+            .collect::<Vec<_>>();
+        axes.sort_unstable();
+        axes.dedup();
+        axes
+    }
+
+    #[test]
+    fn the_vertical_crease_fixture_reaches_dropped_x_and_y() {
+        let project = non_flat_tree_project(90.0);
+        let axes = dropped_axes(&project);
+        assert!(axes.contains(&"x"), "observed axes: {axes:?}");
+        assert!(axes.contains(&"y"), "observed axes: {axes:?}");
+        let response = view(&project);
+        for face in &response.faces {
+            let axis = validate_axis_derivation_v1(
+                face.projection.dropped_world_axis,
+                face.projection.plane_axes,
+            )
+            .expect("the plane axes are derived from the dropped axis");
+            let (expected_dropped, expected_plane) = axis_tag(axis).unwrap();
+            assert_eq!(face.projection.dropped_world_axis, expected_dropped);
+            assert_eq!(face.projection.plane_axes, expected_plane);
+        }
+    }
+
+    #[test]
+    fn the_horizontal_crease_fixture_reaches_dropped_z() {
+        let project = install_non_flat_evidence(horizontal_single_hinge_project(), 90.0);
+        let axes = dropped_axes(&project);
+        assert!(axes.contains(&"z"), "observed axes: {axes:?}");
+        let response = view(&project);
+        assert!(response.read_only);
+        assert!(!response.authorizes_project_mutation);
+        for face in &response.faces {
+            validate_axis_derivation_v1(
+                face.projection.dropped_world_axis,
+                face.projection.plane_axes,
+            )
+            .expect("the plane axes are derived from the dropped axis");
+        }
+    }
+
+    #[test]
+    fn every_dropped_world_axis_is_reached_by_a_canonical_fixture() {
+        let mut observed = dropped_axes(&non_flat_tree_project(90.0));
+        observed.extend(dropped_axes(&install_non_flat_evidence(
+            horizontal_single_hinge_project(),
+            90.0,
+        )));
+        observed.sort_unstable();
+        observed.dedup();
+        assert_eq!(observed, vec!["x", "y", "z"], "observed axes: {observed:?}");
+    }
+
+    #[test]
+    fn a_second_canonical_fixture_stays_read_only_and_deterministic() {
+        let project = install_non_flat_evidence(horizontal_single_hinge_project(), 90.0);
+        let first = view(&project);
+        let second = view(&project);
+        assert_eq!(first, second);
+        assert_eq!(
+            serde_json::to_vec(&first).unwrap(),
+            serde_json::to_vec(&second).unwrap()
+        );
+        let capability = capture_current_applied_pose_capability(&project)
+            .unwrap()
+            .unwrap();
+        let live = revalidate_current_applied_pose_capability(&project, &capability)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.pose.model_id, live.semantic_pose().model_id());
     }
 }

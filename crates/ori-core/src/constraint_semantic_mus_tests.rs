@@ -176,6 +176,7 @@ fn direct_core_is_promoted_only_after_every_deletion_has_an_independent_exact_as
         certificate.single_constraint_constructive_witness_count(),
         0,
     );
+    assert_eq!(certificate.pair_constraint_constructive_witness_count(), 0);
     assert!(certificate.deletion_witness_work() > 0);
     assert!(
         certificate.deletion_witness_work() <= MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK_V1,
@@ -483,3 +484,9 @@ fn direct_oracle_hard_bound_remains_separate_from_witness_work() {
 
 #[path = "constraint_semantic_mus_tests/singleton_phase.rs"]
 mod singleton_phase;
+
+#[path = "constraint_semantic_mus_tests/pair_phase.rs"]
+mod pair_phase;
+
+#[path = "constraint_semantic_mus_tests/pair_phase_limits.rs"]
+mod pair_phase_limits;

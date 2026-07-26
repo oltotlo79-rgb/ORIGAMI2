@@ -86,8 +86,16 @@ pub use editor::bulk_intersection_plan::{
 pub use editor::{
     Command, CommandError, CommandResult, EDITOR_HISTORY_SCHEMA_VERSION_V1, EditorHistoryErrorV1,
     EditorHistoryV1, EditorState, ElementMetadataTargetV1, HistoryEntryLimitError,
-    IntersectionEdgeTarget, JunctionVertexIntent, MAX_EDITOR_HISTORY_ENTRIES, MAX_REVISION,
-    MirrorAxisV1, MirrorSelectionModeV1, Revision, VertexPositionUpdate,
+    IntersectionEdgeTarget, JunctionVertexIntent, MAX_EDITOR_HISTORY_ENTRIES,
+    MAX_PENDING_SPECULATIVE_UNPROVEN_FOLDS_V1, MAX_RETAINED_SPECULATIVE_UNPROVEN_BASE_MARKS_V1,
+    MAX_REVISION, MirrorAxisV1, MirrorSelectionModeV1, Revision,
+    SpeculativeApproximateBlockingObservationV1, SpeculativeUnprovenFoldApplyErrorV1,
+    SpeculativeUnprovenFoldBindingV1, SpeculativeUnprovenFoldHistoryLocationV1,
+    SpeculativeUnprovenFoldMetadataErrorV1, SpeculativeUnprovenFoldProofOutcomeV1,
+    SpeculativeUnprovenFoldResolutionErrorV1, SpeculativeUnprovenFoldResolutionReportV1,
+    SpeculativeUnprovenFoldStateMarkerV1, SpeculativeUnprovenFoldStatusCountsV1,
+    SpeculativeUnprovenFoldStatusV1, SpeculativeUnprovenFoldSummaryV1,
+    SpeculativeUnprovenFoldUnknownReasonV1, VertexPositionUpdate,
 };
 pub use flat_surface::{
     CertifiedFlatSurfaceFaceV1, CertifiedFlatSurfaceV1, MAX_CERTIFIED_FLAT_SURFACE_VERTICES_V1,

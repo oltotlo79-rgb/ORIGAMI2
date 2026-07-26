@@ -30,9 +30,24 @@ use thiserror::Error;
 pub mod bulk_intersection_plan;
 
 mod history_persistence;
+mod speculative_unproven;
 
 pub use history_persistence::{
     EDITOR_HISTORY_SCHEMA_VERSION_V1, EditorHistoryErrorV1, EditorHistoryV1,
+};
+use speculative_unproven::{
+    AppliedBaseUnprovenLedgerV1, AppliedBaseUnprovenMarkV1, SpeculativeUnprovenFoldMarkV1,
+};
+#[allow(unused_imports)] // Re-exported by the crate facade during P1-3 integration.
+pub use speculative_unproven::{
+    MAX_PENDING_SPECULATIVE_UNPROVEN_FOLDS_V1, MAX_RETAINED_SPECULATIVE_UNPROVEN_BASE_MARKS_V1,
+    SpeculativeApproximateBlockingObservationV1, SpeculativeUnprovenFoldApplyErrorV1,
+    SpeculativeUnprovenFoldBindingV1, SpeculativeUnprovenFoldHistoryLocationV1,
+    SpeculativeUnprovenFoldMetadataErrorV1, SpeculativeUnprovenFoldProofOutcomeV1,
+    SpeculativeUnprovenFoldResolutionErrorV1, SpeculativeUnprovenFoldResolutionReportV1,
+    SpeculativeUnprovenFoldStateMarkerV1, SpeculativeUnprovenFoldStatusCountsV1,
+    SpeculativeUnprovenFoldStatusV1, SpeculativeUnprovenFoldSummaryV1,
+    SpeculativeUnprovenFoldUnknownReasonV1,
 };
 
 pub type Revision = u64;
@@ -805,6 +820,7 @@ struct HistoryEntry {
     forward: Command,
     inverse: Inverse,
     applied_pose: AppliedPoseHistoryTransition,
+    speculative_unproven_fold: Option<SpeculativeUnprovenFoldMarkV1>,
 }
 
 /// Runtime-pose behavior attached to one document-history edge.
@@ -849,20 +865,29 @@ impl AppliedPoseHistoryTransition {
 
 pub const MAX_EDITOR_HISTORY_ENTRIES: usize = 128;
 
-fn trim_history_to_limit(stack: &mut Vec<HistoryEntry>, limit: usize) {
+fn trim_history_to_limit(stack: &mut Vec<HistoryEntry>, limit: usize) -> Vec<HistoryEntry> {
     let discard_count = stack.len().saturating_sub(limit);
     if discard_count > 0 {
-        stack.drain(..discard_count);
+        stack.drain(..discard_count).collect()
+    } else {
+        Vec::new()
     }
 }
 
-fn push_bounded_history(stack: &mut Vec<HistoryEntry>, entry: HistoryEntry, limit: usize) {
+fn push_bounded_history(
+    stack: &mut Vec<HistoryEntry>,
+    entry: HistoryEntry,
+    limit: usize,
+) -> Vec<HistoryEntry> {
     debug_assert!((1..=MAX_EDITOR_HISTORY_ENTRIES).contains(&limit));
     let discard_count = stack.len().saturating_add(1).saturating_sub(limit);
-    if discard_count > 0 {
-        stack.drain(..discard_count);
-    }
+    let discarded = if discard_count > 0 {
+        stack.drain(..discard_count).collect()
+    } else {
+        Vec::new()
+    };
     stack.push(entry);
+    discarded
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2077,6 +2102,7 @@ pub struct EditorState {
     revision: Revision,
     undo_stack: Vec<HistoryEntry>,
     redo_stack: Vec<HistoryEntry>,
+    applied_base_unproven: AppliedBaseUnprovenLedgerV1,
     history_entry_limit: usize,
 }
 
@@ -2277,6 +2303,7 @@ impl EditorState {
             revision: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            applied_base_unproven: AppliedBaseUnprovenLedgerV1::default(),
             history_entry_limit: MAX_EDITOR_HISTORY_ENTRIES,
         }
     }
@@ -2495,8 +2522,15 @@ impl EditorState {
             });
         }
 
-        trim_history_to_limit(&mut self.undo_stack, limit);
-        trim_history_to_limit(&mut self.redo_stack, limit);
+        let trimmed_undo = trim_history_to_limit(&mut self.undo_stack, limit);
+        self.applied_base_unproven.absorb_trimmed_applied_marks(
+            trimmed_undo
+                .into_iter()
+                .map(|mut entry| entry.speculative_unproven_fold.take())
+                .collect(),
+            self.undo_stack.len(),
+        );
+        let _discarded_redo = trim_history_to_limit(&mut self.redo_stack, limit);
         self.history_entry_limit = limit;
         Ok(())
     }
@@ -2523,14 +2557,23 @@ impl EditorState {
             } else {
                 AppliedPoseHistoryTransition::PreserveCurrent
             };
-        push_bounded_history(
+        self.applied_base_unproven.note_applied_entry();
+        let trimmed_undo = push_bounded_history(
             &mut self.undo_stack,
             HistoryEntry {
                 forward: command,
                 inverse,
                 applied_pose,
+                speculative_unproven_fold: None,
             },
             self.history_entry_limit,
+        );
+        self.applied_base_unproven.absorb_trimmed_applied_marks(
+            trimmed_undo
+                .into_iter()
+                .map(|mut entry| entry.speculative_unproven_fold.take())
+                .collect(),
+            self.undo_stack.len(),
         );
         self.redo_stack.clear();
         self.revision = next_revision;
@@ -3761,7 +3804,9 @@ impl EditorState {
         self.undo_stack
             .pop()
             .expect("the successfully applied undo entry must still be present");
-        push_bounded_history(&mut self.redo_stack, entry, self.history_entry_limit);
+        let _discarded_redo =
+            push_bounded_history(&mut self.redo_stack, entry, self.history_entry_limit);
+        self.applied_base_unproven.note_unapplied_entry();
         self.revision = next_revision;
         Ok(self.result(result))
     }
@@ -3783,7 +3828,16 @@ impl EditorState {
         self.redo_stack
             .pop()
             .expect("the successfully applied redo entry must still be present");
-        push_bounded_history(&mut self.undo_stack, entry, self.history_entry_limit);
+        self.applied_base_unproven.note_applied_entry();
+        let trimmed_undo =
+            push_bounded_history(&mut self.undo_stack, entry, self.history_entry_limit);
+        self.applied_base_unproven.absorb_trimmed_applied_marks(
+            trimmed_undo
+                .into_iter()
+                .map(|mut entry| entry.speculative_unproven_fold.take())
+                .collect(),
+            self.undo_stack.len(),
+        );
         self.revision = next_revision;
         Ok(self.result(result))
     }
@@ -16879,6 +16933,13 @@ mod tests {
 
     #[path = "editor_history_limit_tests.rs"]
     mod history_limit_tests;
+
+    #[path = "editor_speculative_unproven_operations_tests.rs"]
+    mod speculative_unproven_operations_tests;
+    #[path = "editor_speculative_unproven_persistence_tests.rs"]
+    mod speculative_unproven_persistence_tests;
+    #[path = "editor_speculative_unproven_test_support.rs"]
+    mod speculative_unproven_test_support;
 
     fn runtime_pose(angle_degrees: f64) -> crate::AppliedPoseV1 {
         use ori_domain::FaceId;

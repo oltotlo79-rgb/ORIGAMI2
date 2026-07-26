@@ -11,6 +11,10 @@ use thiserror::Error;
 
 use super::*;
 
+mod speculative_unproven;
+
+use speculative_unproven::*;
+
 pub const EDITOR_HISTORY_SCHEMA_VERSION_V1: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -39,6 +43,14 @@ pub enum EditorHistoryErrorV1 {
     InverseMismatch,
     #[error("editor history could not be encoded canonically")]
     EncodingFailed,
+    #[error("editor history contains invalid speculative-unproven metadata")]
+    InvalidSpeculativeUnprovenMetadata,
+    #[error("editor history contains too many unresolved speculative entries")]
+    TooManyPendingSpeculativeEntries,
+    #[error("editor history contains duplicate speculative request bindings")]
+    DuplicateSpeculativeBinding,
+    #[error("editor history contains an invalid speculative applied-base ledger")]
+    InvalidSpeculativeAppliedBaseLedger,
 }
 
 /// Opaque V1 editor history persisted by the `.ori2` adapter.
@@ -54,6 +66,11 @@ pub struct EditorHistoryV1 {
     history_entry_limit: u32,
     undo_stack: Vec<HistoryEntryV1>,
     redo_stack: Vec<HistoryEntryV1>,
+    #[serde(
+        default,
+        skip_serializing_if = "AppliedBaseUnprovenLedgerWireV1::is_empty"
+    )]
+    speculative_unproven_applied_base_v1: AppliedBaseUnprovenLedgerWireV1,
 }
 
 impl EditorHistoryV1 {
@@ -82,6 +99,19 @@ impl EditorHistoryV1 {
         self.history_entry_limit == MAX_EDITOR_HISTORY_ENTRIES as u32
             && self.undo_stack.is_empty()
             && self.redo_stack.is_empty()
+            && self.speculative_unproven_applied_base_v1.is_empty()
+    }
+
+    /// True when the containing format must advertise the
+    /// `speculative_unproven_fold_v1` required feature.
+    #[must_use]
+    pub fn requires_speculative_unproven_fold_feature_v1(&self) -> bool {
+        !self.speculative_unproven_applied_base_v1.is_empty()
+            || self
+                .undo_stack
+                .iter()
+                .chain(&self.redo_stack)
+                .any(|entry| entry.speculative_unproven_fold_v1.is_some())
     }
 
     fn validate_shape(&self) -> Result<usize, EditorHistoryErrorV1> {
@@ -102,6 +132,8 @@ impl EditorHistoryV1 {
         if self.redo_stack.len() > limit {
             return Err(EditorHistoryErrorV1::TooManyRedoEntries);
         }
+        self.speculative_unproven_applied_base_v1
+            .validate_shape(self.undo_stack.len())?;
         Ok(limit)
     }
 }
@@ -111,6 +143,8 @@ impl EditorHistoryV1 {
 struct HistoryEntryV1 {
     forward: CommandV1,
     inverse: InverseV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    speculative_unproven_fold_v1: Option<SpeculativeUnprovenFoldMarkWireV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1818,15 +1852,22 @@ fn entry_to_wire(entry: &HistoryEntry) -> Result<HistoryEntryV1, EditorHistoryEr
     Ok(HistoryEntryV1 {
         forward: command_to_wire(&entry.forward)?,
         inverse: inverse_to_wire(&entry.inverse)?,
+        speculative_unproven_fold_v1: entry.speculative_unproven_fold.as_ref().map(mark_to_wire),
     })
 }
 
-fn entry_from_wire(entry: HistoryEntryV1) -> Result<(Command, Inverse), EditorHistoryErrorV1> {
+fn entry_from_wire(
+    entry: HistoryEntryV1,
+) -> Result<(Command, Inverse, Option<SpeculativeUnprovenFoldMarkV1>), EditorHistoryErrorV1> {
     let forward = command_from_wire(entry.forward)?;
     let inverse = inverse_from_wire(entry.inverse)?;
+    let speculative_unproven_fold = entry
+        .speculative_unproven_fold_v1
+        .map(mark_from_wire)
+        .transpose()?;
     validate_command_finite(&forward)?;
     validate_inverse_finite(&inverse)?;
-    Ok((forward, inverse))
+    Ok((forward, inverse, speculative_unproven_fold))
 }
 
 fn finite_point(point: Point2) -> bool {
@@ -2673,6 +2714,7 @@ fn replay_forward(
         forward,
         inverse,
         applied_pose,
+        speculative_unproven_fold: None,
     })
 }
 
@@ -2690,6 +2732,7 @@ impl EditorState {
         if project_id.canonical_bytes() == [0; 16] {
             return Err(EditorHistoryErrorV1::NilProjectId);
         }
+        validate_editor_unproven_history(self, project_id)?;
         let history = EditorHistoryV1 {
             schema_version: EDITOR_HISTORY_SCHEMA_VERSION_V1,
             project_id,
@@ -2704,6 +2747,7 @@ impl EditorState {
                 .iter()
                 .map(entry_to_wire)
                 .collect::<Result<Vec<_>, _>>()?,
+            speculative_unproven_applied_base_v1: applied_base_to_wire(&self.applied_base_unproven),
         };
         history.validate_shape()?;
         Ok(history)
@@ -2849,6 +2893,8 @@ impl EditorState {
         );
         validate_editor_finite(&current)?;
         let expected_current = editor_document_parts_bytes(&current)?;
+        let applied_base =
+            applied_base_from_wire(history.speculative_unproven_applied_base_v1.clone())?;
 
         let undo_wire = history
             .undo_stack
@@ -2862,17 +2908,18 @@ impl EditorState {
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut base = current.clone();
-        for (_, inverse) in undo_wire.iter().rev() {
+        for (_, inverse, _) in undo_wire.iter().rev() {
             apply_persisted_inverse(&mut base, inverse)?;
         }
 
         let mut rebuilt = base;
         let mut undo_stack = Vec::with_capacity(undo_wire.len());
-        for (forward, expected_inverse) in undo_wire {
-            let generated = replay_forward(&mut rebuilt, forward)?;
+        for (forward, expected_inverse, mark) in undo_wire {
+            let mut generated = replay_forward(&mut rebuilt, forward)?;
             if !inverse_is_exact(&generated.inverse, &expected_inverse)? {
                 return Err(EditorHistoryErrorV1::InverseMismatch);
             }
+            generated.speculative_unproven_fold = mark;
             undo_stack.push(generated);
         }
         if editor_document_parts_bytes(&rebuilt)? != expected_current {
@@ -2881,20 +2928,23 @@ impl EditorState {
 
         let mut redo_cursor = current.clone();
         let mut redo_application_order = Vec::with_capacity(redo_wire.len());
-        for (forward, expected_inverse) in redo_wire.into_iter().rev() {
-            let generated = replay_forward(&mut redo_cursor, forward)?;
+        for (forward, expected_inverse, mark) in redo_wire.into_iter().rev() {
+            let mut generated = replay_forward(&mut redo_cursor, forward)?;
             if !inverse_is_exact(&generated.inverse, &expected_inverse)? {
                 return Err(EditorHistoryErrorV1::InverseMismatch);
             }
+            generated.speculative_unproven_fold = mark;
             redo_application_order.push(generated);
         }
         redo_application_order.reverse();
 
         current.undo_stack = undo_stack;
         current.redo_stack = redo_application_order;
+        current.applied_base_unproven = applied_base;
         current.history_entry_limit = limit;
         current.revision = 0;
         current.current_applied_pose = None;
+        validate_editor_unproven_history(&current, history.project_id)?;
         Ok(current)
     }
 }
@@ -3417,6 +3467,7 @@ mod tests {
                     id: VertexId::new(),
                 },
             },
+            speculative_unproven_fold_v1: None,
         }
     }
 
@@ -3431,6 +3482,7 @@ mod tests {
             history_entry_limit: limit,
             undo_stack,
             redo_stack,
+            speculative_unproven_applied_base_v1: AppliedBaseUnprovenLedgerWireV1::default(),
         }
     }
 
@@ -4131,6 +4183,7 @@ mod tests {
                             opacity: 1.0,
                         },
                     },
+                    speculative_unproven_fold_v1: None,
                 };
                 if corrupt_inverse {
                     let InverseV1::Command {

@@ -74,7 +74,6 @@ import {
   applySvgImport,
   assignEdgeToProjectLayer,
   beginInstructionExportGeneration,
-  cancelCreasePatternExport,
   cancelFoldImport,
   cancelInstructionExport,
   cancelInstructionMeshAnimation,
@@ -108,7 +107,6 @@ import {
   moveVertices,
   moveVertex,
   newProject,
-  previewCreasePatternExport,
   previewFoldImport,
   previewGeometricConstraintSolve,
   previewGeometricConstraintEdgeSolve,
@@ -129,7 +127,6 @@ import {
   removeGeometricConstraint,
   removeVertex,
   resizeRectangularPaper,
-  saveCreasePatternExport,
   saveInstructionExport,
   saveInstructionMeshAnimation,
   saveStaticMeshExport,
@@ -197,10 +194,6 @@ import {
   projectFolderClientErrorMessage,
   saveProjectFolderAs,
 } from './lib/projectFolderClient'
-import {
-  type CreasePatternExportFormat,
-  type CreasePatternExportPreview,
-} from './lib/creaseExport'
 import {
   INSTRUCTION_EXPORT_PROFILE,
   INSTRUCTION_EXPORT_PROJECTION_PROFILE,
@@ -351,6 +344,7 @@ import { updateGridPreferenceInput } from './lib/gridPreference'
 import { useCanvasUnderlays } from './lib/useCanvasUnderlays'
 import { useGridDivisionPreference } from './lib/useGridDivisionPreference'
 import { useProjectCanvasProjection } from './lib/useProjectCanvasProjection'
+import { useCreaseExportWorkflow } from './lib/useCreaseExportWorkflow'
 import {
   appConfirmationText,
   appErrorLocalizedText,
@@ -380,7 +374,6 @@ import {
   formatBytes,
   lineKindLabel,
   localFlatFoldabilityCoreStatus,
-  localizedCreaseExportFormatLabel,
   localizedInstructionExportFormatLabel,
   localizedLocalFlatFoldabilityConditionLabel,
   localizedLocalFlatFoldabilityReasonLabel,
@@ -954,15 +947,6 @@ function App() {
     useState<AppMessage | null>(null)
   const [svgImportValidation, setSvgImportValidation] =
     useState<SvgImportSettingsValidation | null>(null)
-  const [creaseExportOpen, setCreaseExportOpen] = useState(false)
-  const [creaseExportFormat, setCreaseExportFormat] =
-    useState<CreasePatternExportFormat>('fold')
-  const [creaseExportPreview, setCreaseExportPreview] =
-    useState<CreasePatternExportPreview | null>(null)
-  const [creaseExportErrorMessage, setCreaseExportError] =
-    useState<AppMessage | null>(null)
-  const [creaseExportNoticeMessage, setCreaseExportNotice] =
-    useState<AppMessage | null>(null)
   const [meshExportOpen, setMeshExportOpen] = useState(false)
   const [meshExportFormat, setMeshExportFormat] =
     useState<StaticMeshExportFormat>('obj')
@@ -1020,8 +1004,6 @@ function App() {
   const newProjectError = appMessageText(locale, newProjectErrorMessage)
   const foldImportError = appMessageText(locale, foldImportErrorMessage)
   const svgImportError = appMessageText(locale, svgImportErrorMessage)
-  const creaseExportError = appMessageText(locale, creaseExportErrorMessage)
-  const creaseExportNotice = appMessageText(locale, creaseExportNoticeMessage)
   const meshExportError = appMessageText(locale, meshExportErrorMessage)
   const meshExportNotice = appMessageText(locale, meshExportNoticeMessage)
   const instructionExportError = appMessageText(
@@ -1065,8 +1047,6 @@ function App() {
   const foldTechniqueRequestIdRef = useRef(0)
   const foldImportButtonRef = useRef<HTMLButtonElement>(null)
   const svgImportButtonRef = useRef<HTMLButtonElement>(null)
-  const creaseExportButtonRef = useRef<HTMLButtonElement>(null)
-  const creaseExportRequestIdRef = useRef(0)
   const meshExportButtonRef = useRef<HTMLButtonElement>(null)
   const meshExportRequestIdRef = useRef(0)
   const instructionExportButtonRef = useRef<HTMLButtonElement>(null)
@@ -1074,6 +1054,54 @@ function App() {
   const meshAnimationExportRequestIdRef = useRef(0)
   const instructionExportRequestIdRef = useRef(0)
   const instructionExportGenerationIdRef = useRef<string | null>(null)
+  const {
+    open: creaseExportOpen,
+    format: creaseExportFormat,
+    preview: creaseExportPreview,
+    error: creaseExportErrorMessage,
+    notice: creaseExportNoticeMessage,
+    buttonRef: creaseExportButtonRef,
+    prepare: prepareCreaseExport,
+    begin: beginCreaseExport,
+    changeFormat: changeCreaseExportFormat,
+    close: closeCreaseExportDialog,
+    save: saveCurrentCreaseExport,
+  } = useCreaseExportWorkflow({
+    locale,
+    copy: {
+      previewRejected: APP_TEXT.rejectedAnExportPreviewThatDoesNotMatchTheCurrent,
+      previewReadyJapanese: APP_TEXT.message0145,
+      previewReadyEnglish: APP_TEXT.reviewInformationLossForTheFormatExport,
+      cancelled: APP_TEXT.creasePatternExportCancelled,
+      projectChanged: APP_TEXT.theProjectChangedRebuildTheExportData,
+      saveCancelledNotice: APP_TEXT.saveLocationSelectionWasCancelledYouCanRetryFromThe,
+      saveCancelledStatus: APP_TEXT.creasePatternSaveLocationSelectionCancelled,
+    },
+    getCurrentSnapshot: () => latestSnapshotRef.current,
+    operationActive: () => coreOperationRef.current,
+    setOperationBusy: (busy) => {
+      coreOperationRef.current = busy
+      setCoreBusy(busy)
+    },
+    setFileOperation,
+    cancelInteraction: () => setCancelInteractionToken((token) => token + 1),
+    onStatus: setCoreStatus,
+    prepareFailedMessage: appMessage(
+      appErrorLocalizedText('crease_export_prepare_failed'),
+    ),
+    cleanupFailedMessage: appMessage(
+      appErrorLocalizedText('crease_export_cleanup_failed'),
+    ),
+    saveFailedMessage: appMessage(
+      appErrorLocalizedText('crease_export_save_failed'),
+    ),
+    savedMessage: (preview) => appMessage(
+      APP_TEXT.exportedFileName,
+      { fileName: preview.suggested_file_name },
+    ),
+  })
+  const creaseExportError = appMessageText(locale, creaseExportErrorMessage)
+  const creaseExportNotice = appMessageText(locale, creaseExportNoticeMessage)
   recoveryStartupRef.current = recoveryStartup
   recoveryBlockingRef.current = recoveryBlocking
   appliedFoldPoseRef.current = appliedFoldPose
@@ -5140,159 +5168,6 @@ function App() {
       setSvgImportError(safeError)
       setCoreStatus(safeError)
     } finally {
-      coreOperationRef.current = false
-      setCoreBusy(false)
-    }
-  }
-
-  async function prepareCreaseExport(format: CreasePatternExportFormat) {
-    const current = latestSnapshotRef.current
-    if (!current || coreOperationRef.current) return
-
-    const requestId = ++creaseExportRequestIdRef.current
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    setFileOperation('crease_export')
-    setCreaseExportPreview(null)
-    setCreaseExportError(null)
-    setCreaseExportNotice(null)
-    setCancelInteractionToken((token) => token + 1)
-    try {
-      const response = await previewCreasePatternExport(
-        current.project_id,
-        current.revision,
-        format,
-      )
-      if (requestId !== creaseExportRequestIdRef.current) {
-        await cancelCreasePatternExport(response.preview.export_id).catch(() => undefined)
-        return
-      }
-      const latest = latestSnapshotRef.current
-      const preview = response.preview
-      if (
-        !latest
-        || preview.format !== format
-        || preview.expected_project_id !== current.project_id
-        || preview.expected_revision !== current.revision
-        || latest.project_id !== current.project_id
-        || latest.revision !== current.revision
-      ) {
-        await cancelCreasePatternExport(preview.export_id).catch(() => undefined)
-        throw new Error(text(APP_TEXT.rejectedAnExportPreviewThatDoesNotMatchTheCurrent))
-      }
-      setCreaseExportPreview(preview)
-      setCoreStatus(appMessage({
-        ja: formatLocalizedText('ja', APP_TEXT.message0145, { format: localizedCreaseExportFormatLabel(preview.format, 'ja') }),
-        en: formatLocalizedText('en', APP_TEXT.reviewInformationLossForTheFormatExport, { format: localizedCreaseExportFormatLabel(preview.format, 'en') }),
-      }))
-    } catch {
-      if (requestId !== creaseExportRequestIdRef.current) return
-      const safeError = appMessage(
-        appErrorLocalizedText('crease_export_prepare_failed'),
-      )
-      setCreaseExportError(safeError)
-      setCoreStatus(safeError)
-    } finally {
-      if (requestId === creaseExportRequestIdRef.current) {
-        setFileOperation(null)
-        coreOperationRef.current = false
-        setCoreBusy(false)
-      }
-    }
-  }
-
-  function beginCreaseExport() {
-    if (!latestSnapshotRef.current || coreOperationRef.current) return
-    setCreaseExportOpen(true)
-    setCreaseExportFormat('fold')
-    setCreaseExportPreview(null)
-    setCreaseExportError(null)
-    setCreaseExportNotice(null)
-    void prepareCreaseExport('fold')
-  }
-
-  function changeCreaseExportFormat(format: CreasePatternExportFormat) {
-    if (format === creaseExportFormat || coreOperationRef.current) return
-    setCreaseExportFormat(format)
-    void prepareCreaseExport(format)
-  }
-
-  async function closeCreaseExportDialog() {
-    if (coreOperationRef.current) return
-    const preview = creaseExportPreview
-    creaseExportRequestIdRef.current += 1
-    if (!preview) {
-      setCreaseExportOpen(false)
-      setCreaseExportError(null)
-      setCreaseExportNotice(null)
-      requestAnimationFrame(() => creaseExportButtonRef.current?.focus())
-      return
-    }
-
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    try {
-      await cancelCreasePatternExport(preview.export_id)
-      setCreaseExportOpen(false)
-      setCreaseExportPreview(null)
-      setCreaseExportError(null)
-      setCreaseExportNotice(null)
-      setCoreStatus(appMessage(APP_TEXT.creasePatternExportCancelled))
-      requestAnimationFrame(() => creaseExportButtonRef.current?.focus())
-    } catch {
-      const safeError = appMessage(
-        appErrorLocalizedText('crease_export_cleanup_failed'),
-      )
-      setCreaseExportError(safeError)
-      setCoreStatus(safeError)
-    } finally {
-      coreOperationRef.current = false
-      setCoreBusy(false)
-    }
-  }
-
-  async function saveCurrentCreaseExport(warningsAcknowledged: boolean) {
-    const current = latestSnapshotRef.current
-    const preview = creaseExportPreview
-    if (!current || !preview || coreOperationRef.current) return
-    if (
-      current.project_id !== preview.expected_project_id
-      || current.revision !== preview.expected_revision
-    ) {
-      setCreaseExportError(appMessage(APP_TEXT.theProjectChangedRebuildTheExportData))
-      return
-    }
-
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    setFileOperation('crease_export')
-    setCreaseExportError(null)
-    setCreaseExportNotice(null)
-    try {
-      const response = await saveCreasePatternExport(
-        preview.export_id,
-        current.project_id,
-        current.revision,
-        warningsAcknowledged,
-      )
-      if (response.canceled) {
-        setCreaseExportNotice(appMessage(APP_TEXT.saveLocationSelectionWasCancelledYouCanRetryFromThe))
-        setCoreStatus(appMessage(APP_TEXT.creasePatternSaveLocationSelectionCancelled))
-        return
-      }
-      setCreaseExportOpen(false)
-      setCreaseExportPreview(null)
-      setCreaseExportNotice(null)
-      setCoreStatus(appMessage(APP_TEXT.exportedFileName, { fileName: preview.suggested_file_name }))
-      requestAnimationFrame(() => creaseExportButtonRef.current?.focus())
-    } catch {
-      const safeError = appMessage(
-        appErrorLocalizedText('crease_export_save_failed'),
-      )
-      setCreaseExportError(safeError)
-      setCoreStatus(safeError)
-    } finally {
-      setFileOperation(null)
       coreOperationRef.current = false
       setCoreBusy(false)
     }

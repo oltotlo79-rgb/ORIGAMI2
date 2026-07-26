@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const appSource = [
   readSource('../src/App.tsx'),
+  readSource('../src/lib/useCreaseExportWorkflow.ts'),
   readSource('../src/lib/appText.ts'),
 ].join('\n')
 const clientSource = readSource('../src/lib/coreClient.ts')
@@ -20,7 +21,10 @@ test('the toolbar opens one background-blocking export confirmation dialog', () 
   )
   assert.match(appSource, /\|\| creaseExportOpen/u)
   assert.match(appSource, /\{creaseExportOpen && \(\s*<CreaseExportDialog/u)
-  assert.match(appSource, /requestAnimationFrame\(\(\) => creaseExportButtonRef\.current\?\.focus\(\)\)/u)
+  assert.match(
+    appSource,
+    /buttonRef: creaseExportButtonRef[\s\S]*scheduleFocus\(\(\) => buttonRef\.current\?\.focus\(\)\)/u,
+  )
 })
 
 test('the native IPC contract exposes metadata and opaque identity but no export bytes or path', () => {
@@ -57,11 +61,13 @@ test('the native IPC contract exposes metadata and opaque identity but no export
 test('save is bound to the preview project and revision and native cancel remains retryable', () => {
   assert.match(
     appSource,
-    /current\.project_id !== preview\.expected_project_id\s*\|\|\s*current\.revision !== preview\.expected_revision/u,
+    /current\.project_id !== pendingPreview\.expected_project_id\s*\|\|\s*current\.revision !== pendingPreview\.expected_revision/u,
   )
-  assert.match(appSource, /saveCreasePatternExport\(\s*preview\.export_id/u)
+  assert.match(appSource, /save: saveCreasePatternExport/u)
+  assert.match(appSource, /transport\.save\(\s*pendingPreview\.export_id/u)
   assert.match(appSource, /if \(response\.canceled\) \{[\s\S]*確認画面から再試行できます/u)
-  assert.match(appSource, /cancelCreasePatternExport\(preview\.export_id\)/u)
+  assert.match(appSource, /cancel: cancelCreasePatternExport/u)
+  assert.match(appSource, /transport\.cancel\(pendingPreview\.export_id\)/u)
 })
 
 test('the dialog requires explicit loss acknowledgement and handles focus and IME safely', () => {

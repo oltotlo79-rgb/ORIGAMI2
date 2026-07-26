@@ -1,34 +1,52 @@
 # ORIGAMI2 開発進捗
 
-2026-07-23 SIM-010静的遷移列証拠: `469cbf9`は正厚みのboundedな離散sample列を非認可opaque chainへ封印した。各sampleのnative静的proofだけを保持し、連続運動・project mutationを認可しない。一般continuous collisionとlayer transportは未達のためSIM-010は部分実装、全体完成度は79.3%据え置き。
+履歴（2026-07-23 checkpoint）: SIM-010静的遷移列証拠`469cbf9`は、正厚みのboundedな離散sample列を非認可opaque chainへ封印した。各sampleのnative静的proofだけを保持し、連続運動・project mutationを認可しないため、このcheckpointではSIM-010を部分実装、全体完成度を79.3%据え置きとした。
 
 ## 完成率
 
-**全体完成率: 約79.3%（2026-07-21、暫定の重み付き概算）**
+**全体完成率:** 下記の正本発効条件が成立していれば **81.96%（表示82.0%）**、成立前は **79.32%（表示79.3%）**。
+
+「反映head」は、下記81.96%重み表と本発効規則を含むremote `main` headを指す。反映headとexactに同じ`head_sha`の単一CI run attemptで、必須7 job（`dependency-advisory-audit`、`frontend`、`slicer-acceptance`、`rust (macos-latest)`、`rust (windows-latest)`、`windows-bundle`、`macos-bundle`）がすべてterminalの`conclusion=success`となり、`rustsec-warning-review`、`sample-viewer-runtime-log`、`ORIGAMI2-windows-nsis-${run_id}`、`ORIGAMI2-macos-app-${run_id}`の4 artifactが発効監査時に生成済みかつ`expired=false`であることを確認した時点で、81.96%（表示82.0%）を正本として発効する。queued / in-progress、job未生成、success以外、artifact欠落のいずれかがある間は79.32%（表示79.3%）を維持する。失敗したheadは発効せず、後続headはそのexact `head_sha`で全条件を満たす必要がある。一度記録した発効はartifact retention期限後も失効せず、green後の文書追記commitを要求しない。
+
+反映前baseはcommit`45dfae5d2e66ee19f04d405bb7e9642c1237a950`の[CI #685](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/30183421620)（run ID `30183421620`、attempt 1）で、同じ7 jobの成功と4 artifactの生成まで検証した。これは反映前codeの基準証拠であり、81.96%を発効するCIは反映head自身に対して別途同じ条件を満たす必要がある。
 
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
-下表は79.3%を確定した時点の凍結基準値であり、現在能力を99%・100%・55%と再主張するものではない。2026-07-23監査で「3D 75%・制約85%・自動設計35%・経路78%」への補正を含む再評価案（81.96%、表示82.0%）を`docs/progress-reassessment-pending-ci-2026-07-22.md`へ分離した。正本値は同一remote headの全必須CIと正本更新後CIがgreenになるまで79.3%を維持し、凍結値と監査補正値を混在させない。
+下表は2026-07-23監査で旧79.32%の領域入力を全件再評価し、反映前base CIを通過した81.96%の発効対象値である。監査では「3D 75%・制約85%・初心者向け自動設計35%」へ過大計上を是正する一方、「保存94%・経路78%・折り手順92%」の利用者経路を再評価した。根拠と二重計上監査は`docs/progress-reassessment-pending-ci-2026-07-22.md`に記録する。
 
-下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。直前の正本61.67%に対し、2Dの注釈・下絵・面属性・複数選択対称編集、指定M/V局所十分性と有界経路診断、手順編集・保存・折り図出力、初心者向け目標入力・認識・制約・端末内候補生成を利用者経路へ接続した。「2D展開図エディター」を57%から100%、「折り可能性・経路探索」を35%から45%、「折り手順・PDF」を25%から75%、「初心者向け自動設計」を0%から55%へ更新し、79.32%を小数第1位へ丸めて表示している。一般正厚・cycle mutation・dense/証明困難な経路、一般的な目標形状からの展開図生成、実際の署名済みGitHub Release公開は未完了である。入力値自体が概数なので、79.32%は追跡用の計算値であって測定誤差のない精密値ではない。
+下表の「全体への寄与」は「全体比率 × 現在の領域進捗」である。旧79.32%への単純な差分加算は行わず、10領域を再合計して81.96%とした。入力値自体が概数なので、81.96%は追跡用の計算値であって測定誤差のない精密値ではない。任意topologyの一般経路、一般正厚・一般物理motion、一般目標からの一枚紙設計、実際の署名済みGitHub Release公開は引き続き未完了である。
 
 ## 重み付け
 
 | 領域 | 全体比率 | 現在の領域進捗 | 全体への寄与 | 状態 |
 |---|---:|---:|---:|---|
-| 要件・基本設計・技術検証 | 5% | 70% | 3.50% | 要件定義・設計文書・技術検証は充実。紙厚は中央面基準近似を初版仕様として確定。全体平坦折りと層順序の証明モデルをversion固定した |
-| プロジェクト・保存・履歴 | 8% | 78% | 6.24% | 原子的編集、差分Undo/Redo、`.ori2`保存、project単位の表示単位・memo・安全なthumbnail、独立した現在3D姿勢、1〜128件の履歴上限設定、30秒周期のnative自動保存、起動時の必須復元・破棄に加え、認証済みUndo/Redo両stackと履歴上限の通常保存・復旧を実装 |
+| 要件・基本設計・技術検証 | 5% | 85% | 4.25% | trust・proof・resource・persistence境界をversion固定したcodeと回帰へ接続。一般物理・一般自動設計の証明範囲は未完成 |
+| プロジェクト・保存・履歴 | 8% | 94% | 7.52% | strictな`.ori2`・展開folder・recovery、認証済みUndo/Redo、autosave authorityを実装。Windowsオーナー実機障害matrixと正式schema compatibility policyを残す |
 | 2D展開図エディター | 15% | 100% | 15.00% | 基本編集、9種スナップ、5線種、layer文書・edge assignment・管理UI、表示・lock・透明度、注釈・下絵object、面属性編集、複数選択の移動・複製・任意軸対称編集を保存・復旧・履歴・native IPC・Canvasへ接続 |
-| 数式・幾何制約 | 9% | 100% | 9.00% | 数式入力と全11種制約、有界Gauss-Newton solver、頂点・辺駆動preview、rank・自由度・条件推定、原子的Apply、layer lock、stale拒否、Undo/Redoに加え、`v.<UUID>.x/y`と`e.<UUID>.length/angle`を頂点・辺横断の有界DAGでmulti-driver solveへ接続し、退化・循環・保存・履歴・10,000件性能境界まで監査済み |
-| 3D折り・紙厚・衝突 | 17% | 99% | 16.83% | 木構造多ヒンジ姿勢・紙厚・衝突・固定面・物理把持、高精度静的診断に加え、折り重ねを厚さ0単一hinge・同軸multi-hinge・adaptive sparse非同軸2〜64hinge、限定正厚1〜14hingeでpreview・原子的apply・Undo/Redoへ接続。候補/current層順3D viewerも実装。一般正厚・cycle mutation・dense/証明困難な経路を残す |
-| 折り可能性・経路探索 | 18% | 45% | 8.10% | 1ヒンジCCD、補正候補、川崎・前川局所条件、指定M/Vのexact BLB局所十分性、凸面対象の全体平坦折り3値判定、場所別層順序、有界multi-hinge候補・closure・衝突診断を接続。一般経路探索と一般cycleの物理実行を残す |
-| 折り手順・PDF | 10% | 75% | 7.50% | 手順追加・削除・説明編集・並べ替え、Undo/Redo、通常・展開folder・復旧保存、完成形、カメラ、折る方向、注目位置、手指・持ち替えguideをUI・3D・A4 PDF・SVG ZIPへ接続。一般技法からの安全な物理動作生成を残す |
+| 数式・幾何制約 | 9% | 85% | 7.65% | 数式入力、11種制約、有界solver、原子的Apply、保存・履歴・10,000件境界を実装。直接矛盾certificateは限定familyで、一般充足可能性・一般MUSは未完成 |
+| 3D折り・紙厚・衝突 | 17% | 75% | 12.75% | Tree・限定cycle・限定正厚のproof、preview、原子的Apply、層順viewerを実装。一般正厚・一般多面・任意self-contact・一般物理motionは未証明 |
+| 折り可能性・経路探索 | 18% | 78% | 14.04% | dyadic 3/5/9、Tree/cycle issuer proof、preview、atomic Applyを実装。任意non-tree・dense・multi-cycleの一般経路と安全なcycle mutationを残す |
+| 折り手順・PDF | 10% | 92% | 9.20% | named compiler、認証済みpreview/Apply、保存、PDF/SVG ZIPを実装。未証明技法の連続3D certificate付きcompilerを残す |
 | 入出力・互換性 | 5% | 100% | 5.00% | `.ori2`、FOLD/SVG取込・展開図/手順/3D書出し、PBR・表裏texture、複数hinge watertight union、animation、FOLD 3D複数frame、正厚manifold reportを実装。独立reader、Khronos validator/Sample Viewer、Blender LTS、PrusaSlicer実機受入をCIへ固定 |
 | 多言語・設定・配布・QA | 5% | 75% | 3.75% | frontend/Rust自動回帰、Windows/macOS CI、診断、テーマ・shortcut・レイアウト、日英切替、更新確認に加え、署名・SBOM・checksum・provenance・prerelease/stable promotionを持つ正式版workflowを実装。実際のGitHub Release公開を残す |
-| 初心者向け自動設計 | 8% | 55% | 4.40% | 動物・昆虫、部品、棒状骨格、画像下絵、marker/silhouette認識案、突起・3D膨らみ目標、評価preset・制約・追加候補・端末内限定生成を接続。一般画像/3D認識と一般目標からの展開図生成を残す |
-| **合計** | **100%** | — | **79.32%** | — |
+| 初心者向け自動設計 | 8% | 35% | 2.80% | bounded custom target・一般木候補・画像/GLB consensusを実装。一般treeの平坦可解性合成、一般画像/GLB認識、一般目標からの一枚紙生成を残す |
+| **合計** | **100%** | — | **81.96%** | **表示82.0%** |
+
+## 81.96%時点でも残る未完境界
+
+- EDT-009は21直接矛盾variantと16制約以下のbounded direct-oracle最小化までであり、全制約種の一般充足可能性、一般矛盾原因、一般MUSは未完成。
+- 任意のnon-tree・dense・multi-cycle topologyに対する一般経路探索と安全なcycle mutation。
+- 任意角度・分岐・self-contactを含む一般正厚continuous motion、衝突回避、一般複数層transport、層順証明。
+- 摩擦、弾性、塑性、圧縮、手指把持を含む一般物理motion。
+- 花弁等の未証明技法を連続3D certificate付きcompilerへ昇格すること。
+- 任意の一般画像・一般GLBから意味部位・surfaceを認識し、一般的な一枚紙展開図と折り手順を生成すること。
+- 展開folderのWindowsオーナー実機E2E、権限・容量枯渇・同期softwareを含む障害matrix。
+- 複数世代schema migrationの正式compatibility policy。
+- 実際の署名済みGitHub Release公開、外部配布authority、stable promotionの運用実績。
 
 ## 完了
+
+以下の個別完成度は各checkpoint時点の履歴値であり、冒頭の条件付き正本値を上書きしない。
 - `9f6053f`で、正の紙厚・全三角形`MaterialTree`・全hinge角が有限かつ90度未満という限定入力について、単一の静的exact poseにおける全unordered face pairのclosed-prism分類と、canonical shared-hingeごとのwhole-tree coverage vectorの完全一致を証明した。4/8/16-face Treeの成功と資源上限超過のpreflight拒否を固定した。連続経路、layer transport、current mutation、非三角形・一般姿勢は未証明であり、SIM-010は部分実装、全体完成度は79.32%（表示79.3%）を維持する
 
 - EDT-009の既存`horizontal_and_vertical` 2制約原因を再監査し、水平残差`dy=0`と垂直残差`dx=0`は同一辺を長さ0へ潰す解を共有するため、直接矛盾という従来判定が偽陽性だったことを確認した。実residual回帰でzero-length escapeを固定し、同じ辺へ正の固定長がある3制約の場合だけ直接矛盾とし、それ以外は判定保留へ閉じるよう修正した。旧2-ID DTOは拒否、新3-ID DTOだけを受理し、削除最小原因も再検証した。WSL focused 2件、削除最小1件、Clippy all-targets、Node 18件、DOM 12件、production buildが成功した。`7c7134d`後から本修正`6b00ed0`前までの「soundな13種」という文書表現はこの1種について過大だった。現行の数え方は`DirectConstraintConflictKindV1`の21直接矛盾variant（17 fixed-pattern + 4 general-graph）へ統一する。19番目は同じcenterで`source/target`を逆にした2回転と実在半径辺のconsistentな正の固定長について、binary64加算結果が360度でない片側証拠がある場合だけcollapse矛盾を肯定し、丸め結果が360度なら判定保留へ閉じる。20番目は同じ対称軸上へ拘束された鏡映点と、その鏡映点対を結ぶ実在辺のconsistentな正の固定長を厳密IDで照合し、反射が強制するcollapseと正の間隔の矛盾を肯定する。21番目は180度ではない回転対称に対し、`source on line(center,target)`または`target on line(center,source)`を同一実在半径edgeの`PointOnLine`で指定する2制約を矛盾とする。PointOnLineの正規化残差はline edgeのcollapseを`NonConvergent`へ閉じ、非退化時は非零ベクトルとその非180度回転像が共線にならないため、固定長の追加証拠は不要である。solverとsolution verifierは直接矛盾preflightを数値toleranceより先に`NonConvergent`へ閉じる。初期座標、epsilon、近似値、別点・別辺は根拠にしない。EDT-009は一般MUS未実装の部分実装、全体完成率は79.32%（表示79.3%）を維持する
@@ -525,8 +543,8 @@
 
 ## 進行中
 
-- Claudeコードレビュー第2回の即時修正1-1〜1-5は、拡張子補正後の既存保存先拒否とatomic create-new、折り図errorの型付きcategory化、SVG ZIPから未参照TTFと`@font-face`の削除、川崎・前川判定のproject lock外実行まで対応済みである。取込過剰拒否はSVG側の未対応property・`!important`対応に加え、CSS規則どおりproperty名もASCII大文字小文字を区別せずcanonical 9 propertyへ正規化する回帰を追加した。FOLD側の任意`edges_assignment`と利用者が選ぶ境界候補はDTO・UI・適用時再検証を伴う契約変更のため未対応であり、アプリ内fontの静的化・subset化および全IPC error schemaの一括移行とともに独立checkpointで扱う
-- [native current applied pose設計](native-applied-pose-design.md)に従い、表示・投影から独立したnative kinematics、current pose capability、native静的・連続衝突、場所別cell-order transport、原子的commitを順に実装する作業。4×11分類表と実geometry証拠の対応を先に完成させ、任意の現在3D状態で局所的に重なる層を安全に扱えるまで折り重ねUIへ着手しない
+- Claudeコードレビュー第2回の即時修正1-1〜1-5、FOLD境界候補のDTO・UI・適用時再検証、SVGの厳格取込、折り図error categoryは対応済みである。残るアプリ内fontの静的化・subset化と全IPC error schemaの段階移行は、既存互換性を壊さない独立checkpointとして扱う
+- [native current applied pose設計](native-applied-pose-design.md)に従う限定Tree/cycleのproof、場所別cell-order transport、preview、原子的`ApplyStackedFold`、Undo/Redo・保存・UIは実装済みである。現在は一般三block以上、一般non-flat target、任意多hinge schedule、共有hinge admission、一般複数層transportへ証明範囲を拡張し、証明不能caseを引き続き無変更へ閉じる作業を進める
 - 非cardinalな斜め共有ヒンジで面ごとのbinary64変換像に微小な端点差が生じる問題を、任意epsilonではなくexact rigidなwatertight canonical poseまたは検証可能な全face誤差包含で解決する作業。raw姿勢の横断・共面正面積を端点不一致より優先する暫定案は不採用とし、現在は完全coverage付き判定保留へ閉じる
 - `FoldPreview`のscene資源分離に続き、既存のexact lease・stale無効化・原子的scene更新を保ったまま残るcamera/入力runtimeを小さな責務へ分割する作業
 - 単一折りの紙面ドラッグをWindows実機のmouse・pen・touchで操作し、pointer capture、カメラ競合、表裏の掴みやすさを確認するネイティブE2E
@@ -542,8 +560,8 @@
 
 ## 次の作業
 
-1. exact rational Cayley回転によるwatertight rigid poseをversion付きで構成し、全共有ヒンジ線の一致、面内距離、直交性、角度包含および表示姿勢との差を証明する。完成までは斜め共有featureのraw姿勢不一致を判定保留へ閉じる
-2. nativeの衝突分類v2 4×11純粋表へ、正厚証拠と有限ヒンジcorridorを接続し、続いてcurrent poseまでのcontinuous collisionと場所別cell-order transportを証明する。全180度flatは内部bootstrapに限定し、製品要件をflat限定へ縮小しない
-3. 上記前提の完成後に`ApplyStackedFold`を展開図、3D姿勢、層順序、face lineage、timelineへ原子的に接続し、失敗時の全状態不変と段階再生を回帰する。UIはその後に接続する
-4. MUST 87件のstatus表を各checkpointで維持し、i18nの利用者向け切替、レイヤー編集、その他の未着手MUSTをbreadth-firstで進める
+1. 実装済みのexact rational Cayley姿勢を一般renderer包含、非cardinal共有feature、一般正厚continuous motionへ拡張し、証明できないraw姿勢不一致は判定保留へ閉じる
+2. native衝突分類v2、有限ヒンジcorridor、場所別cell-order transportを任意一般姿勢・一般多面へ拡張し、一般self-contactと一般複数層の安全証明を完成させる
+3. 限定`ApplyStackedFold`を一般三block以上、一般cycle、任意多hinge schedule、一般non-flat targetへ拡張し、専用read-only viewerと失敗時の全状態不変を回帰する
+4. MUST 87件の **実装済み85 / 部分実装2 / 未着手0** を各checkpointで維持し、EDT-009の一般矛盾原因とSIM-010の一般物理・層transport境界を閉じる
 5. Windows正式版に向けて3Dキーボード選択の実機AT確認、保存・復旧・終了を含むネイティブE2Eを進める。macOSは自動ビルド・CI検証だけを継続する

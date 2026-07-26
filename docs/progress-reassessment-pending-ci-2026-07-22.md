@@ -1,14 +1,14 @@
-# 完成度再評価案（CI確認待ち、2026-07-22）
+# 完成度再評価（正本発効条件付き、2026-07-22起案）
 
 ## 位置づけ
 
-次の3監査を統合した、CI確認待ちの完成度再評価案である。
+次の3監査を統合し、2026-07-26に反映前base CIまで完了した完成度再評価である。
 
 - `beginner-custom-target-evidence-2026-07-22.md`
 - `path-technique-evidence-2026-07-22.md`
 - `project-design-evidence-2026-07-22.md`
 
-本書は提案値であり完成度の正本ではない。remote CIの全必須jobが同一headでterminal greenになるまで`docs/progress.md`を編集せず、公式表示は79.3%のままとする。
+本書の81.96%は`docs/progress.md`の発効規則に従う条件付き正本候補である。81.96%重み表と発効規則を含む反映head自身のCI条件が成立するまでは79.32%（表示79.3%）が正本であり、成立時に追加commitなしで81.96%（表示82.0%）が発効する。
 
 ## 統合後の領域別試算
 
@@ -35,7 +35,7 @@
 + 14.04 + 9.20 + 5.00 + 3.75 + 2.80 = 81.96%
 ```
 
-表示値は小数第1位へ丸めて **82.0%** とする。ただしCI gateまでは正本79.3%を維持する。
+表示値は小数第1位へ丸めて **82.0%** とする。ただし反映head自身のCI発効条件が成立するまでは正本79.3%を維持する。
 
 ## 監査後に追加された提案値の裏付け
 
@@ -55,18 +55,39 @@
 - strict DTO、cancel、stale、tamper回帰は各機能の受入条件として扱い、「多言語・設定・配布・QA」へ別加算しない。
 - 実際のGitHub Release公開、署名鍵、promotion authorityは今回の監査範囲外であり、QA/配布75%を据え置いた。
 
-## `docs/progress.md`反映gate
+## 反映前base CI証拠
 
-次の全条件を満たした場合だけ、正本へ提案値を反映する。
+反映前base commit`45dfae5d2e66ee19f04d405bb7e9642c1237a950`の[CI #685](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/30183421620)は、run ID `30183421620`、attempt 1、2026-07-26T01:45:37Z開始・02:31:20Z完了で、次の7 jobがすべて`completed / success`となった。
 
-1. 反映対象commitを含む同一remote headを特定する。
-2. Windows、macOS、frontend、Rust、format、Clippy、bundle等、repositoryが必須とする全CI jobがterminal状態になる。
-3. required jobがすべてgreenで、cancelled、skipped相当の未検証必須job、古いheadの成功を混在させない。
+- `dependency-advisory-audit`（job `89743858311`）
+- `frontend`（job `89743858306`）
+- `slicer-acceptance`（job `89743858296`）
+- `rust (macos-latest)`（job `89743858307`）
+- `rust (windows-latest)`（job `89743858338`）
+- `macos-bundle`（job `89746348028`）
+- `windows-bundle`（job `89746348022`）
+
+同じrunでは、発効監査時に次の4 artifactが生成済みで`expired=false`だった。retention期限は2026-08-02であり、この監査記録は期限後の自動削除によって失効しない。
+
+- `ORIGAMI2-macos-app-30183421620`（artifact `8626588537`、23,155,167 bytes、SHA-256 `9007fa0cdd97002464e8cf27271295710795b67a20bcfdf8dcc6f1704cd8a5a8`）
+- `ORIGAMI2-windows-nsis-30183421620`（artifact `8626643864`、17,007,506 bytes、SHA-256 `ba5e9f47229fb7a73aec9857f82fb73d1814ee1b5123b1b3aea5a806956ba54b`）
+- `rustsec-warning-review`（artifact `8626320166`、1,265 bytes、SHA-256 `a1fd782353a216f524c0de6de09f229d913cdc460d43244bf7082e9421bdf79d`）
+- `sample-viewer-runtime-log`（artifact `8626360815`、300 bytes、SHA-256 `c9be8d6c63391d25e34381ccfd16ba6d7366f770a56add8e1f1e989f1c9e823a`）
+
+このrunは反映前codeのbase証拠であり、81.96%自体を発効しない。
+
+## 反映headの正本発効条件
+
+81.96%重み表と発効規則を含むremote `main` headを反映headとする。次の全条件を満たした場合だけ、81.96%を正本として発効する。
+
+1. 反映headとexactに同じ`head_sha`の単一CI run attemptを特定する。
+2. 上記と同名の必須7 jobがすべてterminalの`conclusion=success`となる。formatとClippyは両Rust job内の必須stepとしてjob successに包含する。
+3. `rustsec-warning-review`、`sample-viewer-runtime-log`、`ORIGAMI2-windows-nsis-${run_id}`、`ORIGAMI2-macos-app-${run_id}`の4 artifactが同じrunで生成済みかつ発効監査時に`expired=false`である。
 4. worktreeの監査対象codeとremote headが一致し、未pushの機能差分を完成根拠に含めない。
 5. `docs/progress.md`の領域値、各寄与、合計、説明、未完一覧を同一commitで更新し、加重式を再検算する。
-6. 更新後の正本をCIで再検証し、そのdocumentation-onlyまたは後続headもterminal greenにする。
+6. cancelled、skipped相当の未検証必須job、別attempt、別head、古い成功を混在させない。
 
-一つでも満たさない場合は本書をpending案のまま保持し、`docs/progress.md`の79.32%（表示79.3%）を維持する。
+queued / in-progress、job未生成、success以外、artifact欠落のいずれかがある間は79.32%（表示79.3%）を維持する。失敗したheadは発効せず、後続headはそのexact `head_sha`で全条件を満たす必要がある。一度記録した発効はartifact retention期限後も失効せず、green後の文書追記commitを要求しない。
 
 ## 81.96%時点でも残る未完
 
@@ -78,6 +99,5 @@
 - expanded folderのWindowsオーナー実機E2E、権限・容量枯渇・同期softwareを含む障害matrix。
 - 複数世代schema migrationの正式compatibility policy。
 - 実際の署名済みGitHub Release公開、外部配布authority、stable promotionの運用実績。
-- 全CIが同一headでterminal greenになった後の正本反映と再検証。
 
 このため81.96%は「残件が小さい」ことを意味せず、一般物理motion、一般自動設計、正式配布という高難度の終盤作業を明示的に残した保守的な工数概算である。

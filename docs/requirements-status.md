@@ -4,6 +4,8 @@
 
 現在の行単位集計は **実装済み85 / 部分実装2 / 未着手0**。
 
+全体加重完成度はこのMUST行集計とは別指標で、`docs/progress.md`の正本発効規則に従う。反映headのCI条件成立前は79.32%（表示79.3%）、成立後は81.96%（表示82.0%）である。以下の日付付き完成度・集計は各checkpoint時点の履歴で、現在値を上書きしない。
+
 `requirements-definition.md`のMUST 87件を、利用者がUIから実行できるかを基準に追跡する。配布・CI要件だけは、要件に明記された自動検証または成果物が存在するかを基準とする。内部基盤やテストだけが完成していても、利用者機能がUI未接続なら「実装済み」へは上げない。
 
 - 実装済み: 要件の主要な利用経路がUIから動作する。配布・CI要件は、指定された自動検証または成果物がそろう
@@ -251,7 +253,7 @@ FOLD/SVG/PDF/DXFはmm正本を維持する。紙辺比は一意な正長Boundary
 | SIM-007 | 実装済み | 3D紙面の表裏へ個別の色と組込み模様textureを反映し、設定変更時にscene resourceを安全に再生成・解放する |
 | SIM-008 | 実装済み | topology snapshotへ元紙ID付きの決定的material componentを追加し、境界間Cut、closed cut loop、紙内部または境界接続のopen/branched CutをDCEL walkから分類する。Faceは外周・時計回り穴・zero-area seamをversion互換表現で保持し、切断後の各pieceを同じsheet originへ束縛する。Cut incidenceは両岸faceを保持するがhinge adjacencyへ入れず、frontendは全face/component partition、穴・seam、面積を再検証し、穴を両面capと厚み壁へ反映して全pieceを静的3D表示する。切断禁止は従来どおり拒否する |
 | SIM-009 | 実装済み | nativeで10,000本の実edgeを生成・転送して2D Canvasへ表示し、空間索引による選択・snapと描画FPS/p95を計測できる。性能データ上で頂点drag（incident edge座標を一括更新）と線削除の基本編集を実行できる。10,000要素・faceのbroad-phase、snap、parallel/angle補助も専用回帰と資源上限で検証する |
-| SIM-010 | 部分実装 | 証明済みの単一hinge・厚さ0経路に加え、bounded dyadic 3/5/9 levelのgraph/cycle経路と、positive-thickness Treeの連続経路・shared-vertex layer transportをnative proofへ接続した。各transitionでschedule、closure、正厚連続性、層transport、source/target fingerprint、紙厚を再認証できる場合だけread-only previewをmintし、project instance/revision/fingerprint/generationへ結合した非直列化one-shot tokenと明示確認を経て、target pattern・paper・layers・完全hinge角timeline・applied poseを一つのeditor履歴entryへ原子的にApplyする。失敗、入力・選択・revision変更、取消、再入、stale/ABA、token再使用は無変更へ閉じ、Undo/Redo・再openでも一括履歴を維持する。任意の一般姿勢・任意多hinge scheduleへ広げた正厚衝突、共有hinge admission、完全な連続経路/closure、一般複数層transport、適用後を含む専用層順viewerは未完成であり、証明を発行できないcaseはApplyを無効化するため部分実装とする |
+| SIM-010 | 部分実装 | 証明済みの単一hinge・厚さ0経路に加え、bounded dyadic 3/5/9 levelのgraph/cycle経路と、positive-thickness Treeの連続経路・shared-vertex layer transportをnative proofへ接続した。各transitionでschedule、closure、正厚連続性、層transport、source/target fingerprint、紙厚を再認証できる場合だけread-only previewをmintし、project instance/revision/fingerprint/generationへ結合した非直列化one-shot tokenと明示確認を経て、target pattern・paper・layers・完全hinge角timeline・applied poseを一つのeditor履歴entryへ原子的にApplyする。失敗、入力・選択・revision変更、取消、再入、stale/ABA、token再使用は無変更へ閉じ、Undo/Redo・再openでも一括履歴を維持する。17-face・二blockの保存済み適用後層順は日英のread-only viewerで確認できる。任意の一般姿勢・任意多hinge scheduleへ広げた正厚衝突、共有hinge admission、完全な連続経路/closure、一般複数層transport、一般三block以上・一般non-flat targetの専用層順viewerは未完成であり、証明を発行できないcaseはApplyを無効化するため部分実装とする |
 
 ## 折り手順
 

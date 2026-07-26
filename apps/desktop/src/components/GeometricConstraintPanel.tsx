@@ -868,6 +868,7 @@ function SemanticMusStatus({
             constructive: view.singleConstraintConstructiveWitnessCount,
             pairConstructive: view.pairConstraintConstructiveWitnessCount,
             pairAlgebraic: view.pairConstraintAlgebraicWitnessCount,
+            lengthConstructive: view.lengthConstraintConstructiveWitnessCount,
             ids: view.constraintIds
               .map((id) => shortConstraintId(id, locale))
               .join(selectLocalizedText(locale, TEXT.idListSeparator)),

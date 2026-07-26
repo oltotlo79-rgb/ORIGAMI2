@@ -66,6 +66,7 @@ fn algebraic_pair_witness_is_a_distinct_strict_wire_counter() {
             single_constraint_constructive_witness_count: 0,
             pair_constraint_constructive_witness_count: 2,
             pair_constraint_algebraic_witness_count: 1,
+            length_constraint_constructive_witness_count: 0,
             authorizes_project_mutation: false,
             replayable_across_runtimes: false,
             ..
@@ -76,7 +77,7 @@ fn algebraic_pair_witness_is_a_distinct_strict_wire_counter() {
     let object = encoded
         .as_object()
         .expect("semantic certificate must be an object");
-    assert_eq!(object.len(), 14);
+    assert_eq!(object.len(), 15);
     assert_eq!(object["pair_constraint_constructive_witness_count"], 2);
     assert_eq!(object["pair_constraint_algebraic_witness_count"], 1);
     assert_eq!(
@@ -86,6 +87,7 @@ fn algebraic_pair_witness_is_a_distinct_strict_wire_counter() {
             "single_constraint_constructive_witness_count",
             "pair_constraint_constructive_witness_count",
             "pair_constraint_algebraic_witness_count",
+            "length_constraint_constructive_witness_count",
         ]
         .into_iter()
         .map(|key| object[key].as_u64().expect("strict witness counter"))

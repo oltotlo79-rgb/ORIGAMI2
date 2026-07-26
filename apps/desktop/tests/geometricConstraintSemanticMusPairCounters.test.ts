@@ -20,6 +20,19 @@ type CertifiedSemanticMus = Extract<
   { status: 'certified' }
 >
 
+function parsedCertified(
+  overrides: Readonly<Record<string, unknown>> = {},
+): CertifiedSemanticMus {
+  const normalized = normalizeGeometricConstraintPreflightResponse(
+    envelope(certified(overrides), provenDirect()),
+    BINDING,
+  )
+  if (normalized?.semantic_mus?.status !== 'certified') {
+    throw new Error('expected parsed certified semantic MUS')
+  }
+  return normalized.semantic_mus
+}
+
 test('keeps constructive and algebraic pair witnesses as separate exact counters', () => {
   const semanticMus = certified({
     current_assignment_witness_count: 0,
@@ -87,12 +100,12 @@ test('pair witness counters reject missing, wrong-type, negative, noninteger, an
 })
 
 test('presentation view model independently refuses an overcounted typed value', () => {
-  const valid = certified({
+  const valid = parsedCertified({
     current_assignment_witness_count: 0,
     single_constraint_constructive_witness_count: 0,
     pair_constraint_constructive_witness_count: 1,
     pair_constraint_algebraic_witness_count: 1,
-  }) as unknown as CertifiedSemanticMus
+  })
   const view =
     buildGeometricConstraintSemanticMusCertifiedViewModel(valid)
   assert.deepEqual(view && [
@@ -102,10 +115,10 @@ test('presentation view model independently refuses an overcounted typed value',
   assert.equal(Object.isFrozen(view), true)
   assert.equal(Object.isFrozen(view?.constraintIds), true)
 
-  const overcounted = {
+  const overcounted = Object.freeze({
     ...valid,
     current_assignment_witness_count: 2,
-  }
+  }) as CertifiedSemanticMus
   assert.equal(
     buildGeometricConstraintSemanticMusCertifiedViewModel(overcounted),
     null,
@@ -114,6 +127,7 @@ test('presentation view model independently refuses an overcounted typed value',
 
 test('presentation view model fails closed for hostile getters and proxies', () => {
   let getterCalls = 0
+  let proxyTrapCalls = 0
   const accessor = certified() as unknown as CertifiedSemanticMus
   Object.defineProperty(accessor, 'constraint_count', {
     enumerable: true,
@@ -122,8 +136,22 @@ test('presentation view model fails closed for hostile getters and proxies', () 
       throw new Error('private')
     },
   })
+  Object.freeze(accessor)
   const hostile = new Proxy(certified(), {
     get() {
+      proxyTrapCalls += 1
+      throw new Error('private')
+    },
+    ownKeys() {
+      proxyTrapCalls += 1
+      throw new Error('private')
+    },
+    getOwnPropertyDescriptor() {
+      proxyTrapCalls += 1
+      throw new Error('private')
+    },
+    getPrototypeOf() {
+      proxyTrapCalls += 1
       throw new Error('private')
     },
   }) as unknown as CertifiedSemanticMus
@@ -136,5 +164,6 @@ test('presentation view model fails closed for hostile getters and proxies', () 
       )
     })
   }
-  assert.equal(getterCalls, 1)
+  assert.equal(getterCalls, 0)
+  assert.equal(proxyTrapCalls, 0)
 })

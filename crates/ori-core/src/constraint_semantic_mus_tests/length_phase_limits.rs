@@ -1,12 +1,12 @@
-use super::pair_phase::pair_work_fixture;
+use super::length_phase::length_work_fixture;
 use super::*;
 
 #[derive(Default)]
-struct PairRecordingObserver {
+struct LengthRecordingObserver {
     progress: Vec<BoundedSemanticMusProgressV1>,
 }
 
-impl BoundedSemanticMusObserverV1 for PairRecordingObserver {
+impl BoundedSemanticMusObserverV1 for LengthRecordingObserver {
     fn checkpoint(
         &mut self,
         progress: BoundedSemanticMusProgressV1,
@@ -17,31 +17,35 @@ impl BoundedSemanticMusObserverV1 for PairRecordingObserver {
 }
 
 #[test]
-fn pair_phase_reserves_full_work_and_has_pre_post_stop_checkpoints() {
-    let fixture = pair_work_fixture();
+fn length_phase_reserves_full_work_and_has_pre_post_stop_checkpoints() {
+    let fixture = length_work_fixture();
     let prepared = prepared(&fixture.pattern, fixture.records.iter().cloned());
-    let (setup, current, axis, _singleton, pair, _algebraic, _length) =
+    let (setup, current, axis, _singleton, _pair, _algebraic, length) =
         crate::constraint_semantic_mus::witness_phase_work_for_test(
             fixture.pattern.vertices.len(),
             fixture.pattern.edges.len(),
+            4,
             3,
-            2,
         )
-        .expect("small pair work accounting");
-    let phase = current + axis + pair;
+        .expect("small length-only phase work");
+    let before_length = setup + current + axis;
+    let complete_first = before_length + length;
     let baseline = certified(certify_bounded_current_runtime_semantic_mus_v1(&prepared));
-    assert_eq!(baseline.deletion_witness_work(), setup + 3 * phase);
-    assert_eq!(baseline.pair_constraint_constructive_witness_count(), 3);
+    assert_eq!(
+        baseline.deletion_witness_work(),
+        setup + 4 * (current + axis + length),
+    );
+    assert_eq!(baseline.length_constraint_constructive_witness_count(), 4,);
 
-    let mut one_short_observer = NoopBoundedSemanticMusObserverV1;
+    let mut one_short = NoopBoundedSemanticMusObserverV1;
     assert!(matches!(
         certify_bounded_current_runtime_semantic_mus_with_observer_v1(
             &prepared,
             BoundedSemanticMusLimitsV1 {
-                max_deletion_witness_checks: 3,
-                max_deletion_witness_work: setup + phase - 1,
+                max_deletion_witness_checks: 4,
+                max_deletion_witness_work: complete_first - 1,
             },
-            &mut one_short_observer,
+            &mut one_short,
         ),
         BoundedCurrentRuntimeSemanticMusV1::Unknown {
             reason: BoundedSemanticMusUnknownReasonV1::DeletionWitnessWorkLimitExceeded,
@@ -49,11 +53,10 @@ fn pair_phase_reserves_full_work_and_has_pre_post_stop_checkpoints() {
             certified_deletion_witnesses: 0,
             deletion_witness_work,
             ..
-        } if deletion_witness_work == setup + current + axis
+        } if deletion_witness_work == before_length
     ));
 
-    let first_boundary_work = setup + phase;
-    let mut recording = PairRecordingObserver::default();
+    let mut recording = LengthRecordingObserver::default();
     assert!(matches!(
         certify_bounded_current_runtime_semantic_mus_with_observer_v1(
             &prepared,
@@ -69,7 +72,7 @@ fn pair_phase_reserves_full_work_and_has_pre_post_stop_checkpoints() {
         .filter_map(|(index, progress)| {
             (progress.deletion_witness_checks == 1
                 && progress.certified_deletion_witnesses == 0
-                && progress.deletion_witness_work == first_boundary_work)
+                && progress.deletion_witness_work == complete_first)
                 .then_some(index + 1)
         })
         .collect::<Vec<_>>();
@@ -113,7 +116,7 @@ fn pair_phase_reserves_full_work_and_has_pre_post_stop_checkpoints() {
                 certified_deletion_witnesses: 0,
                 deletion_witness_work,
                 ..
-            } if actual == reason && deletion_witness_work == first_boundary_work
+            } if actual == reason && deletion_witness_work == complete_first
         ));
     }
 }

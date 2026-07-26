@@ -19,6 +19,7 @@ pub(crate) enum GeometricConstraintSemanticMusResult {
         single_constraint_constructive_witness_count: u32,
         pair_constraint_constructive_witness_count: u32,
         pair_constraint_algebraic_witness_count: u32,
+        length_constraint_constructive_witness_count: u32,
         authorizes_project_mutation: bool,
         replayable_across_runtimes: bool,
     },
@@ -106,6 +107,10 @@ pub(super) fn map_semantic_direct_conflict_result(
                 certificate.pair_constraint_algebraic_witness_count(),
                 constraint_ids.len(),
             )?;
+            let length_constraint_constructive_witness_count = checked_semantic_count(
+                certificate.length_constraint_constructive_witness_count(),
+                constraint_ids.len(),
+            )?;
             if deletion_witness_checks != constraint_count
                 || current_assignment_witness_count
                     .checked_add(axis_exactification_witness_count)
@@ -114,6 +119,9 @@ pub(super) fn map_semantic_direct_conflict_result(
                     })
                     .and_then(|count| count.checked_add(pair_constraint_constructive_witness_count))
                     .and_then(|count| count.checked_add(pair_constraint_algebraic_witness_count))
+                    .and_then(|count| {
+                        count.checked_add(length_constraint_constructive_witness_count)
+                    })
                     != Some(constraint_count)
                 || certificate.direct_oracle_calls() == 0
                 || prepared.constraints().len() > MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1
@@ -140,6 +148,7 @@ pub(super) fn map_semantic_direct_conflict_result(
                     single_constraint_constructive_witness_count,
                     pair_constraint_constructive_witness_count,
                     pair_constraint_algebraic_witness_count,
+                    length_constraint_constructive_witness_count,
                     authorizes_project_mutation: false,
                     replayable_across_runtimes: false,
                 },

@@ -28,6 +28,7 @@ export function certified(
     single_constraint_constructive_witness_count: 1,
     pair_constraint_constructive_witness_count: 0,
     pair_constraint_algebraic_witness_count: 0,
+    length_constraint_constructive_witness_count: 0,
     authorizes_project_mutation: false,
     replayable_across_runtimes: false,
     ...overrides,

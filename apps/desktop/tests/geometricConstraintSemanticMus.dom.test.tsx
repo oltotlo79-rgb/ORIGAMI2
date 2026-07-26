@@ -6,11 +6,17 @@ import type {
   GeometricConstraintPreflightResult,
   GeometricConstraintSemanticMus,
 } from '../src/lib/coreClient'
+import { normalizeGeometricConstraintPreflightResponse } from '../src/lib/geometricConstraints'
+import {
+  BINDING,
+  envelope,
+  provenDirect,
+} from './geometricConstraintSemanticMusTestSupport'
 import { localeFixture } from './localeTestFixture'
 
 const uuid = (index: number) =>
   `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`
-const CORE = [uuid(1), uuid(2)]
+const CORE = Object.freeze([uuid(1), uuid(2)])
 const DIRECT: GeometricConstraintPreflightResult = {
   status: 'direct_conflict',
   conflicts: [{
@@ -23,7 +29,7 @@ const DIRECT: GeometricConstraintPreflightResult = {
     oracle_calls: 7,
   },
 }
-const CERTIFIED: GeometricConstraintSemanticMus = {
+const CERTIFIED_WIRE = {
   status: 'certified',
   model_id: 'geometric_constraint_current_runtime_semantic_mus_v1',
   constraint_ids: CORE,
@@ -36,9 +42,31 @@ const CERTIFIED: GeometricConstraintSemanticMus = {
   single_constraint_constructive_witness_count: 0,
   pair_constraint_constructive_witness_count: 1,
   pair_constraint_algebraic_witness_count: 1,
+  length_constraint_constructive_witness_count: 0,
   authorizes_project_mutation: false,
   replayable_across_runtimes: false,
 }
+
+function parsedCertified(
+  overrides: Partial<Extract<
+    GeometricConstraintSemanticMus,
+    { status: 'certified' }
+  >>,
+): GeometricConstraintSemanticMus {
+  const normalized = normalizeGeometricConstraintPreflightResponse(
+    envelope(
+      { ...CERTIFIED_WIRE, ...overrides, constraint_ids: CORE },
+      provenDirect(),
+    ),
+    BINDING,
+  )
+  if (normalized?.semantic_mus?.status !== 'certified') {
+    throw new Error('expected parsed certified semantic MUS')
+  }
+  return normalized.semantic_mus
+}
+
+const CERTIFIED = parsedCertified({})
 
 afterEach(cleanup)
 
@@ -55,6 +83,7 @@ describe('geometric-constraint semantic MUS status', () => {
     expect(region.textContent).toContain(
       '1 pair-constraint constructive, 1 pair-constraint algebraic-collapse',
     )
+    expect(region.textContent).toContain('0 bounded length-only constructive')
     expect(region.textContent).toContain(
       'does not authorize project mutation and cannot be replayed across runtimes',
     )
@@ -69,13 +98,29 @@ describe('geometric-constraint semantic MUS status', () => {
     })
     expect(region.textContent).toContain('二制約構成1件')
     expect(region.textContent).toContain('二制約代数縮退1件')
+    expect(region.textContent).toContain('有界長さ制約構成0件')
+  })
+
+  it('shows a bounded length-only witness count without inflating its total', () => {
+    renderPanel(parsedCertified({
+      pair_constraint_constructive_witness_count: 0,
+      pair_constraint_algebraic_witness_count: 0,
+      length_constraint_constructive_witness_count: 2,
+    }), 'ja')
+
+    const region = screen.getByRole('region', {
+      name: '現在の実行環境で意味論的最小コア認証',
+    })
+    expect(region.textContent).toContain('削除証人2件')
+    expect(region.textContent).toContain('有界長さ制約構成2件')
+    expect(region.textContent).not.toContain('有界長さ制約構成3件')
   })
 
   it('fails closed instead of overstating forged in-process witness counts', () => {
-    renderPanel({
+    renderPanel(Object.freeze({
       ...CERTIFIED,
       current_assignment_witness_count: 2,
-    }, 'en')
+    }), 'en')
 
     const region = screen.getByRole('region', {
       name: 'Current-runtime semantic minimal-core certification',

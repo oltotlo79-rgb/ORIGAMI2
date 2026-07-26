@@ -20,7 +20,7 @@ impl BoundedSemanticMusObserverV1 for AlgebraicRecordingObserver {
 fn algebraic_pair_reserves_full_work_and_has_pre_post_stop_checkpoints() {
     let fixture = algebraic_work_fixture();
     let prepared = prepared(&fixture.pattern, fixture.records.iter().cloned());
-    let (setup, current, axis, _singleton, pair, algebraic) =
+    let (setup, current, axis, _singleton, pair, algebraic, _length) =
         crate::constraint_semantic_mus::witness_phase_work_for_test(
             fixture.pattern.vertices.len(),
             fixture.pattern.edges.len(),

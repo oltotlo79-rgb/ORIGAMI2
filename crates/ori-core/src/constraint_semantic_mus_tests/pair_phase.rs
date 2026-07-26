@@ -300,10 +300,15 @@ fn pair_language_promotes_five_of_the_fifteen_proven_direct_families() {
                 + certificate.axis_exactification_witness_count()
                 + certificate.single_constraint_constructive_witness_count()
                 + certificate.pair_constraint_constructive_witness_count()
-                + certificate.pair_constraint_algebraic_witness_count(),
+                + certificate.pair_constraint_algebraic_witness_count()
+                + certificate.length_constraint_constructive_witness_count(),
             3,
         );
         assert_eq!(certificate.pair_constraint_algebraic_witness_count(), 0);
+        assert_eq!(
+            certificate.length_constraint_constructive_witness_count(),
+            0
+        );
     }
 }
 
@@ -324,5 +329,9 @@ fn algebraic_pair_promotes_four_additional_three_record_families() {
         );
         assert_eq!(certificate.pair_constraint_constructive_witness_count(), 2);
         assert_eq!(certificate.pair_constraint_algebraic_witness_count(), 1);
+        assert_eq!(
+            certificate.length_constraint_constructive_witness_count(),
+            0
+        );
     }
 }

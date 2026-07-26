@@ -329,8 +329,8 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
     'Current-runtime semantic minimal-core certification',
   ),
   semanticMusCertified: text(
-    '現在の実行環境で意味論的最小コアを認証しました（{count}件、直接オラクル{calls}回、削除証人{checks}件、作業量{work}）。証人方式：現在配置{current}件、軸厳密化{axis}件、単一制約構成{constructive}件、二制約構成{pairConstructive}件、二制約代数縮退{pairAlgebraic}件。コア：{ids}',
-    'Certified a semantic minimal core in the current runtime ({count} constraints, {calls} direct-oracle calls, {checks} deletion witnesses, work {work}). Witness methods: {current} current-assignment, {axis} axis-exactification, {constructive} single-constraint constructive, {pairConstructive} pair-constraint constructive, {pairAlgebraic} pair-constraint algebraic-collapse. Core: {ids}',
+    '現在の実行環境で意味論的最小コアを認証しました（{count}件、直接オラクル{calls}回、削除証人{checks}件、作業量{work}）。証人方式：現在配置{current}件、軸厳密化{axis}件、単一制約構成{constructive}件、二制約構成{pairConstructive}件、二制約代数縮退{pairAlgebraic}件、有界長さ制約構成{lengthConstructive}件。コア：{ids}',
+    'Certified a semantic minimal core in the current runtime ({count} constraints, {calls} direct-oracle calls, {checks} deletion witnesses, work {work}). Witness methods: {current} current-assignment, {axis} axis-exactification, {constructive} single-constraint constructive, {pairConstructive} pair-constraint constructive, {pairAlgebraic} pair-constraint algebraic-collapse, {lengthConstructive} bounded length-only constructive. Core: {ids}',
   ),
   semanticMusUnknownWithCore: text(
     '直接矛盾コア（{count}件）は得られましたが、意味論的最小性は認証されていません。理由：{reason}。進捗：削除証人{certified}/{checks}件、作業量{work}。コア：{ids}',

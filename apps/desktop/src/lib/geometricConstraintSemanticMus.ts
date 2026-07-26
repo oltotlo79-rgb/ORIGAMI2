@@ -26,6 +26,7 @@ export type GeometricConstraintSemanticMusV1 =
       single_constraint_constructive_witness_count: number
       pair_constraint_constructive_witness_count: number
       pair_constraint_algebraic_witness_count: number
+      length_constraint_constructive_witness_count: number
       authorizes_project_mutation: false
       replayable_across_runtimes: false
     }>
@@ -46,6 +47,28 @@ export type GeometricConstraintSemanticMusV1 =
       authorizes_project_mutation: false
       replayable_across_runtimes: false
     }>
+
+type CertifiedSemanticMusV1 = Extract<
+  GeometricConstraintSemanticMusV1,
+  { status: 'certified' }
+>
+
+const certifiedSemanticMusValues = new WeakSet<object>()
+
+/**
+ * Checks the exact identity issued by this module's strict parser.
+ *
+ * WeakSet membership does not inspect the candidate, so accessor and Proxy
+ * traps cannot run before the presentation boundary rejects an unissued
+ * in-process value.
+ */
+export function isParsedCertifiedGeometricConstraintSemanticMus(
+  value: unknown,
+): value is CertifiedSemanticMusV1 {
+  return value !== null
+    && typeof value === 'object'
+    && certifiedSemanticMusValues.has(value)
+}
 
 type BoundedDirectMus =
   | Readonly<{
@@ -120,6 +143,7 @@ function parseCertified(
       'single_constraint_constructive_witness_count',
       'pair_constraint_constructive_witness_count',
       'pair_constraint_algebraic_witness_count',
+      'length_constraint_constructive_witness_count',
       'authorizes_project_mutation',
       'replayable_across_runtimes',
     ])
@@ -171,11 +195,17 @@ function parseCertified(
       constraintIds.length,
       true,
     )
+    || !isCount(
+      record.length_constraint_constructive_witness_count,
+      constraintIds.length,
+      true,
+    )
     || record.current_assignment_witness_count
       + record.axis_exactification_witness_count
       + record.single_constraint_constructive_witness_count
       + record.pair_constraint_constructive_witness_count
       + record.pair_constraint_algebraic_witness_count
+      + record.length_constraint_constructive_witness_count
       !== constraintIds.length
     || record.authorizes_project_mutation !== false
     || record.replayable_across_runtimes !== false
@@ -187,7 +217,7 @@ function parseCertified(
     )
     || !matchesOuterConflict(constraintIds, directResult.conflicts)
   ) return null
-  return Object.freeze({
+  const result: CertifiedSemanticMusV1 = Object.freeze({
     status: 'certified',
     model_id: GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID,
     constraint_ids: constraintIds,
@@ -205,9 +235,13 @@ function parseCertified(
       record.pair_constraint_constructive_witness_count,
     pair_constraint_algebraic_witness_count:
       record.pair_constraint_algebraic_witness_count,
+    length_constraint_constructive_witness_count:
+      record.length_constraint_constructive_witness_count,
     authorizes_project_mutation: false,
     replayable_across_runtimes: false,
   })
+  certifiedSemanticMusValues.add(result)
+  return result
 }
 
 function parseUnknown(

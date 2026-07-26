@@ -217,7 +217,9 @@
         "327518c360e142d754d0c21c2680b7389d36042e",
         "1be7912632e7a8bfd02f01659401730131343261",
         "8bdb61e8f36b05d54b15cfb87326a580e684cbbf",
-        "5d38e10ecf311abd94d008528d638895c3c70aa1"
+        "5d38e10ecf311abd94d008528d638895c3c70aa1",
+        "9a96b89a5149041b96fe4e3a2e0b0f7be3c5dbd5",
+        "2a33b9aaa592266990e75da0f36707d175fef7fa"
       ],
       "evidence": [
         {
@@ -268,7 +270,7 @@
         {
           "kind": "production-symbol",
           "path": "crates/ori-core/src/constraints/bounded_zero_closure.rs",
-          "selector": "pub(super) fn conflict("
+          "selector": "pub(super) fn conflict_with_limits_and_observer("
         },
         {
           "kind": "test",
@@ -307,22 +309,22 @@
         },
         {
           "kind": "test",
-          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "path": "apps/desktop/src-tauri/src/tests.rs",
           "selector": "fn geometric_constraint_worker_cancel_is_bound_to_exact_request_generation()"
         },
         {
           "kind": "test",
-          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "path": "apps/desktop/src-tauri/src/tests.rs",
           "selector": "fn geometric_constraint_gate_consumes_exact_cancel_before_acquire_once()"
         },
         {
           "kind": "test",
-          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "path": "apps/desktop/src-tauri/src/tests.rs",
           "selector": "fn geometric_constraint_gate_retains_queued_cancel_while_another_generation_is_active()"
         },
         {
           "kind": "test",
-          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "path": "apps/desktop/src-tauri/src/tests.rs",
           "selector": "fn geometric_constraint_pre_cancel_ledger_is_bounded_and_evicts_oldest_only()"
         }
       ],

@@ -3033,11 +3033,12 @@ pub(super) mod tests {
         let simulation = topology.simulation_snapshot().unwrap();
         let fixed_face = simulation.faces[0].id;
         let hinge = simulation.hinge_adjacency[0].edge;
-        let face_ids = simulation
+        let mut face_ids = simulation
             .faces
             .iter()
             .map(|face| face.id)
             .collect::<Vec<_>>();
+        face_ids.sort_unstable_by_key(FaceId::canonical_bytes);
         let active_pose = ori_core::prepare_applied_pose_v1(
             &face_ids,
             &[hinge],

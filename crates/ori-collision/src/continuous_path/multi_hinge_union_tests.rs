@@ -5,13 +5,13 @@ use serde::de::DeserializeOwned;
 
 use super::*;
 
-type Fixture = (
+pub(super) type Fixture = (
     MaterialHingeGraphGeometry,
     MaterialHingeGraphAudit,
     CanonicalCycleScheduleV1,
     FaceId,
 );
-type Relief = (
+pub(super) type Relief = (
     Vec<HingeReliefPolicyRecordV1>,
     Vec<HingeReliefLinearAngleScheduleV1>,
     NativeHingeReliefPrerequisiteV1,
@@ -26,7 +26,7 @@ fn id<T: DeserializeOwned>(prefix: &str, suffix: u64) -> T {
 /// A production topology with one geometric crease split into two or
 /// three collinear edge records. Both material faces therefore share the
 /// complete canonical edge list; no test-only graph constructor is used.
-fn segmented_crease(hinge_count: usize, revision: u64) -> Fixture {
+pub(super) fn segmented_crease(hinge_count: usize, revision: u64) -> Fixture {
     assert!((2..=3).contains(&hinge_count));
     let boundary_points = [
         (0.0, 0.0),
@@ -122,7 +122,7 @@ fn segmented_crease(hinge_count: usize, revision: u64) -> Fixture {
     (geometry, audit, schedule, fixed)
 }
 
-fn relief(
+pub(super) fn relief(
     gaps: &MultiHingeReliefUnionGapReportV2,
     geometry: &MaterialHingeGraphGeometry,
 ) -> Relief {

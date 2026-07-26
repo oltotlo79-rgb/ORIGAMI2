@@ -1020,3 +1020,7 @@ fn hash_limits(hash: &mut Sha256, limits: MultiHingeReliefUnionLimitsV2) {
 #[cfg(test)]
 #[path = "multi_hinge_union_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "multi_hinge_union_fail_closed_tests.rs"]
+mod fail_closed_contract_tests;

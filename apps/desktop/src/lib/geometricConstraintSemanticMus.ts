@@ -24,6 +24,8 @@ export type GeometricConstraintSemanticMusV1 =
       current_assignment_witness_count: number
       axis_exactification_witness_count: number
       single_constraint_constructive_witness_count: number
+      pair_constraint_constructive_witness_count: number
+      pair_constraint_algebraic_witness_count: number
       authorizes_project_mutation: false
       replayable_across_runtimes: false
     }>
@@ -116,6 +118,8 @@ function parseCertified(
       'current_assignment_witness_count',
       'axis_exactification_witness_count',
       'single_constraint_constructive_witness_count',
+      'pair_constraint_constructive_witness_count',
+      'pair_constraint_algebraic_witness_count',
       'authorizes_project_mutation',
       'replayable_across_runtimes',
     ])
@@ -157,9 +161,21 @@ function parseCertified(
       constraintIds.length,
       true,
     )
+    || !isCount(
+      record.pair_constraint_constructive_witness_count,
+      constraintIds.length,
+      true,
+    )
+    || !isCount(
+      record.pair_constraint_algebraic_witness_count,
+      constraintIds.length,
+      true,
+    )
     || record.current_assignment_witness_count
       + record.axis_exactification_witness_count
       + record.single_constraint_constructive_witness_count
+      + record.pair_constraint_constructive_witness_count
+      + record.pair_constraint_algebraic_witness_count
       !== constraintIds.length
     || record.authorizes_project_mutation !== false
     || record.replayable_across_runtimes !== false
@@ -185,6 +201,10 @@ function parseCertified(
       record.axis_exactification_witness_count,
     single_constraint_constructive_witness_count:
       record.single_constraint_constructive_witness_count,
+    pair_constraint_constructive_witness_count:
+      record.pair_constraint_constructive_witness_count,
+    pair_constraint_algebraic_witness_count:
+      record.pair_constraint_algebraic_witness_count,
     authorizes_project_mutation: false,
     replayable_across_runtimes: false,
   })

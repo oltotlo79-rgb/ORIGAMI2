@@ -26,6 +26,8 @@ export function certified(
     current_assignment_witness_count: 1,
     axis_exactification_witness_count: 0,
     single_constraint_constructive_witness_count: 1,
+    pair_constraint_constructive_witness_count: 0,
+    pair_constraint_algebraic_witness_count: 0,
     authorizes_project_mutation: false,
     replayable_across_runtimes: false,
     ...overrides,

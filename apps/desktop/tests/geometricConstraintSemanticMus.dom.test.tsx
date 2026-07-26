@@ -31,9 +31,11 @@ const CERTIFIED: GeometricConstraintSemanticMus = {
   direct_oracle_calls: 7,
   deletion_witness_checks: 2,
   deletion_witness_work: 100,
-  current_assignment_witness_count: 1,
+  current_assignment_witness_count: 0,
   axis_exactification_witness_count: 0,
-  single_constraint_constructive_witness_count: 1,
+  single_constraint_constructive_witness_count: 0,
+  pair_constraint_constructive_witness_count: 1,
+  pair_constraint_algebraic_witness_count: 1,
   authorizes_project_mutation: false,
   replayable_across_runtimes: false,
 }
@@ -51,12 +53,40 @@ describe('geometric-constraint semantic MUS status', () => {
       'Certified a semantic minimal core in the current runtime',
     )
     expect(region.textContent).toContain(
-      '1 current-assignment, 0 axis-exactification, 1 single-constraint constructive',
+      '1 pair-constraint constructive, 1 pair-constraint algebraic-collapse',
     )
     expect(region.textContent).toContain(
       'does not authorize project mutation and cannot be replayed across runtimes',
     )
     expect(region.textContent).not.toContain('not certified')
+  })
+
+  it('shows both pair methods in Japanese with the same labelled region', () => {
+    renderPanel(CERTIFIED, 'ja')
+
+    const region = screen.getByRole('region', {
+      name: '現在の実行環境で意味論的最小コア認証',
+    })
+    expect(region.textContent).toContain('二制約構成1件')
+    expect(region.textContent).toContain('二制約代数縮退1件')
+  })
+
+  it('fails closed instead of overstating forged in-process witness counts', () => {
+    renderPanel({
+      ...CERTIFIED,
+      current_assignment_witness_count: 2,
+    }, 'en')
+
+    const region = screen.getByRole('region', {
+      name: 'Current-runtime semantic minimal-core certification',
+    })
+    expect(region.textContent).toContain(
+      'does not contain semantic minimal-core certification information',
+    )
+    expect(region.textContent).not.toContain(
+      'Certified a semantic minimal core',
+    )
+    expect(region.textContent).not.toContain('3 deletion witnesses')
   })
 
   it('does not promote an Unknown direct core to semantic minimality', () => {

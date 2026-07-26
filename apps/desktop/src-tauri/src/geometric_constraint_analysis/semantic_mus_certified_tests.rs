@@ -49,6 +49,8 @@ fn certified_outcome_uses_one_semantic_call_for_both_native_dtos() {
             current_assignment_witness_count: 1,
             axis_exactification_witness_count: 2,
             single_constraint_constructive_witness_count: 0,
+            pair_constraint_constructive_witness_count: 0,
+            pair_constraint_algebraic_witness_count: 0,
             authorizes_project_mutation: false,
             replayable_across_runtimes: false,
         },
@@ -101,6 +103,14 @@ fn certified_outcome_uses_one_semantic_call_for_both_native_dtos() {
     assert_eq!(encoded["semantic_mus"]["replayable_across_runtimes"], false,);
     assert_eq!(
         encoded["semantic_mus"]["single_constraint_constructive_witness_count"],
+        0,
+    );
+    assert_eq!(
+        encoded["semantic_mus"]["pair_constraint_constructive_witness_count"],
+        0,
+    );
+    assert_eq!(
+        encoded["semantic_mus"]["pair_constraint_algebraic_witness_count"],
         0,
     );
     assert_eq!(fixture.pattern, pattern_before);
@@ -172,6 +182,8 @@ fn different_fixed_lengths_are_promoted_by_the_constructive_singleton_witness() 
             current_assignment_witness_count: 1,
             axis_exactification_witness_count: 0,
             single_constraint_constructive_witness_count: 1,
+            pair_constraint_constructive_witness_count: 0,
+            pair_constraint_algebraic_witness_count: 0,
             authorizes_project_mutation: false,
             replayable_across_runtimes: false,
             ..

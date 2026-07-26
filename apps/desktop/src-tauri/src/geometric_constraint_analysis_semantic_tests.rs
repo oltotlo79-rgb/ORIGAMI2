@@ -126,3 +126,6 @@ mod certified_tests;
 
 #[path = "geometric_constraint_analysis/semantic_mus_mapping_tests.rs"]
 mod mapping_tests;
+
+#[path = "geometric_constraint_analysis/semantic_mus_algebraic_tests.rs"]
+mod algebraic_tests;

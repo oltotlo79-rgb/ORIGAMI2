@@ -63,11 +63,15 @@ test('accepts and deeply freezes the exact certified semantic-MUS DTO', () => {
   assert.deepEqual(normalized, raw)
   assert.deepEqual(raw, before)
   assertDeepFrozen(normalized)
-  assert.equal(
+  assert.deepEqual(
     normalized?.semantic_mus?.status === 'certified'
-      ? normalized.semantic_mus.single_constraint_constructive_witness_count
+      ? [
+          normalized.semantic_mus
+            .pair_constraint_constructive_witness_count,
+          normalized.semantic_mus.pair_constraint_algebraic_witness_count,
+        ]
       : null,
-    1,
+    [0, 0],
   )
   assert.equal(MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_CHECKS, 16)
   assert.equal(MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK, 20_000_000)
@@ -105,6 +109,8 @@ test('certified semantic-MUS parsing rejects malformed evidence and cross-check 
     { ...certified(), current_assignment_witness_count: -1 },
     { ...certified(), axis_exactification_witness_count: 3 },
     { ...certified(), single_constraint_constructive_witness_count: -0 },
+    { ...certified(), pair_constraint_constructive_witness_count: -1 },
+    { ...certified(), pair_constraint_algebraic_witness_count: 0.5 },
     {
       ...certified(),
       current_assignment_witness_count: 1,

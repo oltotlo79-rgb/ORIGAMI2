@@ -16,6 +16,9 @@ import {
   type GeometricConstraintCreationFieldLabel,
 } from '../lib/geometricConstraintPanelText.ts'
 import {
+  buildGeometricConstraintSemanticMusCertifiedViewModel,
+} from '../lib/geometricConstraintSemanticMusViewModel.ts'
+import {
   formatLocalizedText,
   localeStore,
   selectLocalizedText,
@@ -848,22 +851,28 @@ function SemanticMusStatus({
   if (result === null) {
     detail = selectLocalizedText(locale, TEXT.semanticMusLegacyUnavailable)
   } else if (result.status === 'certified') {
-    detail = formatLocalizedText(
-      locale,
-      TEXT.semanticMusCertified,
-      {
-        count: result.constraint_count,
-        calls: result.direct_oracle_calls,
-        checks: result.deletion_witness_checks,
-        work: result.deletion_witness_work,
-        current: result.current_assignment_witness_count,
-        axis: result.axis_exactification_witness_count,
-        constructive: result.single_constraint_constructive_witness_count,
-        ids: result.constraint_ids
-          .map((id) => shortConstraintId(id, locale))
-          .join(selectLocalizedText(locale, TEXT.idListSeparator)),
-      },
-    )
+    const view =
+      buildGeometricConstraintSemanticMusCertifiedViewModel(result)
+    detail = view === null
+      ? selectLocalizedText(locale, TEXT.semanticMusLegacyUnavailable)
+      : formatLocalizedText(
+          locale,
+          TEXT.semanticMusCertified,
+          {
+            count: view.constraintCount,
+            calls: view.directOracleCalls,
+            checks: view.deletionWitnessChecks,
+            work: view.deletionWitnessWork,
+            current: view.currentAssignmentWitnessCount,
+            axis: view.axisExactificationWitnessCount,
+            constructive: view.singleConstraintConstructiveWitnessCount,
+            pairConstructive: view.pairConstraintConstructiveWitnessCount,
+            pairAlgebraic: view.pairConstraintAlgebraicWitnessCount,
+            ids: view.constraintIds
+              .map((id) => shortConstraintId(id, locale))
+              .join(selectLocalizedText(locale, TEXT.idListSeparator)),
+          },
+        )
   } else {
     const reason = selectLocalizedText(
       locale,

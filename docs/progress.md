@@ -10,6 +10,8 @@
 
 反映前baseはcommit`45dfae5d2e66ee19f04d405bb7e9642c1237a950`の[CI #685](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/30183421620)（run ID `30183421620`、attempt 1）で、同じ7 jobの成功と4 artifactの生成まで検証した。これは反映前codeの基準証拠であり、81.96%を発効するCIは反映head自身に対して別途同じ条件を満たす必要がある。
 
+正本発効監査は2026-07-26に完了した。remote `main`の反映head `f9913149b69ad1bc83d89681aa9309b986063cc5`とexactに一致する[CI #686](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/30185019151)（run ID `30185019151`、attempt 1）は、2026-07-26T02:43:43Z開始・03:27:47Z完了で必須7 jobがすべて`completed / success`となり、同じrunの必須4 artifactも生成済みかつ`expired=false`だった。別head・別attempt・失敗・取消の混在がないため、81.96%（表示82.0%）はこの監査時点で発効済みである。
+
 完成率は画面数や実装行数ではなく、折り紙作家向けMUST 87件と、その後に作る初心者向け自動設計FUTURE 14件、品質検証、Windows正式版とmacOS自動ビルド・CI検証を合わせた全製品ビジョンの総工数に対する暫定概算である。各領域の進捗値は要件件数の単純比ではなく、利用者がUIから実行できる範囲を第三者監査とコードで見積もった概数である。UI未接続の解析基盤、テスト追加、内部品質改善は各節へ成果として記録するが、それだけでは機能完成率へ加算しない。MUST 87件の個別状態は`docs/requirements-status.md`で別に追跡する。
 
 下表は2026-07-23監査で旧79.32%の領域入力を全件再評価し、反映前base CIを通過した81.96%の発効対象値である。監査では「3D 75%・制約85%・初心者向け自動設計35%」へ過大計上を是正する一方、「保存94%・経路78%・折り手順92%」の利用者経路を再評価した。根拠と二重計上監査は`docs/progress-reassessment-pending-ci-2026-07-22.md`に記録する。
@@ -24,7 +26,7 @@
 | プロジェクト・保存・履歴 | 8% | 94% | 7.52% | strictな`.ori2`・展開folder・recovery、認証済みUndo/Redo、autosave authorityを実装。Windowsオーナー実機障害matrixと正式schema compatibility policyを残す |
 | 2D展開図エディター | 15% | 100% | 15.00% | 基本編集、9種スナップ、5線種、layer文書・edge assignment・管理UI、表示・lock・透明度、注釈・下絵object、面属性編集、複数選択の移動・複製・任意軸対称編集を保存・復旧・履歴・native IPC・Canvasへ接続 |
 | 数式・幾何制約 | 9% | 85% | 7.65% | 数式入力、11種制約、有界solver、原子的Apply、保存・履歴・10,000件境界を実装。直接矛盾certificateは限定familyで、一般充足可能性・一般MUSは未完成 |
-| 3D折り・紙厚・衝突 | 17% | 75% | 12.75% | Tree・限定cycle・限定正厚のproof、preview、原子的Apply、層順viewerを実装。一般正厚・一般多面・任意self-contact・一般物理motionは未証明 |
+| 3D折り・紙厚・衝突 | 17% | 75% | 12.75% | Tree・限定cycle・限定正厚のproof、preview、原子的Apply、限定層順viewerを実装。一般正厚・一般多面・任意self-contact・一般物理motionは未証明 |
 | 折り可能性・経路探索 | 18% | 78% | 14.04% | dyadic 3/5/9、Tree/cycle issuer proof、preview、atomic Applyを実装。任意non-tree・dense・multi-cycleの一般経路と安全なcycle mutationを残す |
 | 折り手順・PDF | 10% | 92% | 9.20% | named compiler、認証済みpreview/Apply、保存、PDF/SVG ZIPを実装。未証明技法の連続3D certificate付きcompilerを残す |
 | 入出力・互換性 | 5% | 100% | 5.00% | `.ori2`、FOLD/SVG取込・展開図/手順/3D書出し、PBR・表裏texture、複数hinge watertight union、animation、FOLD 3D複数frame、正厚manifold reportを実装。独立reader、Khronos validator/Sample Viewer、Blender LTS、PrusaSlicer実機受入をCIへ固定 |

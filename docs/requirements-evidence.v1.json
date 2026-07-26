@@ -1856,7 +1856,7 @@
         "certified bounded dyadic graph/cycle and positive-thickness tree paths with fail-closed apply only"
       ],
       "missingAcceptance": [
-        "arbitrary-pose positive-thickness multi-hinge continuous paths, general multi-layer transport and closure, and a dedicated post-apply layer-order viewer"
+        "arbitrary-pose positive-thickness multi-hinge continuous paths, general multi-layer transport and closure, and a general non-flat post-apply layer-order viewer"
       ]
     },
     {

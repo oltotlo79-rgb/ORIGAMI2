@@ -10,6 +10,8 @@
 
 本書の81.96%は`docs/progress.md`の発効規則に従う条件付き正本候補である。81.96%重み表と発効規則を含む反映head自身のCI条件が成立するまでは79.32%（表示79.3%）が正本であり、成立時に追加commitなしで81.96%（表示82.0%）が発効する。
 
+2026-07-26の正本発効監査で、反映head `f9913149b69ad1bc83d89681aa9309b986063cc5`に対するCI #686が本書の全条件を満たしたため、81.96%（表示82.0%）は発効済みである。
+
 ## 統合後の領域別試算
 
 | 領域 | 全体比率 | 正本値 | 提案値 | 提案後の全体寄与 | 変更根拠 |
@@ -69,10 +71,10 @@
 
 同じrunでは、発効監査時に次の4 artifactが生成済みで`expired=false`だった。retention期限は2026-08-02であり、この監査記録は期限後の自動削除によって失効しない。
 
-- `ORIGAMI2-macos-app-30183421620`（artifact `8626588537`、23,155,167 bytes、SHA-256 `9007fa0cdd97002464e8cf27271295710795b67a20bcfdf8dcc6f1704cd8a5a8`）
-- `ORIGAMI2-windows-nsis-30183421620`（artifact `8626643864`、17,007,506 bytes、SHA-256 `ba5e9f47229fb7a73aec9857f82fb73d1814ee1b5123b1b3aea5a806956ba54b`）
-- `rustsec-warning-review`（artifact `8626320166`、1,265 bytes、SHA-256 `a1fd782353a216f524c0de6de09f229d913cdc460d43244bf7082e9421bdf79d`）
-- `sample-viewer-runtime-log`（artifact `8626360815`、300 bytes、SHA-256 `c9be8d6c63391d25e34381ccfd16ba6d7366f770a56add8e1f1e989f1c9e823a`）
+- `ORIGAMI2-macos-app-30183421620`（artifact `8626588537`、23,155,167 bytes、GitHub artifact archive digest SHA-256 `9007fa0cdd97002464e8cf27271295710795b67a20bcfdf8dcc6f1704cd8a5a8`）
+- `ORIGAMI2-windows-nsis-30183421620`（artifact `8626643864`、17,007,506 bytes、GitHub artifact archive digest SHA-256 `ba5e9f47229fb7a73aec9857f82fb73d1814ee1b5123b1b3aea5a806956ba54b`）
+- `rustsec-warning-review`（artifact `8626320166`、1,265 bytes、GitHub artifact archive digest SHA-256 `a1fd782353a216f524c0de6de09f229d913cdc460d43244bf7082e9421bdf79d`）
+- `sample-viewer-runtime-log`（artifact `8626360815`、300 bytes、GitHub artifact archive digest SHA-256 `c9be8d6c63391d25e34381ccfd16ba6d7366f770a56add8e1f1e989f1c9e823a`）
 
 このrunは反映前codeのbase証拠であり、81.96%自体を発効しない。
 
@@ -89,8 +91,30 @@
 
 queued / in-progress、job未生成、success以外、artifact欠落のいずれかがある間は79.32%（表示79.3%）を維持する。失敗したheadは発効せず、後続headはそのexact `head_sha`で全条件を満たす必要がある。一度記録した発効はartifact retention期限後も失効せず、green後の文書追記commitを要求しない。
 
+## 反映headの正本発効証拠
+
+remote `main`の反映head `f9913149b69ad1bc83d89681aa9309b986063cc5`に対する[CI #686](https://github.com/oltotlo79-rgb/ORIGAMI2/actions/runs/30185019151)は、run ID `30185019151`、attempt 1、2026-07-26T02:43:43Z開始・03:27:47Z完了で、次の7 jobがすべて`completed / success`となった。
+
+- `dependency-advisory-audit`（job `89748013459`）
+- `frontend`（job `89748013457`）
+- `slicer-acceptance`（job `89748013419`）
+- `rust (macos-latest)`（job `89748013444`）
+- `rust (windows-latest)`（job `89748013442`）
+- `macos-bundle`（job `89750495557`）
+- `windows-bundle`（job `89750495528`）
+
+同じrunの次の4 artifactは発効監査時にすべて`expired=false`だった。
+
+- `ORIGAMI2-macos-app-30185019151`（artifact `8627063844`、23,155,438 bytes、GitHub artifact archive digest SHA-256 `dc1dbd7b061b9ff654f3491e7f2b36c4551b5a05fd67ce925cb3543502709ca3`）
+- `ORIGAMI2-windows-nsis-30185019151`（artifact `8627108329`、16,998,864 bytes、GitHub artifact archive digest SHA-256 `195ddd7f7a1b795315bff01a193de9c3c0f6e3c4bd9f309e349408c26ca2d609`）
+- `rustsec-warning-review`（artifact `8626759991`、1,265 bytes、GitHub artifact archive digest SHA-256 `fdd38544fae8617fa5c95b1efc71659d6841d92a1c69f2314956c9c06965abc5`）
+- `sample-viewer-runtime-log`（artifact `8626796135`、300 bytes、GitHub artifact archive digest SHA-256 `d1057fb16c46a12d4389bc1bb39fd089cf32a95ead5d74408d184bd89a354557`）
+
+run head、remote head、attempt、7 job、4 artifactをexactに照合し、別head・別attempt・失敗・取消の混在はなかった。したがって本書の発効条件は成立し、81.96%（表示82.0%）を正本として採用した。
+
 ## 81.96%時点でも残る未完
 
+- EDT-009の全制約種に対するsoundな一般充足可能性判定、一般矛盾原因、一般最小不能部分集合。
 - 任意の非tree・dense・multi-cycle topologyに対する一般経路探索と安全なcycle mutation。
 - 任意角度・分岐・self-contactを含む一般正厚continuous motion、衝突回避、層順証明。
 - 摩擦、弾性、塑性、圧縮、手指把持を含む一般物理motion。

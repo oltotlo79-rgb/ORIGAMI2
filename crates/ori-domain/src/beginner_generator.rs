@@ -955,7 +955,7 @@ pub fn generate_beginner_plans_v1(
     } else {
         EdgeKind::Mountain
     };
-    let template = match target_category {
+    let mut template = match target_category {
         BeginnerTargetCategoryV1::CustomObject => {
             let tree_ratios = bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)
                 .ok_or(BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate)?;
@@ -1614,6 +1614,20 @@ pub fn generate_beginner_plans_v1(
             }
         }
     };
+    if template.kind == BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
+        let error = match target_category {
+            BeginnerTargetCategoryV1::Insect => BeginnerGeneratorErrorV1::UnsupportedInsectTemplate,
+            BeginnerTargetCategoryV1::Animal | BeginnerTargetCategoryV1::CustomObject => {
+                BeginnerGeneratorErrorV1::UnsupportedAnimalTemplate
+            }
+        };
+        template.skeleton_segments =
+            canonical_bounded_tree_segments(&constraints.skeleton_segments)
+                .ok_or(error)?
+                .into_iter()
+                .cloned()
+                .collect();
+    }
     if target_category == BeginnerTargetCategoryV1::CustomObject {
         return Ok(vec![template]);
     }
@@ -1644,6 +1658,12 @@ pub fn generate_beginner_plans_v1(
         }
         BeginnerTargetCategoryV1::CustomObject => unreachable!("returned above"),
     };
+    let variant_skeleton_segments =
+        if template.kind == BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
+            template.skeleton_segments.clone()
+        } else {
+            constraints.skeleton_segments.clone()
+        };
     let mut plans = vec![template];
     plans.extend(
         variants
@@ -1690,7 +1710,7 @@ pub fn generate_beginner_plans_v1(
                     },
                     instruction_codes: vec![instruction.to_owned()],
                     target_parts: constraints.target_parts.clone(),
-                    skeleton_segments: constraints.skeleton_segments.clone(),
+                    skeleton_segments: variant_skeleton_segments.clone(),
                     target_asset: constraints.target_asset,
                     semantic_landmark_provenance: None,
                 }
@@ -2101,8 +2121,8 @@ fn append_bounded_radial_tree_graph(
     } else {
         namespace
     };
-    let segments = &constraints.skeleton_segments;
-    let ratios = bounded_tree_skeleton_length_ratios(segments)?;
+    let ratios = bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)?;
+    let segments = canonical_bounded_tree_segments(&constraints.skeleton_segments)?;
     let point = |value: BeginnerSkeletonPointV1| (value.x_tenths_mm, value.y_tenths_mm);
     let orient = |a: (i32, i32), b: (i32, i32), c: (i32, i32)| {
         (i128::from(b.0) - i128::from(a.0)) * (i128::from(c.1) - i128::from(a.1))
@@ -2137,7 +2157,7 @@ fn append_bounded_radial_tree_graph(
         }
     }
     let mut degree = std::collections::BTreeMap::<(i32, i32), usize>::new();
-    for segment in segments {
+    for segment in &segments {
         *degree.entry(point(segment.start)).or_default() += 1;
         *degree.entry(point(segment.end)).or_default() += 1;
     }
@@ -2150,7 +2170,8 @@ fn append_bounded_radial_tree_graph(
     {
         return None;
     }
-    let (source_min_x, source_max_x, source_min_y, source_max_y) = skeleton_bounds(segments)?;
+    let (source_min_x, source_max_x, source_min_y, source_max_y) =
+        skeleton_bounds(&constraints.skeleton_segments)?;
     let source_width = f64::from(source_max_x.checked_sub(source_min_x)?);
     let source_height = f64::from(source_max_y.checked_sub(source_min_y)?);
     if source_width <= 0.0 || source_height <= 0.0 || max_x <= min_x || max_y <= min_y {
@@ -2221,16 +2242,26 @@ fn append_bounded_radial_tree_graph(
         leaf_count,
         segments.len()
     ));
+    plan.skeleton_segments = segments.into_iter().cloned().collect();
     Some(plan)
 }
 
-fn bounded_tree_skeleton_length_ratios(segments: &[BeginnerSkeletonSegmentV1]) -> Option<Vec<u32>> {
-    if segments.is_empty()
-        || segments.len() > MAX_BEGINNER_GENERIC_TREE_BARS_V1
-        || segments.windows(2).any(|pair| pair[0].id >= pair[1].id)
-    {
+fn canonical_bounded_tree_segments(
+    segments: &[BeginnerSkeletonSegmentV1],
+) -> Option<Vec<&BeginnerSkeletonSegmentV1>> {
+    if segments.is_empty() || segments.len() > MAX_BEGINNER_GENERIC_TREE_BARS_V1 {
         return None;
     }
+    let mut canonical = segments.iter().collect::<Vec<_>>();
+    canonical.sort_unstable_by_key(|segment| segment.id);
+    if canonical.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        return None;
+    }
+    Some(canonical)
+}
+
+fn bounded_tree_skeleton_length_ratios(segments: &[BeginnerSkeletonSegmentV1]) -> Option<Vec<u32>> {
+    let segments = canonical_bounded_tree_segments(segments)?;
     let point = |point: BeginnerSkeletonPointV1| (point.x_tenths_mm, point.y_tenths_mm);
     let points = segments
         .iter()
@@ -2246,7 +2277,7 @@ fn bounded_tree_skeleton_length_ratios(segments: &[BeginnerSkeletonSegmentV1]) -
     let mut reached = std::collections::BTreeSet::from([point(segments[0].start)]);
     while reached.len() < points.len() {
         let before = reached.len();
-        for segment in segments {
+        for segment in &segments {
             let start = point(segment.start);
             let end = point(segment.end);
             if reached.contains(&start) {
@@ -2722,10 +2753,19 @@ mod tests {
             bounded_tree_skeleton_length_ratios(&sixteen).unwrap().len(),
             16
         );
+        let mut reversed_sixteen = sixteen.clone();
+        reversed_sixteen.reverse();
+        assert_eq!(
+            bounded_tree_skeleton_length_ratios(&reversed_sixteen),
+            bounded_tree_skeleton_length_ratios(&sixteen)
+        );
         let seventeen = (0..17)
             .map(|id| bar(id, (id as i32, 0), (id as i32 + 1, 0)))
             .collect::<Vec<_>>();
         assert!(bounded_tree_skeleton_length_ratios(&seventeen).is_none());
+        let mut reversed_seventeen = seventeen;
+        reversed_seventeen.reverse();
+        assert!(bounded_tree_skeleton_length_ratios(&reversed_seventeen).is_none());
 
         let crossing = vec![
             bar(0, (-10, 0), (10, 0)),
@@ -2762,6 +2802,105 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn generic_tree_segment_order_is_canonical_and_sorted_fixture_stays_bit_exact() {
+        let bar = |id: u16, start: (i32, i32), end: (i32, i32)| BeginnerSkeletonSegmentV1 {
+            id,
+            start: BeginnerSkeletonPointV1 {
+                x_tenths_mm: start.0,
+                y_tenths_mm: start.1,
+            },
+            end: BeginnerSkeletonPointV1 {
+                x_tenths_mm: end.0,
+                y_tenths_mm: end.1,
+            },
+            thickness_tenths_mm: 1,
+        };
+        let constraints = BeginnerGenerationConstraintsV1 {
+            skeleton_segments: vec![
+                bar(10, (0, 0), (10, 0)),
+                bar(20, (10, 0), (10, 20)),
+                bar(30, (10, 20), (30, 20)),
+                bar(40, (30, 20), (30, 50)),
+            ],
+            protrusions: vec![bilateral_protrusion(1, 2)],
+            ..BeginnerGenerationConstraintsV1::default()
+        };
+        let namespace = ProjectId::schema_namespace([
+            0x01, 0x90, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x09, 0x91,
+        ]);
+        let generate = |constraints: &BeginnerGenerationConstraintsV1| {
+            let ratios = bounded_tree_skeleton_length_ratios(&constraints.skeleton_segments)?;
+            let plan = BeginnerGeneratedPlanV1 {
+                schema_version: 1,
+                kind: BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase,
+                crease_pattern: CreasePattern {
+                    vertices: Vec::new(),
+                    edges: Vec::new(),
+                },
+                instruction_codes: vec![format!(
+                    "bounded_tree_river_axial_v1:{}",
+                    ratios
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )],
+                target_parts: Vec::new(),
+                skeleton_segments: constraints.skeleton_segments.clone(),
+                target_asset: None,
+                semantic_landmark_provenance: None,
+            };
+            append_bounded_radial_tree_graph(plan, constraints, namespace, 0.0, 100.0, 0.0, 100.0)
+        };
+        let generated = generate(&constraints).expect("sorted fixture");
+        assert_eq!(
+            generated
+                .crease_pattern
+                .edges
+                .iter()
+                .map(|edge| edge.kind)
+                .collect::<Vec<_>>(),
+            [
+                EdgeKind::Valley,
+                EdgeKind::Mountain,
+                EdgeKind::Valley,
+                EdgeKind::Mountain,
+            ]
+        );
+        assert_eq!(
+            generated.instruction_codes,
+            [
+                "bounded_tree_river_axial_v1:1000000,4000000,4000000,9000000",
+                "bounded_tree_branch_topology_v1:nodes=5:leaves=2:bars=4",
+            ]
+        );
+        let json = serde_json::to_string(&generated).unwrap();
+        assert_eq!(
+            <[u8; 32]>::from(Sha256::digest(json.as_bytes())),
+            [
+                0xbc, 0x33, 0x6f, 0x7c, 0xbf, 0xa6, 0xf4, 0x17, 0x86, 0x31, 0x9f, 0x5c, 0x99, 0xdd,
+                0xde, 0x02, 0x24, 0xc7, 0xe6, 0xf6, 0x86, 0xbb, 0xc4, 0xaf, 0x54, 0x22, 0xa1, 0xb8,
+                0x18, 0x75, 0x05, 0xee,
+            ],
+            "the previously accepted sorted plan JSON, including edge IDs, must stay bit-exact"
+        );
+
+        let mut reversed = constraints.clone();
+        reversed.skeleton_segments.reverse();
+        assert_eq!(generate(&reversed), Some(generated.clone()));
+        let mut shuffled = constraints.clone();
+        shuffled.skeleton_segments = [2, 0, 3, 1]
+            .map(|index| constraints.skeleton_segments[index])
+            .to_vec();
+        assert_eq!(generate(&shuffled), Some(generated));
+
+        let mut duplicate = constraints;
+        duplicate.skeleton_segments[1].id = duplicate.skeleton_segments[0].id;
+        assert!(generate(&duplicate).is_none());
     }
 
     #[test]
@@ -3050,6 +3189,20 @@ mod tests {
         );
         assert_eq!(generic_plans[0].crease_pattern.vertices.len(), 13);
         assert_eq!(generic_plans[0].crease_pattern.edges.len(), 11);
+        let mut reversed_skeleton = generic.clone();
+        reversed_skeleton.skeleton_segments.reverse();
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &reversed_skeleton).unwrap(),
+            generic_plans
+        );
+        let mut shuffled_skeleton = generic.clone();
+        shuffled_skeleton.skeleton_segments = [2, 0, 1]
+            .map(|index| generic.skeleton_segments[index])
+            .to_vec();
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &shuffled_skeleton).unwrap(),
+            generic_plans
+        );
         let mut locally_outlined = generic.clone();
         locally_outlined.protrusions[0].local_outline_tenths_mm =
             Some(vec![[-2, -1], [0, -2], [2, -1], [1, 2], [-1, 2]]);

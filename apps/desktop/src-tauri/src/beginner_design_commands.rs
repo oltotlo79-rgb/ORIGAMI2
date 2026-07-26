@@ -4019,24 +4019,25 @@ pub(super) fn apply_grid_plan_document(
         } else {
             return Err("grid_candidate_tree_orientation_provenance_invalid".to_owned());
         };
+        let mut segments = beginner_design_profile
+            .generation_constraints
+            .skeleton_segments
+            .iter()
+            .collect::<Vec<_>>();
+        segments.sort_unstable_by_key(|segment| segment.id);
+        if segments.is_empty() || segments.windows(2).any(|pair| pair[0].id == pair[1].id) {
+            return Err("grid_candidate_tree_provenance_invalid".to_owned());
+        }
         let tree_topology_sha256: [u8; 32] = sha2::Sha256::digest(
-            serde_json::to_vec(
-                &beginner_design_profile
-                    .generation_constraints
-                    .skeleton_segments,
-            )
-            .map_err(|_| "grid_candidate_tree_provenance_invalid")?,
+            serde_json::to_vec(&segments).map_err(|_| "grid_candidate_tree_provenance_invalid")?,
         )
         .into();
-        let segments = &beginner_design_profile
-            .generation_constraints
-            .skeleton_segments;
         let point =
             |point: ori_domain::BeginnerSkeletonPointV1| (point.x_tenths_mm, point.y_tenths_mm);
         let mut depths = std::collections::BTreeMap::from([(point(segments[0].start), 0_u8)]);
         while depths.len() <= segments.len() {
             let before = depths.len();
-            for segment in segments {
+            for segment in &segments {
                 let start = point(segment.start);
                 let end = point(segment.end);
                 match (depths.get(&start).copied(), depths.get(&end).copied()) {

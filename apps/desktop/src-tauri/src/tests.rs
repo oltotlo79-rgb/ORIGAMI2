@@ -1756,6 +1756,111 @@ fn generic_mixed_target_grid_apply_undo_redo_and_archive_round_trip() {
         beginner_contour_placement_witness(&profile.generation_constraints, &plan).unwrap();
     assert!(outline_free_witness.local_bindings.is_empty());
     assert_eq!(outline_free_witness.generic_feature_bindings.len(), 2);
+    let baseline_assessment = assess_beginner_generated_plan_with_deadline(
+        project.project_id,
+        project.editor.paper(),
+        project.editor.pattern(),
+        &plan,
+        None,
+        std::time::Instant::now() + std::time::Duration::from_millis(750),
+    );
+    let mut shuffled_profile = profile.clone();
+    let sorted_segments = profile.generation_constraints.skeleton_segments.clone();
+    shuffled_profile.generation_constraints.skeleton_segments = [2, 0, 1]
+        .map(|index| sorted_segments[index].clone())
+        .to_vec();
+    let shuffled_plan = grid_template_plan(
+        project.project_id,
+        project.editor.pattern(),
+        &project.editor.paper().boundary_vertices,
+        &shuffled_profile,
+        point,
+    )
+    .unwrap()
+    .into_iter()
+    .find(|candidate| {
+        candidate.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase
+    })
+    .unwrap();
+    assert_eq!(
+        shuffled_plan, plan,
+        "generic plan geometry, edge IDs, M/V assignments, instructions, and saved skeleton must be canonical"
+    );
+    let shuffled_witness = beginner_contour_placement_witness(
+        &shuffled_profile.generation_constraints,
+        &shuffled_plan,
+    )
+    .expect("canonical graph-edge tail must remain consumable by the native witness");
+    assert_eq!(
+        shuffled_witness
+            .generic_feature_bindings
+            .iter()
+            .map(|binding| (
+                binding.protrusion_id,
+                binding.crease_start,
+                binding.crease_authority_sha256,
+            ))
+            .collect::<Vec<_>>(),
+        outline_free_witness
+            .generic_feature_bindings
+            .iter()
+            .map(|binding| (
+                binding.protrusion_id,
+                binding.crease_start,
+                binding.crease_authority_sha256,
+            ))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        shuffled_witness
+            .skeleton_branch_bindings
+            .iter()
+            .map(|binding| (
+                binding.segment_id,
+                binding.parent_segment_id,
+                binding.parent_endpoint,
+                binding.child_endpoint,
+                binding.generated_feature_ids.clone(),
+            ))
+            .collect::<Vec<_>>(),
+        outline_free_witness
+            .skeleton_branch_bindings
+            .iter()
+            .map(|binding| (
+                binding.segment_id,
+                binding.parent_segment_id,
+                binding.parent_endpoint,
+                binding.child_endpoint,
+                binding.generated_feature_ids.clone(),
+            ))
+            .collect::<Vec<_>>(),
+    );
+    let shuffled_assessment = assess_beginner_generated_plan_with_deadline(
+        project.project_id,
+        project.editor.paper(),
+        project.editor.pattern(),
+        &shuffled_plan,
+        None,
+        std::time::Instant::now() + std::time::Duration::from_millis(750),
+    );
+    assert_eq!(
+        (
+            shuffled_assessment.kind,
+            shuffled_assessment.expected_candidate_edge_id,
+            shuffled_assessment.proof_scope,
+            shuffled_assessment.apply_allowed,
+            shuffled_assessment.reason,
+        ),
+        (
+            baseline_assessment.kind,
+            baseline_assessment.expected_candidate_edge_id,
+            baseline_assessment.proof_scope,
+            baseline_assessment.apply_allowed,
+            baseline_assessment.reason,
+        ),
+    );
+    profile = shuffled_profile;
+    let plan = shuffled_plan;
     let project_id = project.project_id;
     let instance_id = project.instance_id;
     let revision = project.editor.revision();
@@ -1764,7 +1869,7 @@ fn generic_mixed_target_grid_apply_undo_redo_and_archive_round_trip() {
         project_id,
         revision,
         Command::UpdateBeginnerDesignProfile {
-            profile: Box::new(profile),
+            profile: Box::new(profile.clone()),
         },
     )
     .unwrap();
@@ -1782,6 +1887,42 @@ fn generic_mixed_target_grid_apply_undo_redo_and_archive_round_trip() {
             .beginner_design_profile()
             .generation_provenance
             .is_some()
+    );
+    let generic_tree = project
+        .editor
+        .beginner_design_profile()
+        .generation_provenance
+        .as_ref()
+        .and_then(|provenance| provenance.generic_tree.as_ref())
+        .expect("generic apply must persist read-only canonical tree provenance");
+    let mut canonical_segments = profile.generation_constraints.skeleton_segments.clone();
+    canonical_segments.sort_unstable_by_key(|segment| segment.id);
+    assert_eq!(
+        generic_tree.tree_topology_sha256,
+        <[u8; 32]>::from(sha2::Sha256::digest(
+            serde_json::to_vec(&canonical_segments).unwrap()
+        ))
+    );
+    assert_eq!(
+        generic_tree.normalized_length_ratios,
+        [1_000_000, 1_000_000, 2_000_000]
+    );
+    let mut proposal_assignments = generic_tree
+        .instruction_proposal
+        .as_ref()
+        .expect("generic tree instruction proposal")
+        .steps
+        .iter()
+        .map(|step| (step.canonical_crease_id.as_str(), step.assignment.as_str()))
+        .collect::<Vec<_>>();
+    proposal_assignments.sort_unstable();
+    assert_eq!(
+        proposal_assignments,
+        [
+            ("tree-river-0001", "valley"),
+            ("tree-river-0002", "mountain"),
+            ("tree-river-0003", "valley"),
+        ]
     );
     assert!(
         apply_grid_plan_document(

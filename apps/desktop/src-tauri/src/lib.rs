@@ -41,6 +41,7 @@ mod recovery;
 mod runtime_update;
 mod save_path;
 mod stacked_fold_even_cycle_candidates;
+mod stacked_fold_live_hinge_registry;
 mod stacked_fold_read;
 mod stacked_fold_transaction;
 mod svg_import_commands;
@@ -268,11 +269,12 @@ use recovery::{
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use stacked_fold_even_cycle_candidates::read_even_cycle_candidates_v1;
+use stacked_fold_live_hinge_registry::read_live_hinge_registry_v1;
 use stacked_fold_read::{
     DyadicPathPreviewState, apply_dyadic_pose_path_preview_v1, cancel_current_stacked_fold_read_v1,
     cancel_dyadic_pose_path_preview_v1, mint_dyadic_pose_path_preview_v1,
     propose_current_cycle_pose_v1, propose_current_stacked_fold_read,
-    read_bounded_dyadic_pose_graph_v1, read_live_hinge_registry_v1,
+    read_bounded_dyadic_pose_graph_v1,
 };
 use stacked_fold_transaction::{
     apply_named_accordion_fold_transaction, apply_named_book_fold_transaction,

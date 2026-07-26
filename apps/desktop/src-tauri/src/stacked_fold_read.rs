@@ -53,6 +53,11 @@ use tauri::{AppHandle, Emitter, State};
 use super::stacked_fold_even_cycle_candidates::{
     EvenCycleCandidatesRequestV1, read_even_cycle_candidates_inner_v1,
 };
+use super::stacked_fold_live_hinge_registry::{LiveGraphHingeAngleDto, live_hinge_registry};
+#[cfg(test)]
+use super::stacked_fold_live_hinge_registry::{
+    LiveHingeRegistryRequestV1, read_live_hinge_registry_inner,
+};
 use super::{
     AppState,
     applied_pose::{
@@ -69,15 +74,15 @@ use super::{
 
 pub(super) const UNAVAILABLE_MESSAGE: &str =
     "The current pose and certified layer order cannot prepare a stacked-fold proposal.";
-const INVALID_REQUEST_MESSAGE: &str = "The stacked-fold line request is invalid.";
-const ANALYSIS_FAILED_MESSAGE: &str =
+pub(super) const INVALID_REQUEST_MESSAGE: &str = "The stacked-fold line request is invalid.";
+pub(super) const ANALYSIS_FAILED_MESSAGE: &str =
     "The stacked-fold proposal is unsupported or could not be certified.";
 const CYCLE_NONCLOSING_MESSAGE: &str = "stacked_fold_cycle_nonclosing";
 const CYCLE_PATH_UNCERTIFIED_MESSAGE: &str = "stacked_fold_cycle_path_uncertified";
 const CYCLE_PATH_UNSUPPORTED_MESSAGE: &str = "stacked_fold_cycle_path_unsupported";
 const CYCLE_PATH_RESOURCE_MESSAGE: &str = "stacked_fold_cycle_path_resource_limit";
 const CYCLE_PATH_NO_CERTIFIED_PATH_MESSAGE: &str = "stacked_fold_cycle_path_no_certified_path";
-const BUSY_MESSAGE: &str = "Another native pose analysis is already running.";
+pub(super) const BUSY_MESSAGE: &str = "Another native pose analysis is already running.";
 pub(super) const STALE_MESSAGE: &str =
     "The project, current pose, or certified layer order changed during analysis.";
 const CANCELLED_MESSAGE: &str = "stacked_fold_cycle_path_cancelled";
@@ -136,7 +141,7 @@ pub(super) fn cancel_current_stacked_fold_read_v1() -> Result<(), String> {
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum FixedSideRequest {
+pub(super) enum FixedSideRequest {
     Left,
     Right,
 }
@@ -152,7 +157,7 @@ impl From<FixedSideRequest> for StackedFoldFixedSideV1 {
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum RotationDirectionRequest {
+pub(super) enum RotationDirectionRequest {
     Positive,
     Negative,
 }
@@ -207,32 +212,6 @@ struct CurrentCyclePoseProgressDtoV1 {
     status: &'static str,
     completed_work: usize,
     total_work: usize,
-    authorizes_project_mutation: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct LiveHingeRegistryRequestV1 {
-    expected_project_instance_id: ProjectId,
-    expected_project_id: ProjectId,
-    expected_revision: u64,
-    first: [f64; 3],
-    second: [f64; 3],
-    fixed_side: FixedSideRequest,
-    rotation_direction: RotationDirectionRequest,
-    requested_angle_degrees: f64,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct LiveHingeRegistryResponseV1 {
-    version: u32,
-    project_instance_id: ProjectId,
-    project_id: ProjectId,
-    revision: u64,
-    pose_generation: u64,
-    graph_fingerprint_sha256: String,
-    entries: Vec<LiveGraphHingeAngleDto>,
     authorizes_project_mutation: bool,
 }
 
@@ -3883,189 +3862,6 @@ struct StackedFoldTransactionProposalDto {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LiveGraphHingeAngleDto {
-    edge: ori_domain::EdgeId,
-    initial_angle_degrees: f64,
-}
-
-fn live_hinge_registry(angles: &[ori_kinematics::HingeAngle]) -> Vec<LiveGraphHingeAngleDto> {
-    angles
-        .iter()
-        .map(|angle| LiveGraphHingeAngleDto {
-            edge: angle.edge(),
-            initial_angle_degrees: angle.angle_degrees(),
-        })
-        .collect()
-}
-
-#[tauri::command]
-pub(super) async fn read_live_hinge_registry_v1(
-    app_state: State<'_, AppState>,
-    foldability_state: State<'_, GlobalFlatFoldabilityState>,
-    request: LiveHingeRegistryRequestV1,
-) -> Result<LiveHingeRegistryResponseV1, String> {
-    read_live_hinge_registry_inner(&app_state, &foldability_state, request).await
-}
-
-async fn read_live_hinge_registry_inner(
-    app_state: &AppState,
-    foldability_state: &GlobalFlatFoldabilityState,
-    request: LiveHingeRegistryRequestV1,
-) -> Result<LiveHingeRegistryResponseV1, String> {
-    let worker_permit = app_state
-        .try_acquire_native_pose_worker()
-        .ok_or_else(|| BUSY_MESSAGE.to_owned())?;
-    let (paper, pattern, capability, layer_capability, source_fingerprint) = {
-        let project = lock_project(&app_state).map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?;
-        if project.instance_id != request.expected_project_instance_id
-            || project.project_id != request.expected_project_id
-            || project.editor.revision() != request.expected_revision
-        {
-            return Err(STALE_MESSAGE.to_owned());
-        }
-        let capability = project
-            .applied_pose_authority
-            .capture_capability(&project)
-            .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
-            .ok_or_else(|| UNAVAILABLE_MESSAGE.to_owned())?;
-        (
-            project.editor.paper().clone(),
-            project.editor.pattern().clone(),
-            capability,
-            capture_current_layer_order_capability(&foldability_state, &project)
-                .map_err(|_| UNAVAILABLE_MESSAGE.to_owned())?
-                .ok_or_else(|| UNAVAILABLE_MESSAGE.to_owned())?,
-            project.editor.fold_model_fingerprint_v1(),
-        )
-    };
-    let expected_instance_id = request.expected_project_instance_id;
-    let expected_project_id = request.expected_project_id;
-    let expected_revision = request.expected_revision;
-    let (capability, layer_capability, source_fingerprint, fingerprint, entries) =
-        tauri::async_runtime::spawn_blocking(move || {
-            let (model, pose) = capability
-                .tree()
-                .ok_or_else(|| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            let first = Point3::new(request.first[0], request.first[1], request.first[2])
-                .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
-            let second = Point3::new(request.second[0], request.second[1], request.second[2])
-                .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
-            let candidate = StackedFoldLinearCandidateV1::new(
-                first,
-                second,
-                request.fixed_side.into(),
-                request.rotation_direction.into(),
-                request.requested_angle_degrees,
-            )
-            .map_err(|_| INVALID_REQUEST_MESSAGE.to_owned())?;
-            let binding = StackedFoldReadBindingV1::new(
-                expected_instance_id,
-                expected_project_id,
-                expected_revision,
-                capability.generation(),
-                layer_capability.generation(),
-            );
-            let input = FlatEndpointLayerOrderInputV1 {
-                identity_namespace: binding.project_id(),
-                source_revision: binding.source_revision(),
-                paper: &paper,
-                pattern: &pattern,
-                model,
-                pose,
-                layer_order: layer_capability.snapshot(),
-            };
-            let limits = StackedFoldReadLimitsV1::default();
-            let guard = capture_stacked_fold_read_guard_v1(binding, input, limits)
-                .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            let proposal =
-                propose_linear_stacked_fold_read_v1(&guard, binding, input, candidate, limits)
-                    .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            let material_map = reverse_map_linear_stacked_fold_material_v1(
-                &proposal,
-                &guard,
-                binding,
-                input,
-                limits,
-                StackedFoldMaterialMapLimitsV1::default(),
-            )
-            .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            let expected_creases = material_map
-                .segments()
-                .iter()
-                .map(|segment| ExpectedStackedFoldCreaseV1 {
-                    start: segment.start(),
-                    end: segment.end(),
-                    kind: segment.assignment(),
-                })
-                .collect::<Vec<_>>();
-            let prepared = prepare_stacked_fold_geometry_candidate_v1(
-                binding.project_id(),
-                binding.source_revision(),
-                &pattern,
-                &paper,
-                layer_capability.snapshot(),
-                &expected_creases,
-                StackedFoldTopologyBuildLimitsV1::default(),
-                FaceLineageLimits::default(),
-                StackedFoldGeometryLimitsV1::default(),
-            )
-            .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            let fingerprint = prepared.proof().lineage().target_fingerprint().to_hex();
-            let audited = prepare_stacked_fold_target_graph_audit_v1(
-                prepared,
-                TreeKinematicsLimits::default(),
-            )
-            .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            let initial = prepare_stacked_fold_initial_graph_pose_v1(audited, model, pose)
-                .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())?;
-            let entries = live_hinge_registry(initial.pose().hinge_angles().as_slice());
-            if entries.len() > 64 {
-                return Err(ANALYSIS_FAILED_MESSAGE.to_owned());
-            }
-            drop(worker_permit);
-            Ok::<_, String>((
-                capability,
-                layer_capability,
-                source_fingerprint,
-                fingerprint,
-                entries,
-            ))
-        })
-        .await
-        .map_err(|_| ANALYSIS_FAILED_MESSAGE.to_owned())??;
-    {
-        let project = lock_project(&app_state).map_err(|_| STALE_MESSAGE.to_owned())?;
-        if project.editor.fold_model_fingerprint_v1() != source_fingerprint
-            || project
-                .applied_pose_authority
-                .revalidate_capability(&project, &capability)
-                .map_err(|_| STALE_MESSAGE.to_owned())?
-                .is_none()
-            || revalidate_current_layer_order_capability(
-                &foldability_state,
-                &project,
-                &layer_capability,
-            )
-            .map_err(|_| STALE_MESSAGE.to_owned())?
-            .is_none()
-        {
-            return Err(STALE_MESSAGE.to_owned());
-        }
-    }
-    Ok(LiveHingeRegistryResponseV1 {
-        version: 1,
-        project_instance_id: expected_instance_id,
-        project_id: expected_project_id,
-        revision: expected_revision,
-        pose_generation: capability.generation(),
-        graph_fingerprint_sha256: fingerprint,
-        entries,
-        authorizes_project_mutation: false,
-    })
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(super) struct StackedFoldReadResponse {
     guard_model_id: &'static str,
     proposal_model_id: &'static str,
@@ -5550,16 +5346,16 @@ mod tests {
         let tree_only_result = tauri::async_runtime::block_on(read_live_hinge_registry_inner(
             &state,
             &layer_state,
-            LiveHingeRegistryRequestV1 {
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
-                first: [0.0, 0.0, 0.0],
-                second: [1.0, 0.0, 0.0],
-                fixed_side: FixedSideRequest::Left,
-                rotation_direction: RotationDirectionRequest::Positive,
-                requested_angle_degrees: 1.0,
-            },
+            LiveHingeRegistryRequestV1::for_test(
+                instance,
+                project_id,
+                revision,
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                FixedSideRequest::Left,
+                RotationDirectionRequest::Positive,
+                1.0,
+            ),
         ));
         assert_eq!(
             tree_only_result.expect_err("graph pose must fail closed"),
@@ -7922,30 +7718,30 @@ mod tests {
         let registry = tauri::async_runtime::block_on(read_live_hinge_registry_inner(
             &app_state,
             &layer_state,
-            LiveHingeRegistryRequestV1 {
-                expected_project_instance_id: instance,
-                expected_project_id: project_id,
-                expected_revision: revision,
+            LiveHingeRegistryRequestV1::for_test(
+                instance,
+                project_id,
+                revision,
                 first,
                 second,
-                fixed_side: FixedSideRequest::Left,
-                rotation_direction: RotationDirectionRequest::Positive,
-                requested_angle_degrees: angle,
-            },
+                FixedSideRequest::Left,
+                RotationDirectionRequest::Positive,
+                angle,
+            ),
         ))
         .expect("live target hinge registry");
-        assert!(registry.entries.len() >= 2);
+        let registry_entries = registry.entries_for_test();
+        assert!(registry_entries.len() >= 2);
         let cycle_schedule_v1 = CycleScheduleRequestV1 {
             version: 1,
             endpoint_denominator: None,
-            entries: registry
-                .entries
+            entries: registry_entries
                 .iter()
                 .map(|entry| {
                     let is_source_hinge =
-                        entry.initial_angle_degrees.to_bits() == 180.0_f64.to_bits();
+                        entry.initial_angle_degrees_for_test().to_bits() == 180.0_f64.to_bits();
                     CycleScheduleEntryRequestV1 {
-                        edge: entry.edge,
+                        edge: entry.edge_for_test(),
                         u_domain: [
                             RationalCoefficientRequestV1 {
                                 numerator: 0,
@@ -7994,12 +7790,11 @@ mod tests {
             states: (0..=certified_path_steps)
                 .map(|step| step as f64 / certified_path_steps as f64)
                 .map(|progress| CertifiedPathGraphStateRequestV1 {
-                    entries: registry
-                        .entries
+                    entries: registry_entries
                         .iter()
                         .map(|entry| CertifiedPathGraphAngleRequestV1 {
-                            edge: entry.edge,
-                            angle_degrees: if entry.initial_angle_degrees.to_bits()
+                            edge: entry.edge_for_test(),
+                            angle_degrees: if entry.initial_angle_degrees_for_test().to_bits()
                                 == 180.0_f64.to_bits()
                             {
                                 180.0
@@ -9279,7 +9074,10 @@ mod tests {
         .unwrap();
         let registry = live_hinge_registry(live.as_slice());
         assert_eq!(
-            registry.iter().map(|entry| entry.edge).collect::<Vec<_>>(),
+            registry
+                .iter()
+                .map(LiveGraphHingeAngleDto::edge_for_test)
+                .collect::<Vec<_>>(),
             vec![first, second]
         );
         let request = LinearCandidateRequestV1 {
@@ -9288,9 +9086,9 @@ mod tests {
             entries: registry
                 .iter()
                 .map(|entry| LinearCandidateEntryRequestV1 {
-                    edge: entry.edge,
-                    initial_angle_degrees: entry.initial_angle_degrees,
-                    requested_angle_degrees: entry.initial_angle_degrees + 5.0,
+                    edge: entry.edge_for_test(),
+                    initial_angle_degrees: entry.initial_angle_degrees_for_test(),
+                    requested_angle_degrees: entry.initial_angle_degrees_for_test() + 5.0,
                 })
                 .collect(),
         };

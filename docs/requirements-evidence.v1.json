@@ -1850,7 +1850,8 @@
       "id": "SIM-010",
       "status": "部分実装",
       "commits": [
-        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db"
+        "66074eba1c5c2dc564ec1c3cf135c0891c4d66db",
+        "26461c5428d8c98d6d5688ebda695b359cb1ea5a"
       ],
       "evidence": [
         {
@@ -1867,6 +1868,16 @@
           "kind": "test",
           "path": "crates/ori-collision/src/continuous_path.rs",
           "selector": "fn continuous_layer_transport_binds_every_dyadic_transition_and_fails_closed()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-collision/src/block_composition.rs",
+          "selector": "pub struct CompleteMultiBlockPositiveLayerAuthorityV1"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-collision/src/block_composition.rs",
+          "selector": "fn complete_live_three_four_and_eight_block_authorities_are_sealed_and_non_authorizing()"
         }
       ],
       "limitations": [

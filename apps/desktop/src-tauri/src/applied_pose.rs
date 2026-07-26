@@ -611,9 +611,10 @@ impl CurrentAppliedPoseAuthority {
 
     /// Adopts only the latest still-current prepared request.
     ///
-    /// Semantic pose adoption, generation advance, pending removal, and
-    /// certificate publication happen while the caller holds the project lock
-    /// and this authority lock. Every fallible check precedes those mutations.
+    /// Semantic pose adoption, stale layer-evidence invalidation, generation
+    /// advance, pending removal, and certificate publication happen while the
+    /// caller holds the project lock and this authority lock. Every fallible
+    /// check precedes those mutations.
     pub(super) fn commit_prepared(
         &self,
         project: &mut ProjectState,
@@ -730,6 +731,7 @@ impl CurrentAppliedPoseAuthority {
         project
             .editor
             .adopt_current_applied_pose(semantic_for_editor);
+        project.current_layer_evidence = None;
         slot.generation = generation;
         slot.pending = None;
         slot.current = Some(Arc::clone(&certificate));
@@ -1488,6 +1490,54 @@ pub(super) mod tests {
         ProjectState::new_with_paper(pattern, paper)
     }
 
+    fn centered_single_hinge_project() -> (ProjectState, EdgeId) {
+        let positions = [
+            Point2::new(0.0, 0.0),
+            Point2::new(200.0, 0.0),
+            Point2::new(400.0, 0.0),
+            Point2::new(400.0, 400.0),
+            Point2::new(200.0, 400.0),
+            Point2::new(0.0, 400.0),
+        ];
+        let vertices = positions
+            .into_iter()
+            .map(|position| Vertex {
+                id: VertexId::new(),
+                position,
+            })
+            .collect::<Vec<_>>();
+        let mut edges = (0..vertices.len())
+            .map(|index| Edge {
+                id: EdgeId::new(),
+                start: vertices[index].id,
+                end: vertices[(index + 1) % vertices.len()].id,
+                kind: EdgeKind::Boundary,
+            })
+            .collect::<Vec<_>>();
+        let hinge = EdgeId::new();
+        edges.push(Edge {
+            id: hinge,
+            start: vertices[1].id,
+            end: vertices[4].id,
+            kind: EdgeKind::Mountain,
+        });
+        let paper = Paper {
+            boundary_vertices: vertices.iter().map(|vertex| vertex.id).collect(),
+            ..Paper::default()
+        };
+        (
+            ProjectState::new_with_paper(CreasePattern { vertices, edges }, paper),
+            hinge,
+        )
+    }
+
+    fn install_flat_layer_evidence(project: &mut ProjectState) {
+        let snapshot = crate::global_flat_foldability::reanalyze_current_flat_layer_order(project)
+            .expect("flat layer evidence fixture");
+        project.current_layer_evidence =
+            Some(crate::stacked_fold_transaction::CurrentLayerEvidence::CertifiedFlat(snapshot));
+    }
+
     fn invalid_topology_project() -> ProjectState {
         ProjectState::new_with_paper(CreasePattern::empty(), Paper::default())
     }
@@ -1670,6 +1720,30 @@ pub(super) mod tests {
         authority.commit_prepared(project, prepared).unwrap();
     }
 
+    pub(crate) fn install_pose_authority_with_angles(
+        project: &mut ProjectState,
+        angles: Vec<(EdgeId, f64)>,
+        fixed_face: FaceId,
+    ) -> Result<(), PoseAuthorityError> {
+        let request = NativePoseRequest {
+            expected_project_instance_id: project.instance_id,
+            expected_project_id: project.project_id,
+            expected_revision: project.editor.revision(),
+            fixed_face_id: Some(fixed_face),
+            complete_hinge_angles: angles
+                .into_iter()
+                .map(|(edge_id, angle_degrees)| NativePoseHingeAngleRequest {
+                    edge_id,
+                    angle_degrees,
+                })
+                .collect(),
+        };
+        let authority = project.applied_pose_authority.clone();
+        let prepared = authority.capture_request(project, request)?.prepare()?;
+        authority.commit_prepared(project, prepared)?;
+        Ok(())
+    }
+
     #[test]
     fn graph_pose_capture_commit_and_revalidation_are_native_bound() {
         let (mut project, mut hinges) = four_vertex_cycle_project();
@@ -1767,6 +1841,152 @@ pub(super) mod tests {
                 .is_some()
         );
         assert!(!reopened.is_dirty());
+    }
+
+    #[test]
+    fn successful_same_pose_commit_clears_flat_layer_evidence_before_archive_publication() {
+        let mut project = no_hinge_project();
+        install_current_pose_authority(&mut project);
+        install_flat_layer_evidence(&mut project);
+        assert!(
+            project
+                .project_archive()
+                .expect("archive with flat evidence")
+                .layer_evidence
+                .is_some()
+        );
+
+        let authority = project.applied_pose_authority.clone();
+        let prepared = authority
+            .capture_request(&project, request_for(&project))
+            .expect("capture pose")
+            .prepare()
+            .expect("prepare pose");
+        authority
+            .commit_prepared(&mut project, prepared)
+            .expect("commit pose");
+
+        assert!(project.current_layer_evidence.is_none());
+        assert!(
+            project
+                .project_archive()
+                .expect("archive after pose commit")
+                .layer_evidence
+                .is_none(),
+            "an archive must not publish layer evidence bound to the previous pose"
+        );
+    }
+
+    #[test]
+    fn successful_live_pose_change_clears_non_flat_layer_evidence_before_archive_publication() {
+        let (mut project, hinge) = centered_single_hinge_project();
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let simulation = topology.simulation_snapshot().expect("simulation topology");
+        let fixed_face = simulation.faces[0].id;
+        install_pose_authority_with_angles(&mut project, vec![(hinge, 90.0)], fixed_face)
+            .expect("install initial pose");
+
+        let angles = CanonicalHingeAngles::new(vec![
+            HingeAngle::new(hinge, 90.0).expect("initial hinge angle"),
+        ])
+        .expect("canonical initial angles");
+        let flat = crate::global_flat_foldability::reanalyze_current_flat_layer_order(&project)
+            .expect("flat source layer order");
+        let proof = ori_core::revalidate_current_non_flat_layer_order_v1(
+            project.project_id,
+            project.editor.revision(),
+            project.editor.pattern(),
+            project.editor.paper(),
+            Some(fixed_face),
+            &angles,
+            &flat,
+            ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+        )
+        .expect("non-flat layer evidence fixture");
+        project.current_layer_evidence =
+            Some(crate::stacked_fold_transaction::CurrentLayerEvidence::NonFlat(proof));
+        assert!(
+            project
+                .project_archive()
+                .expect("archive with non-flat evidence")
+                .layer_evidence
+                .is_some()
+        );
+
+        install_pose_authority_with_angles(&mut project, vec![(hinge, 45.0)], fixed_face)
+            .expect("install changed pose");
+
+        assert!(project.current_layer_evidence.is_none());
+        assert!(
+            project
+                .project_archive()
+                .expect("archive after live pose change")
+                .layer_evidence
+                .is_none(),
+            "an archive must not publish non-flat evidence bound to the previous live pose"
+        );
+    }
+
+    #[test]
+    fn failed_pose_capture_prepare_and_commit_preserve_current_layer_evidence() {
+        let mut project = no_hinge_project();
+        install_flat_layer_evidence(&mut project);
+        let authority = project.applied_pose_authority.clone();
+
+        let mut invalid_capture = request_for(&project);
+        invalid_capture.fixed_face_id =
+            Some(FaceId::derive_v5(project.project_id, b"unexpected-face"));
+        assert_eq!(
+            authority.capture_request(&project, invalid_capture).err(),
+            Some(PoseAuthorityError::InvalidRequest)
+        );
+        assert!(matches!(
+            project.current_layer_evidence.as_ref(),
+            Some(crate::stacked_fold_transaction::CurrentLayerEvidence::CertifiedFlat(_))
+        ));
+
+        let invalid_fixed_face = FaceId::derive_v5(project.project_id, b"fixed-face");
+        assert!(
+            install_pose_authority_with_angles(
+                &mut project,
+                vec![(EdgeId::new(), 45.0)],
+                invalid_fixed_face,
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            project.current_layer_evidence.as_ref(),
+            Some(crate::stacked_fold_transaction::CurrentLayerEvidence::CertifiedFlat(_))
+        ));
+
+        let prepared = authority
+            .capture_request(&project, request_for(&project))
+            .expect("capture valid replacement")
+            .prepare()
+            .expect("prepare valid replacement");
+        assert_eq!(
+            authority
+                .commit_prepared_with_semantic_clone(&mut project, prepared, |_| {
+                    Err(PoseAuthorityError::SemanticPoseUnavailable)
+                })
+                .err(),
+            Some(PoseAuthorityError::SemanticPoseUnavailable)
+        );
+        assert!(matches!(
+            project.current_layer_evidence.as_ref(),
+            Some(crate::stacked_fold_transaction::CurrentLayerEvidence::CertifiedFlat(_))
+        ));
+        assert!(
+            project
+                .project_archive()
+                .expect("archive after failed operations")
+                .layer_evidence
+                .is_some(),
+            "failed operations must preserve the previously current evidence"
+        );
     }
 
     #[test]

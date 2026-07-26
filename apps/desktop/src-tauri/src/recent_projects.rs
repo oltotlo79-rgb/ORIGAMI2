@@ -418,10 +418,14 @@ fn canonical_identity(path: &Path, _metadata: &fs::Metadata) -> Result<Canonical
     };
     let file = fs::File::open(path).map_err(|_| ())?;
     let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    // SAFETY: `file` keeps the OS handle live and `info` points to writable
+    // storage for the complete output structure.
     let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) };
     if ok == 0 {
         return Err(());
     }
+    // SAFETY: a successful `GetFileInformationByHandle` call initialized the
+    // complete `BY_HANDLE_FILE_INFORMATION` value.
     let info = unsafe { info.assume_init() };
     if info.nNumberOfLinks != 1 {
         return Err(());

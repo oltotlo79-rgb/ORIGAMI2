@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Geometry predicates and structural validation for origami crease patterns.
 
 use std::error::Error;

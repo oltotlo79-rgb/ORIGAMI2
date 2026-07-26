@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Resource-bounded scalar expressions for exact origami construction input.
 //!
 //! Decimal literals and rational arithmetic remain exact. Irrational

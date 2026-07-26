@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Versioned persistence and interchange adapters.
 
 mod crease_pattern_export;

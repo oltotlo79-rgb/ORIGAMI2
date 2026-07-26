@@ -1527,6 +1527,8 @@ mod tests {
         fs::remove_file(fifo_root.join("project.json")).expect("remove project");
         let fifo =
             CString::new(fifo_root.join("project.json").as_os_str().as_bytes()).expect("FIFO path");
+        // SAFETY: `fifo` is a live NUL-terminated path for the duration of the
+        // call, and `0o600` contains only valid FIFO permission bits.
         let created = unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };
         assert_eq!(created, 0, "create FIFO");
         assert!(matches!(

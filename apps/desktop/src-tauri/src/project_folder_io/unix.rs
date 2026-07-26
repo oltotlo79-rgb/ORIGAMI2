@@ -457,6 +457,8 @@ fn open_directory_at(
     if !metadata.file_type().is_dir() {
         return Err(ProjectFolderFilesystemError::LinkOrSpecialEntry);
     }
+    // SAFETY: `geteuid` reads process state and has no pointer or ownership
+    // preconditions.
     if require_current_owner && metadata.uid() != unsafe { libc::geteuid() } {
         return Err(ProjectFolderFilesystemError::WriteFailed);
     }

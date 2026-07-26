@@ -150,6 +150,8 @@ impl PinnedDirectory {
             FindFirstFileW(query.as_ptr(), &raw mut data)
         };
         if handle == INVALID_HANDLE_VALUE {
+            // SAFETY: `GetLastError` reads the calling thread's error slot and
+            // is invoked immediately after the failed Win32 call.
             let error = unsafe { GetLastError() };
             if is_empty_find_result(error) {
                 self.revalidate_selected_path()?;
@@ -171,6 +173,8 @@ impl PinnedDirectory {
                 FindNextFileW(handle, &raw mut data)
             };
             if has_next == 0 {
+                // SAFETY: `GetLastError` reads the calling thread's error slot
+                // immediately after `FindNextFileW` reported failure.
                 let error = unsafe { GetLastError() };
                 break if error == ERROR_NO_MORE_FILES {
                     Ok(())

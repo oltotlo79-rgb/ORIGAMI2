@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Deterministic planar topology derived from an ORIGAMI2 crease pattern.
 //!
 //! Boundary-only sheets and one-fold legacy snapshots share the same stable

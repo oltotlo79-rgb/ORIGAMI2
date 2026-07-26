@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use std::{collections::HashSet, error::Error, fmt};
 
 use serde::{Deserialize, Serialize};

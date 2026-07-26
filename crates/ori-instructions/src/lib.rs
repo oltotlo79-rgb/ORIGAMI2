@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Deterministic drawing plans derived from authored folding instructions.
 //!
 //! This crate owns the CPU-side pose and fixed-camera projection used by

@@ -743,6 +743,635 @@ mod tests {
 
     use super::*;
 
+    #[derive(Debug, Clone, Copy)]
+    enum QuarantinedDirectFamily {
+        DifferentFixedAngles,
+        DifferentLengthRatios,
+        EqualLengthWithNonUnitRatioAndFixedLength,
+        NonReciprocalLengthRatiosWithFixedLength,
+        LengthRatioWithIncompatibleFixedLengths,
+        NonUnitLengthRatioCycleWithFixedLength,
+        InconsistentLengthRatioGraphWithFixedLength,
+        PerpendicularOrientationsInParallelComponent,
+        NonParallelFixedAngleInParallelComponent,
+        ParallelWithFixedNonParallelAngle,
+        SameOrientationWithFixedNonParallelAngle,
+        PerpendicularOrientationsWithFixedNonRightAngle,
+        DifferentRotationalSymmetryAnglesWithFixedRadius,
+        NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius,
+        MirrorSymmetryWithPointOnAxisAndFixedSeparation,
+        RotationalSymmetryWithCollinearRadius,
+    }
+
+    struct QuarantinedCounterexample {
+        pattern: CreasePattern,
+        document: GeometricConstraintDocumentV1,
+        positions: HashMap<VertexId, Point2>,
+    }
+
+    #[derive(Default)]
+    struct CounterexampleBuilder {
+        vertices: Vec<Vertex>,
+        edges: Vec<Edge>,
+        positions: HashMap<VertexId, Point2>,
+    }
+
+    impl CounterexampleBuilder {
+        fn vertex(&mut self, solution: Point2) -> VertexId {
+            let id = VertexId::new();
+            let index = self.vertices.len() as f64 + 1.0;
+            self.vertices.push(Vertex {
+                id,
+                position: Point2::new(index * 7.0, index * index + index * 3.0),
+            });
+            self.positions.insert(id, solution);
+            id
+        }
+
+        fn edge(&mut self, start: VertexId, end: VertexId) -> EdgeId {
+            let id = EdgeId::new();
+            self.edges.push(Edge {
+                id,
+                start,
+                end,
+                kind: EdgeKind::Auxiliary,
+            });
+            id
+        }
+
+        fn independent_edge(&mut self, vector: Point2) -> EdgeId {
+            let start = self.vertex(Point2::new(0.0, 0.0));
+            let end = self.vertex(vector);
+            self.edge(start, end)
+        }
+
+        fn finish(
+            self,
+            constraints: impl IntoIterator<Item = GeometricConstraintKindV1>,
+        ) -> QuarantinedCounterexample {
+            QuarantinedCounterexample {
+                pattern: CreasePattern {
+                    vertices: self.vertices,
+                    edges: self.edges,
+                },
+                document: GeometricConstraintDocumentV1 {
+                    schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+                    constraints: constraints
+                        .into_iter()
+                        .map(|constraint| GeometricConstraintRecordV1 {
+                            id: ConstraintId::new(),
+                            constraint,
+                        })
+                        .collect(),
+                },
+                positions: self.positions,
+            }
+        }
+    }
+
+    fn assert_quarantined_counterexample(
+        family: QuarantinedDirectFamily,
+        example: QuarantinedCounterexample,
+    ) {
+        let label = format!("{family:?}");
+        let values = residuals(&example.pattern, &example.document, &example.positions)
+            .unwrap_or_else(|error| panic!("{label}: counterexample residuals failed: {error:?}"));
+        assert!(
+            values.iter().all(|value| value.is_finite()),
+            "{label}: every counterexample residual must be finite: {values:?}"
+        );
+        assert_eq!(
+            maximum_absolute(&values),
+            0.0,
+            "{label}: the concrete assignment must satisfy every implemented residual"
+        );
+
+        let prepared = prepare_geometric_constraints_v1(
+            &example.pattern,
+            &example.document,
+            GeometricConstraintLimitsV1::default(),
+        )
+        .unwrap_or_else(|error| {
+            panic!("{label}: valid counterexample failed to prepare: {error:?}")
+        });
+        let preflight = prepared.preflight();
+        assert!(
+            matches!(
+                preflight,
+                crate::ConstraintPreflightV1::Unknown {
+                    reason:
+                        crate::GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                    ref unchecked_constraint_ids,
+                } if !unchecked_constraint_ids.is_empty()
+            ),
+            "{label}: preflight must defer instead of certifying unsatisfiability: {preflight:?}"
+        );
+        assert!(
+            matches!(
+                crate::find_bounded_direct_mus_v1(&prepared),
+                crate::BoundedDirectMusV1::Unknown { .. }
+            ),
+            "{label}: the bounded oracle must not manufacture a proven MUS"
+        );
+
+        let drivers = example
+            .pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, example.positions[&vertex.id]))
+            .collect::<Vec<_>>();
+        let preview = solve_geometric_constraints_with_drivers_v1(
+            &example.pattern,
+            &example.document,
+            &drivers,
+            ConstraintSolveLimitsV1::default(),
+        )
+        .unwrap_or_else(|error| {
+            panic!("{label}: full-driver zero-residual solution was rejected: {error:?}")
+        });
+        assert_eq!(preview.maximum_residual, 0.0, "{label}");
+
+        assert!(
+            verify_geometric_constraint_solution_v1(&example.pattern, &example.document, f64::MAX,)
+                .is_ok(),
+            "{label}: verifier must reach its residual check instead of a false preflight rejection"
+        );
+
+        let mut reordered_pattern = example.pattern.clone();
+        reordered_pattern.vertices.reverse();
+        reordered_pattern.edges.reverse();
+        let mut reordered_document = example.document.clone();
+        reordered_document.constraints.reverse();
+        let reordered = prepare_geometric_constraints_v1(
+            &reordered_pattern,
+            &reordered_document,
+            GeometricConstraintLimitsV1::default(),
+        )
+        .unwrap_or_else(|error| {
+            panic!("{label}: reordered counterexample failed to prepare: {error:?}")
+        });
+        assert_eq!(
+            reordered.preflight(),
+            preflight,
+            "{label}: deferred output must remain canonical"
+        );
+    }
+
+    fn quarantined_counterexample(family: QuarantinedDirectFamily) -> QuarantinedCounterexample {
+        let minimum = f64::from_bits(1);
+        let one_up = 1.0_f64.next_up();
+        let one_down = 1.0_f64.next_down();
+        let mut builder = CounterexampleBuilder::default();
+
+        match family {
+            QuarantinedDirectFamily::DifferentFixedAngles => {
+                let center = builder.vertex(Point2::new(0.0, 0.0));
+                let first_vertex = builder.vertex(Point2::new(1.0, 0.0));
+                let second_vertex = builder.vertex(Point2::new(2.0, 0.0));
+                let first_edge = builder.edge(center, first_vertex);
+                let second_edge = builder.edge(center, second_vertex);
+                builder.finish([
+                    GeometricConstraintKindV1::FixedAngle {
+                        vertex: center,
+                        first_edge,
+                        second_edge,
+                        angle_degrees: f64::from_bits(1),
+                    },
+                    GeometricConstraintKindV1::FixedAngle {
+                        vertex: center,
+                        first_edge,
+                        second_edge,
+                        angle_degrees: f64::from_bits(2),
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::DifferentLengthRatios => {
+                let first_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                let second_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                builder.finish([
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: first_edge,
+                        denominator_edge: second_edge,
+                        ratio: one_up,
+                    },
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: first_edge,
+                        denominator_edge: second_edge,
+                        ratio: one_down,
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::EqualLengthWithNonUnitRatioAndFixedLength => {
+                let first_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                let second_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                builder.finish([
+                    GeometricConstraintKindV1::FixedLength {
+                        edge: first_edge,
+                        length_mm: minimum,
+                    },
+                    GeometricConstraintKindV1::EqualLength {
+                        first_edge,
+                        second_edge,
+                    },
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: first_edge,
+                        denominator_edge: second_edge,
+                        ratio: one_up,
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::NonReciprocalLengthRatiosWithFixedLength => {
+                let first_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                let second_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                builder.finish([
+                    GeometricConstraintKindV1::FixedLength {
+                        edge: first_edge,
+                        length_mm: minimum,
+                    },
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: first_edge,
+                        denominator_edge: second_edge,
+                        ratio: one_up,
+                    },
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: second_edge,
+                        denominator_edge: first_edge,
+                        ratio: one_down,
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::LengthRatioWithIncompatibleFixedLengths => {
+                let first_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                let second_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                builder.finish([
+                    GeometricConstraintKindV1::FixedLength {
+                        edge: first_edge,
+                        length_mm: minimum,
+                    },
+                    GeometricConstraintKindV1::FixedLength {
+                        edge: second_edge,
+                        length_mm: minimum,
+                    },
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: first_edge,
+                        denominator_edge: second_edge,
+                        ratio: one_up,
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::NonUnitLengthRatioCycleWithFixedLength => {
+                let first_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                let second_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                let third_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                builder.finish([
+                    GeometricConstraintKindV1::FixedLength {
+                        edge: first_edge,
+                        length_mm: minimum,
+                    },
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: first_edge,
+                        denominator_edge: second_edge,
+                        ratio: one_up,
+                    },
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: second_edge,
+                        denominator_edge: third_edge,
+                        ratio: one_up,
+                    },
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: third_edge,
+                        denominator_edge: first_edge,
+                        ratio: one_up,
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::InconsistentLengthRatioGraphWithFixedLength => {
+                let first_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                let second_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                let third_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                let fourth_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+                builder.finish([
+                    GeometricConstraintKindV1::FixedLength {
+                        edge: first_edge,
+                        length_mm: minimum,
+                    },
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: first_edge,
+                        denominator_edge: second_edge,
+                        ratio: one_up,
+                    },
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: second_edge,
+                        denominator_edge: third_edge,
+                        ratio: one_up,
+                    },
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: third_edge,
+                        denominator_edge: fourth_edge,
+                        ratio: one_up,
+                    },
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: fourth_edge,
+                        denominator_edge: first_edge,
+                        ratio: one_up,
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::PerpendicularOrientationsInParallelComponent => {
+                let vectors = [
+                    Point2::new(1.0, 0.0),
+                    Point2::new(minimum, 0.0),
+                    Point2::new(
+                        f64::from_bits(0x3fec_411b_4f6d_2708),
+                        f64::from_bits(0x3fde_0bd2_7424_5079),
+                    ),
+                    Point2::new(f64::from_bits(0xe), f64::from_bits(0x8)),
+                    Point2::new(
+                        f64::from_bits(0x3feb_6dea_1e76_eade),
+                        f64::from_bits(0x3fe0_7b31_20fd_df13),
+                    ),
+                    Point2::new(minimum, minimum),
+                    Point2::new(
+                        f64::from_bits(0x3fe0_f519_3eac_dd2a),
+                        f64::from_bits(0x3feb_2335_c2cd_a946),
+                    ),
+                    Point2::new(f64::from_bits(0x8), f64::from_bits(0xe)),
+                    Point2::new(
+                        f64::from_bits(0x3fdf_071e_edef_a0ee),
+                        f64::from_bits(0x3feb_fce2_77d3_39c6),
+                    ),
+                    Point2::new(0.0, minimum),
+                    Point2::new(0.0, 1.0),
+                ];
+                let edges = vectors
+                    .into_iter()
+                    .map(|vector| builder.independent_edge(vector))
+                    .collect::<Vec<_>>();
+                let mut constraints = vec![GeometricConstraintKindV1::Horizontal {
+                    edge: edges[0],
+                }];
+                constraints.extend(edges.windows(2).map(|pair| {
+                    GeometricConstraintKindV1::Parallel {
+                        first_edge: pair[0],
+                        second_edge: pair[1],
+                    }
+                }));
+                constraints.push(GeometricConstraintKindV1::Vertical {
+                    edge: *edges.last().expect("parallel path has a final edge"),
+                });
+                builder.finish(constraints)
+            }
+            QuarantinedDirectFamily::NonParallelFixedAngleInParallelComponent => {
+                let center = builder.vertex(Point2::new(0.0, 0.0));
+                let first_vertex = builder.vertex(Point2::new(1.0, 0.0));
+                let second_vertex = builder.vertex(Point2::new(2.0, minimum));
+                let first_edge = builder.edge(center, first_vertex);
+                let second_edge = builder.edge(center, second_vertex);
+                let middle_edge = builder.independent_edge(Point2::new(1.0, 0.0));
+                builder.finish([
+                    GeometricConstraintKindV1::Parallel {
+                        first_edge,
+                        second_edge: middle_edge,
+                    },
+                    GeometricConstraintKindV1::Parallel {
+                        first_edge: middle_edge,
+                        second_edge,
+                    },
+                    GeometricConstraintKindV1::FixedAngle {
+                        vertex: center,
+                        first_edge,
+                        second_edge,
+                        angle_degrees: f64::from_bits(0x39),
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::ParallelWithFixedNonParallelAngle => {
+                let center = builder.vertex(Point2::new(0.0, 0.0));
+                let first_vertex = builder.vertex(Point2::new(1.0, 0.0));
+                let second_vertex = builder.vertex(Point2::new(2.0, minimum));
+                let first_edge = builder.edge(center, first_vertex);
+                let second_edge = builder.edge(center, second_vertex);
+                builder.finish([
+                    GeometricConstraintKindV1::Parallel {
+                        first_edge,
+                        second_edge,
+                    },
+                    GeometricConstraintKindV1::FixedAngle {
+                        vertex: center,
+                        first_edge,
+                        second_edge,
+                        angle_degrees: f64::from_bits(0x39),
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::SameOrientationWithFixedNonParallelAngle => {
+                let center = builder.vertex(Point2::new(0.0, 0.0));
+                let first_vertex = builder.vertex(Point2::new(1.0, 0.0));
+                let second_vertex = builder.vertex(Point2::new(2.0, 0.0));
+                let first_edge = builder.edge(center, first_vertex);
+                let second_edge = builder.edge(center, second_vertex);
+                builder.finish([
+                    GeometricConstraintKindV1::Horizontal { edge: first_edge },
+                    GeometricConstraintKindV1::Horizontal { edge: second_edge },
+                    GeometricConstraintKindV1::FixedAngle {
+                        vertex: center,
+                        first_edge,
+                        second_edge,
+                        angle_degrees: f64::from_bits(1),
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::PerpendicularOrientationsWithFixedNonRightAngle => {
+                let center = builder.vertex(Point2::new(0.0, 0.0));
+                let horizontal_vertex = builder.vertex(Point2::new(1.0, 0.0));
+                let vertical_vertex = builder.vertex(Point2::new(0.0, 1.0));
+                let horizontal_edge = builder.edge(center, horizontal_vertex);
+                let vertical_edge = builder.edge(center, vertical_vertex);
+                builder.finish([
+                    GeometricConstraintKindV1::Horizontal {
+                        edge: horizontal_edge,
+                    },
+                    GeometricConstraintKindV1::Vertical {
+                        edge: vertical_edge,
+                    },
+                    GeometricConstraintKindV1::FixedAngle {
+                        vertex: center,
+                        first_edge: horizontal_edge,
+                        second_edge: vertical_edge,
+                        angle_degrees: 90.0_f64.next_down(),
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::DifferentRotationalSymmetryAnglesWithFixedRadius => {
+                let center = builder.vertex(Point2::new(0.0, 0.0));
+                let source = builder.vertex(Point2::new(minimum, 0.0));
+                let target = builder.vertex(Point2::new(minimum, 0.0));
+                let radius = builder.edge(center, source);
+                builder.finish([
+                    GeometricConstraintKindV1::RotationalSymmetry {
+                        center_vertex: center,
+                        source_vertex: source,
+                        target_vertex: target,
+                        angle_degrees: f64::from_bits(1),
+                    },
+                    GeometricConstraintKindV1::RotationalSymmetry {
+                        center_vertex: center,
+                        source_vertex: source,
+                        target_vertex: target,
+                        angle_degrees: f64::from_bits(2),
+                    },
+                    GeometricConstraintKindV1::FixedLength {
+                        edge: radius,
+                        length_mm: minimum,
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::
+                NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius =>
+            {
+                let center = builder.vertex(Point2::new(0.0, 0.0));
+                let source = builder.vertex(Point2::new(minimum, 0.0));
+                let target = builder.vertex(Point2::new(minimum, 0.0));
+                let radius = builder.edge(center, source);
+                builder.finish([
+                    GeometricConstraintKindV1::RotationalSymmetry {
+                        center_vertex: center,
+                        source_vertex: source,
+                        target_vertex: target,
+                        angle_degrees: f64::from_bits(1),
+                    },
+                    GeometricConstraintKindV1::RotationalSymmetry {
+                        center_vertex: center,
+                        source_vertex: target,
+                        target_vertex: source,
+                        angle_degrees: f64::from_bits(1),
+                    },
+                    GeometricConstraintKindV1::FixedLength {
+                        edge: radius,
+                        length_mm: minimum,
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::MirrorSymmetryWithPointOnAxisAndFixedSeparation => {
+                let axis_start = builder.vertex(Point2::new(0.0, 0.0));
+                let axis_end = builder.vertex(Point2::new(1.0, 1.0));
+                let first = builder.vertex(Point2::new(2.0, 2.0));
+                let reflected = f64::from_bits(0x3fff_ffff_ffff_fffc);
+                let second = builder.vertex(Point2::new(reflected, reflected));
+                let axis_edge = builder.edge(axis_start, axis_end);
+                let separation_edge = builder.edge(first, second);
+                builder.finish([
+                    GeometricConstraintKindV1::MirrorSymmetry {
+                        first_vertex: first,
+                        second_vertex: second,
+                        axis_edge,
+                    },
+                    GeometricConstraintKindV1::PointOnLine {
+                        vertex: first,
+                        line_edge: axis_edge,
+                    },
+                    GeometricConstraintKindV1::FixedLength {
+                        edge: separation_edge,
+                        length_mm: f64::from_bits(0x3cd6_a09e_667f_3bcd),
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::RotationalSymmetryWithCollinearRadius => {
+                let center = builder.vertex(Point2::new(0.0, 0.0));
+                let source = builder.vertex(Point2::new(minimum, 0.0));
+                let target = builder.vertex(Point2::new(minimum, 0.0));
+                let radius = builder.edge(center, source);
+                builder.finish([
+                    GeometricConstraintKindV1::RotationalSymmetry {
+                        center_vertex: center,
+                        source_vertex: source,
+                        target_vertex: target,
+                        angle_degrees: f64::from_bits(1),
+                    },
+                    GeometricConstraintKindV1::PointOnLine {
+                        vertex: target,
+                        line_edge: radius,
+                    },
+                ])
+            }
+        }
+    }
+
+    macro_rules! quarantined_family_regression {
+        ($test:ident, $family:ident) => {
+            #[test]
+            fn $test() {
+                let family = QuarantinedDirectFamily::$family;
+                assert_quarantined_counterexample(family, quarantined_counterexample(family));
+            }
+        };
+    }
+
+    quarantined_family_regression!(
+        different_fixed_angles_are_solver_required,
+        DifferentFixedAngles
+    );
+    quarantined_family_regression!(
+        different_length_ratios_are_solver_required,
+        DifferentLengthRatios
+    );
+    quarantined_family_regression!(
+        equal_length_nonunit_ratio_fixed_length_is_solver_required,
+        EqualLengthWithNonUnitRatioAndFixedLength
+    );
+    quarantined_family_regression!(
+        nonreciprocal_ratios_fixed_length_is_solver_required,
+        NonReciprocalLengthRatiosWithFixedLength
+    );
+    quarantined_family_regression!(
+        incompatible_ratio_fixed_lengths_are_solver_required,
+        LengthRatioWithIncompatibleFixedLengths
+    );
+    quarantined_family_regression!(
+        nonunit_ratio_cycle_fixed_length_is_solver_required,
+        NonUnitLengthRatioCycleWithFixedLength
+    );
+    quarantined_family_regression!(
+        inconsistent_ratio_graph_fixed_length_is_solver_required,
+        InconsistentLengthRatioGraphWithFixedLength
+    );
+    quarantined_family_regression!(
+        perpendicular_parallel_component_is_solver_required,
+        PerpendicularOrientationsInParallelComponent
+    );
+    quarantined_family_regression!(
+        fixed_angle_parallel_component_is_solver_required,
+        NonParallelFixedAngleInParallelComponent
+    );
+    quarantined_family_regression!(
+        parallel_fixed_nonparallel_angle_is_solver_required,
+        ParallelWithFixedNonParallelAngle
+    );
+    quarantined_family_regression!(
+        same_orientation_fixed_angle_is_solver_required,
+        SameOrientationWithFixedNonParallelAngle
+    );
+    quarantined_family_regression!(
+        perpendicular_orientation_fixed_angle_is_solver_required,
+        PerpendicularOrientationsWithFixedNonRightAngle
+    );
+    quarantined_family_regression!(
+        different_rotation_angles_fixed_radius_are_solver_required,
+        DifferentRotationalSymmetryAnglesWithFixedRadius
+    );
+    quarantined_family_regression!(
+        inverse_rotation_angles_fixed_radius_are_solver_required,
+        NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius
+    );
+    quarantined_family_regression!(
+        mirror_axis_fixed_separation_is_solver_required,
+        MirrorSymmetryWithPointOnAxisAndFixedSeparation
+    );
+    quarantined_family_regression!(
+        collinear_rotation_radius_is_solver_required,
+        RotationalSymmetryWithCollinearRadius
+    );
+
     #[test]
     fn angle_bisector_rejects_the_opposite_reflex_direction() {
         let center = VertexId::new();
@@ -1170,7 +1799,7 @@ mod tests {
     }
 
     #[test]
-    fn collinear_rotation_preflight_blocks_subnormal_numeric_zero_and_degenerate_line_escape() {
+    fn collinear_rotation_subnormal_zero_is_not_rejected_by_preflight() {
         let center = VertexId::new();
         let source = VertexId::new();
         let target = VertexId::new();
@@ -1243,11 +1872,11 @@ mod tests {
                     .expect("the adversarial ordinary residual is finite"),
                 vec![0.0; 3]
             );
-            assert!(matches!(
-                verify_geometric_constraint_solution_v1(&pattern, &document, 1e-7),
-                Err(ConstraintSolveErrorV1::NonConvergent)
-            ));
-            assert!(matches!(
+            assert!(
+                verify_geometric_constraint_solution_v1(&pattern, &document, 1e-7).is_ok(),
+                "a real zero-residual counterexample must not be rejected by preflight"
+            );
+            assert!(
                 solve_geometric_constraints_with_drivers_v1(
                     &pattern,
                     &document,
@@ -1257,9 +1886,10 @@ mod tests {
                         (target, Point2::new(-minimum, 0.0)),
                     ],
                     ConstraintSolveLimitsV1::default(),
-                ),
-                Err(ConstraintSolveErrorV1::NonConvergent)
-            ));
+                )
+                .is_ok(),
+                "the fully driven zero-residual counterexample must converge"
+            );
         }
 
         let point_only = GeometricConstraintDocumentV1 {
@@ -1284,7 +1914,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_preflight_blocks_normal_radius_half_turn_neighbors_below_solver_tolerance() {
+    fn collinear_rotation_neighbors_defer_to_solver_tolerance() {
         let center = VertexId::new();
         let source = VertexId::new();
         let target = VertexId::new();
@@ -1347,11 +1977,11 @@ mod tests {
                     && ordinary_maximum < ConstraintSolveLimitsV1::default().residual_tolerance,
                 "the exact contradiction is smaller than the numerical acceptance tolerance"
             );
-            assert!(matches!(
-                verify_geometric_constraint_solution_v1(&pattern, &document, 1e-7),
-                Err(ConstraintSolveErrorV1::NonConvergent)
-            ));
-            assert!(matches!(
+            assert!(
+                verify_geometric_constraint_solution_v1(&pattern, &document, 1e-7).is_ok(),
+                "preflight must not override the verifier tolerance"
+            );
+            assert!(
                 solve_geometric_constraints_with_drivers_v1(
                     &pattern,
                     &document,
@@ -1361,9 +1991,10 @@ mod tests {
                         (target, Point2::new(-1.0, 0.0)),
                     ],
                     ConstraintSolveLimitsV1::default(),
-                ),
-                Err(ConstraintSolveErrorV1::NonConvergent)
-            ));
+                )
+                .is_ok(),
+                "preflight must not reject a fully driven within-tolerance solution"
+            );
             assert!(matches!(
                 solve_geometric_constraints_with_drivers_v1(
                     &pattern,
@@ -1455,11 +2086,11 @@ mod tests {
             near_zero_maximum <= ConstraintSolveLimitsV1::default().residual_tolerance,
             "the near-zero exact contradiction lies inside numerical tolerance"
         );
-        assert!(matches!(
-            verify_geometric_constraint_solution_v1(&near_zero_pattern, &near_zero_document, 1e-7,),
-            Err(ConstraintSolveErrorV1::NonConvergent)
-        ));
-        assert!(matches!(
+        assert!(
+            verify_geometric_constraint_solution_v1(&near_zero_pattern, &near_zero_document, 1e-7,)
+                .is_ok()
+        );
+        assert!(
             solve_geometric_constraints_with_drivers_v1(
                 &near_zero_pattern,
                 &near_zero_document,
@@ -1469,9 +2100,9 @@ mod tests {
                     (target, Point2::new(1.0_f64.next_up(), 0.0)),
                 ],
                 ConstraintSolveLimitsV1::default(),
-            ),
-            Err(ConstraintSolveErrorV1::NonConvergent)
-        ));
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1768,7 +2399,11 @@ mod tests {
                 )
                 .expect("extreme finite fixture prepares")
                 .preflight(),
-                crate::ConstraintPreflightV1::DirectConflict { .. }
+                crate::ConstraintPreflightV1::Unknown {
+                    reason:
+                        crate::GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                    ..
+                }
             ));
         }
     }

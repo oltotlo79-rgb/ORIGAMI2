@@ -310,6 +310,12 @@ impl<'pattern> GeometricConstraintSetV1<'pattern> {
     }
 }
 
+/// Stable V1 wire tags for direct-conflict output.
+///
+/// Some legacy variants remain for serialization compatibility even though
+/// their binary64 recognizers are now quarantined as solver-required
+/// candidates. Native output emits only variants accepted by the internal
+/// residual-proof allowlist.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DirectConstraintConflictKindV1 {
@@ -395,66 +401,32 @@ pub enum DirectConstraintConflictKindV1 {
         horizontal_edge: EdgeId,
         vertical_edge: EdgeId,
     },
-    /// Two rotational-symmetry constraints assign different angles to the same
-    /// role-ordered `center/source/target` triple while a real radius edge of
-    /// that triple carries a consistent positive [`GeometricConstraintKindV1::FixedLength`].
-    ///
-    /// Only the collapsed solution `source == center == target` satisfies both
-    /// rotations, because `det(Rot(alpha) - Rot(beta)) = 4 sin²((alpha - beta) / 2)`
-    /// is non-zero for `0 < alpha, beta < 360` with `alpha != beta`. The positive
-    /// fixed radius forbids that collapse, so the three constraints are jointly
-    /// unsatisfiable. Without such a radius witness the pair stays unchecked.
+    /// Legacy wire tag retained for compatibility. Distinct stored angles can
+    /// produce the same implemented binary64 rotation residual.
     DifferentRotationalSymmetryAnglesWithFixedRadius {
         center_vertex: VertexId,
         source_vertex: VertexId,
         target_vertex: VertexId,
         fixed_radius_edge: EdgeId,
     },
-    /// Two rotational-symmetry constraints use the same center with their
-    /// `source` and `target` roles reversed, but their stored binary64 angles
-    /// do not sum to one full turn. A real radius edge of that triple carries
-    /// a consistent positive [`GeometricConstraintKindV1::FixedLength`].
-    ///
-    /// If `target - center = Rot(alpha)(source - center)` and the inverse-role
-    /// constraint says `source - center = Rot(beta)(target - center)`, then
-    /// `source - center = Rot(alpha + beta)(source - center)`. Because both
-    /// angles are strictly between 0 and 360 degrees, a non-collapsed solution
-    /// exists only when their exact real sum is 360 degrees. The positive fixed
-    /// radius forbids the remaining collapse. A rounded sum of exactly 360 is
-    /// deliberately left unchecked, including nearby non-360 exact sums.
+    /// Legacy wire tag retained for compatibility. Exact stored-angle
+    /// composition is not a proof about the rounded trigonometric residual.
     NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius {
         center_vertex: VertexId,
         source_vertex: VertexId,
         target_vertex: VertexId,
         fixed_radius_edge: EdgeId,
     },
-    /// A mirror-symmetry point is constrained to lie on that same symmetry
-    /// axis while a real edge joining the mirrored vertex pair carries a
-    /// consistent positive [`GeometricConstraintKindV1::FixedLength`].
-    ///
-    /// Reflection fixes every point on its axis. Therefore, if either member
-    /// of a mirrored pair is on the axis, the mirror relation forces both
-    /// members to coincide. The positive fixed separation forbids precisely
-    /// that collapse. The axis edge and separation edge are matched by exact
-    /// IDs and exact pattern endpoints; current coordinates are never used as
-    /// evidence.
+    /// Legacy wire tag retained for compatibility. Independently rounded
+    /// mirror and point-on-line residuals can admit positive separation.
     MirrorSymmetryWithPointOnAxisAndFixedSeparation {
         first_vertex: VertexId,
         second_vertex: VertexId,
         axis_edge: EdgeId,
         fixed_separation_edge: EdgeId,
     },
-    /// A non-half-turn rotational-symmetry relation also constrains one
-    /// rotated endpoint to the real radius edge joining the center to the
-    /// other endpoint.
-    ///
-    /// `PointOnLine` uses a normalized line direction, so collapsing that
-    /// radius is non-convergent rather than a satisfying escape. With a
-    /// non-zero radius, a planar rotation through `0 < angle < 360` maps the
-    /// radius to a collinear vector only at 180 degrees. Therefore a stored
-    /// angle whose binary64 value is not exactly 180 degrees is unsatisfiable.
-    /// No current coordinate, epsilon, or geometrically unrelated edge is
-    /// used.
+    /// Legacy wire tag retained for compatibility. A stored non-half-turn can
+    /// round to an implemented identity or half-turn residual.
     RotationalSymmetryWithCollinearRadius {
         center_vertex: VertexId,
         source_vertex: VertexId,
@@ -466,10 +438,9 @@ pub enum DirectConstraintConflictKindV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DirectConstraintConflictV1 {
     conflict: DirectConstraintConflictKindV1,
-    /// Canonically sorted, duplicate-free minimal witness sufficient for this
-    /// contradiction. Fixed-pattern witnesses contain at most four IDs; the
-    /// separately work-bounded general ratio-graph witness contains at most
-    /// 256 IDs.
+    /// Canonically sorted, duplicate-free witness for an emitted, allowlisted
+    /// contradiction. Native preflight does not emit candidate witnesses for
+    /// the retained legacy variants.
     constraint_ids: Vec<ConstraintId>,
 }
 
@@ -519,8 +490,8 @@ pub const MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1: usize = 16;
 pub const MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1: usize =
     (1_usize << MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1) - 1;
 
-/// Sound but intentionally incomplete subset oracle over the exact direct
-/// contradiction theorems. `Unknown` never means satisfiable.
+/// Sound but intentionally incomplete subset oracle over the allowlisted
+/// direct contradictions. `Unknown` never means satisfiable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum BoundedDirectMusV1 {
@@ -1671,6 +1642,24 @@ fn observe_exact_nondegenerate_edge_use(
 std::thread_local! {
     static FIXED_LENGTH_SUMMARY_VISITS: std::cell::Cell<Option<usize>> =
         const { std::cell::Cell::new(None) };
+    static LAST_QUARANTINED_DIRECT_CONFLICTS: std::cell::RefCell<Vec<DirectConstraintConflictV1>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn begin_quarantined_direct_conflict_capture() {
+    LAST_QUARANTINED_DIRECT_CONFLICTS.with(|candidates| candidates.borrow_mut().clear());
+}
+
+#[cfg(test)]
+fn record_quarantined_direct_conflict(candidate: &DirectConstraintConflictV1) {
+    LAST_QUARANTINED_DIRECT_CONFLICTS
+        .with(|candidates| candidates.borrow_mut().push(candidate.clone()));
+}
+
+#[cfg(test)]
+fn last_quarantined_direct_conflicts() -> Vec<DirectConstraintConflictV1> {
+    LAST_QUARANTINED_DIRECT_CONFLICTS.with(|candidates| candidates.borrow().clone())
 }
 
 #[cfg(test)]
@@ -1706,7 +1695,7 @@ fn finish_fixed_length_summary_visit_count() -> usize {
     })
 }
 
-/// Exhaustively scans the finite set of direct contradiction rules.
+/// Exhaustively scans the finite set of direct candidate rules.
 ///
 /// With `N` prepared records and `E` validated pattern edges, total time is
 /// `O(E log E + N² + K log K)` and storage is `O(E + N + K)`, where `K` is
@@ -1719,8 +1708,13 @@ fn finish_fixed_length_summary_visit_count() -> usize {
 /// cross-product rescan of fixed-length groups and equal-length pairs.
 /// Point-on-line, mirror-axis, and angle-bisector edge references are also
 /// indexed once during that pass for exact non-degeneracy witnesses.
+/// Candidate relations outside the residual-proven allowlist are returned as
+/// solver-required instead of emitted as direct conflicts.
 #[must_use]
 pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> ConstraintPreflightV1 {
+    #[cfg(test)]
+    begin_quarantined_direct_conflict_capture();
+
     if set.constraints.len() > set.max_preflight_checks {
         return ConstraintPreflightV1::Unknown {
             reason: GeometricConstraintUnknownReasonV1::WorkLimitExceeded,
@@ -2035,8 +2029,9 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
             );
         }
     }
-    // Opposite ratio equations alone admit the shared zero-length solution.
-    // A positive fixed length is therefore part of every sound witness here.
+    // Retain this legacy candidate join for stable canonicalization. Its
+    // exact-rational premise is not a proof about rounded solver residuals, so
+    // the emission boundary below quarantines the result.
     for ((first, second), forward_assignments) in &ratios {
         if first >= second {
             continue;
@@ -2072,8 +2067,7 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
             );
         }
     }
-    // A directed three-ratio cycle admits the all-zero solution. One positive
-    // fixed length is therefore necessary and included in every sound witness.
+    // This legacy exact-ratio candidate is likewise quarantined before output.
     let mut consistent_outgoing: BTreeMap<CanonicalId, Vec<(CanonicalId, ScalarAssignment)>> =
         BTreeMap::new();
     for ((numerator, denominator), assignments) in &ratios {
@@ -2236,11 +2230,9 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
             );
         }
 
-        // The solver measures FixedAngle as abs(cross).atan2(dot), so an
-        // exactly horizontal/vertical pair is 90 degrees while both edges
-        // are non-degenerate. If either edge collapses, atan2(0, 0) is zero.
-        // Consequently every admitted angle other than 0 or 90 is impossible
-        // even though edge collapse itself is not forbidden here.
+        // Keep the legacy candidate classification, but do not promote it:
+        // signed zero and angle conversion/wrapping can make other stored
+        // angles satisfy the implemented binary64 residual.
         let angle = angles.iter().find(|assignment| {
             assignment.value.to_bits() != 0.0_f64.to_bits()
                 && assignment.value.to_bits() != 90.0_f64.to_bits()
@@ -2451,6 +2443,8 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
         }
     }
 
+    quarantine_unproven_direct_conflicts_v1(&mut conflicts, &mut unchecked);
+
     if conflicts.is_empty() {
         match general_equal_length_graph_conflict_v1(&equal_lengths, &fixed_lengths, &edge_ids) {
             Ok(Some(conflict)) => conflicts.push(conflict),
@@ -2473,7 +2467,12 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
             &vertex_ids,
             &edge_ids,
         ) {
-            Ok(Some(conflict)) => conflicts.push(conflict),
+            Ok(Some(candidate)) => {
+                debug_assert!(!is_proven_direct_conflict_v1(&candidate.conflict));
+                #[cfg(test)]
+                record_quarantined_direct_conflict(&candidate);
+                unchecked.extend(candidate.constraint_ids);
+            }
             Ok(None) => {}
             Err(()) => {
                 return ConstraintPreflightV1::Unknown {
@@ -2486,7 +2485,12 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
 
     if conflicts.is_empty() {
         match general_ratio_graph_conflict_v1(&ratios, &fixed_lengths, &edge_ids) {
-            Ok(Some(conflict)) => conflicts.push(conflict),
+            Ok(Some(candidate)) => {
+                debug_assert!(!is_proven_direct_conflict_v1(&candidate.conflict));
+                #[cfg(test)]
+                record_quarantined_direct_conflict(&candidate);
+                unchecked.extend(candidate.constraint_ids);
+            }
             Ok(None) => {}
             Err(()) => {
                 return ConstraintPreflightV1::Unknown {
@@ -2537,14 +2541,15 @@ fn consistent_scalar_assignment(assignments: &[ScalarAssignment]) -> Option<Scal
         })
 }
 
-/// One-sided proof that two stored binary64 degree values do not add to an
+/// One-sided test that two stored binary64 degree values do not add to an
 /// exact real full turn.
 ///
 /// IEEE-754 addition is correctly rounded. Because `360.0` is exactly
 /// representable, an exact real sum of 360 must round to the `360.0` bit
 /// pattern. Therefore a different rounded result proves the exact sum differs
-/// from 360. The converse is intentionally not used: a nearby non-360 exact
-/// sum may round to 360 and is left for the complete solver.
+/// from 360. This says nothing conclusive about the separately rounded
+/// trigonometric solver residual, so callers may use it only to form a
+/// quarantined solver candidate.
 fn binary64_angle_sum_is_proven_not_full_turn_v1(first: f64, second: f64) -> bool {
     debug_assert!(first.is_finite() && first > 0.0 && first < 360.0);
     debug_assert!(second.is_finite() && second > 0.0 && second < 360.0);
@@ -3495,6 +3500,33 @@ fn push_conflict(
     });
 }
 
+fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bool {
+    matches!(
+        conflict,
+        DirectConstraintConflictKindV1::DifferentFixedLengths { .. }
+            | DirectConstraintConflictKindV1::HorizontalAndVertical { .. }
+            | DirectConstraintConflictKindV1::EqualLengthWithDifferentFixedLengths { .. }
+            | DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent { .. }
+            | DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
+    )
+}
+
+fn quarantine_unproven_direct_conflicts_v1(
+    conflicts: &mut Vec<DirectConstraintConflictV1>,
+    unchecked: &mut Vec<ConstraintId>,
+) {
+    conflicts.retain(|candidate| {
+        if is_proven_direct_conflict_v1(&candidate.conflict) {
+            true
+        } else {
+            #[cfg(test)]
+            record_quarantined_direct_conflict(candidate);
+            unchecked.extend(candidate.constraint_ids.iter().copied());
+            false
+        }
+    });
+}
+
 /// Indexes real pattern edges by their canonical unordered endpoint pair.
 ///
 /// Constraint records only name edge IDs, so [`edge_id_lookup`] cannot prove
@@ -4202,21 +4234,51 @@ mod tests {
         }
     }
 
+    fn assert_solver_required(preflight: &ConstraintPreflightV1) {
+        assert!(matches!(
+            preflight,
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                unchecked_constraint_ids,
+            } if !unchecked_constraint_ids.is_empty()
+        ));
+    }
+
+    fn assert_no_proven_direct_mus(prepared: &GeometricConstraintSetV1<'_>) {
+        assert!(matches!(
+            find_bounded_direct_mus_v1(prepared),
+            BoundedDirectMusV1::Unknown { .. }
+        ));
+    }
+
+    // These helpers inspect quarantined legacy recognizer output only to keep
+    // its stable wire tags and canonical ordering covered. Public outcome
+    // assertions above still require solver-required and never treat these
+    // candidates as unsatisfiability certificates.
+    fn emitted_and_quarantined_conflicts(
+        preflight: &ConstraintPreflightV1,
+    ) -> Vec<DirectConstraintConflictV1> {
+        let mut candidates = match preflight {
+            ConstraintPreflightV1::DirectConflict { conflicts } => conflicts.clone(),
+            ConstraintPreflightV1::NoDirectConflict | ConstraintPreflightV1::Unknown { .. } => {
+                Vec::new()
+            }
+        };
+        candidates.extend(last_quarantined_direct_conflicts());
+        candidates
+    }
+
     fn rotation_conflicts(preflight: &ConstraintPreflightV1) -> Vec<DirectConstraintConflictV1> {
-        match preflight {
-            ConstraintPreflightV1::DirectConflict { conflicts } => conflicts
-                .iter()
-                .filter(|conflict| {
-                    matches!(
-                        conflict.conflict(),
-                        DirectConstraintConflictKindV1::
-                            DifferentRotationalSymmetryAnglesWithFixedRadius { .. }
-                    )
-                })
-                .cloned()
-                .collect(),
-            _ => Vec::new(),
-        }
+        emitted_and_quarantined_conflicts(preflight)
+            .into_iter()
+            .filter(|conflict| {
+                matches!(
+                    conflict.conflict(),
+                    DirectConstraintConflictKindV1::
+                        DifferentRotationalSymmetryAnglesWithFixedRadius { .. }
+                )
+            })
+            .collect()
     }
 
     fn only_rotation_conflict(
@@ -4224,27 +4286,25 @@ mod tests {
         raw: &GeometricConstraintDocumentV1,
     ) -> Option<DirectConstraintConflictV1> {
         let prepared = prepare(fixture, raw).expect("rotation fixture prepares");
-        let mut found = rotation_conflicts(&prepared.preflight());
+        let preflight = prepared.preflight();
+        assert_solver_required(&preflight);
+        let mut found = rotation_conflicts(&preflight);
         (found.len() == 1).then(|| found.remove(0))
     }
 
     fn inverse_rotation_conflicts(
         preflight: &ConstraintPreflightV1,
     ) -> Vec<DirectConstraintConflictV1> {
-        match preflight {
-            ConstraintPreflightV1::DirectConflict { conflicts } => conflicts
-                .iter()
-                .filter(|conflict| {
-                    matches!(
-                        conflict.conflict(),
-                        DirectConstraintConflictKindV1::
-                            NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius { .. }
-                    )
-                })
-                .cloned()
-                .collect(),
-            _ => Vec::new(),
-        }
+        emitted_and_quarantined_conflicts(preflight)
+            .into_iter()
+            .filter(|conflict| {
+                matches!(
+                    conflict.conflict(),
+                    DirectConstraintConflictKindV1::
+                        NonComplementaryInverseRotationalSymmetryAnglesWithFixedRadius { .. }
+                )
+            })
+            .collect()
     }
 
     fn only_inverse_rotation_conflict(
@@ -4252,25 +4312,23 @@ mod tests {
         raw: &GeometricConstraintDocumentV1,
     ) -> Option<DirectConstraintConflictV1> {
         let prepared = prepare(fixture, raw).expect("inverse rotation fixture prepares");
-        let mut found = inverse_rotation_conflicts(&prepared.preflight());
+        let preflight = prepared.preflight();
+        assert_solver_required(&preflight);
+        let mut found = inverse_rotation_conflicts(&preflight);
         (found.len() == 1).then(|| found.remove(0))
     }
 
     fn mirror_axis_conflicts(preflight: &ConstraintPreflightV1) -> Vec<DirectConstraintConflictV1> {
-        match preflight {
-            ConstraintPreflightV1::DirectConflict { conflicts } => conflicts
-                .iter()
-                .filter(|conflict| {
-                    matches!(
-                        conflict.conflict(),
-                        DirectConstraintConflictKindV1::
-                            MirrorSymmetryWithPointOnAxisAndFixedSeparation { .. }
-                    )
-                })
-                .cloned()
-                .collect(),
-            _ => Vec::new(),
-        }
+        emitted_and_quarantined_conflicts(preflight)
+            .into_iter()
+            .filter(|conflict| {
+                matches!(
+                    conflict.conflict(),
+                    DirectConstraintConflictKindV1::
+                        MirrorSymmetryWithPointOnAxisAndFixedSeparation { .. }
+                )
+            })
+            .collect()
     }
 
     fn only_mirror_axis_conflict(
@@ -4278,26 +4336,24 @@ mod tests {
         raw: &GeometricConstraintDocumentV1,
     ) -> Option<DirectConstraintConflictV1> {
         let prepared = prepare(fixture, raw).expect("mirror-axis fixture prepares");
-        let mut found = mirror_axis_conflicts(&prepared.preflight());
+        let preflight = prepared.preflight();
+        assert_solver_required(&preflight);
+        let mut found = mirror_axis_conflicts(&preflight);
         (found.len() == 1).then(|| found.remove(0))
     }
 
     fn collinear_rotation_conflicts(
         preflight: &ConstraintPreflightV1,
     ) -> Vec<DirectConstraintConflictV1> {
-        match preflight {
-            ConstraintPreflightV1::DirectConflict { conflicts } => conflicts
-                .iter()
-                .filter(|conflict| {
-                    matches!(
-                        conflict.conflict(),
-                        DirectConstraintConflictKindV1::RotationalSymmetryWithCollinearRadius { .. }
-                    )
-                })
-                .cloned()
-                .collect(),
-            _ => Vec::new(),
-        }
+        emitted_and_quarantined_conflicts(preflight)
+            .into_iter()
+            .filter(|conflict| {
+                matches!(
+                    conflict.conflict(),
+                    DirectConstraintConflictKindV1::RotationalSymmetryWithCollinearRadius { .. }
+                )
+            })
+            .collect()
     }
 
     fn only_collinear_rotation_conflict(
@@ -4305,7 +4361,9 @@ mod tests {
         raw: &GeometricConstraintDocumentV1,
     ) -> Option<DirectConstraintConflictV1> {
         let prepared = prepare(fixture, raw).expect("collinear-rotation fixture prepares");
-        let mut found = collinear_rotation_conflicts(&prepared.preflight());
+        let preflight = prepared.preflight();
+        assert_solver_required(&preflight);
+        let mut found = collinear_rotation_conflicts(&preflight);
         (found.len() == 1).then(|| found.remove(0))
     }
 
@@ -4352,15 +4410,7 @@ mod tests {
             );
 
             let prepared = prepare(&fixture, &raw).expect("the exact witness prepares");
-            let BoundedDirectMusV1::ProvenUnsatisfiable {
-                constraint_ids,
-                oracle_calls,
-            } = find_bounded_direct_mus_v1(&prepared)
-            else {
-                panic!("the two-record collinear rotation must feed the bounded MUS oracle")
-            };
-            assert_eq!(constraint_ids, conflict.constraint_ids());
-            assert!(oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1);
+            assert_no_proven_direct_mus(&prepared);
         }
     }
 
@@ -4633,15 +4683,7 @@ mod tests {
                 sorted_ids(&records.map(|record| record.id))
             );
             let prepared = prepare(&fixture, &raw).expect("the exact witness prepares");
-            let BoundedDirectMusV1::ProvenUnsatisfiable {
-                constraint_ids,
-                oracle_calls,
-            } = find_bounded_direct_mus_v1(&prepared)
-            else {
-                panic!("the three-record mirror contradiction must feed the bounded MUS oracle")
-            };
-            assert_eq!(constraint_ids, conflict.constraint_ids());
-            assert!(oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1);
+            assert_no_proven_direct_mus(&prepared);
         }
     }
 
@@ -5202,16 +5244,9 @@ mod tests {
             let prepared = prepare(&fixture, &raw).expect("padded documents prepare");
             let conflict = only_rotation_conflict(&fixture, &raw)
                 .expect("padding never hides the rotation witness");
-            let BoundedDirectMusV1::ProvenUnsatisfiable {
-                constraint_ids,
-                oracle_calls,
-            } = find_bounded_direct_mus_v1(&prepared)
-            else {
-                panic!("a direct conflict is minimizable within the bounded oracle");
-            };
+            assert_no_proven_direct_mus(&prepared);
+            let constraint_ids = conflict.constraint_ids().to_vec();
             assert_eq!(constraint_ids.len(), 3);
-            assert_eq!(constraint_ids, conflict.constraint_ids().to_vec());
-            assert!(oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1);
             if let Some(previous) = &expected {
                 assert_eq!(&constraint_ids, previous);
             } else {
@@ -6258,22 +6293,8 @@ mod tests {
         let records = [fixed.clone(), equal.clone(), ratio.clone()];
         let prepared = prepare(&fixture, &document(records.clone()))
             .expect("the individually valid constraints prepare");
-        let ConstraintPreflightV1::DirectConflict { conflicts } = prepared.preflight() else {
-            panic!("equal lengths and a non-unit ratio contradict a positive fixed length");
-        };
-        assert_eq!(conflicts.len(), 1);
-        let mut canonical_edges = [fixture.edges[0], fixture.edges[1]];
-        canonical_edges.sort_unstable_by_key(EdgeId::canonical_bytes);
-        assert_eq!(
-            conflicts[0].conflict(),
-            &DirectConstraintConflictKindV1::EqualLengthWithNonUnitRatioAndFixedLength {
-                first_edge: canonical_edges[0],
-                second_edge: canonical_edges[1],
-            }
-        );
-        let mut expected_ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
-        expected_ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
-        assert_eq!(conflicts[0].constraint_ids(), expected_ids);
+        assert_solver_required(&prepared.preflight());
+        assert_no_proven_direct_mus(&prepared);
 
         for removed in 0..records.len() {
             let subset = records
@@ -6313,22 +6334,8 @@ mod tests {
         let records = [fixed.clone(), forward.clone(), reverse.clone()];
         let prepared = prepare(&fixture, &document(records.clone()))
             .expect("the individually valid constraints prepare");
-        let ConstraintPreflightV1::DirectConflict { conflicts } = prepared.preflight() else {
-            panic!("non-reciprocal ratios contradict a positive fixed edge length");
-        };
-        assert_eq!(conflicts.len(), 1);
-        let mut canonical_edges = [fixture.edges[0], fixture.edges[1]];
-        canonical_edges.sort_unstable_by_key(EdgeId::canonical_bytes);
-        assert_eq!(
-            conflicts[0].conflict(),
-            &DirectConstraintConflictKindV1::NonReciprocalLengthRatiosWithFixedLength {
-                first_edge: canonical_edges[0],
-                second_edge: canonical_edges[1],
-            }
-        );
-        let mut expected_ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
-        expected_ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
-        assert_eq!(conflicts[0].constraint_ids(), expected_ids);
+        assert_solver_required(&prepared.preflight());
+        assert_no_proven_direct_mus(&prepared);
 
         for removed in 0..records.len() {
             let subset = records
@@ -6521,7 +6528,7 @@ mod tests {
         let ConstraintPreflightV1::DirectConflict { conflicts } = prepared.preflight() else {
             panic!("different direct scalar assignments must conflict");
         };
-        assert_eq!(conflicts.len(), 3);
+        assert_eq!(conflicts.len(), 1);
         for conflict in &conflicts {
             assert!(
                 conflict
@@ -6536,18 +6543,11 @@ mod tests {
                 DirectConstraintConflictKindV1::DifferentFixedLengths { .. }
             ) && same_ids(conflict.constraint_ids(), &[length_a.id, length_b.id])
         }));
-        assert!(conflicts.iter().any(|conflict| {
-            matches!(
-                conflict.conflict(),
-                DirectConstraintConflictKindV1::DifferentFixedAngles { .. }
-            ) && same_ids(conflict.constraint_ids(), &[angle_a.id, angle_b.id])
-        }));
-        assert!(conflicts.iter().any(|conflict| {
-            matches!(
-                conflict.conflict(),
-                DirectConstraintConflictKindV1::DifferentLengthRatios { .. }
-            ) && same_ids(conflict.constraint_ids(), &[ratio_a.id, ratio_b.id])
-        }));
+        assert!(
+            conflicts
+                .iter()
+                .all(|conflict| is_proven_direct_conflict_v1(conflict.conflict()))
+        );
     }
 
     #[test]
@@ -6887,23 +6887,8 @@ mod tests {
             &document([parallel.clone(), vertical.clone(), horizontal.clone()]),
         )
         .expect("general same-node parallel witness");
-        assert!(matches!(
-            without_point.preflight(),
-            ConstraintPreflightV1::DirectConflict { ref conflicts }
-                if conflicts.len() == 1
-                    && matches!(
-                        conflicts[0].conflict(),
-                        DirectConstraintConflictKindV1::
-                            PerpendicularOrientationsInParallelComponent {
-                                parallel_constraint_count: 1,
-                                ..
-                            }
-                    )
-                    && same_ids(
-                        conflicts[0].constraint_ids(),
-                        &[horizontal.id, vertical.id, parallel.id],
-                    )
-        ));
+        assert_solver_required(&without_point.preflight());
+        assert_no_proven_direct_mus(&without_point);
     }
 
     #[test]
@@ -6943,10 +6928,11 @@ mod tests {
             conflict.conflict(),
             DirectConstraintConflictKindV1::EqualLengthWithDifferentFixedLengths { .. }
         )));
-        assert!(conflicts.iter().any(|conflict| matches!(
-            conflict.conflict(),
-            DirectConstraintConflictKindV1::ParallelWithFixedNonParallelAngle { .. }
-        )));
+        assert!(
+            conflicts
+                .iter()
+                .all(|conflict| is_proven_direct_conflict_v1(conflict.conflict()))
+        );
     }
 
     #[test]
@@ -7017,10 +7003,15 @@ mod tests {
             ],
         ];
 
-        for records in cases {
+        for (index, records) in cases.into_iter().enumerate() {
             let prepared = prepare(&fixture, &document(records.clone())).expect("valid cause");
+            if index >= 2 {
+                assert_solver_required(&prepared.preflight());
+                assert_no_proven_direct_mus(&prepared);
+                continue;
+            }
             let ConstraintPreflightV1::DirectConflict { conflicts } = prepared.preflight() else {
-                panic!("complete direct witness must prove a conflict");
+                panic!("the allowlisted direct witness must prove a conflict");
             };
             assert_eq!(conflicts.len(), 1);
             let cause = &conflicts[0];
@@ -7100,7 +7091,7 @@ mod tests {
             denominator_edge: fixture.edges[1],
             ratio: 3.0,
         });
-        let conflict = prepare(
+        let prepared = prepare(
             &fixture,
             &document([
                 numerator.clone(),
@@ -7108,22 +7099,9 @@ mod tests {
                 incompatible_ratio.clone(),
             ]),
         )
-        .expect("exactly incompatible fixed lengths and ratio")
-        .preflight();
-        let ConstraintPreflightV1::DirectConflict { conflicts } = conflict else {
-            panic!("an exact binary64 product mismatch must prove a direct conflict");
-        };
-        assert_eq!(conflicts.len(), 1);
-        assert_eq!(
-            conflicts[0].conflict(),
-            &DirectConstraintConflictKindV1::LengthRatioWithIncompatibleFixedLengths {
-                numerator_edge: fixture.edges[0],
-                denominator_edge: fixture.edges[1],
-            }
-        );
-        let mut expected_ids = vec![numerator.id, denominator.id, incompatible_ratio.id];
-        canonicalize_constraint_ids(&mut expected_ids);
-        assert_eq!(conflicts[0].constraint_ids(), expected_ids);
+        .expect("exactly incompatible fixed lengths and ratio");
+        assert_solver_required(&prepared.preflight());
+        assert_no_proven_direct_mus(&prepared);
     }
 
     #[test]
@@ -7156,27 +7134,13 @@ mod tests {
             denominator_edge: fixture.edges[0],
             ratio: 0.25,
         });
-        let conflict = prepare(
+        let prepared = prepare(
             &fixture,
             &document([fixed.clone(), first.clone(), second.clone(), third.clone()]),
         )
-        .expect("incompatible directed ratio cycle")
-        .preflight();
-        let ConstraintPreflightV1::DirectConflict { conflicts } = conflict else {
-            panic!("a non-unit cycle with a positive fixed length must conflict");
-        };
-        let cycle = conflicts
-            .iter()
-            .find(|conflict| {
-                matches!(
-                    conflict.conflict(),
-                    DirectConstraintConflictKindV1::NonUnitLengthRatioCycleWithFixedLength { .. }
-                )
-            })
-            .expect("cycle conflict");
-        let mut expected_ids = vec![fixed.id, first.id, second.id, third.id];
-        canonicalize_constraint_ids(&mut expected_ids);
-        assert_eq!(cycle.constraint_ids(), expected_ids);
+        .expect("incompatible directed ratio cycle");
+        assert_solver_required(&prepared.preflight());
+        assert_no_proven_direct_mus(&prepared);
 
         let without_fixed = prepare(&fixture, &document([first, second, third]))
             .expect("zero-length solution remains admissible")
@@ -7252,29 +7216,10 @@ mod tests {
                 ratio: 0.1,
             }),
         ];
-        let ConstraintPreflightV1::DirectConflict { conflicts } =
-            prepare(&fixture, &document(records.clone()))
-                .expect("bounded inconsistent ratio graph")
-                .preflight()
-        else {
-            panic!("positive anchored inconsistent component must conflict");
-        };
-        assert_eq!(conflicts.len(), 1);
-        assert!(matches!(
-            conflicts[0].conflict(),
-            DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength {
-                fixed_edge,
-                ratio_constraint_count: 5,
-            } if *fixed_edge == fixture.edges[4]
-        ));
-
-        assert_eq!(conflicts[0].constraint_ids().len(), records.len());
-        assert!(
-            conflicts[0]
-                .constraint_ids()
-                .windows(2)
-                .all(|pair| pair[0].canonical_bytes() < pair[1].canonical_bytes())
-        );
+        let prepared = prepare(&fixture, &document(records.clone()))
+            .expect("bounded inconsistent ratio graph");
+        assert_solver_required(&prepared.preflight());
+        assert_no_proven_direct_mus(&prepared);
 
         let duplicate_fixed = record(GeometricConstraintKindV1::FixedLength {
             edge: fixture.edges[4],
@@ -7295,33 +7240,12 @@ mod tests {
             .expect("source-reordered equal duplicate assignments")
             .preflight();
         assert_eq!(forward, reversed);
+        assert_solver_required(&forward);
 
-        let ConstraintPreflightV1::DirectConflict {
-            conflicts: duplicate_conflicts,
-        } = forward
-        else {
-            panic!("duplicates preserve the graph conflict");
-        };
-        let selected = duplicate_conflicts[0].constraint_ids();
-        let expected_fixed =
-            if records[0].id.canonical_bytes() < duplicate_fixed.id.canonical_bytes() {
-                records[0].id
-            } else {
-                duplicate_fixed.id
-            };
-        let expected_ratio =
-            if records[1].id.canonical_bytes() < duplicate_ratio.id.canonical_bytes() {
-                records[1].id
-            } else {
-                duplicate_ratio.id
-            };
-        assert!(selected.contains(&expected_fixed));
-        assert!(selected.contains(&expected_ratio));
-
-        for removed in conflicts[0].constraint_ids() {
+        for removed in records.iter().map(|record| record.id) {
             let subset = records
                 .iter()
-                .filter(|record| record.id != *removed)
+                .filter(|record| record.id != removed)
                 .cloned()
                 .collect::<Vec<_>>();
             assert!(!matches!(
@@ -7508,24 +7432,10 @@ mod tests {
             forward_b.clone(),
             reverse_b.clone(),
         ];
-        let ConstraintPreflightV1::DirectConflict { conflicts } =
-            prepare(&fixture, &document(records))
-                .expect("two inconsistent ratio cycles connected to one remote fixed edge")
-                .preflight()
-        else {
-            panic!("one canonical general graph conflict must be selected");
-        };
-        assert_eq!(conflicts.len(), 1);
-        let mut first_ids = vec![fixed.id, connector_a.id, forward_a.id, reverse_a.id];
-        let mut second_ids = vec![fixed.id, connector_b.id, forward_b.id, reverse_b.id];
-        canonicalize_constraint_ids(&mut first_ids);
-        canonicalize_constraint_ids(&mut second_ids);
-        let expected = if canonical_id_slice_cmp(&first_ids, &second_ids).is_lt() {
-            first_ids
-        } else {
-            second_ids
-        };
-        assert_eq!(conflicts[0].constraint_ids(), expected);
+        let prepared = prepare(&fixture, &document(records))
+            .expect("two inconsistent ratio cycles connected to one remote fixed edge");
+        assert_solver_required(&prepared.preflight());
+        assert_no_proven_direct_mus(&prepared);
 
         let reverse_kind = |record: &GeometricConstraintRecordV1| {
             let GeometricConstraintKindV1::LengthRatio {
@@ -7911,21 +7821,10 @@ mod tests {
                 edge: fixture.edges[2],
             }),
         ];
-        let ConstraintPreflightV1::DirectConflict { conflicts } =
-            prepare(&fixture, &document(path_records.clone()))
-                .expect("perpendicular orientations connected by a parallel path")
-                .preflight()
-        else {
-            panic!("parallel path must conflict");
-        };
-        assert_eq!(conflicts.len(), 1);
-        assert!(matches!(
-            conflicts[0].conflict(),
-            DirectConstraintConflictKindV1::PerpendicularOrientationsInParallelComponent {
-                parallel_constraint_count: 2,
-                ..
-            }
-        ));
+        let prepared = prepare(&fixture, &document(path_records.clone()))
+            .expect("perpendicular orientations connected by a parallel path");
+        assert_solver_required(&prepared.preflight());
+        assert_no_proven_direct_mus(&prepared);
         let mut duplicated = path_records.clone();
         duplicated.extend([
             record(GeometricConstraintKindV1::Parallel {
@@ -7944,10 +7843,11 @@ mod tests {
             .expect("source-reordered duplicate parallel graph labels")
             .preflight();
         assert_eq!(forward, reverse);
-        for removed in conflicts[0].constraint_ids() {
+        assert_solver_required(&forward);
+        for removed in path_records.iter().map(|record| record.id) {
             let subset = path_records
                 .iter()
-                .filter(|record| record.id != *removed)
+                .filter(|record| record.id != removed)
                 .cloned()
                 .collect::<Vec<_>>();
             assert!(!matches!(
@@ -7970,20 +7870,10 @@ mod tests {
                 second_edge: fixture.edges[1],
             }),
         ];
-        let ConstraintPreflightV1::DirectConflict { conflicts } =
-            prepare(&fixture, &document(same_node))
-                .expect("same-node labels made nondegenerate by incident parallel constraint")
-                .preflight()
-        else {
-            panic!("same-node labels must not be lost by single-owner BFS");
-        };
-        assert!(matches!(
-            conflicts[0].conflict(),
-            DirectConstraintConflictKindV1::PerpendicularOrientationsInParallelComponent {
-                parallel_constraint_count: 1,
-                ..
-            }
-        ));
+        let same_node = prepare(&fixture, &document(same_node))
+            .expect("same-node labels made nondegenerate by incident parallel constraint");
+        assert_solver_required(&same_node.preflight());
+        assert_no_proven_direct_mus(&same_node);
 
         GENERAL_PARALLEL_TEST_WORK_LIMIT.with(|limit| {
             assert_eq!(
@@ -8114,17 +8004,7 @@ mod tests {
             .expect("source-reordered parallel diamond")
             .preflight();
         assert_eq!(forward, reverse);
-        let ConstraintPreflightV1::DirectConflict { conflicts } = forward else {
-            panic!("parallel diamond must conflict");
-        };
-        let mut expected = vec![
-            horizontal.id,
-            vertical.id,
-            parallel_records[0].id,
-            parallel_records[1].id,
-        ];
-        canonicalize_constraint_ids(&mut expected);
-        assert_eq!(conflicts[0].constraint_ids(), expected);
+        assert_solver_required(&forward);
     }
 
     #[test]
@@ -8149,20 +8029,11 @@ mod tests {
             second_parallel.clone(),
             angle.clone(),
         ];
-        let ConstraintPreflightV1::DirectConflict { conflicts } =
-            prepare(&fixture, &document(records.clone()))
-                .expect("nonparallel fixed angle inside a parallel component")
-                .preflight()
-        else {
-            panic!("parallel path forces angle 0 or 180");
-        };
-        assert!(matches!(
-            conflicts[0].conflict(),
-            DirectConstraintConflictKindV1::NonParallelFixedAngleInParallelComponent {
-                parallel_constraint_count: 2,
-                ..
-            }
-        ));
+        let prepared = prepare(&fixture, &document(records.clone()))
+            .expect("nonparallel fixed angle inside a parallel component");
+        let baseline = prepared.preflight();
+        assert_solver_required(&baseline);
+        assert_no_proven_direct_mus(&prepared);
         let mut reversed_angle = angle.clone();
         reversed_angle.constraint = GeometricConstraintKindV1::FixedAngle {
             vertex: fixture.vertices[0],
@@ -8181,14 +8052,12 @@ mod tests {
             )
             .expect("operand-reversed fixed angle")
             .preflight(),
-            ConstraintPreflightV1::DirectConflict {
-                conflicts: conflicts.clone(),
-            }
+            baseline
         );
-        for removed in conflicts[0].constraint_ids() {
+        for removed in records.iter().map(|record| record.id) {
             let subset = records
                 .iter()
-                .filter(|record| record.id != *removed)
+                .filter(|record| record.id != removed)
                 .cloned()
                 .collect::<Vec<_>>();
             assert!(!matches!(
@@ -8246,24 +8115,21 @@ mod tests {
             ConstraintPreflightV1::DirectConflict { .. }
         ));
         for incompatible in [f64::from_bits(1), f64::from_bits(180.0_f64.to_bits() - 1)] {
-            assert!(matches!(
-                prepare(
-                    &fixture,
-                    &document([
-                        first_parallel.clone(),
-                        second_parallel.clone(),
-                        record(GeometricConstraintKindV1::FixedAngle {
-                            vertex: fixture.vertices[0],
-                            first_edge: fixture.edges[0],
-                            second_edge: fixture.edges[2],
-                            angle_degrees: incompatible,
-                        }),
-                    ]),
-                )
-                .expect("one-ULP incompatible angle")
-                .preflight(),
-                ConstraintPreflightV1::DirectConflict { .. }
-            ));
+            let prepared = prepare(
+                &fixture,
+                &document([
+                    first_parallel.clone(),
+                    second_parallel.clone(),
+                    record(GeometricConstraintKindV1::FixedAngle {
+                        vertex: fixture.vertices[0],
+                        first_edge: fixture.edges[0],
+                        second_edge: fixture.edges[2],
+                        angle_degrees: incompatible,
+                    }),
+                ]),
+            )
+            .expect("one-ULP incompatible angle");
+            assert_solver_required(&prepared.preflight());
         }
 
         let no_path = prepare(
@@ -8377,12 +8243,7 @@ mod tests {
             .expect("reordered fixed-angle parallel diamond")
             .preflight();
         assert_eq!(forward, reverse);
-        let ConstraintPreflightV1::DirectConflict { conflicts } = forward else {
-            panic!("fixed-angle parallel diamond must conflict");
-        };
-        let mut expected = vec![angle.id, parallels[0].id, parallels[1].id];
-        canonicalize_constraint_ids(&mut expected);
-        assert_eq!(conflicts[0].constraint_ids(), expected);
+        assert_solver_required(&forward);
     }
 
     #[test]
@@ -8707,29 +8568,8 @@ mod tests {
                 })
             }));
             let prepared = prepare(&fixture, &document(records)).unwrap();
-            let BoundedDirectMusV1::ProvenUnsatisfiable { constraint_ids, .. } =
-                find_bounded_direct_mus_v1(&prepared)
-            else {
-                panic!("same orientation has exact angle zero or pi only")
-            };
-            assert_eq!(constraint_ids.len(), 3);
-            for removed in &constraint_ids {
-                let constraints = prepared
-                    .constraints
-                    .iter()
-                    .filter(|record| constraint_ids.contains(&record.id) && record.id != *removed)
-                    .cloned()
-                    .collect();
-                let subset = GeometricConstraintSetV1 {
-                    source_pattern: &fixture.pattern,
-                    constraints,
-                    max_preflight_checks: prepared.max_preflight_checks,
-                };
-                assert!(!matches!(
-                    subset.preflight(),
-                    ConstraintPreflightV1::DirectConflict { .. }
-                ));
-            }
+            assert_solver_required(&prepared.preflight());
+            assert_no_proven_direct_mus(&prepared);
         }
     }
 
@@ -8767,10 +8607,7 @@ mod tests {
             ];
             let prepared = prepare(&fixture, &document(records.clone())).unwrap();
             let expected = prepared.preflight();
-            assert!(matches!(
-                expected,
-                ConstraintPreflightV1::DirectConflict { .. }
-            ));
+            assert_solver_required(&expected);
 
             records.reverse();
             let permuted = prepare(&fixture, &document(records)).unwrap();
@@ -8828,29 +8665,8 @@ mod tests {
                 })
             }));
             let prepared = prepare(&fixture, &document(records)).unwrap();
-            let BoundedDirectMusV1::ProvenUnsatisfiable { constraint_ids, .. } =
-                find_bounded_direct_mus_v1(&prepared)
-            else {
-                panic!("an exact horizontal/vertical pair can only measure zero or 90 degrees")
-            };
-            assert_eq!(constraint_ids.len(), 3);
-            for removed in &constraint_ids {
-                let constraints = prepared
-                    .constraints
-                    .iter()
-                    .filter(|record| constraint_ids.contains(&record.id) && record.id != *removed)
-                    .cloned()
-                    .collect();
-                let subset = GeometricConstraintSetV1 {
-                    source_pattern: &fixture.pattern,
-                    constraints,
-                    max_preflight_checks: prepared.max_preflight_checks,
-                };
-                assert!(!matches!(
-                    subset.preflight(),
-                    ConstraintPreflightV1::DirectConflict { .. }
-                ));
-            }
+            assert_solver_required(&prepared.preflight());
+            assert_no_proven_direct_mus(&prepared);
         }
     }
 
@@ -8903,16 +8719,7 @@ mod tests {
         let expected = prepare(&fixture, &document(records.clone()))
             .unwrap()
             .preflight();
-        let ConstraintPreflightV1::DirectConflict { conflicts } = &expected else {
-            panic!("180 degrees is neither the degenerate zero nor the non-degenerate right angle")
-        };
-        assert!(conflicts.iter().any(|conflict| matches!(
-            conflict.conflict(),
-            DirectConstraintConflictKindV1::PerpendicularOrientationsWithFixedNonRightAngle {
-                horizontal_edge,
-                vertical_edge,
-            } if *horizontal_edge == fixture.edges[1] && *vertical_edge == fixture.edges[0]
-        )));
+        assert_solver_required(&expected);
 
         records.reverse();
         let permuted = prepare(&fixture, &document(records)).unwrap().preflight();

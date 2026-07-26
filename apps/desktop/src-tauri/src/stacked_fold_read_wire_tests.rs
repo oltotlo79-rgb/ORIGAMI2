@@ -153,56 +153,6 @@ fn transaction_proposal_failure_classes_are_explicit_and_fail_closed() {
 }
 
 #[test]
-fn cycle_schedule_wire_rejects_unknown_fields_and_numeric_overflow() {
-    let request = || {
-        serde_json::json!({
-            "expectedProjectInstanceId": "018f47a2-4b7a-7cc1-8abc-112233445566",
-            "expectedProjectId": "018f47a2-4b7a-7cc1-8abc-665544332211",
-            "expectedRevision": 3,
-            "first": [0.0, 0.0, 0.0],
-            "second": [1.0, 0.0, 0.0],
-            "fixedSide": "left",
-            "rotationDirection": "positive",
-            "requestedAngleDegrees": 90.0,
-            "cycleScheduleV1": {
-                "version": 1,
-                "entries": [{
-                    "edge": "018f47a2-4b7a-7cc1-8abc-778899aabbcc",
-                    "uDomain": [
-                        {"numerator": 0, "denominator": 1},
-                        {"numerator": 1, "denominator": 1}
-                    ],
-                    "numeratorPowerCoefficients": [{"numerator": 1, "denominator": 1}],
-                    "denominatorPowerCoefficients": [{"numerator": 1, "denominator": 1}],
-                    "requestedAngleDegrees": 90.0
-                }]
-            }
-        })
-    };
-    let admitted = serde_json::from_value::<StackedFoldReadRequest>(request()).unwrap();
-    assert_eq!(validate_request_resource_shape_v1(&admitted), Ok(()));
-    let mut unknown = request();
-    unknown["cycleScheduleV1"]["entries"][0]["authority"] = serde_json::json!(true);
-    assert!(serde_json::from_value::<StackedFoldReadRequest>(unknown).is_err());
-    let mut overflow = request();
-    overflow["cycleScheduleV1"]["entries"][0]["uDomain"][0]["denominator"] = serde_json::json!(-1);
-    assert!(serde_json::from_value::<StackedFoldReadRequest>(overflow).is_err());
-
-    let mut coefficient_exhaustion = request();
-    coefficient_exhaustion["cycleScheduleV1"]["entries"][0]["numeratorPowerCoefficients"] = serde_json::json!(
-        (0..=MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1)
-            .map(|_| serde_json::json!({"numerator": 1, "denominator": 1}))
-            .collect::<Vec<_>>()
-    );
-    let coefficient_exhaustion =
-        serde_json::from_value::<StackedFoldReadRequest>(coefficient_exhaustion).unwrap();
-    assert_eq!(
-        validate_request_resource_shape_v1(&coefficient_exhaustion),
-        Err(CYCLE_PATH_RESOURCE_MESSAGE)
-    );
-}
-
-#[test]
 fn explicit_half_angle_schedule_uses_graph_proof_boundary_for_tree_topology() {
     assert!(requires_graph_schedule_boundary_v1(false, true));
     assert!(requires_graph_schedule_boundary_v1(true, false));

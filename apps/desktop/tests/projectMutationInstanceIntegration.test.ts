@@ -10,11 +10,13 @@ const instructionPanel = source('../src/components/InstructionTimelinePanel.tsx'
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
 const beginnerDesignNative = source('../src-tauri/src/beginner_design_commands.rs')
+const geometricConstraintNative = source('../src-tauri/src/geometric_constraint_commands.rs')
 const patternEditNative = source('../src-tauri/src/pattern_edit_commands.rs')
 const projectLifecycleNative = source('../src-tauri/src/project_lifecycle_commands.rs')
 const nativeMutationSources = [
   native,
   beginnerDesignNative,
+  geometricConstraintNative,
   patternEditNative,
   projectLifecycleNative,
 ] as const

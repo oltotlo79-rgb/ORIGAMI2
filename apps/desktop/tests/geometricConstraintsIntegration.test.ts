@@ -10,7 +10,9 @@ const app = source('../src/App.tsx')
 const panel = source('../src/components/GeometricConstraintPanel.tsx')
 const panelText = source('../src/lib/geometricConstraintPanelText.ts')
 const client = source('../src/lib/coreClient.ts')
-const native = source('../src-tauri/src/lib.rs')
+const nativeRoot = source('../src-tauri/src/lib.rs')
+const nativeAnalysis = source('../src-tauri/src/geometric_constraint_analysis.rs')
+const nativeCommands = source('../src-tauri/src/geometric_constraint_commands.rs')
 const nativeTests = source('../src-tauri/src/tests.rs')
 const editor = source('../../../crates/ori-core/src/editor.rs')
 const formats = source('../../../crates/ori-formats/src/lib.rs')
@@ -24,7 +26,11 @@ test('constraint commands use instance, document, and revision bindings end to e
     'remove_geometric_constraint',
   ]) {
     assert.match(client, new RegExp(`'${command}'`, 'u'))
-    assert.match(native, new RegExp(`\\n\\s*${command},`, 'u'))
+    assert.match(nativeRoot, new RegExp(`\\n\\s*${command},`, 'u'))
+    const implementation = command.includes('analysis') || command.startsWith('analyze_')
+      ? nativeAnalysis
+      : nativeCommands
+    assert.match(implementation, new RegExp(`fn ${command}\\(`, 'u'))
   }
   for (const clientFunction of [
     functionSection(client, 'export function analyzeGeometricConstraints(', 'export function cancelGeometricConstraintAnalysis('),
@@ -43,13 +49,13 @@ test('constraint commands use instance, document, and revision bindings end to e
     assert.match(clientFunction, /requestGenerationId/u)
   }
   assert.match(
-    native,
+    nativeAnalysis,
     /ensure_project_expectation\(\s*project,\s*ProjectExpectation::new\(\s*expected_project_instance_id,\s*expected_project_id,\s*expected_revision,\s*\),\s*\)\?/u,
   )
   const workerGate = functionSection(
-    native,
+    nativeAnalysis,
     'impl GeometricConstraintWorkerGate {',
-    'struct GeometricConstraintWorkerPermit {',
+    'pub(super) struct GeometricConstraintWorkerPermit {',
   )
   assert.match(
     workerGate,
@@ -68,11 +74,11 @@ test('constraint commands use instance, document, and revision bindings end to e
     /\.all\(\|candidate\| \*candidate != key\)[\s\S]*?state\.pre_cancelled\.len\(\) >= MAX_GEOMETRIC_CONSTRAINT_PRE_CANCELLED_REQUESTS[\s\S]*?state\.pre_cancelled\.pop_front\(\);[\s\S]*?state\.pre_cancelled\.push_back\(key\);/u,
   )
   assert.match(
-    native,
+    nativeAnalysis,
     /const MAX_GEOMETRIC_CONSTRAINT_PRE_CANCELLED_REQUESTS: usize = 64;/u,
   )
   assert.match(
-    native,
+    nativeAnalysis,
     /fn cancel_geometric_constraint_analysis\(\s*state: State<'_, AppState>,\s*expected_project_instance_id: ProjectId,\s*expected_project_id: ProjectId,\s*expected_revision: u64,\s*request_generation_id: ProjectId,\s*\) -> bool \{[\s\S]*?state\.cancel_geometric_constraint_worker\(\s*GeometricConstraintAnalysisBinding \{\s*project_instance_id: expected_project_instance_id,\s*project_id: expected_project_id,\s*revision: expected_revision,\s*\},\s*request_generation_id,\s*\)/u,
   )
   assert.match(
@@ -95,10 +101,10 @@ test('constraints are editor-owned, dirty-tracked, snapshotted, and persisted', 
   assert.match(editor, /geometric_constraints:\s*GeometricConstraintDocumentV1/u)
   assert.match(editor, /AddGeometricConstraint/u)
   assert.match(editor, /RemoveGeometricConstraint/u)
-  assert.match(native, /geometric_constraints:\s*self\.editor\.geometric_constraints\(\)\.clone\(\)/u)
-  assert.match(native, /saved\.geometric_constraints\s*!=\s*\*self\.editor\.geometric_constraints\(\)/u)
+  assert.match(nativeRoot, /geometric_constraints:\s*self\.editor\.geometric_constraints\(\)\.clone\(\)/u)
+  assert.match(nativeRoot, /saved\.geometric_constraints\s*!=\s*\*self\.editor\.geometric_constraints\(\)/u)
   assert.match(
-    native,
+    nativeRoot,
     /geometric_constraints:\s*project\.editor\.geometric_constraints\(\)\.clone\(\)/u,
   )
   assert.match(formats, /pub geometric_constraints:\s*GeometricConstraintDocumentV1/u)

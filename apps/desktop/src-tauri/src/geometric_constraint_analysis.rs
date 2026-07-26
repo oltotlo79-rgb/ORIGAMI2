@@ -1,0 +1,616 @@
+//! Private native boundary for geometric-constraint preflight analysis.
+//!
+//! This module owns the single-flight worker gate, cancellation/deadline runtime,
+//! bounded direct-MUS classification, and read-only Tauri analysis commands.
+
+use super::*;
+
+pub(super) const GEOMETRIC_CONSTRAINT_ANALYSIS_BUSY_MESSAGE: &str =
+    "geometric-constraint analysis is already in progress";
+pub(super) const GEOMETRIC_CONSTRAINT_ANALYSIS_FAILED_MESSAGE: &str =
+    "geometric-constraint analysis did not complete";
+const GEOMETRIC_CONSTRAINT_ANALYSIS_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(2);
+
+fn geometric_constraint_analysis_task_error<T>(_: T) -> String {
+    GEOMETRIC_CONSTRAINT_ANALYSIS_FAILED_MESSAGE.to_owned()
+}
+
+/// Process-wide gate for bounded geometric-constraint preflight work.
+///
+/// The permit owns the active request's cancellation token and moves into
+/// `spawn_blocking`, so abandoning an awaiting WebView request cannot release
+/// the gate before the native worker actually exits. The same mutex publishes
+/// the active binding/generation and a bounded early-cancel ledger atomically,
+/// closing both cancel-after-acquire and cancel-before-acquire races without
+/// allowing an old generation to stop a replacement worker. A cancellation
+/// for a different generation is retained even while one worker is active,
+/// because that queued analyze future may not have reached its first native
+/// poll yet; frontend generation IDs are unique per work item, and the ledger
+/// bounds abandoned entries.
+#[derive(Default)]
+struct GeometricConstraintWorkerShared {
+    state: Mutex<GeometricConstraintWorkerState>,
+}
+
+#[derive(Default)]
+struct GeometricConstraintWorkerState {
+    active: Option<GeometricConstraintWorkerSlot>,
+    pre_cancelled: VecDeque<GeometricConstraintWorkerKey>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct GeometricConstraintWorkerKey {
+    binding: GeometricConstraintAnalysisBinding,
+    request_generation_id: ProjectId,
+}
+
+struct GeometricConstraintWorkerSlot {
+    key: GeometricConstraintWorkerKey,
+    cancellation: Arc<AtomicBool>,
+}
+
+pub(super) const MAX_GEOMETRIC_CONSTRAINT_PRE_CANCELLED_REQUESTS: usize = 64;
+
+#[derive(Clone, Default)]
+pub(super) struct GeometricConstraintWorkerGate(Arc<GeometricConstraintWorkerShared>);
+
+impl GeometricConstraintWorkerGate {
+    pub(super) fn try_acquire(
+        &self,
+        binding: GeometricConstraintAnalysisBinding,
+        request_generation_id: ProjectId,
+    ) -> Option<GeometricConstraintWorkerPermit> {
+        let key = GeometricConstraintWorkerKey {
+            binding,
+            request_generation_id,
+        };
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.active.is_some() {
+            return None;
+        }
+        let pre_cancelled = state
+            .pre_cancelled
+            .iter()
+            .position(|candidate| *candidate == key)
+            .and_then(|index| state.pre_cancelled.remove(index))
+            .is_some();
+        let cancellation = Arc::new(AtomicBool::new(pre_cancelled));
+        state.active = Some(GeometricConstraintWorkerSlot {
+            key,
+            cancellation: Arc::clone(&cancellation),
+        });
+        Some(GeometricConstraintWorkerPermit {
+            shared: Arc::clone(&self.0),
+            cancellation,
+        })
+    }
+
+    pub(super) fn cancel(
+        &self,
+        binding: GeometricConstraintAnalysisBinding,
+        request_generation_id: ProjectId,
+    ) -> bool {
+        let key = GeometricConstraintWorkerKey {
+            binding,
+            request_generation_id,
+        };
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(slot) = state.active.as_ref().filter(|slot| slot.key == key) {
+            slot.cancellation.store(true, Ordering::Release);
+            return true;
+        }
+        let active_worker_present = state.active.is_some();
+        if state
+            .pre_cancelled
+            .iter()
+            .all(|candidate| *candidate != key)
+        {
+            if state.pre_cancelled.len() >= MAX_GEOMETRIC_CONSTRAINT_PRE_CANCELLED_REQUESTS {
+                state.pre_cancelled.pop_front();
+            }
+            state.pre_cancelled.push_back(key);
+        }
+        !active_worker_present
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_busy(&self) -> bool {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .active
+            .is_some()
+    }
+
+    #[cfg(test)]
+    pub(super) fn pre_cancelled_count(&self) -> usize {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pre_cancelled
+            .len()
+    }
+}
+
+pub(super) struct GeometricConstraintWorkerPermit {
+    shared: Arc<GeometricConstraintWorkerShared>,
+    pub(super) cancellation: Arc<AtomicBool>,
+}
+
+impl GeometricConstraintWorkerPermit {
+    pub(super) fn cancellation(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancellation)
+    }
+}
+
+impl Drop for GeometricConstraintWorkerPermit {
+    fn drop(&mut self) {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .active
+            .as_ref()
+            .is_some_and(|slot| Arc::ptr_eq(&slot.cancellation, &self.cancellation))
+        {
+            state.active = None;
+        }
+        debug_assert!(
+            state.active.is_none(),
+            "geometric constraint worker permit mismatch"
+        );
+    }
+}
+
+impl AppState {
+    fn try_acquire_geometric_constraint_worker(
+        &self,
+        binding: GeometricConstraintAnalysisBinding,
+        request_generation_id: ProjectId,
+    ) -> Option<GeometricConstraintWorkerPermit> {
+        self.2.try_acquire(binding, request_generation_id)
+    }
+
+    pub(super) fn cancel_geometric_constraint_worker(
+        &self,
+        binding: GeometricConstraintAnalysisBinding,
+        request_generation_id: ProjectId,
+    ) -> bool {
+        self.2.cancel(binding, request_generation_id)
+    }
+
+    #[cfg(test)]
+    pub(super) fn geometric_constraint_worker_is_busy(&self) -> bool {
+        self.2.is_busy()
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct GeometricConstraintPreflightResponse {
+    pub(super) project_instance_id: ProjectId,
+    pub(super) project_id: ProjectId,
+    pub(super) revision: u64,
+    pub(super) result: GeometricConstraintPreflightResult,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(super) enum GeometricConstraintPreflightResult {
+    DirectConflict {
+        conflicts: Vec<DirectConstraintConflictV1>,
+        bounded_direct_mus: BoundedDirectMusResult,
+    },
+    NoDirectConflict,
+    Unknown {
+        reason: GeometricConstraintUnknownReason,
+        unchecked_constraint_ids: Vec<ConstraintId>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum GeometricConstraintUnknownReason {
+    WorkLimitExceeded,
+    ConstraintLimitExceeded,
+    StorageLimitExceeded,
+    Cancelled,
+    DeadlineReached,
+    SolverRequiredConstraintKinds,
+    InvalidDocumentOrGeometry,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(super) enum BoundedDirectMusResult {
+    ProvenUnsatisfiable {
+        constraint_ids: Vec<ConstraintId>,
+        oracle_calls: usize,
+    },
+    Unknown {
+        reason: BoundedDirectMusUnknownReason,
+        oracle_calls: usize,
+        max_constraints: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum BoundedDirectMusUnknownReason {
+    ConstraintLimitExceeded,
+    OracleIncomplete,
+    Cancelled,
+    DeadlineReached,
+}
+
+#[tauri::command]
+pub(super) async fn analyze_geometric_constraints(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    request_generation_id: ProjectId,
+) -> Result<GeometricConstraintPreflightResponse, String> {
+    if request_generation_id.canonical_bytes() == [0; 16] {
+        return Err(GEOMETRIC_CONSTRAINT_ANALYSIS_FAILED_MESSAGE.to_owned());
+    }
+    analyze_geometric_constraints_with_worker(
+        &state,
+        expected_project_instance_id,
+        expected_project_id,
+        expected_revision,
+        request_generation_id,
+        |pattern, document, runtime| {
+            Ok(analyze_geometric_constraint_document_with_observer(
+                &pattern,
+                &document,
+                &mut GeometricConstraintAnalysisObserver::new(runtime),
+            ))
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub(super) fn cancel_geometric_constraint_analysis(
+    state: State<'_, AppState>,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    request_generation_id: ProjectId,
+) -> bool {
+    if request_generation_id.canonical_bytes() == [0; 16] {
+        return false;
+    }
+    state.cancel_geometric_constraint_worker(
+        GeometricConstraintAnalysisBinding {
+            project_instance_id: expected_project_instance_id,
+            project_id: expected_project_id,
+            revision: expected_revision,
+        },
+        request_generation_id,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct GeometricConstraintAnalysisBinding {
+    pub(super) project_instance_id: ProjectId,
+    pub(super) project_id: ProjectId,
+    pub(super) revision: u64,
+}
+
+#[derive(Clone)]
+pub(super) struct GeometricConstraintAnalysisRuntime {
+    pub(super) cancellation: Arc<AtomicBool>,
+    pub(super) deadline: std::time::Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GeometricConstraintAnalysisStop {
+    Cancelled,
+    DeadlineReached,
+}
+
+pub(super) struct GeometricConstraintAnalysisObserver {
+    runtime: GeometricConstraintAnalysisRuntime,
+    stop: Option<GeometricConstraintAnalysisStop>,
+}
+
+impl GeometricConstraintAnalysisObserver {
+    pub(super) fn new(runtime: GeometricConstraintAnalysisRuntime) -> Self {
+        Self {
+            runtime,
+            stop: None,
+        }
+    }
+
+    fn checkpoint(&mut self) -> Option<GeometricConstraintAnalysisStop> {
+        let stop = if self.runtime.cancellation.load(Ordering::Acquire) {
+            Some(GeometricConstraintAnalysisStop::Cancelled)
+        } else if std::time::Instant::now() >= self.runtime.deadline {
+            Some(GeometricConstraintAnalysisStop::DeadlineReached)
+        } else {
+            None
+        };
+        self.stop = self.stop.or(stop);
+        self.stop
+    }
+}
+
+impl GeometricConstraintPreflightObserverV1 for GeometricConstraintAnalysisObserver {
+    fn checkpoint(&mut self) -> GeometricConstraintPreflightObserverControlV1 {
+        match self.checkpoint() {
+            None => GeometricConstraintPreflightObserverControlV1::Continue,
+            Some(GeometricConstraintAnalysisStop::Cancelled) => {
+                GeometricConstraintPreflightObserverControlV1::Cancelled
+            }
+            Some(GeometricConstraintAnalysisStop::DeadlineReached) => {
+                GeometricConstraintPreflightObserverControlV1::DeadlineReached
+            }
+        }
+    }
+}
+
+impl BoundedDirectMusObserverV1 for GeometricConstraintAnalysisObserver {
+    fn should_cancel(&mut self, _completed_oracle_calls: usize) -> bool {
+        self.checkpoint().is_some()
+    }
+}
+
+struct GeometricConstraintAnalysisInput {
+    binding: GeometricConstraintAnalysisBinding,
+    pattern: CreasePattern,
+    document: GeometricConstraintDocumentV1,
+}
+
+pub(super) async fn analyze_geometric_constraints_with_worker<F>(
+    state: &AppState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+    request_generation_id: ProjectId,
+    worker: F,
+) -> Result<GeometricConstraintPreflightResponse, String>
+where
+    F: FnOnce(
+            CreasePattern,
+            GeometricConstraintDocumentV1,
+            GeometricConstraintAnalysisRuntime,
+        ) -> Result<GeometricConstraintPreflightResult, String>
+        + Send
+        + 'static,
+{
+    let permit = state
+        .try_acquire_geometric_constraint_worker(
+            GeometricConstraintAnalysisBinding {
+                project_instance_id: expected_project_instance_id,
+                project_id: expected_project_id,
+                revision: expected_revision,
+            },
+            request_generation_id,
+        )
+        .ok_or_else(|| GEOMETRIC_CONSTRAINT_ANALYSIS_BUSY_MESSAGE.to_owned())?;
+    let runtime = GeometricConstraintAnalysisRuntime {
+        cancellation: permit.cancellation(),
+        deadline: std::time::Instant::now()
+            .checked_add(GEOMETRIC_CONSTRAINT_ANALYSIS_DEADLINE)
+            .ok_or_else(|| GEOMETRIC_CONSTRAINT_ANALYSIS_FAILED_MESSAGE.to_owned())?,
+    };
+    let input = {
+        let project = lock_project(state)?;
+        capture_geometric_constraint_analysis(
+            &project,
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        )?
+    };
+    let binding = input.binding;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        worker(input.pattern, input.document, runtime)
+    })
+    .await
+    .map_err(geometric_constraint_analysis_task_error)?
+    .map_err(geometric_constraint_analysis_task_error)?;
+
+    let project = lock_project(state)?;
+    finish_geometric_constraint_analysis(&project, binding, result)
+}
+
+fn capture_geometric_constraint_analysis(
+    project: &ProjectState,
+    expected_project_instance_id: ProjectId,
+    expected_project_id: ProjectId,
+    expected_revision: u64,
+) -> Result<GeometricConstraintAnalysisInput, String> {
+    ensure_project_expectation(
+        project,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
+    )?;
+    Ok(GeometricConstraintAnalysisInput {
+        binding: GeometricConstraintAnalysisBinding {
+            project_instance_id: project.instance_id,
+            project_id: project.project_id,
+            revision: project.editor.revision(),
+        },
+        pattern: project.editor.pattern().clone(),
+        document: project.editor.geometric_constraints().clone(),
+    })
+}
+
+fn finish_geometric_constraint_analysis(
+    project: &ProjectState,
+    binding: GeometricConstraintAnalysisBinding,
+    result: GeometricConstraintPreflightResult,
+) -> Result<GeometricConstraintPreflightResponse, String> {
+    ensure_project_expectation(
+        project,
+        ProjectExpectation::new(
+            binding.project_instance_id,
+            binding.project_id,
+            binding.revision,
+        ),
+    )?;
+    Ok(GeometricConstraintPreflightResponse {
+        project_instance_id: binding.project_instance_id,
+        project_id: binding.project_id,
+        revision: binding.revision,
+        result,
+    })
+}
+
+#[cfg(test)]
+pub(super) fn analyze_geometric_constraint_document(
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+) -> GeometricConstraintPreflightResult {
+    let runtime = GeometricConstraintAnalysisRuntime {
+        cancellation: Arc::new(AtomicBool::new(false)),
+        deadline: std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(3_600))
+            .expect("one-hour test/default observer deadline must be representable"),
+    };
+    analyze_geometric_constraint_document_with_observer(
+        pattern,
+        document,
+        &mut GeometricConstraintAnalysisObserver::new(runtime),
+    )
+}
+
+pub(super) fn analyze_geometric_constraint_document_with_observer(
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+    observer: &mut GeometricConstraintAnalysisObserver,
+) -> GeometricConstraintPreflightResult {
+    if let Some(stop) = observer.checkpoint() {
+        let mut unchecked_constraint_ids = document
+            .constraints
+            .iter()
+            .map(|record| record.id)
+            .collect::<Vec<_>>();
+        unchecked_constraint_ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
+        unchecked_constraint_ids.dedup();
+        return GeometricConstraintPreflightResult::Unknown {
+            reason: match stop {
+                GeometricConstraintAnalysisStop::Cancelled => {
+                    GeometricConstraintUnknownReason::Cancelled
+                }
+                GeometricConstraintAnalysisStop::DeadlineReached => {
+                    GeometricConstraintUnknownReason::DeadlineReached
+                }
+            },
+            unchecked_constraint_ids,
+        };
+    }
+    if document.schema_version == ori_domain::GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1
+        && document.is_empty()
+    {
+        return GeometricConstraintPreflightResult::NoDirectConflict;
+    }
+
+    let Ok(prepared) =
+        prepare_geometric_constraints_v1(pattern, document, GeometricConstraintLimitsV1::default())
+    else {
+        let mut unchecked_constraint_ids = document
+            .constraints
+            .iter()
+            .map(|record| record.id)
+            .collect::<Vec<_>>();
+        unchecked_constraint_ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
+        return GeometricConstraintPreflightResult::Unknown {
+            reason: GeometricConstraintUnknownReason::InvalidDocumentOrGeometry,
+            unchecked_constraint_ids,
+        };
+    };
+
+    match prepared.preflight_with_observer(observer) {
+        ConstraintPreflightV1::DirectConflict { conflicts } => {
+            let bounded_direct_mus = analyze_bounded_direct_mus_with_observer(&prepared, observer);
+            GeometricConstraintPreflightResult::DirectConflict {
+                conflicts,
+                bounded_direct_mus,
+            }
+        }
+        ConstraintPreflightV1::NoDirectConflict => {
+            GeometricConstraintPreflightResult::NoDirectConflict
+        }
+        ConstraintPreflightV1::Unknown {
+            reason,
+            unchecked_constraint_ids,
+        } => GeometricConstraintPreflightResult::Unknown {
+            reason: match reason {
+                GeometricConstraintUnknownReasonV1::WorkLimitExceeded => {
+                    GeometricConstraintUnknownReason::WorkLimitExceeded
+                }
+                GeometricConstraintUnknownReasonV1::ConstraintLimitExceeded => {
+                    GeometricConstraintUnknownReason::ConstraintLimitExceeded
+                }
+                GeometricConstraintUnknownReasonV1::StorageLimitExceeded => {
+                    GeometricConstraintUnknownReason::StorageLimitExceeded
+                }
+                GeometricConstraintUnknownReasonV1::Cancelled => {
+                    GeometricConstraintUnknownReason::Cancelled
+                }
+                GeometricConstraintUnknownReasonV1::DeadlineReached => {
+                    GeometricConstraintUnknownReason::DeadlineReached
+                }
+                GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds => {
+                    GeometricConstraintUnknownReason::SolverRequiredConstraintKinds
+                }
+            },
+            unchecked_constraint_ids,
+        },
+    }
+}
+
+pub(super) fn analyze_bounded_direct_mus_with_observer(
+    prepared: &ori_core::GeometricConstraintSetV1<'_>,
+    observer: &mut GeometricConstraintAnalysisObserver,
+) -> BoundedDirectMusResult {
+    if prepared.constraints().len() > MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1 {
+        return BoundedDirectMusResult::Unknown {
+            reason: BoundedDirectMusUnknownReason::ConstraintLimitExceeded,
+            oracle_calls: 0,
+            max_constraints: MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1,
+        };
+    }
+    match find_bounded_direct_mus_with_observer_v1(prepared, observer) {
+        BoundedDirectMusV1::ProvenUnsatisfiable {
+            constraint_ids,
+            oracle_calls,
+        } => BoundedDirectMusResult::ProvenUnsatisfiable {
+            constraint_ids,
+            oracle_calls,
+        },
+        BoundedDirectMusV1::Unknown { oracle_calls } => BoundedDirectMusResult::Unknown {
+            reason: match observer.stop {
+                Some(GeometricConstraintAnalysisStop::Cancelled) => {
+                    BoundedDirectMusUnknownReason::Cancelled
+                }
+                Some(GeometricConstraintAnalysisStop::DeadlineReached) => {
+                    BoundedDirectMusUnknownReason::DeadlineReached
+                }
+                None => BoundedDirectMusUnknownReason::OracleIncomplete,
+            },
+            oracle_calls,
+            max_constraints: MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1,
+        },
+    }
+}

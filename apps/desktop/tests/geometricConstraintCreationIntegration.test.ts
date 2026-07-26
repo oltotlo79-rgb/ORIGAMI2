@@ -8,7 +8,7 @@ const panelSource = readFileSync(
 )
 const clientSource = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8')
 const nativeSource = readFileSync(
-  new URL('../src-tauri/src/lib.rs', import.meta.url),
+  new URL('../src-tauri/src/geometric_constraint_commands.rs', import.meta.url),
   'utf8',
 )
 

@@ -12,6 +12,7 @@ const nativeSource = read('../src-tauri/src/lib.rs')
 const nativeExportSource = read('../src-tauri/src/instruction_export.rs')
 const layoutSource = read('../../../crates/ori-formats/src/instruction_export/layout.rs')
 const exportModelSource = read('../src/lib/instructionExport.ts')
+const exportTextSource = read('../src/lib/instructionExportText.ts')
 
 test('the current authored timeline opens one background-blocking instruction export flow', () => {
   assert.match(appSource, /\|\| instructionExportOpen/u)
@@ -27,7 +28,7 @@ test('the current authored timeline opens one background-blocking instruction ex
   assert.match(panelSource, /steps\.some\(\(step\) => step\.stale\)/u)
   assert.match(
     panelSource,
-    /import \{ INSTRUCTION_TIMELINE_PANEL_TEXT as TEXT \} from '\.\.\/lib\/instructionTimelinePanelText\.ts'/u,
+    /INSTRUCTION_TIMELINE_PANEL_TEXT as TEXT,[\s\S]*?from '\.\.\/lib\/instructionTimelinePanelText\.ts'/u,
   )
   assert.match(panelTextSource, /折り図を書き出す/u)
 })
@@ -100,9 +101,10 @@ test('proof-bearing browser requests keep strict native errors closed through th
     nativeExportSource,
     /StaleStep \{ \.\. \}[\s\S]*TimelineStale/u,
   )
-  assert.match(exportModelSource, /document_input_invalid:[\s\S]*折り図に含められない/u)
-  assert.match(exportModelSource, /timeline_stale:[\s\S]*現在の展開図より古い/u)
-  assert.match(exportModelSource, /project_changed:[\s\S]*編集内容が変わ/u)
+  assert.match(exportModelSource, /INSTRUCTION_EXPORT_ERROR_TEXT/u)
+  assert.match(exportTextSource, /document_input_invalid:[\s\S]*折り図に含められない/u)
+  assert.match(exportTextSource, /timeline_stale:[\s\S]*現在の展開図より古い/u)
+  assert.match(exportTextSource, /project_changed:[\s\S]*編集内容が変わ/u)
   assert.match(appSource, /error=\{instructionExportError\}/u)
   assert.match(dialogSource, /role="alert"/u)
 })

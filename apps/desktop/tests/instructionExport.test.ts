@@ -77,6 +77,13 @@ test('instruction export byte formatting rejects unsafe metadata and uses decima
   assert.equal(formatInstructionExportBytes(-1), '不明')
   assert.equal(formatInstructionExportBytes(Number.MAX_VALUE), '不明')
   assert.equal(formatInstructionExportBytes(Number.MAX_VALUE, 'en'), 'Unknown')
+  assert.equal(
+    formatInstructionExportBytes(
+      Number.MAX_VALUE,
+      'unsupported-locale' as never,
+    ),
+    '不明',
+  )
 })
 
 test('instruction export errors use a closed category and never expose raw values', () => {
@@ -106,6 +113,10 @@ test('instruction export errors use a closed category and never expose raw value
     }),
     fallback,
   )
+  assert.equal(
+    instructionExportErrorMessage(changed, 'unsupported-locale' as never),
+    changed.message_ja,
+  )
 })
 
 test('instruction export warning categories select trusted Japanese and English text', () => {
@@ -127,6 +138,24 @@ test('instruction export warning categories select trusted Japanese and English 
       message_ja: 'C:\\private\\untrusted.ori2',
     }, 'en'),
     'An instruction export limitation could not be identified.',
+  )
+  assert.equal(
+    instructionExportWarningMessage(warning, 'unsupported-locale' as never),
+    '各手順は保存済みの終端姿勢のみを表し、手順間の連続動作は出力されません。',
+  )
+})
+
+test('instruction export labels use Japanese fallback for unknown locales', () => {
+  assert.equal(
+    instructionExportFormatLabel('svg_zip', 'unsupported-locale' as never),
+    'SVG画像 ZIP',
+  )
+  assert.equal(
+    instructionExportPhaseLabel(
+      'building_document',
+      'unsupported-locale' as never,
+    ),
+    'ページとファイルを生成しています',
   )
 })
 

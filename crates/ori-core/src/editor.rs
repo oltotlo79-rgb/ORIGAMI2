@@ -3712,6 +3712,40 @@ impl EditorState {
         }
     }
 
+    /// Clones and rewinds exactly one authenticated stacked-fold document
+    /// entry without exposing general history internals or mutating `self`.
+    ///
+    /// Both halves of the latest entry must use the dedicated stacked-fold
+    /// variants and there must be no redo branch. A partial lookalike, another
+    /// command, empty history, pending redo history, or a failed clone-only
+    /// Undo returns `None`.
+    ///
+    /// After Apply -> Undo -> Redo, the persisted document, pose, and bounded
+    /// history are semantically indistinguishable from the original post-Apply
+    /// state in V1. That state is accepted here; callers must still regenerate
+    /// and exactly compare every proof rather than treating this history shape
+    /// as evidence by itself.
+    #[must_use]
+    pub fn clone_predecessor_if_last_stacked_fold_v1(&self) -> Option<Self> {
+        if !self.redo_stack.is_empty() {
+            return None;
+        }
+        let latest = self.undo_stack.last()?;
+        if !matches!(
+            (&latest.forward, &latest.inverse),
+            (
+                Command::ApplyStackedFoldDocument { .. },
+                Inverse::RestoreStackedFoldDocument { .. }
+            )
+        ) {
+            return None;
+        }
+        let mut predecessor = self.clone();
+        let undo_len = predecessor.undo_stack.len();
+        predecessor.undo(predecessor.revision()).ok()?;
+        (predecessor.undo_stack.len().checked_add(1) == Some(undo_len)).then_some(predecessor)
+    }
+
     pub fn undo(&mut self, expected_revision: Revision) -> Result<CommandResult, CommandError> {
         self.ensure_revision(expected_revision)?;
         let next_revision = self.next_revision()?;
@@ -18631,6 +18665,85 @@ mod tests {
         assert_eq!(editor.current_applied_pose(), Some(&after_pose));
         assert!(editor.can_undo());
 
+        let live_pattern = editor.pattern().clone();
+        let live_revision = editor.revision();
+        let live_undo = format!("{:?}", editor.undo_stack);
+        let live_redo = format!("{:?}", editor.redo_stack);
+        let predecessor = editor
+            .clone_predecessor_if_last_stacked_fold_v1()
+            .expect("explicit stacked-fold entry yields one detached predecessor");
+        assert_eq!(predecessor.pattern(), &source_pattern);
+        assert_eq!(predecessor.revision(), live_revision + 1);
+        assert_eq!(editor.pattern(), &live_pattern);
+        assert_eq!(editor.revision(), live_revision);
+        assert_eq!(format!("{:?}", editor.undo_stack), live_undo);
+        assert_eq!(format!("{:?}", editor.redo_stack), live_redo);
+
+        let mut forward_only = editor.clone();
+        forward_only.undo_stack.last_mut().unwrap().inverse =
+            Inverse::Command(Command::SetCuttingAllowed { allowed: true });
+        assert!(
+            forward_only
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .is_none()
+        );
+        let mut inverse_only = editor.clone();
+        inverse_only.undo_stack.last_mut().unwrap().forward =
+            Command::SetCuttingAllowed { allowed: true };
+        assert!(
+            inverse_only
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .is_none()
+        );
+        let mut other_command =
+            EditorState::with_paper(source_pattern.clone(), source_paper.clone());
+        other_command
+            .execute(
+                0,
+                Command::UpdateProjectMemo {
+                    memo: "not a stacked fold".to_owned(),
+                },
+            )
+            .unwrap();
+        assert!(
+            other_command
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .is_none()
+        );
+        assert!(
+            EditorState::with_paper(source_pattern.clone(), source_paper.clone())
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .is_none()
+        );
+        let mut exhausted = editor.clone();
+        exhausted.revision = MAX_REVISION;
+        assert!(
+            exhausted
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .is_none()
+        );
+        let mut redo_present = editor.clone();
+        redo_present
+            .execute(
+                redo_present.revision(),
+                Command::UpdateProjectMemo {
+                    memo: "temporary edit".to_owned(),
+                },
+            )
+            .unwrap();
+        redo_present.undo(redo_present.revision()).unwrap();
+        assert!(redo_present.can_redo());
+        assert!(
+            redo_present
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .is_none(),
+            "a pending redo branch must not be mistaken for the pristine post-apply state"
+        );
+        assert_eq!(editor.pattern(), &live_pattern);
+        assert_eq!(editor.revision(), live_revision);
+        assert_eq!(format!("{:?}", editor.undo_stack), live_undo);
+        assert_eq!(format!("{:?}", editor.redo_stack), live_redo);
+
         editor.undo(1).expect("undo whole stacked fold");
         assert_eq!(editor.pattern(), &source_pattern);
         assert!(editor.instruction_timeline().steps.is_empty());
@@ -18640,6 +18753,13 @@ mod tests {
         assert_eq!(editor.pattern(), &target_pattern);
         assert_eq!(editor.instruction_timeline(), &timeline);
         assert_eq!(editor.current_applied_pose(), Some(&after_pose));
+        assert_eq!(
+            editor
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .expect("the replayed semantic post-Apply state remains reconstructible")
+                .pattern(),
+            &source_pattern
+        );
 
         let mut pose_editor = EditorState::with_paper(target_pattern.clone(), source_paper.clone());
         let before_pose = runtime_pose(0.0);

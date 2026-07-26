@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Deterministic, fail-closed global flat-foldability proofs.
 //!
 //! The first model proves deterministic layer orders for connected convex
@@ -320,6 +322,54 @@ pub struct GlobalFlatFoldabilityWorkCounts {
 pub struct LayerFace {
     pub face_id: FaceId,
     pub face_key: FaceKey,
+}
+
+/// One caller-required order between two trusted material faces.
+///
+/// The constrained archive-admission API treats every value as untrusted and
+/// rebinds both complete [`LayerFace`] records to the freshly reconstructed
+/// canonical material registry before using the relation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequiredLayerOrderPair {
+    pub lower_face: LayerFace,
+    pub upper_face: LayerFace,
+}
+
+/// Fail-closed result categories for constrained layer-order reanalysis.
+///
+/// A required-order contradiction is deliberately not a global
+/// flat-foldability verdict: it only means that the supplied requirements
+/// cannot authenticate an archived certificate for this project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum RequiredLayerOrderError {
+    #[error("the project is globally impossible before archived pair requirements are considered")]
+    BaseAnalysisImpossible,
+    #[error("the constrained analysis remained inconclusive: {reason:?}")]
+    Inconclusive {
+        reason: GlobalFlatFoldabilityUnknownReason,
+    },
+    #[error("a required layer-order face is not in the trusted material registry: {face:?}")]
+    UnknownFace { face: FaceId },
+    #[error("a required layer-order pair orders one face against itself: {face:?}")]
+    EqualFace { face: FaceId },
+    #[error(
+        "a required layer-order pair does not overlap in the trusted flat arrangement: {lower:?} -> {upper:?}"
+    )]
+    NonOverlappingPair { lower: FaceId, upper: FaceId },
+    #[error("a required layer-order pair is duplicated: {lower:?} -> {upper:?}")]
+    DuplicatePair { lower: FaceId, upper: FaceId },
+    #[error("required layer-order pairs conflict: {first:?} <-> {second:?}")]
+    ConflictingPair { first: FaceId, second: FaceId },
+    #[error(
+        "a required layer-order pair contradicts a trusted fixed assignment: {lower:?} -> {upper:?}"
+    )]
+    ContradictsTrustedFixedOrder { lower: FaceId, upper: FaceId },
+    #[error("the trusted flat constraints cannot satisfy the required layer orders")]
+    Unsatisfied,
+    #[error("the constrained layer-order certificate did not reverify")]
+    CertificateReverificationFailed,
+    #[error(transparent)]
+    Execution(#[from] GlobalFlatFoldabilityExecutionError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -666,6 +716,323 @@ pub fn analyze_global_flat_foldability(
     analyze_global_flat_foldability_with_observer(input, limits, &mut observer)
 }
 
+/// Solves and verifies one flat layer-order certificate while requiring
+/// selected pair directions.
+///
+/// Source revalidation, exact embedding, constraint construction, the
+/// constrained solve, and certificate verification share one analysis pass
+/// and one set of operation/search/storage limits. Invalid, contradictory,
+/// inconclusive, or unsatisfied requirements never become a public
+/// `Impossible` verdict for the project.
+pub fn analyze_global_flat_foldability_with_required_pair_orders(
+    input: GlobalFlatFoldabilityInput<'_>,
+    limits: GlobalFlatFoldabilityLimits,
+    required_pair_orders: &[RequiredLayerOrderPair],
+) -> Result<LayerOrderSnapshot, RequiredLayerOrderError> {
+    let mut observer = NoopGlobalFlatFoldabilityObserver;
+    analyze_global_flat_foldability_with_required_pair_orders_and_observer(
+        input,
+        limits,
+        required_pair_orders,
+        &mut observer,
+    )
+}
+
+fn required_pair_preflight_failure(
+    required_pair_count: usize,
+    limits: GlobalFlatFoldabilityLimits,
+) -> Option<GlobalFlatFoldabilityUnknownReason> {
+    if required_pair_count > limits.max_overlap_face_pairs {
+        return Some(GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+            resource: FlatFoldabilityResource::OverlapFacePairs,
+            limit: limits.max_overlap_face_pairs,
+            observed: required_pair_count,
+        });
+    }
+    let required_storage = required_pair_count.saturating_mul(std::mem::size_of::<(usize, bool)>());
+    if required_storage > limits.max_certificate_bytes {
+        return Some(GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+            resource: FlatFoldabilityResource::CertificateBytes,
+            limit: limits.max_certificate_bytes,
+            observed: required_storage,
+        });
+    }
+    None
+}
+
+struct ValidatedGlobalFlatSource<'a> {
+    paper: &'a Paper,
+    crease_pattern: &'a CreasePattern,
+    topology: &'a TopologySnapshot,
+    canonical_faces: Vec<LayerFace>,
+    provenance: GlobalFlatFoldabilityProvenance,
+    work_counts: GlobalFlatFoldabilityWorkCounts,
+}
+
+enum GlobalFlatSourceValidationFailure {
+    Unknown {
+        provenance: GlobalFlatFoldabilityProvenance,
+        work_counts: GlobalFlatFoldabilityWorkCounts,
+        reason: GlobalFlatFoldabilityUnknownReason,
+    },
+    Impossible {
+        provenance: GlobalFlatFoldabilityProvenance,
+        work_counts: GlobalFlatFoldabilityWorkCounts,
+        violations: Vec<LocalNecessaryConditionViolation>,
+    },
+    Execution(GlobalFlatFoldabilityExecutionError),
+}
+
+fn validate_global_flat_source_with_observer<'a, O: GlobalFlatFoldabilityObserver + ?Sized>(
+    input: GlobalFlatFoldabilityInput<'a>,
+    limits: GlobalFlatFoldabilityLimits,
+    required_pair_count: Option<usize>,
+    observer: &mut O,
+) -> Result<ValidatedGlobalFlatSource<'a>, Box<GlobalFlatSourceValidationFailure>> {
+    let mut provenance = GlobalFlatFoldabilityProvenance {
+        identity_namespace: input.identity_namespace,
+        source_revision: input.source_revision,
+        source_fingerprint: None,
+        model_id: GLOBAL_FLAT_FOLDABILITY_MODEL_ID,
+    };
+    let work_counts = count_work(&input)
+        .map_err(|error| Box::new(GlobalFlatSourceValidationFailure::Execution(error)))?;
+    match phase_checkpoint(
+        observer,
+        GlobalFlatFoldabilityPhase::Capturing,
+        work_counts,
+        Some(work_counts.total_records),
+    ) {
+        Ok(None) => {}
+        Ok(Some(reason)) => {
+            return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
+                provenance,
+                work_counts,
+                reason,
+            }));
+        }
+        Err(error) => {
+            return Err(Box::new(GlobalFlatSourceValidationFailure::Execution(
+                error,
+            )));
+        }
+    }
+    if let Some(reason) =
+        required_pair_count.and_then(|count| required_pair_preflight_failure(count, limits))
+    {
+        return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
+            provenance,
+            work_counts,
+            reason,
+        }));
+    }
+    if input.topology.source_revision != input.source_revision {
+        return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
+            provenance,
+            work_counts,
+            reason: GlobalFlatFoldabilityUnknownReason::StaleProvenance {
+                artifact: FlatFoldabilityInputArtifact::TopologySnapshot,
+                expected_revision: input.source_revision,
+                actual_revision: input.topology.source_revision,
+            },
+        }));
+    }
+    if input.local_report_source_revision != input.source_revision {
+        return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
+            provenance,
+            work_counts,
+            reason: GlobalFlatFoldabilityUnknownReason::StaleProvenance {
+                artifact: FlatFoldabilityInputArtifact::LocalFlatFoldabilityReport,
+                expected_revision: input.source_revision,
+                actual_revision: input.local_report_source_revision,
+            },
+        }));
+    }
+    if let Some(reason) = first_limit_failure(work_counts, limits) {
+        return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
+            provenance,
+            work_counts,
+            reason,
+        }));
+    }
+    let (Some(identity_namespace), Some(paper), Some(crease_pattern)) =
+        (input.identity_namespace, input.paper, input.crease_pattern)
+    else {
+        return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
+            provenance,
+            work_counts,
+            reason: GlobalFlatFoldabilityUnknownReason::ProofIncomplete {
+                reason: FlatFoldabilityProofIncompleteReason::GeometryInputUnavailable,
+            },
+        }));
+    };
+    match phase_checkpoint(
+        observer,
+        GlobalFlatFoldabilityPhase::ValidatingLocalConditions,
+        work_counts,
+        Some(work_counts.local_vertex_records),
+    ) {
+        Ok(None) => {}
+        Ok(Some(reason)) => {
+            return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
+                provenance,
+                work_counts,
+                reason,
+            }));
+        }
+        Err(error) => {
+            return Err(Box::new(GlobalFlatSourceValidationFailure::Execution(
+                error,
+            )));
+        }
+    }
+    let fingerprint = {
+        let mut checkpoint = || observer_reverification_checkpoint(observer);
+        fold_model_fingerprint_v1_with_checkpoint(crease_pattern, paper, &mut checkpoint)
+    };
+    match fingerprint {
+        Ok(fingerprint) => provenance.source_fingerprint = Some(fingerprint),
+        Err(SourceReverificationAbort::Unknown(reason)) => {
+            return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
+                provenance,
+                work_counts,
+                reason,
+            }));
+        }
+        Err(SourceReverificationAbort::Execution(error)) => {
+            return Err(Box::new(GlobalFlatSourceValidationFailure::Execution(
+                error,
+            )));
+        }
+    }
+    match reverify_source_artifacts(
+        identity_namespace,
+        input.source_revision,
+        paper,
+        crease_pattern,
+        input.topology,
+        input.local_flat_foldability,
+        observer,
+    ) {
+        Ok(()) => {}
+        Err(SourceReverificationAbort::Unknown(reason)) => {
+            return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
+                provenance,
+                work_counts,
+                reason,
+            }));
+        }
+        Err(SourceReverificationAbort::Execution(error)) => {
+            return Err(Box::new(GlobalFlatSourceValidationFailure::Execution(
+                error,
+            )));
+        }
+    }
+    let canonical_faces = validate_topology(input.topology).map_err(|reason| {
+        Box::new(GlobalFlatSourceValidationFailure::Unknown {
+            provenance,
+            work_counts,
+            reason,
+        })
+    })?;
+    if canonical_faces.is_empty() {
+        return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
+            provenance,
+            work_counts,
+            reason: GlobalFlatFoldabilityUnknownReason::ProofIncomplete {
+                reason: FlatFoldabilityProofIncompleteReason::NoMaterialFaces,
+            },
+        }));
+    }
+    match validate_local_report(input.local_flat_foldability).map_err(|reason| {
+        Box::new(GlobalFlatSourceValidationFailure::Unknown {
+            provenance,
+            work_counts,
+            reason,
+        })
+    })? {
+        LocalReportEvidence::Blocked => {
+            return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
+                provenance,
+                work_counts,
+                reason: GlobalFlatFoldabilityUnknownReason::ProofIncomplete {
+                    reason: FlatFoldabilityProofIncompleteReason::LocalNecessaryConditionsBlocked,
+                },
+            }));
+        }
+        LocalReportEvidence::Indeterminate => {
+            return Err(Box::new(GlobalFlatSourceValidationFailure::Unknown {
+                provenance,
+                work_counts,
+                reason: GlobalFlatFoldabilityUnknownReason::ProofIncomplete {
+                    reason:
+                        FlatFoldabilityProofIncompleteReason::LocalNecessaryConditionsIndeterminate,
+                },
+            }));
+        }
+        LocalReportEvidence::Violated(violations) => {
+            return Err(Box::new(GlobalFlatSourceValidationFailure::Impossible {
+                provenance,
+                work_counts,
+                violations,
+            }));
+        }
+        LocalReportEvidence::NoViolation => {}
+    }
+    Ok(ValidatedGlobalFlatSource {
+        paper,
+        crease_pattern,
+        topology: input.topology,
+        canonical_faces,
+        provenance,
+        work_counts,
+    })
+}
+
+/// Observer-enabled form of
+/// [`analyze_global_flat_foldability_with_required_pair_orders`].
+pub fn analyze_global_flat_foldability_with_required_pair_orders_and_observer<
+    O: GlobalFlatFoldabilityObserver + ?Sized,
+>(
+    input: GlobalFlatFoldabilityInput<'_>,
+    limits: GlobalFlatFoldabilityLimits,
+    required_pair_orders: &[RequiredLayerOrderPair],
+    observer: &mut O,
+) -> Result<LayerOrderSnapshot, RequiredLayerOrderError> {
+    let validated = match validate_global_flat_source_with_observer(
+        input,
+        limits,
+        Some(required_pair_orders.len()),
+        observer,
+    ) {
+        Ok(validated) => validated,
+        Err(failure) => match *failure {
+            GlobalFlatSourceValidationFailure::Unknown { reason, .. } => {
+                return Err(RequiredLayerOrderError::Inconclusive { reason });
+            }
+            GlobalFlatSourceValidationFailure::Impossible { .. } => {
+                return Err(RequiredLayerOrderError::BaseAnalysisImpossible);
+            }
+            GlobalFlatSourceValidationFailure::Execution(error) => {
+                return Err(RequiredLayerOrderError::Execution(error));
+            }
+        },
+    };
+    facewise::analyze_facewise_with_required_pair_orders(
+        facewise::FacewiseAnalysisInput {
+            paper: validated.paper,
+            crease_pattern: validated.crease_pattern,
+            topology: validated.topology,
+            canonical_faces: &validated.canonical_faces,
+            provenance: validated.provenance,
+            work_counts: validated.work_counts,
+            limits,
+        },
+        required_pair_orders,
+        observer,
+    )
+}
+
 /// Runs with an explicit deterministic cancellation checkpoint.
 pub fn analyze_global_flat_foldability_with_control(
     input: GlobalFlatFoldabilityInput<'_>,
@@ -682,156 +1049,41 @@ pub fn analyze_global_flat_foldability_with_observer<O: GlobalFlatFoldabilityObs
     limits: GlobalFlatFoldabilityLimits,
     observer: &mut O,
 ) -> Result<GlobalFlatFoldabilityReport, GlobalFlatFoldabilityExecutionError> {
-    let mut provenance = GlobalFlatFoldabilityProvenance {
-        identity_namespace: input.identity_namespace,
-        source_revision: input.source_revision,
-        source_fingerprint: None,
-        model_id: GLOBAL_FLAT_FOLDABILITY_MODEL_ID,
-    };
-    let work_counts = count_work(&input)?;
-    if let Some(reason) = phase_checkpoint(
-        observer,
-        GlobalFlatFoldabilityPhase::Capturing,
-        work_counts,
-        Some(work_counts.total_records),
-    )? {
-        return Ok(unknown(provenance, work_counts, reason));
-    }
-
-    if input.topology.source_revision != input.source_revision {
-        return Ok(unknown(
-            provenance,
-            work_counts,
-            GlobalFlatFoldabilityUnknownReason::StaleProvenance {
-                artifact: FlatFoldabilityInputArtifact::TopologySnapshot,
-                expected_revision: input.source_revision,
-                actual_revision: input.topology.source_revision,
-            },
-        ));
-    }
-    if input.local_report_source_revision != input.source_revision {
-        return Ok(unknown(
-            provenance,
-            work_counts,
-            GlobalFlatFoldabilityUnknownReason::StaleProvenance {
-                artifact: FlatFoldabilityInputArtifact::LocalFlatFoldabilityReport,
-                expected_revision: input.source_revision,
-                actual_revision: input.local_report_source_revision,
-            },
-        ));
-    }
-    if let Some(reason) = first_limit_failure(work_counts, limits) {
-        return Ok(unknown(provenance, work_counts, reason));
-    }
-
-    let (Some(identity_namespace), Some(paper), Some(crease_pattern)) =
-        (input.identity_namespace, input.paper, input.crease_pattern)
-    else {
-        return Ok(unknown(
-            provenance,
-            work_counts,
-            GlobalFlatFoldabilityUnknownReason::ProofIncomplete {
-                reason: FlatFoldabilityProofIncompleteReason::GeometryInputUnavailable,
-            },
-        ));
-    };
-
-    if let Some(reason) = phase_checkpoint(
-        observer,
-        GlobalFlatFoldabilityPhase::ValidatingLocalConditions,
-        work_counts,
-        Some(work_counts.local_vertex_records),
-    )? {
-        return Ok(unknown(provenance, work_counts, reason));
-    }
-    let fingerprint = {
-        let mut checkpoint = || observer_reverification_checkpoint(observer);
-        fold_model_fingerprint_v1_with_checkpoint(crease_pattern, paper, &mut checkpoint)
-    };
-    match fingerprint {
-        Ok(fingerprint) => provenance.source_fingerprint = Some(fingerprint),
-        Err(SourceReverificationAbort::Unknown(reason)) => {
-            return Ok(unknown(provenance, work_counts, reason));
-        }
-        Err(SourceReverificationAbort::Execution(error)) => return Err(error),
-    }
-    match reverify_source_artifacts(
-        identity_namespace,
-        input.source_revision,
-        paper,
-        crease_pattern,
-        input.topology,
-        input.local_flat_foldability,
-        observer,
-    ) {
-        Ok(()) => {}
-        Err(SourceReverificationAbort::Unknown(reason)) => {
-            return Ok(unknown(provenance, work_counts, reason));
-        }
-        Err(SourceReverificationAbort::Execution(error)) => return Err(error),
-    }
-
-    let canonical_faces = match validate_topology(input.topology) {
-        Ok(faces) => faces,
-        Err(reason) => return Ok(unknown(provenance, work_counts, reason)),
-    };
-    if canonical_faces.is_empty() {
-        return Ok(unknown(
-            provenance,
-            work_counts,
-            GlobalFlatFoldabilityUnknownReason::ProofIncomplete {
-                reason: FlatFoldabilityProofIncompleteReason::NoMaterialFaces,
-            },
-        ));
-    }
-
-    let local = match validate_local_report(input.local_flat_foldability) {
-        Ok(local) => local,
-        Err(reason) => return Ok(unknown(provenance, work_counts, reason)),
-    };
-    match local {
-        LocalReportEvidence::Blocked => {
-            return Ok(unknown(
+    let validated = match validate_global_flat_source_with_observer(input, limits, None, observer) {
+        Ok(validated) => validated,
+        Err(failure) => match *failure {
+            GlobalFlatSourceValidationFailure::Unknown {
                 provenance,
                 work_counts,
-                GlobalFlatFoldabilityUnknownReason::ProofIncomplete {
-                    reason: FlatFoldabilityProofIncompleteReason::LocalNecessaryConditionsBlocked,
-                },
-            ));
-        }
-        LocalReportEvidence::Indeterminate => {
-            return Ok(unknown(
+                reason,
+            } => return Ok(unknown(provenance, work_counts, reason)),
+            GlobalFlatSourceValidationFailure::Impossible {
                 provenance,
                 work_counts,
-                GlobalFlatFoldabilityUnknownReason::ProofIncomplete {
-                    reason:
-                        FlatFoldabilityProofIncompleteReason::LocalNecessaryConditionsIndeterminate,
-                },
-            ));
-        }
-        LocalReportEvidence::Violated(violations) => {
-            return Ok(GlobalFlatFoldabilityReport {
-                provenance,
-                work_counts,
-                outcome: GlobalFlatFoldabilityOutcome::Impossible {
-                    reason:
-                        GlobalFlatFoldabilityImpossibleReason::LocalNecessaryConditionViolated {
-                            violations,
-                        },
-                },
-            });
-        }
-        LocalReportEvidence::NoViolation => {}
-    }
-
+                violations,
+            } => {
+                return Ok(GlobalFlatFoldabilityReport {
+                    provenance,
+                    work_counts,
+                    outcome: GlobalFlatFoldabilityOutcome::Impossible {
+                        reason:
+                            GlobalFlatFoldabilityImpossibleReason::LocalNecessaryConditionViolated {
+                                violations,
+                            },
+                    },
+                });
+            }
+            GlobalFlatSourceValidationFailure::Execution(error) => return Err(error),
+        },
+    };
     facewise::analyze_facewise(
         facewise::FacewiseAnalysisInput {
-            paper,
-            crease_pattern,
-            topology: input.topology,
-            canonical_faces: &canonical_faces,
-            provenance,
-            work_counts,
+            paper: validated.paper,
+            crease_pattern: validated.crease_pattern,
+            topology: validated.topology,
+            canonical_faces: &validated.canonical_faces,
+            provenance: validated.provenance,
+            work_counts: validated.work_counts,
             limits,
         },
         observer,
@@ -1778,6 +2030,23 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct PhaseRecorder {
+        phases: Vec<GlobalFlatFoldabilityPhase>,
+    }
+
+    impl GlobalFlatFoldabilityObserver for PhaseRecorder {
+        fn on_progress(&mut self, progress: GlobalFlatFoldabilityProgress) {
+            assert!(
+                self.phases
+                    .last()
+                    .is_none_or(|previous| *previous <= progress.phase),
+                "constrained progress phases remain monotonic"
+            );
+            self.phases.push(progress.phase);
+        }
+    }
+
     fn analyze(
         topology: &TopologySnapshot,
         local: &LocalFlatFoldabilityReport,
@@ -1884,6 +2153,617 @@ mod tests {
         assert_eq!(layer_order.material_faces.len(), 3);
         assert_eq!(layer_order.face_pair_orders.len(), 3);
         assert!(layer_order.proof_summary.is_some());
+    }
+
+    #[test]
+    fn constrained_public_api_classifies_required_pairs_and_preserves_empty_result() {
+        let (paper, pattern, topology) = three_panel_accordion();
+        let local = analyze_local_flat_foldability(&paper, &pattern);
+        let input = || {
+            GlobalFlatFoldabilityInput::current_with_geometry(
+                fixed_id::<ProjectId>(1),
+                &paper,
+                &pattern,
+                &topology,
+                &local,
+            )
+        };
+        let ordinary =
+            analyze_global_flat_foldability(input(), GlobalFlatFoldabilityLimits::default())
+                .unwrap()
+                .layer_order()
+                .unwrap()
+                .clone();
+        assert_eq!(
+            analyze_global_flat_foldability_with_required_pair_orders(
+                input(),
+                GlobalFlatFoldabilityLimits::default(),
+                &[],
+            )
+            .unwrap(),
+            ordinary,
+            "empty requirements must use the ordinary single-pass solve without overlay storage"
+        );
+
+        let positive = ordinary.face_pair_orders[0].clone();
+        let required = RequiredLayerOrderPair {
+            lower_face: positive.lower_face,
+            upper_face: positive.upper_face,
+        };
+        let canonical_direction = (
+            required.lower_face.face_key,
+            required.lower_face.face_id.canonical_bytes(),
+        ) < (
+            required.upper_face.face_key,
+            required.upper_face.face_id.canonical_bytes(),
+        );
+        let constrained = analyze_global_flat_foldability_with_required_pair_orders(
+            input(),
+            GlobalFlatFoldabilityLimits::default(),
+            &[required],
+        )
+        .expect("one existing directed relation remains satisfiable");
+        assert!(constrained.face_pair_orders.iter().any(|order| {
+            order.lower_face == required.lower_face && order.upper_face == required.upper_face
+        }));
+
+        let mut reversed_pattern = pattern.clone();
+        for edge in &mut reversed_pattern.edges {
+            edge.kind = match edge.kind {
+                EdgeKind::Mountain => EdgeKind::Valley,
+                EdgeKind::Valley => EdgeKind::Mountain,
+                other => other,
+            };
+        }
+        let reversed_topology = extract_faces_strict(FaceExtractionInput {
+            identity_namespace: fixed_id::<ProjectId>(1),
+            source_revision: REVISION,
+            paper: &paper,
+            pattern: &reversed_pattern,
+        })
+        .expect("assignment-reversed accordion topology");
+        let reversed_local = analyze_local_flat_foldability(&paper, &reversed_pattern);
+        let reversed_input = || {
+            GlobalFlatFoldabilityInput::current_with_geometry(
+                fixed_id::<ProjectId>(1),
+                &paper,
+                &reversed_pattern,
+                &reversed_topology,
+                &reversed_local,
+            )
+        };
+        let reversed_ordinary = analyze_global_flat_foldability(
+            reversed_input(),
+            GlobalFlatFoldabilityLimits::default(),
+        )
+        .unwrap()
+        .layer_order()
+        .unwrap()
+        .clone();
+        let reverse_direction_required = reversed_ordinary
+            .face_pair_orders
+            .iter()
+            .find(|order| {
+                let lower_key = (
+                    order.lower_face.face_key,
+                    order.lower_face.face_id.canonical_bytes(),
+                );
+                let upper_key = (
+                    order.upper_face.face_key,
+                    order.upper_face.face_id.canonical_bytes(),
+                );
+                (lower_key < upper_key) != canonical_direction
+            })
+            .map(|order| RequiredLayerOrderPair {
+                lower_face: order.lower_face,
+                upper_face: order.upper_face,
+            })
+            .expect("reversing all hinge assignments reverses the canonical pair direction");
+        let reverse_direction_constrained =
+            analyze_global_flat_foldability_with_required_pair_orders(
+                reversed_input(),
+                GlobalFlatFoldabilityLimits::default(),
+                &[reverse_direction_required],
+            )
+            .expect("the opposite canonical direction is independently satisfiable");
+        assert!(
+            reverse_direction_constrained
+                .face_pair_orders
+                .iter()
+                .any(|order| {
+                    order.lower_face == reverse_direction_required.lower_face
+                        && order.upper_face == reverse_direction_required.upper_face
+                })
+        );
+
+        assert_eq!(
+            analyze_global_flat_foldability_with_required_pair_orders(
+                input(),
+                GlobalFlatFoldabilityLimits::default(),
+                &[required, required],
+            ),
+            Err(RequiredLayerOrderError::DuplicatePair {
+                lower: required.lower_face.face_id,
+                upper: required.upper_face.face_id,
+            })
+        );
+        let mut required_error_progress = PhaseRecorder::default();
+        assert!(matches!(
+            analyze_global_flat_foldability_with_required_pair_orders_and_observer(
+                input(),
+                GlobalFlatFoldabilityLimits::default(),
+                &[required, required],
+                &mut required_error_progress,
+            ),
+            Err(RequiredLayerOrderError::DuplicatePair { .. })
+        ));
+        assert_eq!(
+            required_error_progress.phases.last(),
+            Some(&GlobalFlatFoldabilityPhase::Completed),
+            "facewise required-order failures publish a terminal progress update"
+        );
+        let reverse = RequiredLayerOrderPair {
+            lower_face: required.upper_face,
+            upper_face: required.lower_face,
+        };
+        for requirements in [
+            vec![required, required, reverse],
+            vec![required, reverse, required],
+            vec![reverse, required, required],
+        ] {
+            assert!(matches!(
+                analyze_global_flat_foldability_with_required_pair_orders(
+                    input(),
+                    GlobalFlatFoldabilityLimits::default(),
+                    &requirements,
+                ),
+                Err(RequiredLayerOrderError::ConflictingPair { .. })
+            ));
+        }
+
+        let mut unknown_key = required;
+        unknown_key.lower_face.face_key.0[0] ^= 0xff;
+        assert_eq!(
+            analyze_global_flat_foldability_with_required_pair_orders(
+                input(),
+                GlobalFlatFoldabilityLimits::default(),
+                &[unknown_key],
+            ),
+            Err(RequiredLayerOrderError::UnknownFace {
+                face: unknown_key.lower_face.face_id,
+            })
+        );
+        let mut unknown_id = required;
+        unknown_id.lower_face.face_id = FaceId::new();
+        assert_eq!(
+            analyze_global_flat_foldability_with_required_pair_orders(
+                input(),
+                GlobalFlatFoldabilityLimits::default(),
+                &[unknown_id],
+            ),
+            Err(RequiredLayerOrderError::UnknownFace {
+                face: unknown_id.lower_face.face_id,
+            })
+        );
+        let equal = RequiredLayerOrderPair {
+            lower_face: required.lower_face,
+            upper_face: required.lower_face,
+        };
+        assert_eq!(
+            analyze_global_flat_foldability_with_required_pair_orders(
+                input(),
+                GlobalFlatFoldabilityLimits::default(),
+                &[equal],
+            ),
+            Err(RequiredLayerOrderError::EqualFace {
+                face: equal.lower_face.face_id,
+            })
+        );
+        let mut equal_with_tampered_key = equal;
+        equal_with_tampered_key.upper_face.face_key.0[0] ^= 0xff;
+        assert_eq!(
+            analyze_global_flat_foldability_with_required_pair_orders(
+                input(),
+                GlobalFlatFoldabilityLimits::default(),
+                &[equal_with_tampered_key],
+            ),
+            Err(RequiredLayerOrderError::UnknownFace {
+                face: equal_with_tampered_key.upper_face.face_id,
+            }),
+            "exact trusted-face lookup takes precedence over same-ID classification"
+        );
+
+        let hinge_pairs = topology
+            .hinge_adjacency
+            .iter()
+            .map(|hinge| {
+                if hinge.first.canonical_bytes() < hinge.second.canonical_bytes() {
+                    (hinge.first, hinge.second)
+                } else {
+                    (hinge.second, hinge.first)
+                }
+            })
+            .collect::<HashSet<_>>();
+        let inferred = ordinary
+            .face_pair_orders
+            .iter()
+            .find(|order| {
+                let key = if order.lower_face.face_id.canonical_bytes()
+                    < order.upper_face.face_id.canonical_bytes()
+                {
+                    (order.lower_face.face_id, order.upper_face.face_id)
+                } else {
+                    (order.upper_face.face_id, order.lower_face.face_id)
+                };
+                !hinge_pairs.contains(&key)
+            })
+            .expect("the accordion has one non-hinge inferred pair");
+        assert_eq!(
+            analyze_global_flat_foldability_with_required_pair_orders(
+                input(),
+                GlobalFlatFoldabilityLimits::default(),
+                &[RequiredLayerOrderPair {
+                    lower_face: inferred.upper_face,
+                    upper_face: inferred.lower_face,
+                }],
+            ),
+            Err(RequiredLayerOrderError::Unsatisfied)
+        );
+    }
+
+    #[test]
+    fn constrained_public_api_rejects_fixed_nonoverlap_resource_deadline_and_cancel() {
+        let (paper, pattern, topology, local) = centered_single_hinge_square();
+        let input = || {
+            GlobalFlatFoldabilityInput::current_with_geometry(
+                fixed_id::<ProjectId>(2),
+                &paper,
+                &pattern,
+                &topology,
+                &local,
+            )
+        };
+        let ordinary =
+            analyze_global_flat_foldability(input(), GlobalFlatFoldabilityLimits::default())
+                .unwrap()
+                .layer_order()
+                .unwrap()
+                .clone();
+        let order = &ordinary.face_pair_orders[0];
+        let required = RequiredLayerOrderPair {
+            lower_face: order.lower_face,
+            upper_face: order.upper_face,
+        };
+        assert_eq!(
+            required_pair_preflight_failure(
+                1,
+                GlobalFlatFoldabilityLimits {
+                    max_overlap_face_pairs: 1,
+                    max_certificate_bytes: std::mem::size_of::<(usize, bool)>(),
+                    ..GlobalFlatFoldabilityLimits::default()
+                },
+            ),
+            None,
+            "required-pair count and preflight storage admit equality"
+        );
+        assert!(matches!(
+            analyze_global_flat_foldability_with_required_pair_orders(
+                input(),
+                GlobalFlatFoldabilityLimits::default(),
+                &[RequiredLayerOrderPair {
+                    lower_face: required.upper_face,
+                    upper_face: required.lower_face,
+                }],
+            ),
+            Err(RequiredLayerOrderError::ContradictsTrustedFixedOrder { .. })
+        ));
+
+        let required_storage = std::mem::size_of::<(usize, bool)>();
+        assert!(matches!(
+            required_pair_preflight_failure(
+                1,
+                GlobalFlatFoldabilityLimits {
+                    max_certificate_bytes: required_storage - 1,
+                    ..GlobalFlatFoldabilityLimits::default()
+                },
+            ),
+            Some(GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                    resource: FlatFoldabilityResource::CertificateBytes,
+                    limit,
+                    observed,
+            }) if limit == required_storage - 1 && observed == required_storage
+        ));
+        assert!(matches!(
+            analyze_global_flat_foldability_with_required_pair_orders(
+                input(),
+                GlobalFlatFoldabilityLimits {
+                    max_certificate_bytes: required_storage - 1,
+                    ..GlobalFlatFoldabilityLimits::default()
+                },
+                &[required],
+            ),
+            Err(RequiredLayerOrderError::Inconclusive {
+                reason: GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                    resource: FlatFoldabilityResource::CertificateBytes,
+                    limit,
+                    observed,
+                }
+            }) if limit == required_storage - 1 && observed == required_storage
+        ));
+        let equality = analyze_global_flat_foldability_with_required_pair_orders(
+            input(),
+            GlobalFlatFoldabilityLimits {
+                max_overlap_face_pairs: 1,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            &[required],
+        )
+        .expect("one trusted overlap pair is admitted at the exact count limit");
+        assert!(equality.face_pair_orders.iter().any(|order| {
+            order.lower_face == required.lower_face && order.upper_face == required.upper_face
+        }));
+
+        struct ImmediateCheckpoint(GlobalFlatFoldabilityCheckpoint);
+        impl GlobalFlatFoldabilityObserver for ImmediateCheckpoint {
+            fn checkpoint(&mut self) -> GlobalFlatFoldabilityCheckpoint {
+                self.0
+            }
+        }
+        let capped = GlobalFlatFoldabilityLimits {
+            max_overlap_face_pairs: 0,
+            ..GlobalFlatFoldabilityLimits::default()
+        };
+        let mut immediate_deadline =
+            ImmediateCheckpoint(GlobalFlatFoldabilityCheckpoint::DeadlineReached);
+        assert_eq!(
+            analyze_global_flat_foldability_with_required_pair_orders_and_observer(
+                input(),
+                capped,
+                &[required],
+                &mut immediate_deadline,
+            ),
+            Err(RequiredLayerOrderError::Inconclusive {
+                reason: GlobalFlatFoldabilityUnknownReason::TimeLimitReached {
+                    phase: GlobalFlatFoldabilityPhase::Capturing,
+                },
+            }),
+            "the Capturing checkpoint takes priority over required-count limits"
+        );
+        let mut immediate_cancel = ImmediateCheckpoint(GlobalFlatFoldabilityCheckpoint::Cancelled);
+        assert_eq!(
+            analyze_global_flat_foldability_with_required_pair_orders_and_observer(
+                input(),
+                capped,
+                &[required],
+                &mut immediate_cancel,
+            ),
+            Err(RequiredLayerOrderError::Execution(
+                GlobalFlatFoldabilityExecutionError::Cancelled
+            )),
+            "Capturing cancellation takes priority over required-count limits"
+        );
+        assert!(matches!(
+            analyze_global_flat_foldability_with_required_pair_orders(
+                input(),
+                GlobalFlatFoldabilityLimits {
+                    max_overlap_face_pairs: 0,
+                    ..GlobalFlatFoldabilityLimits::default()
+                },
+                &[required],
+            ),
+            Err(RequiredLayerOrderError::Inconclusive {
+                reason: GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                    resource: FlatFoldabilityResource::OverlapFacePairs,
+                    limit: 0,
+                    observed: 1,
+                }
+            })
+        ));
+        assert!(matches!(
+            analyze_global_flat_foldability_with_required_pair_orders(
+                input(),
+                GlobalFlatFoldabilityLimits {
+                    max_exact_operations: 0,
+                    ..GlobalFlatFoldabilityLimits::default()
+                },
+                &[required],
+            ),
+            Err(RequiredLayerOrderError::Inconclusive {
+                reason: GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                    resource: FlatFoldabilityResource::ExactOperations,
+                    ..
+                }
+            })
+        ));
+        let mut deadline = DeadlineAtFacewise {
+            phase: GlobalFlatFoldabilityPhase::Capturing,
+        };
+        assert!(matches!(
+            analyze_global_flat_foldability_with_required_pair_orders_and_observer(
+                input(),
+                GlobalFlatFoldabilityLimits::default(),
+                &[required],
+                &mut deadline,
+            ),
+            Err(RequiredLayerOrderError::Inconclusive {
+                reason: GlobalFlatFoldabilityUnknownReason::TimeLimitReached { .. }
+            })
+        ));
+        let mut cancelled = FixedGlobalFlatFoldabilityObserver {
+            control: GlobalFlatFoldabilityExecutionControl::Cancelled,
+        };
+        assert_eq!(
+            analyze_global_flat_foldability_with_required_pair_orders_and_observer(
+                input(),
+                GlobalFlatFoldabilityLimits::default(),
+                &[required],
+                &mut cancelled,
+            ),
+            Err(RequiredLayerOrderError::Execution(
+                GlobalFlatFoldabilityExecutionError::Cancelled
+            ))
+        );
+
+        let (paper, mut pattern, _) = three_panel_accordion();
+        for vertex in &mut pattern.vertices {
+            if vertex.position.x.to_bits() == 2.0_f64.to_bits() {
+                vertex.position.x = 1.0;
+            }
+        }
+        let topology = extract_faces_strict(FaceExtractionInput {
+            identity_namespace: fixed_id::<ProjectId>(1),
+            source_revision: REVISION,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .expect("unequal three-panel strip topology");
+        let local = analyze_local_flat_foldability(&paper, &pattern);
+        let unequal_input = || {
+            GlobalFlatFoldabilityInput::current_with_geometry(
+                fixed_id::<ProjectId>(1),
+                &paper,
+                &pattern,
+                &topology,
+                &local,
+            )
+        };
+        let unequal = analyze_global_flat_foldability(
+            unequal_input(),
+            GlobalFlatFoldabilityLimits::default(),
+        )
+        .unwrap()
+        .layer_order()
+        .unwrap()
+        .clone();
+        let ordered = unequal
+            .face_pair_orders
+            .iter()
+            .map(|order| {
+                if order.lower_face.face_id.canonical_bytes()
+                    < order.upper_face.face_id.canonical_bytes()
+                {
+                    (order.lower_face.face_id, order.upper_face.face_id)
+                } else {
+                    (order.upper_face.face_id, order.lower_face.face_id)
+                }
+            })
+            .collect::<HashSet<_>>();
+        let non_overlap = unequal
+            .material_faces
+            .iter()
+            .enumerate()
+            .find_map(|(first, lower)| {
+                unequal
+                    .material_faces
+                    .iter()
+                    .skip(first + 1)
+                    .find_map(|upper| {
+                        let key =
+                            if lower.face_id.canonical_bytes() < upper.face_id.canonical_bytes() {
+                                (lower.face_id, upper.face_id)
+                            } else {
+                                (upper.face_id, lower.face_id)
+                            };
+                        (!ordered.contains(&key)).then_some(RequiredLayerOrderPair {
+                            lower_face: *lower,
+                            upper_face: *upper,
+                        })
+                    })
+            })
+            .expect("unequal strip has one non-overlapping outer-face pair");
+        assert!(matches!(
+            analyze_global_flat_foldability_with_required_pair_orders(
+                unequal_input(),
+                GlobalFlatFoldabilityLimits::default(),
+                &[non_overlap],
+            ),
+            Err(RequiredLayerOrderError::NonOverlappingPair { .. })
+        ));
+    }
+
+    #[test]
+    fn constrained_public_api_preserves_search_node_limit_reason() {
+        let (paper, mut pattern, _) = three_panel_accordion();
+        for edge in &mut pattern.edges {
+            if edge.kind == EdgeKind::Valley {
+                edge.kind = EdgeKind::Mountain;
+            }
+        }
+        let topology = extract_faces_strict(FaceExtractionInput {
+            identity_namespace: fixed_id::<ProjectId>(1),
+            source_revision: REVISION,
+            paper: &paper,
+            pattern: &pattern,
+        })
+        .expect("same-direction three-panel topology");
+        let local = analyze_local_flat_foldability(&paper, &pattern);
+        let input = || {
+            GlobalFlatFoldabilityInput::current_with_geometry(
+                fixed_id::<ProjectId>(1),
+                &paper,
+                &pattern,
+                &topology,
+                &local,
+            )
+        };
+        let ordinary =
+            analyze_global_flat_foldability(input(), GlobalFlatFoldabilityLimits::default())
+                .unwrap()
+                .layer_order()
+                .unwrap()
+                .clone();
+        assert!(
+            ordinary
+                .proof_summary
+                .expect("facewise proof summary")
+                .search_nodes
+                > 0,
+            "same-direction outer flaps leave one deterministic search choice"
+        );
+        let hinge = topology
+            .hinge_adjacency
+            .first()
+            .expect("fixture has a trusted hinge");
+        let required = ordinary
+            .face_pair_orders
+            .iter()
+            .find(|order| {
+                let pair = [order.lower_face.face_id, order.upper_face.face_id];
+                pair.contains(&hinge.first) && pair.contains(&hinge.second)
+            })
+            .map(|order| RequiredLayerOrderPair {
+                lower_face: order.lower_face,
+                upper_face: order.upper_face,
+            })
+            .expect("ordinary certificate contains the hinge order");
+        let mut search_limit_progress = PhaseRecorder::default();
+        let search_limited = analyze_global_flat_foldability_with_required_pair_orders_and_observer(
+            input(),
+            GlobalFlatFoldabilityLimits {
+                max_search_nodes: 0,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            &[required],
+            &mut search_limit_progress,
+        );
+        assert!(
+            matches!(
+                search_limited,
+                Err(RequiredLayerOrderError::Inconclusive {
+                    reason: GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                        resource: FlatFoldabilityResource::SearchNodes,
+                        limit: 0,
+                        observed: 1,
+                    },
+                })
+            ),
+            "search-node exhaustion remains precisely classified: {search_limited:?}"
+        );
+        assert_eq!(
+            search_limit_progress.phases.last(),
+            Some(&GlobalFlatFoldabilityPhase::Completed),
+            "facewise inconclusive results publish a terminal progress update"
+        );
     }
 
     #[test]

@@ -1,3 +1,4 @@
+#![deny(unsafe_op_in_unsafe_fn)]
 #![allow(
     clippy::clone_on_copy,
     clippy::collapsible_else_if,
@@ -117,10 +118,12 @@ use fold_technique_file_io::{
     FoldTechniqueFileIoState, open_fold_technique_file, save_fold_technique_file_as,
 };
 use global_flat_foldability::{
-    GlobalFlatFoldabilityState, begin_global_flat_foldability, cancel_global_flat_foldability,
-    get_current_layer_order_view, get_global_flat_foldability_progress,
-    get_global_flat_foldability_result, reanalyze_current_flat_layer_order,
-    revalidate_archived_flat_layer_evidence,
+    GlobalFlatFoldabilityState, archive_revalidation_deadline, begin_global_flat_foldability,
+    cancel_global_flat_foldability, get_current_layer_order_view,
+    get_global_flat_foldability_progress, get_global_flat_foldability_result,
+    reanalyze_editor_flat_layer_order_with_required_pairs_and_deadline,
+    revalidate_archived_flat_layer_evidence_with_deadline,
+    revalidate_authenticated_non_refining_graph_layer_evidence,
 };
 use history_settings::{get_history_entry_limit, set_history_entry_limit};
 use instruction_export::{
@@ -1215,11 +1218,17 @@ fn revalidate_archived_layer_evidence(
     {
         return Err(PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned());
     }
+    let revalidation_deadline =
+        archive_revalidation_deadline().map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
     match &archived.evidence {
         LayerEvidenceArchiveKindV1::Flat {
             canonical_snapshot_json,
-        } => revalidate_archived_flat_layer_evidence(project, canonical_snapshot_json)
-            .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned()),
+        } => revalidate_archived_flat_layer_evidence_with_deadline(
+            project,
+            canonical_snapshot_json,
+            revalidation_deadline,
+        )
+        .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned()),
         LayerEvidenceArchiveKindV1::NonFlat {
             fixed_face,
             hinge_angles,
@@ -1236,47 +1245,92 @@ fn revalidate_archived_layer_evidence(
                     .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())
             };
             let fixed_face = fixed_face.as_deref().map(parse_face).transpose()?;
-            let mut angles = hinge_angles
-                .iter()
-                .map(|angle| {
-                    HingeAngle::new(parse_edge(&angle.edge)?, angle.angle_degrees)
-                        .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())
-                })
-                .collect::<Result<Vec<_>, String>>()?;
-            angles.sort_unstable_by_key(|angle| angle.edge().canonical_bytes());
+            let mut angles = Vec::new();
+            angles
+                .try_reserve_exact(hinge_angles.len())
+                .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+            let mut previous_edge = None;
+            for angle in hinge_angles {
+                if angle.angle_degrees.to_bits() == (-0.0_f64).to_bits() {
+                    return Err(PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned());
+                }
+                let edge = parse_edge(&angle.edge)?;
+                if previous_edge.is_some_and(|previous: EdgeId| {
+                    previous.canonical_bytes() >= edge.canonical_bytes()
+                }) {
+                    return Err(PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned());
+                }
+                previous_edge = Some(edge);
+                angles.push(
+                    HingeAngle::new(edge, angle.angle_degrees)
+                        .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?,
+                );
+            }
             let angles = CanonicalHingeAngles::new(angles)
                 .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
-            let flat = reanalyze_current_flat_layer_order(project)
-                .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
-            let trusted = ori_core::revalidate_current_non_flat_layer_order_v1(
-                project.project_id,
-                project.editor.revision(),
-                project.editor.pattern(),
-                project.editor.paper(),
-                fixed_face,
-                &angles,
-                &flat,
-                ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
-            )
-            .or_else(|tree_error| {
-                let Some(fixed_face) = fixed_face else {
-                    return Err(tree_error);
-                };
-                ori_core::revalidate_current_graph_non_flat_layer_order_v1(
-                    ori_core::RevalidateCurrentGraphNonFlatLayerOrderRequestV1 {
+            let current_applied_pose = project
+                .editor
+                .current_applied_pose()
+                .ok_or_else(|| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+            let predecessor = project
+                .editor
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .ok_or_else(|| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+            let archived_pairs = pair_orders
+                .iter()
+                .map(|pair| {
+                    Ok(ori_core::ArchivedNonFlatFacePairOrderInputV1 {
+                        lower_face: parse_face(&pair.lower_face)?,
+                        upper_face: parse_face(&pair.upper_face)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let trusted = if predecessor.pattern() == project.editor.pattern()
+                && predecessor.paper() == project.editor.paper()
+            {
+                revalidate_authenticated_non_refining_graph_layer_evidence(
+                    project.project_id,
+                    &predecessor,
+                    &project.editor,
+                    fixed_face,
+                    &angles,
+                    revalidation_deadline,
+                )
+                .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?
+            } else {
+                let prepared = ori_core::prepare_archived_refined_non_flat_layer_order_v1(
+                    ori_core::PrepareArchivedRefinedNonFlatLayerOrderRequestV1 {
                         identity_namespace: project.project_id,
-                        revision: project.editor.revision(),
-                        pattern: project.editor.pattern(),
-                        paper: project.editor.paper(),
+                        source_revision: predecessor.revision(),
+                        source_pattern: predecessor.pattern(),
+                        source_paper: predecessor.paper(),
+                        target_admission_revision: project.editor.revision(),
+                        target_pattern: project.editor.pattern(),
+                        target_paper: project.editor.paper(),
                         fixed_face,
                         hinge_angles: &angles,
-                        current_flat: &flat,
-                        expected_archive: None,
+                        archived_pair_orders: &archived_pairs,
+                        lineage_limits: ori_core::FaceLineageLimits::default(),
+                        geometry_limits: ori_core::StackedFoldGeometryLimitsV1::default(),
                         max_face_pairs: ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
                     },
                 )
-            })
-            .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+                .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+                let constrained_source_flat =
+                    reanalyze_editor_flat_layer_order_with_required_pairs_and_deadline(
+                        project.project_id,
+                        &predecessor,
+                        prepared.required_source_pair_orders(),
+                        revalidation_deadline,
+                    )
+                    .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?;
+                ori_core::finish_archived_refined_non_flat_layer_order_v1(
+                    prepared,
+                    &constrained_source_flat,
+                    current_applied_pose,
+                )
+                .map_err(|_| PROJECT_ARCHIVE_INVALID_MESSAGE.to_owned())?
+            };
             let materials_match = trusted.material_faces().len() == material_faces.len()
                 && trusted
                     .material_faces()

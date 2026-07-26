@@ -1962,10 +1962,11 @@ fn apply_stacked_fold_transaction_with_title(
             }
         }
     }
-    project.current_layer_evidence = target
-        .is_none()
-        .then(|| applied_layer_order.clone())
-        .flatten();
+    project.current_layer_evidence = match applied_layer_order.as_ref() {
+        Some(CurrentLayerEvidence::NonFlat(_)) => applied_layer_order.clone(),
+        _ if target.is_none() => applied_layer_order.clone(),
+        _ => None,
+    };
     drop(project);
     transaction_slot.pending = None;
     transaction_slot.active_generation = None;

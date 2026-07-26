@@ -20,7 +20,8 @@ use crate::{
     GlobalFlatFoldabilityProvenance, GlobalFlatFoldabilityReport,
     GlobalFlatFoldabilityUnknownReason, GlobalFlatFoldabilityWorkCounts, LayerFace,
     LayerOrderDerivation, LayerOrderModelId, LayerOrderProvenance, LayerOrderSnapshot,
-    OverlapCellKey, OverlapCellSnapshot, UnsupportedFlatFoldabilityTopology, complete_progress,
+    OverlapCellKey, OverlapCellSnapshot, RequiredLayerOrderError, RequiredLayerOrderPair,
+    UnsupportedFlatFoldabilityTopology, complete_progress,
     constraints::{
         ConstraintSolverControl, ConstraintSolverEvent, ConstraintSolverResult, TupleConstraint,
         solve_constraints_with_memory,
@@ -68,6 +69,7 @@ impl ExactStorage {
 enum FacewiseAbort {
     Unknown(GlobalFlatFoldabilityUnknownReason),
     Impossible(GlobalFlatFoldabilityImpossibleReason),
+    RequiredLayerOrder(RequiredLayerOrderError),
     Execution(GlobalFlatFoldabilityExecutionError),
 }
 
@@ -413,6 +415,15 @@ impl<'a, O: GlobalFlatFoldabilityObserver + ?Sized> Runtime<'a, O> {
         self.exact_storage.constraint_bytes = 0;
     }
 
+    fn release_constraint_storage(&mut self, released: usize) -> FacewiseResult<()> {
+        self.exact_storage.constraint_bytes = self
+            .exact_storage
+            .constraint_bytes
+            .checked_sub(released)
+            .ok_or_else(internal_abort)?;
+        Ok(())
+    }
+
     fn remaining_storage_bytes(&self) -> FacewiseResult<usize> {
         let used = self
             .exact_storage
@@ -647,6 +658,7 @@ pub(crate) fn analyze_facewise<O: GlobalFlatFoldabilityObserver + ?Sized>(
         topology,
         canonical_faces,
         provenance,
+        None,
         &mut runtime,
     );
     match result {
@@ -673,7 +685,65 @@ pub(crate) fn analyze_facewise<O: GlobalFlatFoldabilityObserver + ?Sized>(
                 outcome: GlobalFlatFoldabilityOutcome::Impossible { reason },
             })
         }
+        Err(FacewiseAbort::RequiredLayerOrder(_)) => {
+            Err(GlobalFlatFoldabilityExecutionError::Internal {
+                reason: GlobalFlatFoldabilityInternalError::ValidatedTopologyInvariantLost,
+            })
+        }
         Err(FacewiseAbort::Execution(error)) => Err(error),
+    }
+}
+
+pub(crate) fn analyze_facewise_with_required_pair_orders<
+    O: GlobalFlatFoldabilityObserver + ?Sized,
+>(
+    input: FacewiseAnalysisInput<'_>,
+    required_pair_orders: &[RequiredLayerOrderPair],
+    observer: &mut O,
+) -> Result<LayerOrderSnapshot, RequiredLayerOrderError> {
+    let FacewiseAnalysisInput {
+        paper,
+        crease_pattern,
+        topology,
+        canonical_faces,
+        provenance,
+        work_counts,
+        limits,
+    } = input;
+    let mut runtime = Runtime::new(observer, limits, work_counts);
+    let required_pair_orders = (!required_pair_orders.is_empty()).then_some(required_pair_orders);
+    match solve_facewise(
+        paper,
+        crease_pattern,
+        topology,
+        canonical_faces,
+        provenance,
+        required_pair_orders,
+        &mut runtime,
+    ) {
+        Ok(success) => {
+            complete_progress(runtime.observer, runtime.work);
+            Ok(success.layer_order)
+        }
+        Err(FacewiseAbort::RequiredLayerOrder(error)) => {
+            complete_progress(runtime.observer, runtime.work);
+            Err(error)
+        }
+        Err(FacewiseAbort::Impossible(_)) => {
+            complete_progress(runtime.observer, runtime.work);
+            Err(RequiredLayerOrderError::BaseAnalysisImpossible)
+        }
+        Err(FacewiseAbort::Unknown(GlobalFlatFoldabilityUnknownReason::ProofIncomplete {
+            reason: FlatFoldabilityProofIncompleteReason::CertificateReverificationFailed,
+        })) => {
+            complete_progress(runtime.observer, runtime.work);
+            Err(RequiredLayerOrderError::CertificateReverificationFailed)
+        }
+        Err(FacewiseAbort::Unknown(reason)) => {
+            complete_progress(runtime.observer, runtime.work);
+            Err(RequiredLayerOrderError::Inconclusive { reason })
+        }
+        Err(FacewiseAbort::Execution(error)) => Err(RequiredLayerOrderError::Execution(error)),
     }
 }
 
@@ -683,6 +753,7 @@ fn solve_facewise<O: GlobalFlatFoldabilityObserver + ?Sized>(
     topology: &TopologySnapshot,
     canonical_faces: &[LayerFace],
     provenance: GlobalFlatFoldabilityProvenance,
+    required_pair_orders: Option<&[RequiredLayerOrderPair]>,
     runtime: &mut Runtime<'_, O>,
 ) -> FacewiseResult<SolveSuccess> {
     runtime.advance(
@@ -696,7 +767,14 @@ fn solve_facewise<O: GlobalFlatFoldabilityObserver + ?Sized>(
     runtime.set_overlap_pairs(overlap_pairs.len())?;
     let cells = build_overlap_cells(&embedding.faces, &overlap_pairs, runtime)?;
     runtime.set_overlap_cells(cells.len())?;
-    solve_layer_order(embedding, overlap_pairs, cells, provenance, runtime)
+    solve_layer_order(
+        embedding,
+        overlap_pairs,
+        cells,
+        provenance,
+        required_pair_orders,
+        runtime,
+    )
 }
 
 fn build_flat_embedding<O: GlobalFlatFoldabilityObserver + ?Sized>(
@@ -1904,11 +1982,177 @@ fn layer_order_derivation(
     }
 }
 
+fn trusted_required_face_index(embedding: &FlatEmbedding, required: LayerFace) -> Option<usize> {
+    let required_key = (required.face_key, required.face_id.canonical_bytes());
+    let index = embedding
+        .faces
+        .binary_search_by(|candidate| {
+            let candidate = candidate.source.layer;
+            (candidate.face_key, candidate.face_id.canonical_bytes()).cmp(&required_key)
+        })
+        .ok()?;
+    (embedding.faces[index].source.layer == required).then_some(index)
+}
+
+fn required_face_registry_is_strictly_canonical(embedding: &FlatEmbedding) -> bool {
+    embedding.faces.windows(2).all(|faces| {
+        let first = faces[0].source.layer;
+        let second = faces[1].source.layer;
+        (first.face_key, first.face_id.canonical_bytes())
+            < (second.face_key, second.face_id.canonical_bytes())
+    })
+}
+
+fn required_pair_direction(
+    embedding: &FlatEmbedding,
+    variable: (usize, usize),
+    canonical_second_above_first: bool,
+) -> (ori_domain::FaceId, ori_domain::FaceId) {
+    let (lower, upper) = if canonical_second_above_first {
+        variable
+    } else {
+        (variable.1, variable.0)
+    };
+    (
+        embedding.faces[lower].source.layer.face_id,
+        embedding.faces[upper].source.layer.face_id,
+    )
+}
+
+struct RequiredPairOverlay {
+    fixed_assignments: Vec<Option<bool>>,
+    required_assignments: Vec<(usize, bool)>,
+    storage_bytes: usize,
+}
+
+impl RequiredPairOverlay {
+    fn release<O: GlobalFlatFoldabilityObserver + ?Sized>(
+        self,
+        runtime: &mut Runtime<'_, O>,
+    ) -> FacewiseResult<()> {
+        let storage_bytes = self.storage_bytes;
+        drop(self);
+        runtime.release_constraint_storage(storage_bytes)
+    }
+}
+
+fn overlay_required_pair_orders<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    embedding: &FlatEmbedding,
+    problem: &ConstraintProblem,
+    required_pair_orders: &[RequiredLayerOrderPair],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<RequiredPairOverlay> {
+    if !required_face_registry_is_strictly_canonical(embedding) {
+        return Err(FacewiseAbort::Execution(internal_error()));
+    }
+    let required_bytes = runtime.allocation_bytes(
+        required_pair_orders.len(),
+        std::mem::size_of::<(usize, bool)>(),
+    )?;
+    runtime.add_constraint_storage(required_bytes)?;
+    let mut required_assignments = Vec::new();
+    required_assignments
+        .try_reserve_exact(required_pair_orders.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    for required in required_pair_orders {
+        runtime.checkpoint(None)?;
+        let Some(lower) = trusted_required_face_index(embedding, required.lower_face) else {
+            return Err(FacewiseAbort::RequiredLayerOrder(
+                RequiredLayerOrderError::UnknownFace {
+                    face: required.lower_face.face_id,
+                },
+            ));
+        };
+        let Some(upper) = trusted_required_face_index(embedding, required.upper_face) else {
+            return Err(FacewiseAbort::RequiredLayerOrder(
+                RequiredLayerOrderError::UnknownFace {
+                    face: required.upper_face.face_id,
+                },
+            ));
+        };
+        if lower == upper {
+            return Err(FacewiseAbort::RequiredLayerOrder(
+                RequiredLayerOrderError::EqualFace {
+                    face: required.lower_face.face_id,
+                },
+            ));
+        }
+        let pair = ordered_pair(lower, upper);
+        let Ok(variable) = problem.variables.binary_search(&pair) else {
+            return Err(FacewiseAbort::RequiredLayerOrder(
+                RequiredLayerOrderError::NonOverlappingPair {
+                    lower: required.lower_face.face_id,
+                    upper: required.upper_face.face_id,
+                },
+            ));
+        };
+        required_assignments.push((variable, upper == pair.1));
+    }
+    required_assignments.sort_unstable();
+    let mut group_start = 0;
+    while group_start < required_assignments.len() {
+        let variable_index = required_assignments[group_start].0;
+        let mut group_end = group_start + 1;
+        while group_end < required_assignments.len()
+            && required_assignments[group_end].0 == variable_index
+        {
+            group_end += 1;
+        }
+        let group = &required_assignments[group_start..group_end];
+        let variable = problem.variables[variable_index];
+        let has_false = group.iter().any(|(_, direction)| !*direction);
+        let has_true = group.iter().any(|(_, direction)| *direction);
+        if has_false && has_true {
+            let (first, second) = required_pair_direction(embedding, variable, false);
+            return Err(FacewiseAbort::RequiredLayerOrder(
+                RequiredLayerOrderError::ConflictingPair { first, second },
+            ));
+        }
+        if group.len() > 1 {
+            let (lower, upper) = required_pair_direction(embedding, variable, group[0].1);
+            return Err(FacewiseAbort::RequiredLayerOrder(
+                RequiredLayerOrderError::DuplicatePair { lower, upper },
+            ));
+        }
+        group_start = group_end;
+    }
+
+    let fixed_bytes = runtime.allocation_bytes(
+        problem.fixed_assignments.len(),
+        std::mem::size_of::<Option<bool>>(),
+    )?;
+    runtime.add_constraint_storage(fixed_bytes)?;
+    let mut fixed_assignments = Vec::new();
+    fixed_assignments
+        .try_reserve_exact(problem.fixed_assignments.len())
+        .map_err(|_| runtime.exact_storage_limit_failure(runtime.limits.max_certificate_bytes))?;
+    fixed_assignments.extend_from_slice(&problem.fixed_assignments);
+    for &(variable, required) in &required_assignments {
+        if fixed_assignments[variable].is_some_and(|fixed| fixed != required) {
+            let (lower, upper) =
+                required_pair_direction(embedding, problem.variables[variable], required);
+            return Err(FacewiseAbort::RequiredLayerOrder(
+                RequiredLayerOrderError::ContradictsTrustedFixedOrder { lower, upper },
+            ));
+        }
+        fixed_assignments[variable] = Some(required);
+    }
+    let storage_bytes = required_bytes
+        .checked_add(fixed_bytes)
+        .ok_or_else(|| runtime.exact_storage_limit_failure(usize::MAX))?;
+    Ok(RequiredPairOverlay {
+        fixed_assignments,
+        required_assignments,
+        storage_bytes,
+    })
+}
+
 fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
     embedding: FlatEmbedding,
     pairs: Vec<OverlapPair>,
     cells: Vec<OverlapCell>,
     provenance: GlobalFlatFoldabilityProvenance,
+    required_pair_orders: Option<&[RequiredLayerOrderPair]>,
     runtime: &mut Runtime<'_, O>,
 ) -> FacewiseResult<SolveSuccess> {
     runtime.advance(GlobalFlatFoldabilityPhase::BuildingConstraints, None)?;
@@ -1918,12 +2162,20 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
     {
         return Err(FacewiseAbort::Execution(internal_error()));
     }
+    let required_overlay = required_pair_orders
+        .map(|required| overlay_required_pair_orders(&embedding, &problem, required, runtime))
+        .transpose()?;
+    let solver_fixed_assignments = required_overlay
+        .as_ref()
+        .map_or(problem.fixed_assignments.as_slice(), |overlay| {
+            overlay.fixed_assignments.as_slice()
+        });
     runtime.advance(GlobalFlatFoldabilityPhase::Propagating, None)?;
     let solver_memory_limit = runtime.remaining_storage_bytes()?;
     let solver_result = solve_constraints_with_memory(
         problem.variables.len(),
         &problem.constraints,
-        &problem.fixed_assignments,
+        solver_fixed_assignments,
         runtime.limits.max_search_nodes,
         solver_memory_limit,
         |event, search_nodes| runtime.constraint_solver_control(event, search_nodes),
@@ -1944,6 +2196,11 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
             search_nodes,
         } => {
             runtime.set_search_nodes(search_nodes)?;
+            if required_pair_orders.is_some() {
+                return Err(FacewiseAbort::RequiredLayerOrder(
+                    RequiredLayerOrderError::Unsatisfied,
+                ));
+            }
             if let Some(index) = conflict_constraint {
                 let constraint = problem.constraints.get(index).ok_or_else(internal_abort)?;
                 return Err(constraint_contradiction(constraint, &embedding));
@@ -1996,6 +2253,19 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
         )?;
     }
     verify_facewise_certificate(&embedding, &pairs, &cells, &problem, &assignment, runtime)?;
+    if required_overlay.as_ref().is_some_and(|overlay| {
+        overlay
+            .required_assignments
+            .iter()
+            .any(|(variable, expected)| assignment.get(*variable) != Some(expected))
+    }) {
+        return Err(FacewiseAbort::RequiredLayerOrder(
+            RequiredLayerOrderError::CertificateReverificationFailed,
+        ));
+    }
+    if let Some(overlay) = required_overlay {
+        overlay.release(runtime)?;
+    }
     runtime.add_certificate_structure_storage(runtime.allocation_bytes(
         problem.variables.len(),
         std::mem::size_of::<((usize, usize), bool)>(),
@@ -2227,6 +2497,9 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
         provenance,
         runtime,
     )?;
+    if let Some(required_pair_orders) = required_pair_orders {
+        verify_required_pair_orders_against_snapshot(&layer_order, required_pair_orders, runtime)?;
+    }
     Ok(SolveSuccess {
         reason: GlobalFlatFoldabilityPossibleReason::FacewiseConstraintCertificate {
             reference_face,
@@ -2235,6 +2508,77 @@ fn solve_layer_order<O: GlobalFlatFoldabilityObserver + ?Sized>(
         },
         layer_order,
     })
+}
+
+fn verify_required_pair_orders_against_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    snapshot: &LayerOrderSnapshot,
+    required_pair_orders: &[RequiredLayerOrderPair],
+    runtime: &mut Runtime<'_, O>,
+) -> FacewiseResult<()> {
+    let canonical_key = |face: LayerFace| (face.face_key, face.face_id.canonical_bytes());
+    if snapshot
+        .material_faces
+        .windows(2)
+        .any(|faces| canonical_key(faces[0]) >= canonical_key(faces[1]))
+    {
+        return Err(FacewiseAbort::RequiredLayerOrder(
+            RequiredLayerOrderError::CertificateReverificationFailed,
+        ));
+    }
+    let face_is_material = |required: LayerFace| {
+        snapshot
+            .material_faces
+            .binary_search_by_key(&canonical_key(required), |face| canonical_key(*face))
+            .ok()
+            .is_some_and(|index| snapshot.material_faces[index] == required)
+    };
+    for order in &snapshot.face_pair_orders {
+        runtime.checkpoint(None)?;
+        if !face_is_material(order.lower_face)
+            || !face_is_material(order.upper_face)
+            || order.lower_face.face_id == order.upper_face.face_id
+        {
+            return Err(FacewiseAbort::RequiredLayerOrder(
+                RequiredLayerOrderError::CertificateReverificationFailed,
+            ));
+        }
+    }
+    let pair_key = |lower: LayerFace, upper: LayerFace| {
+        (
+            lower.face_key,
+            upper.face_key,
+            lower.face_id.canonical_bytes(),
+            upper.face_id.canonical_bytes(),
+        )
+    };
+    for required in required_pair_orders {
+        runtime.checkpoint(None)?;
+        if !face_is_material(required.lower_face)
+            || !face_is_material(required.upper_face)
+            || required.lower_face.face_id == required.upper_face.face_id
+        {
+            return Err(FacewiseAbort::RequiredLayerOrder(
+                RequiredLayerOrderError::CertificateReverificationFailed,
+            ));
+        }
+        let key = pair_key(required.lower_face, required.upper_face);
+        let Some(order) = snapshot
+            .face_pair_orders
+            .binary_search_by_key(&key, |order| pair_key(order.lower_face, order.upper_face))
+            .ok()
+            .and_then(|index| snapshot.face_pair_orders.get(index))
+        else {
+            return Err(FacewiseAbort::RequiredLayerOrder(
+                RequiredLayerOrderError::CertificateReverificationFailed,
+            ));
+        };
+        if order.lower_face != required.lower_face || order.upper_face != required.upper_face {
+            return Err(FacewiseAbort::RequiredLayerOrder(
+                RequiredLayerOrderError::CertificateReverificationFailed,
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn verify_layer_order_snapshot<O: GlobalFlatFoldabilityObserver + ?Sized>(
@@ -5638,6 +5982,7 @@ mod tests {
                 pairs.clone(),
                 artificially_split_cells,
                 provenance,
+                None,
                 &mut split_runtime,
             ),
             Err(FacewiseAbort::Unknown(
@@ -5652,6 +5997,7 @@ mod tests {
             pairs,
             cells.clone(),
             provenance,
+            None,
             &mut runtime,
         )
         .expect("accordion has a verified layer order");
@@ -5687,6 +6033,35 @@ mod tests {
             &mut runtime,
         )
         .expect("untampered snapshot reverifies");
+        let required = RequiredLayerOrderPair {
+            lower_face: success.layer_order.face_pair_orders[0].lower_face,
+            upper_face: success.layer_order.face_pair_orders[0].upper_face,
+        };
+        verify_required_pair_orders_against_snapshot(
+            &success.layer_order,
+            &[required],
+            &mut runtime,
+        )
+        .expect("raw required faces and direction rejoin the completed snapshot");
+        let reversed = RequiredLayerOrderPair {
+            lower_face: required.upper_face,
+            upper_face: required.lower_face,
+        };
+        assert!(matches!(
+            verify_required_pair_orders_against_snapshot(
+                &success.layer_order,
+                &[reversed],
+                &mut runtime,
+            ),
+            Err(FacewiseAbort::RequiredLayerOrder(
+                RequiredLayerOrderError::CertificateReverificationFailed
+            ))
+        ));
+        let mut noncanonical_embedding = embedding.clone();
+        noncanonical_embedding.faces.swap(0, 1);
+        assert!(!required_face_registry_is_strictly_canonical(
+            &noncanonical_embedding
+        ));
 
         let untampered = success.layer_order;
         let actual_certificate_bytes = untampered
@@ -6041,6 +6416,131 @@ mod tests {
         runtime
             .add_certificate_structure_storage(128)
             .expect("assignment and problem storage are released together after both values drop");
+    }
+
+    #[test]
+    fn released_required_overlay_is_not_charged_against_pair_value_replacement() {
+        let required_assignments = vec![(0_usize, true)];
+        let fixed_assignments = vec![Some(true)];
+        let overlay_bytes = required_assignments.len() * std::mem::size_of::<(usize, bool)>()
+            + fixed_assignments.len() * std::mem::size_of::<Option<bool>>();
+        let pair_value_bytes = std::mem::size_of::<((usize, usize), bool)>();
+        assert!(
+            pair_value_bytes > overlay_bytes,
+            "the replacement must define the live peak for this boundary fixture"
+        );
+        let retained_problem_and_assignment_bytes = 40;
+        let exact_limit = retained_problem_and_assignment_bytes + pair_value_bytes;
+
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut runtime = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits {
+                max_certificate_bytes: exact_limit,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        runtime
+            .add_constraint_storage(retained_problem_and_assignment_bytes)
+            .expect("retained problem and assignment fit");
+        runtime
+            .add_constraint_storage(overlay_bytes)
+            .expect("required overlay fits before solver verification");
+        let overlay = RequiredPairOverlay {
+            fixed_assignments,
+            required_assignments,
+            storage_bytes: overlay_bytes,
+        };
+        assert_eq!(
+            runtime.exact_storage.total(),
+            Some(retained_problem_and_assignment_bytes + overlay_bytes)
+        );
+        assert!(matches!(
+            runtime.add_certificate_structure_storage(pair_value_bytes),
+            Err(FacewiseAbort::Unknown(
+                GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                    resource: FlatFoldabilityResource::CertificateBytes,
+                    limit,
+                    observed,
+                }
+            )) if limit == exact_limit
+                && observed
+                    == retained_problem_and_assignment_bytes
+                        + overlay_bytes
+                        + pair_value_bytes
+        ));
+
+        overlay
+            .release(&mut runtime)
+            .expect("dropped overlay releases only its own retained bytes");
+        assert_eq!(
+            runtime.exact_storage.total(),
+            Some(retained_problem_and_assignment_bytes)
+        );
+        runtime
+            .add_certificate_structure_storage(pair_value_bytes)
+            .expect("the exact live replacement peak is admitted after overlay release");
+        assert_eq!(runtime.exact_storage.total(), Some(exact_limit));
+
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut one_byte_short = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits {
+                max_certificate_bytes: exact_limit - 1,
+                ..GlobalFlatFoldabilityLimits::default()
+            },
+            zero_work(),
+        );
+        one_byte_short
+            .add_constraint_storage(retained_problem_and_assignment_bytes)
+            .expect("retained problem and assignment fit");
+        one_byte_short
+            .add_constraint_storage(overlay_bytes)
+            .expect("overlay is below the replacement peak");
+        RequiredPairOverlay {
+            fixed_assignments: vec![Some(true)],
+            required_assignments: vec![(0, true)],
+            storage_bytes: overlay_bytes,
+        }
+        .release(&mut one_byte_short)
+        .expect("overlay release preserves the retained problem and assignment");
+        assert!(matches!(
+            one_byte_short.add_certificate_structure_storage(pair_value_bytes),
+            Err(FacewiseAbort::Unknown(
+                GlobalFlatFoldabilityUnknownReason::ResourceLimitReached {
+                    resource: FlatFoldabilityResource::CertificateBytes,
+                    limit,
+                    observed,
+                }
+            )) if limit == exact_limit - 1 && observed == exact_limit
+        ));
+        assert_eq!(
+            one_byte_short.exact_storage.total(),
+            Some(retained_problem_and_assignment_bytes)
+        );
+
+        let mut observer = NoopGlobalFlatFoldabilityObserver;
+        let mut inconsistent = Runtime::new(
+            &mut observer,
+            GlobalFlatFoldabilityLimits::default(),
+            zero_work(),
+        );
+        inconsistent
+            .add_constraint_storage(1)
+            .expect("one retained byte");
+        assert!(matches!(
+            inconsistent.release_constraint_storage(2),
+            Err(FacewiseAbort::Execution(
+                GlobalFlatFoldabilityExecutionError::Internal {
+                    reason: GlobalFlatFoldabilityInternalError::ValidatedTopologyInvariantLost,
+                }
+            ))
+        ));
+        assert_eq!(
+            inconsistent.exact_storage.constraint_bytes, 1,
+            "an impossible release leaves the live accounting unchanged"
+        );
     }
 
     #[test]

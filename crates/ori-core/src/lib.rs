@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use ori_domain::{CreasePattern, Edge, EdgeId, EdgeKind, Point2, Vertex, VertexId};
 
 mod annotation_editor;
@@ -25,9 +27,9 @@ pub use constraint_solver::{
     verify_geometric_constraint_solution_v1,
 };
 pub use constraints::{
-    BoundedDirectMusV1, ConstraintEdgeRoleV1, ConstraintId, ConstraintPreflightV1,
-    ConstraintScalarFieldV1, ConstraintVertexRoleV1, DEFAULT_MAX_CONSTRAINT_EDGES,
-    DEFAULT_MAX_CONSTRAINT_PRECHECKS, DEFAULT_MAX_CONSTRAINT_RECORDS,
+    BoundedDirectMusObserverV1, BoundedDirectMusV1, ConstraintEdgeRoleV1, ConstraintId,
+    ConstraintPreflightV1, ConstraintScalarFieldV1, ConstraintVertexRoleV1,
+    DEFAULT_MAX_CONSTRAINT_EDGES, DEFAULT_MAX_CONSTRAINT_PRECHECKS, DEFAULT_MAX_CONSTRAINT_RECORDS,
     DEFAULT_MAX_CONSTRAINT_REFERENCES, DEFAULT_MAX_CONSTRAINT_VERTICES,
     DirectConstraintConflictKindV1, DirectConstraintConflictV1, GEOMETRIC_CONSTRAINT_MODEL_ID_V1,
     GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1, GeometricConstraintDocumentV1,
@@ -35,7 +37,8 @@ pub use constraints::{
     GeometricConstraintKindV1, GeometricConstraintLimitsV1, GeometricConstraintRecordV1,
     GeometricConstraintResourceV1, GeometricConstraintSetV1, GeometricConstraintUnknownReasonV1,
     MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1, MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1,
-    MAX_DIRECT_CONFLICT_CAUSE_IDS_V1, find_bounded_direct_mus_v1, preflight_direct_conflicts_v1,
+    MAX_DIRECT_CONFLICT_CAUSE_IDS_V1, NoopBoundedDirectMusObserverV1, find_bounded_direct_mus_v1,
+    find_bounded_direct_mus_with_observer_v1, preflight_direct_conflicts_v1,
     prepare_geometric_constraints_v1, validate_geometric_constraint_document_v1,
     validate_geometric_constraint_record_against_pattern_v1,
 };
@@ -103,6 +106,7 @@ pub use ori_topology::{
 };
 pub use sheet::{SheetCreationError, SheetProject, create_rectangular_sheet};
 pub use stacked_fold::{
+    ArchivedNonFlatFacePairOrderInputV1, ArchivedRefinedNonFlatLayerOrderErrorV1,
     DEFAULT_MAX_FACE_LINEAGE_BOUNDARY_HALF_EDGES, DEFAULT_MAX_FACE_LINEAGE_EXACT_CONTAINMENT_TESTS,
     DEFAULT_MAX_FACE_LINEAGE_FACE_PAIRS, DEFAULT_MAX_FACE_LINEAGE_SOURCE_FACES,
     DEFAULT_MAX_FACE_LINEAGE_TARGET_FACES, DEFAULT_MAX_STACKED_FOLD_BUILD_CARRIERS,
@@ -113,9 +117,10 @@ pub use stacked_fold::{
     DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS, ExpectedCreaseSubdivisionV1,
     ExpectedStackedFoldCreaseV1, FaceLineageError, FaceLineageInput, FaceLineageLimits,
     FaceLineageRecord, FaceLineageResource, FaceLineageTopology, FaceLineageV1,
-    PrepareStackedFoldGeometryErrorV1, PrepareStackedFoldInitialPoseErrorV1,
-    PrepareStackedFoldNonFlatLayerOrderErrorV1, PrepareStackedFoldRequestedPoseErrorV1,
-    PrepareStackedFoldTargetGraphAuditErrorV1, PrepareStackedFoldTargetModelErrorV1,
+    PrepareArchivedRefinedNonFlatLayerOrderRequestV1, PrepareStackedFoldGeometryErrorV1,
+    PrepareStackedFoldInitialPoseErrorV1, PrepareStackedFoldNonFlatLayerOrderErrorV1,
+    PrepareStackedFoldRequestedPoseErrorV1, PrepareStackedFoldTargetGraphAuditErrorV1,
+    PrepareStackedFoldTargetModelErrorV1, PreparedArchivedRefinedNonFlatLayerOrderV1,
     PreparedStackedFoldGeometryV1, PreparedStackedFoldInitialGraphPoseV1,
     PreparedStackedFoldInitialPoseV1, PreparedStackedFoldRequestedGraphPoseV1,
     PreparedStackedFoldRequestedPoseV1, PreparedStackedFoldTargetGraphAuditV1,
@@ -128,7 +133,8 @@ pub use stacked_fold::{
     StackedFoldNonFlatLayerOrderV1, StackedFoldNonFlatOverlapCellV1,
     StackedFoldTopologyBuildErrorV1, StackedFoldTopologyBuildLimitsV1,
     StackedFoldTopologyBuildResourceV1, StackedFoldTopologyCandidateV1,
-    build_stacked_fold_topology_v1, prepare_face_lineage_v1,
+    build_stacked_fold_topology_v1, finish_archived_refined_non_flat_layer_order_v1,
+    prepare_archived_refined_non_flat_layer_order_v1, prepare_face_lineage_v1,
     prepare_stacked_fold_geometry_candidate_v1, prepare_stacked_fold_geometry_v1,
     prepare_stacked_fold_graph_non_flat_layer_order_from_non_flat_v1,
     prepare_stacked_fold_graph_non_flat_layer_order_v1, prepare_stacked_fold_initial_graph_pose_v1,

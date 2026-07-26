@@ -1229,28 +1229,41 @@ mod tests {
     }
 
     /// Builds a project whose current evidence is a freshly solved non-flat
-    /// layer order, using only the canonical revalidation entry point.
+    /// layer order after one authenticated stacked-fold document transition.
     fn non_flat_tree_project(angle_degrees: f64) -> ProjectState {
-        let mut project = centered_single_hinge_project();
-        let topology = project
-            .editor
+        let target = centered_single_hinge_project();
+        let target_pattern = target.editor.pattern().clone();
+        let target_paper = target.editor.paper().clone();
+        let target_hinge = target_pattern
+            .edges
+            .iter()
+            .find(|edge| edge.kind == ori_domain::EdgeKind::Mountain)
+            .expect("one target hinge")
+            .id;
+        let mut source_pattern = target_pattern.clone();
+        source_pattern.edges.retain(|edge| edge.id != target_hinge);
+        let mut project = ProjectState::new_with_paper(source_pattern, target_paper.clone());
+        let target_editor =
+            ori_core::EditorState::with_paper(target_pattern.clone(), target_paper.clone());
+        let topology = target_editor
             .topology_analysis_input(project.project_id)
             .analyze();
         let simulation = topology
             .simulation_snapshot()
             .expect("a simulation snapshot");
-        let fixed = simulation.faces[0].id;
-        let hinges = simulation
+        let mut faces = simulation
+            .faces
+            .iter()
+            .map(|face| face.id)
+            .collect::<Vec<_>>();
+        faces.sort_unstable_by_key(FaceId::canonical_bytes);
+        let fixed = faces[0];
+        let mut hinges = simulation
             .hinge_adjacency
             .iter()
             .map(|hinge| hinge.edge)
             .collect::<Vec<_>>();
-        crate::applied_pose::tests::install_tree_pose_authority_at_angle_on_face(
-            &mut project,
-            hinges.clone(),
-            fixed,
-            angle_degrees,
-        );
+        hinges.sort_unstable_by_key(EdgeId::canonical_bytes);
         let angles = CanonicalHingeAngles::new(
             hinges
                 .iter()
@@ -1258,6 +1271,58 @@ mod tests {
                 .collect::<Vec<_>>(),
         )
         .expect("canonical hinge angles");
+        let applied_pose = ori_core::prepare_applied_pose_v1(
+            &faces,
+            &hinges,
+            Some(fixed),
+            &angles
+                .as_slice()
+                .iter()
+                .map(|angle| (angle.edge(), angle.angle_degrees()))
+                .collect::<Vec<_>>(),
+            ori_core::AppliedPoseLimitsV1::default(),
+        )
+        .expect("complete target semantic pose");
+        let timeline = ori_domain::InstructionTimeline {
+            steps: vec![ori_domain::InstructionStep {
+                id: ori_domain::InstructionStepId::new(),
+                title: "Stacked fold".to_owned(),
+                description: String::new(),
+                caution: String::new(),
+                duration_ms: ori_domain::MIN_INSTRUCTION_DURATION_MS,
+                visual: ori_domain::InstructionVisual::default(),
+                pose: ori_domain::InstructionPose {
+                    model: ori_domain::InstructionPoseModel::AbsoluteHingeAnglesV1,
+                    source_model_fingerprint: target_editor.fold_model_fingerprint_v1(),
+                    fixed_face: Some(fixed),
+                    hinge_angles: angles
+                        .as_slice()
+                        .iter()
+                        .map(|angle| ori_domain::InstructionHingeAngle {
+                            edge: angle.edge(),
+                            angle_degrees: angle.angle_degrees(),
+                        })
+                        .collect(),
+                },
+            }],
+        };
+        project
+            .editor
+            .execute_stacked_fold_document(
+                project.editor.revision(),
+                target_pattern,
+                target_paper,
+                timeline,
+                ori_domain::ProjectLayerDocumentV1::default(),
+                applied_pose,
+            )
+            .expect("one authenticated stacked-fold history entry");
+        crate::applied_pose::tests::install_tree_pose_authority_at_angle_on_face(
+            &mut project,
+            hinges,
+            fixed,
+            angle_degrees,
+        );
         let flat = crate::global_flat_foldability::reanalyze_current_flat_layer_order(&project)
             .expect("the current flat layer order");
         let proof = ori_core::revalidate_current_non_flat_layer_order_v1(
@@ -1272,6 +1337,33 @@ mod tests {
         )
         .expect("a freshly solved non-flat layer order");
         project.current_layer_evidence = Some(CurrentLayerEvidence::NonFlat(proof));
+        let capability = capture_current_applied_pose_capability(&project)
+            .expect("capture native pose authority")
+            .expect("native pose authority exists");
+        let current = revalidate_current_applied_pose_capability(&project, &capability)
+            .expect("revalidate native pose authority")
+            .expect("native pose authority remains current");
+        assert!(current.tree().is_some());
+        let proof = match project.current_layer_evidence.as_ref() {
+            Some(CurrentLayerEvidence::NonFlat(proof)) => proof,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            current.semantic_pose(),
+            project.editor.current_applied_pose().unwrap()
+        );
+        assert_eq!(current.semantic_pose().fixed_face(), proof.fixed_face());
+        assert!(
+            current
+                .semantic_pose()
+                .hinge_angles()
+                .iter()
+                .zip(proof.hinge_angles())
+                .all(|(pose, proof)| {
+                    pose.edge() == proof.edge()
+                        && pose.angle_degrees().to_bits() == proof.angle_degrees().to_bits()
+                })
+        );
         project
     }
 

@@ -9,9 +9,11 @@ use std::{
 };
 
 use ori_core::{
-    CooperativeAnalysisAbort, CooperativeAnalysisCheckpoint, TopologyAnalysisInput,
-    TopologySnapshot, analyze_local_flat_foldability,
+    CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1, CooperativeAnalysisAbort, CooperativeAnalysisCheckpoint,
+    EditorState, RevalidateCurrentGraphNonFlatLayerOrderRequestV1, StackedFoldNonFlatLayerOrderV1,
+    TopologyAnalysisInput, TopologySnapshot, analyze_local_flat_foldability,
     analyze_local_flat_foldability_with_checkpoint,
+    revalidate_current_graph_non_flat_layer_order_v1,
 };
 use ori_domain::{CreasePattern, FaceId, Paper, ProjectId};
 use ori_foldability::{
@@ -22,60 +24,243 @@ use ori_foldability::{
     GlobalFlatFoldabilityOutcome, GlobalFlatFoldabilityPhase, GlobalFlatFoldabilityProgress,
     GlobalFlatFoldabilityReport, GlobalFlatFoldabilityUnknownReason,
     GlobalFlatFoldabilityWorkCounts, LAYER_ORDER_MODEL_ID, LayerFace, LayerOrderProvenance,
-    LayerOrderSnapshot, analyze_global_flat_foldability,
-    analyze_global_flat_foldability_with_observer,
+    LayerOrderSnapshot, RequiredLayerOrderPair, analyze_global_flat_foldability_with_observer,
+    analyze_global_flat_foldability_with_required_pair_orders_and_observer,
 };
+use ori_kinematics::CanonicalHingeAngles;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
 use super::stacked_fold_transaction::CurrentLayerEvidence;
 use super::{AppState, ProjectState, lock_project};
 
+#[cfg(test)]
 pub(super) fn revalidate_archived_flat_layer_evidence(
     project: &ProjectState,
     canonical_snapshot_json: &str,
 ) -> Result<CurrentLayerEvidence, ()> {
-    let layer_order = reanalyze_current_flat_layer_order(project)?;
+    revalidate_archived_flat_layer_evidence_with_deadline(
+        project,
+        canonical_snapshot_json,
+        archive_revalidation_deadline()?,
+    )
+}
+
+pub(super) fn revalidate_archived_flat_layer_evidence_with_deadline(
+    project: &ProjectState,
+    canonical_snapshot_json: &str,
+    deadline: Instant,
+) -> Result<CurrentLayerEvidence, ()> {
+    let layer_order = reanalyze_editor_flat_layer_order_with_deadline(
+        project.project_id,
+        &project.editor,
+        deadline,
+    )?;
     if serde_json::to_string(&layer_order).map_err(|_| ())? != canonical_snapshot_json {
         return Err(());
     }
     Ok(CurrentLayerEvidence::CertifiedFlat(layer_order))
 }
 
+#[cfg(test)]
 pub(super) fn reanalyze_current_flat_layer_order(
     project: &ProjectState,
 ) -> Result<LayerOrderSnapshot, ()> {
-    let topology_input = project.editor.topology_analysis_input(project.project_id);
-    if topology_input.revision() != project.editor.revision() {
+    reanalyze_editor_flat_layer_order(project.project_id, &project.editor)
+}
+
+#[cfg(test)]
+pub(super) fn reanalyze_editor_flat_layer_order(
+    project_id: ProjectId,
+    editor: &EditorState,
+) -> Result<LayerOrderSnapshot, ()> {
+    let mut observer = ori_foldability::NoopGlobalFlatFoldabilityObserver;
+    reanalyze_editor_flat_layer_order_with_observer(project_id, editor, &mut observer)
+}
+
+fn reanalyze_editor_flat_layer_order_with_deadline(
+    project_id: ProjectId,
+    editor: &EditorState,
+    deadline: Instant,
+) -> Result<LayerOrderSnapshot, ()> {
+    let mut observer = ArchiveRevalidationObserver { deadline };
+    reanalyze_editor_flat_layer_order_with_observer(project_id, editor, &mut observer)
+}
+
+fn reanalyze_editor_flat_layer_order_with_observer<O: GlobalFlatFoldabilityObserver + ?Sized>(
+    project_id: ProjectId,
+    editor: &EditorState,
+    observer: &mut O,
+) -> Result<LayerOrderSnapshot, ()> {
+    let topology_input = editor.topology_analysis_input(project_id);
+    if topology_input.revision() != editor.revision() {
         return Err(());
     }
     let topology = topology_input.analyze();
     let simulation = topology.simulation_snapshot().ok_or(())?;
-    let local = analyze_local_flat_foldability(project.editor.paper(), project.editor.pattern());
-    let report = analyze_global_flat_foldability(
+    let local = analyze_local_flat_foldability(editor.paper(), editor.pattern());
+    let report = analyze_global_flat_foldability_with_observer(
         GlobalFlatFoldabilityInput::current_with_geometry(
-            project.project_id,
-            project.editor.paper(),
-            project.editor.pattern(),
+            project_id,
+            editor.paper(),
+            editor.pattern(),
             simulation,
             &local,
         ),
         native_limits(),
+        observer,
     )
     .map_err(|_| ())?;
     let GlobalFlatFoldabilityOutcome::Possible { layer_order, .. } = report.outcome else {
         return Err(());
     };
     let provenance = layer_order.provenance.source;
-    if provenance.identity_namespace != Some(project.project_id)
-        || provenance.source_revision != project.editor.revision()
-        || provenance.source_fingerprint.is_none_or(|fingerprint| {
-            fingerprint.to_hex() != project.editor.fold_model_fingerprint_v1()
-        })
+    if provenance.identity_namespace != Some(project_id)
+        || provenance.source_revision != editor.revision()
+        || provenance
+            .source_fingerprint
+            .is_none_or(|fingerprint| fingerprint.to_hex() != editor.fold_model_fingerprint_v1())
     {
         return Err(());
     }
     Ok(*layer_order)
+}
+
+#[cfg(test)]
+pub(super) fn reanalyze_editor_flat_layer_order_with_required_pairs(
+    project_id: ProjectId,
+    editor: &EditorState,
+    required_pair_orders: &[RequiredLayerOrderPair],
+) -> Result<LayerOrderSnapshot, ()> {
+    reanalyze_editor_flat_layer_order_with_required_pairs_and_deadline(
+        project_id,
+        editor,
+        required_pair_orders,
+        archive_revalidation_deadline()?,
+    )
+}
+
+pub(super) fn reanalyze_editor_flat_layer_order_with_required_pairs_and_deadline(
+    project_id: ProjectId,
+    editor: &EditorState,
+    required_pair_orders: &[RequiredLayerOrderPair],
+    deadline: Instant,
+) -> Result<LayerOrderSnapshot, ()> {
+    let topology_input = editor.topology_analysis_input(project_id);
+    if topology_input.revision() != editor.revision() {
+        return Err(());
+    }
+    let topology = topology_input.analyze();
+    let simulation = topology.simulation_snapshot().ok_or(())?;
+    let local = analyze_local_flat_foldability(editor.paper(), editor.pattern());
+    let mut observer = ArchiveRevalidationObserver { deadline };
+    let layer_order = analyze_global_flat_foldability_with_required_pair_orders_and_observer(
+        GlobalFlatFoldabilityInput::current_with_geometry(
+            project_id,
+            editor.paper(),
+            editor.pattern(),
+            simulation,
+            &local,
+        ),
+        native_limits(),
+        required_pair_orders,
+        &mut observer,
+    )
+    .map_err(|_| ())?;
+    let provenance = layer_order.provenance.source;
+    if provenance.identity_namespace != Some(project_id)
+        || provenance.source_revision != editor.revision()
+        || provenance
+            .source_fingerprint
+            .is_none_or(|fingerprint| fingerprint.to_hex() != editor.fold_model_fingerprint_v1())
+    {
+        return Err(());
+    }
+    Ok(layer_order)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AuthenticatedNonRefiningGraphEvidenceError {
+    HistoryGeometryMismatch,
+    CurrentPoseMismatch,
+    FlatAnalysisFailed,
+    GraphRevalidationFailed,
+}
+
+/// Reissues archive evidence for an authenticated pose-only graph transition.
+///
+/// This V1 path is deliberately graph-only. A same-geometry Tree pose has no
+/// independently reconstructed issuer on this route and therefore fails
+/// closed at the exact active-pose model check.
+pub(super) fn revalidate_authenticated_non_refining_graph_layer_evidence(
+    project_id: ProjectId,
+    predecessor: &EditorState,
+    current: &EditorState,
+    fixed_face: Option<FaceId>,
+    hinge_angles: &CanonicalHingeAngles,
+    deadline: Instant,
+) -> Result<StackedFoldNonFlatLayerOrderV1, AuthenticatedNonRefiningGraphEvidenceError> {
+    if predecessor.pattern() != current.pattern() || predecessor.paper() != current.paper() {
+        return Err(AuthenticatedNonRefiningGraphEvidenceError::HistoryGeometryMismatch);
+    }
+    let graph_fixed_face =
+        fixed_face.ok_or(AuthenticatedNonRefiningGraphEvidenceError::CurrentPoseMismatch)?;
+    let active_pose = current
+        .current_applied_pose()
+        .ok_or(AuthenticatedNonRefiningGraphEvidenceError::CurrentPoseMismatch)?;
+    if active_pose.model_id() != CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1
+        || active_pose.fixed_face() != Some(graph_fixed_face)
+        || active_pose.hinge_angles().len() != hinge_angles.as_slice().len()
+        || active_pose
+            .hinge_angles()
+            .iter()
+            .zip(hinge_angles.as_slice())
+            .any(|(active, archived)| {
+                active.edge() != archived.edge()
+                    || active.angle_degrees().to_bits() != archived.angle_degrees().to_bits()
+            })
+    {
+        return Err(AuthenticatedNonRefiningGraphEvidenceError::CurrentPoseMismatch);
+    }
+    let current_flat =
+        reanalyze_editor_flat_layer_order_with_deadline(project_id, current, deadline)
+            .map_err(|_| AuthenticatedNonRefiningGraphEvidenceError::FlatAnalysisFailed)?;
+    revalidate_current_graph_non_flat_layer_order_v1(
+        RevalidateCurrentGraphNonFlatLayerOrderRequestV1 {
+            identity_namespace: project_id,
+            revision: current.revision(),
+            pattern: current.pattern(),
+            paper: current.paper(),
+            fixed_face: graph_fixed_face,
+            hinge_angles,
+            current_flat: &current_flat,
+            expected_archive: None,
+            max_face_pairs: ori_core::DEFAULT_MAX_STACKED_FOLD_NON_FLAT_FACE_PAIRS,
+        },
+    )
+    .map_err(|_| AuthenticatedNonRefiningGraphEvidenceError::GraphRevalidationFailed)
+}
+
+struct ArchiveRevalidationObserver {
+    deadline: Instant,
+}
+
+pub(super) fn archive_revalidation_deadline() -> Result<Instant, ()> {
+    // Archive loading has no async cancellation token. All mathematical
+    // reanalysis branches share this one absolute process-wide deadline.
+    Instant::now()
+        .checked_add(Duration::from_millis(MAX_TIME_LIMIT_MS))
+        .ok_or(())
+}
+
+impl GlobalFlatFoldabilityObserver for ArchiveRevalidationObserver {
+    fn checkpoint(&mut self) -> GlobalFlatFoldabilityCheckpoint {
+        if Instant::now() >= self.deadline {
+            GlobalFlatFoldabilityCheckpoint::DeadlineReached
+        } else {
+            GlobalFlatFoldabilityCheckpoint::Continue
+        }
+    }
 }
 
 const MIN_TIME_LIMIT_MS: u64 = 1_000;
@@ -2571,7 +2756,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn archived_non_flat_evidence_is_freshly_solved_and_tamper_rejected() {
+    fn archived_non_flat_evidence_without_authenticated_stacked_fold_history_is_rejected() {
         let mut project = centered_single_hinge_project();
         let topology = project
             .editor
@@ -2602,34 +2787,22 @@ pub(super) mod tests {
             .unwrap()
             .expect("non-flat DTO");
 
-        assert!(matches!(
-            crate::revalidate_archived_layer_evidence(&project, &archived),
-            Ok(CurrentLayerEvidence::NonFlat(_))
-        ));
+        assert!(
+            project
+                .editor
+                .clone_predecessor_if_last_stacked_fold_v1()
+                .is_none(),
+            "a manually installed proof must not manufacture authenticated stacked-fold history"
+        );
+        assert!(crate::revalidate_archived_layer_evidence(&project, &archived).is_err());
         let archive = project.project_archive().unwrap();
-        let mut reopened = ProjectState::from_project_archive(
-            archive,
-            PathBuf::from("non-flat-layer-evidence-reopened.ori2"),
-        )
-        .unwrap();
-        assert!(matches!(
-            reopened.current_layer_evidence,
-            Some(CurrentLayerEvidence::NonFlat(_))
-        ));
-        let revision = reopened.editor.revision();
-        let vertex = reopened.editor.pattern().vertices[0].id;
-        let position = reopened.editor.pattern().vertices[0].position;
-        reopened
-            .editor
-            .execute(
-                revision,
-                Command::MoveVertex {
-                    id: vertex,
-                    position: Point2::new(position.x + 1.0, position.y),
-                },
+        assert!(
+            ProjectState::from_project_archive(
+                archive,
+                PathBuf::from("non-flat-layer-evidence-reopened.ori2"),
             )
-            .expect("the next operation after reopen remains available");
-        assert_eq!(reopened.editor.revision(), revision + 1);
+            .is_err()
+        );
 
         let mut stale = archived.clone();
         stale.revision += 1;
@@ -2796,6 +2969,101 @@ pub(super) mod tests {
                 .expect_err("above maximum")
                 .category,
             GlobalFlatFoldabilityErrorCategory::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn archive_revalidation_observer_enforces_its_absolute_deadline() {
+        let mut expired = ArchiveRevalidationObserver {
+            deadline: Instant::now()
+                .checked_sub(Duration::from_millis(1))
+                .expect("one millisecond before the current instant"),
+        };
+        assert_eq!(
+            expired.checkpoint(),
+            GlobalFlatFoldabilityCheckpoint::DeadlineReached
+        );
+
+        let mut bounded = ArchiveRevalidationObserver {
+            deadline: Instant::now()
+                .checked_add(Duration::from_millis(MAX_TIME_LIMIT_MS))
+                .expect("configured maximum deadline is representable"),
+        };
+        assert_eq!(
+            bounded.checkpoint(),
+            GlobalFlatFoldabilityCheckpoint::Continue
+        );
+    }
+
+    #[test]
+    fn archive_flat_reanalysis_uses_the_shared_absolute_deadline() {
+        let project = centered_single_hinge_project();
+        let expired = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("one millisecond before the current instant");
+        assert!(
+            reanalyze_editor_flat_layer_order_with_deadline(
+                project.project_id,
+                &project.editor,
+                expired,
+            )
+            .is_err(),
+            "a pre-expired archive deadline stops fresh flat analysis"
+        );
+
+        let maximum_window = archive_revalidation_deadline().expect("maximum archive deadline");
+        assert!(
+            reanalyze_editor_flat_layer_order_with_deadline(
+                project.project_id,
+                &project.editor,
+                maximum_window,
+            )
+            .is_ok(),
+            "the configured maximum window admits the canonical flat fixture"
+        );
+    }
+
+    #[test]
+    fn same_geometry_tree_pose_is_not_admitted_by_the_graph_archive_route() {
+        let mut project = centered_single_hinge_project();
+        let topology = project
+            .editor
+            .topology_analysis_input(project.project_id)
+            .analyze();
+        let simulation = topology.simulation_snapshot().unwrap();
+        let fixed_face = simulation.faces[0].id;
+        let hinge = simulation.hinge_adjacency[0].edge;
+        let face_ids = simulation
+            .faces
+            .iter()
+            .map(|face| face.id)
+            .collect::<Vec<_>>();
+        let active_pose = ori_core::prepare_applied_pose_v1(
+            &face_ids,
+            &[hinge],
+            Some(fixed_face),
+            &[(hinge, 90.0)],
+            ori_core::AppliedPoseLimitsV1::default(),
+        )
+        .expect("two-face tree semantic pose");
+        assert_eq!(active_pose.model_id(), ori_core::APPLIED_POSE_MODEL_ID_V1);
+        project.editor.adopt_current_applied_pose(active_pose);
+        let predecessor = project.editor.clone();
+        let angles =
+            CanonicalHingeAngles::new(vec![ori_kinematics::HingeAngle::new(hinge, 90.0).unwrap()])
+                .unwrap();
+
+        assert_eq!(
+            revalidate_authenticated_non_refining_graph_layer_evidence(
+                project.project_id,
+                &predecessor,
+                &project.editor,
+                Some(fixed_face),
+                &angles,
+                archive_revalidation_deadline().unwrap(),
+            ),
+            Err(AuthenticatedNonRefiningGraphEvidenceError::CurrentPoseMismatch),
+            "same geometry never downgrades a Tree issuer into the graph archive route"
         );
     }
 

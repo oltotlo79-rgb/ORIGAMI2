@@ -8,7 +8,7 @@ use ori_domain::{
 use ori_foldability::{
     ExactAffineTransform, ExactPointValue, ExactRationalValue, ExactSign, FoldModelFingerprintV1,
     GlobalFlatFoldabilityProvenance, LAYER_ORDER_MODEL_ID, LayerFace, LayerOrderSnapshot,
-    fold_model_fingerprint_v1,
+    RequiredLayerOrderPair, fold_model_fingerprint_v1,
 };
 use ori_geometry::{
     GeometryError, Orientation, PointPolygonRelation, PointSegmentRelation, SegmentIntersection,
@@ -24,7 +24,10 @@ use ori_topology::{
 };
 use thiserror::Error;
 
-use crate::{MAX_REVISION, Revision};
+use crate::{
+    APPLIED_POSE_MODEL_ID_V1, AppliedPoseV1, CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1, MAX_REVISION,
+    Revision,
+};
 
 pub const DEFAULT_MAX_FACE_LINEAGE_SOURCE_FACES: usize = 2_048;
 pub const DEFAULT_MAX_FACE_LINEAGE_TARGET_FACES: usize = 2_048;
@@ -94,6 +97,31 @@ pub struct FaceLineageInput<'a> {
     pub target_revision: Revision,
     pub target_paper: &'a Paper,
     pub target_pattern: &'a CreasePattern,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FaceLineageGeometryInput<'a> {
+    identity_namespace: ProjectId,
+    source_revision: Revision,
+    source_paper: &'a Paper,
+    source_pattern: &'a CreasePattern,
+    target_revision: Revision,
+    target_paper: &'a Paper,
+    target_pattern: &'a CreasePattern,
+}
+
+impl<'a> From<FaceLineageInput<'a>> for FaceLineageGeometryInput<'a> {
+    fn from(input: FaceLineageInput<'a>) -> Self {
+        Self {
+            identity_namespace: input.identity_namespace,
+            source_revision: input.source_revision,
+            source_paper: input.source_paper,
+            source_pattern: input.source_pattern,
+            target_revision: input.target_revision,
+            target_paper: input.target_paper,
+            target_pattern: input.target_pattern,
+        }
+    }
 }
 
 /// One complete source-face to descendant-faces relation.
@@ -321,6 +349,76 @@ pub struct StackedFoldNonFlatFacePairOrderV1 {
     upper_face: FaceId,
 }
 
+/// One untrusted target-face order read from persisted non-flat evidence.
+///
+/// Construction is intentionally public transport only. The archive
+/// preparation boundary rebinds both IDs to a freshly reconstructed target
+/// material registry and proves that the complete pair set matches the actual
+/// projected overlaps before any relation can constrain a source solve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArchivedNonFlatFacePairOrderInputV1 {
+    pub lower_face: FaceId,
+    pub upper_face: FaceId,
+}
+
+/// Immutable inputs for re-authenticating non-flat evidence against the exact
+/// predecessor restored from authenticated editor history.
+///
+/// `source_revision` belongs to the read-only predecessor clone. The lineage
+/// uses its next revision only as an ephemeral proof binding; the separately
+/// supplied `target_admission_revision` is not installed until
+/// [`finish_archived_refined_non_flat_layer_order_v1`] has re-run every target
+/// constructor and source-order check.
+#[derive(Debug, Clone, Copy)]
+pub struct PrepareArchivedRefinedNonFlatLayerOrderRequestV1<'a> {
+    pub identity_namespace: ProjectId,
+    pub source_revision: Revision,
+    pub source_pattern: &'a CreasePattern,
+    pub source_paper: &'a Paper,
+    pub target_admission_revision: Revision,
+    pub target_pattern: &'a CreasePattern,
+    pub target_paper: &'a Paper,
+    pub fixed_face: Option<FaceId>,
+    pub hinge_angles: &'a CanonicalHingeAngles,
+    pub archived_pair_orders: &'a [ArchivedNonFlatFacePairOrderInputV1],
+    pub lineage_limits: FaceLineageLimits,
+    pub geometry_limits: StackedFoldGeometryLimitsV1,
+    pub max_face_pairs: usize,
+}
+
+/// Opaque two-phase archive-admission package.
+///
+/// Callers can inspect only the deduplicated source requirements. All
+/// predecessor/ephemeral/admission bindings and target geometry remain private,
+/// preventing a constrained result from being mixed with another archive.
+#[derive(Debug, Clone)]
+pub struct PreparedArchivedRefinedNonFlatLayerOrderV1 {
+    identity_namespace: ProjectId,
+    source_revision: Revision,
+    ephemeral_target_revision: Revision,
+    target_admission_revision: Revision,
+    source_pattern: CreasePattern,
+    source_paper: Paper,
+    target_pattern: CreasePattern,
+    target_paper: Paper,
+    fixed_face: Option<FaceId>,
+    hinge_angles: CanonicalHingeAngles,
+    archived_pair_orders: Vec<ArchivedNonFlatFacePairOrderInputV1>,
+    required_source_pair_orders: Vec<RequiredLayerOrderPair>,
+    expected_creases: Vec<ExpectedStackedFoldCreaseV1>,
+    lineage_limits: FaceLineageLimits,
+    geometry_limits: StackedFoldGeometryLimitsV1,
+    max_face_pairs: usize,
+}
+
+impl PreparedArchivedRefinedNonFlatLayerOrderV1 {
+    /// Canonical, same-direction-deduplicated source requirements.
+    #[must_use]
+    pub fn required_source_pair_orders(&self) -> &[RequiredLayerOrderPair] {
+        &self.required_source_pair_orders
+    }
+}
+
 impl StackedFoldNonFlatOverlapCellV1 {
     #[must_use]
     pub fn boundary(&self) -> &[Point2] {
@@ -450,6 +548,54 @@ pub enum PrepareStackedFoldNonFlatLayerOrderErrorV1 {
     Kinematics(#[from] KinematicsError),
     #[error("exact projected-overlap predicate failed: {0}")]
     Geometry(#[from] GeometryError),
+}
+
+/// Fail-closed archive-admission errors for predecessor-refined non-flat
+/// evidence.
+#[derive(Debug, Error, PartialEq)]
+pub enum ArchivedRefinedNonFlatLayerOrderErrorV1 {
+    #[error("the predecessor revision cannot produce an ephemeral target binding")]
+    SourceRevisionCannotAdvance,
+    #[error("the target admission revision is outside the supported revision range")]
+    TargetAdmissionRevisionOutOfRange,
+    #[error("the archived target pair count exceeds its configured limit")]
+    ArchivedPairResourceLimit,
+    #[error("the predecessor-to-target face lineage is invalid: {0}")]
+    Lineage(#[from] FaceLineageError),
+    #[error("the predecessor-to-target stacked-fold geometry delta is invalid: {0}")]
+    GeometryDelta(#[from] StackedFoldGeometryErrorV1),
+    #[error("the target non-flat geometry cannot be reconstructed: {0}")]
+    NonFlat(#[from] PrepareStackedFoldNonFlatLayerOrderErrorV1),
+    #[error("an archived pair references an unknown target face: {face:?}")]
+    UnknownTargetFace { face: FaceId },
+    #[error("an archived pair orders one target face against itself: {face:?}")]
+    EqualTargetFace { face: FaceId },
+    #[error("an archived target pair is duplicated: {first:?} <-> {second:?}")]
+    DuplicateTargetPair { first: FaceId, second: FaceId },
+    #[error("archived directions conflict for one target pair: {first:?} <-> {second:?}")]
+    ConflictingTargetPair { first: FaceId, second: FaceId },
+    #[error("the archive omits a projected target overlap: {first:?} <-> {second:?}")]
+    MissingTargetPair { first: FaceId, second: FaceId },
+    #[error("an archived target pair is not a projected overlap: {first:?} <-> {second:?}")]
+    NonOverlappingTargetPair { first: FaceId, second: FaceId },
+    #[error(
+        "an archived target order contradicts non-zero plane separation: {first:?} <-> {second:?}"
+    )]
+    GeometryDirectionMismatch { first: FaceId, second: FaceId },
+    #[error("coincident target descendants belong to the same source face: {source_face:?}")]
+    CoincidentDescendantsShareSource { source_face: FaceId },
+    #[error("mapped source requirements conflict: {first:?} <-> {second:?}")]
+    ConflictingSourceRequirement { first: FaceId, second: FaceId },
+    #[error("the constrained source pair index exceeds its configured limit or allocation budget")]
+    SourcePairResourceLimit,
+    #[error("the constrained source pair index is not a complete canonical directed relation")]
+    SourcePairIndexInvalid,
+    #[error("the constrained source snapshot does not satisfy every mapped requirement")]
+    SourceRequirementUnsatisfied,
+    #[error("the active semantic pose does not exactly match the archived non-flat pose")]
+    CurrentAppliedPoseMismatch,
+    #[error("the finished target pair set no longer matches the prepared archive")]
+    FinishedTargetPairSetMismatch,
 }
 
 impl PreparedStackedFoldInitialGraphPoseV1 {
@@ -1055,6 +1201,22 @@ pub fn prepare_face_lineage_v1(
     input: FaceLineageInput<'_>,
     limits: FaceLineageLimits,
 ) -> Result<FaceLineageV1, FaceLineageError> {
+    let source_layer_order = input.source_layer_order;
+    prepare_face_lineage_from_geometry_v1(input.into(), Some(source_layer_order), limits)
+}
+
+fn prepare_face_lineage_from_fresh_source_registry_v1(
+    input: FaceLineageGeometryInput<'_>,
+    limits: FaceLineageLimits,
+) -> Result<FaceLineageV1, FaceLineageError> {
+    prepare_face_lineage_from_geometry_v1(input, None, limits)
+}
+
+fn prepare_face_lineage_from_geometry_v1(
+    input: FaceLineageGeometryInput<'_>,
+    source_layer_order: Option<&LayerOrderSnapshot>,
+    limits: FaceLineageLimits,
+) -> Result<FaceLineageV1, FaceLineageError> {
     check_limit(
         FaceLineageResource::SourceVertices,
         input.source_pattern.vertices.len(),
@@ -1120,18 +1282,19 @@ pub fn prepare_face_lineage_v1(
         input.source_paper,
         input.source_pattern,
     );
-    if !input.source_layer_order.is_current_for(&source_provenance) {
-        return Err(FaceLineageError::LayerOrderNotCurrent);
-    }
-    if input.source_layer_order.model_id != LAYER_ORDER_MODEL_ID {
-        return Err(FaceLineageError::LayerOrderModelMismatch);
-    }
-
     let source_registry = canonical_registry(&source_topology);
-    if input.source_layer_order.material_faces.len() != source_registry.len()
-        || input.source_layer_order.material_faces != source_registry
-    {
-        return Err(FaceLineageError::LayerOrderMaterialRegistryMismatch);
+    if let Some(source_layer_order) = source_layer_order {
+        if !source_layer_order.is_current_for(&source_provenance) {
+            return Err(FaceLineageError::LayerOrderNotCurrent);
+        }
+        if source_layer_order.model_id != LAYER_ORDER_MODEL_ID {
+            return Err(FaceLineageError::LayerOrderModelMismatch);
+        }
+        if source_layer_order.material_faces.len() != source_registry.len()
+            || source_layer_order.material_faces != source_registry
+        {
+            return Err(FaceLineageError::LayerOrderMaterialRegistryMismatch);
+        }
     }
 
     let target_topology = simulation_snapshot(
@@ -2280,6 +2443,862 @@ pub fn revalidate_current_graph_non_flat_layer_order_v1(
     Ok(fresh)
 }
 
+#[derive(Debug)]
+struct ReconstructedRefinedTargetOverlapV1 {
+    boundary: Vec<Point2>,
+    exact_boundary: Vec<ExactPointValue>,
+    first_face: FaceId,
+    second_face: FaceId,
+    separation: f64,
+}
+
+#[derive(Debug)]
+struct ReconstructedRefinedTargetV1 {
+    pose_model_id: &'static str,
+    fixed_face: Option<FaceId>,
+    hinge_angles: Vec<HingeAngle>,
+    folded_faces: Vec<StackedFoldNonFlatFoldedFaceV1>,
+    material_faces: Vec<LayerFace>,
+    tested_face_pairs: usize,
+    overlaps: Vec<ReconstructedRefinedTargetOverlapV1>,
+}
+
+enum ReconstructedRefinedTargetPoseV1 {
+    Tree(MaterialTreePose),
+    Graph {
+        geometry: MaterialHingeGraphGeometry,
+        pose: ClosedMaterialHingeGraphPose,
+    },
+}
+
+impl ReconstructedRefinedTargetPoseV1 {
+    fn face_ids(&self) -> &[FaceId] {
+        match self {
+            Self::Tree(pose) => pose.face_ids(),
+            Self::Graph { geometry, .. } => geometry.face_ids(),
+        }
+    }
+
+    fn fixed_face(&self) -> Option<FaceId> {
+        match self {
+            Self::Tree(pose) => pose.fixed_face(),
+            Self::Graph { pose, .. } => Some(pose.fixed_face()),
+        }
+    }
+
+    fn hinge_angles(&self) -> &[HingeAngle] {
+        match self {
+            Self::Tree(pose) => pose.hinge_angles(),
+            Self::Graph { pose, .. } => pose.hinge_angles().as_slice(),
+        }
+    }
+
+    fn face_transform(&self, face: FaceId) -> Option<RigidTransform> {
+        match self {
+            Self::Tree(pose) => pose.face_transform(face),
+            Self::Graph { pose, .. } => pose.face_transform(face),
+        }
+    }
+
+    fn face_plane(
+        &self,
+        face: FaceId,
+    ) -> Result<(Point3, Point3, Vec<Point3>), PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+        match self {
+            Self::Tree(pose) => target_face_plane(pose, face),
+            Self::Graph { geometry, pose } => target_graph_face_plane(geometry, pose, face),
+        }
+    }
+}
+
+fn canonical_face_id_pair(first: FaceId, second: FaceId) -> (FaceId, FaceId) {
+    if first.canonical_bytes() < second.canonical_bytes() {
+        (first, second)
+    } else {
+        (second, first)
+    }
+}
+
+struct ReconstructRefinedTargetRequestV1<'a> {
+    identity_namespace: ProjectId,
+    ephemeral_target_revision: Revision,
+    target_pattern: &'a CreasePattern,
+    target_paper: &'a Paper,
+    lineage: &'a FaceLineageV1,
+    fixed_face: Option<FaceId>,
+    hinge_angles: &'a CanonicalHingeAngles,
+    max_face_pairs: usize,
+}
+
+fn reconstruct_refined_target_v1(
+    request: ReconstructRefinedTargetRequestV1<'_>,
+) -> Result<ReconstructedRefinedTargetV1, PrepareStackedFoldNonFlatLayerOrderErrorV1> {
+    let target_fingerprint =
+        fold_model_fingerprint_v1(request.target_pattern, request.target_paper);
+    if request.lineage.identity_namespace() != request.identity_namespace
+        || request.lineage.target_revision() != request.ephemeral_target_revision
+        || request.lineage.target_fingerprint() != target_fingerprint
+    {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch);
+    }
+    let topology = simulation_snapshot(
+        request.identity_namespace,
+        request.ephemeral_target_revision,
+        request.target_paper,
+        request.target_pattern,
+        FaceLineageTopology::Target,
+    )
+    .map_err(|_| PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)?;
+    let mut material_faces = request
+        .lineage
+        .records()
+        .iter()
+        .flat_map(|record| record.descendants().iter().copied())
+        .collect::<Vec<_>>();
+    material_faces.sort_unstable_by(compare_layer_faces);
+    if material_faces != canonical_registry(&topology) {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch);
+    }
+    let tested_face_pairs = material_faces
+        .len()
+        .checked_mul(material_faces.len().saturating_sub(1))
+        .and_then(|value| value.checked_div(2))
+        .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::ResourceLimit)?;
+    if tested_face_pairs > request.max_face_pairs {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::ResourceLimit);
+    }
+
+    let limits = TreeKinematicsLimits::default();
+    let audit = MaterialHingeGraphAudit::prepare(&topology, limits)?;
+    let pose = if audit.is_tree() {
+        let model = MaterialTreeKinematicsModel::prepare(
+            request.target_pattern,
+            request.target_paper,
+            &topology,
+            limits,
+        )?;
+        ReconstructedRefinedTargetPoseV1::Tree(
+            model.solve(request.fixed_face, request.hinge_angles)?,
+        )
+    } else {
+        let fixed_face = request
+            .fixed_face
+            .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)?;
+        let geometry = MaterialHingeGraphGeometry::prepare(
+            request.target_pattern,
+            request.target_paper,
+            &topology,
+            limits,
+        )?;
+        let pose = geometry.solve_closed(
+            &audit,
+            fixed_face,
+            request.hinge_angles,
+            STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+        )?;
+        ReconstructedRefinedTargetPoseV1::Graph { geometry, pose }
+    };
+    if pose.hinge_angles().iter().all(|angle| {
+        angle.angle_degrees().to_bits() == 0.0_f64.to_bits()
+            || angle.angle_degrees().to_bits() == 180.0_f64.to_bits()
+    }) {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::NotNonFlatEndpoint);
+    }
+    let mut material_face_ids = material_faces
+        .iter()
+        .map(|face| face.face_id)
+        .collect::<Vec<_>>();
+    material_face_ids.sort_unstable_by_key(FaceId::canonical_bytes);
+    if material_face_ids != pose.face_ids()
+        || pose.fixed_face() != request.fixed_face
+        || pose.hinge_angles() != request.hinge_angles.as_slice()
+    {
+        return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch);
+    }
+
+    let planes = material_faces
+        .iter()
+        .map(|face| pose.face_plane(face.face_id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let folded_faces = material_faces
+        .iter()
+        .zip(&planes)
+        .map(|(face, plane)| {
+            pose.face_transform(face.face_id)
+                .ok_or(PrepareStackedFoldNonFlatLayerOrderErrorV1::TargetPoseMismatch)
+                .and_then(|transform| exact_folded_face(*face, transform, plane.1))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut overlaps = Vec::new();
+    overlaps
+        .try_reserve_exact(tested_face_pairs)
+        .map_err(|_| PrepareStackedFoldNonFlatLayerOrderErrorV1::ResourceLimit)?;
+    for first in 0..planes.len() {
+        for second in first + 1..planes.len() {
+            let normal_cross = point_length(point_cross(
+                point_values(planes[first].1),
+                point_values(planes[second].1),
+            ));
+            if !normal_cross.is_finite() {
+                return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::UnrepresentableFacePlane);
+            }
+            if normal_cross > 1.0e-9 {
+                continue;
+            }
+            let (boundary, exact_boundary, positive_area) =
+                projected_convex_overlap(&planes[first], &planes[second])?;
+            if boundary.len() < 3 || !positive_area {
+                continue;
+            }
+            let separation = point_dot(
+                point_delta(planes[second].0, planes[first].0),
+                planes[first].1,
+            );
+            if !separation.is_finite() {
+                return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::UnrepresentableFacePlane);
+            }
+            overlaps.push(ReconstructedRefinedTargetOverlapV1 {
+                boundary,
+                exact_boundary,
+                first_face: material_faces[first].face_id,
+                second_face: material_faces[second].face_id,
+                separation,
+            });
+        }
+    }
+    Ok(ReconstructedRefinedTargetV1 {
+        pose_model_id: match &pose {
+            ReconstructedRefinedTargetPoseV1::Tree(_) => APPLIED_POSE_MODEL_ID_V1,
+            ReconstructedRefinedTargetPoseV1::Graph { .. } => CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1,
+        },
+        fixed_face: pose.fixed_face(),
+        hinge_angles: pose.hinge_angles().to_vec(),
+        folded_faces,
+        material_faces,
+        tested_face_pairs,
+        overlaps,
+    })
+}
+
+fn archived_target_pair_map(
+    material_faces: &[LayerFace],
+    archived_pair_orders: &[ArchivedNonFlatFacePairOrderInputV1],
+    max_face_pairs: usize,
+) -> Result<
+    HashMap<(FaceId, FaceId), ArchivedNonFlatFacePairOrderInputV1>,
+    ArchivedRefinedNonFlatLayerOrderErrorV1,
+> {
+    if archived_pair_orders.len() > max_face_pairs {
+        return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::ArchivedPairResourceLimit);
+    }
+    let material_ids = material_faces
+        .iter()
+        .map(|face| face.face_id)
+        .collect::<HashSet<_>>();
+    let mut pairs = HashMap::new();
+    pairs
+        .try_reserve(archived_pair_orders.len())
+        .map_err(|_| ArchivedRefinedNonFlatLayerOrderErrorV1::ArchivedPairResourceLimit)?;
+    for archived in archived_pair_orders {
+        if archived.lower_face == archived.upper_face {
+            return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::EqualTargetFace {
+                face: archived.lower_face,
+            });
+        }
+        for face in [archived.lower_face, archived.upper_face] {
+            if !material_ids.contains(&face) {
+                return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::UnknownTargetFace { face });
+            }
+        }
+        let key = canonical_face_id_pair(archived.lower_face, archived.upper_face);
+        if let Some(previous) = pairs.insert(key, *archived) {
+            if previous == *archived {
+                return Err(
+                    ArchivedRefinedNonFlatLayerOrderErrorV1::DuplicateTargetPair {
+                        first: key.0,
+                        second: key.1,
+                    },
+                );
+            }
+            return Err(
+                ArchivedRefinedNonFlatLayerOrderErrorV1::ConflictingTargetPair {
+                    first: key.0,
+                    second: key.1,
+                },
+            );
+        }
+    }
+    Ok(pairs)
+}
+
+fn classify_archived_source_requirements_v1(
+    lineage: &FaceLineageV1,
+    target: &ReconstructedRefinedTargetV1,
+    archived_pair_orders: &[ArchivedNonFlatFacePairOrderInputV1],
+    max_face_pairs: usize,
+) -> Result<Vec<RequiredLayerOrderPair>, ArchivedRefinedNonFlatLayerOrderErrorV1> {
+    let archived =
+        archived_target_pair_map(&target.material_faces, archived_pair_orders, max_face_pairs)?;
+    let descendant_count = lineage.records().iter().try_fold(0_usize, |total, record| {
+        total.checked_add(record.descendants().len())
+    });
+    let mut source_by_target = HashMap::new();
+    source_by_target
+        .try_reserve(
+            descendant_count
+                .ok_or(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairResourceLimit)?,
+        )
+        .map_err(|_| ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairResourceLimit)?;
+    for record in lineage.records() {
+        for descendant in record.descendants() {
+            if source_by_target
+                .insert(descendant.face_id, record.source())
+                .is_some()
+            {
+                return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid);
+            }
+        }
+    }
+    let mut overlap_keys = HashSet::new();
+    overlap_keys
+        .try_reserve(target.overlaps.len())
+        .map_err(|_| ArchivedRefinedNonFlatLayerOrderErrorV1::ArchivedPairResourceLimit)?;
+    let mut source_requirements = HashMap::<(FaceId, FaceId), RequiredLayerOrderPair>::new();
+    source_requirements
+        .try_reserve(target.overlaps.len())
+        .map_err(|_| ArchivedRefinedNonFlatLayerOrderErrorV1::ArchivedPairResourceLimit)?;
+    for overlap in &target.overlaps {
+        let key = canonical_face_id_pair(overlap.first_face, overlap.second_face);
+        overlap_keys.insert(key);
+        let archived = archived.get(&key).copied().ok_or(
+            ArchivedRefinedNonFlatLayerOrderErrorV1::MissingTargetPair {
+                first: key.0,
+                second: key.1,
+            },
+        )?;
+        if overlap.separation.abs() > 1.0e-9 {
+            let expected = if overlap.separation > 0.0 {
+                ArchivedNonFlatFacePairOrderInputV1 {
+                    lower_face: overlap.first_face,
+                    upper_face: overlap.second_face,
+                }
+            } else {
+                ArchivedNonFlatFacePairOrderInputV1 {
+                    lower_face: overlap.second_face,
+                    upper_face: overlap.first_face,
+                }
+            };
+            if archived != expected {
+                return Err(
+                    ArchivedRefinedNonFlatLayerOrderErrorV1::GeometryDirectionMismatch {
+                        first: key.0,
+                        second: key.1,
+                    },
+                );
+            }
+            continue;
+        }
+        let lower_face = source_by_target
+            .get(&archived.lower_face)
+            .copied()
+            .ok_or(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid)?;
+        let upper_face = source_by_target
+            .get(&archived.upper_face)
+            .copied()
+            .ok_or(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid)?;
+        if lower_face.face_id == upper_face.face_id {
+            return Err(
+                ArchivedRefinedNonFlatLayerOrderErrorV1::CoincidentDescendantsShareSource {
+                    source_face: lower_face.face_id,
+                },
+            );
+        }
+        let source_key = canonical_face_id_pair(lower_face.face_id, upper_face.face_id);
+        let requirement = RequiredLayerOrderPair {
+            lower_face,
+            upper_face,
+        };
+        if let Some(previous) = source_requirements.get(&source_key) {
+            if *previous != requirement {
+                return Err(
+                    ArchivedRefinedNonFlatLayerOrderErrorV1::ConflictingSourceRequirement {
+                        first: source_key.0,
+                        second: source_key.1,
+                    },
+                );
+            }
+            continue;
+        }
+        source_requirements.insert(source_key, requirement);
+    }
+    for archived in archived_pair_orders {
+        let key = canonical_face_id_pair(archived.lower_face, archived.upper_face);
+        if !overlap_keys.contains(&key) {
+            return Err(
+                ArchivedRefinedNonFlatLayerOrderErrorV1::NonOverlappingTargetPair {
+                    first: key.0,
+                    second: key.1,
+                },
+            );
+        }
+    }
+    let mut requirements = source_requirements.into_values().collect::<Vec<_>>();
+    requirements.sort_unstable_by(|left, right| {
+        canonical_face_id_pair(left.lower_face.face_id, left.upper_face.face_id)
+            .0
+            .canonical_bytes()
+            .cmp(
+                &canonical_face_id_pair(right.lower_face.face_id, right.upper_face.face_id)
+                    .0
+                    .canonical_bytes(),
+            )
+            .then_with(|| {
+                canonical_face_id_pair(left.lower_face.face_id, left.upper_face.face_id)
+                    .1
+                    .canonical_bytes()
+                    .cmp(
+                        &canonical_face_id_pair(right.lower_face.face_id, right.upper_face.face_id)
+                            .1
+                            .canonical_bytes(),
+                    )
+            })
+    });
+    Ok(requirements)
+}
+
+fn reconstruct_expected_creases_from_delta_v1(
+    source_pattern: &CreasePattern,
+    target_pattern: &CreasePattern,
+    limits: StackedFoldGeometryLimitsV1,
+) -> Result<Vec<ExpectedStackedFoldCreaseV1>, StackedFoldGeometryErrorV1> {
+    let source_vertices = geometry_vertex_records(source_pattern, FaceLineageTopology::Source)?;
+    let target_vertices = geometry_vertex_records(target_pattern, FaceLineageTopology::Target)?;
+    let source_positions = vertex_position_map(&source_vertices);
+    let target_positions = vertex_position_map(&target_vertices);
+    let source_edges = geometry_edge_records(
+        source_pattern,
+        &source_positions,
+        FaceLineageTopology::Source,
+    )?;
+    let target_edges = geometry_edge_records(
+        target_pattern,
+        &target_positions,
+        FaceLineageTopology::Target,
+    )?;
+    let inference_tests = target_edges.len().checked_mul(source_edges.len()).ok_or(
+        StackedFoldGeometryErrorV1::ResourceLimit {
+            resource: StackedFoldGeometryResourceV1::EdgeCarrierTests,
+            actual: usize::MAX,
+            maximum: limits.max_edge_carrier_tests,
+        },
+    )?;
+    check_stacked_fold_limit(
+        StackedFoldGeometryResourceV1::EdgeCarrierTests,
+        inference_tests,
+        limits.max_edge_carrier_tests,
+    )?;
+    let mut expected = Vec::new();
+    expected
+        .try_reserve_exact(target_edges.len().min(limits.max_expected_creases))
+        .map_err(|_| StackedFoldGeometryErrorV1::ResourceLimit {
+            resource: StackedFoldGeometryResourceV1::ExpectedCreases,
+            actual: target_edges.len(),
+            maximum: limits.max_expected_creases,
+        })?;
+    for target in target_edges {
+        let belongs_to_source = source_edges.iter().try_fold(false, |matched, source| {
+            if matched || target.kind != source.kind {
+                Ok(matched)
+            } else {
+                segment_is_within_carrier(target, source.start, source.end)
+            }
+        })?;
+        if belongs_to_source {
+            continue;
+        }
+        if !matches!(target.kind, EdgeKind::Mountain | EdgeKind::Valley) {
+            return Err(StackedFoldGeometryErrorV1::TargetEdgeWithoutCarrier { edge: target.id });
+        }
+        expected.push(ExpectedStackedFoldCreaseV1 {
+            start: target.start,
+            end: target.end,
+            kind: target.kind,
+        });
+        check_stacked_fold_limit(
+            StackedFoldGeometryResourceV1::ExpectedCreases,
+            expected.len(),
+            limits.max_expected_creases,
+        )?;
+    }
+    Ok(expected)
+}
+
+/// Prepares an opaque archive-admission package and derives only the
+/// coincident-plane source constraints needed for a fresh predecessor solve.
+pub fn prepare_archived_refined_non_flat_layer_order_v1(
+    request: PrepareArchivedRefinedNonFlatLayerOrderRequestV1<'_>,
+) -> Result<PreparedArchivedRefinedNonFlatLayerOrderV1, ArchivedRefinedNonFlatLayerOrderErrorV1> {
+    if request.target_admission_revision > MAX_REVISION {
+        return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::TargetAdmissionRevisionOutOfRange);
+    }
+    let ephemeral_target_revision = request
+        .source_revision
+        .checked_add(1)
+        .filter(|revision| *revision <= MAX_REVISION)
+        .ok_or(ArchivedRefinedNonFlatLayerOrderErrorV1::SourceRevisionCannotAdvance)?;
+    let lineage = prepare_face_lineage_from_fresh_source_registry_v1(
+        FaceLineageGeometryInput {
+            identity_namespace: request.identity_namespace,
+            source_revision: request.source_revision,
+            source_paper: request.source_paper,
+            source_pattern: request.source_pattern,
+            target_revision: ephemeral_target_revision,
+            target_paper: request.target_paper,
+            target_pattern: request.target_pattern,
+        },
+        request.lineage_limits,
+    )?;
+    let expected_creases = reconstruct_expected_creases_from_delta_v1(
+        request.source_pattern,
+        request.target_pattern,
+        request.geometry_limits,
+    )?;
+    let geometry_proof = prepare_stacked_fold_geometry_v1(
+        StackedFoldGeometryInputV1 {
+            identity_namespace: request.identity_namespace,
+            source_revision: request.source_revision,
+            source_paper: request.source_paper,
+            source_pattern: request.source_pattern,
+            target_revision: ephemeral_target_revision,
+            target_paper: request.target_paper,
+            target_pattern: request.target_pattern,
+            face_lineage: &lineage,
+            expected_creases: &expected_creases,
+        },
+        request.geometry_limits,
+    )?;
+    let target = reconstruct_refined_target_v1(ReconstructRefinedTargetRequestV1 {
+        identity_namespace: request.identity_namespace,
+        ephemeral_target_revision,
+        target_pattern: request.target_pattern,
+        target_paper: request.target_paper,
+        lineage: geometry_proof.lineage(),
+        fixed_face: request.fixed_face,
+        hinge_angles: request.hinge_angles,
+        max_face_pairs: request.max_face_pairs,
+    })?;
+    let required_source_pair_orders = classify_archived_source_requirements_v1(
+        &lineage,
+        &target,
+        request.archived_pair_orders,
+        request.max_face_pairs,
+    )?;
+    Ok(PreparedArchivedRefinedNonFlatLayerOrderV1 {
+        identity_namespace: request.identity_namespace,
+        source_revision: request.source_revision,
+        ephemeral_target_revision,
+        target_admission_revision: request.target_admission_revision,
+        source_pattern: request.source_pattern.clone(),
+        source_paper: request.source_paper.clone(),
+        target_pattern: request.target_pattern.clone(),
+        target_paper: request.target_paper.clone(),
+        fixed_face: request.fixed_face,
+        hinge_angles: request.hinge_angles.clone(),
+        archived_pair_orders: request.archived_pair_orders.to_vec(),
+        required_source_pair_orders,
+        expected_creases,
+        lineage_limits: request.lineage_limits,
+        geometry_limits: request.geometry_limits,
+        max_face_pairs: request.max_face_pairs,
+    })
+}
+
+type SourcePairDirectionIndexV1 = HashMap<(FaceId, FaceId), RequiredLayerOrderPair>;
+
+fn build_source_pair_direction_index_v1(
+    source_layer_order: &LayerOrderSnapshot,
+    max_face_pairs: usize,
+) -> Result<SourcePairDirectionIndexV1, ArchivedRefinedNonFlatLayerOrderErrorV1> {
+    if source_layer_order.face_pair_orders.len() > max_face_pairs {
+        return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairResourceLimit);
+    }
+    let mut material_by_id = HashMap::new();
+    material_by_id
+        .try_reserve(source_layer_order.material_faces.len())
+        .map_err(|_| ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairResourceLimit)?;
+    for face in &source_layer_order.material_faces {
+        if material_by_id.insert(face.face_id, *face).is_some() {
+            return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid);
+        }
+    }
+    let mut index = HashMap::new();
+    index
+        .try_reserve(source_layer_order.face_pair_orders.len())
+        .map_err(|_| ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairResourceLimit)?;
+    for order in &source_layer_order.face_pair_orders {
+        if order.lower_face.face_id == order.upper_face.face_id
+            || material_by_id.get(&order.lower_face.face_id) != Some(&order.lower_face)
+            || material_by_id.get(&order.upper_face.face_id) != Some(&order.upper_face)
+        {
+            return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid);
+        }
+        let key = canonical_face_id_pair(order.lower_face.face_id, order.upper_face.face_id);
+        let direction = RequiredLayerOrderPair {
+            lower_face: order.lower_face,
+            upper_face: order.upper_face,
+        };
+        if index.insert(key, direction).is_some() {
+            return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid);
+        }
+    }
+    Ok(index)
+}
+
+fn source_requirements_are_satisfied(
+    source_pair_index: &SourcePairDirectionIndexV1,
+    required: &[RequiredLayerOrderPair],
+) -> bool {
+    required.iter().all(|required| {
+        source_pair_index.get(&canonical_face_id_pair(
+            required.lower_face.face_id,
+            required.upper_face.face_id,
+        )) == Some(required)
+    })
+}
+
+fn inherited_source_order_from_index_v1(
+    first: FaceId,
+    second: FaceId,
+    source_by_target: &HashMap<FaceId, FaceId>,
+    source_pair_index: &SourcePairDirectionIndexV1,
+) -> Result<(FaceId, FaceId), ArchivedRefinedNonFlatLayerOrderErrorV1> {
+    let first_source = source_by_target
+        .get(&first)
+        .copied()
+        .ok_or(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid)?;
+    let second_source = source_by_target
+        .get(&second)
+        .copied()
+        .ok_or(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid)?;
+    if first_source == second_source {
+        return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::NonFlat(
+            PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap,
+        ));
+    }
+    let direction = source_pair_index
+        .get(&canonical_face_id_pair(first_source, second_source))
+        .ok_or(ArchivedRefinedNonFlatLayerOrderErrorV1::NonFlat(
+            PrepareStackedFoldNonFlatLayerOrderErrorV1::AmbiguousProjectedOverlap,
+        ))?;
+    if direction.lower_face.face_id == first_source {
+        Ok((first, second))
+    } else {
+        Ok((second, first))
+    }
+}
+
+fn seal_reconstructed_refined_target_v1(
+    lineage: &FaceLineageV1,
+    target: ReconstructedRefinedTargetV1,
+    source_layer_order: &LayerOrderSnapshot,
+    source_pair_index: &SourcePairDirectionIndexV1,
+) -> Result<StackedFoldNonFlatLayerOrderV1, ArchivedRefinedNonFlatLayerOrderErrorV1> {
+    let descendant_count = lineage.records().iter().try_fold(0_usize, |sum, record| {
+        sum.checked_add(record.descendants().len())
+    });
+    let mut source_by_target = HashMap::new();
+    source_by_target
+        .try_reserve(
+            descendant_count
+                .ok_or(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairResourceLimit)?,
+        )
+        .map_err(|_| ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairResourceLimit)?;
+    for record in lineage.records() {
+        for target in record.descendants() {
+            if source_by_target
+                .insert(target.face_id, record.source().face_id)
+                .is_some()
+            {
+                return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid);
+            }
+        }
+    }
+    let mut overlap_cells = Vec::new();
+    overlap_cells
+        .try_reserve_exact(target.overlaps.len())
+        .map_err(|_| ArchivedRefinedNonFlatLayerOrderErrorV1::ArchivedPairResourceLimit)?;
+    let mut face_pair_orders = Vec::new();
+    face_pair_orders
+        .try_reserve_exact(target.overlaps.len())
+        .map_err(|_| ArchivedRefinedNonFlatLayerOrderErrorV1::ArchivedPairResourceLimit)?;
+    for overlap in target.overlaps {
+        let (lower_face, upper_face) = if overlap.separation.abs() > 1.0e-9 {
+            if overlap.separation > 0.0 {
+                (overlap.first_face, overlap.second_face)
+            } else {
+                (overlap.second_face, overlap.first_face)
+            }
+        } else {
+            inherited_source_order_from_index_v1(
+                overlap.first_face,
+                overlap.second_face,
+                &source_by_target,
+                source_pair_index,
+            )?
+        };
+        overlap_cells.push(StackedFoldNonFlatOverlapCellV1 {
+            boundary: overlap.boundary,
+            exact_boundary: overlap.exact_boundary,
+            lower_face,
+            upper_face,
+        });
+        face_pair_orders.push(StackedFoldNonFlatFacePairOrderV1 {
+            lower_face,
+            upper_face,
+        });
+    }
+    Ok(StackedFoldNonFlatLayerOrderV1 {
+        identity_namespace: lineage.identity_namespace(),
+        target_revision: lineage.target_revision(),
+        target_fingerprint: lineage.target_fingerprint(),
+        fixed_face: target.fixed_face,
+        hinge_angles: target.hinge_angles,
+        folded_faces: target.folded_faces,
+        material_faces: target.material_faces,
+        tested_face_pairs: target.tested_face_pairs,
+        source_overlap_cells_authenticated: source_layer_order.overlap_cells.len(),
+        overlap_cells,
+        face_pair_orders,
+    })
+}
+
+fn proof_pair_set_matches_archive(
+    proof: &StackedFoldNonFlatLayerOrderV1,
+    archived: &[ArchivedNonFlatFacePairOrderInputV1],
+) -> Result<bool, ArchivedRefinedNonFlatLayerOrderErrorV1> {
+    if proof.face_pair_orders().len() != archived.len() {
+        return Ok(false);
+    }
+    let mut expected = HashMap::new();
+    expected
+        .try_reserve(archived.len())
+        .map_err(|_| ArchivedRefinedNonFlatLayerOrderErrorV1::ArchivedPairResourceLimit)?;
+    for pair in archived {
+        if expected
+            .insert(
+                canonical_face_id_pair(pair.lower_face, pair.upper_face),
+                (pair.lower_face, pair.upper_face),
+            )
+            .is_some()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(proof.face_pair_orders().iter().all(|pair| {
+        expected
+            .get(&canonical_face_id_pair(
+                pair.lower_face(),
+                pair.upper_face(),
+            ))
+            .is_some_and(|direction| *direction == (pair.lower_face(), pair.upper_face()))
+    }))
+}
+
+fn current_applied_pose_matches_reconstructed(
+    current: &AppliedPoseV1,
+    target: &ReconstructedRefinedTargetV1,
+) -> bool {
+    current.model_id() == target.pose_model_id
+        && current.fixed_face() == target.fixed_face
+        && current.hinge_angles().len() == target.hinge_angles.len()
+        && current
+            .hinge_angles()
+            .iter()
+            .zip(&target.hinge_angles)
+            .all(|(current, target)| {
+                current.edge() == target.edge()
+                    && current.angle_degrees().to_bits() == target.angle_degrees().to_bits()
+            })
+}
+
+/// Finishes archive admission with a freshly constrained predecessor snapshot.
+///
+/// Every lineage and target constructor is re-run. Only after the regenerated
+/// complete target pair set matches the prepared archive is the sealed proof
+/// rebound from its private ephemeral target revision to the current archive
+/// admission revision.
+pub fn finish_archived_refined_non_flat_layer_order_v1(
+    prepared: PreparedArchivedRefinedNonFlatLayerOrderV1,
+    constrained_source_flat: &LayerOrderSnapshot,
+    current_applied_pose: &AppliedPoseV1,
+) -> Result<StackedFoldNonFlatLayerOrderV1, ArchivedRefinedNonFlatLayerOrderErrorV1> {
+    let source_pair_index =
+        build_source_pair_direction_index_v1(constrained_source_flat, prepared.max_face_pairs)?;
+    if !source_requirements_are_satisfied(&source_pair_index, &prepared.required_source_pair_orders)
+    {
+        return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourceRequirementUnsatisfied);
+    }
+    let lineage = prepare_face_lineage_v1(
+        FaceLineageInput {
+            identity_namespace: prepared.identity_namespace,
+            source_revision: prepared.source_revision,
+            source_paper: &prepared.source_paper,
+            source_pattern: &prepared.source_pattern,
+            source_layer_order: constrained_source_flat,
+            target_revision: prepared.ephemeral_target_revision,
+            target_paper: &prepared.target_paper,
+            target_pattern: &prepared.target_pattern,
+        },
+        prepared.lineage_limits,
+    )?;
+    let expected_creases = reconstruct_expected_creases_from_delta_v1(
+        &prepared.source_pattern,
+        &prepared.target_pattern,
+        prepared.geometry_limits,
+    )?;
+    if expected_creases != prepared.expected_creases {
+        return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::FinishedTargetPairSetMismatch);
+    }
+    let geometry_proof = prepare_stacked_fold_geometry_v1(
+        StackedFoldGeometryInputV1 {
+            identity_namespace: prepared.identity_namespace,
+            source_revision: prepared.source_revision,
+            source_paper: &prepared.source_paper,
+            source_pattern: &prepared.source_pattern,
+            target_revision: prepared.ephemeral_target_revision,
+            target_paper: &prepared.target_paper,
+            target_pattern: &prepared.target_pattern,
+            face_lineage: &lineage,
+            expected_creases: &expected_creases,
+        },
+        prepared.geometry_limits,
+    )?;
+    let target = reconstruct_refined_target_v1(ReconstructRefinedTargetRequestV1 {
+        identity_namespace: prepared.identity_namespace,
+        ephemeral_target_revision: prepared.ephemeral_target_revision,
+        target_pattern: &prepared.target_pattern,
+        target_paper: &prepared.target_paper,
+        lineage: geometry_proof.lineage(),
+        fixed_face: prepared.fixed_face,
+        hinge_angles: &prepared.hinge_angles,
+        max_face_pairs: prepared.max_face_pairs,
+    })?;
+    if !current_applied_pose_matches_reconstructed(current_applied_pose, &target) {
+        return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::CurrentAppliedPoseMismatch);
+    }
+    let mut proof = seal_reconstructed_refined_target_v1(
+        geometry_proof.lineage(),
+        target,
+        constrained_source_flat,
+        &source_pair_index,
+    )?;
+    if !proof_pair_set_matches_archive(&proof, &prepared.archived_pair_orders)? {
+        return Err(ArchivedRefinedNonFlatLayerOrderErrorV1::FinishedTargetPairSetMismatch);
+    }
+    proof.target_revision = prepared.target_admission_revision;
+    Ok(proof)
+}
+
 /// Continues non-flat layer authority without pretending that it is a global
 /// flat-foldability snapshot. All source cells and pair orders remain sealed.
 pub fn prepare_stacked_fold_non_flat_layer_order_from_non_flat_v1(
@@ -2422,14 +3441,7 @@ fn prepare_stacked_fold_non_flat_layer_order_from_source_v1(
         .iter()
         .map(FaceLineageRecord::source)
         .collect::<Vec<_>>();
-    source_faces.sort_unstable_by(|first, second| {
-        first.face_key.cmp(&second.face_key).then_with(|| {
-            first
-                .face_id
-                .canonical_bytes()
-                .cmp(&second.face_id.canonical_bytes())
-        })
-    });
+    source_faces.sort_unstable_by(compare_layer_faces);
     if source_layer_order.material_faces() != source_faces {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch);
     }
@@ -2442,14 +3454,7 @@ fn prepare_stacked_fold_non_flat_layer_order_from_source_v1(
         .iter()
         .flat_map(|record| record.descendants().iter().copied())
         .collect::<Vec<_>>();
-    material_faces.sort_unstable_by(|first, second| {
-        first.face_key.cmp(&second.face_key).then_with(|| {
-            first
-                .face_id
-                .canonical_bytes()
-                .cmp(&second.face_id.canonical_bytes())
-        })
-    });
+    material_faces.sort_unstable_by(compare_layer_faces);
     let mut material_face_ids = material_faces
         .iter()
         .map(|face| face.face_id)
@@ -2608,13 +3613,7 @@ fn prepare_stacked_fold_graph_non_flat_layer_order_from_source_v1(
         .iter()
         .map(FaceLineageRecord::source)
         .collect::<Vec<_>>();
-    source_faces.sort_unstable_by(|a, b| {
-        a.face_key.cmp(&b.face_key).then_with(|| {
-            a.face_id
-                .canonical_bytes()
-                .cmp(&b.face_id.canonical_bytes())
-        })
-    });
+    source_faces.sort_unstable_by(compare_layer_faces);
     if source_layer_order.material_faces() != source_faces {
         return Err(PrepareStackedFoldNonFlatLayerOrderErrorV1::SourceLayerOrderMismatch);
     }
@@ -2633,13 +3632,7 @@ fn prepare_stacked_fold_graph_non_flat_layer_order_from_source_v1(
         .iter()
         .flat_map(|record| record.descendants().iter().copied())
         .collect::<Vec<_>>();
-    material_faces.sort_unstable_by(|a, b| {
-        a.face_key.cmp(&b.face_key).then_with(|| {
-            a.face_id
-                .canonical_bytes()
-                .cmp(&b.face_id.canonical_bytes())
-        })
-    });
+    material_faces.sort_unstable_by(compare_layer_faces);
     let mut ids = material_faces
         .iter()
         .map(|face| face.face_id)
@@ -4831,6 +5824,184 @@ mod tests {
         )
         .expect("two-face positive-thickness layer offset");
         assert_eq!(positive_order.material_faces().len(), 2);
+
+        let target_model = requested.initial().target().model();
+        let target_candidate = requested.initial().target().geometry().candidate();
+        let expected_hinges = target_model
+            .hinges()
+            .iter()
+            .map(|hinge| hinge.edge())
+            .collect::<Vec<_>>();
+        let applied_angles = requested
+            .pose()
+            .hinge_angles()
+            .iter()
+            .map(|angle| (angle.edge(), angle.angle_degrees()))
+            .collect::<Vec<_>>();
+        let requested_hinge_angles =
+            CanonicalHingeAngles::new(requested.pose().hinge_angles().to_vec())
+                .expect("requested pose keeps canonical hinge angles");
+        let current_applied_pose = crate::prepare_applied_pose_v1(
+            target_model.face_ids(),
+            &expected_hinges,
+            requested.pose().fixed_face(),
+            &applied_angles,
+            crate::AppliedPoseLimitsV1::default(),
+        )
+        .expect("prepare exact active semantic pose");
+        assert_eq!(
+            current_applied_pose.model_id(),
+            crate::APPLIED_POSE_MODEL_ID_V1,
+            "the archive happy path exercises the native tree pose authority"
+        );
+        let archived_pairs = non_flat_order
+            .face_pair_orders()
+            .iter()
+            .map(|pair| ArchivedNonFlatFacePairOrderInputV1 {
+                lower_face: pair.lower_face(),
+                upper_face: pair.upper_face(),
+            })
+            .collect::<Vec<_>>();
+        let prepare_archive = |source_revision,
+                               target_admission_revision,
+                               pairs: &[ArchivedNonFlatFacePairOrderInputV1],
+                               max_face_pairs| {
+            prepare_archived_refined_non_flat_layer_order_v1(
+                PrepareArchivedRefinedNonFlatLayerOrderRequestV1 {
+                    identity_namespace: fixture.identity,
+                    source_revision,
+                    source_pattern: &fixture.source_pattern,
+                    source_paper: &fixture.source_paper,
+                    target_admission_revision,
+                    target_pattern: &target_candidate.pattern,
+                    target_paper: &target_candidate.paper,
+                    fixed_face: requested.pose().fixed_face(),
+                    hinge_angles: &requested_hinge_angles,
+                    archived_pair_orders: pairs,
+                    lineage_limits: FaceLineageLimits::default(),
+                    geometry_limits: StackedFoldGeometryLimitsV1::default(),
+                    max_face_pairs,
+                },
+            )
+        };
+        let prepared = prepare_archive(fixture.source_revision, 91, &archived_pairs, usize::MAX)
+            .expect("prepare opaque archive rebind package");
+        assert_eq!(prepared.source_revision, fixture.source_revision);
+        assert_eq!(
+            prepared.ephemeral_target_revision,
+            fixture.source_revision + 1
+        );
+        assert_eq!(prepared.target_admission_revision, 91);
+        assert!(prepared.required_source_pair_orders().is_empty());
+        let rebound = finish_archived_refined_non_flat_layer_order_v1(
+            prepared.clone(),
+            &fixture.source_layer_order,
+            &current_applied_pose,
+        )
+        .expect("finish a freshly reconstructed archive rebind");
+        assert_eq!(rebound.target_revision(), 91);
+        assert_eq!(rebound.face_pair_order_count(), archived_pairs.len());
+        assert_eq!(
+            rebound.hinge_angles(),
+            requested.pose().hinge_angles(),
+            "the rebound proof retains the freshly reconstructed pose"
+        );
+
+        let mut changed_angles = applied_angles.clone();
+        changed_angles[0].1 = f64::from_bits(changed_angles[0].1.to_bits() + 1);
+        let changed_applied_pose = crate::prepare_applied_pose_v1(
+            target_model.face_ids(),
+            &expected_hinges,
+            requested.pose().fixed_face(),
+            &changed_angles,
+            crate::AppliedPoseLimitsV1::default(),
+        )
+        .expect("prepare an individually valid but different semantic pose");
+        assert_eq!(
+            finish_archived_refined_non_flat_layer_order_v1(
+                prepared,
+                &fixture.source_layer_order,
+                &changed_applied_pose,
+            ),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::CurrentAppliedPoseMismatch)
+        );
+
+        let [first_face, second_face] = target_model.face_ids() else {
+            panic!("the fixture has exactly two target faces");
+        };
+        let non_overlap = ArchivedNonFlatFacePairOrderInputV1 {
+            lower_face: *first_face,
+            upper_face: *second_face,
+        };
+        assert!(matches!(
+            prepare_archive(fixture.source_revision, 91, &[non_overlap], usize::MAX),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::NonOverlappingTargetPair { .. })
+        ));
+        assert!(matches!(
+            prepare_archive(
+                fixture.source_revision,
+                91,
+                &[ArchivedNonFlatFacePairOrderInputV1 {
+                    lower_face: *first_face,
+                    upper_face: *first_face,
+                }],
+                usize::MAX,
+            ),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::EqualTargetFace { .. })
+        ));
+        assert!(matches!(
+            prepare_archive(
+                fixture.source_revision,
+                91,
+                &[ArchivedNonFlatFacePairOrderInputV1 {
+                    lower_face: FaceId::new(),
+                    upper_face: *second_face,
+                }],
+                usize::MAX,
+            ),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::UnknownTargetFace { .. })
+        ));
+        assert!(matches!(
+            prepare_archive(
+                fixture.source_revision,
+                91,
+                &[non_overlap, non_overlap],
+                usize::MAX
+            ),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::DuplicateTargetPair { .. })
+        ));
+        assert!(matches!(
+            prepare_archive(
+                fixture.source_revision,
+                91,
+                &[
+                    non_overlap,
+                    ArchivedNonFlatFacePairOrderInputV1 {
+                        lower_face: non_overlap.upper_face,
+                        upper_face: non_overlap.lower_face,
+                    },
+                ],
+                usize::MAX,
+            ),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::ConflictingTargetPair { .. })
+        ));
+        assert!(matches!(
+            prepare_archive(fixture.source_revision, 91, &[non_overlap, non_overlap], 1),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::ArchivedPairResourceLimit)
+        ));
+        assert!(matches!(
+            prepare_archive(MAX_REVISION, 91, &archived_pairs, usize::MAX,),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourceRevisionCannotAdvance)
+        ));
+        assert!(matches!(
+            prepare_archive(
+                fixture.source_revision,
+                MAX_REVISION + 1,
+                &archived_pairs,
+                usize::MAX,
+            ),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::TargetAdmissionRevisionOutOfRange)
+        ));
     }
 
     #[test]
@@ -4873,6 +6044,238 @@ mod tests {
             let expected = if value == 0.0 { 0.0 } else { value };
             assert_eq!(exact.to_f64().unwrap().to_bits(), expected.to_bits());
         }
+    }
+
+    #[test]
+    fn archived_target_pair_classification_maps_deduplicates_and_checks_directions() {
+        let face = |key| LayerFace {
+            face_id: FaceId::new(),
+            face_key: ori_topology::FaceKey([key; 32]),
+        };
+        let source_a = face(1);
+        let source_b = face(2);
+        let target_a1 = face(11);
+        let target_a2 = face(12);
+        let target_b1 = face(21);
+        let target_b2 = face(22);
+        let lineage = FaceLineageV1 {
+            identity_namespace: ProjectId::new(),
+            source_revision: 1,
+            target_revision: 2,
+            source_fingerprint: FoldModelFingerprintV1([1; 32]),
+            target_fingerprint: FoldModelFingerprintV1([2; 32]),
+            records: vec![
+                FaceLineageRecord {
+                    source: source_a,
+                    descendants: vec![target_a1, target_a2],
+                },
+                FaceLineageRecord {
+                    source: source_b,
+                    descendants: vec![target_b1, target_b2],
+                },
+            ],
+        };
+        let overlap = |first_face, second_face, separation| ReconstructedRefinedTargetOverlapV1 {
+            boundary: Vec::new(),
+            exact_boundary: Vec::new(),
+            first_face,
+            second_face,
+            separation,
+        };
+        let target = ReconstructedRefinedTargetV1 {
+            pose_model_id: APPLIED_POSE_MODEL_ID_V1,
+            fixed_face: None,
+            hinge_angles: Vec::new(),
+            folded_faces: Vec::new(),
+            material_faces: vec![target_a1, target_a2, target_b1, target_b2],
+            tested_face_pairs: 6,
+            overlaps: vec![
+                overlap(target_a1.face_id, target_b1.face_id, 0.0),
+                overlap(target_a2.face_id, target_b2.face_id, 0.0),
+                overlap(target_a1.face_id, target_b2.face_id, 2.0),
+            ],
+        };
+        let archived = [
+            ArchivedNonFlatFacePairOrderInputV1 {
+                lower_face: target_a1.face_id,
+                upper_face: target_b1.face_id,
+            },
+            ArchivedNonFlatFacePairOrderInputV1 {
+                lower_face: target_a2.face_id,
+                upper_face: target_b2.face_id,
+            },
+            ArchivedNonFlatFacePairOrderInputV1 {
+                lower_face: target_a1.face_id,
+                upper_face: target_b2.face_id,
+            },
+        ];
+        let required =
+            classify_archived_source_requirements_v1(&lineage, &target, &archived, archived.len())
+                .expect("same-direction descendant requirements deduplicate");
+        assert_eq!(
+            required,
+            vec![RequiredLayerOrderPair {
+                lower_face: source_a,
+                upper_face: source_b,
+            }]
+        );
+
+        let separated_target = ReconstructedRefinedTargetV1 {
+            pose_model_id: APPLIED_POSE_MODEL_ID_V1,
+            fixed_face: None,
+            hinge_angles: Vec::new(),
+            folded_faces: Vec::new(),
+            material_faces: vec![target_a1, target_a2, target_b1, target_b2],
+            tested_face_pairs: 6,
+            overlaps: vec![overlap(target_a1.face_id, target_b2.face_id, 2.0)],
+        };
+        assert!(
+            classify_archived_source_requirements_v1(
+                &lineage,
+                &separated_target,
+                &[ArchivedNonFlatFacePairOrderInputV1 {
+                    lower_face: target_a1.face_id,
+                    upper_face: target_b2.face_id,
+                }],
+                1,
+            )
+            .expect("a correctly directed separated overlap is geometry-authenticated")
+            .is_empty(),
+            "non-zero separation never creates a source layer-order requirement"
+        );
+
+        let mut conflicting = archived;
+        let pair = &mut conflicting[1];
+        std::mem::swap(&mut pair.lower_face, &mut pair.upper_face);
+        assert!(matches!(
+            classify_archived_source_requirements_v1(
+                &lineage,
+                &target,
+                &conflicting,
+                conflicting.len()
+            ),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::ConflictingSourceRequirement { .. })
+        ));
+
+        let mut reversed_separation = archived;
+        let pair = &mut reversed_separation[2];
+        std::mem::swap(&mut pair.lower_face, &mut pair.upper_face);
+        assert!(matches!(
+            classify_archived_source_requirements_v1(
+                &lineage,
+                &target,
+                &reversed_separation,
+                reversed_separation.len()
+            ),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::GeometryDirectionMismatch { .. })
+        ));
+
+        let same_source_target = ReconstructedRefinedTargetV1 {
+            pose_model_id: APPLIED_POSE_MODEL_ID_V1,
+            fixed_face: None,
+            hinge_angles: Vec::new(),
+            folded_faces: Vec::new(),
+            material_faces: vec![target_a1, target_a2, target_b1, target_b2],
+            tested_face_pairs: 6,
+            overlaps: vec![overlap(target_a1.face_id, target_a2.face_id, 0.0)],
+        };
+        assert!(matches!(
+            classify_archived_source_requirements_v1(
+                &lineage,
+                &same_source_target,
+                &[ArchivedNonFlatFacePairOrderInputV1 {
+                    lower_face: target_a1.face_id,
+                    upper_face: target_a2.face_id,
+                }],
+                1,
+            ),
+            Err(
+                ArchivedRefinedNonFlatLayerOrderErrorV1::CoincidentDescendantsShareSource {
+                    source_face
+                }
+            ) if source_face == source_a.face_id
+        ));
+
+        let unbound_target = face(31);
+        let missing_lineage_target = ReconstructedRefinedTargetV1 {
+            pose_model_id: APPLIED_POSE_MODEL_ID_V1,
+            fixed_face: None,
+            hinge_angles: Vec::new(),
+            folded_faces: Vec::new(),
+            material_faces: vec![target_a1, unbound_target],
+            tested_face_pairs: 1,
+            overlaps: vec![overlap(target_a1.face_id, unbound_target.face_id, 0.0)],
+        };
+        assert_eq!(
+            classify_archived_source_requirements_v1(
+                &lineage,
+                &missing_lineage_target,
+                &[ArchivedNonFlatFacePairOrderInputV1 {
+                    lower_face: target_a1.face_id,
+                    upper_face: unbound_target.face_id,
+                }],
+                1,
+            ),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid),
+            "an inconsistent target registry fails closed instead of indexing absent lineage"
+        );
+    }
+
+    #[test]
+    fn archived_source_pair_index_is_linear_bounded_and_fail_closed() {
+        let source = subdivided_cross_geometry_fixture().source_layer_order;
+        assert_eq!(
+            source.face_pair_orders.len(),
+            1,
+            "the source diagonal fixture has one certified directed overlap"
+        );
+        let index = build_source_pair_direction_index_v1(&source, source.face_pair_orders.len())
+            .expect("the inclusive pair cap admits the certified source relation");
+        let order = source.face_pair_orders[0].clone();
+        assert_eq!(
+            index.get(&canonical_face_id_pair(
+                order.lower_face.face_id,
+                order.upper_face.face_id,
+            )),
+            Some(&RequiredLayerOrderPair {
+                lower_face: order.lower_face,
+                upper_face: order.upper_face,
+            })
+        );
+        assert_eq!(
+            build_source_pair_direction_index_v1(&source, source.face_pair_orders.len() - 1),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairResourceLimit)
+        );
+
+        let mut duplicate = source.clone();
+        duplicate.face_pair_orders.push(order.clone());
+        assert_eq!(
+            build_source_pair_direction_index_v1(&duplicate, duplicate.face_pair_orders.len()),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid)
+        );
+
+        let mut conflicting = source.clone();
+        let mut reverse = order.clone();
+        std::mem::swap(&mut reverse.lower_face, &mut reverse.upper_face);
+        conflicting.face_pair_orders.push(reverse);
+        assert_eq!(
+            build_source_pair_direction_index_v1(&conflicting, conflicting.face_pair_orders.len()),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid)
+        );
+
+        let mut equal = source.clone();
+        equal.face_pair_orders[0].upper_face = equal.face_pair_orders[0].lower_face;
+        assert_eq!(
+            build_source_pair_direction_index_v1(&equal, equal.face_pair_orders.len()),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid)
+        );
+
+        let mut unknown = source;
+        unknown.face_pair_orders[0].lower_face.face_id = FaceId::new();
+        assert_eq!(
+            build_source_pair_direction_index_v1(&unknown, unknown.face_pair_orders.len()),
+            Err(ArchivedRefinedNonFlatLayerOrderErrorV1::SourcePairIndexInvalid)
+        );
     }
 
     #[test]

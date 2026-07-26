@@ -2,21 +2,24 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const app = read('../src/App.tsx')
+const app = [
+  read('../src/App.tsx'),
+  read('../src/lib/useMeshAnimationExportWorkflow.ts'),
+].join('\n')
 const dialog = read('../src/components/MeshAnimationExportDialog.tsx')
 
 test('animation export route revalidates binding and rejects stale responses', () => {
   assert.match(
     app,
-    /!matchesProjectOccGuard\(\{\s*expectedProjectInstanceId: preview\.projectInstanceId,\s*expectedProjectId: preview\.projectId,\s*expectedRevision: preview\.revision,\s*\}, latest\)/u,
+    /!matchesProjectOccGuard\(\{\s*expectedProjectInstanceId: nextPreview\.projectInstanceId,\s*expectedProjectId: nextPreview\.projectId,\s*expectedRevision: nextPreview\.revision,\s*\}, latest\)/u,
   )
-  assert.match(app, /cancelInstructionMeshAnimation\(preview\.exportId\)/u)
+  assert.match(app, /transport\.cancel\(nextPreview\.exportId\)/u)
 })
 
 test('animation export route closes reentry and disposal generations', () => {
   assert.match(app, /coreOperationRef\.current/u)
-  assert.match(app, /\+\+meshAnimationExportRequestIdRef\.current/u)
-  assert.match(app, /requestId !== meshAnimationExportRequestIdRef\.current/u)
+  assert.match(app, /\+\+requestIdRef\.current/u)
+  assert.match(app, /requestId !== requestIdRef\.current/u)
   assert.match(app, /\|\| meshAnimationExportOpen/u)
 })
 

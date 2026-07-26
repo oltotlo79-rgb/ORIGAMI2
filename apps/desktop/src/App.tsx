@@ -76,7 +76,6 @@ import {
   beginInstructionExportGeneration,
   cancelFoldImport,
   cancelInstructionExport,
-  cancelInstructionMeshAnimation,
   cancelSvgImport,
   connectEdgeIntersection,
   connectIntersectionCluster,
@@ -114,7 +113,6 @@ import {
   previewLinearArray,
   previewRadialArray,
   previewInstructionExport,
-  previewInstructionMeshAnimation,
   previewSvgImport,
   redo,
   removeAnnotation,
@@ -126,7 +124,6 @@ import {
   removeVertex,
   resizeRectangularPaper,
   saveInstructionExport,
-  saveInstructionMeshAnimation,
   setLengthDisplayUnit,
   setElementMetadata,
   splitBoundaryEdge,
@@ -200,7 +197,6 @@ import {
   type InstructionExportPhase,
   type InstructionExportPreview,
 } from './lib/instructionExport'
-import type { MeshAnimationPreviewResponse } from './lib/meshAnimationExport'
 import type { FoldImportPreview, FoldImportSettings } from './lib/foldImport'
 import type {
   SvgImportPreview,
@@ -338,6 +334,7 @@ import { useGridDivisionPreference } from './lib/useGridDivisionPreference'
 import { useProjectCanvasProjection } from './lib/useProjectCanvasProjection'
 import { useCreaseExportWorkflow } from './lib/useCreaseExportWorkflow'
 import { useStaticMeshExportWorkflow } from './lib/useStaticMeshExportWorkflow'
+import { useMeshAnimationExportWorkflow } from './lib/useMeshAnimationExportWorkflow'
 import {
   appConfirmationText,
   appErrorLocalizedText,
@@ -953,13 +950,6 @@ function App() {
     useState<AppMessage | null>(null)
   const [instructionExportNoticeMessage, setInstructionExportNotice] =
     useState<AppMessage | null>(null)
-  const [meshAnimationExportOpen, setMeshAnimationExportOpen] = useState(false)
-  const [meshAnimationExportPreview, setMeshAnimationExportPreview] =
-    useState<MeshAnimationPreviewResponse | null>(null)
-  const [meshAnimationExportError, setMeshAnimationExportError] =
-    useState<AppMessage | null>(null)
-  const [meshAnimationExportNotice, setMeshAnimationExportNotice] =
-    useState<AppMessage | null>(null)
   const [parallelReferenceEdgeId, setParallelReferenceEdgeId] = useState<string | null>(null)
   const [angleDegrees, setAngleDegrees] = useState(DEFAULT_ANGLE_SNAP_CONFIG.angleDegrees)
   const [angleDegreesInput, setAngleDegreesInput] = useState(
@@ -1030,8 +1020,6 @@ function App() {
   const foldImportButtonRef = useRef<HTMLButtonElement>(null)
   const svgImportButtonRef = useRef<HTMLButtonElement>(null)
   const instructionExportButtonRef = useRef<HTMLButtonElement>(null)
-  const meshAnimationExportButtonRef = useRef<HTMLButtonElement>(null)
-  const meshAnimationExportRequestIdRef = useRef(0)
   const instructionExportRequestIdRef = useRef(0)
   const instructionExportGenerationIdRef = useRef<string | null>(null)
   const {
@@ -1113,6 +1101,34 @@ function App() {
     },
     setFileOperation,
     cancelInteraction: () => setCancelInteractionToken((token) => token + 1),
+    onStatus: setCoreStatus,
+  })
+  const {
+    open: meshAnimationExportOpen,
+    preview: meshAnimationExportPreview,
+    error: meshAnimationExportError,
+    notice: meshAnimationExportNotice,
+    buttonRef: meshAnimationExportButtonRef,
+    prepare: prepareMeshAnimationExport,
+    begin: beginMeshAnimationExport,
+    close: closeMeshAnimationExport,
+    save: saveCurrentMeshAnimationExport,
+  } = useMeshAnimationExportWorkflow({
+    copy: {
+      prepareFailed: APP_TEXT.couldNotBuildAnAnimationFromTheCurrentInstructionsReview,
+      cleanupFailed: APP_TEXT.couldNotSafelyDiscardTheAnimationExport,
+      projectChanged: APP_TEXT.theProjectChangedRebuildFromTheCurrentInstructions,
+      saveCancelledNotice: APP_TEXT.saveLocationSelectionWasCancelledYouCanRetryWithThe2,
+      saved: APP_TEXT.exportedFileName2,
+      saveFailed: APP_TEXT.theInstructionsChangedOrTheFileCouldNotBeSaved,
+    },
+    getCurrentSnapshot: () => latestSnapshotRef.current,
+    operationActive: () => coreOperationRef.current,
+    setOperationBusy: (busy) => {
+      coreOperationRef.current = busy
+      setCoreBusy(busy)
+    },
+    setFileOperation,
     onStatus: setCoreStatus,
   })
   const creaseExportError = appMessageText(locale, creaseExportErrorMessage)
@@ -5265,130 +5281,6 @@ function App() {
         coreOperationRef.current = false
         setCoreBusy(false)
       }
-    }
-  }
-
-  async function prepareMeshAnimationExport() {
-    const current = latestSnapshotRef.current
-    if (!current || coreOperationRef.current) return
-    const requestId = ++meshAnimationExportRequestIdRef.current
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    setFileOperation('mesh_animation_export')
-    setMeshAnimationExportPreview(null)
-    setMeshAnimationExportError(null)
-    setMeshAnimationExportNotice(null)
-    try {
-      const preview = await previewInstructionMeshAnimation({
-        expectedProjectInstanceId: current.project_instance_id,
-        expectedProjectId: current.project_id,
-        expectedRevision: current.revision,
-      })
-      if (requestId !== meshAnimationExportRequestIdRef.current) {
-        await cancelInstructionMeshAnimation(preview.exportId).catch(() => undefined)
-        return
-      }
-      const latest = latestSnapshotRef.current
-      if (
-        !latest
-        || !matchesProjectOccGuard({
-          expectedProjectInstanceId: preview.projectInstanceId,
-          expectedProjectId: preview.projectId,
-          expectedRevision: preview.revision,
-        }, latest)
-      ) {
-        await cancelInstructionMeshAnimation(preview.exportId).catch(() => undefined)
-        throw new Error('stale animation preview')
-      }
-      setMeshAnimationExportPreview(preview)
-    } catch {
-      if (requestId !== meshAnimationExportRequestIdRef.current) return
-      const error = appMessage(APP_TEXT.couldNotBuildAnAnimationFromTheCurrentInstructionsReview)
-      setMeshAnimationExportError(error)
-      setCoreStatus(error)
-    } finally {
-      if (requestId === meshAnimationExportRequestIdRef.current) {
-        setFileOperation(null)
-        coreOperationRef.current = false
-        setCoreBusy(false)
-      }
-    }
-  }
-
-  function beginMeshAnimationExport() {
-    if (!latestSnapshotRef.current || coreOperationRef.current) return
-    setMeshAnimationExportOpen(true)
-    void prepareMeshAnimationExport()
-  }
-
-  async function closeMeshAnimationExport() {
-    if (coreOperationRef.current) return
-    const preview = meshAnimationExportPreview
-    meshAnimationExportRequestIdRef.current += 1
-    if (preview) {
-      coreOperationRef.current = true
-      setCoreBusy(true)
-      try {
-        await cancelInstructionMeshAnimation(preview.exportId)
-      } catch {
-        setMeshAnimationExportError(appMessage(APP_TEXT.couldNotSafelyDiscardTheAnimationExport))
-        coreOperationRef.current = false
-        setCoreBusy(false)
-        return
-      }
-      coreOperationRef.current = false
-      setCoreBusy(false)
-    }
-    setMeshAnimationExportOpen(false)
-    setMeshAnimationExportPreview(null)
-    setMeshAnimationExportError(null)
-    setMeshAnimationExportNotice(null)
-    requestAnimationFrame(() => meshAnimationExportButtonRef.current?.focus())
-  }
-
-  async function saveCurrentMeshAnimationExport() {
-    const preview = meshAnimationExportPreview
-    const current = latestSnapshotRef.current
-    if (!preview || !current || coreOperationRef.current) return
-    if (
-      !matchesProjectOccGuard({
-        expectedProjectInstanceId: preview.projectInstanceId,
-        expectedProjectId: preview.projectId,
-        expectedRevision: preview.revision,
-      }, current)
-    ) {
-      setMeshAnimationExportError(appMessage(APP_TEXT.theProjectChangedRebuildFromTheCurrentInstructions))
-      return
-    }
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    setFileOperation('mesh_animation_export')
-    setMeshAnimationExportError(null)
-    setMeshAnimationExportNotice(null)
-    try {
-      const response = await saveInstructionMeshAnimation({
-        exportId: preview.exportId,
-        expectedProjectInstanceId: preview.projectInstanceId,
-        expectedProjectId: preview.projectId,
-        expectedRevision: preview.revision,
-        expectedSourceFingerprint: preview.sourceFingerprint,
-      })
-      if (response.canceled) {
-        setMeshAnimationExportNotice(appMessage(APP_TEXT.saveLocationSelectionWasCancelledYouCanRetryWithThe2))
-        return
-      }
-      setMeshAnimationExportOpen(false)
-      setMeshAnimationExportPreview(null)
-      setCoreStatus(appMessage(APP_TEXT.exportedFileName2, { fileName: preview.suggestedFileName }))
-      requestAnimationFrame(() => meshAnimationExportButtonRef.current?.focus())
-    } catch {
-      const error = appMessage(APP_TEXT.theInstructionsChangedOrTheFileCouldNotBeSaved)
-      setMeshAnimationExportError(error)
-      setCoreStatus(error)
-    } finally {
-      setFileOperation(null)
-      coreOperationRef.current = false
-      setCoreBusy(false)
     }
   }
 

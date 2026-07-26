@@ -8,6 +8,7 @@ const app = [
   readFileSync('src/lib/appText.ts', 'utf8'),
 ].join('\n')
 const native = readFileSync('src-tauri/src/lib.rs', 'utf8')
+const nativeTests = readFileSync('src-tauri/src/tests.rs', 'utf8')
 const browser = readFileSync('scripts/generic-target-browser-e2e.mjs', 'utf8')
 const browserHarness = readFileSync('scripts/generic-target-browser-harness.tsx', 'utf8')
 const generator = readFileSync('../../crates/ori-domain/src/beginner_generator.rs', 'utf8')
@@ -40,7 +41,7 @@ test('3D generalization stays bounded to confirmed semantic parts', () => {
   assert.match(client, /protrusions\.length < 1 \|\| protrusions\.length > 8/u)
   assert.match(client, /semantic[\s\S]*remain the user's current target_parts/u)
   assert.match(app, /geometry evidence only; part meanings come from the parts you confirmed/u)
-  assert.match(native, /four explicit generic features remain a bounded candidate/u)
+  assert.match(nativeTests, /four explicit generic features remain a bounded candidate/u)
   assert.match(native, /reference_model_suggestion_confirmation_required/u)
   assert.match(native, /reference_model_suggestion_matches_live_v1/u)
 })

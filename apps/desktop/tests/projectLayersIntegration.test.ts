@@ -5,6 +5,7 @@ import test from 'node:test'
 const client = source('../src/lib/coreClient.ts')
 const recovery = source('../src/lib/recoveryClient.ts')
 const native = source('../src-tauri/src/lib.rs')
+const nativeTests = source('../src-tauri/src/tests.rs')
 const editor = source('../../../crates/ori-core/src/editor.rs')
 const formats = source('../../../crates/ori-formats/src/lib.rs')
 const ori2 = source('../../../crates/ori-formats/src/ori2.rs')
@@ -46,7 +47,13 @@ test('document, dirty state, normal open, recovery, and history endpoints retain
     native.match(
       /\.layers\s*=\s*(?:editor|undo_endpoint)\.project_layers\(\)\.clone\(\)/gu,
     )?.length,
-    2,
+    1,
+  )
+  assert.equal(
+    nativeTests.match(
+      /\.layers\s*=\s*(?:editor|undo_endpoint)\.project_layers\(\)\.clone\(\)/gu,
+    )?.length,
+    1,
   )
 })
 

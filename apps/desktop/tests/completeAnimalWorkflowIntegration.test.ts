@@ -5,6 +5,7 @@ import test from 'node:test'
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const client = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8')
 const native = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8')
+const nativeTests = readFileSync(new URL('../src-tauri/src/tests.rs', import.meta.url), 'utf8')
 const recognition = readFileSync(new URL('../src-tauri/src/beginner_recognition.rs', import.meta.url), 'utf8')
 const workflow = readFileSync(new URL('../src/lib/beginnerGridWorkflow.ts', import.meta.url), 'utf8')
 
@@ -29,7 +30,7 @@ test('optional wing pair stays the strict fifth binding across image, GLB, and w
 })
 
 test('grid cancellation and stale replacement stay generation and snapshot scoped', () => {
-  assert.match(native, /beginner_grid_progress_is_bounded_and_cancel_is_generation_scoped/)
+  assert.match(nativeTests, /beginner_grid_progress_is_bounded_and_cancel_is_generation_scoped/)
   assert.match(client, /cancelBeginnerParameterGrid/)
   assert.match(app, /requestId !== beginnerGridRequestRef\.current/)
   assert.match(
@@ -53,11 +54,11 @@ test('confirmed apply retains preview on failure and restores focus only after s
 })
 
 test('native complete animal apply is atomic, replay-safe, undoable, redoable, and persistent', () => {
-  assert.match(native, /fn complete_animal_grid_apply_replay_undo_redo_and_archive_round_trip/)
-  assert.match(native, /fn complete_winged_animal_grid_apply_and_archive_round_trip/)
+  assert.match(nativeTests, /fn complete_animal_grid_apply_replay_undo_redo_and_archive_round_trip/)
+  assert.match(nativeTests, /fn complete_winged_animal_grid_apply_and_archive_round_trip/)
   assert.match(native, /expected_grid_hash/)
   assert.match(native, /Command::ApplyStackedFoldDocument/)
-  assert.match(native, /execute_undo\(&mut project/)
-  assert.match(native, /execute_redo\(&mut project/)
+  assert.match(nativeTests, /execute_undo\(&mut project/)
+  assert.match(nativeTests, /execute_redo\(&mut project/)
   assert.match(native, /animal_complete_bindings_v1/)
 })

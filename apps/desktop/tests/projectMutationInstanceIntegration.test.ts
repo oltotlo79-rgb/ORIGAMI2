@@ -10,6 +10,7 @@ const instructionPanel = source('../src/components/InstructionTimelinePanel.tsx'
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
 const formats = source('../../../crates/ori-formats/src/lib.rs')
+const nativeUnitTestsPath = new URL('../src-tauri/src/tests.rs', import.meta.url).pathname
 const nativeRustSources = rustSources(new URL('../src-tauri/src/', import.meta.url))
 const nativeHandler = rustInvokeHandlerSection(native)
 
@@ -385,7 +386,11 @@ function rustSources(directory: URL): Array<readonly [string, string]> {
     const child = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory)
     if (entry.isDirectory()) {
       result.push(...rustSources(child))
-    } else if (entry.isFile() && entry.name.endsWith('.rs')) {
+    } else if (
+      entry.isFile()
+      && entry.name.endsWith('.rs')
+      && child.pathname !== nativeUnitTestsPath
+    ) {
       result.push([child.pathname, readFileSync(child, 'utf8')])
     }
   }

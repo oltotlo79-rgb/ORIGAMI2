@@ -7,6 +7,7 @@ function source(relativePath: string): string {
 }
 
 const nativeLib = source('../src-tauri/src/lib.rs')
+const nativeTests = source('../src-tauri/src/tests.rs')
 const nativeModule = source('../src-tauri/src/numeric_expression.rs')
 const nativeCargo = source('../src-tauri/Cargo.toml')
 const frontend = source('../src/lib/numericExpressionNative.ts')
@@ -218,7 +219,7 @@ test('vertex and polar construction expressions retain source, ID, and native au
     /data-vertex-polar-expression[\s\S]*?length_source[\s\S]*?angle_degrees_source/u,
   )
   assert.match(
-    nativeLib,
+    nativeTests,
     /vertex_coordinate_expressions_follow_native_history_and_archive_round_trip/u,
   )
 })

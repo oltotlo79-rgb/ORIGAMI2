@@ -12,6 +12,7 @@ const editor = readFileSync('../../crates/ori-core/src/editor.rs', 'utf8')
 const history = readFileSync('../../crates/ori-core/src/editor/history_persistence.rs', 'utf8')
 const constraints = readFileSync('../../crates/ori-core/src/constraints.rs', 'utf8')
 const native = readFileSync('src-tauri/src/lib.rs', 'utf8')
+const nativeTests = readFileSync('src-tauri/src/tests.rs', 'utf8')
 const client = readFileSync('src/lib/coreClient.ts', 'utf8')
 const panel = readFileSync('src/components/InstructionTimelinePanel.tsx', 'utf8')
 
@@ -145,8 +146,9 @@ test('EDT-009 retains twenty-one legacy tags and adds two bounded sound proof fa
       item.selector === 'fn different_ratios_with_fixed_denominator_can_share_an_underflowed_zero_numerator()',
   ))
   assert.ok(edtEvidence.evidence.some(
-    (item: { selector: string }) =>
-      item.selector === 'pub(super) fn conflict(',
+    (item: { path: string, selector: string }) =>
+      item.path === 'crates/ori-core/src/constraints/bounded_zero_closure.rs'
+      && item.selector === 'pub(super) fn conflict_with_limits_and_observer(',
   ))
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
@@ -169,15 +171,27 @@ test('EDT-009 retains twenty-one legacy tags and adds two bounded sound proof fa
       item.selector === 'fn bounded_zero_length_closure_resource_and_observer_stops_are_fail_closed()',
   ))
   assert.ok(edtEvidence.evidence.some(
-    (item: { selector: string }) =>
-      item.selector === 'fn geometric_constraint_worker_cancel_is_bound_to_exact_request_generation()',
+    (item: { path: string, selector: string }) =>
+      item.path === 'apps/desktop/src-tauri/src/tests.rs'
+      && item.selector === 'fn geometric_constraint_worker_cancel_is_bound_to_exact_request_generation()',
   ))
   assert.ok(edtEvidence.evidence.some(
-    (item: { selector: string }) =>
-      item.selector === 'fn geometric_constraint_gate_consumes_exact_cancel_before_acquire_once()',
+    (item: { path: string, selector: string }) =>
+      item.path === 'apps/desktop/src-tauri/src/tests.rs'
+      && item.selector === 'fn geometric_constraint_gate_consumes_exact_cancel_before_acquire_once()',
   ))
   assert.ok(edtEvidence.evidence.some(
-    (item: { selector: string }) =>
-      item.selector === 'fn geometric_constraint_gate_retains_queued_cancel_while_another_generation_is_active()',
+    (item: { path: string, selector: string }) =>
+      item.path === 'apps/desktop/src-tauri/src/tests.rs'
+      && item.selector === 'fn geometric_constraint_gate_retains_queued_cancel_while_another_generation_is_active()',
   ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { path: string, selector: string }) =>
+      item.path === 'apps/desktop/src-tauri/src/tests.rs'
+      && item.selector === 'fn geometric_constraint_pre_cancel_ledger_is_bounded_and_evicts_oldest_only()',
+  ))
+  assert.match(nativeTests, /fn geometric_constraint_worker_cancel_is_bound_to_exact_request_generation\(\)/u)
+  assert.match(nativeTests, /fn geometric_constraint_gate_consumes_exact_cancel_before_acquire_once\(\)/u)
+  assert.match(nativeTests, /fn geometric_constraint_gate_retains_queued_cancel_while_another_generation_is_active\(\)/u)
+  assert.match(nativeTests, /fn geometric_constraint_pre_cancel_ledger_is_bounded_and_evicts_oldest_only\(\)/u)
 })

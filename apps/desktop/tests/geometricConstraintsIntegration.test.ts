@@ -11,6 +11,7 @@ const panel = source('../src/components/GeometricConstraintPanel.tsx')
 const panelText = source('../src/lib/geometricConstraintPanelText.ts')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
+const nativeTests = source('../src-tauri/src/tests.rs')
 const editor = source('../../../crates/ori-core/src/editor.rs')
 const formats = source('../../../crates/ori-formats/src/lib.rs')
 const ori2 = source('../../../crates/ori-formats/src/ori2.rs')
@@ -75,7 +76,7 @@ test('constraint commands use instance, document, and revision bindings end to e
     /fn cancel_geometric_constraint_analysis\(\s*state: State<'_, AppState>,\s*expected_project_instance_id: ProjectId,\s*expected_project_id: ProjectId,\s*expected_revision: u64,\s*request_generation_id: ProjectId,\s*\) -> bool \{[\s\S]*?state\.cancel_geometric_constraint_worker\(\s*GeometricConstraintAnalysisBinding \{\s*project_instance_id: expected_project_instance_id,\s*project_id: expected_project_id,\s*revision: expected_revision,\s*\},\s*request_generation_id,\s*\)/u,
   )
   assert.match(
-    native,
+    nativeTests,
     /fn geometric_constraint_gate_retains_queued_cancel_while_another_generation_is_active\(\)[\s\S]*?!gate\.cancel\(binding, queued_generation\)[\s\S]*?!active\.cancellation\.load\(Ordering::Acquire\)[\s\S]*?try_acquire\(binding, queued_generation\)[\s\S]*?queued\.cancellation\.load\(Ordering::Acquire\)/u,
   )
   assert.match(app, /current\.project_instance_id[\s\S]*?response\.project_instance_id/u)

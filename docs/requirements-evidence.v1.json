@@ -975,7 +975,8 @@
       "id": "IO-009",
       "status": "実装済み",
       "commits": [
-        "6643ca273b99e0a5a99eba82e904bcbd840166ac"
+        "6643ca273b99e0a5a99eba82e904bcbd840166ac",
+        "b35cbe7f3b6706ec43733890a37a49558b5dc806"
       ],
       "evidence": [
         {
@@ -985,7 +986,7 @@
         },
         {
           "kind": "production-symbol",
-          "path": "apps/desktop/src/lib/creaseExport.ts",
+          "path": "apps/desktop/src/lib/creaseExportDialogText.ts",
           "selector": "export function creasePatternExportWarningMessage("
         },
         {

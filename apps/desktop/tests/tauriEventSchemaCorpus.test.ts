@@ -3,7 +3,12 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const rust = readFileSync('src-tauri/src/stacked_fold_read.rs', 'utf8')
+const rust = [
+  'src-tauri/src/stacked_fold_read.rs',
+  'src-tauri/src/stacked_fold_read_wire.rs',
+]
+  .map((path) => readFileSync(path, 'utf8'))
+  .join('\n')
 const typescript = readFileSync('src/lib/coreClient.ts', 'utf8')
 const corpusBytes = readFileSync('tests/fixtures/tauri-event-v1-corpus.json')
 const corpusText = corpusBytes.toString('utf8')
@@ -52,7 +57,7 @@ test('Rust DTOs TypeScript types and canonical corpus have identical camelCase f
     const rustBody = rustStruct(schema.rust)
     const tsBody = tsType(schema.ts)
     assert.match(rust.slice(Math.max(0, rust.indexOf(`struct ${schema.rust}`) - 100), rust.indexOf(`struct ${schema.rust}`)), /#\[serde\(rename_all = "camelCase"\)\]/u)
-    const rustKeys = [...rustBody.matchAll(/^\s+([a-z][a-z0-9_]*):/gmu)].map((match) => camelCase(match[1])).sort()
+    const rustKeys = [...rustBody.matchAll(/^\s+(?:pub\(super\)\s+)?([a-z][a-z0-9_]*):/gmu)].map((match) => camelCase(match[1])).sort()
     const tsKeys = [...tsBody.matchAll(/^\s+([a-z][A-Za-z0-9]*):/gmu)].map((match) => match[1]).sort()
     assert.deepEqual(rustKeys, schema.keys, `${event}: Rust schema`)
     assert.deepEqual(tsKeys, schema.keys, `${event}: TypeScript schema`)

@@ -10,6 +10,8 @@ mod stacked_fold_cycle_pose_wire;
 mod stacked_fold_dyadic_graph_wire;
 #[path = "stacked_fold_dyadic_preview.rs"]
 pub(super) mod stacked_fold_dyadic_preview;
+#[path = "stacked_fold_read_wire.rs"]
+mod stacked_fold_read_wire;
 
 use std::sync::{
     Mutex,
@@ -20,8 +22,7 @@ use ori_collision::{
     FlatEndpointLayerOrderInputV1, GeneralCellTransportInputV1, GeneralCellTransportLimitsV1,
     StackedFoldFixedSideV1, StackedFoldLinearCandidateV1, StackedFoldMaterialMapLimitsV1,
     StackedFoldPathDiagnosticLimitsV1, StackedFoldReadBindingV1, StackedFoldReadLimitsV1,
-    StackedFoldReadSupportV1, StackedFoldRotationDirectionV1, StaticCollisionLimits,
-    anchor_flat_endpoint_layer_order_v1, capture_stacked_fold_read_guard_v1,
+    StaticCollisionLimits, anchor_flat_endpoint_layer_order_v1, capture_stacked_fold_read_guard_v1,
     certify_canonical_positive_thickness_cycle_schedule_path_v1,
     certify_general_multi_face_cell_transport_v1, diagnose_collective_hinge_path_v1,
     diagnose_scheduled_cycle_path_v1, diagnose_scheduled_positive_thickness_cycle_path_v1,
@@ -53,18 +54,18 @@ use ori_kinematics::{
     generate_linear_multi_hinge_path_candidate_v1,
 };
 use ori_topology::{FaceExtractionInput, TopologyIssueSeverity, analyze_faces};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 
 #[cfg(test)]
 use self::stacked_fold_cycle_pose_wire::{
-    CertifiedPathGraphAngleRequestV1, CertifiedPathGraphStateRequestV1,
-    CertifiedPathGraphTransitionRequestV1, LinearCandidateEntryRequestV1,
+    CertifiedPathGraphAngleRequestV1, CertifiedPathGraphRequestV1,
+    CertifiedPathGraphStateRequestV1, CertifiedPathGraphTransitionRequestV1,
+    LinearCandidateEntryRequestV1, LinearCandidateRequestV1,
 };
 use self::stacked_fold_cycle_pose_wire::{
-    CertifiedPathGraphRequestV1, CurrentCyclePosePreviewRequestV1,
-    CurrentCyclePosePreviewResponseV1, LayerOrderPairDtoV1, LinearCandidateRequestV1,
+    CurrentCyclePosePreviewRequestV1, CurrentCyclePosePreviewResponseV1, LayerOrderPairDtoV1,
     validate_certified_path_graph_v1, validate_exact_dyadic_candidate_path_v1,
     validate_linear_candidate_angles_v1, validate_progress_request_id_v1,
 };
@@ -77,6 +78,18 @@ use self::stacked_fold_dyadic_preview::{
     ApplyDyadicPathPreviewRequestV1, DyadicPathPreviewRequestV1, DyadicPathPreviewState,
     apply_dyadic_pose_path_preview_inner_v1, cancel_dyadic_pose_path_preview_inner_v1,
     mint_dyadic_pose_path_preview_inner_v1,
+};
+use self::stacked_fold_read_wire::{
+    CertifiedPathGraphEdgeDto, CertifiedPathGraphPreviewDto, CurrentCyclePoseProgressDtoV1,
+    DyadicPoseGraphAngleDtoV1, StackedFoldContinuousPathDto, StackedFoldEndpointCollisionDto,
+    StackedFoldFlatEndpointLayerOrderDto, StackedFoldMaterialSegmentDto, StackedFoldReadBindingDto,
+    StackedFoldReadCellDto, StackedFoldReadProgressDtoV1, StackedFoldReadWorkDto,
+    StackedFoldTopologyProofDto, StackedFoldTransactionProposalDto,
+    requires_graph_schedule_boundary_v1, transaction_failure_classes,
+    validate_request_resource_shape_v1,
+};
+pub(super) use self::stacked_fold_read_wire::{
+    FixedSideRequest, RotationDirectionRequest, StackedFoldReadRequest, StackedFoldReadResponse,
 };
 #[cfg(test)]
 use super::stacked_fold_even_cycle_candidates::{
@@ -162,89 +175,6 @@ pub(super) fn cancel_current_stacked_fold_read_v1() -> Result<(), String> {
         })
         .map(|_| ())
         .map_err(|_| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum FixedSideRequest {
-    Left,
-    Right,
-}
-
-impl From<FixedSideRequest> for StackedFoldFixedSideV1 {
-    fn from(value: FixedSideRequest) -> Self {
-        match value {
-            FixedSideRequest::Left => Self::Left,
-            FixedSideRequest::Right => Self::Right,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum RotationDirectionRequest {
-    Positive,
-    Negative,
-}
-
-impl From<RotationDirectionRequest> for StackedFoldRotationDirectionV1 {
-    fn from(value: RotationDirectionRequest) -> Self {
-        match value {
-            RotationDirectionRequest::Positive => Self::Positive,
-            RotationDirectionRequest::Negative => Self::Negative,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct StackedFoldReadRequest {
-    #[serde(default)]
-    progress_request_id: Option<String>,
-    expected_project_instance_id: ProjectId,
-    expected_project_id: ProjectId,
-    expected_revision: u64,
-    first: [f64; 3],
-    second: [f64; 3],
-    fixed_side: FixedSideRequest,
-    rotation_direction: RotationDirectionRequest,
-    requested_angle_degrees: f64,
-    #[serde(default)]
-    cycle_schedule_v1: Option<CycleScheduleRequestV1>,
-    #[serde(default)]
-    linear_candidate_v1: Option<LinearCandidateRequestV1>,
-    #[serde(default)]
-    certified_path_graph_v1: Option<CertifiedPathGraphRequestV1>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StackedFoldReadProgressDtoV1 {
-    version: u32,
-    request_id: String,
-    explored_state_count: usize,
-    evaluated_transition_count: usize,
-    state_limit: usize,
-    transition_limit: usize,
-    authorizes_project_mutation: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CurrentCyclePoseProgressDtoV1 {
-    version: u32,
-    request_id: String,
-    status: &'static str,
-    completed_work: usize,
-    total_work: usize,
-    authorizes_project_mutation: bool,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DyadicPoseGraphAngleDtoV1 {
-    edge: ori_domain::EdgeId,
-    angle_degrees: f64,
 }
 
 /// Native-only holder for the future regular-quad petal transaction.
@@ -2900,187 +2830,6 @@ struct RationalCoefficientRequestV1 {
     denominator: u64,
 }
 
-fn validate_request_resource_shape_v1(
-    request: &StackedFoldReadRequest,
-) -> Result<(), &'static str> {
-    if request
-        .linear_candidate_v1
-        .as_ref()
-        .is_some_and(|candidate| {
-            candidate.entries.is_empty()
-                || candidate.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
-        })
-        || request
-            .certified_path_graph_v1
-            .as_ref()
-            .is_some_and(|graph| {
-                graph.states.is_empty()
-                    || graph.states.len() > ori_collision::MAX_CERTIFIED_PATH_GRAPH_STATES_V1
-                    || graph.transitions.is_empty()
-                    || graph.transitions.len() > MAX_STACKED_FOLD_ATOMIC_PATH_TRANSITIONS_V1
-                    || graph.states.iter().any(|state| {
-                        state.entries.is_empty()
-                            || state.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
-                    })
-            })
-        || request.cycle_schedule_v1.as_ref().is_some_and(|schedule| {
-            schedule.entries.is_empty()
-                || schedule.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
-                || schedule.entries.iter().any(|entry| {
-                    entry.numerator_power_coefficients.is_empty()
-                        || entry.numerator_power_coefficients.len()
-                            > MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1
-                        || entry.denominator_power_coefficients.is_empty()
-                        || entry.denominator_power_coefficients.len()
-                            > MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1
-                })
-        })
-    {
-        return Err(CYCLE_PATH_RESOURCE_MESSAGE);
-    }
-    Ok(())
-}
-
-fn requires_graph_schedule_boundary_v1(
-    topology_requires_closure: bool,
-    has_explicit_cycle_schedule: bool,
-) -> bool {
-    topology_requires_closure || has_explicit_cycle_schedule
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum StackedFoldReadSupportDto {
-    NoHingeSingleFace,
-    BitExactFlatEndpointTree,
-}
-
-impl From<StackedFoldReadSupportV1> for StackedFoldReadSupportDto {
-    fn from(value: StackedFoldReadSupportV1) -> Self {
-        match value {
-            StackedFoldReadSupportV1::NoHingeSingleFace => Self::NoHingeSingleFace,
-            StackedFoldReadSupportV1::BitExactFlatEndpointTree => Self::BitExactFlatEndpointTree,
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StackedFoldReadBindingDto {
-    project_instance_id: ProjectId,
-    project_id: ProjectId,
-    source_revision: u64,
-    pose_generation: u64,
-    layer_order_generation: u64,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StackedFoldReadCellDto {
-    cell_key_sha256: String,
-    bottom_to_top_faces: Vec<FaceId>,
-    boundary_world: Vec<[f64; 3]>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StackedFoldMaterialSegmentDto {
-    face_id: FaceId,
-    start: [f64; 2],
-    end: [f64; 2],
-    fixed_side: &'static str,
-    assignment: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StackedFoldReadWorkDto {
-    scanned_cells: usize,
-    total_boundary_vertices: usize,
-    total_layer_records: usize,
-    orientation_tests: usize,
-    exact_arithmetic_operations: usize,
-    maximum_exact_integer_bits: usize,
-    total_exact_integer_bits: usize,
-    retained_cells: usize,
-    retained_target_faces: usize,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StackedFoldTopologyProofDto {
-    target_fingerprint_sha256: String,
-    target_vertex_count: usize,
-    target_edge_count: usize,
-    target_boundary_vertex_count: usize,
-    lineage_record_count: usize,
-    source_edge_subdivision_count: usize,
-    expected_crease_subdivision_count: usize,
-    target_material_face_count: usize,
-    target_hinge_count: usize,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StackedFoldEndpointCollisionDto {
-    expected_pair_count: usize,
-    separated_pair_count: usize,
-    touching_pair_count: usize,
-    allowed_pair_count: usize,
-    penetrating_pair_count: usize,
-    indeterminate_pair_count: usize,
-    has_blocking_hold: bool,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StackedFoldContinuousPathDto {
-    model_id: &'static str,
-    continuous_certificate_model_id: Option<&'static str>,
-    sampled_pose_count: usize,
-    sampled_nonblocking_pose_count: usize,
-    interval_leaf_count: usize,
-    interval_pair_work: usize,
-    interval_candidate_limit: usize,
-    positive_endpoint_candidate_count: usize,
-    positive_endpoint_exact_pair_calls: usize,
-    positive_endpoint_candidate_limit: usize,
-    closure_required: bool,
-    closure_leaf_count: usize,
-    closure_pair_work: usize,
-    first_closure_failure_angle_degrees: Option<f64>,
-    first_sampled_blocking_angle_degrees: Option<f64>,
-    requested_angle_degrees: f64,
-    continuous_clearance_certified: bool,
-    safe_stop_angle_degrees: f64,
-    authorizes_project_mutation: bool,
-    paper_thickness_mm: f64,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CertifiedPathGraphPreviewDto {
-    model_id: &'static str,
-    version: u32,
-    source_fingerprint_sha256: String,
-    target_fingerprint_sha256: String,
-    explored_state_count: usize,
-    evaluated_transition_count: usize,
-    edges: Vec<CertifiedPathGraphEdgeDto>,
-    authorizes_project_mutation: bool,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CertifiedPathGraphEdgeDto {
-    source_fingerprint_sha256: String,
-    target_fingerprint_sha256: String,
-    schedule_certificate_sha256: String,
-    collision_certificate_sha256: String,
-    closure_certificate_sha256: String,
-    hinges: Vec<ori_domain::EdgeId>,
-}
-
 enum StackedFoldPathAnalysis {
     Tree(ori_collision::StackedFoldBoundedPathDiagnosticV1),
     Graph {
@@ -3092,66 +2841,6 @@ enum StackedFoldPathAnalysis {
 enum NativeStackedFoldPremises {
     Tree(super::stacked_fold_transaction::PendingStackedFoldPremises),
     Graph(super::stacked_fold_transaction::PendingStackedFoldGraphPremises),
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StackedFoldFlatEndpointLayerOrderDto {
-    applicable: bool,
-    certified: bool,
-    material_face_count: usize,
-    overlap_cell_count: usize,
-}
-
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum StackedFoldTransactionFailureClassDto {
-    ContinuousPathUncertified,
-    TargetLayerOrderUnavailable,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StackedFoldTransactionProposalDto {
-    transaction_token: Option<ProjectId>,
-    source_project_id: ProjectId,
-    source_revision: u64,
-    target_revision: u64,
-    source_fingerprint_sha256: String,
-    target_fingerprint_sha256: String,
-    added_vertex_count: usize,
-    added_edge_count: usize,
-    mountain_crease_count: usize,
-    valley_crease_count: usize,
-    timeline_step_count: usize,
-    timeline_complete_hinge_angle_count: usize,
-    requested_angle_degrees: f64,
-    ready_for_atomic_apply: bool,
-    failure_classes: Vec<StackedFoldTransactionFailureClassDto>,
-    authorizes_project_mutation: bool,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct StackedFoldReadResponse {
-    guard_model_id: &'static str,
-    proposal_model_id: &'static str,
-    material_map_model_id: &'static str,
-    binding: StackedFoldReadBindingDto,
-    support: StackedFoldReadSupportDto,
-    crossed_cells: Vec<StackedFoldReadCellDto>,
-    target_faces: Vec<FaceId>,
-    material_segments: Vec<StackedFoldMaterialSegmentDto>,
-    topology_proof: StackedFoldTopologyProofDto,
-    live_graph_hinge_angles: Vec<LiveGraphHingeAngleDto>,
-    endpoint_collision: StackedFoldEndpointCollisionDto,
-    continuous_path: StackedFoldContinuousPathDto,
-    certified_path_graph: Option<CertifiedPathGraphPreviewDto>,
-    flat_endpoint_layer_order: StackedFoldFlatEndpointLayerOrderDto,
-    transaction_proposal: StackedFoldTransactionProposalDto,
-    work: StackedFoldReadWorkDto,
-    authorizes_project_mutation: bool,
-    authorizes_apply_stacked_fold: bool,
 }
 
 #[tauri::command]
@@ -4458,20 +4147,6 @@ fn pose_state_fingerprint_v1(angles: &ori_kinematics::CanonicalHingeAngles) -> [
         hash.update(angle.angle_degrees().to_bits().to_be_bytes());
     }
     hash.finalize().into()
-}
-
-fn transaction_failure_classes(
-    continuous_path_certified: bool,
-    target_layer_order_certified: bool,
-) -> Vec<StackedFoldTransactionFailureClassDto> {
-    let mut failures = Vec::new();
-    if !continuous_path_certified {
-        failures.push(StackedFoldTransactionFailureClassDto::ContinuousPathUncertified);
-    }
-    if !target_layer_order_certified {
-        failures.push(StackedFoldTransactionFailureClassDto::TargetLayerOrderUnavailable);
-    }
-    failures
 }
 
 #[cfg(test)]
@@ -7880,52 +7555,6 @@ mod tests {
     }
 
     #[test]
-    fn request_schema_is_closed_and_rejects_non_finite_points() {
-        let project_instance_id = ProjectId::new();
-        let project_id = ProjectId::new();
-        let json = serde_json::json!({
-            "expectedProjectInstanceId": project_instance_id,
-            "expectedProjectId": project_id,
-            "expectedRevision": 7,
-            "first": [10.0, 0.0, 0.0],
-            "second": [10.0, 0.0, -20.0],
-            "fixedSide": "left",
-            "rotationDirection": "positive",
-            "requestedAngleDegrees": 90.0
-        });
-        let request: StackedFoldReadRequest =
-            serde_json::from_value(json.clone()).expect("valid request");
-        assert_eq!(request.expected_revision, 7);
-        assert!(
-            StackedFoldLinearCandidateV1::new(
-                Point3::new(request.first[0], request.first[1], request.first[2]).unwrap(),
-                Point3::new(request.second[0], request.second[1], request.second[2]).unwrap(),
-                request.fixed_side.into(),
-                request.rotation_direction.into(),
-                request.requested_angle_degrees,
-            )
-            .is_ok()
-        );
-        let mut unknown = json.clone();
-        unknown
-            .as_object_mut()
-            .unwrap()
-            .insert("future".to_owned(), serde_json::Value::Bool(true));
-        assert!(serde_json::from_value::<StackedFoldReadRequest>(unknown).is_err());
-
-        let mut non_finite = json;
-        non_finite["first"][0] = serde_json::json!(f64::INFINITY);
-        assert!(
-            serde_json::from_value::<StackedFoldReadRequest>(non_finite)
-                .ok()
-                .and_then(|request| {
-                    Point3::new(request.first[0], request.first[1], request.first[2]).ok()
-                })
-                .is_none()
-        );
-    }
-
-    #[test]
     fn cell_keys_use_fixed_lowercase_sha256_hex() {
         let mut bytes = [0_u8; 32];
         bytes[0] = 0xab;
@@ -7936,157 +7565,6 @@ mod tests {
         assert!(encoded.ends_with("00ef"));
         assert!(encoded.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert!(!encoded.bytes().any(|byte| byte.is_ascii_uppercase()));
-    }
-
-    #[test]
-    fn request_schema_rejects_missing_malformed_and_open_enum_values() {
-        let valid = serde_json::json!({
-            "expectedProjectInstanceId": ProjectId::new(),
-            "expectedProjectId": ProjectId::new(),
-            "expectedRevision": 7,
-            "first": [10.0, 0.0, 0.0],
-            "second": [10.0, 0.0, -20.0],
-            "fixedSide": "left",
-            "rotationDirection": "positive",
-            "requestedAngleDegrees": 90.0
-        });
-
-        for field in [
-            "expectedProjectInstanceId",
-            "expectedProjectId",
-            "expectedRevision",
-            "first",
-            "second",
-            "fixedSide",
-            "rotationDirection",
-            "requestedAngleDegrees",
-        ] {
-            let mut missing = valid.clone();
-            missing.as_object_mut().unwrap().remove(field);
-            assert!(
-                serde_json::from_value::<StackedFoldReadRequest>(missing).is_err(),
-                "missing field {field} must be rejected"
-            );
-        }
-
-        for malformed in [
-            ("first", serde_json::json!([10.0, 0.0])),
-            ("second", serde_json::json!([10.0, 0.0, -20.0, 1.0])),
-            ("fixedSide", serde_json::json!("center")),
-            ("fixedSide", serde_json::json!("Left")),
-            ("rotationDirection", serde_json::json!("clockwise")),
-            ("rotationDirection", serde_json::json!("Positive")),
-        ] {
-            let mut request = valid.clone();
-            request[malformed.0] = malformed.1;
-            assert!(
-                serde_json::from_value::<StackedFoldReadRequest>(request).is_err(),
-                "malformed field {} must be rejected",
-                malformed.0
-            );
-        }
-    }
-
-    #[test]
-    fn candidate_validation_rejects_degenerate_line_and_invalid_angles() {
-        let point = Point3::new(1.0, 2.0, 3.0).unwrap();
-        assert!(
-            StackedFoldLinearCandidateV1::new(
-                point,
-                point,
-                StackedFoldFixedSideV1::Left,
-                StackedFoldRotationDirectionV1::Positive,
-                90.0,
-            )
-            .is_err()
-        );
-
-        let other = Point3::new(2.0, 2.0, 3.0).unwrap();
-        for angle in [
-            f64::NAN,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            0.0,
-            -90.0,
-            180.1,
-        ] {
-            assert!(
-                StackedFoldLinearCandidateV1::new(
-                    point,
-                    other,
-                    StackedFoldFixedSideV1::Right,
-                    StackedFoldRotationDirectionV1::Negative,
-                    angle,
-                )
-                .is_err(),
-                "invalid angle {angle:?} must be rejected"
-            );
-        }
-    }
-
-    #[test]
-    fn transaction_proposal_failure_classes_are_explicit_and_fail_closed() {
-        let missing_all = serde_json::to_value(transaction_failure_classes(false, false)).unwrap();
-        assert_eq!(
-            missing_all,
-            serde_json::json!([
-                "continuous_path_uncertified",
-                "target_layer_order_unavailable"
-            ])
-        );
-        let ready = serde_json::to_value(transaction_failure_classes(true, true)).unwrap();
-        assert_eq!(ready, serde_json::json!([]));
-    }
-
-    #[test]
-    fn cycle_schedule_wire_rejects_unknown_fields_and_numeric_overflow() {
-        let request = || {
-            serde_json::json!({
-                "expectedProjectInstanceId": "018f47a2-4b7a-7cc1-8abc-112233445566",
-                "expectedProjectId": "018f47a2-4b7a-7cc1-8abc-665544332211",
-                "expectedRevision": 3,
-                "first": [0.0, 0.0, 0.0],
-                "second": [1.0, 0.0, 0.0],
-                "fixedSide": "left",
-                "rotationDirection": "positive",
-                "requestedAngleDegrees": 90.0,
-                "cycleScheduleV1": {
-                    "version": 1,
-                    "entries": [{
-                        "edge": "018f47a2-4b7a-7cc1-8abc-778899aabbcc",
-                        "uDomain": [
-                            {"numerator": 0, "denominator": 1},
-                            {"numerator": 1, "denominator": 1}
-                        ],
-                        "numeratorPowerCoefficients": [{"numerator": 1, "denominator": 1}],
-                        "denominatorPowerCoefficients": [{"numerator": 1, "denominator": 1}],
-                        "requestedAngleDegrees": 90.0
-                    }]
-                }
-            })
-        };
-        let admitted = serde_json::from_value::<StackedFoldReadRequest>(request()).unwrap();
-        assert_eq!(validate_request_resource_shape_v1(&admitted), Ok(()));
-        let mut unknown = request();
-        unknown["cycleScheduleV1"]["entries"][0]["authority"] = serde_json::json!(true);
-        assert!(serde_json::from_value::<StackedFoldReadRequest>(unknown).is_err());
-        let mut overflow = request();
-        overflow["cycleScheduleV1"]["entries"][0]["uDomain"][0]["denominator"] =
-            serde_json::json!(-1);
-        assert!(serde_json::from_value::<StackedFoldReadRequest>(overflow).is_err());
-
-        let mut coefficient_exhaustion = request();
-        coefficient_exhaustion["cycleScheduleV1"]["entries"][0]["numeratorPowerCoefficients"] = serde_json::json!(
-            (0..=MAX_CYCLE_SCHEDULE_COEFFICIENTS_V1)
-                .map(|_| serde_json::json!({"numerator": 1, "denominator": 1}))
-                .collect::<Vec<_>>()
-        );
-        let coefficient_exhaustion =
-            serde_json::from_value::<StackedFoldReadRequest>(coefficient_exhaustion).unwrap();
-        assert_eq!(
-            validate_request_resource_shape_v1(&coefficient_exhaustion),
-            Err(CYCLE_PATH_RESOURCE_MESSAGE)
-        );
     }
 
     #[test]
@@ -8141,13 +7619,6 @@ mod tests {
             STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
             before + 1
         );
-    }
-
-    #[test]
-    fn explicit_half_angle_schedule_uses_graph_proof_boundary_for_tree_topology() {
-        assert!(requires_graph_schedule_boundary_v1(false, true));
-        assert!(requires_graph_schedule_boundary_v1(true, false));
-        assert!(!requires_graph_schedule_boundary_v1(false, false));
     }
 
     #[test]

@@ -30,6 +30,21 @@ use crate::{
     static_collision::prepare_positive_thickness_tree_endpoint_topology_memo_v1,
 };
 
+mod multi_hinge_union;
+pub use multi_hinge_union::{
+    MAX_MULTI_HINGE_UNION_GEOMETRY_HINGES_V2, MAX_MULTI_HINGE_UNION_HINGES_V2,
+    MAX_MULTI_HINGE_UNION_PAIRS_V2, MAX_MULTI_HINGE_UNION_STORAGE_BYTES_V2,
+    MAX_MULTI_HINGE_UNION_WORK_V2, MAX_MULTI_HINGES_PER_FACE_PAIR_V2,
+    MULTI_HINGE_RELIEF_UNION_CERTIFICATE_MODEL_ID_V2, MULTI_HINGE_RELIEF_UNION_GAP_MODEL_ID_V2,
+    MultiHingeReliefUnionCertificateV2, MultiHingeReliefUnionCoveredPairV2,
+    MultiHingeReliefUnionErrorV2, MultiHingeReliefUnionGapReportV2, MultiHingeReliefUnionGapV2,
+    MultiHingeReliefUnionHingeGapV2, MultiHingeReliefUnionLimitsV2,
+    certify_multi_hinge_relief_union_v2, certify_multi_hinge_relief_union_with_cancel_v2,
+    diagnose_multi_hinge_relief_union_gaps_v2,
+    diagnose_multi_hinge_relief_union_gaps_with_cancel_v2,
+    revalidate_multi_hinge_relief_union_certificate_v2,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ExactDyadicPathIntersectionErrorV1 {
     #[error("exact path intersection work exceeds its bound")]

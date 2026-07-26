@@ -293,6 +293,16 @@ const DIRECT_CONFLICTS = [
     },
     constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
   },
+  {
+    conflict: {
+      kind: 'mirror_symmetry_with_point_on_axis_and_fixed_separation',
+      first_vertex: VERTEX_1,
+      second_vertex: VERTEX_2,
+      axis_edge: EDGE_1,
+      fixed_separation_edge: EDGE_2,
+    },
+    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+  },
 ] as const
 
 test('normalizes, detaches, and deeply freezes all eleven document kinds', () => {
@@ -687,7 +697,7 @@ test('presentation also fails closed for malformed or hostile records', () => {
   assert.equal(getterCalls, 0)
 })
 
-test('normalizes all nineteen direct-conflict kinds and the bounded direct MUS', () => {
+test('normalizes all twenty direct-conflict kinds and the bounded direct MUS', () => {
   const raw = response({
     status: 'direct_conflict',
     conflicts: DIRECT_CONFLICTS,
@@ -703,7 +713,7 @@ test('normalizes all nineteen direct-conflict kinds and the bounded direct MUS',
     normalized?.result.status === 'direct_conflict'
       ? normalized.result.conflicts.length
       : 0,
-    19,
+    20,
   )
   assert.deepEqual(
     normalized?.result.status === 'direct_conflict'
@@ -1097,6 +1107,56 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
         source_vertex: VERTEX_2,
         target_vertex: VERTEX_3,
         fixed_radius_edge: 'not-a-uuid',
+      },
+    ].map((conflict) => response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict,
+        constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+      }],
+    })),
+    ...[
+      {
+        kind: 'mirror_symmetry_with_point_on_axis_and_fixed_separation',
+        first_vertex: VERTEX_1,
+        second_vertex: VERTEX_2,
+        axis_edge: EDGE_1,
+      },
+      {
+        kind: 'mirror_symmetry_with_point_on_axis_and_fixed_separation',
+        first_vertex: VERTEX_1,
+        second_vertex: VERTEX_2,
+        axis_edge: EDGE_1,
+        fixed_separation_edge: EDGE_2,
+        future: true,
+      },
+      {
+        kind: 'mirror_symmetry_with_point_on_axis_and_fixed_separation',
+        first_vertex: VERTEX_1,
+        second_vertex: VERTEX_1,
+        axis_edge: EDGE_1,
+        fixed_separation_edge: EDGE_2,
+      },
+      {
+        kind: 'mirror_symmetry_with_point_on_axis_and_fixed_separation',
+        first_vertex: VERTEX_2,
+        second_vertex: VERTEX_1,
+        axis_edge: EDGE_1,
+        fixed_separation_edge: EDGE_2,
+      },
+      {
+        kind: 'mirror_symmetry_with_point_on_axis_and_fixed_separation',
+        first_vertex: VERTEX_1,
+        second_vertex: VERTEX_2,
+        axis_edge: 'not-a-uuid',
+        fixed_separation_edge: EDGE_2,
+      },
+      {
+        kind: 'mirror_symmetry_with_point_on_axis_and_fixed_separation',
+        first_vertex: VERTEX_1,
+        second_vertex: VERTEX_2,
+        axis_edge: EDGE_1,
+        fixed_separation_edge: 'not-a-uuid',
       },
     ].map((conflict) => response({
       status: 'direct_conflict',

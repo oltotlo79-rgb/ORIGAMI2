@@ -475,6 +475,17 @@ describe('GeometricConstraintPanel', () => {
         expected:
           'Inverse rotational-symmetry angles do not sum to a full turn and conflict with a positive fixed radius',
       },
+      {
+        conflict: {
+          kind: 'mirror_symmetry_with_point_on_axis_and_fixed_separation' as const,
+          first_vertex: IDS[6]!,
+          second_vertex: IDS[7]!,
+          axis_edge: IDS[0]!,
+          fixed_separation_edge: IDS[1]!,
+        },
+        expected:
+          'A mirrored point lies on its symmetry axis and conflicts with a positive fixed separation',
+      },
     ]
     for (const { conflict, expected } of conflictCases) {
       rerender(panel({

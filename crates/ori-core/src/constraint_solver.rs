@@ -536,6 +536,15 @@ fn residuals(
         let (x, y) = vector(edge_id);
         x.hypot(y)
     };
+    let unit_vector = |edge_id| {
+        let (x, y) = vector(edge_id);
+        let magnitude = x.hypot(y);
+        if !magnitude.is_finite() || magnitude == 0.0 {
+            return None;
+        }
+        let unit = (x / magnitude, y / magnitude);
+        (unit.0.is_finite() && unit.1.is_finite()).then_some(unit)
+    };
     document
         .constraints
         .iter()
@@ -565,11 +574,9 @@ fn residuals(
                     let edge = edges[&line_edge];
                     let start = positions[&edge.start];
                     let point = positions[&vertex];
-                    let direction = vector(line_edge);
-                    vec![
-                        ((point.x - start.x) * direction.1 - (point.y - start.y) * direction.0)
-                            / direction.0.hypot(direction.1),
-                    ]
+                    let direction =
+                        unit_vector(line_edge).ok_or(ConstraintSolveErrorV1::NonConvergent)?;
+                    vec![((point.x - start.x) * direction.1 - (point.y - start.y) * direction.0)]
                 }
                 GeometricConstraintKindV1::LengthRatio {
                     numerator_edge,
@@ -596,12 +603,11 @@ fn residuals(
                 } => {
                     let axis = edges[&axis_edge];
                     let origin = positions[&axis.start];
-                    let direction = vector(axis_edge);
-                    let norm = direction.0 * direction.0 + direction.1 * direction.1;
+                    let direction =
+                        unit_vector(axis_edge).ok_or(ConstraintSolveErrorV1::NonConvergent)?;
                     let first = positions[&first_vertex];
-                    let projection = ((first.x - origin.x) * direction.0
-                        + (first.y - origin.y) * direction.1)
-                        / norm;
+                    let projection =
+                        (first.x - origin.x) * direction.0 + (first.y - origin.y) * direction.1;
                     let reflected = Point2::new(
                         2.0 * (origin.x + projection * direction.0) - first.x,
                         2.0 * (origin.y + projection * direction.1) - first.y,
@@ -855,6 +861,236 @@ mod tests {
             residuals(&pattern, &document, &collapsed).expect("finite zero-length residuals"),
             vec![0.0, 0.0]
         );
+    }
+
+    #[test]
+    fn mirror_point_on_axis_has_only_the_fixed_separation_blocking_its_collapse() {
+        let axis_start = VertexId::new();
+        let axis_end = VertexId::new();
+        let first = VertexId::new();
+        let second = VertexId::new();
+        let axis_edge = EdgeId::new();
+        let separation_edge = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: axis_start,
+                    position: Point2::new(-1.0, 0.0),
+                },
+                Vertex {
+                    id: axis_end,
+                    position: Point2::new(1.0, 0.0),
+                },
+                Vertex {
+                    id: first,
+                    position: Point2::new(0.0, 1.0),
+                },
+                Vertex {
+                    id: second,
+                    position: Point2::new(0.0, -1.0),
+                },
+            ],
+            edges: vec![
+                Edge {
+                    id: axis_edge,
+                    start: axis_start,
+                    end: axis_end,
+                    kind: EdgeKind::Auxiliary,
+                },
+                Edge {
+                    id: separation_edge,
+                    start: first,
+                    end: second,
+                    kind: EdgeKind::Auxiliary,
+                },
+            ],
+        };
+        let mirror = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::MirrorSymmetry {
+                first_vertex: first,
+                second_vertex: second,
+                axis_edge,
+            },
+        };
+        let point_on_axis = GeometricConstraintRecordV1 {
+            id: ConstraintId::new(),
+            constraint: GeometricConstraintKindV1::PointOnLine {
+                vertex: first,
+                line_edge: axis_edge,
+            },
+        };
+        let mirror_and_axis = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![mirror.clone(), point_on_axis.clone()],
+        };
+        let mut collapsed = pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, vertex.position))
+            .collect::<HashMap<_, _>>();
+        collapsed.insert(first, Point2::new(0.0, 0.0));
+        collapsed.insert(second, Point2::new(0.0, 0.0));
+        assert_eq!(
+            residuals(&pattern, &mirror_and_axis, &collapsed)
+                .expect("the non-degenerate axis keeps all residuals finite"),
+            vec![0.0, 0.0, 0.0],
+            "without positive separation the mirrored pair may collapse on-axis"
+        );
+        let mut collapsed_axis = collapsed.clone();
+        collapsed_axis.insert(axis_end, collapsed_axis[&axis_start]);
+        assert!(matches!(
+            residuals(&pattern, &mirror_and_axis, &collapsed_axis),
+            Err(ConstraintSolveErrorV1::NonConvergent)
+        ));
+
+        let with_fixed_separation = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![
+                mirror,
+                point_on_axis,
+                GeometricConstraintRecordV1 {
+                    id: ConstraintId::new(),
+                    constraint: GeometricConstraintKindV1::FixedLength {
+                        edge: separation_edge,
+                        length_mm: 2.0,
+                    },
+                },
+            ],
+        };
+        assert_eq!(
+            residuals(&pattern, &with_fixed_separation, &collapsed)
+                .expect("the fixed-length residual is finite"),
+            vec![0.0, 0.0, 0.0, -2.0],
+            "the direct theorem may rely only on this exact positive separation"
+        );
+    }
+
+    #[test]
+    fn mirror_and_point_on_line_share_an_overflow_safe_normalized_axis() {
+        fn fixture(
+            axis_end_position: Point2,
+            first_position: Point2,
+            second_position: Point2,
+            length_mm: f64,
+        ) -> (
+            CreasePattern,
+            GeometricConstraintDocumentV1,
+            HashMap<VertexId, Point2>,
+        ) {
+            let axis_start = VertexId::new();
+            let axis_end = VertexId::new();
+            let first = VertexId::new();
+            let second = VertexId::new();
+            let axis_edge = EdgeId::new();
+            let separation_edge = EdgeId::new();
+            let pattern = CreasePattern {
+                vertices: vec![
+                    Vertex {
+                        id: axis_start,
+                        position: Point2::new(0.0, 0.0),
+                    },
+                    Vertex {
+                        id: axis_end,
+                        position: axis_end_position,
+                    },
+                    Vertex {
+                        id: first,
+                        position: first_position,
+                    },
+                    Vertex {
+                        id: second,
+                        position: second_position,
+                    },
+                ],
+                edges: vec![
+                    Edge {
+                        id: axis_edge,
+                        start: axis_start,
+                        end: axis_end,
+                        kind: EdgeKind::Auxiliary,
+                    },
+                    Edge {
+                        id: separation_edge,
+                        start: first,
+                        end: second,
+                        kind: EdgeKind::Auxiliary,
+                    },
+                ],
+            };
+            let document = GeometricConstraintDocumentV1 {
+                schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+                constraints: vec![
+                    GeometricConstraintRecordV1 {
+                        id: ConstraintId::new(),
+                        constraint: GeometricConstraintKindV1::MirrorSymmetry {
+                            first_vertex: first,
+                            second_vertex: second,
+                            axis_edge,
+                        },
+                    },
+                    GeometricConstraintRecordV1 {
+                        id: ConstraintId::new(),
+                        constraint: GeometricConstraintKindV1::PointOnLine {
+                            vertex: first,
+                            line_edge: axis_edge,
+                        },
+                    },
+                    GeometricConstraintRecordV1 {
+                        id: ConstraintId::new(),
+                        constraint: GeometricConstraintKindV1::FixedLength {
+                            edge: separation_edge,
+                            length_mm,
+                        },
+                    },
+                ],
+            };
+            let positions = pattern
+                .vertices
+                .iter()
+                .map(|vertex| (vertex.id, vertex.position))
+                .collect();
+            (pattern, document, positions)
+        }
+
+        let cases = [
+            (
+                "squared axis length would overflow",
+                fixture(
+                    Point2::new(1.0e308, 0.0),
+                    Point2::new(1.0, 0.0),
+                    Point2::new(-1.0, 0.0),
+                    2.0,
+                ),
+            ),
+            (
+                "scale-first point-on-line cross product would underflow",
+                fixture(
+                    Point2::new(f64::from_bits(1), 0.0),
+                    Point2::new(1.0, 0.25),
+                    Point2::new(1.0, -0.25),
+                    0.5,
+                ),
+            ),
+        ];
+        for (description, (pattern, document, positions)) in cases {
+            let values =
+                residuals(&pattern, &document, &positions).expect("extreme axes stay finite");
+            assert!(
+                values.iter().any(|value| *value != 0.0),
+                "{description} must not manufacture a zero-residual counterexample"
+            );
+            assert!(matches!(
+                prepare_geometric_constraints_v1(
+                    &pattern,
+                    &document,
+                    GeometricConstraintLimitsV1::default(),
+                )
+                .expect("extreme finite fixture prepares")
+                .preflight(),
+                crate::ConstraintPreflightV1::DirectConflict { .. }
+            ));
+        }
     }
 
     #[test]

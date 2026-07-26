@@ -419,6 +419,22 @@ pub enum DirectConstraintConflictKindV1 {
         target_vertex: VertexId,
         fixed_radius_edge: EdgeId,
     },
+    /// A mirror-symmetry point is constrained to lie on that same symmetry
+    /// axis while a real edge joining the mirrored vertex pair carries a
+    /// consistent positive [`GeometricConstraintKindV1::FixedLength`].
+    ///
+    /// Reflection fixes every point on its axis. Therefore, if either member
+    /// of a mirrored pair is on the axis, the mirror relation forces both
+    /// members to coincide. The positive fixed separation forbids precisely
+    /// that collapse. The axis edge and separation edge are matched by exact
+    /// IDs and exact pattern endpoints; current coordinates are never used as
+    /// evidence.
+    MirrorSymmetryWithPointOnAxisAndFixedSeparation {
+        first_vertex: VertexId,
+        second_vertex: VertexId,
+        axis_edge: EdgeId,
+        fixed_separation_edge: EdgeId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1510,6 +1526,31 @@ impl RotationRoleKey {
     }
 }
 
+/// Canonical mirror relation with an unordered mirrored vertex pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct MirrorAxisKey {
+    first: CanonicalId,
+    second: CanonicalId,
+    axis: CanonicalId,
+}
+
+impl MirrorAxisKey {
+    fn relation(first: VertexId, second: VertexId, axis: EdgeId) -> Self {
+        let first_bytes = first.canonical_bytes();
+        let second_bytes = second.canonical_bytes();
+        let (first, second) = if first_bytes < second_bytes {
+            (first_bytes, second_bytes)
+        } else {
+            (second_bytes, first_bytes)
+        };
+        Self {
+            first,
+            second,
+            axis: axis.canonical_bytes(),
+        }
+    }
+}
+
 /// Canonical unordered vertex pair used to find a real radius edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct VertexPairKey {
@@ -1651,6 +1692,9 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
     let mut parallels: BTreeMap<EdgePairKey, Vec<ConstraintId>> = BTreeMap::new();
     let mut rotations: BTreeMap<RotationRoleKey, ScalarGroupSummary> = BTreeMap::new();
     let mut rotation_roles: BTreeMap<RotationRoleKey, [VertexId; 3]> = BTreeMap::new();
+    let mut points_on_lines: BTreeMap<(CanonicalId, CanonicalId), Vec<ConstraintId>> =
+        BTreeMap::new();
+    let mut mirrors: BTreeMap<MirrorAxisKey, Vec<ConstraintId>> = BTreeMap::new();
     let mut unchecked = Vec::new();
 
     for record in &set.constraints {
@@ -1762,9 +1806,29 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                 ]);
                 unchecked.push(record.id);
             }
-            GeometricConstraintKindV1::PointOnLine { .. }
-            | GeometricConstraintKindV1::MirrorSymmetry { .. }
-            | GeometricConstraintKindV1::AngleBisector { .. } => {
+            GeometricConstraintKindV1::PointOnLine { vertex, line_edge } => {
+                points_on_lines
+                    .entry((vertex.canonical_bytes(), line_edge.canonical_bytes()))
+                    .or_default()
+                    .push(record.id);
+                unchecked.push(record.id);
+            }
+            GeometricConstraintKindV1::MirrorSymmetry {
+                first_vertex,
+                second_vertex,
+                axis_edge,
+            } => {
+                mirrors
+                    .entry(MirrorAxisKey::relation(
+                        *first_vertex,
+                        *second_vertex,
+                        *axis_edge,
+                    ))
+                    .or_default()
+                    .push(record.id);
+                unchecked.push(record.id);
+            }
+            GeometricConstraintKindV1::AngleBisector { .. } => {
                 unchecked.push(record.id);
             }
         }
@@ -2138,8 +2202,61 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                 .and_then(ScalarGroupSummary::consistent_assignment)
                 .is_some()
     });
-    if has_same_role_rotation_candidate || has_inverse_role_rotation_candidate {
-        let radius_edges = pattern_edges_by_vertex_pair(set.source_pattern);
+    let has_mirror_axis_candidate = mirrors.keys().any(|key| {
+        points_on_lines.contains_key(&(key.first, key.axis))
+            || points_on_lines.contains_key(&(key.second, key.axis))
+    });
+    if has_same_role_rotation_candidate
+        || has_inverse_role_rotation_candidate
+        || has_mirror_axis_candidate
+    {
+        let pattern_edges = pattern_edges_by_vertex_pair(set.source_pattern);
+        if has_mirror_axis_candidate {
+            let mut fixed_separation_witnesses: BTreeMap<
+                VertexPairKey,
+                Option<(ConstraintId, EdgeId)>,
+            > = BTreeMap::new();
+            for (key, mirror_ids) in &mirrors {
+                let Some(mirror_id) = mirror_ids
+                    .iter()
+                    .copied()
+                    .min_by_key(ConstraintId::canonical_bytes)
+                else {
+                    continue;
+                };
+                let Some(point_id) = [key.first, key.second]
+                    .into_iter()
+                    .filter_map(|vertex| points_on_lines.get(&(vertex, key.axis)))
+                    .flatten()
+                    .copied()
+                    .min_by_key(ConstraintId::canonical_bytes)
+                else {
+                    continue;
+                };
+                let pair = VertexPairKey {
+                    first: key.first,
+                    second: key.second,
+                };
+                let Some((fixed_id, fixed_separation_edge)) =
+                    *fixed_separation_witnesses.entry(pair).or_insert_with(|| {
+                        canonical_positive_fixed_edge_witness(&pattern_edges, &fixed_lengths, pair)
+                    })
+                else {
+                    continue;
+                };
+                push_conflict(
+                    &mut conflicts,
+                    DirectConstraintConflictKindV1::
+                        MirrorSymmetryWithPointOnAxisAndFixedSeparation {
+                            first_vertex: vertex_ids[&key.first],
+                            second_vertex: vertex_ids[&key.second],
+                            axis_edge: edge_ids[&key.axis],
+                            fixed_separation_edge,
+                        },
+                    [mirror_id, point_id, fixed_id],
+                );
+            }
+        }
         if has_same_role_rotation_candidate {
             for (key, summary) in &rotations {
                 let Some(witness) = summary.different_witness() else {
@@ -2147,7 +2264,7 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                 };
                 let [center_vertex, source_vertex, target_vertex] = rotation_roles[key];
                 let Some((fixed_id, fixed_radius_edge)) = canonical_positive_radius_witness(
-                    &radius_edges,
+                    &pattern_edges,
                     &fixed_lengths,
                     center_vertex,
                     source_vertex,
@@ -2188,7 +2305,7 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                 }
                 let [center_vertex, source_vertex, target_vertex] = rotation_roles[key];
                 let Some((fixed_id, fixed_radius_edge)) = canonical_positive_radius_witness(
-                    &radius_edges,
+                    &pattern_edges,
                     &fixed_lengths,
                     center_vertex,
                     source_vertex,
@@ -3314,6 +3431,38 @@ fn canonical_positive_radius_witness(
     best
 }
 
+/// Selects the canonical positive fixed-length witness for exactly one
+/// unordered pattern-vertex pair.
+///
+/// Fixed-length groups must agree bit-for-bit. A contradictory group is never
+/// reused as secondary evidence for a mirror contradiction.
+fn canonical_positive_fixed_edge_witness(
+    edges_by_pair: &BTreeMap<VertexPairKey, Vec<EdgeId>>,
+    fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
+    pair: VertexPairKey,
+) -> Option<(ConstraintId, EdgeId)> {
+    let mut best: Option<(ConstraintId, EdgeId)> = None;
+    for edge in edges_by_pair.get(&pair).into_iter().flatten() {
+        let Some(assignment) = fixed_lengths
+            .get(&edge.canonical_bytes())
+            .and_then(ScalarGroupSummary::consistent_assignment)
+        else {
+            continue;
+        };
+        if !assignment.value.is_finite() || assignment.value <= 0.0 {
+            continue;
+        }
+        let candidate = (assignment.id, *edge);
+        if best.is_none_or(|current| {
+            (candidate.0.canonical_bytes(), candidate.1.canonical_bytes())
+                < (current.0.canonical_bytes(), current.1.canonical_bytes())
+        }) {
+            best = Some(candidate);
+        }
+    }
+    best
+}
+
 fn edge_id_lookup(records: &[GeometricConstraintRecordV1]) -> BTreeMap<CanonicalId, EdgeId> {
     let mut result = BTreeMap::new();
     for record in records {
@@ -3409,9 +3558,9 @@ fn vertex_id_lookup(records: &[GeometricConstraintRecordV1]) -> BTreeMap<Canonic
 
 /// Total order over conflict kinds.
 ///
-/// The final slot lets the rotational-symmetry variants include their fourth
-/// identity while preserving every pre-existing variant's ordering; shorter
-/// keys pad unused slots with zero.
+/// The final slot lets four-entity variants include their complete identity
+/// while preserving every pre-existing variant's ordering; shorter keys pad
+/// unused slots with zero. New variants are appended by rank.
 fn conflict_sort_key(
     conflict: &DirectConstraintConflictKindV1,
 ) -> (u8, CanonicalId, CanonicalId, CanonicalId, CanonicalId) {
@@ -3604,6 +3753,19 @@ fn conflict_sort_key(
                 source_vertex.canonical_bytes(),
                 target_vertex.canonical_bytes(),
                 fixed_radius_edge.canonical_bytes(),
+            ),
+        DirectConstraintConflictKindV1::
+            MirrorSymmetryWithPointOnAxisAndFixedSeparation {
+                first_vertex,
+                second_vertex,
+                axis_edge,
+                fixed_separation_edge,
+            } => (
+                19,
+                first_vertex.canonical_bytes(),
+                second_vertex.canonical_bytes(),
+                axis_edge.canonical_bytes(),
+                fixed_separation_edge.canonical_bytes(),
             ),
     }
 }
@@ -3836,6 +3998,373 @@ mod tests {
         let prepared = prepare(fixture, raw).expect("inverse rotation fixture prepares");
         let mut found = inverse_rotation_conflicts(&prepared.preflight());
         (found.len() == 1).then(|| found.remove(0))
+    }
+
+    fn mirror_axis_conflicts(preflight: &ConstraintPreflightV1) -> Vec<DirectConstraintConflictV1> {
+        match preflight {
+            ConstraintPreflightV1::DirectConflict { conflicts } => conflicts
+                .iter()
+                .filter(|conflict| {
+                    matches!(
+                        conflict.conflict(),
+                        DirectConstraintConflictKindV1::
+                            MirrorSymmetryWithPointOnAxisAndFixedSeparation { .. }
+                    )
+                })
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn only_mirror_axis_conflict(
+        fixture: &Fixture,
+        raw: &GeometricConstraintDocumentV1,
+    ) -> Option<DirectConstraintConflictV1> {
+        let prepared = prepare(fixture, raw).expect("mirror-axis fixture prepares");
+        let mut found = mirror_axis_conflicts(&prepared.preflight());
+        (found.len() == 1).then(|| found.remove(0))
+    }
+
+    fn mirror_axis_witness_records(
+        fixture: &Fixture,
+        point_vertex: usize,
+    ) -> [GeometricConstraintRecordV1; 3] {
+        [
+            record(GeometricConstraintKindV1::MirrorSymmetry {
+                first_vertex: fixture.vertices[1],
+                second_vertex: fixture.vertices[5],
+                axis_edge: fixture.edges[1],
+            }),
+            record(GeometricConstraintKindV1::PointOnLine {
+                vertex: fixture.vertices[point_vertex],
+                line_edge: fixture.edges[1],
+            }),
+            record(fixed_length(fixture, 5, f64::MIN_POSITIVE)),
+        ]
+    }
+
+    #[test]
+    fn mirrored_point_on_the_same_axis_conflicts_with_positive_fixed_separation() {
+        for point_vertex in [1, 5] {
+            let fixture = Fixture::new();
+            let records = mirror_axis_witness_records(&fixture, point_vertex);
+            let raw = document(records.clone());
+            let conflict = only_mirror_axis_conflict(&fixture, &raw)
+                .expect("either mirrored member on the exact axis forces collapse");
+            let (first_vertex, second_vertex) =
+                if fixture.vertices[1].canonical_bytes() < fixture.vertices[5].canonical_bytes() {
+                    (fixture.vertices[1], fixture.vertices[5])
+                } else {
+                    (fixture.vertices[5], fixture.vertices[1])
+                };
+            assert_eq!(
+                *conflict.conflict(),
+                DirectConstraintConflictKindV1::MirrorSymmetryWithPointOnAxisAndFixedSeparation {
+                    first_vertex,
+                    second_vertex,
+                    axis_edge: fixture.edges[1],
+                    fixed_separation_edge: fixture.edges[5],
+                }
+            );
+            assert_eq!(
+                conflict.constraint_ids(),
+                sorted_ids(&records.map(|record| record.id))
+            );
+            let prepared = prepare(&fixture, &raw).expect("the exact witness prepares");
+            let BoundedDirectMusV1::ProvenUnsatisfiable {
+                constraint_ids,
+                oracle_calls,
+            } = find_bounded_direct_mus_v1(&prepared)
+            else {
+                panic!("the three-record mirror contradiction must feed the bounded MUS oracle")
+            };
+            assert_eq!(constraint_ids, conflict.constraint_ids());
+            assert!(oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1);
+        }
+    }
+
+    #[test]
+    fn mirror_axis_conflict_requires_exact_axis_vertex_pair_and_pattern_edge() {
+        let fixture = Fixture::new();
+        let negative_documents = [
+            document([
+                record(GeometricConstraintKindV1::MirrorSymmetry {
+                    first_vertex: fixture.vertices[1],
+                    second_vertex: fixture.vertices[5],
+                    axis_edge: fixture.edges[1],
+                }),
+                record(GeometricConstraintKindV1::PointOnLine {
+                    vertex: fixture.vertices[1],
+                    line_edge: fixture.edges[2],
+                }),
+                record(fixed_length(&fixture, 5, 5.0)),
+            ]),
+            document([
+                record(GeometricConstraintKindV1::MirrorSymmetry {
+                    first_vertex: fixture.vertices[1],
+                    second_vertex: fixture.vertices[5],
+                    axis_edge: fixture.edges[1],
+                }),
+                record(GeometricConstraintKindV1::PointOnLine {
+                    vertex: fixture.vertices[6],
+                    line_edge: fixture.edges[1],
+                }),
+                record(fixed_length(&fixture, 5, 5.0)),
+            ]),
+            document([
+                record(GeometricConstraintKindV1::MirrorSymmetry {
+                    first_vertex: fixture.vertices[1],
+                    second_vertex: fixture.vertices[5],
+                    axis_edge: fixture.edges[1],
+                }),
+                record(GeometricConstraintKindV1::PointOnLine {
+                    vertex: fixture.vertices[1],
+                    line_edge: fixture.edges[1],
+                }),
+                record(fixed_length(&fixture, 4, 5.0)),
+            ]),
+            document([
+                record(GeometricConstraintKindV1::MirrorSymmetry {
+                    first_vertex: fixture.vertices[1],
+                    second_vertex: fixture.vertices[5],
+                    axis_edge: fixture.edges[1],
+                }),
+                record(GeometricConstraintKindV1::PointOnLine {
+                    vertex: fixture.vertices[1],
+                    line_edge: fixture.edges[1],
+                }),
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[5],
+                }),
+            ]),
+        ];
+        for raw in negative_documents {
+            let prepared = prepare(&fixture, &raw).expect("exact negative fixture prepares");
+            assert!(
+                mirror_axis_conflicts(&prepared.preflight()).is_empty(),
+                "different axes, outside vertices, unrelated edges, and missing fixed lengths stay unknown"
+            );
+        }
+    }
+
+    #[test]
+    fn mirror_axis_conflict_never_uses_initial_collinearity_or_approximate_lengths() {
+        let fixture = Fixture::new();
+        let initially_on_axis = fixture.pattern.vertices[1].position;
+        let axis_start = fixture.pattern.vertices[0].position;
+        let axis_end = fixture.pattern.vertices[3].position;
+        assert_eq!(
+            (initially_on_axis.y - axis_start.y) * (axis_end.x - axis_start.x),
+            (initially_on_axis.x - axis_start.x) * (axis_end.y - axis_start.y)
+        );
+
+        let no_point_constraint = document([
+            record(GeometricConstraintKindV1::MirrorSymmetry {
+                first_vertex: fixture.vertices[1],
+                second_vertex: fixture.vertices[5],
+                axis_edge: fixture.edges[2],
+            }),
+            record(fixed_length(&fixture, 5, 5.0)),
+        ]);
+        let prepared = prepare(&fixture, &no_point_constraint)
+            .expect("initial collinearity is valid geometry");
+        assert!(mirror_axis_conflicts(&prepared.preflight()).is_empty());
+
+        let raw = document([
+            record(GeometricConstraintKindV1::MirrorSymmetry {
+                first_vertex: fixture.vertices[1],
+                second_vertex: fixture.vertices[5],
+                axis_edge: fixture.edges[1],
+            }),
+            record(GeometricConstraintKindV1::PointOnLine {
+                vertex: fixture.vertices[1],
+                line_edge: fixture.edges[1],
+            }),
+            record(fixed_length(&fixture, 5, 5.0)),
+            record(fixed_length(&fixture, 5, 5.0_f64.next_up())),
+        ]);
+        let preflight = prepare(&fixture, &raw)
+            .expect("adjacent positive binary64 lengths prepare")
+            .preflight();
+        assert!(mirror_axis_conflicts(&preflight).is_empty());
+        let ConstraintPreflightV1::DirectConflict { conflicts } = preflight else {
+            panic!("bit-distinct fixed lengths retain their primary conflict");
+        };
+        assert!(conflicts.iter().all(|conflict| matches!(
+            conflict.conflict(),
+            DirectConstraintConflictKindV1::DifferentFixedLengths { .. }
+        )));
+    }
+
+    #[test]
+    fn mirror_axis_witness_is_canonical_deletion_minimal_and_order_independent() {
+        let fixture = Fixture::new();
+        let first_mirror = record(GeometricConstraintKindV1::MirrorSymmetry {
+            first_vertex: fixture.vertices[5],
+            second_vertex: fixture.vertices[1],
+            axis_edge: fixture.edges[1],
+        });
+        let second_mirror = record(GeometricConstraintKindV1::MirrorSymmetry {
+            first_vertex: fixture.vertices[1],
+            second_vertex: fixture.vertices[5],
+            axis_edge: fixture.edges[1],
+        });
+        let first_point = record(GeometricConstraintKindV1::PointOnLine {
+            vertex: fixture.vertices[1],
+            line_edge: fixture.edges[1],
+        });
+        let second_point = record(GeometricConstraintKindV1::PointOnLine {
+            vertex: fixture.vertices[5],
+            line_edge: fixture.edges[1],
+        });
+        let first_fixed = record(fixed_length(&fixture, 5, 5.0));
+        let second_fixed = record(fixed_length(&fixture, 5, 5.0));
+        let records = vec![
+            first_mirror.clone(),
+            second_mirror.clone(),
+            first_point.clone(),
+            second_point.clone(),
+            first_fixed.clone(),
+            second_fixed.clone(),
+        ];
+        let expected_ids = [
+            [first_mirror.id, second_mirror.id]
+                .into_iter()
+                .min_by_key(ConstraintId::canonical_bytes)
+                .expect("mirror minimum"),
+            [first_point.id, second_point.id]
+                .into_iter()
+                .min_by_key(ConstraintId::canonical_bytes)
+                .expect("point minimum"),
+            [first_fixed.id, second_fixed.id]
+                .into_iter()
+                .min_by_key(ConstraintId::canonical_bytes)
+                .expect("fixed minimum"),
+        ];
+        let forward = document(records.clone());
+        let forward_conflict =
+            only_mirror_axis_conflict(&fixture, &forward).expect("canonical witness exists");
+        assert_eq!(forward_conflict.constraint_ids(), sorted_ids(&expected_ids));
+
+        let mut reversed_records = records;
+        reversed_records.reverse();
+        let reversed = document(reversed_records);
+        let mut reversed_pattern = fixture.pattern.clone();
+        reversed_pattern.edges.reverse();
+        let reversed_preflight = prepare_geometric_constraints_v1(
+            &reversed_pattern,
+            &reversed,
+            GeometricConstraintLimitsV1::default(),
+        )
+        .expect("reversed order prepares")
+        .preflight();
+        assert_eq!(
+            serde_json::to_value(prepare(&fixture, &forward).unwrap().preflight()).unwrap(),
+            serde_json::to_value(reversed_preflight).unwrap()
+        );
+
+        let minimal_records = mirror_axis_witness_records(&fixture, 1);
+        for omitted in 0..minimal_records.len() {
+            let subset = document(
+                minimal_records
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != omitted)
+                    .map(|(_, record)| record.clone()),
+            );
+            assert!(
+                mirror_axis_conflicts(&prepare(&fixture, &subset).unwrap().preflight()).is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn mirror_axis_fixed_separation_selects_the_global_canonical_real_edge() {
+        let fixture = Fixture::new();
+        let alternate_edge = EdgeId::new();
+        let mut pattern = fixture.pattern.clone();
+        pattern.edges.push(Edge {
+            id: alternate_edge,
+            start: fixture.vertices[5],
+            end: fixture.vertices[1],
+            kind: EdgeKind::Auxiliary,
+        });
+        let mirror = record(GeometricConstraintKindV1::MirrorSymmetry {
+            first_vertex: fixture.vertices[1],
+            second_vertex: fixture.vertices[5],
+            axis_edge: fixture.edges[1],
+        });
+        let point = record(GeometricConstraintKindV1::PointOnLine {
+            vertex: fixture.vertices[1],
+            line_edge: fixture.edges[1],
+        });
+        let first_fixed = record(fixed_length(&fixture, 5, 5.0));
+        let second_fixed = record(GeometricConstraintKindV1::FixedLength {
+            edge: alternate_edge,
+            length_mm: 7.0,
+        });
+        let expected = [
+            (first_fixed.id, fixture.edges[5]),
+            (second_fixed.id, alternate_edge),
+        ]
+        .into_iter()
+        .min_by_key(|(id, edge)| (id.canonical_bytes(), edge.canonical_bytes()))
+        .expect("two fixed-separation candidates have a minimum");
+        let records = vec![mirror, point, first_fixed, second_fixed];
+        let forward = document(records.clone());
+        let forward_preflight = prepare_geometric_constraints_v1(
+            &pattern,
+            &forward,
+            GeometricConstraintLimitsV1::default(),
+        )
+        .expect("duplicate real separation edges prepare")
+        .preflight();
+        let mut conflicts = mirror_axis_conflicts(&forward_preflight);
+        assert_eq!(conflicts.len(), 1);
+        let conflict = conflicts.remove(0);
+        let DirectConstraintConflictKindV1::MirrorSymmetryWithPointOnAxisAndFixedSeparation {
+            fixed_separation_edge,
+            ..
+        } = *conflict.conflict()
+        else {
+            panic!("the filtered conflict has the mirror-axis kind")
+        };
+        assert_eq!(fixed_separation_edge, expected.1);
+        assert!(conflict.constraint_ids().contains(&expected.0));
+
+        pattern.edges.reverse();
+        let reversed = document(records.into_iter().rev());
+        let reversed_preflight = prepare_geometric_constraints_v1(
+            &pattern,
+            &reversed,
+            GeometricConstraintLimitsV1::default(),
+        )
+        .expect("reversed duplicate-edge fixture prepares")
+        .preflight();
+        assert_eq!(
+            serde_json::to_value(forward_preflight).unwrap(),
+            serde_json::to_value(reversed_preflight).unwrap()
+        );
+    }
+
+    #[test]
+    fn mirror_axis_conflict_serializes_and_keeps_the_new_final_sort_rank() {
+        let fixture = Fixture::new();
+        let raw = document(mirror_axis_witness_records(&fixture, 1));
+        let conflict =
+            only_mirror_axis_conflict(&fixture, &raw).expect("mirror-axis witness exists");
+        let value = serde_json::to_value(&conflict).expect("serialize mirror-axis conflict");
+        assert_eq!(
+            value["conflict"]["kind"],
+            "mirror_symmetry_with_point_on_axis_and_fixed_separation"
+        );
+        assert_eq!(
+            value["conflict"]["fixed_separation_edge"],
+            serde_json::to_value(fixture.edges[5]).expect("serialize edge ID")
+        );
+        assert_eq!(conflict_sort_key(conflict.conflict()).0, 19);
+        assert_eq!(value["constraint_ids"].as_array().unwrap().len(), 3);
     }
 
     #[test]

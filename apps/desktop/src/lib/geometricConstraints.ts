@@ -191,6 +191,13 @@ export type DirectConstraintConflictKindV1 =
       target_vertex: string
       fixed_radius_edge: string
     }>
+  | Readonly<{
+      kind: 'mirror_symmetry_with_point_on_axis_and_fixed_separation'
+      first_vertex: string
+      second_vertex: string
+      axis_edge: string
+      fixed_separation_edge: string
+    }>
 
 export type DirectConstraintConflictV1 = Readonly<{
   conflict: DirectConstraintConflictKindV1
@@ -1208,6 +1215,31 @@ function parseDirectConflictKind(
         }),
         witnessSize: 3,
       }
+    case 'mirror_symmetry_with_point_on_axis_and_fixed_separation':
+      if (
+        !hasExactKeys(record, [
+          'kind',
+          'first_vertex',
+          'second_vertex',
+          'axis_edge',
+          'fixed_separation_edge',
+        ])
+        || !isCanonicalUuid(record.first_vertex)
+        || !isCanonicalUuid(record.second_vertex)
+        || !isCanonicalUuid(record.axis_edge)
+        || !isCanonicalUuid(record.fixed_separation_edge)
+        || record.first_vertex >= record.second_vertex
+      ) return null
+      return {
+        conflict: Object.freeze({
+          kind: record.kind,
+          first_vertex: record.first_vertex,
+          second_vertex: record.second_vertex,
+          axis_edge: record.axis_edge,
+          fixed_separation_edge: record.fixed_separation_edge,
+        }),
+        witnessSize: 3,
+      }
     default:
       return null
   }
@@ -1312,6 +1344,15 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
         kind.source_vertex,
         kind.target_vertex,
         kind.fixed_radius_edge,
+      ]
+      break
+    case 'mirror_symmetry_with_point_on_axis_and_fixed_separation':
+      target = [
+        kind.kind,
+        kind.first_vertex,
+        kind.second_vertex,
+        kind.axis_edge,
+        kind.fixed_separation_edge,
       ]
       break
   }

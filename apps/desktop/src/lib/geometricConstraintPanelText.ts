@@ -413,6 +413,10 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
       '向きを反転した回転対称の角度合計が360度にならず、正の固定半径と両立しません',
       'Inverse rotational-symmetry angles do not sum to a full turn and conflict with a positive fixed radius',
     ),
+    mirror_symmetry_with_point_on_axis_and_fixed_separation: text(
+      '鏡映点が同じ対称軸上にあり、正の固定間隔と両立しません',
+      'A mirrored point lies on its symmetry axis and conflicts with a positive fixed separation',
+    ),
   }),
   unknownReasonLabels: Object.freeze({
     work_limit_exceeded: text(

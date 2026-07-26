@@ -120,10 +120,13 @@ test('every converted step retains the exact same physical binary64 as mm', () =
 })
 
 test('both paper thickness controls use exact custom steps and retain direct input', () => {
-  const appSource = readFileSync(
-    new URL('../src/App.tsx', import.meta.url),
-    'utf8',
-  )
+  const appSource = [
+    readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
+    readFileSync(
+      new URL('../src/components/PaperInspectorSection.tsx', import.meta.url),
+      'utf8',
+    ),
+  ].join('\n')
   const componentSource = readFileSync(
     new URL('../src/components/PaperThicknessInput.tsx', import.meta.url),
     'utf8',
@@ -161,7 +164,7 @@ test('both paper thickness controls use exact custom steps and retain direct inp
   assert.match(appSource, /initialValue="0\.10"/u)
   assert.match(
     appSource,
-    /initialValue=\{lengthDisplayUnit\.effectiveUnit === 'mm'[\s\S]*?formatPaperThicknessInput\([\s\S]*?nativeSnapshot\?\.paper\.thickness_mm[\s\S]*?: formatLengthInput\([\s\S]*?lengthDisplayUnit/u,
+    /initialValue=\{lengthDisplayUnit\.effectiveUnit === 'mm'[\s\S]*?formatPaperThicknessInput\([\s\S]*?snapshot\?\.paper\.thickness_mm[\s\S]*?: formatLengthInput\([\s\S]*?lengthDisplayUnit/u,
   )
   assert.match(
     componentSource,

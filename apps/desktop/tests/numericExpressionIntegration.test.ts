@@ -20,6 +20,10 @@ const app = [
   source('../src/App.tsx'),
   source('../src/lib/appText.ts'),
   source('../src/lib/projectCanvasProjection.ts'),
+  source('../src/components/PaperInspectorSection.tsx'),
+  source('../src/components/SelectedLineInspector.tsx'),
+  source('../src/components/SelectedFaceInspector.tsx'),
+  source('../src/components/SelectedVertexInspector.tsx'),
 ].join('\n')
 const numericCore = source('../../../crates/ori-numeric/src/lib.rs')
 const formats = source('../../../crates/ori-formats/src/lib.rs')

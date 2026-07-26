@@ -5,6 +5,7 @@ import test from 'node:test'
 const appSource = [
   readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/components/SelectedVertexInspector.tsx', import.meta.url), 'utf8'),
 ].join('\n')
 const canvasSource = readFileSync(
   new URL('../src/components/CreaseCanvas.tsx', import.meta.url),
@@ -15,7 +16,7 @@ test('compass construction uses the selected vertex, display unit, and bounded g
   assert.match(appSource, /name="compass_radius_display"/u)
   assert.match(appSource, /selectedVertex\.position\.x/u)
   assert.match(appSource, /selectedVertex\.position\.y/u)
-  assert.match(appSource, /lengthDisplayUnit\.millimetresPerUnit/u)
+  assert.match(appSource, /displayUnit\.millimetresPerUnit/u)
   assert.match(appSource, /\.slice\(-64\)/u)
   assert.match(appSource, /if \(forceReplacement\) setCompassCircles\(\[\]\)/u)
   assert.match(appSource, /circle-line and circle-circle intersections/u)

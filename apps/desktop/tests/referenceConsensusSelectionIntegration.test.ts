@@ -8,6 +8,7 @@ const app = [
   readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/components/BeginnerCandidateControls.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/components/BeginnerCandidateResults.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/components/BeginnerReferenceAssetPanel.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/useBeginnerCandidateWorkflow.ts', import.meta.url), 'utf8'),
 ].join('\n')
 
@@ -22,7 +23,7 @@ test('consensus selection accepts only two to four native-resolved project asset
 
 test('selection UI is bounded, keyboard native and stale-reset by snapshot', () => {
   assert.match(app, /<fieldset aria-describedby="reference-consensus-selection-help">/u)
-  assert.match(app, /type="checkbox" checked=\{checked\}/u)
+  assert.match(app, /type="checkbox"\s*checked=\{checked\}/u)
   assert.match(app, /disabled=\{!checked && consensusSelectionDraft\.length >= 4\}/u)
   assert.match(app, /setConsensusSelectionDraft\(\s*\(snapshotRef\.current\?/u)
   assert.match(app, /Save consensus references/u)

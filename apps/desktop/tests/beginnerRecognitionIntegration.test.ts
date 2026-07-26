@@ -6,6 +6,12 @@ const app = [
   source('../src/App.tsx'),
   source('../src/lib/appText.ts'),
   source('../src/components/BeginnerRecognitionPanel.tsx'),
+  source('../src/components/BeginnerDesignEditorSection.tsx'),
+  source('../src/components/BeginnerDesignSources.tsx'),
+  source('../src/components/BeginnerReferenceAssetPanel.tsx'),
+  source('../src/components/BeginnerReferenceSuggestionPanel.tsx'),
+  source('../src/components/BeginnerDesignConstraints.tsx'),
+  source('../src/components/BeginnerSkeletonEditor.tsx'),
   source('../src/lib/useBeginnerRecognitionWorkflow.ts'),
   source('../src/lib/useBeginnerEditorState.ts'),
   source('../src/lib/useBeginnerProfileWorkflow.ts'),
@@ -182,8 +188,14 @@ test('recognized skeleton bars remain directly correctable before save and synth
     app,
     /skeletonBarSegmentIdLabelMm: localized\(\s*'骨格バー \{segmentId\} \{label\} \(mm\)',\s*'Skeleton bar \{segmentId\} \{label\} \(mm\)'/u,
   )
-  assert.match(app, /setBeginnerSkeletonSegments\(\(segments\) => segments\.map/u)
-  assert.match(app, /changed\.start\.x_tenths_mm === changed\.end\.x_tenths_mm/u)
+  assert.match(
+    app,
+    /setBeginnerSkeletonSegments\(\(segments\) =>\s*segments\.map/u,
+  )
+  assert.match(
+    app,
+    /changed\.start\.x_tenths_mm\s*=== changed\.end\.x_tenths_mm/u,
+  )
   assert.match(app, /field === 'thickness_tenths_mm'/u)
   assert.match(app, /onSubmit=\{submitBeginnerDesignProfile\}/u)
 })

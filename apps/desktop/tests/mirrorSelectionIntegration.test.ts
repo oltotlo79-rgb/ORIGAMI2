@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const app = source('../src/App.tsx')
+const app = [
+  source('../src/App.tsx'),
+  source('../src/components/MirrorSelectionPanel.tsx'),
+].join('\n')
 const canvas = source('../src/components/CreaseCanvas.tsx')
 const native = source('../src-tauri/src/pattern_edit_commands.rs')
 const editor = source('../../../crates/ori-core/src/editor.rs')
@@ -40,7 +43,7 @@ test('core mirror admission closes every mutation and identity escape', () => {
 })
 
 test('mirror failures are translated from a closed vocabulary', () => {
-  assert.match(app, /function mirrorPreflightIssueText/u)
+  assert.match(app, /const issueText = \(issue: string \| null\) =>/u)
   assert.match(app, /case 'invalid_axis'/u)
   assert.match(app, /case 'core_rejected'/u)
   assert.doesNotMatch(

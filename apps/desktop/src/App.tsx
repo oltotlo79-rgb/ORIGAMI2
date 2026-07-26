@@ -19,7 +19,6 @@ import {
 import { CreaseExportDialog } from './components/CreaseExportDialog'
 import { AnnotationPanel } from './components/AnnotationPanel'
 import { UnderlayPanel } from './components/UnderlayPanel'
-import { CreationDimensionExpressionSummary } from './components/CreationDimensionExpressionSummary'
 import { DiagnosticsDialog } from './components/DiagnosticsDialog'
 import { FoldImportDialog } from './components/FoldImportDialog'
 import { Fold3dFramesLauncher } from './components/Fold3dFramesLauncher'
@@ -29,12 +28,10 @@ import { FoldTechniqueEditorDialog } from './components/FoldTechniqueEditorDialo
 import { FoldTechniqueTimelinePreviewDialog } from './components/FoldTechniqueTimelinePreviewDialog'
 import { GeometricConstraintPanel } from './components/GeometricConstraintPanel'
 import { GlobalFlatFoldabilityPanel } from './components/GlobalFlatFoldabilityPanel'
-import { HistoryLimitControl } from './components/HistoryLimitControl'
 import { InstructionExportDialog } from './components/InstructionExportDialog'
 import { InstructionTimelinePanel } from './components/InstructionTimelinePanel'
 import { KeyboardShortcutControl } from './components/KeyboardShortcutControl'
 import { LanguageControl } from './components/LanguageControl'
-import { LengthUnitControl } from './components/LengthUnitControl'
 import { MeshAnimationExportDialog } from './components/MeshAnimationExportDialog'
 import { NumericExpressionInput } from './components/NumericExpressionInput'
 import { ProjectLayerPanel } from './components/ProjectLayerPanel'
@@ -48,7 +45,6 @@ import { ThemeControl } from './components/ThemeControl'
 import { UpdateCheckPopover } from './components/UpdateCheckControl'
 import { WorkspaceLayoutControl } from './components/WorkspaceLayoutControl'
 import { WorkspaceLayoutSeparator } from './components/WorkspaceLayoutSeparator'
-import { BulkIntersectionRepairControl } from './components/BulkIntersectionRepairControl'
 import { PairMeasurementStatus } from './components/PairMeasurementStatus'
 import type { InstructionOnionSkinRequest } from './lib/instructionOnionSkin'
 import { useCreasePairMeasurement } from './lib/useCreasePairMeasurement'
@@ -192,12 +188,9 @@ import {
 } from './lib/nativeStaticCollisionView'
 import type { InstructionStepPresentation } from './lib/instructionTimeline'
 import { planInstructionAutoRecord } from './lib/instructionAutoRecord'
-import { formatPaperThicknessInput } from './lib/paperThicknessInput'
 import { PaperThicknessInput } from './components/PaperThicknessInput'
 import {
   formatLength,
-  formatLengthInput,
-  formatLengthPoint,
   formatLengthValue,
   lengthDisplayUnitLabel,
   MILLIMETRE_LENGTH_DISPLAY_UNIT,
@@ -209,7 +202,6 @@ import {
   ANGLE_SNAP_PRESETS,
   DEFAULT_SNAP_SETTINGS,
   DEFAULT_ANGLE_SNAP_CONFIG,
-  toggleSnapSetting,
   type AngleSnapConfig,
   type AngleSnapReferenceKind,
   type SnapSettings,
@@ -247,7 +239,6 @@ import { workspaceLayoutStore } from './lib/workspaceLayout'
 import {
   evaluateFiniteNumericExpression,
   evaluatePositiveMillimetreExpression,
-  MAX_NUMERIC_EXPRESSION_SOURCE_BYTES,
   numericExpressionNativeErrorCategory,
 } from './lib/numericExpressionNative'
 import {
@@ -259,7 +250,6 @@ import {
   type MessageVariables,
 } from './lib/i18n'
 import { APP_TEXT } from './lib/appText.ts'
-import { updateGridPreferenceInput } from './lib/gridPreference'
 import { useCanvasUnderlays } from './lib/useCanvasUnderlays'
 import { useGridDivisionPreference } from './lib/useGridDivisionPreference'
 import { useProjectCanvasProjection } from './lib/useProjectCanvasProjection'
@@ -282,7 +272,6 @@ import {
 } from './lib/appMessages'
 import {
   createInitialFoldTechniqueDocumentV1,
-  foldTechniqueLocalizedTextV1,
   type FoldTechniqueFileDocumentV1,
 } from './lib/foldTechniqueEditor'
 import { useFoldTechniqueTimelineProposal } from './lib/useFoldTechniqueTimelineProposal'
@@ -293,26 +282,32 @@ import {
   saveFoldTechniqueFileAsV1,
 } from './lib/foldTechniqueFileClient'
 import './App.css'
-import { ProtrusionDimensionEditor } from './components/ProtrusionDimensionEditor'
-import { GenericBodyOutlineEditor } from './components/GenericBodyOutlineEditor'
-import { BeginnerShapeCanvasPreview } from './components/BeginnerShapeCanvasPreview'
-import { RecognitionContourCopyAction } from './components/RecognitionContourCopyAction'
-import { BeginnerCandidateControls } from './components/BeginnerCandidateControls'
-import { BeginnerCandidateResults } from './components/BeginnerCandidateResults'
-import { BeginnerRecognitionPanel } from './components/BeginnerRecognitionPanel'
+import { PaperInspectorSection } from './components/PaperInspectorSection'
+import { HistoryLimitInspectorSection } from './components/HistoryLimitInspectorSection'
+import { FoldTechniqueInspectorSection } from './components/FoldTechniqueInspectorSection'
+import { SnapInspectorSection } from './components/SnapInspectorSection'
+import { SNAP_INSPECTOR_OPTIONS } from './lib/snapInspectorOptions'
+import { MirrorSelectionPanel } from './components/MirrorSelectionPanel'
+import { ElementMetadataForm } from './components/ElementMetadataForm'
+import { SelectedLineInspector } from './components/SelectedLineInspector'
+import { SelectedFaceInspector } from './components/SelectedFaceInspector'
+import {
+  BenchmarkVertexInspector,
+  DirectVertexInspector,
+  SelectedVertexInspector,
+} from './components/SelectedVertexInspector'
+import { BeginnerDesignEditorSection } from './components/BeginnerDesignEditorSection'
+import { ValidationInspectorSections } from './components/ValidationInspectorSections'
+import {
+  ProjectMemoAndCandidateSection,
+} from './components/ProjectMemoAndCandidateSection'
 import {
   formatBytes,
-  lineKindLabel,
   localFlatFoldabilityCoreStatus,
-  localizedLocalFlatFoldabilityConditionLabel,
-  localizedLocalFlatFoldabilityReasonLabel,
-  localizedLocalFlatFoldabilitySummary,
   normalizeFoldAngle,
   toolLabel,
-  validationIssueLabel,
 } from './lib/appPresentation'
 import {
-  formatAngleDegrees,
   formatLineMeasurementLabel,
   formatMeasurementValue,
   measureCreaseLine,
@@ -338,22 +333,6 @@ import {
   nextFoldTechniqueRequestId,
   selectedNamedBookFold,
 } from './lib/appFoldTechnique'
-
-const SNAP_OPTIONS: ReadonlyArray<{
-  kind: keyof SnapSettings
-  label: LocalizedText
-}> = [
-  { kind: 'grid', label: APP_TEXT.grid },
-  { kind: 'vertex', label: APP_TEXT.vertex },
-  { kind: 'intersection', label: APP_TEXT.intersection },
-  { kind: 'edge', label: APP_TEXT.edge },
-  { kind: 'midpoint', label: APP_TEXT.midpoint },
-  { kind: 'horizontal', label: APP_TEXT.horizontal },
-  { kind: 'vertical', label: APP_TEXT.vertical },
-  { kind: 'parallel', label: APP_TEXT.parallel },
-  { kind: 'angle', label: APP_TEXT.angle },
-]
-
 const nativeStaticCollisionTransport =
   createNativeStaticCollisionNativeTransport()
 const nativeStaticCollisionCoordinator =
@@ -872,9 +851,13 @@ function App() {
     (action) => beginnerNativeEditRef.current(action),
     [],
   )
+  const beginnerEditorState = useBeginnerEditorState({
+    snapshot: nativeSnapshot,
+    getCurrentSnapshot: () => latestSnapshotRef.current,
+    getSelectedFaceId: () => selectedFaceId,
+  })
   const {
     beginnerDesignFormRef,
-    beginnerPartTotal,
     setBeginnerPartTotal,
     beginnerSkeletonSegments,
     setBeginnerSkeletonSegments,
@@ -885,23 +868,11 @@ function App() {
     setBeginnerProtrusions,
     beginnerBodyOutline,
     setBeginnerBodyOutline,
-    beginnerBodySize,
-    setBeginnerBodySize,
     beginnerBodyOutlineMode,
     setBeginnerBodyOutlineMode,
     beginnerProtrusionKinds,
-    setBeginnerProtrusionKinds,
     beginnerBulgeTargets,
-    setBeginnerBulgeTargets,
-    addBeginnerSkeletonSegment,
-    addBeginnerProtrusion,
-    createEmptyGenericTarget,
-    addBeginnerBulgeTarget,
-  } = useBeginnerEditorState({
-    snapshot: nativeSnapshot,
-    getCurrentSnapshot: () => latestSnapshotRef.current,
-    getSelectedFaceId: () => selectedFaceId,
-  })
+  } = beginnerEditorState
   const beginnerCandidateWorkflow = useBeginnerCandidateWorkflow({
     snapshot: nativeSnapshot,
     getCurrentSnapshot: () => latestSnapshotRef.current,
@@ -916,42 +887,7 @@ function App() {
     },
     consensusProgressEnabled: isNativeCoreAvailable(),
   })
-  const {
-    beginnerCandidateBusy,
-    consensusSelectionDraft,
-    cancelBeginnerCandidates,
-    toggleConsensusReference,
-    saveConsensusReferences,
-    confirmAndAppendGenericTreeInstructions,
-  } = beginnerCandidateWorkflow
-  const beginnerGridWorkflow = useBeginnerParameterGridWorkflow({
-    getCurrentSnapshot: () => latestSnapshotRef.current,
-    skeletonTreeStatus: beginnerSkeletonTree.status,
-    runNativeEdit: runBeginnerNativeEdit,
-    confirm: (message) => window.confirm(text(message)),
-    applyConfirmation:
-      APP_TEXT.revalidateThisDesignSGridGeometryAndGlobalProofThen,
-  })
-  const { invalidateBeginnerGridForProjectReplacement } =
-    beginnerGridWorkflow
-  invalidateBeginnerGridRef.current =
-    invalidateBeginnerGridForProjectReplacement
-  const {
-    beginnerReferenceGeometry,
-    beginnerReferenceSuggestion,
-    beginnerSurfaceAssignments,
-    setBeginnerSurfaceAssignments,
-    beginnerSurfaceEdits,
-    setBeginnerSurfaceEdits,
-    requestBeginnerReferenceModelImport,
-    activateBeginnerReferenceAsset,
-    archiveBeginnerReferenceAsset,
-    toggleBeginnerReferenceModelPreview,
-    requestBeginnerReferenceSuggestion,
-    confirmBeginnerReferenceSuggestion,
-    copyBeginnerReferenceContours,
-    copyBeginnerGeneralReferenceTarget,
-  } = useBeginnerReferenceWorkflow({
+  const beginnerReferenceWorkflow = useBeginnerReferenceWorkflow({
     snapshot: nativeSnapshot,
     getCurrentSnapshot: () => latestSnapshotRef.current,
     runNativeEdit: runBeginnerNativeEdit,
@@ -971,6 +907,22 @@ function App() {
       setBeginnerComponentBridgeOverride,
     },
   })
+  const {
+    beginnerCandidateBusy,
+    cancelBeginnerCandidates,
+  } = beginnerCandidateWorkflow
+  const beginnerGridWorkflow = useBeginnerParameterGridWorkflow({
+    getCurrentSnapshot: () => latestSnapshotRef.current,
+    skeletonTreeStatus: beginnerSkeletonTree.status,
+    runNativeEdit: runBeginnerNativeEdit,
+    confirm: (message) => window.confirm(text(message)),
+    applyConfirmation:
+      APP_TEXT.revalidateThisDesignSGridGeometryAndGlobalProofThen,
+  })
+  const { invalidateBeginnerGridForProjectReplacement } =
+    beginnerGridWorkflow
+  invalidateBeginnerGridRef.current =
+    invalidateBeginnerGridForProjectReplacement
   const beginnerRecognitionWorkflow = useBeginnerRecognitionWorkflow({
     snapshot: nativeSnapshot,
     getCurrentSnapshot: () => latestSnapshotRef.current,
@@ -1036,12 +988,10 @@ function App() {
   })
   const {
     beginnerRecognitionProposal,
-    beginnerRecognitionBusy,
     beginnerSilhouetteThresholds,
     beginnerSilhouetteCropRoi,
     beginnerSilhouetteOrientation,
     beginnerSilhouetteMirror,
-    invalidateBeginnerRecognition,
   } = beginnerRecognitionWorkflow
   const { submitBeginnerDesignProfile } = useBeginnerProfileWorkflow({
     getCurrentSnapshot: () => latestSnapshotRef.current,
@@ -1573,9 +1523,6 @@ function App() {
       nativeSnapshot.crease_pattern.vertices.map((vertex) => vertex.id),
     )
   }, [nativeSnapshot, validation])
-  const selectedLocalFlatFoldability = selectedVertexId
-    ? localFlatFoldabilityPresentation?.verticesById.get(selectedVertexId)
-    : undefined
   useEffect(() => {
     setAssignedLocalSummary(null)
     if (!nativeSnapshot) {
@@ -1959,7 +1906,7 @@ function App() {
     && historyLimitLoadState.settings.revision === nativeSnapshot.revision
       ? historyLimitLoadState.settings
       : null
-  const snapStatusLabel = SNAP_OPTIONS
+  const snapStatusLabel = SNAP_INSPECTOR_OPTIONS
     .filter(({ kind }) => snapSettings[kind])
     .map(({ label }) => text(label))
     .join(text(APP_TEXT.message0036))
@@ -2599,21 +2546,6 @@ function App() {
     const applied = await runNativeEdit((id, revision, instance) =>
       confirmRadialArray(id, revision, instance, preview.request, result.request_sha256))
     if (applied) { radialArrayRequestSequenceRef.current += 1; setRadialArrayPreview(null) }
-  }
-
-  function mirrorPreflightIssueText(issue: string | null) {
-    switch (issue) {
-      case 'invalid_axis':
-        return text(APP_TEXT.theMirrorAxisIsInvalid)
-      case 'empty_selection':
-        return text(APP_TEXT.theSelectionIsEmpty)
-      case 'noncanonical_selection':
-      case 'invalid_new_ids':
-      case 'core_rejected':
-        return text(APP_TEXT.thisEditIsUnsafeForTheCurrentGeometryOrLayers)
-      default:
-        return text(APP_TEXT.theMirrorEditCannotBeApplied)
-    }
   }
 
   useEffect(() => {
@@ -5038,1640 +4970,152 @@ function App() {
           </div>
           <section>
             <h2>{text(APP_TEXT.selection)}</h2>
-            <section className="mirror-selection-panel" aria-labelledby="mirror-selection-heading">
-              <h3 id="mirror-selection-heading">
-                {text(APP_TEXT.mirrorSelection)}
-              </h3>
-              <p aria-live="polite">
-                {formattedText(APP_TEXT.verticesVerticesEdgesEdges, { vertices: mirrorVertexIds.length, edges: mirrorEdgeIds.length })}
-              </p>
-              <div className="button-row">
-                <button
-                  type="button"
-                  disabled={coreBusy || mirrorBusy || (!selectedVertex && !selectedLine)}
-                  onClick={addCurrentToMirrorSelection}
-                >
-                  {text(APP_TEXT.addCurrentSelection)}
-                </button>
-                {beginnerCandidateBusy && (
-                  <button type="button" onClick={cancelBeginnerCandidates}>
-                    {text(APP_TEXT.cancelCandidateGeneration)}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={coreBusy || (
-                    mirrorVertexIds.length === 0 && mirrorEdgeIds.length === 0
-                  )}
-                  onClick={cancelMirrorSelection}
-                >
-                  {text(APP_TEXT.cancel)}
-                </button>
-              </div>
-              <fieldset disabled={coreBusy || mirrorBusy}>
-                <legend>{text(APP_TEXT.operation)}</legend>
-                <label>
-                  <input
-                    type="radio"
-                    name="mirror_mode"
-                    checked={mirrorMode === 'duplicate'}
-                    onChange={() => {
-                      setMirrorMode('duplicate')
-                      setMirrorPreview(null)
-                    }}
-                  />
-                  {text(APP_TEXT.duplicate)}
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="mirror_mode"
-                    checked={mirrorMode === 'move'}
-                    onChange={() => {
-                      setMirrorMode('move')
-                      setMirrorPreview(null)
-                    }}
-                  />
-                  {text(APP_TEXT.move)}
-                </label>
-              </fieldset>
-              <fieldset disabled={coreBusy || mirrorBusy}>
-                <legend>{text(APP_TEXT.twoPointMirrorAxis)}</legend>
-                {([
-                  ['x1', '始点 X', 'Start X'],
-                  ['y1', '始点 Y', 'Start Y'],
-                  ['x2', '終点 X', 'End X'],
-                  ['y2', '終点 Y', 'End Y'],
-                ] as const).map(([key, ja, en]) => (
-                  <label className="field" key={key}>
-                    <span>{text({ ja, en })}</span>
-                    <input
-                      aria-label={text({ ja, en })}
-                      inputMode="decimal"
-                      value={mirrorAxis[key]}
-                      onChange={(event) => {
-                        setMirrorAxis((current) => ({
-                          ...current,
-                          [key]: event.currentTarget.value,
-                        }))
-                        setMirrorPreview(null)
-                      }}
-                    />
-                  </label>
-                ))}
-              </fieldset>
-              <div className="button-row">
-                <button
-                  type="button"
-                  disabled={
-                    coreBusy || mirrorBusy
-                    || (mirrorVertexIds.length === 0 && mirrorEdgeIds.length === 0)
-                  }
-                  onClick={() => void previewCurrentMirrorSelection()}
-                >
-                  {mirrorBusy
-                    ? text(APP_TEXT.checking)
-                    : text(APP_TEXT.preflight)}
-                </button>
-                <button
-                  type="button"
-                  disabled={coreBusy || mirrorBusy || !mirrorPreview?.result.allowed}
-                  onClick={() => void applyCurrentMirrorSelection()}
-                >
-                  {text(APP_TEXT.applyMirrorEdit)}
-                </button>
-              </div>
-              {mirrorPreview && (
-                <p
-                  role="status"
-                  data-testid="mirror-selection-preflight"
-                  className={mirrorPreview.result.allowed ? 'status-good' : 'status-bad'}
-                >
-                  {mirrorPreview.result.allowed
-                    ? text(APP_TEXT.readyReviewAndExplicitlyApplyTheEdit)
-                    : mirrorPreflightIssueText(mirrorPreview.result.issue)}
-                </p>
-              )}
-            </section>
+            <MirrorSelectionPanel
+              locale={locale}
+              coreBusy={coreBusy}
+              mirrorBusy={mirrorBusy}
+              candidateBusy={beginnerCandidateBusy}
+              currentSelectionAvailable={Boolean(selectedVertex || selectedLine)}
+              selectedVertexCount={mirrorVertexIds.length}
+              selectedEdgeCount={mirrorEdgeIds.length}
+              mode={mirrorMode}
+              axis={mirrorAxis}
+              preview={mirrorPreview}
+              onAddCurrentSelection={addCurrentToMirrorSelection}
+              onCancelCandidateGeneration={cancelBeginnerCandidates}
+              onCancelMirrorSelection={cancelMirrorSelection}
+              onModeChange={(mode) => {
+                setMirrorMode(mode)
+                setMirrorPreview(null)
+              }}
+              onAxisChange={(key, value) => {
+                setMirrorAxis((current) => ({ ...current, [key]: value }))
+                setMirrorPreview(null)
+              }}
+              onPreview={previewCurrentMirrorSelection}
+              onApply={applyCurrentMirrorSelection}
+            />
             {selectedElementTarget && (
-              <form
-                key={`${selectedElementTarget.kind}:${selectedElementTarget.id}:${nativeSnapshot?.revision ?? 0}`}
-                className="element-metadata-form"
+              <ElementMetadataForm
+                locale={locale}
+                target={selectedElementTarget}
+                metadata={selectedElementMetadata}
+                revision={nativeSnapshot?.revision ?? 0}
+                disabled={coreBusy}
                 onSubmit={submitElementMetadata}
-              >
-                <label className="field">
-                  <span>{text(APP_TEXT.name)}</span>
-                  <input
-                    name="element_name"
-                    type="text"
-                    maxLength={120}
-                    defaultValue={selectedElementMetadata?.name ?? ''}
-                    disabled={coreBusy}
-                  />
-                </label>
-                <label className="field">
-                  <span>{text(APP_TEXT.memo)}</span>
-                  <textarea
-                    name="element_memo"
-                    maxLength={4_000}
-                    defaultValue={selectedElementMetadata?.memo ?? ''}
-                    disabled={coreBusy}
-                  />
-                </label>
-                <label className="check">
-                  <input
-                    name="element_use_color"
-                    type="checkbox"
-                    defaultChecked={Boolean(selectedElementMetadata?.color)}
-                    disabled={coreBusy}
-                  />{' '}
-                  {text(APP_TEXT.useCustomColor)}
-                </label>
-                <label className="paper-color-field">
-                  <span>{text(APP_TEXT.color)}</span>
-                  <input
-                    name="element_color"
-                    type="color"
-                    defaultValue={rgbaToHex(
-                      selectedElementMetadata?.color ?? undefined,
-                      '#4b82c3',
-                    )}
-                    disabled={coreBusy}
-                  />
-                </label>
-                <button type="submit" disabled={coreBusy}>
-                  {text(APP_TEXT.saveElementDetails)}
-                </button>
-              </form>
+              />
             )}
             {selectedLine ? (
-              <>
-                <dl>
-                  <div><dt>ID</dt><dd>{selectedLine.id}</dd></div>
-                  <div>
-                    <dt>{text(APP_TEXT.type)}</dt>
-                    <dd>{lineKindLabel(selectedLine.kind, locale)}</dd>
-                  </div>
-                  <div>
-                    <dt>{text(APP_TEXT.start)}</dt>
-                    <dd>{formatLengthPoint(
-                      selectedLine.x1,
-                      selectedLine.y1,
-                      displayedLengthUnit,
-                      locale,
-                    )}</dd>
-                  </div>
-                  <div>
-                    <dt>{text(APP_TEXT.end)}</dt>
-                    <dd>{formatLengthPoint(
-                      selectedLine.x2,
-                      selectedLine.y2,
-                      displayedLengthUnit,
-                      locale,
-                    )}</dd>
-                  </div>
-                  <div><dt>ΔX</dt><dd>{formatLength(selectedLineMeasurement?.deltaX, displayedLengthUnit, locale)}</dd></div>
-                  <div><dt>ΔY</dt><dd>{formatLength(selectedLineMeasurement?.deltaY, displayedLengthUnit, locale)}</dd></div>
-                  <div>
-                    <dt>{text(APP_TEXT.length)}</dt>
-                    <dd>{formatLength(selectedLineMeasurement?.length, displayedLengthUnit, locale)}</dd>
-                  </div>
-                  <div>
-                    <dt>{text(APP_TEXT.angle)}</dt>
-                    <dd>{formatMeasurementValue(
-                      selectedLineMeasurement?.angleDegrees,
-                      '°',
-                      2,
-                      locale,
-                    )}</dd>
-                  </div>
-                </dl>
-                {benchmarkRun ? (
-                  <>
-                    <button
-                      type="button"
-                      className="danger"
-                      onClick={() => deleteBenchmarkLine(selectedLine.id)}
-                    >
-                      {text(APP_TEXT.deleteBenchmarkLine)}
-                    </button>
-                    <p className="muted">
-                      {text(APP_TEXT.selectionMeasurementVertexMovementAndLineDeletionAreAvailableOn)}
-                    </p>
-                  </>
-                ) : (
-                  <>
-                  <form onSubmit={(event) => void submitMoveSelectedEdge(event)}>
-                    <fieldset disabled={coreBusy || selectedLine.locked}>
-                      <legend>{text(APP_TEXT.moveEntireLine)}</legend>
-                      <label className="field">
-                        {formattedText(APP_TEXT.horizontalOffsetUnit, { unit: lengthDisplayUnitLabelText })}
-                        <input
-                          name="edge_delta_x_display"
-                          type="text"
-                          inputMode="text"
-                          maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                          defaultValue="0"
-                        />
-                      </label>
-                      <label className="field">
-                        {formattedText(APP_TEXT.verticalOffsetUnit, { unit: lengthDisplayUnitLabelText })}
-                        <input
-                          name="edge_delta_y_display"
-                          type="text"
-                          inputMode="text"
-                          maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                          defaultValue="0"
-                        />
-                      </label>
-                      <div className="property-actions">
-                        <button type="submit">
-                          {text(APP_TEXT.moveEntireLine)}
-                        </button>
-                      </div>
-                    </fieldset>
-                  </form>
-                  <form onSubmit={(event) => void submitMirrorSelectedEdge(event)}>
-                    <fieldset disabled={coreBusy || selectedLine.locked}>
-                      <legend>{text(APP_TEXT.leftRightSymmetry)}</legend>
-                      <label className="field">
-                        {formattedText(APP_TEXT.mirrorAxisXUnit, { unit: lengthDisplayUnitLabelText })}
-                        <input
-                          name="symmetry_axis_x_display"
-                          type="text"
-                          inputMode="text"
-                          maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                          defaultValue="0"
-                        />
-                      </label>
-                      <button type="submit">
-                        {text(APP_TEXT.applyLeftRightReflection)}
-                      </button>
-                    </fieldset>
-                  </form>
-                  <form onSubmit={(event) => void submitRotateSelectedEdge(event)}>
-                    <fieldset disabled={coreBusy || selectedLine.locked}>
-                      <legend>{text(APP_TEXT.rotationalSymmetry)}</legend>
-                      <label className="field">
-                        {formattedText(APP_TEXT.centerXUnit, { unit: lengthDisplayUnitLabelText })}
-                        <input
-                          name="rotation_center_x_display"
-                          type="text"
-                          inputMode="text"
-                          maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                          defaultValue="0"
-                        />
-                      </label>
-                      <label className="field">
-                        {formattedText(APP_TEXT.centerYUnit, { unit: lengthDisplayUnitLabelText })}
-                        <input
-                          name="rotation_center_y_display"
-                          type="text"
-                          inputMode="text"
-                          maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                          defaultValue="0"
-                        />
-                      </label>
-                      <label className="field">
-                        {text(APP_TEXT.rotationAngle)}
-                        <input
-                          name="rotation_angle_degrees"
-                          type="text"
-                          inputMode="text"
-                          maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                          defaultValue="180"
-                        />
-                      </label>
-                      <button type="submit">
-                        {text(APP_TEXT.applyRotation)}
-                      </button>
-                    </fieldset>
-                  </form>
-                  {selectedLine.kind !== 'boundary' && (
-                    <form
-                      onSubmit={(event) => void submitLinearArrayPreview(event)}
-                      onInput={() => {
-                        linearArrayRequestSequenceRef.current += 1
-                        setLinearArrayPreview(null)
-                      }}
-                      data-testid="linear-array-panel"
-                    >
-                      <fieldset disabled={coreBusy || selectedLine.locked}>
-                        <legend>{text(APP_TEXT.linearArray)}</legend>
-                        <label className="field">
-                          {text(APP_TEXT.additionalCopies)}
-                          <input name="linear_array_copies" type="number" min="1" max="16" step="1" defaultValue="1" />
-                        </label>
-                        <label className="field">
-                          {text(APP_TEXT.xOffsetMm)}
-                          <input name="linear_array_dx" type="number" step="any" defaultValue="10" />
-                        </label>
-                        <label className="field">
-                          {text(APP_TEXT.yOffsetMm)}
-                          <input name="linear_array_dy" type="number" step="any" defaultValue="0" />
-                        </label>
-                        <button type="submit" data-testid="preview-linear-array">
-                          {text(APP_TEXT.previewArray)}
-                        </button>
-                      </fieldset>
-                      {linearArrayPreview?.request.edges[0] === selectedLine.id && (
-                        <div data-testid="linear-array-preview" aria-live="polite">
-                          <p>{formattedText(APP_TEXT.verticesVerticesAndEdgesEdgeSeedsWillBeAddedThe, {
-                            vertices: linearArrayPreview.result.generated_vertex_count,
-                            edges: linearArrayPreview.result.generated_edge_seed_count,
-                          })}</p>
-                          <button type="button" onClick={() => void confirmCurrentLinearArray()} data-testid="confirm-linear-array">
-                            {text(APP_TEXT.confirmArray)}
-                          </button>
-                          <button type="button" onClick={() => {
-                            linearArrayRequestSequenceRef.current += 1
-                            setLinearArrayPreview(null)
-                          }}>
-                            {text(APP_TEXT.cancel2)}
-                          </button>
-                        </div>
-                      )}
-                    </form>
-                  )}
-                  {selectedLine.kind !== 'boundary' && (
-                    <form onSubmit={(event)=>void submitRadialArrayPreview(event)} onInput={()=>{radialArrayRequestSequenceRef.current+=1;setRadialArrayPreview(null)}} data-testid="radial-array-panel">
-                      <fieldset disabled={coreBusy||selectedLine.locked}><legend>{text(APP_TEXT.radialArray)}</legend>
-                        <p className="muted">{text(APP_TEXT.usesTheStartVertexOfTheSelectedLineAsThe)}</p>
-                        <label className="field">{text(APP_TEXT.additionalCopies)}<input name="radial_array_copies" type="number" min="1" max="3" step="1" defaultValue="1"/></label>
-                        <label className="field">{text(APP_TEXT.rotationAngle2)}<select name="radial_array_angle" defaultValue="90"><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label>
-                        <button type="submit" data-testid="preview-radial-array">{text(APP_TEXT.previewRadialArray)}</button>
-                      </fieldset>
-                      {radialArrayPreview?.request.edges[0]===selectedLine.id&&<div data-testid="radial-array-preview" aria-live="polite"><p>{formattedText(APP_TEXT.copiesCopiesWillBeAddedAfterConfirmation,{copies:radialArrayPreview.result.additional_copies})}</p><button type="button" data-testid="confirm-radial-array" onClick={()=>void confirmCurrentRadialArray()}>{text(APP_TEXT.confirmRadialArray)}</button><button type="button" onClick={()=>{radialArrayRequestSequenceRef.current+=1;setRadialArrayPreview(null)}}>{text(APP_TEXT.cancel2)}</button></div>}
-                    </form>
-                  )}
-                  <div className="property-actions">
-                    <button
-                      type="button"
-                      aria-pressed={parallelReferenceEdgeId === selectedLine.id}
-                      disabled={coreBusy}
-                      onClick={() => setParallelReferenceEdgeId((current) => (
-                        current === selectedLine.id ? null : selectedLine.id
-                      ))}
-                    >
-                      {parallelReferenceEdgeId === selectedLine.id
-                        ? text(APP_TEXT.clearDirectionReference)
-                        : text(APP_TEXT.setAsDirectionReference)}
-                    </button>
-                    {selectedLine.kind === 'boundary' ? (
-                      <button
-                        type="button"
-                        disabled={coreBusy || selectedLine.locked}
-                        onClick={() => void splitSelectedBoundaryEdge()}
-                      >
-                        {text(APP_TEXT.splitBoundaryEdgeAtMidpoint)}
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="danger"
-                        disabled={coreBusy || selectedLine.locked}
-                        onClick={() => void deleteSelection()}
-                      >
-                        {text(APP_TEXT.deleteLine)}
-                      </button>
-                    )}
-                  </div>
-                  </>
-                )}
-                {selectedLine.locked && (
-                  <p className="muted">
-                    {text(APP_TEXT.thisLineLayerIsLockedSelectionMeasurementAndReferencesRemain)}
-                  </p>
-                )}
-                {selectedLine.kind === 'boundary' && (
-                  <p className="muted">
-                    {text(APP_TEXT.moveTheNewlySelectedVertexAfterSplittingToEditThe)}
-                  </p>
-                )}
-              </>
+              <SelectedLineInspector
+                locale={locale}
+                line={selectedLine}
+                displayUnit={displayedLengthUnit}
+                displayUnitLabel={lengthDisplayUnitLabelText}
+                coreBusy={coreBusy}
+                benchmarkActive={Boolean(benchmarkRun)}
+                parallelReferenceEdgeId={parallelReferenceEdgeId}
+                linearArrayPreview={linearArrayPreview}
+                radialArrayPreview={radialArrayPreview}
+                onDeleteBenchmarkLine={deleteBenchmarkLine}
+                onSubmitMove={(event) => void submitMoveSelectedEdge(event)}
+                onSubmitMirror={(event) => void submitMirrorSelectedEdge(event)}
+                onSubmitRotate={(event) => void submitRotateSelectedEdge(event)}
+                onSubmitLinearArray={(event) => void submitLinearArrayPreview(event)}
+                onInvalidateLinearArray={() => {
+                  linearArrayRequestSequenceRef.current += 1
+                  setLinearArrayPreview(null)
+                }}
+                onConfirmLinearArray={confirmCurrentLinearArray}
+                onSubmitRadialArray={(event) => void submitRadialArrayPreview(event)}
+                onInvalidateRadialArray={() => {
+                  radialArrayRequestSequenceRef.current += 1
+                  setRadialArrayPreview(null)
+                }}
+                onConfirmRadialArray={confirmCurrentRadialArray}
+                onToggleParallelReference={(lineId) =>
+                  setParallelReferenceEdgeId((current) => (
+                    current === lineId ? null : lineId
+                  ))}
+                onSplitBoundaryEdge={splitSelectedBoundaryEdge}
+                onDeleteSelection={deleteSelection}
+              />
             ) : selectedFace ? (
-              <>
-                <dl>
-                  <div><dt>ID</dt><dd>{selectedFace.id}</dd></div>
-                  <div>
-                    <dt>{text(APP_TEXT.boundaryVertices)}</dt>
-                    <dd>{selectedFace.vertexIds.length}</dd>
-                  </div>
-                  <div>
-                    <dt>{text(APP_TEXT.boundaryLines)}</dt>
-                    <dd>{selectedFace.edgeIds.length}</dd>
-                  </div>
-                </dl>
-                <form onSubmit={(event) => void submitMoveSelectedFace(event)}>
-                  <fieldset disabled={coreBusy || selectedFaceLocked}>
-                    <legend>{text(APP_TEXT.moveEntireFace)}</legend>
-                    <label className="field">
-                      {formattedText(APP_TEXT.horizontalOffsetUnit, { unit: lengthDisplayUnitLabelText })}
-                      <input
-                        name="face_delta_x_display"
-                        type="text"
-                        inputMode="text"
-                        maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                        defaultValue="0"
-                      />
-                    </label>
-                    <label className="field">
-                      {formattedText(APP_TEXT.verticalOffsetUnit, { unit: lengthDisplayUnitLabelText })}
-                      <input
-                        name="face_delta_y_display"
-                        type="text"
-                        inputMode="text"
-                        maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                        defaultValue="0"
-                      />
-                    </label>
-                    <div className="property-actions">
-                      <button type="submit">
-                        {text(APP_TEXT.moveEntireFace)}
-                      </button>
-                    </div>
-                  </fieldset>
-                </form>
-                <form onSubmit={(event) => void submitSplitSelectedFace(event)}>
-                  <fieldset disabled={
-                    coreBusy || selectedFaceLocked || selectedFace.vertexIds.length < 4
-                  }>
-                    <legend>{text(APP_TEXT.addOrSplitAFace)}</legend>
-                    <label className="field">
-                      {text(APP_TEXT.startVertex)}
-                      <select
-                        name="face_split_start"
-                        defaultValue={selectedFace.vertexIds[0]}
-                      >
-                        {selectedFace.vertexIds.map((vertexId, index) => (
-                          <option value={vertexId} key={vertexId}>
-                            {formattedText(APP_TEXT.vertexIndexId, { index: index + 1, id: vertexId })}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="field">
-                      {text(APP_TEXT.endVertex)}
-                      <select
-                        name="face_split_end"
-                        defaultValue={selectedFace.vertexIds[2]}
-                      >
-                        {selectedFace.vertexIds.map((vertexId, index) => (
-                          <option value={vertexId} key={vertexId}>
-                            {formattedText(APP_TEXT.vertexIndexId, { index: index + 1, id: vertexId })}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="field">
-                      {text(APP_TEXT.splitLineType)}
-                      <select name="face_split_kind" defaultValue="mountain">
-                        <option value="mountain">
-                          {text(APP_TEXT.mountainFold)}
-                        </option>
-                        <option value="valley">
-                          {text(APP_TEXT.valleyFold)}
-                        </option>
-                        <option value="auxiliary">
-                          {text(APP_TEXT.auxiliaryLine)}
-                        </option>
-                        {nativeSnapshot?.cutting_allowed && (
-                          <option value="cut">
-                            {text(APP_TEXT.cut2)}
-                          </option>
-                        )}
-                      </select>
-                    </label>
-                    <div className="property-actions">
-                      <button type="submit">
-                        {text(APP_TEXT.splitAndAddFace)}
-                      </button>
-                    </div>
-                  </fieldset>
-                </form>
-                <form onSubmit={(event) => void submitMergeSelectedFace(event)}>
-                  <fieldset disabled={
-                    coreBusy || selectedFaceLocked || selectedFaceRemovableEdges.length === 0
-                  }>
-                    <legend>{text(APP_TEXT.deleteOrMergeFace)}</legend>
-                    <label className="field">
-                      {text(APP_TEXT.sharedLineToRemove)}
-                      <select name="face_merge_edge">
-                        {selectedFaceRemovableEdges.map((line) => (
-                          <option value={line.id} key={line.id}>
-                            {lineKindLabel(line.kind, locale)}: {line.id}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <div className="property-actions">
-                      <button type="submit" className="danger">
-                        {text(APP_TEXT.removeLineAndMergeFace)}
-                      </button>
-                    </div>
-                  </fieldset>
-                </form>
-                {selectedFaceLocked && (
-                  <p className="muted">
-                    {text(APP_TEXT.thisFaceCannotMoveBecauseItsBoundaryIncludesALocked)}
-                  </p>
-                )}
-              </>
+              <SelectedFaceInspector
+                locale={locale}
+                face={selectedFace}
+                removableEdges={selectedFaceRemovableEdges}
+                locked={selectedFaceLocked}
+                coreBusy={coreBusy}
+                cuttingAllowed={nativeSnapshot?.cutting_allowed ?? false}
+                displayUnitLabel={lengthDisplayUnitLabelText}
+                onSubmitMove={(event) => void submitMoveSelectedFace(event)}
+                onSubmitSplit={(event) => void submitSplitSelectedFace(event)}
+                onSubmitMerge={(event) => void submitMergeSelectedFace(event)}
+              />
             ) : selectedBenchmarkVertex ? (
-              <>
-                <dl>
-                  <div><dt>ID</dt><dd>{selectedBenchmarkVertex.id}</dd></div>
-                  <div>
-                    <dt>{text(APP_TEXT.type)}</dt>
-                    <dd>{text(APP_TEXT.benchmarkVertex)}</dd>
-                  </div>
-                  <div><dt>X</dt><dd>{selectedBenchmarkVertex.x}</dd></div>
-                  <div><dt>Y</dt><dd>{selectedBenchmarkVertex.y}</dd></div>
-                </dl>
-                <p className="muted">
-                  {text(APP_TEXT.dragTheBenchmarkVertexIn2DToMoveItAnd)}
-                </p>
-              </>
+              <BenchmarkVertexInspector
+                locale={locale}
+                vertex={selectedBenchmarkVertex}
+              />
             ) : selectedVertex ? (
-              <>
-                <dl>
-                  <div><dt>ID</dt><dd>{selectedVertex.id}</dd></div>
-                  <div>
-                    <dt>{text(APP_TEXT.type)}</dt>
-                    <dd>{text(APP_TEXT.vertex)}</dd>
-                  </div>
-                </dl>
-                <form
-                  key={`${selectedVertex.id}:${selectedVertex.position.x}:${selectedVertex.position.y}:${lengthDisplayUnit.key}:${selectedVertexExpression?.x_source ?? ''}:${selectedVertexExpression?.y_source ?? ''}`}
-                  className="coordinate-form"
-                  onSubmit={submitVertexPosition}
-                >
-                  <label className="field">
-                    {`X (${lengthDisplayUnitLabelText})`}
-                    <input
-                      name="x_display"
-                      type="text"
-                      inputMode="text"
-                      maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                      defaultValue={lengthDisplayUnit.millimetresPerUnit === 1
-                        && selectedVertexExpression
-                        ? selectedVertexExpression.x_source
-                        : formatLengthInput(
-                            selectedVertex.position.x,
-                            lengthDisplayUnit,
-                          )}
-                      disabled={coreBusy || selectedVertexLocked}
-                      aria-label={formattedText(APP_TEXT.vertexXCoordinateUnit, { unit: lengthDisplayUnitLabelText })}
-                    />
-                  </label>
-                  <label className="field">
-                    {`Y (${lengthDisplayUnitLabelText})`}
-                    <input
-                      name="y_display"
-                      type="text"
-                      inputMode="text"
-                      maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                      defaultValue={lengthDisplayUnit.millimetresPerUnit === 1
-                        && selectedVertexExpression
-                        ? selectedVertexExpression.y_source
-                        : formatLengthInput(
-                            selectedVertex.position.y,
-                            lengthDisplayUnit,
-                          )}
-                      disabled={coreBusy || selectedVertexLocked}
-                      aria-label={formattedText(APP_TEXT.vertexYCoordinateUnit, { unit: lengthDisplayUnitLabelText })}
-                    />
-                  </label>
-                  <div className="property-actions">
-                    <button
-                      type="submit"
-                      name="vertex_action"
-                      value="update_coordinates"
-                      disabled={coreBusy || selectedVertexLocked}
-                    >
-                      {text(APP_TEXT.updateCoordinates)}
-                    </button>
-                    <button
-                      type="button"
-                      className="danger"
-                      disabled={
-                        coreBusy ||
-                        selectedVertexLocked ||
-                        (selectedVertexIsBoundary && paperBoundaryVertexCount <= 3)
-                      }
-                      onClick={() => void deleteSelection()}
-                    >
-                      {selectedVertexIsBoundary
-                        ? text(APP_TEXT.deleteBoundaryVertexAndMergeEdges)
-                        : text(APP_TEXT.deleteVertex)}
-                    </button>
-                  </div>
-                  {selectedVertexExpression?.polar_construction ? (
-                    <p className="muted" data-vertex-polar-expression>
-                      {formattedText(APP_TEXT.constructionExpressionLengthLengthMmAngleAngleEvaluatedLengthValueMm, {
-                        length: selectedVertexExpression.polar_construction.length_source,
-                        angle: selectedVertexExpression.polar_construction.angle_degrees_source,
-                        lengthValue: selectedVertexExpression.polar_construction.adopted_length_mm,
-                        angleValue: selectedVertexExpression.polar_construction.adopted_angle_degrees,
-                      })}
-                    </p>
-                  ) : null}
-                  <fieldset>
-                    <legend>
-                      {text(APP_TEXT.endpointByLengthAndAngle)}
-                    </legend>
-                    <label className="field">
-                      {`${text(APP_TEXT.length)} (${lengthDisplayUnitLabelText})`}
-                      <input
-                        name="polar_length_display"
-                        type="text"
-                        inputMode="text"
-                        maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                        defaultValue={formatLengthInput(10, lengthDisplayUnit)}
-                        disabled={coreBusy || selectedVertexLocked}
-                        aria-label={formattedText(APP_TEXT.lengthFromTheStartVertexUnit, { unit: lengthDisplayUnitLabelText })}
-                      />
-                    </label>
-                    <label className="field">
-                      {text(APP_TEXT.angleDegrees)}
-                      <input
-                        name="polar_angle_degrees"
-                        type="text"
-                        inputMode="text"
-                        maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                        defaultValue="0"
-                        disabled={coreBusy || selectedVertexLocked}
-                        aria-label={text(APP_TEXT.angleFromTheStartVertexDegrees)}
-                      />
-                    </label>
-                    <label className="field">
-                      {text(APP_TEXT.lineType)}
-                      <select
-                        name="polar_edge_kind"
-                        defaultValue="mountain"
-                        disabled={coreBusy || selectedVertexLocked}
-                        aria-label={text(APP_TEXT.lineTypeForLengthAndAngleDrawing)}
-                      >
-                        <option value="mountain">
-                          {text(APP_TEXT.mountainFold)}
-                        </option>
-                        <option value="valley">
-                          {text(APP_TEXT.valleyFold)}
-                        </option>
-                        <option value="auxiliary">
-                          {text(APP_TEXT.auxiliaryLine)}
-                        </option>
-                        {nativeSnapshot?.cutting_allowed && (
-                          <option value="cut">
-                            {text(APP_TEXT.cut2)}
-                          </option>
-                        )}
-                      </select>
-                    </label>
-                    <div className="property-actions">
-                      <button
-                        type="submit"
-                        name="vertex_action"
-                        value="polar_endpoint"
-                        disabled={coreBusy || selectedVertexLocked}
-                      >
-                        {text(APP_TEXT.drawLineByLengthAndAngle)}
-                      </button>
-                      <button
-                        type="submit"
-                        name="vertex_action"
-                        value="ray_to_target"
-                        data-testid="draw-ray-to-first-target"
-                        disabled={coreBusy || selectedVertexLocked}
-                      >
-                        {text(APP_TEXT.drawToFirstTargetByAngle)}
-                      </button>
-                    </div>
-                  </fieldset>
-                  <fieldset>
-                    <legend>
-                      {text(APP_TEXT.compassCircle)}
-                    </legend>
-                    <label className="field">
-                      {`${text(APP_TEXT.radius)} (${lengthDisplayUnitLabelText})`}
-                      <input
-                        name="compass_radius_display"
-                        type="number"
-                        inputMode="decimal"
-                        min="0.000001"
-                        step="any"
-                        defaultValue="10"
-                        disabled={coreBusy}
-                      />
-                    </label>
-                    <div className="property-actions">
-                      <button
-                        type="button"
-                        disabled={coreBusy}
-                        onClick={(event) => {
-                          const form = event.currentTarget.form
-                          const input = form?.elements.namedItem('compass_radius_display')
-                          if (!(input instanceof HTMLInputElement)) return
-                          const displayRadius = Number(input.value)
-                          const radius = displayRadius
-                            * lengthDisplayUnit.millimetresPerUnit
-                          if (!Number.isFinite(radius) || radius <= 0) return
-                          setCompassCircles((current) => [
-                            ...current,
-                            {
-                              centerX: selectedVertex.position.x,
-                              centerY: selectedVertex.position.y,
-                              radius,
-                            },
-                          ].slice(-64))
-                        }}
-                      >
-                        {text(APP_TEXT.addCircleAtSelectedVertex)}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={coreBusy || compassCircles.length === 0}
-                        onClick={() => setCompassCircles([])}
-                      >
-                        {text(APP_TEXT.clearCompassCircles)}
-                      </button>
-                    </div>
-                    <p className="muted">
-                      {formattedText(APP_TEXT.countConstructionCirclesTheVertexToolSnapsToCircleLine, { count: compassCircles.length })}
-                    </p>
-                  </fieldset>
-                  {selectedVertexLocked && (
-                    <p className="muted">
-                      {text(APP_TEXT.thisVertexIsConnectedToALineOnALocked)}
-                    </p>
-                  )}
-                  <p className="muted">
-                    {selectedVertexIsBoundary
-                      ? formattedText(APP_TEXT.aBoundaryNeedsAtLeastThreePointsCountCurrentlyThis, { count: paperBoundaryVertexCount })
-                      : text(APP_TEXT.deleteConnectedLinesBeforeDeletingTheirVertex)}
-                  </p>
-                </form>
-              </>
+              <SelectedVertexInspector
+                locale={locale}
+                vertex={selectedVertex}
+                expression={selectedVertexExpression}
+                displayUnit={lengthDisplayUnit}
+                displayUnitLabel={lengthDisplayUnitLabelText}
+                coreBusy={coreBusy}
+                locked={selectedVertexLocked}
+                boundary={selectedVertexIsBoundary}
+                boundaryVertexCount={paperBoundaryVertexCount}
+                cuttingAllowed={nativeSnapshot?.cutting_allowed ?? false}
+                compassCircleCount={compassCircles.length}
+                onSubmit={submitVertexPosition}
+                onDeleteSelection={deleteSelection}
+                onAddCompassCircle={(circle) => setCompassCircles(
+                  (current) => [...current, circle].slice(-64),
+                )}
+                onClearCompassCircles={() => setCompassCircles([])}
+              />
             ) : nativeSnapshot && !benchmarkRun ? (
-              <>
-                <p className="muted">
-                  {text(APP_TEXT.selectALineOrVertexOrAddAVertexBy)}
-                </p>
-                <form
-                  key={`${nativeSnapshot.project_instance_id}:${lengthDisplayUnit.key}`}
-                  className="coordinate-form"
-                  onSubmit={(event) => void submitDirectVertex(event)}
-                >
-                  <label className="field">
-                    {`X (${lengthDisplayUnitLabelText})`}
-                    <input
-                      name="direct_x_display"
-                      type="text"
-                      inputMode="text"
-                      maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                      defaultValue="0"
-                      disabled={coreBusy || nativeLayerView.defaultLayerLocked}
-                      aria-label={formattedText(APP_TEXT.newVertexXCoordinateUnit, { unit: lengthDisplayUnitLabelText })}
-                    />
-                  </label>
-                  <label className="field">
-                    {`Y (${lengthDisplayUnitLabelText})`}
-                    <input
-                      name="direct_y_display"
-                      type="text"
-                      inputMode="text"
-                      maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                      defaultValue="0"
-                      disabled={coreBusy || nativeLayerView.defaultLayerLocked}
-                      aria-label={formattedText(APP_TEXT.newVertexYCoordinateUnit, { unit: lengthDisplayUnitLabelText })}
-                    />
-                  </label>
-                  <div className="property-actions">
-                    <button
-                      type="submit"
-                      disabled={coreBusy || nativeLayerView.defaultLayerLocked}
-                    >
-                      {text(APP_TEXT.addVertexByCoordinates)}
-                    </button>
-                  </div>
-                  {nativeLayerView.defaultLayerLocked && (
-                    <p className="muted">
-                      {text(APP_TEXT.unlockTheDefaultLayerBeforeAddingAVertex)}
-                    </p>
-                  )}
-                </form>
-              </>
+              <DirectVertexInspector
+                locale={locale}
+                projectInstanceId={nativeSnapshot.project_instance_id}
+                displayUnit={lengthDisplayUnit}
+                displayUnitLabel={lengthDisplayUnitLabelText}
+                coreBusy={coreBusy}
+                defaultLayerLocked={nativeLayerView.defaultLayerLocked}
+                onSubmit={(event) => void submitDirectVertex(event)}
+              />
             ) : (
-              <p className="muted">
-                {text(APP_TEXT.selectALineOrVertex)}
-              </p>
+              <p className="muted">{text(APP_TEXT.selectALineOrVertex)}</p>
             )}
           </section>
           {nativeSnapshot && !benchmarkRun && (
-            <section className="property-section">
-              <h2>{text(APP_TEXT.projectMemo)}</h2>
-              <form
-                key={`${nativeSnapshot.project_instance_id}:${nativeSnapshot.memo}`}
-                onSubmit={(event) => void submitProjectMemo(event)}
-              >
-                <label>
-                  <span>{text(APP_TEXT.notes)}</span>
-                  <textarea
-                    name="project_memo"
-                    maxLength={16_000}
-                    rows={5}
-                    defaultValue={nativeSnapshot.memo}
-                    disabled={coreBusy || recoveryBlocking}
-                  />
-                </label>
-                <div className="property-actions">
-                  <button type="submit" disabled={coreBusy || recoveryBlocking}>
-                    {text(APP_TEXT.saveMemo)}
-                  </button>
-                </div>
-              </form>
-              <div aria-labelledby="beginner-candidate-heading">
-                <BeginnerCandidateControls
-                  locale={locale}
-                  coreBusy={coreBusy}
-                  recoveryBlocking={recoveryBlocking}
-                  skeletonTreeStatus={beginnerSkeletonTree.status}
-                  candidateWorkflow={beginnerCandidateWorkflow}
-                  gridWorkflow={beginnerGridWorkflow}
-                />
-                <BeginnerCandidateResults
-                  locale={locale}
-                  snapshot={nativeSnapshot}
-                  coreBusy={coreBusy}
-                  recoveryBlocking={recoveryBlocking}
-                  candidateWorkflow={beginnerCandidateWorkflow}
-                />
-              </div>
-            </section>
+            <ProjectMemoAndCandidateSection
+              locale={locale}
+              snapshot={nativeSnapshot}
+              coreBusy={coreBusy}
+              recoveryBlocking={recoveryBlocking}
+              skeletonTreeStatus={beginnerSkeletonTree.status}
+              candidateWorkflow={beginnerCandidateWorkflow}
+              gridWorkflow={beginnerGridWorkflow}
+              onSubmitMemo={(event) => void submitProjectMemo(event)}
+            />
           )}
           {nativeSnapshot && !benchmarkRun && (
-            <section className="property-section" aria-labelledby="beginner-design-heading">
-              <h2 id="beginner-design-heading">
-                {text(APP_TEXT.beginnerDesignPriorities)}
-              </h2>
-              <p className="muted">
-                {text(APP_TEXT.setsHowFutureOnDeviceDesignCandidatesAreScoredIt)}
-              </p>
-              <form
-                ref={beginnerDesignFormRef}
-                key={[
-                  nativeSnapshot.project_instance_id,
-                  nativeSnapshot.beginner_design_profile.preset,
-                  nativeSnapshot.beginner_design_profile.generation_constraints.maximum_steps,
-                  nativeSnapshot.beginner_design_profile.generation_constraints.detail_level,
-                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.generic_body_size_tenths_mm),
-                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.generic_body_outline_tenths_mm),
-                  nativeSnapshot.beginner_design_profile.generation_constraints.generic_body_outline_mode ?? 'symmetric',
-                  nativeSnapshot.beginner_design_profile.generation_constraints.target_category ?? 'unset',
-                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.target_parts),
-                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.skeleton_segments),
-                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.protrusions),
-                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.bulge_targets),
-                  JSON.stringify(nativeSnapshot.beginner_design_profile.generation_constraints.target_asset),
-                  nativeSnapshot.beginner_design_profile.generation_constraints.allowed_techniques.join(','),
-                ].join(':')}
-                onSubmit={submitBeginnerDesignProfile}
-              >
-                {nativeSnapshot.beginner_design_profile.outline_edit_authority && (
-                  <p role="status">{formattedText(APP_TEXT.savedOutlineEditAuthorityCountEditsImageDigestDigest, {
-                    count: nativeSnapshot.beginner_design_profile.outline_edit_authority.edits.length,
-                    digest: nativeSnapshot.beginner_design_profile.outline_edit_authority.source_sha256
-                      .slice(0, 4).map((byte) => byte.toString(16).padStart(2, '0')).join(''),
-                  })}</p>
-                )}
-                {nativeSnapshot.beginner_design_profile.generation_provenance?.generic_tree && (
-                  <div role="status"><p>{formattedText(APP_TEXT.savedGenericTreeNameOriginSourceOrientationOrientationGeneratorV, {
-                    name: nativeSnapshot.beginner_design_profile.generation_constraints.custom_object_display_name ?? 'Custom object',
-                    source: nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.source,
-                    orientation: nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.orientation,
-                    version: nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.generator_version,
-                  })}</p>
-                    {nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.instruction_proposal && (
-                      <ol aria-label={text(APP_TEXT.readOnlyFoldingInstructionProposal)}>
-                        {nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.instruction_proposal.steps.map((step) => (
-                          <li key={step.canonical_crease_id}>
-                            {step.canonical_crease_id} · depth {step.tree_depth} · {step.assignment} · {step.target_branch} · fixed {step.fixed_side}
-                            <br />{step.caution}
-                          </li>
-                        ))}
-                      </ol>
-                    )}
-                    {nativeSnapshot.beginner_design_profile.generation_provenance.generic_tree.instruction_proposal && (
-                      <button type="button" onClick={confirmAndAppendGenericTreeInstructions}>
-                        {text(APP_TEXT.confirmAndAppendToInstructions)}
-                      </button>
-                    )}
-                  </div>
-                )}
-                <label className="field">
-                  <span>{text(APP_TEXT.evaluationPreset)}</span>
-                  <select
-                    name="design_preset"
-                    defaultValue={nativeSnapshot.beginner_design_profile.preset}
-                    disabled={coreBusy || recoveryBlocking}
-                    aria-describedby="beginner-design-weights"
-                  >
-                    <option value="balanced">
-                      {text(APP_TEXT.balanced)}
-                    </option>
-                    <option value="shape_priority">
-                      {text(APP_TEXT.shapeFidelityPriority)}
-                    </option>
-                    <option value="foldability_priority">
-                      {text(APP_TEXT.foldabilityPriority)}
-                    </option>
-                  </select>
-                </label>
-                <p id="beginner-design-weights" className="muted">
-                  {formattedText(APP_TEXT.currentWeightsShapeShapeFoldabilityFoldabilityStepsStepsPaperEfficiency, {
-                    shape: nativeSnapshot.beginner_design_profile.shape_fidelity_weight,
-                    foldability: nativeSnapshot.beginner_design_profile.foldability_weight,
-                    steps: nativeSnapshot.beginner_design_profile.step_count_weight,
-                    paper: nativeSnapshot.beginner_design_profile.paper_efficiency_weight,
-                  })}
-                </p>
-                <label className="field">
-                  <span>{text(APP_TEXT.targetShapeCategory)}</span>
-                  <select
-                    name="target_category"
-                    required
-                    defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints.target_category ?? ''}
-                    disabled={coreBusy || recoveryBlocking}
-                    aria-describedby="beginner-target-category-help"
-                  >
-                    <option value="" disabled>
-                      {text(APP_TEXT.selectACategory)}
-                    </option>
-                    <option value="animal">{text(APP_TEXT.animal)}</option>
-                    <option value="insect">{text(APP_TEXT.insect)}</option>
-                    <option value="custom_object">{text(APP_TEXT.customObject)}</option>
-                  </select>
-                </label>
-                <label className="field">
-                  <span>{text(APP_TEXT.customObjectDisplayName)}</span>
-                  <input
-                    name="custom_object_display_name"
-                    type="text"
-                    maxLength={64}
-                    defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints.custom_object_display_name ?? 'Custom object'}
-                    disabled={coreBusy || recoveryBlocking}
-                    aria-describedby="beginner-custom-object-name-help"
-                  />
-                </label>
-                <p id="beginner-custom-object-name-help" className="muted">
-                  {text(APP_TEXT.displayMetadataOnlyItDoesNotAffectGeneratorAuthorityOr)}
-                </p>
-                <p id="beginner-target-category-help" className="muted">
-                  {text(APP_TEXT.animalAndInsectUseNamedTemplatesCustomObjectIsRouted)}
-                </p>
-                <label className="field">
-                  <span>{text(APP_TEXT.referenceImage)}</span>
-                  <select
-                    name="target_reference_underlay"
-                    defaultValue={
-                      nativeSnapshot.beginner_design_profile.generation_constraints.target_asset
-                        ?.kind === 'reference_image'
-                        ? nativeSnapshot.beginner_design_profile.generation_constraints.target_asset
-                            .underlay_id
-                        : ''
-                    }
-                    disabled={coreBusy || recoveryBlocking}
-                    aria-describedby="beginner-target-asset-help"
-                  >
-                    <option value="">{text(APP_TEXT.none2)}</option>
-                    {(nativeSnapshot.underlays?.underlays ?? []).map((underlay, index) => (
-                      <option key={underlay.id} value={underlay.id}>
-                        {formattedText(APP_TEXT.underlayImageIndex, { index: index + 1 })}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <p id="beginner-target-asset-help" className="muted">
-                  {text(APP_TEXT.onlyPNGJPEGImagesAlreadyPlacedInThisProjectCan)}
-                </p>
-                <div aria-live="polite">
-                  <button
-                    type="button"
-                    onClick={requestBeginnerReferenceModelImport}
-                    disabled={coreBusy || recoveryBlocking}
-                    aria-describedby="beginner-reference-model-help"
-                  >
-                    {text(APP_TEXT.import3DReferenceModel)}
-                  </button>
-                  {beginnerRecognitionBusy && <button type="button"
-                    onClick={invalidateBeginnerRecognition}>
-                    {text(APP_TEXT.cancelImageRecognition)}
-                  </button>}
-                  <p id="beginner-reference-model-help" className="muted">
-                    {text(APP_TEXT.aGLB20ModelIsAReadOnlyVisual)}
-                  </p>
-                  <fieldset aria-describedby="reference-consensus-selection-help">
-                    <legend>References for consensus</legend>
-                    <p id="reference-consensus-selection-help" className="muted">Select two to four project references. Content hashes are read only by the native core.</p>
-                    {[...(nativeSnapshot.underlays?.underlays ?? []).map((underlay, index) => ({
-                      kind: 'image' as const, asset_id: underlay.asset, label: `Underlay image ${index + 1} (image)`,
-                    })), ...(nativeSnapshot.reference_model_assets ?? []).map((asset, index) => ({
-                      kind: 'reference_model' as const, asset_id: asset.asset_id, label: `3D reference ${index + 1} (GLB)`,
-                    }))].filter((asset, index, all) => all.findIndex((candidate) => candidate.asset_id === asset.asset_id) === index)
-                      .map((asset) => {
-                        const checked = consensusSelectionDraft.some((selection) => selection.asset_id === asset.asset_id)
-                        return <label key={asset.asset_id}><input type="checkbox" checked={checked}
-                          disabled={!checked && consensusSelectionDraft.length >= 4}
-                          onChange={() => toggleConsensusReference(asset.kind, asset.asset_id)} />{asset.label}</label>
-                      })}
-                    <p role="status" aria-live="polite">{`${consensusSelectionDraft.length} of 2–4 references selected.`}</p>
-                    <button type="button" disabled={consensusSelectionDraft.length < 2 || consensusSelectionDraft.length > 4 || coreBusy || recoveryBlocking}
-                      onClick={saveConsensusReferences}>Save consensus references</button>
-                  </fieldset>
-                  {(nativeSnapshot.reference_model_assets ?? []).length > 0 && <ul aria-label={text(APP_TEXT.project3DReferenceAssets)}>
-                    {(nativeSnapshot.reference_model_assets ?? []).map((asset, index) => {
-                      const active = nativeSnapshot.beginner_design_profile.generation_constraints.target_asset
-                        ?.kind === 'reference_model'
-                        && nativeSnapshot.beginner_design_profile.generation_constraints.target_asset.asset_id === asset.asset_id
-                      const archived = nativeSnapshot.beginner_design_profile.archived_reference_model_asset_ids
-                        ?.includes(asset.asset_id) ?? false
-                      return <li key={asset.asset_id}>
-                        {`GLB ${index + 1} · SHA-256 ${asset.sha256.slice(0, 4)
-                          .map((byte) => byte.toString(16).padStart(2, '0')).join('')}`}
-                        {active ? <span> · Active reference</span> : !archived && <button type="button"
-                          onClick={() => activateBeginnerReferenceAsset(asset.asset_id)}>
-                          Activate this reference
-                        </button>}
-                        <button type="button" onClick={() => archiveBeginnerReferenceAsset(asset.asset_id, !archived)}>
-                          {archived ? 'Restore archived reference' : 'Archive reference without deleting bytes'}
-                        </button>
-                      </li>
-                    })}
-                  </ul>}
-                  {nativeSnapshot.beginner_design_profile.generation_constraints.target_asset?.kind
-                    === 'reference_model' && (
-                    <>
-                      <p role="status">
-                        {text(APP_TEXT.aValidated3DReferenceModelIsAttached)}
-                      </p>
-                      <button type="button" onClick={toggleBeginnerReferenceModelPreview}>
-                        {beginnerReferenceGeometry
-                          ? text(APP_TEXT.hide3DReferencePreview)
-                          : text(APP_TEXT.show3DReferencePreview)}
-                      </button>
-                      <button type="button" onClick={requestBeginnerReferenceSuggestion}
-                        disabled={coreBusy || recoveryBlocking}>
-                        {text(APP_TEXT.suggestRangesFromSafeGeometryFeatures)}
-                      </button>
-                      {beginnerReferenceSuggestion && (
-                        <div role="status">
-                          <p>{text(APP_TEXT.thisIsNot3DRecognitionItIsAReadOnly)}</p>
-                          <p>{formattedText(APP_TEXT.countProtrusionsLengthLengthMmThicknessThicknessMm, {
-                            count: beginnerReferenceSuggestion.protrusions.reduce((sum, target) => sum + target.count, 0),
-                            length: beginnerReferenceSuggestion.protrusions[0]?.length_tenths_mm ? beginnerReferenceSuggestion.protrusions[0].length_tenths_mm / 10 : 0,
-                            thickness: beginnerReferenceSuggestion.protrusions[0]?.thickness_tenths_mm ? beginnerReferenceSuggestion.protrusions[0].thickness_tenths_mm / 10 : 0,
-                          })}</p>
-                          <p>{formattedText(APP_TEXT.general3DProposalQualityScore100PrincipalExtentsXY, {
-                            score: beginnerReferenceSuggestion.quality_score,
-                            x: beginnerReferenceSuggestion.principal_axis_extents_tenths_mm[0],
-                            y: beginnerReferenceSuggestion.principal_axis_extents_tenths_mm[1],
-                            z: beginnerReferenceSuggestion.principal_axis_extents_tenths_mm[2],
-                            protrusions: beginnerReferenceSuggestion.general_protrusion_candidates.length,
-                            bars: beginnerReferenceSuggestion.stick_bars.length,
-                          })}</p>
-                          {beginnerReferenceSuggestion.insufficiency_reasons.length > 0 && <p>{formattedText(APP_TEXT.general3DProposalInsufficiencyReasons, { reasons: beginnerReferenceSuggestion.insufficiency_reasons.join(', ') })}</p>}
-                          <fieldset>
-                            <legend>{text(APP_TEXT.explicitlyAssignMeasuredSurfaceRangesTo28Parts)}</legend>
-                            {beginnerReferenceSuggestion.surface_ranges.map((range, index) => {
-                              const target = beginnerReferenceSuggestion.protrusions[index]
-                              if (!target) return null
-                              return <div key={range.id}>
-                                <input type="checkbox"
-                                  aria-label={formattedText(APP_TEXT.assignSurfaceRangeRangeIdToPartPartId, { rangeId: range.id, partId: target.id })}
-                                  checked={beginnerSurfaceAssignments.some(
-                                    (item) => item.range_id === range.id)}
-                                  onChange={(event) => setBeginnerSurfaceAssignments((current) => {
-                                    if (event.currentTarget.checked) return [...current, {
-                                      range_id: range.id, protrusion_id: target.id,
-                                    }]
-                                    return current.filter((item) => item.range_id !== range.id)
-                                  })} />
-                                {formattedText(APP_TEXT.surfaceRangeIdCenterXYZLengthLengthMm, {
-                                  id: range.id,
-                                  x: target.position_tenths_mm[0] / 10,
-                                  y: target.position_tenths_mm[1] / 10,
-                                  z: target.position_tenths_mm[2] / 10,
-                                  length: target.length_tenths_mm / 10,
-                                })}
-                                <span>{formattedText(APP_TEXT.partId, { id: target.id })}</span>
-                                <span>{text(APP_TEXT.triangleIndicesAddRemoveAdjacentFacesOnly)}</span>
-                                <input type="text"
-                                  aria-label={formattedText(APP_TEXT.surfaceRangeRangeIdTriangleIndices, { rangeId: range.id })}
-                                  value={beginnerSurfaceEdits.find(
-                                    (edit) => edit.range_id === range.id)?.triangle_indices.join(',') ?? ''}
-                                  onChange={(event) => {
-                                    const indices = event.currentTarget.value.split(',')
-                                      .map((value) => Number(value.trim()))
-                                      .filter((value) => Number.isInteger(value) && value >= 0)
-                                    setBeginnerSurfaceEdits((current) => current.map((edit) =>
-                                      edit.range_id === range.id
-                                        ? { ...edit, triangle_indices: [...new Set(indices)] }
-                                        : edit))
-                                  }} />
-                                {(['X', 'Y', 'Z'] as const).map((axis, axisIndex) => <label key={axis}>
-                                  <span>{`Bulge direction ${axis}`}</span>
-                                  <input type="number" min="-1" max="1" step="0.001"
-                                    value={(beginnerSurfaceEdits.find(
-                                      (edit) => edit.range_id === range.id)?.bulge_direction_milli[axisIndex] ?? 0) / 1000}
-                                    onChange={(event) => setBeginnerSurfaceEdits((current) => current.map((edit) => {
-                                      if (edit.range_id !== range.id) return edit
-                                      const direction = [...edit.bulge_direction_milli] as [number, number, number]
-                                      direction[axisIndex] = Math.round(Number(event.currentTarget.value) * 1000)
-                                      return { ...edit, bulge_direction_milli: direction }
-                                    }))} />
-                                </label>)}
-                                <label><span>{text(APP_TEXT.bulgeAmountMm)}</span>
-                                  <input type="number" min="0.1" max="100000" step="0.1"
-                                    value={(beginnerSurfaceEdits.find(
-                                      (edit) => edit.range_id === range.id)?.bulge_amount_tenths_mm ?? 1) / 10}
-                                    onChange={(event) => setBeginnerSurfaceEdits((current) => current.map((edit) =>
-                                      edit.range_id === range.id ? { ...edit,
-                                        bulge_amount_tenths_mm: Math.round(Number(event.currentTarget.value) * 10) } : edit))} />
-                                </label>
-                              </div>
-                            })}
-                            <p>{text(APP_TEXT.onlyGLBMeasuredRangesAreShownDuplicateUnconfirmedOrTampered)}</p>
-                          </fieldset>
-                          <button type="button" onClick={confirmBeginnerReferenceSuggestion}
-                            disabled={beginnerSurfaceAssignments.length < 2}>
-                            {text(APP_TEXT.confirmAndApplySuggestedRanges)}
-                          </button>
-                          {(beginnerReferenceSuggestion.generic_body_outline_tenths_mm
-                            || beginnerReferenceSuggestion.protrusions.some(
-                              (target) => target.local_outline_tenths_mm)) && <>
-                            <p>{formattedText(APP_TEXT.editableBodyContourBodyPointsLocalContoursLocal, {
-                              body: beginnerReferenceSuggestion.generic_body_outline_tenths_mm?.length ?? 0,
-                              local: beginnerReferenceSuggestion.protrusions.filter(
-                                (target) => target.local_outline_tenths_mm).length,
-                            })}</p>
-                            <button type="button" hidden onClick={copyBeginnerReferenceContours}>
-                              {text(APP_TEXT.reviewAndCopyContoursToEditor)}
-                            </button>
-                          </>}
-                          <RecognitionContourCopyAction locale={locale}
-                            bodyPointCount={beginnerReferenceSuggestion
-                              .generic_body_outline_tenths_mm?.length ?? 0}
-                            localContourCount={beginnerReferenceSuggestion.protrusions.filter(
-                              (target) => target.local_outline_tenths_mm).length}
-                            onCopy={copyBeginnerReferenceContours} />
-                          <button type="button" onClick={copyBeginnerGeneralReferenceTarget}>
-                            {text(APP_TEXT.reviewAndCopyGeneral3DProposalToEditor)}
-                          </button>
-                          {beginnerComponentBridgeOverride && (
-                            <fieldset aria-label={text(APP_TEXT.reviewedComponentBridgeOverrides)}>
-                              <legend>Component bridges (reviewed, maximum 7)</legend>
-                              {beginnerComponentBridgeOverride.bridges.map((bridge, index) => (
-                                <label key={bridge.id}>
-                                  <input type="checkbox" checked={bridge.accepted} onChange={(event) => {
-                                    setBeginnerComponentBridgeOverride({ ...beginnerComponentBridgeOverride,
-                                      bridges: beginnerComponentBridgeOverride.bridges.map((item, itemIndex) =>
-                                        itemIndex === index ? { ...item, accepted: event.target.checked } : item),
-                                    })
-                                  }} />
-                                  {`Bridge ${bridge.id}: component `}
-                                  <select value={bridge.start_component_id} onChange={(event) => setBeginnerComponentBridgeOverride({
-                                    ...beginnerComponentBridgeOverride, bridges: beginnerComponentBridgeOverride.bridges.map((item, itemIndex) => itemIndex === index ? { ...item, start_component_id: Number(event.target.value) } : item),
-                                  })}>{Array.from({ length: beginnerComponentBridgeOverride.component_count }, (_, id) => <option key={id} value={id}>{id}</option>)}</select>
-                                  {' to '}
-                                  <select value={bridge.end_component_id} onChange={(event) => setBeginnerComponentBridgeOverride({
-                                    ...beginnerComponentBridgeOverride, bridges: beginnerComponentBridgeOverride.bridges.map((item, itemIndex) => itemIndex === index ? { ...item, end_component_id: Number(event.target.value) } : item),
-                                  })}>{Array.from({ length: beginnerComponentBridgeOverride.component_count }, (_, id) => <option key={id} value={id}>{id}</option>)}</select>
-                                </label>
-                              ))}
-                            </fieldset>
-                          )}
-                        </div>
-                      )}
-                      {beginnerReferenceGeometry && (
-                        <svg
-                          viewBox="-100 -100 200 200"
-                          role="img"
-                          aria-label={text(APP_TEXT.readOnly3DReferenceModel)}
-                        >
-                          {beginnerReferenceGeometry.triangle_indices.map((triangle, index) => {
-                            const points = triangle.map((vertex) => {
-                              const position = beginnerReferenceGeometry.positions[vertex]
-                              return `${position[0]},${-position[1]}`
-                            }).join(' ')
-                            return <polygon key={index} points={points} fill="none" stroke="currentColor" />
-                          })}
-                        </svg>
-                      )}
-                    </>
-                  )}
-                </div>
-                <BeginnerRecognitionPanel
-                  locale={locale}
-                  coreBusy={coreBusy}
-                  recoveryBlocking={recoveryBlocking}
-                  workflow={beginnerRecognitionWorkflow}
-                />
-                <fieldset
-                  aria-describedby="beginner-target-parts-help beginner-target-parts-total"
-                  onInput={(event) => {
-                    const inputs = event.currentTarget.querySelectorAll<HTMLInputElement>(
-                      'input[name^="target_part_"]',
-                    )
-                    setBeginnerPartTotal(Array.from(inputs).reduce(
-                      (sum, input) => sum + Math.max(0, Number(input.value) || 0),
-                      0,
-                    ))
-                  }}
-                >
-                  <legend>{text(APP_TEXT.targetShapeParts)}</legend>
-                  {([
-                    ['head', APP_TEXT.head2],
-                    ['torso', APP_TEXT.torso2],
-                    ['leg', APP_TEXT.legs],
-                    ['horn', APP_TEXT.horns],
-                    ['ear', APP_TEXT.ears],
-                    ['wing', APP_TEXT.wings],
-                    ['tail', APP_TEXT.tails],
-                  ] as const).map(([kind, label]) => (
-                    <label className="field" key={kind}>
-                      <span>{text(label)}</span>
-                      <input
-                        name={`target_part_${kind}`}
-                        type="number"
-                        min={kind === 'head' || kind === 'torso' ? 1 : 0}
-                        max={8}
-                        required={kind === 'head' || kind === 'torso'}
-                        defaultValue={
-                          nativeSnapshot.beginner_design_profile.generation_constraints.target_parts
-                            .find((part) => part.kind === kind)?.count
-                            ?? (kind === 'head' || kind === 'torso' ? 1 : 0)
-                        }
-                        disabled={coreBusy || recoveryBlocking}
-                      />
-                    </label>
-                  ))}
-                </fieldset>
-                <fieldset aria-describedby="beginner-body-size-help">
-                  <legend>{text(APP_TEXT.targetBodySizeOptional)}</legend>
-                  <label className="field">
-                    <span>{text(APP_TEXT.bodyWidthMm)}</span>
-                    <input name="generic_body_width_mm" type="number" min={0.1} max={100000} step={0.1}
-                      value={beginnerBodySize?.[0] === undefined ? '' : beginnerBodySize[0] / 10}
-                      onChange={(event) => { const value = Number(event.currentTarget.value)
-                        setBeginnerBodySize((current) => event.currentTarget.value === '' ? undefined
-                          : [Math.round(value * 10), current?.[1] ?? Math.round(value * 10)]) }} />
-                  </label>
-                  <label className="field">
-                    <span>{text(APP_TEXT.bodyHeightMm)}</span>
-                    <input name="generic_body_height_mm" type="number" min={0.1} max={100000} step={0.1}
-                      value={beginnerBodySize?.[1] === undefined ? '' : beginnerBodySize[1] / 10}
-                      onChange={(event) => { const value = Number(event.currentTarget.value)
-                        setBeginnerBodySize((current) => event.currentTarget.value === '' ? undefined
-                          : [current?.[0] ?? Math.round(value * 10), Math.round(value * 10)]) }} />
-                  </label>
-                  <p id="beginner-body-size-help" className="muted">{text(APP_TEXT.leaveBothFieldsBlankForNoBodySizeTargetA)}</p>
-                </fieldset>
-                <GenericBodyOutlineEditor locale={locale} points={beginnerBodyOutline}
-                  mode={beginnerBodyOutlineMode} onModeChange={(mode) => {
-                    setBeginnerBodyOutlineMode(mode)
-                    setBeginnerBodyOutline([])
-                  }} onChange={setBeginnerBodyOutline} />
-                <BeginnerShapeCanvasPreview locale={locale} bodySize={beginnerBodySize}
-                  bodyOutline={beginnerBodyOutline} bodyMode={beginnerBodyOutlineMode}
-                  protrusions={beginnerProtrusions} onBodyOutlineChange={setBeginnerBodyOutline}
-                  onProtrusionChange={(changed) => setBeginnerProtrusions((targets) => targets.map(
-                    (target) => target.id === changed.id ? changed : target,
-                  ))} />
-                <output id="beginner-target-parts-total" aria-live="polite">
-                  {formattedText(APP_TEXT.totalPartsTotal32, { total: beginnerPartTotal })}
-                </output>
-                <p id="beginner-target-parts-help" className="muted">
-                  {text(APP_TEXT.oneHeadAndOneTorsoAreRequiredEachPartIs)}
-                </p>
-                <fieldset aria-describedby="beginner-skeleton-help">
-                  <legend>{text(APP_TEXT.stickSkeleton)}</legend>
-                  <label className="field">
-                    <span>{text(APP_TEXT.startXMm)}</span>
-                    <input name="skeleton_start_x_mm" type="number" min={-10000} max={10000} step={0.1} defaultValue={0} />
-                  </label>
-                  <label className="field">
-                    <span>{text(APP_TEXT.startYMm)}</span>
-                    <input name="skeleton_start_y_mm" type="number" min={-10000} max={10000} step={0.1} defaultValue={0} />
-                  </label>
-                  <label className="field">
-                    <span>{text(APP_TEXT.lengthMm)}</span>
-                    <input name="skeleton_length_mm" type="number" min={0.1} max={10000} step={0.1} defaultValue={10} required />
-                  </label>
-                  <label className="field">
-                    <span>{text(APP_TEXT.angleDegrees)}</span>
-                    <input name="skeleton_angle_degrees" type="number" min={-360} max={360} step={0.1} defaultValue={0} required />
-                  </label>
-                  <label className="field">
-                    <span>{text(APP_TEXT.thicknessMm)}</span>
-                    <input name="skeleton_thickness_mm" type="number" min={0.1} max={1000} step={0.1} defaultValue={1} required />
-                  </label>
-                  <button
-                    type="button"
-                    disabled={beginnerSkeletonSegments.length >= 64 || coreBusy || recoveryBlocking}
-                    onClick={(event) => {
-                      if (event.currentTarget.form) addBeginnerSkeletonSegment(event.currentTarget.form)
-                    }}
-                  >
-                    {text(APP_TEXT.addSkeletonBar)}
-                  </button>
-                  <svg viewBox="-110 -110 220 220" role="img"
-                    aria-label={text(APP_TEXT.stickSkeletonPreview)}>
-                    {beginnerSkeletonSegments.map((segment) => (
-                      <line
-                        key={segment.id}
-                        x1={segment.start.x_tenths_mm / 10}
-                        y1={segment.start.y_tenths_mm / 10}
-                        x2={segment.end.x_tenths_mm / 10}
-                        y2={segment.end.y_tenths_mm / 10}
-                        stroke="currentColor"
-                        strokeWidth={Math.max(0.5, segment.thickness_tenths_mm / 10)}
-                      />
-                    ))}
-                  </svg>
-                  <ul aria-label={text(APP_TEXT.skeletonBarList)}>
-                    {beginnerSkeletonSegments.map((segment) => (
-                      <li key={segment.id}>
-                        #{segment.id}: {formattedText(APP_TEXT.thicknessThicknessMm, { thickness: segment.thickness_tenths_mm / 10 })}
-                        {([
-                          ['start.x_tenths_mm', text(APP_TEXT.startX), segment.start.x_tenths_mm],
-                          ['start.y_tenths_mm', text(APP_TEXT.startY), segment.start.y_tenths_mm],
-                          ['end.x_tenths_mm', text(APP_TEXT.endX), segment.end.x_tenths_mm],
-                          ['end.y_tenths_mm', text(APP_TEXT.endY), segment.end.y_tenths_mm],
-                          ['thickness_tenths_mm', text(APP_TEXT.thickness), segment.thickness_tenths_mm],
-                        ] as const).map(([field, label, tenths]) => <label key={field}>
-                          <span>{label} (mm)</span>
-                          <input type="number" step="0.1" defaultValue={tenths / 10}
-                            min={field === 'thickness_tenths_mm' ? 0.1 : -10000}
-                            max={field === 'thickness_tenths_mm' ? 1000 : 10000}
-                            aria-label={formattedText(APP_TEXT.skeletonBarSegmentIdLabelMm, { segmentId: segment.id, label })}
-                            onBlur={(event) => {
-                              const next = Math.round(Number(event.currentTarget.value) * 10)
-                              const valid = Number.isSafeInteger(next) && (field === 'thickness_tenths_mm'
-                                ? next >= 1 && next <= 10_000 : Math.abs(next) <= 100_000)
-                              if (!valid) { event.currentTarget.value = String(tenths / 10); return }
-                              setBeginnerSkeletonSegments((segments) => segments.map((item) => {
-                                if (item.id !== segment.id) return item
-                                if (field === 'thickness_tenths_mm') return { ...item, thickness_tenths_mm: next }
-                                const [endpoint, axis] = field.split('.') as ['start' | 'end', 'x_tenths_mm' | 'y_tenths_mm']
-                                const changed = { ...item, [endpoint]: { ...item[endpoint], [axis]: next } }
-                                return changed.start.x_tenths_mm === changed.end.x_tenths_mm
-                                  && changed.start.y_tenths_mm === changed.end.y_tenths_mm ? item : changed
-                              }))
-                            }} />
-                        </label>)}
-                        <button type="button" onClick={() => setBeginnerSkeletonSegments(
-                          (segments) => segments.filter((item) => item.id !== segment.id),
-                        )}>
-                          {text(APP_TEXT.remove)}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </fieldset>
-                <p id="beginner-skeleton-help" className="muted">
-                  {text(APP_TEXT.upTo64BarsAreStoredAt01Mm)}
-                </p>
-                <p role="status">{beginnerSkeletonTree.status === 'tree'
-                  ? formattedText(APP_TEXT.skeletonTreeConfirmedPointsJointsAndEdgesBranchesCandidateGeneration, { points: beginnerSkeletonTree.pointCount, edges: beginnerSkeletonTree.edgeCount })
-                  : formattedText(APP_TEXT.skeletonTreeUnconfirmedReasonCyclesDuplicateEdgesAndDisconnectedSkeleton, { reason: beginnerSkeletonTree.status })}</p>
-                <fieldset aria-describedby="beginner-protrusion-help">
-                  <legend>{text(APP_TEXT.protrusionTargets)}</legend>
-                  {([
-                    ['protrusion_count', text(APP_TEXT.count), 2, 1, 8, 1],
-                    ['protrusion_length_mm', text(APP_TEXT.lengthMm), 20, 0.1, 100000, 0.1],
-                    ['protrusion_thickness_mm', text(APP_TEXT.thicknessMm), 2, 0.1, 1000, 0.1],
-                    ['protrusion_position_x_mm', text(APP_TEXT.finalPositionXMm), 0, -10000, 10000, 0.1],
-                    ['protrusion_position_y_mm', text(APP_TEXT.finalPositionYMm), 0, -10000, 10000, 0.1],
-                    ['protrusion_position_z_mm', text(APP_TEXT.finalPositionZMm), 0, -10000, 10000, 0.1],
-                    ['protrusion_direction_x', text(APP_TEXT.directionX), 1, -1, 1, 0.001],
-                    ['protrusion_direction_y', text(APP_TEXT.directionY), 0, -1, 1, 0.001],
-                    ['protrusion_direction_z', text(APP_TEXT.directionZ), 0, -1, 1, 0.001],
-                    ['protrusion_curvature_degrees', text(APP_TEXT.curvatureDegrees), 0, -360, 360, 1],
-                    ['protrusion_motion_min', text(APP_TEXT.motionMinimumDegrees), 0, -360, 360, 1],
-                    ['protrusion_motion_max', text(APP_TEXT.motionMaximumDegrees), 0, -360, 360, 1],
-                    ['protrusion_priority', text(APP_TEXT.priority), 50, 1, 100, 1],
-                  ] as const).map(([name, label, initial, min, max, step]) => (
-                    <label className="field" key={name}>
-                      <span>{label}</span>
-                      <input name={name} type="number" defaultValue={initial}
-                        min={min} max={max} step={step} required />
-                    </label>
-                  ))}
-                  <label className="field">
-                    <span>{text(APP_TEXT.rootWidthMmOptional)}</span>
-                    <input name="protrusion_root_width_mm" type="number" min={0.1} max={1000} step={0.1} />
-                  </label>
-                  <label className="field">
-                    <span>{text(APP_TEXT.tipWidthMmOptional)}</span>
-                    <input name="protrusion_tip_width_mm" type="number" min={0.1} max={1000} step={0.1} />
-                  </label>
-                  <label className="field"><span>{text(APP_TEXT.symmetry)}</span>
-                    <select name="protrusion_symmetry" defaultValue="none">
-                      <option value="none">{text(APP_TEXT.none)}</option>
-                      <option value="bilateral">{text(APP_TEXT.bilateral)}</option>
-                      <option value="radial">{text(APP_TEXT.radial)}</option>
-                    </select>
-                  </label>
-                  <label className="field"><span>{text(APP_TEXT.joint)}</span>
-                    <select name="protrusion_joint" defaultValue="fixed">
-                      <option value="fixed">{text(APP_TEXT.fixed)}</option>
-                      <option value="hinge">{text(APP_TEXT.hinge)}</option>
-                      <option value="ball">{text(APP_TEXT.ball)}</option>
-                    </select>
-                  </label>
-                  <label className="field"><span>{text(APP_TEXT.side)}</span>
-                    <select name="protrusion_side" defaultValue="either">
-                      <option value="front">{text(APP_TEXT.front)}</option>
-                      <option value="back">{text(APP_TEXT.back)}</option>
-                      <option value="either">{text(APP_TEXT.either)}</option>
-                    </select>
-                  </label>
-                  <button type="button" disabled={beginnerProtrusions.length >= 8 || coreBusy}
-                    onClick={(event) => event.currentTarget.form
-                      && addBeginnerProtrusion(event.currentTarget.form)}>
-                    {text(APP_TEXT.addProtrusionTarget)}
-                  </button>
-                  {beginnerProtrusions.length === 0 && <button type="button" disabled={coreBusy}
-                    onClick={createEmptyGenericTarget}>
-                    {text(APP_TEXT.createEmptyGenericTarget)}
-                  </button>}
-                  {beginnerProtrusions.length > 0 && <table aria-label={text(APP_TEXT.featureConstraintComparison)}>
-                    <thead><tr><th>{text(APP_TEXT.feature)}</th>
-                      <th>{text(APP_TEXT.length)}</th>
-                      <th>{text(APP_TEXT.thickness)}</th>
-                      <th>{text(APP_TEXT.joint)}</th>
-                      <th>{text(APP_TEXT.motion)}</th>
-                      <th>{text(APP_TEXT.side2)}</th>
-                      <th>{text(APP_TEXT.priority)}</th></tr></thead>
-                    <tbody>{beginnerProtrusions.map((target, index) => <tr key={target.id}>
-                      <td>{beginnerProtrusionKinds[index] ?? 'tail'} #{target.id}</td>
-                      <td>{target.length_tenths_mm / 10} mm</td><td>{target.thickness_tenths_mm / 10} mm</td>
-                      <td>{target.joint}</td><td>{target.motion_degrees.join('..')}°</td>
-                      <td>{target.side}</td><td>{target.priority}/100</td>
-                    </tr>)}</tbody>
-                  </table>}
-                  <ul aria-label={text(APP_TEXT.protrusionTargetList)}>
-                    {beginnerProtrusions.map((target, index) => (
-                      <ProtrusionDimensionEditor key={target.id} locale={locale} target={target}
-                        kind={beginnerProtrusionKinds[index] ?? 'tail'}
-                        onKindChange={(kind) => setBeginnerProtrusionKinds((kinds) =>
-                          kinds.length === beginnerProtrusions.length
-                            ? kinds.map((item, kindIndex) => kindIndex === index ? kind : item)
-                            : beginnerProtrusions.map((_, kindIndex) => kindIndex === index ? kind : 'tail'))}
-                        onChange={(changed) => setBeginnerProtrusions((targets) => targets.map(
-                          (item) => item.id === changed.id ? changed : item,
-                        ))}
-                        onRemove={() => {
-                          setBeginnerProtrusions((targets) => targets.filter((item) => item.id !== target.id)
-                            .map((item, canonicalIndex) => ({ ...item, id: canonicalIndex + 1 })))
-                          setBeginnerProtrusionKinds((kinds) => kinds.filter((_, kindIndex) => kindIndex !== index))
-                        }}
-                        canRemove={beginnerProtrusions.length !== 2}
-                        canMoveUp={index > 0} canMoveDown={index + 1 < beginnerProtrusions.length}
-                        onMoveUp={() => {
-                          setBeginnerProtrusions((targets) => {
-                            if (index === 0) return targets
-                            const moved = [...targets]
-                            ;[moved[index - 1], moved[index]] = [moved[index]!, moved[index - 1]!]
-                            return moved.map((item, canonicalIndex) => ({ ...item, id: canonicalIndex + 1 }))
-                          })
-                          setBeginnerProtrusionKinds((kinds) => {
-                            if (index === 0) return kinds
-                            const moved = [...kinds]
-                            ;[moved[index - 1], moved[index]] = [moved[index]!, moved[index - 1]!]
-                            return moved
-                          })
-                        }}
-                        onMoveDown={() => {
-                          setBeginnerProtrusions((targets) => {
-                            if (index + 1 >= targets.length) return targets
-                            const moved = [...targets]
-                            ;[moved[index], moved[index + 1]] = [moved[index + 1]!, moved[index]!]
-                            return moved.map((item, canonicalIndex) => ({ ...item, id: canonicalIndex + 1 }))
-                          })
-                          setBeginnerProtrusionKinds((kinds) => {
-                            if (index + 1 >= kinds.length) return kinds
-                            const moved = [...kinds]
-                            ;[moved[index], moved[index + 1]] = [moved[index + 1]!, moved[index]!]
-                            return moved
-                          })
-                        }} />
-                    ))}
-                  </ul>
-                </fieldset>
-                <p id="beginner-protrusion-help" className="muted">
-                  {text(APP_TEXT.explicitlySetsCountDimensionsFinalPositionDirectionSymmetryCurvatureJoin)}
-                </p>
-                <fieldset aria-describedby="beginner-bulge-help">
-                  <legend>{text(APP_TEXT.text3dBulgeTargets)}</legend>
-                  <p>{selectedFaceId
-                    ? formattedText(APP_TEXT.selectedFaceId, { id: selectedFaceId })
-                    : text(APP_TEXT.selectATargetFaceInThe2DOr3DView)}</p>
-                  {([
-                    ['bulge_min_x', 'Range minimum X (mm)', -5],
-                    ['bulge_min_y', 'Range minimum Y (mm)', -5],
-                    ['bulge_min_z', 'Range minimum Z (mm)', -5],
-                    ['bulge_max_x', 'Range maximum X (mm)', 5],
-                    ['bulge_max_y', 'Range maximum Y (mm)', 5],
-                    ['bulge_max_z', 'Range maximum Z (mm)', 5],
-                    ['bulge_direction_x', 'Bulge direction X', 0],
-                    ['bulge_direction_y', 'Bulge direction Y', 0],
-                    ['bulge_direction_z', 'Bulge direction Z', 1],
-                    ['bulge_amount_mm', 'Bulge amount (mm)', 5],
-                  ] as const).map(([name, label, initial]) => (
-                    <label className="field" key={name}><span>{label}</span>
-                      <input name={name} type="number" step={name.includes('direction') ? 0.001 : 0.1}
-                        min={name === 'bulge_amount_mm' ? 0.1 : name.includes('direction') ? -1 : -10000}
-                        max={name === 'bulge_amount_mm' ? 100000 : name.includes('direction') ? 1 : 10000}
-                        defaultValue={initial} required />
-                    </label>
-                  ))}
-                  <button type="button"
-                    disabled={!selectedFaceId || beginnerBulgeTargets.length >= 32 || coreBusy}
-                    onClick={(event) => event.currentTarget.form
-                      && addBeginnerBulgeTarget(event.currentTarget.form)}>
-                    {text(APP_TEXT.addBulgeTargetForSelectedFace)}
-                  </button>
-                  <ul aria-label={text(APP_TEXT.text3dBulgeTargetList)}>
-                    {beginnerBulgeTargets.map((target) => (
-                      <li key={target.id}>
-                        {formattedText(APP_TEXT.faceFaceAmountAmountMm, { face: target.face_ids[0], amount: target.amount_tenths_mm / 10 })}
-                        <button type="button" onClick={() => setBeginnerBulgeTargets(
-                          (targets) => targets.filter((item) => item.id !== target.id),
-                        )}>{text(APP_TEXT.remove)}</button>
-                      </li>
-                    ))}
-                  </ul>
-                </fieldset>
-                <p id="beginner-bulge-help" className="muted">
-                  {text(APP_TEXT.storesOnlyTheBoundedRangeDirectionAndAmountBoundTo)}
-                </p>
-                <label className="field">
-                  <span>{text(APP_TEXT.maximumSteps)}</span>
-                  <input
-                    name="maximum_steps"
-                    type="number"
-                    min={1}
-                    max={500}
-                    required
-                    defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints.maximum_steps}
-                    disabled={coreBusy || recoveryBlocking}
-                  />
-                </label>
-                <label className="field">
-                  <span>{text(APP_TEXT.partDetail)}</span>
-                  <select
-                    name="detail_level"
-                    defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints.detail_level}
-                    disabled={coreBusy || recoveryBlocking}
-                  >
-                    <option value="simple">{text(APP_TEXT.simple)}</option>
-                    <option value="standard">{text(APP_TEXT.standard)}</option>
-                    <option value="detailed">{text(APP_TEXT.detailed)}</option>
-                  </select>
-                </label>
-                <label className="field">
-                  <span>{text(APP_TEXT.allowedFoldTechniques)}</span>
-                  <select
-                    name="allowed_techniques"
-                    multiple
-                    size={8}
-                    required
-                    defaultValue={nativeSnapshot.beginner_design_profile.generation_constraints.allowed_techniques}
-                    disabled={coreBusy || recoveryBlocking}
-                    aria-describedby="beginner-technique-help"
-                  >
-                    <option value="valley_fold">{text(APP_TEXT.valleyFold)}</option>
-                    <option value="mountain_fold">{text(APP_TEXT.mountainFold)}</option>
-                    <option value="inside_reverse_fold">{text(APP_TEXT.insideReverseFold)}</option>
-                    <option value="outside_reverse_fold">{text(APP_TEXT.outsideReverseFold)}</option>
-                    <option value="squash_fold">{text(APP_TEXT.squashFold)}</option>
-                    <option value="petal_fold">{text(APP_TEXT.petalFold)}</option>
-                    <option value="sink_fold">{text(APP_TEXT.sinkFold)}</option>
-                    <option value="crimp_fold">{text(APP_TEXT.crimpFold)}</option>
-                  </select>
-                </label>
-                <p id="beginner-technique-help" className="muted">
-                  {text(APP_TEXT.holdCtrlOrCommandToSelectMultipleTechniquesSelectAt)}
-                </p>
-                <p className="muted" data-testid="petal-fold-certification-scope">
-                  {text(APP_TEXT.petalFoldIsADesignPreferenceOnlyItsPhysicalMotion)}
-                </p>
-                <button type="submit" disabled={coreBusy || recoveryBlocking}>
-                  {text(APP_TEXT.saveDesignPriorities)}
-                </button>
-              </form>
-            </section>
+            <BeginnerDesignEditorSection
+              locale={locale}
+              snapshot={nativeSnapshot}
+              coreBusy={coreBusy}
+              recoveryBlocking={recoveryBlocking}
+              selectedFaceId={selectedFaceId}
+              candidateWorkflow={beginnerCandidateWorkflow}
+              editor={beginnerEditorState}
+              recognitionWorkflow={beginnerRecognitionWorkflow}
+              referenceWorkflow={beginnerReferenceWorkflow}
+              onSubmit={submitBeginnerDesignProfile}
+            />
           )}
           {nativeSnapshot && !benchmarkRun && (
             <StackedFoldPanel
@@ -6807,331 +5251,31 @@ function App() {
               onApplySolve={applyConstraintSolve}
             />
           )}
-          {validation && (
-            <section className={validation.is_valid ? 'validation-report valid' : 'validation-report invalid'}>
-              <h2>{text(APP_TEXT.geometryValidation)}</h2>
-              {validation.is_valid ? (
-                <p>
-                  {text(APP_TEXT.noIssuesWereFound)}
-                </p>
-              ) : (
-                <>
-                  <p>
-                    {formattedText(APP_TEXT.countIssuesWereFound, { count: validation.issues.length })}
-                  </p>
-                  <BulkIntersectionRepairControl
-                    count={unsplitIntersectionCount}
-                    pending={bulkIntersectionRepairPending}
-                    disabled={coreBusy || fileOperation !== null}
-                    locale={locale}
-                    onConfirm={() => void repairAllIntersections()}
-                  />
-                  <ul>
-                    {validation.issues.slice(0, 20).map((issue, index) => {
-                      const edgeId = issue.edges.find((id) =>
-                        nativeLines.some((line) => line.id === id))
-                      const vertexId = issue.vertices.find((id) =>
-                        nativeVertices.some((vertex) => vertex.id === id))
-                      const label = validationIssueLabel(issue.code, locale)
-                      return (
-                        <li key={`${issue.code}:${index}`}>
-                          {edgeId || vertexId ? (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (edgeId) {
-                                  setSelectedLineId(edgeId)
-                                  setSelectedVertexId(null)
-                                } else if (vertexId) {
-                                  setSelectedVertexId(vertexId)
-                                  setSelectedLineId(null)
-                                }
-                              }}
-                            >
-                              {label}
-                            </button>
-                          ) : <span>{label}</span>}
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </>
-              )}
-            </section>
-          )}
-          {localFlatFoldabilityPresentation && !benchmarkRun && (
-            <section
-              className={`local-flat-foldability-report is-${
-                localFlatFoldabilityPresentation.kind === 'ready'
-                  ? localFlatFoldabilityPresentation.reportStatus
-                  : localFlatFoldabilityPresentation.kind
-              }`}
-            >
-              <h2>
-                {text(APP_TEXT.localFlatFoldabilityConditions)}
-              </h2>
-              <p
-                id="local-flat-foldability-summary"
-                className="local-flat-foldability-summary"
-                role="status"
-                aria-live="polite"
-                aria-atomic="true"
-              >
-                {localizedLocalFlatFoldabilitySummary(
-                  localFlatFoldabilityPresentation,
-                  locale,
-                )}
-              </p>
-              {localFlatFoldabilityPresentation.maxExactFoldDegree !== null && (
-                <p className="local-flat-foldability-coverage">
-                  {formattedText(APP_TEXT.coverageASingleInteriorVertexZeroThicknessModelFoldDegree, {
-                    degree: localFlatFoldabilityPresentation.maxExactFoldDegree,
-                  })}
-                </p>
-              )}
-              {localFlatFoldabilityPresentation.kind === 'ready' && (
-                <>
-                  <ul
-                    className="local-flat-foldability-counts"
-                    aria-label={text(APP_TEXT.vertexCountsByLocalFlatFoldabilityResult)}
-                  >
-                    {([
-                      [
-                        'satisfied',
-                        APP_TEXT.satisfied,
-                        localFlatFoldabilityPresentation.counts.satisfied,
-                      ],
-                      [
-                        'violated',
-                        APP_TEXT.violated,
-                        localFlatFoldabilityPresentation.counts.violated,
-                      ],
-                      [
-                        'not-applicable',
-                        APP_TEXT.notApplicable,
-                        localFlatFoldabilityPresentation.counts.notApplicable,
-                      ],
-                      [
-                        'indeterminate',
-                        APP_TEXT.indeterminate2,
-                        localFlatFoldabilityPresentation.counts.indeterminate,
-                      ],
-                    ] as const).map(([kind, label, count]) => (
-                      <li key={kind} className={`is-${kind}`}>
-                        <span>{text(label)}</span>
-                        <strong>{count.toLocaleString(locale)}</strong>
-                      </li>
-                    ))}
-                  </ul>
-                  {(assignedLocalSummaryStatus === 'loading'
-                    || assignedLocalSummaryStatus === 'retrying') && (
-                    <p role="status">{text({
-                      ja: assignedLocalSummaryStatus === 'retrying'
-                        ? '旧解析の終了を待って局所十分性summaryを再試行しています…'
-                        : '全頂点の指定M/V局所十分性を有界解析しています…',
-                      en: assignedLocalSummaryStatus === 'retrying'
-                        ? 'Waiting for the previous worker to exit, then retrying the summary…'
-                        : 'Running the bounded assigned M/V local-sufficiency summary…',
-                    })}</p>
-                  )}
-                  {assignedLocalSummaryStatus === 'failed' && (
-                    <p role="alert">{text(APP_TEXT.theAllVertexLocalSufficiencySummaryIsUnavailable)}</p>
-                  )}
-                  {assignedLocalSummary && (
-                    <section aria-label={text(APP_TEXT.allVertexLocalSufficiencySummary)}>
-                      <p>{text(APP_TEXT.necessaryConditionFailureProvenSufficiencyAndIndeterminateAreSeparatePas)}</p>
-                      <ul>
-                        {assignedLocalSummary.vertices.map((item) => (
-                          <li key={item.vertex}>
-                            <button type="button" onClick={() => setSelectedVertexId(item.vertex)}>
-                              {item.vertex.slice(0, 8)} · {item.status === 'necessary_failed'
-                                ? text(APP_TEXT.necessaryFailed)
-                                : item.status === 'sufficient_proven'
-                                  ? text(APP_TEXT.sufficiencyProven)
-                                  : text(APP_TEXT.indeterminate2)}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </section>
-                  )}
-                  {selectedLocalFlatFoldability && (
-                    <div className="selected-local-flat-foldability">
-                      <h3>
-                        {text(APP_TEXT.localConditionsForSelectedVertex)}
-                      </h3>
-                      <dl>
-                        <div>
-                          <dt>{text(APP_TEXT.overall)}</dt>
-                          <dd>
-                            {localizedLocalFlatFoldabilityConditionLabel(
-                              selectedLocalFlatFoldability.verdict,
-                              locale,
-                            )}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>
-                            {text(APP_TEXT.kawasakiCondition)}
-                          </dt>
-                          <dd>
-                            {localizedLocalFlatFoldabilityConditionLabel(
-                              selectedLocalFlatFoldability.kawasaki,
-                              locale,
-                            )}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>
-                            {text(APP_TEXT.maekawaCondition)}
-                          </dt>
-                          <dd>
-                            {localizedLocalFlatFoldabilityConditionLabel(
-                              selectedLocalFlatFoldability.maekawa,
-                              locale,
-                            )}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>{text(APP_TEXT.foldDegree)}</dt>
-                          <dd>{selectedLocalFlatFoldability.foldDegree}</dd>
-                        </div>
-                        <div>
-                          <dt>
-                            {text(APP_TEXT.mountainValley)}
-                          </dt>
-                          <dd>
-                            {selectedLocalFlatFoldability.mountainCount}
-                            {' / '}
-                            {selectedLocalFlatFoldability.valleyCount}
-                          </dd>
-                        </div>
-                      </dl>
-                      {selectedLocalFlatFoldability.reason && (
-                        <p className="local-flat-foldability-reason">
-                          {localizedLocalFlatFoldabilityReasonLabel(
-                            selectedLocalFlatFoldability.reason,
-                            localFlatFoldabilityPresentation.maxExactFoldDegree,
-                            locale,
-                          )}
-                        </p>
-                      )}
-                      {assignedLocalSufficiency && (
-                        <p
-                          className="local-flat-foldability-sufficiency"
-                          aria-live="polite"
-                        >
-                          {assignedLocalSufficiency.result.status === 'proven'
-                            ? text({
-                              ja: `指定M/Vの局所十分性をBLB縮約 ${assignedLocalSufficiency.result.reduction_steps} 段で証明しました。`,
-                              en: `Assigned M/V local sufficiency is proven by ${assignedLocalSufficiency.result.reduction_steps} BLB reduction step(s).`,
-                            })
-                            : text({
-                              ja: assignedLocalSufficiency.result.reason === 'resource_limit'
-                                ? '局所十分性は資源上限のため判定不能です。'
-                                : assignedLocalSufficiency.result.reason === 'necessary_conditions_not_satisfied'
-                                  ? '局所必要条件が成立しないため十分性を証明できません。'
-                                  : '適用できる一意なstrict BLB縮約がないため局所十分性は判定不能です。',
-                              en: assignedLocalSufficiency.result.reason === 'resource_limit'
-                                ? 'Local sufficiency is indeterminate because the resource limit was reached.'
-                                : assignedLocalSufficiency.result.reason === 'necessary_conditions_not_satisfied'
-                                  ? 'Local sufficiency cannot be proven because the necessary conditions fail.'
-                                  : 'Local sufficiency is indeterminate because no unique strict BLB reduction applies.',
-                            })}
-                        </p>
-                      )}
-                    </div>
-                  )}
-                  {localFlatFoldabilityPresentation.visibleItems.length > 0 && (
-                    <>
-                      <h3>
-                        {text(APP_TEXT.verticesRequiringReview)}
-                      </h3>
-                      <ul className="local-flat-foldability-items">
-                        {localFlatFoldabilityPresentation.visibleItems.map((item) => {
-                          const verdictLabel =
-                            localizedLocalFlatFoldabilityConditionLabel(
-                              item.verdict,
-                              locale,
-                            )
-                          const reasonLabel = localizedLocalFlatFoldabilityReasonLabel(
-                            item.reason,
-                            localFlatFoldabilityPresentation.maxExactFoldDegree,
-                            locale,
-                          )
-                          return (
-                            <li key={item.vertexId}>
-                              <button
-                                type="button"
-                                aria-pressed={selectedVertexId === item.vertexId}
-                                aria-label={formattedText(APP_TEXT.vertexOrdinalLocalNecessaryConditionVerdictKawasakiConditionKawasakiMaek, {
-                                  ordinal: item.ordinal,
-                                  verdict: verdictLabel,
-                                  kawasaki:
-                                    localizedLocalFlatFoldabilityConditionLabel(
-                                      item.kawasaki,
-                                      locale,
-                                    ),
-                                  maekawa:
-                                    localizedLocalFlatFoldabilityConditionLabel(
-                                      item.maekawa,
-                                      locale,
-                                    ),
-                                  reason: reasonLabel,
-                                })}
-                                onClick={() => {
-                                  if (!nativeVertices.some(
-                                    ({ id }) => id === item.vertexId,
-                                  )) return
-                                  setSelectedVertexId(item.vertexId)
-                                  setSelectedLineId(null)
-                                }}
-                              >
-                                <span className={`local-verdict is-${item.verdict}`}>
-                                  {verdictLabel}
-                                </span>
-                                <span>
-                                  {formattedText(APP_TEXT.vertexOrdinal, { ordinal: item.ordinal })}
-                                </span>
-                                <span className="local-flat-foldability-item-detail">
-                                  {reasonLabel || (
-                                    formattedText(APP_TEXT.kawasakiKawasakiMaekawaMaekawa, {
-                                      kawasaki:
-                                        localizedLocalFlatFoldabilityConditionLabel(
-                                          item.kawasaki,
-                                          locale,
-                                        ),
-                                      maekawa:
-                                        localizedLocalFlatFoldabilityConditionLabel(
-                                          item.maekawa,
-                                          locale,
-                                        ),
-                                    })
-                                  )}
-                                </span>
-                              </button>
-                            </li>
-                          )
-                        })}
-                      </ul>
-                      {localFlatFoldabilityPresentation.hiddenItemCount > 0 && (
-                        <p className="muted">
-                          {formattedText(APP_TEXT.countMoreVerticesSelectAVertexToReviewItsResult, {
-                            count:
-                              localFlatFoldabilityPresentation.hiddenItemCount
-                                .toLocaleString(locale),
-                          })}
-                        </p>
-                      )}
-                    </>
-                  )}
-                </>
-              )}
-              <p className="local-flat-foldability-disclaimer">
-                {text(APP_TEXT.satisfiedMeansOnlyThatTheLocalNecessaryConditionsWereVerified)}
-              </p>
-            </section>
-          )}
+          <ValidationInspectorSections
+            locale={locale}
+            validation={validation}
+            lines={nativeLines}
+            vertices={nativeVertices}
+            unsplitIntersectionCount={unsplitIntersectionCount}
+            bulkIntersectionRepairPending={bulkIntersectionRepairPending}
+            controlsDisabled={coreBusy || fileOperation !== null}
+            onRepairAllIntersections={repairAllIntersections}
+            localPresentation={localFlatFoldabilityPresentation}
+            benchmarkActive={Boolean(benchmarkRun)}
+            selectedVertexId={selectedVertexId}
+            assignedLocalSummaryStatus={assignedLocalSummaryStatus}
+            assignedLocalSummary={assignedLocalSummary}
+            assignedLocalSufficiency={assignedLocalSufficiency}
+            onSelectLine={(lineId) => {
+              setSelectedLineId(lineId)
+              setSelectedVertexId(null)
+            }}
+            onSelectVertex={(vertexId) => {
+              setSelectedVertexId(vertexId)
+              setSelectedLineId(null)
+            }}
+            onSelectSummaryVertex={setSelectedVertexId}
+          />
           <GlobalFlatFoldabilityPanel
             job={globalFlatFoldabilityJob}
             localSummary={assignedLocalSummary}
@@ -7157,567 +5301,78 @@ function App() {
             onStart={startGlobalFlatFoldability}
             onCancel={cancelGlobalFlatFoldability}
           />
-          <section>
-            <h2>{text(APP_TEXT.paper)}</h2>
-            <LengthUnitControl
-              unit={lengthDisplayUnit}
-              references={boundaryLengthReferences}
-              disabled={coreBusy || !nativeSnapshot}
-              onChange={changeLengthDisplayUnit}
-            />
-            <form
-              key={paperFormKey}
-              className="paper-properties-form"
-              onSubmit={submitPaperProperties}
-              noValidate
-            >
-              <div className="field">
-                <label htmlFor="paper-thickness-mm">
-                  {text(APP_TEXT.thickness2)}
-                </label>
-                <PaperThicknessInput
-                  id="paper-thickness-mm"
-                  name="thickness_display"
-                  initialValue={lengthDisplayUnit.effectiveUnit === 'mm'
-                    ? formatPaperThicknessInput(
-                        nativeSnapshot?.paper.thickness_mm,
-                      )
-                    : formatLengthInput(
-                        nativeSnapshot?.paper.thickness_mm,
-                        lengthDisplayUnit,
-                      )}
-                  sourceMillimetres={nativeSnapshot?.paper.thickness_mm}
-                  unit={lengthDisplayUnit}
-                  disabled={coreBusy || !nativeSnapshot}
-                />
-                <span>{lengthDisplayUnitLabelText}</span>
-              </div>
-              <div className="paper-color-fields">
-                <label className="paper-color-field">
-                  <span>{text(APP_TEXT.frontColor)}</span>
-                  <input
-                    name="front_color"
-                    type="color"
-                    defaultValue={rgbaToHex(nativeSnapshot?.paper.front.color, '#ffffff')}
-                    disabled={coreBusy || !nativeSnapshot}
-                  />
-                </label>
-                <label className="paper-color-field">
-                  <span>{text(APP_TEXT.backColor)}</span>
-                  <input
-                    name="back_color"
-                    type="color"
-                    defaultValue={rgbaToHex(nativeSnapshot?.paper.back.color, '#f8f8f5')}
-                    disabled={coreBusy || !nativeSnapshot}
-                  />
-                </label>
-              </div>
-              <div className="paper-color-fields">
-                <label className="paper-color-field">
-                  <span>{text(APP_TEXT.frontPattern)}</span>
-                  <select
-                    name="front_pattern"
-                    defaultValue={builtinPaperPatternFromAsset(
-                      nativeSnapshot?.paper.front.texture_asset,
-                    ) ?? (nativeSnapshot?.paper.front.texture_asset ? 'custom' : 'none')}
-                    disabled={coreBusy || !nativeSnapshot}
-                  >
-                    <option value="none">{text(APP_TEXT.noneSolid)}</option>
-                    <option value="dots">{text(APP_TEXT.dots)}</option>
-                    <option value="grid">{text(APP_TEXT.grid2)}</option>
-                    <option value="stripes">{text(APP_TEXT.stripes)}</option>
-                    {nativeSnapshot?.paper.front.texture_asset
-                      && !builtinPaperPatternFromAsset(nativeSnapshot.paper.front.texture_asset)
-                      ? <option value="custom">{text(APP_TEXT.importedImage)}</option>
-                      : null}
-                  </select>
-                  <button
-                    type="button"
-                    disabled={coreBusy || !nativeSnapshot}
-                    onClick={chooseFrontPaperTexture}
-                  >
-                    {text(APP_TEXT.importImage)}
-                  </button>
-                </label>
-                <label className="paper-color-field">
-                  <span>{text(APP_TEXT.backPattern)}</span>
-                  <select
-                    name="back_pattern"
-                    defaultValue={builtinPaperPatternFromAsset(
-                      nativeSnapshot?.paper.back.texture_asset,
-                    ) ?? (nativeSnapshot?.paper.back.texture_asset ? 'custom' : 'none')}
-                    disabled={coreBusy || !nativeSnapshot}
-                  >
-                    <option value="none">{text(APP_TEXT.noneSolid)}</option>
-                    <option value="dots">{text(APP_TEXT.dots)}</option>
-                    <option value="grid">{text(APP_TEXT.grid2)}</option>
-                    <option value="stripes">{text(APP_TEXT.stripes)}</option>
-                    {nativeSnapshot?.paper.back.texture_asset
-                      && !builtinPaperPatternFromAsset(nativeSnapshot.paper.back.texture_asset)
-                      ? <option value="custom">{text(APP_TEXT.importedImage)}</option>
-                      : null}
-                  </select>
-                  <button
-                    type="button"
-                    disabled={coreBusy || !nativeSnapshot}
-                    onClick={chooseBackPaperTexture}
-                  >
-                    {text(APP_TEXT.importImage)}
-                  </button>
-                </label>
-              </div>
-              <label className="check">
-                <input
-                  name="cutting_allowed"
-                  type="checkbox"
-                  defaultChecked={nativeSnapshot?.paper.cutting_allowed ?? false}
-                  disabled={coreBusy || !nativeSnapshot}
-                />{' '}
-                {text(APP_TEXT.allowCutting)}
-              </label>
-              <div className="property-actions">
-                <button type="submit" disabled={coreBusy || !nativeSnapshot}>
-                  {text(APP_TEXT.updatePaperSettings)}
-                </button>
-              </div>
-            </form>
-            <div className="paper-size-editor">
-              <h3>{text(APP_TEXT.paperSize)}</h3>
-              <form
-                key={paperResizeFormKey}
-                className="paper-size-form"
-                onSubmit={submitPaperResize}
-                noValidate
-              >
-                <div className="paper-size-fields">
-                  <label className="field">
-                    <span>{text(APP_TEXT.width)}</span>
-                    <input
-                      name="width_display"
-                      type="text"
-                      inputMode="text"
-                      maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                      defaultValue={formatLengthInput(
-                        rectangularPaperSize?.width ?? 0,
-                        lengthDisplayUnit,
-                      )}
-                      readOnly={rectangularRatioReferenceAxis === 'width'}
-                      required
-                      disabled={coreBusy || !rectangularPaperSize}
-                      aria-label={formattedText(APP_TEXT.paperWidthUnit, { unit: lengthDisplayUnitLabelText })}
-                    />
-                    <span>{lengthDisplayUnitLabelText}</span>
-                  </label>
-                  <label className="field">
-                    <span>{text(APP_TEXT.height)}</span>
-                    <input
-                      name="height_display"
-                      type="text"
-                      inputMode="text"
-                      maxLength={MAX_NUMERIC_EXPRESSION_SOURCE_BYTES}
-                      defaultValue={formatLengthInput(
-                        rectangularPaperSize?.height ?? 0,
-                        lengthDisplayUnit,
-                      )}
-                      readOnly={rectangularRatioReferenceAxis === 'height'}
-                      required
-                      disabled={coreBusy || !rectangularPaperSize}
-                      aria-label={formattedText(APP_TEXT.paperHeightUnit, { unit: lengthDisplayUnitLabelText })}
-                    />
-                    <span>{lengthDisplayUnitLabelText}</span>
-                  </label>
-                </div>
-                {!rectangularPaperSize && (
-                  <p className="paper-size-note">
-                    {text(APP_TEXT.paperThatIsNotRecognizedAsAnAxisAlignedRectangle)}
-                  </p>
-                )}
-                <p className="paper-size-note">
-                  {text(APP_TEXT.resizingProportionallyTransformsEveryVertexIncludingFoldLinesFromThe)}
-                </p>
-                <CreationDimensionExpressionSummary
-                  key={nativeSnapshot?.project_id ?? 'no-project'}
-                  binding={creationDimensionExpression}
-                />
-                {rectangularRatioReferenceAxis && (
-                  <p className="paper-size-note">
-                    {formattedText(APP_TEXT.forAPaperEdgeRatioAxisRemainsReadOnlyAt, {
-                      axis: rectangularRatioReferenceAxis === 'width'
-                        ? text(APP_TEXT.width2)
-                        : text(APP_TEXT.height2),
-                    })}
-                  </p>
-                )}
-                <div className="property-actions">
-                  <button
-                    type="submit"
-                    disabled={coreBusy || !nativeSnapshot || !rectangularPaperSize}
-                  >
-                    {text(APP_TEXT.resizePaper)}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </section>
-          <section>
-            <h2>{text(APP_TEXT.editHistory)}</h2>
-            {boundHistoryLimitSettings && nativeSnapshot ? (
-              <HistoryLimitControl
-                settings={boundHistoryLimitSettings}
-                expectedProjectInstanceId={nativeSnapshot.project_instance_id}
-                expectedProjectId={nativeSnapshot.project_id}
-                expectedRevision={nativeSnapshot.revision}
-                disabled={coreBusy || recoveryBlocking}
-                onApplied={acceptAppliedHistoryLimit}
-              />
-            ) : historyLimitLoadState.kind === 'failed' ? (
-              <div role="alert">
-                <p>
-                  {text(APP_TEXT.theUndoRedoHistoryLimitCouldNotBeChecked)}
-                </p>
-                <button
-                  type="button"
-                  disabled={coreBusy || recoveryBlocking}
-                  onClick={() => setHistoryLimitRetrySequence(
-                    (sequence) => sequence + 1,
-                  )}
-                >
-                  {text(APP_TEXT.retry)}
-                </button>
-              </div>
-            ) : historyLimitLoadState.kind === 'unavailable' ? (
-              <p className="muted">
-                {text(APP_TEXT.historyLimitSettingsAreAvailableInTheDesktopApp)}
-              </p>
-            ) : (
-              <p className="muted" role="status" aria-live="polite">
-                {text(APP_TEXT.checkingHistoryLimit)}
-              </p>
+          <PaperInspectorSection
+            locale={locale}
+            snapshot={nativeSnapshot}
+            coreBusy={coreBusy}
+            lengthDisplayUnit={lengthDisplayUnit}
+            lengthDisplayUnitLabelText={lengthDisplayUnitLabelText}
+            boundaryLengthReferences={boundaryLengthReferences}
+            paperFormKey={paperFormKey}
+            paperResizeFormKey={paperResizeFormKey}
+            rectangularPaperSize={rectangularPaperSize}
+            rectangularRatioReferenceAxis={rectangularRatioReferenceAxis}
+            creationDimensionExpression={creationDimensionExpression}
+            onLengthUnitChange={changeLengthDisplayUnit}
+            onSubmitPaperProperties={submitPaperProperties}
+            onChooseFrontPaperTexture={chooseFrontPaperTexture}
+            onChooseBackPaperTexture={chooseBackPaperTexture}
+            onSubmitPaperResize={submitPaperResize}
+          />
+          <HistoryLimitInspectorSection
+            locale={locale}
+            snapshot={nativeSnapshot}
+            settings={boundHistoryLimitSettings}
+            loadState={historyLimitLoadState}
+            disabled={coreBusy || recoveryBlocking}
+            onApplied={acceptAppliedHistoryLimit}
+            onRetry={() => setHistoryLimitRetrySequence(
+              (sequence) => sequence + 1,
             )}
-          </section>
-          <section className="fold-technique-workspace">
-            <h2>
-              {text(APP_TEXT.namedFoldTechniques)}
-            </h2>
-            <p className="muted">
-              {text(APP_TEXT.createAndShareMultipleInstructionStepsAsDeclarativeDataThis)}
-            </p>
-            {foldTechniqueWorkspace && (
-              <>
-                <dl>
-                  <div>
-                    <dt>{text(APP_TEXT.packageID)}</dt>
-                    <dd>{foldTechniqueWorkspace.document.package_id}</dd>
-                  </div>
-                  <div>
-                    <dt>{text(APP_TEXT.techniques)}</dt>
-                    <dd>
-                      {foldTechniqueWorkspace.document.techniques.length
-                        .toLocaleString(locale)}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>{text(APP_TEXT.shareState)}</dt>
-                    <dd>
-                      {foldTechniqueWorkspace.dirty
-                        ? text(APP_TEXT.changedSaveAsRequired)
-                        : text(APP_TEXT.saved)}
-                    </dd>
-                  </div>
-                </dl>
-                <label className="dialog-field">
-                  <span>
-                    {text(APP_TEXT.techniqueToAddToTimeline)}
-                  </span>
-                  <select
-                    value={foldTechniqueSelectedIndex}
-                    disabled={
-                      coreBusy
-                      || foldTechniqueBusy
-                      || foldTechniqueTimelineBusy
-                    }
-                    onChange={(event) => {
-                      const nextIndex = Number(event.currentTarget.value)
-                      if (
-                        Number.isSafeInteger(nextIndex)
-                        && nextIndex >= 0
-                        && nextIndex
-                          < foldTechniqueWorkspace.document.techniques.length
-                      ) setFoldTechniqueSelectedIndex(nextIndex)
-                    }}
-                  >
-                    {foldTechniqueWorkspace.document.techniques.map(
-                      (technique, techniqueIndex) => (
-                        <option
-                          key={`${technique.id}:${technique.version}`}
-                          value={techniqueIndex}
-                        >
-                          {foldTechniqueLocalizedTextV1(
-                            technique.names,
-                            locale,
-                          ) || foldTechniqueLocalizedTextV1(
-                            technique.names,
-                            locale === 'ja' ? 'en' : 'ja',
-                          ) || technique.id}
-                        </option>
-                      ),
-                    )}
-                  </select>
-                </label>
-              </>
-            )}
-            <div className="property-actions fold-technique-actions">
-              <button
-                type="button"
-                disabled={
-                  coreBusy
-                  || foldTechniqueBusy
-                  || !isNativeFoldTechniqueFileAvailable()
-                }
-                aria-haspopup="dialog"
-                onClick={(event) =>
-                  openNewFoldTechniqueEditor(event.currentTarget)}
-              >
-                {text(APP_TEXT.create)}
-              </button>
-              <button
-                type="button"
-                disabled={
-                  coreBusy
-                  || foldTechniqueBusy
-                  || !isNativeFoldTechniqueFileAvailable()
-                }
-                aria-haspopup="dialog"
-                onClick={(event) =>
-                  void importFoldTechniqueFile(event.currentTarget)}
-              >
-                {text(APP_TEXT.importFile)}
-              </button>
-              <button
-                type="button"
-                disabled={
-                  coreBusy
-                  || foldTechniqueBusy
-                  || !foldTechniqueWorkspace
-                }
-                aria-haspopup="dialog"
-                onClick={(event) =>
-                  openCurrentFoldTechniqueEditor(event.currentTarget)}
-              >
-                {text(APP_TEXT.edit)}
-              </button>
-              <button
-                type="button"
-                disabled={
-                  coreBusy
-                  || foldTechniqueBusy
-                  || !foldTechniqueWorkspace
-                  || !isNativeFoldTechniqueFileAvailable()
-                }
-                onClick={() => void saveCurrentFoldTechniqueAs()}
-              >
-                {text(APP_TEXT.saveAs)}
-              </button>
-              <button
-                type="button"
-                disabled={
-                  coreBusy
-                  || foldTechniqueBusy
-                  || foldTechniqueTimelineBusy
-                  || !foldTechniqueWorkspace
-                  || !nativeSnapshot
-                  || !isNativeCoreAvailable()
-                }
-                aria-haspopup="dialog"
-                onClick={(event) =>
-                  previewSelectedFoldTechniqueTimeline(event.currentTarget)}
-              >
-                {text(APP_TEXT.buildTimelineProposal)}
-              </button>
-            </div>
-            {foldTechniqueBusy && (
-              <p role="status" aria-live="polite">
-                {text(APP_TEXT.processingTheFoldTechniqueFile)}
-              </p>
-            )}
-            {!isNativeFoldTechniqueFileAvailable() && (
-              <p className="muted">
-                {text(APP_TEXT.safeFileSelectionAndAtomicSavingAreAvailableInThe)}
-              </p>
-            )}
-          </section>
-          <section>
-            <h2>{text(APP_TEXT.snap)}</h2>
-            <div
-              className="chip-row"
-              aria-label={text(APP_TEXT.snapSettings)}
-            >
-              {SNAP_OPTIONS.map(({ kind, label }) => (
-                <button
-                  key={kind}
-                  type="button"
-                  className={`chip${snapSettings[kind] ? ' active' : ''}`}
-                  aria-pressed={snapSettings[kind]}
-                  disabled={coreBusy}
-                  onClick={() => setSnapSettings((current) => toggleSnapSetting(current, kind))}
-                >
-                  {text(label)}
-                </button>
-              ))}
-            </div>
-            <label className="angle-snap-field">
-              <span>{text(APP_TEXT.dividePaperIntoN)}</span>
-              <input
-                type="number"
-                min="2"
-                max="63"
-                step="1"
-                value={gridDivisionsInput}
-                placeholder={text(APP_TEXT.auto)}
-                aria-invalid={!gridDivisionsValid}
-                disabled={coreBusy}
-                onChange={(event) => {
-                  const next = updateGridPreferenceInput(
-                    event.target.value,
-                    gridDiagonals,
-                  )
-                  if (!next) return
-                  setGridDivisionsInput(next.input)
-                  setGridDiagonals(next.diagonals)
-                }}
-              />
-              <small>{text(APP_TEXT.leaveBlankForAutomaticSpacingUse3ForThirdsOr)}</small>
-            </label>
-            <button
-              type="button"
-              className={`chip${gridDiagonals ? ' active' : ''}`}
-              aria-pressed={gridDiagonals}
-              disabled={coreBusy || !gridDivisionsValid || gridDivisions === null}
-              onClick={() => setGridDiagonals((current) => !current)}
-            >
-              {text(APP_TEXT.paperDiagonals)}
-            </button>
-            <div className="angle-snap-settings">
-              <h3>{text(APP_TEXT.angleSnap)}</h3>
-              <label className="angle-snap-field">
-                <span>{text(APP_TEXT.preset)}</span>
-                <select
-                  value={selectedAnglePreset}
-                  disabled={coreBusy}
-                  onChange={(event) => {
-                    if (event.target.value === 'custom') {
-                      angleInputRef.current?.focus()
-                      angleInputRef.current?.select()
-                      return
-                    }
-                    const nextDegrees = Number(event.target.value)
-                    setAngleDegrees(nextDegrees)
-                    setAngleDegreesInput(String(nextDegrees))
-                  }}
-                >
-                  {ANGLE_SNAP_PRESETS.map((preset) => (
-                    <option key={preset} value={preset}>{preset}°</option>
-                  ))}
-                  <option value="custom">
-                    {text(APP_TEXT.customAngle)}
-                  </option>
-                </select>
-              </label>
-              <label className="angle-snap-field">
-                <span>{text(APP_TEXT.angle)}</span>
-                <span className="angle-input-with-unit">
-                  <input
-                    ref={angleInputRef}
-                    type="number"
-                    min="0"
-                    max="90"
-                    step="any"
-                    value={angleDegreesInput}
-                    disabled={coreBusy}
-                    aria-invalid={!angleInputIsValid}
-                    aria-describedby={!angleInputIsValid ? 'angle-snap-error' : undefined}
-                    onChange={(event) => {
-                      const nextInput = event.target.value
-                      const nextDegrees = Number(nextInput)
-                      setAngleDegreesInput(nextInput)
-                      if (
-                        nextInput.trim().length > 0
-                        && Number.isFinite(nextDegrees)
-                        && nextDegrees > 0
-                        && nextDegrees <= 90
-                      ) setAngleDegrees(nextDegrees)
-                    }}
-                  />
-                  <span>°</span>
-                </span>
-              </label>
-              {!angleInputIsValid && (
-                <p id="angle-snap-error" className="field-error" role="alert">
-                  {text(APP_TEXT.enterAnAngleGreaterThan0AndNoMoreThan)}
-                </p>
-              )}
-              <div className="angle-reference-setting">
-                <span>{text(APP_TEXT.reference)}</span>
-                <div
-                  className="chip-row"
-                  role="group"
-                  aria-label={text(APP_TEXT.angleSnapReference)}
-                >
-                  <button
-                    type="button"
-                    className={`chip${angleReferenceKind === 'global-horizontal' ? ' active' : ''}`}
-                    aria-pressed={angleReferenceKind === 'global-horizontal'}
-                    disabled={coreBusy}
-                    onClick={() => setAngleReferenceKind('global-horizontal')}
-                  >
-                    {text(APP_TEXT.horizontal)}
-                  </button>
-                  <button
-                    type="button"
-                    className={`chip${angleReferenceKind === 'edge' ? ' active' : ''}`}
-                    aria-pressed={angleReferenceKind === 'edge'}
-                    disabled={coreBusy}
-                    onClick={() => setAngleReferenceKind('edge')}
-                  >
-                    {text(APP_TEXT.directionReferenceEdge)}
-                  </button>
-                </div>
-              </div>
-              <p className="muted">
-                {formattedText(APP_TEXT.currentAngleReference, {
-                  angle: formatAngleDegrees(angleDegrees),
-                  reference: angleReferenceKind === 'global-horizontal'
-                    ? text(APP_TEXT.horizontalReference)
-                    : text(APP_TEXT.directionEdgeReference),
-                })}
-              </p>
-              {snapSettings.angle && angleReferenceKind === 'edge' && !parallelReferenceLine && (
-                <p className="field-error" role="status">
-                  {text(APP_TEXT.selectALineAndSetItAsTheDirectionReference)}
-                </p>
-              )}
-            </div>
-            {parallelReferenceLine ? (
-              <div className="property-actions">
-                <span className="muted" title={parallelReferenceLine.id}>
-                  {formattedText(APP_TEXT.directionReferenceParallelAndAngleKind, {
-                    kind: lineKindLabel(parallelReferenceLine.kind, locale),
-                  })}
-                </span>
-                <button
-                  type="button"
-                  disabled={coreBusy}
-                  onClick={() => setParallelReferenceEdgeId(null)}
-                >
-                  {text(APP_TEXT.clearReference)}
-                </button>
-              </div>
-            ) : (
-              <p className="muted">
-                {text(APP_TEXT.selectALineAndChooseSetAsDirectionReferenceTo)}
-              </p>
-            )}
-          </section>
+          />
+          <FoldTechniqueInspectorSection
+            locale={locale}
+            workspace={foldTechniqueWorkspace}
+            selectedIndex={foldTechniqueSelectedIndex}
+            coreBusy={coreBusy}
+            fileBusy={foldTechniqueBusy}
+            timelineBusy={foldTechniqueTimelineBusy}
+            projectAvailable={nativeSnapshot !== null}
+            nativeFileAvailable={isNativeFoldTechniqueFileAvailable()}
+            nativeCoreAvailable={isNativeCoreAvailable()}
+            onSelectTechnique={setFoldTechniqueSelectedIndex}
+            onCreate={openNewFoldTechniqueEditor}
+            onImport={importFoldTechniqueFile}
+            onEdit={openCurrentFoldTechniqueEditor}
+            onSaveAs={saveCurrentFoldTechniqueAs}
+            onPreviewTimeline={previewSelectedFoldTechniqueTimeline}
+          />
+          <SnapInspectorSection
+            locale={locale}
+            coreBusy={coreBusy}
+            snapSettings={snapSettings}
+            gridDivisionsInput={gridDivisionsInput}
+            gridDivisionsValid={gridDivisionsValid}
+            gridDivisions={gridDivisions}
+            gridDiagonals={gridDiagonals}
+            selectedAnglePreset={selectedAnglePreset}
+            angleDegrees={angleDegrees}
+            angleDegreesInput={angleDegreesInput}
+            angleInputIsValid={angleInputIsValid}
+            angleInputRef={angleInputRef}
+            angleReferenceKind={angleReferenceKind}
+            parallelReferenceLine={parallelReferenceLine}
+            onSnapSettingsChange={setSnapSettings}
+            onGridPreferenceChange={(input, diagonals) => {
+              setGridDivisionsInput(input)
+              setGridDiagonals(diagonals)
+            }}
+            onGridDiagonalsChange={setGridDiagonals}
+            onAngleDegreesChange={setAngleDegrees}
+            onAngleDegreesInputChange={setAngleDegreesInput}
+            onAngleReferenceKindChange={setAngleReferenceKind}
+            onClearParallelReference={() => setParallelReferenceEdgeId(null)}
+          />
         </aside>
       </section>
 

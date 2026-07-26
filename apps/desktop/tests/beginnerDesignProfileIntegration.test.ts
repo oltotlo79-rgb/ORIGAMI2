@@ -8,6 +8,14 @@ const app = [
   source('../src/components/BeginnerCandidateControls.tsx'),
   source('../src/components/BeginnerCandidateResults.tsx'),
   source('../src/components/BeginnerRecognitionPanel.tsx'),
+  source('../src/components/BeginnerDesignEditorSection.tsx'),
+  source('../src/components/BeginnerDesignSources.tsx'),
+  source('../src/components/BeginnerReferenceAssetPanel.tsx'),
+  source('../src/components/BeginnerReferenceSuggestionPanel.tsx'),
+  source('../src/components/BeginnerDesignConstraints.tsx'),
+  source('../src/components/BeginnerSkeletonEditor.tsx'),
+  source('../src/components/BeginnerProtrusionEditor.tsx'),
+  source('../src/components/ProjectMemoAndCandidateSection.tsx'),
   source('../src/lib/useBeginnerCandidateWorkflow.ts'),
   source('../src/lib/useBeginnerParameterGridWorkflow.ts'),
   source('../src/lib/useBeginnerReferenceWorkflow.ts'),
@@ -113,8 +121,8 @@ test('AUT-003 stores and previews bounded stick skeleton bars with explicit dime
   assert.match(generation, /pub thickness_tenths_mm: u16/u)
   assert.match(client, /record\.skeleton_segments\.length > 64/u)
   assert.match(client, /Math\.abs\(Number\(coordinate\)\) > 100_000/u)
-  assert.match(app, /name="skeleton_length_mm"/u)
-  assert.match(app, /name="skeleton_thickness_mm"/u)
+  assert.match(app, /\['skeleton_length_mm', APP_TEXT\.lengthMm/u)
+  assert.match(app, /\['skeleton_thickness_mm', APP_TEXT\.thicknessMm/u)
   assert.match(app, /Stick skeleton preview/u)
   assert.match(app, /Only bars with explicit length and thickness are used for generation/u)
 })
@@ -264,8 +272,8 @@ test('AUT-006 stores every bounded protrusion target attribute in profile histor
   assert.match(app, /name="generic_body_width_mm"/u)
   assert.match(app, /name="generic_body_height_mm"/u)
   assert.match(app, /generic_body_size_tenths_mm: bodySize/u)
-  assert.match(app, /name="protrusion_root_width_mm"/u)
-  assert.match(app, /name="protrusion_tip_width_mm"/u)
+  assert.match(app, /\['protrusion_root_width_mm', APP_TEXT\.rootWidthMmOptional\]/u)
+  assert.match(app, /\['protrusion_tip_width_mm', APP_TEXT\.tipWidthMmOptional\]/u)
   assert.match(app, /root_width_tenths_mm: Math\.round\(rootWidth \* 10\)/u)
   assert.match(app, /tip_width_tenths_mm: Math\.round\(tipWidth \* 10\)/u)
   assert.match(generation, /pub generic_body_outline_tenths_mm: Option<Vec<\[i32; 2\]>>/u)

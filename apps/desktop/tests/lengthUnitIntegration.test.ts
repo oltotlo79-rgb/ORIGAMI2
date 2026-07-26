@@ -6,6 +6,10 @@ const app = [
   read('../src/App.tsx'),
   read('../src/lib/appText.ts'),
   read('../src/lib/useSvgImportWorkflow.ts'),
+  read('../src/components/PaperInspectorSection.tsx'),
+  read('../src/components/SelectedLineInspector.tsx'),
+  read('../src/components/SelectedFaceInspector.tsx'),
+  read('../src/components/SelectedVertexInspector.tsx'),
 ].join('\n')
 const preview = read('../src/components/FoldPreview.tsx')
 const thickness = [
@@ -24,9 +28,9 @@ test('App applies one snapshot display unit to every authoring length surface', 
     /paperSizeLabel[\s\S]*?formatLengthValue\([\s\S]*?lengthDisplayUnit,[\s\S]*?locale,[\s\S]*?formatLength\([\s\S]*?lengthDisplayUnit,[\s\S]*?locale/u,
   )
   assert.match(app, /measurementLabel=\{formatLineMeasurementLabel\([\s\S]*?displayedLengthUnit/u)
-  assert.match(app, /formatLengthPoint\([\s\S]*?displayedLengthUnit,[\s\S]*?locale/u)
-  assert.match(app, /name="x_display"[\s\S]*?formatLengthInput\([\s\S]*?lengthDisplayUnit/u)
-  assert.match(app, /name="y_display"[\s\S]*?formatLengthInput\([\s\S]*?lengthDisplayUnit/u)
+  assert.match(app, /formatLengthPoint\([\s\S]*?displayUnit,[\s\S]*?locale/u)
+  assert.match(app, /name="x_display"[\s\S]*?formatLengthInput\([\s\S]*?displayUnit/u)
+  assert.match(app, /name="y_display"[\s\S]*?formatLengthInput\([\s\S]*?displayUnit/u)
   assert.match(app, /name="thickness_display"[\s\S]*?unit=\{lengthDisplayUnit\}/u)
   assert.match(app, /name="width_display"[\s\S]*?formatLengthInput\([\s\S]*?lengthDisplayUnit/u)
   assert.match(app, /name="height_display"[\s\S]*?formatLengthInput\([\s\S]*?lengthDisplayUnit/u)

@@ -5,6 +5,7 @@ import test from 'node:test'
 const appSource = [
   readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/components/SelectedVertexInspector.tsx', import.meta.url), 'utf8'),
 ].join('\n')
 
 test('the empty inspector exposes direct coordinate vertex creation in both locales', () => {

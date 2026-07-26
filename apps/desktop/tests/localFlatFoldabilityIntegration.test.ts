@@ -5,6 +5,7 @@ import test from 'node:test'
 const appSource = [
   readSource('../src/App.tsx'),
   readSource('../src/lib/appText.ts'),
+  readSource('../src/components/ValidationInspectorSections.tsx'),
 ].join('\n')
 const canvasSource = readSource('../src/components/CreaseCanvas.tsx')
 const clientSource = readSource('../src/lib/coreClient.ts')

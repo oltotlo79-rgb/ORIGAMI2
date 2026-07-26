@@ -6,6 +6,13 @@ const appSource = [
   readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
 ].join('\n')
+const historyPanelSource = [
+  readFileSync(
+    new URL('../src/components/HistoryLimitInspectorSection.tsx', import.meta.url),
+    'utf8',
+  ),
+  appSource,
+].join('\n')
 
 test('App loads the history limit only for the exact current project binding', () => {
   const effect = section(
@@ -47,22 +54,18 @@ test('App refreshes Undo/Redo availability after applying a limit', () => {
 })
 
 test('App exposes explicit loading, retry, desktop-only, and bound control states', () => {
-  const panel = section(
-    appSource,
-    '<h2>{text(APP_TEXT.editHistory)}</h2>',
-    '<h2>{text(APP_TEXT.snap)}</h2>',
-  )
+  const panel = historyPanelSource
 
   assert.match(panel, /text\(APP_TEXT\.editHistory\)/u)
   assert.match(panel, /<HistoryLimitControl/u)
   assert.match(panel, /settings=\{boundHistoryLimitSettings\}/u)
-  assert.match(panel, /expectedProjectInstanceId=\{nativeSnapshot\.project_instance_id\}/u)
-  assert.match(panel, /expectedProjectId=\{nativeSnapshot\.project_id\}/u)
-  assert.match(panel, /expectedRevision=\{nativeSnapshot\.revision\}/u)
+  assert.match(panel, /expectedProjectInstanceId=\{snapshot\.project_instance_id\}/u)
+  assert.match(panel, /expectedProjectId=\{snapshot\.project_id\}/u)
+  assert.match(panel, /expectedRevision=\{snapshot\.revision\}/u)
   assert.match(panel, /onApplied=\{acceptAppliedHistoryLimit\}/u)
-  assert.match(panel, /historyLimitLoadState\.kind === 'failed'/u)
+  assert.match(panel, /loadState\.kind === 'failed'/u)
   assert.match(panel, /setHistoryLimitRetrySequence/u)
-  assert.match(panel, /historyLimitLoadState\.kind === 'unavailable'/u)
+  assert.match(panel, /loadState\.kind === 'unavailable'/u)
   assert.match(panel, /role="status" aria-live="polite"/u)
 })
 

@@ -4,6 +4,8 @@
 //! retains private native capabilities and revalidates them under both live
 //! authority guards before one atomic Editor command is committed.
 
+#[path = "stacked_fold_cycle_pose_wire.rs"]
+mod stacked_fold_cycle_pose_wire;
 #[path = "stacked_fold_dyadic_graph_wire.rs"]
 mod stacked_fold_dyadic_graph_wire;
 #[path = "stacked_fold_dyadic_preview.rs"]
@@ -55,6 +57,17 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 
+#[cfg(test)]
+use self::stacked_fold_cycle_pose_wire::{
+    CertifiedPathGraphAngleRequestV1, CertifiedPathGraphStateRequestV1,
+    CertifiedPathGraphTransitionRequestV1, LinearCandidateEntryRequestV1,
+};
+use self::stacked_fold_cycle_pose_wire::{
+    CertifiedPathGraphRequestV1, CurrentCyclePosePreviewRequestV1,
+    CurrentCyclePosePreviewResponseV1, LayerOrderPairDtoV1, LinearCandidateRequestV1,
+    validate_certified_path_graph_v1, validate_exact_dyadic_candidate_path_v1,
+    validate_linear_candidate_angles_v1, validate_progress_request_id_v1,
+};
 use self::stacked_fold_dyadic_graph_wire::{
     DyadicPoseGraphReadRequestV1, DyadicPoseGraphReadResponseV1, dyadic_graph_response,
     unsupported_dyadic_graph_response_v1,
@@ -1818,117 +1831,6 @@ fn strict_dyadic_topology_snapshot_is_in_scope_v1(
             .all(|face| face.holes.is_empty() && face.seams.is_empty())
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LinearCandidateRequestV1 {
-    version: u32,
-    entries: Vec<LinearCandidateEntryRequestV1>,
-    #[serde(default)]
-    exact_dyadic_path_v1: Option<ExactDyadicPathRequestV1>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ExactDyadicPathRequestV1 {
-    version: u32,
-    segments: Vec<ExactDyadicSegmentRequestV1>,
-    max_pair_tests: usize,
-    max_denominator_power: u32,
-    max_integer_bits: usize,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ExactDyadicSegmentRequestV1 {
-    start: ExactDyadicPointRequestV1,
-    end: ExactDyadicPointRequestV1,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ExactDyadicPointRequestV1 {
-    x_numerator: i128,
-    y_numerator: i128,
-    denominator_power: u32,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LinearCandidateEntryRequestV1 {
-    edge: ori_domain::EdgeId,
-    initial_angle_degrees: f64,
-    requested_angle_degrees: f64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CertifiedPathGraphRequestV1 {
-    version: u32,
-    states: Vec<CertifiedPathGraphStateRequestV1>,
-    transitions: Vec<CertifiedPathGraphTransitionRequestV1>,
-    source_state: usize,
-    target_state: usize,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CertifiedPathGraphStateRequestV1 {
-    entries: Vec<CertifiedPathGraphAngleRequestV1>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CertifiedPathGraphAngleRequestV1 {
-    edge: ori_domain::EdgeId,
-    angle_degrees: f64,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CertifiedPathGraphTransitionRequestV1 {
-    source_state: usize,
-    target_state: usize,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CurrentCyclePosePreviewRequestV1 {
-    #[serde(default)]
-    progress_request_id: Option<String>,
-    expected_project_instance_id: ProjectId,
-    expected_project_id: ProjectId,
-    expected_revision: u64,
-    cycle_schedule_v1: CycleScheduleRequestV1,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct CurrentCyclePosePreviewResponseV1 {
-    version: u32,
-    transaction_token: ProjectId,
-    source_revision: u64,
-    target_revision: u64,
-    closure_leaf_count: usize,
-    closure_max_depth: u32,
-    checked_hinge_count: usize,
-    total_hinge_count: usize,
-    continuous_path_certified: bool,
-    continuous_layer_transport_model_id: Option<&'static str>,
-    continuous_layer_transition_count: usize,
-    continuous_layer_pair_order_count: usize,
-    continuous_layer_target_order_sha256: Option<String>,
-    source_layer_order: Vec<LayerOrderPairDtoV1>,
-    target_layer_order: Vec<LayerOrderPairDtoV1>,
-    authorizes_project_mutation: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LayerOrderPairDtoV1 {
-    lower_face: FaceId,
-    upper_face: FaceId,
-}
-
 #[tauri::command]
 pub(super) fn propose_current_cycle_pose_v1(
     app: AppHandle,
@@ -2715,15 +2617,6 @@ fn begin_stacked_fold_read_generation_v1() -> Result<u64, String> {
         .ok_or_else(|| CYCLE_PATH_RESOURCE_MESSAGE.to_owned())
 }
 
-fn validate_progress_request_id_v1(value: Option<&str>) -> Result<Option<&str>, String> {
-    match value {
-        Some(value) if value.is_empty() || value.len() > 128 || !value.is_ascii() => {
-            Err(INVALID_REQUEST_MESSAGE.to_owned())
-        }
-        value => Ok(value),
-    }
-}
-
 fn emit_current_cycle_progress_v1(
     app: Option<&AppHandle>,
     request_id: Option<&str>,
@@ -2745,109 +2638,6 @@ fn emit_current_cycle_progress_v1(
             authorizes_project_mutation: false,
         },
     );
-}
-
-fn validate_certified_path_graph_v1(
-    request: &CertifiedPathGraphRequestV1,
-    live: &ori_kinematics::CanonicalHingeAngles,
-) -> Result<Vec<ori_kinematics::CanonicalHingeAngles>, &'static str> {
-    if request.version != 1
-        || request.states.is_empty()
-        || request.states.len() > ori_collision::MAX_CERTIFIED_PATH_GRAPH_STATES_V1
-        || request.transitions.is_empty()
-        || request.transitions.len() > MAX_STACKED_FOLD_ATOMIC_PATH_TRANSITIONS_V1
-        || request.states.iter().any(|state| {
-            state.entries.is_empty() || state.entries.len() > MAX_STACKED_FOLD_REQUEST_HINGES_V1
-        })
-    {
-        return Err(CYCLE_PATH_RESOURCE_MESSAGE);
-    }
-    if request.source_state != 0
-        || request.target_state >= request.states.len()
-        || request.target_state == request.source_state
-    {
-        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
-    }
-    let mut states = Vec::with_capacity(request.states.len());
-    for state in &request.states {
-        let angles = ori_kinematics::CanonicalHingeAngles::new(
-            state
-                .entries
-                .iter()
-                .map(|entry| ori_kinematics::HingeAngle::new(entry.edge, entry.angle_degrees))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE)?,
-        )
-        .map_err(|_| CYCLE_PATH_UNSUPPORTED_MESSAGE)?;
-        if angles.as_slice().len() != live.as_slice().len() {
-            return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
-        }
-        states.push(angles);
-    }
-    if states.first() != Some(live)
-        || states.iter().enumerate().any(|(index, state)| {
-            states[..index]
-                .iter()
-                .any(|previous| previous.as_slice() == state.as_slice())
-        })
-    {
-        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
-    }
-    let mut canonical_edges = request
-        .transitions
-        .iter()
-        .map(|edge| (edge.source_state, edge.target_state))
-        .collect::<Vec<_>>();
-    if canonical_edges.iter().any(|(source, target)| {
-        *source >= states.len() || *target >= states.len() || source == target
-    }) {
-        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
-    }
-    canonical_edges.sort_unstable();
-    if canonical_edges.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(CYCLE_PATH_UNSUPPORTED_MESSAGE);
-    }
-    Ok(states)
-}
-
-fn validate_linear_candidate_angles_v1(
-    request: &LinearCandidateRequestV1,
-    live: &ori_kinematics::CanonicalHingeAngles,
-) -> Result<
-    (
-        ori_kinematics::CanonicalHingeAngles,
-        ori_kinematics::CanonicalHingeAngles,
-    ),
-    (),
-> {
-    if request.version != 1 {
-        return Err(());
-    }
-    let collect = |requested: bool| {
-        ori_kinematics::CanonicalHingeAngles::new(
-            request
-                .entries
-                .iter()
-                .map(|entry| {
-                    ori_kinematics::HingeAngle::new(
-                        entry.edge,
-                        if requested {
-                            entry.requested_angle_degrees
-                        } else {
-                            entry.initial_angle_degrees
-                        },
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| ())?,
-        )
-        .map_err(|_| ())
-    };
-    let initial = collect(false)?;
-    if initial != *live {
-        return Err(());
-    }
-    Ok((initial, collect(true)?))
 }
 
 fn prepare_requested_cycle_schedule_v1(
@@ -3149,47 +2939,6 @@ fn validate_request_resource_shape_v1(
         return Err(CYCLE_PATH_RESOURCE_MESSAGE);
     }
     Ok(())
-}
-
-fn validate_exact_dyadic_candidate_path_v1(
-    request: &ExactDyadicPathRequestV1,
-) -> Result<(), &'static str> {
-    if request.version != 1 || request.segments.is_empty() {
-        return Err(CYCLE_PATH_RESOURCE_MESSAGE);
-    }
-    let segments = request
-        .segments
-        .iter()
-        .map(|segment| {
-            let point = |value: ExactDyadicPointRequestV1| ori_collision::DyadicPointV1 {
-                x_numerator: value.x_numerator,
-                y_numerator: value.y_numerator,
-                denominator_power: value.denominator_power,
-            };
-            ori_collision::DyadicSegmentV1 {
-                start: point(segment.start),
-                end: point(segment.end),
-            }
-        })
-        .collect::<Vec<_>>();
-    match ori_collision::classify_exact_dyadic_path_self_intersection_v1(
-        &segments,
-        ori_collision::ExactDyadicIntersectionLimitsV1 {
-            max_denominator_power: request.max_denominator_power,
-            max_integer_bits: request.max_integer_bits,
-        },
-        request.max_pair_tests,
-    ) {
-        Ok(None) => Ok(()),
-        Ok(Some(_)) => Err(CYCLE_PATH_UNCERTIFIED_MESSAGE),
-        Err(ori_collision::ExactDyadicPathIntersectionErrorV1::ResourceLimit) => {
-            Err(CYCLE_PATH_RESOURCE_MESSAGE)
-        }
-        Err(ori_collision::ExactDyadicPathIntersectionErrorV1::Cancelled) => Err(CANCELLED_MESSAGE),
-        Err(ori_collision::ExactDyadicPathIntersectionErrorV1::InvalidSegment) => {
-            Err(CYCLE_PATH_UNCERTIFIED_MESSAGE)
-        }
-    }
 }
 
 fn requires_graph_schedule_boundary_v1(
@@ -8382,196 +8131,6 @@ mod tests {
     }
 
     #[test]
-    fn linear_candidate_requires_bit_exact_live_initial_angles() {
-        let edge = serde_json::from_value::<ori_domain::EdgeId>(serde_json::json!(
-            "018f47a2-4b7a-7cc1-8abc-778899aabbcc"
-        ))
-        .unwrap();
-        let live = ori_kinematics::CanonicalHingeAngles::new(vec![
-            ori_kinematics::HingeAngle::new(edge, 20.0).unwrap(),
-        ])
-        .unwrap();
-        let request = LinearCandidateRequestV1 {
-            version: 1,
-            exact_dyadic_path_v1: None,
-            entries: vec![LinearCandidateEntryRequestV1 {
-                edge,
-                initial_angle_degrees: 20.0,
-                requested_angle_degrees: 40.0,
-            }],
-        };
-        let (initial, requested) = validate_linear_candidate_angles_v1(&request, &live).unwrap();
-        assert_eq!(initial, live);
-        assert_ne!(requested, live);
-
-        let mismatch = LinearCandidateRequestV1 {
-            version: 1,
-            exact_dyadic_path_v1: None,
-            entries: vec![LinearCandidateEntryRequestV1 {
-                edge,
-                initial_angle_degrees: f64::from_bits(20.0f64.to_bits() + 1),
-                requested_angle_degrees: 40.0,
-            }],
-        };
-        assert!(validate_linear_candidate_angles_v1(&mismatch, &live).is_err());
-        let wrong_version = LinearCandidateRequestV1 {
-            version: 2,
-            exact_dyadic_path_v1: None,
-            entries: request.entries,
-        };
-        assert!(validate_linear_candidate_angles_v1(&wrong_version, &live).is_err());
-    }
-
-    #[test]
-    fn exact_dyadic_candidate_preflight_rejects_crossing_and_allows_endpoint_touch() {
-        let point = |x, y, power| ExactDyadicPointRequestV1 {
-            x_numerator: x,
-            y_numerator: y,
-            denominator_power: power,
-        };
-        let path = |second| ExactDyadicPathRequestV1 {
-            version: 1,
-            segments: vec![
-                ExactDyadicSegmentRequestV1 {
-                    start: point(0, 0, 0),
-                    end: point(2, 0, 0),
-                },
-                second,
-            ],
-            max_pair_tests: 1,
-            max_denominator_power: 80,
-            max_integer_bits: 256,
-        };
-        assert_eq!(
-            validate_exact_dyadic_candidate_path_v1(&path(ExactDyadicSegmentRequestV1 {
-                start: point(1, -1, 80),
-                end: point(1, 1, 80),
-            })),
-            Err(CYCLE_PATH_UNCERTIFIED_MESSAGE)
-        );
-        assert_eq!(
-            validate_exact_dyadic_candidate_path_v1(&path(ExactDyadicSegmentRequestV1 {
-                start: point(2, 0, 0),
-                end: point(3, 1, 0),
-            })),
-            Ok(())
-        );
-        let mut bounded = path(ExactDyadicSegmentRequestV1 {
-            start: point(1, 1, 80),
-            end: point(1, 2, 80),
-        });
-        bounded.max_pair_tests = 0;
-        assert_eq!(
-            validate_exact_dyadic_candidate_path_v1(&bounded),
-            Err(CYCLE_PATH_RESOURCE_MESSAGE)
-        );
-    }
-
-    #[test]
-    fn certified_path_graph_admission_is_live_bound_canonical_and_bounded() {
-        let edge = ori_domain::EdgeId::new();
-        let live = ori_kinematics::CanonicalHingeAngles::new(vec![
-            ori_kinematics::HingeAngle::new(edge, 0.0).unwrap(),
-        ])
-        .unwrap();
-        let state = |angle_degrees| CertifiedPathGraphStateRequestV1 {
-            entries: vec![CertifiedPathGraphAngleRequestV1 {
-                edge,
-                angle_degrees,
-            }],
-        };
-        let valid = CertifiedPathGraphRequestV1 {
-            version: 1,
-            states: vec![state(0.0), state(45.0), state(90.0)],
-            transitions: vec![
-                CertifiedPathGraphTransitionRequestV1 {
-                    source_state: 0,
-                    target_state: 1,
-                },
-                CertifiedPathGraphTransitionRequestV1 {
-                    source_state: 1,
-                    target_state: 2,
-                },
-            ],
-            source_state: 0,
-            target_state: 2,
-        };
-        assert_eq!(
-            validate_certified_path_graph_v1(&valid, &live)
-                .unwrap()
-                .len(),
-            3
-        );
-
-        let stale = CertifiedPathGraphRequestV1 {
-            states: vec![state(1.0), state(45.0)],
-            target_state: 1,
-            transitions: vec![CertifiedPathGraphTransitionRequestV1 {
-                source_state: 0,
-                target_state: 1,
-            }],
-            ..valid
-        };
-        assert_eq!(
-            validate_certified_path_graph_v1(&stale, &live),
-            Err(CYCLE_PATH_UNSUPPORTED_MESSAGE)
-        );
-        let over_limit = CertifiedPathGraphRequestV1 {
-            version: 1,
-            states: (0..=ori_collision::MAX_CERTIFIED_PATH_GRAPH_STATES_V1)
-                .map(|index| state(index as f64))
-                .collect(),
-            target_state: 1,
-            transitions: Vec::new(),
-            source_state: 0,
-        };
-        assert_eq!(
-            validate_certified_path_graph_v1(&over_limit, &live),
-            Err(CYCLE_PATH_RESOURCE_MESSAGE)
-        );
-        let transition_over_limit = CertifiedPathGraphRequestV1 {
-            version: 1,
-            states: vec![state(0.0), state(90.0)],
-            transitions: (0..=MAX_STACKED_FOLD_ATOMIC_PATH_TRANSITIONS_V1)
-                .map(|_| CertifiedPathGraphTransitionRequestV1 {
-                    source_state: 0,
-                    target_state: 1,
-                })
-                .collect(),
-            source_state: 0,
-            target_state: 1,
-        };
-        assert_eq!(
-            validate_certified_path_graph_v1(&transition_over_limit, &live),
-            Err(CYCLE_PATH_RESOURCE_MESSAGE)
-        );
-        let oversized_state = CertifiedPathGraphRequestV1 {
-            version: 1,
-            states: vec![
-                CertifiedPathGraphStateRequestV1 {
-                    entries: (0..=MAX_STACKED_FOLD_REQUEST_HINGES_V1)
-                        .map(|_| CertifiedPathGraphAngleRequestV1 {
-                            edge: ori_domain::EdgeId::new(),
-                            angle_degrees: 0.0,
-                        })
-                        .collect(),
-                },
-                state(90.0),
-            ],
-            transitions: vec![CertifiedPathGraphTransitionRequestV1 {
-                source_state: 0,
-                target_state: 1,
-            }],
-            source_state: 0,
-            target_state: 1,
-        };
-        assert_eq!(
-            validate_certified_path_graph_v1(&oversized_state, &live),
-            Err(CYCLE_PATH_RESOURCE_MESSAGE)
-        );
-    }
-
-    #[test]
     fn stacked_fold_read_cancel_advances_the_process_wide_generation() {
         let _generation_guard = STACKED_FOLD_READ_GENERATION_TEST_LOCK
             .lock()
@@ -12290,19 +11849,6 @@ mod tests {
     }
 
     #[test]
-    fn current_cycle_preview_request_rejects_unknown_dto_fields() {
-        let id = ProjectId::new();
-        let value = serde_json::json!({
-            "expectedProjectInstanceId": id,
-            "expectedProjectId": id,
-            "expectedRevision": 0,
-            "cycleScheduleV1": { "version": 1, "entries": [] },
-            "unexpected": true
-        });
-        assert!(serde_json::from_value::<CurrentCyclePosePreviewRequestV1>(value).is_err());
-    }
-
-    #[test]
     fn current_cycle_generation_replacement_and_cancel_are_monotonic() {
         let _guard = STACKED_FOLD_READ_GENERATION_TEST_LOCK
             .lock()
@@ -12320,17 +11866,5 @@ mod tests {
             STACKED_FOLD_READ_GENERATION.load(Ordering::Acquire),
             replacement
         );
-    }
-
-    #[test]
-    fn current_cycle_progress_id_is_strict_and_bounded() {
-        assert_eq!(validate_progress_request_id_v1(None).unwrap(), None);
-        assert_eq!(
-            validate_progress_request_id_v1(Some("cycle:1")).unwrap(),
-            Some("cycle:1")
-        );
-        assert!(validate_progress_request_id_v1(Some("")).is_err());
-        assert!(validate_progress_request_id_v1(Some(&"x".repeat(129))).is_err());
-        assert!(validate_progress_request_id_v1(Some("循環")).is_err());
     }
 }

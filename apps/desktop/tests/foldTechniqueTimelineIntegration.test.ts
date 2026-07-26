@@ -62,8 +62,9 @@ test('confirmation is one atomic native edit and never dispatches a pose or phys
     confirm,
     /appendProposal\(\s*\{\s*expectedProjectInstanceId: projectInstanceId,\s*expectedProjectId: projectId,\s*expectedRevision: revision,\s*\},\s*pending\.preview\.proposal,\s*\)/u,
   )
-  assert.match(confirm, /1回のUndoで戻せます/u)
-  assert.match(confirm, /One Undo removes the complete addition/u)
+  assert.match(confirm, /TEXT\.appendSucceeded/u)
+  assert.match(proposal, /1回のUndoで戻せます/u)
+  assert.match(proposal, /One Undo removes the complete addition/u)
   assert.doesNotMatch(
     confirm,
     /addInstructionStep|replaceInstructionStepPose|applyInstructionStepPose|straightLineStackedFold/u,

@@ -38,6 +38,12 @@ const EXPECTED_KEYS = [
   'unsupportedPhysicalOperation',
   'stackedFoldNotExecuted',
   'descriptionOnlyStep',
+  'timelineCapacityError',
+  'proposalSizeError',
+  'proposalBuildError',
+  'staleProposalError',
+  'appendFailed',
+  'appendSucceeded',
 ] as const
 
 const EXPECTED_PLACEHOLDERS = new Map<string, readonly string[]>([
@@ -46,6 +52,8 @@ const EXPECTED_PLACEHOLDERS = new Map<string, readonly string[]>([
   ['preconditionTitle', ['id']],
   ['operationTitle', ['index', 'name']],
   ['unsupportedPhysicalOperation', ['operation']],
+  ['timelineCapacityError', ['available', 'required']],
+  ['appendSucceeded', ['technique']],
 ])
 
 test('timeline proposal catalog is exact, closed, and deeply frozen', () => {
@@ -68,7 +76,7 @@ test('timeline proposal catalog is exact, closed, and deeply frozen', () => {
   assertDeeplyFrozen(TEXT)
   assert.equal(
     createHash('sha256').update(JSON.stringify(TEXT), 'utf8').digest('hex'),
-    '2c285632ab6460048cb2cf91c5b0ebf240c75baf3199ab509912463eb37105ce',
+    '33a65c325fd13b9b2120edc44b41fd0232ce24e2121a7b08e1a81a31bc394ba3',
   )
 
   assert.deepEqual(TEXT.techniqueAndProvenance, {
@@ -78,6 +86,30 @@ test('timeline proposal catalog is exact, closed, and deeply frozen', () => {
   assert.deepEqual(TEXT.unsupportedPhysicalOperation, {
     ja: '未対応の物理操作（{operation}）です。説明テンプレートとしてのみ追加し、自動実行しません。',
     en: 'Unsupported physical operation ({operation}). It is added only as an explanation template and is never auto-executed.',
+  })
+  assert.deepEqual(TEXT.timelineCapacityError, {
+    ja: '折り手順の上限内に追加できません（必要 {required}、空き {available}）。',
+    en: 'The proposal does not fit in the instruction limit (requires {required}, {available} available).',
+  })
+  assert.deepEqual(TEXT.proposalSizeError, {
+    ja: '折り技法の説明案が安全な入力サイズ上限を超えています。',
+    en: 'The fold-technique proposal exceeds the safe input-size limit.',
+  })
+  assert.deepEqual(TEXT.proposalBuildError, {
+    ja: '選択中の折り技法から説明案を作成できませんでした。',
+    en: 'Could not build a proposal from the selected fold technique.',
+  })
+  assert.deepEqual(TEXT.staleProposalError, {
+    ja: 'プロジェクトまたは選択中の技法が変わりました。案を閉じて作り直してください。',
+    en: 'The project or selected technique changed. Close and rebuild the proposal.',
+  })
+  assert.deepEqual(TEXT.appendFailed, {
+    ja: '説明ステップを追加できませんでした。プロジェクトは変更されていません。',
+    en: 'Could not append the description steps. The project was not changed.',
+  })
+  assert.deepEqual(TEXT.appendSucceeded, {
+    ja: '「{technique}」から説明専用の折り手順を追加しました。1回のUndoで戻せます。',
+    en: 'Added description-only steps from “{technique}”. One Undo removes the complete addition.',
   })
 })
 
@@ -136,6 +168,42 @@ test('timeline proposal delegates fixed copy and locale choice to the catalog', 
   assert.match(source, /\bisLocale\(locale\)/u)
   assert.doesNotMatch(source, /\bfunction localized\(/u)
   assert.doesNotMatch(source, /[ぁ-んァ-ン一-龯]/u)
+})
+
+test('timeline proposal hook delegates every status message to the catalog', () => {
+  const source = readFileSync(
+    new URL(
+      '../src/lib/useFoldTechniqueTimelineProposal.ts',
+      import.meta.url,
+    ),
+    'utf8',
+  )
+
+  assert.match(source, /FOLD_TECHNIQUE_TIMELINE_PROPOSAL_TEXT as TEXT/u)
+  for (const key of [
+    'timelineCapacityError',
+    'proposalSizeError',
+    'proposalBuildError',
+    'staleProposalError',
+    'appendFailed',
+    'appendSucceeded',
+  ]) {
+    assert.match(source, new RegExp(`\\bTEXT\\.${key}\\b`, 'u'), key)
+  }
+  assert.doesNotMatch(source, /\b(?:ja|en)\s*:/u)
+  assert.doesNotMatch(source, /[ぁ-んァ-ン一-龯]/u)
+  assert.doesNotMatch(
+    source,
+    /The proposal does not fit|Could not build a proposal|Could not append the description steps|One Undo removes/u,
+  )
+  assert.match(
+    source,
+    /message\(TEXT\.timelineCapacityError,\s*\{\s*required: proposal\.requiredSteps,\s*available: proposal\.availableSteps,\s*\}\)/u,
+  )
+  assert.match(
+    source,
+    /message\(\s*TEXT\.appendSucceeded,\s*\{ technique: pending\.preview\.techniqueName \},\s*\)/u,
+  )
 })
 
 function placeholders(value: string): readonly string[] {

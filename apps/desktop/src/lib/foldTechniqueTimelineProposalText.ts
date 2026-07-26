@@ -20,6 +20,12 @@ type FoldTechniqueTimelineProposalTextKey =
   | 'unsupportedPhysicalOperation'
   | 'stackedFoldNotExecuted'
   | 'descriptionOnlyStep'
+  | 'timelineCapacityError'
+  | 'proposalSizeError'
+  | 'proposalBuildError'
+  | 'staleProposalError'
+  | 'appendFailed'
+  | 'appendSucceeded'
 
 export type FoldTechniqueTimelineProposalText = Readonly<
   Record<FoldTechniqueTimelineProposalTextKey, LocalizedText>
@@ -105,5 +111,29 @@ export const FOLD_TECHNIQUE_TIMELINE_PROPOSAL_TEXT = Object.freeze({
   descriptionOnlyStep: localized(
     '説明専用ステップです。3D姿勢は変更しません。',
     'This is a description-only step. It does not change the 3D pose.',
+  ),
+  timelineCapacityError: localized(
+    '折り手順の上限内に追加できません（必要 {required}、空き {available}）。',
+    'The proposal does not fit in the instruction limit (requires {required}, {available} available).',
+  ),
+  proposalSizeError: localized(
+    '折り技法の説明案が安全な入力サイズ上限を超えています。',
+    'The fold-technique proposal exceeds the safe input-size limit.',
+  ),
+  proposalBuildError: localized(
+    '選択中の折り技法から説明案を作成できませんでした。',
+    'Could not build a proposal from the selected fold technique.',
+  ),
+  staleProposalError: localized(
+    'プロジェクトまたは選択中の技法が変わりました。案を閉じて作り直してください。',
+    'The project or selected technique changed. Close and rebuild the proposal.',
+  ),
+  appendFailed: localized(
+    '説明ステップを追加できませんでした。プロジェクトは変更されていません。',
+    'Could not append the description steps. The project was not changed.',
+  ),
+  appendSucceeded: localized(
+    '「{technique}」から説明専用の折り手順を追加しました。1回のUndoで戻せます。',
+    'Added description-only steps from “{technique}”. One Undo removes the complete addition.',
   ),
 }) satisfies FoldTechniqueTimelineProposalText

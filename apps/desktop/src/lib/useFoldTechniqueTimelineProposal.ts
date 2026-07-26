@@ -10,6 +10,9 @@ import {
   createFoldTechniqueTimelineProposalV1,
   type FoldTechniqueTimelineProposalPreview,
 } from './foldTechniqueTimelineProposal.ts'
+import {
+  FOLD_TECHNIQUE_TIMELINE_PROPOSAL_TEXT as TEXT,
+} from './foldTechniqueTimelineProposalText.ts'
 import type {
   Locale,
   LocalizedText,
@@ -117,22 +120,13 @@ export function useFoldTechniqueTimelineProposal(input: Readonly<{
     )
     if (!proposal.ok) {
       const status = proposal.error === 'timeline_capacity'
-        ? message({
-            ja: '折り手順の上限内に追加できません（必要 {required}、空き {available}）。',
-            en: 'The proposal does not fit in the instruction limit (requires {required}, {available} available).',
-          }, {
+        ? message(TEXT.timelineCapacityError, {
             required: proposal.requiredSteps,
             available: proposal.availableSteps,
           })
         : proposal.error === 'proposal_size'
-          ? message({
-              ja: '折り技法の説明案が安全な入力サイズ上限を超えています。',
-              en: 'The fold-technique proposal exceeds the safe input-size limit.',
-            })
-          : message({
-              ja: '選択中の折り技法から説明案を作成できませんでした。',
-              en: 'Could not build a proposal from the selected fold technique.',
-            })
+          ? message(TEXT.proposalSizeError)
+          : message(TEXT.proposalBuildError)
       input.onStatus(status)
       return
     }
@@ -178,10 +172,7 @@ export function useFoldTechniqueTimelineProposal(input: Readonly<{
       || input.getCurrentWorkspace()?.document !== pending.sourceDocument
       || input.selectedIndex !== pending.techniqueIndex
     ) {
-      setError(message({
-        ja: 'プロジェクトまたは選択中の技法が変わりました。案を閉じて作り直してください。',
-        en: 'The project or selected technique changed. Close and rebuild the proposal.',
-      }))
+      setError(message(TEXT.staleProposalError))
       return
     }
 
@@ -220,19 +211,16 @@ export function useFoldTechniqueTimelineProposal(input: Readonly<{
     if (!completeOwnedRequest(requestGateRef.current, requestId)) return
     setBusy(false)
     if (!succeeded) {
-      setError(message({
-        ja: '説明ステップを追加できませんでした。プロジェクトは変更されていません。',
-        en: 'Could not append the description steps. The project was not changed.',
-      }))
+      setError(message(TEXT.appendFailed))
       return
     }
     const opener = openerRef.current
     openerRef.current = null
     setPreview(null)
-    input.onStatus(message({
-      ja: '「{technique}」から説明専用の折り手順を追加しました。1回のUndoで戻せます。',
-      en: 'Added description-only steps from “{technique}”. One Undo removes the complete addition.',
-    }, { technique: pending.preview.techniqueName }))
+    input.onStatus(message(
+      TEXT.appendSucceeded,
+      { technique: pending.preview.techniqueName },
+    ))
     scheduleFocus(() => opener?.focus())
   }
 

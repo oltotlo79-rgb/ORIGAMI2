@@ -215,7 +215,8 @@
       "commits": [
         "66074eba1c5c2dc564ec1c3cf135c0891c4d66db",
         "327518c360e142d754d0c21c2680b7389d36042e",
-        "1be7912632e7a8bfd02f01659401730131343261"
+        "1be7912632e7a8bfd02f01659401730131343261",
+        "8bdb61e8f36b05d54b15cfb87326a580e684cbbf"
       ],
       "evidence": [
         {
@@ -247,13 +248,28 @@
           "kind": "test",
           "path": "crates/ori-core/src/constraint_solver.rs",
           "selector": "fn incompatible_fixed_lengths_and_ratio_are_rejected_before_numerical_tolerance()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "fn different_ratios_need_a_fixed_denominator_and_incompatible_binary64_products()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_solver.rs",
+          "selector": "fn different_ratios_with_fixed_denominator_can_share_an_underflowed_zero_numerator()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/geometricConstraints.test.ts",
+          "selector": "different length ratio proof requires exactly three cause IDs"
         }
       ],
       "limitations": [
-        "only six of the twenty-one wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the other fifteen fail closed to Unknown"
+        "only seven of the twenty-one wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the other fourteen fail closed to Unknown"
       ],
       "missingAcceptance": [
-        "sound general satisfiability and unsatisfiability oracle plus minimal unsatisfiable subsets beyond the six allowlisted direct-conflict variants"
+        "sound general satisfiability and unsatisfiability oracle plus minimal unsatisfiable subsets beyond the seven allowlisted direct-conflict variants"
       ]
     },
     {

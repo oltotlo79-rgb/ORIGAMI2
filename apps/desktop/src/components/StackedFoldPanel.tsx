@@ -1,4 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { CurrentNonFlatLayerOrderViewer } from './CurrentNonFlatLayerOrderViewer.tsx'
+import type { FoldPreviewAppliedPoseSnapshot } from '../lib/foldPreviewAppliedPose.ts'
 import {
   applyStackedFoldTransaction,
   applyNamedBookFoldTransaction,
@@ -74,6 +76,7 @@ type Props = Readonly<{
     reason?: string
   }>[]
   onSelectNamedTechnique?(techniqueId: string): void
+  appliedPose?: FoldPreviewAppliedPoseSnapshot | null
 }>
 
 const MAX_CYCLE_SCHEDULE_JSON_BYTES = 65_536
@@ -112,9 +115,28 @@ export function StackedFoldPanel({
   namedBookFold = null,
   namedTechniquePalette = [],
   onSelectNamedTechnique,
+  appliedPose = null,
 }: Props) {
   const text = (localized: LocalizedText) =>
     selectLocalizedText(locale, localized)
+  // The viewer request is only formed while the observed pose is stable and
+  // bound to the same project and revision as the snapshot.
+  const nonFlatViewerSource = useMemo(() => {
+    if (
+      appliedPose === null
+      || appliedPose.state !== 'stable'
+      || appliedPose.fixedFaceId === null
+      || appliedPose.projectId !== snapshot.project_id
+      || appliedPose.revision !== snapshot.revision
+    ) return null
+    return {
+      projectInstanceId: snapshot.project_instance_id,
+      projectId: snapshot.project_id,
+      revision: snapshot.revision,
+      foldModelFingerprintSha256: snapshot.fold_model_fingerprint,
+      appliedPose,
+    }
+  }, [appliedPose, snapshot])
   const formattedText = (
     localized: LocalizedText,
     variables: MessageVariables,
@@ -1513,6 +1535,10 @@ export function StackedFoldPanel({
           {!ready && <p className="muted">{text(TEXT.applyIsDisabledBecauseTheCaseIsNotFullyCertified)}</p>}
         </div>
       )}
+      <CurrentNonFlatLayerOrderViewer
+        locale={locale}
+        source={nonFlatViewerSource}
+      />
     </section>
   )
 }

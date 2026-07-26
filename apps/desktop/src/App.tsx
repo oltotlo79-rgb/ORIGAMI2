@@ -9195,6 +9195,7 @@ function App() {
             <StackedFoldPanel
               locale={locale}
               snapshot={nativeSnapshot}
+              appliedPose={appliedFoldPose}
               selectedLine={selectedLine ? {
                 id: selectedLine.id,
                 start: { x: selectedLine.x1, y: selectedLine.y1 },

@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 
 import type { ProjectFileResponse } from './coreClient.ts'
 import type { Locale } from './i18n.ts'
+import { PROJECT_FOLDER_CLIENT_TEXT } from './projectFolderClientText.ts'
 import { parsePathlessProjectSnapshot } from './recoveryClient.ts'
 
 export type ProjectFolderClientErrorCode =
@@ -119,9 +120,18 @@ export function normalizeProjectFolderResponse(
 export function projectFolderClientErrorCode(
   error: unknown,
 ): ProjectFolderClientErrorCode {
-  return error instanceof ProjectFolderClientError
-    ? error.code
-    : 'invalid_response'
+  try {
+    if (!(error instanceof ProjectFolderClientError)) {
+      return 'invalid_response'
+    }
+    const code: unknown = error.code
+    return typeof code === 'string'
+      && Object.hasOwn(PROJECT_FOLDER_CLIENT_TEXT, code)
+      ? code as ProjectFolderClientErrorCode
+      : 'invalid_response'
+  } catch {
+    return 'invalid_response'
+  }
 }
 
 export function projectFolderClientErrorMessage(
@@ -129,68 +139,7 @@ export function projectFolderClientErrorMessage(
   locale: Locale,
 ): string {
   const code = projectFolderClientErrorCode(error)
-  const messages: Readonly<Record<
-    ProjectFolderClientErrorCode,
-    Readonly<Record<Locale, string>>
-  >> = {
-    native_unavailable: {
-      ja: '展開フォルダー操作はデスクトップ版で利用できます。',
-      en: 'Expanded-folder operations are available in the desktop app.',
-    },
-    busy: {
-      ja: '別の展開フォルダー操作を処理中です。完了後にもう一度実行してください。',
-      en: 'Another expanded-folder operation is running. Try again after it finishes.',
-    },
-    invalid_request: {
-      ja: '展開フォルダー操作の条件を確認できませんでした。もう一度実行してください。',
-      en: 'The expanded-folder request could not be verified. Try again.',
-    },
-    open_failed: {
-      ja: '選択した展開フォルダーを安全に開けませんでした。アクセス権を確認してください。',
-      en: 'The selected expanded folder could not be opened safely. Check its permissions.',
-    },
-    invalid: {
-      ja: '展開フォルダーのmanifestまたはプロジェクト内容が正しくありません。',
-      en: 'The expanded folder has an invalid manifest or project content.',
-    },
-    too_large: {
-      ja: '展開フォルダー内のファイルがサイズ上限を超えています。',
-      en: 'A file in the expanded folder exceeds the size limit.',
-    },
-    link_or_special_entry: {
-      ja: '展開フォルダーにリンク、再解析ポイント、ハードリンク、または特殊ファイルが含まれています。通常のファイルだけにしてください。',
-      en: 'The expanded folder contains a link, reparse point, hard link, or special file. Use ordinary files only.',
-    },
-    changed_during_read: {
-      ja: '処理中に展開フォルダーが変更されました。変更が止まってからもう一度実行してください。',
-      en: 'The expanded folder changed during processing. Try again after changes stop.',
-    },
-    save_failed: {
-      ja: '展開フォルダーを安全に保存できませんでした。保存先のアクセス権と空き容量を確認してください。',
-      en: 'The expanded folder could not be saved safely. Check destination permissions and free space.',
-    },
-    target_exists: {
-      ja: '同じ名前の展開フォルダーは別のプロジェクトに属するか、安全な置き換え条件を満たしていません。別の親フォルダーを選んでください。',
-      en: 'The same-named expanded folder belongs to another project or cannot be replaced safely. Choose a different parent folder.',
-    },
-    project_changed: {
-      ja: '操作中にプロジェクトが変更されました。現在の内容でもう一度実行してください。',
-      en: 'The project changed during the operation. Try again with the current content.',
-    },
-    recovery_required: {
-      ja: '前回の展開フォルダー置き換えを安全に完了する必要があります。保存先が外付けドライブ等にある場合は再接続してから、展開フォルダー操作をもう一度実行してください。',
-      en: 'A previous expanded-folder replacement must be recovered safely. If its destination is on an external drive, reconnect it and retry an expanded-folder operation.',
-    },
-    replacement_unsupported: {
-      ja: 'この保存先では既存フォルダーの安全な置き換えを保証できません。新しいフォルダー名で保存するか、ローカルのNTFS/ReFS保存先を選んでください。',
-      en: 'Safe replacement of an existing folder cannot be guaranteed at this destination. Save with a new folder name or choose a local NTFS/ReFS destination.',
-    },
-    invalid_response: {
-      ja: '展開フォルダー操作の応答を確認できませんでした。もう一度実行してください。',
-      en: 'The expanded-folder response could not be verified. Try again.',
-    },
-  }
-  return messages[code][locale]
+  return PROJECT_FOLDER_CLIENT_TEXT[code][locale]
 }
 
 function exactRecord(
@@ -228,7 +177,11 @@ function exactRecord(
 }
 
 function mapNativeError(error: unknown): ProjectFolderClientError {
-  if (error instanceof ProjectFolderClientError) return error
+  try {
+    if (error instanceof ProjectFolderClientError) return error
+  } catch {
+    return new ProjectFolderClientError('invalid_response')
+  }
   if (typeof error === 'string' && Object.hasOwn(NATIVE_ERROR_CODES, error)) {
     return new ProjectFolderClientError(
       NATIVE_ERROR_CODES[error as keyof typeof NATIVE_ERROR_CODES],

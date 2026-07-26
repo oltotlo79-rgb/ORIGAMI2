@@ -8,9 +8,24 @@ import {
   projectFolderClientErrorCode,
   projectFolderClientErrorMessage,
 } from '../src/lib/projectFolderClient.ts'
+import type { Locale } from '../src/lib/i18n.ts'
 
 const INSTANCE_ID = '11111111-1111-4111-8111-111111111111'
 const PROJECT_ID = '22222222-2222-4222-8222-222222222222'
+const NATIVE_ERROR_CASES = [
+  ['project_folder_busy', 'busy'],
+  ['project_folder_invalid_request', 'invalid_request'],
+  ['project_folder_open_failed', 'open_failed'],
+  ['project_folder_invalid', 'invalid'],
+  ['project_folder_too_large', 'too_large'],
+  ['project_folder_link_or_special_entry', 'link_or_special_entry'],
+  ['project_folder_changed_during_read', 'changed_during_read'],
+  ['project_folder_save_failed', 'save_failed'],
+  ['project_folder_target_exists', 'target_exists'],
+  ['project_folder_project_changed', 'project_changed'],
+  ['project_folder_recovery_required', 'recovery_required'],
+  ['project_folder_replacement_unsupported', 'replacement_unsupported'],
+] as const
 
 test('invokes only the two pathless native commands with a strict locale', async () => {
   const calls: Array<readonly [string, unknown]> = []
@@ -26,6 +41,27 @@ test('invokes only the two pathless native commands with a strict locale', async
     ['save_project_folder_as', { locale: 'en' }],
   ])
   assert.doesNotMatch(JSON.stringify(calls), /path|bytes|targetName/u)
+})
+
+test('rejects runtime locale drift before availability checks or IPC', async () => {
+  let availabilityCalls = 0
+  let nativeCalls = 0
+  const client = createProjectFolderClient(async () => {
+    nativeCalls += 1
+    return { canceled: false, project: validSnapshot() }
+  }, () => {
+    availabilityCalls += 1
+    return true
+  })
+
+  for (const locale of ['fr', '', null, undefined, { locale: 'ja' }]) {
+    await assert.rejects(
+      client.open(locale as unknown as Locale),
+      invalidResponse,
+    )
+  }
+  assert.equal(availabilityCalls, 0)
+  assert.equal(nativeCalls, 0)
 })
 
 test('strictly admits an exact pathless response and rejects response drift', () => {
@@ -71,37 +107,51 @@ test('does not invoke hostile response getters', () => {
 })
 
 test('maps only fixed native categories and redacts arbitrary failures', async () => {
-  const stale = createProjectFolderClient(async () => {
-    throw 'project_folder_project_changed'
-  }, () => true)
-  await assert.rejects(stale.saveAsNew('ja'), (error: unknown) =>
-    error instanceof ProjectFolderClientError
-      && error.code === 'project_changed')
+  for (const [nativeCode, clientCode] of NATIVE_ERROR_CASES) {
+    const client = createProjectFolderClient(async () => {
+      throw nativeCode
+    }, () => true)
+    await assert.rejects(client.open('ja'), (error: unknown) =>
+      error instanceof ProjectFolderClientError
+        && error.code === clientCode)
+  }
 
-  const recovery = createProjectFolderClient(async () => {
-    throw 'project_folder_recovery_required'
+  const expectedError = new ProjectFolderClientError('busy')
+  const clientError = createProjectFolderClient(async () => {
+    throw expectedError
   }, () => true)
-  await assert.rejects(recovery.open('en'), (error: unknown) =>
-    error instanceof ProjectFolderClientError
-      && error.code === 'recovery_required')
-
-  const unsupportedReplacement = createProjectFolderClient(async () => {
-    throw 'project_folder_replacement_unsupported'
-  }, () => true)
-  await assert.rejects(unsupportedReplacement.saveAsNew('ja'), (error: unknown) =>
-    error instanceof ProjectFolderClientError
-      && error.code === 'replacement_unsupported')
-
-  const hostile = createProjectFolderClient(async () => {
-    throw new Error('C:\\Users\\alice\\private-project\\manifest.json')
-  }, () => true)
-  await assert.rejects(hostile.open('ja'), (error: unknown) => {
-    assert.equal(projectFolderClientErrorCode(error), 'invalid_response')
-    assert.ok(error instanceof ProjectFolderClientError)
-    assert.doesNotMatch(error.message, /alice|manifest|private/u)
-    assert.equal('cause' in error, false)
+  await assert.rejects(clientError.open('ja'), (error: unknown) => {
+    assert.equal(error, expectedError)
     return true
   })
+
+  const privatePath = String.raw`C:\Users\alice\private-project\manifest.json`
+  const hostileObject = new Proxy(Object.create(null) as object, {
+    get() {
+      throw new Error(privatePath)
+    },
+    getPrototypeOf() {
+      throw new Error(privatePath)
+    },
+  })
+  for (const nativeFailure of [
+    'project_folder_future_error',
+    new Error(privatePath),
+    { code: 'project_folder_busy', path: privatePath },
+    hostileObject,
+    Symbol(privatePath),
+  ]) {
+    const hostile = createProjectFolderClient(async () => {
+      throw nativeFailure
+    }, () => true)
+    await assert.rejects(hostile.open('ja'), (error: unknown) => {
+      assert.equal(projectFolderClientErrorCode(error), 'invalid_response')
+      assert.ok(error instanceof ProjectFolderClientError)
+      assert.doesNotMatch(error.message, /alice|manifest|private|Users/u)
+      assert.equal('cause' in error, false)
+      return true
+    })
+  }
 })
 
 test('formats actionable Japanese and English messages without raw payloads', () => {

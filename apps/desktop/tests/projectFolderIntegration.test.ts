@@ -7,6 +7,7 @@ const app = [
   source('../src/lib/appText.ts'),
 ].join('\n')
 const client = source('../src/lib/projectFolderClient.ts')
+const clientText = source('../src/lib/projectFolderClientText.ts')
 const coreClient = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/project_folder_io.rs')
 const nativeRoot = source('../src-tauri/src/lib.rs')
@@ -61,6 +62,23 @@ test('IPC accepts only locale and returns an exact pathless snapshot envelope', 
 })
 
 test('native errors and filesystem names remain closed categories', () => {
+  assert.match(
+    client,
+    /import \{ PROJECT_FOLDER_CLIENT_TEXT \} from '\.\/projectFolderClientText\.ts'/u,
+  )
+  assert.match(
+    client,
+    /return PROJECT_FOLDER_CLIENT_TEXT\[code\]\[locale\]/u,
+  )
+  assert.match(clientText, /export const PROJECT_FOLDER_CLIENT_TEXT/u)
+  assert.doesNotMatch(
+    functionSection(
+      client,
+      'export function projectFolderClientErrorMessage(',
+      'function exactRecord(',
+    ),
+    /[ぁ-んァ-ン一-龯]|Expanded-folder|expanded folder/u,
+  )
   assert.match(client, /const NATIVE_ERROR_CODES = Object\.freeze/u)
   assert.match(client, /project_folder_target_exists: 'target_exists'/u)
   assert.match(client, /project_folder_project_changed: 'project_changed'/u)

@@ -5,7 +5,7 @@ use super::{
     EdgePairKey, GeometricConstraintKindV1, GeometricConstraintSetV1,
     MAX_DIRECT_CONFLICT_CAUSE_IDS_V1, ScalarAssignment, ScalarGroupSummary,
     ZeroLengthClosureProviderKindV1, canonical_id_slice_cmp, canonicalize_constraint_ids,
-    fixed_angle_residual_binary64_v1,
+    fixed_angle_rejects_zero_cross_binary64_v1,
 };
 
 /// Whole-document ceiling for the exact-zero implication theorem.
@@ -317,7 +317,7 @@ pub(super) fn conflict_with_limits_and_observer(
                 second_edge,
                 angle_degrees,
                 ..
-            } if fixed_angle_rejects_collapsed_edge(angle_degrees) => {
+            } if fixed_angle_rejects_zero_cross_binary64_v1(angle_degrees) => {
                 for edge in [first_edge, second_edge] {
                     add_provider_terminal(
                         &mut terminals,
@@ -607,13 +607,6 @@ fn add_provider_terminal(
             kind: TerminalKind::Provider(provider_kind),
         },
     );
-}
-
-fn fixed_angle_rejects_collapsed_edge(angle_degrees: f64) -> bool {
-    [0.0, std::f64::consts::PI].into_iter().all(|actual| {
-        let residual = fixed_angle_residual_binary64_v1(actual, angle_degrees);
-        !residual.is_finite() || residual != 0.0
-    })
 }
 
 fn orientation_equality_graph<O: Observer>(

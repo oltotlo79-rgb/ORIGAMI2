@@ -444,6 +444,14 @@ pub enum DirectConstraintConflictKindV1 {
         horizontal_edge: EdgeId,
         vertical_edge: EdgeId,
     },
+    /// Two exact, distinct pattern edges share the validated `FixedAngle`
+    /// vertex and are both constrained horizontal or both constrained
+    /// vertical. Their production cross term is therefore either signed zero
+    /// or non-finite, including every collapse and endpoint-direction case.
+    /// The conflict is emitted only when the shared production fixed-angle
+    /// residual rejects every finite `atan2(+0, dot)` class, including both
+    /// signed-zero dot values. Stored-degree inequality, tolerance, and current
+    /// coordinates are never used as evidence.
     SameOrientationWithFixedNonParallelAngle {
         first_edge: EdgeId,
         second_edge: EdgeId,
@@ -2397,10 +2405,9 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
         }
     }
     for (pair, angles) in &fixed_angles_by_pair {
-        let angle = angles.iter().find(|assignment| {
-            assignment.value.to_bits() != 0.0_f64.to_bits()
-                && assignment.value.to_bits() != 180.0_f64.to_bits()
-        });
+        let angle = angles
+            .iter()
+            .find(|assignment| fixed_angle_rejects_zero_cross_binary64_v1(assignment.value));
         let same_orientation = horizontal
             .get(&pair.first)
             .zip(horizontal.get(&pair.second))
@@ -3051,6 +3058,34 @@ pub(crate) fn fixed_angle_residual_binary64_v1(actual_radians: f64, angle_degree
         - std::f64::consts::PI
 }
 
+/// Returns whether the shared production residual rejects every result class
+/// reachable when the production absolute cross term is exactly `+0.0`.
+///
+/// `atan2(+0, dot)` depends on the dot product's sign and signed-zero class.
+/// Finite same-orientation vectors cover positive, negative, `+0.0`, and
+/// `-0.0`; overflow can additionally produce either infinity or NaN. The
+/// representative inputs below are evaluated through the same platform
+/// `atan2` and fixed-angle helper as the solver instead of assuming stored
+/// degree inequality or a hard-coded pi bit pattern.
+fn fixed_angle_rejects_zero_cross_binary64_v1(angle_degrees: f64) -> bool {
+    debug_assert!(angle_degrees.is_finite() && (0.0..=180.0).contains(&angle_degrees));
+    [
+        0.0,
+        -0.0,
+        1.0,
+        -1.0,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
+    ]
+    .into_iter()
+    .all(|dot| {
+        let actual = 0.0_f64.atan2(dot);
+        let residual = fixed_angle_residual_binary64_v1(actual, angle_degrees);
+        !residual.is_finite() || residual != 0.0
+    })
+}
+
 /// One-sided test that two stored binary64 degree values do not add to an
 /// exact real full turn.
 ///
@@ -3684,6 +3719,7 @@ fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bo
             | DirectConstraintConflictKindV1::InconsistentLengthRatioGraphWithFixedLength { .. }
             | DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent { .. }
             | DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
+            | DirectConstraintConflictKindV1::SameOrientationWithFixedNonParallelAngle { .. }
             | DirectConstraintConflictKindV1::PositiveFixedLengthInBoundedZeroLengthClosure { .. }
             | DirectConstraintConflictKindV1::ZeroLengthClosureReachesNondegenerateProvider { .. }
     )
@@ -4315,6 +4351,14 @@ mod ratio_cycle_limits_tests;
 #[cfg(test)]
 #[path = "constraints_ratio_cycle_tests.rs"]
 mod ratio_cycle_tests;
+
+#[cfg(test)]
+#[path = "constraints_same_orientation_angle_limits_tests.rs"]
+mod same_orientation_angle_limits_tests;
+
+#[cfg(test)]
+#[path = "constraints_same_orientation_angle_tests.rs"]
+mod same_orientation_angle_tests;
 
 #[cfg(test)]
 mod tests {
@@ -9310,103 +9354,6 @@ mod tests {
                 oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1,
                 "{count}"
             );
-        }
-    }
-
-    #[test]
-    fn same_exact_orientation_and_nonparallel_angle_remain_solver_required_at_oracle_boundaries() {
-        for count in [4, 8, 16] {
-            let fixture = Fixture::new();
-            let mut records = vec![
-                record(GeometricConstraintKindV1::Horizontal {
-                    edge: fixture.edges[0],
-                }),
-                record(GeometricConstraintKindV1::Horizontal {
-                    edge: fixture.edges[1],
-                }),
-                record(GeometricConstraintKindV1::FixedAngle {
-                    vertex: fixture.vertices[0],
-                    first_edge: fixture.edges[0],
-                    second_edge: fixture.edges[1],
-                    angle_degrees: 90.0,
-                }),
-            ];
-            records.extend((3..count).map(|index| {
-                record(GeometricConstraintKindV1::EqualLength {
-                    first_edge: fixture.edges[index % 6],
-                    second_edge: fixture.edges[(index + 1) % 6],
-                })
-            }));
-            let prepared = prepare(&fixture, &document(records)).unwrap();
-            assert_solver_required(&prepared.preflight());
-            assert_bounded_direct_oracle_unknown(&prepared);
-        }
-    }
-
-    #[test]
-    fn same_exact_orientation_conflict_is_symmetric_deterministic_and_keeps_parallel_angles() {
-        let fixture = Fixture::new();
-        for orientation in [
-            GeometricConstraintKindV1::Horizontal {
-                edge: fixture.edges[0],
-            },
-            GeometricConstraintKindV1::Vertical {
-                edge: fixture.edges[0],
-            },
-        ] {
-            let second_orientation = match orientation {
-                GeometricConstraintKindV1::Horizontal { .. } => {
-                    GeometricConstraintKindV1::Horizontal {
-                        edge: fixture.edges[1],
-                    }
-                }
-                GeometricConstraintKindV1::Vertical { .. } => GeometricConstraintKindV1::Vertical {
-                    edge: fixture.edges[1],
-                },
-                _ => unreachable!(),
-            };
-            let mut records = vec![
-                record(orientation.clone()),
-                record(second_orientation),
-                record(GeometricConstraintKindV1::FixedAngle {
-                    vertex: fixture.vertices[0],
-                    first_edge: fixture.edges[1],
-                    second_edge: fixture.edges[0],
-                    angle_degrees: 90.0,
-                }),
-            ];
-            let prepared = prepare(&fixture, &document(records.clone())).unwrap();
-            let expected = prepared.preflight();
-            assert_solver_required(&expected);
-
-            records.reverse();
-            let permuted = prepare(&fixture, &document(records)).unwrap();
-            assert_eq!(permuted.preflight(), expected);
-        }
-
-        for compatible_angle in [0.0, 180.0] {
-            let prepared = prepare(
-                &fixture,
-                &document([
-                    record(GeometricConstraintKindV1::Horizontal {
-                        edge: fixture.edges[0],
-                    }),
-                    record(GeometricConstraintKindV1::Horizontal {
-                        edge: fixture.edges[1],
-                    }),
-                    record(GeometricConstraintKindV1::FixedAngle {
-                        vertex: fixture.vertices[0],
-                        first_edge: fixture.edges[0],
-                        second_edge: fixture.edges[1],
-                        angle_degrees: compatible_angle,
-                    }),
-                ]),
-            )
-            .unwrap();
-            assert!(!matches!(
-                prepared.preflight(),
-                ConstraintPreflightV1::DirectConflict { .. }
-            ));
         }
     }
 

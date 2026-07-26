@@ -9,6 +9,8 @@
 この指示書の担当範囲: 適用済みの非平坦姿勢に現在結合されている native layer evidence を、専用の読取専用ビューアーで安全に表示する
 
 > **2026-07-26 追補（必読）:** §7.1 の不正 evidence fixture に関するブロッカーは、`ori-core` の公開境界を広げずに解消できる。実装を再開する前に [`sim010-viewer-blocker-resolution-2026-07-26.md`](sim010-viewer-blocker-resolution-2026-07-26.md) を最後まで読み、その private adapter / private test fixture 方式と禁止事項に従うこと。
+>
+> **完了確認:** 上記追補は `ccce7bd`「非平坦層順の構造検証に敵対的回帰を追加する」で検証済み。再実装、amend、squashを行わず、§7.2以降とCommit 1の残件、Commit 2、Commit 3をこの指示書どおり直ちに続行すること。
 
 ## 0. この作業の位置付け
 

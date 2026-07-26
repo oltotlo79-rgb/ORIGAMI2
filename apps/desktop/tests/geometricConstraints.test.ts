@@ -329,6 +329,23 @@ const DIRECT_CONFLICTS = [
       CONSTRAINT_4,
     ],
   },
+  {
+    conflict: {
+      kind: 'zero_length_closure_reaches_nondegenerate_provider',
+      provider_kind: 'parallel',
+      provider_edge: EDGE_1,
+      forced_zero_edge: EDGE_2,
+      horizontal_constraint_count: 1,
+      vertical_constraint_count: 1,
+      zero_propagation_constraint_count: 1,
+    },
+    constraint_ids: [
+      CONSTRAINT_1,
+      CONSTRAINT_2,
+      CONSTRAINT_3,
+      CONSTRAINT_4,
+    ],
+  },
 ] as const
 
 test('normalizes, detaches, and deeply freezes all eleven document kinds', () => {
@@ -723,7 +740,7 @@ test('presentation also fails closed for malformed or hostile records', () => {
   assert.equal(getterCalls, 0)
 })
 
-test('normalizes all twenty-two conflict kinds and the bounded proof core', () => {
+test('normalizes all twenty-three conflict kinds and the bounded proof core', () => {
   const raw = response({
     status: 'direct_conflict',
     conflicts: DIRECT_CONFLICTS,
@@ -739,7 +756,7 @@ test('normalizes all twenty-two conflict kinds and the bounded proof core', () =
     normalized?.result.status === 'direct_conflict'
       ? normalized.result.conflicts.length
       : 0,
-    22,
+    23,
   )
   assert.deepEqual(
     normalized?.result.status === 'direct_conflict'
@@ -816,7 +833,7 @@ test('bounded zero-length closure parser binds u16 counts to the exact bounded c
   )
 
   const atLimitIds = Array.from(
-    { length: MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS },
+    { length: MAX_DIRECT_CONFLICT_WITNESS_IDS },
     (_, index) => uuid(200 + index),
   )
   const atLimit = response({
@@ -824,12 +841,18 @@ test('bounded zero-length closure parser binds u16 counts to the exact bounded c
     conflicts: [{
       conflict: {
         ...conflict,
-        horizontal_constraint_count: 7,
-        vertical_constraint_count: 7,
+        horizontal_constraint_count: 127,
+        vertical_constraint_count: 127,
         zero_propagation_constraint_count: 1,
       },
       constraint_ids: atLimitIds,
     }],
+    bounded_direct_mus: {
+      status: 'unknown',
+      reason: 'constraint_limit_exceeded',
+      oracle_calls: 0,
+      max_constraints: MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS,
+    },
   })
   assert.deepEqual(
     normalizeGeometricConstraintPreflightResponse(atLimit, BINDING),
@@ -866,8 +889,8 @@ test('bounded zero-length closure parser binds u16 counts to the exact bounded c
     { ...conflict, zero_propagation_constraint_count: 0x1_0000 },
     {
       ...conflict,
-      horizontal_constraint_count: 8,
-      vertical_constraint_count: 7,
+      horizontal_constraint_count: 128,
+      vertical_constraint_count: 127,
       zero_propagation_constraint_count: 1,
     },
     { ...conflict, future: true },
@@ -888,6 +911,142 @@ test('bounded zero-length closure parser binds u16 counts to the exact bounded c
       null,
     )
   }
+})
+
+test('nondegenerate-provider closure parser is closed, exact, and independent from the MUS limit', () => {
+  const base = {
+    kind: 'zero_length_closure_reaches_nondegenerate_provider',
+    provider_kind: 'point_on_line',
+    provider_edge: EDGE_1,
+    forced_zero_edge: EDGE_1,
+    horizontal_constraint_count: 1,
+    vertical_constraint_count: 1,
+    zero_propagation_constraint_count: 1,
+  }
+  const causeIds = [
+    CONSTRAINT_1,
+    CONSTRAINT_2,
+    CONSTRAINT_3,
+    CONSTRAINT_4,
+  ]
+  for (const provider_kind of [
+    'point_on_line',
+    'mirror_symmetry_axis',
+    'angle_bisector',
+    'parallel',
+    'fixed_angle',
+  ]) {
+    const raw = response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict: { ...base, provider_kind },
+        constraint_ids: causeIds,
+      }],
+    })
+    const normalized =
+      normalizeGeometricConstraintPreflightResponse(raw, BINDING)
+    assert.deepEqual(normalized, raw)
+    assertDeepFrozen(normalized)
+  }
+
+  const atLimitIds = Array.from(
+    { length: MAX_DIRECT_CONFLICT_WITNESS_IDS },
+    (_, index) => uuid(2_000 + index),
+  )
+  const atLimit = response({
+    status: 'direct_conflict',
+    conflicts: [{
+      conflict: {
+        ...base,
+        horizontal_constraint_count: 127,
+        vertical_constraint_count: 127,
+        zero_propagation_constraint_count: 1,
+      },
+      constraint_ids: atLimitIds,
+    }],
+    bounded_direct_mus: {
+      status: 'unknown',
+      reason: 'constraint_limit_exceeded',
+      oracle_calls: 0,
+      max_constraints: MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS,
+    },
+  })
+  assert.deepEqual(
+    normalizeGeometricConstraintPreflightResponse(atLimit, BINDING),
+    atLimit,
+  )
+
+  const malformed = [
+    { ...base, provider_kind: 'fixed_length' },
+    { ...base, provider_kind: 'POINT_ON_LINE' },
+    { ...base, provider_kind: null },
+    { ...base, provider_edge: uuid(0xabc).toUpperCase() },
+    {
+      ...base,
+      provider_edge: '00000000-0000-0000-0000-000000000000',
+    },
+    { ...base, forced_zero_edge: 'invalid' },
+    { ...base, horizontal_constraint_count: 0 },
+    { ...base, vertical_constraint_count: -1 },
+    { ...base, horizontal_constraint_count: 1.5 },
+    { ...base, vertical_constraint_count: Number.NaN },
+    { ...base, horizontal_constraint_count: Number.POSITIVE_INFINITY },
+    { ...base, vertical_constraint_count: 0x1_0000 },
+    { ...base, zero_propagation_constraint_count: -1 },
+    { ...base, zero_propagation_constraint_count: 1.5 },
+    { ...base, zero_propagation_constraint_count: 0x1_0000 },
+    {
+      ...base,
+      horizontal_constraint_count: 128,
+      vertical_constraint_count: 127,
+      zero_propagation_constraint_count: 1,
+    },
+    { ...base, future: true },
+  ]
+  for (const conflict of malformed) {
+    assert.equal(
+      normalizeGeometricConstraintPreflightResponse(response({
+        status: 'direct_conflict',
+        conflicts: [{ conflict, constraint_ids: causeIds }],
+      }), BINDING),
+      null,
+    )
+  }
+
+  for (const constraint_ids of [
+    causeIds.slice(0, 3),
+    [...causeIds, CONSTRAINT_5],
+    Array.from(
+      { length: MAX_DIRECT_CONFLICT_WITNESS_IDS + 1 },
+      (_, index) => uuid(3_000 + index),
+    ),
+  ]) {
+    assert.equal(
+      normalizeGeometricConstraintPreflightResponse(response({
+        status: 'direct_conflict',
+        conflicts: [{ conflict: base, constraint_ids }],
+      }), BINDING),
+      null,
+    )
+  }
+
+  const distinctProviders = response({
+    status: 'direct_conflict',
+    conflicts: [
+      {
+        conflict: base,
+        constraint_ids: causeIds,
+      },
+      {
+        conflict: { ...base, provider_kind: 'parallel' },
+        constraint_ids: causeIds,
+      },
+    ],
+  })
+  assert.deepEqual(
+    normalizeGeometricConstraintPreflightResponse(distinctProviders, BINDING),
+    distinctProviders,
+  )
 })
 
 test('bounded direct oracle-result parser is strict, canonical, and distinguishes skipped minimization', () => {
@@ -947,6 +1106,26 @@ test('bounded direct oracle-result parser is strict, canonical, and distinguishe
     },
   )
   assertDeepFrozen(incomplete)
+
+  for (const [reason, oracle_calls] of [
+    ['cancelled', 0],
+    ['deadline_reached', 23],
+  ] as const) {
+    const stopped = response({
+      status: 'direct_conflict',
+      conflicts: [DIRECT_CONFLICTS[0]],
+      bounded_direct_mus: {
+        status: 'unknown',
+        reason,
+        oracle_calls,
+        max_constraints: 16,
+      },
+    })
+    assert.deepEqual(
+      normalizeGeometricConstraintPreflightResponse(stopped, BINDING),
+      stopped,
+    )
+  }
 
   const invalidBoundedResults = [
     undefined,
@@ -1012,6 +1191,18 @@ test('bounded direct oracle-result parser is strict, canonical, and distinguishe
       status: 'unknown',
       reason: 'oracle_incomplete',
       oracle_calls: 0,
+      max_constraints: 16,
+    },
+    {
+      status: 'unknown',
+      reason: 'cancelled',
+      oracle_calls: -0,
+      max_constraints: 16,
+    },
+    {
+      status: 'unknown',
+      reason: 'deadline_reached',
+      oracle_calls: 65_536,
       max_constraints: 16,
     },
     {
@@ -1091,7 +1282,7 @@ test('bounded direct oracle result rejects nested hostile records without invoki
   assert.equal(getterCalls, 0)
 })
 
-test('normalizes no-conflict and all three closed unknown reasons', () => {
+test('normalizes no-conflict and all seven closed unknown reasons', () => {
   const noConflict = normalizeGeometricConstraintPreflightResponse(
     response({ status: 'no_direct_conflict' }),
     BINDING,
@@ -1101,6 +1292,10 @@ test('normalizes no-conflict and all three closed unknown reasons', () => {
 
   for (const reason of [
     'work_limit_exceeded',
+    'constraint_limit_exceeded',
+    'storage_limit_exceeded',
+    'cancelled',
+    'deadline_reached',
     'solver_required_constraint_kinds',
     'invalid_document_or_geometry',
   ] as const) {

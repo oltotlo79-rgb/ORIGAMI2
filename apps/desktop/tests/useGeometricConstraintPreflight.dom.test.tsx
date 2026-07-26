@@ -83,12 +83,16 @@ describe('useGeometricConstraintPreflight', () => {
     const snapshot1 = binding(1)
     const snapshot2 = binding(2)
     const snapshot3 = binding(3)
+    const cancel = vi.fn(async () => true)
+    const createRequestGenerationId = requestGenerationFactory()
     const { result, rerender } = renderHook(
       ({ snapshot }: { snapshot: Binding }) =>
         useGeometricConstraintPreflight({
           snapshot,
           enabled: true,
           analyze,
+          cancel,
+          createRequestGenerationId,
         }),
       { initialProps: { snapshot: snapshot1 } },
     )
@@ -105,6 +109,7 @@ describe('useGeometricConstraintPreflight', () => {
     expect(result.current.preflight).toBeNull()
     expect(result.current.analyzing).toBe(true)
     expect(maximumActiveRequests).toBe(1)
+    expect(cancel).toHaveBeenCalledTimes(2)
 
     await resolveAndFlush(latest, response(snapshot3))
     expect(result.current.preflight).toEqual(response(snapshot3))
@@ -146,12 +151,16 @@ describe('useGeometricConstraintPreflight', () => {
     const onFailure = vi.fn()
     const snapshot1 = binding(1)
     const snapshot2 = binding(2)
+    const cancel = vi.fn(async () => true)
+    const createRequestGenerationId = requestGenerationFactory()
     const { rerender, unmount } = renderHook(
       ({ snapshot }: { snapshot: Binding }) =>
         useGeometricConstraintPreflight({
           snapshot,
           enabled: true,
           analyze,
+          cancel,
+          createRequestGenerationId,
           onFailure,
         }),
       { initialProps: { snapshot: snapshot1 } },
@@ -160,10 +169,90 @@ describe('useGeometricConstraintPreflight', () => {
     rerender({ snapshot: snapshot2 })
     expect(analyze).toHaveBeenCalledTimes(1)
     unmount()
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(cancel).toHaveBeenCalledWith(
+      snapshot1.project_instance_id,
+      snapshot1.project_id,
+      snapshot1.revision,
+      requestGenerationId(1),
+    )
     await resolveAndFlush(first, response(snapshot1))
 
     expect(analyze).toHaveBeenCalledTimes(1)
     expect(onFailure).not.toHaveBeenCalled()
+  })
+
+  it('binds supersede and clear cancellation to the exact request generation', async () => {
+    const first = deferred<GeometricConstraintPreflightResponse>()
+    const second = deferred<GeometricConstraintPreflightResponse>()
+    const delayedFirstCancel = deferred<boolean>()
+    const analyze = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+    const cancel = vi.fn()
+      .mockImplementationOnce(() => delayedFirstCancel.promise)
+      .mockResolvedValueOnce(true)
+    const createRequestGenerationId = requestGenerationFactory()
+    const firstSnapshot = binding(41)
+    const sameBindingNextIntent = binding(41)
+    const { result, rerender } = renderHook(
+      ({ enabled, snapshot }: { enabled: boolean; snapshot: Binding }) =>
+        useGeometricConstraintPreflight({
+          snapshot,
+          enabled,
+          analyze,
+          cancel,
+          createRequestGenerationId,
+        }),
+      {
+        initialProps: {
+          enabled: true,
+          snapshot: firstSnapshot,
+        },
+      },
+    )
+
+    expect(analyze.mock.calls[0]).toEqual([
+      firstSnapshot.project_instance_id,
+      firstSnapshot.project_id,
+      firstSnapshot.revision,
+      requestGenerationId(1),
+    ])
+    rerender({ enabled: true, snapshot: sameBindingNextIntent })
+    expect(cancel).toHaveBeenNthCalledWith(
+      1,
+      firstSnapshot.project_instance_id,
+      firstSnapshot.project_id,
+      firstSnapshot.revision,
+      requestGenerationId(1),
+    )
+
+    await resolveAndFlush(first, response(firstSnapshot))
+    expect(analyze.mock.calls[1]).toEqual([
+      sameBindingNextIntent.project_instance_id,
+      sameBindingNextIntent.project_id,
+      sameBindingNextIntent.revision,
+      requestGenerationId(2),
+    ])
+    await resolveAndFlush(delayedFirstCancel, true)
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(result.current.preflight).toBeNull()
+    expect(result.current.analyzing).toBe(true)
+
+    rerender({ enabled: false, snapshot: sameBindingNextIntent })
+    expect(cancel).toHaveBeenNthCalledWith(
+      2,
+      sameBindingNextIntent.project_instance_id,
+      sameBindingNextIntent.project_id,
+      sameBindingNextIntent.revision,
+      requestGenerationId(2),
+    )
+    await resolveAndFlush(second, response(sameBindingNextIntent))
+    expect(result.current.preflight).toBeNull()
+    expect(result.current.analyzing).toBe(false)
   })
 
   it('routes retry through the same serial lane and clears the failure immediately', async () => {
@@ -235,6 +324,15 @@ function response(binding: Binding): GeometricConstraintPreflightResponse {
     ...binding,
     result: Object.freeze({ status: 'no_direct_conflict' }),
   })
+}
+
+function requestGenerationId(sequence: number): string {
+  return `30000000-0000-4000-8000-${sequence.toString().padStart(12, '0')}`
+}
+
+function requestGenerationFactory(): () => string {
+  let sequence = 0
+  return () => requestGenerationId(++sequence)
 }
 
 function deferred<T>(): Deferred<T> {

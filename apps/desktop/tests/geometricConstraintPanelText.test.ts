@@ -72,6 +72,8 @@ const SIMPLE_KEYS = [
   'boundedMusProven',
   'boundedMusConstraintLimit',
   'boundedMusIncomplete',
+  'boundedMusCancelled',
+  'boundedMusDeadlineReached',
   'invalidIdentifier',
   'idListSeparator',
   'remainingIds',
@@ -142,9 +144,14 @@ const NESTED_KEYS = {
     'mirror_symmetry_with_point_on_axis_and_fixed_separation',
     'rotational_symmetry_with_collinear_radius',
     'positive_fixed_length_in_bounded_zero_length_closure',
+    'zero_length_closure_reaches_nondegenerate_provider',
   ],
   unknownReasonLabels: [
     'work_limit_exceeded',
+    'constraint_limit_exceeded',
+    'storage_limit_exceeded',
+    'cancelled',
+    'deadline_reached',
     'solver_required_constraint_kinds',
     'invalid_document_or_geometry',
   ],
@@ -169,7 +176,7 @@ test('geometric constraint panel catalog is exact, closed, and deeply frozen', (
   }
   assert.equal(
     createHash('sha256').update(JSON.stringify(TEXT), 'utf8').digest('hex'),
-    '605a57cb7dda8da8d00d68aee8dee4abeae1276d04f5765a06b3c0a829f272f9',
+    'c9a0ef3febc2b530c716b99367b6418a2b0669893d8284e4a6b37f2fc3594687',
   )
   assert.equal(Object.hasOwn(TEXT, 'ja'), false)
   assert.equal(TEXT.title.ja, '幾何制約')

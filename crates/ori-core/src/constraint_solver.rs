@@ -7,7 +7,8 @@ use thiserror::Error;
 
 use crate::{
     ConstraintPreflightV1, GeometricConstraintLimitsV1,
-    constraints::length_ratio_residual_binary64_v1, prepare_geometric_constraints_v1,
+    constraints::{fixed_angle_residual_binary64_v1, length_ratio_residual_binary64_v1},
+    prepare_geometric_constraints_v1,
 };
 
 const REGULARIZATION: f64 = 1e-10;
@@ -615,7 +616,7 @@ fn residuals(
                     let actual = (first.0 * second.1 - first.1 * second.0)
                         .abs()
                         .atan2(first.0 * second.0 + first.1 * second.1);
-                    vec![wrap_angle(actual - angle_degrees.to_radians())]
+                    vec![fixed_angle_residual_binary64_v1(actual, angle_degrees)]
                 }
                 GeometricConstraintKindV1::MirrorSymmetry {
                     first_vertex,
@@ -684,10 +685,6 @@ fn residuals(
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|rows| rows.into_iter().flatten().collect())
-}
-
-fn wrap_angle(angle: f64) -> f64 {
-    (angle + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI) - std::f64::consts::PI
 }
 
 fn maximum_absolute(values: &[f64]) -> f64 {

@@ -310,6 +310,28 @@ impl<'pattern> GeometricConstraintSetV1<'pattern> {
     pub fn preflight(&self) -> ConstraintPreflightV1 {
         preflight_direct_conflicts_v1(self)
     }
+
+    /// Runs the same bounded direct preflight with cooperative cancellation
+    /// and deadline checkpoints.
+    #[must_use]
+    pub fn preflight_with_observer(
+        &self,
+        observer: &mut impl GeometricConstraintPreflightObserverV1,
+    ) -> ConstraintPreflightV1 {
+        preflight_direct_conflicts_with_observer_v1(self, observer)
+    }
+}
+
+/// Constraint family whose production binary64 residual rejects collapse of
+/// the reported edge in every possible signed-zero execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZeroLengthClosureProviderKindV1 {
+    PointOnLine,
+    MirrorSymmetryAxis,
+    AngleBisector,
+    Parallel,
+    FixedAngle,
 }
 
 /// Stable V1 wire tags for direct-conflict output.
@@ -458,6 +480,22 @@ pub enum DirectConstraintConflictKindV1 {
         vertical_constraint_count: u16,
         zero_propagation_constraint_count: u16,
     },
+    /// A bounded exact-zero implication closure reaches an edge role whose
+    /// production residual is proven to reject collapse. The provider record
+    /// itself is the final witness ID.
+    ///
+    /// This does not infer a general relation for the provider family. In
+    /// particular, `Parallel` is used only as a non-degeneracy terminal, and a
+    /// `FixedAngle` provider is admitted only after evaluating both collapsed
+    /// `atan2` outcomes (zero and pi) through the production residual helper.
+    ZeroLengthClosureReachesNondegenerateProvider {
+        provider_kind: ZeroLengthClosureProviderKindV1,
+        provider_edge: EdgeId,
+        forced_zero_edge: EdgeId,
+        horizontal_constraint_count: u16,
+        vertical_constraint_count: u16,
+        zero_propagation_constraint_count: u16,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -485,7 +523,24 @@ impl DirectConstraintConflictV1 {
 #[serde(rename_all = "snake_case")]
 pub enum GeometricConstraintUnknownReasonV1 {
     WorkLimitExceeded,
+    ConstraintLimitExceeded,
+    StorageLimitExceeded,
+    Cancelled,
+    DeadlineReached,
     SolverRequiredConstraintKinds,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeometricConstraintPreflightObserverControlV1 {
+    Continue,
+    Cancelled,
+    DeadlineReached,
+}
+
+/// Cooperative stop hook shared by whole-document direct preflight and the
+/// separately bounded subset oracle at the desktop analysis boundary.
+pub trait GeometricConstraintPreflightObserverV1 {
+    fn checkpoint(&mut self) -> GeometricConstraintPreflightObserverControlV1;
 }
 
 /// Result of the finite direct-conflict scan.
@@ -1765,8 +1820,84 @@ fn finish_fixed_length_summary_visit_count() -> usize {
 /// solver-required instead of emitted as direct conflicts.
 #[must_use]
 pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> ConstraintPreflightV1 {
+    preflight_direct_conflicts_with_zero_closure_controls_v1(
+        set,
+        bounded_zero_closure::Limits::default(),
+        &mut bounded_zero_closure::NoopObserver,
+    )
+}
+
+struct PublicPreflightObserverAdapter<'a, O>(&'a mut O);
+
+impl<O: GeometricConstraintPreflightObserverV1> bounded_zero_closure::Observer
+    for PublicPreflightObserverAdapter<'_, O>
+{
+    fn checkpoint(
+        &mut self,
+        _checkpoint: bounded_zero_closure::Checkpoint,
+    ) -> bounded_zero_closure::ObserverControl {
+        match self.0.checkpoint() {
+            GeometricConstraintPreflightObserverControlV1::Continue => {
+                bounded_zero_closure::ObserverControl::Continue
+            }
+            GeometricConstraintPreflightObserverControlV1::Cancelled => {
+                bounded_zero_closure::ObserverControl::Cancelled
+            }
+            GeometricConstraintPreflightObserverControlV1::DeadlineReached => {
+                bounded_zero_closure::ObserverControl::DeadlineReached
+            }
+        }
+    }
+}
+
+#[must_use]
+pub fn preflight_direct_conflicts_with_observer_v1(
+    set: &GeometricConstraintSetV1<'_>,
+    observer: &mut impl GeometricConstraintPreflightObserverV1,
+) -> ConstraintPreflightV1 {
+    preflight_direct_conflicts_with_zero_closure_controls_v1(
+        set,
+        bounded_zero_closure::Limits::default(),
+        &mut PublicPreflightObserverAdapter(observer),
+    )
+}
+
+fn preflight_observer_stop_reason(
+    observer: &mut impl bounded_zero_closure::Observer,
+    phase: bounded_zero_closure::Phase,
+    completed_work: u64,
+) -> Option<GeometricConstraintUnknownReasonV1> {
+    match observer.checkpoint(bounded_zero_closure::Checkpoint {
+        phase,
+        completed_work,
+        reserved_storage_units: 0,
+    }) {
+        bounded_zero_closure::ObserverControl::Continue => None,
+        bounded_zero_closure::ObserverControl::Cancelled => {
+            Some(GeometricConstraintUnknownReasonV1::Cancelled)
+        }
+        bounded_zero_closure::ObserverControl::DeadlineReached => {
+            Some(GeometricConstraintUnknownReasonV1::DeadlineReached)
+        }
+    }
+}
+
+fn preflight_direct_conflicts_with_zero_closure_controls_v1(
+    set: &GeometricConstraintSetV1<'_>,
+    zero_closure_limits: bounded_zero_closure::Limits,
+    zero_closure_observer: &mut impl bounded_zero_closure::Observer,
+) -> ConstraintPreflightV1 {
     #[cfg(test)]
     begin_quarantined_direct_conflict_capture();
+
+    if let Some(reason) =
+        preflight_observer_stop_reason(zero_closure_observer, bounded_zero_closure::Phase::Start, 0)
+    {
+        return ConstraintPreflightV1::Unknown {
+            reason,
+            unchecked_constraint_ids: canonical_constraint_ids(&set.constraints),
+        };
+    }
 
     if set.constraints.len() > set.max_preflight_checks {
         return ConstraintPreflightV1::Unknown {
@@ -1792,7 +1923,20 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
     let mut exact_nondegenerate_edge_uses: BTreeMap<CanonicalId, ConstraintId> = BTreeMap::new();
     let mut unchecked = Vec::new();
 
-    for record in &set.constraints {
+    for (record_index, record) in set.constraints.iter().enumerate() {
+        if record_index != 0
+            && record_index % 128 == 0
+            && let Some(reason) = preflight_observer_stop_reason(
+                zero_closure_observer,
+                bounded_zero_closure::Phase::DirectPreflightScan,
+                u64::try_from(record_index).unwrap_or(u64::MAX),
+            )
+        {
+            return ConstraintPreflightV1::Unknown {
+                reason,
+                unchecked_constraint_ids: canonical_constraint_ids(&set.constraints),
+            };
+        }
         match &record.constraint {
             GeometricConstraintKindV1::FixedLength { edge, length_mm } => {
                 let assignment = ScalarAssignment {
@@ -2524,7 +2668,7 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
     }
 
     if conflicts.is_empty() {
-        match bounded_zero_closure::conflict(
+        match bounded_zero_closure::conflict_with_limits_and_observer(
             set,
             &fixed_lengths,
             &horizontal,
@@ -2532,12 +2676,30 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
             &equal_lengths,
             &ratios,
             &edge_ids,
+            zero_closure_limits,
+            zero_closure_observer,
         ) {
-            Ok(Some(conflict)) => conflicts.push(conflict),
-            Ok(None) => {}
-            Err(()) => {
+            bounded_zero_closure::Outcome::Proven(conflict) => conflicts.push(conflict),
+            bounded_zero_closure::Outcome::NoProof => {}
+            bounded_zero_closure::Outcome::Unknown { reason, .. } => {
                 return ConstraintPreflightV1::Unknown {
-                    reason: GeometricConstraintUnknownReasonV1::WorkLimitExceeded,
+                    reason: match reason {
+                        bounded_zero_closure::UnknownReason::ConstraintLimitExceeded => {
+                            GeometricConstraintUnknownReasonV1::ConstraintLimitExceeded
+                        }
+                        bounded_zero_closure::UnknownReason::WorkLimitExceeded => {
+                            GeometricConstraintUnknownReasonV1::WorkLimitExceeded
+                        }
+                        bounded_zero_closure::UnknownReason::StorageLimitExceeded => {
+                            GeometricConstraintUnknownReasonV1::StorageLimitExceeded
+                        }
+                        bounded_zero_closure::UnknownReason::Cancelled => {
+                            GeometricConstraintUnknownReasonV1::Cancelled
+                        }
+                        bounded_zero_closure::UnknownReason::DeadlineReached => {
+                            GeometricConstraintUnknownReasonV1::DeadlineReached
+                        }
+                    },
                     unchecked_constraint_ids: canonical_constraint_ids(&set.constraints),
                 };
             }
@@ -2585,6 +2747,17 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                 };
             }
         }
+    }
+
+    if let Some(reason) = preflight_observer_stop_reason(
+        zero_closure_observer,
+        bounded_zero_closure::Phase::Complete,
+        u64::try_from(set.constraints.len()).unwrap_or(u64::MAX),
+    ) {
+        return ConstraintPreflightV1::Unknown {
+            reason,
+            unchecked_constraint_ids: canonical_constraint_ids(&set.constraints),
+        };
     }
 
     conflicts.sort_unstable_by(|left, right| {
@@ -2696,6 +2869,17 @@ pub(crate) fn length_ratio_residual_binary64_v1(
 ) -> f64 {
     let scaled_denominator = length_ratio_scaled_denominator_binary64_v1(ratio, denominator_length);
     numerator_length - scaled_denominator
+}
+
+/// Evaluates the V1 fixed-angle residual in the exact operation order used by
+/// the numerical solver.
+///
+/// Direct proofs call the same helper when signed-zero collapse leaves
+/// `atan2` with either zero or pi as its only finite outcome.
+pub(crate) fn fixed_angle_residual_binary64_v1(actual_radians: f64, angle_degrees: f64) -> f64 {
+    let difference = actual_radians - angle_degrees.to_radians();
+    (difference + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI)
+        - std::f64::consts::PI
 }
 
 /// One-sided test that two stored binary64 degree values do not add to an
@@ -3657,6 +3841,7 @@ fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bo
             | DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent { .. }
             | DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
             | DirectConstraintConflictKindV1::PositiveFixedLengthInBoundedZeroLengthClosure { .. }
+            | DirectConstraintConflictKindV1::ZeroLengthClosureReachesNondegenerateProvider { .. }
     )
 }
 
@@ -4220,6 +4405,33 @@ fn conflict_sort_key(
                 fixed_edge.canonical_bytes(),
                 forced_zero_edge.canonical_bytes(),
                 counts,
+                zero,
+            )
+        }
+        DirectConstraintConflictKindV1::ZeroLengthClosureReachesNondegenerateProvider {
+            provider_kind,
+            provider_edge,
+            forced_zero_edge,
+            horizontal_constraint_count,
+            vertical_constraint_count,
+            zero_propagation_constraint_count,
+        } => {
+            let mut metadata = [0_u8; 16];
+            metadata[0] = match provider_kind {
+                ZeroLengthClosureProviderKindV1::PointOnLine => 0,
+                ZeroLengthClosureProviderKindV1::MirrorSymmetryAxis => 1,
+                ZeroLengthClosureProviderKindV1::AngleBisector => 2,
+                ZeroLengthClosureProviderKindV1::Parallel => 3,
+                ZeroLengthClosureProviderKindV1::FixedAngle => 4,
+            };
+            metadata[2..4].copy_from_slice(&horizontal_constraint_count.to_be_bytes());
+            metadata[4..6].copy_from_slice(&vertical_constraint_count.to_be_bytes());
+            metadata[6..8].copy_from_slice(&zero_propagation_constraint_count.to_be_bytes());
+            (
+                22,
+                provider_edge.canonical_bytes(),
+                forced_zero_edge.canonical_bytes(),
+                metadata,
                 zero,
             )
         }
@@ -9585,6 +9797,22 @@ mod tests {
         conflict
     }
 
+    fn only_nondegenerate_provider_closure_conflict(
+        preflight: &ConstraintPreflightV1,
+    ) -> &DirectConstraintConflictV1 {
+        let ConstraintPreflightV1::DirectConflict { conflicts } = preflight else {
+            panic!("the non-degeneracy terminal closure must prove a conflict");
+        };
+        let [conflict] = conflicts.as_slice() else {
+            panic!("the fixture must emit exactly one conflict: {conflicts:?}");
+        };
+        assert!(matches!(
+            conflict.conflict(),
+            DirectConstraintConflictKindV1::ZeroLengthClosureReachesNondegenerateProvider { .. }
+        ));
+        conflict
+    }
+
     #[test]
     fn bounded_zero_length_closure_crosses_equal_length_and_ratio_without_solver_assumptions() {
         for use_ratio in [false, true] {
@@ -9817,8 +10045,208 @@ mod tests {
     }
 
     #[test]
-    fn bounded_zero_length_closure_obeys_four_eight_sixteen_and_seventeen_boundaries() {
-        for count in [4, 8, 16] {
+    fn bounded_zero_length_closure_uses_each_binary64_proven_provider_terminal() {
+        let fixture = Fixture::new();
+        let providers = [
+            (
+                ZeroLengthClosureProviderKindV1::PointOnLine,
+                fixture.edges[5],
+                GeometricConstraintKindV1::PointOnLine {
+                    vertex: fixture.vertices[2],
+                    line_edge: fixture.edges[5],
+                },
+            ),
+            (
+                ZeroLengthClosureProviderKindV1::MirrorSymmetryAxis,
+                fixture.edges[0],
+                GeometricConstraintKindV1::MirrorSymmetry {
+                    first_vertex: fixture.vertices[2],
+                    second_vertex: fixture.vertices[4],
+                    axis_edge: fixture.edges[0],
+                },
+            ),
+            (
+                ZeroLengthClosureProviderKindV1::AngleBisector,
+                fixture.edges[0],
+                GeometricConstraintKindV1::AngleBisector {
+                    vertex: fixture.vertices[0],
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[1],
+                    bisector_edge: fixture.edges[2],
+                },
+            ),
+            (
+                ZeroLengthClosureProviderKindV1::Parallel,
+                fixture.edges[0],
+                GeometricConstraintKindV1::Parallel {
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[1],
+                },
+            ),
+            (
+                ZeroLengthClosureProviderKindV1::FixedAngle,
+                fixture.edges[0],
+                GeometricConstraintKindV1::FixedAngle {
+                    vertex: fixture.vertices[0],
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[1],
+                    angle_degrees: 90.0,
+                },
+            ),
+        ];
+
+        for (provider_kind, provider_edge, provider) in providers {
+            let records = vec![
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[4],
+                }),
+                record(GeometricConstraintKindV1::Vertical {
+                    edge: fixture.edges[4],
+                }),
+                record(GeometricConstraintKindV1::EqualLength {
+                    first_edge: fixture.edges[4],
+                    second_edge: provider_edge,
+                }),
+                record(provider),
+            ];
+            let expected_ids =
+                sorted_ids(&records.iter().map(|record| record.id).collect::<Vec<_>>());
+            let prepared = prepare(&fixture, &document(records.clone())).unwrap();
+            let preflight = prepared.preflight();
+            let conflict = only_nondegenerate_provider_closure_conflict(&preflight);
+            assert_eq!(conflict.constraint_ids(), expected_ids);
+            assert!(matches!(
+                conflict.conflict(),
+                DirectConstraintConflictKindV1::
+                    ZeroLengthClosureReachesNondegenerateProvider {
+                        provider_kind: actual_kind,
+                        provider_edge: actual_edge,
+                        forced_zero_edge,
+                        horizontal_constraint_count: 1,
+                        vertical_constraint_count: 1,
+                        zero_propagation_constraint_count: 1,
+                    } if *actual_kind == provider_kind
+                        && *actual_edge == provider_edge
+                        && *forced_zero_edge == fixture.edges[4]
+            ));
+
+            let mut reversed_records = records;
+            reversed_records.reverse();
+            let mut reversed_pattern = fixture.pattern.clone();
+            reversed_pattern.edges.reverse();
+            let reversed = prepare_geometric_constraints_v1(
+                &reversed_pattern,
+                &document(reversed_records),
+                GeometricConstraintLimitsV1::default(),
+            )
+            .unwrap();
+            assert_eq!(reversed.preflight(), preflight);
+        }
+    }
+
+    #[test]
+    fn nondegenerate_provider_closure_serializes_its_closed_wire_contract() {
+        let fixture = Fixture::new();
+        let prepared = prepare(
+            &fixture,
+            &document([
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[4],
+                }),
+                record(GeometricConstraintKindV1::Vertical {
+                    edge: fixture.edges[4],
+                }),
+                record(GeometricConstraintKindV1::EqualLength {
+                    first_edge: fixture.edges[4],
+                    second_edge: fixture.edges[0],
+                }),
+                record(GeometricConstraintKindV1::Parallel {
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[1],
+                }),
+            ]),
+        )
+        .unwrap();
+        let preflight = prepared.preflight();
+        let conflict = only_nondegenerate_provider_closure_conflict(&preflight);
+        assert_eq!(
+            serde_json::to_value(conflict.conflict()).unwrap(),
+            json!({
+                "kind": "zero_length_closure_reaches_nondegenerate_provider",
+                "provider_kind": "parallel",
+                "provider_edge": fixture.edges[0],
+                "forced_zero_edge": fixture.edges[4],
+                "horizontal_constraint_count": 1,
+                "vertical_constraint_count": 1,
+                "zero_propagation_constraint_count": 1,
+            })
+        );
+        assert_eq!(conflict.constraint_ids().len(), 4);
+        assert_eq!(conflict_sort_key(conflict.conflict()).0, 22);
+    }
+
+    #[test]
+    fn fixed_angle_zero_terminal_rejects_signed_zero_pi_and_radian_underflow_false_positives() {
+        let fixture = Fixture::new();
+        for angle_degrees in [0.0, -0.0, 180.0, f64::from_bits(1)] {
+            let prepared = prepare(
+                &fixture,
+                &document([
+                    record(GeometricConstraintKindV1::Horizontal {
+                        edge: fixture.edges[4],
+                    }),
+                    record(GeometricConstraintKindV1::Vertical {
+                        edge: fixture.edges[4],
+                    }),
+                    record(GeometricConstraintKindV1::EqualLength {
+                        first_edge: fixture.edges[4],
+                        second_edge: fixture.edges[0],
+                    }),
+                    record(GeometricConstraintKindV1::FixedAngle {
+                        vertex: fixture.vertices[0],
+                        first_edge: fixture.edges[0],
+                        second_edge: fixture.edges[1],
+                        angle_degrees,
+                    }),
+                ]),
+            )
+            .unwrap();
+            assert!(
+                !matches!(
+                    prepared.preflight(),
+                    ConstraintPreflightV1::DirectConflict { conflicts }
+                        if conflicts.iter().any(|conflict| matches!(
+                            conflict.conflict(),
+                            DirectConstraintConflictKindV1::
+                                ZeroLengthClosureReachesNondegenerateProvider {
+                                    provider_kind:
+                                        ZeroLengthClosureProviderKindV1::FixedAngle,
+                                    ..
+                                }
+                        ))
+                ),
+                "{angle_degrees:?} must retain a collapsed binary64 escape"
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_overflow_counterexample_forbids_zero_length_propagation() {
+        let first = (1.0e308_f64, 0.0_f64);
+        let second = (1.0e308_f64, 1.0e-308_f64);
+        let cross = first.0 * second.1 - first.1 * second.0;
+        let denominator = first.0.hypot(first.1) * second.0.hypot(second.1);
+        let residual = cross / denominator;
+
+        assert!(cross.is_finite());
+        assert_ne!(cross, 0.0);
+        assert!(denominator.is_infinite());
+        assert_eq!(residual, 0.0);
+    }
+
+    #[test]
+    fn bounded_zero_length_closure_obeys_four_eight_sixteen_seventeen_256_and_257_boundaries() {
+        for count in [4, 8, 16, 17, 256] {
             let fixture = Fixture::new();
             let mut records = bounded_zero_closure_records(&fixture, false, 1.0, 1.0);
             let proof_ids = sorted_ids(&records.iter().map(|record| record.id).collect::<Vec<_>>());
@@ -9832,17 +10260,24 @@ mod tests {
                 only_bounded_zero_closure_conflict(&prepared.preflight()).constraint_ids(),
                 proof_ids
             );
-            let BoundedDirectMusV1::ProvenUnsatisfiable { constraint_ids, .. } =
-                find_bounded_direct_mus_v1(&prepared)
-            else {
-                panic!("{count}: the bounded oracle must prove its core");
-            };
-            assert_eq!(constraint_ids, proof_ids);
+            if count <= MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1 {
+                let BoundedDirectMusV1::ProvenUnsatisfiable { constraint_ids, .. } =
+                    find_bounded_direct_mus_v1(&prepared)
+                else {
+                    panic!("{count}: the bounded oracle must prove its core");
+                };
+                assert_eq!(constraint_ids, proof_ids);
+            } else {
+                assert_eq!(
+                    find_bounded_direct_mus_v1(&prepared),
+                    BoundedDirectMusV1::Unknown { oracle_calls: 0 }
+                );
+            }
         }
 
         let fixture = Fixture::new();
         let mut records = bounded_zero_closure_records(&fixture, false, 1.0, 1.0);
-        records.extend((records.len()..17).map(|_| {
+        records.extend((records.len()..257).map(|_| {
             record(GeometricConstraintKindV1::Horizontal {
                 edge: fixture.edges[2],
             })
@@ -9851,7 +10286,7 @@ mod tests {
         assert!(matches!(
             prepared.preflight(),
             ConstraintPreflightV1::Unknown {
-                reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                reason: GeometricConstraintUnknownReasonV1::ConstraintLimitExceeded,
                 ..
             }
         ));
@@ -9859,6 +10294,170 @@ mod tests {
             find_bounded_direct_mus_v1(&prepared),
             BoundedDirectMusV1::Unknown { oracle_calls: 0 }
         );
+    }
+
+    #[test]
+    fn bounded_zero_length_closure_resource_and_observer_stops_are_fail_closed() {
+        struct StopAt {
+            phase: bounded_zero_closure::Phase,
+            minimum_work: u64,
+            control: bounded_zero_closure::ObserverControl,
+            checkpoints: usize,
+            stopped: bool,
+        }
+
+        impl bounded_zero_closure::Observer for StopAt {
+            fn checkpoint(
+                &mut self,
+                checkpoint: bounded_zero_closure::Checkpoint,
+            ) -> bounded_zero_closure::ObserverControl {
+                self.checkpoints += 1;
+                if checkpoint.phase == self.phase && checkpoint.completed_work >= self.minimum_work
+                {
+                    self.stopped = true;
+                    self.control
+                } else {
+                    bounded_zero_closure::ObserverControl::Continue
+                }
+            }
+        }
+
+        fn controlled(
+            prepared: &GeometricConstraintSetV1<'_>,
+            limits: bounded_zero_closure::Limits,
+            observer: &mut impl bounded_zero_closure::Observer,
+        ) -> ConstraintPreflightV1 {
+            preflight_direct_conflicts_with_zero_closure_controls_v1(prepared, limits, observer)
+        }
+
+        let fixture = Fixture::new();
+        let records = bounded_zero_closure_records(&fixture, false, 1.0, 1.0);
+        let prepared = prepare(&fixture, &document(records.clone())).unwrap();
+        let exact_work =
+            bounded_zero_closure::required_work(fixture.pattern.edges.len(), records.len())
+                .unwrap();
+        let exact_storage = records.len() * 32;
+
+        let mut noop = bounded_zero_closure::NoopObserver;
+        assert!(matches!(
+            controlled(
+                &prepared,
+                bounded_zero_closure::Limits {
+                    max_work: exact_work - 1,
+                    ..bounded_zero_closure::Limits::default()
+                },
+                &mut noop,
+            ),
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::WorkLimitExceeded,
+                ..
+            }
+        ));
+        assert!(matches!(
+            controlled(
+                &prepared,
+                bounded_zero_closure::Limits {
+                    max_work: exact_work,
+                    ..bounded_zero_closure::Limits::default()
+                },
+                &mut noop,
+            ),
+            ConstraintPreflightV1::DirectConflict { .. }
+        ));
+        assert!(matches!(
+            controlled(
+                &prepared,
+                bounded_zero_closure::Limits {
+                    max_storage_units: exact_storage - 1,
+                    ..bounded_zero_closure::Limits::default()
+                },
+                &mut noop,
+            ),
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::StorageLimitExceeded,
+                ..
+            }
+        ));
+        assert!(matches!(
+            controlled(
+                &prepared,
+                bounded_zero_closure::Limits {
+                    max_storage_units: exact_storage,
+                    ..bounded_zero_closure::Limits::default()
+                },
+                &mut noop,
+            ),
+            ConstraintPreflightV1::DirectConflict { .. }
+        ));
+
+        for (phase, minimum_work, control, expected_reason) in [
+            (
+                bounded_zero_closure::Phase::Start,
+                0,
+                bounded_zero_closure::ObserverControl::Cancelled,
+                GeometricConstraintUnknownReasonV1::Cancelled,
+            ),
+            (
+                bounded_zero_closure::Phase::ProofSearch,
+                1,
+                bounded_zero_closure::ObserverControl::DeadlineReached,
+                GeometricConstraintUnknownReasonV1::DeadlineReached,
+            ),
+        ] {
+            let mut stop = StopAt {
+                phase,
+                minimum_work,
+                control,
+                checkpoints: 0,
+                stopped: false,
+            };
+            assert!(matches!(
+                controlled(
+                    &prepared,
+                    bounded_zero_closure::Limits::default(),
+                    &mut stop,
+                ),
+                ConstraintPreflightV1::Unknown {
+                    reason,
+                    ..
+                } if reason == expected_reason
+            ));
+            assert!(stop.stopped);
+            assert!(stop.checkpoints > 0);
+        }
+
+        let mut expanded_pattern = fixture.pattern.clone();
+        expanded_pattern.edges.extend((0..140).map(|_| Edge {
+            id: EdgeId::new(),
+            start: fixture.vertices[0],
+            end: fixture.vertices[1],
+            kind: EdgeKind::Auxiliary,
+        }));
+        let expanded = prepare_geometric_constraints_v1(
+            &expanded_pattern,
+            &document(records),
+            GeometricConstraintLimitsV1::default(),
+        )
+        .unwrap();
+        let mut mid_scan = StopAt {
+            phase: bounded_zero_closure::Phase::SourcePatternScan,
+            minimum_work: 128,
+            control: bounded_zero_closure::ObserverControl::Cancelled,
+            checkpoints: 0,
+            stopped: false,
+        };
+        assert!(matches!(
+            controlled(
+                &expanded,
+                bounded_zero_closure::Limits::default(),
+                &mut mid_scan,
+            ),
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::Cancelled,
+                ..
+            }
+        ));
+        assert!(mid_scan.stopped);
     }
 
     #[test]

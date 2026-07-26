@@ -47,7 +47,7 @@ test('the evidence audit does not promote the remaining SIM-010 proof boundary',
   assert.match(evidence, /SIM-010の未証明範囲を完成へ昇格させる証拠には使用しない/u)
 })
 
-test('EDT-009 retains twenty-one legacy tags and adds one bounded sound proof family', () => {
+test('EDT-009 retains twenty-one legacy tags and adds two bounded sound proof families', () => {
   const enumBody = constraints.match(
     /pub enum DirectConstraintConflictKindV1 \{(?<body>[\s\S]*?)\n\}/u,
   )?.groups?.body
@@ -57,8 +57,8 @@ test('EDT-009 retains twenty-one legacy tags and adds one bounded sound proof fa
   ]
     .map((match) => match.groups?.name)
     .filter((name): name is string => name !== undefined)
-  assert.equal(enumVariants.length, 22)
-  assert.equal(new Set(enumVariants).size, 22)
+  assert.equal(enumVariants.length, 23)
+  assert.equal(new Set(enumVariants).size, 23)
 
   const statusRow = status.match(/^\| EDT-009 \| 部分実装 \|.*$/mu)?.[0]
   assert.ok(statusRow)
@@ -71,6 +71,7 @@ test('EDT-009 retains twenty-one legacy tags and adds one bounded sound proof fa
     'DifferentFixedLengthsInEqualLengthComponent',
     'ParallelWithPerpendicularOrientations',
     'PositiveFixedLengthInBoundedZeroLengthClosure',
+    'ZeroLengthClosureReachesNondegenerateProvider',
   ]
   const documentedVariants = [
     ...statusRow.matchAll(/`(?<name>[A-Z][A-Za-z0-9]+)`/gu),
@@ -100,11 +101,11 @@ test('EDT-009 retains twenty-one legacy tags and adds one bounded sound proof fa
   )
   assert.match(
     status,
-    /2026-07-26 EDT-009有界ゼロ長閉包追補:[^\n]+合計22 variant[^\n]+sound familyは8種[^\n]+本項がvariant数・sound family数の現行正本/u,
+    /2026-07-26 EDT-009非退化provider閉包追補:[^\n]+合計23 variant[^\n]+sound familyは9種[^\n]+本項がvariant数・sound family数の現行正本/u,
   )
   assert.match(
     progress,
-    /2026-07-26 EDT-009有界ゼロ長閉包追補:[^\n]+合計22 variantのうちsound familyは8種、legacy fail-closedは14種/u,
+    /2026-07-26 EDT-009非退化provider閉包追補:[^\n]+合計23 variantのうちsound familyは9種、legacy fail-closedは14種/u,
   )
   assert.match(progress, /\*\*81\.96%（表示82\.0%）\*\*/u)
   assert.match(status, /\*\*実装済み85 \/ 部分実装2 \/ 未着手0\*\*/u)
@@ -114,10 +115,10 @@ test('EDT-009 retains twenty-one legacy tags and adds one bounded sound proof fa
   )
   assert.ok(edtEvidence)
   assert.deepEqual(edtEvidence.limitations, [
-    'only eight of the twenty-two wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the fourteen retained legacy variants fail closed to Unknown',
+    'only nine of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the fourteen retained legacy variants fail closed to Unknown',
   ])
   assert.deepEqual(edtEvidence.missingAcceptance, [
-    'complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded five-kind zero-length proof',
+    'complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded ten-kind zero-length proof',
   ])
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
@@ -158,5 +159,25 @@ test('EDT-009 retains twenty-one legacy tags and adds one bounded sound proof fa
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
       item.selector === 'reverse_zero_length_ratio_underflow_is_solver_required',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { selector: string }) =>
+      item.selector === 'fn bounded_zero_length_closure_uses_each_binary64_proven_provider_terminal()',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { selector: string }) =>
+      item.selector === 'fn bounded_zero_length_closure_resource_and_observer_stops_are_fail_closed()',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { selector: string }) =>
+      item.selector === 'fn geometric_constraint_worker_cancel_is_bound_to_exact_request_generation()',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { selector: string }) =>
+      item.selector === 'fn geometric_constraint_gate_consumes_exact_cancel_before_acquire_once()',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { selector: string }) =>
+      item.selector === 'fn geometric_constraint_gate_retains_queued_cancel_while_another_generation_is_active()',
   ))
 })

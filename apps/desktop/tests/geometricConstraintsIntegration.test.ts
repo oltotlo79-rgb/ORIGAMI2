@@ -18,6 +18,7 @@ const ori2 = source('../../../crates/ori-formats/src/ori2.rs')
 test('constraint commands use instance, document, and revision bindings end to end', () => {
   for (const command of [
     'analyze_geometric_constraints',
+    'cancel_geometric_constraint_analysis',
     'add_edge_orientation_constraint',
     'remove_geometric_constraint',
   ]) {
@@ -25,7 +26,8 @@ test('constraint commands use instance, document, and revision bindings end to e
     assert.match(native, new RegExp(`\\n\\s*${command},`, 'u'))
   }
   for (const clientFunction of [
-    functionSection(client, 'export function analyzeGeometricConstraints(', 'export function previewCreasePatternExport('),
+    functionSection(client, 'export function analyzeGeometricConstraints(', 'export function cancelGeometricConstraintAnalysis('),
+    functionSection(client, 'export function cancelGeometricConstraintAnalysis(', 'export function previewCreasePatternExport('),
     functionSection(client, 'export function addEdgeOrientationConstraint(', 'export function removeGeometricConstraint('),
     functionSection(client, 'export function removeGeometricConstraint(', 'export function undo('),
   ]) {
@@ -33,9 +35,48 @@ test('constraint commands use instance, document, and revision bindings end to e
     assert.match(clientFunction, /expectedProjectId/u)
     assert.match(clientFunction, /expectedRevision/u)
   }
+  for (const clientFunction of [
+    functionSection(client, 'export function analyzeGeometricConstraints(', 'export function cancelGeometricConstraintAnalysis('),
+    functionSection(client, 'export function cancelGeometricConstraintAnalysis(', 'export function previewCreasePatternExport('),
+  ]) {
+    assert.match(clientFunction, /requestGenerationId/u)
+  }
   assert.match(
     native,
     /ensure_project_expectation\(\s*project,\s*ProjectExpectation::new\(\s*expected_project_instance_id,\s*expected_project_id,\s*expected_revision,\s*\),\s*\)\?/u,
+  )
+  const workerGate = functionSection(
+    native,
+    'impl GeometricConstraintWorkerGate {',
+    'struct GeometricConstraintWorkerPermit {',
+  )
+  assert.match(
+    workerGate,
+    /let key = GeometricConstraintWorkerKey \{\s*binding,\s*request_generation_id,\s*\};/u,
+  )
+  assert.match(
+    workerGate,
+    /state\.active\.as_ref\(\)\.filter\(\|slot\| slot\.key == key\)[\s\S]*?slot\.cancellation\.store\(true, Ordering::Release\);[\s\S]*?return true;/u,
+  )
+  assert.match(
+    workerGate,
+    /state\s*\.pre_cancelled\s*\.iter\(\)\s*\.position\(\|candidate\| \*candidate == key\)\s*\.and_then\(\|index\| state\.pre_cancelled\.remove\(index\)\)\s*\.is_some\(\);[\s\S]*?AtomicBool::new\(pre_cancelled\)/u,
+  )
+  assert.match(
+    workerGate,
+    /\.all\(\|candidate\| \*candidate != key\)[\s\S]*?state\.pre_cancelled\.len\(\) >= MAX_GEOMETRIC_CONSTRAINT_PRE_CANCELLED_REQUESTS[\s\S]*?state\.pre_cancelled\.pop_front\(\);[\s\S]*?state\.pre_cancelled\.push_back\(key\);/u,
+  )
+  assert.match(
+    native,
+    /const MAX_GEOMETRIC_CONSTRAINT_PRE_CANCELLED_REQUESTS: usize = 64;/u,
+  )
+  assert.match(
+    native,
+    /fn cancel_geometric_constraint_analysis\(\s*state: State<'_, AppState>,\s*expected_project_instance_id: ProjectId,\s*expected_project_id: ProjectId,\s*expected_revision: u64,\s*request_generation_id: ProjectId,\s*\) -> bool \{[\s\S]*?state\.cancel_geometric_constraint_worker\(\s*GeometricConstraintAnalysisBinding \{\s*project_instance_id: expected_project_instance_id,\s*project_id: expected_project_id,\s*revision: expected_revision,\s*\},\s*request_generation_id,\s*\)/u,
+  )
+  assert.match(
+    native,
+    /fn geometric_constraint_gate_retains_queued_cancel_while_another_generation_is_active\(\)[\s\S]*?!gate\.cancel\(binding, queued_generation\)[\s\S]*?!active\.cancellation\.load\(Ordering::Acquire\)[\s\S]*?try_acquire\(binding, queued_generation\)[\s\S]*?queued\.cancellation\.load\(Ordering::Acquire\)/u,
   )
   assert.match(app, /current\.project_instance_id[\s\S]*?response\.project_instance_id/u)
   assert.match(

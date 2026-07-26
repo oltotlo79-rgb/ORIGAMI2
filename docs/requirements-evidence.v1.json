@@ -289,13 +289,48 @@
           "kind": "test",
           "path": "apps/desktop/tests/geometricConstraints.test.ts",
           "selector": "bounded zero-length closure parser binds u16 counts to the exact bounded cause size"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "fn bounded_zero_length_closure_uses_each_binary64_proven_provider_terminal()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "fn bounded_zero_length_closure_resource_and_observer_stops_are_fail_closed()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/geometricConstraints.test.ts",
+          "selector": "nondegenerate-provider closure parser is closed, exact, and independent from the MUS limit"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "selector": "fn geometric_constraint_worker_cancel_is_bound_to_exact_request_generation()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "selector": "fn geometric_constraint_gate_consumes_exact_cancel_before_acquire_once()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "selector": "fn geometric_constraint_gate_retains_queued_cancel_while_another_generation_is_active()"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/src-tauri/src/lib.rs",
+          "selector": "fn geometric_constraint_pre_cancel_ledger_is_bounded_and_evicts_oldest_only()"
         }
       ],
       "limitations": [
-        "only eight of the twenty-two wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the fourteen retained legacy variants fail closed to Unknown"
+        "only nine of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the fourteen retained legacy variants fail closed to Unknown"
       ],
       "missingAcceptance": [
-        "complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded five-kind zero-length proof"
+        "complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded ten-kind zero-length proof"
       ]
     },
     {

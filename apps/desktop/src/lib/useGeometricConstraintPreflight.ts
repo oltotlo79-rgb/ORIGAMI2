@@ -9,6 +9,7 @@ import {
 
 import {
   analyzeGeometricConstraints,
+  cancelGeometricConstraintAnalysis,
   type GeometricConstraintPreflightResponse,
   type ProjectSnapshot,
 } from './coreClient'
@@ -22,7 +23,15 @@ type AnalyzeGeometricConstraints = (
   expectedProjectInstanceId: string,
   expectedProjectId: string,
   expectedRevision: number,
+  requestGenerationId: string,
 ) => Promise<GeometricConstraintPreflightResponse>
+
+type CancelGeometricConstraintAnalysis = (
+  expectedProjectInstanceId: string,
+  expectedProjectId: string,
+  expectedRevision: number,
+  requestGenerationId: string,
+) => Promise<boolean>
 
 type IntentToken = Readonly<{
   enabled: boolean
@@ -39,6 +48,7 @@ type CoordinatorState = Readonly<{
 type Work = Readonly<{
   intentToken: IntentToken
   binding: SnapshotBinding
+  requestGenerationId: string
 }>
 
 type Coordinator = Readonly<{
@@ -60,6 +70,8 @@ export type UseGeometricConstraintPreflightOptions = Readonly<{
   snapshot: SnapshotBinding | null
   enabled: boolean
   analyze?: AnalyzeGeometricConstraints
+  cancel?: CancelGeometricConstraintAnalysis
+  createRequestGenerationId?: () => string
   onFailure?: () => void
 }>
 
@@ -72,19 +84,27 @@ const IDLE_STATE: CoordinatorState = Object.freeze({
 /**
  * Owns the latest-only native preflight lane.
  *
- * Native exact work cannot be cancelled after it starts, so one active request
- * and at most one latest pending intent are retained. Every superseded result,
- * failure, and queued intermediate snapshot is observationally discarded.
+ * Native exact work is cooperatively cancelled by an exact
+ * project/revision/request-generation binding. One active request and at most
+ * one latest pending intent are retained. Every superseded result, failure,
+ * delayed cancellation, and queued intermediate snapshot is observationally
+ * discarded.
  */
 export function useGeometricConstraintPreflight({
   snapshot,
   enabled,
   analyze = analyzeGeometricConstraints,
+  cancel = cancelGeometricConstraintAnalysis,
+  createRequestGenerationId = () => crypto.randomUUID(),
   onFailure,
 }: UseGeometricConstraintPreflightOptions): GeometricConstraintPreflightView {
   const analyzeRef = useRef(analyze)
+  const cancelRef = useRef(cancel)
+  const createRequestGenerationIdRef = useRef(createRequestGenerationId)
   const onFailureRef = useRef(onFailure)
   analyzeRef.current = analyze
+  cancelRef.current = cancel
+  createRequestGenerationIdRef.current = createRequestGenerationId
   onFailureRef.current = onFailure
 
   const [retrySequence, setRetrySequence] = useState(0)
@@ -106,6 +126,8 @@ export function useGeometricConstraintPreflight({
   if (coordinatorRef.current === null) {
     coordinatorRef.current = createCoordinator({
       analyze: (...arguments_) => analyzeRef.current(...arguments_),
+      cancel: (...arguments_) => cancelRef.current(...arguments_),
+      createRequestGenerationId: () => createRequestGenerationIdRef.current(),
       isCurrentIntent: (candidate) => currentIntentRef.current === candidate,
       onFailure: () => onFailureRef.current?.(),
       onState: setCoordinatorState,
@@ -170,11 +192,15 @@ export function useGeometricConstraintPreflight({
 
 function createCoordinator({
   analyze,
+  cancel,
+  createRequestGenerationId,
   isCurrentIntent,
   onFailure,
   onState,
 }: Readonly<{
   analyze: AnalyzeGeometricConstraints
+  cancel: CancelGeometricConstraintAnalysis
+  createRequestGenerationId(): string
   isCurrentIntent(intentToken: IntentToken): boolean
   onFailure(): void
   onState(state: CoordinatorState): void
@@ -185,6 +211,19 @@ function createCoordinator({
   let state = IDLE_STATE
   let consumerActive = false
   let disposed = false
+
+  const cancelWork = (work: Work) => {
+    try {
+      void Promise.resolve(cancel(
+        work.binding.project_instance_id,
+        work.binding.project_id,
+        work.binding.revision,
+        work.requestGenerationId,
+      )).catch(() => undefined)
+    } catch {
+      // Cancellation is best-effort; the native absolute deadline remains authoritative.
+    }
+  }
 
   const publish = (next: CoordinatorState) => {
     state = next
@@ -251,6 +290,7 @@ function createCoordinator({
         work.binding.project_instance_id,
         work.binding.project_id,
         work.binding.revision,
+        work.requestGenerationId,
       )
     } catch {
       finish(work, { ok: false })
@@ -289,23 +329,56 @@ function createCoordinator({
 
       const binding = detachBinding(snapshot)
       if (binding === null) {
+        if (active !== null) cancelWork(active)
         pending = null
-        const invalidWork = Object.freeze({ intentToken, binding: snapshot })
+        const invalidWork = Object.freeze({
+          intentToken,
+          binding: snapshot,
+          requestGenerationId: '',
+        })
         reportCurrentFailure(invalidWork)
         return
       }
 
-      const work = Object.freeze({ intentToken, binding })
+      let requestGenerationId: string
+      try {
+        requestGenerationId = createRequestGenerationId()
+      } catch {
+        if (active !== null) cancelWork(active)
+        pending = null
+        const invalidWork = Object.freeze({
+          intentToken,
+          binding,
+          requestGenerationId: '',
+        })
+        reportCurrentFailure(invalidWork)
+        return
+      }
+      if (!isCanonicalUuid(requestGenerationId)) {
+        if (active !== null) cancelWork(active)
+        pending = null
+        const invalidWork = Object.freeze({
+          intentToken,
+          binding,
+          requestGenerationId,
+        })
+        reportCurrentFailure(invalidWork)
+        return
+      }
+
+      const work = Object.freeze({ intentToken, binding, requestGenerationId })
       publish(analyzingState(intentToken))
       if (active === null) {
         start(work)
       } else {
+        cancelWork(active)
         pending = work
       }
     },
     clear(intentToken) {
       if (disposed || latestIntentToken === intentToken) return
       latestIntentToken = intentToken
+      if (active !== null) cancelWork(active)
       pending = null
       publish(idleState(intentToken))
     },
@@ -314,6 +387,7 @@ function createCoordinator({
       disposed = true
       consumerActive = false
       latestIntentToken = null
+      if (active !== null) cancelWork(active)
       active = null
       pending = null
       state = IDLE_STATE

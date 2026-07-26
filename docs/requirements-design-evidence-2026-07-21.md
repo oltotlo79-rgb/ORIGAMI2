@@ -6,6 +6,8 @@
 
 要件状態の「実装済み」はproduction実装、利用者経路、永続化または出力、fail-closed検証の証拠を持つ。状態表の説明を正本とし、過去の追記内にある時点集計や「未実装」は履歴であって現在値ではない。
 
+2026-07-26 EDT-009現行証拠: legacy 21 wire variantを維持したまま、有界binary64 exact-zero closureの`PositiveFixedLengthInBoundedZeroLengthClosure`と`ZeroLengthClosureReachesNondegenerateProvider`を追加し、`DirectConstraintConflictKindV1`は合計23 variant、実残差で肯定できるsound familyは9種、legacy fail-closedは14種となった。closureは10/11制約種を横断できるが256制約の独立上限内に限り、subset oracleは16制約以下の最小基数proof coreに限る。全11種の一般充足可能性、完全な一般矛盾原因、semantic MUSは未完成であるため、EDT-009の部分実装、MUST集計85 / 2 / 0、全体81.96%（表示82.0%）を変更しない。
+
 ## INS-007設計証拠の補完
 
 自動記録は`apps/desktop/src/App.tsx`の明示toggleと安定姿勢観測から、通常のinstruction step追加commandへ接続する。分割・結合は`InstructionTimelinePanel.tsx`からnative IPCを経て、`ori-core`の`RewriteInstructionTimelineSplitMerge`を一度だけ実行する。

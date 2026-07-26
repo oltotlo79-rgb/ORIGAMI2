@@ -13,6 +13,13 @@ export const MAX_DIRECT_CONFLICT_WITNESS_IDS = 256
 export const MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS = 16
 export const MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS = 65_535
 
+export type ZeroLengthClosureProviderKindV1 =
+  | 'point_on_line'
+  | 'mirror_symmetry_axis'
+  | 'angle_bisector'
+  | 'parallel'
+  | 'fixed_angle'
+
 export type GeometricConstraintKindV1 =
   | Readonly<{
       kind: 'fixed_length'
@@ -213,6 +220,15 @@ export type DirectConstraintConflictKindV1 =
       vertical_constraint_count: number
       zero_propagation_constraint_count: number
     }>
+  | Readonly<{
+      kind: 'zero_length_closure_reaches_nondegenerate_provider'
+      provider_kind: ZeroLengthClosureProviderKindV1
+      provider_edge: string
+      forced_zero_edge: string
+      horizontal_constraint_count: number
+      vertical_constraint_count: number
+      zero_propagation_constraint_count: number
+    }>
 
 export type DirectConstraintConflictV1 = Readonly<{
   conflict: DirectConstraintConflictKindV1
@@ -221,6 +237,10 @@ export type DirectConstraintConflictV1 = Readonly<{
 
 export type GeometricConstraintUnknownReasonV1 =
   | 'work_limit_exceeded'
+  | 'constraint_limit_exceeded'
+  | 'storage_limit_exceeded'
+  | 'cancelled'
+  | 'deadline_reached'
   | 'solver_required_constraint_kinds'
   | 'invalid_document_or_geometry'
 
@@ -232,7 +252,11 @@ export type BoundedDirectMusV1 =
     }>
   | Readonly<{
       status: 'unknown'
-      reason: 'constraint_limit_exceeded' | 'oracle_incomplete'
+      reason:
+        | 'constraint_limit_exceeded'
+        | 'oracle_incomplete'
+        | 'cancelled'
+        | 'deadline_reached'
       oracle_calls: number
       max_constraints: typeof MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS
     }>
@@ -859,6 +883,8 @@ function parseBoundedDirectMus(value: unknown): BoundedDirectMusV1 | null {
         || (
           record.reason !== 'constraint_limit_exceeded'
           && record.reason !== 'oracle_incomplete'
+          && record.reason !== 'cancelled'
+          && record.reason !== 'deadline_reached'
         )
         || record.max_constraints !== MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS
       ) return null
@@ -871,7 +897,10 @@ function parseBoundedDirectMus(value: unknown): BoundedDirectMusV1 | null {
           max_constraints: record.max_constraints,
         })
       }
-      if (!isBoundedDirectMusOracleCalls(record.oracle_calls, false)) return null
+      if (!isBoundedDirectMusOracleCalls(
+        record.oracle_calls,
+        record.reason !== 'oracle_incomplete',
+      )) return null
       return Object.freeze({
         status: record.status,
         reason: record.reason,
@@ -890,6 +919,7 @@ function isBoundedDirectMusOracleCalls(
 ): value is number {
   return typeof value === 'number'
     && Number.isSafeInteger(value)
+    && !Object.is(value, -0)
     && value >= (allowZero ? 0 : 1)
     && value <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS
 }
@@ -1307,13 +1337,52 @@ function parseDirectConflictKind(
         + record.zero_propagation_constraint_count
       if (
         !Number.isSafeInteger(witnessSize)
-        || witnessSize > MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS
         || witnessSize > MAX_DIRECT_CONFLICT_WITNESS_IDS
       ) return null
       return {
         conflict: Object.freeze({
           kind: record.kind,
           fixed_edge: record.fixed_edge,
+          forced_zero_edge: record.forced_zero_edge,
+          horizontal_constraint_count: record.horizontal_constraint_count,
+          vertical_constraint_count: record.vertical_constraint_count,
+          zero_propagation_constraint_count:
+            record.zero_propagation_constraint_count,
+        }),
+        witnessSize,
+      }
+    }
+    case 'zero_length_closure_reaches_nondegenerate_provider': {
+      if (
+        !hasExactKeys(record, [
+          'kind',
+          'provider_kind',
+          'provider_edge',
+          'forced_zero_edge',
+          'horizontal_constraint_count',
+          'vertical_constraint_count',
+          'zero_propagation_constraint_count',
+        ])
+        || !isZeroLengthClosureProviderKind(record.provider_kind)
+        || !isCanonicalUuid(record.provider_edge)
+        || !isCanonicalUuid(record.forced_zero_edge)
+        || !isPositiveU16(record.horizontal_constraint_count)
+        || !isPositiveU16(record.vertical_constraint_count)
+        || !isNonNegativeU16(record.zero_propagation_constraint_count)
+      ) return null
+      const witnessSize = 1
+        + record.horizontal_constraint_count
+        + record.vertical_constraint_count
+        + record.zero_propagation_constraint_count
+      if (
+        !Number.isSafeInteger(witnessSize)
+        || witnessSize > MAX_DIRECT_CONFLICT_WITNESS_IDS
+      ) return null
+      return {
+        conflict: Object.freeze({
+          kind: record.kind,
+          provider_kind: record.provider_kind,
+          provider_edge: record.provider_edge,
           forced_zero_edge: record.forced_zero_edge,
           horizontal_constraint_count: record.horizontal_constraint_count,
           vertical_constraint_count: record.vertical_constraint_count,
@@ -1457,6 +1526,17 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
         String(kind.zero_propagation_constraint_count),
       ]
       break
+    case 'zero_length_closure_reaches_nondegenerate_provider':
+      target = [
+        kind.kind,
+        kind.provider_edge,
+        kind.forced_zero_edge,
+        kind.provider_kind,
+        String(kind.horizontal_constraint_count),
+        String(kind.vertical_constraint_count),
+        String(kind.zero_propagation_constraint_count),
+      ]
+      break
   }
   return `${target.join('\u0000')}\u0001${conflict.constraint_ids.join('\u0000')}`
 }
@@ -1577,10 +1657,24 @@ function isNonNegativeU16(value: unknown): value is number {
     && value <= 0xffff
 }
 
+function isZeroLengthClosureProviderKind(
+  value: unknown,
+): value is ZeroLengthClosureProviderKindV1 {
+  return value === 'point_on_line'
+    || value === 'mirror_symmetry_axis'
+    || value === 'angle_bisector'
+    || value === 'parallel'
+    || value === 'fixed_angle'
+}
+
 function isUnknownReason(
   value: unknown,
 ): value is GeometricConstraintUnknownReasonV1 {
   return value === 'work_limit_exceeded'
+    || value === 'constraint_limit_exceeded'
+    || value === 'storage_limit_exceeded'
+    || value === 'cancelled'
+    || value === 'deadline_reached'
     || value === 'solver_required_constraint_kinds'
     || value === 'invalid_document_or_geometry'
 }

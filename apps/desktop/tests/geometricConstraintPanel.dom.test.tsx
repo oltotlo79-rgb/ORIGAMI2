@@ -510,6 +510,20 @@ describe('GeometricConstraintPanel', () => {
         expected:
           'A bounded zero-length implication closure conflicts with a positive fixed length',
       },
+      {
+        conflict: {
+          kind:
+            'zero_length_closure_reaches_nondegenerate_provider' as const,
+          provider_kind: 'parallel' as const,
+          provider_edge: IDS[0]!,
+          forced_zero_edge: IDS[1]!,
+          horizontal_constraint_count: 1,
+          vertical_constraint_count: 1,
+          zero_propagation_constraint_count: 1,
+        },
+        expected:
+          'A bounded zero-length implication closure reaches a constraint edge that cannot collapse',
+      },
     ]
     for (const { conflict, expected } of conflictCases) {
       rerender(panel({
@@ -530,6 +544,22 @@ describe('GeometricConstraintPanel', () => {
       [
         'work_limit_exceeded',
         'Indeterminate because the analysis work limit was reached.',
+      ],
+      [
+        'constraint_limit_exceeded',
+        'Indeterminate because the analysis constraint limit was reached.',
+      ],
+      [
+        'storage_limit_exceeded',
+        'Indeterminate because the analysis storage limit was reached.',
+      ],
+      [
+        'cancelled',
+        'Indeterminate because the analysis was cancelled.',
+      ],
+      [
+        'deadline_reached',
+        'Indeterminate because the analysis time limit was reached.',
       ],
       [
         'solver_required_constraint_kinds',
@@ -642,6 +672,33 @@ describe('GeometricConstraintPanel', () => {
       'A direct conflict is proven, but bounded direct-conflict minimization did not complete.',
     )
     expect(alert.classList.contains('is-blocking')).toBe(true)
+
+    for (const [reason, expected] of [
+      [
+        'cancelled',
+        'A direct conflict is proven, but bounded direct-conflict minimization was cancelled.',
+      ],
+      [
+        'deadline_reached',
+        'A direct conflict is proven, but bounded direct-conflict minimization reached its time limit.',
+      ],
+    ] as const) {
+      rerender(panel({
+        localeStore: localeFixture('en'),
+        preflight: {
+          ...direct,
+          bounded_direct_mus: {
+            status: 'unknown',
+            reason,
+            oracle_calls: 0,
+            max_constraints: 16,
+          },
+        },
+      }))
+      alert = screen.getByRole('alert')
+      expect(alert.textContent).toContain(expected)
+      expect(alert.classList.contains('is-blocking')).toBe(true)
+    }
 
     rerender(panel({
       localeStore: localeFixture('ja'),

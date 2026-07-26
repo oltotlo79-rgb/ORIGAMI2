@@ -103,6 +103,8 @@ type GeometricConstraintPanelSimpleTextKey =
   | 'boundedMusProven'
   | 'boundedMusConstraintLimit'
   | 'boundedMusIncomplete'
+  | 'boundedMusCancelled'
+  | 'boundedMusDeadlineReached'
   | 'invalidIdentifier'
   | 'idListSeparator'
   | 'remainingIds'
@@ -289,6 +291,14 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
     '直接矛盾は証明済みですが、有界な直接矛盾の最小化は完了していません。',
     'A direct conflict is proven, but bounded direct-conflict minimization did not complete.',
   ),
+  boundedMusCancelled: text(
+    '直接矛盾は証明済みですが、有界な直接矛盾の最小化は取り消されました。',
+    'A direct conflict is proven, but bounded direct-conflict minimization was cancelled.',
+  ),
+  boundedMusDeadlineReached: text(
+    '直接矛盾は証明済みですが、有界な直接矛盾の最小化は時間上限に達しました。',
+    'A direct conflict is proven, but bounded direct-conflict minimization reached its time limit.',
+  ),
   invalidIdentifier: text('不正な識別子', 'invalid identifier'),
   idListSeparator: text('、', ', '),
   remainingIds: text(
@@ -425,11 +435,31 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
       '有界ゼロ長閉包が正の固定長と両立しません',
       'A bounded zero-length implication closure conflicts with a positive fixed length',
     ),
+    zero_length_closure_reaches_nondegenerate_provider: text(
+      '有界ゼロ長閉包が、長さゼロを許さない制約辺に到達し両立しません',
+      'A bounded zero-length implication closure reaches a constraint edge that cannot collapse',
+    ),
   }),
   unknownReasonLabels: Object.freeze({
     work_limit_exceeded: text(
       '診断の処理上限に達したため判定保留です',
       'Indeterminate because the analysis work limit was reached.',
+    ),
+    constraint_limit_exceeded: text(
+      '診断対象の制約数上限に達したため判定保留です',
+      'Indeterminate because the analysis constraint limit was reached.',
+    ),
+    storage_limit_exceeded: text(
+      '診断の記憶領域上限に達したため判定保留です',
+      'Indeterminate because the analysis storage limit was reached.',
+    ),
+    cancelled: text(
+      '診断が取り消されたため判定保留です',
+      'Indeterminate because the analysis was cancelled.',
+    ),
+    deadline_reached: text(
+      '診断の時間上限に達したため判定保留です',
+      'Indeterminate because the analysis time limit was reached.',
     ),
     solver_required_constraint_kinds: text(
       '完全な制約ソルバーが必要なため判定保留です',

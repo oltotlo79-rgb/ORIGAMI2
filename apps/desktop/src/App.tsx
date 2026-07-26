@@ -1109,11 +1109,13 @@ function App() {
     expectedProjectInstanceId: string,
     expectedProjectId: string,
     expectedRevision: number,
+    requestGenerationId: string,
   ) => {
     const response = await analyzeGeometricConstraints(
       expectedProjectInstanceId,
       expectedProjectId,
       expectedRevision,
+      requestGenerationId,
     )
     const current = latestSnapshotRef.current
     if (

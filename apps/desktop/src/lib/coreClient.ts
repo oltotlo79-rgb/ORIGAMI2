@@ -4501,11 +4501,23 @@ export function analyzeGeometricConstraints(
   expectedProjectInstanceId: string,
   expectedProjectId: string,
   expectedRevision: number,
+  requestGenerationId: string,
 ) {
+  if (
+    !isCanonicalNonNilUuid(expectedProjectInstanceId)
+    || !isCanonicalNonNilUuid(expectedProjectId)
+    || !Number.isSafeInteger(expectedRevision)
+    || Object.is(expectedRevision, -0)
+    || expectedRevision < 0
+    || !isCanonicalNonNilUuid(requestGenerationId)
+  ) {
+    return Promise.reject(new Error('invalid geometric-constraint analysis request'))
+  }
   return invoke<unknown>('analyze_geometric_constraints', {
     expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
+    requestGenerationId,
   }).then((response) => {
     const normalized = normalizeGeometricConstraintPreflightResponse(response, {
       project_instance_id: expectedProjectInstanceId,
@@ -4516,6 +4528,35 @@ export function analyzeGeometricConstraints(
       throw new Error('invalid geometric-constraint preflight response')
     }
     return normalized
+  })
+}
+
+export function cancelGeometricConstraintAnalysis(
+  expectedProjectInstanceId: string,
+  expectedProjectId: string,
+  expectedRevision: number,
+  requestGenerationId: string,
+): Promise<boolean> {
+  if (
+    !isCanonicalNonNilUuid(expectedProjectInstanceId)
+    || !isCanonicalNonNilUuid(expectedProjectId)
+    || !Number.isSafeInteger(expectedRevision)
+    || Object.is(expectedRevision, -0)
+    || expectedRevision < 0
+    || !isCanonicalNonNilUuid(requestGenerationId)
+  ) {
+    return Promise.reject(new Error('invalid geometric-constraint cancellation request'))
+  }
+  return invoke<unknown>('cancel_geometric_constraint_analysis', {
+    expectedProjectInstanceId,
+    expectedProjectId,
+    expectedRevision,
+    requestGenerationId,
+  }).then((cancelled) => {
+    if (typeof cancelled !== 'boolean') {
+      throw new Error('invalid geometric-constraint cancellation response')
+    }
+    return cancelled
   })
 }
 

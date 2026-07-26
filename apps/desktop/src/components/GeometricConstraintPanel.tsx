@@ -792,11 +792,16 @@ function BoundedDirectMusStatus({
       </p>
     )
   }
+  const label = result.reason === 'constraint_limit_exceeded'
+    ? TEXT.boundedMusConstraintLimit
+    : result.reason === 'cancelled'
+      ? TEXT.boundedMusCancelled
+      : result.reason === 'deadline_reached'
+        ? TEXT.boundedMusDeadlineReached
+        : TEXT.boundedMusIncomplete
   return (
     <p className="geometric-constraint-bounded-mus">
-      {result.reason === 'constraint_limit_exceeded'
-        ? selectLocalizedText(locale, TEXT.boundedMusConstraintLimit)
-        : selectLocalizedText(locale, TEXT.boundedMusIncomplete)}
+      {selectLocalizedText(locale, label)}
     </p>
   )
 }

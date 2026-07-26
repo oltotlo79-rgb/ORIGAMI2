@@ -12,6 +12,8 @@ const dialogSource = readSource('../src/components/FoldImportDialog.tsx')
 const dialogTextSource = readSource('../src/lib/foldImportDialogText.ts')
 const foldImportSource = readSource('../src/lib/foldImport.ts')
 const appMessagesSource = readSource('../src/lib/appMessages.ts')
+const nativeRootSource = readSource('../src-tauri/src/lib.rs')
+const nativeCommandSource = readSource('../src-tauri/src/fold_import_commands.rs')
 
 test('the client exposes only token-based preview, apply, and cancel FOLD invocations', () => {
   const preview = exportedFunction('previewFoldImport')
@@ -54,6 +56,32 @@ test('the client exposes only token-based preview, apply, and cancel FOLD invoca
       /invoke(?:<[^>]+>)?\('(?:preview|apply|cancel)_fold_import'/gu,
     )?.length,
     3,
+  )
+  for (const command of [
+    'preview_fold_import',
+    'apply_fold_import',
+    'cancel_fold_import',
+  ]) {
+    assert.match(
+      nativeCommandSource,
+      new RegExp(`#\\[tauri::command\\][\\s\\S]{0,100}(?:async )?fn ${command}\\(`, 'u'),
+      `${command} native command`,
+    )
+    assert.match(
+      nativeRootSource,
+      new RegExp(`tauri::generate_handler!\\[[\\s\\S]*?\\b${command}\\b`, 'u'),
+      `${command} command registration`,
+    )
+    assert.doesNotMatch(
+      nativeRootSource,
+      new RegExp(`#\\[tauri::command\\][\\s\\S]{0,100}(?:async )?fn ${command}\\(`, 'u'),
+      `${command} must be defined only in the FOLD import module`,
+    )
+  }
+  assert.match(nativeRootSource, /\.manage\(FoldImportState::default\(\)\)/u)
+  assert.match(
+    nativeCommandSource,
+    /file\.take\(MAX_FOLD_IMPORT_FILE_SIZE\.saturating_add\(1\)\)/u,
   )
 })
 

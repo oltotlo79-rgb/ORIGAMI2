@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
+use super::crease_pattern_boundary_support::validate_active_edge_containment;
 #[cfg(not(target_os = "windows"))]
 use super::project_persistence::{containing_directory, publish_unix_staged_file};
 #[cfg(target_os = "windows")]
@@ -20,7 +21,6 @@ use super::save_path::{DialogSaveDestination, ExistingDestinationPolicy};
 use super::{
     AppState, ProjectExpectation, ProjectState, StagedFile, create_staged_file,
     ensure_project_expectation, ensure_project_identity, lock_project,
-    validate_import_active_edge_containment,
 };
 #[cfg(not(target_os = "windows"))]
 use std::fs::File;
@@ -387,7 +387,7 @@ fn validate_project_for_export(project: &ProjectState) -> Result<(), String> {
     // The bounded exporter performs the authoritative pattern and paper
     // validation after applying its candidate-work limits. Only the
     // editor-specific active-edge containment rule is checked here.
-    validate_import_active_edge_containment(project, "export")
+    validate_active_edge_containment(project, "export")
         .map_err(|_| "用紙外に有効な折線があるため書き出せません。".to_owned())
 }
 

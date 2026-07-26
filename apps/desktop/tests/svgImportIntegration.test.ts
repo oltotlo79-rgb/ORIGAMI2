@@ -11,7 +11,8 @@ const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/SvgImportDialog.tsx')
 const dialogTextSource = readSource('../src/lib/svgImportDialogText.ts')
 const svgImportSource = readSource('../src/lib/svgImport.ts')
-const nativeSource = readSource('../src-tauri/src/lib.rs')
+const nativeRootSource = readSource('../src-tauri/src/lib.rs')
+const nativeCommandSource = readSource('../src-tauri/src/svg_import_commands.rs')
 const appMessagesSource = readSource('../src/lib/appMessages.ts')
 
 test('the client exposes only token-based preview, validation, apply, and cancel SVG invocations', () => {
@@ -73,24 +74,29 @@ test('the client exposes only token-based preview, validation, apply, and cancel
     'cancel_svg_import',
   ]) {
     assert.match(
-      nativeSource,
+      nativeCommandSource,
       new RegExp(`#\\[tauri::command\\][\\s\\S]{0,100}(?:async )?fn ${command}\\(`, 'u'),
       `${command} native command`,
     )
     assert.match(
-      nativeSource,
+      nativeRootSource,
       new RegExp(`tauri::generate_handler!\\[[\\s\\S]*?\\b${command}\\b`, 'u'),
       `${command} command registration`,
     )
+    assert.doesNotMatch(
+      nativeRootSource,
+      new RegExp(`#\\[tauri::command\\][\\s\\S]{0,100}(?:async )?fn ${command}\\(`, 'u'),
+      `${command} must be defined only in the SVG import module`,
+    )
   }
-  assert.match(nativeSource, /\.manage\(SvgImportState::default\(\)\)/u)
+  assert.match(nativeRootSource, /\.manage\(SvgImportState::default\(\)\)/u)
   assert.match(
-    nativeSource,
+    nativeCommandSource,
     /svg_import_requires_warning_acknowledgement\(&preview\)\s*&&\s*!warnings_acknowledged/u,
   )
-  assert.match(nativeSource, /if !boundary_confirmed/u)
+  assert.match(nativeCommandSource, /if !boundary_confirmed/u)
   assert.match(
-    nativeSource,
+    nativeCommandSource,
     /validate_import_scale\(millimeters_per_unit\)\?/u,
   )
 
@@ -161,7 +167,7 @@ test('dirty-project confirmation is deferred until immediately before SVG replac
     /transport\.apply\(\s*binding\.project_id,\s*binding\.revision,\s*settings,\s*replaceDirtyProjectConfirmed,\s*\)/u,
   )
   assert.match(
-    nativeSource,
+    nativeCommandSource,
     /project\.is_dirty\(\)\s*&&\s*!replace_dirty_project_confirmed/u,
   )
   assert.equal(

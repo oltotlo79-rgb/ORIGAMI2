@@ -49,6 +49,13 @@ describe('GeometricConstraintPanel', () => {
       conditionEstimate: 1,
       systemClassification: 'under_constrained',
       changedVertices: [{ vertexId: IDS[6], x: 12, y: 8 }],
+      exactSatisfaction: {
+        modelId: 'geometric_constraint_current_runtime_exact_satisfaction_v1',
+        constraintCount: 2,
+        equationCount: 3,
+        authorizesProjectMutation: false,
+        replayableAcrossRuntimes: false,
+      },
     })
     const onApplySolve = vi.fn().mockResolvedValue(true)
     renderPanel({
@@ -63,6 +70,9 @@ describe('GeometricConstraintPanel', () => {
     fireEvent.change(screen.getByLabelText('Constraint solver Y coordinate'), { target: { value: '8' } })
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
     await screen.findByText(/Changed vertices: 1/u)
+    expect(screen.getByText(
+      'In this runtime, the apply candidate exactly satisfies all 2 constraints and 3 binary64 residual equations. Explicit confirmation is still required to apply it.',
+    )).toBeTruthy()
     expect(onApplySolve).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }))

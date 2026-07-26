@@ -11296,6 +11296,7 @@ fn solver_stage_fixture() -> (
         revision: 0,
         positions: vec![(start, Point2::new(2.0, 3.0))],
         expression_bindings: None,
+        exact_satisfaction: None,
     };
     (project, stage, start, original)
 }

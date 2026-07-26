@@ -14,6 +14,7 @@ pub(super) struct GeometricConstraintSolveStage {
     pub(super) revision: u64,
     pub(super) positions: Vec<(VertexId, Point2)>,
     pub(super) expression_bindings: Option<Vec<VertexCoordinateExpressions>>,
+    pub(super) exact_satisfaction: Option<GeometricConstraintSolveExactSatisfaction>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,6 +23,22 @@ struct GeometricConstraintSolveVertex {
     vertex_id: VertexId,
     x: f64,
     y: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct GeometricConstraintSolveExactSatisfaction {
+    model_id: &'static str,
+    constraint_count: usize,
+    equation_count: usize,
+    authorizes_project_mutation: bool,
+    replayable_across_runtimes: bool,
+}
+
+#[derive(Debug)]
+struct PreparedGeometricConstraintSolve {
+    positions: Vec<(VertexId, Point2)>,
+    exact_satisfaction: Option<GeometricConstraintSolveExactSatisfaction>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,6 +54,8 @@ pub(super) struct GeometricConstraintSolvePreviewResponse {
     condition_estimate: f64,
     system_classification: &'static str,
     changed_vertices: Vec<GeometricConstraintSolveVertex>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exact_satisfaction: Option<GeometricConstraintSolveExactSatisfaction>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -70,38 +89,23 @@ pub(super) fn preview_geometric_constraint_solve(
     )
     .map_err(|error| format!("geometric constraint solve failed: {error}"))?;
     let token = ProjectId::new();
-    let response = GeometricConstraintSolvePreviewResponse {
+    let (response, stage) = finish_geometric_constraint_solve_preview(
         token,
-        revision: expected_revision,
-        iterations: solved.iterations,
-        maximum_residual: solved.maximum_residual,
-        rank: solved.rank,
-        degrees_of_freedom: solved.degrees_of_freedom,
-        equation_count: solved.equation_count,
-        condition_estimate: solved.condition_estimate,
-        system_classification: solve_system_classification(&solved),
-        changed_vertices: solved
-            .positions
-            .iter()
-            .map(|(vertex_id, point)| GeometricConstraintSolveVertex {
-                vertex_id: *vertex_id,
-                x: point.x,
-                y: point.y,
-            })
-            .collect(),
-    };
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
+        project.editor.pattern(),
+        project.editor.geometric_constraints(),
+        &solved,
+        None,
+    );
     let mut slot = state
         .3
         .lock()
         .map_err(|_| "geometric constraint preview state unavailable".to_owned())?;
-    *slot = Some(GeometricConstraintSolveStage {
-        token,
-        project_instance_id: expected_project_instance_id,
-        project_id: expected_project_id,
-        revision: expected_revision,
-        positions: solved.positions,
-        expression_bindings: None,
-    });
+    *slot = Some(stage);
     Ok(response)
 }
 
@@ -140,38 +144,22 @@ pub(super) fn preview_geometric_constraint_edge_solve(
     )
     .map_err(|error| format!("geometric constraint solve failed: {error}"))?;
     let token = ProjectId::new();
-    let response = GeometricConstraintSolvePreviewResponse {
+    let (response, stage) = finish_geometric_constraint_solve_preview(
         token,
-        revision: expected_revision,
-        iterations: solved.iterations,
-        maximum_residual: solved.maximum_residual,
-        rank: solved.rank,
-        degrees_of_freedom: solved.degrees_of_freedom,
-        equation_count: solved.equation_count,
-        condition_estimate: solved.condition_estimate,
-        system_classification: solve_system_classification(&solved),
-        changed_vertices: solved
-            .positions
-            .iter()
-            .map(|(vertex_id, point)| GeometricConstraintSolveVertex {
-                vertex_id: *vertex_id,
-                x: point.x,
-                y: point.y,
-            })
-            .collect(),
-    };
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
+        project.editor.pattern(),
+        project.editor.geometric_constraints(),
+        &solved,
+        None,
+    );
     *state
         .3
         .lock()
-        .map_err(|_| "geometric constraint preview state unavailable".to_owned())? =
-        Some(GeometricConstraintSolveStage {
-            token,
-            project_instance_id: expected_project_instance_id,
-            project_id: expected_project_id,
-            revision: expected_revision,
-            positions: solved.positions,
-            expression_bindings: None,
-        });
+        .map_err(|_| "geometric constraint preview state unavailable".to_owned())? = Some(stage);
     Ok(response)
 }
 
@@ -196,36 +184,22 @@ pub(super) fn preview_geometric_constraint_expression_solve(
     )
     .map_err(|error| format!("geometric constraint solve failed: {error}"))?;
     let token = ProjectId::new();
-    let response = geometric_constraint_solve_response(token, expected_revision, &solved);
-    let expression_bindings = project
-        .numeric_expressions
-        .vertex_coordinates
-        .iter()
-        .filter_map(|binding| {
-            solved
-                .positions
-                .iter()
-                .find(|(vertex, _)| *vertex == binding.vertex)
-                .map(|(_, point)| {
-                    let mut binding = binding.clone();
-                    binding.adopted_x_mm = point.x;
-                    binding.adopted_y_mm = point.y;
-                    binding
-                })
-        })
-        .collect();
+    let (response, stage) = finish_geometric_constraint_solve_preview(
+        token,
+        ProjectExpectation::new(
+            expected_project_instance_id,
+            expected_project_id,
+            expected_revision,
+        ),
+        project.editor.pattern(),
+        project.editor.geometric_constraints(),
+        &solved,
+        Some(&project.numeric_expressions.vertex_coordinates),
+    );
     *state
         .3
         .lock()
-        .map_err(|_| "geometric constraint preview state unavailable".to_owned())? =
-        Some(GeometricConstraintSolveStage {
-            token,
-            project_instance_id: expected_project_instance_id,
-            project_id: expected_project_id,
-            revision: expected_revision,
-            positions: solved.positions,
-            expression_bindings: Some(expression_bindings),
-        });
+        .map_err(|_| "geometric constraint preview state unavailable".to_owned())? = Some(stage);
     Ok(response)
 }
 
@@ -489,10 +463,54 @@ pub(super) fn expand_saved_vertex_references(
     Ok(result)
 }
 
+fn finish_geometric_constraint_solve_preview(
+    token: ProjectId,
+    expectation: ProjectExpectation,
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+    solved: &ori_core::ConstraintSolvePreviewV1,
+    expression_bindings: Option<&[VertexCoordinateExpressions]>,
+) -> (
+    GeometricConstraintSolvePreviewResponse,
+    GeometricConstraintSolveStage,
+) {
+    let prepared = prepare_geometric_constraint_solve(pattern, document, solved);
+    let response =
+        geometric_constraint_solve_response(token, expectation.revision, solved, &prepared);
+    let expression_bindings = expression_bindings.map(|bindings| {
+        bindings
+            .iter()
+            .filter_map(|binding| {
+                prepared
+                    .positions
+                    .iter()
+                    .find(|(vertex, _)| *vertex == binding.vertex)
+                    .map(|(_, point)| {
+                        let mut binding = binding.clone();
+                        binding.adopted_x_mm = point.x;
+                        binding.adopted_y_mm = point.y;
+                        binding
+                    })
+            })
+            .collect()
+    });
+    let stage = GeometricConstraintSolveStage {
+        token,
+        project_instance_id: expectation.instance_id,
+        project_id: expectation.project_id,
+        revision: expectation.revision,
+        positions: prepared.positions,
+        expression_bindings,
+        exact_satisfaction: prepared.exact_satisfaction,
+    };
+    (response, stage)
+}
+
 fn geometric_constraint_solve_response(
     token: ProjectId,
     revision: u64,
     solved: &ori_core::ConstraintSolvePreviewV1,
+    prepared: &PreparedGeometricConstraintSolve,
 ) -> GeometricConstraintSolvePreviewResponse {
     GeometricConstraintSolvePreviewResponse {
         token,
@@ -504,7 +522,7 @@ fn geometric_constraint_solve_response(
         equation_count: solved.equation_count,
         condition_estimate: solved.condition_estimate,
         system_classification: solve_system_classification(solved),
-        changed_vertices: solved
+        changed_vertices: prepared
             .positions
             .iter()
             .map(|(vertex_id, point)| GeometricConstraintSolveVertex {
@@ -513,6 +531,49 @@ fn geometric_constraint_solve_response(
                 y: point.y,
             })
             .collect(),
+        exact_satisfaction: prepared.exact_satisfaction,
+    }
+}
+
+fn prepare_geometric_constraint_solve(
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+    solved: &ori_core::ConstraintSolvePreviewV1,
+) -> PreparedGeometricConstraintSolve {
+    let Some(exact) =
+        ori_core::exactify_axis_aligned_constraint_preview_v1(pattern, document, solved)
+    else {
+        return PreparedGeometricConstraintSolve {
+            positions: solved.positions.clone(),
+            exact_satisfaction: None,
+        };
+    };
+
+    let mut positions = exact
+        .pattern()
+        .vertices
+        .iter()
+        .filter_map(|vertex| {
+            let original = pattern
+                .vertices
+                .iter()
+                .find(|candidate| candidate.id == vertex.id)?;
+            (original.position.x.to_bits() != vertex.position.x.to_bits()
+                || original.position.y.to_bits() != vertex.position.y.to_bits())
+            .then_some((vertex.id, vertex.position))
+        })
+        .collect::<Vec<_>>();
+    positions.sort_unstable_by_key(|(vertex, _)| vertex.canonical_bytes());
+    let certificate = exact.certificate();
+    PreparedGeometricConstraintSolve {
+        positions,
+        exact_satisfaction: Some(GeometricConstraintSolveExactSatisfaction {
+            model_id: exact.model_id(),
+            constraint_count: certificate.constraint_count(),
+            equation_count: certificate.equation_count(),
+            authorizes_project_mutation: exact.authorizes_project_mutation(),
+            replayable_across_runtimes: exact.replayable_across_runtimes(),
+        }),
     }
 }
 
@@ -576,6 +637,24 @@ pub(super) fn apply_geometric_constraint_solve_stage(
     {
         return Err("geometric constraint preview is stale".to_owned());
     }
+    if let Some(exact_satisfaction) = staged.exact_satisfaction {
+        recertify_staged_exact_geometric_constraint_solve(
+            project.editor.pattern(),
+            project.editor.geometric_constraints(),
+            &staged.positions,
+            exact_satisfaction,
+        )?;
+        if staged.positions.is_empty() {
+            if staged
+                .expression_bindings
+                .as_ref()
+                .is_none_or(Vec::is_empty)
+            {
+                return Ok(snapshot(project));
+            }
+            return Err("exact geometric constraint preview has inconsistent bindings".to_owned());
+        }
+    }
     execute_expected_command(
         project,
         ProjectExpectation::new(
@@ -600,6 +679,47 @@ pub(super) fn apply_geometric_constraint_solve_stage(
         }
     }
     Ok(snapshot(project))
+}
+
+fn recertify_staged_exact_geometric_constraint_solve(
+    pattern: &CreasePattern,
+    document: &GeometricConstraintDocumentV1,
+    positions: &[(VertexId, Point2)],
+    expected: GeometricConstraintSolveExactSatisfaction,
+) -> Result<(), String> {
+    if expected.model_id
+        != ori_core::GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_EXACT_SATISFACTION_MODEL_ID_V1
+        || expected.authorizes_project_mutation
+        || expected.replayable_across_runtimes
+        || positions.len() > pattern.vertices.len()
+    {
+        return Err("exact geometric constraint preview certificate is invalid".to_owned());
+    }
+    let mut candidate = pattern.clone();
+    let mut seen = HashSet::with_capacity(positions.len());
+    for (vertex, position) in positions {
+        if !position.x.is_finite() || !position.y.is_finite() || !seen.insert(*vertex) {
+            return Err("exact geometric constraint preview assignment is invalid".to_owned());
+        }
+        let target = candidate
+            .vertices
+            .iter_mut()
+            .find(|candidate| candidate.id == *vertex)
+            .ok_or_else(|| "exact geometric constraint preview assignment is invalid".to_owned())?;
+        target.position = *position;
+    }
+    let certificate =
+        ori_core::certify_binary64_exact_geometric_constraint_satisfaction_v1(&candidate, document)
+            .map_err(|_| "exact geometric constraint preview could not be re-certified".to_owned())?
+            .ok_or_else(|| {
+                "exact geometric constraint preview could not be re-certified".to_owned()
+            })?;
+    if certificate.constraint_count() != expected.constraint_count
+        || certificate.equation_count() != expected.equation_count
+    {
+        return Err("exact geometric constraint preview certificate is stale".to_owned());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -679,3 +799,7 @@ pub(super) fn remove_geometric_constraint(
         Command::RemoveGeometricConstraint { id: constraint },
     )
 }
+
+#[cfg(test)]
+#[path = "geometric_constraint_commands_exact_tests.rs"]
+mod exact_satisfaction_tests;

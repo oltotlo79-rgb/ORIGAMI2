@@ -271,6 +271,20 @@ export function GeometricConstraintPanel({
                 ],
               )}
             </p>
+            {solvePreview.exactSatisfaction && (
+              <p className="geometric-constraint-exact-satisfaction">
+                {formatLocalizedText(
+                  locale,
+                  TEXT.exactSatisfaction,
+                  {
+                    constraintCount:
+                      solvePreview.exactSatisfaction.constraintCount,
+                    equationCount:
+                      solvePreview.exactSatisfaction.equationCount,
+                  },
+                )}
+              </p>
+            )}
             <svg
               viewBox="-2 -2 4 4"
               aria-label={selectLocalizedText(locale, TEXT.movePreview)}

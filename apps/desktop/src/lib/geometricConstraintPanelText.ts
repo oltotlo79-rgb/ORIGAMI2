@@ -55,6 +55,7 @@ type GeometricConstraintPanelSimpleTextKey =
   | 'rank'
   | 'degreesOfFreedom'
   | 'condition'
+  | 'exactSatisfaction'
   | 'detailSeparator'
   | 'movePreview'
   | 'apply'
@@ -163,6 +164,10 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
   rank: text('rank', 'rank'),
   degreesOfFreedom: text('DOF', 'DOF'),
   condition: text('condition', 'condition'),
+  exactSatisfaction: text(
+    '現在の実行環境で、適用候補は全{constraintCount}件・{equationCount}方程式のbinary64残差を厳密に満たしています。適用には引き続き明示確認が必要です。',
+    'In this runtime, the apply candidate exactly satisfies all {constraintCount} constraints and {equationCount} binary64 residual equations. Explicit confirmation is still required to apply it.',
+  ),
   detailSeparator: text(' · ', ' · '),
   movePreview: text('移動プレビュー', 'Move preview'),
   apply: text('適用', 'Apply'),

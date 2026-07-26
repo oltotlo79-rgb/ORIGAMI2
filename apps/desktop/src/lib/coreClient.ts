@@ -59,6 +59,10 @@ import {
   type StackedFoldReadRequest,
   type StackedFoldReadResponse,
 } from './stackedFoldRead.ts'
+import {
+  normalizeGeometricConstraintSolvePreview,
+  type GeometricConstraintSolvePreview,
+} from './geometricConstraintSolvePreview.ts'
 
 export type CurrentCyclePosePreviewRequestV1 = Readonly<{
   progressRequestId?: string
@@ -116,6 +120,12 @@ export type {
   LayerRecordV1,
   ProjectLayerDocumentV1,
 } from './projectLayers.ts'
+export {
+  normalizeGeometricConstraintSolvePreview,
+} from './geometricConstraintSolvePreview.ts'
+export type {
+  GeometricConstraintSolvePreview,
+} from './geometricConstraintSolvePreview.ts'
 
 export type PatternResponse = {
   requested_edge_count: number
@@ -5300,20 +5310,15 @@ export function confirmRadialArray(expectedProjectId: string, expectedRevision: 
   })
 }
 
-export type GeometricConstraintSolvePreview = {
-  token: string
-  revision: number
-  iterations: number
-  maximumResidual: number
-  rank: number
-  degreesOfFreedom: number
-  equationCount: number
-  conditionEstimate: number
-  systemClassification: 'under_constrained' | 'over_constrained' | 'well_constrained'
-  changedVertices: Array<{ vertexId: string; x: number; y: number }>
+function requireGeometricConstraintSolvePreview(
+  value: unknown,
+): GeometricConstraintSolvePreview {
+  const parsed = normalizeGeometricConstraintSolvePreview(value)
+  if (!parsed) throw new Error('invalid geometric constraint solve preview response')
+  return parsed
 }
 
-export function previewGeometricConstraintEdgeSolve(
+export async function previewGeometricConstraintEdgeSolve(
   expectedProjectId: string,
   expectedRevision: number,
   expectedProjectInstanceId: string,
@@ -5323,7 +5328,7 @@ export function previewGeometricConstraintEdgeSolve(
   endXMm: number,
   endYMm: number,
 ) {
-  return invoke<GeometricConstraintSolvePreview>('preview_geometric_constraint_edge_solve', {
+  const value = await invoke<unknown>('preview_geometric_constraint_edge_solve', {
     expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
@@ -5333,21 +5338,23 @@ export function previewGeometricConstraintEdgeSolve(
     endXMm,
     endYMm,
   })
+  return requireGeometricConstraintSolvePreview(value)
 }
 
-export function previewGeometricConstraintExpressionSolve(
+export async function previewGeometricConstraintExpressionSolve(
   expectedProjectId: string,
   expectedRevision: number,
   expectedProjectInstanceId: string,
 ) {
-  return invoke<GeometricConstraintSolvePreview>('preview_geometric_constraint_expression_solve', {
+  const value = await invoke<unknown>('preview_geometric_constraint_expression_solve', {
     expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
   })
+  return requireGeometricConstraintSolvePreview(value)
 }
 
-export function previewGeometricConstraintSolve(
+export async function previewGeometricConstraintSolve(
   expectedProjectId: string,
   expectedRevision: number,
   expectedProjectInstanceId: string,
@@ -5355,7 +5362,7 @@ export function previewGeometricConstraintSolve(
   xMm: number,
   yMm: number,
 ) {
-  return invoke<GeometricConstraintSolvePreview>('preview_geometric_constraint_solve', {
+  const value = await invoke<unknown>('preview_geometric_constraint_solve', {
     expectedProjectInstanceId,
     expectedProjectId,
     expectedRevision,
@@ -5363,6 +5370,7 @@ export function previewGeometricConstraintSolve(
     xMm,
     yMm,
   })
+  return requireGeometricConstraintSolvePreview(value)
 }
 
 export function applyGeometricConstraintSolve(

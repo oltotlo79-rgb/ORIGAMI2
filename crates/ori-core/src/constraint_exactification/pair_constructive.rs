@@ -11,8 +11,13 @@ use crate::{
     certify_binary64_exact_geometric_constraint_satisfaction_v1, prepare_geometric_constraints_v1,
 };
 
+mod algebraic;
 mod geometry;
 
+pub(crate) use algebraic::{
+    MAX_PAIR_CONSTRAINT_ALGEBRAIC_CANDIDATES_V1,
+    construct_pair_constraint_algebraic_exact_assignment_v1,
+};
 pub(crate) const MAX_PAIR_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1: usize = 4;
 
 /// Tries a fixed, deliberately incomplete language of exact assignments for

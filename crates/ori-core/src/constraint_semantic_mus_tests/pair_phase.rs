@@ -148,7 +148,7 @@ pub(super) fn pair_work_fixture() -> SemanticFixture {
     promoted_fixtures().remove(0).1
 }
 
-fn collapse_dependent_fixtures() -> Vec<(Family, SemanticFixture)> {
+fn algebraic_pair_fixtures() -> Vec<(Family, SemanticFixture)> {
     vec![
         (
             Family::HorizontalVertical,
@@ -228,6 +228,10 @@ fn collapse_dependent_fixtures() -> Vec<(Family, SemanticFixture)> {
     ]
 }
 
+pub(super) fn algebraic_work_fixture() -> SemanticFixture {
+    algebraic_pair_fixtures().remove(0).1
+}
+
 fn has_family(preflight: &ConstraintPreflightV1, family: Family) -> bool {
     let ConstraintPreflightV1::DirectConflict { conflicts } = preflight else {
         return false;
@@ -295,30 +299,30 @@ fn pair_language_promotes_five_of_the_fifteen_proven_direct_families() {
             certificate.current_assignment_witness_count()
                 + certificate.axis_exactification_witness_count()
                 + certificate.single_constraint_constructive_witness_count()
-                + certificate.pair_constraint_constructive_witness_count(),
+                + certificate.pair_constraint_constructive_witness_count()
+                + certificate.pair_constraint_algebraic_witness_count(),
             3,
         );
+        assert_eq!(certificate.pair_constraint_algebraic_witness_count(), 0);
     }
 }
 
 #[test]
-fn collapse_dependent_three_record_families_remain_strictly_unknown() {
-    for (family, fixture) in collapse_dependent_fixtures() {
+fn algebraic_pair_promotes_four_additional_three_record_families() {
+    let fixtures = algebraic_pair_fixtures();
+    assert_eq!(fixtures.len(), 4);
+    for (family, fixture) in fixtures {
         let prepared = prepared(&fixture.pattern, fixture.records.iter().cloned());
         assert!(has_family(&prepared.preflight(), family));
-        assert!(matches!(
-            certify_bounded_current_runtime_semantic_mus_v1(&prepared),
-            BoundedCurrentRuntimeSemanticMusV1::Unknown {
-                reason: BoundedSemanticMusUnknownReasonV1::DeletionWitnessUnavailable,
-                direct_core_constraint_ids,
-                deletion_witness_checks,
-                certified_deletion_witnesses,
-                deletion_witness_work,
-                ..
-            } if direct_core_constraint_ids.len() == 3
-                && (1..=3).contains(&deletion_witness_checks)
-                && certified_deletion_witnesses < deletion_witness_checks
-                && deletion_witness_work > 0
-        ));
+        let certificate = certified(certify_bounded_current_runtime_semantic_mus_v1(&prepared));
+        assert_eq!(certificate.constraint_ids().len(), 3);
+        assert_eq!(certificate.current_assignment_witness_count(), 0);
+        assert_eq!(certificate.axis_exactification_witness_count(), 0);
+        assert_eq!(
+            certificate.single_constraint_constructive_witness_count(),
+            0,
+        );
+        assert_eq!(certificate.pair_constraint_constructive_witness_count(), 2);
+        assert_eq!(certificate.pair_constraint_algebraic_witness_count(), 1);
     }
 }

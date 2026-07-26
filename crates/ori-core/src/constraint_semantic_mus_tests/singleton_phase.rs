@@ -88,6 +88,7 @@ fn different_fixed_lengths_are_promoted_by_the_constructive_singleton_witness() 
         1,
     );
     assert_eq!(certificate.pair_constraint_constructive_witness_count(), 0);
+    assert_eq!(certificate.pair_constraint_algebraic_witness_count(), 0);
 }
 
 #[test]
@@ -113,7 +114,7 @@ fn constructive_singleton_phase_reserves_its_complete_work_before_starting() {
     let fixture = different_fixed_lengths_fixture(3.0);
     let prepared = prepared(&fixture.pattern, fixture.records.iter().cloned());
     let baseline = certified(certify_bounded_current_runtime_semantic_mus_v1(&prepared));
-    let (setup_work, current_work, axis_work, singleton_work, _pair_work) =
+    let (setup_work, current_work, axis_work, singleton_work, _pair_work, _algebraic_work) =
         crate::constraint_semantic_mus::witness_phase_work_for_test(
             fixture.pattern.vertices.len(),
             fixture.pattern.edges.len(),
@@ -168,7 +169,7 @@ impl BoundedSemanticMusObserverV1 for RecordingObserver {
 fn constructive_singleton_has_distinct_cancel_and_deadline_checkpoints_before_and_after() {
     let fixture = different_fixed_lengths_fixture(3.0);
     let prepared = prepared(&fixture.pattern, fixture.records.iter().cloned());
-    let (setup_work, current_work, axis_work, singleton_work, _pair_work) =
+    let (setup_work, current_work, axis_work, singleton_work, _pair_work, _algebraic_work) =
         crate::constraint_semantic_mus::witness_phase_work_for_test(
             fixture.pattern.vertices.len(),
             fixture.pattern.edges.len(),

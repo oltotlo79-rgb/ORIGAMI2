@@ -13,7 +13,9 @@ mod pair_constructive;
 mod singleton_constructive;
 
 pub(crate) use pair_constructive::{
-    MAX_PAIR_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1, construct_pair_constraint_exact_assignment_v1,
+    MAX_PAIR_CONSTRAINT_ALGEBRAIC_CANDIDATES_V1, MAX_PAIR_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1,
+    construct_pair_constraint_algebraic_exact_assignment_v1,
+    construct_pair_constraint_exact_assignment_v1,
 };
 pub(crate) use singleton_constructive::MAX_SINGLE_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1;
 pub use singleton_constructive::construct_single_constraint_exact_assignment_v1;
@@ -217,6 +219,10 @@ impl CanonicalDisjointSet {
 #[cfg(test)]
 #[path = "constraint_exactification/pair_constructive_tests.rs"]
 mod pair_constructive_tests;
+
+#[cfg(test)]
+#[path = "constraint_exactification/pair_constructive_algebraic_tests.rs"]
+mod pair_constructive_algebraic_tests;
 
 #[cfg(test)]
 #[path = "constraint_singleton_constructive_tests.rs"]

@@ -7,8 +7,10 @@ use crate::{
     BoundedDirectMusObserverV1, BoundedDirectMusV1, ConstraintSolvePreviewV1,
     GeometricConstraintSetV1, MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1,
     certify_binary64_exact_geometric_constraint_satisfaction_v1,
+    constraint_exactification::MAX_PAIR_CONSTRAINT_ALGEBRAIC_CANDIDATES_V1,
     constraint_exactification::MAX_PAIR_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1,
     constraint_exactification::MAX_SINGLE_CONSTRAINT_CONSTRUCTIVE_CANDIDATES_V1,
+    constraint_exactification::construct_pair_constraint_algebraic_exact_assignment_v1,
     constraint_exactification::construct_pair_constraint_exact_assignment_v1,
     constraint_exactification::construct_single_constraint_exact_assignment_v1,
     exactify_axis_aligned_constraint_preview_v1, find_bounded_direct_mus_with_observer_v1,
@@ -139,6 +141,7 @@ pub struct CurrentRuntimeSemanticMusV1 {
     axis_exactification_witness_count: usize,
     single_constraint_constructive_witness_count: usize,
     pair_constraint_constructive_witness_count: usize,
+    pair_constraint_algebraic_witness_count: usize,
 }
 
 impl CurrentRuntimeSemanticMusV1 {
@@ -185,6 +188,11 @@ impl CurrentRuntimeSemanticMusV1 {
     #[must_use]
     pub const fn pair_constraint_constructive_witness_count(&self) -> usize {
         self.pair_constraint_constructive_witness_count
+    }
+
+    #[must_use]
+    pub const fn pair_constraint_algebraic_witness_count(&self) -> usize {
+        self.pair_constraint_algebraic_witness_count
     }
 
     #[must_use]
@@ -319,6 +327,7 @@ pub fn certify_bounded_current_runtime_semantic_mus_with_observer_v1(
     let mut axis_exactification_witness_count = 0;
     let mut single_constraint_constructive_witness_count = 0;
     let mut pair_constraint_constructive_witness_count = 0;
+    let mut pair_constraint_algebraic_witness_count = 0;
     for removed in &constraint_ids {
         progress.deletion_witness_checks += 1;
         if let Some(reason) = checkpoint(observer, progress) {
@@ -469,14 +478,51 @@ pub fn certify_bounded_current_runtime_semantic_mus_with_observer_v1(
         if let Some(reason) = checkpoint(observer, progress) {
             return unknown(reason, progress, &constraint_ids);
         }
-        if !pair_constraint_is_exact {
+        if pair_constraint_is_exact {
+            pair_constraint_constructive_witness_count += 1;
+            progress.certified_deletion_witnesses += 1;
+            continue;
+        }
+
+        let Some(pair_algebraic_work) =
+            pair_constraint_algebraic_phase_work(set, document.constraints.len())
+        else {
+            return unknown(
+                BoundedSemanticMusUnknownReasonV1::DeletionWitnessWorkLimitExceeded,
+                progress,
+                &constraint_ids,
+            );
+        };
+        if !charge_witness_work(
+            &mut progress,
+            pair_algebraic_work,
+            limits.max_deletion_witness_work,
+        ) {
+            return unknown(
+                BoundedSemanticMusUnknownReasonV1::DeletionWitnessWorkLimitExceeded,
+                progress,
+                &constraint_ids,
+            );
+        }
+        if let Some(reason) = checkpoint(observer, progress) {
+            return unknown(reason, progress, &constraint_ids);
+        }
+        let pair_algebraic_is_exact = construct_pair_constraint_algebraic_exact_assignment_v1(
+            set.source_pattern(),
+            &document,
+        )
+        .is_some();
+        if let Some(reason) = checkpoint(observer, progress) {
+            return unknown(reason, progress, &constraint_ids);
+        }
+        if !pair_algebraic_is_exact {
             return unknown(
                 BoundedSemanticMusUnknownReasonV1::DeletionWitnessUnavailable,
                 progress,
                 &constraint_ids,
             );
         }
-        pair_constraint_constructive_witness_count += 1;
+        pair_constraint_algebraic_witness_count += 1;
         progress.certified_deletion_witnesses += 1;
     }
 
@@ -493,6 +539,7 @@ pub fn certify_bounded_current_runtime_semantic_mus_with_observer_v1(
         axis_exactification_witness_count,
         single_constraint_constructive_witness_count,
         pair_constraint_constructive_witness_count,
+        pair_constraint_algebraic_witness_count,
     })
 }
 
@@ -628,6 +675,41 @@ fn pair_constraint_constructive_work(
     ])
 }
 
+fn pair_constraint_algebraic_phase_work(
+    set: &GeometricConstraintSetV1<'_>,
+    constraint_count: usize,
+) -> Option<usize> {
+    pair_constraint_algebraic_work(
+        set.source_pattern().vertices.len(),
+        set.source_pattern().edges.len(),
+        constraint_count,
+    )
+}
+
+fn pair_constraint_algebraic_work(
+    vertex_count: usize,
+    edge_count: usize,
+    constraint_count: usize,
+) -> Option<usize> {
+    let template_work = checked_sum([
+        checked_mul(
+            checked_sum([vertex_count, edge_count, constraint_count, 1])?,
+            96,
+        )?,
+        checked_mul(sort_work(edge_count)?, 16)?,
+    ])?;
+    let candidate_work = checked_sum([
+        checked_mul(vertex_count.checked_add(1)?, 96)?,
+        prepare_and_preflight_work(vertex_count, edge_count, constraint_count)?,
+        residual_certificate_work(vertex_count, edge_count, constraint_count)?,
+    ])?;
+    checked_sum([
+        prepare_and_preflight_work(vertex_count, edge_count, constraint_count)?,
+        template_work,
+        checked_mul(MAX_PAIR_CONSTRAINT_ALGEBRAIC_CANDIDATES_V1, candidate_work)?,
+    ])
+}
+
 fn deletion_document_build_work(constraint_count: usize) -> Option<usize> {
     checked_mul(constraint_count.checked_add(1)?, 8)
 }
@@ -755,7 +837,7 @@ pub(crate) fn witness_phase_work_for_test(
     edge_count: usize,
     core_constraint_count: usize,
     deletion_constraint_count: usize,
-) -> Option<(usize, usize, usize, usize, usize)> {
+) -> Option<(usize, usize, usize, usize, usize, usize)> {
     Some((
         witness_setup_work(core_constraint_count)?,
         checked_sum([
@@ -789,6 +871,7 @@ pub(crate) fn witness_phase_work_for_test(
             )?,
         ])?,
         pair_constraint_constructive_work(vertex_count, edge_count, deletion_constraint_count)?,
+        pair_constraint_algebraic_work(vertex_count, edge_count, deletion_constraint_count)?,
     ))
 }
 

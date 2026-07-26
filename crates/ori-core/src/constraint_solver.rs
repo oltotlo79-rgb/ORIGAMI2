@@ -11,6 +11,13 @@ use crate::{
     prepare_geometric_constraints_v1,
 };
 
+mod residual_overlay;
+
+pub(crate) use residual_overlay::{
+    Binary64ResidualOnlyConstraintSatisfactionV1,
+    certify_binary64_residual_only_constraint_overlay_v1,
+};
+
 const REGULARIZATION: f64 = 1e-10;
 const DERIVATIVE_STEP: f64 = 1e-6;
 
@@ -806,6 +813,10 @@ fn solve_dense(
         Err(ConstraintSolveErrorV1::NonConvergent)
     }
 }
+
+#[cfg(test)]
+#[path = "constraint_solver_residual_overlay_tests.rs"]
+mod residual_overlay_tests;
 
 #[cfg(test)]
 mod tests {

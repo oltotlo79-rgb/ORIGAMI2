@@ -214,7 +214,8 @@
       "status": "部分実装",
       "commits": [
         "66074eba1c5c2dc564ec1c3cf135c0891c4d66db",
-        "327518c360e142d754d0c21c2680b7389d36042e"
+        "327518c360e142d754d0c21c2680b7389d36042e",
+        "1be7912632e7a8bfd02f01659401730131343261"
       ],
       "evidence": [
         {
@@ -236,13 +237,23 @@
           "kind": "test",
           "path": "crates/ori-core/src/constraints.rs",
           "selector": "fn partially_checked_fixed_angle_and_ratio_kinds_return_unknown()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "fn fixed_lengths_and_ratio_share_the_solver_binary64_residual()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_solver.rs",
+          "selector": "fn incompatible_fixed_lengths_and_ratio_are_rejected_before_numerical_tolerance()"
         }
       ],
       "limitations": [
-        "only five of the twenty-one wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the other sixteen fail closed to Unknown"
+        "only six of the twenty-one wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the other fifteen fail closed to Unknown"
       ],
       "missingAcceptance": [
-        "sound general satisfiability and unsatisfiability oracle plus minimal unsatisfiable subsets beyond the five allowlisted direct-conflict variants"
+        "sound general satisfiability and unsatisfiability oracle plus minimal unsatisfiable subsets beyond the six allowlisted direct-conflict variants"
       ]
     },
     {

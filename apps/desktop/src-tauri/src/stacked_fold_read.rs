@@ -4,6 +4,9 @@
 //! retains private native capabilities and revalidates them under both live
 //! authority guards before one atomic Editor command is committed.
 
+#[path = "stacked_fold_dyadic_graph_wire.rs"]
+mod stacked_fold_dyadic_graph_wire;
+
 use std::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
@@ -49,6 +52,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 
+use self::stacked_fold_dyadic_graph_wire::{
+    DyadicPoseGraphReadRequestV1, DyadicPoseGraphReadResponseV1, dyadic_graph_response,
+    unsupported_dyadic_graph_response_v1,
+};
 #[cfg(test)]
 use super::stacked_fold_even_cycle_candidates::{
     EvenCycleCandidatesRequestV1, read_even_cycle_candidates_inner_v1,
@@ -213,21 +220,6 @@ struct CurrentCyclePoseProgressDtoV1 {
     completed_work: usize,
     total_work: usize,
     authorizes_project_mutation: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct DyadicPoseGraphReadRequestV1 {
-    expected_project_instance_id: ProjectId,
-    expected_project_id: ProjectId,
-    expected_revision: u64,
-    target_angles: Vec<DyadicPoseGraphAngleDtoV1>,
-    max_states: usize,
-    max_transitions: usize,
-    #[serde(default = "default_dyadic_level_count_v1")]
-    level_count: usize,
-    #[serde(default)]
-    cycle_schedule_v1: Option<CycleScheduleRequestV1>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -1157,31 +1149,6 @@ pub(super) struct CancelDyadicPathPreviewRequestV1 {
     preview_token: ProjectId,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct DyadicPoseGraphReadResponseV1 {
-    version: u32,
-    project_instance_id: ProjectId,
-    project_id: ProjectId,
-    revision: u64,
-    status: &'static str,
-    reason: &'static str,
-    state_count: usize,
-    transition_count: usize,
-    explored_state_count: usize,
-    evaluated_transition_count: usize,
-    certified_transition_count: usize,
-    certificate_binding_sha256: Option<String>,
-    positive_thickness_transition_count: usize,
-    positive_thickness_certified: bool,
-    positive_thickness_binding_sha256: Option<String>,
-    layer_transport_transition_count: usize,
-    layer_transport_certified: bool,
-    layer_transport_binding_sha256: Option<String>,
-    mutation_candidate_ready: bool,
-    authorizes_project_mutation: bool,
-}
-
 #[tauri::command]
 pub(super) fn read_bounded_dyadic_pose_graph_v1(
     app_state: State<'_, AppState>,
@@ -1260,12 +1227,12 @@ fn mint_dyadic_pose_path_preview_inner_v1(
         },
         Some(&mut native_authority),
     )?;
-    if !observed.mutation_candidate_ready
-        || observed.certificate_binding_sha256.as_deref()
+    if !observed.mutation_candidate_ready()
+        || observed.certificate_binding_sha256()
             != Some(request.expected_path_binding_sha256.as_str())
-        || observed.positive_thickness_binding_sha256.as_deref()
+        || observed.positive_thickness_binding_sha256()
             != Some(request.expected_positive_thickness_binding_sha256.as_str())
-        || observed.layer_transport_binding_sha256.as_deref()
+        || observed.layer_transport_binding_sha256()
             != Some(request.expected_layer_transport_binding_sha256.as_str())
     {
         return Err(CYCLE_PATH_UNCERTIFIED_MESSAGE.to_owned());
@@ -2097,25 +2064,6 @@ fn read_bounded_dyadic_pose_graph_inner_v1(
     ))
 }
 
-fn unsupported_dyadic_graph_response_v1(
-    project: &super::ProjectState,
-) -> DyadicPoseGraphReadResponseV1 {
-    dyadic_graph_response(
-        project,
-        "unsupported",
-        0,
-        0,
-        0,
-        0,
-        0,
-        None,
-        0,
-        None,
-        0,
-        None,
-    )
-}
-
 fn strict_dyadic_geometry_is_in_scope_v1(project: &super::ProjectState) -> bool {
     let topology = project
         .editor
@@ -2241,59 +2189,6 @@ fn strict_dyadic_topology_snapshot_is_in_scope_v1(
             .faces
             .iter()
             .all(|face| face.holes.is_empty() && face.seams.is_empty())
-}
-
-fn dyadic_graph_response(
-    project: &super::ProjectState,
-    status: &'static str,
-    state_count: usize,
-    transition_count: usize,
-    explored_state_count: usize,
-    evaluated_transition_count: usize,
-    certified_transition_count: usize,
-    certificate_binding_sha256: Option<String>,
-    positive_thickness_transition_count: usize,
-    positive_thickness_binding_sha256: Option<String>,
-    layer_transport_transition_count: usize,
-    layer_transport_binding_sha256: Option<String>,
-) -> DyadicPoseGraphReadResponseV1 {
-    let positive_thickness_certified = certified_transition_count > 0
-        && positive_thickness_transition_count == certified_transition_count
-        && positive_thickness_binding_sha256.is_some();
-    let layer_transport_certified = certified_transition_count > 0
-        && layer_transport_transition_count == certified_transition_count
-        && layer_transport_binding_sha256.is_some();
-    DyadicPoseGraphReadResponseV1 {
-        version: 1,
-        project_instance_id: project.instance_id,
-        project_id: project.project_id,
-        revision: project.editor.revision(),
-        status,
-        reason: match status {
-            "certified" if positive_thickness_certified && layer_transport_certified => {
-                "proof_complete"
-            }
-            "certified" => "no_certified_path",
-            "no_path" => "no_certified_path",
-            "resource_limit" => "bounded_resource_limit",
-            "cancelled" => "cancelled",
-            _ => "unsupported_geometry",
-        },
-        state_count,
-        transition_count,
-        explored_state_count,
-        evaluated_transition_count,
-        certified_transition_count,
-        certificate_binding_sha256,
-        positive_thickness_transition_count,
-        positive_thickness_certified,
-        positive_thickness_binding_sha256,
-        layer_transport_transition_count,
-        layer_transport_certified,
-        layer_transport_binding_sha256,
-        mutation_candidate_ready: positive_thickness_certified && layer_transport_certified,
-        authorizes_project_mutation: false,
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -6504,12 +6399,14 @@ mod tests {
         let limited_request = request(8);
         let live_request = request(32);
         let state = AppState::new(project);
-        let limited =
-            read_bounded_dyadic_pose_graph_inner_v1(&state, None, limited_request, None).unwrap();
+        let limited = read_bounded_dyadic_pose_graph_inner_v1(&state, None, limited_request, None)
+            .unwrap()
+            .into_test_view();
         assert_eq!(limited.status, "resource_limit");
         assert!(!limited.authorizes_project_mutation);
-        let observed =
-            read_bounded_dyadic_pose_graph_inner_v1(&state, None, live_request, None).unwrap();
+        let observed = read_bounded_dyadic_pose_graph_inner_v1(&state, None, live_request, None)
+            .unwrap()
+            .into_test_view();
         assert_eq!(observed.state_count, 9);
         assert_eq!(observed.transition_count, 24);
         assert_eq!(observed.status, "no_path");
@@ -6703,7 +6600,8 @@ mod tests {
                 request(levels, states, transitions),
                 None,
             )
-            .unwrap();
+            .unwrap()
+            .into_test_view();
             assert_eq!(limited.status, "resource_limit");
             assert!(!limited.mutation_candidate_ready);
         }
@@ -6713,7 +6611,8 @@ mod tests {
             request(3, 81, 432),
             None,
         )
-        .unwrap();
+        .unwrap()
+        .into_test_view();
         assert_eq!((observed.state_count, observed.transition_count), (81, 432));
         assert_eq!(
             observed.status,
@@ -6889,7 +6788,8 @@ mod tests {
                 request(levels, states, transitions, target_angles.clone()),
                 None,
             )
-            .unwrap();
+            .unwrap()
+            .into_test_view();
             assert_eq!(limited.status, "resource_limit");
             assert!(!limited.mutation_candidate_ready);
         }
@@ -6911,7 +6811,8 @@ mod tests {
             request(3, 243, 1_620, target_angles.clone()),
             None,
         )
-        .unwrap();
+        .unwrap()
+        .into_test_view();
         assert_eq!(
             (observed.state_count, observed.transition_count),
             (243, 1_620)
@@ -7092,7 +6993,8 @@ mod tests {
                 request(levels, states, transitions),
                 None,
             )
-            .unwrap();
+            .unwrap()
+            .into_test_view();
             assert_eq!(limited.status, "resource_limit");
             assert_eq!((limited.state_count, limited.transition_count), (0, 0));
         }
@@ -7102,7 +7004,8 @@ mod tests {
             request(3, 729, 5_832),
             None,
         )
-        .unwrap();
+        .unwrap()
+        .into_test_view();
         assert_eq!(
             (observed.state_count, observed.transition_count),
             (729, 5_832)
@@ -7269,7 +7172,8 @@ mod tests {
             request(None),
             None,
         )
-        .unwrap();
+        .unwrap()
+        .into_test_view();
         assert_eq!(generic.status, "certified");
         assert_eq!(
             (generic.state_count, generic.transition_count),
@@ -7436,7 +7340,8 @@ mod tests {
             request(None),
             None,
         )
-        .unwrap();
+        .unwrap()
+        .into_test_view();
         assert_eq!(generic.status, "resource_limit");
         assert_eq!((generic.state_count, generic.transition_count), (0, 0));
         assert!(!generic.mutation_candidate_ready);
@@ -7448,7 +7353,8 @@ mod tests {
             request(Some(schedule.clone())),
             None,
         )
-        .unwrap();
+        .unwrap()
+        .into_test_view();
         assert_eq!((observed.state_count, observed.transition_count), (3, 4));
         assert_eq!(observed.status, "certified");
         assert!(observed.mutation_candidate_ready);
@@ -7606,7 +7512,8 @@ mod tests {
             },
             None,
         )
-        .expect("non-graph capability returns a read-only DTO");
+        .expect("non-graph capability returns a read-only DTO")
+        .into_test_view();
         assert_eq!(observed.status, "unsupported");
         assert_eq!(observed.reason, "unsupported_geometry");
         assert_eq!(observed.state_count, 0);
@@ -10420,7 +10327,8 @@ mod tests {
             },
             None,
         )
-        .expect("concave read returns a fail-closed observation");
+        .expect("concave read returns a fail-closed observation")
+        .into_test_view();
         assert_eq!(observed.reason, "unsupported_geometry");
         assert!(!observed.mutation_candidate_ready);
         assert!(!observed.authorizes_project_mutation);
@@ -10508,7 +10416,8 @@ mod tests {
             },
             None,
         )
-        .expect("cut read returns a fail-closed observation");
+        .expect("cut read returns a fail-closed observation")
+        .into_test_view();
         assert_eq!(observed.reason, "unsupported_geometry");
         assert!(!observed.mutation_candidate_ready);
         assert!(!observed.authorizes_project_mutation);
@@ -10604,7 +10513,8 @@ mod tests {
             },
             None,
         )
-        .expect("hole read returns a fail-closed observation");
+        .expect("hole read returns a fail-closed observation")
+        .into_test_view();
         assert_eq!(observed.reason, "unsupported_geometry");
         assert!(!observed.mutation_candidate_ready);
         assert!(!observed.authorizes_project_mutation);
@@ -10699,7 +10609,8 @@ mod tests {
             },
             None,
         )
-        .expect("out-of-scope boundary returns a fail-closed observation");
+        .expect("out-of-scope boundary returns a fail-closed observation")
+        .into_test_view();
         assert_eq!(observed.status, "unsupported");
         assert_eq!(observed.reason, "unsupported_geometry");
         assert_eq!(observed.state_count, 0);
@@ -10994,7 +10905,8 @@ mod tests {
                 },
                 None,
             )
-            .unwrap_or_else(|error| panic!("{fixture_name} exact schedule dyadic read: {error}"));
+            .unwrap_or_else(|error| panic!("{fixture_name} exact schedule dyadic read: {error}"))
+            .into_test_view();
             assert_eq!(observed.status, "certified");
             assert_eq!(observed.state_count, 3);
             assert_eq!(observed.transition_count, 4);
@@ -12292,7 +12204,8 @@ mod tests {
                     request,
                     None,
                 )
-                .ok()?;
+                .ok()?
+                .into_test_view();
                 value
                     .mutation_candidate_ready
                     .then_some((schedule, target, value))

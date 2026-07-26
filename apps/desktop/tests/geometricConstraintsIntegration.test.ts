@@ -85,7 +85,10 @@ test('constraint commands use instance, document, and revision bindings end to e
     nativeTests,
     /fn geometric_constraint_gate_retains_queued_cancel_while_another_generation_is_active\(\)[\s\S]*?!gate\.cancel\(binding, queued_generation\)[\s\S]*?!active\.cancellation\.load\(Ordering::Acquire\)[\s\S]*?try_acquire\(binding, queued_generation\)[\s\S]*?queued\.cancellation\.load\(Ordering::Acquire\)/u,
   )
-  assert.match(app, /current\.project_instance_id[\s\S]*?response\.project_instance_id/u)
+  assert.match(
+    app,
+    /const current = latestSnapshotRef\.current[\s\S]*?!current[\s\S]*?matchesProjectOccGuard\(\{\s*expectedProjectInstanceId: response\.project_instance_id,\s*expectedProjectId: response\.project_id,\s*expectedRevision: response\.revision,\s*\}, current\)/u,
+  )
   assert.match(
     app,
     /latestSnapshotRef\.current !== current[\s\S]*?!isExpectedNativeEditSnapshot\(/u,

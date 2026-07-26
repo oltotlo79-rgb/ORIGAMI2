@@ -1,5 +1,4 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { listen } from '@tauri-apps/api/event'
 import {
   type CSSProperties,
   type FormEvent,
@@ -62,11 +61,9 @@ import {
   addRayToFirstTarget,
   addInstructionStep,
   addVertex,
-  appendGenericTreeInstructionProposal,
   analyzeGeometricConstraints,
   analyzeProjectTopology,
   applyGeometricConstraintSolve,
-  applyBeginnerGeneratedPlan,
   applyMirrorSelection,
   confirmLinearArray,
   confirmRadialArray,
@@ -77,16 +74,6 @@ import {
   connectTJunction,
   createProjectLayer,
   deleteProjectLayer,
-  evaluateBeginnerCandidates,
-  evaluateBeginnerParameterGrid,
-  applyBeginnerParameterGridCandidate,
-  getBeginnerParameterGridProgress,
-  cancelBeginnerParameterGrid,
-  cancelReferenceConsensus,
-  getBeginnerSymmetricParameterEstimate,
-  applyBeginnerSymmetricParameters,
-  recognizeBeginnerTarget,
-  recognizeBeginnerSilhouette,
   generateBenchmarkPattern,
   getProjectSnapshot as requestProjectSnapshot,
   isNativeCoreAvailable,
@@ -123,32 +110,10 @@ import {
   importUnderlayImage,
   updateProjectLayerPresentation,
   updateProjectMemo,
-  updateBeginnerDesignProfile,
-  updateBeginnerReferenceConsensus,
-  importBeginnerReferenceModel,
-  activateBeginnerReferenceModelAsset,
-  archiveBeginnerReferenceModelAsset,
-  recognizeBeginnerOutlineCandidates,
-  applyBeginnerOutlineCandidate,
-  recognizeBeginnerPartSuggestions,
-  applyBeginnerPartAssignments,
-  getBeginnerReferenceModelGeometry,
-  suggestBeginnerReferenceModelFeatures,
-  applyBeginnerReferenceModelFeatures,
   updatePaperProperties,
   importFrontPaperTexture,
   importBackPaperTexture,
   type ProjectSnapshot,
-  type BeginnerDesignProfileV1,
-  type BeginnerCandidateResponseV1,
-  type BeginnerGridEvaluationResponse,
-  type BeginnerSymmetricParameterEstimateResponse,
-  type BeginnerRecognitionProposalV1,
-  type BeginnerReferenceModelGeometry,
-  type BeginnerReferenceModelSuggestionV1,
-  type BeginnerOutlineCandidatesResponse,
-  type BeginnerPartSuggestionsResponse,
-  BeginnerRecognitionError,
   type MirrorSelectionPreflight,
   type MirrorSelectionRequest,
   type LinearArrayPreview,
@@ -161,7 +126,6 @@ import {
   type ElementMetadata,
   type ElementMetadataTarget,
   type ValidationSnapshot,
-  normalizeCustomObjectDisplayName,
   validateProject,
   proveCurrentAssignedLocalSufficiencyV1,
   type AssignedLocalSufficiencyResponseV1,
@@ -187,11 +151,6 @@ import {
   placementTouchesLockedLayer,
 } from './lib/projectLayerCanvasView'
 import { isExpectedNativeEditSnapshot } from './lib/projectSnapshotBinding'
-import {
-  finishBeginnerGridCancellation,
-  runBeginnerGridApplyWorkflow,
-} from './lib/beginnerGridWorkflow'
-import { analyzeGenericSkeletonTree } from './lib/genericSkeletonTree'
 import {
   cancelWindowClosePrepare,
   createWindowCloseHandshake,
@@ -310,6 +269,13 @@ import { useMeshAnimationExportWorkflow } from './lib/useMeshAnimationExportWork
 import { useInstructionExportWorkflow } from './lib/useInstructionExportWorkflow'
 import { useFoldImportWorkflow } from './lib/useFoldImportWorkflow'
 import { useSvgImportWorkflow } from './lib/useSvgImportWorkflow'
+import { useBeginnerEditorState } from './lib/useBeginnerEditorState'
+import { useBeginnerProfileWorkflow } from './lib/useBeginnerProfileWorkflow'
+import { useBeginnerCandidateWorkflow } from './lib/useBeginnerCandidateWorkflow'
+import { useBeginnerParameterGridWorkflow } from './lib/useBeginnerParameterGridWorkflow'
+import { useBeginnerReferenceWorkflow } from './lib/useBeginnerReferenceWorkflow'
+import { useBeginnerRecognitionWorkflow } from './lib/useBeginnerRecognitionWorkflow'
+import type { BeginnerNativeEditRunner } from './lib/beginnerWorkflowSupport'
 import {
   appConfirmationText,
   appErrorLocalizedText,
@@ -327,14 +293,13 @@ import {
   saveFoldTechniqueFileAsV1,
 } from './lib/foldTechniqueFileClient'
 import './App.css'
-import { CompleteAnimalBindingList } from './components/CompleteAnimalBindingList'
-import { CompleteInsectBindingList } from './components/CompleteInsectBindingList'
-import { GenericTargetBindingList } from './components/GenericTargetBindingList'
 import { ProtrusionDimensionEditor } from './components/ProtrusionDimensionEditor'
 import { GenericBodyOutlineEditor } from './components/GenericBodyOutlineEditor'
 import { BeginnerShapeCanvasPreview } from './components/BeginnerShapeCanvasPreview'
 import { RecognitionContourCopyAction } from './components/RecognitionContourCopyAction'
-import { BeginnerGridProgressStatus } from './components/BeginnerGridProgressStatus'
+import { BeginnerCandidateControls } from './components/BeginnerCandidateControls'
+import { BeginnerCandidateResults } from './components/BeginnerCandidateResults'
+import { BeginnerRecognitionPanel } from './components/BeginnerRecognitionPanel'
 import {
   formatBytes,
   lineKindLabel,
@@ -675,175 +640,6 @@ function App() {
   const [projectLayerDocumentInvalid, setProjectLayerDocumentInvalid] =
     useState(false)
   const [topologyResponse, setTopologyResponse] = useState<ProjectTopologyResponse | null>(null)
-  const [beginnerCandidates, setBeginnerCandidates] =
-    useState<BeginnerCandidateResponseV1 | null>(null)
-  const [beginnerCandidateBusy, setBeginnerCandidateBusy] = useState(false)
-  const [consensusProgress, setConsensusProgress] = useState({ processed_assets: 0, total_assets: 0, processed_pairs: 0, total_pairs: 0 })
-  const [selectedConsensusPair, setSelectedConsensusPair] = useState<string | null>(null)
-  const [consensusSelectionDraft, setConsensusSelectionDraft] = useState<Array<{ kind: 'image' | 'reference_model'; asset_id: string }>>([])
-  const [beginnerGrid, setBeginnerGrid] = useState<BeginnerGridEvaluationResponse | null>(null)
-  const [beginnerGridSelectedPointId, setBeginnerGridSelectedPointId] = useState<number | null>(null)
-  const [beginnerGridBusy, setBeginnerGridBusy] = useState(false)
-  const beginnerGridRequestRef = useRef(0)
-  const consensusGenerationRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (!isNativeCoreAvailable()) return undefined
-    let disposed = false
-    let unlisten: (() => void) | undefined
-    void listen<Record<string, unknown>>('reference-consensus-progress-v1', (event) => {
-      if (disposed || event.payload.request_generation_id !== consensusGenerationRef.current) return
-      const values = ['processed_assets', 'total_assets', 'processed_pairs', 'total_pairs'].map((key) => Number(event.payload[key]))
-      if (values.some((value) => !Number.isInteger(value) || value < 0 || value > 6)
-        || values[0] > values[1] || values[2] > values[3]) return
-      setConsensusProgress({ processed_assets: values[0], total_assets: values[1], processed_pairs: values[2], total_pairs: values[3] })
-    }).then((dispose) => { if (disposed) dispose(); else unlisten = dispose })
-      .catch(() => undefined)
-    return () => { disposed = true; unlisten?.() }
-  }, [])
-  const beginnerGridGenerationRef = useRef<string | null>(null)
-  const [beginnerGridProgress, setBeginnerGridProgress] = useState({ enumerated: 0, globalChecked: 0, refined: 0 })
-  useEffect(() => () => {
-    const generationId = beginnerGridGenerationRef.current
-    beginnerGridRequestRef.current += 1
-    if (generationId) void cancelBeginnerParameterGrid(generationId).catch(() => undefined)
-  }, [])
-  const [beginnerSymmetricEstimate, setBeginnerSymmetricEstimate] =
-    useState<BeginnerSymmetricParameterEstimateResponse | null>(null)
-  const [beginnerSymmetricScale, setBeginnerSymmetricScale] = useState(25)
-  const [beginnerSymmetricSpacing, setBeginnerSymmetricSpacing] = useState(35)
-  const [beginnerPartTotal, setBeginnerPartTotal] = useState(0)
-  const [beginnerSkeletonSegments, setBeginnerSkeletonSegments] =
-    useState<BeginnerDesignProfileV1['generation_constraints']['skeleton_segments']>([])
-  const [beginnerComponentBridgeOverride, setBeginnerComponentBridgeOverride] =
-    useState<BeginnerDesignProfileV1['generation_constraints']['component_bridge_override']>()
-  const beginnerSkeletonTree = analyzeGenericSkeletonTree(beginnerSkeletonSegments)
-  const [beginnerProtrusions, setBeginnerProtrusions] =
-    useState<NonNullable<BeginnerDesignProfileV1['generation_constraints']['protrusions']>>([])
-  const [beginnerBodyOutline, setBeginnerBodyOutline] = useState<Array<[number, number]>>([])
-  const [beginnerBodySize, setBeginnerBodySize] = useState<[number, number] | undefined>()
-  const [beginnerBodyOutlineMode, setBeginnerBodyOutlineMode] =
-    useState<'symmetric' | 'general'>('symmetric')
-  const [beginnerProtrusionKinds, setBeginnerProtrusionKinds] =
-    useState<Array<BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']>>([])
-  const [beginnerBulgeTargets, setBeginnerBulgeTargets] =
-    useState<NonNullable<BeginnerDesignProfileV1['generation_constraints']['bulge_targets']>>([])
-  const beginnerCandidateRequestRef = useRef(0)
-  const [beginnerRecognitionProposal, setBeginnerRecognitionProposal] =
-    useState<BeginnerRecognitionProposalV1 | null>(null)
-  const [acceptedRecognitionProtrusionIds, setAcceptedRecognitionProtrusionIds] =
-    useState<ReadonlySet<number>>(() => new Set())
-  const [beginnerRecognitionBusy, setBeginnerRecognitionBusy] = useState(false)
-  const [beginnerSilhouetteThresholds, setBeginnerSilhouetteThresholds] = useState<{
-    alpha: number; luma: number; polarity: 'dark_on_light' | 'light_on_dark' | 'alpha_only'
-  }>({ alpha: 128, luma: 127, polarity: 'dark_on_light' })
-  const [beginnerSilhouetteCropRoi, setBeginnerSilhouetteCropRoi] = useState<
-    BeginnerDesignProfileV1['generation_constraints']['silhouette_crop_roi']>()
-  const [beginnerSilhouetteOrientation, setBeginnerSilhouetteOrientation] = useState<0 | 90 | 180 | 270>(0)
-  const [beginnerSilhouetteMirror, setBeginnerSilhouetteMirror] = useState({
-    schema_version: 1 as const, mirror_x: false, mirror_y: false,
-  })
-  useEffect(() => {
-    const timeout = window.setTimeout(() => requestBeginnerRecognition('silhouette'), 300)
-    return () => window.clearTimeout(timeout)
-  }, [beginnerSilhouetteThresholds.alpha, beginnerSilhouetteThresholds.luma,
-    beginnerSilhouetteThresholds.polarity, beginnerSilhouetteCropRoi?.x_millionths,
-    beginnerSilhouetteCropRoi?.y_millionths, beginnerSilhouetteCropRoi?.width_millionths,
-    beginnerSilhouetteCropRoi?.height_millionths, beginnerSilhouetteOrientation,
-    beginnerSilhouetteMirror.mirror_x, beginnerSilhouetteMirror.mirror_y])
-  const beginnerRecognitionRequestRef = useRef(0)
-  const [beginnerOutlineCandidates, setBeginnerOutlineCandidates] =
-    useState<BeginnerOutlineCandidatesResponse | null>(null)
-  const [beginnerPartSuggestions, setBeginnerPartSuggestions] =
-    useState<BeginnerPartSuggestionsResponse | null>(null)
-  const [beginnerPartAssignments, setBeginnerPartAssignments] =
-    useState<Array<{
-      candidate_id: number
-      kind: BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']
-      source_candidate_ids?: number[]
-      split_fragment?: number
-      split_x?: number
-    }>>([])
-  const [excludedBeginnerPartAssignments, setExcludedBeginnerPartAssignments] =
-    useState<typeof beginnerPartAssignments>([])
-  const [beginnerReferenceGeometry, setBeginnerReferenceGeometry] =
-    useState<BeginnerReferenceModelGeometry | null>(null)
-  const [beginnerReferenceSuggestion, setBeginnerReferenceSuggestion] =
-    useState<BeginnerReferenceModelSuggestionV1 | null>(null)
-  const [beginnerSurfaceAssignments, setBeginnerSurfaceAssignments] = useState<Array<{
-    range_id: number
-    protrusion_id: number
-  }>>([])
-  const [beginnerSurfaceEdits, setBeginnerSurfaceEdits] = useState<Array<{
-    range_id: number
-    base_digest_sha256: readonly number[]
-    triangle_indices: number[]
-    bulge_direction_milli: [number, number, number]
-    bulge_amount_tenths_mm: number
-  }>>([])
-  const beginnerReferenceRequestRef = useRef(0)
-  const beginnerDesignFormRef = useRef<HTMLFormElement>(null)
-  useEffect(() => {
-    setBeginnerCandidates(null)
-    if (consensusGenerationRef.current) void cancelReferenceConsensus(consensusGenerationRef.current).catch(() => undefined)
-    consensusGenerationRef.current = null
-    setConsensusProgress({ processed_assets: 0, total_assets: 0, processed_pairs: 0, total_pairs: 0 })
-    setSelectedConsensusPair(null)
-    setConsensusSelectionDraft((nativeSnapshot?.beginner_design_profile.reference_consensus_v1?.bindings ?? [])
-      .map((binding) => ({ kind: binding.kind, asset_id: binding.asset_id })))
-    setBeginnerSymmetricEstimate(null)
-    beginnerRecognitionRequestRef.current += 1
-    setBeginnerRecognitionBusy(false)
-    setBeginnerRecognitionProposal(null)
-    setBeginnerSilhouetteThresholds(nativeSnapshot?.beginner_design_profile.generation_constraints
-      .silhouette_thresholds ?? { alpha: 128, luma: 127, polarity: 'dark_on_light' })
-    setBeginnerSilhouetteCropRoi(nativeSnapshot?.beginner_design_profile.generation_constraints
-      .silhouette_crop_roi)
-    setBeginnerSilhouetteOrientation(nativeSnapshot?.beginner_design_profile.generation_constraints
-      .silhouette_orientation_degrees ?? 0)
-    setBeginnerSilhouetteMirror(nativeSnapshot?.beginner_design_profile.generation_constraints
-      .silhouette_mirror ?? { schema_version: 1, mirror_x: false, mirror_y: false })
-    setBeginnerOutlineCandidates(null)
-    setBeginnerPartSuggestions(null)
-    setBeginnerPartAssignments([])
-    setExcludedBeginnerPartAssignments([])
-    beginnerReferenceRequestRef.current += 1
-    setBeginnerReferenceGeometry(null)
-    setBeginnerReferenceSuggestion(null)
-    setBeginnerSurfaceAssignments([])
-    setBeginnerPartTotal(
-      nativeSnapshot?.beginner_design_profile.generation_constraints.target_parts
-        .reduce((sum, part) => sum + part.count, 0) ?? 0,
-    )
-    setBeginnerSkeletonSegments(
-      nativeSnapshot?.beginner_design_profile.generation_constraints.skeleton_segments ?? [],
-    )
-    setBeginnerComponentBridgeOverride(
-      nativeSnapshot?.beginner_design_profile.generation_constraints.component_bridge_override,
-    )
-    setBeginnerProtrusions(
-      nativeSnapshot?.beginner_design_profile.generation_constraints.protrusions ?? [],
-    )
-    setBeginnerBodyOutline(
-      nativeSnapshot?.beginner_design_profile.generation_constraints.generic_body_outline_tenths_mm
-        ?.map((point) => [...point] as [number, number]) ?? [],
-    )
-    setBeginnerBodySize(nativeSnapshot?.beginner_design_profile.generation_constraints
-      .generic_body_size_tenths_mm
-      ? [...nativeSnapshot.beginner_design_profile.generation_constraints
-          .generic_body_size_tenths_mm] as [number, number] : undefined)
-    setBeginnerBodyOutlineMode(
-      nativeSnapshot?.beginner_design_profile.generation_constraints.generic_body_outline_mode
-        === 'general' ? 'general' : 'symmetric',
-    )
-    setBeginnerProtrusionKinds(
-      nativeSnapshot?.beginner_design_profile.generation_constraints.target_parts
-        .filter((part) => part.kind !== 'head' && part.kind !== 'torso')
-        .map((part) => part.kind) ?? [],
-    )
-    setBeginnerBulgeTargets(
-      nativeSnapshot?.beginner_design_profile.generation_constraints.bulge_targets ?? [],
-    )
-  }, [nativeSnapshot?.project_instance_id, nativeSnapshot?.revision])
   const [topologyStatusMessage, setTopologyStatus] = useState<AppMessage>(
     () => isNativeCoreAvailable()
       ? appMessage(APP_TEXT.waitingForFaceAndHingeAnalysis)
@@ -943,7 +739,10 @@ function App() {
   const benchmarkRequestIdRef = useRef(0)
   const topologyRequestIdRef = useRef(0)
   const diagnosticsButtonRef = useRef<HTMLButtonElement>(null)
-  const beginnerGridButtonRef = useRef<HTMLButtonElement>(null)
+  const beginnerNativeEditRef = useRef<BeginnerNativeEditRunner>(
+    async () => false,
+  )
+  const invalidateBeginnerGridRef = useRef<() => void>(() => undefined)
   const foldTechniqueWorkspaceRef = useRef<FoldTechniqueWorkspace | null>(
     foldTechniqueWorkspace,
   )
@@ -1069,6 +868,199 @@ function App() {
   appliedFoldPoseRef.current = appliedFoldPose
   foldTechniqueWorkspaceRef.current = foldTechniqueWorkspace
   foldTechniqueBusyRef.current = foldTechniqueBusy
+  const runBeginnerNativeEdit = useCallback<BeginnerNativeEditRunner>(
+    (action) => beginnerNativeEditRef.current(action),
+    [],
+  )
+  const {
+    beginnerDesignFormRef,
+    beginnerPartTotal,
+    setBeginnerPartTotal,
+    beginnerSkeletonSegments,
+    setBeginnerSkeletonSegments,
+    beginnerSkeletonTree,
+    beginnerComponentBridgeOverride,
+    setBeginnerComponentBridgeOverride,
+    beginnerProtrusions,
+    setBeginnerProtrusions,
+    beginnerBodyOutline,
+    setBeginnerBodyOutline,
+    beginnerBodySize,
+    setBeginnerBodySize,
+    beginnerBodyOutlineMode,
+    setBeginnerBodyOutlineMode,
+    beginnerProtrusionKinds,
+    setBeginnerProtrusionKinds,
+    beginnerBulgeTargets,
+    setBeginnerBulgeTargets,
+    addBeginnerSkeletonSegment,
+    addBeginnerProtrusion,
+    createEmptyGenericTarget,
+    addBeginnerBulgeTarget,
+  } = useBeginnerEditorState({
+    snapshot: nativeSnapshot,
+    getCurrentSnapshot: () => latestSnapshotRef.current,
+    getSelectedFaceId: () => selectedFaceId,
+  })
+  const beginnerCandidateWorkflow = useBeginnerCandidateWorkflow({
+    snapshot: nativeSnapshot,
+    getCurrentSnapshot: () => latestSnapshotRef.current,
+    runNativeEdit: runBeginnerNativeEdit,
+    confirm: (message) => window.confirm(text(message)),
+    copy: {
+      applyPlan: APP_TEXT.applyThisCandidateToTheCreasePatternAndInstructionsYou,
+      saveSymmetric:
+        APP_TEXT.saveTheAdjustedSymmetricParametersThisDoesNotStartGeneration,
+      appendInstructions:
+        APP_TEXT.appendThisReviewedReadOnlyProposalToTheInstructionsIt,
+    },
+    consensusProgressEnabled: isNativeCoreAvailable(),
+  })
+  const {
+    beginnerCandidateBusy,
+    consensusSelectionDraft,
+    cancelBeginnerCandidates,
+    toggleConsensusReference,
+    saveConsensusReferences,
+    confirmAndAppendGenericTreeInstructions,
+  } = beginnerCandidateWorkflow
+  const beginnerGridWorkflow = useBeginnerParameterGridWorkflow({
+    getCurrentSnapshot: () => latestSnapshotRef.current,
+    skeletonTreeStatus: beginnerSkeletonTree.status,
+    runNativeEdit: runBeginnerNativeEdit,
+    confirm: (message) => window.confirm(text(message)),
+    applyConfirmation:
+      APP_TEXT.revalidateThisDesignSGridGeometryAndGlobalProofThen,
+  })
+  const { invalidateBeginnerGridForProjectReplacement } =
+    beginnerGridWorkflow
+  invalidateBeginnerGridRef.current =
+    invalidateBeginnerGridForProjectReplacement
+  const {
+    beginnerReferenceGeometry,
+    beginnerReferenceSuggestion,
+    beginnerSurfaceAssignments,
+    setBeginnerSurfaceAssignments,
+    beginnerSurfaceEdits,
+    setBeginnerSurfaceEdits,
+    requestBeginnerReferenceModelImport,
+    activateBeginnerReferenceAsset,
+    archiveBeginnerReferenceAsset,
+    toggleBeginnerReferenceModelPreview,
+    requestBeginnerReferenceSuggestion,
+    confirmBeginnerReferenceSuggestion,
+    copyBeginnerReferenceContours,
+    copyBeginnerGeneralReferenceTarget,
+  } = useBeginnerReferenceWorkflow({
+    snapshot: nativeSnapshot,
+    getCurrentSnapshot: () => latestSnapshotRef.current,
+    runNativeEdit: runBeginnerNativeEdit,
+    confirm: (message) => window.confirm(text(message)),
+    copy: {
+      applySuggestion:
+        APP_TEXT.applyThisMeasuredCandidateBoundingBoxAreaAndNormalsProvide,
+      copyEstimatedBridges:
+        APP_TEXT.bridgesBetweenDisconnected3DComponentsAreEstimatedCopyToA,
+    },
+    editor: {
+      beginnerDesignFormRef,
+      setBeginnerBodyOutline,
+      setBeginnerBodyOutlineMode,
+      setBeginnerProtrusions,
+      setBeginnerSkeletonSegments,
+      setBeginnerComponentBridgeOverride,
+    },
+  })
+  const beginnerRecognitionWorkflow = useBeginnerRecognitionWorkflow({
+    snapshot: nativeSnapshot,
+    getCurrentSnapshot: () => latestSnapshotRef.current,
+    operationBlocked: () => (
+      coreOperationRef.current || recoveryBlockingRef.current
+    ),
+    runNativeEdit: runBeginnerNativeEdit,
+    confirm: (message) => window.confirm(text(message)),
+    copy: {
+      copyOutline:
+        APP_TEXT.copyThisOutlineIntoTheEditableTargetSkeletonThisDoes,
+      applyParts:
+        APP_TEXT.applyTheExplicitPartAssignmentsToTargetPartsThisDoes,
+      copyProposal:
+        APP_TEXT.copyThisRecognitionProposalIntoTheEditorTheProjectStays,
+      overrideLowConfidence:
+        APP_TEXT.thisContourProposalHasLowConfidenceOverrideAfterReviewingIts,
+    },
+    editor: {
+      beginnerDesignFormRef,
+      setBeginnerPartTotal,
+      setBeginnerSkeletonSegments,
+      setBeginnerBodyOutline,
+      setBeginnerBodyOutlineMode,
+      setBeginnerProtrusions,
+    },
+    onMissingReference: () => {
+      setCoreStatus(appMessage(APP_TEXT.selectAReferenceImageToRecognize))
+    },
+    onRecognitionReady: (mode) => {
+      setCoreStatus(appMessage({
+        ja: mode === 'silhouette'
+          ? '\u8f2a\u90ed\u753b\u50cf\u306e\u8a8d\u8b58\u6848\u3092\u4f5c\u6210\u3057\u307e\u3057\u305f\u3002\u307e\u3060\u4fdd\u5b58\u3055\u308c\u3066\u3044\u307e\u305b\u3093\u3002'
+          : '\u30de\u30fc\u30ab\u30fcPNG\u306e\u8a8d\u8b58\u6848\u3092\u4f5c\u6210\u3057\u307e\u3057\u305f\u3002\u307e\u3060\u4fdd\u5b58\u3055\u308c\u3066\u3044\u307e\u305b\u3093\u3002',
+        en: mode === 'silhouette'
+          ? 'Created a silhouette proposal. It has not been saved.'
+          : 'Created a marker PNG proposal. It has not been saved.',
+      }))
+    },
+    onRecognitionFailure: (reason) => {
+      setCoreStatus(appMessage({
+        ja: reason === 'ambiguous_silhouette'
+          ? '\u8f2a\u90ed\u304c\u8907\u6570\u307e\u305f\u306f\u4e0d\u660e\u77ad\u306a\u305f\u3081\u8a8d\u8b58\u3092\u62d2\u5426\u3057\u307e\u3057\u305f\u3002'
+          : reason === 'resource_limit'
+            ? '\u753b\u50cf\u304c\u8a8d\u8b58\u306e\u8cc7\u6e90\u4e0a\u9650\u3092\u8d85\u3048\u3066\u3044\u307e\u3059\u3002'
+            : reason === 'unsupported_silhouette'
+              ? '\u8f2a\u90ed\u753b\u50cf\u306f\u900f\u660e\u80cc\u666f\u3068\u5b8c\u5168\u306a\u9ed2\u306e\u5358\u4e00\u5f62\u72b6\u306b\u3057\u3066\u304f\u3060\u3055\u3044\u3002'
+              : '\u753b\u50cf\u3092\u5b89\u5168\u306b\u8a8d\u8b58\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f\u3002',
+        en: reason === 'ambiguous_silhouette'
+          ? 'Recognition was rejected because the silhouette is ambiguous or disconnected.'
+          : reason === 'resource_limit'
+            ? 'The image exceeds the recognition resource limit.'
+            : reason === 'unsupported_silhouette'
+              ? 'Use one solid black silhouette on a transparent background.'
+              : 'The image could not be recognized safely.',
+      }))
+    },
+    onProposalCopied: () => {
+      setCoreStatus(appMessage(
+        APP_TEXT.copiedTheProposalIntoTheEditorSaveItToAdd,
+      ))
+    },
+  })
+  const {
+    beginnerRecognitionProposal,
+    beginnerRecognitionBusy,
+    beginnerSilhouetteThresholds,
+    beginnerSilhouetteCropRoi,
+    beginnerSilhouetteOrientation,
+    beginnerSilhouetteMirror,
+    invalidateBeginnerRecognition,
+  } = beginnerRecognitionWorkflow
+  const { submitBeginnerDesignProfile } = useBeginnerProfileWorkflow({
+    getCurrentSnapshot: () => latestSnapshotRef.current,
+    runNativeEdit: runBeginnerNativeEdit,
+    editor: {
+      beginnerBodyOutline,
+      beginnerBodyOutlineMode,
+      beginnerSkeletonSegments,
+      beginnerComponentBridgeOverride,
+      beginnerProtrusions,
+      beginnerProtrusionKinds,
+      beginnerBulgeTargets,
+    },
+    recognitionProposal: beginnerRecognitionProposal,
+    silhouetteThresholds: beginnerSilhouetteThresholds,
+    silhouetteCropRoi: beginnerSilhouetteCropRoi,
+    silhouetteOrientation: beginnerSilhouetteOrientation,
+    silhouetteMirror: beginnerSilhouetteMirror,
+  })
   const replaceFoldTechniqueWorkspace = useCallback((
     workspace: FoldTechniqueWorkspace,
   ) => {
@@ -1195,12 +1187,7 @@ function App() {
       expectedProjectId: admittedSnapshot.project_id,
       expectedRevision: admittedSnapshot.revision,
     }, priorSnapshot)) {
-      const gridGeneration = beginnerGridGenerationRef.current
-      beginnerGridRequestRef.current += 1
-      beginnerGridGenerationRef.current = null
-      if (gridGeneration) void cancelBeginnerParameterGrid(gridGeneration).catch(() => undefined)
-      setBeginnerGridBusy(false)
-      setBeginnerGrid(null)
+      invalidateBeginnerGridRef.current()
     }
     latestSnapshotRef.current = admittedSnapshot
     globalFlatFoldabilityCoordinatorRef.current?.invalidate({
@@ -2317,6 +2304,7 @@ function App() {
       setCoreBusy(false)
     }
   }, [applySnapshot])
+  beginnerNativeEditRef.current = runNativeEdit
 
   const {
     preview: foldTechniqueTimelinePreview,
@@ -2367,7 +2355,7 @@ function App() {
     } finally {
       setBulkIntersectionRepairPending(false)
     }
-  }, [bulkIntersectionRepairPending, runNativeEdit, text, unsplitIntersectionCount])
+  }, [bulkIntersectionRepairPending, runNativeEdit, unsplitIntersectionCount])
 
   function addCurrentToMirrorSelection() {
     setMirrorPreview(null)
@@ -3743,784 +3731,6 @@ function App() {
     }
     void runNativeEdit((projectId, revision, projectInstanceId) =>
       updateProjectMemo(projectId, revision, projectInstanceId, memo))
-  }
-
-  function submitBeginnerDesignProfile(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const current = latestSnapshotRef.current
-    if (!current) return
-    const data = new FormData(event.currentTarget)
-    const preset = String(data.get('design_preset'))
-    const maximumSteps = Number(data.get('maximum_steps'))
-    const detailLevel = String(data.get('detail_level'))
-    const targetCategory = String(data.get('target_category'))
-    const effectiveTargetCategory = beginnerRecognitionProposal?.skeleton_quality?.distance_metric
-      === 'aabb_squared_distance_v1' ? 'custom_object' : targetCategory
-    const customObjectDisplayName = effectiveTargetCategory === 'custom_object'
-      ? normalizeCustomObjectDisplayName(String(data.get('custom_object_display_name') ?? ''))
-      : null
-    const bodyWidthRaw = String(data.get('generic_body_width_mm') ?? '').trim()
-    const bodyHeightRaw = String(data.get('generic_body_height_mm') ?? '').trim()
-    const bodySize = bodyWidthRaw === '' && bodyHeightRaw === ''
-      ? undefined
-      : [Math.round(Number(bodyWidthRaw) * 10), Math.round(Number(bodyHeightRaw) * 10)] as [number, number]
-    const targetUnderlayId = String(data.get('target_reference_underlay'))
-    const targetUnderlay = current.underlays?.underlays
-      .find((underlay) => underlay.id === targetUnderlayId)
-    const formTargetParts = ([
-      'head', 'torso', 'leg', 'horn', 'ear', 'wing', 'fin', 'antenna', 'tail',
-    ] as const).map((kind) => ({
-      kind,
-      count: Number(data.get(`target_part_${kind}`)),
-    })).filter((part) => part.count > 0)
-    const targetParts = beginnerProtrusions.length >= 2
-      && beginnerProtrusionKinds.length === beginnerProtrusions.length
-      ? [
-          ...formTargetParts.filter((part) => part.kind === 'head' || part.kind === 'torso'),
-          ...beginnerProtrusions.map((target, index) => ({
-            kind: beginnerProtrusionKinds[index]!, count: target.count,
-          })),
-        ]
-      : formTargetParts
-    const allowedTechniques = data.getAll('allowed_techniques').map(String)
-    const generationConstraints = {
-      schema_version: 1 as const,
-      maximum_steps: maximumSteps,
-      detail_level: detailLevel as 'simple' | 'standard' | 'detailed',
-      ...(bodySize === undefined ? {} : { generic_body_size_tenths_mm: bodySize }),
-      ...(beginnerBodyOutline.length === 0 ? {} : {
-        generic_body_outline_tenths_mm: beginnerBodyOutline,
-      }),
-      generic_body_outline_mode: beginnerBodyOutlineMode,
-      target_category: effectiveTargetCategory as 'animal' | 'insect' | 'custom_object',
-      ...(effectiveTargetCategory === 'custom_object' && customObjectDisplayName !== null
-        ? { custom_object_display_name: customObjectDisplayName } : {}),
-      target_parts: targetParts,
-      skeleton_segments: beginnerSkeletonSegments,
-      ...(beginnerComponentBridgeOverride ? { component_bridge_override: beginnerComponentBridgeOverride } : {}),
-      silhouette_thresholds: { schema_version: 1 as const, ...beginnerSilhouetteThresholds },
-      ...(beginnerSilhouetteCropRoi ? { silhouette_crop_roi: beginnerSilhouetteCropRoi } : {}),
-      silhouette_orientation_degrees: beginnerSilhouetteOrientation,
-      silhouette_mirror: beginnerSilhouetteMirror,
-      protrusions: beginnerProtrusions,
-      bulge_targets: beginnerBulgeTargets,
-      target_asset: targetUnderlay
-        ? {
-            kind: 'reference_image' as const,
-            underlay_id: targetUnderlay.id,
-            asset_id: targetUnderlay.asset,
-          }
-        : current.beginner_design_profile.generation_constraints.target_asset?.kind
-            === 'reference_model'
-          ? current.beginner_design_profile.generation_constraints.target_asset
-          : null,
-      allowed_techniques: allowedTechniques as BeginnerDesignProfileV1['generation_constraints']['allowed_techniques'],
-    }
-    if (
-      !Number.isInteger(maximumSteps)
-      || maximumSteps < 1
-      || maximumSteps > 500
-      || !['simple', 'standard', 'detailed'].includes(detailLevel)
-      || !['animal', 'insect', 'custom_object'].includes(targetCategory)
-      || (effectiveTargetCategory === 'custom_object' && customObjectDisplayName === null)
-      || (bodySize !== undefined && bodySize.some((axis) =>
-        !Number.isInteger(axis) || axis < 1 || axis > 1_000_000))
-      || (beginnerBodyOutline.length !== 0
-        && (beginnerBodyOutline.length < 4 || beginnerBodyOutline.length > 16))
-      || (targetUnderlayId !== '' && !targetUnderlay)
-      || targetParts.some((part) => !Number.isInteger(part.count) || part.count > 8)
-      || targetParts.reduce((sum, part) => sum + part.count, 0) > 32
-      || allowedTechniques.length < 1
-      || allowedTechniques.length > 8
-      || new Set(allowedTechniques).size !== allowedTechniques.length
-    ) return
-    const profile: BeginnerDesignProfileV1 | null = preset === 'shape_priority'
-      ? {
-          schema_version: 1,
-          preset,
-          shape_fidelity_weight: 60,
-          foldability_weight: 20,
-          step_count_weight: 10,
-          paper_efficiency_weight: 10,
-          generation_constraints: generationConstraints,
-        }
-      : preset === 'foldability_priority'
-        ? {
-            schema_version: 1,
-            preset,
-            shape_fidelity_weight: 20,
-            foldability_weight: 60,
-            step_count_weight: 10,
-            paper_efficiency_weight: 10,
-            generation_constraints: generationConstraints,
-          }
-        : preset === 'balanced'
-          ? {
-              schema_version: 1,
-              preset,
-              shape_fidelity_weight: 35,
-              foldability_weight: 35,
-              step_count_weight: 15,
-              paper_efficiency_weight: 15,
-              generation_constraints: generationConstraints,
-            }
-          : null
-    if (!profile) return
-    void runNativeEdit((projectId, revision, projectInstanceId) =>
-      updateBeginnerDesignProfile(
-        projectId,
-        revision,
-        projectInstanceId,
-        profile,
-      ))
-  }
-
-  function requestBeginnerReferenceModelImport() {
-    void runNativeEdit((projectId, revision, projectInstanceId) =>
-      importBeginnerReferenceModel(projectId, revision, projectInstanceId))
-  }
-
-  function activateBeginnerReferenceAsset(assetId: string) {
-    void runNativeEdit((projectId, revision, projectInstanceId) =>
-      activateBeginnerReferenceModelAsset(projectId, revision, projectInstanceId, assetId))
-  }
-
-  function archiveBeginnerReferenceAsset(assetId: string, archived: boolean) {
-    void runNativeEdit((projectId, revision, projectInstanceId) =>
-      archiveBeginnerReferenceModelAsset(projectId, revision, projectInstanceId, assetId, archived))
-  }
-
-  function excludeBeginnerConsensusAsset(assetId: string | null) {
-    const current = latestSnapshotRef.current
-    const consensus = current?.beginner_design_profile.reference_consensus_v1
-    if (!current || !consensus || (assetId !== null && !consensus.bindings.some((binding) => binding.asset_id === assetId))) return
-    const profile = {
-      ...current.beginner_design_profile,
-      reference_consensus_v1: {
-        ...consensus,
-        ...(assetId === null ? { excluded_asset_id: undefined } : { excluded_asset_id: assetId }),
-      },
-    }
-    void runNativeEdit((projectId, revision, projectInstanceId) =>
-      updateBeginnerDesignProfile(projectId, revision, projectInstanceId, profile))
-  }
-
-  function toggleConsensusReference(kind: 'image' | 'reference_model', assetId: string) {
-    setConsensusSelectionDraft((current) => {
-      const exists = current.some((selection) => selection.asset_id === assetId)
-      if (exists) return current.filter((selection) => selection.asset_id !== assetId)
-      if (current.length >= 4) return current
-      return [...current, { kind, asset_id: assetId }]
-    })
-  }
-
-  function saveConsensusReferences() {
-    if (consensusSelectionDraft.length < 2 || consensusSelectionDraft.length > 4) return
-    const canonical = [...consensusSelectionDraft].sort((left, right) => left.asset_id.localeCompare(right.asset_id))
-    void runNativeEdit((projectId, revision, projectInstanceId) =>
-      updateBeginnerReferenceConsensus(projectId, revision, projectInstanceId, canonical))
-  }
-
-  function toggleBeginnerReferenceModelPreview() {
-    if (beginnerReferenceGeometry) {
-      beginnerReferenceRequestRef.current += 1
-      setBeginnerReferenceGeometry(null)
-      return
-    }
-    const current = latestSnapshotRef.current
-    if (!current) return
-    const request = ++beginnerReferenceRequestRef.current
-    void getBeginnerReferenceModelGeometry(
-      current.project_id,
-      current.revision,
-      current.project_instance_id,
-    ).then((geometry) => {
-      const latest = latestSnapshotRef.current
-      if (request === beginnerReferenceRequestRef.current
-        && latest?.project_id === geometry.project_id
-        && latest.project_instance_id === geometry.project_instance_id
-        && latest.revision === geometry.revision) {
-        setBeginnerReferenceGeometry(geometry)
-      }
-    }).catch(() => {
-      if (request === beginnerReferenceRequestRef.current) setBeginnerReferenceGeometry(null)
-    })
-  }
-
-  function requestBeginnerReferenceSuggestion() {
-    const current = latestSnapshotRef.current
-    if (!current) return
-    void suggestBeginnerReferenceModelFeatures(
-      current.project_id, current.revision, current.project_instance_id,
-    ).then((suggestion) => {
-      if (latestSnapshotRef.current === current) {
-        setBeginnerReferenceSuggestion(suggestion)
-        setBeginnerSurfaceAssignments([])
-        setBeginnerSurfaceEdits(suggestion.surface_ranges.map((range) => ({
-          range_id: range.id, base_digest_sha256: range.digest_sha256,
-          triangle_indices: [...range.triangle_indices],
-          bulge_direction_milli: [0, 0, 1000], bulge_amount_tenths_mm: 50,
-        })))
-      }
-    })
-  }
-
-  function confirmBeginnerReferenceSuggestion() {
-    const current = latestSnapshotRef.current
-    const suggestion = beginnerReferenceSuggestion
-    if (!current || !suggestion || beginnerSurfaceAssignments.length < 2
-      || !window.confirm(text(APP_TEXT.applyThisMeasuredCandidateBoundingBoxAreaAndNormalsProvide))) return
-    void runNativeEdit((projectId, revision, projectInstanceId) =>
-      applyBeginnerReferenceModelFeatures(
-        projectId, revision, projectInstanceId, suggestion,
-        [...beginnerSurfaceAssignments].sort((left, right) => left.range_id - right.range_id),
-        beginnerSurfaceEdits.filter((edit) => beginnerSurfaceAssignments.some(
-          (assignment) => assignment.range_id === edit.range_id,
-        )).sort((left, right) => left.range_id - right.range_id),
-      )).finally(() => setBeginnerReferenceSuggestion(null))
-  }
-
-  function copyBeginnerReferenceContours() {
-    const suggestion = beginnerReferenceSuggestion
-    const current = latestSnapshotRef.current
-    const targetAsset = current?.beginner_design_profile.generation_constraints.target_asset
-    if (!suggestion || !current || targetAsset?.kind !== 'reference_model'
-      || targetAsset.asset_id !== suggestion.asset_id) return
-    if (suggestion.generic_body_outline_tenths_mm) {
-      setBeginnerBodyOutline(suggestion.generic_body_outline_tenths_mm.map(
-        (point) => [...point] as [number, number]))
-      setBeginnerBodyOutlineMode(suggestion.generic_body_outline_mode === 'general' ? 'general' : 'symmetric')
-    }
-    setBeginnerProtrusions(suggestion.protrusions.map((target) => ({
-      ...target,
-      ...(target.local_outline_tenths_mm ? {
-        local_outline_tenths_mm: target.local_outline_tenths_mm.map(
-          (point) => [...point] as [number, number]),
-      } : {}),
-    })))
-  }
-
-  function copyBeginnerGeneralReferenceTarget() {
-    const suggestion = beginnerReferenceSuggestion
-    const targetAsset = latestSnapshotRef.current?.beginner_design_profile.generation_constraints.target_asset
-    if (!suggestion || targetAsset?.kind !== 'reference_model' || targetAsset.asset_id !== suggestion.asset_id) return
-    if (suggestion.inferred_component_bridges && !window.confirm(text(APP_TEXT.bridgesBetweenDisconnected3DComponentsAreEstimatedCopyToA))) return
-    if (suggestion.inferred_component_bridges) {
-      const category = beginnerDesignFormRef.current?.elements.namedItem('target_category')
-      if (category instanceof HTMLSelectElement) category.value = 'custom_object'
-      setBeginnerComponentBridgeOverride({
-        schema_version: 1,
-        source_asset_sha256: suggestion.source_asset_sha256.slice(),
-        component_count: suggestion.component_count,
-        reviewed: true,
-        bridges: Array.from({ length: suggestion.component_count - 1 }, (_, id) => ({
-          id, start_component_id: id, end_component_id: id + 1, accepted: true,
-        })),
-      })
-    }
-    setBeginnerProtrusions(suggestion.general_protrusion_candidates.map((target) => ({ ...target })))
-    setBeginnerSkeletonSegments(suggestion.stick_bars.filter((bar) =>
-      bar.start_tenths_mm[0] !== bar.end_tenths_mm[0]
-        || bar.start_tenths_mm[1] !== bar.end_tenths_mm[1]).map((bar, index) => ({
-      id: index,
-      start: { x_tenths_mm: bar.start_tenths_mm[0], y_tenths_mm: bar.start_tenths_mm[1] },
-      end: { x_tenths_mm: bar.end_tenths_mm[0], y_tenths_mm: bar.end_tenths_mm[1] },
-      thickness_tenths_mm: bar.thickness_tenths_mm,
-    })))
-  }
-
-  function invalidateBeginnerRecognition() {
-    beginnerRecognitionRequestRef.current += 1
-    setBeginnerRecognitionBusy(false)
-    setBeginnerRecognitionProposal(null)
-  }
-
-  function requestBeginnerRecognition(mode: 'marker' | 'silhouette' = 'marker') {
-    const current = latestSnapshotRef.current
-    const form = beginnerDesignFormRef.current
-    if (!current || !form || beginnerRecognitionBusy || coreBusy || recoveryBlocking) return
-    const underlayId = String(new FormData(form).get('target_reference_underlay') ?? '')
-    const underlay = current.underlays?.underlays.find((item) => item.id === underlayId)
-    if (!underlay) {
-      setCoreStatus(appMessage(APP_TEXT.selectAReferenceImageToRecognize))
-      return
-    }
-    const requestId = ++beginnerRecognitionRequestRef.current
-    const binding = {
-      instanceId: current.project_instance_id,
-      projectId: current.project_id,
-      revision: current.revision,
-    }
-    setBeginnerRecognitionBusy(true)
-    setBeginnerRecognitionProposal(null)
-    const recognition = mode === 'silhouette' ? recognizeBeginnerSilhouette(
-      binding.projectId,
-      binding.revision,
-      binding.instanceId,
-      underlay.id,
-      underlay.asset,
-      { ...beginnerSilhouetteThresholds, crop_roi: beginnerSilhouetteCropRoi,
-        orientation_degrees: beginnerSilhouetteOrientation, mirror: beginnerSilhouetteMirror },
-    ) : recognizeBeginnerTarget(binding.projectId, binding.revision, binding.instanceId,
-      underlay.id, underlay.asset)
-    void recognition.then((proposal) => {
-      const latest = latestSnapshotRef.current
-      if (requestId !== beginnerRecognitionRequestRef.current
-        || !latest
-        || !matchesProjectOccGuard({
-          expectedProjectInstanceId: binding.instanceId,
-          expectedProjectId: binding.projectId,
-          expectedRevision: binding.revision,
-        }, latest)) return
-      setBeginnerRecognitionProposal(proposal)
-      setAcceptedRecognitionProtrusionIds(new Set(proposal.protrusions?.map((target) => target.id) ?? []))
-      setCoreStatus(appMessage({
-        ja: mode === 'silhouette'
-          ? '輪郭画像の認識案を作成しました。まだ保存されていません。'
-          : 'マーカーPNGの認識案を作成しました。まだ保存されていません。',
-        en: mode === 'silhouette'
-          ? 'Created a silhouette proposal. It has not been saved.'
-          : 'Created a marker PNG proposal. It has not been saved.',
-      }))
-    }).catch((error: unknown) => {
-      if (requestId !== beginnerRecognitionRequestRef.current) return
-      const reason = error instanceof BeginnerRecognitionError ? error.reason : 'native_failure'
-      setCoreStatus(appMessage({
-        ja: reason === 'ambiguous_silhouette'
-          ? '輪郭が複数または不明瞭なため認識を拒否しました。'
-          : reason === 'resource_limit'
-            ? '画像が認識の資源上限を超えています。'
-            : reason === 'unsupported_silhouette'
-              ? '輪郭画像は透明背景と完全な黒の単一形状にしてください。'
-              : '画像を安全に認識できませんでした。',
-        en: reason === 'ambiguous_silhouette'
-          ? 'Recognition was rejected because the silhouette is ambiguous or disconnected.'
-          : reason === 'resource_limit'
-            ? 'The image exceeds the recognition resource limit.'
-            : reason === 'unsupported_silhouette'
-              ? 'Use one solid black silhouette on a transparent background.'
-              : 'The image could not be recognized safely.',
-      }))
-    }).finally(() => {
-      if (requestId === beginnerRecognitionRequestRef.current) setBeginnerRecognitionBusy(false)
-    })
-  }
-
-  function requestBeginnerOutlineCandidates() {
-    const current = latestSnapshotRef.current
-    const form = beginnerDesignFormRef.current
-    if (!current || !form || beginnerRecognitionBusy || coreBusy || recoveryBlocking) return
-    const underlayId = String(new FormData(form).get('target_reference_underlay') ?? '')
-    const underlay = current.underlays?.underlays.find((item) => item.id === underlayId)
-    if (!underlay) return
-    const requestId = ++beginnerRecognitionRequestRef.current
-    setBeginnerRecognitionBusy(true)
-    setBeginnerOutlineCandidates(null)
-    void recognizeBeginnerOutlineCandidates(
-      current.project_id, current.revision, current.project_instance_id,
-      underlay.id, underlay.asset,
-    ).then((proposal) => {
-      const latest = latestSnapshotRef.current
-      if (requestId === beginnerRecognitionRequestRef.current
-        && latest
-        && matchesProjectOccGuard({
-          expectedProjectInstanceId: proposal.project_instance_id,
-          expectedProjectId: proposal.project_id,
-          expectedRevision: proposal.revision,
-        }, latest)) {
-        setBeginnerOutlineCandidates(proposal)
-      }
-    }).catch(() => {
-      if (requestId === beginnerRecognitionRequestRef.current) setBeginnerOutlineCandidates(null)
-    }).finally(() => {
-      if (requestId === beginnerRecognitionRequestRef.current) setBeginnerRecognitionBusy(false)
-    })
-  }
-
-  function copyBeginnerOutlineCandidate(
-    candidate: BeginnerOutlineCandidatesResponse['candidates'][number],
-  ) {
-    const proposal = beginnerOutlineCandidates
-    if (!proposal || !window.confirm(text(APP_TEXT.copyThisOutlineIntoTheEditableTargetSkeletonThisDoes))) return
-    void runNativeEdit(() => applyBeginnerOutlineCandidate(proposal, candidate, true))
-      .then(() => setBeginnerOutlineCandidates(null))
-  }
-
-  function requestBeginnerPartSuggestions(candidate: BeginnerOutlineCandidatesResponse['candidates'][number]) {
-    const outline = beginnerOutlineCandidates
-    if (!outline) return
-    void recognizeBeginnerPartSuggestions(outline, candidate).then((proposal) => {
-      const latest = latestSnapshotRef.current
-      if (latest && matchesProjectOccGuard({
-        expectedProjectInstanceId: proposal.project_instance_id,
-        expectedProjectId: proposal.project_id,
-        expectedRevision: proposal.revision,
-      }, latest)) {
-        setBeginnerPartSuggestions(proposal)
-        setBeginnerPartAssignments(proposal.suggestions.map((item) => ({
-          candidate_id: item.candidate_id, kind: item.suggested_kind,
-        })))
-        setExcludedBeginnerPartAssignments([])
-      }
-    }).catch(() => setBeginnerPartSuggestions(null))
-  }
-
-  function confirmBeginnerPartAssignments() {
-    const outline = beginnerOutlineCandidates
-    const proposal = beginnerPartSuggestions
-    const selected = outline?.candidates.find((candidate) => candidate.id === proposal?.selected_outline_id)
-    if (!outline || !proposal || !selected || !window.confirm(text(APP_TEXT.applyTheExplicitPartAssignmentsToTargetPartsThisDoes))) return
-    void runNativeEdit(() => applyBeginnerPartAssignments(outline, selected, beginnerPartAssignments))
-      .then(() => setBeginnerPartSuggestions(null))
-  }
-
-  function requestBeginnerSymmetricEstimate() {
-    const current = latestSnapshotRef.current
-    if (!current) return
-    void getBeginnerSymmetricParameterEstimate(
-      current.project_id, current.revision, current.project_instance_id,
-    ).then((response) => {
-      const latest = latestSnapshotRef.current
-      if (latest && matchesProjectOccGuard({
-        expectedProjectInstanceId: response.project_instance_id,
-        expectedProjectId: response.project_id,
-        expectedRevision: response.revision,
-      }, latest)) {
-        setBeginnerSymmetricEstimate(response)
-        setBeginnerSymmetricScale(response.estimate.scale_percent)
-        setBeginnerSymmetricSpacing(response.estimate.spacing_percent)
-      }
-    }).catch(() => setBeginnerSymmetricEstimate(null))
-  }
-
-  function confirmBeginnerSymmetricEstimate() {
-    const estimate = beginnerSymmetricEstimate
-    if (!estimate || !window.confirm(text(APP_TEXT.saveTheAdjustedSymmetricParametersThisDoesNotStartGeneration))) return
-    void runNativeEdit((projectId, revision, projectInstanceId) => applyBeginnerSymmetricParameters(
-      projectId, revision, projectInstanceId, estimate.estimate,
-      beginnerSymmetricScale, beginnerSymmetricSpacing,
-    )).then(() => setBeginnerSymmetricEstimate(null))
-  }
-
-  function copyBeginnerRecognitionProposal() {
-    const proposal = beginnerRecognitionProposal
-    const form = beginnerDesignFormRef.current
-    const current = latestSnapshotRef.current
-    const liveUnderlay = current?.underlays?.underlays.find(
-      (underlay) => underlay.id === proposal?.source_underlay_id
-        && underlay.asset === proposal.source_asset_id)
-    if (!proposal || !form || !current || !liveUnderlay || !window.confirm(text(APP_TEXT.copyThisRecognitionProposalIntoTheEditorTheProjectStays))) return
-    if (proposal.contour_confidence?.explicit_override_required && !window.confirm(text(APP_TEXT.thisContourProposalHasLowConfidenceOverrideAfterReviewingIts))) return
-    if (proposal.target_parts.length > 0) {
-      const counts = new Map(proposal.target_parts.map((part) => [part.kind, part.count]))
-      form.querySelectorAll<HTMLInputElement>('input[name^="target_part_"]').forEach((input) => {
-        const kind = input.name.slice('target_part_'.length)
-        input.value = String(counts.get(kind as BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']) ?? 0)
-      })
-      setBeginnerPartTotal(proposal.target_parts.reduce((sum, part) => sum + part.count, 0))
-    }
-    if (proposal.skeleton_quality?.distance_metric === 'aabb_squared_distance_v1') {
-      const category = form.elements.namedItem('target_category')
-      if (category instanceof HTMLSelectElement) category.value = 'custom_object'
-    }
-    setBeginnerSkeletonSegments(proposal.skeleton_segments.map((segment) => ({
-      ...segment,
-      start: { ...segment.start },
-      end: { ...segment.end },
-    })))
-    if (proposal.generic_body_outline_tenths_mm) {
-      setBeginnerBodyOutline(proposal.generic_body_outline_tenths_mm.map(
-        (point) => [...point] as [number, number]))
-      setBeginnerBodyOutlineMode(proposal.generic_body_outline_mode === 'general' ? 'general' : 'symmetric')
-    }
-    if (proposal.protrusions) {
-      setBeginnerProtrusions(proposal.protrusions
-        .filter((target) => acceptedRecognitionProtrusionIds.has(target.id))
-        .map((target) => ({
-        ...target,
-        ...(target.local_outline_tenths_mm ? {
-          local_outline_tenths_mm: target.local_outline_tenths_mm.map(
-            (point) => [...point] as [number, number]),
-        } : {}),
-      })))
-    }
-    setCoreStatus(appMessage(APP_TEXT.copiedTheProposalIntoTheEditorSaveItToAdd))
-  }
-
-  function addBeginnerSkeletonSegment(form: HTMLFormElement) {
-    if (beginnerSkeletonSegments.length >= 64) return
-    const data = new FormData(form)
-    const startX = Number(data.get('skeleton_start_x_mm'))
-    const startY = Number(data.get('skeleton_start_y_mm'))
-    const length = Number(data.get('skeleton_length_mm'))
-    const angle = Number(data.get('skeleton_angle_degrees'))
-    const thickness = Number(data.get('skeleton_thickness_mm'))
-    if (![startX, startY, length, angle, thickness].every(Number.isFinite)
-      || Math.abs(startX) > 10_000 || Math.abs(startY) > 10_000
-      || length < 0.1 || length > 10_000
-      || angle < -360 || angle > 360
-      || thickness < 0.1 || thickness > 1_000) return
-    const radians = angle * Math.PI / 180
-    const start = {
-      x_tenths_mm: Math.round(startX * 10),
-      y_tenths_mm: Math.round(startY * 10),
-    }
-    const end = {
-      x_tenths_mm: Math.round((startX + length * Math.cos(radians)) * 10),
-      y_tenths_mm: Math.round((startY + length * Math.sin(radians)) * 10),
-    }
-    if (Math.abs(end.x_tenths_mm) > 100_000 || Math.abs(end.y_tenths_mm) > 100_000
-      || (start.x_tenths_mm === end.x_tenths_mm && start.y_tenths_mm === end.y_tenths_mm)) return
-    const used = new Set(beginnerSkeletonSegments.map((segment) => segment.id))
-    let id = 0
-    while (used.has(id) && id < 65_535) id += 1
-    setBeginnerSkeletonSegments((segments) => [...segments, {
-      id,
-      start,
-      end,
-      thickness_tenths_mm: Math.round(thickness * 10),
-    }])
-  }
-
-  function addBeginnerProtrusion(form: HTMLFormElement) {
-    if (beginnerProtrusions.length >= 8) return
-    const data = new FormData(form)
-    const number = (name: string) => Number(data.get(name))
-    const count = number('protrusion_count')
-    const length = number('protrusion_length_mm')
-    const thickness = number('protrusion_thickness_mm')
-    const optionalWidth = (name: string) => {
-      const raw = String(data.get(name) ?? '').trim()
-      return raw === '' ? undefined : Number(raw)
-    }
-    const rootWidth = optionalWidth('protrusion_root_width_mm')
-    const tipWidth = optionalWidth('protrusion_tip_width_mm')
-    const position = ['x', 'y', 'z'].map((axis) => Math.round(number(`protrusion_position_${axis}_mm`) * 10))
-    const direction = ['x', 'y', 'z'].map((axis) => Math.round(number(`protrusion_direction_${axis}`) * 1000))
-    const curvature = number('protrusion_curvature_degrees')
-    const motion = [number('protrusion_motion_min'), number('protrusion_motion_max')]
-    const priority = number('protrusion_priority')
-    if (![count, length, thickness, ...position, ...direction, curvature, ...motion, priority]
-      .every(Number.isFinite)
-      || !Number.isInteger(count) || count < 1 || count > 8
-      || length <= 0 || length > 100_000 || thickness <= 0 || thickness > 1_000
-      || [rootWidth, tipWidth].some((width) => width !== undefined
-        && (!Number.isFinite(width) || width <= 0 || width > 1_000))
-      || position.some((value) => Math.abs(value) > 100_000)
-      || direction.some((value) => Math.abs(value) > 1_000) || direction.every((value) => value === 0)
-      || Math.abs(curvature) > 360 || motion.some((value) => Math.abs(value) > 360)
-      || motion[0] > motion[1] || !Number.isInteger(priority) || priority < 1 || priority > 100) return
-    const used = new Set(beginnerProtrusions.map((target) => target.id))
-    let id = 1
-    while (used.has(id) && id < 65_535) id += 1
-    setBeginnerProtrusions((targets) => [...targets, {
-      id, count, length_tenths_mm: Math.round(length * 10),
-      thickness_tenths_mm: Math.round(thickness * 10),
-      ...(rootWidth === undefined ? {} : { root_width_tenths_mm: Math.round(rootWidth * 10) }),
-      ...(tipWidth === undefined ? {} : { tip_width_tenths_mm: Math.round(tipWidth * 10) }),
-      position_tenths_mm: position as [number, number, number],
-      direction_milli: direction as [number, number, number],
-      symmetry: String(data.get('protrusion_symmetry')) as 'none' | 'bilateral' | 'radial',
-      curvature_degrees: Math.round(curvature),
-      joint: String(data.get('protrusion_joint')) as 'fixed' | 'hinge' | 'ball',
-      motion_degrees: motion.map(Math.round) as [number, number],
-      side: String(data.get('protrusion_side')) as 'front' | 'back' | 'either',
-      priority,
-    }])
-    setBeginnerProtrusionKinds((kinds) => [
-      ...beginnerProtrusions.map((_, index) => kinds[index] ?? 'tail'), 'tail',
-    ])
-  }
-
-  function createEmptyGenericTarget() {
-    if (beginnerProtrusions.length !== 0) return
-    const base: NonNullable<BeginnerDesignProfileV1['generation_constraints']['protrusions']>[number] = {
-      id: 1, count: 1, length_tenths_mm: 200, thickness_tenths_mm: 20,
-      position_tenths_mm: [0, 0, 0], direction_milli: [0, 1_000, 0],
-      symmetry: 'none', curvature_degrees: 0, joint: 'fixed', motion_degrees: [0, 0],
-      side: 'either', priority: 50,
-    }
-    setBeginnerProtrusions([base, { ...base, id: 2, direction_milli: [1_000, 0, 0] }])
-    setBeginnerProtrusionKinds(['tail', 'fin'])
-  }
-
-  function addBeginnerBulgeTarget(form: HTMLFormElement) {
-    const current = latestSnapshotRef.current
-    if (!current || !selectedFaceId || beginnerBulgeTargets.length >= 32) return
-    const data = new FormData(form)
-    const tuple = (prefix: string, scale: number) => ['x', 'y', 'z'].map(
-      (axis) => Math.round(Number(data.get(`${prefix}_${axis}`)) * scale),
-    ) as [number, number, number]
-    const minimum = tuple('bulge_min', 10)
-    const maximum = tuple('bulge_max', 10)
-    const direction = tuple('bulge_direction', 1000)
-    const amount = Math.round(Number(data.get('bulge_amount_mm')) * 10)
-    if ([...minimum, ...maximum, ...direction, amount].some((value) => !Number.isFinite(value))
-      || minimum.some((value, index) => value > maximum[index] || Math.abs(value) > 100_000)
-      || maximum.some((value) => Math.abs(value) > 100_000)
-      || minimum.every((value, index) => value === maximum[index])
-      || direction.some((value) => Math.abs(value) > 1_000)
-      || direction.every((value) => value === 0) || amount < 1 || amount > 1_000_000) return
-    const used = new Set(beginnerBulgeTargets.map((target) => target.id))
-    let id = 0
-    while (used.has(id) && id < 65_535) id += 1
-    setBeginnerBulgeTargets((targets) => [...targets, {
-      id, face_ids: [selectedFaceId], range_min_tenths_mm: minimum,
-      range_max_tenths_mm: maximum, direction_milli: direction,
-      amount_tenths_mm: amount,
-      source_fold_model_fingerprint: current.fold_model_fingerprint,
-    }])
-  }
-
-  function requestBeginnerCandidates(requestedCandidateCount: number) {
-    if (beginnerCandidateBusy) return
-    const current = latestSnapshotRef.current
-    if (!current) return
-    const requestId = beginnerCandidateRequestRef.current + 1
-    const generationId = crypto.randomUUID()
-    beginnerCandidateRequestRef.current = requestId
-    consensusGenerationRef.current = generationId
-    setConsensusProgress({ processed_assets: 0, total_assets: 0, processed_pairs: 0, total_pairs: 0 })
-    setBeginnerCandidateBusy(true)
-    evaluateBeginnerCandidates(
-      current.project_id,
-      current.revision,
-      current.project_instance_id,
-      requestedCandidateCount,
-      generationId,
-    ).then((response) => {
-      if (beginnerCandidateRequestRef.current !== requestId
-        || latestSnapshotRef.current !== current) return
-      setBeginnerCandidates(response)
-    }).catch(() => {
-      if (beginnerCandidateRequestRef.current === requestId
-        && latestSnapshotRef.current === current) setBeginnerCandidates(null)
-    }).finally(() => {
-      if (beginnerCandidateRequestRef.current === requestId) {
-        setBeginnerCandidateBusy(false)
-        consensusGenerationRef.current = null
-      }
-    })
-  }
-
-  function cancelConsensusAnalysis() {
-    const generation = consensusGenerationRef.current
-    if (!generation) return
-    beginnerCandidateRequestRef.current += 1
-    consensusGenerationRef.current = null
-    setBeginnerCandidateBusy(false)
-    void cancelReferenceConsensus(generation).catch(() => undefined)
-  }
-
-  function cancelBeginnerCandidates() {
-    beginnerCandidateRequestRef.current += 1
-    setBeginnerCandidateBusy(false)
-    setBeginnerCandidates(null)
-  }
-
-  function requestBeginnerGrid() {
-    if (beginnerGridBusy || beginnerSkeletonTree.status !== 'tree') return
-    const current = latestSnapshotRef.current
-    if (!current) return
-    const requestId = ++beginnerGridRequestRef.current
-    const generationId = crypto.randomUUID()
-    beginnerGridGenerationRef.current = generationId
-    setBeginnerGridProgress({ enumerated: 0, globalChecked: 0, refined: 0 })
-    setBeginnerGridBusy(true)
-    const poll = window.setInterval(() => {
-      void getBeginnerParameterGridProgress(generationId).then((progress) => {
-        if (requestId !== beginnerGridRequestRef.current) return
-        setBeginnerGridProgress((currentProgress) => ({
-          enumerated: Math.max(currentProgress.enumerated, progress.enumerated_grid_points),
-          globalChecked: Math.max(currentProgress.globalChecked, progress.global_checked_candidates),
-          refined: Math.max(currentProgress.refined, progress.refinement_iterations),
-        }))
-      }).catch(() => undefined)
-    }, 50)
-    void evaluateBeginnerParameterGrid(
-      current.project_id, current.revision, current.project_instance_id,
-      generationId,
-    ).then((response) => {
-      const latest = latestSnapshotRef.current
-      if (requestId === beginnerGridRequestRef.current
-        && latest
-        && matchesProjectOccGuard({
-          expectedProjectInstanceId: response.project_instance_id,
-          expectedProjectId: response.project_id,
-          expectedRevision: response.revision,
-        }, latest)) {
-        setBeginnerGrid(response)
-        setBeginnerGridSelectedPointId(response.candidates[0]?.point.id ?? null)
-        setBeginnerGridProgress({ enumerated: 27, globalChecked: 3, refined: response.refinement_iterations })
-      }
-    }).catch(() => {
-      if (requestId === beginnerGridRequestRef.current) setBeginnerGrid(null)
-    }).finally(() => {
-      window.clearInterval(poll)
-      if (requestId === beginnerGridRequestRef.current) {
-        beginnerGridGenerationRef.current = null
-        setBeginnerGridBusy(false)
-      }
-    })
-  }
-
-  function cancelBeginnerGrid() {
-    const generationId = beginnerGridGenerationRef.current
-    beginnerGridRequestRef.current += 1
-    beginnerGridGenerationRef.current = null
-    if (generationId) void cancelBeginnerParameterGrid(generationId).catch(() => undefined)
-    setBeginnerGridBusy(false)
-    finishBeginnerGridCancellation(
-      () => setBeginnerGrid(null),
-      () => requestAnimationFrame(() => beginnerGridButtonRef.current?.focus()),
-    )
-  }
-
-  function confirmAndApplyBeginnerGridCandidate(
-    candidate: BeginnerGridEvaluationResponse['candidates'][number],
-  ) {
-    const grid = beginnerGrid
-    const current = latestSnapshotRef.current
-    if (!grid || !current) return
-    void runBeginnerGridApplyWorkflow({
-      confirm: () => window.confirm(text(APP_TEXT.revalidateThisDesignSGridGeometryAndGlobalProofThen)),
-      apply: () => runNativeEdit(() => applyBeginnerParameterGridCandidate(
-        current.project_id, current.revision, current.project_instance_id,
-        grid, current.beginner_design_profile, candidate,
-      )),
-      clearPreview: () => {
-        beginnerGridRequestRef.current += 1
-        setBeginnerGrid(null)
-      },
-      restoreFocus: () => requestAnimationFrame(() => beginnerGridButtonRef.current?.focus()),
-    })
-  }
-
-  function confirmAndAppendGenericTreeInstructions() {
-    const tree = latestSnapshotRef.current?.beginner_design_profile.generation_provenance?.generic_tree
-    if (!tree?.instruction_proposal || !window.confirm(text(APP_TEXT.appendThisReviewedReadOnlyProposalToTheInstructionsIt))) return
-    void runNativeEdit((projectId, revision, projectInstanceId) =>
-      appendGenericTreeInstructionProposal(projectId, revision, projectInstanceId, tree.tree_topology_sha256))
-  }
-
-  function confirmAndApplyBeginnerPlan(
-    kind: 'diagonal_fold' | 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'asymmetric_bird_landmark_base' | 'asymmetric_four_leg_landmark_base' | 'asymmetric_insect_landmark_base' | 'asymmetric_fish_landmark_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' | 'symmetric_antenna_base' | 'symmetric_insect_leg_pair_base' | 'symmetric_six_leg_base' | 'center_axis_tail_base' | 'center_axis_horn_base' | 'center_axis_antenna_base' | 'composite_tail_ear_base' | 'composite_horn_ear_base' | 'composite_horn_tail_base' | 'composite_horn_tail_ear_base' | 'composite_wing_antenna_base' | 'composite_complete_insect_base' | 'composite_complete_animal_base' | 'composite_complete_winged_animal_base' | 'composite_generic_target_base',
-    expectedCandidateEdgeId: string,
-  ) {
-    const current = latestSnapshotRef.current
-    if (!current) return
-    const confirmed = window.confirm(text(APP_TEXT.applyThisCandidateToTheCreasePatternAndInstructionsYou))
-    if (!confirmed) return
-    const expectedProfile = current.beginner_design_profile
-    void runNativeEdit((projectId, revision, projectInstanceId) =>
-      applyBeginnerGeneratedPlan(
-        projectId,
-        revision,
-        projectInstanceId,
-        expectedProfile,
-        kind,
-        expectedCandidateEdgeId,
-      ))
   }
 
   async function submitPaperResize(event: FormEvent<HTMLFormElement>) {
@@ -6681,536 +5891,21 @@ function App() {
                 </div>
               </form>
               <div aria-labelledby="beginner-candidate-heading">
-                <h3 id="beginner-candidate-heading">
-                  {text(APP_TEXT.compareDesignCandidates)}
-                </h3>
-                <p id="beginner-candidate-description" className="muted">
-                  {text(APP_TEXT.scoresUpToThreeCandidatesOnThisDeviceUsingThe)}
-                </p>
-                <button type="button" onClick={requestBeginnerSymmetricEstimate}>
-                  {text(APP_TEXT.estimateSymmetricParameters)}
-                </button>
-                {beginnerSymmetricEstimate && (
-                  <fieldset>
-                    <legend>{text(APP_TEXT.adjustReadOnlyEstimate)}</legend>
-                    <p>{formattedText(APP_TEXT.countCountScaleScaleSpacingSpacing, { count: beginnerSymmetricEstimate.estimate.protrusion_count,
-                      scale: beginnerSymmetricEstimate.estimate.scale_percent,
-                      spacing: beginnerSymmetricEstimate.estimate.spacing_percent })}</p>
-                    <ol>
-                      {beginnerSymmetricEstimate.candidates.map((candidate) => (
-                        <li key={candidate.id}>
-                          {formattedText(APP_TEXT.scaleScaleSpacingSpacingApproximationScoreComplexityComplexityRequiredCo, { scale: candidate.scale_percent, spacing: candidate.spacing_percent,
-                            score: candidate.approximation_score, complexity: candidate.complexity_score,
-                            count: candidate.required_protrusion_count })}
-                          <button type="button" onClick={() => {
-                            setBeginnerSymmetricScale(candidate.scale_percent)
-                            setBeginnerSymmetricSpacing(candidate.spacing_percent)
-                          }}>
-                            {text(APP_TEXT.selectThisCandidate)}
-                          </button>
-                        </li>
-                      ))}
-                    </ol>
-                    <label>{text(APP_TEXT.scale1045)}
-                      <input type="number" min="10" max="45" value={beginnerSymmetricScale}
-                        onChange={(event) => setBeginnerSymmetricScale(Number(event.currentTarget.value))} />
-                    </label>
-                    <label>{text(APP_TEXT.spacing2080)}
-                      <input type="number" min="20" max="80" value={beginnerSymmetricSpacing}
-                        onChange={(event) => setBeginnerSymmetricSpacing(Number(event.currentTarget.value))} />
-                    </label>
-                    <button type="button" onClick={confirmBeginnerSymmetricEstimate}>
-                      {text(APP_TEXT.confirmDesignParameters)}
-                    </button>
-                  </fieldset>
-                )}
-                <button
-                  type="button"
-                  onClick={() => requestBeginnerCandidates(1)}
-                  disabled={coreBusy || recoveryBlocking || beginnerCandidateBusy}
-                  aria-describedby="beginner-candidate-description"
-                >
-                  {beginnerCandidateBusy
-                    ? text(APP_TEXT.scoringCandidates)
-                    : text(APP_TEXT.scoreCandidates)}
-                </button>
-                {beginnerCandidateBusy && <div role="status" aria-live="polite">
-                  {`Consensus progress: assets ${consensusProgress.processed_assets}/${consensusProgress.total_assets}; pairs ${consensusProgress.processed_pairs}/${consensusProgress.total_pairs}.`}
-                  <button type="button" onClick={cancelConsensusAnalysis}>Cancel consensus analysis</button>
-                </div>}
-                <button ref={beginnerGridButtonRef} type="button" onClick={requestBeginnerGrid}
-                  disabled={coreBusy || recoveryBlocking || beginnerGridBusy
-                    || beginnerSkeletonTree.status !== 'tree'}>
-                  {beginnerGridBusy
-                    ? text(APP_TEXT.evaluating27Designs)
-                    : text(APP_TEXT.evaluateTop3Of27Designs)}
-                </button>
-                <BeginnerGridProgressStatus locale={locale} busy={beginnerGridBusy}
-                  enumerated={beginnerGridProgress.enumerated}
-                  checked={beginnerGridProgress.globalChecked} refined={beginnerGridProgress.refined}
-                  onCancel={cancelBeginnerGrid} />
-                {beginnerGrid && (
-                  <section aria-label={text(APP_TEXT.top3FromThe27DesignSearch)}>
-                    <p className="muted">{formattedText(APP_TEXT.countDesignsEvaluatedGridHashHash, { count: beginnerGrid.evaluated_grid_points,
-                      hash: beginnerGrid.grid_hash.slice(0, 6).map((byte) => byte.toString(16).padStart(2, '0')).join('') })}</p>
-                    <table aria-label={text(APP_TEXT.strictCandidateAuthorityComparison)}>
-                      <thead><tr>
-                        <th>{text(APP_TEXT.select)}</th>
-                        <th>{text(APP_TEXT.creases)}</th>
-                        <th>{text(APP_TEXT.steps)}</th>
-                        <th>{text(APP_TEXT.localProof)}</th>
-                        <th>{text(APP_TEXT.globalProof)}</th>
-                        <th>{text(APP_TEXT.pathProof)}</th>
-                        <th>{text(APP_TEXT.text3dShape)}</th>
-                        <th>{text(APP_TEXT.paperEfficiency)}</th>
-                      </tr></thead>
-                      <tbody>{beginnerGrid.candidates.map((candidate) => <tr key={candidate.point.id}>
-                        <td><input type="radio" name="beginner-grid-authority"
-                          aria-label={formattedText(APP_TEXT.selectExactCandidateId, { id: candidate.point.id + 1 })}
-                          checked={beginnerGridSelectedPointId === candidate.point.id}
-                          onChange={() => setBeginnerGridSelectedPointId(candidate.point.id)} /></td>
-                        <td>{candidate.plan.crease_pattern.edges.length}</td>
-                        <td>{candidate.plan.instruction_codes.length}</td>
-                        <td>{candidate.local_proof_scope}</td>
-                        <td>{candidate.global_proof_scope}</td>
-                        <td>{candidate.assessment.proof_scope === 'sufficient'
-                          ? text(APP_TEXT.certifiedOnApply)
-                          : text(APP_TEXT.blocked)}</td>
-                        <td>{candidate.assessment.shape_approximation_score
-                          ?? text(APP_TEXT.notMeasured)}</td>
-                        <td>{candidate.paper_efficiency_score}/100</td>
-                      </tr>)}</tbody>
-                    </table>
-                    <button type="button" disabled={beginnerGridSelectedPointId === null
-                      || !beginnerGrid.candidates.some((candidate) => candidate.point.id === beginnerGridSelectedPointId
-                        && candidate.assessment.proof_scope === 'sufficient'
-                        && candidate.assessment.apply_allowed)}
-                      onClick={() => {
-                        const selected = beginnerGrid.candidates.find(
-                          (candidate) => candidate.point.id === beginnerGridSelectedPointId)
-                        if (selected) confirmAndApplyBeginnerGridCandidate(selected)
-                      }}>
-                      {text(APP_TEXT.revalidateAndApplySelectedCandidate)}
-                    </button>
-                    <ol>{beginnerGrid.candidates.map((candidate) => (
-                      <li key={candidate.point.id}>
-                        <strong>{formattedText(APP_TEXT.designIdPrimaryScoreScore1000, { id: candidate.point.id + 1, score: candidate.primary_score })}</strong>
-                        <span className="muted">{formattedText(APP_TEXT.strictLocalImprovementsImprovementsIterationsFromStartsStarts, { improvements: candidate.strict_improvements,
-                          iterations: candidate.refinement_iterations,
-                          starts: candidate.refinement_starts })}</span>
-                        <span className="muted">{formattedText(APP_TEXT.scaleScaleSpacingSpacingDetailDetail, { scale: candidate.point.scale_percent, spacing: candidate.point.spacing_percent,
-                          detail: candidate.point.detail_level })}</span>
-                        <span className="muted">{formattedText(APP_TEXT.localLocalGlobalGlobalComplexityComplexity100, { local: candidate.local_proof_scope, global: candidate.global_proof_scope,
-                          complexity: candidate.complexity_score })}</span>
-                        <span className="muted">{formattedText(APP_TEXT.paperEfficiencyPaper100, { paper: candidate.paper_efficiency_score })}</span>
-                        <span className="muted">{formattedText(APP_TEXT.penaltiesScaleScaleSpacingSpacingDetailDetail, { scale: candidate.scale_deviation_penalty,
-                          spacing: candidate.spacing_deviation_penalty,
-                          detail: candidate.detail_mismatch_penalty })}</span>
-                        <span className="muted">{formattedText(APP_TEXT.outcomeReasonShapeDifferenceShape, { reason: candidate.outcome_reason,
-                          shape: candidate.assessment.shape_difference_reason ?? 'none' })}</span>
-                        <span className="muted">{formattedText(APP_TEXT.contourPlacementWitnessBodyBodyPointsLocalLocalVerticesVertices, {
-                          body: candidate.contour_witness.body_contour_points,
-                          local: candidate.contour_witness.local_bindings.length === 0
-                            ? 'none'
-                            : candidate.contour_witness.local_bindings
-                              .map((binding) => `${binding.protrusion_id}:${binding.contour_points}@face${binding.generated_face_id}`)
-                              .join(', '),
-                          vertices: candidate.contour_witness.witnessed_vertices,
-                          creases: candidate.contour_witness.witnessed_creases,
-                          error: candidate.contour_witness.max_contour_error_millionths,
-                        })}</span>
-                        <span className="muted">{formattedText(APP_TEXT.genericFeatureTopologyWitnessFeatures, {
-                          features: candidate.contour_witness.generic_feature_bindings.length === 0
-                            ? 'none'
-                            : candidate.contour_witness.generic_feature_bindings
-                              .map((binding) => `${binding.protrusion_id}:${binding.endpoint_count}@feature${binding.generated_feature_id}`
-                                + `→skeleton${binding.skeleton_segment_id}.${binding.skeleton_endpoint}`
-                                + `#crease-${binding.crease_authority_sha256.slice(0, 4)
-                                  .map((byte) => byte.toString(16).padStart(2, '0')).join('')}`)
-                              .join(', '),
-                        })}</span>
-                        {candidate.contour_witness.skeleton_branch_bindings.length > 0 && (
-                          <span className="muted">{formattedText(APP_TEXT.confirmedTreeSkeletonBranchesAuthorityDigest, {
-                            branches: candidate.contour_witness.skeleton_branch_bindings
-                              .map((branch) => `${branch.parent_segment_id ?? 'root'}→${branch.segment_id}`
-                                + `[feature ${branch.generated_feature_ids.join(',') || 'none'}]`).join(', '),
-                            digest: candidate.contour_witness.skeleton_tree_authority_sha256.slice(0, 4)
-                              .map((byte) => byte.toString(16).padStart(2, '0')).join(''),
-                          })}</span>
-                        )}
-                        {candidate.assessment.proof_scope === 'sufficient'
-                          && candidate.assessment.reason === 'global_flat_foldability_proven'
-                          && candidate.assessment.apply_allowed && (
-                          <button type="button" onClick={() => confirmAndApplyBeginnerGridCandidate(candidate)}>
-                            {text(APP_TEXT.revalidateAndApplyThisDesign)}
-                          </button>
-                        )}
-                      </li>
-                    ))}</ol>
-                  </section>
-                )}
-                {beginnerCandidates && (
-                  <>
-                  <p role="note" className="muted">
-                    {text(APP_TEXT.initialDesignTreatsBulgesAsTargetShapeApproximationsAndDoes)}
-                  </p>
-                  <ol aria-label={text(APP_TEXT.designCandidatesInScoreOrder)}>
-                    {beginnerCandidates.candidates.map((candidate) => (
-                      <li key={candidate.kind}>
-                        <strong>
-                          {candidate.rank}. {candidate.kind === 'recommended'
-                            ? text(APP_TEXT.recommended)
-                            : candidate.kind === 'shape_focused'
-                              ? text(APP_TEXT.shapeFocused)
-                              : text(APP_TEXT.foldabilityFocused)}
-                          {' — '}{candidate.total_score}/100
-                        </strong>
-                        <span className="muted">
-                          {formattedText(APP_TEXT.shapeShapeFoldabilityFoldabilityStepsStepsPaperEfficiencyPaper, {
-                            shape: candidate.shape_score,
-                            foldability: candidate.foldability_score,
-                            steps: candidate.step_count_score,
-                            paper: candidate.paper_efficiency_score,
-                          })}
-                        </span>
-                        <span className="muted">{formattedText(APP_TEXT.weightedContributionsShapeShapeFoldabilityFoldabilityStepsStepsPaperEffi, {
-                          shape: Math.round(candidate.shape_score
-                            * nativeSnapshot.beginner_design_profile.shape_fidelity_weight) / 100,
-                          foldability: Math.round(candidate.foldability_score
-                            * nativeSnapshot.beginner_design_profile.foldability_weight) / 100,
-                          steps: Math.round(candidate.step_count_score
-                            * nativeSnapshot.beginner_design_profile.step_count_weight) / 100,
-                          paper: Math.round(candidate.paper_efficiency_score
-                            * nativeSnapshot.beginner_design_profile.paper_efficiency_weight) / 100,
-                        })}</span>
-                        <span className="muted">
-                          {formattedText(APP_TEXT.targetShapeApproximationTarget100, {
-                            target: candidate.target_approximation_score,
-                          })}
-                        </span>
-                      </li>
-                    ))}
-                  </ol>
-                  {beginnerCandidates.requested_candidate_count < 3 && (
-                    <button
-                      type="button"
-                      onClick={() => requestBeginnerCandidates(
-                        beginnerCandidates.requested_candidate_count + 1,
-                      )}
-                      disabled={beginnerCandidateBusy}
-                      aria-label={text(APP_TEXT.generateOneAdditionalCandidate)}
-                    >
-                      {text(APP_TEXT.generateAndCompareAnotherCandidate)}
-                    </button>
-                  )}
-                  {beginnerCandidates.generation_status === 'ready' ? (
-                    <div aria-label={text(APP_TEXT.generatedCreasePatternAndInstructionCandidates)}>
-                      {beginnerCandidates.multi_reference_fusion && (
-                        <p role={beginnerCandidates.multi_reference_fusion.apply_allowed ? 'status' : 'alert'}>
-                          {formattedText(APP_TEXT.image3DAgreementAgreement100ExtentErrorError100Result, {
-                            agreement: beginnerCandidates.multi_reference_fusion.agreement_score,
-                            error: beginnerCandidates.multi_reference_fusion.normalized_extent_error,
-                            result: beginnerCandidates.multi_reference_fusion.apply_allowed
-                              ? text(APP_TEXT.theBoundedTwoSourceComparisonAgrees)
-                              : text(APP_TEXT.imageAndGLBDisagreeCandidateApplyIsBlocked),
-                          })}
-                        </p>
-                      )}
-                      {beginnerCandidates.reference_consensus_analysis && (
-                        <div aria-label={text(APP_TEXT.referenceConsensus)} role={beginnerCandidates.reference_consensus_analysis.apply_allowed ? 'status' : 'alert'}>
-                          <p>{formattedText(APP_TEXT.referenceConsensusScore100PairsPairComparisonsDisagreementsDisagreements, { score: beginnerCandidates.reference_consensus_analysis.agreement_score,
-                            pairs: beginnerCandidates.reference_consensus_analysis.pair_count,
-                            disagreements: beginnerCandidates.reference_consensus_analysis.disagreement_count })}</p>
-                          <table aria-label={text(APP_TEXT.componentAwareReferenceComparisons)}>
-                            <thead><tr><th scope="col">{text(APP_TEXT.references)}</th><th scope="col">{text(APP_TEXT.components)}</th><th scope="col">{text(APP_TEXT.extent)}</th><th scope="col">{text(APP_TEXT.branches)}</th><th scope="col">{text(APP_TEXT.result)}</th></tr></thead>
-                            <tbody>{beginnerCandidates.reference_consensus_analysis.pairs.slice(0, 6).map((pair) => {
-                              const bindings = nativeSnapshot.beginner_design_profile.reference_consensus_v1?.bindings ?? []
-                              const left = bindings.findIndex((binding) => binding.asset_id === pair.left_asset_id) + 1
-                              const right = bindings.findIndex((binding) => binding.asset_id === pair.right_asset_id) + 1
-                              const key = `${pair.left_asset_id}:${pair.right_asset_id}`
-                              const reason = pair.disagrees
-                                ? [pair.component_error > 1 ? text(APP_TEXT.componentMismatch) : '', pair.normalized_extent_error > 20 ? text(APP_TEXT.extentMismatch) : '', pair.branch_error > 2 ? text(APP_TEXT.branchMismatch) : ''].filter(Boolean).join(', ')
-                                : text(APP_TEXT.withinAllThresholds)
-                              return <tr key={key} aria-selected={selectedConsensusPair === key}>
-                                <th scope="row"><button type="button" aria-pressed={selectedConsensusPair === key}
-                                  onClick={() => setSelectedConsensusPair(selectedConsensusPair === key ? null : key)}>
-                                  {formattedText(APP_TEXT.referenceLeftReferenceRight, { left, right })}</button></th>
-                                <td>{`${pair.left_component_count} / ${pair.right_component_count} (error ${pair.component_error})`}</td>
-                                <td>{`${pair.left_normalized_extents.join('×')} / ${pair.right_normalized_extents.join('×')} (error ${pair.normalized_extent_error})`}</td>
-                                <td>{`${pair.left_branch_count} / ${pair.right_branch_count} (error ${pair.branch_error})`}</td>
-                                <td>{`${pair.agreement_score}/100 — ${reason}`}</td>
-                              </tr>
-                            })}</tbody>
-                          </table>
-                          {selectedConsensusPair && (() => {
-                            const pair = beginnerCandidates.reference_consensus_analysis?.pairs.find((candidate) => `${candidate.left_asset_id}:${candidate.right_asset_id}` === selectedConsensusPair)
-                            return pair ? <p role="status" aria-live="polite">{formattedText(APP_TEXT.readOnlyComponentHighlightALeftExtentLeftBranchesBranchesBRightExtent, { leftExtent: pair.left_normalized_extents.join('×'), leftBranches: pair.left_branch_count,
-                              rightExtent: pair.right_normalized_extents.join('×'), rightBranches: pair.right_branch_count })}</p> : null
-                          })()}
-                          {nativeSnapshot.beginner_design_profile.reference_consensus_v1?.excluded_asset_id && <p role="status">{text(APP_TEXT.oneExplicitlyExcludedReferenceIsOmittedFromThisTable)}</p>}
-                          {nativeSnapshot.beginner_design_profile.reference_consensus_v1 && (
-                            <fieldset><legend>{text(APP_TEXT.excludeOneOutlier)}</legend>
-                              {nativeSnapshot.beginner_design_profile.reference_consensus_v1.bindings.map((binding, index) => (
-                                <button type="button" key={binding.asset_id}
-                                  disabled={nativeSnapshot.beginner_design_profile.reference_consensus_v1?.excluded_asset_id === binding.asset_id}
-                                  onClick={() => excludeBeginnerConsensusAsset(binding.asset_id)}>
-                                  {formattedText(APP_TEXT.excludeReferenceIndex, { index: index + 1 })}
-                                </button>
-                              ))}
-                              {nativeSnapshot.beginner_design_profile.reference_consensus_v1.excluded_asset_id && (
-                                <button type="button" onClick={() => excludeBeginnerConsensusAsset(null)}>{text(APP_TEXT.includeAllReferences)}</button>
-                              )}
-                            </fieldset>
-                          )}
-                        </div>
-                      )}
-                      {beginnerCandidates.generated_plans.map((plan, index) => {
-                        const vertexById = new Map(
-                          plan.crease_pattern.vertices.map((vertex) => [vertex.id, vertex]),
-                        )
-                        const xValues = plan.crease_pattern.vertices.map((vertex) => vertex.position.x)
-                        const yValues = plan.crease_pattern.vertices.map((vertex) => vertex.position.y)
-                        const minX = Math.min(...xValues)
-                        const minY = Math.min(...yValues)
-                        const width = Math.max(Math.max(...xValues) - minX, 1)
-                        const height = Math.max(Math.max(...yValues) - minY, 1)
-                        const applicableKind = (
-                          plan.kind === 'diagonal_fold'
-                          || isBeginnerSymmetricTemplate(plan.kind)
-                        ) ? plan.kind : null
-                        const assessment = beginnerCandidates.plan_assessments[index]
-                        const assessmentReason = assessment?.reason === 'geometry_invalid'
-                          ? text(APP_TEXT.geometryValidationFailed)
-                          : assessment?.reason === 'global_flat_foldability_proven'
-                            ? text(APP_TEXT.globalFlatFoldabilityIsProven)
-                            : assessment?.reason === 'global_flat_foldability_impossible'
-                              ? text(APP_TEXT.globalFlatFoldabilityIsProvenImpossible)
-                              : assessment?.reason === 'global_resource_limit'
-                                ? text(APP_TEXT.globalValidationIsIndeterminateBecauseItsResourceLimitWasReached)
-                                : assessment?.reason === 'global_timeout'
-                                  ? text(APP_TEXT.globalValidationIsIndeterminateBecauseItsTimeLimitWasReached)
-                                : assessment?.reason === 'global_indeterminate'
-                                  ? text(APP_TEXT.globalFlatFoldabilityValidationWasIndeterminate)
-                          : assessment?.reason === 'necessary_conditions_violated'
-                            ? text(APP_TEXT.localFlatFoldabilityNecessaryConditionsAreViolated)
-                            : assessment?.reason === 'local_analysis_blocked'
-                              ? text(APP_TEXT.localFlatFoldabilityAnalysisWasBlocked)
-                              : assessment?.reason === 'necessary_conditions_satisfied'
-                                ? text(APP_TEXT.localFlatFoldabilityNecessaryConditionsAreSatisfied)
-                                : text(APP_TEXT.localFlatFoldabilityIsIndeterminateForThisCandidate)
-                        return (
-                          <article key={plan.kind}>
-                            <h4>
-                              {text(APP_TEXT.candidate)} {index + 1}
-                              {' — '}
-                              {beginnerCandidates.candidates[index]?.total_score ?? 0}/100
-                            </h4>
-                            <svg
-                              viewBox={`${minX - 1} ${minY - 1} ${width + 2} ${height + 2}`}
-                              role="img"
-                              aria-label={text(APP_TEXT.candidateCreasePatternPreview)}
-                            >
-                              {plan.crease_pattern.edges.map((edge) => {
-                                const start = vertexById.get(edge.start)!
-                                const end = vertexById.get(edge.end)!
-                                return (
-                                  <line
-                                    key={edge.id}
-                                    x1={start.position.x}
-                                    y1={start.position.y}
-                                    x2={end.position.x}
-                                    y2={end.position.y}
-                                    stroke="currentColor"
-                                    strokeWidth={Math.max(width, height) / 50}
-                                    strokeDasharray={edge.kind === 'mountain' ? '4 2' : undefined}
-                                  />
-                                )
-                              })}
-                            </svg>
-                            <ol aria-label={text(APP_TEXT.candidateFoldingInstructions)}>
-                              {plan.instruction_codes.map((code) => (
-                                <li key={code}>
-                                  {code === 'symmetric_four_leg_base'
-                                    ? text(APP_TEXT.createTheSymmetricFourLegBaseFromTheSharedCenter)
-                                    : code === 'symmetric_wing_base'
-                                      ? text(APP_TEXT.createTheBilateralWingBaseFromTheSharedCenter)
-                                      : code === 'symmetric_bird_base'
-                                        ? text(APP_TEXT.createTheBilateralBirdWingBase)
-                                        : code === 'asymmetric_bird_landmark_base'
-                                          ? text(APP_TEXT.createTheAsymmetricBirdBaseBoundToIndividualLandmarks)
-                                          : code === 'asymmetric_four_leg_landmark_base'
-                                            ? text(APP_TEXT.createTheAsymmetricFourLegBaseBoundToFourIndividual)
-                                          : code === 'asymmetric_insect_landmark_base'
-                                            ? text(APP_TEXT.bindTenOrderedInsectLandmarksToTheCertifiedFourRay)
-                                          : code === 'asymmetric_fish_landmark_base'
-                                            ? text(APP_TEXT.bindTheHeadTailAndLeftRightFinsToThe)
-                                        : code === 'symmetric_fish_base'
-                                          ? text(APP_TEXT.createTheBilateralFishFinBase)
-                                          : code === 'symmetric_ear_base'
-                                            ? text(APP_TEXT.createTheBilateralLongEarBase)
-                                            : code === 'symmetric_horn_base'
-                                              ? text(APP_TEXT.createTheBilateralHornBase)
-                                              : code === 'symmetric_antenna_base'
-                                                ? text(APP_TEXT.createTheBilateralInsectAntennaBase)
-                                                : code === 'symmetric_six_leg_base'
-                                                  ? (locale === 'ja' ? '左右対称の完全六脚ベース' : 'Symmetric complete six-leg base')
-                                                : code === 'center_axis_tail_base'
-                                                  ? (locale === 'ja' ? '中心軸から伸びる尾のベース' : 'Center-axis tail base')
-                                                : code === 'center_axis_horn_base'
-                                                  ? (locale === 'ja' ? '中心軸から伸びる一本角のベース' : 'Center-axis single-horn base')
-                                                : code === 'center_axis_antenna_base'
-                                                  ? (locale === 'ja' ? '中心軸から伸びる一本触角のベース' : 'Center-axis single-antenna base')
-                                                : code === 'composite_tail_ear_base'
-                                                  ? (locale === 'ja' ? '単一尾と左右一組の耳の複合ベース' : 'Composite tail and ear base')
-                                                : code === 'composite_horn_ear_base'
-                                                  ? (locale === 'ja' ? '一本角と左右一組の耳の複合ベース' : 'Composite horn and ear base')
-                                                : code === 'composite_horn_tail_base'
-                                                  ? (locale === 'ja' ? '一本角と単一尾の複合ベース' : 'Composite horn and tail base')
-                                                : code === 'composite_horn_tail_ear_base'
-                                                  ? (locale === 'ja' ? '一本角・単一尾・左右一組の耳の複合ベース' : 'Composite horn, tail, and ear base')
-                                                : code === 'composite_wing_antenna_base'
-                                                  ? (locale === 'ja' ? '左右一組の翅と触角の複合ベース' : 'Composite wing and antenna base')
-                                                : code === 'composite_complete_insect_base'
-                                                  ? (locale === 'ja' ? '翅・触角・六脚の完全複合昆虫ベース' : 'Complete composite insect base')
-                                                : code === 'composite_complete_animal_base'
-                                                  ? (locale === 'ja' ? '角・尾・耳・四脚の完全複合動物ベース' : 'Complete composite animal base')
-                                                : code === 'composite_complete_winged_animal_base'
-                                                  ? (locale === 'ja' ? '角・尾・耳・四脚・翼の完全複合動物ベース' : 'Complete composite winged animal base')
-                                                : code === 'composite_generic_target_base'
-                                                  ? (locale === 'ja' ? '認識部位から作る上限付き汎用複合ベース' : 'Bounded composite base from recognized parts')
-                                                : code === 'symmetric_insect_leg_pair_base'
-                                                  ? text(APP_TEXT.createOneBilateralInsectLegPairBase)
-                                          : code === 'book_fold_vertical'
-                                    ? text(APP_TEXT.foldInHalfOnTheVerticalCenterLine)
-                                    : code === 'book_fold_horizontal'
-                                      ? text(APP_TEXT.foldInHalfOnTheHorizontalCenterLine)
-                                      : text(APP_TEXT.foldOnTheDiagonal)}
-                                </li>
-                              ))}
-                            </ol>
-                            <p aria-label={text(APP_TEXT.targetPartsUsedByThisCandidate)}>
-                              {plan.target_parts.map((part) => {
-                                const label = {
-                                  head: APP_TEXT.head,
-                                  torso: APP_TEXT.torso,
-                                  leg: APP_TEXT.leg,
-                                  horn: APP_TEXT.horn,
-                                  ear: APP_TEXT.ear,
-                                  wing: APP_TEXT.wing,
-                                  fin: APP_TEXT.fin,
-                                  antenna: APP_TEXT.antenna,
-                                  tail: APP_TEXT.tail,
-                                }[part.kind]
-                                return `${text(label)} × ${part.count}`
-                              }).join(' · ')}
-                            </p>
-                            {(plan.kind === 'composite_complete_animal_base'
-                              || plan.kind === 'composite_complete_winged_animal_base') && (
-                              <CompleteAnimalBindingList locale={locale}
-                                protrusions={nativeSnapshot.beginner_design_profile.generation_constraints.protrusions ?? []} />
-                            )}
-                            {plan.kind === 'composite_complete_insect_base' && (
-                              <CompleteInsectBindingList locale={locale}
-                                protrusions={nativeSnapshot.beginner_design_profile.generation_constraints.protrusions ?? []} />
-                            )}
-                            {plan.kind === 'composite_generic_target_base' && (
-                              <GenericTargetBindingList locale={locale}
-                                protrusions={nativeSnapshot.beginner_design_profile.generation_constraints.protrusions ?? []} />
-                            )}
-                            {plan.skeleton_segments.length > 0 && (
-                              <svg viewBox="-110 -110 220 220" role="img"
-                                aria-label={text(APP_TEXT.stickSkeletonUsedByThisCandidate)}>
-                                {plan.skeleton_segments.map((segment) => (
-                                  <line
-                                    key={segment.id}
-                                    x1={segment.start.x_tenths_mm / 10}
-                                    y1={segment.start.y_tenths_mm / 10}
-                                    x2={segment.end.x_tenths_mm / 10}
-                                    y2={segment.end.y_tenths_mm / 10}
-                                    stroke="currentColor"
-                                    strokeWidth={Math.max(0.5, segment.thickness_tenths_mm / 10)}
-                                  />
-                                ))}
-                              </svg>
-                            )}
-                            {plan.target_asset && (
-                              <p role="note">
-                                {text(APP_TEXT.thisCandidateUsesTheSelectedProjectReferenceImageAsTarget)}
-                              </p>
-                            )}
-                            <p className="muted">
-                              {text(APP_TEXT.thisIsAReadOnlyCandidateItDoesNotBecome)}
-                            </p>
-                            <p
-                              role={assessment?.apply_allowed === false ? 'alert' : 'status'}
-                              aria-label={text(APP_TEXT.candidateValidationResult)}
-                            >
-                              {assessment?.proof_scope === 'sufficient'
-                                ? text(APP_TEXT.sufficientProof)
-                                : assessment?.proof_scope === 'necessary'
-                                  ? text(APP_TEXT.necessaryConditionValidation)
-                                  : text(APP_TEXT.indeterminate)}
-                              {': '}{assessmentReason}
-                              {assessment?.proof_scope === 'indeterminate' && ` ${text(APP_TEXT.warningApplyingItDoesNotGuaranteeFlatFoldability)}`}
-                            </p>
-                            {assessment?.shape_approximation_score !== null
-                              && assessment?.shape_approximation_score !== undefined && (
-                              <p className="muted">
-                                {formattedText(APP_TEXT.readOnlyShapeApproximationToReferenceGLBScore100, { score: assessment.shape_approximation_score })}
-                                {' '}{assessment.shape_difference_reason === 'certified_flat_surface_v1'
-                                  ? text(APP_TEXT.usesActualBboxAreaAndPrincipalAxisFromTheCertified)
-                                  : text(APP_TEXT.differenceTheCreaseCandidateHasNoSurfaceMeshSoOnly)}
-                              </p>
-                            )}
-                            {assessment?.component_shape_comparison && (
-                              <p className="muted" aria-label={text(APP_TEXT.componentAwareShapeScoreBreakdown)}>
-                                {`Components ${assessment.component_shape_comparison.component_count}; `}
-                                {`extent ${assessment.component_shape_comparison.extent_score}/100 × 45%; `}
-                                {`branches ${assessment.component_shape_comparison.branch_score}/100 × 35%; `}
-                                {`bridges ${assessment.component_shape_comparison.bridge_score}/100 × 20%; `}
-                                {`matched ${assessment.component_shape_comparison.matched_branch_count}; `}
-                                {`bounded work ${assessment.component_shape_comparison.work_units}/64.`}
-                              </p>
-                            )}
-                            {applicableKind && (
-                              <button
-                                type="button"
-                                onClick={() => confirmAndApplyBeginnerPlan(
-                                  applicableKind,
-                                  plan.crease_pattern.edges[0].id,
-                                )}
-                                disabled={coreBusy || recoveryBlocking || beginnerCandidateBusy
-                                  || !assessment || !assessment.apply_allowed}
-                                aria-label={text(APP_TEXT.reviewAndApplyThisBoundedGeneratedCandidate)}
-                              >
-                                {text(APP_TEXT.reviewAndApplyThisCandidate)}
-                              </button>
-                            )}
-                          </article>
-                        )
-                      })}
-                    </div>
-                  ) : (
-                    <p role="status">
-                      {beginnerCandidates.generation_status === 'missing_target_category'
-                        ? text(APP_TEXT.saveAnAnimalOrInsectTargetCategoryFirst)
-                        : beginnerCandidates.generation_status === 'missing_required_parts'
-                          ? text(APP_TEXT.saveOneHeadAndOneTorsoAsRequiredTargetParts)
-                          : beginnerCandidates.generation_status === 'unsupported_animal_template'
-                            ? text(APP_TEXT.theAnimalTemplateRequiresOneHeadOneTorsoFourLegs)
-                            : beginnerCandidates.generation_status === 'unsupported_insect_template'
-                              ? text(APP_TEXT.theInsectTemplateRequiresOneHeadOneTorsoTwoWings)
-                              : beginnerCandidates.generation_status === 'missing_target_asset'
-                            ? text(APP_TEXT.theReferenceImageWasRemovedOrChangedSelectAnotherUnderlay)
-                        : beginnerCandidates.generation_status === 'unsupported_techniques'
-                        ? text(APP_TEXT.allowValleyOrMountainFoldsToGeneratePlans)
-                        : beginnerCandidates.generation_status === 'resource_limit'
-                          ? text(APP_TEXT.theInputExceedsTheGenerationWorkLimit)
-                          : text(APP_TEXT.theInitialGeneratorSupportsRectangularSingleSheetPaperOnly)}
-                    </p>
-                  )}
-                  </>
-                )}
+                <BeginnerCandidateControls
+                  locale={locale}
+                  coreBusy={coreBusy}
+                  recoveryBlocking={recoveryBlocking}
+                  skeletonTreeStatus={beginnerSkeletonTree.status}
+                  candidateWorkflow={beginnerCandidateWorkflow}
+                  gridWorkflow={beginnerGridWorkflow}
+                />
+                <BeginnerCandidateResults
+                  locale={locale}
+                  snapshot={nativeSnapshot}
+                  coreBusy={coreBusy}
+                  recoveryBlocking={recoveryBlocking}
+                  candidateWorkflow={beginnerCandidateWorkflow}
+                />
               </div>
             </section>
           )}
@@ -7575,327 +6270,12 @@ function App() {
                     </>
                   )}
                 </div>
-                <div aria-live="polite">
-                  <button
-                    type="button"
-                    onClick={() => requestBeginnerRecognition('marker')}
-                    disabled={beginnerRecognitionBusy || coreBusy || recoveryBlocking}
-                    aria-describedby="beginner-recognition-help"
-                  >
-                    {beginnerRecognitionBusy
-                      ? text(APP_TEXT.recognizing)
-                      : text(APP_TEXT.recognizeMarkerPNG)}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => requestBeginnerRecognition('silhouette')}
-                    disabled={beginnerRecognitionBusy || coreBusy || recoveryBlocking}
-                    aria-describedby="beginner-recognition-help"
-                  >
-                    {beginnerRecognitionBusy
-                      ? text(APP_TEXT.recognizing)
-                      : text(APP_TEXT.recognizeOutlineFromImage)}
-                  </button>
-                  <label>
-                    {text(APP_TEXT.silhouetteAlphaThreshold)}
-                    <input type="range" min="0" max="255" value={beginnerSilhouetteThresholds.alpha}
-                      onChange={(event) => { invalidateBeginnerRecognition(); setBeginnerSilhouetteThresholds((value) => ({ ...value, alpha: Number(event.target.value) })) }} />
-                    <output>{beginnerSilhouetteThresholds.alpha}</output>
-                  </label>
-                  <label>
-                    {text(APP_TEXT.silhouetteLumaThreshold)}
-                    <input type="range" min="0" max="255" value={beginnerSilhouetteThresholds.luma}
-                      onChange={(event) => { invalidateBeginnerRecognition(); setBeginnerSilhouetteThresholds((value) => ({ ...value, luma: Number(event.target.value) })) }} />
-                    <output>{beginnerSilhouetteThresholds.luma}</output>
-                  </label>
-                  <label>
-                    {text(APP_TEXT.silhouetteForegroundPolarity)}
-                    <select value={beginnerSilhouetteThresholds.polarity} onChange={(event) => {
-                      invalidateBeginnerRecognition()
-                      setBeginnerSilhouetteThresholds((value) => ({ ...value,
-                        polarity: event.target.value as 'dark_on_light' | 'light_on_dark' | 'alpha_only' }))
-                    }}>
-                      <option value="dark_on_light">{text(APP_TEXT.darkOnLight)}</option>
-                      <option value="light_on_dark">{text(APP_TEXT.lightOnDark)}</option>
-                      <option value="alpha_only">{text(APP_TEXT.alphaOnly)}</option>
-                    </select>
-                  </label>
-                  <fieldset aria-label={text(APP_TEXT.silhouetteCropROI)}>
-                    <legend>{text(APP_TEXT.silhouetteCropROI2)}</legend>
-                    <label><input type="checkbox" checked={Boolean(beginnerSilhouetteCropRoi)} onChange={(event) => {
-                      invalidateBeginnerRecognition()
-                      setBeginnerSilhouetteCropRoi(event.target.checked ? { schema_version: 1, x_millionths: 0, y_millionths: 0, width_millionths: 1_000_000, height_millionths: 1_000_000 } : undefined)
-                    }} />{text(APP_TEXT.useCrop)}</label>
-                    {beginnerSilhouetteCropRoi && (['x_millionths', 'y_millionths', 'width_millionths', 'height_millionths'] as const).map((key) => (
-                      <label key={key}>{key}<input type="number" min="0" max="1000000" step="1000" value={beginnerSilhouetteCropRoi[key]}
-                        onChange={(event) => { invalidateBeginnerRecognition(); setBeginnerSilhouetteCropRoi({ ...beginnerSilhouetteCropRoi, [key]: Math.max(0, Math.min(1_000_000, Number(event.target.value))) }) }} /></label>
-                    ))}
-                    <button type="button" onClick={() => setBeginnerSilhouetteCropRoi(undefined)}>{text(APP_TEXT.resetToFullImage)}</button>
-                  </fieldset>
-                  <label>
-                    {text(APP_TEXT.silhouetteOrientation)}
-                    <select value={beginnerSilhouetteOrientation} onChange={(event) => {
-                      invalidateBeginnerRecognition()
-                      setBeginnerSilhouetteOrientation(Number(event.target.value) as 0 | 90 | 180 | 270)
-                    }}>
-                      {[0, 90, 180, 270].map((angle) => <option key={angle} value={angle}>{angle}°</option>)}
-                    </select>
-                    <button type="button" onClick={() => setBeginnerSilhouetteOrientation(0)}>{text(APP_TEXT.resetOrientation)}</button>
-                  </label>
-                  <fieldset aria-label={text(APP_TEXT.silhouetteMirror)}>
-                    <legend>{text(APP_TEXT.silhouetteMirror2)}</legend>
-                    <label><input type="checkbox" checked={beginnerSilhouetteMirror.mirror_x}
-                      onChange={(event) => { invalidateBeginnerRecognition(); setBeginnerSilhouetteMirror((value) => ({ ...value, mirror_x: event.target.checked })) }} />
-                      {text(APP_TEXT.mirrorHorizontally)}</label>
-                    <label><input type="checkbox" checked={beginnerSilhouetteMirror.mirror_y}
-                      onChange={(event) => { invalidateBeginnerRecognition(); setBeginnerSilhouetteMirror((value) => ({ ...value, mirror_y: event.target.checked })) }} />
-                      {text(APP_TEXT.mirrorVertically)}</label>
-                    <button type="button" onClick={() => setBeginnerSilhouetteMirror({ schema_version: 1, mirror_x: false, mirror_y: false })}>
-                      {text(APP_TEXT.resetMirror)}</button>
-                  </fieldset>
-                  <p id="beginner-recognition-help" className="muted">
-                    {text(APP_TEXT.boundedPNGOrJPEGInputProducesAReadOnlyOutline)}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={requestBeginnerOutlineCandidates}
-                    disabled={beginnerRecognitionBusy || coreBusy || recoveryBlocking}
-                  >
-                    {text(APP_TEXT.showOutlineCandidates)}
-                  </button>
-                  {beginnerOutlineCandidates && (
-                    <section aria-labelledby="beginner-outline-candidates-heading">
-                      <h3 id="beginner-outline-candidates-heading">
-                        {text(APP_TEXT.readOnlyOutlineCandidates)}
-                      </h3>
-                      <p>{text(APP_TEXT.candidatesExposeOnlyBoundsAreaAndReasonTheyGrantNo)}</p>
-                      <ol>
-                        {beginnerOutlineCandidates.candidates.map((candidate) => (
-                          <li key={candidate.id}>
-                            {formattedText(APP_TEXT.areaAreaPxBoundsMinXMinYMaxXMaxYReasonReason, {
-                              area: candidate.area_pixels,
-                              minX: candidate.bounds.min_x, minY: candidate.bounds.min_y,
-                              maxX: candidate.bounds.max_x, maxY: candidate.bounds.max_y,
-                              reason: candidate.confidence_reason === 'solid_component'
-                                ? text(APP_TEXT.solidComponent)
-                                : text(APP_TEXT.smallComponent),
-                            })}
-                            <button
-                              type="button"
-                              onClick={() => copyBeginnerOutlineCandidate(candidate)}
-                              disabled={coreBusy || recoveryBlocking}
-                            >
-                              {text(APP_TEXT.confirmAndCopyToTarget)}
-                            </button>
-                            <button type="button" onClick={() => requestBeginnerPartSuggestions(candidate)}>
-                              {text(APP_TEXT.suggestParts)}
-                            </button>
-                          </li>
-                        ))}
-                      </ol>
-                      {beginnerPartSuggestions && (
-                        <fieldset>
-                          <legend>{text(APP_TEXT.explicitPartAssignments)}</legend>
-                          {beginnerPartAssignments.map((assignment, index) => (
-                            <label key={`${assignment.candidate_id}:${assignment.split_fragment ?? 'original'}:${index}`}>
-                              {formattedText(APP_TEXT.candidateId, { id: assignment.candidate_id + 1 })}
-                              <select value={assignment.kind} onChange={(event) => {
-                                const kind = event.currentTarget.value as
-                                  BeginnerDesignProfileV1['generation_constraints']['target_parts'][number]['kind']
-                                setBeginnerPartAssignments((items) => items.map((item, itemIndex) =>
-                                  itemIndex === index ? { ...item, kind } : item))
-                              }}>
-                                <option value="torso">{text(APP_TEXT.torso2)}</option>
-                                <option value="head">{text(APP_TEXT.head2)}</option>
-                                <option value="leg">{text(APP_TEXT.leg2)}</option>
-                                <option value="wing">{text(APP_TEXT.wing2)}</option>
-                                <option value="fin">{text(APP_TEXT.fin2)}</option>
-                                <option value="ear">{text(APP_TEXT.ear2)}</option>
-                                <option value="horn">{text(APP_TEXT.horn2)}</option>
-                                <option value="antenna">{text(APP_TEXT.antenna2)}</option>
-                                <option value="tail">{text(APP_TEXT.tail2)}</option>
-                              </select>
-                              {assignment.split_fragment === 0 && assignment.split_x !== undefined && (
-                                <span>
-                                  {text(APP_TEXT.verticalSplitPositionXPx)}
-                                  <input type="number" value={assignment.split_x}
-                                    min={beginnerOutlineCandidates?.candidates.find(
-                                      (candidate) => candidate.id === assignment.candidate_id)?.bounds.min_x ?? 0}
-                                    max={beginnerOutlineCandidates?.candidates.find(
-                                      (candidate) => candidate.id === assignment.candidate_id)?.bounds.max_x ?? 0}
-                                    onChange={(event) => {
-                                      const splitX = Number(event.currentTarget.value)
-                                      setBeginnerPartAssignments((items) => items.map((item) =>
-                                        item.candidate_id === assignment.candidate_id
-                                          && item.source_candidate_ids?.length === 1
-                                          ? { ...item, split_x: splitX } : item))
-                                    }} />
-                                </span>
-                              )}
-                              <button
-                                type="button"
-                                disabled={assignment.kind === 'torso'
-                                  || beginnerPartAssignments.length <= 2}
-                                onClick={() => {
-                                  setBeginnerPartAssignments((items) =>
-                                    items.filter((item) => item.candidate_id !== assignment.candidate_id))
-                                  setExcludedBeginnerPartAssignments((items) => [
-                                    ...items.filter((item) => item.candidate_id !== assignment.candidate_id),
-                                    assignment,
-                                  ])
-                                }}
-                              >
-                                {text(APP_TEXT.excludeAsImageNoise)}
-                              </button>
-                            </label>
-                          ))}
-                          {excludedBeginnerPartAssignments.length > 0 && (
-                            <section aria-label={text(APP_TEXT.excludedImageCandidates)}>
-                              <p>{text(APP_TEXT.restoredCandidatesRemainSemanticallyUnconfirmedAndCannotGenerateADesign)}</p>
-                              {excludedBeginnerPartAssignments.map((assignment) => (
-                                <button key={assignment.candidate_id} type="button" onClick={() => {
-                                  setExcludedBeginnerPartAssignments((items) =>
-                                    items.filter((item) => item.candidate_id !== assignment.candidate_id))
-                                  setBeginnerPartAssignments((items) => [...items, assignment].sort(
-                                    (left, right) => left.candidate_id - right.candidate_id,
-                                  ))
-                                }}>
-                                  {formattedText(APP_TEXT.restoreCandidateIdWithItsOriginalOutlineEvidence, { id: assignment.candidate_id + 1 })}
-                                </button>
-                              ))}
-                            </section>
-                          )}
-                          <section aria-label={text(APP_TEXT.outlineComponentEditProposal)}>
-                            <p>{text(APP_TEXT.splitAndMergeEditsAreNonAuthoritativeProposalsBoundTo)}</p>
-                            <button type="button" onClick={() => setBeginnerPartAssignments((items) => {
-                              const index = items.findIndex((item) => item.kind !== 'torso'
-                                && item.split_fragment === undefined)
-                              if (index < 0 || items.length >= 10) return items
-                              const source = items[index]
-                              const outline = beginnerOutlineCandidates?.candidates.find(
-                                (candidate) => candidate.id === source.candidate_id)
-                              if (!outline || outline.bounds.min_x >= outline.bounds.max_x) return items
-                              const splitX = Math.floor((outline.bounds.min_x + outline.bounds.max_x + 1) / 2)
-                              const split = [
-                                { ...source, source_candidate_ids: [source.candidate_id],
-                                  split_fragment: 0, split_x: splitX },
-                                { ...source, kind: 'tail' as const,
-                                  source_candidate_ids: [source.candidate_id],
-                                  split_fragment: 1, split_x: splitX },
-                              ]
-                              return [...items.slice(0, index), ...split, ...items.slice(index + 1)]
-                            })}>
-                              {text(APP_TEXT.splitFirstPartCandidate)}
-                            </button>
-                            <button type="button" onClick={() => setBeginnerPartAssignments((items) => {
-                              const indexes = items.map((item, index) => ({ item, index }))
-                                .filter(({ item }) => item.kind !== 'torso'
-                                  && item.split_fragment === undefined).slice(0, 2)
-                              if (indexes.length !== 2) return items
-                              const first = indexes[0]!
-                              const second = indexes[1]!
-                              const merged = { ...first.item,
-                                candidate_id: Math.min(first.item.candidate_id, second.item.candidate_id),
-                                source_candidate_ids: [first.item.candidate_id, second.item.candidate_id]
-                                  .sort((left, right) => left - right),
-                              }
-                              return items.filter((_, index) => index !== first.index && index !== second.index)
-                                .concat(merged).sort((left, right) => left.candidate_id - right.candidate_id)
-                            })}>
-                              {text(APP_TEXT.mergeFirstTwoPartCandidates)}
-                            </button>
-                          </section>
-                          <p>{text(APP_TEXT.theImageProvesOnlyEachCandidateOutlinePartMeaningsCome)}</p>
-                          <button type="button" onClick={confirmBeginnerPartAssignments}>
-                            {text(APP_TEXT.confirmTargetParts)}
-                          </button>
-                        </fieldset>
-                      )}
-                    </section>
-                  )}
-                  {beginnerRecognitionProposal && (
-                    <section aria-labelledby="beginner-recognition-heading">
-                      <h3 id="beginner-recognition-heading">
-                        {text(APP_TEXT.recognitionProposalPreview)}
-                      </h3>
-                      <p>
-                        {formattedText(APP_TEXT.imageWidthHeightPxPartsPartsSegmentsSkeletonBars, {
-                          width: beginnerRecognitionProposal.width,
-                          height: beginnerRecognitionProposal.height,
-                          parts: beginnerRecognitionProposal.target_parts.reduce(
-                            (sum, part) => sum + part.count, 0,
-                          ),
-                          segments: beginnerRecognitionProposal.skeleton_segments.length,
-                        })}
-                      </p>
-                      <svg
-                        viewBox={`0 0 ${beginnerRecognitionProposal.width} ${beginnerRecognitionProposal.height}`}
-                        role="img"
-                        aria-label={text(APP_TEXT.recognizedShapeBoundsAndSkeleton)}
-                      >
-                        <rect
-                          x={beginnerRecognitionProposal.shape_bounds.min_x}
-                          y={beginnerRecognitionProposal.shape_bounds.min_y}
-                          width={beginnerRecognitionProposal.shape_bounds.max_x
-                            - beginnerRecognitionProposal.shape_bounds.min_x + 1}
-                          height={beginnerRecognitionProposal.shape_bounds.max_y
-                            - beginnerRecognitionProposal.shape_bounds.min_y + 1}
-                          fill="none"
-                          stroke="currentColor"
-                        />
-                        {beginnerRecognitionProposal.skeleton_segments.map((segment) => (
-                          <line
-                            key={segment.id}
-                            x1={segment.start.x_tenths_mm / 10}
-                            y1={segment.start.y_tenths_mm / 10}
-                            x2={segment.end.x_tenths_mm / 10}
-                            y2={segment.end.y_tenths_mm / 10}
-                            stroke="currentColor"
-                            strokeWidth={Math.max(1, segment.thickness_tenths_mm / 10)}
-                          />
-                        ))}
-                      </svg>
-                      <button type="button" onClick={copyBeginnerRecognitionProposal}>
-                        {text(APP_TEXT.copyToEditableFields)}
-                      </button>
-                      {(beginnerRecognitionProposal.generic_body_outline_tenths_mm
-                        || beginnerRecognitionProposal.protrusions?.some(
-                          (target) => target.local_outline_tenths_mm)) && <p>{formattedText(APP_TEXT.recognizedContoursBodyBodyPointsAndLocalLocalContoursConfirmation, {
-                        body: beginnerRecognitionProposal.generic_body_outline_tenths_mm?.length ?? 0,
-                        local: beginnerRecognitionProposal.protrusions?.filter(
-                          (target) => target.local_outline_tenths_mm).length ?? 0,
-                      })}</p>}
-                      {beginnerRecognitionProposal.contour_confidence && <p>{formattedText(APP_TEXT.contourConfidenceScore100ReasonsReasons, { score: beginnerRecognitionProposal.contour_confidence.body_score,
-                        reasons: beginnerRecognitionProposal.contour_confidence.body_reasons.join(', ') })}</p>}
-                      {beginnerRecognitionProposal.skeleton_quality && (
-                        <div role="status" aria-label={text(APP_TEXT.skeletonProposalQuality)}>
-                          <p>{formattedText(APP_TEXT.skeletonQualityScore100FullyOfflineDistanceAxisApproximationLimit, {
-                            score: beginnerRecognitionProposal.skeleton_quality.score,
-                            limit: beginnerRecognitionProposal.skeleton_quality.bar_limit,
-                          })}</p>
-                          {beginnerRecognitionProposal.skeleton_quality.insufficiency_reasons.length > 0 && <p>{formattedText(APP_TEXT.insufficiencyReasonsReasons, { reasons: beginnerRecognitionProposal.skeleton_quality.insufficiency_reasons.join(', ') })}</p>}
-                        </div>
-                      )}
-                      {(beginnerRecognitionProposal.protrusions?.length ?? 0) > 0 && (
-                        <fieldset><legend>{text(APP_TEXT.confirmRecognizedProtrusions)}</legend>
-                          {(beginnerRecognitionProposal.protrusions ?? []).map((target) => (
-                            <label key={target.id}>
-                              <input type="checkbox" checked={acceptedRecognitionProtrusionIds.has(target.id)}
-                                onChange={(event) => setAcceptedRecognitionProtrusionIds((current) => {
-                                  const next = new Set(current)
-                                  if (event.target.checked) next.add(target.id); else next.delete(target.id)
-                                  return next
-                                })} />
-                              {formattedText(APP_TEXT.protrusionIdLocalContourPointsPoints, {
-                                id: target.id, points: target.local_outline_tenths_mm?.length ?? 0,
-                              })}
-                            </label>
-                          ))}
-                        </fieldset>
-                      )}
-                    </section>
-                  )}
-                </div>
+                <BeginnerRecognitionPanel
+                  locale={locale}
+                  coreBusy={coreBusy}
+                  recoveryBlocking={recoveryBlocking}
+                  workflow={beginnerRecognitionWorkflow}
+                />
                 <fieldset
                   aria-describedby="beginner-target-parts-help beginner-target-parts-total"
                   onInput={(event) => {
@@ -9698,40 +8078,6 @@ function App() {
       </footer>
     </main>
   )
-}
-
-function isBeginnerSymmetricTemplate(
-  kind:
-    | 'symmetric_four_leg_base'
-    | 'symmetric_wing_base'
-    | 'symmetric_bird_base'
-    | 'asymmetric_bird_landmark_base'
-    | 'asymmetric_four_leg_landmark_base'
-    | 'asymmetric_insect_landmark_base'
-    | 'asymmetric_fish_landmark_base'
-    | 'symmetric_fish_base'
-    | 'symmetric_ear_base'
-    | 'symmetric_horn_base'
-    | 'symmetric_antenna_base'
-    | 'symmetric_insect_leg_pair_base'
-    | 'symmetric_six_leg_base'
-    | 'center_axis_tail_base'
-    | 'center_axis_horn_base'
-    | 'center_axis_antenna_base'
-    | 'composite_tail_ear_base'
-    | 'composite_horn_ear_base'
-    | 'composite_horn_tail_base'
-    | 'composite_horn_tail_ear_base'
-    | 'composite_wing_antenna_base'
-    | 'composite_complete_insect_base'
-    | 'composite_complete_animal_base'
-    | 'composite_complete_winged_animal_base'
-    | 'composite_generic_target_base'
-    | 'vertical_book_fold'
-    | 'horizontal_book_fold'
-    | 'diagonal_fold',
-): kind is 'symmetric_four_leg_base' | 'symmetric_wing_base' | 'symmetric_bird_base' | 'asymmetric_bird_landmark_base' | 'asymmetric_four_leg_landmark_base' | 'asymmetric_insect_landmark_base' | 'asymmetric_fish_landmark_base' | 'symmetric_fish_base' | 'symmetric_ear_base' | 'symmetric_horn_base' | 'symmetric_antenna_base' | 'symmetric_insect_leg_pair_base' | 'symmetric_six_leg_base' | 'center_axis_tail_base' | 'center_axis_horn_base' | 'center_axis_antenna_base' | 'composite_tail_ear_base' | 'composite_horn_ear_base' | 'composite_horn_tail_base' | 'composite_horn_tail_ear_base' | 'composite_wing_antenna_base' | 'composite_complete_insect_base' | 'composite_complete_animal_base' | 'composite_complete_winged_animal_base' | 'composite_generic_target_base' {
-  return ['symmetric_four_leg_base', 'symmetric_wing_base', 'symmetric_bird_base', 'asymmetric_bird_landmark_base', 'asymmetric_four_leg_landmark_base', 'asymmetric_insect_landmark_base', 'asymmetric_fish_landmark_base', 'symmetric_fish_base', 'symmetric_ear_base', 'symmetric_horn_base', 'symmetric_antenna_base', 'symmetric_insect_leg_pair_base', 'symmetric_six_leg_base', 'center_axis_tail_base', 'center_axis_horn_base', 'center_axis_antenna_base', 'composite_tail_ear_base', 'composite_horn_ear_base', 'composite_horn_tail_base', 'composite_horn_tail_ear_base', 'composite_wing_antenna_base', 'composite_complete_insect_base', 'composite_complete_animal_base', 'composite_complete_winged_animal_base', 'composite_generic_target_base'].includes(kind)
 }
 
 function sameRecoveryCandidate(

@@ -6,6 +6,9 @@ const client = readFileSync('src/lib/coreClient.ts', 'utf8')
 const app = [
   readFileSync('src/App.tsx', 'utf8'),
   readFileSync('src/lib/appText.ts', 'utf8'),
+  readFileSync('src/components/BeginnerCandidateControls.tsx', 'utf8'),
+  readFileSync('src/components/BeginnerCandidateResults.tsx', 'utf8'),
+  readFileSync('src/lib/useBeginnerEditorState.ts', 'utf8'),
 ].join('\n')
 const native = readFileSync('src-tauri/src/lib.rs', 'utf8')
 const beginnerDesignNative = readFileSync('src-tauri/src/beginner_design_commands.rs', 'utf8')
@@ -76,7 +79,7 @@ test('confirmed image and 3D generic candidates retain vertical proof coverage',
   assert.match(browser, /Try tampered skeleton branch graph/u)
   assert.match(app, /analyzeGenericSkeletonTree/u)
   assert.match(app, /Cycles, duplicate edges, and disconnected skeletons cannot generate candidates/u)
-  assert.match(app, /beginnerSkeletonTree\.status !== 'tree'/u)
+  assert.match(app, /skeletonTreeStatus !== 'tree'/u)
   assert.match(browser, /Applied image outline evidence \+ 2 explicitly confirmed part meanings/u)
   assert.match(browserHarness, /Global flat-foldability proven/u)
   assert.match(browserHarness, /Native foldability admission: global proof \+ bounded fold path certificate/u)
@@ -110,7 +113,7 @@ test('image and GLB skeletons admit only bounded acyclic river-axial proposals',
   assert.match(native, /bounded_tree_paper_orientation_v1:horizontal/u)
   assert.match(native, /bounded_tree_paper_orientation_v1:vertical/u)
   assert.match(native, /\.take\(MAX_BEGINNER_GENERIC_TREE_ORIENTATIONS_V1\)/u)
-  assert.match(app, /beginnerSkeletonTree\.status !== 'tree'/u)
+  assert.match(app, /skeletonTreeStatus !== 'tree'/u)
 })
 
 test('applied generic trees persist inert versioned source provenance', () => {

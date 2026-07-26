@@ -5,6 +5,15 @@ import test from 'node:test'
 const app = [
   source('../src/App.tsx'),
   source('../src/lib/appText.ts'),
+  source('../src/components/BeginnerCandidateControls.tsx'),
+  source('../src/components/BeginnerCandidateResults.tsx'),
+  source('../src/components/BeginnerRecognitionPanel.tsx'),
+  source('../src/lib/useBeginnerCandidateWorkflow.ts'),
+  source('../src/lib/useBeginnerParameterGridWorkflow.ts'),
+  source('../src/lib/useBeginnerReferenceWorkflow.ts'),
+  source('../src/lib/useBeginnerRecognitionWorkflow.ts'),
+  source('../src/lib/useBeginnerEditorState.ts'),
+  source('../src/lib/useBeginnerProfileWorkflow.ts'),
 ].join('\n')
 const protrusionEditor = [
   source('../src/components/ProtrusionDimensionEditor.tsx'),
@@ -129,8 +138,8 @@ test('AUT-004 preview is bounded, project-bound, and stale-safe', () => {
     client,
     /getBeginnerReferenceModelGeometry[\s\S]*?matchesProjectOccGuard\(\{\s*expectedProjectInstanceId,\s*expectedProjectId,\s*expectedRevision,\s*\}, record/u,
   )
-  assert.match(app, /beginnerReferenceRequestRef\.current/u)
-  assert.match(app, /latest\.project_instance_id === geometry\.project_instance_id/u)
+  assert.match(app, /geometryRequestRef\.current/u)
+  assert.match(app, /matchesBeginnerProjectBinding\(\s*geometry,\s*input\.getCurrentSnapshot\(\)/u)
   assert.match(app, /Read-only 3D reference model/u)
 })
 
@@ -205,8 +214,8 @@ test('general GLB target proposal is offline bounded read-only and explicitly co
   assert.match(client, /stickBars\.length !== 3/u)
   assert.match(app, /General 3D proposal: quality/u)
   assert.match(app, /Review and copy general 3D proposal to editor/u)
-  assert.match(app, /setBeginnerSkeletonSegments\(suggestion\.stick_bars/u)
-  assert.match(app, /setBeginnerProtrusions\(suggestion\.general_protrusion_candidates/u)
+  assert.match(app, /setBeginnerSkeletonSegments\(\s*suggestion\.stick_bars/u)
+  assert.match(app, /setBeginnerProtrusions\(\s*suggestion\.general_protrusion_candidates/u)
 })
 
 test('disconnected GLB components form only one bounded custom tree proposal', () => {
@@ -292,8 +301,9 @@ test('custom silhouette thresholds are versioned bounded and stale-safe', () => 
   assert.match(client, /thresholds\.alpha < 0 \|\| thresholds\.alpha > 255/u)
   assert.match(app, /Silhouette alpha threshold/u)
   assert.match(app, /Silhouette luma threshold/u)
-  assert.match(app, /window\.setTimeout\(\(\) => requestBeginnerRecognition\('silhouette'\), 300\)/u)
-  assert.match(app, /beginnerRecognitionRequestRef\.current \+= 1/u)
+  assert.match(app, /useEffectEvent\(\(\) => requestBeginnerRecognition\('silhouette'\)\)/u)
+  assert.match(app, /scheduleDebounce\(requestSilhouetteAfterDebounce\)/u)
+  assert.match(app, /requestRef\.current \+= 1/u)
 })
 
 test('silhouette foreground polarity is explicit persisted and never auto-guessed', () => {

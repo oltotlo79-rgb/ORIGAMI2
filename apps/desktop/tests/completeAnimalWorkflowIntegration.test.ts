@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const app = [
+  readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/components/BeginnerCandidateControls.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/useBeginnerParameterGridWorkflow.ts', import.meta.url), 'utf8'),
+].join('\n')
 const client = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8')
 const native = readFileSync(new URL('../src-tauri/src/beginner_design_commands.rs', import.meta.url), 'utf8')
 const nativeTests = readFileSync(new URL('../src-tauri/src/tests.rs', import.meta.url), 'utf8')
@@ -15,7 +19,10 @@ test('complete animal recognition reaches the bounded grid through one native co
   assert.match(native, /fn evaluate_beginner_parameter_grid/)
   assert.match(client, /getBeginnerParameterGridProgress/)
   assert.match(app, /evaluateBeginnerParameterGrid/)
-  assert.match(app, /setBeginnerGridProgress\(\{ enumerated: 27, globalChecked: 3, refined: response\.refinement_iterations \}\)/)
+  assert.match(
+    app,
+    /setBeginnerGridProgress\(\{\s*enumerated: 27,\s*globalChecked: 3,\s*refined: response\.refinement_iterations,\s*\}\)/u,
+  )
 })
 
 test('optional wing pair stays the strict fifth binding across image, GLB, and wire', () => {
@@ -32,13 +39,13 @@ test('optional wing pair stays the strict fifth binding across image, GLB, and w
 test('grid cancellation and stale replacement stay generation and snapshot scoped', () => {
   assert.match(nativeTests, /beginner_grid_progress_is_bounded_and_cancel_is_generation_scoped/)
   assert.match(client, /cancelBeginnerParameterGrid/)
-  assert.match(app, /requestId !== beginnerGridRequestRef\.current/)
+  assert.match(app, /requestId !== requestRef\.current/)
   assert.match(
     app,
-    /matchesProjectOccGuard\(\{\s*expectedProjectInstanceId: response\.project_instance_id,\s*expectedProjectId: response\.project_id,\s*expectedRevision: response\.revision,\s*\}, latest\)/u,
+    /matchesBeginnerProjectBinding\(\s*response,\s*input\.getCurrentSnapshot\(\),?\s*\)/u,
   )
-  assert.match(app, /cancelBeginnerParameterGrid\(generationId\)/)
-  assert.match(app, /beginnerGridGenerationRef\.current = null\s*setBeginnerGridBusy\(false\)/)
+  assert.match(app, /transport\.cancel\(generationId\)/)
+  assert.match(app, /generationRef\.current = null[\s\S]*setBeginnerGridBusy\(false\)/u)
   assert.match(app, /finishBeginnerGridCancellation/)
   assert.match(workflow, /clearPreview\(\)\s*restoreFocus\(\)/)
 })
@@ -49,7 +56,7 @@ test('confirmed apply retains preview on failure and restores focus only after s
   assert.match(app, /runBeginnerGridApplyWorkflow/)
   assert.match(workflow, /if \(!confirm\(\)\) return false/)
   assert.match(workflow, /if \(!await apply\(\)\) return false/)
-  assert.match(app, /restoreFocus: \(\) => requestAnimationFrame\(\(\) => beginnerGridButtonRef\.current\?\.focus\(\)\)/)
+  assert.match(app, /function restoreFocus\(\)[\s\S]*buttonRef\.current\?\.focus\(\)/u)
   assert.match(app, /ref=\{beginnerGridButtonRef\}/)
 })
 

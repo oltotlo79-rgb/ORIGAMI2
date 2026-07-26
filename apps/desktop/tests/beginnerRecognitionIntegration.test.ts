@@ -5,6 +5,11 @@ import test from 'node:test'
 const app = [
   source('../src/App.tsx'),
   source('../src/lib/appText.ts'),
+  source('../src/components/BeginnerRecognitionPanel.tsx'),
+  source('../src/lib/useBeginnerRecognitionWorkflow.ts'),
+  source('../src/lib/useBeginnerEditorState.ts'),
+  source('../src/lib/useBeginnerProfileWorkflow.ts'),
+  source('../src/lib/useBeginnerCandidateWorkflow.ts'),
 ].join('\n')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/beginner_recognition.rs')
@@ -36,11 +41,12 @@ test('recognition is bound to the project instance, revision, underlay, asset, a
 })
 
 test('the read-only proposal is stale-safe, single-flight, and copied before normal save', () => {
-  assert.match(app, /beginnerRecognitionRequestRef/u)
+  assert.match(app, /requestRef/u)
+  assert.match(app, /busyRef\.current/u)
   assert.match(app, /beginnerRecognitionBusy/u)
   assert.match(
     app,
-    /matchesProjectOccGuard\(\{\s*expectedProjectInstanceId: binding\.instanceId,\s*expectedProjectId: binding\.projectId,\s*expectedRevision: binding\.revision,\s*\}, latest\)/u,
+    /matchesBeginnerProjectBinding\(\s*binding,\s*input\.getCurrentSnapshot\(\),?\s*\)/u,
   )
   assert.match(app, /Recognition proposal preview/u)
   assert.match(app, /Copy to editable fields/u)
@@ -49,7 +55,7 @@ test('the read-only proposal is stale-safe, single-flight, and copied before nor
   assert.match(app, /read-only outline proposal/u)
   assert.match(app, /no automatic design authority/u)
   assert.match(app, /onSubmit=\{submitBeginnerDesignProfile\}/u)
-  assert.match(app, /function invalidateBeginnerRecognition\(\)[\s\S]*?setBeginnerRecognitionBusy\(false\)/u)
+  assert.match(app, /function invalidateBeginnerRecognition\(\)[\s\S]*?setBusy\(false\)/u)
   assert.match(app, /Cancel image recognition/u)
 })
 
@@ -69,7 +75,7 @@ test('bounded PNG or JPEG silhouette recognition fails closed without inferred p
   assert.match(app, /proposal\.target_parts\.length > 0/u)
   assert.match(client, /generic_body_outline_tenths_mm\?: Array<\[number, number\]>/u)
   assert.match(client, /protrusions\?: BeginnerGenerationConstraintsV1\['protrusions'\]/u)
-  assert.match(app, /setBeginnerBodyOutline\(proposal\.generic_body_outline_tenths_mm/u)
+  assert.match(app, /setBeginnerBodyOutline\(\s*proposal\.generic_body_outline_tenths_mm/u)
   assert.match(app, /underlay\.asset === proposal\.source_asset_id/u)
   assert.match(app, /RecognitionContourCopyAction/u)
 })
@@ -86,7 +92,7 @@ test('multiple silhouettes form one bounded custom tree only through inferred MS
   assert.match(domain, /component_bridges_are_estimated/u)
   assert.match(domain, /explicit_override_required: inferred_component_bridges/u)
   assert.match(client, /aabb_squared_distance_v1/u)
-  assert.match(app, /=== 'aabb_squared_distance_v1' \? 'custom_object'/u)
+  assert.match(app, /=== 'aabb_squared_distance_v1'\s*\?\s*'custom_object'/u)
 })
 
 test('multiple outline candidates stay strict, stale-safe, and read-only', () => {
@@ -99,7 +105,7 @@ test('multiple outline candidates stay strict, stale-safe, and read-only', () =>
   assert.match(app, /Show outline candidates/u)
   assert.match(app, /Read-only outline candidates/u)
   assert.match(app, /They grant no generation authority/u)
-  assert.match(app, /requestId === beginnerRecognitionRequestRef\.current/u)
+  assert.match(app, /requestId === requestRef\.current/u)
 })
 
 test('an explicitly confirmed outline is revalidated and copied as one history command', () => {

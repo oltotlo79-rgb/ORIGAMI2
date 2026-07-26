@@ -14,6 +14,15 @@ const client = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url)
 const app = [
   readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/components/BeginnerCandidateControls.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/components/BeginnerCandidateResults.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/components/BeginnerRecognitionPanel.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/useBeginnerCandidateWorkflow.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/useBeginnerParameterGridWorkflow.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/useBeginnerReferenceWorkflow.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/useBeginnerRecognitionWorkflow.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/useBeginnerEditorState.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/useBeginnerProfileWorkflow.ts', import.meta.url), 'utf8'),
 ].join('\n')
 const completeAnimalBindingList = readFileSync(new URL('../src/components/CompleteAnimalBindingList.tsx', import.meta.url), 'utf8')
 const native = readFileSync(new URL('../src-tauri/src/beginner_design_commands.rs', import.meta.url), 'utf8')
@@ -53,8 +62,9 @@ test('candidate UI is bilingual, accessible, single-flight, and rejects stale AB
   assert.match(app, /設計候補の比較/)
   assert.match(app, /Compare design candidates/)
   assert.match(app, /aria-describedby="beginner-candidate-description"/)
-  assert.match(app, /if \(beginnerCandidateBusy\) return/)
-  assert.match(app, /latestSnapshotRef\.current !== current/)
+  assert.match(app, /if \(busyRef\.current\) return/)
+  assert.doesNotMatch(app, /input\.getCurrentSnapshot\(\) !== current/)
+  assert.match(app, /matchesBeginnerProjectBinding\(\s*binding,\s*input\.getCurrentSnapshot\(\)/u)
 })
 
 test('AUT-107 fixes the initial bulge and elasticity policy in native, IPC, and UI', () => {
@@ -85,7 +95,8 @@ test('AUT-101 exposes bounded generated crease patterns and instructions as read
   assert.match(app, /read-only candidate/)
   assert.match(app, /plan\.crease_pattern\.edges\.map/)
   assert.match(app, /cancelBeginnerCandidates/)
-  assert.match(app, /beginnerCandidateRequestRef\.current !== requestId/)
+  assert.match(app, /candidateRequestRef\.current !== requestId/)
+  assert.match(app, /consensusGenerationRef\.current !== generationId/)
 })
 
 test('AUT-101 admits only explicit symmetric animal and insect templates', () => {

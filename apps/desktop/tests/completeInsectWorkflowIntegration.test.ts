@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+const app = [
+  readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/components/BeginnerCandidateResults.tsx', import.meta.url), 'utf8'),
+].join('\n')
 const component = readFileSync(new URL('../src/components/CompleteInsectBindingList.tsx', import.meta.url), 'utf8')
 const componentText = readFileSync(new URL('../src/lib/completeInsectBindingListText.ts', import.meta.url), 'utf8')
 const native = readFileSync(new URL('../src-tauri/src/beginner_design_commands.rs', import.meta.url), 'utf8')

@@ -42,6 +42,9 @@ test('App and its extracted helpers reference the catalog for every fixed locali
     new URL('../src/lib/useFoldImportWorkflow.ts', import.meta.url),
     new URL('../src/lib/useSvgImportWorkflow.ts', import.meta.url),
     new URL('../src/lib/importWorkflowSupport.ts', import.meta.url),
+    new URL('../src/components/BeginnerCandidateControls.tsx', import.meta.url),
+    new URL('../src/components/BeginnerCandidateResults.tsx', import.meta.url),
+    new URL('../src/components/BeginnerRecognitionPanel.tsx', import.meta.url),
   ]
   const sources = paths.map((path) => ({
     path,

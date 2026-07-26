@@ -384,6 +384,11 @@ pub enum DirectConstraintConflictKindV1 {
         first_edge: EdgeId,
         second_edge: EdgeId,
     },
+    /// Opposing `LengthRatio` records join the same exact edge IDs and one
+    /// edge has a consistent positive finite fixed length. The other edge is
+    /// derived once through the ratio residual that names the fixed edge as
+    /// denominator; substituting that binary64 result into the opposing
+    /// production residual yields a non-zero or non-finite closure.
     NonReciprocalLengthRatiosWithFixedLength {
         first_edge: EdgeId,
         second_edge: EdgeId,
@@ -2242,9 +2247,6 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
             );
         }
     }
-    // Retain this legacy candidate join for stable canonicalization. Its
-    // exact-rational premise is not a proof about rounded solver residuals, so
-    // the emission boundary below quarantines the result.
     for ((first, second), forward_assignments) in &ratios {
         if first >= second {
             continue;
@@ -2252,31 +2254,20 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
         let Some(reverse_assignments) = ratios.get(&(*second, *first)) else {
             continue;
         };
-        let Some(forward) = consistent_scalar_assignment(forward_assignments) else {
-            continue;
-        };
-        let Some(reverse) = consistent_scalar_assignment(reverse_assignments) else {
-            continue;
-        };
-        if positive_binary64_product_is_one_v1(&[forward.value, reverse.value]) {
-            continue;
-        }
-        let fixed = fixed_lengths
-            .get(first)
-            .and_then(ScalarGroupSummary::consistent_assignment)
-            .or_else(|| {
-                fixed_lengths
-                    .get(second)
-                    .and_then(ScalarGroupSummary::consistent_assignment)
-            });
-        if let Some(fixed) = fixed {
+        if let Some(witness) = nonreciprocal_length_ratio_fixed_witness_v1(
+            *first,
+            *second,
+            forward_assignments,
+            reverse_assignments,
+            &fixed_lengths,
+        ) {
             push_conflict(
                 &mut conflicts,
                 DirectConstraintConflictKindV1::NonReciprocalLengthRatiosWithFixedLength {
                     first_edge: edge_ids[first],
                     second_edge: edge_ids[second],
                 },
-                [forward.id, reverse.id, fixed.id],
+                witness,
             );
         }
     }
@@ -2839,6 +2830,68 @@ fn equal_length_ratio_fixed_witness_v1(
                 })
         })
         .min_by(|left, right| canonical_id_slice_cmp(left, right))
+}
+
+/// Returns the canonical three-record binary64 closure proof for two opposing
+/// ratio residuals anchored by one exact fixed length.
+///
+/// When the canonical first edge is fixed, a zero reverse residual forces the
+/// second length to the once-rounded `reverse * first` product; the forward
+/// residual is then evaluated at exactly that value. The symmetric derivation
+/// is used when the second edge is fixed. This deliberately makes no inference
+/// from the exact-real product of the two stored ratios.
+fn nonreciprocal_length_ratio_fixed_witness_v1(
+    first: CanonicalId,
+    second: CanonicalId,
+    forward_assignments: &[ScalarAssignment],
+    reverse_assignments: &[ScalarAssignment],
+    fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
+) -> Option<[ConstraintId; 3]> {
+    let forward = consistent_scalar_assignment(forward_assignments)?;
+    let reverse = consistent_scalar_assignment(reverse_assignments)?;
+    if !forward.value.is_finite()
+        || forward.value <= 0.0
+        || !reverse.value.is_finite()
+        || reverse.value <= 0.0
+    {
+        return None;
+    }
+
+    let mut best: Option<[ConstraintId; 3]> = None;
+    for (fixed_edge, fixed_is_first) in [(first, true), (second, false)] {
+        let Some(fixed) = fixed_lengths
+            .get(&fixed_edge)
+            .and_then(ScalarGroupSummary::consistent_assignment)
+        else {
+            continue;
+        };
+        if !fixed.value.is_finite() || fixed.value <= 0.0 {
+            continue;
+        }
+
+        let closure_residual = if fixed_is_first {
+            let second_length =
+                length_ratio_scaled_denominator_binary64_v1(reverse.value, fixed.value);
+            length_ratio_residual_binary64_v1(fixed.value, forward.value, second_length)
+        } else {
+            let first_length =
+                length_ratio_scaled_denominator_binary64_v1(forward.value, fixed.value);
+            length_ratio_residual_binary64_v1(fixed.value, reverse.value, first_length)
+        };
+        if closure_residual == 0.0 {
+            continue;
+        }
+
+        let mut ids = [forward.id, reverse.id, fixed.id];
+        ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
+        if best
+            .as_ref()
+            .is_none_or(|current| canonical_id_slice_cmp(&ids, current).is_lt())
+        {
+            best = Some(ids);
+        }
+    }
+    best
 }
 
 /// Returns the canonical ratio pair whose implemented denominator products
@@ -3879,6 +3932,7 @@ fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bo
             | DirectConstraintConflictKindV1::HorizontalAndVertical { .. }
             | DirectConstraintConflictKindV1::EqualLengthWithDifferentFixedLengths { .. }
             | DirectConstraintConflictKindV1::EqualLengthWithNonUnitRatioAndFixedLength { .. }
+            | DirectConstraintConflictKindV1::NonReciprocalLengthRatiosWithFixedLength { .. }
             | DirectConstraintConflictKindV1::LengthRatioWithIncompatibleFixedLengths { .. }
             | DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent { .. }
             | DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
@@ -4489,6 +4543,10 @@ fn canonical_id_slice_cmp(left: &[ConstraintId], right: &[ConstraintId]) -> std:
 #[cfg(test)]
 #[path = "constraints_equal_ratio_fixed_tests.rs"]
 mod equal_ratio_fixed_tests;
+
+#[cfg(test)]
+#[path = "constraints_nonreciprocal_ratio_fixed_tests.rs"]
+mod nonreciprocal_ratio_fixed_tests;
 
 #[cfg(test)]
 mod tests {
@@ -6808,7 +6866,7 @@ mod tests {
     }
 
     #[test]
-    fn non_reciprocal_ratio_candidate_is_irredundant_but_solver_required() {
+    fn non_reciprocal_ratio_binary64_closure_conflict_is_irredundant() {
         let fixture = Fixture::new();
         let fixed = record(GeometricConstraintKindV1::FixedLength {
             edge: fixture.edges[0],
@@ -6827,8 +6885,25 @@ mod tests {
         let records = [fixed.clone(), forward.clone(), reverse.clone()];
         let prepared = prepare(&fixture, &document(records.clone()))
             .expect("the individually valid constraints prepare");
-        assert_solver_required(&prepared.preflight());
-        assert_bounded_direct_oracle_unknown(&prepared);
+        assert!(matches!(
+            prepared.preflight(),
+            ConstraintPreflightV1::DirectConflict { ref conflicts }
+                if conflicts.len() == 1
+                    && matches!(
+                        conflicts[0].conflict(),
+                        DirectConstraintConflictKindV1::
+                            NonReciprocalLengthRatiosWithFixedLength { .. }
+                    )
+                    && conflicts[0].constraint_ids()
+                        == sorted_ids(&[fixed.id, forward.id, reverse.id])
+        ));
+        assert!(matches!(
+            find_bounded_direct_mus_v1(&prepared),
+            BoundedDirectMusV1::ProvenUnsatisfiable {
+                ref constraint_ids,
+                ..
+            } if constraint_ids == &sorted_ids(&[fixed.id, forward.id, reverse.id])
+        ));
 
         for removed in 0..records.len() {
             let subset = records
@@ -6843,7 +6918,7 @@ mod tests {
                     prepared.preflight(),
                     ConstraintPreflightV1::DirectConflict { .. }
                 ),
-                "removing any candidate record must withdraw that quarantined candidate"
+                "removing any cause record must withdraw the binary64 closure proof"
             );
         }
         let reciprocal = record(GeometricConstraintKindV1::LengthRatio {

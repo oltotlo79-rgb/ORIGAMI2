@@ -84,6 +84,14 @@ fn sorted_ids(ids: impl IntoIterator<Item = ConstraintId>) -> Vec<ConstraintId> 
     ids
 }
 
+fn minimum_id(records: &[GeometricConstraintRecordV1]) -> ConstraintId {
+    records
+        .iter()
+        .map(|item| item.id)
+        .min_by_key(ConstraintId::canonical_bytes)
+        .unwrap()
+}
+
 fn core_records(
     fixture: &Fixture,
     fixed_edge: usize,
@@ -300,30 +308,27 @@ fn duplicate_equal_fixed_and_ratio_records_choose_one_canonical_witness() {
             ratio: 2.0,
         }),
     ];
-    let expected_ids = sorted_ids([
-        equals
-            .iter()
-            .map(|item| item.id)
-            .min_by_key(ConstraintId::canonical_bytes)
-            .unwrap(),
-        fixed
-            .iter()
-            .map(|item| item.id)
-            .min_by_key(ConstraintId::canonical_bytes)
-            .unwrap(),
-        ratios
-            .iter()
-            .map(|item| item.id)
-            .min_by_key(ConstraintId::canonical_bytes)
-            .unwrap(),
-    ]);
+    let fixed_id = minimum_id(&fixed);
+    let expected_ids = sorted_ids([minimum_id(&equals), fixed_id, minimum_id(&ratios)]);
+    let reciprocal_ids = sorted_ids([fixed_id, ratios[0].id, ratios[1].id]);
     let mut records = equals
         .into_iter()
         .chain(fixed)
         .chain(ratios)
         .collect::<Vec<_>>();
     let expected = prepare(&fixture, records.clone()).preflight();
-    assert_single_target(&expected, &fixture, &expected_ids);
+    let ConstraintPreflightV1::DirectConflict { conflicts } = &expected else {
+        panic!("both rounded-residual families must prove");
+    };
+    assert_eq!(conflicts.len(), 2);
+    assert!(conflicts.iter().any(|conflict| matches!(
+        conflict.conflict(),
+        DirectConstraintConflictKindV1::EqualLengthWithNonUnitRatioAndFixedLength { .. }
+    ) && conflict.constraint_ids() == expected_ids));
+    assert!(conflicts.iter().any(|conflict| matches!(
+        conflict.conflict(),
+        DirectConstraintConflictKindV1::NonReciprocalLengthRatiosWithFixedLength { .. }
+    ) && conflict.constraint_ids() == reciprocal_ids));
     records.reverse();
     assert_eq!(prepare(&fixture, records).preflight(), expected);
 }

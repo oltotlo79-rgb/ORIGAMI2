@@ -19,6 +19,8 @@ pub const MULTI_BLOCK_MIN_BLOCKS_V1: usize = 2;
 pub const MULTI_BLOCK_MAX_BLOCKS_V1: usize = 8;
 pub const MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1: &str =
     "bounded_multi_block_positive_layer_authority_v1";
+pub const COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1: &str =
+    "complete_live_multi_block_positive_layer_authority_v1";
 pub const BLOCK_UNION_COMPLETENESS_MAX_ITEMS_V1: usize = 4_096;
 
 pub struct BlockUnionCompletenessInputV1<'a> {
@@ -33,6 +35,7 @@ pub struct BlockUnionCompletenessGapReportV1 {
     live_hinges: Vec<EdgeId>,
     submitted_faces: Vec<FaceId>,
     submitted_hinges: Vec<EdgeId>,
+    blocks: Vec<CanonicalBlockBindingV1>,
     complete: bool,
 }
 
@@ -129,6 +132,7 @@ pub fn diagnose_block_union_completeness_v1(
         }
         canonical_blocks.push(CanonicalBlockBindingV1 { edges, faces });
     }
+    canonical_blocks.sort_unstable_by_key(|block| block.edges[0].canonical_bytes());
     let mut submitted_faces = blocks
         .iter()
         .flat_map(|block| block.faces.iter().copied())
@@ -152,6 +156,7 @@ pub fn diagnose_block_union_completeness_v1(
         live_hinges,
         submitted_faces,
         submitted_hinges,
+        blocks: canonical_blocks,
         complete,
     })
 }
@@ -223,6 +228,94 @@ pub struct MultiBlockPositiveLayerAuthorityV1 {
     positive: Vec<PositiveThicknessContinuousCertificateV1>,
     layer: Vec<GeneralMultiFaceCellTransportProofV1>,
     articulation_layer_fingerprint: [u8; 32],
+}
+
+/// Sealed evidence that one bounded submitted multi-block authority covers the
+/// exact live geometry instance from which its gap report was issued.
+///
+/// This type closes only the submitted-set completeness boundary. It does not
+/// prove cross-block continuous clearance, a common articulation pose, or
+/// cross-block layer transport, and therefore never authorizes Apply, project
+/// mutation, or a viewer snapshot.
+pub struct CompleteMultiBlockPositiveLayerAuthorityV1 {
+    binding: [u8; 32],
+    issuer: MaterialHingeGraphGeometry,
+    live_faces: Vec<FaceId>,
+    live_hinges: Vec<EdgeId>,
+    blocks: Vec<CanonicalBlockBindingV1>,
+    parent: MultiBlockPositiveLayerAuthorityV1,
+}
+
+impl CompleteMultiBlockPositiveLayerAuthorityV1 {
+    #[must_use]
+    pub const fn model_id(&self) -> &'static str {
+        COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1
+    }
+
+    #[must_use]
+    pub const fn binding_fingerprint_v1(&self) -> [u8; 32] {
+        self.binding
+    }
+
+    #[must_use]
+    pub fn block_count_v1(&self) -> usize {
+        self.blocks.len()
+    }
+
+    #[must_use]
+    pub const fn exact_live_union_certified_v1(&self) -> bool {
+        true
+    }
+
+    #[must_use]
+    pub const fn authorizes_project_mutation(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_apply(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub const fn authorizes_viewer(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn revalidates_v1(
+        &self,
+        live_geometry: &MaterialHingeGraphGeometry,
+        sources: &[&LayerOrderSnapshot],
+        thickness: f64,
+        issuer_context: [u8; 32],
+        articulation_layer_fingerprint: [u8; 32],
+        target_angles: &[(EdgeId, f64)],
+    ) -> bool {
+        self.issuer.same_instance(live_geometry)
+            && self.live_faces == canonical_faces_v1(live_geometry)
+            && self.live_hinges == canonical_hinges_v1(live_geometry)
+            && complete_block_union_matches_live_v1(
+                &self.blocks,
+                &self.live_faces,
+                &self.live_hinges,
+            )
+            && owned_multi_block_bindings_v1(&self.parent) == self.blocks
+            && self.parent.revalidates_v1(
+                sources,
+                thickness,
+                issuer_context,
+                articulation_layer_fingerprint,
+            )
+            && self.parent.target_angles_match_v1(target_angles)
+            && complete_multi_block_positive_layer_binding_v1(
+                self.parent.binding,
+                &self.live_faces,
+                &self.live_hinges,
+                &self.blocks,
+            ) == self.binding
+    }
 }
 
 impl MultiBlockPositiveLayerAuthorityV1 {
@@ -890,6 +983,158 @@ pub fn issue_multi_block_positive_layer_authority_v1(
     })
 }
 
+/// Seals an already-issued submitted-set authority to one exact live geometry.
+///
+/// The consumed gap report is unforgeable outside this module and retains the
+/// live geometry instance on which the canonical block union was observed.
+/// The returned authority deliberately remains non-authorizing for motion,
+/// Apply, project mutation, and viewer publication.
+#[allow(clippy::too_many_arguments)]
+pub fn issue_complete_multi_block_positive_layer_authority_v1(
+    live_geometry: &MaterialHingeGraphGeometry,
+    report: BlockUnionCompletenessGapReportV1,
+    parent: MultiBlockPositiveLayerAuthorityV1,
+    sources: &[&LayerOrderSnapshot],
+    thickness: f64,
+    issuer_context: [u8; 32],
+    articulation_layer_fingerprint: [u8; 32],
+    target_angles: &[(EdgeId, f64)],
+) -> Option<CompleteMultiBlockPositiveLayerAuthorityV1> {
+    if !complete_multi_block_report_matches_parent_v1(live_geometry, &report, &parent)
+        || !parent.revalidates_v1(
+            sources,
+            thickness,
+            issuer_context,
+            articulation_layer_fingerprint,
+        )
+        || !parent.target_angles_match_v1(target_angles)
+    {
+        return None;
+    }
+    let binding = complete_multi_block_positive_layer_binding_v1(
+        parent.binding,
+        &report.live_faces,
+        &report.live_hinges,
+        &report.blocks,
+    );
+    let authority = CompleteMultiBlockPositiveLayerAuthorityV1 {
+        binding,
+        issuer: report.issuer,
+        live_faces: report.live_faces,
+        live_hinges: report.live_hinges,
+        blocks: report.blocks,
+        parent,
+    };
+    authority
+        .revalidates_v1(
+            live_geometry,
+            sources,
+            thickness,
+            issuer_context,
+            articulation_layer_fingerprint,
+            target_angles,
+        )
+        .then_some(authority)
+}
+
+fn complete_multi_block_report_matches_parent_v1(
+    live_geometry: &MaterialHingeGraphGeometry,
+    report: &BlockUnionCompletenessGapReportV1,
+    parent: &MultiBlockPositiveLayerAuthorityV1,
+) -> bool {
+    report.is_for(live_geometry)
+        && report.complete
+        && complete_block_union_matches_live_v1(
+            &report.blocks,
+            &report.live_faces,
+            &report.live_hinges,
+        )
+        && owned_multi_block_bindings_v1(parent) == report.blocks
+}
+
+fn owned_multi_block_bindings_v1(
+    authority: &MultiBlockPositiveLayerAuthorityV1,
+) -> Vec<CanonicalBlockBindingV1> {
+    authority
+        .parent
+        .blocks
+        .iter()
+        .map(|block| CanonicalBlockBindingV1 {
+            edges: block.edges.clone(),
+            faces: block.faces.clone(),
+        })
+        .collect()
+}
+
+fn complete_block_union_matches_live_v1(
+    blocks: &[CanonicalBlockBindingV1],
+    live_faces: &[FaceId],
+    live_hinges: &[EdgeId],
+) -> bool {
+    if !multi_block_count_supported_v1(blocks.len())
+        || blocks.iter().any(|block| {
+            block.faces.is_empty()
+                || block.edges.is_empty()
+                || block
+                    .faces
+                    .windows(2)
+                    .any(|pair| pair[0].canonical_bytes() >= pair[1].canonical_bytes())
+                || block
+                    .edges
+                    .windows(2)
+                    .any(|pair| pair[0].canonical_bytes() >= pair[1].canonical_bytes())
+        })
+        || !block_intersection_is_tree_v1(blocks)
+    {
+        return false;
+    }
+    let mut face_union = blocks
+        .iter()
+        .flat_map(|block| block.faces.iter().copied())
+        .collect::<Vec<_>>();
+    face_union.sort_unstable_by_key(FaceId::canonical_bytes);
+    face_union.dedup();
+    let mut hinge_union = blocks
+        .iter()
+        .flat_map(|block| block.edges.iter().copied())
+        .collect::<Vec<_>>();
+    hinge_union.sort_unstable_by_key(EdgeId::canonical_bytes);
+    !hinge_union.windows(2).any(|pair| pair[0] == pair[1])
+        && face_union == live_faces
+        && hinge_union == live_hinges
+}
+
+fn complete_multi_block_positive_layer_binding_v1(
+    parent_binding: [u8; 32],
+    live_faces: &[FaceId],
+    live_hinges: &[EdgeId],
+    blocks: &[CanonicalBlockBindingV1],
+) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1.as_bytes());
+    hash.update(parent_binding);
+    hash.update((live_faces.len() as u64).to_le_bytes());
+    for face in live_faces {
+        hash.update(face.canonical_bytes());
+    }
+    hash.update((live_hinges.len() as u64).to_le_bytes());
+    for hinge in live_hinges {
+        hash.update(hinge.canonical_bytes());
+    }
+    hash.update((blocks.len() as u64).to_le_bytes());
+    for block in blocks {
+        hash.update((block.faces.len() as u64).to_le_bytes());
+        for face in &block.faces {
+            hash.update(face.canonical_bytes());
+        }
+        hash.update((block.edges.len() as u64).to_le_bytes());
+        for edge in &block.edges {
+            hash.update(edge.canonical_bytes());
+        }
+    }
+    hash.finalize().into()
+}
+
 fn multi_block_positive_layer_binding_v1(
     parent_binding: [u8; 32],
     layers: &[GeneralMultiFaceCellTransportProofV1],
@@ -1102,9 +1347,13 @@ mod miura_cactus_test_support;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet, HashSet};
+
     use super::{
-        CanonicalBlockBindingV1, MULTI_BLOCK_MAX_BLOCKS_V1, MULTI_BLOCK_MIN_BLOCKS_V1,
-        MultiBlockClosureInputV1, MultiBlockPositiveLayerInputV1, block_intersection_is_tree_v1,
+        COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1, CanonicalBlockBindingV1,
+        MULTI_BLOCK_MAX_BLOCKS_V1, MULTI_BLOCK_MIN_BLOCKS_V1, MultiBlockClosureInputV1,
+        MultiBlockPositiveLayerInputV1, block_intersection_is_tree_v1,
+        issue_complete_multi_block_positive_layer_authority_v1,
         issue_multi_block_closure_authority_v1, issue_multi_block_positive_layer_authority_v1,
         multi_block_count_supported_v1,
     };
@@ -1114,7 +1363,9 @@ mod tests {
         certify_general_multi_face_cell_transport_v1,
     };
     use ori_core::{analyze_global_flat_foldability, analyze_local_flat_foldability};
-    use ori_domain::{EdgeId, FaceId, ProjectId};
+    use ori_domain::{
+        CreasePattern, Edge, EdgeId, EdgeKind, FaceId, Paper, Point2, ProjectId, Vertex, VertexId,
+    };
     use ori_foldability::{
         GlobalFlatFoldabilityInput, GlobalFlatFoldabilityLimits, LayerOrderSnapshot,
     };
@@ -1132,6 +1383,353 @@ mod tests {
             edges: Vec::new(),
             faces,
         }
+    }
+
+    type MiuraBlockFixture = (CreasePattern, Paper, Vec<EdgeId>);
+
+    fn chain_pattern_for_cells(cells: &[(i16, i16)], namespace: ProjectId) -> MiuraBlockFixture {
+        let mut points = BTreeSet::new();
+        let mut incidence =
+            BTreeMap::<((i16, i16), (i16, i16)), (usize, (i16, i16), (i16, i16))>::new();
+        for &(x, y) in cells {
+            let corners = [(x, y), (x + 1, y), (x + 1, y + 1), (x, y + 1)];
+            points.extend(corners);
+            for index in 0..4 {
+                let start = corners[index];
+                let end = corners[(index + 1) % 4];
+                let key = if start < end {
+                    (start, end)
+                } else {
+                    (end, start)
+                };
+                incidence
+                    .entry(key)
+                    .and_modify(|entry| entry.0 += 1)
+                    .or_insert((1, start, end));
+            }
+        }
+        let vertex_id = |point: (i16, i16)| {
+            let mut name = Vec::with_capacity(5);
+            name.push(0xd1);
+            name.extend_from_slice(&point.0.to_be_bytes());
+            name.extend_from_slice(&point.1.to_be_bytes());
+            VertexId::derive_v5(namespace, &name)
+        };
+        let vertices = points
+            .iter()
+            .map(|&point| Vertex {
+                id: vertex_id(point),
+                position: Point2::new(f64::from(point.0) * 20.0, f64::from(point.1) * 20.0),
+            })
+            .collect::<Vec<_>>();
+        let mut moving = Vec::new();
+        let edges = incidence
+            .iter()
+            .map(|(&(first, second), &(count, start, end))| {
+                let mut name = Vec::with_capacity(9);
+                name.push(0xd2);
+                name.extend_from_slice(&first.0.to_be_bytes());
+                name.extend_from_slice(&first.1.to_be_bytes());
+                name.extend_from_slice(&second.0.to_be_bytes());
+                name.extend_from_slice(&second.1.to_be_bytes());
+                let id = EdgeId::derive_v5(namespace, &name);
+                let kind = if count == 1 {
+                    EdgeKind::Boundary
+                } else if first.1 == second.1 {
+                    moving.push(id);
+                    EdgeKind::Mountain
+                } else if first.1.rem_euclid(2) == 0 {
+                    EdgeKind::Valley
+                } else {
+                    EdgeKind::Mountain
+                };
+                Edge {
+                    id,
+                    start: vertex_id(start),
+                    end: vertex_id(end),
+                    kind,
+                }
+            })
+            .collect::<Vec<_>>();
+        let directed = incidence
+            .values()
+            .filter(|(count, _, _)| *count == 1)
+            .map(|(_, start, end)| (*start, *end))
+            .collect::<Vec<_>>();
+        let mut boundary = vec![directed[0].0];
+        while boundary.len() < directed.len() {
+            let cursor = *boundary.last().expect("boundary cursor");
+            let next = directed
+                .iter()
+                .find(|(start, _)| *start == cursor)
+                .expect("closed boundary")
+                .1;
+            boundary.push(next);
+        }
+        (
+            CreasePattern { vertices, edges },
+            Paper {
+                boundary_vertices: boundary.into_iter().map(vertex_id).collect(),
+                thickness_mm: 0.1,
+                ..Paper::default()
+            },
+            moving,
+        )
+    }
+
+    fn miura_block_chain_v1(block_count: usize) -> (Vec<MiuraBlockFixture>, MiuraBlockFixture) {
+        assert!((3..=MULTI_BLOCK_MAX_BLOCKS_V1).contains(&block_count));
+        let namespace = ProjectId::new();
+        let blocks = (0..block_count)
+            .map(|index| {
+                let x = i16::try_from(index * 2).expect("bounded block x");
+                let y = if index % 2 == 0 { 0_i16 } else { -2_i16 };
+                (x..=x + 2)
+                    .flat_map(|x| (y..=y + 2).map(move |y| (x, y)))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let combined = blocks
+            .iter()
+            .flat_map(|block| block.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        (
+            blocks
+                .iter()
+                .map(|cells| chain_pattern_for_cells(cells, namespace))
+                .collect(),
+            chain_pattern_for_cells(&combined, namespace),
+        )
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn prepare_complete_chain_v1(
+        block_count: usize,
+    ) -> (
+        Vec<(
+            CreasePattern,
+            MaterialHingeGraphGeometry,
+            MaterialHingeGraphAudit,
+            Vec<EdgeId>,
+            LayerOrderSnapshot,
+        )>,
+        Vec<(
+            CanonicalCycleScheduleV1,
+            ori_kinematics::DyadicMaterialHingeIntervalClosureCertificateV1,
+        )>,
+        MaterialHingeGraphGeometry,
+        MaterialHingeGraphGeometry,
+    ) {
+        let (fixtures, (live_pattern, live_paper, _)) = miura_block_chain_v1(block_count);
+        let face_namespace = ProjectId::new();
+        let mut prepared = fixtures
+            .into_iter()
+            .map(|(pattern, paper, moving)| {
+                let topology = analyze_faces(FaceExtractionInput {
+                    identity_namespace: face_namespace,
+                    source_revision: 1,
+                    paper: &paper,
+                    pattern: &pattern,
+                })
+                .snapshot
+                .expect("multi-block topology");
+                let geometry = MaterialHingeGraphGeometry::prepare(
+                    &pattern,
+                    &paper,
+                    &topology,
+                    TreeKinematicsLimits::default(),
+                )
+                .expect("multi-block geometry");
+                let audit =
+                    MaterialHingeGraphAudit::prepare(&topology, TreeKinematicsLimits::default())
+                        .expect("multi-block audit");
+                let local = analyze_local_flat_foldability(&paper, &pattern);
+                let source = analyze_global_flat_foldability(
+                    GlobalFlatFoldabilityInput::current_with_geometry(
+                        face_namespace,
+                        &paper,
+                        &pattern,
+                        &topology,
+                        &local,
+                    ),
+                    GlobalFlatFoldabilityLimits::default(),
+                )
+                .expect("multi-block flat foldability")
+                .layer_order()
+                .expect("multi-block layer order")
+                .clone();
+                (pattern, geometry, audit, moving, source)
+            })
+            .collect::<Vec<_>>();
+        prepared.sort_unstable_by_key(|(_, geometry, _, _, _)| {
+            geometry
+                .hinges()
+                .iter()
+                .map(|hinge| hinge.edge().canonical_bytes())
+                .min()
+                .expect("non-empty block")
+        });
+        let block_faces = prepared
+            .iter()
+            .map(|(_, geometry, _, _, _)| geometry.face_ids().to_vec())
+            .collect::<Vec<_>>();
+        let fixed_faces = block_faces
+            .iter()
+            .enumerate()
+            .map(|(index, faces)| {
+                faces
+                    .iter()
+                    .copied()
+                    .find(|face| {
+                        block_faces
+                            .iter()
+                            .enumerate()
+                            .any(|(other, candidate)| other != index && candidate.contains(face))
+                    })
+                    .expect("shared articulation")
+            })
+            .collect::<Vec<_>>();
+        let scheduled = prepared
+            .iter()
+            .enumerate()
+            .map(|(index, (pattern, geometry, audit, moving, _))| {
+                let fixed = fixed_faces[index];
+                let row = moving
+                    .iter()
+                    .map(|edge| {
+                        let edge = pattern
+                            .edges
+                            .iter()
+                            .find(|item| item.id == *edge)
+                            .expect("moving edge");
+                        pattern
+                            .vertices
+                            .iter()
+                            .find(|vertex| vertex.id == edge.start)
+                            .expect("moving start")
+                            .position
+                            .y
+                            .to_bits()
+                    })
+                    .min()
+                    .expect("moving row");
+                let active = moving
+                    .iter()
+                    .filter(|edge| {
+                        let edge = pattern
+                            .edges
+                            .iter()
+                            .find(|item| item.id == **edge)
+                            .expect("active edge");
+                        pattern
+                            .vertices
+                            .iter()
+                            .find(|vertex| vertex.id == edge.start)
+                            .expect("active start")
+                            .position
+                            .y
+                            .to_bits()
+                            == row
+                    })
+                    .copied()
+                    .collect::<HashSet<_>>();
+                let entries = geometry
+                    .hinges()
+                    .iter()
+                    .map(|hinge| {
+                        let moves = active.contains(&hinge.edge());
+                        HalfAngleRationalEntryInputV1 {
+                            edge: hinge.edge(),
+                            u_domain: [
+                                RationalCoefficientV1 {
+                                    numerator: 0,
+                                    denominator: 1,
+                                },
+                                RationalCoefficientV1 {
+                                    numerator: 1,
+                                    denominator: 1,
+                                },
+                            ],
+                            numerator_power_coefficients: vec![
+                                RationalCoefficientV1 {
+                                    numerator: 0,
+                                    denominator: 1,
+                                },
+                                RationalCoefficientV1 {
+                                    numerator: i64::from(moves),
+                                    denominator: 1,
+                                },
+                            ],
+                            denominator_power_coefficients: vec![RationalCoefficientV1 {
+                                numerator: if moves { 64 } else { 1 },
+                                denominator: 1,
+                            }],
+                        }
+                    })
+                    .collect();
+                let schedule = CanonicalCycleScheduleV1::prepare_half_angle_rational(
+                    geometry,
+                    audit,
+                    fixed,
+                    entries,
+                    CycleScheduleLimitsV1::default(),
+                )
+                .expect("multi-block schedule");
+                let closure = geometry
+                    .prove_dyadic_schedule_closure_v1(
+                        audit,
+                        fixed,
+                        &schedule,
+                        1.0e-8,
+                        DyadicIntervalClosureLimitsV1 {
+                            max_depth: 8,
+                            max_leaves: 256,
+                            max_work: 1_000_000,
+                            schedule_limits: CycleScheduleLimitsV1::default(),
+                        },
+                    )
+                    .expect("multi-block closure");
+                (schedule, closure)
+            })
+            .collect();
+        let live_topology = analyze_faces(FaceExtractionInput {
+            identity_namespace: face_namespace,
+            source_revision: 1,
+            paper: &live_paper,
+            pattern: &live_pattern,
+        })
+        .snapshot
+        .expect("live multi-block topology");
+        let live_geometry = MaterialHingeGraphGeometry::prepare(
+            &live_pattern,
+            &live_paper,
+            &live_topology,
+            TreeKinematicsLimits::default(),
+        )
+        .expect("live multi-block geometry");
+        let detached_live_geometry = MaterialHingeGraphGeometry::prepare(
+            &live_pattern,
+            &live_paper,
+            &live_topology,
+            TreeKinematicsLimits::default(),
+        )
+        .expect("detached live multi-block geometry");
+        (prepared, scheduled, live_geometry, detached_live_geometry)
+    }
+
+    fn completeness_report_v1(
+        geometry: &MaterialHingeGraphGeometry,
+        face_blocks: &[Vec<FaceId>],
+        hinge_blocks: &[Vec<EdgeId>],
+    ) -> Option<super::BlockUnionCompletenessGapReportV1> {
+        let inputs = face_blocks
+            .iter()
+            .zip(hinge_blocks)
+            .map(|(faces, hinges)| super::BlockUnionCompletenessInputV1 { faces, hinges })
+            .collect::<Vec<_>>();
+        super::diagnose_block_union_completeness_v1(geometry, &inputs)
     }
 
     #[test]
@@ -1617,5 +2215,383 @@ mod tests {
         let mut authority = authority;
         authority.binding[0] ^= 1;
         assert!(!authority.revalidates_v1(&sources, thickness, issuer_context, layer_fingerprint,));
+    }
+
+    fn assert_complete_live_multi_block_authority_v1(block_count: usize) {
+        let (prepared, scheduled, live_geometry, detached_live_geometry) =
+            prepare_complete_chain_v1(block_count);
+        assert_eq!(live_geometry, detached_live_geometry);
+        assert!(!live_geometry.same_instance(&detached_live_geometry));
+        let thickness = 0.1;
+        let issuer_context = [0x51; 32];
+        let layer_fingerprint = [0x52; 32];
+        let parent = issue_multi_block_closure_authority_v1(
+            prepared
+                .iter()
+                .zip(&scheduled)
+                .map(
+                    |((_, geometry, audit, _, _), (schedule, closure))| MultiBlockClosureInputV1 {
+                        geometry,
+                        audit,
+                        schedule,
+                        closure,
+                    },
+                )
+                .collect(),
+            thickness,
+            issuer_context,
+        )
+        .expect("complete multi-block closure authority");
+        let proofs = prepared
+            .iter()
+            .zip(&scheduled)
+            .map(|((_, geometry, audit, _, source), (schedule, closure))| {
+                let positive = certify_canonical_positive_thickness_cycle_schedule_path_v1(
+                    geometry,
+                    audit,
+                    closure.fixed_face(),
+                    schedule,
+                    closure,
+                    thickness,
+                    32,
+                )
+                .expect("complete multi-block positive path");
+                let layer =
+                    certify_general_multi_face_cell_transport_v1(GeneralCellTransportInputV1 {
+                        geometry,
+                        audit,
+                        source,
+                        schedule,
+                        closure,
+                        positive_continuous: &positive,
+                        paper_thickness_mm: thickness,
+                        tolerance: 1.0e-8,
+                        limits: GeneralCellTransportLimitsV1 {
+                            max_transitions: closure.leaves().len() + 1,
+                            max_cells: 1_000_000,
+                            max_layer_records: 1_000_000,
+                            max_boundary_samples: 1_000_000,
+                        },
+                    })
+                    .expect("complete multi-block layer transport");
+                (positive, layer)
+            })
+            .collect::<Vec<_>>();
+        let parent = issue_multi_block_positive_layer_authority_v1(
+            parent,
+            prepared
+                .iter()
+                .zip(proofs)
+                .map(|((_, geometry, _, _, source), (positive, layer))| {
+                    MultiBlockPositiveLayerInputV1 {
+                        geometry,
+                        source,
+                        positive,
+                        layer,
+                    }
+                })
+                .collect(),
+            layer_fingerprint,
+        )
+        .expect("complete multi-block positive layer authority");
+        let sources = prepared
+            .iter()
+            .map(|(_, _, _, _, source)| source)
+            .collect::<Vec<&LayerOrderSnapshot>>();
+        let target_angles = prepared
+            .iter()
+            .zip(&scheduled)
+            .flat_map(|((_, _, _, _, _), (schedule, _))| {
+                schedule
+                    .evaluate(1.0)
+                    .expect("target angles")
+                    .as_slice()
+                    .iter()
+                    .map(|angle| (angle.edge(), angle.angle_degrees()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let block_faces = prepared
+            .iter()
+            .map(|(_, geometry, _, _, _)| geometry.face_ids().to_vec())
+            .collect::<Vec<_>>();
+        let block_hinges = prepared
+            .iter()
+            .map(|(_, geometry, _, _, _)| {
+                geometry
+                    .hinges()
+                    .iter()
+                    .map(|hinge| hinge.edge())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        let mut omitted_faces = block_faces.clone();
+        let omitted_face = omitted_faces[0]
+            .iter()
+            .position(|face| {
+                !omitted_faces[1..]
+                    .iter()
+                    .any(|candidate| candidate.contains(face))
+            })
+            .expect("unique omitted face");
+        omitted_faces[0].remove(omitted_face);
+        assert!(
+            !completeness_report_v1(&live_geometry, &omitted_faces, &block_hinges)
+                .expect("omitted face report")
+                .exact_live_union_observed()
+        );
+        let mut extra_faces = block_faces.clone();
+        extra_faces[0].push(FaceId::new());
+        assert!(
+            !completeness_report_v1(&live_geometry, &extra_faces, &block_hinges)
+                .expect("extra face report")
+                .exact_live_union_observed()
+        );
+        let mut duplicate_faces = block_faces.clone();
+        let duplicate_face = duplicate_faces[0][0];
+        duplicate_faces[0].push(duplicate_face);
+        assert!(completeness_report_v1(&live_geometry, &duplicate_faces, &block_hinges).is_none());
+
+        let mut omitted_hinges = block_hinges.clone();
+        omitted_hinges[0].pop();
+        assert!(
+            !completeness_report_v1(&live_geometry, &block_faces, &omitted_hinges)
+                .expect("omitted hinge report")
+                .exact_live_union_observed()
+        );
+        let mut extra_hinges = block_hinges.clone();
+        extra_hinges[0].push(EdgeId::new());
+        assert!(
+            !completeness_report_v1(&live_geometry, &block_faces, &extra_hinges)
+                .expect("extra hinge report")
+                .exact_live_union_observed()
+        );
+        let mut duplicate_hinges = block_hinges.clone();
+        let duplicate_hinge = duplicate_hinges[1][0];
+        duplicate_hinges[0].push(duplicate_hinge);
+        assert!(
+            !completeness_report_v1(&live_geometry, &block_faces, &duplicate_hinges)
+                .expect("duplicate hinge report")
+                .exact_live_union_observed()
+        );
+
+        let mut disconnected_faces = block_faces.clone();
+        let mut adjacent = None;
+        'adjacent: for first in 0..block_count {
+            for second in first + 1..block_count {
+                let shared = block_faces[first]
+                    .iter()
+                    .copied()
+                    .filter(|face| block_faces[second].contains(face))
+                    .collect::<Vec<_>>();
+                if shared.len() == 1 {
+                    adjacent = Some((first, second, shared[0]));
+                    break 'adjacent;
+                }
+            }
+        }
+        let (first_adjacent, _, first_articulation) = adjacent.expect("adjacent blocks");
+        disconnected_faces[first_adjacent].retain(|face| *face != first_articulation);
+        assert!(
+            !completeness_report_v1(&live_geometry, &disconnected_faces, &block_hinges)
+                .expect("disconnected report")
+                .exact_live_union_observed()
+        );
+        let mut cyclic_faces = block_faces.clone();
+        let mut non_adjacent = None;
+        'non_adjacent: for first in 0..block_count {
+            for second in first + 1..block_count {
+                if block_faces[first]
+                    .iter()
+                    .all(|face| !block_faces[second].contains(face))
+                {
+                    non_adjacent = Some((first, second));
+                    break 'non_adjacent;
+                }
+            }
+        }
+        let (cycle_first, cycle_second) = non_adjacent.expect("non-adjacent blocks");
+        let cycle_face = cyclic_faces[cycle_second]
+            .iter()
+            .copied()
+            .find(|face| {
+                !cyclic_faces
+                    .iter()
+                    .enumerate()
+                    .any(|(index, candidate)| index != cycle_second && candidate.contains(face))
+            })
+            .expect("cycle face");
+        cyclic_faces[cycle_first].push(cycle_face);
+        assert!(
+            !completeness_report_v1(&live_geometry, &cyclic_faces, &block_hinges)
+                .expect("cycle report")
+                .exact_live_union_observed()
+        );
+
+        let mut mismatched_faces = block_faces.clone();
+        let first_unique = mismatched_faces[0]
+            .iter()
+            .position(|face| {
+                !mismatched_faces[1..]
+                    .iter()
+                    .any(|candidate| candidate.contains(face))
+            })
+            .expect("first unique face");
+        let second_unique = mismatched_faces[1]
+            .iter()
+            .position(|face| {
+                !mismatched_faces
+                    .iter()
+                    .enumerate()
+                    .any(|(index, candidate)| index != 1 && candidate.contains(face))
+            })
+            .expect("second unique face");
+        let first = mismatched_faces[0][first_unique];
+        mismatched_faces[0][first_unique] = mismatched_faces[1][second_unique];
+        mismatched_faces[1][second_unique] = first;
+        let mismatched_report =
+            completeness_report_v1(&live_geometry, &mismatched_faces, &block_hinges)
+                .expect("mismatched complete report");
+        assert!(mismatched_report.exact_live_union_observed());
+        assert_ne!(
+            super::owned_multi_block_bindings_v1(&parent),
+            mismatched_report.blocks
+        );
+        assert!(!super::complete_multi_block_report_matches_parent_v1(
+            &live_geometry,
+            &mismatched_report,
+            &parent,
+        ));
+
+        let mut reversed_faces = block_faces.clone();
+        let mut reversed_hinges = block_hinges.clone();
+        reversed_faces.reverse();
+        reversed_hinges.reverse();
+        let report = completeness_report_v1(&live_geometry, &reversed_faces, &reversed_hinges)
+            .expect("canonical complete report");
+        assert!(report.exact_live_union_observed());
+        assert!(!super::complete_multi_block_report_matches_parent_v1(
+            &detached_live_geometry,
+            &report,
+            &parent,
+        ));
+        let mut authority = issue_complete_multi_block_positive_layer_authority_v1(
+            &live_geometry,
+            report,
+            parent,
+            &sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+            &target_angles,
+        )
+        .expect("sealed complete multi-block authority");
+        assert_eq!(
+            authority.model_id(),
+            COMPLETE_MULTI_BLOCK_POSITIVE_LAYER_MODEL_ID_V1
+        );
+        assert_eq!(authority.block_count_v1(), block_count);
+        assert!(authority.exact_live_union_certified_v1());
+        assert!(!authority.authorizes_project_mutation());
+        assert!(!authority.authorizes_apply());
+        assert!(!authority.authorizes_viewer());
+        assert!(authority.revalidates_v1(
+            &live_geometry,
+            &sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+            &target_angles,
+        ));
+        assert!(!authority.revalidates_v1(
+            &detached_live_geometry,
+            &sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+            &target_angles,
+        ));
+        let mut reordered_sources = sources.clone();
+        reordered_sources.swap(0, 1);
+        assert!(!authority.revalidates_v1(
+            &live_geometry,
+            &reordered_sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+            &target_angles,
+        ));
+        assert!(!authority.revalidates_v1(
+            &live_geometry,
+            &sources,
+            thickness + 0.1,
+            issuer_context,
+            layer_fingerprint,
+            &target_angles,
+        ));
+        assert!(!authority.revalidates_v1(
+            &live_geometry,
+            &sources,
+            thickness,
+            [0x50; 32],
+            layer_fingerprint,
+            &target_angles,
+        ));
+        assert!(!authority.revalidates_v1(
+            &live_geometry,
+            &sources,
+            thickness,
+            issuer_context,
+            [0x53; 32],
+            &target_angles,
+        ));
+        let mut wrong_target = target_angles.clone();
+        wrong_target[0].1 = f64::from_bits(wrong_target[0].1.to_bits() ^ 1);
+        assert!(!authority.revalidates_v1(
+            &live_geometry,
+            &sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+            &wrong_target,
+        ));
+        let original_faces = authority.parent.parent.blocks[0].faces.clone();
+        authority.parent.parent.blocks[0].faces[0] = FaceId::new();
+        assert!(!authority.revalidates_v1(
+            &live_geometry,
+            &sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+            &target_angles,
+        ));
+        authority.parent.parent.blocks[0].faces = original_faces;
+        let original_binding = authority.binding;
+        authority.binding[0] ^= 1;
+        assert!(!authority.revalidates_v1(
+            &live_geometry,
+            &sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+            &target_angles,
+        ));
+        authority.binding = original_binding;
+        assert!(authority.revalidates_v1(
+            &live_geometry,
+            &sources,
+            thickness,
+            issuer_context,
+            layer_fingerprint,
+            &target_angles,
+        ));
+    }
+
+    #[test]
+    fn complete_live_three_four_and_eight_block_authorities_are_sealed_and_non_authorizing() {
+        for block_count in [3_usize, 4, 8] {
+            assert_complete_live_multi_block_authority_v1(block_count);
+        }
     }
 }

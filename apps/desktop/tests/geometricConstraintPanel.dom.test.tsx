@@ -245,7 +245,7 @@ describe('GeometricConstraintPanel', () => {
       status: 'direct_conflict',
       conflicts: [{
         conflict: { kind: 'horizontal_and_vertical', edge: IDS[0]! },
-        constraint_ids: [IDS[12]!, IDS[13]!],
+        constraint_ids: [IDS[12]!, IDS[13]!, IDS[14]!],
       }],
       bounded_direct_mus: PROVEN_BOUNDED_DIRECT_MUS,
     }
@@ -305,10 +305,10 @@ describe('GeometricConstraintPanel', () => {
     expect(
       screen.getByRole('list', { name: 'Direct conflict causes' }).textContent,
     ).toContain(
-      'Edge 00000000…0001 is constrained as both horizontal and vertical',
+      'Edge 00000000…0001 has a constraint that forbids zero length, but its horizontal and vertical constraints force zero length',
     )
     expect(alert.textContent).toContain(
-      'Causing constraints: 00000000…0013, 00000000…0014',
+      'Causing constraints: 00000000…0013, 00000000…0014, 00000000…0015',
     )
     expect(alert.textContent).toContain(
       'Smallest subset proven by the bounded direct-conflict oracle (3 constraints, 7 calls)',
@@ -579,7 +579,7 @@ describe('GeometricConstraintPanel', () => {
       status: 'direct_conflict',
       conflicts: [{
         conflict: { kind: 'horizontal_and_vertical', edge: IDS[0] },
-        constraint_ids: [IDS[12], IDS[13]],
+        constraint_ids: [IDS[12], IDS[13], IDS[14]],
       }],
       bounded_direct_mus: PROVEN_BOUNDED_DIRECT_MUS,
     }
@@ -588,11 +588,12 @@ describe('GeometricConstraintPanel', () => {
     let alert = screen.getByRole('alert')
     expect(alert.textContent).toContain('直接矛盾があります（1件）')
     expect(screen.getByRole('list', { name: '直接矛盾の原因' }).textContent).toContain(
-      '水平と垂直が同時に指定されています',
+      '長さ0を許さない制約',
     )
     expect(alert.textContent).toContain('原因となる制約')
     expect(alert.textContent).toContain('00000000…0013')
     expect(alert.textContent).toContain('00000000…0014')
+    expect(alert.textContent).toContain('00000000…0015')
     expect(alert.classList.contains('is-blocking')).toBe(true)
 
     rerender(panel({
@@ -724,8 +725,8 @@ describe('GeometricConstraintPanel', () => {
       }, '異なる長さ比'],
       [{
         conflict: { kind: 'horizontal_and_vertical', edge: IDS[0]! },
-        constraint_ids: [IDS[12]!, IDS[13]!],
-      }, '水平と垂直が同時'],
+        constraint_ids: [IDS[12]!, IDS[13]!, IDS[14]!],
+      }, '長さ0を許さない制約'],
       [{
         conflict: {
           kind: 'equal_length_with_different_fixed_lengths',

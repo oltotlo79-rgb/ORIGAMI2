@@ -857,6 +857,208 @@ mod tests {
         (pattern, document, start_id)
     }
 
+    #[derive(Debug, Clone, Copy)]
+    enum NormalizedEdgeProvider {
+        PointOnLine,
+        MirrorAxis,
+        AngleFirst,
+        AngleSecond,
+        AngleBisector,
+    }
+
+    struct NormalizedEdgeWitnessFixture {
+        pattern: CreasePattern,
+        center: VertexId,
+        target_endpoint: VertexId,
+        other_endpoint: VertexId,
+        third_endpoint: VertexId,
+        mirror_second: VertexId,
+        target_edge: EdgeId,
+        other_edge: EdgeId,
+        third_edge: EdgeId,
+    }
+
+    impl NormalizedEdgeWitnessFixture {
+        fn new() -> Self {
+            let center = VertexId::new();
+            let target_endpoint = VertexId::new();
+            let other_endpoint = VertexId::new();
+            let third_endpoint = VertexId::new();
+            let mirror_second = VertexId::new();
+            let target_edge = EdgeId::new();
+            let other_edge = EdgeId::new();
+            let third_edge = EdgeId::new();
+            let pattern = CreasePattern {
+                vertices: vec![
+                    Vertex {
+                        id: center,
+                        position: Point2::new(0.0, 0.0),
+                    },
+                    Vertex {
+                        id: target_endpoint,
+                        position: Point2::new(1.0, 0.0),
+                    },
+                    Vertex {
+                        id: other_endpoint,
+                        position: Point2::new(0.0, 1.0),
+                    },
+                    Vertex {
+                        id: third_endpoint,
+                        position: Point2::new(-1.0, 0.0),
+                    },
+                    Vertex {
+                        id: mirror_second,
+                        position: Point2::new(0.0, -1.0),
+                    },
+                ],
+                edges: vec![
+                    Edge {
+                        id: target_edge,
+                        start: center,
+                        end: target_endpoint,
+                        kind: EdgeKind::Auxiliary,
+                    },
+                    Edge {
+                        id: other_edge,
+                        start: center,
+                        end: other_endpoint,
+                        kind: EdgeKind::Auxiliary,
+                    },
+                    Edge {
+                        id: third_edge,
+                        start: center,
+                        end: third_endpoint,
+                        kind: EdgeKind::Auxiliary,
+                    },
+                ],
+            };
+            Self {
+                pattern,
+                center,
+                target_endpoint,
+                other_endpoint,
+                third_endpoint,
+                mirror_second,
+                target_edge,
+                other_edge,
+                third_edge,
+            }
+        }
+
+        fn provider(&self, provider: NormalizedEdgeProvider) -> GeometricConstraintKindV1 {
+            match provider {
+                NormalizedEdgeProvider::PointOnLine => GeometricConstraintKindV1::PointOnLine {
+                    vertex: self.other_endpoint,
+                    line_edge: self.target_edge,
+                },
+                NormalizedEdgeProvider::MirrorAxis => GeometricConstraintKindV1::MirrorSymmetry {
+                    first_vertex: self.other_endpoint,
+                    second_vertex: self.mirror_second,
+                    axis_edge: self.target_edge,
+                },
+                NormalizedEdgeProvider::AngleFirst => GeometricConstraintKindV1::AngleBisector {
+                    vertex: self.center,
+                    first_edge: self.target_edge,
+                    second_edge: self.other_edge,
+                    bisector_edge: self.third_edge,
+                },
+                NormalizedEdgeProvider::AngleSecond => GeometricConstraintKindV1::AngleBisector {
+                    vertex: self.center,
+                    first_edge: self.other_edge,
+                    second_edge: self.target_edge,
+                    bisector_edge: self.third_edge,
+                },
+                NormalizedEdgeProvider::AngleBisector => GeometricConstraintKindV1::AngleBisector {
+                    vertex: self.center,
+                    first_edge: self.other_edge,
+                    second_edge: self.third_edge,
+                    bisector_edge: self.target_edge,
+                },
+            }
+        }
+
+        fn positions(&self) -> HashMap<VertexId, Point2> {
+            self.pattern
+                .vertices
+                .iter()
+                .map(|vertex| (vertex.id, vertex.position))
+                .collect()
+        }
+
+        fn satisfying_positions(
+            &self,
+            provider: NormalizedEdgeProvider,
+            horizontal: bool,
+        ) -> HashMap<VertexId, Point2> {
+            let mut positions = self.positions();
+            let mut set = |vertex, x, y| {
+                positions.insert(vertex, Point2::new(x, y));
+            };
+            match (provider, horizontal) {
+                (NormalizedEdgeProvider::PointOnLine, true) => {
+                    set(self.target_endpoint, 1.0, 0.0);
+                    set(self.other_endpoint, 2.0, 0.0);
+                }
+                (NormalizedEdgeProvider::PointOnLine, false) => {
+                    set(self.target_endpoint, 0.0, 1.0);
+                    set(self.other_endpoint, 0.0, 2.0);
+                }
+                (NormalizedEdgeProvider::MirrorAxis, true) => {
+                    set(self.target_endpoint, 1.0, 0.0);
+                    set(self.other_endpoint, 0.0, 1.0);
+                    set(self.mirror_second, 0.0, -1.0);
+                }
+                (NormalizedEdgeProvider::MirrorAxis, false) => {
+                    set(self.target_endpoint, 0.0, 1.0);
+                    set(self.other_endpoint, 1.0, 0.0);
+                    set(self.mirror_second, -1.0, 0.0);
+                }
+                (
+                    NormalizedEdgeProvider::AngleFirst | NormalizedEdgeProvider::AngleSecond,
+                    true,
+                ) => {
+                    set(self.target_endpoint, 1.0, 0.0);
+                    set(self.other_endpoint, 0.0, 1.0);
+                    set(self.third_endpoint, 1.0, 1.0);
+                }
+                (
+                    NormalizedEdgeProvider::AngleFirst | NormalizedEdgeProvider::AngleSecond,
+                    false,
+                ) => {
+                    set(self.target_endpoint, 0.0, 1.0);
+                    set(self.other_endpoint, -1.0, 0.0);
+                    set(self.third_endpoint, -1.0, 1.0);
+                }
+                (NormalizedEdgeProvider::AngleBisector, true) => {
+                    set(self.target_endpoint, 1.0, 0.0);
+                    set(self.other_endpoint, 1.0, 1.0);
+                    set(self.third_endpoint, 1.0, -1.0);
+                }
+                (NormalizedEdgeProvider::AngleBisector, false) => {
+                    set(self.target_endpoint, 0.0, 1.0);
+                    set(self.other_endpoint, 1.0, 1.0);
+                    set(self.third_endpoint, -1.0, 1.0);
+                }
+            }
+            positions
+        }
+    }
+
+    fn solver_document(
+        constraints: impl IntoIterator<Item = GeometricConstraintKindV1>,
+    ) -> GeometricConstraintDocumentV1 {
+        GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: constraints
+                .into_iter()
+                .map(|constraint| GeometricConstraintRecordV1 {
+                    id: ConstraintId::new(),
+                    constraint,
+                })
+                .collect(),
+        }
+    }
+
     #[test]
     fn horizontal_and_vertical_alone_have_a_zero_length_residual_escape() {
         let (pattern, document, _) =
@@ -875,6 +1077,96 @@ mod tests {
             residuals(&pattern, &document, &collapsed).expect("finite zero-length residuals"),
             vec![0.0, 0.0]
         );
+    }
+
+    #[test]
+    fn normalized_edge_provider_witnesses_are_semantically_deletion_minimal() {
+        let fixture = NormalizedEdgeWitnessFixture::new();
+        for provider in [
+            NormalizedEdgeProvider::PointOnLine,
+            NormalizedEdgeProvider::MirrorAxis,
+            NormalizedEdgeProvider::AngleFirst,
+            NormalizedEdgeProvider::AngleSecond,
+            NormalizedEdgeProvider::AngleBisector,
+        ] {
+            let horizontal = GeometricConstraintKindV1::Horizontal {
+                edge: fixture.target_edge,
+            };
+            let vertical = GeometricConstraintKindV1::Vertical {
+                edge: fixture.target_edge,
+            };
+            let provider_kind = fixture.provider(provider);
+            let full =
+                solver_document([horizontal.clone(), vertical.clone(), provider_kind.clone()]);
+            let prepared = prepare_geometric_constraints_v1(
+                &fixture.pattern,
+                &full,
+                GeometricConstraintLimitsV1::default(),
+            )
+            .unwrap_or_else(|error| panic!("{provider:?} source fixture must prepare: {error:?}"));
+            assert!(matches!(
+                prepared.preflight(),
+                ConstraintPreflightV1::DirectConflict { ref conflicts }
+                    if conflicts.len() == 1
+                        && matches!(
+                            conflicts[0].conflict(),
+                            crate::DirectConstraintConflictKindV1::HorizontalAndVertical {
+                                edge
+                            } if *edge == fixture.target_edge
+                        )
+            ));
+            assert_eq!(
+                verify_geometric_constraint_solution_v1(&fixture.pattern, &full, f64::MAX),
+                Err(ConstraintSolveErrorV1::NonConvergent),
+                "{provider:?}: direct preflight must run before numerical tolerance"
+            );
+
+            let mut collapsed = fixture.positions();
+            collapsed.insert(fixture.target_endpoint, collapsed[&fixture.center]);
+            assert!(
+                matches!(
+                    residuals(&fixture.pattern, &full, &collapsed),
+                    Err(ConstraintSolveErrorV1::NonConvergent)
+                ),
+                "{provider:?}: its normalized edge role must reject collapse"
+            );
+
+            let orientations_only = solver_document([horizontal.clone(), vertical.clone()]);
+            assert_eq!(
+                residuals(&fixture.pattern, &orientations_only, &collapsed)
+                    .expect("H/V alone admit their private collapsed residual witness"),
+                vec![0.0, 0.0],
+                "{provider:?}"
+            );
+
+            let horizontal_subset = solver_document([horizontal.clone(), provider_kind.clone()]);
+            let horizontal_values = residuals(
+                &fixture.pattern,
+                &horizontal_subset,
+                &fixture.satisfying_positions(provider, true),
+            )
+            .unwrap_or_else(|error| {
+                panic!("{provider:?} horizontal subset must stay finite: {error:?}")
+            });
+            assert!(
+                maximum_absolute(&horizontal_values) <= 1e-12,
+                "{provider:?} horizontal subset residuals: {horizontal_values:?}"
+            );
+
+            let vertical_subset = solver_document([vertical.clone(), provider_kind]);
+            let vertical_values = residuals(
+                &fixture.pattern,
+                &vertical_subset,
+                &fixture.satisfying_positions(provider, false),
+            )
+            .unwrap_or_else(|error| {
+                panic!("{provider:?} vertical subset must stay finite: {error:?}")
+            });
+            assert!(
+                maximum_absolute(&vertical_values) <= 1e-12,
+                "{provider:?} vertical subset residuals: {vertical_values:?}"
+            );
+        }
     }
 
     #[test]

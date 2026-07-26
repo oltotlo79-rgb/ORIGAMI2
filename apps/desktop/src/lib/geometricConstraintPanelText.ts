@@ -350,8 +350,8 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
       'Different length ratios are assigned to the same pair of edges',
     ),
     horizontal_and_vertical: text(
-      '辺 {edge} に水平と垂直が同時に指定されています',
-      'Edge {edge} is constrained as both horizontal and vertical',
+      '辺 {edge} には長さ0を許さない制約がありますが、水平・垂直制約は長さ0を強制します',
+      'Edge {edge} has a constraint that forbids zero length, but its horizontal and vertical constraints force zero length',
     ),
     equal_length_with_different_fixed_lengths: text(
       '等長にした辺へ異なる固定長が指定されています',

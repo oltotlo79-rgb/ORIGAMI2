@@ -168,7 +168,7 @@ test('geometric constraint panel catalog is exact, closed, and deeply frozen', (
   }
   assert.equal(
     createHash('sha256').update(JSON.stringify(TEXT), 'utf8').digest('hex'),
-    'b1da3b86263396a9d3cb9eb0d5080cee6b638cb094f01866ac685b3ac438cb82',
+    '9fbac399909e4b2961fbec3cb1fbfd2f1a9e40de3ff7782208a87f927e39f58c',
   )
   assert.equal(Object.hasOwn(TEXT, 'ja'), false)
   assert.equal(TEXT.title.ja, '幾何制約')

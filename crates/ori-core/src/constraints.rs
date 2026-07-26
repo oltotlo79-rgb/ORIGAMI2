@@ -325,6 +325,15 @@ pub enum DirectConstraintConflictKindV1 {
         numerator_edge: EdgeId,
         denominator_edge: EdgeId,
     },
+    /// Horizontal and vertical constraints target the same edge while a third
+    /// exact constraint forbids the zero-length edge that would satisfy both
+    /// orientations.
+    ///
+    /// The third cause is either a consistent positive `FixedLength`, or a
+    /// `PointOnLine` line, `MirrorSymmetry` axis, or `AngleBisector` edge role
+    /// whose solver residual rejects collapse. Only the exact edge ID is used;
+    /// current coordinates and geometrically coincident alias edges are not
+    /// evidence for this contradiction.
     HorizontalAndVertical {
         edge: EdgeId,
     },
@@ -1642,6 +1651,22 @@ impl ScalarGroupSummary {
     }
 }
 
+/// Retains the canonical-smallest constraint that uses one exact edge in a
+/// residual which rejects a zero-length vector.
+fn observe_exact_nondegenerate_edge_use(
+    uses: &mut BTreeMap<CanonicalId, ConstraintId>,
+    edge: EdgeId,
+    constraint: ConstraintId,
+) {
+    uses.entry(edge.canonical_bytes())
+        .and_modify(|current| {
+            if constraint.canonical_bytes() < current.canonical_bytes() {
+                *current = constraint;
+            }
+        })
+        .or_insert(constraint);
+}
+
 #[cfg(test)]
 std::thread_local! {
     static FIXED_LENGTH_SUMMARY_VISITS: std::cell::Cell<Option<usize>> =
@@ -1692,6 +1717,8 @@ fn finish_fixed_length_summary_visit_count() -> usize {
 /// Fixed-length assignments are summarized during the single canonical record
 /// pass, so reusing one edge from many equal-length constraints never causes a
 /// cross-product rescan of fixed-length groups and equal-length pairs.
+/// Point-on-line, mirror-axis, and angle-bisector edge references are also
+/// indexed once during that pass for exact non-degeneracy witnesses.
 #[must_use]
 pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> ConstraintPreflightV1 {
     if set.constraints.len() > set.max_preflight_checks {
@@ -1715,6 +1742,7 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
     let mut points_on_lines: BTreeMap<(CanonicalId, CanonicalId), Vec<ConstraintId>> =
         BTreeMap::new();
     let mut mirrors: BTreeMap<MirrorAxisKey, Vec<ConstraintId>> = BTreeMap::new();
+    let mut exact_nondegenerate_edge_uses: BTreeMap<CanonicalId, ConstraintId> = BTreeMap::new();
     let mut unchecked = Vec::new();
 
     for record in &set.constraints {
@@ -1837,6 +1865,11 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                 unchecked.push(record.id);
             }
             GeometricConstraintKindV1::PointOnLine { vertex, line_edge } => {
+                observe_exact_nondegenerate_edge_use(
+                    &mut exact_nondegenerate_edge_uses,
+                    *line_edge,
+                    record.id,
+                );
                 points_on_lines
                     .entry((vertex.canonical_bytes(), line_edge.canonical_bytes()))
                     .or_default()
@@ -1848,6 +1881,11 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                 second_vertex,
                 axis_edge,
             } => {
+                observe_exact_nondegenerate_edge_use(
+                    &mut exact_nondegenerate_edge_uses,
+                    *axis_edge,
+                    record.id,
+                );
                 mirrors
                     .entry(MirrorAxisKey::relation(
                         *first_vertex,
@@ -1858,7 +1896,19 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                     .push(record.id);
                 unchecked.push(record.id);
             }
-            GeometricConstraintKindV1::AngleBisector { .. } => {
+            GeometricConstraintKindV1::AngleBisector {
+                first_edge,
+                second_edge,
+                bisector_edge,
+                ..
+            } => {
+                for edge in [*first_edge, *second_edge, *bisector_edge] {
+                    observe_exact_nondegenerate_edge_use(
+                        &mut exact_nondegenerate_edge_uses,
+                        edge,
+                        record.id,
+                    );
+                }
                 unchecked.push(record.id);
             }
         }
@@ -1938,16 +1988,21 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
             horizontal_ids.first(),
             vertical.get(edge).and_then(|ids| ids.first()),
         ) {
-            if let Some(fixed) = fixed_lengths
+            let fixed_id = fixed_lengths
                 .get(edge)
                 .and_then(ScalarGroupSummary::consistent_assignment)
-            {
+                .map(|assignment| assignment.id);
+            let noncollapse_id = fixed_id
+                .into_iter()
+                .chain(exact_nondegenerate_edge_uses.get(edge).copied())
+                .min_by_key(ConstraintId::canonical_bytes);
+            if let Some(noncollapse_id) = noncollapse_id {
                 push_conflict(
                     &mut conflicts,
                     DirectConstraintConflictKindV1::HorizontalAndVertical {
                         edge: edge_ids[edge],
                     },
-                    [*horizontal_id, *vertical_id, fixed.id],
+                    [*horizontal_id, *vertical_id, noncollapse_id],
                 );
             } else {
                 unchecked.extend([*horizontal_id, *vertical_id]);
@@ -6496,7 +6551,7 @@ mod tests {
     }
 
     #[test]
-    fn horizontal_and_vertical_require_a_positive_fixed_length_to_prove_conflict() {
+    fn horizontal_and_vertical_require_an_exact_noncollapse_witness() {
         let fixture = Fixture::new();
         let horizontal = record(GeometricConstraintKindV1::Horizontal {
             edge: fixture.edges[0],
@@ -6534,6 +6589,321 @@ mod tests {
                 }],
             }
         );
+    }
+
+    #[test]
+    fn horizontal_and_vertical_use_normalized_edge_constraints_as_noncollapse_witnesses() {
+        let fixture = Fixture::new();
+        let providers = [
+            (
+                "point-on-line",
+                GeometricConstraintKindV1::PointOnLine {
+                    vertex: fixture.vertices[2],
+                    line_edge: fixture.edges[0],
+                },
+            ),
+            (
+                "mirror axis",
+                GeometricConstraintKindV1::MirrorSymmetry {
+                    first_vertex: fixture.vertices[2],
+                    second_vertex: fixture.vertices[4],
+                    axis_edge: fixture.edges[0],
+                },
+            ),
+            (
+                "angle-bisector arm",
+                GeometricConstraintKindV1::AngleBisector {
+                    vertex: fixture.vertices[0],
+                    first_edge: fixture.edges[0],
+                    second_edge: fixture.edges[1],
+                    bisector_edge: fixture.edges[2],
+                },
+            ),
+        ];
+
+        for (description, provider_kind) in providers {
+            let horizontal = record(GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[0],
+            });
+            let vertical = record(GeometricConstraintKindV1::Vertical {
+                edge: fixture.edges[0],
+            });
+            let provider = record(provider_kind);
+            let records = vec![vertical.clone(), provider.clone(), horizontal.clone()];
+            let prepared = prepare(&fixture, &document(records.clone()))
+                .unwrap_or_else(|error| panic!("{description} witness must prepare: {error:?}"));
+            assert_eq!(
+                prepared.preflight(),
+                ConstraintPreflightV1::DirectConflict {
+                    conflicts: vec![DirectConstraintConflictV1 {
+                        conflict: DirectConstraintConflictKindV1::HorizontalAndVertical {
+                            edge: fixture.edges[0],
+                        },
+                        constraint_ids: sorted_ids(&[horizontal.id, vertical.id, provider.id,]),
+                    }],
+                },
+                "{description}"
+            );
+
+            let BoundedDirectMusV1::ProvenUnsatisfiable {
+                constraint_ids,
+                oracle_calls,
+            } = find_bounded_direct_mus_v1(&prepared)
+            else {
+                panic!("{description} must feed the bounded direct MUS oracle")
+            };
+            assert_eq!(
+                constraint_ids,
+                sorted_ids(&[horizontal.id, vertical.id, provider.id]),
+                "{description}"
+            );
+            assert_eq!(oracle_calls, 7, "{description}");
+
+            for removed in [horizontal.id, vertical.id, provider.id] {
+                let subset = records
+                    .iter()
+                    .filter(|record| record.id != removed)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                assert!(
+                    !matches!(
+                        prepare(&fixture, &document(subset))
+                            .expect("proper normalized-edge witness subset")
+                            .preflight(),
+                        ConstraintPreflightV1::DirectConflict { .. }
+                    ),
+                    "{description}: deleting {removed:?} must remove the direct contradiction"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn horizontal_and_vertical_detect_every_angle_bisector_edge_role() {
+        let fixture = Fixture::new();
+        let roles = [
+            (fixture.edges[0], fixture.edges[1], fixture.edges[2]),
+            (fixture.edges[1], fixture.edges[0], fixture.edges[2]),
+            (fixture.edges[1], fixture.edges[2], fixture.edges[0]),
+        ];
+
+        for (first_edge, second_edge, bisector_edge) in roles {
+            let horizontal = record(GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[0],
+            });
+            let vertical = record(GeometricConstraintKindV1::Vertical {
+                edge: fixture.edges[0],
+            });
+            let bisector = record(GeometricConstraintKindV1::AngleBisector {
+                vertex: fixture.vertices[0],
+                first_edge,
+                second_edge,
+                bisector_edge,
+            });
+            assert_eq!(
+                prepare(
+                    &fixture,
+                    &document([bisector.clone(), horizontal.clone(), vertical.clone()]),
+                )
+                .expect("every angle-bisector role is locally valid")
+                .preflight(),
+                ConstraintPreflightV1::DirectConflict {
+                    conflicts: vec![DirectConstraintConflictV1 {
+                        conflict: DirectConstraintConflictKindV1::HorizontalAndVertical {
+                            edge: fixture.edges[0],
+                        },
+                        constraint_ids: sorted_ids(&[horizontal.id, vertical.id, bisector.id,]),
+                    }],
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn horizontal_and_vertical_select_the_canonical_noncollapse_witness() {
+        let fixture = Fixture::new();
+        let first_horizontal = record(GeometricConstraintKindV1::Horizontal {
+            edge: fixture.edges[0],
+        });
+        let second_horizontal = record(GeometricConstraintKindV1::Horizontal {
+            edge: fixture.edges[0],
+        });
+        let first_vertical = record(GeometricConstraintKindV1::Vertical {
+            edge: fixture.edges[0],
+        });
+        let second_vertical = record(GeometricConstraintKindV1::Vertical {
+            edge: fixture.edges[0],
+        });
+        let fixed = record(fixed_length(&fixture, 0, 1.0));
+        let point = record(GeometricConstraintKindV1::PointOnLine {
+            vertex: fixture.vertices[2],
+            line_edge: fixture.edges[0],
+        });
+        let mirror = record(GeometricConstraintKindV1::MirrorSymmetry {
+            first_vertex: fixture.vertices[2],
+            second_vertex: fixture.vertices[4],
+            axis_edge: fixture.edges[0],
+        });
+        let bisector = record(GeometricConstraintKindV1::AngleBisector {
+            vertex: fixture.vertices[0],
+            first_edge: fixture.edges[0],
+            second_edge: fixture.edges[1],
+            bisector_edge: fixture.edges[2],
+        });
+        let expected_horizontal = [first_horizontal.id, second_horizontal.id]
+            .into_iter()
+            .min_by_key(ConstraintId::canonical_bytes)
+            .unwrap();
+        let expected_vertical = [first_vertical.id, second_vertical.id]
+            .into_iter()
+            .min_by_key(ConstraintId::canonical_bytes)
+            .unwrap();
+        let expected_provider = [fixed.id, point.id, mirror.id, bisector.id]
+            .into_iter()
+            .min_by_key(ConstraintId::canonical_bytes)
+            .unwrap();
+        let expected = ConstraintPreflightV1::DirectConflict {
+            conflicts: vec![DirectConstraintConflictV1 {
+                conflict: DirectConstraintConflictKindV1::HorizontalAndVertical {
+                    edge: fixture.edges[0],
+                },
+                constraint_ids: sorted_ids(&[
+                    expected_horizontal,
+                    expected_vertical,
+                    expected_provider,
+                ]),
+            }],
+        };
+        let mut records = vec![
+            first_horizontal,
+            second_vertical,
+            fixed,
+            point,
+            second_horizontal,
+            first_vertical,
+            mirror,
+            bisector,
+        ];
+        let forward = prepare(&fixture, &document(records.clone()))
+            .expect("duplicate canonical witnesses prepare")
+            .preflight();
+        records.reverse();
+        let reverse = prepare(&fixture, &document(records))
+            .expect("source-reversed canonical witnesses prepare")
+            .preflight();
+        assert_eq!(forward, expected);
+        assert_eq!(reverse, expected);
+    }
+
+    #[test]
+    fn horizontal_and_vertical_noncollapse_witness_requires_the_same_exact_edge() {
+        let fixture = Fixture::new();
+        let providers = [
+            GeometricConstraintKindV1::PointOnLine {
+                vertex: fixture.vertices[2],
+                line_edge: fixture.edges[5],
+            },
+            GeometricConstraintKindV1::MirrorSymmetry {
+                first_vertex: fixture.vertices[2],
+                second_vertex: fixture.vertices[4],
+                axis_edge: fixture.edges[4],
+            },
+            GeometricConstraintKindV1::AngleBisector {
+                vertex: fixture.vertices[0],
+                first_edge: fixture.edges[1],
+                second_edge: fixture.edges[2],
+                bisector_edge: fixture.edges[3],
+            },
+        ];
+
+        for provider_kind in providers {
+            let horizontal = record(GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[0],
+            });
+            let vertical = record(GeometricConstraintKindV1::Vertical {
+                edge: fixture.edges[0],
+            });
+            let provider = record(provider_kind);
+            assert_eq!(
+                prepare(
+                    &fixture,
+                    &document([horizontal.clone(), vertical.clone(), provider.clone()]),
+                )
+                .expect("nonmatching exact edge witness prepares")
+                .preflight(),
+                ConstraintPreflightV1::Unknown {
+                    reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                    unchecked_constraint_ids: sorted_ids(&[
+                        horizontal.id,
+                        vertical.id,
+                        provider.id,
+                    ]),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn normalized_edge_witness_precedes_general_parallel_for_horizontal_and_vertical() {
+        let fixture = Fixture::new();
+        let horizontal = record(GeometricConstraintKindV1::Horizontal {
+            edge: fixture.edges[0],
+        });
+        let vertical = record(GeometricConstraintKindV1::Vertical {
+            edge: fixture.edges[0],
+        });
+        let point = record(GeometricConstraintKindV1::PointOnLine {
+            vertex: fixture.vertices[2],
+            line_edge: fixture.edges[0],
+        });
+        let parallel = record(GeometricConstraintKindV1::Parallel {
+            first_edge: fixture.edges[0],
+            second_edge: fixture.edges[4],
+        });
+
+        assert_eq!(
+            prepare(
+                &fixture,
+                &document([
+                    parallel.clone(),
+                    vertical.clone(),
+                    point.clone(),
+                    horizontal.clone(),
+                ]),
+            )
+            .expect("fixed normalized-edge witness with incident parallel")
+            .preflight(),
+            ConstraintPreflightV1::DirectConflict {
+                conflicts: vec![DirectConstraintConflictV1 {
+                    conflict: DirectConstraintConflictKindV1::HorizontalAndVertical {
+                        edge: fixture.edges[0],
+                    },
+                    constraint_ids: sorted_ids(&[horizontal.id, vertical.id, point.id]),
+                }],
+            }
+        );
+        let without_point = prepare(
+            &fixture,
+            &document([parallel.clone(), vertical.clone(), horizontal.clone()]),
+        )
+        .expect("general same-node parallel witness");
+        assert!(matches!(
+            without_point.preflight(),
+            ConstraintPreflightV1::DirectConflict { ref conflicts }
+                if conflicts.len() == 1
+                    && matches!(
+                        conflicts[0].conflict(),
+                        DirectConstraintConflictKindV1::
+                            PerpendicularOrientationsInParallelComponent {
+                                parallel_constraint_count: 1,
+                                ..
+                            }
+                    )
+                    && same_ids(
+                        conflicts[0].constraint_ids(),
+                        &[horizontal.id, vertical.id, parallel.id],
+                    )
+        ));
     }
 
     #[test]

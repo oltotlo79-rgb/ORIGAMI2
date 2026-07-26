@@ -219,7 +219,10 @@
         "8bdb61e8f36b05d54b15cfb87326a580e684cbbf",
         "5d38e10ecf311abd94d008528d638895c3c70aa1",
         "9a96b89a5149041b96fe4e3a2e0b0f7be3c5dbd5",
-        "2a33b9aaa592266990e75da0f36707d175fef7fa"
+        "2a33b9aaa592266990e75da0f36707d175fef7fa",
+        "7bfeba0c40ac4e084263f79bb9457b70eb4fdc09",
+        "27b26585cc33618061d4c3c51987c96eeead8982",
+        "b5ca7e2c4ac0bba124a96e5c04922f34153fcddd"
       ],
       "evidence": [
         {
@@ -326,13 +329,53 @@
           "kind": "test",
           "path": "apps/desktop/src-tauri/src/tests.rs",
           "selector": "fn geometric_constraint_pre_cancel_ledger_is_bounded_and_evicts_oldest_only()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraints/directed_ratio_closure.rs",
+          "selector": "pub(super) fn conflict_with_limits_and_observer("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_general_ratio_graph_tests.rs",
+          "selector": "fn every_four_cycle_root_and_both_directions_are_canonical_and_irredundant()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "fn fixed_angle_rejects_zero_cross_binary64_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_same_orientation_angle_tests.rs",
+          "selector": "fn zero_cross_classification_uses_the_shared_binary64_residual()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_same_orientation_angle_limits_tests.rs",
+          "selector": "fn exact_resource_and_work_limits_are_admitted_and_one_short_is_fail_closed()"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "fn fixed_angle_rejects_perpendicular_binary64_v1("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_perpendicular_angle_tests.rs",
+          "selector": "fn perpendicular_actual_classes_use_only_shared_binary64_operations()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints_perpendicular_angle_limits_tests.rs",
+          "selector": "fn exact_resource_and_work_limits_are_admitted_and_one_short_is_fail_closed()"
         }
       ],
       "limitations": [
-        "only twelve of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the eleven retained legacy variants fail closed to Unknown"
+        "only fifteen of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the eight retained legacy variants fail closed to Unknown"
       ],
       "missingAcceptance": [
-        "complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded ten-kind zero-length proof"
+        "complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded exact-zero and directed length-ratio proof families"
       ]
     },
     {

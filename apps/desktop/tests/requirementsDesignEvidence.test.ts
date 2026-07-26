@@ -48,7 +48,7 @@ test('the evidence audit does not promote the remaining SIM-010 proof boundary',
   assert.match(evidence, /SIM-010の未証明範囲を完成へ昇格させる証拠には使用しない/u)
 })
 
-test('EDT-009 retains twenty-one legacy tags and tracks twelve sound proof families', () => {
+test('EDT-009 retains twenty-one legacy tags and tracks fifteen sound proof families', () => {
   const enumBody = constraints.match(
     /pub enum DirectConstraintConflictKindV1 \{(?<body>[\s\S]*?)\n\}/u,
   )?.groups?.body
@@ -71,11 +71,14 @@ test('EDT-009 retains twenty-one legacy tags and tracks twelve sound proof famil
     'DifferentLengthRatios',
     'DifferentFixedLengthsInEqualLengthComponent',
     'ParallelWithPerpendicularOrientations',
+    'SameOrientationWithFixedNonParallelAngle',
+    'PerpendicularOrientationsWithFixedNonRightAngle',
     'PositiveFixedLengthInBoundedZeroLengthClosure',
     'ZeroLengthClosureReachesNondegenerateProvider',
     'EqualLengthWithNonUnitRatioAndFixedLength',
     'NonReciprocalLengthRatiosWithFixedLength',
     'NonUnitLengthRatioCycleWithFixedLength',
+    'InconsistentLengthRatioGraphWithFixedLength',
   ]
   const documentedVariants = [
     ...statusRow.matchAll(/`(?<name>[A-Z][A-Za-z0-9]+)`/gu),
@@ -87,11 +90,11 @@ test('EDT-009 retains twenty-one legacy tags and tracks twelve sound proof famil
   assert.deepEqual(documentedVariants, allowlist)
   assert.equal(
     enumVariants.filter((name) => !allowlist.includes(name)).length,
-    11,
+    8,
   )
   assert.match(statusRow, /legacy 21 variantをwire互換/u)
   assert.match(statusRow, /sound allowlist/u)
-  assert.match(statusRow, /残る11 variant/u)
+  assert.match(statusRow, /残る8 variant/u)
   assert.match(statusRow, /`Unknown`へfail-closed/u)
   assert.match(statusRow, /全11種の一般充足可能性、完全な一般矛盾原因、一般最小不能部分集合は未完成/u)
 
@@ -113,11 +116,35 @@ test('EDT-009 retains twenty-one legacy tags and tracks twelve sound proof famil
   )
   assert.match(
     status,
-    /2026-07-26 EDT-009比率実残差閉包追補:[^\n]+sound familyは12種、legacy fail-closedは11種[^\n]+本項がvariant数・sound family数の現行正本/u,
+    /2026-07-26 EDT-009比率実残差閉包追補:[^\n]+sound familyは12種、legacy fail-closedは11種[^\n]+本項が一般比率グラフ実装前のvariant数・sound family数の現行正本であった/u,
   )
   assert.match(
     progress,
     /2026-07-26 EDT-009比率実残差閉包追補:[^\n]+sound familyは12種、legacy fail-closedは11種/u,
+  )
+  assert.match(
+    status,
+    /2026-07-26 EDT-009一般有向比率グラフ追補:[^\n]+sound familyは13種、legacy fail-closedは10種[^\n]+本項がvariant数・sound family数の現行正本/u,
+  )
+  assert.match(
+    progress,
+    /2026-07-26 EDT-009一般有向比率グラフ追補:[^\n]+sound familyは13種、legacy fail-closedは10種/u,
+  )
+  assert.match(
+    status,
+    /2026-07-26 EDT-009同軸固定角追補:[^\n]+sound familyは14種、legacy fail-closedは9種[^\n]+本項が直交固定角実装前のvariant数・sound family数の現行正本であった/u,
+  )
+  assert.match(
+    progress,
+    /2026-07-26 EDT-009同軸固定角追補:[^\n]+sound familyは14種、legacy fail-closedは9種/u,
+  )
+  assert.match(
+    status,
+    /2026-07-26 EDT-009直交固定角追補:[^\n]+sound familyは15種、legacy fail-closedは8種[^\n]+本項がvariant数・sound family数の現行正本/u,
+  )
+  assert.match(
+    progress,
+    /2026-07-26 EDT-009直交固定角追補:[^\n]+sound familyは15種、legacy fail-closedは8種/u,
   )
   assert.match(progress, /\*\*81\.96%（表示82\.0%）\*\*/u)
   assert.match(status, /\*\*実装済み85 \/ 部分実装2 \/ 未着手0\*\*/u)
@@ -127,10 +154,10 @@ test('EDT-009 retains twenty-one legacy tags and tracks twelve sound proof famil
   )
   assert.ok(edtEvidence)
   assert.deepEqual(edtEvidence.limitations, [
-    'only twelve of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the eleven retained legacy variants fail closed to Unknown',
+    'only fifteen of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the eight retained legacy variants fail closed to Unknown',
   ])
   assert.deepEqual(edtEvidence.missingAcceptance, [
-    'complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded ten-kind zero-length proof',
+    'complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded exact-zero and directed length-ratio proof families',
   ])
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
@@ -139,6 +166,22 @@ test('EDT-009 retains twenty-one legacy tags and tracks twelve sound proof famil
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
       item.selector === 'fn partially_checked_fixed_angle_and_ratio_kinds_return_unknown()',
+  ))
+  assert.ok(edtEvidence.commits.includes(
+    '27b26585cc33618061d4c3c51987c96eeead8982',
+  ))
+  assert.ok(edtEvidence.commits.includes(
+    'b5ca7e2c4ac0bba124a96e5c04922f34153fcddd',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { path: string, selector: string }) =>
+      item.path === 'crates/ori-core/src/constraints_same_orientation_angle_tests.rs'
+      && item.selector === 'fn zero_cross_classification_uses_the_shared_binary64_residual()',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { path: string, selector: string }) =>
+      item.path === 'crates/ori-core/src/constraints_perpendicular_angle_tests.rs'
+      && item.selector === 'fn perpendicular_actual_classes_use_only_shared_binary64_operations()',
   ))
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
@@ -200,6 +243,16 @@ test('EDT-009 retains twenty-one legacy tags and tracks twelve sound proof famil
     (item: { path: string, selector: string }) =>
       item.path === 'apps/desktop/src-tauri/src/tests.rs'
       && item.selector === 'fn geometric_constraint_pre_cancel_ledger_is_bounded_and_evicts_oldest_only()',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { path: string, selector: string }) =>
+      item.path === 'crates/ori-core/src/constraints/directed_ratio_closure.rs'
+      && item.selector === 'pub(super) fn conflict_with_limits_and_observer(',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { path: string, selector: string }) =>
+      item.path === 'crates/ori-core/src/constraints_general_ratio_graph_tests.rs'
+      && item.selector === 'fn every_four_cycle_root_and_both_directions_are_canonical_and_irredundant()',
   ))
   assert.match(nativeTests, /fn geometric_constraint_worker_cancel_is_bound_to_exact_request_generation\(\)/u)
   assert.match(nativeTests, /fn geometric_constraint_gate_consumes_exact_cancel_before_acquire_once\(\)/u)

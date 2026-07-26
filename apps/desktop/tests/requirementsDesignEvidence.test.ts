@@ -48,7 +48,7 @@ test('the evidence audit does not promote the remaining SIM-010 proof boundary',
   assert.match(evidence, /SIM-010の未証明範囲を完成へ昇格させる証拠には使用しない/u)
 })
 
-test('EDT-009 retains twenty-one legacy tags and adds two bounded sound proof families', () => {
+test('EDT-009 retains twenty-one legacy tags and tracks twelve sound proof families', () => {
   const enumBody = constraints.match(
     /pub enum DirectConstraintConflictKindV1 \{(?<body>[\s\S]*?)\n\}/u,
   )?.groups?.body
@@ -73,6 +73,9 @@ test('EDT-009 retains twenty-one legacy tags and adds two bounded sound proof fa
     'ParallelWithPerpendicularOrientations',
     'PositiveFixedLengthInBoundedZeroLengthClosure',
     'ZeroLengthClosureReachesNondegenerateProvider',
+    'EqualLengthWithNonUnitRatioAndFixedLength',
+    'NonReciprocalLengthRatiosWithFixedLength',
+    'NonUnitLengthRatioCycleWithFixedLength',
   ]
   const documentedVariants = [
     ...statusRow.matchAll(/`(?<name>[A-Z][A-Za-z0-9]+)`/gu),
@@ -84,11 +87,11 @@ test('EDT-009 retains twenty-one legacy tags and adds two bounded sound proof fa
   assert.deepEqual(documentedVariants, allowlist)
   assert.equal(
     enumVariants.filter((name) => !allowlist.includes(name)).length,
-    14,
+    11,
   )
   assert.match(statusRow, /legacy 21 variantをwire互換/u)
   assert.match(statusRow, /sound allowlist/u)
-  assert.match(statusRow, /残る14 variant/u)
+  assert.match(statusRow, /残る11 variant/u)
   assert.match(statusRow, /`Unknown`へfail-closed/u)
   assert.match(statusRow, /全11種の一般充足可能性、完全な一般矛盾原因、一般最小不能部分集合は未完成/u)
 
@@ -108,6 +111,14 @@ test('EDT-009 retains twenty-one legacy tags and adds two bounded sound proof fa
     progress,
     /2026-07-26 EDT-009非退化provider閉包追補:[^\n]+合計23 variantのうちsound familyは9種、legacy fail-closedは14種/u,
   )
+  assert.match(
+    status,
+    /2026-07-26 EDT-009比率実残差閉包追補:[^\n]+sound familyは12種、legacy fail-closedは11種[^\n]+本項がvariant数・sound family数の現行正本/u,
+  )
+  assert.match(
+    progress,
+    /2026-07-26 EDT-009比率実残差閉包追補:[^\n]+sound familyは12種、legacy fail-closedは11種/u,
+  )
   assert.match(progress, /\*\*81\.96%（表示82\.0%）\*\*/u)
   assert.match(status, /\*\*実装済み85 \/ 部分実装2 \/ 未着手0\*\*/u)
 
@@ -116,7 +127,7 @@ test('EDT-009 retains twenty-one legacy tags and adds two bounded sound proof fa
   )
   assert.ok(edtEvidence)
   assert.deepEqual(edtEvidence.limitations, [
-    'only nine of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the fourteen retained legacy variants fail closed to Unknown',
+    'only twelve of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the eleven retained legacy variants fail closed to Unknown',
   ])
   assert.deepEqual(edtEvidence.missingAcceptance, [
     'complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded ten-kind zero-length proof',

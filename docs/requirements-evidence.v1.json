@@ -329,7 +329,7 @@
         }
       ],
       "limitations": [
-        "only nine of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the fourteen retained legacy variants fail closed to Unknown"
+        "only twelve of the twenty-three wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the eleven retained legacy variants fail closed to Unknown"
       ],
       "missingAcceptance": [
         "complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded ten-kind zero-length proof"

@@ -753,7 +753,10 @@ mod tests {
     #[derive(Debug, Clone, Copy)]
     enum QuarantinedDirectFamily {
         DifferentFixedAngles,
-        DifferentLengthRatios,
+        // The fixed-denominator, product-incompatible subset is proven by
+        // preflight. This fixture has no fixed denominator and therefore must
+        // never even become a quarantined direct candidate.
+        DifferentLengthRatiosWithoutFixedDenominator,
         EqualLengthWithNonUnitRatioAndFixedLength,
         NonReciprocalLengthRatiosWithFixedLength,
         // This family has one sound rounded-residual subset. The fixture below
@@ -955,7 +958,7 @@ mod tests {
                     },
                 ])
             }
-            QuarantinedDirectFamily::DifferentLengthRatios => {
+            QuarantinedDirectFamily::DifferentLengthRatiosWithoutFixedDenominator => {
                 let first_edge = builder.independent_edge(Point2::new(minimum, 0.0));
                 let second_edge = builder.independent_edge(Point2::new(minimum, 0.0));
                 builder.finish([
@@ -1322,8 +1325,8 @@ mod tests {
         DifferentFixedAngles
     );
     quarantined_family_regression!(
-        different_length_ratios_are_solver_required,
-        DifferentLengthRatios
+        different_length_ratios_without_fixed_denominator_are_solver_required,
+        DifferentLengthRatiosWithoutFixedDenominator
     );
     quarantined_family_regression!(
         equal_length_nonunit_ratio_fixed_length_is_solver_required,
@@ -1452,6 +1455,142 @@ mod tests {
             Err(ConstraintSolveErrorV1::NonConvergent),
             "direct preflight must run before even the largest finite verifier tolerance"
         );
+    }
+
+    #[test]
+    fn different_ratio_products_with_fixed_denominator_are_rejected_before_tolerance() {
+        let mut builder = CounterexampleBuilder::default();
+        let numerator_edge = builder.independent_edge(Point2::new(2.0, 0.0));
+        let denominator_edge = builder.independent_edge(Point2::new(1.0, 0.0));
+        let example = builder.finish([
+            GeometricConstraintKindV1::FixedLength {
+                edge: denominator_edge,
+                length_mm: 1.0,
+            },
+            GeometricConstraintKindV1::LengthRatio {
+                numerator_edge,
+                denominator_edge,
+                ratio: 2.0,
+            },
+            GeometricConstraintKindV1::LengthRatio {
+                numerator_edge,
+                denominator_edge,
+                ratio: 3.0,
+            },
+        ]);
+        let values = residuals(&example.pattern, &example.document, &example.positions)
+            .expect("the ordinary incompatible ratio products remain finite");
+        assert_eq!(values, [0.0, 0.0, -1.0]);
+
+        let prepared = prepare_geometric_constraints_v1(
+            &example.pattern,
+            &example.document,
+            GeometricConstraintLimitsV1::default(),
+        )
+        .expect("the three individually valid records prepare");
+        assert!(matches!(
+            prepared.preflight(),
+            ConstraintPreflightV1::DirectConflict {
+                ref conflicts
+            } if conflicts.len() == 1
+                && matches!(
+                    conflicts[0].conflict(),
+                    crate::DirectConstraintConflictKindV1::DifferentLengthRatios {
+                        numerator_edge: actual_numerator,
+                        denominator_edge: actual_denominator,
+                    } if *actual_numerator == numerator_edge
+                        && *actual_denominator == denominator_edge
+                )
+                && conflicts[0].constraint_ids().len() == 3
+        ));
+
+        let drivers = example
+            .pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, example.positions[&vertex.id]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            solve_geometric_constraints_with_drivers_v1(
+                &example.pattern,
+                &example.document,
+                &drivers,
+                ConstraintSolveLimitsV1::default(),
+            ),
+            Err(ConstraintSolveErrorV1::NonConvergent),
+            "direct preflight must run before a fully driven non-zero residual is tolerated"
+        );
+        assert_eq!(
+            verify_geometric_constraint_solution_v1(&example.pattern, &example.document, f64::MAX,),
+            Err(ConstraintSolveErrorV1::NonConvergent),
+            "direct preflight must run before even the largest finite verifier tolerance"
+        );
+    }
+
+    #[test]
+    fn different_ratios_with_fixed_denominator_can_share_an_underflowed_zero_numerator() {
+        let minimum = f64::from_bits(1);
+        let mut builder = CounterexampleBuilder::default();
+        let numerator_edge = builder.independent_edge(Point2::new(0.0, 0.0));
+        let denominator_edge = builder.independent_edge(Point2::new(minimum, 0.0));
+        let example = builder.finish([
+            GeometricConstraintKindV1::FixedLength {
+                edge: denominator_edge,
+                length_mm: minimum,
+            },
+            GeometricConstraintKindV1::LengthRatio {
+                numerator_edge,
+                denominator_edge,
+                ratio: 0.25,
+            },
+            GeometricConstraintKindV1::LengthRatio {
+                numerator_edge,
+                denominator_edge,
+                ratio: 0.5,
+            },
+        ]);
+        let values = residuals(&example.pattern, &example.document, &example.positions)
+            .expect("both ratio products underflow to the shared zero numerator");
+        assert_eq!(values, [0.0, 0.0, 0.0]);
+
+        let prepared = prepare_geometric_constraints_v1(
+            &example.pattern,
+            &example.document,
+            GeometricConstraintLimitsV1::default(),
+        )
+        .expect("the rounded-zero counterexample prepares");
+        let mut ratio_ids = example.document.constraints[1..]
+            .iter()
+            .map(|record| record.id)
+            .collect::<Vec<_>>();
+        ratio_ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
+        assert_eq!(
+            prepared.preflight(),
+            ConstraintPreflightV1::Unknown {
+                reason: crate::GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                unchecked_constraint_ids: ratio_ids,
+            },
+            "equal finite products, including shared positive underflow, must remain unknown"
+        );
+        assert!(matches!(
+            crate::find_bounded_direct_mus_v1(&prepared),
+            crate::BoundedDirectMusV1::Unknown { .. }
+        ));
+
+        let drivers = example
+            .pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, example.positions[&vertex.id]))
+            .collect::<Vec<_>>();
+        let preview = solve_geometric_constraints_with_drivers_v1(
+            &example.pattern,
+            &example.document,
+            &drivers,
+            ConstraintSolveLimitsV1::default(),
+        )
+        .expect("the full-driver rounded-zero counterexample must remain satisfiable");
+        assert_eq!(preview.maximum_residual, 0.0);
     }
 
     #[test]

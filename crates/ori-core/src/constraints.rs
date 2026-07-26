@@ -327,6 +327,11 @@ pub enum DirectConstraintConflictKindV1 {
         first_edge: EdgeId,
         second_edge: EdgeId,
     },
+    /// Two bit-distinct positive finite ratios target the same ordered edge
+    /// pair, and the denominator has one consistent positive finite fixed
+    /// length. The three-record witness is emitted only when the two
+    /// denominator products, evaluated in the solver's binary64 operation
+    /// order, differ numerically or at least one product is non-finite.
     DifferentLengthRatios {
         numerator_edge: EdgeId,
         denominator_edge: EdgeId,
@@ -1940,14 +1945,22 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
         }
     }
     for ((numerator, denominator), assignments) in &ratios {
-        if let Some(witness) = different_scalar_witness(assignments) {
+        let denominator_length = fixed_lengths
+            .get(denominator)
+            .and_then(ScalarGroupSummary::consistent_assignment);
+        if let Some(denominator_length) = denominator_length
+            && let Some(witness) = incompatible_ratio_pair_with_fixed_denominator_witness_v1(
+                assignments,
+                denominator_length,
+            )
+        {
             push_conflict(
                 &mut conflicts,
                 DirectConstraintConflictKindV1::DifferentLengthRatios {
                     numerator_edge: edge_ids[numerator],
                     denominator_edge: edge_ids[denominator],
                 },
-                witness,
+                [witness[0].id, witness[1].id, denominator_length.id],
             );
         }
         let Some(ratio) = consistent_scalar_assignment(assignments) else {
@@ -1959,10 +1972,7 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
         else {
             continue;
         };
-        let Some(denominator_length) = fixed_lengths
-            .get(denominator)
-            .and_then(ScalarGroupSummary::consistent_assignment)
-        else {
+        let Some(denominator_length) = denominator_length else {
             continue;
         };
         if numerator_length.value.is_finite()
@@ -2551,6 +2561,62 @@ fn consistent_scalar_assignment(assignments: &[ScalarAssignment]) -> Option<Scal
         })
 }
 
+/// Returns the canonical ratio pair whose implemented denominator products
+/// cannot both equal one numerator length.
+///
+/// A positive finite fixed denominator makes every zero fixed-length residual
+/// use exactly `denominator.value`. For two ratio residuals to both be zero,
+/// their separately rounded products must therefore be the same finite
+/// binary64 value. Equal finite products (including a shared underflow to zero)
+/// deliberately remain solver-required.
+fn incompatible_ratio_pair_with_fixed_denominator_witness_v1(
+    assignments: &[ScalarAssignment],
+    denominator: ScalarAssignment,
+) -> Option<[ScalarAssignment; 2]> {
+    if !denominator.value.is_finite() || denominator.value <= 0.0 {
+        return None;
+    }
+
+    let first = *assignments
+        .iter()
+        .filter(|assignment| assignment.value.is_finite() && assignment.value > 0.0)
+        .min_by_key(|assignment| assignment.id.canonical_bytes())?;
+    let first_product = length_ratio_scaled_denominator_binary64_v1(first.value, denominator.value);
+    let second = *assignments
+        .iter()
+        .filter(|assignment| {
+            assignment.value.is_finite()
+                && assignment.value > 0.0
+                && assignment.value.to_bits() != first.value.to_bits()
+        })
+        .filter(|assignment| {
+            let second_product =
+                length_ratio_scaled_denominator_binary64_v1(assignment.value, denominator.value);
+            !first_product.is_finite()
+                || !second_product.is_finite()
+                || first_product != second_product
+        })
+        .min_by_key(|assignment| assignment.id.canonical_bytes())?;
+
+    // If any incompatible pair exists, the canonical-smallest valid
+    // assignment participates in one: otherwise every bit-distinct ratio has
+    // the same finite product as `first`, so no two products are incompatible.
+    let mut witness = [first, second];
+    witness.sort_unstable_by_key(|assignment| assignment.id.canonical_bytes());
+    debug_assert!({
+        let first_product =
+            length_ratio_scaled_denominator_binary64_v1(witness[0].value, denominator.value);
+        let second_product =
+            length_ratio_scaled_denominator_binary64_v1(witness[1].value, denominator.value);
+        !first_product.is_finite() || !second_product.is_finite() || first_product != second_product
+    });
+    Some(witness)
+}
+
+fn length_ratio_scaled_denominator_binary64_v1(ratio: f64, denominator_length: f64) -> f64 {
+    ratio * denominator_length
+}
+
 /// Evaluates the V1 length-ratio residual in its canonical binary64 operation
 /// order.
 ///
@@ -2562,7 +2628,7 @@ pub(crate) fn length_ratio_residual_binary64_v1(
     ratio: f64,
     denominator_length: f64,
 ) -> f64 {
-    let scaled_denominator = ratio * denominator_length;
+    let scaled_denominator = length_ratio_scaled_denominator_binary64_v1(ratio, denominator_length);
     numerator_length - scaled_denominator
 }
 
@@ -3518,6 +3584,7 @@ fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bo
     matches!(
         conflict,
         DirectConstraintConflictKindV1::DifferentFixedLengths { .. }
+            | DirectConstraintConflictKindV1::DifferentLengthRatios { .. }
             | DirectConstraintConflictKindV1::HorizontalAndVertical { .. }
             | DirectConstraintConflictKindV1::EqualLengthWithDifferentFixedLengths { .. }
             | DirectConstraintConflictKindV1::LengthRatioWithIncompatibleFixedLengths { .. }
@@ -6132,6 +6199,7 @@ mod tests {
         }
         for (ratio, valid) in [
             (-1.0, false),
+            (-0.0, false),
             (0.0, false),
             (f64::MIN_POSITIVE, true),
             (f64::MAX, true),
@@ -7247,6 +7315,261 @@ mod tests {
                 ),
                 "{label}: the shared residual boundary must prove the contradiction"
             );
+        }
+    }
+
+    #[test]
+    fn different_ratios_need_a_fixed_denominator_and_incompatible_binary64_products() {
+        let fixture = Fixture::new();
+        let numerator_edge = fixture.edges[0];
+        let denominator_edge = fixture.edges[1];
+        let fixed = record(GeometricConstraintKindV1::FixedLength {
+            edge: denominator_edge,
+            length_mm: 1.0,
+        });
+        let first_ratio = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge,
+            denominator_edge,
+            ratio: 2.0,
+        });
+        let second_ratio = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge,
+            denominator_edge,
+            ratio: 3.0,
+        });
+        let records = vec![fixed.clone(), first_ratio.clone(), second_ratio.clone()];
+        let expected = ConstraintPreflightV1::DirectConflict {
+            conflicts: vec![DirectConstraintConflictV1 {
+                conflict: DirectConstraintConflictKindV1::DifferentLengthRatios {
+                    numerator_edge,
+                    denominator_edge,
+                },
+                constraint_ids: sorted_ids(&[fixed.id, first_ratio.id, second_ratio.id]),
+            }],
+        };
+        let prepared = prepare(&fixture, &document(records.clone()))
+            .expect("two incompatible ratio products and a fixed denominator prepare");
+        assert_eq!(prepared.preflight(), expected);
+        let BoundedDirectMusV1::ProvenUnsatisfiable {
+            constraint_ids,
+            oracle_calls,
+        } = find_bounded_direct_mus_v1(&prepared)
+        else {
+            panic!("the three-record rounded-product contradiction must feed the bounded oracle")
+        };
+        assert_eq!(
+            constraint_ids,
+            sorted_ids(&[fixed.id, first_ratio.id, second_ratio.id])
+        );
+        assert_eq!(oracle_calls, 7);
+
+        for removed in records.iter().map(|record| record.id) {
+            let subset = records
+                .iter()
+                .filter(|record| record.id != removed)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert!(
+                !matches!(
+                    prepare(&fixture, &document(subset))
+                        .expect("proper product-conflict subset prepares")
+                        .preflight(),
+                    ConstraintPreflightV1::DirectConflict { .. }
+                ),
+                "deleting {removed:?} must remove the three-record proof"
+            );
+        }
+
+        let mut reversed = records;
+        reversed.reverse();
+        assert_eq!(
+            prepare(&fixture, &document(reversed))
+                .expect("source-order reversal prepares")
+                .preflight(),
+            expected,
+            "canonical IDs, not source order, select the witness"
+        );
+
+        let without_fixed = prepare(
+            &fixture,
+            &document([first_ratio.clone(), second_ratio.clone()]),
+        )
+        .expect("the unsafe two-ratio counterexample prepares");
+        assert_eq!(
+            without_fixed.preflight(),
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                unchecked_constraint_ids: sorted_ids(&[first_ratio.id, second_ratio.id]),
+            }
+        );
+        assert!(
+            last_quarantined_direct_conflicts()
+                .iter()
+                .all(|candidate| !matches!(
+                    candidate.conflict(),
+                    DirectConstraintConflictKindV1::DifferentLengthRatios { .. }
+                )),
+            "an unsafe two-ID ratio pair must remain unchecked without becoming a candidate"
+        );
+        assert_no_proven_direct_mus(&without_fixed);
+
+        let duplicate_ratio = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge,
+            denominator_edge,
+            ratio: 2.0,
+        });
+        let duplicate_only = prepare(
+            &fixture,
+            &document([fixed.clone(), first_ratio.clone(), duplicate_ratio.clone()]),
+        )
+        .expect("bit-identical duplicate ratios prepare");
+        assert_eq!(
+            duplicate_only.preflight(),
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                unchecked_constraint_ids: sorted_ids(&[first_ratio.id, duplicate_ratio.id]),
+            },
+            "duplicate values never establish a contradiction"
+        );
+
+        let duplicate_fixed = record(GeometricConstraintKindV1::FixedLength {
+            edge: denominator_edge,
+            length_mm: 1.0,
+        });
+        let canonical_fixed = [fixed.id, duplicate_fixed.id]
+            .into_iter()
+            .min_by_key(ConstraintId::canonical_bytes)
+            .expect("two fixed denominator IDs have a minimum");
+        let duplicate_fixed_group = prepare(
+            &fixture,
+            &document([
+                duplicate_fixed,
+                second_ratio.clone(),
+                fixed.clone(),
+                first_ratio.clone(),
+            ]),
+        )
+        .expect("a consistent duplicate fixed-denominator group prepares");
+        assert_eq!(
+            duplicate_fixed_group.preflight(),
+            ConstraintPreflightV1::DirectConflict {
+                conflicts: vec![DirectConstraintConflictV1 {
+                    conflict: DirectConstraintConflictKindV1::DifferentLengthRatios {
+                        numerator_edge,
+                        denominator_edge,
+                    },
+                    constraint_ids: sorted_ids(
+                        &[canonical_fixed, first_ratio.id, second_ratio.id,]
+                    ),
+                }],
+            },
+            "the consistent fixed group must select its canonical-smallest ID"
+        );
+
+        let conflicting_fixed = record(GeometricConstraintKindV1::FixedLength {
+            edge: denominator_edge,
+            length_mm: 2.0,
+        });
+        let inconsistent_denominator = prepare(
+            &fixture,
+            &document([
+                fixed.clone(),
+                conflicting_fixed.clone(),
+                first_ratio.clone(),
+                second_ratio.clone(),
+            ]),
+        )
+        .expect("an inconsistent fixed-denominator group still prepares");
+        let ConstraintPreflightV1::DirectConflict { conflicts } =
+            inconsistent_denominator.preflight()
+        else {
+            panic!("the fixed lengths themselves must conflict")
+        };
+        assert_eq!(conflicts.len(), 1);
+        assert!(matches!(
+            conflicts[0].conflict(),
+            DirectConstraintConflictKindV1::DifferentFixedLengths { edge }
+                if *edge == denominator_edge
+        ));
+        assert_eq!(
+            conflicts[0].constraint_ids(),
+            sorted_ids(&[fixed.id, conflicting_fixed.id])
+        );
+    }
+
+    #[test]
+    fn different_ratio_products_cover_underflow_rounding_and_overflow_boundaries() {
+        let minimum = f64::from_bits(1);
+        let one_up = 1.0_f64.next_up();
+        let cases = [
+            ("ordinary different products", 1.0, 2.0, 3.0, true),
+            ("zero versus subnormal", minimum, 0.5, 1.0, true),
+            ("both underflow to zero", minimum, 0.25, 0.5, false),
+            ("same rounded subnormal", minimum, 1.0, one_up, false),
+            ("finite versus overflow", f64::MAX, 1.0, 2.0, true),
+            ("both overflow", f64::MAX, 2.0, 3.0, true),
+        ];
+
+        for (label, denominator_length, first_value, second_value, proven) in cases {
+            let first_product =
+                length_ratio_scaled_denominator_binary64_v1(first_value, denominator_length);
+            let second_product =
+                length_ratio_scaled_denominator_binary64_v1(second_value, denominator_length);
+            assert_eq!(
+                proven,
+                !first_product.is_finite()
+                    || !second_product.is_finite()
+                    || first_product != second_product,
+                "{label}: the test matrix must match the authoritative product predicate"
+            );
+
+            let fixture = Fixture::new();
+            let fixed = record(GeometricConstraintKindV1::FixedLength {
+                edge: fixture.edges[1],
+                length_mm: denominator_length,
+            });
+            let first = record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: fixture.edges[0],
+                denominator_edge: fixture.edges[1],
+                ratio: first_value,
+            });
+            let second = record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: fixture.edges[0],
+                denominator_edge: fixture.edges[1],
+                ratio: second_value,
+            });
+            let prepared = prepare(
+                &fixture,
+                &document([fixed.clone(), first.clone(), second.clone()]),
+            )
+            .unwrap_or_else(|error| panic!("{label}: valid scalar boundary failed: {error:?}"));
+            if proven {
+                assert!(
+                    matches!(
+                        prepared.preflight(),
+                        ConstraintPreflightV1::DirectConflict {
+                            ref conflicts
+                        } if conflicts.len() == 1
+                            && matches!(
+                                conflicts[0].conflict(),
+                                DirectConstraintConflictKindV1::DifferentLengthRatios { .. }
+                            )
+                            && conflicts[0].constraint_ids()
+                                == sorted_ids(&[fixed.id, first.id, second.id])
+                    ),
+                    "{label}: incompatible products must emit the exact three-ID proof"
+                );
+            } else {
+                assert_eq!(
+                    prepared.preflight(),
+                    ConstraintPreflightV1::Unknown {
+                        reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                        unchecked_constraint_ids: sorted_ids(&[first.id, second.id]),
+                    },
+                    "{label}: a common rounded numerator must stay solver-required"
+                );
+                assert_no_proven_direct_mus(&prepared);
+            }
         }
     }
 
@@ -8746,6 +9069,72 @@ mod tests {
             } = find_bounded_direct_mus_v1(&prepared)
             else {
                 panic!("{count}: the rounded residual theorem must feed the bounded oracle")
+            };
+            assert_eq!(constraint_ids, expected_ids, "{count}");
+            assert!(
+                oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1,
+                "{count}"
+            );
+        }
+    }
+
+    #[test]
+    fn different_ratio_product_cause_is_bounded_at_four_eight_sixteen_and_preserved_at_seventeen() {
+        for count in [4, 8, 16, 17] {
+            let fixture = Fixture::new();
+            let fixed = record(GeometricConstraintKindV1::FixedLength {
+                edge: fixture.edges[1],
+                length_mm: 1.0,
+            });
+            let first = record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: fixture.edges[0],
+                denominator_edge: fixture.edges[1],
+                ratio: 2.0,
+            });
+            let second = record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: fixture.edges[0],
+                denominator_edge: fixture.edges[1],
+                ratio: 3.0,
+            });
+            let expected_ids = sorted_ids(&[fixed.id, first.id, second.id]);
+            let mut records = vec![fixed, first, second];
+            records.extend((3..count).map(|index| {
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[index % fixture.edges.len()],
+                })
+            }));
+            let prepared =
+                prepare(&fixture, &document(records)).expect("bounded ratio-product cause");
+            assert!(
+                matches!(
+                    prepared.preflight(),
+                    ConstraintPreflightV1::DirectConflict {
+                        ref conflicts
+                    } if conflicts.len() == 1
+                        && matches!(
+                            conflicts[0].conflict(),
+                            DirectConstraintConflictKindV1::DifferentLengthRatios { .. }
+                        )
+                        && conflicts[0].constraint_ids() == expected_ids
+                ),
+                "{count}: the direct proof itself must survive every document size"
+            );
+
+            if count == 17 {
+                assert_eq!(
+                    find_bounded_direct_mus_v1(&prepared),
+                    BoundedDirectMusV1::Unknown { oracle_calls: 0 },
+                    "seventeen records keep the proof but skip bounded minimization"
+                );
+                continue;
+            }
+
+            let BoundedDirectMusV1::ProvenUnsatisfiable {
+                constraint_ids,
+                oracle_calls,
+            } = find_bounded_direct_mus_v1(&prepared)
+            else {
+                panic!("{count}: the ratio-product theorem must feed the bounded oracle")
             };
             assert_eq!(constraint_ids, expected_ids, "{count}");
             assert!(

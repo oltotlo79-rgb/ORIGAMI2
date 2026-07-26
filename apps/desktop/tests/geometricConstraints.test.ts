@@ -147,7 +147,7 @@ const DIRECT_CONFLICTS = [
       numerator_edge: EDGE_1,
       denominator_edge: EDGE_2,
     },
-    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2],
+    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
   },
   {
     conflict: {
@@ -738,6 +738,39 @@ test('normalizes all twenty-one direct-conflict kinds and the bounded direct MUS
   assert.equal(MAX_DIRECT_CONFLICT_WITNESS_IDS, 256)
   assert.equal(MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS, 16)
   assert.equal(MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS, 65_535)
+})
+
+test('different length ratio proof requires exactly three cause IDs', () => {
+  const conflict = {
+    kind: 'different_length_ratios',
+    numerator_edge: EDGE_1,
+    denominator_edge: EDGE_2,
+  }
+  for (const constraint_ids of [
+    [CONSTRAINT_1, CONSTRAINT_2],
+    [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3, CONSTRAINT_4],
+  ]) {
+    assert.equal(
+      normalizeGeometricConstraintPreflightResponse(response({
+        status: 'direct_conflict',
+        conflicts: [{ conflict, constraint_ids }],
+      }), BINDING),
+      null,
+      `${constraint_ids.length} IDs must fail the exact three-record wire boundary`,
+    )
+  }
+
+  const valid = response({
+    status: 'direct_conflict',
+    conflicts: [{
+      conflict,
+      constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+    }],
+  })
+  assert.deepEqual(
+    normalizeGeometricConstraintPreflightResponse(valid, BINDING),
+    valid,
+  )
 })
 
 test('bounded direct MUS parser is strict, canonical, and distinguishes skipped minimization', () => {

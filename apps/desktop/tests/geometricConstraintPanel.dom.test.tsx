@@ -721,7 +721,7 @@ describe('GeometricConstraintPanel', () => {
           numerator_edge: IDS[0]!,
           denominator_edge: IDS[1]!,
         },
-        constraint_ids: [IDS[12]!, IDS[13]!],
+        constraint_ids: [IDS[12]!, IDS[13]!, IDS[14]!],
       }, '異なる長さ比'],
       [{
         conflict: { kind: 'horizontal_and_vertical', edge: IDS[0]! },

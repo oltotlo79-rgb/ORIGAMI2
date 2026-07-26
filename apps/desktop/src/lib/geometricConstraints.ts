@@ -974,7 +974,10 @@ function parseDirectConflictKind(
           numerator_edge: record.numerator_edge,
           denominator_edge: record.denominator_edge,
         }),
-        witnessSize: 2,
+        // V1 native output never emitted the former unsafe two-ID candidate.
+        // Its proven subset adds the fixed denominator as the third cause, so
+        // the existing wire tag can stay at schema V1 without ambiguity.
+        witnessSize: 3,
       }
     case 'equal_length_with_different_fixed_lengths':
     case 'equal_length_with_non_unit_ratio_and_fixed_length':

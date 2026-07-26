@@ -435,6 +435,23 @@ pub enum DirectConstraintConflictKindV1 {
         axis_edge: EdgeId,
         fixed_separation_edge: EdgeId,
     },
+    /// A non-half-turn rotational-symmetry relation also constrains one
+    /// rotated endpoint to the real radius edge joining the center to the
+    /// other endpoint.
+    ///
+    /// `PointOnLine` uses a normalized line direction, so collapsing that
+    /// radius is non-convergent rather than a satisfying escape. With a
+    /// non-zero radius, a planar rotation through `0 < angle < 360` maps the
+    /// radius to a collinear vector only at 180 degrees. Therefore a stored
+    /// angle whose binary64 value is not exactly 180 degrees is unsatisfiable.
+    /// No current coordinate, epsilon, or geometrically unrelated edge is
+    /// used.
+    RotationalSymmetryWithCollinearRadius {
+        center_vertex: VertexId,
+        source_vertex: VertexId,
+        target_vertex: VertexId,
+        line_edge: EdgeId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1666,10 +1683,12 @@ fn finish_fixed_length_summary_visit_count() -> usize {
 
 /// Exhaustively scans the finite set of direct contradiction rules.
 ///
-/// With `N` prepared records, total time is `O(N² + output)` and storage is
-/// `O(N + output)`. The quadratic bound comes from joining two directed ratio
-/// steps while looking up a closing third step; the prepared-record work limit
-/// bounds that finite scan.
+/// With `N` prepared records and `E` validated pattern edges, total time is
+/// `O(E log E + N² + K log K)` and storage is `O(E + N + K)`, where `K` is
+/// the number of reported conflicts. The edge term builds only the endpoint
+/// indices needed by candidate rotation/mirror rules. The quadratic term comes
+/// from joining two directed ratio steps while looking up a closing third
+/// step; the prepared-record and geometry limits bound both finite scans.
 /// Fixed-length assignments are summarized during the single canonical record
 /// pass, so reusing one edge from many equal-length constraints never causes a
 /// cross-product rescan of fixed-length groups and equal-length pairs.
@@ -1691,6 +1710,7 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
     let mut equal_lengths: BTreeMap<EdgePairKey, Vec<ConstraintId>> = BTreeMap::new();
     let mut parallels: BTreeMap<EdgePairKey, Vec<ConstraintId>> = BTreeMap::new();
     let mut rotations: BTreeMap<RotationRoleKey, ScalarGroupSummary> = BTreeMap::new();
+    let mut non_half_turn_rotations: BTreeMap<RotationRoleKey, ScalarAssignment> = BTreeMap::new();
     let mut rotation_roles: BTreeMap<RotationRoleKey, [VertexId; 3]> = BTreeMap::new();
     let mut points_on_lines: BTreeMap<(CanonicalId, CanonicalId), Vec<ConstraintId>> =
         BTreeMap::new();
@@ -1799,6 +1819,16 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                     .entry(key)
                     .and_modify(|summary| summary.observe(assignment))
                     .or_insert_with(|| ScalarGroupSummary::new(assignment));
+                if angle_degrees.to_bits() != 180.0_f64.to_bits() {
+                    non_half_turn_rotations
+                        .entry(key)
+                        .and_modify(|current| {
+                            if assignment.id.canonical_bytes() < current.id.canonical_bytes() {
+                                *current = assignment;
+                            }
+                        })
+                        .or_insert(assignment);
+                }
                 rotation_roles.entry(key).or_insert([
                     *center_vertex,
                     *source_vertex,
@@ -2206,11 +2236,45 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
         points_on_lines.contains_key(&(key.first, key.axis))
             || points_on_lines.contains_key(&(key.second, key.axis))
     });
+    let has_collinear_rotation_candidate =
+        !non_half_turn_rotations.is_empty() && !points_on_lines.is_empty();
     if has_same_role_rotation_candidate
         || has_inverse_role_rotation_candidate
         || has_mirror_axis_candidate
+        || has_collinear_rotation_candidate
     {
-        let pattern_edges = pattern_edges_by_vertex_pair(set.source_pattern);
+        let pattern_edges = pattern_edge_index(
+            set.source_pattern,
+            has_same_role_rotation_candidate
+                || has_inverse_role_rotation_candidate
+                || has_mirror_axis_candidate,
+            has_collinear_rotation_candidate,
+        );
+        if has_collinear_rotation_candidate {
+            let point_line_witnesses =
+                canonical_point_line_witnesses(&pattern_edges.by_id, &points_on_lines);
+            for (key, rotation) in &non_half_turn_rotations {
+                let [center_vertex, source_vertex, target_vertex] = rotation_roles[key];
+                let Some((point_id, line_edge)) = canonical_collinear_rotation_witness(
+                    &point_line_witnesses,
+                    center_vertex,
+                    source_vertex,
+                    target_vertex,
+                ) else {
+                    continue;
+                };
+                push_conflict(
+                    &mut conflicts,
+                    DirectConstraintConflictKindV1::RotationalSymmetryWithCollinearRadius {
+                        center_vertex,
+                        source_vertex,
+                        target_vertex,
+                        line_edge,
+                    },
+                    [rotation.id, point_id],
+                );
+            }
+        }
         if has_mirror_axis_candidate {
             let mut fixed_separation_witnesses: BTreeMap<
                 VertexPairKey,
@@ -2239,7 +2303,11 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                 };
                 let Some((fixed_id, fixed_separation_edge)) =
                     *fixed_separation_witnesses.entry(pair).or_insert_with(|| {
-                        canonical_positive_fixed_edge_witness(&pattern_edges, &fixed_lengths, pair)
+                        canonical_positive_fixed_edge_witness(
+                            &pattern_edges.by_pair,
+                            &fixed_lengths,
+                            pair,
+                        )
                     })
                 else {
                     continue;
@@ -2264,7 +2332,7 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                 };
                 let [center_vertex, source_vertex, target_vertex] = rotation_roles[key];
                 let Some((fixed_id, fixed_radius_edge)) = canonical_positive_radius_witness(
-                    &pattern_edges,
+                    &pattern_edges.by_pair,
                     &fixed_lengths,
                     center_vertex,
                     source_vertex,
@@ -2305,7 +2373,7 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
                 }
                 let [center_vertex, source_vertex, target_vertex] = rotation_roles[key];
                 let Some((fixed_id, fixed_radius_edge)) = canonical_positive_radius_witness(
-                    &pattern_edges,
+                    &pattern_edges.by_pair,
                     &fixed_lengths,
                     center_vertex,
                     source_vertex,
@@ -3378,15 +3446,28 @@ fn push_conflict(
 /// that an edge actually joins two vertices. The endpoint relation that makes
 /// an edge a radius of a rotation triple is read once from the source pattern,
 /// linearly in the pattern edge count.
-fn pattern_edges_by_vertex_pair(pattern: &CreasePattern) -> BTreeMap<VertexPairKey, Vec<EdgeId>> {
-    let mut result: BTreeMap<VertexPairKey, Vec<EdgeId>> = BTreeMap::new();
+struct PatternEdgeIndex {
+    by_pair: BTreeMap<VertexPairKey, Vec<EdgeId>>,
+    by_id: BTreeMap<CanonicalId, (EdgeId, VertexPairKey)>,
+}
+
+fn pattern_edge_index(
+    pattern: &CreasePattern,
+    needs_pair_index: bool,
+    needs_id_index: bool,
+) -> PatternEdgeIndex {
+    let mut by_pair: BTreeMap<VertexPairKey, Vec<EdgeId>> = BTreeMap::new();
+    let mut by_id = BTreeMap::new();
     for edge in &pattern.edges {
-        result
-            .entry(VertexPairKey::unordered(edge.start, edge.end))
-            .or_default()
-            .push(edge.id);
+        let pair = VertexPairKey::unordered(edge.start, edge.end);
+        if needs_pair_index {
+            by_pair.entry(pair).or_default().push(edge.id);
+        }
+        if needs_id_index {
+            by_id.insert(edge.id.canonical_bytes(), (edge.id, pair));
+        }
     }
-    result
+    PatternEdgeIndex { by_pair, by_id }
 }
 
 /// Selects the canonical positive radius witness for one rotation triple.
@@ -3429,6 +3510,113 @@ fn canonical_positive_radius_witness(
         }
     }
     best
+}
+
+/// Selects one exact line/radius edge for the collinear-rotation theorem.
+///
+/// The only admitted shapes are `source on line(center, target)` and `target
+/// on line(center, source)`. All per-edge joining is completed once by
+/// [`canonical_point_line_witnesses`], so each rotation relation performs
+/// only two ordered-map lookups rather than rescanning a shared edge bucket.
+fn canonical_collinear_rotation_witness(
+    point_lines: &BTreeMap<(CanonicalId, VertexPairKey), (ConstraintId, EdgeId)>,
+    center_vertex: VertexId,
+    source_vertex: VertexId,
+    target_vertex: VertexId,
+) -> Option<(ConstraintId, EdgeId)> {
+    [
+        (
+            source_vertex.canonical_bytes(),
+            VertexPairKey::unordered(center_vertex, target_vertex),
+        ),
+        (
+            target_vertex.canonical_bytes(),
+            VertexPairKey::unordered(center_vertex, source_vertex),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|key| point_lines.get(&key).copied())
+    .min_by_key(|candidate| (candidate.0.canonical_bytes(), candidate.1.canonical_bytes()))
+}
+
+/// Joins every distinct `(point, line edge)` record group to its real pattern
+/// endpoint pair exactly once.
+///
+/// The resulting key discards the edge identity only after the exact edge
+/// lookup and retains the canonical smallest complete witness for that point
+/// and endpoint pair. Thus duplicate real edges remain deterministic without
+/// allowing any relation to trigger a repeated scan of the same edge bucket.
+fn canonical_point_line_witnesses(
+    edge_pairs: &BTreeMap<CanonicalId, (EdgeId, VertexPairKey)>,
+    points_on_lines: &BTreeMap<(CanonicalId, CanonicalId), Vec<ConstraintId>>,
+) -> BTreeMap<(CanonicalId, VertexPairKey), (ConstraintId, EdgeId)> {
+    let mut result: BTreeMap<(CanonicalId, VertexPairKey), (ConstraintId, EdgeId)> =
+        BTreeMap::new();
+    for ((point_vertex, line_edge), point_ids) in points_on_lines {
+        #[cfg(test)]
+        record_point_line_join_visit();
+        let Some((edge_id, edge_pair)) = edge_pairs.get(line_edge).copied() else {
+            continue;
+        };
+        let Some(point_id) = point_ids
+            .iter()
+            .copied()
+            .min_by_key(ConstraintId::canonical_bytes)
+        else {
+            continue;
+        };
+        let candidate = (point_id, edge_id);
+        result
+            .entry((*point_vertex, edge_pair))
+            .and_modify(|current| {
+                if (candidate.0.canonical_bytes(), candidate.1.canonical_bytes())
+                    < (current.0.canonical_bytes(), current.1.canonical_bytes())
+                {
+                    *current = candidate;
+                }
+            })
+            .or_insert(candidate);
+    }
+    result
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static POINT_LINE_JOIN_VISITS: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn record_point_line_join_visit() {
+    POINT_LINE_JOIN_VISITS.with(|visits| {
+        if let Some(current) = visits.get() {
+            visits.set(Some(
+                current
+                    .checked_add(1)
+                    .expect("test-only point-line join counter overflow"),
+            ));
+        }
+    });
+}
+
+#[cfg(test)]
+fn begin_point_line_join_visit_count() {
+    POINT_LINE_JOIN_VISITS.with(|visits| {
+        assert_eq!(
+            visits.replace(Some(0)),
+            None,
+            "point-line join counter is already active on this test thread"
+        );
+    });
+}
+
+#[cfg(test)]
+fn finish_point_line_join_visit_count() -> usize {
+    POINT_LINE_JOIN_VISITS.with(|visits| {
+        visits
+            .replace(None)
+            .expect("point-line join counter was not active")
+    })
 }
 
 /// Selects the canonical positive fixed-length witness for exactly one
@@ -3767,6 +3955,19 @@ fn conflict_sort_key(
                 axis_edge.canonical_bytes(),
                 fixed_separation_edge.canonical_bytes(),
             ),
+        DirectConstraintConflictKindV1::
+            RotationalSymmetryWithCollinearRadius {
+                center_vertex,
+                source_vertex,
+                target_vertex,
+                line_edge,
+            } => (
+                20,
+                center_vertex.canonical_bytes(),
+                source_vertex.canonical_bytes(),
+                target_vertex.canonical_bytes(),
+                line_edge.canonical_bytes(),
+            ),
     }
 }
 
@@ -4024,6 +4225,311 @@ mod tests {
         let prepared = prepare(fixture, raw).expect("mirror-axis fixture prepares");
         let mut found = mirror_axis_conflicts(&prepared.preflight());
         (found.len() == 1).then(|| found.remove(0))
+    }
+
+    fn collinear_rotation_conflicts(
+        preflight: &ConstraintPreflightV1,
+    ) -> Vec<DirectConstraintConflictV1> {
+        match preflight {
+            ConstraintPreflightV1::DirectConflict { conflicts } => conflicts
+                .iter()
+                .filter(|conflict| {
+                    matches!(
+                        conflict.conflict(),
+                        DirectConstraintConflictKindV1::RotationalSymmetryWithCollinearRadius { .. }
+                    )
+                })
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn only_collinear_rotation_conflict(
+        fixture: &Fixture,
+        raw: &GeometricConstraintDocumentV1,
+    ) -> Option<DirectConstraintConflictV1> {
+        let prepared = prepare(fixture, raw).expect("collinear-rotation fixture prepares");
+        let mut found = collinear_rotation_conflicts(&prepared.preflight());
+        (found.len() == 1).then(|| found.remove(0))
+    }
+
+    fn collinear_rotation_witness_records(
+        fixture: &Fixture,
+        source_is_line_point: bool,
+        angle_degrees: f64,
+    ) -> [GeometricConstraintRecordV1; 2] {
+        let (source, target) = if source_is_line_point { (2, 5) } else { (5, 2) };
+        [
+            record(rotation(fixture, 1, source, target, angle_degrees)),
+            record(GeometricConstraintKindV1::PointOnLine {
+                vertex: fixture.vertices[2],
+                line_edge: fixture.edges[5],
+            }),
+        ]
+    }
+
+    #[test]
+    fn non_half_turn_rotation_conflicts_when_either_radius_is_the_exact_line() {
+        for source_is_line_point in [true, false] {
+            let fixture = Fixture::new();
+            let records = collinear_rotation_witness_records(&fixture, source_is_line_point, 90.0);
+            let raw = document(records.clone());
+            let conflict = only_collinear_rotation_conflict(&fixture, &raw)
+                .expect("a normalized collinear radius excludes every non-half-turn rotation");
+            let (source_vertex, target_vertex) = if source_is_line_point {
+                (fixture.vertices[2], fixture.vertices[5])
+            } else {
+                (fixture.vertices[5], fixture.vertices[2])
+            };
+            assert_eq!(
+                *conflict.conflict(),
+                DirectConstraintConflictKindV1::RotationalSymmetryWithCollinearRadius {
+                    center_vertex: fixture.vertices[1],
+                    source_vertex,
+                    target_vertex,
+                    line_edge: fixture.edges[5],
+                }
+            );
+            assert_eq!(
+                conflict.constraint_ids(),
+                sorted_ids(&records.map(|record| record.id))
+            );
+
+            let prepared = prepare(&fixture, &raw).expect("the exact witness prepares");
+            let BoundedDirectMusV1::ProvenUnsatisfiable {
+                constraint_ids,
+                oracle_calls,
+            } = find_bounded_direct_mus_v1(&prepared)
+            else {
+                panic!("the two-record collinear rotation must feed the bounded MUS oracle")
+            };
+            assert_eq!(constraint_ids, conflict.constraint_ids());
+            assert!(oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1);
+        }
+    }
+
+    #[test]
+    fn collinear_rotation_conflict_requires_non_half_turn_and_exact_roles_and_edge() {
+        let fixture = Fixture::new();
+        let negatives = [
+            document(collinear_rotation_witness_records(&fixture, true, 180.0)),
+            document([
+                record(rotation(&fixture, 1, 2, 5, 90.0)),
+                record(GeometricConstraintKindV1::PointOnLine {
+                    vertex: fixture.vertices[2],
+                    line_edge: fixture.edges[4],
+                }),
+            ]),
+            document([
+                record(rotation(&fixture, 1, 2, 5, 90.0)),
+                record(GeometricConstraintKindV1::PointOnLine {
+                    vertex: fixture.vertices[6],
+                    line_edge: fixture.edges[5],
+                }),
+            ]),
+        ];
+        for raw in negatives {
+            let preflight = prepare(&fixture, &raw)
+                .expect("strict negative fixture prepares")
+                .preflight();
+            assert!(
+                collinear_rotation_conflicts(&preflight).is_empty(),
+                "half turns and unrelated roles or edges stay unchecked"
+            );
+        }
+
+        let irrelevant_fixed_group = document([
+            record(rotation(&fixture, 1, 2, 5, 90.0)),
+            record(GeometricConstraintKindV1::PointOnLine {
+                vertex: fixture.vertices[2],
+                line_edge: fixture.edges[5],
+            }),
+            record(fixed_length(&fixture, 5, 1.0)),
+            record(fixed_length(&fixture, 5, 1.0_f64.next_up())),
+        ]);
+        let preflight = prepare(&fixture, &irrelevant_fixed_group)
+            .expect("bit-distinct positive lengths prepare")
+            .preflight();
+        assert_eq!(
+            collinear_rotation_conflicts(&preflight).len(),
+            1,
+            "unrelated scalar conflicts neither establish nor suppress the two-ID theorem"
+        );
+        let ConstraintPreflightV1::DirectConflict { conflicts } = preflight else {
+            panic!("both independent direct conflicts remain visible")
+        };
+        assert!(conflicts.iter().any(|conflict| matches!(
+            conflict.conflict(),
+            DirectConstraintConflictKindV1::DifferentFixedLengths { .. }
+        )));
+    }
+
+    #[test]
+    fn collinear_rotation_uses_constraints_not_initial_coordinates_and_admits_exact_extremes() {
+        let fixture = Fixture::new();
+        let initially_collinear = document([
+            record(rotation(&fixture, 0, 1, 3, 90.0)),
+            record(fixed_length(&fixture, 0, 1.0)),
+        ]);
+        assert_eq!(fixture.pattern.vertices[0].position.y, 0.0);
+        assert_eq!(fixture.pattern.vertices[1].position.y, 0.0);
+        assert_eq!(fixture.pattern.vertices[3].position.y, 0.0);
+        assert!(
+            collinear_rotation_conflicts(
+                &prepare(&fixture, &initially_collinear)
+                    .expect("initially collinear geometry prepares")
+                    .preflight()
+            )
+            .is_empty(),
+            "initial coordinates never replace an exact PointOnLine record"
+        );
+
+        for angle in [
+            f64::from_bits(1),
+            f64::MIN_POSITIVE,
+            180.0_f64.next_down(),
+            180.0_f64.next_up(),
+            360.0_f64.next_down(),
+        ] {
+            let raw = document(collinear_rotation_witness_records(&fixture, true, angle));
+            assert!(
+                only_collinear_rotation_conflict(&fixture, &raw).is_some(),
+                "every exact non-half-turn binary64 angle remains a real contradiction"
+            );
+        }
+    }
+
+    #[test]
+    fn collinear_rotation_witness_is_canonical_deletion_minimal_and_order_independent() {
+        let fixture = Fixture::new();
+        let first_rotation = record(rotation(&fixture, 1, 2, 5, 90.0));
+        let second_rotation = record(rotation(&fixture, 1, 2, 5, 90.0));
+        let first_point = record(GeometricConstraintKindV1::PointOnLine {
+            vertex: fixture.vertices[2],
+            line_edge: fixture.edges[5],
+        });
+        let second_point = record(GeometricConstraintKindV1::PointOnLine {
+            vertex: fixture.vertices[2],
+            line_edge: fixture.edges[5],
+        });
+        let records = vec![
+            first_rotation.clone(),
+            second_rotation.clone(),
+            first_point.clone(),
+            second_point.clone(),
+        ];
+        let expected_ids = [
+            [first_rotation.id, second_rotation.id]
+                .into_iter()
+                .min_by_key(ConstraintId::canonical_bytes)
+                .expect("rotation minimum"),
+            [first_point.id, second_point.id]
+                .into_iter()
+                .min_by_key(ConstraintId::canonical_bytes)
+                .expect("point minimum"),
+        ];
+        let forward = document(records.clone());
+        let forward_preflight = prepare(&fixture, &forward)
+            .expect("duplicate witness prepares")
+            .preflight();
+        let mut found = collinear_rotation_conflicts(&forward_preflight);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found.remove(0).constraint_ids(), sorted_ids(&expected_ids));
+
+        let mut reversed_pattern = fixture.pattern.clone();
+        reversed_pattern.edges.reverse();
+        let reversed = document(records.into_iter().rev());
+        let reversed_preflight = prepare_geometric_constraints_v1(
+            &reversed_pattern,
+            &reversed,
+            GeometricConstraintLimitsV1::default(),
+        )
+        .expect("reversed duplicate witness prepares")
+        .preflight();
+        assert_eq!(
+            serde_json::to_value(forward_preflight).unwrap(),
+            serde_json::to_value(reversed_preflight).unwrap()
+        );
+
+        let minimal = collinear_rotation_witness_records(&fixture, true, 90.0);
+        for omitted in 0..minimal.len() {
+            let subset = document(
+                minimal
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != omitted)
+                    .map(|(_, record)| record.clone()),
+            );
+            assert!(
+                collinear_rotation_conflicts(&prepare(&fixture, &subset).unwrap().preflight())
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn collinear_rotation_join_work_depends_on_unique_point_edge_buckets_not_rotation_count() {
+        let fixture = Fixture::new();
+        let mut records = Vec::new();
+        let roles = [
+            (1, 2, 5),
+            (5, 2, 1),
+            (1, 5, 2),
+            (5, 1, 2),
+            (0, 2, 1),
+            (1, 2, 0),
+            (0, 1, 2),
+            (1, 0, 2),
+        ];
+        for _ in 0..24 {
+            records.extend(roles.into_iter().map(|(center, source, target)| {
+                record(rotation(&fixture, center, source, target, 90.0))
+            }));
+        }
+        records.extend([
+            record(GeometricConstraintKindV1::PointOnLine {
+                vertex: fixture.vertices[2],
+                line_edge: fixture.edges[5],
+            }),
+            record(GeometricConstraintKindV1::PointOnLine {
+                vertex: fixture.vertices[2],
+                line_edge: fixture.edges[0],
+            }),
+        ]);
+        let raw = document(records);
+        let prepared = prepare(&fixture, &raw).expect("large duplicate bucket prepares");
+        begin_point_line_join_visit_count();
+        let preflight = prepared.preflight();
+        assert_eq!(
+            finish_point_line_join_visit_count(),
+            2,
+            "each indexed (point, edge) bucket is joined once, regardless of rotation count"
+        );
+        assert_eq!(
+            collinear_rotation_conflicts(&preflight).len(),
+            roles.len(),
+            "all distinct role keys reuse the two prejoined buckets"
+        );
+    }
+
+    #[test]
+    fn collinear_rotation_conflict_serializes_and_has_the_new_final_sort_rank() {
+        let fixture = Fixture::new();
+        let raw = document(collinear_rotation_witness_records(&fixture, true, 90.0));
+        let conflict = only_collinear_rotation_conflict(&fixture, &raw)
+            .expect("collinear-rotation witness exists");
+        let value = serde_json::to_value(&conflict).expect("serialize collinear rotation conflict");
+        assert_eq!(
+            value["conflict"]["kind"],
+            "rotational_symmetry_with_collinear_radius"
+        );
+        assert_eq!(
+            value["conflict"]["line_edge"],
+            serde_json::to_value(fixture.edges[5]).expect("serialize radius edge")
+        );
+        assert_eq!(conflict_sort_key(conflict.conflict()).0, 20);
+        assert_eq!(value["constraint_ids"].as_array().unwrap().len(), 2);
     }
 
     fn mirror_axis_witness_records(

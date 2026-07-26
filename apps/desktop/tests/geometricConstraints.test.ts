@@ -303,6 +303,16 @@ const DIRECT_CONFLICTS = [
     },
     constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
   },
+  {
+    conflict: {
+      kind: 'rotational_symmetry_with_collinear_radius',
+      center_vertex: VERTEX_1,
+      source_vertex: VERTEX_2,
+      target_vertex: VERTEX_3,
+      line_edge: EDGE_1,
+    },
+    constraint_ids: [CONSTRAINT_1, CONSTRAINT_2],
+  },
 ] as const
 
 test('normalizes, detaches, and deeply freezes all eleven document kinds', () => {
@@ -697,7 +707,7 @@ test('presentation also fails closed for malformed or hostile records', () => {
   assert.equal(getterCalls, 0)
 })
 
-test('normalizes all twenty direct-conflict kinds and the bounded direct MUS', () => {
+test('normalizes all twenty-one direct-conflict kinds and the bounded direct MUS', () => {
   const raw = response({
     status: 'direct_conflict',
     conflicts: DIRECT_CONFLICTS,
@@ -713,7 +723,7 @@ test('normalizes all twenty direct-conflict kinds and the bounded direct MUS', (
     normalized?.result.status === 'direct_conflict'
       ? normalized.result.conflicts.length
       : 0,
-    20,
+    21,
   )
   assert.deepEqual(
     normalized?.result.status === 'direct_conflict'
@@ -1113,6 +1123,56 @@ test('preflight rejects unknown fields, statuses, reasons, conflict kinds, and o
       conflicts: [{
         conflict,
         constraint_ids: [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+      }],
+    })),
+    ...[
+      {
+        kind: 'rotational_symmetry_with_collinear_radius',
+        center_vertex: VERTEX_1,
+        source_vertex: VERTEX_2,
+        target_vertex: VERTEX_3,
+      },
+      {
+        kind: 'rotational_symmetry_with_collinear_radius',
+        center_vertex: VERTEX_1,
+        source_vertex: VERTEX_2,
+        target_vertex: VERTEX_3,
+        line_edge: EDGE_1,
+        future: true,
+      },
+      {
+        kind: 'rotational_symmetry_with_collinear_radius',
+        center_vertex: VERTEX_1,
+        source_vertex: VERTEX_1,
+        target_vertex: VERTEX_3,
+        line_edge: EDGE_1,
+      },
+      {
+        kind: 'rotational_symmetry_with_collinear_radius',
+        center_vertex: VERTEX_1,
+        source_vertex: VERTEX_2,
+        target_vertex: VERTEX_1,
+        line_edge: EDGE_1,
+      },
+      {
+        kind: 'rotational_symmetry_with_collinear_radius',
+        center_vertex: VERTEX_1,
+        source_vertex: VERTEX_2,
+        target_vertex: VERTEX_2,
+        line_edge: EDGE_1,
+      },
+      {
+        kind: 'rotational_symmetry_with_collinear_radius',
+        center_vertex: VERTEX_1,
+        source_vertex: VERTEX_2,
+        target_vertex: VERTEX_3,
+        line_edge: 'not-a-uuid',
+      },
+    ].map((conflict) => response({
+      status: 'direct_conflict',
+      conflicts: [{
+        conflict,
+        constraint_ids: [CONSTRAINT_1, CONSTRAINT_2],
       }],
     })),
     ...[

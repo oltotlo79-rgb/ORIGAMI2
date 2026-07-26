@@ -417,6 +417,10 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
       '鏡映点が同じ対称軸上にあり、正の固定間隔と両立しません',
       'A mirrored point lies on its symmetry axis and conflicts with a positive fixed separation',
     ),
+    rotational_symmetry_with_collinear_radius: text(
+      '180度ではない回転対称の対応点が同じ半径線上に拘束され、両立しません',
+      'A non-half-turn rotational-symmetry relation conflicts with its corresponding point on the same radius line',
+    ),
   }),
   unknownReasonLabels: Object.freeze({
     work_limit_exceeded: text(

@@ -5,7 +5,7 @@ use ori_domain::{
 };
 use thiserror::Error;
 
-use crate::{GeometricConstraintLimitsV1, prepare_geometric_constraints_v1};
+use crate::{ConstraintPreflightV1, GeometricConstraintLimitsV1, prepare_geometric_constraints_v1};
 
 const REGULARIZATION: f64 = 1e-10;
 const DERIVATIVE_STEP: f64 = 1e-6;
@@ -98,8 +98,9 @@ pub fn solve_geometric_constraints_with_drivers_v1(
     {
         return Err(ConstraintSolveErrorV1::NonFiniteDrivingPosition);
     }
-    prepare_geometric_constraints_v1(pattern, document, GeometricConstraintLimitsV1::default())
-        .map_err(|_| ConstraintSolveErrorV1::InvalidConstraintDocumentOrGeometry)?;
+    let prepared =
+        prepare_geometric_constraints_v1(pattern, document, GeometricConstraintLimitsV1::default())
+            .map_err(|_| ConstraintSolveErrorV1::InvalidConstraintDocumentOrGeometry)?;
     if pattern.vertices.len() > limits.max_vertices
         || document.constraints.len() > limits.max_constraints
     {
@@ -120,6 +121,12 @@ pub fn solve_geometric_constraints_with_drivers_v1(
     let involved = involved_vertices(pattern, document)?;
     if drivers.iter().any(|vertex| !involved.contains(vertex)) {
         return Err(ConstraintSolveErrorV1::UnderConstrained);
+    }
+    if matches!(
+        prepared.preflight(),
+        ConstraintPreflightV1::DirectConflict { .. }
+    ) {
+        return Err(ConstraintSolveErrorV1::NonConvergent);
     }
     let mut variables = involved
         .into_iter()
@@ -335,8 +342,15 @@ pub fn verify_geometric_constraint_solution_v1(
     if !residual_tolerance.is_finite() || residual_tolerance <= 0.0 {
         return Err(ConstraintSolveErrorV1::InvalidLimits);
     }
-    prepare_geometric_constraints_v1(pattern, document, GeometricConstraintLimitsV1::default())
-        .map_err(|_| ConstraintSolveErrorV1::InvalidConstraintDocumentOrGeometry)?;
+    let prepared =
+        prepare_geometric_constraints_v1(pattern, document, GeometricConstraintLimitsV1::default())
+            .map_err(|_| ConstraintSolveErrorV1::InvalidConstraintDocumentOrGeometry)?;
+    if matches!(
+        prepared.preflight(),
+        ConstraintPreflightV1::DirectConflict { .. }
+    ) {
+        return Err(ConstraintSolveErrorV1::NonConvergent);
+    }
     hard_len(document)?;
     let positions = pattern
         .vertices
@@ -576,7 +590,7 @@ fn residuals(
                     let point = positions[&vertex];
                     let direction =
                         unit_vector(line_edge).ok_or(ConstraintSolveErrorV1::NonConvergent)?;
-                    vec![((point.x - start.x) * direction.1 - (point.y - start.y) * direction.0)]
+                    vec![(point.x - start.x) * direction.1 - (point.y - start.y) * direction.0]
                 }
                 GeometricConstraintKindV1::LengthRatio {
                     numerator_edge,
@@ -860,6 +874,380 @@ mod tests {
         assert_eq!(
             residuals(&pattern, &document, &collapsed).expect("finite zero-length residuals"),
             vec![0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn collinear_rotation_preflight_blocks_subnormal_numeric_zero_and_degenerate_line_escape() {
+        let center = VertexId::new();
+        let source = VertexId::new();
+        let target = VertexId::new();
+        let radius = EdgeId::new();
+        let minimum = f64::from_bits(1);
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: center,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: source,
+                    position: Point2::new(minimum, 0.0),
+                },
+                Vertex {
+                    id: target,
+                    position: Point2::new(-minimum, 0.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: radius,
+                start: center,
+                end: source,
+                kind: EdgeKind::Auxiliary,
+            }],
+        };
+        let positions = pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, vertex.position))
+            .collect::<HashMap<_, _>>();
+
+        for angle_degrees in [180.0_f64.next_down(), 180.0_f64.next_up()] {
+            let radians = angle_degrees.to_radians();
+            let legacy_rotation = [
+                -minimum - minimum * radians.cos(),
+                0.0 - minimum * radians.sin(),
+            ];
+            let legacy_point_on_line = 0.0_f64;
+            assert_eq!(
+                [legacy_rotation[0], legacy_rotation[1], legacy_point_on_line,],
+                [0.0; 3],
+                "ordinary binary64 equations manufacture an exact zero"
+            );
+
+            let document = GeometricConstraintDocumentV1 {
+                schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+                constraints: vec![
+                    GeometricConstraintRecordV1 {
+                        id: ConstraintId::new(),
+                        constraint: GeometricConstraintKindV1::RotationalSymmetry {
+                            center_vertex: center,
+                            source_vertex: source,
+                            target_vertex: target,
+                            angle_degrees,
+                        },
+                    },
+                    GeometricConstraintRecordV1 {
+                        id: ConstraintId::new(),
+                        constraint: GeometricConstraintKindV1::PointOnLine {
+                            vertex: target,
+                            line_edge: radius,
+                        },
+                    },
+                ],
+            };
+            assert_eq!(
+                residuals(&pattern, &document, &positions)
+                    .expect("the adversarial ordinary residual is finite"),
+                vec![0.0; 3]
+            );
+            assert!(matches!(
+                verify_geometric_constraint_solution_v1(&pattern, &document, 1e-7),
+                Err(ConstraintSolveErrorV1::NonConvergent)
+            ));
+            assert!(matches!(
+                solve_geometric_constraints_with_drivers_v1(
+                    &pattern,
+                    &document,
+                    &[
+                        (center, Point2::new(0.0, 0.0)),
+                        (source, Point2::new(minimum, 0.0)),
+                        (target, Point2::new(-minimum, 0.0)),
+                    ],
+                    ConstraintSolveLimitsV1::default(),
+                ),
+                Err(ConstraintSolveErrorV1::NonConvergent)
+            ));
+        }
+
+        let point_only = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint: GeometricConstraintKindV1::PointOnLine {
+                    vertex: target,
+                    line_edge: radius,
+                },
+            }],
+        };
+        let mut collapsed_line = positions;
+        collapsed_line.insert(source, collapsed_line[&center]);
+        assert!(
+            matches!(
+                residuals(&pattern, &point_only, &collapsed_line),
+                Err(ConstraintSolveErrorV1::NonConvergent)
+            ),
+            "a collapsed normalized line is not a satisfying escape"
+        );
+    }
+
+    #[test]
+    fn direct_preflight_blocks_normal_radius_half_turn_neighbors_below_solver_tolerance() {
+        let center = VertexId::new();
+        let source = VertexId::new();
+        let target = VertexId::new();
+        let radius = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: center,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: source,
+                    position: Point2::new(1.0, 0.0),
+                },
+                Vertex {
+                    id: target,
+                    position: Point2::new(-1.0, 0.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: radius,
+                start: center,
+                end: source,
+                kind: EdgeKind::Auxiliary,
+            }],
+        };
+        let positions = pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, vertex.position))
+            .collect::<HashMap<_, _>>();
+        for angle_degrees in [180.0_f64.next_down(), 180.0_f64.next_up()] {
+            let document = GeometricConstraintDocumentV1 {
+                schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+                constraints: vec![
+                    GeometricConstraintRecordV1 {
+                        id: ConstraintId::new(),
+                        constraint: GeometricConstraintKindV1::RotationalSymmetry {
+                            center_vertex: center,
+                            source_vertex: source,
+                            target_vertex: target,
+                            angle_degrees,
+                        },
+                    },
+                    GeometricConstraintRecordV1 {
+                        id: ConstraintId::new(),
+                        constraint: GeometricConstraintKindV1::PointOnLine {
+                            vertex: target,
+                            line_edge: radius,
+                        },
+                    },
+                ],
+            };
+            let ordinary_maximum = maximum_absolute(
+                &residuals(&pattern, &document, &positions)
+                    .expect("ordinary-radius residuals remain finite"),
+            );
+            assert!(
+                ordinary_maximum > 0.0
+                    && ordinary_maximum < ConstraintSolveLimitsV1::default().residual_tolerance,
+                "the exact contradiction is smaller than the numerical acceptance tolerance"
+            );
+            assert!(matches!(
+                verify_geometric_constraint_solution_v1(&pattern, &document, 1e-7),
+                Err(ConstraintSolveErrorV1::NonConvergent)
+            ));
+            assert!(matches!(
+                solve_geometric_constraints_with_drivers_v1(
+                    &pattern,
+                    &document,
+                    &[
+                        (center, Point2::new(0.0, 0.0)),
+                        (source, Point2::new(1.0, 0.0)),
+                        (target, Point2::new(-1.0, 0.0)),
+                    ],
+                    ConstraintSolveLimitsV1::default(),
+                ),
+                Err(ConstraintSolveErrorV1::NonConvergent)
+            ));
+            assert!(matches!(
+                solve_geometric_constraints_with_drivers_v1(
+                    &pattern,
+                    &document,
+                    &[(center, Point2::new(0.0, 0.0))],
+                    ConstraintSolveLimitsV1 {
+                        max_constraints: 1,
+                        ..ConstraintSolveLimitsV1::default()
+                    },
+                ),
+                Err(ConstraintSolveErrorV1::WorkLimitExceeded)
+            ));
+            assert!(matches!(
+                solve_geometric_constraints_with_drivers_v1(
+                    &pattern,
+                    &document,
+                    &[(VertexId::new(), Point2::new(0.0, 0.0))],
+                    ConstraintSolveLimitsV1::default(),
+                ),
+                Err(ConstraintSolveErrorV1::DrivingVertexMissing)
+            ));
+            assert!(matches!(
+                solve_geometric_constraints_with_drivers_v1(
+                    &pattern,
+                    &document,
+                    &[
+                        (center, Point2::new(0.0, 0.0)),
+                        (center, Point2::new(0.0, 0.0)),
+                    ],
+                    ConstraintSolveLimitsV1::default(),
+                ),
+                Err(ConstraintSolveErrorV1::DrivingVertexMissing)
+            ));
+
+            let unrelated = VertexId::new();
+            let mut pattern_with_unrelated_vertex = pattern.clone();
+            pattern_with_unrelated_vertex.vertices.push(Vertex {
+                id: unrelated,
+                position: Point2::new(0.0, 2.0),
+            });
+            assert!(matches!(
+                solve_geometric_constraints_with_drivers_v1(
+                    &pattern_with_unrelated_vertex,
+                    &document,
+                    &[(unrelated, Point2::new(0.0, 3.0))],
+                    ConstraintSolveLimitsV1::default(),
+                ),
+                Err(ConstraintSolveErrorV1::UnderConstrained)
+            ));
+        }
+
+        let mut near_zero_pattern = pattern.clone();
+        near_zero_pattern.vertices[2].position = Point2::new(1.0_f64.next_up(), 0.0);
+        let near_zero_document = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![
+                GeometricConstraintRecordV1 {
+                    id: ConstraintId::new(),
+                    constraint: GeometricConstraintKindV1::RotationalSymmetry {
+                        center_vertex: center,
+                        source_vertex: source,
+                        target_vertex: target,
+                        angle_degrees: f64::MIN_POSITIVE,
+                    },
+                },
+                GeometricConstraintRecordV1 {
+                    id: ConstraintId::new(),
+                    constraint: GeometricConstraintKindV1::PointOnLine {
+                        vertex: target,
+                        line_edge: radius,
+                    },
+                },
+            ],
+        };
+        let near_zero_positions = near_zero_pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, vertex.position))
+            .collect::<HashMap<_, _>>();
+        let near_zero_maximum = maximum_absolute(
+            &residuals(
+                &near_zero_pattern,
+                &near_zero_document,
+                &near_zero_positions,
+            )
+            .expect("near-zero-angle residuals stay finite"),
+        );
+        assert!(
+            near_zero_maximum <= ConstraintSolveLimitsV1::default().residual_tolerance,
+            "the near-zero exact contradiction lies inside numerical tolerance"
+        );
+        assert!(matches!(
+            verify_geometric_constraint_solution_v1(&near_zero_pattern, &near_zero_document, 1e-7,),
+            Err(ConstraintSolveErrorV1::NonConvergent)
+        ));
+        assert!(matches!(
+            solve_geometric_constraints_with_drivers_v1(
+                &near_zero_pattern,
+                &near_zero_document,
+                &[
+                    (center, Point2::new(0.0, 0.0)),
+                    (source, Point2::new(1.0, 0.0)),
+                    (target, Point2::new(1.0_f64.next_up(), 0.0)),
+                ],
+                ConstraintSolveLimitsV1::default(),
+            ),
+            Err(ConstraintSolveErrorV1::NonConvergent)
+        ));
+    }
+
+    #[test]
+    fn collinear_rotation_two_record_witness_is_semantically_deletion_minimal() {
+        let center = VertexId::new();
+        let source = VertexId::new();
+        let target = VertexId::new();
+        let radius = EdgeId::new();
+        let pattern = CreasePattern {
+            vertices: vec![
+                Vertex {
+                    id: center,
+                    position: Point2::new(0.0, 0.0),
+                },
+                Vertex {
+                    id: source,
+                    position: Point2::new(1.0, 0.0),
+                },
+                Vertex {
+                    id: target,
+                    position: Point2::new(0.0, 1.0),
+                },
+            ],
+            edges: vec![Edge {
+                id: radius,
+                start: center,
+                end: source,
+                kind: EdgeKind::Auxiliary,
+            }],
+        };
+        let rotation_only = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint: GeometricConstraintKindV1::RotationalSymmetry {
+                    center_vertex: center,
+                    source_vertex: source,
+                    target_vertex: target,
+                    angle_degrees: 90.0,
+                },
+            }],
+        };
+        let positions = pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, vertex.position))
+            .collect::<HashMap<_, _>>();
+        assert!(
+            maximum_absolute(&residuals(&pattern, &rotation_only, &positions).unwrap()) < 1e-12,
+            "the rotation record is satisfiable after deleting PointOnLine"
+        );
+
+        let point_only = GeometricConstraintDocumentV1 {
+            schema_version: GEOMETRIC_CONSTRAINT_SCHEMA_VERSION_V1,
+            constraints: vec![GeometricConstraintRecordV1 {
+                id: ConstraintId::new(),
+                constraint: GeometricConstraintKindV1::PointOnLine {
+                    vertex: target,
+                    line_edge: radius,
+                },
+            }],
+        };
+        let mut point_on_radius = positions;
+        point_on_radius.insert(target, Point2::new(2.0, 0.0));
+        assert_eq!(
+            residuals(&pattern, &point_only, &point_on_radius)
+                .expect("the point-only subset is satisfiable"),
+            vec![0.0]
         );
     }
 

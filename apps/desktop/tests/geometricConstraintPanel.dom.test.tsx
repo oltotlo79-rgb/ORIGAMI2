@@ -486,6 +486,17 @@ describe('GeometricConstraintPanel', () => {
         expected:
           'A mirrored point lies on its symmetry axis and conflicts with a positive fixed separation',
       },
+      {
+        conflict: {
+          kind: 'rotational_symmetry_with_collinear_radius' as const,
+          center_vertex: IDS[6]!,
+          source_vertex: IDS[7]!,
+          target_vertex: IDS[8]!,
+          line_edge: IDS[0]!,
+        },
+        expected:
+          'A non-half-turn rotational-symmetry relation conflicts with its corresponding point on the same radius line',
+      },
     ]
     for (const { conflict, expected } of conflictCases) {
       rerender(panel({
@@ -755,6 +766,16 @@ describe('GeometricConstraintPanel', () => {
         },
         constraint_ids: [IDS[12]!, IDS[13]!, IDS[14]!],
       }, '水平・垂直に拘束した2辺'],
+      [{
+        conflict: {
+          kind: 'rotational_symmetry_with_collinear_radius',
+          center_vertex: IDS[6]!,
+          source_vertex: IDS[7]!,
+          target_vertex: IDS[8]!,
+          line_edge: IDS[0]!,
+        },
+        constraint_ids: [IDS[12]!, IDS[13]!],
+      }, '180度ではない回転対称'],
     ]
     const { rerender } = renderPanel()
     for (const [conflict, expected] of conflicts) {

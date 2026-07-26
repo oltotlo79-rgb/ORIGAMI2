@@ -198,6 +198,13 @@ export type DirectConstraintConflictKindV1 =
       axis_edge: string
       fixed_separation_edge: string
     }>
+  | Readonly<{
+      kind: 'rotational_symmetry_with_collinear_radius'
+      center_vertex: string
+      source_vertex: string
+      target_vertex: string
+      line_edge: string
+    }>
 
 export type DirectConstraintConflictV1 = Readonly<{
   conflict: DirectConstraintConflictKindV1
@@ -1215,6 +1222,33 @@ function parseDirectConflictKind(
         }),
         witnessSize: 3,
       }
+    case 'rotational_symmetry_with_collinear_radius':
+      if (
+        !hasExactKeys(record, [
+          'kind',
+          'center_vertex',
+          'source_vertex',
+          'target_vertex',
+          'line_edge',
+        ])
+        || !isCanonicalUuid(record.center_vertex)
+        || !isCanonicalUuid(record.source_vertex)
+        || !isCanonicalUuid(record.target_vertex)
+        || !isCanonicalUuid(record.line_edge)
+        || record.center_vertex === record.source_vertex
+        || record.center_vertex === record.target_vertex
+        || record.source_vertex === record.target_vertex
+      ) return null
+      return {
+        conflict: Object.freeze({
+          kind: record.kind,
+          center_vertex: record.center_vertex,
+          source_vertex: record.source_vertex,
+          target_vertex: record.target_vertex,
+          line_edge: record.line_edge,
+        }),
+        witnessSize: 2,
+      }
     case 'mirror_symmetry_with_point_on_axis_and_fixed_separation':
       if (
         !hasExactKeys(record, [
@@ -1344,6 +1378,15 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
         kind.source_vertex,
         kind.target_vertex,
         kind.fixed_radius_edge,
+      ]
+      break
+    case 'rotational_symmetry_with_collinear_radius':
+      target = [
+        kind.kind,
+        kind.center_vertex,
+        kind.source_vertex,
+        kind.target_vertex,
+        kind.line_edge,
       ]
       break
     case 'mirror_symmetry_with_point_on_axis_and_fixed_separation':

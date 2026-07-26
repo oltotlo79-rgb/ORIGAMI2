@@ -6,6 +6,7 @@ const app = source('../src/App.tsx')
 const canvas = source('../src/components/CreaseCanvas.tsx')
 const preview = source('../src/components/FoldPreview.tsx')
 const picking = source('../src/lib/foldPreviewPicking.ts')
+const canvasProjection = source('../src/lib/projectCanvasProjection.ts')
 
 test('App shares line vertex and face selections across both views', () => {
   assert.match(app, /const \[selectedFaceId, setSelectedFaceId\]/u)
@@ -46,7 +47,7 @@ test('2D topology faces and 3D element markers are selectable and highlighted', 
 
 test('saved face color metadata is rendered below the selected-face highlight', () => {
   assert.match(
-    app,
+    canvasProjection,
     /element_metadata\.faces\.find\([\s\S]*?record\.face === face\.id[\s\S]*?\{ color: rgbaToCss\(color\) \}/u,
   )
   const metadataFill = canvas.indexOf('for (const face of faces)')

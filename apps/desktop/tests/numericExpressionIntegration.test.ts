@@ -14,6 +14,7 @@ const coreClient = source('../src/lib/coreClient.ts')
 const app = [
   source('../src/App.tsx'),
   source('../src/lib/appText.ts'),
+  source('../src/lib/projectCanvasProjection.ts'),
 ].join('\n')
 const numericCore = source('../../../crates/ori-numeric/src/lib.rs')
 const formats = source('../../../crates/ori-formats/src/lib.rs')

@@ -13,8 +13,6 @@ import {
 } from 'react'
 import {
   CreaseCanvas,
-  type CreaseCanvasFace,
-  type CreaseCanvasAnnotation,
   type CreaseCanvasRenderMetrics,
   type CreaseLine,
   type PaperBounds,
@@ -234,7 +232,6 @@ import {
   createProjectLayerCanvasView,
   placementTouchesLockedLayer,
 } from './lib/projectLayerCanvasView'
-import { buildFoldPreviewModel } from './lib/foldPreviewModel'
 import { isExpectedNativeEditSnapshot } from './lib/projectSnapshotBinding'
 import {
   finishBeginnerGridCancellation,
@@ -286,7 +283,6 @@ import { planInstructionAutoRecord } from './lib/instructionAutoRecord'
 import { formatPaperThicknessInput } from './lib/paperThicknessInput'
 import { PaperThicknessInput } from './components/PaperThicknessInput'
 import {
-  collectBoundaryLengthReferences,
   formatLength,
   formatLengthInput,
   formatLengthPoint,
@@ -354,6 +350,7 @@ import { APP_TEXT } from './lib/appText.ts'
 import { updateGridPreferenceInput } from './lib/gridPreference'
 import { useCanvasUnderlays } from './lib/useCanvasUnderlays'
 import { useGridDivisionPreference } from './lib/useGridDivisionPreference'
+import { useProjectCanvasProjection } from './lib/useProjectCanvasProjection'
 import {
   appConfirmationText,
   appErrorLocalizedText,
@@ -397,8 +394,6 @@ import {
   formatLineMeasurementLabel,
   formatMeasurementValue,
   measureCreaseLine,
-  resolvePaperBounds,
-  resolvePaperPolygon,
   resolveRectangularPaperSize,
   resolveUniqueParallelReference,
 } from './lib/appGeometry'
@@ -1592,29 +1587,21 @@ function App() {
   const selectedBenchmarkVertex = selectedVertexId
     ? firstBenchmarkVertexById.get(selectedVertexId)
     : undefined
-  const boundaryVertexIds = useMemo(() => new Set(
-    nativeSnapshot?.paper.boundary_vertices ?? [],
-  ), [nativeSnapshot])
+  const {
+    boundaryVertexIds,
+    paperBounds,
+    paperPolygon,
+    boundaryLengthReferences,
+    lengthDisplayUnit,
+    rectangularPaperSize,
+    foldPreviewModel,
+    canvasFaces,
+    canvasAnnotations,
+  } = useProjectCanvasProjection(nativeSnapshot, topologyResponse)
   const paperBoundaryVertexCount = boundaryVertexIds.size
   const selectedVertexIsBoundary = selectedVertex
     ? boundaryVertexIds.has(selectedVertex.id)
     : false
-  const paperBounds = useMemo(
-    () => resolvePaperBounds(nativeSnapshot),
-    [nativeSnapshot],
-  )
-  const paperPolygon = useMemo(
-    () => resolvePaperPolygon(nativeSnapshot),
-    [nativeSnapshot],
-  )
-  const boundaryLengthReferences = useMemo(
-    () => collectBoundaryLengthReferences(nativeSnapshot),
-    [nativeSnapshot],
-  )
-  const lengthDisplayUnit = useMemo(
-    () => resolveLengthDisplayUnit(nativeSnapshot, boundaryLengthReferences),
-    [boundaryLengthReferences, nativeSnapshot],
-  )
   const displayedLengthUnit = benchmarkRun
     ? MILLIMETRE_LENGTH_DISPLAY_UNIT
     : lengthDisplayUnit
@@ -1623,97 +1610,9 @@ function App() {
     : pairMeasurement?.kind === 'line'
       ? formatMeasurementValue(pairMeasurement.value, '°', 2, locale)
       : undefined
-  const rectangularPaperSize = useMemo(
-    () => resolveRectangularPaperSize(nativeSnapshot),
-    [nativeSnapshot],
-  )
   const creationDimensionExpression =
     nativeSnapshot?.numeric_expressions?.rectangular_paper_creation
   const rectangularRatioReferenceAxis = ratioReferenceAxis(lengthDisplayUnit)
-  const foldPreviewModel = useMemo(
-    () => buildFoldPreviewModel(nativeSnapshot, topologyResponse),
-    [nativeSnapshot, topologyResponse],
-  )
-  const canvasFaces = useMemo<readonly CreaseCanvasFace[]>(() => {
-    const topology = topologyResponse?.snapshot
-    if (
-      !nativeSnapshot
-      || !topology
-      || topologyResponse.project_id !== nativeSnapshot.project_id
-      || topologyResponse.revision !== nativeSnapshot.revision
-      || topology.source_revision !== nativeSnapshot.revision
-    ) return []
-    const positions = new Map<string, Array<{ x: number; y: number }>>()
-    for (const vertex of nativeSnapshot.crease_pattern.vertices) {
-      const matches = positions.get(vertex.id)
-      if (matches) matches.push(vertex.position)
-      else positions.set(vertex.id, [vertex.position])
-    }
-    const faces: CreaseCanvasFace[] = []
-    for (const face of topology.faces) {
-      const polygon: Array<{ x: number; y: number }> = []
-      let valid = face.outer.half_edges.length >= 3
-      for (const halfEdge of face.outer.half_edges) {
-        const matches = positions.get(halfEdge.origin)
-        if (matches?.length !== 1) {
-          valid = false
-          break
-        }
-        polygon.push({ x: matches[0].x, y: matches[0].y })
-      }
-      if (valid) {
-        const color = nativeSnapshot.element_metadata.faces.find(
-          (record) => record.face === face.id,
-        )?.metadata.color
-        faces.push(Object.freeze({
-          id: face.id,
-          vertexIds: Object.freeze(
-            face.outer.half_edges.map((halfEdge) => halfEdge.origin),
-          ),
-          edgeIds: Object.freeze(
-            face.outer.half_edges.map((halfEdge) => halfEdge.edge),
-          ),
-          polygon: Object.freeze(polygon),
-          ...(color ? { color: rgbaToCss(color) } : {}),
-        }))
-      }
-    }
-    return Object.freeze(faces)
-  }, [nativeSnapshot, topologyResponse])
-  const canvasAnnotations = useMemo<readonly CreaseCanvasAnnotation[]>(() => {
-    if (!nativeSnapshot?.annotations) return []
-    const vertices = new Map(
-      nativeSnapshot.crease_pattern.vertices.map((vertex) => [
-        vertex.id,
-        vertex.position,
-      ]),
-    )
-    const layers = new Map(
-      nativeSnapshot.project_layers.layers.map((layer) => [layer.id, layer]),
-    )
-    return nativeSnapshot.annotations.annotations.flatMap((annotation) => {
-      const layer = layers.get(annotation.layer)
-      if (!layer || layer.content_kind !== 'annotation' || !layer.visible) return []
-      const anchor = annotation.anchor.kind === 'absolute'
-        ? annotation.anchor.position
-        : vertices.get(annotation.anchor.vertex)
-      if (!anchor) return []
-      const offset = annotation.anchor.kind === 'vertex'
-        ? annotation.anchor.offset
-        : { x: 0, y: 0 }
-      return [{
-        id: annotation.id,
-        text: annotation.text,
-        x: anchor.x + offset.x,
-        y: anchor.y + offset.y,
-        color: rgbaToCss(annotation.style.color),
-        opacity: layer.opacity,
-        fontSizeMm: annotation.style.font_size_mm,
-        bold: annotation.style.bold,
-        italic: annotation.style.italic,
-      }]
-    })
-  }, [nativeSnapshot])
   const selectedFace = selectedFaceId
     ? canvasFaces.find((face) => face.id === selectedFaceId)
     : undefined

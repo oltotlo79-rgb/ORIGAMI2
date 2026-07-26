@@ -400,6 +400,11 @@ pub enum DirectConstraintConflictKindV1 {
         numerator_edge: EdgeId,
         denominator_edge: EdgeId,
     },
+    /// Three directed `LengthRatio` records form the reported exact edge
+    /// cycle and one edge has a consistent positive finite fixed length.
+    /// Following the two residuals that derive the other edge lengths, once
+    /// each in production binary64 order, makes the final shared residual
+    /// non-zero or non-finite.
     NonUnitLengthRatioCycleWithFixedLength {
         first_edge: EdgeId,
         second_edge: EdgeId,
@@ -2271,7 +2276,6 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
             );
         }
     }
-    // This legacy exact-ratio candidate is likewise quarantined before output.
     let mut consistent_outgoing: BTreeMap<CanonicalId, Vec<(CanonicalId, ScalarAssignment)>> =
         BTreeMap::new();
     for ((numerator, denominator), assignments) in &ratios {
@@ -2297,23 +2301,11 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
                 else {
                     continue;
                 };
-                if positive_binary64_product_is_one_v1(&[
-                    first_ratio.value,
-                    second_ratio.value,
-                    third_ratio.value,
-                ]) {
-                    continue;
-                }
-                let fixed = [*first, *second, *third]
-                    .into_iter()
-                    .filter_map(|edge| {
-                        fixed_lengths
-                            .get(&edge)
-                            .and_then(ScalarGroupSummary::consistent_assignment)
-                            .map(|assignment| (edge, assignment))
-                    })
-                    .min_by_key(|(_, assignment)| assignment.id.canonical_bytes());
-                if let Some((fixed_edge, fixed)) = fixed {
+                if let Some((fixed_edge, witness)) = length_ratio_cycle_fixed_witness_v1(
+                    [*first, *second, *third],
+                    [*first_ratio, *second_ratio, third_ratio],
+                    &fixed_lengths,
+                ) {
                     push_conflict(
                         &mut conflicts,
                         DirectConstraintConflictKindV1::NonUnitLengthRatioCycleWithFixedLength {
@@ -2322,7 +2314,7 @@ fn preflight_direct_conflicts_with_zero_closure_controls_v1(
                             third_edge: edge_ids[third],
                             fixed_edge: edge_ids[&fixed_edge],
                         },
-                        [first_ratio.id, second_ratio.id, third_ratio.id, fixed.id],
+                        witness,
                     );
                 }
             }
@@ -2894,6 +2886,68 @@ fn nonreciprocal_length_ratio_fixed_witness_v1(
     best
 }
 
+/// Evaluates a directed three-ratio closure from one fixed edge.
+///
+/// Ratios are ordered as `A/B`, `B/C`, `C/A`. Starting at the fixed edge, the
+/// two incoming residuals each force one once-rounded numerator length; the
+/// remaining ratio is evaluated through the shared production residual.
+fn length_ratio_cycle_closure_residual_binary64_v1(
+    fixed_index: usize,
+    fixed_length: f64,
+    ratios: [f64; 3],
+) -> f64 {
+    debug_assert!(fixed_index < 3);
+    let first_derived =
+        length_ratio_scaled_denominator_binary64_v1(ratios[(fixed_index + 2) % 3], fixed_length);
+    let second_derived =
+        length_ratio_scaled_denominator_binary64_v1(ratios[(fixed_index + 1) % 3], first_derived);
+    length_ratio_residual_binary64_v1(fixed_length, ratios[fixed_index], second_derived)
+}
+
+/// Returns the canonical four-record proof for a directed three-edge ratio
+/// cycle whose production binary64 closure cannot be zero.
+fn length_ratio_cycle_fixed_witness_v1(
+    edges: [CanonicalId; 3],
+    ratios: [ScalarAssignment; 3],
+    fixed_lengths: &BTreeMap<CanonicalId, ScalarGroupSummary>,
+) -> Option<(CanonicalId, [ConstraintId; 4])> {
+    if ratios
+        .iter()
+        .any(|ratio| !ratio.value.is_finite() || ratio.value <= 0.0)
+    {
+        return None;
+    }
+    let ratio_values = ratios.map(|ratio| ratio.value);
+    let mut best: Option<(CanonicalId, [ConstraintId; 4])> = None;
+    for (fixed_index, fixed_edge) in edges.into_iter().enumerate() {
+        let Some(fixed) = fixed_lengths
+            .get(&fixed_edge)
+            .and_then(ScalarGroupSummary::consistent_assignment)
+        else {
+            continue;
+        };
+        if !fixed.value.is_finite() || fixed.value <= 0.0 {
+            continue;
+        }
+        if length_ratio_cycle_closure_residual_binary64_v1(fixed_index, fixed.value, ratio_values)
+            == 0.0
+        {
+            continue;
+        }
+
+        let mut ids = [ratios[0].id, ratios[1].id, ratios[2].id, fixed.id];
+        ids.sort_unstable_by_key(ConstraintId::canonical_bytes);
+        if best.as_ref().is_none_or(|(current_edge, current_ids)| {
+            canonical_id_slice_cmp(&ids, current_ids)
+                .then_with(|| fixed_edge.cmp(current_edge))
+                .is_lt()
+        }) {
+            best = Some((fixed_edge, ids));
+        }
+    }
+    best
+}
+
 /// Returns the canonical ratio pair whose implemented denominator products
 /// cannot both equal one numerator length.
 ///
@@ -3007,6 +3061,7 @@ fn positive_binary64_odd_parts_v1(value: f64) -> (u64, i16) {
     (significand, exponent)
 }
 
+#[cfg(test)]
 fn positive_binary64_product_is_one_v1(values: &[f64]) -> bool {
     let mut exponent = 0_i32;
     let mut significand = BigUint::from(1_u8);
@@ -3934,6 +3989,7 @@ fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bo
             | DirectConstraintConflictKindV1::EqualLengthWithNonUnitRatioAndFixedLength { .. }
             | DirectConstraintConflictKindV1::NonReciprocalLengthRatiosWithFixedLength { .. }
             | DirectConstraintConflictKindV1::LengthRatioWithIncompatibleFixedLengths { .. }
+            | DirectConstraintConflictKindV1::NonUnitLengthRatioCycleWithFixedLength { .. }
             | DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent { .. }
             | DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
             | DirectConstraintConflictKindV1::PositiveFixedLengthInBoundedZeroLengthClosure { .. }
@@ -4547,6 +4603,14 @@ mod equal_ratio_fixed_tests;
 #[cfg(test)]
 #[path = "constraints_nonreciprocal_ratio_fixed_tests.rs"]
 mod nonreciprocal_ratio_fixed_tests;
+
+#[cfg(test)]
+#[path = "constraints_ratio_cycle_limits_tests.rs"]
+mod ratio_cycle_limits_tests;
+
+#[cfg(test)]
+#[path = "constraints_ratio_cycle_tests.rs"]
+mod ratio_cycle_tests;
 
 #[cfg(test)]
 mod tests {
@@ -7570,13 +7634,8 @@ mod tests {
             ],
         ];
 
-        for (index, records) in cases.into_iter().enumerate() {
+        for records in cases {
             let prepared = prepare(&fixture, &document(records.clone())).expect("valid cause");
-            if index == 3 {
-                assert_solver_required(&prepared.preflight());
-                assert_bounded_direct_oracle_unknown(&prepared);
-                continue;
-            }
             let ConstraintPreflightV1::DirectConflict { conflicts } = prepared.preflight() else {
                 panic!("the allowlisted direct witness must prove a conflict");
             };
@@ -8058,7 +8117,7 @@ mod tests {
     }
 
     #[test]
-    fn three_ratio_cycle_requires_a_positive_fixed_length_and_exact_unit_product() {
+    fn three_ratio_cycle_uses_binary64_closure_instead_of_exact_unit_product() {
         assert!(positive_binary64_product_is_one_v1(&[2.0, 4.0, 0.125]));
         assert!(positive_binary64_product_is_one_v1(&[
             f64::from_bits(1),
@@ -8092,8 +8151,25 @@ mod tests {
             &document([fixed.clone(), first.clone(), second.clone(), third.clone()]),
         )
         .expect("incompatible directed ratio cycle");
-        assert_solver_required(&prepared.preflight());
-        assert_bounded_direct_oracle_unknown(&prepared);
+        let expected_ids = sorted_ids(&[fixed.id, first.id, second.id, third.id]);
+        assert!(matches!(
+            prepared.preflight(),
+            ConstraintPreflightV1::DirectConflict { ref conflicts }
+                if conflicts.len() == 1
+                    && matches!(
+                        conflicts[0].conflict(),
+                        DirectConstraintConflictKindV1::
+                            NonUnitLengthRatioCycleWithFixedLength { .. }
+                    )
+                    && conflicts[0].constraint_ids() == expected_ids
+        ));
+        assert!(matches!(
+            find_bounded_direct_mus_v1(&prepared),
+            BoundedDirectMusV1::ProvenUnsatisfiable {
+                ref constraint_ids,
+                ..
+            } if constraint_ids == &expected_ids
+        ));
 
         let without_fixed = prepare(&fixture, &document([first, second, third]))
             .expect("zero-length solution remains admissible")

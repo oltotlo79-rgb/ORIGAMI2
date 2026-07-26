@@ -8,6 +8,9 @@ mod applied_pose;
 mod constraint_exact_satisfaction_adversarial_tests;
 #[cfg(test)]
 mod constraint_exact_satisfaction_tests;
+mod constraint_exactification;
+#[cfg(test)]
+mod constraint_exactification_tests;
 mod constraint_solver;
 mod constraints;
 mod cycle_fold_transaction;
@@ -24,6 +27,9 @@ pub use applied_pose::{
     APPLIED_POSE_MODEL_ID_V1, AppliedHingeAngleV1, AppliedPoseErrorV1, AppliedPoseLimitsV1,
     AppliedPoseResourceV1, AppliedPoseV1, CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1,
     prepare_applied_pose_v1, prepare_closed_graph_applied_pose_v1,
+};
+pub use constraint_exactification::{
+    CurrentRuntimeExactConstraintAssignmentV1, exactify_axis_aligned_constraint_preview_v1,
 };
 pub use constraint_solver::{
     Binary64ExactConstraintSatisfactionV1, ConstraintSolveErrorV1, ConstraintSolveLimitsV1,

@@ -3781,6 +3781,17 @@ fn checked_work_sum(
         .ok_or(CayleyError::ResourceLimitExceeded { stage, resource })
 }
 
+fn checked_work_product(
+    value: usize,
+    count: usize,
+    stage: CayleyStage,
+    resource: &'static str,
+) -> Result<usize, CayleyError> {
+    value
+        .checked_mul(count)
+        .ok_or(CayleyError::ResourceLimitExceeded { stage, resource })
+}
+
 fn refined_product_bits(
     left: &BigInt,
     right: &BigInt,
@@ -3836,6 +3847,8 @@ fn try_array3<T>(
 }
 
 mod containment;
+#[path = "parallel_meter.rs"]
+mod parallel_meter;
 mod positive_thickness;
 
 pub(crate) use containment::{
@@ -3850,8 +3863,11 @@ pub use positive_thickness::{
     revalidate_tree_hinge_thickness_boundaries_v1,
 };
 pub(crate) use positive_thickness::{
-    PositiveThicknessPrismPairDispositionV1, SharedHingeSolidDiagnosticDispositionV1,
-    SharedHingeSolidDiagnosticErrorV1, ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1,
+    MAX_POSITIVE_THICKNESS_PRISM_PARALLEL_WORKERS_V1, PositiveThicknessPrismPairDispositionV1,
+    PositiveThicknessPrismParallelConfigV1, PositiveThicknessPrismScanErrorV1,
+    SharedHingeSolidDiagnosticDispositionV1, SharedHingeSolidDiagnosticErrorV1,
+    ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1,
+    diagnose_bound_positive_thickness_prism_pairs_parallel_v1,
     diagnose_bound_positive_thickness_prism_pairs_v1,
     diagnose_bound_shared_hinge_solid_for_edge_v1, diagnose_bound_shared_hinge_solid_v1,
     diagnose_bound_zero_thickness_shared_hinge_boundaries_v1,

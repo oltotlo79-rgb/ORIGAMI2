@@ -20,6 +20,7 @@ ori-foldability = { path = "../ori-foldability" }
 ori-kinematics = { path = "../ori-kinematics" }
 ori-numeric = { path = "../ori-numeric" }
 ori-topology = { path = "../ori-topology" }
+rayon.workspace = true
 sha2 = "0.10.9"
 thiserror.workspace = true
 

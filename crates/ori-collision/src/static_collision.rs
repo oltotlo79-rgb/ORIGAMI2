@@ -1,4 +1,10 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use ori_domain::FaceId;
 use ori_kinematics::{
@@ -10,10 +16,12 @@ use thiserror::Error;
 use crate::{
     IntersectionEvidenceV2, TOPOLOGY_CONTACT_POLICY_V2, TopologyContactDecision, TopologyRelation,
     cayley::{
-        PositiveThicknessPrismPairDispositionV1, ProvenTransversalScanError,
-        ProvenTransversalScanLimits, ProvenTransversalScanSummary,
+        MAX_POSITIVE_THICKNESS_PRISM_PARALLEL_WORKERS_V1, PositiveThicknessPrismPairDispositionV1,
+        PositiveThicknessPrismParallelConfigV1, PositiveThicknessPrismScanErrorV1,
+        ProvenTransversalScanError, ProvenTransversalScanLimits, ProvenTransversalScanSummary,
         SharedHingeSolidDiagnosticDispositionV1, SharedHingeSolidDiagnosticErrorV1,
         ZeroThicknessSharedHingeBoundaryDiagnosticErrorV1,
+        diagnose_bound_positive_thickness_prism_pairs_parallel_v1,
         diagnose_bound_positive_thickness_prism_pairs_v1,
         diagnose_bound_shared_hinge_solid_for_edge_v1, diagnose_bound_shared_hinge_solid_v1,
         diagnose_bound_zero_thickness_shared_hinge_boundaries_v1,
@@ -35,6 +43,51 @@ pub const CENTERED_MID_SURFACE_THICKNESS_MODEL_V1: &str = "centered_mid_surface_
 /// This is a hard production cap. Caller-provided limits may reduce it but
 /// cannot expand it.
 pub const NATIVE_STATIC_COLLISION_MAX_PAIR_DIAGNOSTICS_V1: usize = 50_000;
+
+/// Maximum explicit worker count accepted by the V1 static proof entry.
+///
+/// Each invocation owns a dedicated Rayon pool; the process-global pool is
+/// never configured or used by this proof path.
+pub const MAX_STATIC_COLLISION_PARALLEL_WORKERS_V1: usize =
+    MAX_POSITIVE_THICKNESS_PRISM_PARALLEL_WORKERS_V1;
+
+/// Explicit execution settings for the V1 parallel static proof entry.
+///
+/// The cancellation signal is cooperative and fail-closed. If it is observed
+/// at any checkpoint before proof publication, no partial proof is published.
+/// The caller must treat the signal as monotonic for the lifetime of the call:
+/// only a `false` to `true` transition is supported; resetting it is not.
+#[derive(Debug, Clone)]
+pub struct StaticCollisionParallelConfigV1 {
+    worker_threads: usize,
+    cancellation: Option<Arc<AtomicBool>>,
+}
+
+impl StaticCollisionParallelConfigV1 {
+    #[must_use]
+    pub fn new(worker_threads: usize) -> Self {
+        Self {
+            worker_threads,
+            cancellation: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_cancellation(mut self, cancellation: Arc<AtomicBool>) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
+    #[must_use]
+    pub fn worker_threads(&self) -> usize {
+        self.worker_threads
+    }
+
+    #[must_use]
+    pub fn cancellation(&self) -> Option<&Arc<AtomicBool>> {
+        self.cancellation.as_ref()
+    }
+}
 
 /// First opaque native static-collision geometry-proof format.
 ///
@@ -844,17 +897,83 @@ pub fn prove_static_collision_geometry(
     paper_thickness_mm: f64,
     limits: StaticCollisionLimits,
 ) -> Result<NativeStaticCollisionGeometryProof, StaticCollisionError> {
+    prove_static_collision_geometry_with_parallel_config_v1(
+        model,
+        pose,
+        paper_thickness_mm,
+        limits,
+        &StaticCollisionParallelConfigV1::new(1),
+        &|| {},
+    )
+}
+
+/// Proves static collision geometry with an explicit dedicated worker count.
+///
+/// V1 parallelizes only the independent canonical closed-prism face-pair
+/// phase. Input authentication, the zero-thickness prerequisite, and
+/// shared-hinge post-classification retain their established sequential
+/// semantics. Worker counts outside `1..=MAX_STATIC_COLLISION_PARALLEL_WORKERS_V1`
+/// fail closed before a worker pool is created.
+pub fn prove_static_collision_geometry_parallel_v1(
+    model: &MaterialTreeKinematicsModel,
+    pose: &MaterialTreePose,
+    paper_thickness_mm: f64,
+    limits: StaticCollisionLimits,
+    config: StaticCollisionParallelConfigV1,
+) -> Result<NativeStaticCollisionGeometryProof, StaticCollisionError> {
+    prove_static_collision_geometry_with_parallel_config_v1(
+        model,
+        pose,
+        paper_thickness_mm,
+        limits,
+        &config,
+        &|| {},
+    )
+}
+
+fn ensure_static_collision_not_cancelled_v1(
+    parallel: &StaticCollisionParallelConfigV1,
+    expected_unordered_face_pairs: usize,
+) -> Result<(), StaticCollisionError> {
+    if parallel
+        .cancellation
+        .as_deref()
+        .is_some_and(|signal| signal.load(Ordering::Acquire))
+    {
+        Err(StaticCollisionError::PairEvidenceUnavailable {
+            expected_unordered_face_pairs,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn prove_static_collision_geometry_with_parallel_config_v1(
+    model: &MaterialTreeKinematicsModel,
+    pose: &MaterialTreePose,
+    paper_thickness_mm: f64,
+    limits: StaticCollisionLimits,
+    parallel: &StaticCollisionParallelConfigV1,
+    observe_positive_scan_complete: &dyn Fn(),
+) -> Result<NativeStaticCollisionGeometryProof, StaticCollisionError> {
     let validated = validate_static_collision_input(model, pose, paper_thickness_mm, limits)?;
     let bound = validated.bound;
     let face_count = validated.face_count;
     let expected_unordered_face_pairs = validated.expected_unordered_face_pairs;
+    if parallel.worker_threads == 0
+        || parallel.worker_threads > MAX_STATIC_COLLISION_PARALLEL_WORKERS_V1
+    {
+        return Err(StaticCollisionError::ResourceLimitExceeded);
+    }
+    ensure_static_collision_not_cancelled_v1(parallel, expected_unordered_face_pairs)?;
 
     if expected_unordered_face_pairs == 0 {
         // `bind_pose` above proves this came from a private PreparedTree.
         // Material-tree preparation exact-validates every paper and face
         // boundary before it can issue either the model or this pose, so the
         // allocation-free zero-pair proof does not bypass source validity.
-        return Ok(NativeStaticCollisionGeometryProof {
+        ensure_static_collision_not_cancelled_v1(parallel, expected_unordered_face_pairs)?;
+        let proof = NativeStaticCollisionGeometryProof {
             proof: Arc::new(StaticCollisionProof {
                 model: model.clone(),
                 pose: pose.clone(),
@@ -870,7 +989,9 @@ pub fn prove_static_collision_geometry(
                 analyzed_triangle_pairs: 0,
                 shared_hinge_coverage: Vec::new(),
             }),
-        });
+        };
+        ensure_static_collision_not_cancelled_v1(parallel, expected_unordered_face_pairs)?;
+        return Ok(proof);
     }
     let all_faces_triangular = pose.face_ids().iter().all(|face| {
         pose.face_boundary(*face)
@@ -932,12 +1053,40 @@ pub fn prove_static_collision_geometry(
             expected_unordered_face_pairs,
         )?;
         drop(prerequisite);
-        let prism_pairs = diagnose_bound_positive_thickness_prism_pairs_v1(
-            bound,
-            paper_thickness_mm,
-            limits.max_unordered_face_pairs,
-        )
-        .map_err(map_shared_hinge_solid_diagnostic_error)?;
+        let prism_pairs = if parallel.worker_threads == 1 && parallel.cancellation.is_none() {
+            diagnose_bound_positive_thickness_prism_pairs_v1(
+                bound,
+                paper_thickness_mm,
+                limits.max_unordered_face_pairs,
+            )
+            .map_err(map_shared_hinge_solid_diagnostic_error)?
+        } else {
+            diagnose_bound_positive_thickness_prism_pairs_parallel_v1(
+                bound,
+                paper_thickness_mm,
+                limits.max_unordered_face_pairs,
+                PositiveThicknessPrismParallelConfigV1 {
+                    worker_threads: parallel.worker_threads,
+                    cancellation: parallel.cancellation.as_deref(),
+                },
+            )
+            .map_err(|error| match error {
+                PositiveThicknessPrismScanErrorV1::Cancelled => {
+                    StaticCollisionError::PairEvidenceUnavailable {
+                        expected_unordered_face_pairs,
+                    }
+                }
+                PositiveThicknessPrismScanErrorV1::ResourceLimitExceeded => {
+                    StaticCollisionError::ResourceLimitExceeded
+                }
+                PositiveThicknessPrismScanErrorV1::InconsistentPose => {
+                    StaticCollisionError::InconsistentMaterialPose
+                }
+            })?
+            .into_diagnostics()
+        };
+        observe_positive_scan_complete();
+        ensure_static_collision_not_cancelled_v1(parallel, expected_unordered_face_pairs)?;
         if prism_pairs.len() != expected_unordered_face_pairs {
             return Err(StaticCollisionError::InconsistentMaterialPose);
         }
@@ -971,6 +1120,7 @@ pub fn prove_static_collision_geometry(
             .try_reserve_exact(expected_shared_hinges.len())
             .map_err(|_| StaticCollisionError::ResourceLimitExceeded)?;
         for pair in &prism_pairs {
+            ensure_static_collision_not_cancelled_v1(parallel, expected_unordered_face_pairs)?;
             let shared_hinge = expected_shared_hinges.iter().find(|hinge| {
                 (hinge.left_face() == pair.first_face && hinge.right_face() == pair.second_face)
                     || (hinge.left_face() == pair.second_face
@@ -1061,7 +1211,8 @@ pub fn prove_static_collision_geometry(
         {
             return Err(StaticCollisionError::InconsistentMaterialPose);
         }
-        return Ok(NativeStaticCollisionGeometryProof {
+        ensure_static_collision_not_cancelled_v1(parallel, expected_unordered_face_pairs)?;
+        let proof = NativeStaticCollisionGeometryProof {
             proof: Arc::new(StaticCollisionProof {
                 model: model.clone(),
                 pose: pose.clone(),
@@ -1077,7 +1228,12 @@ pub fn prove_static_collision_geometry(
                 analyzed_triangle_pairs: prism_pairs.len(),
                 shared_hinge_coverage,
             }),
-        });
+        };
+        // Building the detached candidate can clone issuer-bound state. A
+        // cancellation observed during that work still discards the object
+        // before any authority handle escapes this boundary.
+        ensure_static_collision_not_cancelled_v1(parallel, expected_unordered_face_pairs)?;
+        return Ok(proof);
     }
     let analysis =
         prepare_authenticated_zero_thickness_pose(pose, zero_thickness_geometry_limits(limits))
@@ -1142,6 +1298,7 @@ pub fn prove_static_collision_geometry(
             scan_bound_pose_for_proven_transversal_penetration(bound, transversal_limits).map_err(
                 |error| map_proven_transversal_scan_error(error, expected_unordered_face_pairs),
             )?;
+        ensure_static_collision_not_cancelled_v1(parallel, expected_unordered_face_pairs)?;
         return if is_positive_thickness {
             finish_proven_positive_thickness_scan(&transversal, expected_unordered_face_pairs)
         } else {
@@ -1151,6 +1308,25 @@ pub fn prove_static_collision_geometry(
     Err(StaticCollisionError::PairEvidenceUnavailable {
         expected_unordered_face_pairs,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn prove_static_collision_geometry_with_post_prism_observer_for_test_v1(
+    model: &MaterialTreeKinematicsModel,
+    pose: &MaterialTreePose,
+    paper_thickness_mm: f64,
+    limits: StaticCollisionLimits,
+    parallel: &StaticCollisionParallelConfigV1,
+    observe_positive_scan_complete: &dyn Fn(),
+) -> Result<NativeStaticCollisionGeometryProof, StaticCollisionError> {
+    prove_static_collision_geometry_with_parallel_config_v1(
+        model,
+        pose,
+        paper_thickness_mm,
+        limits,
+        parallel,
+        observe_positive_scan_complete,
+    )
 }
 
 /// Produces a complete, user-visible pair classification for one exact native

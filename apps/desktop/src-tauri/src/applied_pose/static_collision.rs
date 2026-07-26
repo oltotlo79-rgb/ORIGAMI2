@@ -18,10 +18,10 @@ use ori_collision::{
     POSITIVE_THICKNESS_GRAPH_GEOMETRY_PROOF_V1, PositiveThicknessGraphLimitsV1,
     PositiveThicknessGraphProofErrorV1, StaticCollisionDiagnosticSnapshot, StaticCollisionError,
     StaticCollisionLimits, StaticCollisionPairDiagnostic, StaticCollisionPairDisposition,
-    TOPOLOGY_CONTACT_POLICY_V2, anchor_flat_endpoint_layer_order_v1,
-    diagnose_static_collision_geometry,
+    StaticCollisionParallelConfigV1, TOPOLOGY_CONTACT_POLICY_V2,
+    anchor_flat_endpoint_layer_order_v1, diagnose_static_collision_geometry,
     diagnose_static_collision_geometry_with_flat_layer_order_v1,
-    prove_positive_thickness_graph_geometry_v1, prove_static_collision_geometry,
+    prove_positive_thickness_graph_geometry_v1, prove_static_collision_geometry_parallel_v1,
 };
 use ori_domain::{CreasePattern, FaceId, Paper, ProjectId};
 use ori_kinematics::{
@@ -42,6 +42,18 @@ use crate::{
     },
     lock_project,
 };
+
+/// Version-fixed dedicated worker count for the Desktop tree proof boundary.
+///
+/// The outer native-pose permit serializes heavy jobs per application state;
+/// this inner count controls only the proof-owned Rayon pool.
+const DESKTOP_STATIC_COLLISION_TREE_WORKERS_V1: usize = 4;
+
+#[cfg(test)]
+std::thread_local! {
+    static DESKTOP_PARALLEL_TREE_PROOF_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
 
 /// Fixed-category failure at the current static-collision boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -830,7 +842,7 @@ fn prepare_static_collision_for_diagnostic(
             }));
         }
     };
-    if prove_static_collision_geometry(model, pose, paper_thickness_mm, limits).is_ok() {
+    if prove_desktop_static_collision_tree_v1(model, pose, paper_thickness_mm, limits).is_ok() {
         // Mint through the authoritative proof entry instead of reconstructing
         // opaque safe authority from the read-only pair snapshot.
         return prepare_static_collision(capability, limits);
@@ -880,6 +892,29 @@ fn blocking_error_from_diagnostic_snapshot(
     }
 }
 
+fn prove_desktop_static_collision_tree_v1(
+    model: &MaterialTreeKinematicsModel,
+    pose: &MaterialTreePose,
+    paper_thickness_mm: f64,
+    limits: StaticCollisionLimits,
+) -> Result<NativeStaticCollisionGeometryProof, StaticCollisionError> {
+    #[cfg(test)]
+    DESKTOP_PARALLEL_TREE_PROOF_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
+
+    prove_static_collision_geometry_parallel_v1(
+        model,
+        pose,
+        paper_thickness_mm,
+        limits,
+        StaticCollisionParallelConfigV1::new(DESKTOP_STATIC_COLLISION_TREE_WORKERS_V1),
+    )
+}
+
+#[cfg(test)]
+fn take_desktop_parallel_tree_proof_call_count() -> usize {
+    DESKTOP_PARALLEL_TREE_PROOF_CALLS.with(|calls| calls.replace(0))
+}
+
 fn prepare_static_collision(
     capability: CurrentAppliedPoseCapability,
     limits: StaticCollisionLimits,
@@ -897,7 +932,7 @@ fn prepare_static_collision(
     // proven transversal penetration exits before Prepared B or certificate C
     // can be constructed.
     let geometry_proof = if let Some((model, pose)) = capability.claims.native_pose.tree() {
-        match prove_static_collision_geometry(model, pose, paper_thickness_mm, limits) {
+        match prove_desktop_static_collision_tree_v1(model, pose, paper_thickness_mm, limits) {
             Ok(proof) => CurrentNativeStaticGeometryProof::Tree(proof),
             Err(error) => {
                 return Err(Box::new(FailedCurrentStaticCollisionPreparation {
@@ -1353,6 +1388,59 @@ mod tests {
         let mut project = no_hinge_project();
         adopt_no_hinge_pose(&mut project);
         AppState::new(project)
+    }
+
+    #[test]
+    fn desktop_worker4_tree_proof_matches_sequential_and_normal_preparation_uses_it() {
+        let state = adopted_no_hinge_state();
+        let capability = capture_current_pose_capability(&state)
+            .expect("capture")
+            .expect("current tree pose");
+        let (model, pose) = capability.claims.native_pose.tree().expect("tree pose");
+        let thickness = f64::from_bits(capability.claims.paper_thickness_bits);
+        let _ = take_desktop_parallel_tree_proof_call_count();
+        let sequential = prove_static_collision_geometry(
+            model,
+            pose,
+            thickness,
+            StaticCollisionLimits::default(),
+        )
+        .expect("sequential proof");
+        let desktop = prove_desktop_static_collision_tree_v1(
+            model,
+            pose,
+            thickness,
+            StaticCollisionLimits::default(),
+        )
+        .expect("desktop worker-4 proof");
+        let observation = |proof: &NativeStaticCollisionGeometryProof| {
+            (
+                proof.proof_id(),
+                proof.policy_id(),
+                proof.kinematics_model_id(),
+                proof.thickness_model_id(),
+                proof.paper_thickness_bits(),
+                proof.face_count(),
+                proof.expected_unordered_face_pairs(),
+                proof.analyzed_unordered_face_pairs(),
+                proof.expected_triangle_pairs(),
+                proof.analyzed_triangle_pairs(),
+                proof.expected_shared_hinges(),
+                proof.analyzed_shared_hinges(),
+            )
+        };
+        assert_eq!(observation(&desktop), observation(&sequential));
+        assert!(desktop.is_for_geometry(model, pose, thickness));
+        assert!(sequential.is_for_geometry(model, pose, thickness));
+        assert_eq!(take_desktop_parallel_tree_proof_call_count(), 1);
+        drop(capability);
+
+        let capability = capture_current_pose_capability(&state)
+            .expect("capture")
+            .expect("current tree pose");
+        prepare_static_collision(capability, StaticCollisionLimits::default())
+            .expect("normal desktop tree preparation");
+        assert_eq!(take_desktop_parallel_tree_proof_call_count(), 1);
     }
 
     fn blocking_failure_from_current(state: &AppState) -> FailedCurrentStaticCollisionPreparation {

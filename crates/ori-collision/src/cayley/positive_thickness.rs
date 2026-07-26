@@ -43,7 +43,7 @@ use ori_kinematics::{
 };
 use ori_topology::FoldAssignment;
 
-use self::exact_prism::ExactPrismIntersectionKind;
+use self::exact_prism::{ExactPrismIntersectionKind, ExactTriangularPrismInput};
 use super::{
     CayleyError, CayleyLimits, CayleyStage, CayleyWork, ExactFacePose, ExactHingePose, ExactPoint3,
     ExactRigidTransform, ExactTreePoseLimits, ExactVector3, RATIONAL_CAYLEY_TREE_POSE_V1,
@@ -81,9 +81,16 @@ mod direct_f_corridor;
 mod ef_boundary;
 mod exact_e_corridor;
 mod exact_prism;
+mod parallel_scan;
 mod shared_hinge_corridor_admission;
 mod shared_hinge_solid_classification;
 mod shared_hinge_topology_margin;
+
+pub(crate) use parallel_scan::{
+    PositiveThicknessPrismParallelConfigV1, PositiveThicknessPrismScanErrorV1,
+    diagnose_bound_positive_thickness_prism_pairs_parallel_v1,
+    diagnose_bound_positive_thickness_prism_pairs_v1,
+};
 
 const STAGE: CayleyStage = CayleyStage::Containment;
 const SCALAR_INPUT_RATIONALS: usize = 13;
@@ -1805,208 +1812,13 @@ pub(crate) enum PositiveThicknessPrismPairDispositionV1 {
 // size, so a transversal extending into either face cannot become joint
 // contact merely because the paper is large.
 const SHARED_FEATURE_CORRIDOR_HALF_EXTENT_MULTIPLIER_V1: i64 = 16;
+pub(crate) const MAX_POSITIVE_THICKNESS_PRISM_PARALLEL_WORKERS_V1: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PositiveThicknessPrismPairDiagnosticV1 {
     pub(crate) first_face: FaceId,
     pub(crate) second_face: FaceId,
     pub(crate) disposition: PositiveThicknessPrismPairDispositionV1,
-}
-
-pub(crate) fn diagnose_bound_positive_thickness_prism_pairs_v1(
-    bound: BoundMaterialTreePose<'_>,
-    paper_thickness_mm: f64,
-    max_unordered_face_pairs: usize,
-) -> Result<Vec<PositiveThicknessPrismPairDiagnosticV1>, SharedHingeSolidDiagnosticErrorV1> {
-    use exact_prism::{ExactPrismLimits, ExactTriangularPrismInput, analyze_exact_prism_pair_v1};
-
-    if !positive_finite_binary64(paper_thickness_mm)
-        || bound.model().face_ids() != bound.pose().face_ids()
-        || bound.model().hinges() != bound.pose().hinges()
-    {
-        return Err(SharedHingeSolidDiagnosticErrorV1::InconsistentPose);
-    }
-    let exact = prepare_rational_cayley_tree_pose_v1(bound, ExactTreePoseLimits::default())
-        .map_err(|error| match error {
-            CayleyError::ResourceLimitExceeded { .. } => {
-                SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded
-            }
-            _ => SharedHingeSolidDiagnosticErrorV1::InconsistentPose,
-        })?;
-    let pair_count = exact
-        .faces
-        .len()
-        .checked_mul(exact.faces.len().saturating_sub(1))
-        .and_then(|value| value.checked_div(2))
-        .ok_or(SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
-    if pair_count > max_unordered_face_pairs {
-        return Err(SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded);
-    }
-    let half_thickness = BigRational::from_float(paper_thickness_mm)
-        .ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?
-        / BigRational::from_integer(2.into());
-    let prism = |face: &ExactFacePose| -> Option<ExactTriangularPrismInput> {
-        (face.boundary.len() == 3).then(|| ExactTriangularPrismInput {
-            mid_surface: [
-                face.boundary[0].1.clone(),
-                face.boundary[1].1.clone(),
-                face.boundary[2].1.clone(),
-            ],
-            material_normal: ExactVector3 {
-                coordinates: [
-                    face.transform.rotation[0][1].clone(),
-                    face.transform.rotation[1][1].clone(),
-                    face.transform.rotation[2][1].clone(),
-                ],
-            },
-            half_thickness: half_thickness.clone(),
-        })
-    };
-    let mut result = Vec::new();
-    result
-        .try_reserve_exact(pair_count)
-        .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
-    for first in 0..exact.faces.len() {
-        for second in first + 1..exact.faces.len() {
-            let (Some(first_prism), Some(second_prism)) =
-                (prism(&exact.faces[first]), prism(&exact.faces[second]))
-            else {
-                return Err(SharedHingeSolidDiagnosticErrorV1::InconsistentPose);
-            };
-            let mut shared_vertices = [None, None, None];
-            let mut shared_vertex_count = 0;
-            for entry in &exact.faces[first].boundary {
-                if exact.faces[second]
-                    .boundary
-                    .iter()
-                    .any(|(other, _)| *other == entry.0)
-                {
-                    shared_vertices[shared_vertex_count] = Some(entry);
-                    shared_vertex_count += 1;
-                }
-            }
-            let bounds = |input: &ExactTriangularPrismInput| {
-                let mut lower: [Option<BigRational>; 3] = [None, None, None];
-                let mut upper: [Option<BigRational>; 3] = [None, None, None];
-                for point in &input.mid_surface {
-                    for sign in [-1_i8, 1_i8] {
-                        for axis in 0..3 {
-                            let offset =
-                                &input.material_normal.coordinates[axis] * &input.half_thickness;
-                            let value = if sign < 0 {
-                                &point.coordinates[axis] - offset
-                            } else {
-                                &point.coordinates[axis] + offset
-                            };
-                            lower[axis] = Some(lower[axis].as_ref().map_or_else(
-                                || value.clone(),
-                                |current| current.min(&value).clone(),
-                            ));
-                            upper[axis] = Some(upper[axis].as_ref().map_or_else(
-                                || value.clone(),
-                                |current| current.max(&value).clone(),
-                            ));
-                        }
-                    }
-                }
-                (
-                    lower.map(|value| value.expect("a triangular prism has vertices")),
-                    upper.map(|value| value.expect("a triangular prism has vertices")),
-                )
-            };
-            let (first_lower, first_upper) = bounds(&first_prism);
-            let (second_lower, second_upper) = bounds(&second_prism);
-            let intersection_lower: [BigRational; 3] = std::array::from_fn(|axis| {
-                if first_lower[axis] >= second_lower[axis] {
-                    first_lower[axis].clone()
-                } else {
-                    second_lower[axis].clone()
-                }
-            });
-            let intersection_upper: [BigRational; 3] = std::array::from_fn(|axis| {
-                if first_upper[axis] <= second_upper[axis] {
-                    first_upper[axis].clone()
-                } else {
-                    second_upper[axis].clone()
-                }
-            });
-            if (0..3).any(|axis| intersection_lower[axis] > intersection_upper[axis]) {
-                result.push(PositiveThicknessPrismPairDiagnosticV1 {
-                    first_face: exact.faces[first].face,
-                    second_face: exact.faces[second].face,
-                    disposition: PositiveThicknessPrismPairDispositionV1::Separated,
-                });
-                continue;
-            }
-            let intersection = analyze_exact_prism_pair_v1(
-                &first_prism,
-                &second_prism,
-                ExactPrismLimits::default(),
-            )
-            .map_err(|_| SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded)?;
-            let intersection = intersection
-                .intersection
-                .ok_or(SharedHingeSolidDiagnosticErrorV1::InconsistentPose)?;
-            let shared_vertex_corridor = (shared_vertex_count == 1).then(|| {
-                let center = &shared_vertices[0].expect("one counted shared vertex").1;
-                let radius = &half_thickness
-                    * BigRational::from_integer(
-                        SHARED_FEATURE_CORRIDOR_HALF_EXTENT_MULTIPLIER_V1.into(),
-                    );
-                intersection.canonical_vertices().iter().all(|point| {
-                    point
-                        .coordinates
-                        .iter()
-                        .zip(&center.coordinates)
-                        .all(|(coordinate, origin)| (coordinate - origin).abs() <= radius)
-                })
-            }) == Some(true);
-            let shared_vertex_ids = (shared_vertex_count == 2).then(|| {
-                [
-                    shared_vertices[0].expect("two counted shared vertices").0,
-                    shared_vertices[1].expect("two counted shared vertices").0,
-                ]
-            });
-            let has_bound_shared_hinge = shared_vertex_ids.is_some_and(|vertices| {
-                exact.hinges.iter().any(|hinge| {
-                    exact_hinge_binds_face_pair_vertices_v1(
-                        hinge,
-                        exact.faces[first].face,
-                        exact.faces[second].face,
-                        vertices,
-                    )
-                })
-            });
-            let shared_hinge_corridor = has_bound_shared_hinge.then(|| {
-                let first_shared = shared_vertices[0].expect("two counted shared vertices");
-                let second_shared = shared_vertices[1].expect("two counted shared vertices");
-                let radius = &half_thickness
-                    * BigRational::from_integer(
-                        SHARED_FEATURE_CORRIDOR_HALF_EXTENT_MULTIPLIER_V1.into(),
-                    );
-                intersection.canonical_vertices().iter().all(|point| {
-                    (0..3).all(|axis| {
-                        let first = &first_shared.1.coordinates[axis];
-                        let second = &second_shared.1.coordinates[axis];
-                        let lower = first.min(second) - &radius;
-                        let upper = first.max(second) + &radius;
-                        point.coordinates[axis] >= lower && point.coordinates[axis] <= upper
-                    })
-                })
-            }) == Some(true);
-            let disposition = classify_exact_prism_pair_disposition_v1(
-                intersection.kind(),
-                shared_hinge_corridor,
-                shared_vertex_corridor,
-            );
-            result.push(PositiveThicknessPrismPairDiagnosticV1 {
-                first_face: exact.faces[first].face,
-                second_face: exact.faces[second].face,
-                disposition,
-            });
-        }
-    }
-    Ok(result)
 }
 
 const fn classify_exact_prism_pair_disposition_v1(

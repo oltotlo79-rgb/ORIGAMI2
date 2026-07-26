@@ -250,14 +250,15 @@ pub use stacked_fold_read::{
     reverse_map_linear_stacked_fold_material_v1,
 };
 pub use static_collision::{
-    CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1,
-    NATIVE_STATIC_COLLISION_MAX_PAIR_DIAGNOSTICS_V1, NativePositiveThicknessPairSeparationV1,
-    NativeStaticCollisionGeometryProof, StaticCollisionDiagnosticSnapshot, StaticCollisionError,
-    StaticCollisionLimits, StaticCollisionPairDiagnostic, StaticCollisionPairDisposition,
+    CENTERED_MID_SURFACE_THICKNESS_MODEL_V1, MAX_STATIC_COLLISION_PARALLEL_WORKERS_V1,
+    NATIVE_STATIC_COLLISION_GEOMETRY_PROOF_V1, NATIVE_STATIC_COLLISION_MAX_PAIR_DIAGNOSTICS_V1,
+    NativePositiveThicknessPairSeparationV1, NativeStaticCollisionGeometryProof,
+    StaticCollisionDiagnosticSnapshot, StaticCollisionError, StaticCollisionLimits,
+    StaticCollisionPairDiagnostic, StaticCollisionPairDisposition, StaticCollisionParallelConfigV1,
     classify_static_collision_pair_disposition, diagnose_static_collision_geometry,
     diagnose_static_collision_geometry_with_flat_layer_order_v1,
     prepare_positive_thickness_pair_separation_v1, prove_static_collision_geometry,
-    revalidate_positive_thickness_pair_separation_v1,
+    prove_static_collision_geometry_parallel_v1, revalidate_positive_thickness_pair_separation_v1,
 };
 pub use static_transition_chain::{
     MAX_POSITIVE_THICKNESS_STATIC_CHAIN_TRANSITIONS_V1,

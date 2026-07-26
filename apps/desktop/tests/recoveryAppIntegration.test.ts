@@ -207,7 +207,7 @@ test('modal, keyboard, file, edit, and close guards all include recovery', () =>
   const fileOperation = section(
     appSource,
     "async function runFileOperation(operation: 'open' | 'save' | 'save_as')",
-    'async function beginFoldImport',
+    'async function runProjectFolderOperation',
   )
   assert.match(fileOperation, /\|\| recoveryBlockingRef\.current/u)
 

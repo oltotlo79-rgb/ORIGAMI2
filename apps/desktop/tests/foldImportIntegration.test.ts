@@ -6,6 +6,7 @@ const appSource = [
   readSource('../src/App.tsx'),
   readSource('../src/lib/appText.ts'),
 ].join('\n')
+const workflowSource = readSource('../src/lib/useFoldImportWorkflow.ts')
 const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/FoldImportDialog.tsx')
 const dialogTextSource = readSource('../src/lib/foldImportDialogText.ts')
@@ -57,16 +58,16 @@ test('the client exposes only token-based preview, apply, and cancel FOLD invoca
 })
 
 test('the toolbar performs file selection before opening one explicit mapping modal', () => {
-  const begin = appFunction('beginFoldImport', 'closeFoldImportDialog')
+  const begin = workflowFunction('begin', 'close')
 
   assert.match(
     appSource,
     /ref=\{foldImportButtonRef\}[\s\S]*?onClick=\{\(\) => void beginFoldImport\(\)\}[\s\S]*?aria-haspopup="dialog"[\s\S]*?FOLD取込/u,
   )
-  assert.match(begin, /const response = await previewFoldImport\(\)/u)
+  assert.match(begin, /const response = await transport\.preview\(\)/u)
   assert.match(begin, /if \(response\.canceled\)[\s\S]*?return/u)
   assert.match(begin, /if \(!response\.preview\)[\s\S]*?throw new Error/u)
-  assert.match(begin, /setFoldImportPreview\(response\.preview\)/u)
+  assert.match(begin, /setPreview\(response\.preview\)/u)
   assert.doesNotMatch(begin, /\bis_dirty\b|window\.confirm|\bpath\b/iu)
 
   assert.match(
@@ -131,11 +132,11 @@ test('the toolbar performs file selection before opening one explicit mapping mo
 })
 
 test('dirty-project confirmation is deferred until immediately before replacement', () => {
-  const confirm = appFunction('confirmFoldImport', 'toggleBenchmark')
+  const confirm = workflowApplyFunction()
   const dirtyIndex = confirm.indexOf('current.is_dirty')
-  const confirmationIndex = confirm.indexOf('window.confirm')
-  const operationLeaseIndex = confirm.indexOf('coreOperationRef.current = true')
-  const applyIndex = confirm.indexOf('await applyFoldImport(')
+  const confirmationIndex = confirm.indexOf('confirmReplace')
+  const operationLeaseIndex = confirm.indexOf('input.setOperationBusy(true)')
+  const applyIndex = confirm.indexOf('await transport.apply(')
 
   assert.ok(dirtyIndex >= 0, 'missing dirty-project guard')
   assert.ok(confirmationIndex > dirtyIndex, 'confirmation must be part of the dirty guard')
@@ -146,7 +147,7 @@ test('dirty-project confirmation is deferred until immediately before replacemen
   assert.ok(applyIndex > operationLeaseIndex, 'replacement must happen after confirmation')
   assert.match(
     confirm,
-    /current\.is_dirty\s*&&\s*!window\.confirm\(appConfirmationText\(locale, 'replaceWithFold'\)\)\s*\)\s*return/u,
+    /current\.is_dirty\s*&&\s*!confirmReplace\(appConfirmationText\(input\.locale, 'replaceWithFold'\)\)\s*\)\s*return/u,
   )
   assert.match(
     appMessagesSource,
@@ -154,7 +155,7 @@ test('dirty-project confirmation is deferred until immediately before replacemen
   )
   assert.match(
     confirm,
-    /applyFoldImport\(\s*current\.project_id,\s*current\.revision,\s*settings,\s*\)/u,
+    /transport\.apply\(\s*binding\.project_id,\s*binding\.revision,\s*settings,\s*\)/u,
   )
 })
 
@@ -185,13 +186,18 @@ test('the FOLD modal makes all background regions inert', () => {
 })
 
 test('apply closes and resets editor state only after success while errors keep the dialog', () => {
-  const confirm = appFunction('confirmFoldImport', 'toggleBenchmark')
+  const confirm = workflowApplyFunction()
+  const acceptance = sourceSection(
+    appSource,
+    'const acceptImportedProjectSnapshot = useCallback((',
+    'const {\n    preview: foldImportPreview,',
+  )
   const tryBody = sourceSection(confirm, 'try {', '} catch {')
   const catchBody = sourceSection(confirm, '} catch {', '} finally {')
   const finallyBody = sourceSection(confirm, '} finally {', '\n    }\n  }')
-  const applyIndex = tryBody.indexOf('await applyFoldImport(')
-  const snapshotIndex = tryBody.indexOf('applySnapshot(snapshot, true)')
-  const closeIndex = tryBody.indexOf('setFoldImportPreview(null)')
+  const applyIndex = tryBody.indexOf('await transport.apply(')
+  const snapshotIndex = tryBody.indexOf('input.onApplied(snapshot)')
+  const closeIndex = tryBody.indexOf('clearPreview()')
 
   assert.ok(applyIndex >= 0, 'missing FOLD apply call')
   assert.ok(snapshotIndex > applyIndex, 'the returned snapshot must be applied after import')
@@ -205,29 +211,31 @@ test('apply closes and resets editor state only after success while errors keep 
     'setAppliedFoldPose(null)',
     "setActiveTool('select')",
   ]) {
-    assert.match(tryBody, new RegExp(escapeRegExp(reset), 'u'), reset)
+    assert.match(acceptance, new RegExp(escapeRegExp(reset), 'u'), reset)
   }
   assert.match(
-    tryBody,
-    /setBenchmarkStatus\(appMessage\(APP_TEXT\.returnedToTheNormalCreasePatternAfterFOLDImport\)\)/u,
+    acceptance,
+    /source === 'fold'[\s\S]*APP_TEXT\.returnedToTheNormalCreasePatternAfterFOLDImport/u,
   )
 
   assert.match(
     catchBody,
-    /const safeError = appMessage\(\s*appErrorLocalizedText\('fold_import_failed'\),\s*\)[\s\S]*setFoldImportError\(safeError\)[\s\S]*setCoreStatus\(safeError\)/u,
+    /rejectWith\('fold_import_failed'\)/u,
   )
   assert.doesNotMatch(catchBody, /String\(error\)|\{ error:/u)
-  assert.doesNotMatch(catchBody, /setFoldImportPreview\(null\)/u)
-  assert.doesNotMatch(finallyBody, /setFoldImportPreview\(null\)/u)
-  assert.match(finallyBody, /coreOperationRef\.current = false/u)
-  assert.match(finallyBody, /setCoreBusy\(false\)/u)
+  assert.doesNotMatch(catchBody, /String\(|\{ error:/u)
+  assert.doesNotMatch(finallyBody, /clearPreview/u)
+  assert.match(finallyBody, /input\.setOperationBusy\(false\)/u)
 })
 
 test('performance data cannot outlive or obscure a FOLD project replacement', () => {
-  const confirm = appFunction('confirmFoldImport', 'toggleBenchmark')
-  const tryBody = sourceSection(confirm, 'try {', '} catch {')
-  const snapshotIndex = tryBody.indexOf('applySnapshot(snapshot, true)')
-  const clearBenchmarkIndex = tryBody.indexOf('setBenchmarkRun(null)')
+  const acceptance = sourceSection(
+    appSource,
+    'const acceptImportedProjectSnapshot = useCallback((',
+    'const {\n    preview: foldImportPreview,',
+  )
+  const snapshotIndex = acceptance.indexOf('applySnapshot(snapshot, true)')
+  const clearBenchmarkIndex = acceptance.indexOf('setBenchmarkRun(null)')
 
   assert.ok(snapshotIndex >= 0, 'missing imported snapshot application')
   assert.ok(
@@ -239,23 +247,30 @@ test('performance data cannot outlive or obscure a FOLD project replacement', ()
     /ref=\{foldImportButtonRef\}[\s\S]*?disabled=\{coreBusy \|\| benchmarkLoading \|\| Boolean\(benchmarkRun\) \|\| !nativeSnapshot\}[\s\S]*?FOLD取込/u,
   )
   assert.doesNotMatch(
-    sourceSection(confirm, '} catch {', '} finally {'),
+    workflowApplyFunction(),
     /setBenchmarkRun\(null\)/u,
   )
 })
 
 test('cancel invalidates the native preview token and then closes the dialog', () => {
-  const cancel = appFunction('closeFoldImportDialog', 'confirmFoldImport')
+  const cancel = workflowFunction('close', 'apply')
 
-  assert.match(cancel, /const preview = foldImportPreview/u)
-  assert.match(cancel, /await cancelFoldImport\(preview\.import_id\)/u)
+  assert.match(cancel, /const pendingPreview = preview/u)
   assert.match(
     cancel,
-    /finally \{[\s\S]*?setFoldImportPreview\(null\)[\s\S]*?setFoldImportError\(null\)/u,
+    /await cleanup\.cancel\(\s*transport\.cancel,\s*pendingPreview\.import_id/u,
   )
   assert.match(
     cancel,
-    /requestAnimationFrame\(\(\) => foldImportButtonRef\.current\?\.focus\(\)\)/u,
+    /if \(cleanupError !== null\)[\s\S]*?rejectWith\('fold_cleanup_failed'\)[\s\S]*?return[\s\S]*?clearPreview\(\)/u,
+  )
+  assert.match(
+    cancel,
+    /clearPreview\(\)[\s\S]*?restoreButtonFocus\(\)/u,
+  )
+  assert.doesNotMatch(
+    sourceSection(cancel, '} finally {', '\n    }\n  }'),
+    /clearPreview/u,
   )
 })
 
@@ -267,11 +282,19 @@ function exportedFunction(name: string) {
   return clientSource.slice(startIndex, nextIndex < 0 ? clientSource.length : nextIndex)
 }
 
-function appFunction(name: string, nextName: string) {
+function workflowFunction(name: string, nextName: string) {
   return sourceSection(
-    appSource,
+    workflowSource,
     `async function ${name}(`,
     `async function ${nextName}(`,
+  )
+}
+
+function workflowApplyFunction() {
+  return sourceSection(
+    workflowSource,
+    'async function apply(',
+    '\n  return {',
   )
 }
 

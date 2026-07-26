@@ -70,11 +70,7 @@ import {
   applyMirrorSelection,
   confirmLinearArray,
   confirmRadialArray,
-  applyFoldImport,
-  applySvgImport,
   assignEdgeToProjectLayer,
-  cancelFoldImport,
-  cancelSvgImport,
   connectEdgeIntersection,
   connectIntersectionCluster,
   repairAllUnsplitIntersections,
@@ -102,14 +98,12 @@ import {
   moveVertices,
   moveVertex,
   newProject,
-  previewFoldImport,
   previewGeometricConstraintSolve,
   previewGeometricConstraintEdgeSolve,
   previewGeometricConstraintExpressionSolve,
   preflightMirrorSelection,
   previewLinearArray,
   previewRadialArray,
-  previewSvgImport,
   redo,
   removeAnnotation,
   removeUnderlay,
@@ -167,7 +161,6 @@ import {
   type ElementMetadata,
   type ElementMetadataTarget,
   type ValidationSnapshot,
-  validateSvgImportSettings,
   normalizeCustomObjectDisplayName,
   validateProject,
   proveCurrentAssignedLocalSufficiencyV1,
@@ -183,13 +176,6 @@ import {
   projectFolderClientErrorMessage,
   saveProjectFolderAs,
 } from './lib/projectFolderClient'
-import type { FoldImportPreview, FoldImportSettings } from './lib/foldImport'
-import type {
-  SvgImportPreview,
-  SvgImportSettings,
-  SvgImportSettingsDraft,
-  SvgImportSettingsValidation,
-} from './lib/svgImport'
 import { normalizeGeometricConstraintDocument } from './lib/geometricConstraints'
 import {
   DEFAULT_PROJECT_LAYER_DOCUMENT_V1,
@@ -322,6 +308,8 @@ import { useCreaseExportWorkflow } from './lib/useCreaseExportWorkflow'
 import { useStaticMeshExportWorkflow } from './lib/useStaticMeshExportWorkflow'
 import { useMeshAnimationExportWorkflow } from './lib/useMeshAnimationExportWorkflow'
 import { useInstructionExportWorkflow } from './lib/useInstructionExportWorkflow'
+import { useFoldImportWorkflow } from './lib/useFoldImportWorkflow'
+import { useSvgImportWorkflow } from './lib/useSvgImportWorkflow'
 import {
   appConfirmationText,
   appErrorLocalizedText,
@@ -906,14 +894,6 @@ function App() {
   const [foldTechniqueBusy, setFoldTechniqueBusy] = useState(false)
   const [foldTechniqueSaveFailed, setFoldTechniqueSaveFailed] = useState(false)
   const [foldTechniqueSelectedIndex, setFoldTechniqueSelectedIndex] = useState(0)
-  const [foldImportPreview, setFoldImportPreview] = useState<FoldImportPreview | null>(null)
-  const [foldImportErrorMessage, setFoldImportError] =
-    useState<AppMessage | null>(null)
-  const [svgImportPreview, setSvgImportPreview] = useState<SvgImportPreview | null>(null)
-  const [svgImportErrorMessage, setSvgImportError] =
-    useState<AppMessage | null>(null)
-  const [svgImportValidation, setSvgImportValidation] =
-    useState<SvgImportSettingsValidation | null>(null)
   const [parallelReferenceEdgeId, setParallelReferenceEdgeId] = useState<string | null>(null)
   const [angleDegrees, setAngleDegrees] = useState(DEFAULT_ANGLE_SNAP_CONFIG.angleDegrees)
   const [angleDegreesInput, setAngleDegreesInput] = useState(
@@ -940,8 +920,6 @@ function App() {
   const topologyStatus = appMessageText(locale, topologyStatusMessage) ?? ''
   const coreStatus = appMessageText(locale, coreStatusMessage) ?? ''
   const newProjectError = appMessageText(locale, newProjectErrorMessage)
-  const foldImportError = appMessageText(locale, foldImportErrorMessage)
-  const svgImportError = appMessageText(locale, svgImportErrorMessage)
   const recoveryBlocking = recoveryStartup.kind !== 'ready'
   const coreOperationRef = useRef(false)
   const latestSnapshotRef = useRef<ProjectSnapshot | null>(null)
@@ -973,8 +951,6 @@ function App() {
   const foldTechniqueEditorDirtyRef = useRef(false)
   const foldTechniqueEditorOpenerRef = useRef<HTMLButtonElement | null>(null)
   const foldTechniqueRequestIdRef = useRef(0)
-  const foldImportButtonRef = useRef<HTMLButtonElement>(null)
-  const svgImportButtonRef = useRef<HTMLButtonElement>(null)
   const {
     open: creaseExportOpen,
     format: creaseExportFormat,
@@ -1241,6 +1217,85 @@ function App() {
     setTopologyResponse(null)
     setTopologyStatus(appMessage(APP_TEXT.waitingForFaceAndHingeAnalysis))
   }, [])
+  const acceptImportedProjectSnapshot = useCallback((
+    snapshot: ProjectSnapshot,
+    source: 'fold' | 'svg',
+  ) => {
+    applySnapshot(snapshot, true)
+    setBenchmarkRun(null)
+    setBenchmarkStatus(appMessage(
+      source === 'fold'
+        ? APP_TEXT.returnedToTheNormalCreasePatternAfterFOLDImport
+        : APP_TEXT.returnedToTheNormalCreasePatternAfterSVGImport,
+    ))
+    setSelectedLineId(null)
+    setSelectedVertexId(null)
+    setPendingEdgeStart(null)
+    setParallelReferenceEdgeId(null)
+    setAppliedFoldPose(null)
+    setFoldAngleOverrides({ projectId: null, values: new Map() })
+    setFixedFaceChoice({ projectId: null, faceId: null })
+    setActiveTool('select')
+  }, [applySnapshot])
+  const {
+    preview: foldImportPreview,
+    error: foldImportErrorMessage,
+    buttonRef: foldImportButtonRef,
+    begin: beginFoldImport,
+    close: closeFoldImportDialog,
+    apply: confirmFoldImport,
+  } = useFoldImportWorkflow({
+    locale,
+    copy: {
+      missingPreview: APP_TEXT.noImportPreviewWasReturned,
+      cancelled: APP_TEXT.foldImportCancelled,
+      reviewReady: APP_TEXT.reviewTheFOLDLineTypesAndScale,
+      imported: APP_TEXT.importedNameFromFOLDASaveLocationHasNotBeen,
+    },
+    getCurrentSnapshot: () => latestSnapshotRef.current,
+    operationActive: () => coreOperationRef.current,
+    setOperationBusy: (busy) => {
+      coreOperationRef.current = busy
+      setCoreBusy(busy)
+    },
+    setFileOperation,
+    cancelInteraction: () => setCancelInteractionToken((token) => token + 1),
+    onStatus: setCoreStatus,
+    onApplied: (snapshot) => acceptImportedProjectSnapshot(snapshot, 'fold'),
+  })
+  const {
+    preview: svgImportPreview,
+    validation: svgImportValidation,
+    error: svgImportErrorMessage,
+    buttonRef: svgImportButtonRef,
+    begin: beginSvgImport,
+    invalidateValidation: invalidateSvgImportValidation,
+    validate: validateSvgImportDraft,
+    close: closeSvgImportDialog,
+    apply: confirmSvgImport,
+  } = useSvgImportWorkflow({
+    locale,
+    copy: {
+      missingPreview: APP_TEXT.noImportPreviewWasReturned,
+      cancelled: APP_TEXT.svgImportCancelled,
+      reviewReady: APP_TEXT.reviewTheSVGBoundaryLineTypesAndScale,
+      validationReadyJapanese: APP_TEXT.message0140,
+      validationReadyEnglish: APP_TEXT.validatedSVGBoundaryWidthHeightMm,
+      imported: APP_TEXT.importedNameFromSVGASaveLocationHasNotBeen,
+    },
+    getCurrentSnapshot: () => latestSnapshotRef.current,
+    operationActive: () => coreOperationRef.current,
+    setOperationBusy: (busy) => {
+      coreOperationRef.current = busy
+      setCoreBusy(busy)
+    },
+    setFileOperation,
+    cancelInteraction: () => setCancelInteractionToken((token) => token + 1),
+    onStatus: setCoreStatus,
+    onApplied: (snapshot) => acceptImportedProjectSnapshot(snapshot, 'svg'),
+  })
+  const foldImportError = appMessageText(locale, foldImportErrorMessage)
+  const svgImportError = appMessageText(locale, svgImportErrorMessage)
   const acceptAppliedHistoryLimit = useCallback(async (
     settings: HistoryLimitSettings,
   ) => {
@@ -4973,242 +5028,6 @@ function App() {
       if (foldTechniqueRequestIdRef.current === requestId) {
         setFoldTechniqueOperationBusy(false)
       }
-    }
-  }
-
-  async function beginFoldImport() {
-    if (!latestSnapshotRef.current || coreOperationRef.current) return
-
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    setFileOperation('fold_import')
-    setFoldImportError(null)
-    setCancelInteractionToken((token) => token + 1)
-    try {
-      const response = await previewFoldImport()
-      if (response.canceled) {
-        setCoreStatus(appMessage(APP_TEXT.foldImportCancelled))
-        return
-      }
-      if (!response.preview) {
-        throw new Error(text(APP_TEXT.noImportPreviewWasReturned))
-      }
-      setFoldImportPreview(response.preview)
-      setCoreStatus(appMessage(APP_TEXT.reviewTheFOLDLineTypesAndScale))
-    } catch {
-      setCoreStatus(appMessage(
-        appErrorLocalizedText('fold_read_failed'),
-      ))
-    } finally {
-      setFileOperation(null)
-      coreOperationRef.current = false
-      setCoreBusy(false)
-    }
-  }
-
-  async function closeFoldImportDialog() {
-    const preview = foldImportPreview
-    if (!preview || coreOperationRef.current) return
-
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    try {
-      await cancelFoldImport(preview.import_id)
-      setCoreStatus(appMessage(APP_TEXT.foldImportCancelled))
-    } catch {
-      setCoreStatus(appMessage(
-        appErrorLocalizedText('fold_cleanup_failed'),
-      ))
-    } finally {
-      setFoldImportPreview(null)
-      setFoldImportError(null)
-      coreOperationRef.current = false
-      setCoreBusy(false)
-      requestAnimationFrame(() => foldImportButtonRef.current?.focus())
-    }
-  }
-
-  async function confirmFoldImport(settings: FoldImportSettings) {
-    const current = latestSnapshotRef.current
-    if (!current || coreOperationRef.current) return
-    if (
-      current.is_dirty
-      && !window.confirm(appConfirmationText(locale, 'replaceWithFold'))
-    ) return
-
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    setFoldImportError(null)
-    setCancelInteractionToken((token) => token + 1)
-    try {
-      const snapshot = await applyFoldImport(
-        current.project_id,
-        current.revision,
-        settings,
-      )
-      applySnapshot(snapshot, true)
-      setBenchmarkRun(null)
-      setBenchmarkStatus(appMessage(APP_TEXT.returnedToTheNormalCreasePatternAfterFOLDImport))
-      setFoldImportPreview(null)
-      setSelectedLineId(null)
-      setSelectedVertexId(null)
-      setPendingEdgeStart(null)
-      setParallelReferenceEdgeId(null)
-      setAppliedFoldPose(null)
-      setFoldAngleOverrides({ projectId: null, values: new Map() })
-      setFixedFaceChoice({ projectId: null, faceId: null })
-      setActiveTool('select')
-      setCoreStatus(appMessage(APP_TEXT.importedNameFromFOLDASaveLocationHasNotBeen, { name: snapshot.name }))
-      requestAnimationFrame(() => foldImportButtonRef.current?.focus())
-    } catch {
-      const safeError = appMessage(
-        appErrorLocalizedText('fold_import_failed'),
-      )
-      setFoldImportError(safeError)
-      setCoreStatus(safeError)
-    } finally {
-      coreOperationRef.current = false
-      setCoreBusy(false)
-    }
-  }
-
-  async function beginSvgImport() {
-    if (!latestSnapshotRef.current || coreOperationRef.current) return
-
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    setFileOperation('svg_import')
-    setSvgImportError(null)
-    setSvgImportValidation(null)
-    setCancelInteractionToken((token) => token + 1)
-    try {
-      const response = await previewSvgImport()
-      if (response.canceled) {
-        setCoreStatus(appMessage(APP_TEXT.svgImportCancelled))
-        return
-      }
-      if (!response.preview) {
-        throw new Error(text(APP_TEXT.noImportPreviewWasReturned))
-      }
-      setSvgImportPreview(response.preview)
-      setCoreStatus(appMessage(APP_TEXT.reviewTheSVGBoundaryLineTypesAndScale))
-    } catch {
-      setCoreStatus(appMessage(
-        appErrorLocalizedText('svg_read_failed'),
-      ))
-    } finally {
-      setFileOperation(null)
-      coreOperationRef.current = false
-      setCoreBusy(false)
-    }
-  }
-
-  async function closeSvgImportDialog() {
-    const preview = svgImportPreview
-    if (!preview || coreOperationRef.current) return
-
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    try {
-      await cancelSvgImport(preview.import_id)
-      setCoreStatus(appMessage(APP_TEXT.svgImportCancelled))
-      setSvgImportPreview(null)
-      setSvgImportError(null)
-      setSvgImportValidation(null)
-      requestAnimationFrame(() => svgImportButtonRef.current?.focus())
-    } catch {
-      const safeError = appMessage(
-        appErrorLocalizedText('svg_cleanup_failed'),
-      )
-      setSvgImportError(safeError)
-      setCoreStatus(safeError)
-    } finally {
-      coreOperationRef.current = false
-      setCoreBusy(false)
-    }
-  }
-
-  async function validateSvgImportDraft(settings: SvgImportSettingsDraft) {
-    const current = latestSnapshotRef.current
-    if (!current || coreOperationRef.current) return
-
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    setSvgImportError(null)
-    setSvgImportValidation(null)
-    try {
-      const validation = await validateSvgImportSettings(
-        current.project_id,
-        current.revision,
-        settings,
-      )
-      setSvgImportValidation(validation)
-      setCoreStatus(appMessage({
-        ja: formatLocalizedText('ja', APP_TEXT.message0140, {
-          width: validation.width_mm.toLocaleString('ja'),
-          height: validation.height_mm.toLocaleString('ja'),
-        }),
-        en: formatLocalizedText('en', APP_TEXT.validatedSVGBoundaryWidthHeightMm, {
-          width: validation.width_mm.toLocaleString('en'),
-          height: validation.height_mm.toLocaleString('en'),
-        }),
-      }))
-    } catch {
-      const safeError = appMessage(
-        appErrorLocalizedText('svg_boundary_validation_failed'),
-      )
-      setSvgImportError(safeError)
-      setCoreStatus(safeError)
-    } finally {
-      coreOperationRef.current = false
-      setCoreBusy(false)
-    }
-  }
-
-  async function confirmSvgImport(settings: SvgImportSettings) {
-    const current = latestSnapshotRef.current
-    if (!current || coreOperationRef.current) return
-    const replaceDirtyProjectConfirmed = current.is_dirty
-    if (
-      replaceDirtyProjectConfirmed
-      && !window.confirm(appConfirmationText(locale, 'replaceWithSvg'))
-    ) return
-
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    setSvgImportError(null)
-    setCancelInteractionToken((token) => token + 1)
-    try {
-      const snapshot = await applySvgImport(
-        current.project_id,
-        current.revision,
-        settings,
-        replaceDirtyProjectConfirmed,
-      )
-      applySnapshot(snapshot, true)
-      setBenchmarkRun(null)
-      setBenchmarkStatus(appMessage(APP_TEXT.returnedToTheNormalCreasePatternAfterSVGImport))
-      setSvgImportPreview(null)
-      setSvgImportValidation(null)
-      setSelectedLineId(null)
-      setSelectedVertexId(null)
-      setPendingEdgeStart(null)
-      setParallelReferenceEdgeId(null)
-      setAppliedFoldPose(null)
-      setFoldAngleOverrides({ projectId: null, values: new Map() })
-      setFixedFaceChoice({ projectId: null, faceId: null })
-      setActiveTool('select')
-      setCoreStatus(appMessage(APP_TEXT.importedNameFromSVGASaveLocationHasNotBeen, { name: snapshot.name }))
-      requestAnimationFrame(() => svgImportButtonRef.current?.focus())
-    } catch {
-      const safeError = appMessage(
-        appErrorLocalizedText('svg_import_failed'),
-      )
-      setSvgImportError(safeError)
-      setCoreStatus(safeError)
-    } finally {
-      coreOperationRef.current = false
-      setCoreBusy(false)
     }
   }
 
@@ -9754,10 +9573,7 @@ function App() {
           validation={svgImportValidation}
           busy={coreBusy}
           error={svgImportError}
-          onInvalidateValidation={() => {
-            setSvgImportValidation(null)
-            setSvgImportError(null)
-          }}
+          onInvalidateValidation={invalidateSvgImportValidation}
           onValidate={(settings) => void validateSvgImportDraft(settings)}
           onCancel={() => void closeSvgImportDialog()}
           onImport={(settings) => void confirmSvgImport(settings)}

@@ -61,8 +61,22 @@ test('snapshot changes invalidate before publishing and replacements are explici
   )
   assert.equal(
     [...appSource.matchAll(/applySnapshot\(snapshot, true\)/gu)].length,
-    3,
-    'new project, FOLD import and SVG import are snapshot replacements',
+    2,
+    'new project and the shared import acceptance path are replacements',
+  )
+  const importAcceptance = section(
+    appSource,
+    'const acceptImportedProjectSnapshot = useCallback',
+    'const {\n    preview: foldImportPreview,',
+  )
+  assert.match(importAcceptance, /source: 'fold' \| 'svg'/u)
+  assert.match(importAcceptance, /applySnapshot\(snapshot, true\)/u)
+  assert.equal(
+    appSource.match(
+      /onApplied: \(snapshot\) => acceptImportedProjectSnapshot\(snapshot, '(?:fold|svg)'\)/gu,
+    )?.length,
+    2,
+    'both import workflows use the shared replacement path',
   )
 
   const start = section(

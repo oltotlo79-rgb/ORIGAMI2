@@ -6,6 +6,7 @@ const appSource = [
   readSource('../src/App.tsx'),
   readSource('../src/lib/appText.ts'),
 ].join('\n')
+const workflowSource = readSource('../src/lib/useSvgImportWorkflow.ts')
 const clientSource = readSource('../src/lib/coreClient.ts')
 const dialogSource = readSource('../src/components/SvgImportDialog.tsx')
 const dialogTextSource = readSource('../src/lib/svgImportDialogText.ts')
@@ -107,17 +108,21 @@ test('the client exposes only token-based preview, validation, apply, and cancel
 })
 
 test('the toolbar starts native preview without an early dirty confirmation', () => {
-  const begin = appFunction('beginSvgImport', 'closeSvgImportDialog')
+  const begin = sourceSection(
+    workflowSource,
+    'async function begin(',
+    'function invalidateValidation(',
+  )
 
   assert.match(
     appSource,
     /ref=\{svgImportButtonRef\}[\s\S]*?disabled=\{coreBusy \|\| benchmarkLoading \|\| Boolean\(benchmarkRun\) \|\| !nativeSnapshot\}[\s\S]*?onClick=\{\(\) => void beginSvgImport\(\)\}[\s\S]*?aria-haspopup="dialog"[\s\S]*?SVG取込/u,
   )
-  assert.match(begin, /if \(!latestSnapshotRef\.current \|\| coreOperationRef\.current\) return/u)
-  assert.match(begin, /const response = await previewSvgImport\(\)/u)
+  assert.match(begin, /if \(!current \|\| preview !== null \|\| input\.operationActive\(\)\) return/u)
+  assert.match(begin, /const response = await transport\.preview\(\)/u)
   assert.match(begin, /if \(response\.canceled\)[\s\S]*?return/u)
   assert.match(begin, /if \(!response\.preview\)[\s\S]*?throw new Error/u)
-  assert.match(begin, /setSvgImportPreview\(response\.preview\)/u)
+  assert.match(begin, /setPreview\(response\.preview\)/u)
   assert.doesNotMatch(
     begin,
     /\bis_dirty\b|window\.confirm|\b(?:path|filePath|file_path|rawSvg|raw_svg|rawXml|raw_xml)\b/iu,
@@ -130,11 +135,11 @@ test('the toolbar starts native preview without an early dirty confirmation', ()
 })
 
 test('dirty-project confirmation is deferred until immediately before SVG replacement', () => {
-  const confirm = appFunction('confirmSvgImport', 'toggleBenchmark')
+  const confirm = workflowApplyFunction()
   const dirtyIndex = confirm.indexOf('current.is_dirty')
-  const confirmationIndex = confirm.indexOf('window.confirm')
-  const operationLeaseIndex = confirm.indexOf('coreOperationRef.current = true')
-  const applyIndex = confirm.indexOf('await applySvgImport(')
+  const confirmationIndex = confirm.indexOf('confirmReplace')
+  const operationLeaseIndex = confirm.indexOf('input.setOperationBusy(true)')
+  const applyIndex = confirm.indexOf('await transport.apply(')
 
   assert.ok(dirtyIndex >= 0, 'missing dirty-project guard')
   assert.ok(confirmationIndex > dirtyIndex, 'confirmation must be part of the dirty guard')
@@ -145,7 +150,7 @@ test('dirty-project confirmation is deferred until immediately before SVG replac
   assert.ok(applyIndex > operationLeaseIndex, 'replacement must happen after confirmation')
   assert.match(
     confirm,
-    /const replaceDirtyProjectConfirmed = current\.is_dirty[\s\S]*?replaceDirtyProjectConfirmed\s*&&\s*!window\.confirm\(appConfirmationText\(locale, 'replaceWithSvg'\)\)\s*\)\s*return/u,
+    /const replaceDirtyProjectConfirmed = current\.is_dirty[\s\S]*?replaceDirtyProjectConfirmed\s*&&\s*!confirmReplace\(appConfirmationText\(input\.locale, 'replaceWithSvg'\)\)\s*\)\s*return/u,
   )
   assert.match(
     appMessagesSource,
@@ -153,14 +158,14 @@ test('dirty-project confirmation is deferred until immediately before SVG replac
   )
   assert.match(
     confirm,
-    /applySvgImport\(\s*current\.project_id,\s*current\.revision,\s*settings,\s*replaceDirtyProjectConfirmed,\s*\)/u,
+    /transport\.apply\(\s*binding\.project_id,\s*binding\.revision,\s*settings,\s*replaceDirtyProjectConfirmed,\s*\)/u,
   )
   assert.match(
     nativeSource,
     /project\.is_dirty\(\)\s*&&\s*!replace_dirty_project_confirmed/u,
   )
   assert.equal(
-    appSource.match(/window\.confirm\(appConfirmationText\(locale, 'replaceWithSvg'\)\)/gu)?.length,
+    workflowSource.match(/confirmReplace\(appConfirmationText\(input\.locale, 'replaceWithSvg'\)\)/gu)?.length,
     1,
   )
 })
@@ -192,13 +197,18 @@ test('the SVG modal makes every background region inert', () => {
 })
 
 test('successful SVG apply resets editor, benchmark, and fold state only after replacement', () => {
-  const confirm = appFunction('confirmSvgImport', 'toggleBenchmark')
+  const confirm = workflowApplyFunction()
+  const acceptance = sourceSection(
+    appSource,
+    'const acceptImportedProjectSnapshot = useCallback((',
+    'const {\n    preview: foldImportPreview,',
+  )
   const tryBody = sourceSection(confirm, 'try {', '} catch {')
   const catchBody = sourceSection(confirm, '} catch {', '} finally {')
   const finallyBody = sourceSection(confirm, '} finally {', '\n    }\n  }')
-  const applyIndex = tryBody.indexOf('await applySvgImport(')
-  const snapshotIndex = tryBody.indexOf('applySnapshot(snapshot, true)')
-  const closeIndex = tryBody.indexOf('setSvgImportPreview(null)')
+  const applyIndex = tryBody.indexOf('await transport.apply(')
+  const snapshotIndex = tryBody.indexOf('input.onApplied(snapshot)')
+  const closeIndex = tryBody.indexOf('clearPreview()')
 
   assert.ok(applyIndex >= 0, 'missing SVG apply call')
   assert.ok(snapshotIndex > applyIndex, 'the returned snapshot must be applied after import')
@@ -214,56 +224,63 @@ test('successful SVG apply resets editor, benchmark, and fold state only after r
     'setFixedFaceChoice({ projectId: null, faceId: null })',
     "setActiveTool('select')",
   ]) {
-    assert.match(tryBody, new RegExp(escapeRegExp(reset), 'u'), reset)
+    assert.match(acceptance, new RegExp(escapeRegExp(reset), 'u'), reset)
   }
   assert.match(
-    tryBody,
-    /setBenchmarkStatus\(appMessage\(APP_TEXT\.returnedToTheNormalCreasePatternAfterSVGImport\)\)/u,
+    acceptance,
+    /APP_TEXT\.returnedToTheNormalCreasePatternAfterSVGImport/u,
   )
 
   assert.match(
     tryBody,
-    /requestAnimationFrame\(\(\) => svgImportButtonRef\.current\?\.focus\(\)\)/u,
+    /restoreButtonFocus\(\)/u,
   )
   assert.match(
     catchBody,
-    /const safeError = appMessage\(\s*appErrorLocalizedText\('svg_import_failed'\),\s*\)[\s\S]*?setSvgImportError\(safeError\)[\s\S]*?setCoreStatus\(safeError\)/u,
+    /rejectWith\('svg_import_failed'\)/u,
   )
   assert.doesNotMatch(catchBody, /String\(error\)|\{error\}/u)
-  assert.doesNotMatch(catchBody, /setSvgImportPreview\(null\)|setBenchmarkRun\(null\)/u)
-  assert.doesNotMatch(finallyBody, /setSvgImportPreview\(null\)|setBenchmarkRun\(null\)/u)
-  assert.match(finallyBody, /coreOperationRef\.current = false/u)
-  assert.match(finallyBody, /setCoreBusy\(false\)/u)
+  assert.doesNotMatch(catchBody, /setBenchmarkRun\(null\)/u)
+  assert.doesNotMatch(finallyBody, /clearPreview|setBenchmarkRun\(null\)/u)
+  assert.match(finallyBody, /input\.setOperationBusy\(false\)/u)
 })
 
 test('cancel invalidates the SVG preview token, keeps project state, and restores focus', () => {
-  const cancel = appFunction('closeSvgImportDialog', 'confirmSvgImport')
-  const tryBody = sourceSection(cancel, 'try {', '} catch {')
-  const catchBody = sourceSection(cancel, '} catch {', '} finally {')
+  const cancel = workflowFunction('close', 'apply')
+  const tryBody = sourceSection(cancel, 'try {', '} finally {')
+  const cleanupFailure = sourceSection(
+    tryBody,
+    'if (cleanupError !== null) {',
+    '\n      clearPreview()',
+  )
   const finallyBody = sourceSection(cancel, '} finally {', '\n    }\n  }')
 
-  assert.match(cancel, /const preview = svgImportPreview/u)
-  assert.match(cancel, /await cancelSvgImport\(preview\.import_id\)/u)
+  assert.match(cancel, /const pendingPreview = preview/u)
+  assert.match(
+    cancel,
+    /await cleanup\.cancel\(\s*transport\.cancel,\s*pendingPreview\.import_id/u,
+  )
   assert.doesNotMatch(
     cancel,
     /applySnapshot|setNativeSnapshot|setBenchmarkRun|setSelectedLineId|setSelectedVertexId/u,
   )
   assert.match(
     tryBody,
-    /setSvgImportPreview\(null\)[\s\S]*?setSvgImportError\(null\)/u,
+    /clearPreview\(\)[\s\S]*?input\.onStatus/u,
   )
   assert.match(
     tryBody,
-    /requestAnimationFrame\(\(\) => svgImportButtonRef\.current\?\.focus\(\)\)/u,
+    /clearPreview\(\)[\s\S]*?restoreButtonFocus\(\)/u,
   )
-  assert.doesNotMatch(catchBody, /setSvgImportPreview\(null\)/u)
   assert.match(
-    catchBody,
-    /const safeError = appMessage\(\s*appErrorLocalizedText\('svg_cleanup_failed'\),\s*\)[\s\S]*?setSvgImportError\(safeError\)[\s\S]*?setCoreStatus\(safeError\)/u,
+    cleanupFailure,
+    /rejectWith\('svg_cleanup_failed'\)\s*return/u,
   )
-  assert.doesNotMatch(catchBody, /String\(error\)|\{error\}/u)
-  assert.doesNotMatch(finallyBody, /setSvgImportPreview\(null\)/u)
-  assert.match(finallyBody, /coreOperationRef\.current = false/u)
+  assert.doesNotMatch(cleanupFailure, /clearPreview\(\)/u)
+  assert.doesNotMatch(cancel, /String\(error\)|\{error\}/u)
+  assert.doesNotMatch(cancel, /\}\s*catch\s*\{/u)
+  assert.doesNotMatch(finallyBody, /clearPreview\(\)/u)
+  assert.match(finallyBody, /input\.setOperationBusy\(false\)/u)
 })
 
 test('the SVG dialog requires native geometry validation, every mapping, and explicit confirmations', () => {
@@ -385,11 +402,19 @@ function exportedFunction(name: string) {
   return clientSource.slice(startIndex, nextIndex < 0 ? clientSource.length : nextIndex)
 }
 
-function appFunction(name: string, nextName: string) {
+function workflowFunction(name: string, nextName: string) {
   return sourceSection(
-    appSource,
+    workflowSource,
     `async function ${name}(`,
     `async function ${nextName}(`,
+  )
+}
+
+function workflowApplyFunction() {
+  return sourceSection(
+    workflowSource,
+    'async function apply(',
+    '\n  return {',
   )
 }
 

@@ -39,6 +39,9 @@ test('App and its extracted helpers reference the catalog for every fixed locali
     new URL('../src/lib/appGeometry.ts', import.meta.url),
     new URL('../src/lib/appNumericExpression.ts', import.meta.url),
     new URL('../src/lib/appPresentation.ts', import.meta.url),
+    new URL('../src/lib/useFoldImportWorkflow.ts', import.meta.url),
+    new URL('../src/lib/useSvgImportWorkflow.ts', import.meta.url),
+    new URL('../src/lib/importWorkflowSupport.ts', import.meta.url),
   ]
   const sources = paths.map((path) => ({
     path,
@@ -96,6 +99,6 @@ test('App and its extracted helpers reference the catalog for every fixed locali
       ),
       0,
     ),
-    935,
+    933,
   )
 })

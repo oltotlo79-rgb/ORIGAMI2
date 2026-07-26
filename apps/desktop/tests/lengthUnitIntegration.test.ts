@@ -5,6 +5,7 @@ import test from 'node:test'
 const app = [
   read('../src/App.tsx'),
   read('../src/lib/appText.ts'),
+  read('../src/lib/useSvgImportWorkflow.ts'),
 ].join('\n')
 const preview = read('../src/components/FoldPreview.tsx')
 const thickness = [
@@ -101,7 +102,7 @@ test('benchmark, expression-backed new-project, and import contracts remain expl
   )
   assert.match(
     app,
-    /ja: formatLocalizedText\('ja',[\s\S]*?validation\.width_mm\.toLocaleString\('ja'\)[\s\S]*?validation\.height_mm\.toLocaleString\('ja'\)[\s\S]*?en: formatLocalizedText\('en',[\s\S]*?validation\.width_mm\.toLocaleString\('en'\)[\s\S]*?validation\.height_mm\.toLocaleString\('en'\)/u,
+    /ja: formatLocalizedText\(\s*'ja',[\s\S]*?response\.width_mm\.toLocaleString\('ja'\)[\s\S]*?response\.height_mm\.toLocaleString\('ja'\)[\s\S]*?en: formatLocalizedText\(\s*'en',[\s\S]*?response\.width_mm\.toLocaleString\('en'\)[\s\S]*?response\.height_mm\.toLocaleString\('en'\)/u,
   )
 })
 

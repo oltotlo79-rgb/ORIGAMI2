@@ -8,6 +8,9 @@ const appSource = [
   readFileSync(new URL('../src/lib/appPresentation.ts', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/useInstructionExportWorkflow.ts', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/instructionExportWorkflowSupport.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/useFoldImportWorkflow.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/useSvgImportWorkflow.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/importWorkflowSupport.ts', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
 ].join('\n')
 
@@ -30,14 +33,39 @@ const APP_FAILURE_CODES = [
   'benchmark_failed',
 ] as const
 
+const IMPORT_FAILURE_CODES = new Set<string>([
+  'fold_read_failed',
+  'fold_cleanup_failed',
+  'fold_import_failed',
+  'svg_read_failed',
+  'svg_cleanup_failed',
+  'svg_boundary_validation_failed',
+  'svg_import_failed',
+])
+
 test('App routes every general failure through a fixed structured code', () => {
   for (const code of APP_FAILURE_CODES) {
     assert.match(
       appSource,
-      new RegExp(`appErrorLocalizedText\\('${code}'\\)`, 'u'),
+      new RegExp(
+        IMPORT_FAILURE_CODES.has(code)
+          ? `rejectWith\\('${code}'\\)`
+          : `appErrorLocalizedText\\('${code}'\\)`,
+        'u',
+      ),
       code,
     )
   }
+  assert.equal(
+    appSource.match(
+      /function rejectWith\([\s\S]*?const message = importWorkflowError\(code\)/gu,
+    )?.length,
+    2,
+  )
+  assert.match(
+    appSource,
+    /export function importWorkflowError\([\s\S]*?return importWorkflowMessage\(appErrorLocalizedText\(code\)\)/u,
+  )
 
   assert.doesNotMatch(appSource, /String\(error\)/u)
   assert.doesNotMatch(appSource, /const message = String\(error\)/u)

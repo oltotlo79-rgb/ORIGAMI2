@@ -15,7 +15,6 @@ import {
   CreaseCanvas,
   type CreaseCanvasFace,
   type CreaseCanvasAnnotation,
-  type CreaseCanvasUnderlay,
   type CreaseCanvasRenderMetrics,
   type CreaseLine,
   type PaperBounds,
@@ -144,7 +143,6 @@ import {
   updateAnnotation,
   updateUnderlay,
   importUnderlayImage,
-  readUnderlayAssetDataUrl,
   updateProjectLayerPresentation,
   updateProjectMemo,
   updateBeginnerDesignProfile,
@@ -354,6 +352,7 @@ import {
 } from './lib/i18n'
 import { APP_TEXT } from './lib/appText.ts'
 import { updateGridPreferenceInput } from './lib/gridPreference'
+import { useCanvasUnderlays } from './lib/useCanvasUnderlays'
 import { useGridDivisionPreference } from './lib/useGridDivisionPreference'
 import {
   appConfirmationText,
@@ -707,34 +706,7 @@ function App() {
     radialArrayRequestSequenceRef.current += 1
     setRadialArrayPreview(null)
   }, [selectedLineId, nativeSnapshot?.project_instance_id, nativeSnapshot?.project_id, nativeSnapshot?.revision])
-  const [underlayImages, setUnderlayImages] = useState<ReadonlyMap<string, HTMLImageElement>>(
-    () => new Map(),
-  )
-  useEffect(() => {
-    if (!nativeSnapshot?.underlays?.underlays.length) {
-      setUnderlayImages(new Map())
-      return
-    }
-    let canceled = false
-    const { project_id, project_instance_id, revision } = nativeSnapshot
-    Promise.all(nativeSnapshot.underlays.underlays.map(async ({ asset }) => {
-      const url = await readUnderlayAssetDataUrl(
-        project_id, revision, project_instance_id, asset,
-      )
-      const image = new Image()
-      await new Promise<void>((resolve, reject) => {
-        image.onload = () => resolve()
-        image.onerror = () => reject(new Error('underlay image unavailable'))
-        image.src = url
-      })
-      return [asset, image] as const
-    })).then((entries) => {
-      if (!canceled) setUnderlayImages(new Map(entries))
-    }).catch(() => {
-      if (!canceled) setUnderlayImages(new Map())
-    })
-    return () => { canceled = true }
-  }, [nativeSnapshot])
+  const canvasUnderlays = useCanvasUnderlays(nativeSnapshot)
   const [recoveryStartup, setRecoveryStartup] = useState<RecoveryStartupState>(
     () => isNativeCoreAvailable()
       ? { kind: 'checking' }
@@ -1740,25 +1712,6 @@ function App() {
       }]
     })
   }, [nativeSnapshot])
-  const canvasUnderlays = useMemo<readonly CreaseCanvasUnderlay[]>(() => {
-    if (!nativeSnapshot?.underlays) return []
-    const layers = new Map(nativeSnapshot.project_layers.layers.map((layer) => [layer.id, layer]))
-    return nativeSnapshot.underlays.underlays.flatMap((record) => {
-      const layer = layers.get(record.layer)
-      const image = underlayImages.get(record.asset)
-      if (!image || !layer || layer.content_kind !== 'underlay' || !layer.visible) return []
-      return [{
-        id: record.id,
-        image,
-        x: record.transform.position.x,
-        y: record.transform.position.y,
-        scaleX: record.transform.scale_x,
-        scaleY: record.transform.scale_y,
-        rotationDegrees: record.transform.rotation_degrees,
-        opacity: record.opacity * layer.opacity,
-      }]
-    })
-  }, [nativeSnapshot, underlayImages])
   const selectedFace = selectedFaceId
     ? canvasFaces.find((face) => face.id === selectedFaceId)
     : undefined

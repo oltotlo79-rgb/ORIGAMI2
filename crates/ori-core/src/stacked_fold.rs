@@ -4133,7 +4133,7 @@ pub fn prepare_stacked_fold_requested_scheduled_graph_pose_v1(
 ) -> Result<PreparedStackedFoldRequestedGraphPoseV1, PrepareStackedFoldRequestedPoseErrorV1> {
     if !display_angle_degrees.is_finite()
         || !(0.0..=180.0).contains(&display_angle_degrees)
-        || interval_closure.leaves().is_empty()
+        || !interval_closure.every_leaf_covers_graph_v1(&initial.target.hinge_geometry)
         || interval_closure.fixed_face() != initial.pose.fixed_face()
         || !schedule.matches_binding(
             &initial.target.hinge_geometry,
@@ -5441,6 +5441,47 @@ mod tests {
                 &CanonicalHingeAngles::new(Vec::new()).expect("empty angles"),
             )
             .expect("source pose");
+        let prepare_initial = || {
+            let target = prepare_stacked_fold_target_graph_audit_v1(
+                prepare_geometry(),
+                TreeKinematicsLimits::default(),
+            )
+            .expect("rebuild cyclic target graph");
+            prepare_stacked_fold_initial_graph_pose_v1(target, &source_model, &source_pose)
+                .expect("rebuild cycle initial embedding")
+        };
+        let prepare_stationary_schedule =
+            |target: &PreparedStackedFoldTargetGraphAuditV1,
+             pose: &ClosedMaterialHingeGraphPose| {
+                let entries = pose
+                    .hinge_angles()
+                    .as_slice()
+                    .iter()
+                    .map(|angle| ori_kinematics::CycleScheduleEntryInputV1 {
+                        edge: angle.edge(),
+                        initial_angle_degrees_bits: angle.angle_degrees().to_bits(),
+                        chebyshev_coefficients: vec![ori_kinematics::RationalCoefficientV1 {
+                            numerator: 0,
+                            denominator: 1,
+                        }],
+                    })
+                    .collect::<Vec<_>>();
+                ori_kinematics::CanonicalCycleScheduleV1::prepare(
+                    target.hinge_geometry(),
+                    target.audit(),
+                    pose.fixed_face(),
+                    [0.0, 1.0],
+                    entries,
+                    ori_kinematics::CycleScheduleLimitsV1::default(),
+                )
+                .expect("prepare stationary cycle schedule")
+            };
+        let closure_limits = ori_kinematics::DyadicIntervalClosureLimitsV1 {
+            max_depth: 0,
+            max_leaves: 1,
+            max_work: 1,
+            schedule_limits: ori_kinematics::CycleScheduleLimitsV1::default(),
+        };
         let initial =
             prepare_stacked_fold_initial_graph_pose_v1(package, &source_model, &source_pose)
                 .expect("cycle initial embedding closes");
@@ -5449,8 +5490,108 @@ mod tests {
             4
         );
         assert_eq!(initial.pose().transforms().len(), 4);
+        let schedule = prepare_stationary_schedule(initial.target(), initial.pose());
+        let derivative_bounds = initial
+            .target()
+            .hinge_geometry()
+            .hinges()
+            .iter()
+            .map(|hinge| schedule.derivative_bound(hinge.edge()))
+            .collect::<Vec<_>>();
+        assert!(
+            derivative_bounds
+                .iter()
+                .all(|bound| bound.is_some_and(|bound| bound.to_bits() == 0.0_f64.to_bits())),
+            "{derivative_bounds:?}"
+        );
+        let scheduled_angles = schedule
+            .evaluate(0.0)
+            .expect("evaluate the stationary schedule");
+        assert_eq!(&scheduled_angles, initial.pose().hinge_angles());
+        initial
+            .target()
+            .hinge_geometry()
+            .solve_closed(
+                initial.target().audit(),
+                initial.pose().fixed_face(),
+                &scheduled_angles,
+                STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+            )
+            .expect("the stationary schedule stays closed");
+        let closure = initial
+            .target()
+            .hinge_geometry()
+            .prove_dyadic_schedule_closure_v1(
+                initial.target().audit(),
+                initial.pose().fixed_face(),
+                &schedule,
+                STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                closure_limits,
+            )
+            .expect("prove the complete stationary schedule");
+        assert!(closure.has_canonical_complete_partition_v1());
+        assert!(closure.every_leaf_covers_graph_v1(initial.target().hinge_geometry()));
+        let requested_angles = initial.pose().hinge_angles().clone();
+        let scheduled = prepare_stacked_fold_requested_scheduled_graph_pose_v1(
+            initial,
+            &schedule,
+            &closure,
+            requested_angles,
+            0.0,
+        )
+        .expect("accept a complete closure from the live graph instance");
+        assert_eq!(scheduled.requested_angle_degrees(), 0.0);
+
+        let stale_initial = prepare_initial();
+        let live_schedule =
+            prepare_stationary_schedule(stale_initial.target(), stale_initial.pose());
+        let foreign_target = prepare_stacked_fold_target_graph_audit_v1(
+            prepare_geometry(),
+            TreeKinematicsLimits::default(),
+        )
+        .expect("prepare identical foreign cyclic target graph");
+        assert!(
+            !foreign_target
+                .hinge_geometry()
+                .same_instance(stale_initial.target().hinge_geometry())
+        );
+        let foreign_schedule = prepare_stationary_schedule(&foreign_target, stale_initial.pose());
+        assert_eq!(
+            foreign_schedule.graph_binding_fingerprint_v1(),
+            live_schedule.graph_binding_fingerprint_v1()
+        );
+        assert_eq!(
+            foreign_schedule.certificate_binding_fingerprint_v1(),
+            live_schedule.certificate_binding_fingerprint_v1()
+        );
+        let foreign_closure = foreign_target
+            .hinge_geometry()
+            .prove_dyadic_schedule_closure_v1(
+                foreign_target.audit(),
+                stale_initial.pose().fixed_face(),
+                &foreign_schedule,
+                STACKED_FOLD_GRAPH_CLOSURE_TOLERANCE_V1,
+                closure_limits,
+            )
+            .expect("prove identical content on a foreign graph instance");
+        assert!(foreign_closure.every_leaf_covers_graph_v1(foreign_target.hinge_geometry()));
+        assert!(
+            !foreign_closure.every_leaf_covers_graph_v1(stale_initial.target().hinge_geometry())
+        );
+        let stale_requested_angles = stale_initial.pose().hinge_angles().clone();
         assert!(matches!(
-            prepare_stacked_fold_requested_graph_pose_v1(initial, 90.0),
+            prepare_stacked_fold_requested_scheduled_graph_pose_v1(
+                stale_initial,
+                &live_schedule,
+                &foreign_closure,
+                stale_requested_angles,
+                0.0,
+            ),
+            Err(PrepareStackedFoldRequestedPoseErrorV1::InvalidRequestedAngle)
+        ));
+
+        assert!(matches!(
+            prepare_stacked_fold_requested_graph_pose_v1(prepare_initial(), 90.0),
             Err(PrepareStackedFoldRequestedPoseErrorV1::Kinematics(
                 KinematicsError::UnsupportedTopology
             ))

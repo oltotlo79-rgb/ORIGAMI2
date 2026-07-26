@@ -3661,6 +3661,7 @@ mod tests {
         let mut reordered = closure.clone();
         reordered.leaves.swap(1, 2);
         assert!(!reordered.has_canonical_complete_partition_v1());
+        assert!(!reordered.every_leaf_covers_graph_v1(&geometry));
         assert_ne!(
             reordered.partition_binding_fingerprint_v1(),
             closure.partition_binding_fingerprint_v1()
@@ -3669,6 +3670,13 @@ mod tests {
         let mut gapped = closure.clone();
         gapped.leaves.remove(1);
         assert!(!gapped.has_canonical_complete_partition_v1());
+        assert!(!gapped.every_leaf_covers_graph_v1(&geometry));
+
+        let mut empty = closure.clone();
+        empty.leaves.clear();
+        assert!(empty.leaves().is_empty());
+        assert!(!empty.has_canonical_complete_partition_v1());
+        assert!(!empty.every_leaf_covers_graph_v1(&geometry));
 
         let mut stale = closure;
         let valid_binding = stale.partition_binding_fingerprint_v1();

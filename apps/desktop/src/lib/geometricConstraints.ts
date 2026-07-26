@@ -205,6 +205,14 @@ export type DirectConstraintConflictKindV1 =
       target_vertex: string
       line_edge: string
     }>
+  | Readonly<{
+      kind: 'positive_fixed_length_in_bounded_zero_length_closure'
+      fixed_edge: string
+      forced_zero_edge: string
+      horizontal_constraint_count: number
+      vertical_constraint_count: number
+      zero_propagation_constraint_count: number
+    }>
 
 export type DirectConstraintConflictV1 = Readonly<{
   conflict: DirectConstraintConflictKindV1
@@ -1277,6 +1285,44 @@ function parseDirectConflictKind(
         }),
         witnessSize: 3,
       }
+    case 'positive_fixed_length_in_bounded_zero_length_closure': {
+      if (
+        !hasExactKeys(record, [
+          'kind',
+          'fixed_edge',
+          'forced_zero_edge',
+          'horizontal_constraint_count',
+          'vertical_constraint_count',
+          'zero_propagation_constraint_count',
+        ])
+        || !isCanonicalUuid(record.fixed_edge)
+        || !isCanonicalUuid(record.forced_zero_edge)
+        || !isPositiveU16(record.horizontal_constraint_count)
+        || !isPositiveU16(record.vertical_constraint_count)
+        || !isNonNegativeU16(record.zero_propagation_constraint_count)
+      ) return null
+      const witnessSize = 1
+        + record.horizontal_constraint_count
+        + record.vertical_constraint_count
+        + record.zero_propagation_constraint_count
+      if (
+        !Number.isSafeInteger(witnessSize)
+        || witnessSize > MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS
+        || witnessSize > MAX_DIRECT_CONFLICT_WITNESS_IDS
+      ) return null
+      return {
+        conflict: Object.freeze({
+          kind: record.kind,
+          fixed_edge: record.fixed_edge,
+          forced_zero_edge: record.forced_zero_edge,
+          horizontal_constraint_count: record.horizontal_constraint_count,
+          vertical_constraint_count: record.vertical_constraint_count,
+          zero_propagation_constraint_count:
+            record.zero_propagation_constraint_count,
+        }),
+        witnessSize,
+      }
+    }
     default:
       return null
   }
@@ -1401,6 +1447,16 @@ function directConflictKey(conflict: DirectConstraintConflictV1): string {
         kind.fixed_separation_edge,
       ]
       break
+    case 'positive_fixed_length_in_bounded_zero_length_closure':
+      target = [
+        kind.kind,
+        kind.fixed_edge,
+        kind.forced_zero_edge,
+        String(kind.horizontal_constraint_count),
+        String(kind.vertical_constraint_count),
+        String(kind.zero_propagation_constraint_count),
+      ]
+      break
   }
   return `${target.join('\u0000')}\u0001${conflict.constraint_ids.join('\u0000')}`
 }
@@ -1505,6 +1561,20 @@ function isOpenRotationAngle(value: unknown): value is number {
     && Number.isFinite(value)
     && value > 0
     && value < 360
+}
+
+function isPositiveU16(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 1
+    && value <= 0xffff
+}
+
+function isNonNegativeU16(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0
+    && value <= 0xffff
 }
 
 function isUnknownReason(

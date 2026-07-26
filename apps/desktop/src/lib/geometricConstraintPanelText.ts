@@ -421,6 +421,10 @@ export const GEOMETRIC_CONSTRAINT_PANEL_TEXT = Object.freeze({
       '180度ではない回転対称の対応点が同じ半径線上に拘束され、両立しません',
       'A non-half-turn rotational-symmetry relation conflicts with its corresponding point on the same radius line',
     ),
+    positive_fixed_length_in_bounded_zero_length_closure: text(
+      '有界ゼロ長閉包が正の固定長と両立しません',
+      'A bounded zero-length implication closure conflicts with a positive fixed length',
+    ),
   }),
   unknownReasonLabels: Object.freeze({
     work_limit_exceeded: text(

@@ -36,6 +36,8 @@ use ori_domain::{CreasePattern, Edge, EdgeId, Vertex, VertexId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod bounded_zero_closure;
+
 /// Stable semantic identifier for the first geometric-constraint model.
 pub const GEOMETRIC_CONSTRAINT_MODEL_ID_V1: &str = "geometric_constraints_v1";
 
@@ -441,6 +443,21 @@ pub enum DirectConstraintConflictKindV1 {
         target_vertex: VertexId,
         line_edge: EdgeId,
     },
+    /// A bounded, graph-derived exact-zero proof forces one edge length to
+    /// binary64 zero, then propagates that zero through `EqualLength` and the
+    /// denominator-to-numerator direction of `LengthRatio` until it reaches an
+    /// edge with a positive finite `FixedLength`.
+    ///
+    /// This is deliberately a distinct V1 wire tag rather than disguising a
+    /// variable-length graph proof as one of the legacy fixed-size direct
+    /// families.
+    PositiveFixedLengthInBoundedZeroLengthClosure {
+        fixed_edge: EdgeId,
+        forced_zero_edge: EdgeId,
+        horizontal_constraint_count: u16,
+        vertical_constraint_count: u16,
+        zero_propagation_constraint_count: u16,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -499,7 +516,12 @@ pub const MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1: usize =
     (1_usize << MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1) - 1;
 
 /// Sound but intentionally incomplete subset oracle over the allowlisted
-/// direct contradictions. `Unknown` never means satisfiable.
+/// contradiction theorems. `Unknown` never means satisfiable.
+///
+/// `ProvenUnsatisfiable` is the canonical cardinality-smallest subset accepted
+/// by this oracle. The legacy `Mus` type name does not claim that deleting each
+/// returned ID has been accompanied by an independent semantic satisfiability
+/// certificate for the full nonlinear eleven-kind residual language.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum BoundedDirectMusV1 {
@@ -512,7 +534,31 @@ pub enum BoundedDirectMusV1 {
     },
 }
 
+/// Cooperative stop hook for bounded subset enumeration.
+///
+/// Cancellation is fail-closed: it produces `Unknown` with the number of
+/// completed oracle calls and can never manufacture an unsatisfiability proof.
+pub trait BoundedDirectMusObserverV1 {
+    fn should_cancel(&mut self, completed_oracle_calls: usize) -> bool;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopBoundedDirectMusObserverV1;
+
+impl BoundedDirectMusObserverV1 for NoopBoundedDirectMusObserverV1 {
+    fn should_cancel(&mut self, _completed_oracle_calls: usize) -> bool {
+        false
+    }
+}
+
 pub fn find_bounded_direct_mus_v1(set: &GeometricConstraintSetV1<'_>) -> BoundedDirectMusV1 {
+    find_bounded_direct_mus_with_observer_v1(set, &mut NoopBoundedDirectMusObserverV1)
+}
+
+pub fn find_bounded_direct_mus_with_observer_v1(
+    set: &GeometricConstraintSetV1<'_>,
+    observer: &mut impl BoundedDirectMusObserverV1,
+) -> BoundedDirectMusV1 {
     let count = set.constraints.len();
     if count == 0 || count > MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS_V1 {
         return BoundedDirectMusV1::Unknown { oracle_calls: 0 };
@@ -523,12 +569,11 @@ pub fn find_bounded_direct_mus_v1(set: &GeometricConstraintSetV1<'_>) -> Bounded
             if mask.count_ones() as usize != size {
                 continue;
             }
-            oracle_calls += 1;
-            if oracle_calls > MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1 {
-                return BoundedDirectMusV1::Unknown {
-                    oracle_calls: oracle_calls - 1,
-                };
+            if observer.should_cancel(oracle_calls) {
+                return BoundedDirectMusV1::Unknown { oracle_calls };
             }
+            oracle_calls += 1;
+            debug_assert!(oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1);
             let constraints = set
                 .constraints
                 .iter()
@@ -2479,6 +2524,27 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
     }
 
     if conflicts.is_empty() {
+        match bounded_zero_closure::conflict(
+            set,
+            &fixed_lengths,
+            &horizontal,
+            &vertical,
+            &equal_lengths,
+            &ratios,
+            &edge_ids,
+        ) {
+            Ok(Some(conflict)) => conflicts.push(conflict),
+            Ok(None) => {}
+            Err(()) => {
+                return ConstraintPreflightV1::Unknown {
+                    reason: GeometricConstraintUnknownReasonV1::WorkLimitExceeded,
+                    unchecked_constraint_ids: canonical_constraint_ids(&set.constraints),
+                };
+            }
+        }
+    }
+
+    if conflicts.is_empty() {
         match general_parallel_graph_conflict_v1(
             &parallels,
             &horizontal,
@@ -3590,6 +3656,7 @@ fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bo
             | DirectConstraintConflictKindV1::LengthRatioWithIncompatibleFixedLengths { .. }
             | DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent { .. }
             | DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
+            | DirectConstraintConflictKindV1::PositiveFixedLengthInBoundedZeroLengthClosure { .. }
     )
 }
 
@@ -4130,13 +4197,32 @@ fn conflict_sort_key(
                 source_vertex,
                 target_vertex,
                 line_edge,
-            } => (
-                20,
-                center_vertex.canonical_bytes(),
-                source_vertex.canonical_bytes(),
-                target_vertex.canonical_bytes(),
-                line_edge.canonical_bytes(),
-            ),
+        } => (
+            20,
+            center_vertex.canonical_bytes(),
+            source_vertex.canonical_bytes(),
+            target_vertex.canonical_bytes(),
+            line_edge.canonical_bytes(),
+        ),
+        DirectConstraintConflictKindV1::PositiveFixedLengthInBoundedZeroLengthClosure {
+            fixed_edge,
+            forced_zero_edge,
+            horizontal_constraint_count,
+            vertical_constraint_count,
+            zero_propagation_constraint_count,
+        } => {
+            let mut counts = [0_u8; 16];
+            counts[0..2].copy_from_slice(&horizontal_constraint_count.to_be_bytes());
+            counts[2..4].copy_from_slice(&vertical_constraint_count.to_be_bytes());
+            counts[4..6].copy_from_slice(&zero_propagation_constraint_count.to_be_bytes());
+            (
+                21,
+                fixed_edge.canonical_bytes(),
+                forced_zero_edge.canonical_bytes(),
+                counts,
+                zero,
+            )
+        }
     }
 }
 
@@ -4326,7 +4412,7 @@ mod tests {
         ));
     }
 
-    fn assert_no_proven_direct_mus(prepared: &GeometricConstraintSetV1<'_>) {
+    fn assert_bounded_direct_oracle_unknown(prepared: &GeometricConstraintSetV1<'_>) {
         assert!(matches!(
             find_bounded_direct_mus_v1(prepared),
             BoundedDirectMusV1::Unknown { .. }
@@ -4492,7 +4578,7 @@ mod tests {
             );
 
             let prepared = prepare(&fixture, &raw).expect("the exact witness prepares");
-            assert_no_proven_direct_mus(&prepared);
+            assert_bounded_direct_oracle_unknown(&prepared);
         }
     }
 
@@ -4588,7 +4674,7 @@ mod tests {
     }
 
     #[test]
-    fn collinear_rotation_witness_is_canonical_deletion_minimal_and_order_independent() {
+    fn collinear_rotation_candidate_core_is_canonical_irredundant_and_order_independent() {
         let fixture = Fixture::new();
         let first_rotation = record(rotation(&fixture, 1, 2, 5, 90.0));
         let second_rotation = record(rotation(&fixture, 1, 2, 5, 90.0));
@@ -4765,7 +4851,7 @@ mod tests {
                 sorted_ids(&records.map(|record| record.id))
             );
             let prepared = prepare(&fixture, &raw).expect("the exact witness prepares");
-            assert_no_proven_direct_mus(&prepared);
+            assert_bounded_direct_oracle_unknown(&prepared);
         }
     }
 
@@ -4883,7 +4969,7 @@ mod tests {
     }
 
     #[test]
-    fn mirror_axis_witness_is_canonical_deletion_minimal_and_order_independent() {
+    fn mirror_axis_candidate_core_is_canonical_irredundant_and_order_independent() {
         let fixture = Fixture::new();
         let first_mirror = record(GeometricConstraintKindV1::MirrorSymmetry {
             first_vertex: fixture.vertices[5],
@@ -5286,7 +5372,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rotation_witness_is_deletion_minimal() {
+    fn removing_any_rotation_candidate_record_withdraws_that_candidate() {
         let fixture = Fixture::new();
         let records = [
             record(rotation(&fixture, 0, 1, 2, 90.0)),
@@ -5309,7 +5395,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_mus_returns_the_same_rotation_witness_for_growing_documents() {
+    fn quarantined_rotation_candidate_stays_stable_for_growing_documents() {
         let fixture = Fixture::new();
         let witness_records = [
             record(rotation(&fixture, 0, 1, 2, 90.0)),
@@ -5326,7 +5412,7 @@ mod tests {
             let prepared = prepare(&fixture, &raw).expect("padded documents prepare");
             let conflict = only_rotation_conflict(&fixture, &raw)
                 .expect("padding never hides the rotation witness");
-            assert_no_proven_direct_mus(&prepared);
+            assert_bounded_direct_oracle_unknown(&prepared);
             let constraint_ids = conflict.constraint_ids().to_vec();
             assert_eq!(constraint_ids.len(), 3);
             if let Some(previous) = &expected {
@@ -5338,7 +5424,7 @@ mod tests {
     }
 
     #[test]
-    fn seventeen_records_keep_the_direct_conflict_without_mus_minimization() {
+    fn seventeen_records_keep_the_candidate_without_bounded_subset_minimization() {
         let fixture = Fixture::new();
         let mut records = vec![
             record(rotation(&fixture, 0, 1, 2, 90.0)),
@@ -5600,7 +5686,7 @@ mod tests {
     }
 
     #[test]
-    fn inverse_rotation_witness_is_deletion_minimal_and_order_independent() {
+    fn inverse_rotation_candidate_core_is_irredundant_and_order_independent() {
         let fixture = Fixture::new();
         let records = [
             record(rotation(&fixture, 0, 1, 2, 90.0)),
@@ -6358,7 +6444,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_length_non_unit_ratio_with_positive_fixed_length_has_minimal_cause() {
+    fn equal_length_non_unit_ratio_candidate_is_irredundant_but_solver_required() {
         let fixture = Fixture::new();
         let fixed = record(GeometricConstraintKindV1::FixedLength {
             edge: fixture.edges[0],
@@ -6377,7 +6463,7 @@ mod tests {
         let prepared = prepare(&fixture, &document(records.clone()))
             .expect("the individually valid constraints prepare");
         assert_solver_required(&prepared.preflight());
-        assert_no_proven_direct_mus(&prepared);
+        assert_bounded_direct_oracle_unknown(&prepared);
 
         for removed in 0..records.len() {
             let subset = records
@@ -6392,13 +6478,13 @@ mod tests {
                     prepared.preflight(),
                     ConstraintPreflightV1::DirectConflict { .. }
                 ),
-                "removing any one cause constraint must remove the direct contradiction"
+                "removing any candidate record must withdraw that quarantined candidate"
             );
         }
     }
 
     #[test]
-    fn non_reciprocal_length_ratios_with_positive_fixed_length_have_minimal_cause() {
+    fn non_reciprocal_ratio_candidate_is_irredundant_but_solver_required() {
         let fixture = Fixture::new();
         let fixed = record(GeometricConstraintKindV1::FixedLength {
             edge: fixture.edges[0],
@@ -6418,7 +6504,7 @@ mod tests {
         let prepared = prepare(&fixture, &document(records.clone()))
             .expect("the individually valid constraints prepare");
         assert_solver_required(&prepared.preflight());
-        assert_no_proven_direct_mus(&prepared);
+        assert_bounded_direct_oracle_unknown(&prepared);
 
         for removed in 0..records.len() {
             let subset = records
@@ -6433,7 +6519,7 @@ mod tests {
                     prepared.preflight(),
                     ConstraintPreflightV1::DirectConflict { .. }
                 ),
-                "removing any one cause constraint must remove the direct contradiction"
+                "removing any candidate record must withdraw that quarantined candidate"
             );
         }
         let reciprocal = record(GeometricConstraintKindV1::LengthRatio {
@@ -6733,7 +6819,7 @@ mod tests {
                 oracle_calls,
             } = find_bounded_direct_mus_v1(&prepared)
             else {
-                panic!("{description} must feed the bounded direct MUS oracle")
+                panic!("{description} must feed the bounded direct-conflict oracle")
             };
             assert_eq!(
                 constraint_ids,
@@ -6971,7 +7057,7 @@ mod tests {
         )
         .expect("general same-node parallel witness");
         assert_solver_required(&without_point.preflight());
-        assert_no_proven_direct_mus(&without_point);
+        assert_bounded_direct_oracle_unknown(&without_point);
     }
 
     #[test]
@@ -7019,7 +7105,7 @@ mod tests {
     }
 
     #[test]
-    fn proven_direct_conflict_causes_are_canonical_and_deletion_minimal() {
+    fn proven_direct_conflict_oracle_cores_are_canonical_and_irredundant() {
         let fixture = Fixture::new();
         let cases = [
             vec![
@@ -7090,7 +7176,7 @@ mod tests {
             let prepared = prepare(&fixture, &document(records.clone())).expect("valid cause");
             if index == 3 {
                 assert_solver_required(&prepared.preflight());
-                assert_no_proven_direct_mus(&prepared);
+                assert_bounded_direct_oracle_unknown(&prepared);
                 continue;
             }
             let ConstraintPreflightV1::DirectConflict { conflicts } = prepared.preflight() else {
@@ -7200,7 +7286,7 @@ mod tests {
             },
             "zero in the shared residual must never become a direct contradiction"
         );
-        assert_no_proven_direct_mus(&rounded_compatible);
+        assert_bounded_direct_oracle_unknown(&rounded_compatible);
 
         let numerator = record(GeometricConstraintKindV1::FixedLength {
             edge: fixture.edges[0],
@@ -7411,7 +7497,7 @@ mod tests {
                 )),
             "an unsafe two-ID ratio pair must remain unchecked without becoming a candidate"
         );
-        assert_no_proven_direct_mus(&without_fixed);
+        assert_bounded_direct_oracle_unknown(&without_fixed);
 
         let duplicate_ratio = record(GeometricConstraintKindV1::LengthRatio {
             numerator_edge,
@@ -7568,7 +7654,7 @@ mod tests {
                     },
                     "{label}: a common rounded numerator must stay solver-required"
                 );
-                assert_no_proven_direct_mus(&prepared);
+                assert_bounded_direct_oracle_unknown(&prepared);
             }
         }
     }
@@ -7609,7 +7695,7 @@ mod tests {
         )
         .expect("incompatible directed ratio cycle");
         assert_solver_required(&prepared.preflight());
-        assert_no_proven_direct_mus(&prepared);
+        assert_bounded_direct_oracle_unknown(&prepared);
 
         let without_fixed = prepare(&fixture, &document([first, second, third]))
             .expect("zero-length solution remains admissible")
@@ -7652,7 +7738,7 @@ mod tests {
     }
 
     #[test]
-    fn general_ratio_graph_returns_a_canonical_deletion_minimal_witness() {
+    fn general_ratio_graph_candidate_core_is_canonical_and_irredundant() {
         let fixture = Fixture::new();
         let records = vec![
             record(GeometricConstraintKindV1::FixedLength {
@@ -7688,7 +7774,7 @@ mod tests {
         let prepared = prepare(&fixture, &document(records.clone()))
             .expect("bounded inconsistent ratio graph");
         assert_solver_required(&prepared.preflight());
-        assert_no_proven_direct_mus(&prepared);
+        assert_bounded_direct_oracle_unknown(&prepared);
 
         let duplicate_fixed = record(GeometricConstraintKindV1::FixedLength {
             edge: fixture.edges[4],
@@ -7904,7 +7990,7 @@ mod tests {
         let prepared = prepare(&fixture, &document(records))
             .expect("two inconsistent ratio cycles connected to one remote fixed edge");
         assert_solver_required(&prepared.preflight());
-        assert_no_proven_direct_mus(&prepared);
+        assert_bounded_direct_oracle_unknown(&prepared);
 
         let reverse_kind = |record: &GeometricConstraintRecordV1| {
             let GeometricConstraintKindV1::LengthRatio {
@@ -7950,7 +8036,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_length_graph_returns_a_bounded_deletion_minimal_shortest_witness() {
+    fn equal_length_graph_returns_a_canonical_shortest_oracle_proof_core() {
         let fixture = Fixture::new();
         let records = vec![
             record(GeometricConstraintKindV1::FixedLength {
@@ -8293,7 +8379,7 @@ mod tests {
         let prepared = prepare(&fixture, &document(path_records.clone()))
             .expect("perpendicular orientations connected by a parallel path");
         assert_solver_required(&prepared.preflight());
-        assert_no_proven_direct_mus(&prepared);
+        assert_bounded_direct_oracle_unknown(&prepared);
         let mut duplicated = path_records.clone();
         duplicated.extend([
             record(GeometricConstraintKindV1::Parallel {
@@ -8342,7 +8428,7 @@ mod tests {
         let same_node = prepare(&fixture, &document(same_node))
             .expect("same-node labels made nondegenerate by incident parallel constraint");
         assert_solver_required(&same_node.preflight());
-        assert_no_proven_direct_mus(&same_node);
+        assert_bounded_direct_oracle_unknown(&same_node);
 
         GENERAL_PARALLEL_TEST_WORK_LIMIT.with(|limit| {
             assert_eq!(
@@ -8502,7 +8588,7 @@ mod tests {
             .expect("nonparallel fixed angle inside a parallel component");
         let baseline = prepared.preflight();
         assert_solver_required(&baseline);
-        assert_no_proven_direct_mus(&prepared);
+        assert_bounded_direct_oracle_unknown(&prepared);
         let mut reversed_angle = angle.clone();
         reversed_angle.constraint = GeometricConstraintKindV1::FixedAngle {
             vertex: fixture.vertices[0],
@@ -8951,7 +9037,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_direct_oracle_returns_deletion_minimal_sound_mus_at_four_eight_sixteen() {
+    fn bounded_direct_oracle_returns_cardinality_smallest_proof_core_at_four_eight_sixteen() {
         for count in [4, 8, 16] {
             let fixture = Fixture::new();
             let mut records = vec![
@@ -8977,7 +9063,7 @@ mod tests {
                 oracle_calls,
             } = find_bounded_direct_mus_v1(&prepared)
             else {
-                panic!("the exact direct theorem must prove a bounded MUS")
+                panic!("the exact direct theorem must return a bounded oracle proof core")
             };
             assert_eq!(constraint_ids.len(), 3);
             assert!(oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1);
@@ -9145,7 +9231,7 @@ mod tests {
     }
 
     #[test]
-    fn same_exact_orientation_and_nonparallel_angle_feed_the_bounded_mus_oracle() {
+    fn same_exact_orientation_and_nonparallel_angle_remain_solver_required_at_oracle_boundaries() {
         for count in [4, 8, 16] {
             let fixture = Fixture::new();
             let mut records = vec![
@@ -9170,7 +9256,7 @@ mod tests {
             }));
             let prepared = prepare(&fixture, &document(records)).unwrap();
             assert_solver_required(&prepared.preflight());
-            assert_no_proven_direct_mus(&prepared);
+            assert_bounded_direct_oracle_unknown(&prepared);
         }
     }
 
@@ -9242,7 +9328,7 @@ mod tests {
     }
 
     #[test]
-    fn perpendicular_exact_orientations_and_nonright_angle_feed_the_bounded_mus_oracle() {
+    fn perpendicular_orientations_and_nonright_angle_remain_solver_required_at_oracle_boundaries() {
         for count in [4, 8, 16] {
             let fixture = Fixture::new();
             let mut records = vec![
@@ -9267,7 +9353,7 @@ mod tests {
             }));
             let prepared = prepare(&fixture, &document(records)).unwrap();
             assert_solver_required(&prepared.preflight());
-            assert_no_proven_direct_mus(&prepared);
+            assert_bounded_direct_oracle_unknown(&prepared);
         }
     }
 
@@ -9328,7 +9414,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_with_perpendicular_orientations_feeds_the_bounded_mus_oracle() {
+    fn parallel_with_perpendicular_orientations_feeds_the_bounded_direct_oracle() {
         for count in [4, 8, 16] {
             let fixture = Fixture::new();
             let mut records = vec![
@@ -9377,7 +9463,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_length_with_different_positive_fixed_lengths_feeds_the_bounded_mus_oracle() {
+    fn equal_length_with_different_positive_fixed_lengths_feeds_the_bounded_direct_oracle() {
         for count in [4, 8, 16] {
             let fixture = Fixture::new();
             let mut records = vec![
@@ -9448,5 +9534,400 @@ mod tests {
             compatible.preflight(),
             ConstraintPreflightV1::DirectConflict { .. }
         ));
+    }
+
+    fn bounded_zero_closure_records(
+        fixture: &Fixture,
+        use_ratio: bool,
+        fixed_length: f64,
+        ratio: f64,
+    ) -> Vec<GeometricConstraintRecordV1> {
+        let mut records = vec![
+            record(GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[4],
+            }),
+            record(GeometricConstraintKindV1::Vertical {
+                edge: fixture.edges[4],
+            }),
+        ];
+        records.push(if use_ratio {
+            record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: fixture.edges[0],
+                denominator_edge: fixture.edges[4],
+                ratio,
+            })
+        } else {
+            record(GeometricConstraintKindV1::EqualLength {
+                first_edge: fixture.edges[0],
+                second_edge: fixture.edges[4],
+            })
+        });
+        records.push(record(GeometricConstraintKindV1::FixedLength {
+            edge: fixture.edges[0],
+            length_mm: fixed_length,
+        }));
+        records
+    }
+
+    fn only_bounded_zero_closure_conflict(
+        preflight: &ConstraintPreflightV1,
+    ) -> &DirectConstraintConflictV1 {
+        let ConstraintPreflightV1::DirectConflict { conflicts } = preflight else {
+            panic!("the bounded zero-length closure must prove a conflict");
+        };
+        let [conflict] = conflicts.as_slice() else {
+            panic!("the fixture must emit exactly one conflict: {conflicts:?}");
+        };
+        assert!(matches!(
+            conflict.conflict(),
+            DirectConstraintConflictKindV1::PositiveFixedLengthInBoundedZeroLengthClosure { .. }
+        ));
+        conflict
+    }
+
+    #[test]
+    fn bounded_zero_length_closure_crosses_equal_length_and_ratio_without_solver_assumptions() {
+        for use_ratio in [false, true] {
+            for (fixed_length, ratio) in
+                [(f64::from_bits(1), f64::from_bits(1)), (f64::MAX, f64::MAX)]
+            {
+                let fixture = Fixture::new();
+                let records =
+                    bounded_zero_closure_records(&fixture, use_ratio, fixed_length, ratio);
+                let expected_ids =
+                    sorted_ids(&records.iter().map(|record| record.id).collect::<Vec<_>>());
+                let prepared = prepare(&fixture, &document(records)).unwrap();
+                let preflight = prepared.preflight();
+                let conflict = only_bounded_zero_closure_conflict(&preflight);
+                assert_eq!(conflict.constraint_ids(), expected_ids);
+                assert!(matches!(
+                    conflict.conflict(),
+                    DirectConstraintConflictKindV1::
+                        PositiveFixedLengthInBoundedZeroLengthClosure {
+                            fixed_edge,
+                            forced_zero_edge,
+                            horizontal_constraint_count: 1,
+                            vertical_constraint_count: 1,
+                            zero_propagation_constraint_count: 1,
+                        } if *fixed_edge == fixture.edges[0]
+                            && *forced_zero_edge == fixture.edges[4]
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_zero_length_closure_serializes_its_distinct_wire_tag_and_counts() {
+        let fixture = Fixture::new();
+        let records = bounded_zero_closure_records(&fixture, true, 1.0, 2.0);
+        let prepared = prepare(&fixture, &document(records)).unwrap();
+        let preflight = prepared.preflight();
+        let conflict = only_bounded_zero_closure_conflict(&preflight);
+        let value = serde_json::to_value(conflict).expect("serialize bounded zero-length conflict");
+
+        assert_eq!(
+            value["conflict"],
+            json!({
+                "kind": "positive_fixed_length_in_bounded_zero_length_closure",
+                "fixed_edge": fixture.edges[0],
+                "forced_zero_edge": fixture.edges[4],
+                "horizontal_constraint_count": 1,
+                "vertical_constraint_count": 1,
+                "zero_propagation_constraint_count": 1,
+            })
+        );
+        assert_eq!(conflict_sort_key(conflict.conflict()).0, 21);
+        assert_eq!(value["constraint_ids"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn bounded_zero_length_closure_uses_multi_edge_coordinate_equality_paths() {
+        let fixture = Fixture::new();
+        let bridge = EdgeId::new();
+        let mut pattern = fixture.pattern.clone();
+        pattern.edges.push(Edge {
+            id: bridge,
+            start: fixture.vertices[6],
+            end: fixture.vertices[1],
+            kind: EdgeKind::Auxiliary,
+        });
+        let records = vec![
+            record(GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[4],
+            }),
+            record(GeometricConstraintKindV1::Horizontal { edge: bridge }),
+            record(GeometricConstraintKindV1::Vertical {
+                edge: fixture.edges[4],
+            }),
+            record(GeometricConstraintKindV1::Vertical { edge: bridge }),
+            record(GeometricConstraintKindV1::FixedLength {
+                edge: fixture.edges[5],
+                length_mm: 1.0,
+            }),
+        ];
+        let expected_ids = sorted_ids(&records.iter().map(|record| record.id).collect::<Vec<_>>());
+        let prepared = prepare_geometric_constraints_v1(
+            &pattern,
+            &document(records),
+            GeometricConstraintLimitsV1::default(),
+        )
+        .unwrap();
+        let preflight = prepared.preflight();
+        let conflict = only_bounded_zero_closure_conflict(&preflight);
+        assert_eq!(conflict.constraint_ids(), expected_ids);
+        assert!(matches!(
+            conflict.conflict(),
+            DirectConstraintConflictKindV1::PositiveFixedLengthInBoundedZeroLengthClosure {
+                fixed_edge,
+                forced_zero_edge,
+                horizontal_constraint_count: 2,
+                vertical_constraint_count: 2,
+                zero_propagation_constraint_count: 0,
+            } if *fixed_edge == fixture.edges[5] && *forced_zero_edge == fixture.edges[5]
+        ));
+    }
+
+    #[test]
+    fn bounded_zero_length_closure_core_is_canonical_and_cardinality_smallest_for_the_oracle() {
+        let fixture = Fixture::new();
+        let records = bounded_zero_closure_records(&fixture, true, 1.0, 2.0);
+        let expected_ids = sorted_ids(&records.iter().map(|record| record.id).collect::<Vec<_>>());
+        let baseline = prepare(&fixture, &document(records.clone())).unwrap();
+        let baseline_preflight = baseline.preflight();
+        assert_eq!(
+            only_bounded_zero_closure_conflict(&baseline_preflight).constraint_ids(),
+            expected_ids
+        );
+
+        let mut reversed = records.clone();
+        reversed.reverse();
+        let reversed = prepare(&fixture, &document(reversed)).unwrap();
+        assert_eq!(reversed.preflight(), baseline_preflight);
+
+        let BoundedDirectMusV1::ProvenUnsatisfiable {
+            constraint_ids,
+            oracle_calls,
+        } = find_bounded_direct_mus_v1(&baseline)
+        else {
+            panic!("the bounded oracle must retain the exact-zero proof core");
+        };
+        assert_eq!(constraint_ids, expected_ids);
+        assert!(oracle_calls > 0);
+        for removed in &constraint_ids {
+            let constraints = baseline
+                .constraints
+                .iter()
+                .filter(|record| record.id != *removed)
+                .cloned()
+                .collect();
+            let subset = GeometricConstraintSetV1 {
+                source_pattern: &fixture.pattern,
+                constraints,
+                max_preflight_checks: baseline.max_preflight_checks,
+            };
+            assert!(
+                !matches!(
+                    subset.preflight(),
+                    ConstraintPreflightV1::DirectConflict { conflicts }
+                        if conflicts.iter().any(|conflict| matches!(
+                            conflict.conflict(),
+                            DirectConstraintConflictKindV1::
+                                PositiveFixedLengthInBoundedZeroLengthClosure { .. }
+                        ))
+                ),
+                "deletion removes this theorem's proof; this is not a semantic SAT claim"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_zero_length_closure_selects_the_canonical_duplicate_core_across_storage_orders() {
+        let fixture = Fixture::new();
+        let mut records = Vec::new();
+        for constraint in [
+            GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[4],
+            },
+            GeometricConstraintKindV1::Vertical {
+                edge: fixture.edges[4],
+            },
+            GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: fixture.edges[0],
+                denominator_edge: fixture.edges[4],
+                ratio: 2.0,
+            },
+            GeometricConstraintKindV1::FixedLength {
+                edge: fixture.edges[0],
+                length_mm: 1.0,
+            },
+        ] {
+            records.extend([record(constraint.clone()), record(constraint)]);
+        }
+        let canonical_minimum_for = |predicate: &dyn Fn(&GeometricConstraintKindV1) -> bool| {
+            records
+                .iter()
+                .filter(|record| predicate(&record.constraint))
+                .map(|record| record.id)
+                .min_by_key(ConstraintId::canonical_bytes)
+                .expect("each duplicated role has a canonical minimum")
+        };
+        let expected_ids = sorted_ids(&[
+            canonical_minimum_for(&|kind| {
+                matches!(kind, GeometricConstraintKindV1::Horizontal { .. })
+            }),
+            canonical_minimum_for(&|kind| {
+                matches!(kind, GeometricConstraintKindV1::Vertical { .. })
+            }),
+            canonical_minimum_for(&|kind| {
+                matches!(kind, GeometricConstraintKindV1::LengthRatio { .. })
+            }),
+            canonical_minimum_for(&|kind| {
+                matches!(kind, GeometricConstraintKindV1::FixedLength { .. })
+            }),
+        ]);
+
+        let forward = prepare(&fixture, &document(records.clone())).unwrap();
+        assert_eq!(
+            only_bounded_zero_closure_conflict(&forward.preflight()).constraint_ids(),
+            expected_ids
+        );
+        let BoundedDirectMusV1::ProvenUnsatisfiable {
+            constraint_ids: forward_core,
+            ..
+        } = find_bounded_direct_mus_v1(&forward)
+        else {
+            panic!("the bounded oracle must retain the canonical duplicate proof core");
+        };
+        assert_eq!(forward_core, expected_ids);
+
+        records.reverse();
+        let mut reversed_pattern = fixture.pattern.clone();
+        reversed_pattern.edges.reverse();
+        let reversed = prepare_geometric_constraints_v1(
+            &reversed_pattern,
+            &document(records),
+            GeometricConstraintLimitsV1::default(),
+        )
+        .unwrap();
+        assert_eq!(reversed.preflight(), forward.preflight());
+        assert_eq!(
+            find_bounded_direct_mus_v1(&reversed),
+            find_bounded_direct_mus_v1(&forward)
+        );
+    }
+
+    #[test]
+    fn bounded_zero_length_closure_obeys_four_eight_sixteen_and_seventeen_boundaries() {
+        for count in [4, 8, 16] {
+            let fixture = Fixture::new();
+            let mut records = bounded_zero_closure_records(&fixture, false, 1.0, 1.0);
+            let proof_ids = sorted_ids(&records.iter().map(|record| record.id).collect::<Vec<_>>());
+            records.extend((records.len()..count).map(|_| {
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[2],
+                })
+            }));
+            let prepared = prepare(&fixture, &document(records)).unwrap();
+            assert_eq!(
+                only_bounded_zero_closure_conflict(&prepared.preflight()).constraint_ids(),
+                proof_ids
+            );
+            let BoundedDirectMusV1::ProvenUnsatisfiable { constraint_ids, .. } =
+                find_bounded_direct_mus_v1(&prepared)
+            else {
+                panic!("{count}: the bounded oracle must prove its core");
+            };
+            assert_eq!(constraint_ids, proof_ids);
+        }
+
+        let fixture = Fixture::new();
+        let mut records = bounded_zero_closure_records(&fixture, false, 1.0, 1.0);
+        records.extend((records.len()..17).map(|_| {
+            record(GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[2],
+            })
+        }));
+        let prepared = prepare(&fixture, &document(records)).unwrap();
+        assert!(matches!(
+            prepared.preflight(),
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                ..
+            }
+        ));
+        assert_eq!(
+            find_bounded_direct_mus_v1(&prepared),
+            BoundedDirectMusV1::Unknown { oracle_calls: 0 }
+        );
+    }
+
+    #[test]
+    fn bounded_subset_cancellation_and_preflight_work_limits_fail_closed() {
+        struct CancelAt {
+            completed: usize,
+            checkpoints: usize,
+        }
+        impl BoundedDirectMusObserverV1 for CancelAt {
+            fn should_cancel(&mut self, completed_oracle_calls: usize) -> bool {
+                self.checkpoints += 1;
+                completed_oracle_calls >= self.completed
+            }
+        }
+
+        let fixture = Fixture::new();
+        let records = bounded_zero_closure_records(&fixture, false, 1.0, 1.0);
+        let prepared = prepare(&fixture, &document(records.clone())).unwrap();
+        let mut immediate = CancelAt {
+            completed: 0,
+            checkpoints: 0,
+        };
+        assert_eq!(
+            find_bounded_direct_mus_with_observer_v1(&prepared, &mut immediate),
+            BoundedDirectMusV1::Unknown { oracle_calls: 0 }
+        );
+        assert_eq!(immediate.checkpoints, 1);
+
+        let mut after_two = CancelAt {
+            completed: 2,
+            checkpoints: 0,
+        };
+        assert_eq!(
+            find_bounded_direct_mus_with_observer_v1(&prepared, &mut after_two),
+            BoundedDirectMusV1::Unknown { oracle_calls: 2 }
+        );
+
+        let limited = prepare_geometric_constraints_v1(
+            &fixture.pattern,
+            &document(records),
+            GeometricConstraintLimitsV1 {
+                max_preflight_checks: 3,
+                ..GeometricConstraintLimitsV1::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            limited.preflight(),
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::WorkLimitExceeded,
+                ..
+            }
+        ));
+
+        let mut oversized = bounded_zero_closure_records(&fixture, false, 1.0, 1.0);
+        oversized.extend((oversized.len()..17).map(|_| {
+            record(GeometricConstraintKindV1::Horizontal {
+                edge: fixture.edges[2],
+            })
+        }));
+        let oversized = prepare(&fixture, &document(oversized)).unwrap();
+        let mut resource_precedes_cancel = CancelAt {
+            completed: 0,
+            checkpoints: 0,
+        };
+        assert_eq!(
+            find_bounded_direct_mus_with_observer_v1(&oversized, &mut resource_precedes_cancel,),
+            BoundedDirectMusV1::Unknown { oracle_calls: 0 }
+        );
+        assert_eq!(resource_precedes_cancel.checkpoints, 0);
     }
 }

@@ -497,6 +497,19 @@ describe('GeometricConstraintPanel', () => {
         expected:
           'A non-half-turn rotational-symmetry relation conflicts with its corresponding point on the same radius line',
       },
+      {
+        conflict: {
+          kind:
+            'positive_fixed_length_in_bounded_zero_length_closure' as const,
+          fixed_edge: IDS[0]!,
+          forced_zero_edge: IDS[1]!,
+          horizontal_constraint_count: 1,
+          vertical_constraint_count: 1,
+          zero_propagation_constraint_count: 1,
+        },
+        expected:
+          'A bounded zero-length implication closure conflicts with a positive fixed length',
+      },
     ]
     for (const { conflict, expected } of conflictCases) {
       rerender(panel({

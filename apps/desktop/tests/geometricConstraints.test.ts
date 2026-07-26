@@ -313,6 +313,22 @@ const DIRECT_CONFLICTS = [
     },
     constraint_ids: [CONSTRAINT_1, CONSTRAINT_2],
   },
+  {
+    conflict: {
+      kind: 'positive_fixed_length_in_bounded_zero_length_closure',
+      fixed_edge: EDGE_1,
+      forced_zero_edge: EDGE_2,
+      horizontal_constraint_count: 1,
+      vertical_constraint_count: 1,
+      zero_propagation_constraint_count: 1,
+    },
+    constraint_ids: [
+      CONSTRAINT_1,
+      CONSTRAINT_2,
+      CONSTRAINT_3,
+      CONSTRAINT_4,
+    ],
+  },
 ] as const
 
 test('normalizes, detaches, and deeply freezes all eleven document kinds', () => {
@@ -707,7 +723,7 @@ test('presentation also fails closed for malformed or hostile records', () => {
   assert.equal(getterCalls, 0)
 })
 
-test('normalizes all twenty-one direct-conflict kinds and the bounded direct MUS', () => {
+test('normalizes all twenty-two conflict kinds and the bounded proof core', () => {
   const raw = response({
     status: 'direct_conflict',
     conflicts: DIRECT_CONFLICTS,
@@ -723,7 +739,7 @@ test('normalizes all twenty-one direct-conflict kinds and the bounded direct MUS
     normalized?.result.status === 'direct_conflict'
       ? normalized.result.conflicts.length
       : 0,
-    21,
+    22,
   )
   assert.deepEqual(
     normalized?.result.status === 'direct_conflict'
@@ -773,7 +789,108 @@ test('different length ratio proof requires exactly three cause IDs', () => {
   )
 })
 
-test('bounded direct MUS parser is strict, canonical, and distinguishes skipped minimization', () => {
+test('bounded zero-length closure parser binds u16 counts to the exact bounded cause size', () => {
+  const conflict = {
+    kind: 'positive_fixed_length_in_bounded_zero_length_closure',
+    fixed_edge: EDGE_1,
+    forced_zero_edge: EDGE_2,
+    horizontal_constraint_count: 1,
+    vertical_constraint_count: 1,
+    zero_propagation_constraint_count: 1,
+  }
+  const valid = response({
+    status: 'direct_conflict',
+    conflicts: [{
+      conflict,
+      constraint_ids: [
+        CONSTRAINT_1,
+        CONSTRAINT_2,
+        CONSTRAINT_3,
+        CONSTRAINT_4,
+      ],
+    }],
+  })
+  assert.deepEqual(
+    normalizeGeometricConstraintPreflightResponse(valid, BINDING),
+    valid,
+  )
+
+  const atLimitIds = Array.from(
+    { length: MAX_BOUNDED_DIRECT_MUS_CONSTRAINTS },
+    (_, index) => uuid(200 + index),
+  )
+  const atLimit = response({
+    status: 'direct_conflict',
+    conflicts: [{
+      conflict: {
+        ...conflict,
+        horizontal_constraint_count: 7,
+        vertical_constraint_count: 7,
+        zero_propagation_constraint_count: 1,
+      },
+      constraint_ids: atLimitIds,
+    }],
+  })
+  assert.deepEqual(
+    normalizeGeometricConstraintPreflightResponse(atLimit, BINDING),
+    atLimit,
+  )
+
+  for (const constraint_ids of [
+    [CONSTRAINT_1, CONSTRAINT_2, CONSTRAINT_3],
+    [
+      CONSTRAINT_1,
+      CONSTRAINT_2,
+      CONSTRAINT_3,
+      CONSTRAINT_4,
+      CONSTRAINT_5,
+    ],
+  ]) {
+    assert.equal(
+      normalizeGeometricConstraintPreflightResponse(response({
+        status: 'direct_conflict',
+        conflicts: [{ conflict, constraint_ids }],
+      }), BINDING),
+      null,
+    )
+  }
+
+  for (const malformed of [
+    { ...conflict, fixed_edge: uuid(0xabc).toUpperCase() },
+    { ...conflict, forced_zero_edge: 'invalid' },
+    { ...conflict, horizontal_constraint_count: 0 },
+    { ...conflict, vertical_constraint_count: 0 },
+    { ...conflict, horizontal_constraint_count: 1.5 },
+    { ...conflict, vertical_constraint_count: 0x1_0000 },
+    { ...conflict, zero_propagation_constraint_count: -1 },
+    { ...conflict, zero_propagation_constraint_count: 0x1_0000 },
+    {
+      ...conflict,
+      horizontal_constraint_count: 8,
+      vertical_constraint_count: 7,
+      zero_propagation_constraint_count: 1,
+    },
+    { ...conflict, future: true },
+  ]) {
+    assert.equal(
+      normalizeGeometricConstraintPreflightResponse(response({
+        status: 'direct_conflict',
+        conflicts: [{
+          conflict: malformed,
+          constraint_ids: [
+            CONSTRAINT_1,
+            CONSTRAINT_2,
+            CONSTRAINT_3,
+            CONSTRAINT_4,
+          ],
+        }],
+      }), BINDING),
+      null,
+    )
+  }
+})
+
+test('bounded direct oracle-result parser is strict, canonical, and distinguishes skipped minimization', () => {
   const skipped = normalizeGeometricConstraintPreflightResponse(response({
     status: 'direct_conflict',
     conflicts: [DIRECT_CONFLICTS[0]],
@@ -916,7 +1033,7 @@ test('bounded direct MUS parser is strict, canonical, and distinguishes skipped 
   }
 })
 
-test('bounded direct MUS rejects nested hostile records without invoking getters', () => {
+test('bounded direct oracle result rejects nested hostile records without invoking getters', () => {
   let getterCalls = 0
   const accessor = Object.create(null) as Record<string, unknown>
   Object.defineProperties(accessor, {

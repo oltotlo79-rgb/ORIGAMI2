@@ -757,6 +757,10 @@ mod tests {
         // preflight. This fixture has no fixed denominator and therefore must
         // never even become a quarantined direct candidate.
         DifferentLengthRatiosWithoutFixedDenominator,
+        // Zero propagation through LengthRatio is sound only from denominator
+        // to numerator. In the reverse direction, two positive subnormals can
+        // multiply to binary64 zero.
+        ReverseZeroLengthRatioUnderflow,
         EqualLengthWithNonUnitRatioAndFixedLength,
         NonReciprocalLengthRatiosWithFixedLength,
         // This family has one sound rounded-residual subset. The fixture below
@@ -884,7 +888,7 @@ mod tests {
                 crate::find_bounded_direct_mus_v1(&prepared),
                 crate::BoundedDirectMusV1::Unknown { .. }
             ),
-            "{label}: the bounded oracle must not manufacture a proven MUS"
+            "{label}: the bounded oracle must not manufacture an unsatisfiability proof"
         );
 
         let drivers = example
@@ -971,6 +975,23 @@ mod tests {
                         numerator_edge: first_edge,
                         denominator_edge: second_edge,
                         ratio: one_down,
+                    },
+                ])
+            }
+            QuarantinedDirectFamily::ReverseZeroLengthRatioUnderflow => {
+                let numerator = builder.independent_edge(Point2::new(-0.0, 0.0));
+                let denominator = builder.independent_edge(Point2::new(minimum, 0.0));
+                builder.finish([
+                    GeometricConstraintKindV1::Horizontal { edge: numerator },
+                    GeometricConstraintKindV1::Vertical { edge: numerator },
+                    GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: numerator,
+                        denominator_edge: denominator,
+                        ratio: 0.5,
+                    },
+                    GeometricConstraintKindV1::FixedLength {
+                        edge: denominator,
+                        length_mm: minimum,
                     },
                 ])
             }
@@ -1329,6 +1350,10 @@ mod tests {
         DifferentLengthRatiosWithoutFixedDenominator
     );
     quarantined_family_regression!(
+        reverse_zero_length_ratio_underflow_is_solver_required,
+        ReverseZeroLengthRatioUnderflow
+    );
+    quarantined_family_regression!(
         equal_length_nonunit_ratio_fixed_length_is_solver_required,
         EqualLengthWithNonUnitRatioAndFixedLength
     );
@@ -1384,6 +1409,69 @@ mod tests {
         collinear_rotation_radius_is_solver_required,
         RotationalSymmetryWithCollinearRadius
     );
+
+    #[test]
+    fn bounded_zero_length_closure_precedes_solver_and_verifier_tolerance() {
+        let mut builder = CounterexampleBuilder::default();
+        let forced_zero_edge = builder.independent_edge(Point2::new(0.0, 0.0));
+        let fixed_edge = builder.independent_edge(Point2::new(1.0, 0.0));
+        let example = builder.finish([
+            GeometricConstraintKindV1::Horizontal {
+                edge: forced_zero_edge,
+            },
+            GeometricConstraintKindV1::Vertical {
+                edge: forced_zero_edge,
+            },
+            GeometricConstraintKindV1::EqualLength {
+                first_edge: forced_zero_edge,
+                second_edge: fixed_edge,
+            },
+            GeometricConstraintKindV1::FixedLength {
+                edge: fixed_edge,
+                length_mm: f64::from_bits(1),
+            },
+        ]);
+        let prepared = prepare_geometric_constraints_v1(
+            &example.pattern,
+            &example.document,
+            GeometricConstraintLimitsV1::default(),
+        )
+        .expect("the bounded exact-zero fixture is valid");
+        assert!(matches!(
+            prepared.preflight(),
+            ConstraintPreflightV1::DirectConflict { conflicts }
+                if conflicts.iter().any(|conflict| matches!(
+                    conflict.conflict(),
+                    crate::DirectConstraintConflictKindV1::
+                        PositiveFixedLengthInBoundedZeroLengthClosure { .. }
+                ))
+        ));
+
+        let drivers = example
+            .pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, example.positions[&vertex.id]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            solve_geometric_constraints_with_drivers_v1(
+                &example.pattern,
+                &example.document,
+                &drivers,
+                ConstraintSolveLimitsV1 {
+                    residual_tolerance: f64::MAX,
+                    ..ConstraintSolveLimitsV1::default()
+                },
+            ),
+            Err(ConstraintSolveErrorV1::NonConvergent),
+            "even a solver tolerance that accepts every finite residual cannot bypass proof"
+        );
+        assert_eq!(
+            verify_geometric_constraint_solution_v1(&example.pattern, &example.document, f64::MAX,),
+            Err(ConstraintSolveErrorV1::NonConvergent),
+            "even a verifier tolerance that would accept every finite residual cannot bypass proof"
+        );
+    }
 
     #[test]
     fn incompatible_fixed_lengths_and_ratio_are_rejected_before_numerical_tolerance() {

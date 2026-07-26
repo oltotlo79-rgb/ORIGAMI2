@@ -47,7 +47,7 @@ test('the evidence audit does not promote the remaining SIM-010 proof boundary',
   assert.match(evidence, /SIM-010の未証明範囲を完成へ昇格させる証拠には使用しない/u)
 })
 
-test('EDT-009 keeps twenty-one wire variants but promotes only the six sound residual families', () => {
+test('EDT-009 keeps twenty-one wire variants but promotes only the seven sound residual families', () => {
   const enumBody = constraints.match(
     /pub enum DirectConstraintConflictKindV1 \{(?<body>[\s\S]*?)\n\}/u,
   )?.groups?.body
@@ -67,6 +67,7 @@ test('EDT-009 keeps twenty-one wire variants but promotes only the six sound res
     'HorizontalAndVertical',
     'EqualLengthWithDifferentFixedLengths',
     'LengthRatioWithIncompatibleFixedLengths',
+    'DifferentLengthRatios',
     'DifferentFixedLengthsInEqualLengthComponent',
     'ParallelWithPerpendicularOrientations',
   ]
@@ -80,21 +81,21 @@ test('EDT-009 keeps twenty-one wire variants but promotes only the six sound res
   assert.deepEqual(documentedVariants, allowlist)
   assert.equal(
     enumVariants.filter((name) => !allowlist.includes(name)).length,
-    15,
+    14,
   )
   assert.match(statusRow, /enum 21 variantはwire互換/u)
   assert.match(statusRow, /sound allowlist/u)
-  assert.match(statusRow, /残る15 variant/u)
+  assert.match(statusRow, /残る14 variant/u)
   assert.match(statusRow, /`Unknown`へfail-closed/u)
   assert.match(statusRow, /一般充足可能性、一般矛盾原因、一般最小不能部分集合は未完成/u)
 
   assert.match(
     status,
-    /2026-07-26 EDT-009実残差追補:[^\n]+sound allowlistは6種[^\n]+本項がallowlist数の現行正本/u,
+    /2026-07-26 EDT-009異比率追補:[^\n]+sound allowlistは7種[^\n]+本項がallowlist数の現行正本/u,
   )
   assert.match(
     progress,
-    /2026-07-26 EDT-009実残差追補:[^\n]+sound allowlistは6種、fail-closedは15種/u,
+    /2026-07-26 EDT-009異比率追補:[^\n]+sound allowlistは7種、fail-closedは14種/u,
   )
   assert.match(progress, /\*\*81\.96%（表示82\.0%）\*\*/u)
   assert.match(status, /\*\*実装済み85 \/ 部分実装2 \/ 未着手0\*\*/u)
@@ -104,10 +105,10 @@ test('EDT-009 keeps twenty-one wire variants but promotes only the six sound res
   )
   assert.ok(edtEvidence)
   assert.deepEqual(edtEvidence.limitations, [
-    'only six of the twenty-one wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the other fifteen fail closed to Unknown',
+    'only seven of the twenty-one wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the other fourteen fail closed to Unknown',
   ])
   assert.deepEqual(edtEvidence.missingAcceptance, [
-    'sound general satisfiability and unsatisfiability oracle plus minimal unsatisfiable subsets beyond the six allowlisted direct-conflict variants',
+    'sound general satisfiability and unsatisfiability oracle plus minimal unsatisfiable subsets beyond the seven allowlisted direct-conflict variants',
   ])
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
@@ -124,5 +125,13 @@ test('EDT-009 keeps twenty-one wire variants but promotes only the six sound res
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
       item.selector === 'fn incompatible_fixed_lengths_and_ratio_are_rejected_before_numerical_tolerance()',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { selector: string }) =>
+      item.selector === 'fn different_ratios_need_a_fixed_denominator_and_incompatible_binary64_products()',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { selector: string }) =>
+      item.selector === 'fn different_ratios_with_fixed_denominator_can_share_an_underflowed_zero_numerator()',
   ))
 })

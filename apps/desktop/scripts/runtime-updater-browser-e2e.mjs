@@ -25,7 +25,10 @@ try {
   await region.getByRole('button', { name: 'Download and verify' }).click()
   await region.getByRole('button', { name: 'Restart and apply' }).click()
   await region.getByText('Update application confirmed').waitFor()
-  await region.getByRole('button').focus().catch(() => undefined)
+  const remainingButtonCount = await region.getByRole('button').count()
+  if (remainingButtonCount !== 0) {
+    throw new Error('runtime updater controls remained after explicit apply')
+  }
   const axe = await new AxeBuilder({ page }).include('.runtime-updater-control').analyze()
   const major = axe.violations.filter(({ impact }) => impact === 'critical' || impact === 'serious')
   if (major.length > 0) throw new Error(JSON.stringify(major))

@@ -73,9 +73,7 @@ import {
   applyFoldImport,
   applySvgImport,
   assignEdgeToProjectLayer,
-  beginInstructionExportGeneration,
   cancelFoldImport,
-  cancelInstructionExport,
   cancelSvgImport,
   connectEdgeIntersection,
   connectIntersectionCluster,
@@ -94,7 +92,6 @@ import {
   recognizeBeginnerTarget,
   recognizeBeginnerSilhouette,
   generateBenchmarkPattern,
-  getInstructionExportProgress,
   getProjectSnapshot as requestProjectSnapshot,
   isNativeCoreAvailable,
   matchesProjectOccGuard,
@@ -112,7 +109,6 @@ import {
   preflightMirrorSelection,
   previewLinearArray,
   previewRadialArray,
-  previewInstructionExport,
   previewSvgImport,
   redo,
   removeAnnotation,
@@ -123,7 +119,6 @@ import {
   removeGeometricConstraint,
   removeVertex,
   resizeRectangularPaper,
-  saveInstructionExport,
   setLengthDisplayUnit,
   setElementMetadata,
   splitBoundaryEdge,
@@ -188,15 +183,6 @@ import {
   projectFolderClientErrorMessage,
   saveProjectFolderAs,
 } from './lib/projectFolderClient'
-import {
-  INSTRUCTION_EXPORT_PROFILE,
-  INSTRUCTION_EXPORT_PROJECTION_PROFILE,
-  createInstructionExportError,
-  instructionExportErrorMessage,
-  type InstructionExportFormat,
-  type InstructionExportPhase,
-  type InstructionExportPreview,
-} from './lib/instructionExport'
 import type { FoldImportPreview, FoldImportSettings } from './lib/foldImport'
 import type {
   SvgImportPreview,
@@ -335,6 +321,7 @@ import { useProjectCanvasProjection } from './lib/useProjectCanvasProjection'
 import { useCreaseExportWorkflow } from './lib/useCreaseExportWorkflow'
 import { useStaticMeshExportWorkflow } from './lib/useStaticMeshExportWorkflow'
 import { useMeshAnimationExportWorkflow } from './lib/useMeshAnimationExportWorkflow'
+import { useInstructionExportWorkflow } from './lib/useInstructionExportWorkflow'
 import {
   appConfirmationText,
   appErrorLocalizedText,
@@ -364,7 +351,6 @@ import {
   formatBytes,
   lineKindLabel,
   localFlatFoldabilityCoreStatus,
-  localizedInstructionExportFormatLabel,
   localizedLocalFlatFoldabilityConditionLabel,
   localizedLocalFlatFoldabilityReasonLabel,
   localizedLocalFlatFoldabilitySummary,
@@ -497,15 +483,6 @@ function appMessageWithLocalizedVariables(
     ja: formatLocalizedText('ja', text, variables('ja')),
     en: formatLocalizedText('en', text, variables('en')),
   })
-}
-
-function instructionExportErrorAppMessage(
-  error: unknown,
-  text: LocalizedText,
-): AppMessage {
-  return appMessageWithLocalizedVariables(text, (locale) => ({
-    error: instructionExportErrorMessage(error, locale),
-  }))
 }
 
 function appMessageText(
@@ -937,19 +914,6 @@ function App() {
     useState<AppMessage | null>(null)
   const [svgImportValidation, setSvgImportValidation] =
     useState<SvgImportSettingsValidation | null>(null)
-  const [instructionExportOpen, setInstructionExportOpen] = useState(false)
-  const [instructionExportFormat, setInstructionExportFormat] =
-    useState<InstructionExportFormat>('pdf')
-  const [instructionExportPreview, setInstructionExportPreview] =
-    useState<InstructionExportPreview | null>(null)
-  const [instructionExportGenerationActive, setInstructionExportGenerationActive] =
-    useState(false)
-  const [instructionExportPhase, setInstructionExportPhase] =
-    useState<InstructionExportPhase>('validating')
-  const [instructionExportErrorState, setInstructionExportError] =
-    useState<AppMessage | null>(null)
-  const [instructionExportNoticeMessage, setInstructionExportNotice] =
-    useState<AppMessage | null>(null)
   const [parallelReferenceEdgeId, setParallelReferenceEdgeId] = useState<string | null>(null)
   const [angleDegrees, setAngleDegrees] = useState(DEFAULT_ANGLE_SNAP_CONFIG.angleDegrees)
   const [angleDegreesInput, setAngleDegreesInput] = useState(
@@ -978,14 +942,6 @@ function App() {
   const newProjectError = appMessageText(locale, newProjectErrorMessage)
   const foldImportError = appMessageText(locale, foldImportErrorMessage)
   const svgImportError = appMessageText(locale, svgImportErrorMessage)
-  const instructionExportError = appMessageText(
-    locale,
-    instructionExportErrorState,
-  )
-  const instructionExportNotice = appMessageText(
-    locale,
-    instructionExportNoticeMessage,
-  )
   const recoveryBlocking = recoveryStartup.kind !== 'ready'
   const coreOperationRef = useRef(false)
   const latestSnapshotRef = useRef<ProjectSnapshot | null>(null)
@@ -1019,9 +975,6 @@ function App() {
   const foldTechniqueRequestIdRef = useRef(0)
   const foldImportButtonRef = useRef<HTMLButtonElement>(null)
   const svgImportButtonRef = useRef<HTMLButtonElement>(null)
-  const instructionExportButtonRef = useRef<HTMLButtonElement>(null)
-  const instructionExportRequestIdRef = useRef(0)
-  const instructionExportGenerationIdRef = useRef<string | null>(null)
   const {
     open: creaseExportOpen,
     format: creaseExportFormat,
@@ -1659,6 +1612,59 @@ function App() {
     canvasFaces,
     canvasAnnotations,
   } = useProjectCanvasProjection(nativeSnapshot, topologyResponse)
+  const {
+    open: instructionExportOpen,
+    format: instructionExportFormat,
+    preview: instructionExportPreview,
+    generationActive: instructionExportGenerationActive,
+    phase: instructionExportPhase,
+    error: instructionExportErrorState,
+    notice: instructionExportNoticeMessage,
+    buttonRef: instructionExportButtonRef,
+    prepare: prepareInstructionExport,
+    begin: beginInstructionExport,
+    changeFormat: changeInstructionExportFormat,
+    close: closeInstructionExportDialog,
+    save: saveCurrentInstructionExport,
+  } = useInstructionExportWorkflow({
+    copy: {
+      previewReadyJapanese: APP_TEXT.message0160,
+      previewReadyEnglish: APP_TEXT.reviewTheFormatContentAndNotices,
+      prepareFailed: APP_TEXT.couldNotPrepareTheInstructionsError,
+      prepareStatusFailed: APP_TEXT.instructionExportErrorError,
+      progressFailed: APP_TEXT.progressCouldNotBeUpdatedErrorWaitingForTheGenerated,
+      stopping: APP_TEXT.stoppingInstructionGeneration,
+      stopped: APP_TEXT.instructionGenerationStopped,
+      alreadyFinished: APP_TEXT.instructionGenerationHasAlreadyFinished,
+      cancelled: APP_TEXT.instructionExportCancelled,
+      cancelFailed: APP_TEXT.couldNotCancelError,
+      cancelStatusFailed: APP_TEXT.instructionCancellationErrorError,
+      projectChanged: APP_TEXT.theProjectChangedRebuildTheInstructionData,
+      saveCancelledNotice: APP_TEXT.saveLocationSelectionWasCancelledYouCanSaveAgainFrom,
+      saveCancelledStatus: APP_TEXT.instructionSaveLocationSelectionCancelled,
+      saved: APP_TEXT.exportedFileName3,
+      saveFailed: APP_TEXT.couldNotExportTheInstructionsError,
+      saveStatusFailed: APP_TEXT.instructionExportErrorError,
+    },
+    getCurrentSnapshot: () => latestSnapshotRef.current,
+    exportAvailable: () => foldPreviewModel !== null,
+    operationActive: () => coreOperationRef.current,
+    setOperationBusy: (busy) => {
+      coreOperationRef.current = busy
+      setCoreBusy(busy)
+    },
+    setFileOperation,
+    cancelInteraction: () => setCancelInteractionToken((token) => token + 1),
+    onStatus: setCoreStatus,
+  })
+  const instructionExportError = appMessageText(
+    locale,
+    instructionExportErrorState,
+  )
+  const instructionExportNotice = appMessageText(
+    locale,
+    instructionExportNoticeMessage,
+  )
   const paperBoundaryVertexCount = boundaryVertexIds.size
   const selectedVertexIsBoundary = selectedVertex
     ? boundaryVertexIds.has(selectedVertex.id)
@@ -5201,230 +5207,6 @@ function App() {
       setSvgImportError(safeError)
       setCoreStatus(safeError)
     } finally {
-      coreOperationRef.current = false
-      setCoreBusy(false)
-    }
-  }
-
-  async function prepareInstructionExport(format: InstructionExportFormat) {
-    const current = latestSnapshotRef.current
-    if (!current || !foldPreviewModel || coreOperationRef.current) return
-
-    const requestId = ++instructionExportRequestIdRef.current
-    instructionExportGenerationIdRef.current = null
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    setFileOperation('instruction_export')
-    setInstructionExportGenerationActive(true)
-    setInstructionExportPhase('validating')
-    setInstructionExportPreview(null)
-    setInstructionExportError(null)
-    setInstructionExportNotice(null)
-    setCancelInteractionToken((token) => token + 1)
-    try {
-      const generation = await beginInstructionExportGeneration()
-      if (generation.profile !== INSTRUCTION_EXPORT_PROFILE) {
-        await cancelInstructionExport(generation.export_id).catch(() => undefined)
-        throw createInstructionExportError('document_contract_invalid')
-      }
-      if (requestId !== instructionExportRequestIdRef.current) {
-        await cancelInstructionExport(generation.export_id).catch(() => undefined)
-        return
-      }
-      instructionExportGenerationIdRef.current = generation.export_id
-      void pollInstructionExportProgress(generation.export_id, requestId)
-      const response = await previewInstructionExport(
-        generation.export_id,
-        current.project_id,
-        current.revision,
-        format,
-      )
-      if (requestId !== instructionExportRequestIdRef.current) {
-        await cancelInstructionExport(response.preview.export_id).catch(() => undefined)
-        return
-      }
-      const latest = latestSnapshotRef.current
-      const preview = response.preview
-      if (
-        !latest
-        || preview.export_id !== generation.export_id
-        || preview.format !== format
-        || preview.profile !== INSTRUCTION_EXPORT_PROFILE
-        || preview.projection_profile !== INSTRUCTION_EXPORT_PROJECTION_PROFILE
-        || preview.expected_project_id !== current.project_id
-        || preview.expected_revision !== current.revision
-        || latest.project_id !== current.project_id
-        || latest.revision !== current.revision
-      ) {
-        await cancelInstructionExport(preview.export_id).catch(() => undefined)
-        throw createInstructionExportError('document_contract_invalid')
-      }
-      setInstructionExportPreview(preview)
-      setInstructionExportPhase('ready')
-      setCoreStatus(appMessage({
-        ja: formatLocalizedText('ja', APP_TEXT.message0160, {
-          format: localizedInstructionExportFormatLabel(preview.format, 'ja'),
-        }),
-        en: formatLocalizedText('en', APP_TEXT.reviewTheFormatContentAndNotices, {
-          format: localizedInstructionExportFormatLabel(preview.format, 'en'),
-        }),
-      }))
-    } catch (error) {
-      if (requestId !== instructionExportRequestIdRef.current) return
-      instructionExportGenerationIdRef.current = null
-      setInstructionExportError(instructionExportErrorAppMessage(error, APP_TEXT.couldNotPrepareTheInstructionsError))
-      setCoreStatus(instructionExportErrorAppMessage(error, APP_TEXT.instructionExportErrorError))
-    } finally {
-      if (requestId === instructionExportRequestIdRef.current) {
-        setInstructionExportGenerationActive(false)
-        setFileOperation(null)
-        coreOperationRef.current = false
-        setCoreBusy(false)
-      }
-    }
-  }
-
-  async function pollInstructionExportProgress(exportId: string, requestId: number) {
-    while (
-      requestId === instructionExportRequestIdRef.current
-      && instructionExportGenerationIdRef.current === exportId
-    ) {
-      await new Promise((resolve) => window.setTimeout(resolve, 100))
-      if (
-        requestId !== instructionExportRequestIdRef.current
-        || instructionExportGenerationIdRef.current !== exportId
-      ) return
-      try {
-        const progress = await getInstructionExportProgress(exportId)
-        if (
-          requestId !== instructionExportRequestIdRef.current
-          || instructionExportGenerationIdRef.current !== exportId
-          || progress.export_id !== exportId
-        ) return
-        setInstructionExportPhase(progress.phase)
-        if (progress.phase === 'ready') return
-      } catch (error) {
-        if (
-          requestId !== instructionExportRequestIdRef.current
-          || instructionExportGenerationIdRef.current !== exportId
-        ) return
-        setInstructionExportNotice(instructionExportErrorAppMessage(error, APP_TEXT.progressCouldNotBeUpdatedErrorWaitingForTheGenerated))
-        return
-      }
-    }
-  }
-
-  function beginInstructionExport() {
-    if (!latestSnapshotRef.current || !foldPreviewModel || coreOperationRef.current) return
-    setInstructionExportOpen(true)
-    setInstructionExportFormat('pdf')
-    setInstructionExportPreview(null)
-    setInstructionExportError(null)
-    setInstructionExportNotice(null)
-    void prepareInstructionExport('pdf')
-  }
-
-  function changeInstructionExportFormat(format: InstructionExportFormat) {
-    if (format === instructionExportFormat || coreOperationRef.current) return
-    setInstructionExportFormat(format)
-    void prepareInstructionExport(format)
-  }
-
-  async function closeInstructionExportDialog() {
-    if (coreOperationRef.current && !instructionExportGenerationActive) return
-    const preview = instructionExportPreview
-    const exportId = instructionExportGenerationIdRef.current ?? preview?.export_id ?? null
-    instructionExportRequestIdRef.current += 1
-    instructionExportGenerationIdRef.current = null
-    setInstructionExportGenerationActive(false)
-    if (coreOperationRef.current) {
-      setInstructionExportOpen(false)
-      setInstructionExportPreview(null)
-      setInstructionExportError(null)
-      setInstructionExportNotice(null)
-      setFileOperation(null)
-      coreOperationRef.current = false
-      setCoreBusy(false)
-      setCoreStatus(appMessage(APP_TEXT.stoppingInstructionGeneration))
-      requestAnimationFrame(() => instructionExportButtonRef.current?.focus())
-      if (exportId) {
-        try {
-          await cancelInstructionExport(exportId)
-          setCoreStatus(appMessage(APP_TEXT.instructionGenerationStopped))
-        } catch {
-          setCoreStatus(appMessage(APP_TEXT.instructionGenerationHasAlreadyFinished))
-        }
-      }
-      return
-    }
-    if (!preview) {
-      setInstructionExportOpen(false)
-      setInstructionExportError(null)
-      setInstructionExportNotice(null)
-      requestAnimationFrame(() => instructionExportButtonRef.current?.focus())
-      return
-    }
-
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    try {
-      await cancelInstructionExport(preview.export_id)
-      instructionExportGenerationIdRef.current = null
-      setInstructionExportOpen(false)
-      setInstructionExportPreview(null)
-      setInstructionExportError(null)
-      setInstructionExportNotice(null)
-      setCoreStatus(appMessage(APP_TEXT.instructionExportCancelled))
-      requestAnimationFrame(() => instructionExportButtonRef.current?.focus())
-    } catch (error) {
-      setInstructionExportError(instructionExportErrorAppMessage(error, APP_TEXT.couldNotCancelError))
-      setCoreStatus(instructionExportErrorAppMessage(error, APP_TEXT.instructionCancellationErrorError))
-    } finally {
-      coreOperationRef.current = false
-      setCoreBusy(false)
-    }
-  }
-
-  async function saveCurrentInstructionExport(warningsAcknowledged: boolean) {
-    const current = latestSnapshotRef.current
-    const preview = instructionExportPreview
-    if (!current || !preview || coreOperationRef.current) return
-    if (
-      current.project_id !== preview.expected_project_id
-      || current.revision !== preview.expected_revision
-    ) {
-      setInstructionExportError(appMessage(APP_TEXT.theProjectChangedRebuildTheInstructionData))
-      return
-    }
-
-    coreOperationRef.current = true
-    setCoreBusy(true)
-    setFileOperation('instruction_export')
-    setInstructionExportError(null)
-    setInstructionExportNotice(null)
-    try {
-      const response = await saveInstructionExport(
-        preview.export_id,
-        current.project_id,
-        current.revision,
-        warningsAcknowledged,
-      )
-      if (response.canceled) {
-        setInstructionExportNotice(appMessage(APP_TEXT.saveLocationSelectionWasCancelledYouCanSaveAgainFrom))
-        setCoreStatus(appMessage(APP_TEXT.instructionSaveLocationSelectionCancelled))
-        return
-      }
-      setInstructionExportOpen(false)
-      instructionExportGenerationIdRef.current = null
-      setInstructionExportPreview(null)
-      setInstructionExportNotice(null)
-      setCoreStatus(appMessage(APP_TEXT.exportedFileName3, { fileName: preview.suggested_file_name }))
-      requestAnimationFrame(() => instructionExportButtonRef.current?.focus())
-    } catch (error) {
-      setInstructionExportError(instructionExportErrorAppMessage(error, APP_TEXT.couldNotExportTheInstructionsError))
-      setCoreStatus(instructionExportErrorAppMessage(error, APP_TEXT.instructionExportErrorError))
-    } finally {
-      setFileOperation(null)
       coreOperationRef.current = false
       setCoreBusy(false)
     }

@@ -3,6 +3,11 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const appSource = read('../src/App.tsx')
+const workflowSource = [
+  read('../src/lib/useInstructionExportWorkflow.ts'),
+  read('../src/lib/instructionExportWorkflowSupport.ts'),
+].join('\n')
+const domainIdSource = read('../../../crates/ori-domain/src/lib.rs')
 const clientSource = read('../src/lib/coreClient.ts')
 const panelSource = read('../src/components/InstructionTimelinePanel.tsx')
 const panelTextSource = read('../src/lib/instructionTimelinePanelText.ts')
@@ -22,8 +27,8 @@ test('the current authored timeline opens one background-blocking instruction ex
     /<InstructionTimelinePanel[\s\S]*?exportButtonRef=\{instructionExportButtonRef\}[\s\S]*?onExport=\{beginInstructionExport\}/u,
   )
   assert.match(
-    appSource,
-    /requestAnimationFrame\(\(\) => instructionExportButtonRef\.current\?\.focus\(\)\)/u,
+    workflowSource,
+    /scheduleFocus\(\(\) => buttonRef\.current\?\.focus\(\)\)/u,
   )
   assert.match(panelSource, /steps\.some\(\(step\) => step\.stale\)/u)
   assert.match(
@@ -67,13 +72,34 @@ test('preview save and cancel use opaque identity without exposing bytes or a pa
   assert.doesNotMatch(preview, /\bbytes?\b|\bpath\b|content|svg|pdf/iu)
 })
 
+test('native generation identities are fresh UUID v4 lifetime tokens', () => {
+  assert.match(
+    nativeExportSource,
+    /fn begin_instruction_export[\s\S]*let export_id = ProjectId::new\(\);[\s\S]*begin_export_generation\(&export_state, export_id\)/u,
+  )
+  assert.match(
+    domainIdSource,
+    /macro_rules! entity_id[\s\S]*pub fn new\(\) -> Self \{\s*Self\(Uuid::new_v4\(\)\)/u,
+  )
+})
+
 test('save remains bound to one project revision and requires warning acknowledgement', () => {
   assert.match(
-    appSource,
-    /current\.project_id !== preview\.expected_project_id\s*\|\|\s*current\.revision !== preview\.expected_revision/u,
+    workflowSource,
+    /!matchesInstructionExportBinding\(previewBinding, current\)[\s\S]*current\.project_id !== pendingPreview\.expected_project_id[\s\S]*current\.revision !== pendingPreview\.expected_revision/u,
   )
-  assert.match(appSource, /saveInstructionExport\(\s*preview\.export_id/u)
-  assert.match(appSource, /cancelInstructionExport\(preview\.export_id\)/u)
+  assert.match(
+    workflowSource,
+    /transport\.save\(\s*pendingPreview\.export_id,\s*pendingPreview\.expected_project_id,\s*pendingPreview\.expected_revision/u,
+  )
+  assert.match(
+    workflowSource,
+    /pendingPreview\?\.export_id \?\? null[\s\S]*cancelExportIds\(\.\.\.exportIds\)/u,
+  )
+  assert.match(
+    workflowSource,
+    /expectedProjectInstanceId: expected\.project_instance_id/u,
+  )
   assert.match(dialogSource, /preview\.warnings\.length === 0 \|\| warningsAcknowledged/u)
   assert.match(dialogSource, /\(busy && !generationActive\)/u)
   assert.match(

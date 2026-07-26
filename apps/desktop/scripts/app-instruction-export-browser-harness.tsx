@@ -10,6 +10,7 @@ const model = 'ab'.repeat(32)
 const commands: string[] = []
 let saveMode: 'success' | 'cancel' | 'failure' = 'success'
 let previewMode: 'valid' | 'stale' | 'tamper' = 'valid'
+let exportGeneration = 0
 const evidence = {
   commands,
   setSaveMode: (mode: typeof saveMode) => { saveMode = mode },
@@ -43,7 +44,7 @@ const snapshot = {
   project_layers: { schema_version: 1, layers: [{ id: '00000000-0000-4000-8000-000000000001', name: 'Crease Pattern', content_kind: 'crease_pattern', visible: true, locked: false, opacity: 1 }], edge_assignments: [] },
   element_metadata: { vertices: [], edges: [], faces: [] }, annotations: { schema_version: 1, annotations: [] }, underlays: { schema_version: 1, underlays: [] }, fold_model_fingerprint: model, can_undo: false, can_redo: false, cutting_allowed: false,
 }
-const preview = (format: 'pdf' | 'svg_zip') => ({ export_id: 'app-miura-export', expected_project_id: projectId, expected_revision: 7, format, profile: 'instruction_export_v1', projection_profile: 'orthographic_isometric_v1', format_summary: format === 'pdf' ? 'PDF 1.7 / A4 portrait' : 'SVG ZIP', suggested_file_name: format === 'pdf' ? 'miura.pdf' : 'miura-svg.zip', byte_count: 4096, step_count: 3, page_count: 3, caution_count: 0, warnings: [{ category: 'discrete_step_endpoints_only', message_ja: '離散姿勢のみです。' }] })
+const preview = (format: 'pdf' | 'svg_zip', exportId: string) => ({ export_id: exportId, expected_project_id: projectId, expected_revision: 7, format, profile: 'instruction_export_v1', projection_profile: 'orthographic_isometric_v1', format_summary: format === 'pdf' ? 'PDF 1.7 / A4 portrait' : 'SVG ZIP', suggested_file_name: format === 'pdf' ? 'miura.pdf' : 'miura-svg.zip', byte_count: 4096, step_count: 3, page_count: 3, caution_count: 0, warnings: [{ category: 'discrete_step_endpoints_only', message_ja: '離散姿勢のみです。' }] })
 const otherFaceId = '30000000-0000-4000-8000-000000000002'
 const half = (edge: string, origin: number, destination: number) => ({ edge, origin: vertices[origin].id, destination: vertices[destination].id })
 const topology = { project_id: projectId, revision: 7, simulation_ready: true, issues: [], snapshot: { source_revision: 7,
@@ -61,14 +62,14 @@ Object.assign(window, { __TAURI_INTERNALS__: { invoke: async (command: string, a
   if (command === 'project_snapshot') return snapshot
   if (command === 'get_recovery_candidate') return { schema_version: 1, status: 'none' }
   if (command === 'analyze_project_topology') return topology
-  if (command === 'begin_instruction_export') return { export_id: 'app-miura-export', profile: 'instruction_export_v1' }
+  if (command === 'begin_instruction_export') return { export_id: `app-miura-export-${++exportGeneration}`, profile: 'instruction_export_v1' }
   if (command === 'preview_instruction_export') {
-    const value = preview(args?.format as 'pdf' | 'svg_zip')
+    const value = preview(args?.format as 'pdf' | 'svg_zip', String(args?.exportId))
     if (previewMode === 'stale') return { preview: { ...value, expected_revision: 8 } }
     if (previewMode === 'tamper') return { preview: { ...value, profile: 'tampered_profile' } }
     return { preview: value }
   }
-  if (command === 'get_instruction_export_progress') return { progress: { export_id: 'app-miura-export', phase: 'ready', completed_units: 3, total_units: 3 } }
+  if (command === 'get_instruction_export_progress') return { export_id: String(args?.exportId), phase: 'ready', completed_units: 3, total_units: 3 }
   if (command === 'save_instruction_export') { if (saveMode === 'failure') throw new Error('atomic-save-failed'); return { canceled: saveMode === 'cancel' } }
   if (command === 'cancel_instruction_export') return null
   if (command.startsWith('plugin:')) return null

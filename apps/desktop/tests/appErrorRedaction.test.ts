@@ -6,6 +6,8 @@ const appSource = [
   readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/appNumericExpression.ts', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/appPresentation.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/useInstructionExportWorkflow.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../src/lib/instructionExportWorkflowSupport.ts', import.meta.url), 'utf8'),
   readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
 ].join('\n')
 
@@ -49,7 +51,7 @@ test('App routes every general failure through a fixed structured code', () => {
 test('specialized error paths retain their bounded category translators', () => {
   assert.match(
     appSource,
-    /instructionExportErrorMessage\(error, locale\)/u,
+    /instructionExportErrorMessage\(error, 'ja'\)[\s\S]*instructionExportErrorMessage\(error, 'en'\)/u,
   )
   assert.match(
     appSource,
@@ -97,7 +99,7 @@ test('explicit project names and generated file names remain visible', () => {
   assert.match(appSource, /\{ name: snapshot\.name \}/u)
   assert.match(appSource, /\{ name: response\.project\.name \}/u)
   assert.equal(
-    appSource.match(/\{ fileName: preview\.suggested_file_name \}/gu)?.length,
+    appSource.match(/fileName:\s*(?:preview|pendingPreview)\.suggested_file_name/gu)?.length,
     2,
   )
 })

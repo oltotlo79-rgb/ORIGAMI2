@@ -4631,6 +4631,55 @@ mod tests {
         ));
     }
 
+    fn assert_same_edge_parallel_zero_closure_is_exact_and_minimal(
+        fixture: &Fixture,
+        records: &[GeometricConstraintRecordV1],
+        edge: EdgeId,
+    ) {
+        assert_eq!(records.len(), 3, "the exact proof core has three records");
+        let expected_ids = sorted_ids(&records.iter().map(|record| record.id).collect::<Vec<_>>());
+        let prepared = prepare(fixture, &document(records.iter().cloned()))
+            .expect("same-edge parallel non-degeneracy terminal");
+        assert_eq!(
+            prepared.preflight(),
+            ConstraintPreflightV1::DirectConflict {
+                conflicts: vec![DirectConstraintConflictV1 {
+                    conflict: DirectConstraintConflictKindV1::
+                        ZeroLengthClosureReachesNondegenerateProvider {
+                            provider_kind: ZeroLengthClosureProviderKindV1::Parallel,
+                            provider_edge: edge,
+                            forced_zero_edge: edge,
+                            horizontal_constraint_count: 1,
+                            vertical_constraint_count: 1,
+                            zero_propagation_constraint_count: 0,
+                        },
+                    constraint_ids: expected_ids.clone(),
+                }],
+            }
+        );
+        let BoundedDirectMusV1::ProvenUnsatisfiable {
+            constraint_ids,
+            oracle_calls,
+        } = find_bounded_direct_mus_v1(&prepared)
+        else {
+            panic!("the parallel non-degeneracy terminal must feed the bounded oracle");
+        };
+        assert_eq!(constraint_ids, expected_ids);
+        assert_eq!(oracle_calls, 7);
+        for removed in records.iter().map(|record| record.id) {
+            let subset = records
+                .iter()
+                .filter(|record| record.id != removed)
+                .cloned();
+            assert!(!matches!(
+                prepare(fixture, &document(subset))
+                    .expect("proper same-edge parallel terminal subset")
+                    .preflight(),
+                ConstraintPreflightV1::DirectConflict { .. }
+            ));
+        }
+    }
+
     // These helpers inspect quarantined legacy recognizer output only to keep
     // its stable wire tags and canonical ordering covered. Public outcome
     // assertions above still require solver-required and never treat these
@@ -7263,13 +7312,12 @@ mod tests {
                 }],
             }
         );
-        let without_point = prepare(
+        let without_point_records = vec![parallel.clone(), vertical.clone(), horizontal.clone()];
+        assert_same_edge_parallel_zero_closure_is_exact_and_minimal(
             &fixture,
-            &document([parallel.clone(), vertical.clone(), horizontal.clone()]),
-        )
-        .expect("general same-node parallel witness");
-        assert_solver_required(&without_point.preflight());
-        assert_bounded_direct_oracle_unknown(&without_point);
+            &without_point_records,
+            fixture.edges[0],
+        );
     }
 
     #[test]
@@ -8625,7 +8673,7 @@ mod tests {
             ));
         }
 
-        let same_node = vec![
+        let same_node_records = vec![
             record(GeometricConstraintKindV1::Horizontal {
                 edge: fixture.edges[0],
             }),
@@ -8637,10 +8685,11 @@ mod tests {
                 second_edge: fixture.edges[1],
             }),
         ];
-        let same_node = prepare(&fixture, &document(same_node))
-            .expect("same-node labels made nondegenerate by incident parallel constraint");
-        assert_solver_required(&same_node.preflight());
-        assert_bounded_direct_oracle_unknown(&same_node);
+        assert_same_edge_parallel_zero_closure_is_exact_and_minimal(
+            &fixture,
+            &same_node_records,
+            fixture.edges[0],
+        );
 
         GENERAL_PARALLEL_TEST_WORK_LIMIT.with(|limit| {
             assert_eq!(

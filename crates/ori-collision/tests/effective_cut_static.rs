@@ -265,7 +265,12 @@ fn source_flat_thickness_prerequisite_reports_planned_pair_cardinality_only() {
         diagnose_effective_cut_source_flat_pairs_v1(&geometry, geometry_input, Default::default())
             .unwrap();
     assert_eq!(observation.pair_count(), 1);
-    assert_eq!(observation.indeterminate_pairs(), 1);
+    // The retained 4/7-vertex faces share two radial hinges. Their exact
+    // source-flat polygon interiors are disjoint, while their closed
+    // boundaries touch, so the common positive-thickness extrusion is
+    // touching rather than the former non-triangular/multi-hinge unknown.
+    assert_eq!(observation.touching_pairs(), 1);
+    assert_eq!(observation.indeterminate_pairs(), 0);
     assert_eq!(observation.penetrating_pairs(), 0);
     assert_eq!(observation.shared_hinge_allowed_pairs(), 0);
     assert_eq!(observation.shared_vertex_allowed_pairs(), 0);
@@ -293,9 +298,76 @@ fn source_flat_thickness_prerequisite_reports_planned_pair_cardinality_only() {
             EffectiveCutSourceFlatPairObservationLimitsV1 {
                 max_pairs: 0,
                 max_shared_vertex_work: 10_000_000,
+                ..Default::default()
             },
         )
         .is_err()
+    );
+    for constrained in [
+        EffectiveCutSourceFlatPairObservationLimitsV1 {
+            max_vertices_per_polygon: 6,
+            ..Default::default()
+        },
+        EffectiveCutSourceFlatPairObservationLimitsV1 {
+            max_polygon_storage_items: 117,
+            ..Default::default()
+        },
+        EffectiveCutSourceFlatPairObservationLimitsV1 {
+            max_triangle_pairs: 9,
+            ..Default::default()
+        },
+        EffectiveCutSourceFlatPairObservationLimitsV1 {
+            max_exact_predicate_work: 0,
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            diagnose_effective_cut_source_flat_pairs_v1(&geometry, geometry_input, constrained,),
+            Err(ori_collision::EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit)
+        );
+    }
+    let mut lower_work = 0_usize;
+    let mut upper_work =
+        EffectiveCutSourceFlatPairObservationLimitsV1::default().max_exact_predicate_work;
+    while lower_work < upper_work {
+        let middle = lower_work + (upper_work - lower_work) / 2;
+        let succeeds = diagnose_effective_cut_source_flat_pairs_v1(
+            &geometry,
+            geometry_input,
+            EffectiveCutSourceFlatPairObservationLimitsV1 {
+                max_exact_predicate_work: middle,
+                ..Default::default()
+            },
+        )
+        .is_ok();
+        if succeeds {
+            upper_work = middle;
+        } else {
+            lower_work = middle + 1;
+        }
+    }
+    assert!(lower_work > 0);
+    assert!(
+        diagnose_effective_cut_source_flat_pairs_v1(
+            &geometry,
+            geometry_input,
+            EffectiveCutSourceFlatPairObservationLimitsV1 {
+                max_exact_predicate_work: lower_work,
+                ..Default::default()
+            },
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        diagnose_effective_cut_source_flat_pairs_v1(
+            &geometry,
+            geometry_input,
+            EffectiveCutSourceFlatPairObservationLimitsV1 {
+                max_exact_predicate_work: lower_work - 1,
+                ..Default::default()
+            },
+        ),
+        Err(ori_collision::EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit)
     );
     let exact_work = geometry
         .boundary_occurrence_count()
@@ -304,6 +376,7 @@ fn source_flat_thickness_prerequisite_reports_planned_pair_cardinality_only() {
     let exact_observation_limits = EffectiveCutSourceFlatPairObservationLimitsV1 {
         max_pairs: 1,
         max_shared_vertex_work: exact_work,
+        ..Default::default()
     };
     let exact_observation = diagnose_effective_cut_source_flat_pairs_v1(
         &geometry,
@@ -323,6 +396,7 @@ fn source_flat_thickness_prerequisite_reports_planned_pair_cardinality_only() {
             EffectiveCutSourceFlatPairObservationLimitsV1 {
                 max_pairs: 1,
                 max_shared_vertex_work: exact_work - 1,
+                ..Default::default()
             },
         )
         .is_err()
@@ -349,6 +423,14 @@ fn source_flat_thickness_prerequisite_reports_planned_pair_cardinality_only() {
         Default::default(),
         Default::default(),
         registry_limits,
+    ));
+    assert!(!observation.is_for(
+        &geometry,
+        EffectiveCutCollisionGeometryInputV1 {
+            source: input(namespace, 10, &paper, &pattern),
+            ..geometry_input
+        },
+        Default::default(),
     ));
     assert!(!bridge.is_for(
         &diagnostic,

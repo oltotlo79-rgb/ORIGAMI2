@@ -4,9 +4,9 @@
 //! This module binds prerequisites only. It neither reconstructs the opaque
 //! kinematics geometry nor claims that any face pair is collision-free.
 
-use crate::cayley::{
-    PositiveThicknessPrismPairDispositionV1, SourceFlatPrismFeatureV1,
-    diagnose_source_flat_prism_pair_v1,
+use self::source_flat_polygon::{
+    SourceFlatPolygonError, SourceFlatPolygonIntersection, SourceFlatPolygonLimits,
+    SourceFlatPolygonMeter, classify_source_flat_polygon_pair, prepare_source_flat_polygon,
 };
 use ori_kinematics::{
     EffectiveCutKinematicsDiagnosticV1, EffectiveCutRetainedFacePairRegistryLimitsV1,
@@ -19,6 +19,8 @@ use std::{
     sync::Arc,
 };
 use thiserror::Error;
+
+mod source_flat_polygon;
 
 pub const EFFECTIVE_CUT_STATIC_THICKNESS_PREREQUISITE_MODEL_ID_V1: &str =
     "effective_cut_static_thickness_prerequisite_v1";
@@ -166,6 +168,10 @@ pub struct EffectiveCutCollisionGeometryLimitsV1 {
 pub struct EffectiveCutSourceFlatPairObservationLimitsV1 {
     pub max_pairs: usize,
     pub max_shared_vertex_work: usize,
+    pub max_vertices_per_polygon: usize,
+    pub max_polygon_storage_items: usize,
+    pub max_exact_predicate_work: usize,
+    pub max_triangle_pairs: usize,
 }
 
 impl Default for EffectiveCutSourceFlatPairObservationLimitsV1 {
@@ -173,6 +179,10 @@ impl Default for EffectiveCutSourceFlatPairObservationLimitsV1 {
         Self {
             max_pairs: 50_000,
             max_shared_vertex_work: 10_000_000,
+            max_vertices_per_polygon: 4_096,
+            max_polygon_storage_items: 1_000_000,
+            max_exact_predicate_work: 50_000_000,
+            max_triangle_pairs: 10_000_000,
         }
     }
 }
@@ -788,13 +798,32 @@ fn source_flat_point_v1(point: ori_domain::Point2) -> [f64; 3] {
     [x, 0.0, z]
 }
 
+fn map_source_flat_polygon_error(
+    error: SourceFlatPolygonError,
+) -> EffectiveCutStaticThicknessPrerequisiteErrorV1 {
+    match error {
+        SourceFlatPolygonError::InvalidGeometry => {
+            EffectiveCutStaticThicknessPrerequisiteErrorV1::InvalidBinding
+        }
+        SourceFlatPolygonError::ResourceLimit => {
+            EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit
+        }
+    }
+}
+
 pub fn diagnose_effective_cut_source_flat_pairs_v1(
     geometry: &EffectiveCutCollisionGeometryV1,
     input: EffectiveCutCollisionGeometryInputV1<'_>,
     limits: EffectiveCutSourceFlatPairObservationLimitsV1,
 ) -> Result<EffectiveCutSourceFlatPairObservationV1, EffectiveCutStaticThicknessPrerequisiteErrorV1>
 {
-    if limits.max_pairs > 50_000 || limits.max_shared_vertex_work > 10_000_000 {
+    if limits.max_pairs > 50_000
+        || limits.max_shared_vertex_work > 10_000_000
+        || limits.max_vertices_per_polygon > 4_096
+        || limits.max_polygon_storage_items > 1_000_000
+        || limits.max_exact_predicate_work > 50_000_000
+        || limits.max_triangle_pairs > 10_000_000
+    {
         return Err(EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit);
     }
     let pair_count = geometry
@@ -808,8 +837,37 @@ pub fn diagnose_effective_cut_source_flat_pairs_v1(
         .checked_mul(geometry.face_count().saturating_sub(1))
         .filter(|work| *work <= limits.max_shared_vertex_work)
         .ok_or(EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit)?;
-    if !geometry.is_for(input) || pair_count != input.registry.pair_count() {
+    if !geometry.is_for(input)
+        || pair_count != input.registry.pair_count()
+        || !input.prerequisite.paper_thickness_mm().is_finite()
+        || input.prerequisite.paper_thickness_mm() <= 0.0
+    {
         return Err(EffectiveCutStaticThicknessPrerequisiteErrorV1::InvalidBinding);
+    }
+    let polygon_limits = SourceFlatPolygonLimits {
+        max_vertices_per_polygon: limits.max_vertices_per_polygon,
+        max_storage_items: limits.max_polygon_storage_items,
+        max_predicate_work: limits.max_exact_predicate_work,
+        max_triangle_pairs: limits.max_triangle_pairs,
+    };
+    let mut polygon_meter = SourceFlatPolygonMeter::default();
+    let mut polygons = Vec::new();
+    polygons
+        .try_reserve_exact(geometry.data.faces.len())
+        .map_err(|_| EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit)?;
+    for face in &geometry.data.faces {
+        if face.boundary.len() > polygon_limits.max_vertices_per_polygon {
+            return Err(EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit);
+        }
+        polygons.push(
+            prepare_source_flat_polygon(
+                face.boundary.len(),
+                face.boundary.iter().map(|occurrence| occurrence.point),
+                polygon_limits,
+                &mut polygon_meter,
+            )
+            .map_err(map_source_flat_polygon_error)?,
+        );
     }
     let mut counts = [0_usize; 6];
     let mut analyzed = 0_usize;
@@ -818,8 +876,16 @@ pub fn diagnose_effective_cut_source_flat_pairs_v1(
     let mut hash = Sha256::new();
     hash.update(EFFECTIVE_CUT_SOURCE_FLAT_PAIR_OBSERVATION_MODEL_ID_V1.as_bytes());
     hash.update(geometry.fingerprint_v1());
-    hash.update((limits.max_pairs as u64).to_be_bytes());
-    hash.update((limits.max_shared_vertex_work as u64).to_be_bytes());
+    for value in [
+        limits.max_pairs,
+        limits.max_shared_vertex_work,
+        limits.max_vertices_per_polygon,
+        limits.max_polygon_storage_items,
+        limits.max_exact_predicate_work,
+        limits.max_triangle_pairs,
+    ] {
+        hash.update((value as u64).to_be_bytes());
+    }
     for first_index in 0..geometry.data.faces.len() {
         for second_index in first_index + 1..geometry.data.faces.len() {
             analyzed = analyzed
@@ -827,7 +893,10 @@ pub fn diagnose_effective_cut_source_flat_pairs_v1(
                 .ok_or(EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit)?;
             let first = &geometry.data.faces[first_index];
             let second = &geometry.data.faces[second_index];
-            let hinge_start = hinge_index;
+            // Consume the complete authenticated hinge registry in canonical
+            // face-pair order. Source-flat polygon classification does not use
+            // a hinge feature, but this final-consumption invariant still
+            // rejects a foreign or internally inconsistent registry.
             while geometry
                 .data
                 .hinges
@@ -836,96 +905,22 @@ pub fn diagnose_effective_cut_source_flat_pairs_v1(
             {
                 hinge_index += 1;
             }
-            let shared_hinges = &geometry.data.hinges[hinge_start..hinge_index];
             shared_vertex_work = shared_vertex_work
                 .checked_add(first.canonical_vertices.len())
                 .and_then(|work| work.checked_add(second.canonical_vertices.len()))
                 .filter(|work| *work <= limits.max_shared_vertex_work)
                 .ok_or(EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit)?;
-            let mut left = 0_usize;
-            let mut right = 0_usize;
-            let mut shared = [None; 3];
-            let mut shared_count = 0_usize;
-            while left < first.canonical_vertices.len() && right < second.canonical_vertices.len() {
-                match first.canonical_vertices[left]
-                    .0
-                    .canonical_bytes()
-                    .cmp(&second.canonical_vertices[right].0.canonical_bytes())
-                {
-                    std::cmp::Ordering::Less => left += 1,
-                    std::cmp::Ordering::Greater => right += 1,
-                    std::cmp::Ordering::Equal => {
-                        if shared_count < shared.len() {
-                            shared[shared_count] = Some(first.canonical_vertices[left]);
-                        }
-                        shared_count += 1;
-                        left += 1;
-                        right += 1;
-                    }
-                }
-            }
-            let feature = if shared_hinges.len() > 1 || shared_count > 2 {
-                SourceFlatPrismFeatureV1::Unsupported
-            } else if let Some(hinge) = shared_hinges.first() {
-                let endpoint_match = shared_count == 2
-                    && shared[..2].iter().flatten().all(|(vertex, _)| {
-                        *vertex == hinge.start_vertex || *vertex == hinge.end_vertex
-                    });
-                if endpoint_match {
-                    SourceFlatPrismFeatureV1::SingleHinge([hinge.start, hinge.end])
-                } else {
-                    SourceFlatPrismFeatureV1::Unsupported
-                }
-            } else if shared_count == 1 {
-                SourceFlatPrismFeatureV1::SingleVertex(
-                    shared[0]
-                        .ok_or(EffectiveCutStaticThicknessPrerequisiteErrorV1::InvalidBinding)?
-                        .1,
-                )
-            } else if shared_count == 0 {
-                SourceFlatPrismFeatureV1::None
-            } else {
-                SourceFlatPrismFeatureV1::Unsupported
-            };
-            let first_points = (first.boundary.len() == 3).then(|| {
-                [
-                    first.boundary[0].point,
-                    first.boundary[1].point,
-                    first.boundary[2].point,
-                ]
-            });
-            let second_points = (second.boundary.len() == 3).then(|| {
-                [
-                    second.boundary[0].point,
-                    second.boundary[1].point,
-                    second.boundary[2].point,
-                ]
-            });
-            let disposition = diagnose_source_flat_prism_pair_v1(
-                first_points
-                    .as_ref()
-                    .map_or(&[], |points| points.as_slice()),
-                second_points
-                    .as_ref()
-                    .map_or(&[], |points| points.as_slice()),
-                input.prerequisite.paper_thickness_mm(),
-                feature,
+            let index = match classify_source_flat_polygon_pair(
+                &polygons[first_index],
+                &polygons[second_index],
+                polygon_limits,
+                &mut polygon_meter,
             )
-            .map_err(|error| match error {
-                crate::cayley::SharedHingeSolidDiagnosticErrorV1::ResourceLimitExceeded => {
-                    EffectiveCutStaticThicknessPrerequisiteErrorV1::ResourceLimit
-                }
-                crate::cayley::SharedHingeSolidDiagnosticErrorV1::InconsistentPose => {
-                    EffectiveCutStaticThicknessPrerequisiteErrorV1::InvalidBinding
-                }
-            })?;
-            let index = match disposition {
-                PositiveThicknessPrismPairDispositionV1::Separated => 0,
-                PositiveThicknessPrismPairDispositionV1::Touching => 1,
-                PositiveThicknessPrismPairDispositionV1::SharedHingeCorridorAllowed => 2,
-                PositiveThicknessPrismPairDispositionV1::SharedVertexCorridorAllowed => 3,
-                PositiveThicknessPrismPairDispositionV1::Penetrating => 4,
-                PositiveThicknessPrismPairDispositionV1::Indeterminate => 5,
+            .map_err(map_source_flat_polygon_error)?
+            {
+                SourceFlatPolygonIntersection::Separated => 0,
+                SourceFlatPolygonIntersection::Touching => 1,
+                SourceFlatPolygonIntersection::PositiveArea => 4,
             };
             counts[index] += 1;
             hash.update(first.face.canonical_bytes());

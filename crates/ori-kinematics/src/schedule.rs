@@ -1546,6 +1546,11 @@ impl CanonicalCycleScheduleV1 {
             if !initial.is_finite() || !(0.0..=180.0).contains(&initial) {
                 return Err(CycleSchedulePrepareErrorV1::InvalidInput);
             }
+            let derivative_is_mathematically_zero = input
+                .chebyshev_coefficients
+                .iter()
+                .skip(1)
+                .all(|coefficient| coefficient.numerator == 0);
             let mut coefficients = Vec::with_capacity(input.chebyshev_coefficients.len());
             for coefficient in input.chebyshev_coefficients {
                 if coefficient.denominator == 0
@@ -1571,11 +1576,23 @@ impl CanonicalCycleScheduleV1 {
             if initial - excursion < 0.0 || initial + excursion > 180.0 {
                 return Err(CycleSchedulePrepareErrorV1::AngleRange);
             }
-            let derivative_bound = coefficients
-                .iter()
-                .enumerate()
-                .map(|(degree, value)| 2.0 * (degree * degree) as f64 * value.abs() / width)
-                .sum();
+            let derivative_bound = if derivative_is_mathematically_zero {
+                0.0
+            } else {
+                let computed = coefficients
+                    .iter()
+                    .enumerate()
+                    .map(|(degree, value)| 2.0 * (degree * degree) as f64 * value.abs() / width)
+                    .sum::<f64>();
+                // Exact rational coefficients decide whether the polynomial is
+                // constant. An underflowed non-constant bound must never become
+                // stationary authority; nonzero and non-finite values are kept.
+                if computed == 0.0 {
+                    f64::INFINITY
+                } else {
+                    computed
+                }
+            };
             prepared.push(Entry {
                 edge: input.edge,
                 initial,
@@ -2601,6 +2618,73 @@ mod tests {
         );
         assert_eq!(schedule.derivative_bound(edges[0]), Some(20.0));
         assert!(schedule.evaluate(-0.1).is_none());
+    }
+
+    #[test]
+    fn canonical_schedule_derivative_bound_uses_exact_polynomial_constancy() {
+        let (geometry, audit, fixed, mut edges) = fixture();
+        edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let prepare = |domain: [f64; 2], coefficients: Vec<RationalCoefficientV1>| {
+            let inputs = edges
+                .iter()
+                .map(|edge| CycleScheduleEntryInputV1 {
+                    edge: *edge,
+                    initial_angle_degrees_bits: 90.0_f64.to_bits(),
+                    chebyshev_coefficients: coefficients.clone(),
+                })
+                .collect();
+            CanonicalCycleScheduleV1::prepare(
+                &geometry,
+                &audit,
+                fixed,
+                domain,
+                inputs,
+                CycleScheduleLimitsV1::default(),
+            )
+            .expect("prepare bounded polynomial schedule")
+        };
+        let zero = RationalCoefficientV1 {
+            numerator: 0,
+            denominator: 1,
+        };
+        let one = RationalCoefficientV1 {
+            numerator: 1,
+            denominator: 1,
+        };
+
+        for schedule in [
+            prepare([0.0, 1.0], Vec::new()),
+            prepare([0.0, 1.0], vec![zero]),
+            prepare([0.0, 1.0], vec![one]),
+            prepare([0.0, 1.0], vec![one, zero]),
+        ] {
+            assert!(edges.iter().all(|edge| {
+                schedule
+                    .derivative_bound(*edge)
+                    .is_some_and(|bound| bound.to_bits() == 0.0_f64.to_bits())
+            }));
+        }
+
+        let nonconstant = prepare([0.0, 1.0], vec![zero, one]);
+        assert!(
+            edges
+                .iter()
+                .all(|edge| nonconstant.derivative_bound(*edge) == Some(2.0))
+        );
+
+        let underflowed = prepare([-f64::MAX, f64::MAX], vec![zero, one]);
+        assert!(edges.iter().all(|edge| {
+            underflowed
+                .derivative_bound(*edge)
+                .is_some_and(|bound| bound.is_infinite() && bound.is_sign_positive())
+        }));
+
+        let infinite = prepare([0.0, f64::from_bits(1)], vec![zero, one]);
+        assert!(edges.iter().all(|edge| {
+            infinite
+                .derivative_bound(*edge)
+                .is_some_and(|bound| bound.is_infinite() && bound.is_sign_positive())
+        }));
     }
 
     #[test]

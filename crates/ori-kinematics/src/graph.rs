@@ -2701,7 +2701,10 @@ mod tests {
     };
 
     use super::*;
-    use crate::{HalfAngleRationalEntryInputV1, HingeAngle, Point3, RationalCoefficientV1};
+    use crate::{
+        CycleScheduleEntryInputV1, HalfAngleRationalEntryInputV1, HingeAngle, Point3,
+        RationalCoefficientV1,
+    };
 
     fn face(id: FaceId) -> Face {
         Face {
@@ -3127,6 +3130,90 @@ mod tests {
                 .maximum_error()
                 > 0.0
         );
+    }
+
+    #[test]
+    fn empty_and_explicit_zero_schedules_share_stationary_closure_fast_path() {
+        let namespace = ProjectId::new();
+        let faces = [b"stationary-a", b"stationary-b", b"stationary-c"]
+            .map(|name| FaceId::derive_v5(namespace, name));
+        let edges = [b"stationary-ab", b"stationary-bc", b"stationary-ca"]
+            .map(|name| EdgeId::derive_v5(namespace, name));
+        let source = topology(
+            &faces,
+            &[
+                (edges[0], faces[0], faces[1]),
+                (edges[1], faces[1], faces[2]),
+                (edges[2], faces[2], faces[0]),
+            ],
+        );
+        let audit =
+            MaterialHingeGraphAudit::prepare(&source, TreeKinematicsLimits::default()).unwrap();
+        let origin = Point3::new(0.0, 0.0, 0.0).unwrap();
+        let axis = Point3::new(1.0, 0.0, 0.0).unwrap();
+        let geometry = MaterialHingeGraphGeometry::new_for_test(
+            audit.faces().to_vec(),
+            (0..3)
+                .map(|index| {
+                    TreeHinge::new_for_test(
+                        edges[index],
+                        FoldAssignment::Mountain,
+                        faces[index],
+                        faces[(index + 1) % 3],
+                        origin,
+                        axis,
+                        axis,
+                    )
+                })
+                .collect(),
+        );
+        let mut canonical_edges = edges.to_vec();
+        canonical_edges.sort_unstable_by_key(EdgeId::canonical_bytes);
+        let zero = RationalCoefficientV1 {
+            numerator: 0,
+            denominator: 1,
+        };
+
+        for coefficients in [Vec::new(), vec![zero]] {
+            let entries = canonical_edges
+                .iter()
+                .map(|edge| CycleScheduleEntryInputV1 {
+                    edge: *edge,
+                    initial_angle_degrees_bits: 0.0_f64.to_bits(),
+                    chebyshev_coefficients: coefficients.clone(),
+                })
+                .collect();
+            let schedule = CanonicalCycleScheduleV1::prepare(
+                &geometry,
+                &audit,
+                audit.faces()[0],
+                [0.0, 1.0],
+                entries,
+                CycleScheduleLimitsV1::default(),
+            )
+            .expect("prepare exact stationary cycle schedule");
+            assert!(canonical_edges.iter().all(|edge| {
+                schedule
+                    .derivative_bound(*edge)
+                    .is_some_and(|bound| bound.to_bits() == 0.0_f64.to_bits())
+            }));
+            let closure = geometry
+                .prove_dyadic_schedule_closure_v1(
+                    &audit,
+                    audit.faces()[0],
+                    &schedule,
+                    0.0,
+                    DyadicIntervalClosureLimitsV1 {
+                        max_depth: 0,
+                        max_leaves: 1,
+                        max_work: 1,
+                        schedule_limits: CycleScheduleLimitsV1::default(),
+                    },
+                )
+                .expect("stationary fast path must not consume interval work");
+            assert!(closure.has_canonical_complete_partition_v1());
+            assert_eq!(closure.leaves().len(), 1);
+        }
     }
 
     #[test]

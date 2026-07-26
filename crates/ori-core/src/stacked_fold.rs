@@ -1464,9 +1464,13 @@ struct BuildCarrier {
 /// The result is detached data and grants no mutation authority. Callers must
 /// still run face-lineage and stacked-fold geometry proofs and reauthenticate
 /// all live capabilities before an atomic commit.
+///
+/// Newly introduced vertex and edge identities are content-addressed inside
+/// `identity_namespace`. `source_revision` remains a proof/cache binding at
+/// the caller boundary, but is deliberately outside those derived names.
 pub fn build_stacked_fold_topology_v1(
     identity_namespace: ProjectId,
-    source_revision: Revision,
+    _source_revision: Revision,
     source_pattern: &CreasePattern,
     source_paper: &Paper,
     expected_creases: &[ExpectedStackedFoldCreaseV1],
@@ -1581,7 +1585,7 @@ pub fn build_stacked_fold_topology_v1(
         points.dedup_by(|left, right| point_bits(*left) == point_bits(*right));
         for point in points.iter().copied() {
             if !vertex_ids.contains_key(&point_bits(point)) {
-                let id = derived_vertex_id(identity_namespace, source_revision, point);
+                let id = derived_vertex_id_v2(identity_namespace, point);
                 if source_positions.contains_key(&id)
                     || vertex_ids.values().any(|value| *value == id)
                 {
@@ -1631,28 +1635,14 @@ pub fn build_stacked_fold_topology_v1(
         .map(|edge| edge.id)
         .collect::<HashSet<_>>();
     let mut emitted_edge_ids = HashSet::with_capacity(estimated_edges);
-    for (carrier_index, (carrier, points)) in carriers.iter().zip(&carrier_points).enumerate() {
+    for (carrier, points) in carriers.iter().zip(&carrier_points) {
         for (index, pair) in points.windows(2).enumerate() {
             let id = if index == 0 {
                 carrier.source_edge.unwrap_or_else(|| {
-                    derived_edge_id(
-                        identity_namespace,
-                        source_revision,
-                        carrier_index,
-                        pair[0],
-                        pair[1],
-                        carrier.kind,
-                    )
+                    derived_edge_id_v2(identity_namespace, pair[0], pair[1], carrier.kind)
                 })
             } else {
-                derived_edge_id(
-                    identity_namespace,
-                    source_revision,
-                    carrier_index,
-                    pair[0],
-                    pair[1],
-                    carrier.kind,
-                )
+                derived_edge_id_v2(identity_namespace, pair[0], pair[1], carrier.kind)
             };
             if !emitted_edge_ids.insert(id)
                 || (source_edge_ids.contains(&id) && carrier.source_edge != Some(id))
@@ -4186,37 +4176,28 @@ fn compare_expected_crease(
     canonical(left).cmp(&canonical(right))
 }
 
-fn derived_vertex_id(
-    identity_namespace: ProjectId,
-    source_revision: Revision,
-    point: Point2,
-) -> VertexId {
-    let mut name = b"stacked-fold-target-v1\0vertex\0".to_vec();
+fn derived_vertex_id_v2(identity_namespace: ProjectId, point: Point2) -> VertexId {
+    let mut name = b"stacked-fold-target-v2\0vertex\0".to_vec();
     let (x, y) = point_bits(point);
-    name.extend_from_slice(&source_revision.to_be_bytes());
     name.extend_from_slice(&x.to_be_bytes());
     name.extend_from_slice(&y.to_be_bytes());
     VertexId::derive_v5(identity_namespace, &name)
 }
 
-fn derived_edge_id(
+fn derived_edge_id_v2(
     identity_namespace: ProjectId,
-    source_revision: Revision,
-    carrier_index: usize,
     start: Point2,
     end: Point2,
     kind: EdgeKind,
 ) -> EdgeId {
-    let mut name = b"stacked-fold-target-v1\0edge\0".to_vec();
-    let (start_x, start_y) = point_bits(start);
-    let (end_x, end_y) = point_bits(end);
-    name.extend_from_slice(&source_revision.to_be_bytes());
-    name.extend_from_slice(&(carrier_index as u64).to_be_bytes());
-    name.extend_from_slice(&start_x.to_be_bytes());
-    name.extend_from_slice(&start_y.to_be_bytes());
-    name.extend_from_slice(&end_x.to_be_bytes());
-    name.extend_from_slice(&end_y.to_be_bytes());
-    name.push(kind as u8);
+    let mut name = b"stacked-fold-target-v2\0edge\0".to_vec();
+    let mut endpoints = [point_bits(start), point_bits(end)];
+    endpoints.sort_unstable();
+    for (x, y) in endpoints {
+        name.extend_from_slice(&x.to_be_bytes());
+        name.extend_from_slice(&y.to_be_bytes());
+    }
+    name.push(edge_kind_rank(kind));
     EdgeId::derive_v5(identity_namespace, &name)
 }
 
@@ -5058,6 +5039,10 @@ fn exact_f64_at_minimum_scale(value: f64) -> BigInt {
     let integer = BigInt::from(significand) << shift;
     if negative { -integer } else { integer }
 }
+
+#[cfg(test)]
+#[path = "stacked_fold_content_addressed_id_tests.rs"]
+mod content_addressed_id_tests;
 
 #[cfg(test)]
 mod tests {

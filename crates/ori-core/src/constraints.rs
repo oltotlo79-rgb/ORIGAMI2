@@ -355,6 +355,9 @@ pub enum DirectConstraintConflictKindV1 {
         first_edge: EdgeId,
         second_edge: EdgeId,
     },
+    /// Both edges have consistent positive finite fixed lengths, and evaluating
+    /// the exact binary64 operation used by the solver's length-ratio residual
+    /// with those two lengths produces a non-zero or non-finite result.
     LengthRatioWithIncompatibleFixedLengths {
         numerator_edge: EdgeId,
         denominator_edge: EdgeId,
@@ -1962,11 +1965,18 @@ pub fn preflight_direct_conflicts_v1(set: &GeometricConstraintSetV1<'_>) -> Cons
         else {
             continue;
         };
-        if !positive_binary64_equals_product_v1(
-            numerator_length.value,
-            ratio.value,
-            denominator_length.value,
-        ) {
+        if numerator_length.value.is_finite()
+            && numerator_length.value > 0.0
+            && denominator_length.value.is_finite()
+            && denominator_length.value > 0.0
+            && ratio.value.is_finite()
+            && ratio.value > 0.0
+            && length_ratio_residual_binary64_v1(
+                numerator_length.value,
+                ratio.value,
+                denominator_length.value,
+            ) != 0.0
+        {
             push_conflict(
                 &mut conflicts,
                 DirectConstraintConflictKindV1::LengthRatioWithIncompatibleFixedLengths {
@@ -2541,6 +2551,21 @@ fn consistent_scalar_assignment(assignments: &[ScalarAssignment]) -> Option<Scal
         })
 }
 
+/// Evaluates the V1 length-ratio residual in its canonical binary64 operation
+/// order.
+///
+/// Both preflight proofs and the numerical solver call this function so a
+/// direct contradiction can never be inferred from exact-real multiplication
+/// while the implemented rounded residual is zero.
+pub(crate) fn length_ratio_residual_binary64_v1(
+    numerator_length: f64,
+    ratio: f64,
+    denominator_length: f64,
+) -> f64 {
+    let scaled_denominator = ratio * denominator_length;
+    numerator_length - scaled_denominator
+}
+
 /// One-sided test that two stored binary64 degree values do not add to an
 /// exact real full turn.
 ///
@@ -2570,17 +2595,6 @@ fn positive_binary64_odd_parts_v1(value: f64) -> (u64, i16) {
     significand >>= trailing;
     exponent += trailing as i16;
     (significand, exponent)
-}
-
-/// Compares `left == first * second` as exact positive binary64 rationals.
-/// No rounded binary64 multiplication participates in the decision.
-fn positive_binary64_equals_product_v1(left: f64, first: f64, second: f64) -> bool {
-    let (left_significand, left_exponent) = positive_binary64_odd_parts_v1(left);
-    let (first_significand, first_exponent) = positive_binary64_odd_parts_v1(first);
-    let (second_significand, second_exponent) = positive_binary64_odd_parts_v1(second);
-    left_exponent == first_exponent + second_exponent
-        && BigUint::from(left_significand)
-            == BigUint::from(first_significand) * BigUint::from(second_significand)
 }
 
 fn positive_binary64_product_is_one_v1(values: &[f64]) -> bool {
@@ -3506,6 +3520,7 @@ fn is_proven_direct_conflict_v1(conflict: &DirectConstraintConflictKindV1) -> bo
         DirectConstraintConflictKindV1::DifferentFixedLengths { .. }
             | DirectConstraintConflictKindV1::HorizontalAndVertical { .. }
             | DirectConstraintConflictKindV1::EqualLengthWithDifferentFixedLengths { .. }
+            | DirectConstraintConflictKindV1::LengthRatioWithIncompatibleFixedLengths { .. }
             | DirectConstraintConflictKindV1::DifferentFixedLengthsInEqualLengthComponent { .. }
             | DirectConstraintConflictKindV1::ParallelWithPerpendicularOrientations { .. }
     )
@@ -7005,7 +7020,7 @@ mod tests {
 
         for (index, records) in cases.into_iter().enumerate() {
             let prepared = prepare(&fixture, &document(records.clone())).expect("valid cause");
-            if index >= 2 {
+            if index == 3 {
                 assert_solver_required(&prepared.preflight());
                 assert_no_proven_direct_mus(&prepared);
                 continue;
@@ -7040,14 +7055,25 @@ mod tests {
     }
 
     #[test]
-    fn fixed_lengths_and_ratio_use_exact_binary64_product_evidence() {
-        assert!(positive_binary64_equals_product_v1(6.0, 2.0, 3.0));
-        assert!(positive_binary64_equals_product_v1(
-            f64::from_bits(1),
-            1.0,
-            f64::from_bits(1),
-        ));
-        assert!(!positive_binary64_equals_product_v1(0.3, 3.0, 0.1));
+    fn fixed_lengths_and_ratio_share_the_solver_binary64_residual() {
+        let minimum = f64::from_bits(1);
+        let one_up = 1.0_f64.next_up();
+        assert_eq!(length_ratio_residual_binary64_v1(6.0, 2.0, 3.0), 0.0);
+        assert_eq!(
+            length_ratio_residual_binary64_v1(minimum, one_up, minimum),
+            0.0,
+            "a real-product mismatch can disappear in the implemented rounded multiplication"
+        );
+        assert_ne!(length_ratio_residual_binary64_v1(0.3, 3.0, 0.1), 0.0);
+        assert_ne!(
+            length_ratio_residual_binary64_v1(minimum, 0.5, minimum),
+            0.0,
+            "underflow to zero cannot satisfy a positive fixed numerator"
+        );
+        assert!(
+            !length_ratio_residual_binary64_v1(f64::MAX, 2.0, f64::MAX).is_finite(),
+            "overflow is rejected by the numerical residual boundary"
+        );
 
         let fixture = Fixture::new();
         let ratio = record(GeometricConstraintKindV1::LengthRatio {
@@ -7078,6 +7104,36 @@ mod tests {
             }
         );
 
+        let rounded_ratio = record(GeometricConstraintKindV1::LengthRatio {
+            numerator_edge: fixture.edges[0],
+            denominator_edge: fixture.edges[1],
+            ratio: one_up,
+        });
+        let rounded_compatible = prepare(
+            &fixture,
+            &document([
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[0],
+                    length_mm: minimum,
+                }),
+                record(GeometricConstraintKindV1::FixedLength {
+                    edge: fixture.edges[1],
+                    length_mm: minimum,
+                }),
+                rounded_ratio.clone(),
+            ]),
+        )
+        .expect("rounded-compatible fixed lengths and ratio");
+        assert_eq!(
+            rounded_compatible.preflight(),
+            ConstraintPreflightV1::Unknown {
+                reason: GeometricConstraintUnknownReasonV1::SolverRequiredConstraintKinds,
+                unchecked_constraint_ids: vec![rounded_ratio.id],
+            },
+            "zero in the shared residual must never become a direct contradiction"
+        );
+        assert_no_proven_direct_mus(&rounded_compatible);
+
         let numerator = record(GeometricConstraintKindV1::FixedLength {
             edge: fixture.edges[0],
             length_mm: 0.3,
@@ -7099,9 +7155,99 @@ mod tests {
                 incompatible_ratio.clone(),
             ]),
         )
-        .expect("exactly incompatible fixed lengths and ratio");
-        assert_solver_required(&prepared.preflight());
-        assert_no_proven_direct_mus(&prepared);
+        .expect("binary64-incompatible fixed lengths and ratio");
+        let expected = ConstraintPreflightV1::DirectConflict {
+            conflicts: vec![DirectConstraintConflictV1 {
+                conflict: DirectConstraintConflictKindV1::LengthRatioWithIncompatibleFixedLengths {
+                    numerator_edge: fixture.edges[0],
+                    denominator_edge: fixture.edges[1],
+                },
+                constraint_ids: sorted_ids(&[numerator.id, denominator.id, incompatible_ratio.id]),
+            }],
+        };
+        assert_eq!(prepared.preflight(), expected);
+        let BoundedDirectMusV1::ProvenUnsatisfiable {
+            constraint_ids,
+            oracle_calls,
+        } = find_bounded_direct_mus_v1(&prepared)
+        else {
+            panic!("the shared non-zero residual must prove the three-record direct cause")
+        };
+        assert_eq!(
+            constraint_ids,
+            sorted_ids(&[numerator.id, denominator.id, incompatible_ratio.id])
+        );
+        assert_eq!(oracle_calls, 7);
+
+        let records = vec![
+            numerator.clone(),
+            denominator.clone(),
+            incompatible_ratio.clone(),
+        ];
+        for removed in records.iter().map(|record| record.id) {
+            let subset = records
+                .iter()
+                .filter(|record| record.id != removed)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert!(
+                !matches!(
+                    prepare(&fixture, &document(subset))
+                        .expect("proper rounded-residual witness subset")
+                        .preflight(),
+                    ConstraintPreflightV1::DirectConflict { .. }
+                ),
+                "deleting {removed:?} must remove the direct contradiction"
+            );
+        }
+
+        let mut reversed = records;
+        reversed.reverse();
+        assert_eq!(
+            prepare(&fixture, &document(reversed))
+                .expect("source-order reversed direct cause")
+                .preflight(),
+            expected
+        );
+
+        for (label, numerator_length, ratio, denominator_length) in [
+            ("underflow", minimum, 0.5, minimum),
+            ("overflow", f64::MAX, 2.0, f64::MAX),
+        ] {
+            let prepared = prepare(
+                &fixture,
+                &document([
+                    record(GeometricConstraintKindV1::FixedLength {
+                        edge: fixture.edges[0],
+                        length_mm: numerator_length,
+                    }),
+                    record(GeometricConstraintKindV1::FixedLength {
+                        edge: fixture.edges[1],
+                        length_mm: denominator_length,
+                    }),
+                    record(GeometricConstraintKindV1::LengthRatio {
+                        numerator_edge: fixture.edges[0],
+                        denominator_edge: fixture.edges[1],
+                        ratio,
+                    }),
+                ]),
+            )
+            .unwrap_or_else(|error| panic!("{label} boundary must prepare: {error:?}"));
+            assert!(
+                matches!(
+                    prepared.preflight(),
+                    ConstraintPreflightV1::DirectConflict {
+                        ref conflicts
+                    } if conflicts.len() == 1
+                        && matches!(
+                            conflicts[0].conflict(),
+                            DirectConstraintConflictKindV1::
+                                LengthRatioWithIncompatibleFixedLengths { .. }
+                        )
+                ),
+                "{label}: the shared residual boundary must prove the contradiction"
+            );
+        }
     }
 
     #[test]
@@ -8541,6 +8687,72 @@ mod tests {
             find_bounded_direct_mus_v1(&prepared),
             BoundedDirectMusV1::Unknown { oracle_calls: 0 }
         );
+    }
+
+    #[test]
+    fn rounded_length_ratio_cause_is_bounded_at_four_eight_sixteen_and_preserved_at_seventeen() {
+        for count in [4, 8, 16, 17] {
+            let fixture = Fixture::new();
+            let numerator = record(GeometricConstraintKindV1::FixedLength {
+                edge: fixture.edges[0],
+                length_mm: 0.3,
+            });
+            let denominator = record(GeometricConstraintKindV1::FixedLength {
+                edge: fixture.edges[1],
+                length_mm: 0.1,
+            });
+            let ratio = record(GeometricConstraintKindV1::LengthRatio {
+                numerator_edge: fixture.edges[0],
+                denominator_edge: fixture.edges[1],
+                ratio: 3.0,
+            });
+            let expected_ids = sorted_ids(&[numerator.id, denominator.id, ratio.id]);
+            let mut records = vec![numerator, denominator, ratio];
+            records.extend((3..count).map(|index| {
+                record(GeometricConstraintKindV1::Horizontal {
+                    edge: fixture.edges[index % fixture.edges.len()],
+                })
+            }));
+            let prepared =
+                prepare(&fixture, &document(records)).expect("bounded rounded-residual cause");
+            assert!(
+                matches!(
+                    prepared.preflight(),
+                    ConstraintPreflightV1::DirectConflict {
+                        ref conflicts
+                    } if conflicts.len() == 1
+                        && matches!(
+                            conflicts[0].conflict(),
+                            DirectConstraintConflictKindV1::
+                                LengthRatioWithIncompatibleFixedLengths { .. }
+                        )
+                        && conflicts[0].constraint_ids() == expected_ids
+                ),
+                "{count}: the direct proof itself must survive every document size"
+            );
+
+            if count == 17 {
+                assert_eq!(
+                    find_bounded_direct_mus_v1(&prepared),
+                    BoundedDirectMusV1::Unknown { oracle_calls: 0 },
+                    "seventeen records keep the direct proof but skip bounded minimization"
+                );
+                continue;
+            }
+
+            let BoundedDirectMusV1::ProvenUnsatisfiable {
+                constraint_ids,
+                oracle_calls,
+            } = find_bounded_direct_mus_v1(&prepared)
+            else {
+                panic!("{count}: the rounded residual theorem must feed the bounded oracle")
+            };
+            assert_eq!(constraint_ids, expected_ids, "{count}");
+            assert!(
+                oracle_calls <= MAX_BOUNDED_DIRECT_MUS_ORACLE_CALLS_V1,
+                "{count}"
+            );
+        }
     }
 
     #[test]

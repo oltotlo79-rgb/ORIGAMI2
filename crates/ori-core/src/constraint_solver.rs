@@ -5,7 +5,10 @@ use ori_domain::{
 };
 use thiserror::Error;
 
-use crate::{ConstraintPreflightV1, GeometricConstraintLimitsV1, prepare_geometric_constraints_v1};
+use crate::{
+    ConstraintPreflightV1, GeometricConstraintLimitsV1,
+    constraints::length_ratio_residual_binary64_v1, prepare_geometric_constraints_v1,
+};
 
 const REGULARIZATION: f64 = 1e-10;
 const DERIVATIVE_STEP: f64 = 1e-6;
@@ -596,7 +599,11 @@ fn residuals(
                     numerator_edge,
                     denominator_edge,
                     ratio,
-                } => vec![length(numerator_edge) - ratio * length(denominator_edge)],
+                } => vec![length_ratio_residual_binary64_v1(
+                    length(numerator_edge),
+                    ratio,
+                    length(denominator_edge),
+                )],
                 GeometricConstraintKindV1::FixedAngle {
                     vertex,
                     first_edge,
@@ -749,6 +756,9 @@ mod tests {
         DifferentLengthRatios,
         EqualLengthWithNonUnitRatioAndFixedLength,
         NonReciprocalLengthRatiosWithFixedLength,
+        // This family has one sound rounded-residual subset. The fixture below
+        // deliberately stays on its rounded-zero boundary and must remain
+        // solver-required.
         LengthRatioWithIncompatibleFixedLengths,
         NonUnitLengthRatioCycleWithFixedLength,
         InconsistentLengthRatioGraphWithFixedLength,
@@ -1324,7 +1334,7 @@ mod tests {
         NonReciprocalLengthRatiosWithFixedLength
     );
     quarantined_family_regression!(
-        incompatible_ratio_fixed_lengths_are_solver_required,
+        rounded_compatible_ratio_fixed_lengths_are_solver_required,
         LengthRatioWithIncompatibleFixedLengths
     );
     quarantined_family_regression!(
@@ -1371,6 +1381,78 @@ mod tests {
         collinear_rotation_radius_is_solver_required,
         RotationalSymmetryWithCollinearRadius
     );
+
+    #[test]
+    fn incompatible_fixed_lengths_and_ratio_are_rejected_before_numerical_tolerance() {
+        let mut builder = CounterexampleBuilder::default();
+        let numerator_edge = builder.independent_edge(Point2::new(0.3, 0.0));
+        let denominator_edge = builder.independent_edge(Point2::new(0.1, 0.0));
+        let example = builder.finish([
+            GeometricConstraintKindV1::FixedLength {
+                edge: numerator_edge,
+                length_mm: 0.3,
+            },
+            GeometricConstraintKindV1::FixedLength {
+                edge: denominator_edge,
+                length_mm: 0.1,
+            },
+            GeometricConstraintKindV1::LengthRatio {
+                numerator_edge,
+                denominator_edge,
+                ratio: 3.0,
+            },
+        ]);
+        let values = residuals(&example.pattern, &example.document, &example.positions)
+            .expect("the incompatible ratio residual remains finite");
+        assert_eq!(values[..2], [0.0, 0.0]);
+        assert_eq!(values[2], length_ratio_residual_binary64_v1(0.3, 3.0, 0.1));
+        assert_ne!(values[2], 0.0);
+
+        let prepared = prepare_geometric_constraints_v1(
+            &example.pattern,
+            &example.document,
+            GeometricConstraintLimitsV1::default(),
+        )
+        .expect("the three individually valid records prepare");
+        assert!(matches!(
+            prepared.preflight(),
+            ConstraintPreflightV1::DirectConflict {
+                ref conflicts
+            } if conflicts.len() == 1
+                && matches!(
+                    conflicts[0].conflict(),
+                    crate::DirectConstraintConflictKindV1::
+                        LengthRatioWithIncompatibleFixedLengths {
+                            numerator_edge: actual_numerator,
+                            denominator_edge: actual_denominator,
+                        } if *actual_numerator == numerator_edge
+                            && *actual_denominator == denominator_edge
+                )
+                && conflicts[0].constraint_ids().len() == 3
+        ));
+
+        let drivers = example
+            .pattern
+            .vertices
+            .iter()
+            .map(|vertex| (vertex.id, example.positions[&vertex.id]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            solve_geometric_constraints_with_drivers_v1(
+                &example.pattern,
+                &example.document,
+                &drivers,
+                ConstraintSolveLimitsV1::default(),
+            ),
+            Err(ConstraintSolveErrorV1::NonConvergent),
+            "direct preflight must reject before a fully driven near-zero residual is tolerated"
+        );
+        assert_eq!(
+            verify_geometric_constraint_solution_v1(&example.pattern, &example.document, f64::MAX,),
+            Err(ConstraintSolveErrorV1::NonConvergent),
+            "direct preflight must run before even the largest finite verifier tolerance"
+        );
+    }
 
     #[test]
     fn angle_bisector_rejects_the_opposite_reflex_direction() {

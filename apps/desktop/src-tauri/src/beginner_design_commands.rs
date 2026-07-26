@@ -1547,6 +1547,9 @@ pub(super) fn temporary_symmetric_profile_for_grid(
     if canonical != Some(point) {
         return Err("beginner_parameter_grid_point_invalid".to_owned());
     }
+    let preserved_generic_tree_segments = (symmetric_plan_kind(source)
+        == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase)
+        .then(|| source.generation_constraints.skeleton_segments.clone());
 
     let preserved_pair_ids =
         ori_domain::animal_complete_bindings_v1(&source.generation_constraints)
@@ -1610,6 +1613,9 @@ pub(super) fn temporary_symmetric_profile_for_grid(
         point.scale_percent,
         point.spacing_percent,
     );
+    if let Some(segments) = preserved_generic_tree_segments {
+        profile.generation_constraints.skeleton_segments = segments;
+    }
     if let Some(pair_ids) = preserved_pair_ids {
         profile.generation_constraints.protrusions = pair_ids
             .into_iter()
@@ -2023,6 +2029,27 @@ pub(super) struct BeginnerContourPlacementWitness {
     pub(super) max_contour_error_millionths: u32,
 }
 
+pub(super) fn canonical_generic_tree_segments_v1(
+    segments: &[ori_domain::BeginnerSkeletonSegmentV1],
+) -> Option<Vec<ori_domain::BeginnerSkeletonSegmentV1>> {
+    if segments.is_empty() || segments.len() > ori_domain::MAX_BEGINNER_GENERIC_TREE_BARS_V1 {
+        return None;
+    }
+    let mut canonical = segments.to_vec();
+    canonical.sort_unstable_by_key(|segment| segment.id);
+    if canonical.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        return None;
+    }
+    for segment in &mut canonical {
+        let start = (segment.start.x_tenths_mm, segment.start.y_tenths_mm);
+        let end = (segment.end.x_tenths_mm, segment.end.y_tenths_mm);
+        if end < start {
+            std::mem::swap(&mut segment.start, &mut segment.end);
+        }
+    }
+    Some(canonical)
+}
+
 pub(super) fn normalized_contour_error_millionths(
     target: &[[i32; 2]],
     generated: &[ori_domain::Vertex],
@@ -2160,6 +2187,14 @@ pub(super) fn beginner_contour_placement_witness(
     {
         return None;
     }
+    let canonical_skeleton_segments =
+        if plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
+            Some(canonical_generic_tree_segments_v1(
+                &constraints.skeleton_segments,
+            )?)
+        } else {
+            None
+        };
     let witnessed = body_contour_points.saturating_add(
         local_bindings
             .iter()
@@ -2168,8 +2203,8 @@ pub(super) fn beginner_contour_placement_witness(
     );
     let (graph_vertices, graph_edges) =
         if plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
-            let points = constraints
-                .skeleton_segments
+            let segments = canonical_skeleton_segments.as_deref()?;
+            let points = segments
                 .iter()
                 .flat_map(|segment| {
                     [
@@ -2178,7 +2213,7 @@ pub(super) fn beginner_contour_placement_witness(
                     ]
                 })
                 .collect::<HashSet<_>>();
-            (points.len(), constraints.skeleton_segments.len())
+            (points.len(), segments.len())
         } else {
             (0, 0)
         };
@@ -2238,8 +2273,8 @@ pub(super) fn beginner_contour_placement_witness(
                     .checked_sub(i64::from(point.y_tenths_mm))?;
                 dx.checked_mul(dx)?.checked_add(dy.checked_mul(dy)?)
             };
-            let (mount_distance, skeleton_segment_id, endpoint_rank) = constraints
-                .skeleton_segments
+            let (mount_distance, skeleton_segment_id, endpoint_rank) = canonical_skeleton_segments
+                .as_deref()?
                 .iter()
                 .flat_map(|segment| [(segment, 0u8, segment.start), (segment, 1u8, segment.end)])
                 .filter_map(|(segment, endpoint_rank, point)| {
@@ -2323,11 +2358,7 @@ pub(super) fn beginner_contour_placement_witness(
     }
     let mut skeleton_branch_bindings = Vec::new();
     if plan.kind == ori_domain::BeginnerGeneratedPlanKindV1::CompositeGenericTargetBase {
-        let mut segments = constraints.skeleton_segments.iter().collect::<Vec<_>>();
-        segments.sort_unstable_by_key(|segment| segment.id);
-        if segments.is_empty() || segments.windows(2).any(|pair| pair[0].id >= pair[1].id) {
-            return None;
-        }
+        let segments = canonical_skeleton_segments.as_deref()?;
         let point =
             |point: ori_domain::BeginnerSkeletonPointV1| (point.x_tenths_mm, point.y_tenths_mm);
         let adjacency = |left: &ori_domain::BeginnerSkeletonSegmentV1,
@@ -2344,7 +2375,7 @@ pub(super) fn beginner_contour_placement_witness(
         let skeleton_points = segments
             .iter()
             .flat_map(|segment| [point(segment.start), point(segment.end)])
-            .collect::<HashSet<_>>();
+            .collect::<std::collections::BTreeSet<_>>();
         if segments
             .iter()
             .any(|segment| point(segment.start) == point(segment.end))
@@ -2359,15 +2390,16 @@ pub(super) fn beginner_contour_placement_witness(
         {
             return None;
         }
-        let mut visited = HashSet::from([segments[0].id]);
+        let root_segment = &segments[0];
+        let mut visited = HashSet::from([root_segment.id]);
         skeleton_branch_bindings.push(BeginnerSkeletonBranchBindingWitness {
-            segment_id: segments[0].id,
+            segment_id: root_segment.id,
             parent_segment_id: None,
             parent_endpoint: None,
             child_endpoint: None,
             generated_feature_ids: generic_feature_bindings
                 .iter()
-                .filter(|binding| binding.skeleton_segment_id == segments[0].id)
+                .filter(|binding| binding.skeleton_segment_id == root_segment.id)
                 .map(|binding| binding.generated_feature_id)
                 .collect(),
         });
@@ -2398,14 +2430,17 @@ pub(super) fn beginner_contour_placement_witness(
             });
         }
     }
+    let skeleton_segments_for_authority = canonical_skeleton_segments
+        .as_deref()
+        .unwrap_or(&constraints.skeleton_segments);
     let skeleton_tree_authority_sha256: [u8; 32] = sha2::Sha256::digest(
-        serde_json::to_vec(&(&constraints.skeleton_segments, &skeleton_branch_bindings)).ok()?,
+        serde_json::to_vec(&(skeleton_segments_for_authority, &skeleton_branch_bindings)).ok()?,
     )
     .into();
     let topology_authority_hash: [u8; 32] = sha2::Sha256::digest(
         serde_json::to_vec(&(
             &constraints.generic_body_outline_tenths_mm,
-            &constraints.skeleton_segments,
+            skeleton_segments_for_authority,
             &constraints.protrusions,
             &plan.crease_pattern,
         ))
@@ -4019,22 +4054,20 @@ pub(super) fn apply_grid_plan_document(
         } else {
             return Err("grid_candidate_tree_orientation_provenance_invalid".to_owned());
         };
-        let mut segments = beginner_design_profile
-            .generation_constraints
-            .skeleton_segments
-            .iter()
-            .collect::<Vec<_>>();
-        segments.sort_unstable_by_key(|segment| segment.id);
-        if segments.is_empty() || segments.windows(2).any(|pair| pair[0].id == pair[1].id) {
-            return Err("grid_candidate_tree_provenance_invalid".to_owned());
-        }
+        let segments = canonical_generic_tree_segments_v1(
+            &beginner_design_profile
+                .generation_constraints
+                .skeleton_segments,
+        )
+        .ok_or_else(|| "grid_candidate_tree_provenance_invalid".to_owned())?;
         let tree_topology_sha256: [u8; 32] = sha2::Sha256::digest(
             serde_json::to_vec(&segments).map_err(|_| "grid_candidate_tree_provenance_invalid")?,
         )
         .into();
         let point =
             |point: ori_domain::BeginnerSkeletonPointV1| (point.x_tenths_mm, point.y_tenths_mm);
-        let mut depths = std::collections::BTreeMap::from([(point(segments[0].start), 0_u8)]);
+        let canonical_root = point(segments[0].start);
+        let mut depths = std::collections::BTreeMap::from([(canonical_root, 0_u8)]);
         while depths.len() <= segments.len() {
             let before = depths.len();
             for segment in &segments {
@@ -4071,6 +4104,9 @@ pub(super) fn apply_grid_plan_document(
             (left.tree_depth, &left.canonical_crease_id)
                 .cmp(&(right.tree_depth, &right.canonical_crease_id))
         });
+        beginner_design_profile
+            .generation_constraints
+            .skeleton_segments = segments;
         Some(ori_domain::BeginnerGenericTreeProvenanceV1 {
             schema_version: 1,
             target_category: (beginner_design_profile

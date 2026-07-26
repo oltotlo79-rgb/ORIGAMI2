@@ -22,6 +22,10 @@ const nativeMutationSources = [
 ] as const
 const formats = source('../../../crates/ori-formats/src/lib.rs')
 const nativeUnitTestsPath = new URL('../src-tauri/src/tests.rs', import.meta.url).pathname
+const nativeUnitTestsDirectoryPath = new URL(
+  '../src-tauri/src/tests/',
+  import.meta.url,
+).pathname
 const nativeRustSources = rustSources(new URL('../src-tauri/src/', import.meta.url))
 const nativeHandler = rustInvokeHandlerSection(native)
 
@@ -104,6 +108,34 @@ test('the revision-changing mutation contract matrix remains complete', () => {
   assert.deepEqual(
     productionRevisionChangingCommands(nativeMutationSources),
     mutationContracts.map(([, command]) => command).toSorted(),
+  )
+})
+
+test('the production Rust scan excludes every native test source without weakening violations', () => {
+  assert.equal(
+    nativeRustSources.some(([path]) => (
+      path === nativeUnitTestsPath
+      || path.startsWith(nativeUnitTestsDirectoryPath)
+    )),
+    false,
+  )
+  assert.ok(
+    nativeRustSources.some(([path]) => (
+      path.endsWith('/src-tauri/src/beginner_design_commands.rs')
+    )),
+  )
+  const syntheticProductionModule = `
+fn invalid_production_mutation_path() {
+    execute_command(project, instance_id, project_id, revision, command);
+}
+`
+  assert.equal(
+    [
+      ...rustCodeWithoutLineComments(
+        rustProductionSection(syntheticProductionModule),
+      ).matchAll(/\bexecute_command\s*\(/gu),
+    ].length,
+    1,
   )
 })
 
@@ -411,7 +443,9 @@ function rustSources(directory: URL): Array<readonly [string, string]> {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const child = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, directory)
     if (entry.isDirectory()) {
-      result.push(...rustSources(child))
+      if (child.pathname !== nativeUnitTestsDirectoryPath) {
+        result.push(...rustSources(child))
+      }
     } else if (
       entry.isFile()
       && entry.name.endsWith('.rs')

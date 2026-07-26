@@ -1622,11 +1622,7 @@ pub fn generate_beginner_plans_v1(
             }
         };
         template.skeleton_segments =
-            canonical_bounded_tree_segments(&constraints.skeleton_segments)
-                .ok_or(error)?
-                .into_iter()
-                .cloned()
-                .collect();
+            canonical_bounded_tree_segments(&constraints.skeleton_segments).ok_or(error)?;
     }
     if target_category == BeginnerTargetCategoryV1::CustomObject {
         return Ok(vec![template]);
@@ -2242,20 +2238,27 @@ fn append_bounded_radial_tree_graph(
         leaf_count,
         segments.len()
     ));
-    plan.skeleton_segments = segments.into_iter().cloned().collect();
+    plan.skeleton_segments = segments;
     Some(plan)
 }
 
 fn canonical_bounded_tree_segments(
     segments: &[BeginnerSkeletonSegmentV1],
-) -> Option<Vec<&BeginnerSkeletonSegmentV1>> {
+) -> Option<Vec<BeginnerSkeletonSegmentV1>> {
     if segments.is_empty() || segments.len() > MAX_BEGINNER_GENERIC_TREE_BARS_V1 {
         return None;
     }
-    let mut canonical = segments.iter().collect::<Vec<_>>();
+    let mut canonical = segments.to_vec();
     canonical.sort_unstable_by_key(|segment| segment.id);
     if canonical.windows(2).any(|pair| pair[0].id == pair[1].id) {
         return None;
+    }
+    for segment in &mut canonical {
+        let start = (segment.start.x_tenths_mm, segment.start.y_tenths_mm);
+        let end = (segment.end.x_tenths_mm, segment.end.y_tenths_mm);
+        if end < start {
+            std::mem::swap(&mut segment.start, &mut segment.end);
+        }
     }
     Some(canonical)
 }
@@ -2892,10 +2895,22 @@ mod tests {
         let mut reversed = constraints.clone();
         reversed.skeleton_segments.reverse();
         assert_eq!(generate(&reversed), Some(generated.clone()));
+        let mut all_endpoints_reversed = constraints.clone();
+        for segment in &mut all_endpoints_reversed.skeleton_segments {
+            std::mem::swap(&mut segment.start, &mut segment.end);
+        }
+        assert_eq!(generate(&all_endpoints_reversed), Some(generated.clone()));
+        let mut one_endpoint_reversed = constraints.clone();
+        let segment = &mut one_endpoint_reversed.skeleton_segments[2];
+        std::mem::swap(&mut segment.start, &mut segment.end);
+        assert_eq!(generate(&one_endpoint_reversed), Some(generated.clone()));
         let mut shuffled = constraints.clone();
         shuffled.skeleton_segments = [2, 0, 3, 1]
             .map(|index| constraints.skeleton_segments[index])
             .to_vec();
+        for segment in &mut shuffled.skeleton_segments {
+            std::mem::swap(&mut segment.start, &mut segment.end);
+        }
         assert_eq!(generate(&shuffled), Some(generated));
 
         let mut duplicate = constraints;
@@ -3195,10 +3210,28 @@ mod tests {
             generate_beginner_plans_v1(namespace, &source, &ids, &reversed_skeleton).unwrap(),
             generic_plans
         );
+        let mut all_endpoints_reversed = generic.clone();
+        for segment in &mut all_endpoints_reversed.skeleton_segments {
+            std::mem::swap(&mut segment.start, &mut segment.end);
+        }
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &all_endpoints_reversed).unwrap(),
+            generic_plans
+        );
+        let mut one_endpoint_reversed = generic.clone();
+        let segment = &mut one_endpoint_reversed.skeleton_segments[1];
+        std::mem::swap(&mut segment.start, &mut segment.end);
+        assert_eq!(
+            generate_beginner_plans_v1(namespace, &source, &ids, &one_endpoint_reversed).unwrap(),
+            generic_plans
+        );
         let mut shuffled_skeleton = generic.clone();
         shuffled_skeleton.skeleton_segments = [2, 0, 1]
             .map(|index| generic.skeleton_segments[index])
             .to_vec();
+        for segment in &mut shuffled_skeleton.skeleton_segments {
+            std::mem::swap(&mut segment.start, &mut segment.end);
+        }
         assert_eq!(
             generate_beginner_plans_v1(namespace, &source, &ids, &shuffled_skeleton).unwrap(),
             generic_plans

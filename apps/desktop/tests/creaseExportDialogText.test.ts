@@ -16,7 +16,12 @@ const COPY_KEYS = [
   'description',
   'format',
   'formatOption',
+  'formatLabels',
+  'formatOptionLabels',
   'optionDetails',
+  'numberLocale',
+  'unknownSize',
+  'byteUnits',
   'generating',
   'rebuild',
   'retry',
@@ -36,6 +41,7 @@ const COPY_KEYS = [
   'processing',
   'save',
   'formatSummaries',
+  'warningMessages',
 ] as const
 const FORMAT_KEYS = ['fold', 'svg', 'pdf', 'dxf'] as const
 const METADATA_KEYS = [
@@ -54,6 +60,20 @@ const ASSIGNMENT_KEYS = [
   'auxiliary',
   'cut',
 ] as const
+const BYTE_UNIT_KEYS = ['byte', 'kilobyte', 'megabyte'] as const
+const WARNING_MESSAGE_KEYS = [
+  'paperAppearance',
+  'editorState',
+  'poseCamera',
+  'pdfStructure',
+  'pdfPrintScale',
+  'dxfLayers',
+  'dxfName',
+  'instructionSteps',
+  'instructionStepOne',
+  'cutPermission',
+  'fallback',
+] as const
 
 test('crease export dialog catalog is locale-complete and deeply frozen', () => {
   assert.deepEqual(Object.keys(CREASE_EXPORT_COPY), ['ja', 'en'])
@@ -62,10 +82,18 @@ test('crease export dialog catalog is locale-complete and deeply frozen', () => 
   for (const locale of ['ja', 'en'] as const) {
     const copy = CREASE_EXPORT_COPY[locale]
     assert.deepEqual(Object.keys(copy), COPY_KEYS, locale)
+    assert.deepEqual(Object.keys(copy.formatLabels), FORMAT_KEYS, locale)
+    assert.deepEqual(Object.keys(copy.formatOptionLabels), FORMAT_KEYS, locale)
     assert.deepEqual(Object.keys(copy.optionDetails), FORMAT_KEYS, locale)
     assert.deepEqual(Object.keys(copy.metadata), METADATA_KEYS, locale)
     assert.deepEqual(Object.keys(copy.assignmentLabels), ASSIGNMENT_KEYS, locale)
     assert.deepEqual(Object.keys(copy.formatSummaries), FORMAT_KEYS, locale)
+    assert.deepEqual(Object.keys(copy.byteUnits), BYTE_UNIT_KEYS, locale)
+    assert.deepEqual(
+      Object.keys(copy.warningMessages),
+      WARNING_MESSAGE_KEYS,
+      locale,
+    )
   }
 })
 
@@ -93,6 +121,23 @@ test('crease export dialog catalog preserves reviewed byte-sensitive copy', () =
     pdf: 'Full-size 1:1 vector · drawing bounds + 10 mm margins',
     dxf: 'AC1021 text form · UTF-8 · mm · 5 semantic layers',
   })
+  assert.equal(CREASE_EXPORT_COPY.ja.numberLocale, 'ja-JP')
+  assert.equal(CREASE_EXPORT_COPY.en.numberLocale, 'en-US')
+  assert.equal(
+    CREASE_EXPORT_COPY.ja.formatLabels.dxf,
+    'DXF（AutoCAD 2007）',
+  )
+  assert.equal(
+    CREASE_EXPORT_COPY.en.formatLabels.dxf,
+    'DXF (AutoCAD 2007)',
+  )
+  assert.equal(CREASE_EXPORT_COPY.ja.unknownSize, '不明')
+  assert.equal(CREASE_EXPORT_COPY.en.unknownSize, 'Unknown')
+  assert.deepEqual(CREASE_EXPORT_COPY.ja.byteUnits, {
+    byte: 'B',
+    kilobyte: 'KB',
+    megabyte: 'MB',
+  })
 })
 
 test('crease export templates preserve locale-specific formatting without component branches', () => {
@@ -107,6 +152,13 @@ test('crease export templates preserve locale-specific formatting without compon
     assert.deepEqual(
       placeholders(CREASE_EXPORT_COPY.ja[key]),
       placeholders(CREASE_EXPORT_COPY.en[key]),
+      key,
+    )
+  }
+  for (const key of WARNING_MESSAGE_KEYS) {
+    assert.deepEqual(
+      placeholders(CREASE_EXPORT_COPY.ja.warningMessages[key]),
+      placeholders(CREASE_EXPORT_COPY.en.warningMessages[key]),
       key,
     )
   }
@@ -170,6 +222,18 @@ test('crease export templates preserve locale-specific formatting without compon
       'native summary must not leak',
     ),
     'FOLD 1.2 · 2D creasePattern · coordinates in mm',
+  )
+  assert.equal(
+    resolveCreaseExportFormatSummary(
+      'unsupported-locale' as never,
+      'fold',
+      'native summary remains authoritative',
+    ),
+    'native summary remains authoritative',
+  )
+  assert.equal(
+    formatCreaseExportInteger(12_345, 'unsupported-locale' as never),
+    '12,345',
   )
 })
 

@@ -471,7 +471,17 @@ describe('InstructionTimelinePanel localization', () => {
 
     expect(screen.getByText('折り手順')).toBeTruthy()
     expect(screen.getByText('1手順・合計 1.5秒')).toBeTruthy()
-    expect(screen.getAllByText('再生停止中')).toHaveLength(2)
+    const japaneseNotices = screen.getAllByText('再生停止中')
+    expect(japaneseNotices).toHaveLength(2)
+    const visibleNotice = japaneseNotices.find((node) => (
+      node.classList.contains('instruction-notice')
+    ))!
+    const liveNotice = japaneseNotices.find((node) => (
+      node.classList.contains('visually-hidden')
+    ))!
+    expect(visibleNotice.getAttribute('aria-hidden')).toBe('true')
+    expect(liveNotice.getAttribute('aria-live')).toBe('polite')
+    expect(liveNotice.getAttribute('aria-atomic')).toBe('true')
     expect(screen.getByRole('button', {
       name: '先頭の手順を3Dに表示',
     })).toBeTruthy()
@@ -480,6 +490,12 @@ describe('InstructionTimelinePanel localization', () => {
     })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'GLBアニメーション' })).toBeTruthy()
     expect(screen.getByText(/手順はドラッグして移動できます/)).toBeTruthy()
+    const addCurrentPoseButton = screen.getByRole('button', {
+      name: '＋ 現在の3D姿勢を追加',
+    }) as HTMLButtonElement
+    expect(addCurrentPoseButton.title).toBe(
+      '現在3Dに安全に表示されている姿勢を記録します。',
+    )
 
     const selectedStep = screen.getByText('1. Fold crane · 完成形サムネイル').closest('button')!
     fireEvent.click(selectedStep)
@@ -494,6 +510,12 @@ describe('InstructionTimelinePanel localization', () => {
     const panelHeading = screen.getByText('折り手順')
     const titleInput = screen.getByRole('textbox', { name: 'タイトル' })
     const selectedStepButton = screen.getByRole('button', { name: /1\. Fold crane/ })
+    const updateCurrentPoseButton = screen.getByRole('button', {
+      name: '現在の3D姿勢で更新',
+    }) as HTMLButtonElement
+    expect(updateCurrentPoseButton.title).toBe(
+      '現在3Dに安全に表示されている姿勢を記録します。',
+    )
     const callbackCounts = {
       nativeEdit: runNativeEdit.mock.calls.length,
       applyPose: applyStepPose.mock.calls.length,
@@ -508,13 +530,31 @@ describe('InstructionTimelinePanel localization', () => {
 
     expect(screen.getByText('Folding instructions')).toBe(panelHeading)
     expect(screen.getByText('1 step · Total 1.5 seconds')).toBeTruthy()
-    expect(screen.getAllByText('Playback stopped')).toHaveLength(2)
+    const englishNotices = screen.getAllByText('Playback stopped')
+    expect(englishNotices).toHaveLength(2)
+    expect(englishNotices.find((node) => (
+      node.classList.contains('instruction-notice')
+    ))).toBe(visibleNotice)
+    expect(englishNotices.find((node) => (
+      node.classList.contains('visually-hidden')
+    ))).toBe(liveNotice)
+    expect(visibleNotice.textContent).toBe('Playback stopped')
+    expect(visibleNotice.getAttribute('aria-hidden')).toBe('true')
+    expect(liveNotice.textContent).toBe('Playback stopped')
+    expect(liveNotice.getAttribute('aria-live')).toBe('polite')
+    expect(liveNotice.getAttribute('aria-atomic')).toBe('true')
     expect(screen.getByRole('button', {
       name: 'Show the first step in 3D',
     })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Export diagrams' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'GLB animation' })).toBeTruthy()
     expect(screen.getByText(/Drag steps to reorder/)).toBeTruthy()
+    expect(screen.getByRole('button', {
+      name: '＋ Add current 3D pose',
+    })).toBe(addCurrentPoseButton)
+    expect(addCurrentPoseButton.title).toBe(
+      'Records the pose currently shown safely in 3D.',
+    )
     expect(screen.getByRole('textbox', { name: 'Title' })).toBe(titleInput)
     expect(screen.getByRole('textbox', { name: 'Title' })).toHaveProperty(
       'value',
@@ -523,7 +563,10 @@ describe('InstructionTimelinePanel localization', () => {
     expect(screen.getByRole('textbox', { name: 'Description' })).toBeTruthy()
     expect(screen.getByRole('button', {
       name: 'Update with current 3D pose',
-    })).toBeTruthy()
+    })).toBe(updateCurrentPoseButton)
+    expect(updateCurrentPoseButton.title).toBe(
+      'Records the pose currently shown safely in 3D.',
+    )
     expect(screen.getByRole('button', { name: 'Split step' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Merge with next' })).toBeTruthy()
     expect(

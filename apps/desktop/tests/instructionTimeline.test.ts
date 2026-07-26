@@ -23,8 +23,11 @@ import {
   reduceInstructionPlayback,
   resolveInstructionPoseApplicationObservation,
   validateInstructionMetadata,
+  type InstructionCaptureStatus,
+  type InstructionEditorError,
   type InstructionPlaybackState,
   type InstructionPlaybackStopReason,
+  type InstructionTimelineNotice,
 } from '../src/lib/instructionTimeline.ts'
 import type { FoldPreviewAppliedPoseSnapshot } from '../src/lib/foldPreviewAppliedPose.ts'
 
@@ -500,102 +503,428 @@ test('stops at stale steps, failed application, and explicit invalidation', () =
   assert.equal(state.status === 'stopped' ? state.reason : null, 'manual_pose')
 })
 
-test('localizes playback states and every stop reason without changing authored titles', () => {
+test('goldens every playback state and stop reason without rewriting raw authored text', () => {
+  const rawTitle = '  <b>{title}</b>  '
   const first = step('step-1', CURRENT_FINGERPRINT, [], 1_500)
-  first.title = 'Crane wing'
+  first.title = rawTitle
   const presentation = createInstructionTimelinePresentation({
     steps: [first],
   }, CURRENT_FINGERPRINT)
   const plan = createInstructionPlaybackPlan('project', 0, presentation)
   assert.ok(plan)
 
-  const applying = reduceInstructionPlayback(createInstructionPlaybackState(), {
+  const idle = createInstructionPlaybackState()
+  const applying = reduceInstructionPlayback(idle, {
     kind: 'start',
     plan,
     startIndex: 0,
   })
-  assert.equal(
-    instructionPlaybackStatusText(applying),
-    '手順 1「Crane wing」を表示しています',
-  )
-  assert.equal(
-    instructionPlaybackStatusText(applying, 'en'),
-    'Applying step 1, “Crane wing”',
-  )
-
   const holding = reduceInstructionPlayback(applying, {
     kind: 'pose_applied',
     stepId: 'step-1',
     now: 10,
   })
-  assert.equal(
-    instructionPlaybackStatusText(holding, 'en'),
-    'Showing step 1, “Crane wing”',
-  )
   const complete = reduceInstructionPlayback(holding, {
     kind: 'tick',
     now: 1_510,
   })
-  assert.equal(
-    instructionPlaybackStatusText(complete, 'en'),
-    'Finished playing all folding steps',
-  )
-
-  const englishStops: Readonly<Record<InstructionPlaybackStopReason, string>> = {
-    stale_step: 'Playback stopped because the crease pattern changed for this step',
-    project_changed: 'Playback stopped because the project changed',
-    revision_changed: 'Playback stopped because the edited content changed',
-    model_changed: 'Playback stopped because the 3D model changed',
-    manual_pose: 'Playback stopped because the 3D pose was changed manually',
-    benchmark: 'Playback stopped because a performance test started',
-    file_operation: 'Playback stopped because a file operation started',
-    apply_failed: 'Playback stopped because the 3D pose could not be applied',
-    hidden: 'Playback stopped because the window became hidden',
-    disposed: 'Playback stopped because the view was closed',
-    canceled: 'Folding-step playback stopped',
+  const playbackGoldens = [
+    {
+      state: idle,
+      ja: '再生停止中',
+      en: 'Playback stopped',
+    },
+    {
+      state: applying,
+      ja: '手順 1「  <b>{title}</b>  」を表示しています',
+      en: 'Applying step 1, “  <b>{title}</b>  ”',
+    },
+    {
+      state: holding,
+      ja: '手順 1「  <b>{title}</b>  」を表示中です',
+      en: 'Showing step 1, “  <b>{title}</b>  ”',
+    },
+    {
+      state: complete,
+      ja: '折り手順の段階再生が完了しました',
+      en: 'Finished playing all folding steps',
+    },
+  ] satisfies readonly Readonly<{
+    state: InstructionPlaybackState
+    ja: string
+    en: string
+  }>[]
+  for (const golden of playbackGoldens) {
+    assert.equal(instructionPlaybackStatusText(golden.state, 'ja'), golden.ja)
+    assert.equal(instructionPlaybackStatusText(golden.state, 'en'), golden.en)
   }
-  for (const [reason, expected] of Object.entries(englishStops) as Array<
-    [InstructionPlaybackStopReason, string]
+
+  const stopGoldens = {
+    stale_step: {
+      ja: '展開図が変わった手順のため再生を停止しました',
+      en: 'Playback stopped because the crease pattern changed for this step',
+    },
+    project_changed: {
+      ja: 'プロジェクトが変わったため再生を停止しました',
+      en: 'Playback stopped because the project changed',
+    },
+    revision_changed: {
+      ja: '編集中の内容が変わったため再生を停止しました',
+      en: 'Playback stopped because the edited content changed',
+    },
+    model_changed: {
+      ja: '3Dモデルが変わったため再生を停止しました',
+      en: 'Playback stopped because the 3D model changed',
+    },
+    manual_pose: {
+      ja: '3D姿勢を手動変更したため再生を停止しました',
+      en: 'Playback stopped because the 3D pose was changed manually',
+    },
+    benchmark: {
+      ja: '性能テストを開始したため再生を停止しました',
+      en: 'Playback stopped because a performance test started',
+    },
+    file_operation: {
+      ja: 'ファイル操作を開始したため再生を停止しました',
+      en: 'Playback stopped because a file operation started',
+    },
+    apply_failed: {
+      ja: '3D姿勢を適用できなかったため再生を停止しました',
+      en: 'Playback stopped because the 3D pose could not be applied',
+    },
+    hidden: {
+      ja: '画面が非表示になったため再生を停止しました',
+      en: 'Playback stopped because the window became hidden',
+    },
+    disposed: {
+      ja: '画面を閉じたため再生を停止しました',
+      en: 'Playback stopped because the view was closed',
+    },
+    canceled: {
+      ja: '折り手順の再生を停止しました',
+      en: 'Folding-step playback stopped',
+    },
+  } satisfies Readonly<Record<
+    InstructionPlaybackStopReason,
+    Readonly<{ ja: string; en: string }>
+  >>
+  const secretStepId = 'SECRET_STOP_STEP_ID'
+  for (const [reason, golden] of Object.entries(stopGoldens) as Array<
+    [InstructionPlaybackStopReason, { ja: string; en: string }]
   >) {
     const stopped: InstructionPlaybackState = {
       status: 'stopped',
       sequence: 2,
       reason,
-      stepId: null,
+      stepId: secretStepId,
     }
-    assert.equal(instructionPlaybackStatusText(stopped, 'en'), expected)
-    assert.ok(instructionPlaybackStatusText(stopped, 'ja').length > 0)
+    const ja = instructionPlaybackStatusText(stopped, 'ja')
+    const en = instructionPlaybackStatusText(stopped, 'en')
+    assert.equal(ja, golden.ja)
+    assert.equal(en, golden.en)
+    assert.equal(ja.includes(secretStepId), false)
+    assert.equal(en.includes(secretStepId), false)
   }
 })
 
-test('localizes timeline notices, capture guidance, validation, and durations live', () => {
+test('goldens every timeline notice and playback forwarding in both locales', () => {
+  type NoticeKind = Exclude<InstructionTimelineNotice['kind'], 'playback'>
+  type NoticeGolden = {
+    readonly [Kind in NoticeKind]: Readonly<{
+      notice: Extract<InstructionTimelineNotice, { kind: Kind }>
+      ja: string
+      en: string
+    }>
+  }
+  const title = '  <b>{title}</b>  '
+  const noticeGoldens = {
+    add_failed: {
+      notice: { kind: 'add_failed' },
+      ja: '現在の3D姿勢を手順へ追加できませんでした',
+      en: 'Could not add the current 3D pose as a step',
+    },
+    added: {
+      notice: { kind: 'added', title },
+      ja: '「  <b>{title}</b>  」を追加しました',
+      en: 'Added “  <b>{title}</b>  ”',
+    },
+    updated: {
+      notice: { kind: 'updated', title },
+      ja: '「  <b>{title}</b>  」を更新しました',
+      en: 'Updated “  <b>{title}</b>  ”',
+    },
+    update_failed: {
+      notice: { kind: 'update_failed' },
+      ja: '手順を更新できませんでした',
+      en: 'Could not update the step',
+    },
+    pose_updated: {
+      notice: { kind: 'pose_updated', title },
+      ja: '「  <b>{title}</b>  」の姿勢を現在の3D表示で更新しました',
+      en: 'Updated the pose for “  <b>{title}</b>  ” from the current 3D view',
+    },
+    pose_update_failed: {
+      notice: { kind: 'pose_update_failed' },
+      ja: '手順の姿勢を更新できませんでした',
+      en: 'Could not update the step pose',
+    },
+    delete_failed: {
+      notice: { kind: 'delete_failed' },
+      ja: '手順を削除できませんでした',
+      en: 'Could not delete the step',
+    },
+    deleted: {
+      notice: { kind: 'deleted', title },
+      ja: '「  <b>{title}</b>  」を削除しました',
+      en: 'Deleted “  <b>{title}</b>  ”',
+    },
+    moved: {
+      notice: { kind: 'moved' },
+      ja: '手順の順番を変更しました',
+      en: 'Changed the step order',
+    },
+    split: {
+      notice: { kind: 'split' },
+      ja: '手順を分割しました',
+      en: 'Split the step',
+    },
+    merged: {
+      notice: { kind: 'merged' },
+      ja: '手順を次の手順と結合しました',
+      en: 'Merged the step with the next step',
+    },
+    move_failed: {
+      notice: { kind: 'move_failed' },
+      ja: '手順を移動できませんでした',
+      en: 'Could not move the step',
+    },
+    stale_pose: {
+      notice: { kind: 'stale_pose' },
+      ja: '展開図が変更された手順です。「現在の3D姿勢で更新」してから表示してください',
+      en: 'The crease pattern changed for this step. Update it with the current 3D pose before showing it.',
+    },
+    pose_apply_failed: {
+      notice: { kind: 'pose_apply_failed' },
+      ja: 'この手順の姿勢は現在の3Dモデルへ適用できません',
+      en: 'This step pose cannot be applied to the current 3D model',
+    },
+    pose_applying: {
+      notice: { kind: 'pose_applying', title },
+      ja: '「  <b>{title}</b>  」の保存姿勢を3Dへ適用しています',
+      en: 'Applying the saved pose for “  <b>{title}</b>  ” to the 3D view',
+    },
+    model_required: {
+      notice: { kind: 'model_required' },
+      ja: '再生できる3Dモデルを準備してください',
+      en: 'Prepare a 3D model that can be played',
+    },
+    no_steps: {
+      notice: { kind: 'no_steps' },
+      ja: '再生する手順がありません',
+      en: 'There are no steps to play',
+    },
+    declarative_playback_unsupported: {
+      notice: { kind: 'declarative_playback_unsupported' },
+      ja: '説明専用ステップは3D姿勢を持たないため再生できません。内容は一覧で確認してください',
+      en: 'Description-only steps have no 3D pose and cannot be played. Review them in the timeline list.',
+    },
+  } satisfies NoticeGolden
+
+  assert.equal(Object.keys(noticeGoldens).length, 18)
+  for (const golden of Object.values(noticeGoldens)) {
+    assert.equal(instructionTimelineNoticeText(golden.notice, 'ja'), golden.ja)
+    assert.equal(instructionTimelineNoticeText(golden.notice, 'en'), golden.en)
+  }
+
+  const playbackNotice: InstructionTimelineNotice = {
+    kind: 'playback',
+    state: createInstructionPlaybackState(),
+  }
   assert.equal(
-    instructionTimelineNoticeText({ kind: 'added', title: '鶴' }, 'en'),
-    'Added “鶴”',
+    instructionTimelineNoticeText(playbackNotice, 'ja'),
+    instructionPlaybackStatusText(playbackNotice.state, 'ja'),
   )
   assert.equal(
-    instructionTimelineNoticeText({ kind: 'pose_update_failed' }, 'ja'),
-    '手順の姿勢を更新できませんでした',
+    instructionTimelineNoticeText(playbackNotice, 'en'),
+    instructionPlaybackStatusText(playbackNotice.state, 'en'),
+  )
+})
+
+test('goldens every capture status and editor error in both locales', () => {
+  const captureGoldens = {
+    project_required: {
+      ja: 'プロジェクトを読み込んでください。',
+      en: 'Open a project first.',
+    },
+    pose_required: {
+      ja: '現在のrevisionの3D表示を準備しています。',
+      en: 'Preparing the 3D view for the current revision.',
+    },
+    pose_running: {
+      ja: '3Dの動作が止まってから記録できます。',
+      en: 'Wait for the 3D motion to stop before recording.',
+    },
+    pose_invalid: {
+      ja: '現在の3D姿勢は手順として安全に読み取れません。',
+      en: 'The current 3D pose cannot be read safely as a step.',
+    },
+    pose_blocked: {
+      ja: '衝突境界で安全に停止している表示姿勢を記録します。',
+      en: 'Records the displayed pose that stopped safely at a collision boundary.',
+    },
+    pose_indeterminate: {
+      ja: '経路判定不能で停止した現在の表示姿勢だけを記録します。',
+      en: 'Records only the current displayed pose that stopped because the path was indeterminate.',
+    },
+    pose_ready: {
+      ja: '現在3Dに安全に表示されている姿勢を記録します。',
+      en: 'Records the pose currently shown safely in 3D.',
+    },
+  } satisfies Readonly<Record<
+    InstructionCaptureStatus,
+    Readonly<{ ja: string; en: string }>
+  >>
+  for (const [status, golden] of Object.entries(captureGoldens) as Array<
+    [InstructionCaptureStatus, { ja: string; en: string }]
+  >) {
+    assert.equal(instructionCaptureStatusText(status, 'ja'), golden.ja)
+    assert.equal(instructionCaptureStatusText(status, 'en'), golden.en)
+  }
+
+  const editorGoldens = {
+    invalid_metadata: {
+      ja: 'タイトルは必須・改行なし120文字以内、表示時間は100〜600000msです。',
+      en: 'The title is required, must be one line, and must be at most 120 characters. Display time must be 100–600000 ms.',
+    },
+    update_failed: {
+      ja: '手順の説明を更新できませんでした',
+      en: 'Could not update the step details',
+    },
+  } satisfies Readonly<Record<
+    InstructionEditorError,
+    Readonly<{ ja: string; en: string }>
+  >>
+  for (const [error, golden] of Object.entries(editorGoldens) as Array<
+    [InstructionEditorError, { ja: string; en: string }]
+  >) {
+    assert.equal(instructionEditorErrorText(error, 'ja'), golden.ja)
+    assert.equal(instructionEditorErrorText(error, 'en'), golden.en)
+  }
+})
+
+test('goldens duration boundaries and non-finite inputs without normalizing them', () => {
+  const durationGoldens = [
+    { durationMs: Number.NaN, ja: 'NaN:NaN', en: 'NaN:NaN' },
+    { durationMs: -1, ja: '0秒', en: '0 seconds' },
+    { durationMs: Number.NEGATIVE_INFINITY, ja: '0秒', en: '0 seconds' },
+    { durationMs: Number.POSITIVE_INFINITY, ja: 'Infinity:NaN', en: 'Infinity:NaN' },
+    { durationMs: 0, ja: '0秒', en: '0 seconds' },
+    { durationMs: 99, ja: '0.1秒', en: '0.1 seconds' },
+    { durationMs: 100, ja: '0.1秒', en: '0.1 seconds' },
+    { durationMs: 1_500, ja: '1.5秒', en: '1.5 seconds' },
+    { durationMs: 59_949, ja: '59.9秒', en: '59.9 seconds' },
+    { durationMs: 59_950, ja: '60秒', en: '60 seconds' },
+    { durationMs: 59_999, ja: '60秒', en: '60 seconds' },
+    { durationMs: 60_000, ja: '1:00', en: '1:00' },
+    { durationMs: 90_000, ja: '1:30', en: '1:30' },
+  ] as const
+  for (const golden of durationGoldens) {
+    assert.equal(formatInstructionDuration(golden.durationMs, 'ja'), golden.ja)
+    assert.equal(formatInstructionDuration(golden.durationMs, 'en'), golden.en)
+  }
+})
+
+test('preserves every forged presentation discriminant boundary', () => {
+  const unknownPlayback = {
+    status: 'forged_playback_status',
+    sequence: 0,
+  } as unknown as InstructionPlaybackState
+  assert.equal(instructionPlaybackStatusText(unknownPlayback), undefined)
+
+  const unknownStopReason = {
+    status: 'stopped',
+    sequence: 1,
+    reason: 'SECRET_FORGED_STOP_REASON',
+    stepId: 'SECRET_FORGED_STEP_ID',
+  } as unknown as InstructionPlaybackState
+  assert.equal(instructionPlaybackStatusText(unknownStopReason), undefined)
+
+  const unknownNotice = {
+    kind: 'SECRET_FORGED_NOTICE',
+    title: 'SECRET_FORGED_TITLE',
+  } as unknown as InstructionTimelineNotice
+  assert.equal(instructionTimelineNoticeText(unknownNotice), undefined)
+
+  assert.throws(
+    () => instructionCaptureStatusText(
+      'SECRET_FORGED_CAPTURE' as InstructionCaptureStatus,
+    ),
+    TypeError,
+  )
+
+  const unknownEditor = 'SECRET_FORGED_EDITOR' as InstructionEditorError
+  assert.equal(
+    instructionEditorErrorText(unknownEditor),
+    'タイトルは必須・改行なし120文字以内、表示時間は100〜600000msです。',
   )
   assert.equal(
-    instructionCaptureStatusText('pose_blocked', 'en'),
-    'Records the displayed pose that stopped safely at a collision boundary.',
+    instructionEditorErrorText(unknownEditor, 'en'),
+    'The title is required, must be one line, and must be at most 120 characters. Display time must be 100–600000 ms.',
   )
-  assert.match(
-    instructionEditorErrorText('invalid_metadata', 'en'),
-    /120 characters.*100–600000 ms/u,
-  )
-  assert.equal(
-    instructionEditorErrorText('update_failed', 'en'),
-    'Could not update the step details',
-  )
-  assert.equal(formatInstructionDuration(1_500), '1.5秒')
-  assert.equal(formatInstructionDuration(1_500, 'en'), '1.5 seconds')
-  assert.equal(formatInstructionDuration(90_000, 'en'), '1:30')
-  assert.equal(
-    formatInstructionDuration(1_500, 'unsupported' as never),
-    '1.5秒',
-  )
+})
+
+test('falls back to Japanese for string, symbol, and throwing-proxy locales', () => {
+  const rawTrapError = new Error('RAW_HOSTILE_LOCALE_TRAP')
+  const throwingProxy = new Proxy(Object.create(null) as object, {
+    get() {
+      throw rawTrapError
+    },
+    getOwnPropertyDescriptor() {
+      throw rawTrapError
+    },
+    getPrototypeOf() {
+      throw rawTrapError
+    },
+    has() {
+      throw rawTrapError
+    },
+    isExtensible() {
+      throw rawTrapError
+    },
+    ownKeys() {
+      throw rawTrapError
+    },
+  })
+  const hostileLocales: readonly unknown[] = [
+    'fr',
+    Symbol('hostile-locale'),
+    throwingProxy,
+  ]
+  for (const locale of hostileLocales) {
+    assert.equal(
+      instructionPlaybackStatusText(createInstructionPlaybackState(), locale as never),
+      '再生停止中',
+    )
+    assert.equal(
+      instructionTimelineNoticeText({
+        kind: 'added',
+        title: '  <b>{title}</b>  ',
+      }, locale as never),
+      '「  <b>{title}</b>  」を追加しました',
+    )
+    assert.equal(
+      instructionCaptureStatusText('pose_ready', locale as never),
+      '現在3Dに安全に表示されている姿勢を記録します。',
+    )
+    assert.equal(
+      instructionEditorErrorText('invalid_metadata', locale as never),
+      'タイトルは必須・改行なし120文字以内、表示時間は100〜600000msです。',
+    )
+    assert.equal(
+      formatInstructionDuration(1_500, locale as never),
+      '1.5秒',
+    )
+  }
 })
 
 test('duration formatting delegates its number locale to localized text', () => {
@@ -603,7 +932,12 @@ test('duration formatting delegates its number locale to localized text', () => 
     new URL('../src/lib/instructionTimeline.ts', import.meta.url),
     'utf8',
   )
-  assert.match(source, /DURATION_NUMBER_LOCALE/u)
+  if (/INSTRUCTION_TIMELINE_PRESENTATION_TEXT\s+as\s+TEXT/u.test(source)) {
+    assert.match(source, /TEXT\.duration\.numberLocale/u)
+    assert.doesNotMatch(source, /\bDURATION_NUMBER_LOCALE\b/u)
+  } else {
+    assert.match(source, /\bDURATION_NUMBER_LOCALE\b/u)
+  }
   assert.doesNotMatch(
     source,
     /locale\s*[!=]==?\s*['"](?:ja|en)['"]/u,

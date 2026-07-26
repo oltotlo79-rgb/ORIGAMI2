@@ -2,12 +2,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const native = source('../src-tauri/src/lib.rs')
+const native = source('../src-tauri/src/project_lifecycle_commands.rs')
 const registry = source('../src-tauri/src/recent_projects.rs')
 const client = source('../src/lib/recentProjectsClient.ts')
 
 test('normal open updates recent only after load and project adoption succeed', () => {
-  const body = section(native, 'async fn open_project(', '\n#[tauri::command]\nasync fn save_project(')
+  const body = section(native, 'async fn open_project(', '\n#[tauri::command]\npub(super) async fn save_project(')
   assertOrdered(body,
     'blocking_pick_file()',
     'load_project_file(path)',
@@ -20,7 +20,7 @@ test('normal open updates recent only after load and project adoption succeed', 
 })
 
 test('save and save-as cover current-path success, dialog success, cancel, and failure without premature MRU mutation', () => {
-  const save = section(native, 'async fn save_project(', '\n#[tauri::command]\nasync fn save_project_as(')
+  const save = section(native, 'async fn save_project(', '\n#[tauri::command]\npub(super) async fn save_project_as(')
   assert.match(save, /save_project_to_path\(&mut project, path\)\?/u)
   assert.match(save, /if let Some\(response\) = saved_to_current_path[\s\S]*?remember_current_project/u)
   assert.match(save, /save_project_with_dialog\(&app, &state\)\?[\s\S]*?if !response\.canceled[\s\S]*?remember_current_project/u)
@@ -33,7 +33,7 @@ test('save and save-as cover current-path success, dialog success, cancel, and f
 })
 
 test('recent selection invalidates identity drift before load and successful open re-enters MRU', () => {
-  const openRecent = section(native, 'async fn open_recent_project(', '\n#[tauri::command]')
+  const openRecent = sectionToEnd(native, 'async fn open_recent_project(')
   assertOrdered(openRecent, '.select(', 'OpenRecentProjectResponse::Invalidated', 'load_project_file(path)', 'apply_loaded_project_file(', 'remember_current_project')
   assert.match(registry, /probe_regular_no_follow\(&entry\.path\)[\s\S]*?== Some\(entry\.identity\)/u)
   assert.match(registry, /next\.remove\(index\)[\s\S]*?persist\(&next, storage\)\?[\s\S]*?self\.entries = next/u)
@@ -68,5 +68,10 @@ function occurrences(text: string, needle: string) { return text.split(needle).l
 function section(text: string, start: string, end: string) {
   const from = text.indexOf(start); const to = text.indexOf(end, from + start.length)
   assert.ok(from >= 0 && to > from, `${start} section`); return text.slice(from, to)
+}
+function sectionToEnd(text: string, start: string) {
+  const from = text.indexOf(start)
+  assert.ok(from >= 0, `${start} section`)
+  return text.slice(from)
 }
 function source(relative: string) { return readFileSync(new URL(relative, import.meta.url), 'utf8') }

@@ -11,7 +11,13 @@ const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
 const beginnerDesignNative = source('../src-tauri/src/beginner_design_commands.rs')
 const patternEditNative = source('../src-tauri/src/pattern_edit_commands.rs')
-const nativeMutationSources = [native, beginnerDesignNative, patternEditNative] as const
+const projectLifecycleNative = source('../src-tauri/src/project_lifecycle_commands.rs')
+const nativeMutationSources = [
+  native,
+  beginnerDesignNative,
+  patternEditNative,
+  projectLifecycleNative,
+] as const
 const formats = source('../../../crates/ori-formats/src/lib.rs')
 const nativeUnitTestsPath = new URL('../src-tauri/src/tests.rs', import.meta.url).pathname
 const nativeRustSources = rustSources(new URL('../src-tauri/src/', import.meta.url))

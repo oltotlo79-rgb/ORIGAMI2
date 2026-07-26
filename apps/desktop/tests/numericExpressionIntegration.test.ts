@@ -8,6 +8,9 @@ function source(relativePath: string): string {
 
 const nativeLib = source('../src-tauri/src/lib.rs')
 const patternEditNative = source('../src-tauri/src/pattern_edit_commands.rs')
+const projectLifecycleNative = source(
+  '../src-tauri/src/project_lifecycle_commands.rs',
+)
 const nativeTests = source('../src-tauri/src/tests.rs')
 const nativeModule = source('../src-tauri/src/numeric_expression.rs')
 const nativeCargo = source('../src-tauri/Cargo.toml')
@@ -68,20 +71,20 @@ test('the first user-input slice connects both new-paper dimensions without trus
     /response\.source !== source[\s\S]*?stale_response/u,
   )
   assert.match(
-    nativeLib,
+    projectLifecycleNative,
     /evaluate_positive_millimetre_pair_in_worker\(\s*width_expression\.clone\(\),\s*height_expression\.clone\(\),?\s*\)/u,
   )
-  assert.match(nativeLib, /async fn new_project\(/u)
+  assert.match(projectLifecycleNative, /async fn new_project\(/u)
   assert.match(
-    nativeLib,
+    projectLifecycleNative,
     /evaluate_positive_millimetre_pair_in_worker\([\s\S]*?\)\s*\.await/u,
   )
   assert.match(
-    nativeLib,
+    projectLifecycleNative,
     /async fn new_project\([\s\S]*?expected_project_instance_id:\s*ProjectId/u,
   )
   assert.match(
-    nativeLib,
+    projectLifecycleNative,
     /replace_with_new_project\(\s*&mut project,\s*expected_project_instance_id,/u,
   )
   assert.match(
@@ -115,20 +118,27 @@ test('the first user-input slice connects both new-paper dimensions without trus
     /setNewProjectError\(appMessage\(\{[\s\S]*?ja: formatLocalizedText\('ja',[\s\S]*?japaneseMessage[\s\S]*?en: formatLocalizedText\('en',[\s\S]*?englishMessage/u,
   )
   assert.match(
-    nativeLib,
+    projectLifecycleNative,
     /spawn_blocking\(move \|\| load_project_file\(path\)\)[\s\S]*?PROJECT_OPEN_TASK_FAILED_MESSAGE/u,
   )
   assert.match(
     nativeLib,
     /map_loaded_numeric_expression_error[\s\S]*?PROJECT_NUMERIC_EXPRESSIONS_BUSY_MESSAGE/u,
   )
-  const nativeNewProjectStart = nativeLib.indexOf('async fn new_project(')
-  const nativeNewProjectEnd = nativeLib.indexOf('async fn validate_project')
+  const nativeNewProjectStart = projectLifecycleNative.indexOf(
+    'async fn new_project(',
+  )
+  const nativeNewProjectEnd = projectLifecycleNative.indexOf(
+    'async fn validate_project',
+  )
   assert.ok(
     nativeNewProjectStart >= 0 && nativeNewProjectEnd > nativeNewProjectStart,
   )
   assert.doesNotMatch(
-    nativeLib.slice(nativeNewProjectStart, nativeNewProjectEnd),
+    projectLifecycleNative.slice(
+      nativeNewProjectStart,
+      nativeNewProjectEnd,
+    ),
     /\bwidth_mm:\s*f64\b|\bheight_mm:\s*f64\b/u,
   )
   assert.match(app, /numericExpressionNativeErrorCategory\(error\)/u)

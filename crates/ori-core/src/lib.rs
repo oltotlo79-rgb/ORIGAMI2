@@ -11,6 +11,9 @@ mod constraint_exact_satisfaction_tests;
 mod constraint_exactification;
 #[cfg(test)]
 mod constraint_exactification_tests;
+mod constraint_semantic_mus;
+#[cfg(test)]
+mod constraint_semantic_mus_tests;
 mod constraint_solver;
 mod constraints;
 mod cycle_fold_transaction;
@@ -30,6 +33,16 @@ pub use applied_pose::{
 };
 pub use constraint_exactification::{
     CurrentRuntimeExactConstraintAssignmentV1, exactify_axis_aligned_constraint_preview_v1,
+};
+pub use constraint_semantic_mus::{
+    BoundedCurrentRuntimeSemanticMusV1, BoundedSemanticMusLimitsV1,
+    BoundedSemanticMusObserverControlV1, BoundedSemanticMusObserverV1,
+    BoundedSemanticMusProgressV1, BoundedSemanticMusUnknownReasonV1, CurrentRuntimeSemanticMusV1,
+    GEOMETRIC_CONSTRAINT_CURRENT_RUNTIME_SEMANTIC_MUS_MODEL_ID_V1,
+    MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_CHECKS_V1,
+    MAX_BOUNDED_SEMANTIC_MUS_DELETION_WITNESS_WORK_V1, NoopBoundedSemanticMusObserverV1,
+    certify_bounded_current_runtime_semantic_mus_v1,
+    certify_bounded_current_runtime_semantic_mus_with_observer_v1,
 };
 pub use constraint_solver::{
     Binary64ExactConstraintSatisfactionV1, ConstraintSolveErrorV1, ConstraintSolveLimitsV1,

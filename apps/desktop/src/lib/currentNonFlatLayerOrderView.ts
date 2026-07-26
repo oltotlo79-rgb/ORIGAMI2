@@ -699,12 +699,33 @@ type DetachedCurrentNonFlatLayerOrderViewRequestSource = Readonly<{
 }>
 
 /**
+ * The outcome of reading the untrusted request source.
+ *
+ * `absent` is a legitimate application state that owns no non-flat evidence,
+ * so it never reaches the native boundary and never raises an error.
+ * `malformed` is a hostile or corrupt stable request: it is refused as
+ * data-free `invalid_evidence` instead of being softened into an absence.
+ */
+type DetachedRequestOutcome =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'malformed' }>
+  | Readonly<{
+    kind: 'request'
+    request: DetachedCurrentNonFlatLayerOrderViewRequestSource
+  }>
+
+const ABSENT_REQUEST: DetachedRequestOutcome = Object.freeze({ kind: 'absent' })
+const MALFORMED_REQUEST: DetachedRequestOutcome = Object.freeze({
+  kind: 'malformed',
+})
+
+/**
  * Detaches and validates the complete invoke authority without reading a
  * getter, array index accessor, or Proxy `get` trap.
  */
 function detachCurrentNonFlatLayerOrderViewRequestSource(
   value: unknown,
-): DetachedCurrentNonFlatLayerOrderViewRequestSource | null {
+): DetachedRequestOutcome {
   const source = exactRecord(value, [
     'projectInstanceId',
     'projectId',
@@ -712,7 +733,7 @@ function detachCurrentNonFlatLayerOrderViewRequestSource(
     'foldModelFingerprintSha256',
     'appliedPose',
   ])
-  if (!source) return null
+  if (!source) return MALFORMED_REQUEST
   const pose = exactRecord(source.appliedPose, [
     'projectId',
     'revision',
@@ -720,7 +741,10 @@ function detachCurrentNonFlatLayerOrderViewRequestSource(
     'hingeAngles',
     'state',
   ])
-  if (!pose || pose.state !== 'stable') return null
+  if (!pose) return MALFORMED_REQUEST
+  // A pose that is not stable, or that is bound to another project or
+  // revision, is an ordinary absence rather than a malformed request.
+  if (pose.state !== 'stable' || pose.fixedFaceId === null) return ABSENT_REQUEST
 
   const revision = safeCount(source.revision, Number.MAX_SAFE_INTEGER)
   const poseRevision = safeCount(pose.revision, Number.MAX_SAFE_INTEGER)
@@ -732,26 +756,28 @@ function detachCurrentNonFlatLayerOrderViewRequestSource(
     || !isCanonicalNonNilUuid(pose.fixedFaceId)
     || revision === null
     || poseRevision === null
-    || pose.projectId !== source.projectId
-    || poseRevision !== revision
     || fingerprint === null
-  ) return null
+  ) return MALFORMED_REQUEST
+  if (pose.projectId !== source.projectId || poseRevision !== revision) {
+    return ABSENT_REQUEST
+  }
 
   const rawAngles = denseArray(pose.hingeAngles, MAX_NON_FLAT_VIEW_HINGES_V1)
-  if (!rawAngles || rawAngles.length === 0) return null
+  if (!rawAngles) return MALFORMED_REQUEST
+  // A pose with no hinge at all is an unfolded model, not a hostile request.
+  if (rawAngles.length === 0) return ABSENT_REQUEST
   const hingeAngles: { edgeId: string; angleDegrees: number }[] = []
   let hasNonFlatAngle = false
   for (const rawAngle of rawAngles) {
     const angle = exactRecord(rawAngle, ['edgeId', 'angleDegrees'])
-    if (!angle || !isCanonicalNonNilUuid(angle.edgeId)) return null
+    if (!angle || !isCanonicalNonNilUuid(angle.edgeId)) return MALFORMED_REQUEST
     const angleDegrees = finiteNumber(angle.angleDegrees)
     if (angleDegrees === null || angleDegrees < 0 || angleDegrees > 180) {
-      return null
+      return MALFORMED_REQUEST
     }
     if (angleDegrees !== 0 && angleDegrees !== 180) hasNonFlatAngle = true
     hingeAngles.push({ edgeId: angle.edgeId, angleDegrees })
   }
-  if (!hasNonFlatAngle) return null
   hingeAngles.sort((left, right) => {
     if (left.edgeId < right.edgeId) return -1
     if (left.edgeId > right.edgeId) return 1
@@ -760,15 +786,22 @@ function detachCurrentNonFlatLayerOrderViewRequestSource(
   if (
     hingeAngles.some((angle, index) =>
       index > 0 && hingeAngles[index - 1]?.edgeId === angle.edgeId)
-  ) return null
+  ) return MALFORMED_REQUEST
+  // A fully flat pose owns no non-flat evidence by construction.
+  if (!hasNonFlatAngle) return ABSENT_REQUEST
 
   return Object.freeze({
-    projectInstanceId: source.projectInstanceId,
-    projectId: source.projectId,
-    revision,
-    foldModelFingerprintSha256: fingerprint,
-    fixedFaceId: pose.fixedFaceId,
-    hingeAngles: Object.freeze(hingeAngles.map((angle) => Object.freeze(angle))),
+    kind: 'request',
+    request: Object.freeze({
+      projectInstanceId: source.projectInstanceId,
+      projectId: source.projectId,
+      revision,
+      foldModelFingerprintSha256: fingerprint,
+      fixedFaceId: pose.fixedFaceId,
+      hingeAngles: Object.freeze(
+        hingeAngles.map((angle) => Object.freeze(angle)),
+      ),
+    }),
   })
 }
 
@@ -782,8 +815,12 @@ function detachCurrentNonFlatLayerOrderViewRequestSource(
 export async function getCurrentNonFlatLayerOrderViewV1(
   source: CurrentNonFlatLayerOrderViewRequestSource,
 ): Promise<CurrentNonFlatLayerOrderViewV1 | null> {
-  const detached = detachCurrentNonFlatLayerOrderViewRequestSource(source)
-  if (!detached) return null
+  const outcome = detachCurrentNonFlatLayerOrderViewRequestSource(source)
+  if (outcome.kind === 'absent') return null
+  if (outcome.kind === 'malformed') {
+    throw new CurrentNonFlatLayerOrderViewError('invalid_evidence')
+  }
+  const detached = outcome.request
   const hingeAngles = detached.hingeAngles
   const request = {
     version: 1,

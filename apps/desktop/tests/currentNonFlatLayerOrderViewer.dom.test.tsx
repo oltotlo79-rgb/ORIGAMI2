@@ -169,7 +169,7 @@ afterEach(() => {
 })
 
 describe('CurrentNonFlatLayerOrderViewer', () => {
-  it('renders both panes read-only without mutation controls', async () => {
+  it('UI-LIFE-03 renders both panes read-only without mutation controls', async () => {
     invoke.mockResolvedValue(viewResponse())
     render(<CurrentNonFlatLayerOrderViewer locale="en" source={source} />)
     await screen.findByRole('region', { name: 'Face outlines in world XYZ millimetres' })
@@ -187,7 +187,7 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     }
   })
 
-  it('shows the loading status before the response settles', async () => {
+  it('UI-LIFE-01 shows the loading status before the response settles', async () => {
     const gate = deferred<unknown>()
     invoke.mockReturnValue(gate.promise)
     render(<CurrentNonFlatLayerOrderViewer locale="en" source={source} />)
@@ -204,21 +204,21 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     )
   })
 
-  it('reports absence when the project owns no non-flat evidence', async () => {
+  it('UI-LIFE-02 reports absence when the project owns no non-flat evidence', async () => {
     invoke.mockResolvedValue(null)
     render(<CurrentNonFlatLayerOrderViewer locale="en" source={source} />)
     await screen.findByText('No non-flat layer order is bound to the current pose.')
   })
 
-  const FAILURES: readonly (readonly [string, string])[] = [
-    ['stale_authority', 'The pose or project changed, so the view is unavailable.'],
-    ['invalid_evidence', 'The layer-order evidence did not satisfy the contract.'],
-    ['resource_limit', 'The layer order exceeds the viewer limits.'],
-    ['internal_failure', 'The layer order could not be read.'],
+  const FAILURES: readonly (readonly [string, string, string])[] = [
+    ['04', 'stale_authority', 'The pose or project changed, so the view is unavailable.'],
+    ['05', 'invalid_evidence', 'The layer-order evidence did not satisfy the contract.'],
+    ['06', 'resource_limit', 'The layer order exceeds the viewer limits.'],
+    ['07', 'internal_failure', 'The layer order could not be read.'],
   ]
 
-  for (const [category, message] of FAILURES) {
-    it(`maps the ${category} category to a closed failure message`, async () => {
+  for (const [lifeId, category, message] of FAILURES) {
+    it(`UI-LIFE-${lifeId} maps the ${category} category to a closed failure message`, async () => {
       invoke.mockRejectedValue({ version: 1, category })
       render(<CurrentNonFlatLayerOrderViewer locale="en" source={source} />)
       const alert = await screen.findByRole('alert')
@@ -226,7 +226,7 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     })
   }
 
-  it('never shows a raw native error string', async () => {
+  it('UI-LIFE-08 never shows a raw native error string', async () => {
     invoke.mockRejectedValue(new Error('native panic at src/lib.rs:42'))
     render(<CurrentNonFlatLayerOrderViewer locale="en" source={source} />)
     const alert = await screen.findByRole('alert')
@@ -248,48 +248,29 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     expect(invoke).not.toHaveBeenCalled()
   })
 
-  const NON_INVOKING: readonly (readonly [string, Partial<Source['appliedPose']>])[] = [
-    ['a running pose', { state: 'running' }],
-    ['a blocked pose', { state: 'blocked' }],
-    ['an indeterminate pose', { state: 'indeterminate' }],
-    ['a project ID mismatch', { projectId: uuid(3) }],
-    ['a revision mismatch', { revision: 13 }],
-    ['a null fixed face', { fixedFaceId: null }],
-    ['an empty hinge vector', { hingeAngles: [] }],
-    ['a duplicate request hinge', {
-      hingeAngles: [
-        { edgeId: EDGE_1, angleDegrees: 73.5 },
-        { edgeId: EDGE_1, angleDegrees: 12 },
-      ],
-    }],
-    ['a nonfinite request hinge', {
-      hingeAngles: [{ edgeId: EDGE_1, angleDegrees: Number.NaN }],
-    }],
-    ['a negative-zero request hinge', {
-      hingeAngles: [{ edgeId: EDGE_1, angleDegrees: -0 }],
-    }],
-    ['an out-of-range request hinge', {
-      hingeAngles: [{ edgeId: EDGE_1, angleDegrees: 181 }],
-    }],
-    ['an invalid request hinge ID', {
-      hingeAngles: [{ edgeId: 'not-a-canonical-edge-id', angleDegrees: 73.5 }],
-    }],
-    ['a completely flat request hinge vector', {
+  // A legitimate application state that owns no non-flat evidence: the viewer
+  // reports absence and never reaches the native boundary.
+  const ABSENT_GATES: readonly (readonly [
+    string,
+    Partial<Source['appliedPose']>,
+  ])[] = [
+    ['UI-GATE-01 a running pose', { state: 'running' }],
+    ['UI-GATE-02 a blocked pose', { state: 'blocked' }],
+    ['UI-GATE-03 an indeterminate pose', { state: 'indeterminate' }],
+    ['UI-GATE-04 a project ID mismatch', { projectId: uuid(3) }],
+    ['UI-GATE-05 a revision mismatch', { revision: 13 }],
+    ['UI-GATE-06 a null fixed face', { fixedFaceId: null }],
+    ['UI-GATE-14 an empty hinge vector', { hingeAngles: [] }],
+    ['UI-GATE-15 a completely flat request hinge vector', {
       hingeAngles: [
         { edgeId: EDGE_1, angleDegrees: 0 },
         { edgeId: uuid(22), angleDegrees: 180 },
       ],
     }],
-    ['a request hinge vector above the viewer cap', {
-      hingeAngles: Array.from({ length: 4_097 }, (_, index) => ({
-        edgeId: uuid(100 + index),
-        angleDegrees: 73.5,
-      })),
-    }],
   ]
 
-  for (const [name, overrides] of NON_INVOKING) {
-    it(`never invokes the command for ${name}`, async () => {
+  for (const [name, overrides] of ABSENT_GATES) {
+    it(`${name} reports absence without invoking the command`, async () => {
       render(
         <CurrentNonFlatLayerOrderViewer
           locale="en"
@@ -301,29 +282,101 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     })
   }
 
-  const NON_INVOKING_ROOT: readonly (readonly [
+  // A malformed stable request is hostile or corrupt input. It is refused as
+  // data-free invalid evidence and never softened into an absence.
+  const MALFORMED_POSES: readonly (readonly [
     string,
-    Partial<Omit<Source, 'appliedPose'>>,
+    Partial<Source['appliedPose']>,
   ])[] = [
-    ['an invalid project instance ID', { projectInstanceId: 'invalid' }],
-    ['an invalid project ID', { projectId: 'invalid' }],
-    ['an unsafe revision', { revision: Number.MAX_SAFE_INTEGER + 1 }],
-    ['an uppercase fingerprint', { foldModelFingerprintSha256: 'D'.repeat(64) }],
-    ['a short fingerprint', { foldModelFingerprintSha256: 'd'.repeat(62) }],
+    ['UI-GATE-07 a duplicate request hinge', {
+      hingeAngles: [
+        { edgeId: EDGE_1, angleDegrees: 73.5 },
+        { edgeId: EDGE_1, angleDegrees: 12 },
+      ],
+    }],
+    ['UI-GATE-08 an invalid request edge UUID', {
+      hingeAngles: [{ edgeId: 'not-a-canonical-edge-id', angleDegrees: 73.5 }],
+    }],
+    ['UI-GATE-09a a NaN request hinge', {
+      hingeAngles: [{ edgeId: EDGE_1, angleDegrees: Number.NaN }],
+    }],
+    ['UI-GATE-09b an Infinity request hinge', {
+      hingeAngles: [{ edgeId: EDGE_1, angleDegrees: Number.POSITIVE_INFINITY }],
+    }],
+    ['UI-GATE-09c a -Infinity request hinge', {
+      hingeAngles: [{ edgeId: EDGE_1, angleDegrees: Number.NEGATIVE_INFINITY }],
+    }],
+    ['UI-GATE-10 a negative-zero request hinge', {
+      hingeAngles: [{ edgeId: EDGE_1, angleDegrees: -0 }],
+    }],
+    ['UI-GATE-11a an above-range request hinge', {
+      hingeAngles: [{ edgeId: EDGE_1, angleDegrees: 181 }],
+    }],
+    ['UI-GATE-11b a negative request hinge', {
+      hingeAngles: [{ edgeId: EDGE_1, angleDegrees: -1 }],
+    }],
+    ['UI-GATE-12 a request hinge vector above the viewer cap', {
+      hingeAngles: Array.from({ length: 4_097 }, (_, index) => ({
+        edgeId: uuid(100 + index),
+        angleDegrees: 73.5,
+      })),
+    }],
   ]
 
-  for (const [name, overrides] of NON_INVOKING_ROOT) {
-    it(`never invokes the command for ${name}`, async () => {
+  for (const [name, overrides] of MALFORMED_POSES) {
+    it(`${name} is refused as invalid evidence without invoking`, async () => {
       render(
         <CurrentNonFlatLayerOrderViewer
           locale="en"
-          source={makeSource({}, overrides)}
+          source={makeSource(overrides)}
         />,
       )
-      await screen.findByText('No non-flat layer order is bound to the current pose.')
+      const alert = await screen.findByRole('alert')
+      expect(alert.textContent)
+        .toBe('The layer-order evidence did not satisfy the contract.')
+      expect(invoke).not.toHaveBeenCalled()
+      expect(document.body.textContent).not.toContain(EDGE_1)
+    })
+  }
+
+  const MALFORMED_ROOTS: readonly (readonly [
+    string,
+    Partial<Omit<Source, 'appliedPose'>>,
+  ])[] = [
+    ['UI-GATE-16 an invalid project instance ID', {
+      projectInstanceId: 'invalid',
+    }],
+    ['UI-GATE-17 an invalid project ID', { projectId: 'invalid' }],
+    ['UI-GATE-18 an unsafe revision', { revision: Number.MAX_SAFE_INTEGER + 1 }],
+    ['UI-GATE-19 an uppercase fingerprint', {
+      foldModelFingerprintSha256: 'D'.repeat(64),
+    }],
+    ['UI-GATE-20 a short fingerprint', {
+      foldModelFingerprintSha256: 'd'.repeat(62),
+    }],
+  ]
+
+  for (const [name, overrides] of MALFORMED_ROOTS) {
+    it(`${name} is refused as invalid evidence without invoking`, async () => {
+      const forged = makeSource({}, overrides)
+      // A root mismatch must never be reported as a project or revision gate.
+      forged.appliedPose.projectId = forged.projectId
+      forged.appliedPose.revision = forged.revision
+      render(<CurrentNonFlatLayerOrderViewer locale="en" source={forged} />)
+      const alert = await screen.findByRole('alert')
+      expect(alert.textContent)
+        .toBe('The layer-order evidence did not satisfy the contract.')
       expect(invoke).not.toHaveBeenCalled()
     })
   }
+
+  it('UI-LIFE-09 refuses an undefined native response as invalid evidence', async () => {
+    invoke.mockResolvedValue(undefined)
+    render(<CurrentNonFlatLayerOrderViewer locale="en" source={source} />)
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent)
+      .toBe('The layer-order evidence did not satisfy the contract.')
+  })
 
   it('never executes a source accessor', async () => {
     let reads = 0
@@ -342,7 +395,9 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
         source={hostile}
       />,
     )
-    await screen.findByText('No non-flat layer order is bound to the current pose.')
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent)
+      .toBe('The layer-order evidence did not satisfy the contract.')
     expect(reads).toBe(0)
     expect(invoke).not.toHaveBeenCalled()
   })
@@ -408,7 +463,9 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
         source={hostile}
       />,
     )
-    await screen.findByText('No non-flat layer order is bound to the current pose.')
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent)
+      .toBe('The layer-order evidence did not satisfy the contract.')
     expect(reads).toBe(0)
     expect(invoke).not.toHaveBeenCalled()
   })
@@ -430,7 +487,9 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
         source={hostile}
       />,
     )
-    await screen.findByText('No non-flat layer order is bound to the current pose.')
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent)
+      .toBe('The layer-order evidence did not satisfy the contract.')
     expect(reads).toBe(0)
     expect(invoke).not.toHaveBeenCalled()
   })
@@ -444,11 +503,13 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
         source={revocable.proxy}
       />,
     )
-    await screen.findByText('No non-flat layer order is bound to the current pose.')
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent)
+      .toBe('The layer-order evidence did not satisfy the contract.')
     expect(invoke).not.toHaveBeenCalled()
   })
 
-  it('rejects a response whose pose binding differs from the request', async () => {
+  it('UI-BIND-05 rejects a response whose pose binding differs from the request', async () => {
     const forged = viewResponse()
     forged.pose.hingeAngles = [{ edgeId: EDGE_1, angleDegrees: 73.25 }]
     invoke.mockResolvedValue(forged)
@@ -457,7 +518,7 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     expect(alert.textContent).toBe('The layer-order evidence did not satisfy the contract.')
   })
 
-  it('rejects a response whose project binding differs from the request', async () => {
+  it('UI-BIND-08 rejects a response whose project binding differs from the request', async () => {
     const forged = viewResponse()
     forged.revision = 13
     invoke.mockResolvedValue(forged)
@@ -541,7 +602,7 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     expect(cell.getAttribute('aria-selected')).toBe('true')
   })
 
-  it('switches locale without refetching or losing the selection', async () => {
+  it('UI-SRC-01 switches locale without refetching or losing the selection', async () => {
     invoke.mockResolvedValue(viewResponse())
     const { rerender } = render(
       <CurrentNonFlatLayerOrderViewer locale="en" source={source} />,
@@ -561,7 +622,7 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     expect(invoke).toHaveBeenCalledTimes(1)
   })
 
-  it('refetches when the source object changes even with the same values', async () => {
+  it('UI-SRC-02 refetches when the source object changes even with the same values', async () => {
     invoke.mockResolvedValue(viewResponse())
     const { rerender } = render(
       <CurrentNonFlatLayerOrderViewer locale="en" source={makeSource()} />,
@@ -571,7 +632,7 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledTimes(2))
   })
 
-  it('refetches when only one hinge angle bit changes', async () => {
+  it('UI-SRC-03 refetches when only one hinge angle bit changes', async () => {
     invoke.mockResolvedValue(viewResponse())
     const { rerender } = render(
       <CurrentNonFlatLayerOrderViewer locale="en" source={makeSource()} />,
@@ -593,7 +654,7 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
       .toBe(73.50000000000001)
   })
 
-  it('drops the previous geometry as soon as the source changes', async () => {
+  it('UI-SRC-04 drops the previous geometry as soon as the source changes', async () => {
     const first = deferred<unknown>()
     const second = deferred<unknown>()
     invoke.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
@@ -609,7 +670,7 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     await screen.findByText('2 faces')
   })
 
-  it('hides the viewer synchronously when the source becomes unbound', async () => {
+  it('UI-SRC-07 hides the viewer synchronously when the source becomes unbound', async () => {
     invoke.mockResolvedValue(viewResponse())
     const { rerender } = render(
       <CurrentNonFlatLayerOrderViewer locale="en" source={source} />,
@@ -637,7 +698,7 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     )
   })
 
-  it('never lets a late response overwrite a newer request', async () => {
+  it('UI-SRC-05 never lets a late response overwrite a newer request', async () => {
     const first = deferred<unknown>()
     const second = deferred<unknown>()
     invoke.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
@@ -655,7 +716,7 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     expect(screen.queryByText('1 overlap cells')).toBeNull()
   })
 
-  it('survives an A to B to A reissue without reusing the first response', async () => {
+  it('UI-SRC-06 survives an A to B to A reissue without reusing the first response', async () => {
     const a1 = deferred<unknown>()
     const b = deferred<unknown>()
     const a2 = deferred<unknown>()
@@ -680,7 +741,7 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     await screen.findByText('2 faces')
   })
 
-  it('does not update state after unmount', async () => {
+  it('UI-SRC-08 does not update state after unmount', async () => {
     const gate = deferred<unknown>()
     invoke.mockReturnValue(gate.promise)
     const { unmount } = render(
@@ -692,7 +753,7 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     expect(screen.queryByText('2 faces')).toBeNull()
   })
 
-  it('does not update state after a rejected unmounted request', async () => {
+  it('UI-SRC-09 does not update state after a rejected unmounted request', async () => {
     const gate = deferred<unknown>()
     invoke.mockReturnValue(gate.promise)
     const { unmount } = render(
@@ -702,6 +763,70 @@ describe('CurrentNonFlatLayerOrderViewer', () => {
     gate.reject({ version: 1, category: 'invalid_evidence' })
     await Promise.resolve()
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  /** The next representable f64 above a finite value. */
+  function oneBitAbove(value: number) {
+    const buffer = new ArrayBuffer(8)
+    new Float64Array(buffer)[0] = value
+    const bits = new BigUint64Array(buffer)
+    bits[0] = (bits[0] as bigint) + 1n
+    return new Float64Array(buffer)[0] as number
+  }
+
+  const RESPONSE_BINDINGS: readonly (readonly [
+    string,
+    (value: ReturnType<typeof viewResponse>) => void,
+  ])[] = [
+    ['UI-BIND-01 a fixed face mismatch', (value) => {
+      value.pose.fixedFaceId = FACE_B
+    }],
+    ['UI-BIND-02 a missing response hinge', (value) => {
+      value.pose.hingeAngles = []
+    }],
+    ['UI-BIND-03 an extra response hinge', (value) => {
+      value.pose.hingeAngles = [
+        { edgeId: EDGE_1, angleDegrees: 73.5 },
+        { edgeId: uuid(22), angleDegrees: 12 },
+      ]
+    }],
+    ['UI-BIND-04 an edge ID mismatch', (value) => {
+      value.pose.hingeAngles = [{ edgeId: uuid(22), angleDegrees: 73.5 }]
+    }],
+    ['UI-BIND-06 a response project instance mismatch', (value) => {
+      value.projectInstanceId = uuid(9)
+    }],
+    ['UI-BIND-07 a response project mismatch', (value) => {
+      value.projectId = uuid(9)
+    }],
+    ['UI-BIND-09 a response fingerprint mismatch', (value) => {
+      value.foldModelFingerprintSha256 = 'e'.repeat(64)
+    }],
+  ]
+
+  for (const [name, mutate] of RESPONSE_BINDINGS) {
+    it(`${name} is refused without keeping old geometry`, async () => {
+      const forged = viewResponse()
+      mutate(forged)
+      invoke.mockResolvedValue(forged)
+      render(<CurrentNonFlatLayerOrderViewer locale="en" source={source} />)
+      const alert = await screen.findByRole('alert')
+      expect(alert.textContent)
+        .toBe('The layer-order evidence did not satisfy the contract.')
+      expect(screen.queryByText('2 faces')).toBeNull()
+    })
+  }
+
+  it('UI-BIND-05b refuses a response hinge that differs by one bit', async () => {
+    const forged = viewResponse()
+    forged.pose.hingeAngles = [
+      { edgeId: EDGE_1, angleDegrees: oneBitAbove(73.5) },
+    ]
+    invoke.mockResolvedValue(forged)
+    render(<CurrentNonFlatLayerOrderViewer locale="en" source={source} />)
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent)
+      .toBe('The layer-order evidence did not satisfy the contract.')
   })
 
   it('refetches on demand without changing the source', async () => {

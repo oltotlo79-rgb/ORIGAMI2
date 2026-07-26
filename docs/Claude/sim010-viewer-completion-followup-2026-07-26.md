@@ -75,6 +75,8 @@ escape sequence `"\0"`、`"\u0000"` へ置換して join を残す修正は不�
 - unmount 後の resolve/reject は state を変更しない。
 - response identity が変わった取得では face/cell selection を canonical first へ戻す。locale-only rerenderでは戻さない。
 - effect の `react-hooks/exhaustive-deps` warning を 0 にする。warning を「意図的」として残さない。
+- loading/ready state には取得時の `source` reference を保持する。render 時点で `state.source !== source` なら、その commit では geometry を描画せず同期的に hidden/null とする。passive effect が走るまで旧 pixels を残してはならない。
+- source が ready A から `null`、running、blocked、indeterminate、binding mismatch へ変わる遷移を、rerender 直後かつ effect flush 前の DOM assertion で固定する。最初から source が `null` の test だけで代用しない。
 
 ### 3.3 native の project/evidence/pose 再結合を原指示 §7.3 どおり完成する
 
@@ -97,6 +99,8 @@ escape sequence `"\0"`、`"\u0000"` へ置換して join を残す修正は不�
 4. live model face set は「proof の各 face が存在」だけでなく、extra live face も拒否する完全一致にする。
 5. mismatch は原指示の分類どおり data-free `stale_authority` または `invalid_evidence` とし、ID、revision、fingerprint、座標、raw error を error payload に入れない。
 6. `project.editor.current_applied_pose()` と revalidated semantic pose の current 性を回帰で固定する。
+7. response `pose.modelId` は issuer kind に対応させる。tree は `ori_core::APPLIED_POSE_MODEL_ID_V1`（`tree_absolute_hinge_angles_v1`）、graph は `ori_core::CLOSED_GRAPH_APPLIED_POSE_MODEL_ID_V1`（`closed_graph_absolute_hinge_angles_v1`）を正本とする。graph に tree model ID を付けない。
+8. TypeScript parser も上記 2 値だけの closed union とし、tree/graph positive、unknown model negative を設ける。
 
 ### 3.4 exact hash framing と aggregate cap を修正する
 
@@ -115,6 +119,10 @@ escape sequence `"\0"`、`"\u0000"` へ置換して join を残す修正は不�
 現行 native は face 構築と cell 構築で `magnitude_bytes` を別々に 0 から数えている。8 MiB は response 全体の aggregate cap である。1 個の checked accumulator を faces と cells で共有し、合計 8 MiB + 1 を `resource_limit` にすること。
 
 `testedFacePairs` と `sourceOverlapCellsAuthenticated` も、core の正本 work bound 内かつ frontend の safe integer として lossless であることを native で確認する。
+
+world face boundary は、live model から既知 vertex count を得た時点で 3..=4,096 と aggregate cap を検査し、`try_reserve_exact` または同等の fallible reservation が成功してから point を構築する。cap + 1 の `Vec` を先に collect してから拒否しない。faces、cells、hinges、exact points、serialized bufferについても、大きな確保前のpreflightとallocation failureのdata-free分類を回帰する。
+
+viewer 固有の cheap count preflight は shared structural validator より先に行う。shared validator は core 上限の faces/folded/cells を `HashSet` 化するため、viewer 上限 4,096 を超える入力を validator に渡してから拒否してはならない。順序は、既知 count と checked aggregate の cheap preflight、current pose と project/evidence binding、shared structural validation、fallible reservation、response 構築とする。viewer cap + 1 が validator/大 allocation 前に data-free `resource_limit` となる回帰を設ける。また stale binding と structural tamper が同居する fixture で、原指示 §7.2/§7.3 の category 優先順を固定する。
 
 ### 3.5 TypeScript strict parser/client を完全にする
 
@@ -220,14 +228,14 @@ private constructorsを迂回する `unsafe` test fabricationは禁止。既存�
 - world pane は XYZ field のみ、projection pane は rounded UV のみ
 - dropped X/Y/Z labels
 - face/cell selection と keyboard
-- lower/upper face highlight
+- selected cell の lower/upper face を world pane 上の対応 face として明示 highlight し、選択変更時に追従する。単に cell list の行を選択表示するだけでは未達。
 - zero-cell warning
 - read-only/no-mutation
 - late response、old pixels、same semantic reissue、A-B-A、unmount
 - locale-only no refetch、selection/geometry保持、text/ARIA即時切替
 - raw native error/raw exact big integer 非表示
 - `StackedFoldPanel` に viewer 1 個だけ
--既存 flat `LayerOrderViewer` semantics 不変
+- 既存 flat `LayerOrderViewer` semantics 不変
 - apply callback/count は viewer mount/locale switch で不変
 
 報告の「`stackedFoldPanel.dom.test.tsx` は無変更で52件」は不正確である。standalone は 46 件、viewer 6 件との合計が 52 件である。今後は command ごとの実数を分けて報告する。

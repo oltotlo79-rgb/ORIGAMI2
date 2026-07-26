@@ -9,6 +9,8 @@ const app = [
 const instructionPanel = source('../src/components/InstructionTimelinePanel.tsx')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
+const beginnerDesignNative = source('../src-tauri/src/beginner_design_commands.rs')
+const nativeMutationSources = [native, beginnerDesignNative] as const
 const formats = source('../../../crates/ori-formats/src/lib.rs')
 const nativeUnitTestsPath = new URL('../src-tauri/src/tests.rs', import.meta.url).pathname
 const nativeRustSources = rustSources(new URL('../src-tauri/src/', import.meta.url))
@@ -91,7 +93,7 @@ test('the revision-changing mutation contract matrix remains complete', () => {
   assert.equal(new Set(mutationContracts.map(([name]) => name)).size, 66)
   assert.equal(new Set(mutationContracts.map(([, command]) => command)).size, 66)
   assert.deepEqual(
-    productionRevisionChangingCommands(native),
+    productionRevisionChangingCommands(nativeMutationSources),
     mutationContracts.map(([, command]) => command).toSorted(),
   )
 })
@@ -126,7 +128,10 @@ for (const [clientFunction, nativeCommand] of mutationContracts) {
       /\{\s*expectedProjectInstanceId,\s*expectedProjectId,\s*expectedRevision,/u,
     )
 
-    const nativeFunctionSource = rustFunctionSection(native, nativeCommand)
+    const nativeFunctionSource = rustFunctionSectionFromSources(
+      nativeMutationSources,
+      nativeCommand,
+    )
     assert.match(
       nativeFunctionSource,
       /expected_project_instance_id:\s*ProjectId,\s*expected_project_id:\s*ProjectId,\s*expected_revision:\s*u64,/u,
@@ -304,19 +309,21 @@ function occurrences(text: string, value: string) {
   return text.split(value).length - 1
 }
 
-function productionRevisionChangingCommands(text: string) {
-  const testModule = text.indexOf('\n#[cfg(test)]\nmod tests')
-  assert.ok(testModule >= 0, 'native production/test boundary')
-  const production = text.slice(0, testModule)
+function productionRevisionChangingCommands(texts: readonly string[]) {
+  const productions = texts.map(rustProductionSection)
   const productionFunctions = [
-    ...production.matchAll(/\n(?:async\s+)?fn ([a-z][a-z0-9_]*)\(/gu),
-  ].map((match) => match[1]!)
+    ...new Set(productions.flatMap((production) => [
+      ...production.matchAll(
+        /\n(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn ([a-z][a-z0-9_]*)\(/gu,
+      ),
+    ].map((match) => match[1]!))),
+  ]
   const revisionChanging = new Map<string, boolean>()
   const reachesRevisionChange = (name: string, active: Set<string>): boolean => {
     const cached = revisionChanging.get(name)
     if (cached !== undefined) return cached
     if (active.has(name)) return false
-    const section = rustFunctionSection(production, name)
+    const section = rustFunctionSectionFromSources(productions, name)
     if (/\bexecute_(?:command|undo|redo)\(/u.test(section)) {
       revisionChanging.set(name, true)
       return true
@@ -330,12 +337,12 @@ function productionRevisionChangingCommands(text: string) {
     revisionChanging.set(name, result)
     return result
   }
-  const commands = [
-    ...production.matchAll(
-      /\n#\[tauri::command\]\n(?:#\[[^\n]+\]\n)*(?:async\s+)?fn ([a-z][a-z0-9_]*)\(/gu,
-    ),
-  ]
-    .map((match) => match[1]!)
+  const commands = productions
+    .flatMap((production) => [
+      ...production.matchAll(
+        /\n#\[tauri::command\]\n(?:#\[[^\n]+\]\n)*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn ([a-z][a-z0-9_]*)\(/gu,
+      ),
+    ].map((match) => match[1]!))
     .filter((name) => reachesRevisionChange(name, new Set()))
     .toSorted()
   assert.equal(new Set(commands).size, commands.length)
@@ -371,8 +378,18 @@ function rustFunctionSection(text: string, name: string) {
   assert.fail(`${name} closing brace`)
 }
 
+function rustFunctionSectionFromSources(texts: readonly string[], name: string) {
+  const declaration = new RegExp(
+    String.raw`\n(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn ${name}\(`,
+    'u',
+  )
+  const matches = texts.filter((text) => declaration.test(text))
+  assert.equal(matches.length, 1, `${name} must have one native definition`)
+  return rustFunctionSection(matches[0]!, name)
+}
+
 function rustProductionSection(text: string) {
-  const testModule = /\n#\[cfg\(test\)\]\n(?:pub(?:\([^)]*\))?\s+)?mod tests\s*\{/u.exec(text)
+  const testModule = /\n#\[cfg\(test\)\]\n(?:pub(?:\([^)]*\))?\s+)?mod tests(?:\s*\{|;)/u.exec(text)
   return testModule ? text.slice(0, testModule.index) : text
 }
 

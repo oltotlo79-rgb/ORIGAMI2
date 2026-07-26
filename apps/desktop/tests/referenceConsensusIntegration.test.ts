@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const client = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8')
-const native = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8')
+const native = readFileSync(new URL('../src-tauri/src/beginner_design_commands.rs', import.meta.url), 'utf8')
 const domain = readFileSync(new URL('../../../crates/ori-domain/src/beginner_design.rs', import.meta.url), 'utf8')
 const app = [
   readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8'),

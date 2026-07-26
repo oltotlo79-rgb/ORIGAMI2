@@ -16,7 +16,7 @@ const app = [
   readFileSync(new URL('../src/lib/appText.ts', import.meta.url), 'utf8'),
 ].join('\n')
 const completeAnimalBindingList = readFileSync(new URL('../src/components/CompleteAnimalBindingList.tsx', import.meta.url), 'utf8')
-const native = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8')
+const native = readFileSync(new URL('../src-tauri/src/beginner_design_commands.rs', import.meta.url), 'utf8')
 
 test('AUT-106 candidate reads bind instance, project, and revision without mutation', () => {
   assert.match(native, /fn evaluate_beginner_candidates/)

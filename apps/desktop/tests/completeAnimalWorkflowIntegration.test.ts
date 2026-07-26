@@ -4,7 +4,7 @@ import test from 'node:test'
 
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const client = readFileSync(new URL('../src/lib/coreClient.ts', import.meta.url), 'utf8')
-const native = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8')
+const native = readFileSync(new URL('../src-tauri/src/beginner_design_commands.rs', import.meta.url), 'utf8')
 const nativeTests = readFileSync(new URL('../src-tauri/src/tests.rs', import.meta.url), 'utf8')
 const recognition = readFileSync(new URL('../src-tauri/src/beginner_recognition.rs', import.meta.url), 'utf8')
 const workflow = readFileSync(new URL('../src/lib/beginnerGridWorkflow.ts', import.meta.url), 'utf8')

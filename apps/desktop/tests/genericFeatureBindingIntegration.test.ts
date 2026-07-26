@@ -8,6 +8,7 @@ const app = [
   readFileSync('src/lib/appText.ts', 'utf8'),
 ].join('\n')
 const native = readFileSync('src-tauri/src/lib.rs', 'utf8')
+const beginnerDesignNative = readFileSync('src-tauri/src/beginner_design_commands.rs', 'utf8')
 const nativeTests = readFileSync('src-tauri/src/tests.rs', 'utf8')
 const browser = readFileSync('scripts/generic-target-browser-e2e.mjs', 'utf8')
 const browserHarness = readFileSync('scripts/generic-target-browser-harness.tsx', 'utf8')
@@ -38,6 +39,7 @@ test('generic feature topology is visible and browser-covered through persistenc
 })
 
 test('3D generalization stays bounded to confirmed semantic parts', () => {
+  const native = beginnerDesignNative
   assert.match(client, /protrusions\.length < 1 \|\| protrusions\.length > 8/u)
   assert.match(client, /semantic[\s\S]*remain the user's current target_parts/u)
   assert.match(app, /geometry evidence only; part meanings come from the parts you confirmed/u)
@@ -47,6 +49,7 @@ test('3D generalization stays bounded to confirmed semantic parts', () => {
 })
 
 test('confirmed image and 3D generic candidates retain vertical proof coverage', () => {
+  const native = beginnerDesignNative
   assert.match(browser, /Image meanings unconfirmed: generic topology candidate blocked/u)
   assert.match(browser, /Confirm explicit image part meanings/u)
   assert.match(browser, /Exclude unconfirmed image noise/u)
@@ -84,6 +87,7 @@ test('confirmed image and 3D generic candidates retain vertical proof coverage',
 })
 
 test('image and GLB skeletons admit only bounded acyclic river-axial proposals', () => {
+  const native = beginnerDesignNative
   assert.match(generator, /fn bounded_tree_skeleton_length_ratios/u)
   assert.match(generator, /MAX_BEGINNER_GENERIC_TREE_BARS_V1: usize = 16/u)
   assert.match(generator, /MAX_BEGINNER_GENERIC_TREE_INTERSECTION_PAIRS_V1: usize = 120/u)
@@ -110,13 +114,13 @@ test('image and GLB skeletons admit only bounded acyclic river-axial proposals',
 })
 
 test('applied generic trees persist inert versioned source provenance', () => {
-  assert.match(native, /BeginnerGenericTreeSourceV1::ImageSilhouette/u)
-  assert.match(native, /BeginnerGenericTreeSourceV1::GlbGeometry/u)
-  assert.match(native, /BeginnerGenericTreeSourceV1::ManualSkeleton/u)
-  assert.match(native, /asset_content_sha256/u)
-  assert.match(native, /grid_candidate_tree_ratio_provenance_invalid/u)
-  assert.match(native, /generator_version: 1/u)
-  assert.match(native, /authorizes_apply: false/u)
+  assert.match(beginnerDesignNative, /BeginnerGenericTreeSourceV1::ImageSilhouette/u)
+  assert.match(beginnerDesignNative, /BeginnerGenericTreeSourceV1::GlbGeometry/u)
+  assert.match(beginnerDesignNative, /BeginnerGenericTreeSourceV1::ManualSkeleton/u)
+  assert.match(beginnerDesignNative, /asset_content_sha256/u)
+  assert.match(beginnerDesignNative, /grid_candidate_tree_ratio_provenance_invalid/u)
+  assert.match(beginnerDesignNative, /generator_version: 1/u)
+  assert.match(beginnerDesignNative, /authorizes_apply: false/u)
   assert.match(client, /generic_tree/u)
   assert.match(client, /genericTree\.generator_version !== 1 \|\| genericTree\.authorizes_apply !== false/u)
   assert.match(app, /display only; no apply authority/u)

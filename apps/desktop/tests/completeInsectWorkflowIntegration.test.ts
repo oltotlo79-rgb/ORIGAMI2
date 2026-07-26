@@ -5,7 +5,7 @@ import test from 'node:test'
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const component = readFileSync(new URL('../src/components/CompleteInsectBindingList.tsx', import.meta.url), 'utf8')
 const componentText = readFileSync(new URL('../src/lib/completeInsectBindingListText.ts', import.meta.url), 'utf8')
-const native = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8')
+const native = readFileSync(new URL('../src-tauri/src/beginner_design_commands.rs', import.meta.url), 'utf8')
 const nativeTests = readFileSync(new URL('../src-tauri/src/tests.rs', import.meta.url), 'utf8')
 const recognition = readFileSync(new URL('../src-tauri/src/beginner_recognition.rs', import.meta.url), 'utf8')
 

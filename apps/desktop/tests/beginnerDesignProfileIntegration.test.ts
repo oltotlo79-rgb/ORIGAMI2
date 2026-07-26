@@ -12,6 +12,7 @@ const protrusionEditor = [
 ].join('\n')
 const client = source('../src/lib/coreClient.ts')
 const native = source('../src-tauri/src/lib.rs')
+const beginnerDesignNative = source('../src-tauri/src/beginner_design_commands.rs')
 const recognitionNative = source('../src-tauri/src/beginner_recognition.rs')
 const recognitionDomain = source('../../../crates/ori-domain/src/beginner_recognition.rs')
 const domain = source('../../../crates/ori-domain/src/beginner_design.rs')
@@ -31,6 +32,7 @@ test('AUT-103 and AUT-104 expose three bounded on-device scoring presets', () =>
 })
 
 test('the profile crosses strict IPC and one native history command', () => {
+  const native = beginnerDesignNative
   assert.match(client, /normalizeBeginnerDesignProfile/u)
   assert.match(client, /exactCoreDataRecord\(value, \[[\s\S]*?'schema_version'/u)
   assert.match(client, /update_beginner_design_profile/u)
@@ -135,9 +137,9 @@ test('AUT-004 preview is bounded, project-bound, and stale-safe', () => {
 test('AUT-004 retains multiple GLB references and switches exact active asset authority', () => {
   assert.match(native, /struct ReferenceModelAssetSummaryV1/u)
   assert.match(native, /sha256: sha2::Sha256::digest\(&asset\.bytes\)/u)
-  assert.match(native, /fn activate_beginner_reference_model_asset/u)
-  assert.match(native, /reference_model_asset_stale/u)
-  assert.match(native, /Command::UpdateBeginnerDesignProfile \{\s*profile: Box::new\(profile\),?\s*\}/u)
+  assert.match(beginnerDesignNative, /fn activate_beginner_reference_model_asset/u)
+  assert.match(beginnerDesignNative, /reference_model_asset_stale/u)
+  assert.match(beginnerDesignNative, /Command::UpdateBeginnerDesignProfile \{\s*profile: Box::new\(profile\),?\s*\}/u)
   assert.match(client, /activate_beginner_reference_model_asset/u)
   assert.match(client, /reference_model_assets/u)
   assert.match(app, /Project 3D reference assets/u)
@@ -146,6 +148,7 @@ test('AUT-004 retains multiple GLB references and switches exact active asset au
 })
 
 test('AUT-004 archives references without deleting bytes and keeps the transition undoable', () => {
+  const native = beginnerDesignNative
   assert.match(native, /fn archive_beginner_reference_model_asset/u)
   assert.match(native, /archived_reference_model_asset_ids/u)
   assert.match(native, /profile\.generation_constraints\.target_asset = None/u)
@@ -157,6 +160,7 @@ test('AUT-004 archives references without deleting bytes and keeps the transitio
 })
 
 test('AUT-004 proposes only deterministic safe GLB geometry ranges and applies atomically', () => {
+  const native = beginnerDesignNative
   assert.match(native, /derive_reference_model_suggestion_v1/u)
   assert.match(native, /bounded_bbox_area_normal_v1/u)
   assert.match(native, /surface_area_milli/u)
@@ -188,6 +192,7 @@ test('AUT-004 proposes only deterministic safe GLB geometry ranges and applies a
 })
 
 test('general GLB target proposal is offline bounded read-only and explicitly copied', () => {
+  const native = beginnerDesignNative
   assert.match(native, /general_protrusion_candidates: Vec<ori_domain::BeginnerProtrusionTargetV1>/u)
   assert.match(
     native,
@@ -205,6 +210,7 @@ test('general GLB target proposal is offline bounded read-only and explicitly co
 })
 
 test('disconnected GLB components form only one bounded custom tree proposal', () => {
+  const native = beginnerDesignNative
   assert.match(native, /fn disconnected_glb_stick_tree_v1/u)
   assert.match(native, /grouped\.len\(\) > 8/u)
   assert.match(native, /edges\.sort_unstable\(\)/u)
@@ -338,6 +344,7 @@ test('silhouette mirror is versioned persisted and applied after all cardinal ro
 })
 
 test('AUT-007 binds bounded 3D face ranges and bulge direction without elasticity', () => {
+  const native = beginnerDesignNative
   assert.match(generation, /struct BeginnerBulgeTargetV1/u)
   assert.match(generation, /pub face_ids: Vec<FaceId>/u)
   assert.match(generation, /pub range_min_tenths_mm: \[i32; 3\]/u)

@@ -47,7 +47,7 @@ test('the evidence audit does not promote the remaining SIM-010 proof boundary',
   assert.match(evidence, /SIM-010の未証明範囲を完成へ昇格させる証拠には使用しない/u)
 })
 
-test('EDT-009 keeps twenty-one wire variants but promotes only the seven sound residual families', () => {
+test('EDT-009 retains twenty-one legacy tags and adds one bounded sound proof family', () => {
   const enumBody = constraints.match(
     /pub enum DirectConstraintConflictKindV1 \{(?<body>[\s\S]*?)\n\}/u,
   )?.groups?.body
@@ -57,8 +57,8 @@ test('EDT-009 keeps twenty-one wire variants but promotes only the seven sound r
   ]
     .map((match) => match.groups?.name)
     .filter((name): name is string => name !== undefined)
-  assert.equal(enumVariants.length, 21)
-  assert.equal(new Set(enumVariants).size, 21)
+  assert.equal(enumVariants.length, 22)
+  assert.equal(new Set(enumVariants).size, 22)
 
   const statusRow = status.match(/^\| EDT-009 \| 部分実装 \|.*$/mu)?.[0]
   assert.ok(statusRow)
@@ -70,6 +70,7 @@ test('EDT-009 keeps twenty-one wire variants but promotes only the seven sound r
     'DifferentLengthRatios',
     'DifferentFixedLengthsInEqualLengthComponent',
     'ParallelWithPerpendicularOrientations',
+    'PositiveFixedLengthInBoundedZeroLengthClosure',
   ]
   const documentedVariants = [
     ...statusRow.matchAll(/`(?<name>[A-Z][A-Za-z0-9]+)`/gu),
@@ -83,11 +84,11 @@ test('EDT-009 keeps twenty-one wire variants but promotes only the seven sound r
     enumVariants.filter((name) => !allowlist.includes(name)).length,
     14,
   )
-  assert.match(statusRow, /enum 21 variantはwire互換/u)
+  assert.match(statusRow, /legacy 21 variantをwire互換/u)
   assert.match(statusRow, /sound allowlist/u)
   assert.match(statusRow, /残る14 variant/u)
   assert.match(statusRow, /`Unknown`へfail-closed/u)
-  assert.match(statusRow, /一般充足可能性、一般矛盾原因、一般最小不能部分集合は未完成/u)
+  assert.match(statusRow, /全11種の一般充足可能性、完全な一般矛盾原因、一般最小不能部分集合は未完成/u)
 
   assert.match(
     status,
@@ -97,6 +98,14 @@ test('EDT-009 keeps twenty-one wire variants but promotes only the seven sound r
     progress,
     /2026-07-26 EDT-009異比率追補:[^\n]+sound allowlistは7種、fail-closedは14種/u,
   )
+  assert.match(
+    status,
+    /2026-07-26 EDT-009有界ゼロ長閉包追補:[^\n]+合計22 variant[^\n]+sound familyは8種[^\n]+本項がvariant数・sound family数の現行正本/u,
+  )
+  assert.match(
+    progress,
+    /2026-07-26 EDT-009有界ゼロ長閉包追補:[^\n]+合計22 variantのうちsound familyは8種、legacy fail-closedは14種/u,
+  )
   assert.match(progress, /\*\*81\.96%（表示82\.0%）\*\*/u)
   assert.match(status, /\*\*実装済み85 \/ 部分実装2 \/ 未着手0\*\*/u)
 
@@ -105,10 +114,10 @@ test('EDT-009 keeps twenty-one wire variants but promotes only the seven sound r
   )
   assert.ok(edtEvidence)
   assert.deepEqual(edtEvidence.limitations, [
-    'only seven of the twenty-one wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the other fourteen fail closed to Unknown',
+    'only eight of the twenty-two wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the fourteen retained legacy variants fail closed to Unknown',
   ])
   assert.deepEqual(edtEvidence.missingAcceptance, [
-    'sound general satisfiability and unsatisfiability oracle plus minimal unsatisfiable subsets beyond the seven allowlisted direct-conflict variants',
+    'complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded five-kind zero-length proof',
   ])
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
@@ -133,5 +142,21 @@ test('EDT-009 keeps twenty-one wire variants but promotes only the seven sound r
   assert.ok(edtEvidence.evidence.some(
     (item: { selector: string }) =>
       item.selector === 'fn different_ratios_with_fixed_denominator_can_share_an_underflowed_zero_numerator()',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { selector: string }) =>
+      item.selector === 'pub(super) fn conflict(',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { selector: string }) =>
+      item.selector === 'fn bounded_zero_length_closure_crosses_equal_length_and_ratio_without_solver_assumptions()',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { selector: string }) =>
+      item.selector === 'fn bounded_zero_length_closure_core_is_canonical_and_cardinality_smallest_for_the_oracle()',
+  ))
+  assert.ok(edtEvidence.evidence.some(
+    (item: { selector: string }) =>
+      item.selector === 'reverse_zero_length_ratio_underflow_is_solver_required',
   ))
 })

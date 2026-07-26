@@ -216,7 +216,8 @@
         "66074eba1c5c2dc564ec1c3cf135c0891c4d66db",
         "327518c360e142d754d0c21c2680b7389d36042e",
         "1be7912632e7a8bfd02f01659401730131343261",
-        "8bdb61e8f36b05d54b15cfb87326a580e684cbbf"
+        "8bdb61e8f36b05d54b15cfb87326a580e684cbbf",
+        "5d38e10ecf311abd94d008528d638895c3c70aa1"
       ],
       "evidence": [
         {
@@ -263,13 +264,38 @@
           "kind": "test",
           "path": "apps/desktop/tests/geometricConstraints.test.ts",
           "selector": "different length ratio proof requires exactly three cause IDs"
+        },
+        {
+          "kind": "production-symbol",
+          "path": "crates/ori-core/src/constraints/bounded_zero_closure.rs",
+          "selector": "pub(super) fn conflict("
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "fn bounded_zero_length_closure_crosses_equal_length_and_ratio_without_solver_assumptions()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraints.rs",
+          "selector": "fn bounded_zero_length_closure_core_is_canonical_and_cardinality_smallest_for_the_oracle()"
+        },
+        {
+          "kind": "test",
+          "path": "crates/ori-core/src/constraint_solver.rs",
+          "selector": "reverse_zero_length_ratio_underflow_is_solver_required"
+        },
+        {
+          "kind": "test",
+          "path": "apps/desktop/tests/geometricConstraints.test.ts",
+          "selector": "bounded zero-length closure parser binds u16 counts to the exact bounded cause size"
         }
       ],
       "limitations": [
-        "only seven of the twenty-one wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the other fourteen fail closed to Unknown"
+        "only eight of the twenty-two wire-compatible DirectConstraintConflictKindV1 variants are sound under the actual binary64 residuals; the fourteen retained legacy variants fail closed to Unknown"
       ],
       "missingAcceptance": [
-        "sound general satisfiability and unsatisfiability oracle plus minimal unsatisfiable subsets beyond the seven allowlisted direct-conflict variants"
+        "complete sound satisfiability and unsatisfiability decisions plus semantic minimal unsatisfiable subsets across all eleven constraint kinds beyond the bounded five-kind zero-length proof"
       ]
     },
     {
